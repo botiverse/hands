@@ -32,9 +32,12 @@ RUN yes | sdkmanager --licenses >/dev/null 2>&1 || true && \
 
 WORKDIR /app
 
-# Install Node deps first (better layer caching)
+# Install Node deps. We use --include=dev because tsx (a devDependency) is used to
+# run the TypeScript source directly without a separate build step — much faster
+# iteration and smaller image than tsc → node.
 COPY package.json ./
-RUN npm install --omit=dev --no-audit --no-fund
+COPY package-lock.json* ./
+RUN npm install --include=dev --no-audit --no-fund
 
 # Copy container source
 COPY src ./src

@@ -12,6 +12,7 @@
  */
 
 import { Hono } from "hono";
+import { serve } from "@hono/node-server";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { writeFile, unlink, mkdir } from "node:fs/promises";
@@ -106,9 +107,9 @@ async function parseApk(apkPath: string, bytes: Uint8Array): Promise<ApkMetadata
 }
 
 const port = Number(process.env.PORT ?? 8080);
-export default {
-  port,
-  fetch: app.fetch,
-};
 
-console.log(`APK parser listening on :${port}`);
+// Start the Node HTTP server. The default export of `app.fetch` is for Workers
+// runtime; on Node we use @hono/node-server to actually bind a port.
+serve({ fetch: app.fetch, port }, (info) => {
+  console.log(`APK parser listening on :${info.port}`);
+});

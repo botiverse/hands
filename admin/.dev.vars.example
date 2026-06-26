@@ -1,0 +1,4 @@
+# Dev-only API token for the quiver Worker.
+# Copy to admin/.dev.vars and fill in the same token you set via
+# `wrangler secret put ADMIN_API_TOKEN` in the worker directory.
+VITE_ADMIN_API_TOKEN=test-dev-token-123

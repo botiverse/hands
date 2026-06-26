@@ -11,6 +11,7 @@
     "test": "echo 'no tests yet'"
   },
   "dependencies": {
+    "@hono/node-server": "^1.13.7",
     "hono": "^4.11.1"
   },
   "devDependencies": {
