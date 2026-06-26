@@ -34,6 +34,12 @@ interface ApkMetadata {
   file_hash_sha256: string;
 }
 
+// Absolute paths to the Android SDK binaries installed in the container image.
+// Cloudflare Containers sometimes strip or override ENV PATH, so we hardcode
+// the build-tools path rather than relying on `aapt` being on PATH.
+const AAPT_BIN = "/opt/android-sdk/build-tools/34.0.0/aapt";
+const APKSIGNER_BIN = "/opt/android-sdk/build-tools/34.0.0/apksigner";
+
 const app = new Hono();
 
 app.get("/health", (c) => c.json({ ok: true, service: "apk-parser" }));
@@ -65,7 +71,7 @@ app.post("/parse", async (c) => {
 
 async function parseApk(apkPath: string, bytes: Uint8Array): Promise<ApkMetadata> {
   // 1. aapt dump badging — get package_name / version_name / version_code / sdk / app_label
-  const { stdout: badging } = await execFileAsync("aapt", [
+  const { stdout: badging } = await execFileAsync(AAPT_BIN, [
     "dump", "badging", apkPath,
   ], { maxBuffer: 1024 * 1024 });
 
@@ -81,7 +87,7 @@ async function parseApk(apkPath: string, bytes: Uint8Array): Promise<ApkMetadata
   const appLabel = labelLine?.[1] ?? null;
 
   // 2. apksigner verify --print-certs — get signer cert SHA-256
-  const { stdout: certsOut } = await execFileAsync("apksigner", [
+  const { stdout: certsOut } = await execFileAsync(APKSIGNER_BIN, [
     "verify", "--print-certs", apkPath,
   ], { maxBuffer: 1024 * 1024 });
 

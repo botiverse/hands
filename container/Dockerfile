@@ -1,5 +1,6 @@
 # syntax=docker/dockerfile:1
 # APK metadata parser — Cloudflare Container image
+# Force rebuild 2026-06-26 18:01 UTC to fix aapt ENOENT (use --include=dev so tsx ships).
 #
 # Uses `aapt` + `apksigner` from Android SDK build-tools (NOT full Android SDK).
 # These are small standalone binaries that read APK files, which is all we need.
