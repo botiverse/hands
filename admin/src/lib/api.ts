@@ -11,11 +11,10 @@
 
 const TOKEN = (import.meta as any).env?.VITE_ADMIN_API_TOKEN ?? "";
 
-// API base URL: in production, point at the deployed Worker; in dev, Vite
-// proxies /api → wrangler dev. Override at build time with VITE_API_BASE_URL.
-const API_BASE =
-  (import.meta as any).env?.VITE_API_BASE_URL ??
-  (import.meta.env?.PROD ? "https://quiver-worker.artin.workers.dev" : "");
+// API base URL: in production, the Worker serves both admin UI + API under
+// the same origin (via wrangler [assets] binding), so API_BASE is empty
+// and requests go to the same host. In dev, Vite proxies /api → wrangler dev.
+const API_BASE = (import.meta as any).env?.VITE_API_BASE_URL ?? "";
 
 export class ApiError extends Error {
   constructor(public status: number, public body: unknown, message: string) {

@@ -56,5 +56,13 @@
     "ENVIRONMENT": "development",
     "MAX_APK_SIZE_MB": "200",
     "SIGNED_URL_TTL_SECONDS": "3600"
+  },
+
+  // Serve admin SPA static assets from this Worker (no separate Pages project).
+  // Hono routes take precedence; unmatched paths fall through to /index.html.
+  "assets": {
+    "directory": "../admin/dist",
+    "binding": "ASSETS",
+    "not_found_handling": "single-page-application"
   }
 }
