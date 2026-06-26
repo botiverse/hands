@@ -1,0 +1,88 @@
+package io.quiver.update
+
+import android.os.Bundle
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.setContent
+import androidx.compose.foundation.layout.*
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Text
+import androidx.compose.runtime.*
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
+import io.quiver.update.models.LatestVersionResponse
+import kotlinx.coroutines.runBlocking
+
+/**
+ * Reference Activity wiring [UpdateChecker]. Shows current vs latest version
+ * in a TextView and triggers install on a button tap.
+ *
+ * To use:
+ *   1. Drop this file into your app/src/main/java/.../ui/MainActivity.kt
+ *   2. Add the INTERNET + REQUEST_INSTALL_PACKAGES permissions (see docs/integration.md)
+ *   3. Set baseUrl to your deployed quiver worker URL
+ *   4. Set appSlug to the slug you registered on the quiver admin UI
+ *
+ * This example uses Jetpack Compose. If your app uses XML, translate to
+ * findViewById / startActivity equivalents.
+ */
+class MainActivity : ComponentActivity() {
+
+    private val checker by lazy {
+        UpdateChecker(
+            context = applicationContext,
+            baseUrl = "https://your-quiver-worker.workers.dev",
+            appSlug = "slock-android",
+            installedVersionCode = BuildConfig.VERSION_CODE.toLong(),
+        )
+    }
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        setContent {
+            MaterialTheme {
+                var state by remember { mutableStateOf<UpdateState>(UpdateState.Idle) }
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Text("Installed: v${BuildConfig.VERSION_NAME} (code ${BuildConfig.VERSION_CODE})")
+                    Spacer(Modifier.height(8.dp))
+
+                    when (val s = state) {
+                        is UpdateState.Idle ->
+                            Button(onClick = { state = UpdateState.Checking }) {
+                                Text("Check for updates")
+                            }
+                        is UpdateState.Checking ->
+                            Button(onClick = {}, enabled = false) { Text("Checking…") }
+                        is UpdateState.UpToDate ->
+                            Text("Up to date (latest: v${s.latest.version.version_name})")
+                        is UpdateState.UpdateAvailable ->
+                            Column {
+                                Text("Update available: v${s.latest.version.version_name}")
+                                Spacer(Modifier.height(8.dp))
+                                Button(onClick = { checker.checkAndInstallAsync() }) {
+                                    Text("Install update")
+                                }
+                            }
+                        is UpdateState.Error ->
+                            Text("Update check failed: ${s.message}")
+                    }
+                }
+            }
+        }
+    }
+}
+
+private sealed interface UpdateState {
+    data object Idle : UpdateState
+    data object Checking : UpdateState
+    data class UpToDate(val latest: LatestVersionResponse) : UpdateState
+    data class UpdateAvailable(val latest: LatestVersionResponse) : UpdateState
+    data class Error(val message: String) : UpdateState
+}
+
+private fun Button(
+    onClick: () -> Unit,
+    enabled: Boolean = true,
+    content: @Composable () -> Unit,
+) = androidx.compose.material3.Button(onClick = onClick, enabled = enabled) {
+    content()
+}
