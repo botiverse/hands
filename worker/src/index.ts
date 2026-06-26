@@ -82,7 +82,7 @@ app.get("/public/apps/:slug/latest", handlePublicGetLatestVersion);
 app.get("/public/apps/:slug/channels", handlePublicListChannels);
 
 // Admin — protected by Cloudflare Access JWT or API Token
-const admin = new Hono<{ Bindings: Env }>();
+const admin = new Hono<{ Bindings: Env; Variables: { cf_email?: string; cf_jwt?: string } }>();
 admin.use("*", authMiddleware);
 
 admin.get("/api/apps", handleListApps);
