@@ -132,13 +132,31 @@ export const updateVersion = (
 
 export const createVersion = (
   appId: string,
-  input: Parameters<typeof request>[1] extends infer R ? any : never,
+  input: any,
 ) =>
   request<Version>(`/api/apps/${appId}/versions`, {
     method: "POST",
     admin: true,
     body: JSON.stringify(input),
   });
+
+// Multipart upload to the Worker, which stores in R2 and returns file_hash + r2_key.
+export const uploadApk = async (
+  appId: string,
+  file: File,
+): Promise<{ file_hash: string; r2_key: string; size_bytes: number; original_filename: string }> => {
+  const fd = new FormData();
+  fd.append("apk", file);
+  const res = await fetch(`/api/apps/${appId}/upload`, {
+    method: "POST",
+    headers: TOKEN ? { authorization: `Bearer ${TOKEN}` } : {},
+    body: fd,
+  });
+  if (!res.ok) {
+    throw new ApiError(res.status, await res.text(), `upload failed ${res.status}`);
+  }
+  return res.json();
+};
 
 export const listAuditLogs = (appId: string) =>
   request<{ logs: AuditLogEntry[] }>(`/api/apps/${appId}/audit-logs`, { admin: true });

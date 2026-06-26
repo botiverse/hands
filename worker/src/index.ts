@@ -14,6 +14,7 @@ import {
   handlePublicGetLatestVersion,
   handlePublicListChannels,
 } from "./routes/public";
+import { handleUploadApk } from "./routes/upload";
 import {
   handleListVersions,
   handleCreateVersion,
@@ -69,6 +70,9 @@ admin.get("/api/apps/:appId", handleGetApp);
 admin.post("/api/apps/:appId/versions", handleCreateVersion);
 admin.patch("/api/apps/:appId/versions/:versionId", handleUpdateVersion);
 admin.delete("/api/apps/:appId/versions/:versionId", handleDeleteVersion);
+
+// Multipart APK upload → R2 (admin only, validates + audits)
+admin.post("/api/apps/:appId/upload", handleUploadApk);
 
 admin.get("/api/apps/:appId/channels", handleListChannels);
 admin.post("/api/apps/:appId/channels", handleCreateChannel);
