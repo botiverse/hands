@@ -11,6 +11,10 @@ import { Hono } from "hono";
 import { authMiddleware } from "./middleware/auth";
 import { handleListApps, handleCreateApp, handleGetApp } from "./routes/apps";
 import {
+  handlePublicGetLatestVersion,
+  handlePublicListChannels,
+} from "./routes/public";
+import {
   handleListVersions,
   handleCreateVersion,
   handleGetVersion,
@@ -49,6 +53,10 @@ app.get("/health", handleHealth);
 // NOTE: actual APK binary download goes via signed R2 URL, not through Worker
 app.get("/api/apps/:appId/versions", handleListVersions);
 app.get("/api/apps/:appId/versions/:versionId", handleGetVersion);
+
+// Public — client-facing lookups by human-readable slug (no auth)
+app.get("/public/apps/:slug/latest", handlePublicGetLatestVersion);
+app.get("/public/apps/:slug/channels", handlePublicListChannels);
 
 // Admin — protected by Cloudflare Access JWT or API Token
 const admin = new Hono<{ Bindings: Env }>();
