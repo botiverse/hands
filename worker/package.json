@@ -1,0 +1,31 @@
+{
+  "name": "@oranix/quiver-worker",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "main": "src/index.ts",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "build": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "lint": "eslint src/",
+    "lint:fix": "eslint --fix src/",
+    "db:migrate:local": "wrangler d1 migrations apply quiver-db --local",
+    "db:migrate:remote": "wrangler d1 migrations apply quiver-db --remote",
+    "db:migrations:list": "wrangler d1 migrations list quiver-db"
+  },
+  "dependencies": {
+    "@cloudflare/containers": "^0.0.30",
+    "hono": "^4.11.1"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20250101.0",
+    "@types/node": "^22.10.0",
+    "eslint": "^9.17.0",
+    "typescript": "^5.9.3",
+    "vitest": "^2.1.8",
+    "wrangler": "^4.88.0"
+  }
+}

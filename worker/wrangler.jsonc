@@ -1,0 +1,60 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "quiver-worker",
+  "main": "src/index.ts",
+  "compatibility_date": "2025-10-08",
+  "compatibility_flags": ["nodejs_compat"],
+  "observability": { "enabled": true },
+  "upload_source_maps": true,
+
+  // R2 bucket — APK binaries + parsed icons
+  "r2_buckets": [
+    {
+      "binding": "APK_BUCKET",
+      "bucket_name": "quiver-apks"
+    }
+  ],
+
+  // D1 database — apps / versions / channels / audit_logs
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "quiver-db",
+      "database_id": "fdc960cc-d1c5-41ae-96f3-c74df4b97d6b",
+      "migrations_dir": "../migrations/sql"
+    }
+  ],
+
+  // Cloudflare Container — APK metadata parser
+  "containers": [
+    {
+      "class_name": "ApkParserContainer",
+      "image": "../container/Dockerfile",
+      "max_instances": 3
+    }
+  ],
+
+  // Durable Object binding for the container (per containers-template pattern)
+  "durable_objects": {
+    "bindings": [
+      {
+        "class_name": "ApkParserContainer",
+        "name": "APK_PARSER"
+      }
+    ]
+  },
+
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["ApkParserContainer"]
+    }
+  ],
+
+  // Non-secret config
+  "vars": {
+    "ENVIRONMENT": "development",
+    "MAX_APK_SIZE_MB": "200",
+    "SIGNED_URL_TTL_SECONDS": "3600"
+  }
+}
