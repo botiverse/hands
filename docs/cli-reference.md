@@ -1,7 +1,11 @@
 # Quiver CLI Reference — `@oranix/quiver-cli`
 
-Status: **draft v1, awaiting endpoint implementation** (Phase 3 / Task X.1.6)
-Companion to: `publish-architecture.md` §6
+Status: **draft v2 — design + planned contract** (Phase 3 / Task X.1.6)
+Companion to: `publish-architecture.md` §6, `public-api-reference.md`
+
+> **Caveat (2026-06-28)**: this doc describes the **design** of `@oranix/quiver-cli`. The CLI is not yet implemented (Phase 3.4). Some sections describe *current* contract (what you can call from CI today using raw HTTP / curl + the same JSON shapes the CLI will use), and some describe *planned* shape (commands not yet wrapped in the CLI binary). Each section header tags its status.
+>
+> **Per @Codex-Kuikly-KMP专家's guidance**: I labeled this "X.1.6 — low-conflict finishing item" so we can stabilize the command taxonomy + auth/role boundary + error codes + compat strategy before starting the actual implementation. The doc itself is a target contract; do not treat command names or flag shapes as fixed until the npm package lands.
 
 ---
 
@@ -13,6 +17,11 @@ Companion to: `publish-architecture.md` §6
 - Push build artifacts from CI (GitHub Actions, GitLab CI, BuildKite) without writing curl/HTTP
 - Inspect / release / rollback builds and releases from the terminal
 - Stream operation logs + SSE events
+
+**Status legend** (used in section headers):
+- **Current** — command maps to a backend endpoint that exists today on the deployed Worker.
+- **Planned** — command is designed but the npm package isn't built yet. Calls will hit the same backend endpoints that the admin UI uses once shipped.
+- **Future** — depends on Phase 3 (public API scope), Phase 4 (smoke test), or Phase 5 (org mgmt) work.
 - Manage channels, webhooks, product types, release types
 
 **Where to install**:
@@ -23,7 +32,7 @@ Companion to: `publish-architecture.md` §6
 
 ---
 
-## 2. Authentication
+## 2. Authentication — *Planned* (CLI binary doesn't exist yet; backend `Login with Raft` OAuth + session cookies do work today)
 
 ### 2.1 First-time login (interactive)
 
@@ -63,7 +72,7 @@ server: https://quiver-worker.artin.workers.dev
 
 ---
 
-## 3. Command overview
+## 3. Command overview — *Planned taxonomy* (admin UI already does all of this via the same backend endpoints)
 
 | Command | Description |
 |---|---|
@@ -83,7 +92,7 @@ All commands support `--help` and `--json` (machine-readable output for scriptin
 
 ---
 
-## 4. Apps
+## 4. Apps — *Current* (endpoints live; CLI commands are HTTP-shaped wrappers around `GET/POST/PATCH/DELETE /api/apps`)
 
 ### 4.1 `quiver apps list`
 
@@ -145,7 +154,7 @@ $ quiver apps unarchive --app old-app
 
 ---
 
-## 5. Channels
+## 5. Channels — *Current* (same as Apps)
 
 ### 5.1 `quiver channels list`
 
@@ -192,7 +201,7 @@ $ quiver channels delete --app myapp-android --channel production
 
 ---
 
-## 6. Product types
+## 6. Product types — *Current* (Phase 2.1 schema landed; endpoints live)
 
 User-defined per app: what kinds of artifacts we ship.
 
@@ -219,7 +228,7 @@ $ quiver product-types create --app myapp-android \
 
 ---
 
-## 7. Release types
+## 7. Release types — *Current* (same as product types)
 
 User-defined per app: how to label releases (stable / rc / beta / internal / ...).
 
@@ -247,7 +256,7 @@ $ quiver release-types create --app myapp-android \
 
 ---
 
-## 8. Builds
+## 8. Builds — *Current* (Phase 2.4.6 endpoints live in Worker; CLI binary pending)
 
 A build = one uploaded artifact. Immutable. Can be re-released multiple times.
 
@@ -343,7 +352,7 @@ $ quiver builds delete --app myapp-android --build 8fb0d8db-...
 
 ---
 
-## 9. Build assets
+## 9. Build assets — *Current* (same as builds)
 
 Per-(platform, arch, variant, filetype) binaries attached to a build.
 
@@ -378,7 +387,7 @@ $ quiver build-assets delete --app myapp-electron --build e6f04b61-... --asset a
 
 ---
 
-## 10. Releases
+## 10. Releases — *Current* (Phase 2.5.4-7 endpoints live; full / platform / ip_range scopes implemented; cohort deferred to P5.5)
 
 A release = a build that has been promoted to "live" with a scope. Mutable.
 
@@ -514,7 +523,7 @@ $ quiver releases cancel --app myapp-android --release 1234abcd-... \
 
 ---
 
-## 11. Operations (parse / upload / publish log)
+## 11. Operations (parse / upload / publish log) — *Current* (operation_logs table + GET /api/apps/:id/operations + POST /retry + DELETE; SSE stream at /operations/stream)
 
 Every async task the admin UI triggers is recorded in `operation_logs`. SSE streams updates to the browser. The CLI can list + replay + delete operations.
 
@@ -548,7 +557,7 @@ $ quiver ops delete --app myapp-android --op op-7890ab
 
 ---
 
-## 12. Webhooks (Phase 2.5.8+)
+## 12. Webhooks — *Planned* (admin UI has placeholder UI; backend not yet implemented; CI recipes below assume webhook fires from a stub — real dispatch is P5.5/P5.6)
 
 Quiver can dispatch HTTP webhooks for release lifecycle events (configurable per app).
 
@@ -591,7 +600,7 @@ Payload example:
 
 ---
 
-## 13. CI integration recipes
+## 13. CI integration recipes — *Current endpoint shape, planned CLI wrapping* (recipes below show the curl + jq sequence the CLI will execute)
 
 ### 13.1 GitHub Actions
 
@@ -670,7 +679,7 @@ build_and_release:
 
 ---
 
-## 14. Output formats
+## 14. Output formats — *Planned* (all commands will support `--json` for scripting; admin UI today does NOT expose --json but the underlying API endpoints return JSON)
 
 All commands support `--json` for machine-readable output. Default is human-readable table.
 
@@ -695,7 +704,7 @@ $ quiver builds get --app myapp-electron --build e6f04b61-... --watch
 
 ---
 
-## 15. Exit codes
+## 15. Exit codes — *Planned* (CLI will define a stable exit code table; admin UI doesn't have one)
 
 | Code | Meaning |
 |---|---|
@@ -724,7 +733,7 @@ fi
 
 ---
 
-## 16. Environment variables
+## 16. Environment variables — *Planned* (backend already supports `QUIVER_SERVER` / `QUIVER_TOKEN` via `dev-token` Bearer; CLI will add `QUIVER_EMAIL`)
 
 | Variable | Description |
 |---|---|
@@ -739,7 +748,7 @@ fi
 
 ---
 
-## 17. Config file
+## 17. Config file — *Planned* (admin UI does not have a CLI-equivalent config; `QUIVER_*` env vars work today)
 
 Location: `~/.quiver/config.json`
 
@@ -758,14 +767,18 @@ Token is hashed + stored at `~/.quiver/auth.json` with mode 0600. The CLI never 
 
 ---
 
-## 18. Implementation status
+## 18. Implementation status (as of 2026-06-28)
 
-This doc is **the design target**. Implementation phases:
+This doc is **the design target** for the future npm package `@oranix/quiver-cli`. The CLI binary does not exist yet, but **most of the commands described here already work today as HTTP calls** to the Worker's admin endpoints. CI recipes in §13 show the exact curl + jq sequence the CLI will execute.
 
-- **Phase 2.4.6 + P2.5.4-7 (backend)** — currently being implemented by @Codex-Kuikly-KMP专家. After it lands, the CLI can talk to the real endpoints.
-- **Phase 3.4 (CLI itself)** — npm package scaffold + first cut of `login` / `apps` / `builds` / `releases` / `ops`. ~1 week work. Blocked on backend.
+**Phases**:
 
-When the CLI is ready, install via:
+- **Phase 2.1 + P2.2 (schema + backfill)** — ✅ DONE (commit `c6322ab`): product_types, release_types, channels, build_assets, releases, release_scopes tables on remote D1. 1 app + 1 legacy versions row backfilled. Builds table has parity with versions on `should_force_update` / `availability_at` / `provenance_json`.
+- **Phase 2.4.6 + P2.5.4-7 (backend)** — ✅ DONE (commit `2c77b97` by @Codex-Kuikly-KMP专家): builds + build_assets + releases + release_scopes CRUD with transactional supersede + audit + legacy /versions compat shim. **The CLI can talk to these endpoints today** via `curl + Authorization: Bearer $QUIVER_TOKEN`.
+- **Phase 3.4 (CLI npm package)** — 🔵 TODO: scaffold `packages/cli/` (or separate repo). First cut: `login` / `apps` / `builds` / `releases` / `ops` / `webhooks`. ~1 week work. Blocked on the npm package skeleton, not the backend.
+- **Phase 3.3 (public API scope)** — 🔵 TODO: P3.3 endpoints (`/public/apps/:slug/bundles`, scope resolution on `/latest`) will get CLI commands like `quiver bundles list` / `quiver releases scope`. The doc will get a new section then.
+
+**Install (when shipped)**:
 ```
 npm install --save-dev @oranix/quiver-cli
 # or
@@ -776,8 +789,28 @@ npm install -g @oranix/quiver-cli
 
 ## 19. References
 
-- Quiver architecture: [`publish-architecture.md`](./publish-architecture.md) §6
-- Quiver API design: see `publish-architecture.md` §5
-- Quiver task tracking: [`publish-tasks.md`](./publish-tasks.md)
+- [`publish-architecture.md`](./publish-architecture.md) §6 — original CLI design
+- [`public-api-reference.md`](./public-api-reference.md) — public endpoints the CLI reuses (latest / bundles)
+- [`admin-user-guide.md`](./admin-user-guide.md) — admin UI counterpart
+- [`publish-tasks.md`](./publish-tasks.md) — P3.4 CLI implementation task
+- [`account-org-invite.md`](./account-org-invite.md) §5.2 — role matrix that gates CLI commands
 - ToDesktop CLI (inspiration): https://www.todesktop.com/electron/docs/libraries/cli
 - bytemain/hot-updater CLI (inspiration): https://github.com/bytemain/hot-updater
+- wrangler (general CLI patterns): https://developers.cloudflare.com/workers/wrangler/
+
+## 20. Stability + compat strategy
+
+Per the public-api-reference compat policy, the CLI's command names + flag shapes may evolve before the 1.0 release. The CLI will use **semantic versioning**:
+- **0.x.y (current)** — breaking changes allowed between minor versions. CI scripts should pin a version (e.g. `npm install --save-dev @oranix/quiver-cli@^0.4.0`).
+- **1.0.0** — first stable release. Subsequent minor versions are backward-compatible; major versions may break (with 6-month deprecation).
+- **Server compat** — the CLI requires Worker version >= a minimum (will be enforced at login). If you point the CLI at an older Worker, login fails with a clear version-mismatch error rather than silent misbehavior.
+
+## 21. Test + release process (planned)
+
+When the CLI ships, every release will be:
+1. Tagged in `quiver` (CLI repo) on green CI (typecheck, unit tests against a mock Worker, snapshot tests for command output)
+2. Published to npm under the `@oranix/quiver-cli` scope (public)
+3. Cross-tested against the latest 3 Worker releases (rolling compat window)
+4. Released notes highlight any new commands or breaking changes
+
+For now (Phase 3.4 prep): the command taxonomy in §3 is the contract the implementation will be tested against. Changing a flag name or default behavior is a doc update first, code second.

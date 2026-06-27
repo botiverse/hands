@@ -233,7 +233,7 @@ Goal: introduce `product_types`, `release_types`, `build_assets`, `releases`, `r
 | X.1.3 `account-org-invite.md` | ✅ DONE | companion doc for Phase 5 (account/team/invite/RBAC) |
 | X.1.4 Admin user guide | ✅ DONE | | `docs/admin-user-guide.md` (15 KB, 9 sections: Overview / Caveats / Page-by-page / Workflows / Roles / Shortcuts / Troubleshooting / Future / Related) |
 | X.1.5 Public API reference | ✅ DONE | | `docs/public-api-reference.md` (12 KB, 9 sections: Overview / Endpoints / Client patterns / Error codes / Versioning / Auth boundary / Performance / Open questions / Related) — current contract doc per expert suggestion |
-| X.1.6 CLI reference | 🔵 TODO | Phase 3 |
+| X.1.6 CLI reference | ✅ DONE | Phase 3 | `docs/cli-reference.md` v2: status legend (Current / Planned / Future) on every section, §18 implementation status aligned with actual Phase 2 backend shipped, §19 expanded references, §20 stability + compat strategy, §21 test + release process (planned). Per @Codex-Kuikly-KMP专家's "low-conflict finishing item" suggestion. |
 
 ### X.2 — Testing
 
@@ -344,10 +344,10 @@ Depends on: existing Login with Raft migration `0004_raft_auth.sql`.
 | Phase 3 | 0 | 0 | 14 | 14 | ~3 weeks |
 | Phase 4 | 0 | 0 | 7 | 7 | ~6 weeks (deferred) |
 | Phase 5 | 12 | 0 | 16 | 28 | ~13 days (~2.5 weeks) |
-| Cross-cutting | 4 | 0 | 2 | 6 | ongoing |
-| **Total** | **53** | **0** | **64** | **117** | |
+| Cross-cutting | 5 | 0 | 1 | 6 | ongoing |
+| **Total** | **54** | **0** | **63** | **117** | |
 
-Last sync: 2026-06-28 04:25 UTC
+Last sync: 2026-06-28 04:30 UTC
 
 **Phase 2.1 + P2.2 complete** (commits `c6322ab`): 5 new tables created on remote D1, product_types / release_types / default channels seeded for the 1 existing app, 1 legacy versions row backfilled into builds + build_assets + releases + release_scopes. Builds table now has parity with versions on `should_force_update` / `availability_at` / `provenance_json`.
 
