@@ -53,11 +53,13 @@
 
   // Non-secret config
   "vars": {
-    "ENVIRONMENT": "development",
+    "ENVIRONMENT": "production",
     "MAX_APK_SIZE_MB": "200",
     "SIGNED_URL_TTL_SECONDS": "3600",
-    "CF_ACCESS_AUD": "c86bde93426e605a9563e6efd7d94fdf802b12d2d22397f9afd9ec28283ac234",
-    "CF_ACCESS_JWKS_URL": "https://tank.cloudflareaccess.com/cdn-cgi/access/certs"
+    "APP_ORIGIN": "https://quiver-worker.artin.workers.dev",
+    "RAFT_ORIGIN": "https://app.raft.build",
+    "RAFT_API_ORIGIN": "https://api.raft.build",
+    "RAFT_CLIENT_ID": "quiver"
   },
 
   // Serve admin SPA static assets from this Worker (no separate Pages project).

@@ -15,6 +15,7 @@
 
 import type { Context } from "hono";
 import { createHash } from "node:crypto";
+import { currentActor } from "../middleware/auth";
 import {
   createOperation,
   updateOperation,
@@ -67,7 +68,7 @@ export async function handleUploadApk(c: Context<{ Bindings: Env }>) {
     },
     customMetadata: {
       "original-filename": file.name,
-      "uploaded-by": c.req.header("cf-access-authenticated-user-email") ?? "admin",
+      "uploaded-by": currentActor(c),
     },
   });
 
@@ -79,7 +80,7 @@ export async function handleUploadApk(c: Context<{ Bindings: Env }>) {
       crypto.randomUUID(),
       appId,
       "apk.upload",
-      "admin",
+      currentActor(c),
       JSON.stringify({ r2_key: r2Key, size: file.size, sha256: fileHash }),
       Date.now(),
     )
@@ -89,6 +90,7 @@ export async function handleUploadApk(c: Context<{ Bindings: Env }>) {
   const op = await createOperation(c.env.DB, {
     app_id: appId,
     kind: "upload",
+    actor: currentActor(c),
     input: JSON.stringify({
       original_filename: file.name,
       size_bytes: file.size,

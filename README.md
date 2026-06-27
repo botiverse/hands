@@ -1,6 +1,6 @@
 # quiver
 
-**Open-Source APK distribution platform** — Cloudflare Native (Workers + Container + D1 + R2 + Pages).
+**Open-Source APK distribution platform** — Cloudflare Native (Workers + Container + D1 + R2).
 
 Reference feature set inspired by [Zealot (tryzealot/zealot)](https://github.com/tryzealot/zealot).
 
@@ -17,7 +17,8 @@ The "quiver" metaphor: admins load APK arrows into channels; clients pick the ri
 ┌────────────────────────────────────────────────────────┐
 │ Cloudflare Worker (quiver)                            │
 │ - API routes                                           │
-│ - Auth (Cloudflare Access / API Token)                 │
+│ - Admin SPA static assets                              │
+│ - Auth (Login with Raft session cookie)                │
 │ - Signed URL issuance for R2                           │
 │ - D1 read/write for metadata                           │
 └──────┬───────────────────────────┬────────────────────┘
@@ -34,23 +35,36 @@ The "quiver" metaphor: admins load APK arrows into channels; clients pick the ri
        │                     ┌─────────────────┐
        └─────────────────────│ D1 Database     │
                              │ apps/versions/  │
-                             │ channels/audit  │
-                             └─────────────────┘
-                                      ▲
-                                      │
-                             ┌─────────────────┐
-                             │ Admin UI (SPA)  │
-                             │ Cloudflare Pages│
+                             │ channels/audit/ │
+                             │ raft sessions   │
                              └─────────────────┘
 ```
 
 ## Modules
 
-- `worker/` — Cloudflare Worker (Hono) — API routes, auth, D1 CRUD, R2 signed URLs
+- `worker/` — Cloudflare Worker (Hono) — admin SPA, API routes, Login with Raft, D1 CRUD, R2 signed URLs
 - `container/` — Cloudflare Container — APK metadata parser (aapt + apksigner)
-- `admin/` — Cloudflare Pages SPA (React + Vite + Tailwind) — admin upload UI
+- `admin/` — SPA assets (React + Vite + Tailwind) served by the Worker
 - `migrations/` — D1 SQL schema migrations
-- `docs/` — design notes + API contract
+
+## Login with Raft
+
+Admin access uses Login with Raft as the only production login path.
+
+Register the app in Raft with callback URL:
+
+```text
+https://quiver-worker.artin.workers.dev/login/raft/callback
+```
+
+Worker configuration:
+
+- `RAFT_CLIENT_ID` in `worker/wrangler.jsonc`
+- `RAFT_CLIENT_SECRET` as a Worker secret (`wrangler secret put RAFT_CLIENT_SECRET`)
+- `APP_ORIGIN` must exactly match the origin used in the registered callback URL
+- Optional `RAFT_ALLOWED_SERVER_IDS` / `RAFT_ALLOWED_SERVER_SLUGS` can restrict admin login to specific Raft servers
+
+Do not put Raft client secrets in browser JavaScript, repository files, logs, or public channels.
 
 ## Quick start
 

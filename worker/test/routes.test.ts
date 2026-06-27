@@ -27,6 +27,11 @@ interface MockEnv {
   APK_BUCKET: unknown;
   ENVIRONMENT: string;
   ADMIN_API_TOKEN: string;
+  RAFT_CLIENT_ID: string;
+  RAFT_CLIENT_SECRET: string;
+  RAFT_ORIGIN: string;
+  RAFT_API_ORIGIN: string;
+  APP_ORIGIN: string;
   SIGNED_URL_TTL_SECONDS: string;
   APK_PARSER: unknown;
   MAX_APK_SIZE_MB: string;
@@ -64,6 +69,33 @@ function makeMockDb() {
       actor TEXT NOT NULL, payload TEXT NOT NULL, created_at INTEGER NOT NULL,
       FOREIGN KEY (app_id) REFERENCES apps(id) ON DELETE CASCADE
     );
+    CREATE TABLE raft_accounts (
+      id TEXT PRIMARY KEY,
+      provider TEXT NOT NULL DEFAULT 'raft',
+      provider_subject TEXT NOT NULL,
+      server_id TEXT NOT NULL,
+      server_slug TEXT,
+      principal_type TEXT NOT NULL,
+      server_role TEXT,
+      username TEXT,
+      display_name TEXT NOT NULL,
+      avatar_url TEXT,
+      raw_profile TEXT NOT NULL,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL,
+      last_login_at INTEGER NOT NULL,
+      UNIQUE (provider, provider_subject, server_id)
+    );
+    CREATE TABLE raft_sessions (
+      id TEXT PRIMARY KEY,
+      account_id TEXT NOT NULL,
+      token_hash TEXT NOT NULL UNIQUE,
+      created_at INTEGER NOT NULL,
+      expires_at INTEGER NOT NULL,
+      last_seen_at INTEGER NOT NULL,
+      revoked_at INTEGER,
+      FOREIGN KEY (account_id) REFERENCES raft_accounts(id) ON DELETE CASCADE
+    );
   `);
 
   // Replace `?N` numbered placeholders with anonymous `?` (better-sqlite3 compat).
@@ -99,6 +131,11 @@ function makeMockEnv(): MockEnv {
     APK_BUCKET: null,
     ENVIRONMENT: "development",
     ADMIN_API_TOKEN: "test-token-123",
+    RAFT_CLIENT_ID: "quiver-test",
+    RAFT_CLIENT_SECRET: "test-secret",
+    RAFT_ORIGIN: "https://app.raft.build",
+    RAFT_API_ORIGIN: "https://api.raft.build",
+    APP_ORIGIN: "https://quiver.example.test",
     SIGNED_URL_TTL_SECONDS: "3600",
     APK_PARSER: null,
     MAX_APK_SIZE_MB: "200",
@@ -376,13 +413,22 @@ describe("quiver Hono app — auth + dispatch", () => {
   it("schema migration ordering is consistent", () => {
     // apps → channels (FK app_id) → versions (FK app_id) → audit_logs (FK app_id)
     // Ensure cascade behavior matches what handlers expect.
-    const tables = ["apps", "channels", "versions", "audit_logs"];
+    const tables = [
+      "apps",
+      "channels",
+      "versions",
+      "audit_logs",
+      "raft_accounts",
+      "raft_sessions",
+    ];
     expect(tables[0]).toBe("apps"); // parent
   });
 
-  it("mock env exposes ADMIN_API_TOKEN for dev auth", () => {
+  it("mock env exposes Raft config and keeps bearer auth dev-only", () => {
     const env = makeMockEnv();
     expect(env.ADMIN_API_TOKEN).toBe("test-token-123");
     expect(env.ENVIRONMENT).toBe("development");
+    expect(env.RAFT_CLIENT_ID).toBe("quiver-test");
+    expect(env.RAFT_CLIENT_SECRET).toBe("test-secret");
   });
 });

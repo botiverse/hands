@@ -14,7 +14,15 @@ import { Container, getRandom } from "@cloudflare/containers";
 import { Hono } from "hono";
 import { cors } from "hono/cors";
 
-import { authMiddleware } from "./middleware/auth";
+import { authMiddleware, currentActor } from "./middleware/auth";
+import {
+  handleAgentManifest,
+  handleAuthConfig,
+  handleAuthLogin,
+  handleAuthLogout,
+  handleAuthMe,
+  handleRaftCallback,
+} from "./routes/auth";
 import { handleListApps, handleCreateApp, handleGetApp } from "./routes/apps";
 import {
   handlePublicGetLatestVersion,
@@ -214,6 +222,13 @@ app.use(
 
 // Public — health check (no auth)
 app.get("/health", handleHealth);
+app.get("/.well-known/slock-agent-manifest.json", handleAgentManifest);
+
+app.get("/api/auth/config", handleAuthConfig);
+app.get("/api/auth/login", handleAuthLogin);
+app.get("/login/raft/callback", handleRaftCallback);
+app.get("/api/auth/me", handleAuthMe);
+app.post("/api/auth/logout", handleAuthLogout);
 
 app.get("/api/apps/:appId/versions", handleListVersions);
 app.get("/api/apps/:appId/versions/:versionId", handleGetVersion);
@@ -221,10 +236,13 @@ app.get("/api/apps/:appId/versions/:versionId", handleGetVersion);
 app.get("/public/apps/:slug/latest", handlePublicGetLatestVersion);
 app.get("/public/apps/:slug/channels", handlePublicListChannels);
 
-// Admin — protected by Cloudflare Access JWT or API Token
+// Admin — protected by Quiver's Login with Raft session cookie.
 const admin = new Hono<{
   Bindings: Env;
-  Variables: { cf_email?: string; cf_jwt?: string };
+  Variables: {
+    admin_account?: import("./middleware/auth").AdminAccount;
+    admin_actor?: string;
+  };
 }>();
 admin.use("*", authMiddleware);
 
@@ -279,6 +297,7 @@ admin.post("/api/parse-apk", async (c) => {
   const op = await createOperation(c.env.DB, {
     app_id: null,
     kind: "parse",
+    actor: currentActor(c),
     input: JSON.stringify({ size_bytes: ab.byteLength }),
   });
   await updateOperation(c.env.DB, op.id, {

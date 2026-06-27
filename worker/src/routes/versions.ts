@@ -6,6 +6,7 @@
  */
 
 import type { Context } from "hono";
+import { currentActor } from "../middleware/auth";
 import {
   createOperation,
   updateOperation,
@@ -93,6 +94,7 @@ export async function handleCreateVersion(c: Context<{ Bindings: Env }>) {
   const op = await createOperation(c.env.DB, {
     app_id: appId,
     kind: "publish",
+    actor: currentActor(c),
     input: JSON.stringify(body),
   });
   await updateOperation(c.env.DB, op.id, {
@@ -106,7 +108,16 @@ export async function handleCreateVersion(c: Context<{ Bindings: Env }>) {
 
     await c.env.DB.prepare(
       "INSERT INTO audit_logs (id, app_id, action, actor, payload, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-    ).bind(crypto.randomUUID(), appId, "version.create", "admin", JSON.stringify(body), Date.now()).run();
+    )
+      .bind(
+        crypto.randomUUID(),
+        appId,
+        "version.create",
+        currentActor(c),
+        JSON.stringify(body),
+        Date.now(),
+      )
+      .run();
 
     await updateOperation(c.env.DB, op.id, {
       status: "success",
@@ -200,7 +211,16 @@ export async function handleUpdateVersion(c: Context<{ Bindings: Env }>) {
 
   await c.env.DB.prepare(
     "INSERT INTO audit_logs (id, app_id, action, actor, payload, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-  ).bind(crypto.randomUUID(), appId, "version.update", "admin", JSON.stringify({ versionId, ...body }), Date.now()).run();
+  )
+    .bind(
+      crypto.randomUUID(),
+      appId,
+      "version.update",
+      currentActor(c),
+      JSON.stringify({ versionId, ...body }),
+      Date.now(),
+    )
+    .run();
 
   return c.json({ ok: true });
 }
@@ -213,7 +233,16 @@ export async function handleDeleteVersion(c: Context<{ Bindings: Env }>) {
   ).bind(versionId, appId).run();
   await c.env.DB.prepare(
     "INSERT INTO audit_logs (id, app_id, action, actor, payload, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-  ).bind(crypto.randomUUID(), appId, "version.delete", "admin", JSON.stringify({ versionId }), Date.now()).run();
+  )
+    .bind(
+      crypto.randomUUID(),
+      appId,
+      "version.delete",
+      currentActor(c),
+      JSON.stringify({ versionId }),
+      Date.now(),
+    )
+    .run();
   return c.json({ ok: true });
 }
 

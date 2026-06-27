@@ -6,6 +6,7 @@
  */
 
 import type { Context } from "hono";
+import { currentActor } from "../middleware/auth";
 
 export async function handleListApps(c: Context<{ Bindings: Env }>) {
   const { results } = await c.env.DB.prepare(
@@ -32,7 +33,16 @@ export async function handleCreateApp(c: Context<{ Bindings: Env }>) {
 
   await c.env.DB.prepare(
     "INSERT INTO audit_logs (id, app_id, action, actor, payload, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-  ).bind(crypto.randomUUID(), id, "app.create", "admin", JSON.stringify(body), Date.now()).run();
+  )
+    .bind(
+      crypto.randomUUID(),
+      id,
+      "app.create",
+      currentActor(c),
+      JSON.stringify(body),
+      Date.now(),
+    )
+    .run();
 
   return c.json({ id, slug: body.slug, name: body.name, platform: body.platform }, 201);
 }

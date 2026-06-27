@@ -2,14 +2,13 @@
  * Minimal fetch client for the quiver Worker API.
  *
  * In dev: Vite proxies /api → http://127.0.0.1:8787 (wrangler dev).
- * In prod: Vite-built static assets are deployed to Cloudflare Pages; /api
- *          calls go to the deployed Worker.
+ * In prod: Vite-built static assets are served by the Worker; /api calls are
+ * same-origin.
  *
- * For dev with auth, set VITE_ADMIN_API_TOKEN in admin/.dev.vars (or env)
- * and the client will attach `Authorization: Bearer <token>` to admin calls.
+ * Admin auth is Login with Raft. The Worker sets an HttpOnly same-origin
+ * session cookie after /login/raft/callback; browser code never sees Raft
+ * codes, access tokens, or client secrets.
  */
-
-const TOKEN = (import.meta as any).env?.VITE_ADMIN_API_TOKEN ?? "";
 
 // API base URL: in production, the Worker serves both admin UI + API under
 // the same origin (via wrangler [assets] binding), so API_BASE is empty
@@ -83,16 +82,30 @@ export interface Operation {
   completed_at: number | null;
 }
 
+export interface AuthAccount {
+  id: string;
+  provider: "raft";
+  server_id: string;
+  server_slug: string | null;
+  principal_type: "human" | "agent";
+  server_role: string | null;
+  username: string | null;
+  display_name: string;
+  avatar_url: string | null;
+  actor: string;
+}
+
 async function request<T>(
   path: string,
   init: RequestInit & { admin?: boolean } = {},
 ): Promise<T> {
   const headers = new Headers(init.headers);
   headers.set("content-type", "application/json");
-  if (init.admin && TOKEN) {
-    headers.set("authorization", `Bearer ${TOKEN}`);
-  }
-  const res = await fetch(`${API_BASE}${path}`, { ...init, headers });
+  const res = await fetch(`${API_BASE}${path}`, {
+    ...init,
+    headers,
+    credentials: "include",
+  });
   const text = await res.text();
   let body: unknown = text;
   try {
@@ -110,6 +123,19 @@ async function request<T>(
   return body as T;
 }
 
+// ---------- Auth ----------
+
+export const getAuthMe = () =>
+  request<{ authenticated: true; account: AuthAccount }>(`/api/auth/me`);
+
+export const logout = () =>
+  request<{ ok: boolean }>(`/api/auth/logout`, {
+    method: "POST",
+  });
+
+export const loginUrl = (returnTo = window.location.pathname) =>
+  `${API_BASE}/api/auth/login?return=${encodeURIComponent(returnTo)}`;
+
 // ---------- Public API (no auth) ----------
 
 export const listPublicVersions = (appId: string) =>
@@ -120,7 +146,7 @@ export const getPublicVersion = (appId: string, versionId: string) =>
     `/api/apps/${appId}/versions/${versionId}`,
   );
 
-// ---------- Admin API (requires ADMIN_API_TOKEN in dev / Cloudflare Access in prod) ----------
+// ---------- Admin API (requires Login with Raft session cookie in prod) ----------
 
 export const listApps = () =>
   request<{ apps: App[] }>(`/api/apps`, { admin: true });
@@ -200,9 +226,7 @@ export function streamOperations(
 ): EventSource {
   const url = `${API_BASE}/api/apps/${appId}/operations/stream`;
   const es = new EventSource(url, {
-    // EventSource can't send custom headers; we rely on the Access JWT
-    // being set as a cookie by the browser, OR on VITE_API_BASE_URL pointing
-    // at a path that the Worker knows is internal.
+    withCredentials: true,
   });
   es.addEventListener("op", (ev) => {
     try {
@@ -219,14 +243,12 @@ export function streamOperations(
 export const parseApk = async (file: File): Promise<any> => {
   const res = await fetch(`${API_BASE}/api/parse-apk`, {
     method: "POST",
-    headers: {
-      authorization: TOKEN ? `Bearer ${TOKEN}` : "",
-      "content-type": "application/octet-stream",
-    },
+    headers: { "content-type": "application/octet-stream" },
     body: file,
+    credentials: "include",
   });
   if (!res.ok) {
-    throw new ApiError(res.status, await res.text(), `parse failed ${res.status}`);
+    throw new ApiError(res.status, await readErrorBody(res), `parse failed ${res.status}`);
   }
   return res.json();
 };
@@ -240,11 +262,20 @@ export const uploadApk = async (
   fd.append("apk", file);
   const res = await fetch(`${API_BASE}/api/apps/${appId}/upload`, {
     method: "POST",
-    headers: TOKEN ? { authorization: `Bearer ${TOKEN}` } : {},
     body: fd,
+    credentials: "include",
   });
   if (!res.ok) {
-    throw new ApiError(res.status, await res.text(), `upload failed ${res.status}`);
+    throw new ApiError(res.status, await readErrorBody(res), `upload failed ${res.status}`);
   }
   return res.json();
 };
+
+async function readErrorBody(res: Response): Promise<unknown> {
+  const text = await res.text();
+  try {
+    return text ? JSON.parse(text) : null;
+  } catch {
+    return text;
+  }
+}

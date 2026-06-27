@@ -1,95 +1,128 @@
 /**
- * Auth middleware.
+ * Admin authentication.
  *
- * Two modes, picked by `c.env.ENVIRONMENT`:
+ * Production uses Login with Raft exclusively:
+ *   - /api/auth/login redirects to Raft setup.
+ *   - /login/raft/callback exchanges the code server-side.
+ *   - Admin routes require the Quiver HttpOnly session cookie.
  *
- *   - "production" (or anything else with CF_ACCESS_AUD set):
- *       Verify the `cf-access-jwt-assertion` header against the Cloudflare
- *       Access JWKs at `CF_ACCESS_JWKS_URL`. The JWT must be signed by the
- *       Access app whose AUD tag matches `CF_ACCESS_AUD`. On success, the
- *       verified email is available as `c.get("cf_email")` for handlers to use.
- *
- *   - development (no CF_ACCESS_AUD):
- *       Static Bearer token comparison against the `ADMIN_API_TOKEN` secret,
- *       set via `wrangler secret put ADMIN_API_TOKEN` (or .dev.vars for dev).
- *
- * In either case, handlers under the `admin` Hono sub-app are protected;
- * public routes (/health, /api/apps/:appId/versions, /public/*) skip auth.
+ * A static bearer token is accepted only when ENVIRONMENT !== "production",
+ * so local development and unit smoke tests can still call admin endpoints
+ * without a registered Raft OAuth client.
  */
 
-import type { MiddlewareHandler } from "hono";
-import { createRemoteJWKSet, jwtVerify } from "jose";
+import type { Context, MiddlewareHandler } from "hono";
+import { getCookie } from "hono/cookie";
+
+export const SESSION_COOKIE = "quiver_session";
+
+export type AdminAccount = {
+  id: string;
+  provider: "raft";
+  provider_subject: string;
+  server_id: string;
+  server_slug: string | null;
+  principal_type: "human" | "agent";
+  server_role: string | null;
+  username: string | null;
+  display_name: string;
+  avatar_url: string | null;
+  raw_profile: string;
+  created_at: number;
+  updated_at: number;
+  last_login_at: number;
+};
 
 export type AdminEnv = {
   Variables: {
-    cf_email?: string;
-    cf_jwt?: string;
+    admin_account?: AdminAccount;
+    admin_actor?: string;
   };
 };
 
-// Cache the JWKs remote set per Worker instance — `createRemoteJWKSet` does
-// its own caching internally but we lazily initialize on first request to
-// avoid boot-time cost.
-let jwksCache: ReturnType<typeof createRemoteJWKSet> | null = null;
-let jwksCacheUrl: string | null = null;
-
-function getJwks(url: string) {
-  if (jwksCache && jwksCacheUrl === url) return jwksCache;
-  jwksCache = createRemoteJWKSet(new URL(url));
-  jwksCacheUrl = url;
-  return jwksCache;
+async function sha256Hex(input: string): Promise<string> {
+  const data = new TextEncoder().encode(input);
+  const digest = await crypto.subtle.digest("SHA-256", data);
+  return Array.from(new Uint8Array(digest))
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
 }
 
-export const authMiddleware: MiddlewareHandler<AdminEnv & { Bindings: Env }> = async (
-  c,
-  next,
-) => {
-  const env: string = c.env.ENVIRONMENT;
-  const cfAud = c.env.CF_ACCESS_AUD;
-  const cfJwksUrl = c.env.CF_ACCESS_JWKS_URL;
+export function isProductionEnv(env: Env): boolean {
+  return String(env.ENVIRONMENT ?? "production") === "production";
+}
 
-  // Production: trust Cloudflare Access JWT
-  if (cfAud && cfJwksUrl) {
-    const jwt = c.req.header("cf-access-jwt-assertion");
-    if (!jwt) {
-      return c.json(
-        { error: "unauthorized: missing Cloudflare Access JWT" },
-        401,
-      );
-    }
+export function accountActor(account: AdminAccount): string {
+  const handle = account.username || account.display_name || account.provider_subject;
+  const server = account.server_slug || account.server_id;
+  return `raft:${handle}@${server}`;
+}
 
-    try {
-      const jwks = getJwks(cfJwksUrl);
-      const { payload } = await jwtVerify(jwt, jwks, {
-        audience: cfAud,
-        issuer: new URL("/", cfJwksUrl).origin,
-      });
+export function currentActor(c: Context<any>): string {
+  return c.get("admin_actor") || "admin";
+}
 
-      // Stash verified identity for handlers to use (e.g. audit log actor).
-      c.set("cf_email", String(payload.email ?? ""));
-      c.set("cf_jwt", jwt);
+export async function loadAccountFromSession(
+  env: Env,
+  token: string | undefined,
+): Promise<AdminAccount | null> {
+  if (!token) return null;
+  const tokenHash = await sha256Hex(token);
+  const now = Date.now();
+  const account = await env.DB.prepare(
+    `SELECT a.*
+     FROM raft_sessions s
+     JOIN raft_accounts a ON a.id = s.account_id
+     WHERE s.token_hash = ?1
+       AND s.revoked_at IS NULL
+       AND s.expires_at > ?2
+     LIMIT 1`,
+  )
+    .bind(tokenHash, now)
+    .first<AdminAccount>();
+
+  if (!account) return null;
+
+  await env.DB.prepare(
+    "UPDATE raft_sessions SET last_seen_at = ?1 WHERE token_hash = ?2",
+  )
+    .bind(now, tokenHash)
+    .run();
+  return account;
+}
+
+export const authMiddleware: MiddlewareHandler<AdminEnv & { Bindings: Env }> =
+  async (c, next) => {
+    const account = await loadAccountFromSession(
+      c.env,
+      getCookie(c, SESSION_COOKIE),
+    );
+    if (account) {
+      c.set("admin_account", account);
+      c.set("admin_actor", accountActor(account));
       await next();
       return;
-    } catch (e) {
-      return c.json(
-        {
-          error: "unauthorized: Cloudflare Access JWT verification failed",
-          detail: e instanceof Error ? e.message : String(e),
-        },
-        401,
-      );
     }
-  }
 
-  // Development: static API token (Bearer header)
-  const auth = c.req.header("authorization");
-  if (!auth || !auth.startsWith("Bearer ")) {
-    return c.json({ error: "unauthorized: missing bearer token" }, 401);
-  }
-  const token = auth.slice("Bearer ".length).trim();
-  const expected = c.env.ADMIN_API_TOKEN;
-  if (!expected || token !== expected) {
-    return c.json({ error: "forbidden: invalid token" }, 403);
-  }
-  await next();
-};
+    if (!isProductionEnv(c.env)) {
+      const auth = c.req.header("authorization");
+      const expected = c.env.ADMIN_API_TOKEN;
+      if (expected && auth?.startsWith("Bearer ")) {
+        const token = auth.slice("Bearer ".length).trim();
+        if (token === expected) {
+          c.set("admin_actor", "dev-token");
+          await next();
+          return;
+        }
+      }
+    }
+
+    const returnTo = new URL(c.req.url).pathname;
+    return c.json(
+      {
+        error: "unauthorized",
+        login_url: `/api/auth/login?return=${encodeURIComponent(returnTo)}`,
+      },
+      401,
+    );
+  };

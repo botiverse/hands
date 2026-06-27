@@ -14,6 +14,7 @@
  */
 
 import type { Context } from "hono";
+import { currentActor } from "../middleware/auth";
 
 export interface OperationLog {
   id: string;
@@ -38,7 +39,9 @@ export interface OperationLog {
 export async function createOperation(
   db: D1Database,
   partial: Pick<OperationLog, "app_id" | "kind"> &
-    Partial<Pick<OperationLog, "parent_op_id" | "step_number" | "input">>,
+    Partial<
+      Pick<OperationLog, "parent_op_id" | "step_number" | "input" | "actor">
+    >,
 ): Promise<OperationLog> {
   const id = crypto.randomUUID();
   const now = Date.now();
@@ -49,7 +52,7 @@ export async function createOperation(
     status: "pending",
     parent_op_id: partial.parent_op_id ?? null,
     step_number: partial.step_number ?? null,
-    actor: "admin",
+    actor: partial.actor ?? "admin",
     input: partial.input ?? "{}",
     output: "{}",
     error: null,
@@ -240,7 +243,7 @@ export async function handleRetryOperation(c: Context<{ Bindings: Env }>) {
           crypto.randomUUID(),
           existing.app_id,
           "version.create",
-          "admin",
+          currentActor(c),
           JSON.stringify({ ...input, retried_from: existing.id }),
           Date.now(),
         )
