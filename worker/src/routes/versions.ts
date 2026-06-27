@@ -204,7 +204,11 @@ export async function insertVersion(
 export async function handleUpdateVersion(c: Context<{ Bindings: Env }>) {
   const appId = c.req.param("appId") ?? "";
   const versionId = c.req.param("versionId") ?? "";
-  const body = (await c.req.json()) as { enabled?: boolean; channel?: string };
+  const body = (await c.req.json()) as {
+    enabled?: boolean;
+    channel?: string;
+    should_force_update?: boolean;
+  };
 
   const updates: string[] = [];
   const binds: (string | number)[] = [];
@@ -215,6 +219,10 @@ export async function handleUpdateVersion(c: Context<{ Bindings: Env }>) {
   if (body.channel !== undefined) {
     updates.push(`channel = ?${binds.length + 1}`);
     binds.push(body.channel);
+  }
+  if (body.should_force_update !== undefined) {
+    updates.push(`should_force_update = ?${binds.length + 1}`);
+    binds.push(body.should_force_update ? 1 : 0);
   }
   if (updates.length === 0) return c.json({ error: "nothing to update" }, 400);
 

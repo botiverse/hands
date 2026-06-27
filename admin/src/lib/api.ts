@@ -184,7 +184,7 @@ export const listChannels = (appId: string) =>
 export const updateVersion = (
   appId: string,
   versionId: string,
-  patch: { enabled?: boolean; channel?: string },
+  patch: { enabled?: boolean; channel?: string; should_force_update?: boolean },
 ) =>
   request<{ ok: boolean }>(`/api/apps/${appId}/versions/${versionId}`, {
     method: "PATCH",

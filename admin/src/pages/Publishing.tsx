@@ -112,6 +112,28 @@ export function Publishing({ appId }: { appId: string }) {
       toast.show({ kind: "error", title: "Move failed", description: (e as Error).message }),
   });
 
+  const toggleForceUpdate = useMutation({
+    mutationFn: ({ v, next }: { v: Version; next: boolean }) =>
+      updateVersion(appId, v.id, { should_force_update: next }),
+    onMutate: () =>
+      toast.show({ kind: "loading", title: "Updating force-update flag…", ttlMs: 0 }),
+    onSuccess: (_, vars) => {
+      toast.show({
+        kind: "success",
+        title: vars.next
+          ? `v${vars.v.version_name} now requires install`
+          : `v${vars.v.version_name} no longer forced`,
+      });
+      qc.invalidateQueries({ queryKey: ["versions", appId] });
+    },
+    onError: (e) =>
+      toast.show({
+        kind: "error",
+        title: "Force-update toggle failed",
+        description: (e as Error).message,
+      }),
+  });
+
   return (
     <div>
       <div className="mb-6">
@@ -174,7 +196,14 @@ export function Publishing({ appId }: { appId: string }) {
             channels={channels.data?.channels ?? []}
             onToggle={(enabled) => toggle.mutate({ v, enabled })}
             onMove={(channel) => moveChannel.mutate({ v, channel })}
-            busy={toggle.isPending || moveChannel.isPending}
+            onToggleForceUpdate={(next) =>
+              toggleForceUpdate.mutate({ v, next })
+            }
+            busy={
+              toggle.isPending ||
+              moveChannel.isPending ||
+              toggleForceUpdate.isPending
+            }
           />
         ))}
       </div>
@@ -196,91 +225,150 @@ function PublishRow({
   channels,
   onToggle,
   onMove,
+  onToggleForceUpdate,
   busy,
 }: {
   version: Version;
   channels: Channel[];
   onToggle: (enabled: boolean) => void;
   onMove: (channel: string) => void;
+  onToggleForceUpdate: (next: boolean) => void;
   busy: boolean;
 }) {
   const [editing, setEditing] = useState(false);
+  const [showChangelog, setShowChangelog] = useState(false);
+  const provenance = (() => {
+    try {
+      return JSON.parse(v.provenance_json || "{}") as Record<string, unknown>;
+    } catch {
+      return {};
+    }
+  })();
+  const provenanceChips = Object.entries(provenance)
+    .filter(([, val]) => val && val !== "")
+    .map(([key, val]) => `${key}=${String(val)}`);
   return (
-    <div className="card flex items-center gap-4">
-      <div className="flex-1 min-w-0">
-        <div className="flex items-center gap-2">
-          <span className="font-mono font-medium">
-            v{v.version_name} ({v.version_code})
-          </span>
-          <span className="badge-gray">{v.channel}</span>
-          {v.enabled ? (
-            <span className="badge-green">enabled</span>
-          ) : (
-            <span className="badge-gray">disabled</span>
+    <div className="card">
+      <div className="flex items-center gap-4">
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="font-mono font-medium">
+              v{v.version_name} ({v.version_code})
+            </span>
+            <span className="badge-gray">{v.channel}</span>
+            {v.enabled ? (
+              <span className="badge-green">enabled</span>
+            ) : (
+              <span className="badge-gray">disabled</span>
+            )}
+            {v.should_force_update ? (
+              <span
+                className="badge-orange"
+                title="Clients must install this version (no skip)"
+              >
+                ⚠ force update
+              </span>
+            ) : null}
+            {v.availability_at &&
+            v.availability_at > Date.now() ? (
+              <span className="badge-blue">
+                scheduled {new Date(v.availability_at).toISOString().slice(0, 16)}Z
+              </span>
+            ) : null}
+          </div>
+          <div className="text-xs text-slate-500 font-mono mt-1 truncate">
+            {v.package_name} · {(v.size_bytes / 1024 / 1024).toFixed(2)} MB ·{" "}
+            {new Date(v.created_at).toISOString().split("T")[0]}
+          </div>
+          <div className="text-xs text-slate-400 font-mono mt-0.5 truncate">
+            sha256: {v.signature_sha256.slice(0, 32)}…
+          </div>
+          {provenanceChips.length > 0 && (
+            <div className="text-xs text-slate-500 font-mono mt-1 truncate">
+              {provenanceChips.join(" · ")}
+            </div>
+          )}
+          {v.changelog && (
+            <button
+              className="text-xs text-blue-600 hover:text-blue-800 mt-1"
+              onClick={() => setShowChangelog(!showChangelog)}
+            >
+              {showChangelog ? "▾" : "▸"} Changelog
+            </button>
           )}
         </div>
-        <div className="text-xs text-slate-500 font-mono mt-1 truncate">
-          {v.package_name} · {(v.size_bytes / 1024 / 1024).toFixed(2)} MB ·{" "}
-          {new Date(v.created_at).toISOString().split("T")[0]}
-        </div>
-        <div className="text-xs text-slate-400 font-mono mt-0.5 truncate">
-          sha256: {v.signature_sha256.slice(0, 32)}…
-        </div>
-      </div>
 
-      {editing ? (
-        <div className="flex gap-2 items-center">
-          <select
-            className="input text-sm w-32"
-            defaultValue={v.channel}
-            id={`move-target-${v.id}`}
-            disabled={busy}
-          >
-            {channels.map((c) => (
-              <option key={c.id} value={c.slug}>
-                {c.slug}
-              </option>
-            ))}
-          </select>
-          <button
-            className="btn-primary text-sm"
-            disabled={busy}
-            onClick={() => {
-              const sel = document.getElementById(
-                `move-target-${v.id}`,
-              ) as HTMLSelectElement;
-              onMove(sel.value);
-              setEditing(false);
-            }}
-          >
-            Move
-          </button>
-          <button
-            className="btn-secondary text-sm"
-            onClick={() => setEditing(false)}
-            disabled={busy}
-          >
-            Cancel
-          </button>
-        </div>
-      ) : (
-        <div className="flex gap-2">
-          <button
-            onClick={() => setEditing(true)}
-            className="btn-secondary text-sm"
-            disabled={busy}
-            title="Move this version to a different channel"
-          >
-            Move
-          </button>
-          <button
-            onClick={() => onToggle(!v.enabled)}
-            className={v.enabled ? "btn-secondary text-sm" : "btn-primary text-sm"}
-            disabled={busy}
-          >
-            {v.enabled ? "Disable" : "Enable"}
-          </button>
-        </div>
+        {editing ? (
+          <div className="flex gap-2 items-center">
+            <select
+              className="input text-sm w-32"
+              defaultValue={v.channel}
+              id={`move-target-${v.id}`}
+              disabled={busy}
+            >
+              {channels.map((c) => (
+                <option key={c.id} value={c.slug}>
+                  {c.slug}
+                </option>
+              ))}
+            </select>
+            <button
+              className="btn-primary text-sm"
+              disabled={busy}
+              onClick={() => {
+                const sel = document.getElementById(
+                  `move-target-${v.id}`,
+                ) as HTMLSelectElement;
+                onMove(sel.value);
+                setEditing(false);
+              }}
+            >
+              Move
+            </button>
+            <button
+              className="btn-secondary text-sm"
+              onClick={() => setEditing(false)}
+              disabled={busy}
+            >
+              Cancel
+            </button>
+          </div>
+        ) : (
+          <div className="flex gap-2">
+            <button
+              onClick={() => setEditing(true)}
+              className="btn-secondary text-sm"
+              disabled={busy}
+              title="Move this version to a different channel"
+            >
+              Move
+            </button>
+            <button
+              onClick={() => onToggle(!v.enabled)}
+              className={v.enabled ? "btn-secondary text-sm" : "btn-primary text-sm"}
+              disabled={busy}
+            >
+              {v.enabled ? "Disable" : "Enable"}
+            </button>
+            <button
+              onClick={() => onToggleForceUpdate(!v.should_force_update)}
+              className={
+                v.should_force_update
+                  ? "btn-secondary text-sm"
+                  : "btn-secondary text-sm"
+              }
+              disabled={busy}
+              title="Toggle 'must install, no skip' for clients"
+            >
+              {v.should_force_update ? "Unforce" : "Force"}
+            </button>
+          </div>
+        )}
+      </div>
+      {showChangelog && v.changelog && (
+        <pre className="mt-3 pt-3 border-t border-slate-100 text-xs font-mono whitespace-pre-wrap text-slate-700 max-h-64 overflow-y-auto">
+          {v.changelog}
+        </pre>
       )}
     </div>
   );
