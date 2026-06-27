@@ -15,6 +15,11 @@
 
 import type { Context } from "hono";
 import { createHash } from "node:crypto";
+import {
+  createOperation,
+  updateOperation,
+  type OperationLog,
+} from "./operations";
 
 export async function handleUploadApk(c: Context<{ Bindings: Env }>) {
   const appId = c.req.param("appId");
@@ -79,6 +84,22 @@ export async function handleUploadApk(c: Context<{ Bindings: Env }>) {
       Date.now(),
     )
     .run();
+
+  // Record as operation log entry (success)
+  const op = await createOperation(c.env.DB, {
+    app_id: appId,
+    kind: "upload",
+    input: JSON.stringify({
+      original_filename: file.name,
+      size_bytes: file.size,
+    }),
+  });
+  await updateOperation(c.env.DB, op.id, {
+    status: "success",
+    progress: 1,
+    output: JSON.stringify({ r2_key: r2Key, file_hash: fileHash }),
+    completed_at: Date.now(),
+  });
 
   return c.json({
     file_hash: fileHash,

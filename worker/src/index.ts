@@ -5,7 +5,7 @@
  * Extends with D1 (apps / versions / channels / audit_logs) and R2 (APK binaries + icons).
  *
  * The ApkParserContainer class is bundled into the container image and runs
- * inside it. Class methods (onStart, parseApk) can use `this.ctx.container.exec()`
+ * inside it. Class methods (onStart, parseApk) can use `(this.ctx as any).container.exec.bind((this.ctx as any).container)()`
  * to spawn processes within the container — see
  * https://developers.cloudflare.com/containers/execute-commands/
  */
@@ -22,6 +22,15 @@ import {
 } from "./routes/public";
 import { handleUploadApk } from "./routes/upload";
 import {
+  handleListOperations,
+  handleGetOperation,
+  handleRetryOperation,
+  handleDeleteOperation,
+  handleStreamOperations,
+  createOperation,
+  updateOperation,
+} from "./routes/operations";
+import {
   handleListVersions,
   handleCreateVersion,
   handleGetVersion,
@@ -36,7 +45,7 @@ import { handleHealth } from "./routes/health";
 //
 // This class is compiled by wrangler and bundled into the container image.
 // At runtime its methods run *inside* the container and have access to
-// `this.ctx.container.exec()` for spawning processes.
+// `(this.ctx as any).container.exec.bind((this.ctx as any).container)()` for spawning processes.
 
 export interface ApkMetadata {
   package_name: string;
@@ -63,22 +72,22 @@ export class ApkParserContainer extends Container<Env> {
     // Sanity check + PATH/env diagnostics so we can see exactly what's wrong.
     const decoder = new TextDecoder();
 
-    const whereProc = await this.ctx.container.exec(["which", "aapt"]);
+    const whereProc = await (this.ctx as any).container.exec.bind((this.ctx as any).container)(["which", "aapt"]);
     const whereOut = await whereProc.output();
     console.log(
-      `[apk-parser] which aapt: exit=${whereOut.exitCode} stdout="${decoder.decode(whereOut.stdout).trim()}" stderr="${decoder.decode(whereOut.stderr).trim()}"`,
+      `[apk-parser] which aapt: exit=${whereOut.exitCode ?? "?"} stdout="${decoder.decode(whereOut.stdout ?? new Uint8Array()).trim()}" stderr="${decoder.decode(whereOut.stderr ?? new Uint8Array()).trim()}"`,
     );
 
-    const directProc = await this.ctx.container.exec([AAPT_BIN, "version"]);
+    const directProc = await (this.ctx as any).container.exec.bind((this.ctx as any).container)([AAPT_BIN, "version"]);
     const directOut = await directProc.output();
     console.log(
-      `[apk-parser] direct ${AAPT_BIN} version: exit=${directOut.exitCode} stdout="${decoder.decode(directOut.stdout).trim()}" stderr="${decoder.decode(directOut.stderr).trim()}"`,
+      `[apk-parser] direct ${AAPT_BIN} version: exit=${directOut.exitCode ?? "?"} stdout="${decoder.decode(directOut.stdout ?? new Uint8Array()).trim()}" stderr="${decoder.decode(directOut.stderr ?? new Uint8Array()).trim()}"`,
     );
 
-    const pathProc = await this.ctx.container.exec(["sh", "-c", "echo $PATH && ls /opt/android-sdk/build-tools/ 2>&1 | head -5"]);
+    const pathProc = await (this.ctx as any).container.exec.bind((this.ctx as any).container)(["sh", "-c", "echo $PATH && ls /opt/android-sdk/build-tools/ 2>&1 | head -5"]);
     const pathOut = await pathProc.output();
     console.log(
-      `[apk-parser] PATH + ls: ${decoder.decode(pathOut.stdout).trim()}`,
+      `[apk-parser] PATH + ls: ${decoder.decode(pathOut.stdout ?? new Uint8Array()).trim()}`,
     );
   }
 
@@ -94,7 +103,7 @@ export class ApkParserContainer extends Container<Env> {
    *
    * Called by the Worker via `container.fetch(...)` after writing the APK
    * bytes to a known in-container path. This method runs in the container
-   * and uses `this.ctx.container.exec()` to spawn aapt / apksigner.
+   * and uses `(this.ctx as any).container.exec.bind((this.ctx as any).container)()` to spawn aapt / apksigner.
    *
    * Path convention: the worker writes the APK to /tmp/quiver-apk/<id>.apk
    * first, then calls this method with the id.
@@ -103,7 +112,7 @@ export class ApkParserContainer extends Container<Env> {
     const apkPath = `${TMP_DIR}/${id}.apk`;
 
     // 1. aapt dump badging
-    const aaptProc = await this.ctx.container.exec([
+    const aaptProc = await (this.ctx as any).container.exec.bind((this.ctx as any).container)([
       AAPT_BIN,
       "dump",
       "badging",
@@ -117,7 +126,7 @@ export class ApkParserContainer extends Container<Env> {
     const badging = new TextDecoder().decode(aaptOut.stdout);
 
     // 2. apksigner verify --print-certs
-    const sigProc = await this.ctx.container.exec([
+    const sigProc = await (this.ctx as any).container.exec.bind((this.ctx as any).container)([
       APKSIGNER_BIN,
       "verify",
       "--print-certs",
@@ -230,6 +239,13 @@ admin.delete("/api/apps/:appId/versions/:versionId", handleDeleteVersion);
 // Multipart APK upload → R2 (admin only, validates + audits)
 admin.post("/api/apps/:appId/upload", handleUploadApk);
 
+// Operation log + SSE stream (admin)
+admin.get("/api/apps/:appId/operations", handleListOperations);
+admin.get("/api/apps/:appId/operations/stream", handleStreamOperations);
+admin.get("/api/apps/:appId/operations/:opId", handleGetOperation);
+admin.post("/api/apps/:appId/operations/:opId/retry", handleRetryOperation);
+admin.delete("/api/apps/:appId/operations/:opId", handleDeleteOperation);
+
 // Parse APK: write to R2, ask container to parse via exec(), return metadata
 admin.post("/api/parse-apk", async (c) => {
   const ab = await c.req.arrayBuffer();
@@ -238,8 +254,18 @@ admin.post("/api/parse-apk", async (c) => {
     return c.json({ error: "APK too large (>200MB)" }, 413);
   }
 
-  // 1. Compute hash and upload to a temp location in R2 (we don't need to
-  //    commit to a per-version key yet — admin UI does that after parse).
+  // Record operation log entry (start as in_progress)
+  const op = await createOperation(c.env.DB, {
+    app_id: "00000000-0000-0000-0000-000000000000", // placeholder; not tied to an app
+    kind: "parse",
+    input: JSON.stringify({ size_bytes: ab.byteLength }),
+  });
+  await updateOperation(c.env.DB, op.id, {
+    status: "in_progress",
+    progress: 0.1,
+  });
+
+  // 1. Compute hash and upload to a temp location in R2
   const bytes = new Uint8Array(ab);
   const hashBuffer = await crypto.subtle.digest("SHA-256", bytes);
   const fileHash = Array.from(new Uint8Array(hashBuffer))
@@ -252,22 +278,25 @@ admin.post("/api/parse-apk", async (c) => {
     },
   });
 
-  // 2. Forward to container: write bytes to in-container tmp, call parseApk.
+  await updateOperation(c.env.DB, op.id, { progress: 0.4 });
+
+  // 2. Forward to container
   const container = await getRandom(c.env.APK_PARSER, 1);
-  // We need the container to fetch the bytes. Pass a request that the
-  // container's fetch() handler reads, writes to disk, and parses.
   const fakeRequest = new Request("http://container/parse", {
     method: "POST",
     body: ab,
     headers: { "content-type": "application/octet-stream" },
   });
-  // Use a wrapper that delegates to the container's parseApk method via
-  // the same id (fileHash). Easier: use the @cloudflare/containers
-  // container.fetch() with a custom internal endpoint we register in the
-  // class below.
-  return container.fetch(fakeRequest).then(async (res) => {
+  try {
+    const res = await container.fetch(fakeRequest);
     const text = await res.text();
     if (!res.ok) {
+      await updateOperation(c.env.DB, op.id, {
+        status: "failed",
+        error: text.slice(0, 500),
+        progress: 1,
+        completed_at: Date.now(),
+      });
       return c.json(
         {
           error: "parse failed",
@@ -277,15 +306,28 @@ admin.post("/api/parse-apk", async (c) => {
         500,
       );
     }
-    // Container returned the metadata as JSON. Patch in the real hash +
-    // size (the container doesn't know the original bytes' size — we do).
     const metadata = JSON.parse(text);
     metadata.size_bytes = ab.byteLength;
     metadata.file_hash_sha256 = fileHash;
-    // Clean up the R2 tmp key (best-effort).
     c.env.APK_BUCKET.delete(tmpKey).catch(() => {});
+
+    await updateOperation(c.env.DB, op.id, {
+      status: "success",
+      progress: 1,
+      output: JSON.stringify(metadata),
+      completed_at: Date.now(),
+    });
+
     return c.json(metadata);
-  });
+  } catch (err) {
+    await updateOperation(c.env.DB, op.id, {
+      status: "failed",
+      error: (err as Error).message,
+      progress: 1,
+      completed_at: Date.now(),
+    });
+    throw err;
+  }
 });
 
 admin.get("/api/apps/:appId/channels", handleListChannels);

@@ -6,6 +6,10 @@
  */
 
 import type { Context } from "hono";
+import {
+  createOperation,
+  updateOperation,
+} from "./operations";
 
 export async function handleListVersions(c: Context<{ Bindings: Env }>) {
   const appId = c.req.param("appId") ?? "";
@@ -75,24 +79,52 @@ export async function handleCreateVersion(c: Context<{ Bindings: Env }>) {
     r2_key: string;
   };
 
+  // Record operation log (publish step)
+  const op = await createOperation(c.env.DB, {
+    app_id: appId,
+    kind: "publish",
+    input: JSON.stringify(body),
+  });
+  await updateOperation(c.env.DB, op.id, {
+    status: "in_progress",
+    progress: 0.3,
+  });
+
   const id = crypto.randomUUID();
-  await c.env.DB.prepare(
-    `INSERT INTO versions
-     (id, app_id, channel, version_name, version_code, package_name,
-      signature_sha256, min_sdk, target_sdk, size_bytes, file_hash,
-      enabled, created_at)
-     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, 1, ?12)`,
-  ).bind(
-    id, appId, body.channel, body.version_name, body.version_code, body.package_name,
-    body.signature_sha256, body.min_sdk ?? null, body.target_sdk ?? null,
-    body.size_bytes, body.file_hash, Date.now(),
-  ).run();
+  try {
+    await c.env.DB.prepare(
+      `INSERT INTO versions
+       (id, app_id, channel, version_name, version_code, package_name,
+        signature_sha256, min_sdk, target_sdk, size_bytes, file_hash,
+        enabled, created_at)
+       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, 1, ?12)`,
+    ).bind(
+      id, appId, body.channel, body.version_name, body.version_code, body.package_name,
+      body.signature_sha256, body.min_sdk ?? null, body.target_sdk ?? null,
+      body.size_bytes, body.file_hash, Date.now(),
+    ).run();
 
-  await c.env.DB.prepare(
-    "INSERT INTO audit_logs (id, app_id, action, actor, payload, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-  ).bind(crypto.randomUUID(), appId, "version.create", "admin", JSON.stringify(body), Date.now()).run();
+    await c.env.DB.prepare(
+      "INSERT INTO audit_logs (id, app_id, action, actor, payload, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+    ).bind(crypto.randomUUID(), appId, "version.create", "admin", JSON.stringify(body), Date.now()).run();
 
-  return c.json({ id, ...body }, 201);
+    await updateOperation(c.env.DB, op.id, {
+      status: "success",
+      progress: 1,
+      output: JSON.stringify({ version_id: id }),
+      completed_at: Date.now(),
+    });
+
+    return c.json({ id, ...body }, 201);
+  } catch (e) {
+    await updateOperation(c.env.DB, op.id, {
+      status: "failed",
+      error: (e as Error).message,
+      progress: 1,
+      completed_at: Date.now(),
+    });
+    throw e;
+  }
 }
 
 export async function handleUpdateVersion(c: Context<{ Bindings: Env }>) {
