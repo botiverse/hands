@@ -18,7 +18,7 @@ import { Releases } from "./pages/Releases";
 import { OrgSettings } from "./pages/OrgSettings";
 import { AcceptInvite } from "./pages/AcceptInvite";
 import { AppAccess } from "./pages/AppAccess";
-import { getAuthMe, loginUrl, logout, type AuthAccount } from "./lib/api";
+import { getAuthMe, listOrgs, loginUrl, logout, type AuthAccount } from "./lib/api";
 
 function RaftIcon({ className = "" }: { className?: string }) {
   return (
@@ -43,6 +43,11 @@ function Header({ account }: { account: AuthAccount }) {
     window.location.assign(loginUrl("/"));
   };
   const orgHref = account.org_id ? `/orgs/${account.org_id}` : "/orgs/placeholder";
+  const orgs = useQuery({
+    queryKey: ["orgs", account.id],
+    queryFn: () => listOrgs(),
+    enabled: !!account.id,
+  });
   return (
     <header className="bg-white border-b border-slate-200">
       <div className="max-w-5xl mx-auto px-4 py-4 flex items-center justify-between gap-6">
@@ -75,22 +80,32 @@ function Header({ account }: { account: AuthAccount }) {
                   : "Org settings (no org yet — first login required)"
               }
             >
-              Org
-              {account.org_role && (
-                <span
-                  className="ml-1 text-xs px-1 rounded"
-                  style={{
-                    color:
-                      account.org_role === "owner"
-                        ? "#a855f7"
-                        : account.org_role === "admin"
-                          ? "#3b82f6"
-                          : "#6b7280",
-                  }}
-                >
-                  {account.org_role}
-                </span>
-              )}
+              <span className="inline-flex items-center gap-1">
+                Org
+                {account.org_role && (
+                  <span
+                    className="text-xs px-1 rounded"
+                    style={{
+                      color:
+                        account.org_role === "owner"
+                          ? "#a855f7"
+                          : account.org_role === "admin"
+                            ? "#3b82f6"
+                            : "#6b7280",
+                    }}
+                  >
+                    {account.org_role}
+                  </span>
+                )}
+                {orgs.data && orgs.data.orgs.length > 1 && (
+                  <span
+                    className="text-xs text-slate-400"
+                    title={`Member of ${orgs.data.orgs.length} organizations`}
+                  >
+                    ▾
+                  </span>
+                )}
+              </span>
             </NavLink>
             <NavLink
               to="/settings"
