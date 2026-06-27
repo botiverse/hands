@@ -14,13 +14,16 @@ import {
   type Version,
 } from "../lib/api";
 import { useToast } from "../components/Toast";
+import { Operations } from "./Operations";
 
 export function AppDetail({
   appId,
   onShowAudit,
+  onShowPublish,
 }: {
   appId: string;
   onShowAudit: () => void;
+  onShowPublish: () => void;
 }) {
   const qc = useQueryClient();
   const toast = useToast();
@@ -49,9 +52,15 @@ export function AppDetail({
         <div className="text-sm text-slate-500 font-mono">{app?.slug}</div>
         <button
           onClick={onShowAudit}
-          className="mt-2 text-sm text-blue-600 hover:underline"
+          className="mt-2 text-sm text-blue-600 hover:underline inline-block mr-3"
         >
           View audit log →
+        </button>
+        <button
+          onClick={onShowPublish}
+          className="mt-2 text-sm text-blue-600 hover:underline inline-block"
+        >
+          Manage publishing →
         </button>
       </div>
 
@@ -133,6 +142,10 @@ export function AppDetail({
             }}
           />
         )}
+      </section>
+
+      <section className="mt-8">
+        <Operations appId={appId} />
       </section>
     </div>
   );

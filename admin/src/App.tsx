@@ -3,15 +3,32 @@ import { AppsList } from "./pages/AppsList";
 import { AppDetail } from "./pages/AppDetail";
 import { AuditLog } from "./pages/AuditLog";
 import { Settings } from "./pages/Settings";
+import { Publishing } from "./pages/Publishing";
 
 type View =
   | { kind: "apps" }
   | { kind: "app"; appId: string }
   | { kind: "audit"; appId: string }
+  | { kind: "publish"; appId: string }
   | { kind: "settings" };
 
 export function App() {
   const [view, setView] = useState<View>({ kind: "apps" });
+
+  const navLink = (
+    target: View["kind"],
+    label: string,
+    onClick: () => void,
+  ) => (
+    <button
+      onClick={onClick}
+      className={`px-3 py-1.5 rounded-md text-sm ${
+        view.kind === target ? "bg-slate-100 font-medium" : "hover:bg-slate-100"
+      }`}
+    >
+      {label}
+    </button>
+  );
 
   return (
     <div className="min-h-screen flex flex-col">
@@ -24,26 +41,18 @@ export function App() {
             quiver
           </button>
           <nav className="flex gap-2">
-            <button
-              onClick={() => setView({ kind: "apps" })}
-              className="px-3 py-1.5 rounded-md text-sm hover:bg-slate-100"
-            >
-              Apps
-            </button>
+            {navLink("apps", "Apps", () => setView({ kind: "apps" }))}
             {view.kind === "app" && (
-              <button
-                onClick={() => setView({ kind: "audit", appId: view.appId })}
-                className="px-3 py-1.5 rounded-md text-sm hover:bg-slate-100"
-              >
-                Audit
-              </button>
+              <>
+                {navLink("publish", "Publish", () =>
+                  setView({ kind: "publish", appId: view.appId }),
+                )}
+                {navLink("audit", "Audit", () =>
+                  setView({ kind: "audit", appId: view.appId }),
+                )}
+              </>
             )}
-            <button
-              onClick={() => setView({ kind: "settings" })}
-              className="px-3 py-1.5 rounded-md text-sm hover:bg-slate-100"
-            >
-              Settings
-            </button>
+            {navLink("settings", "Settings", () => setView({ kind: "settings" }))}
           </nav>
         </div>
       </header>
@@ -58,8 +67,10 @@ export function App() {
           <AppDetail
             appId={view.appId}
             onShowAudit={() => setView({ kind: "audit", appId: view.appId })}
+            onShowPublish={() => setView({ kind: "publish", appId: view.appId })}
           />
         )}
+        {view.kind === "publish" && <Publishing appId={view.appId} />}
         {view.kind === "audit" && <AuditLog appId={view.appId} />}
         {view.kind === "settings" && <Settings />}
       </main>
