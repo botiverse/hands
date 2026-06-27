@@ -1,4 +1,3 @@
-# syntax=docker/dockerfile:1
 # APK metadata parser — Cloudflare Container image
 # Force rebuild 1782558219 for bookworm-slim migration
 
