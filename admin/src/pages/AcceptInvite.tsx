@@ -5,34 +5,22 @@
  * If not signed in, "Sign in with Raft to accept" button.
  * After accept: redirect to /apps/:appId or / (org dashboard).
  *
- * Scaffold: UI is laid out. Real data wiring (call /api/invites/:token +
- * /api/invites/:token/accept) will land after expert completes P5.3.
+ * Wires the new P5.3 endpoints:
+ *   GET /api/invites/:token  (public — view invite details)
+ *   POST /api/invites/:token/accept  (auth required — accept invite)
  */
 
 import { useEffect, useState } from "react";
-import { useQuery, useMutation } from "@tanstack/react-query";
+import { useMutation, useQuery } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
-import { getAuthMe, loginUrl } from "../lib/api";
-
-interface InviteDetails {
-  id: string;
-  org_id: string;
-  app_id: string | null;
-  email: string;
-  role: string;
-  status: "pending" | "accepted" | "revoked" | "expired";
-  message: string | null;
-  created_at: number;
-  expires_at: number;
-  invited_by_display_name: string;
-  org_name: string;
-  app_name: string | null;
-}
+import { acceptInvite, getAuthMe, loginUrl, type Invite } from "../lib/api";
+import { useToast } from "../components/Toast";
 
 export function AcceptInvite({ token }: { token: string }) {
   const navigate = useNavigate();
+  const toast = useToast();
   const me = useQuery({ queryKey: ["auth-me"], queryFn: () => getAuthMe() });
-  const [invite, setInvite] = useState<InviteDetails | null>(null);
+  const [invite, setInvite] = useState<Invite | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -43,14 +31,13 @@ export function AcceptInvite({ token }: { token: string }) {
     setError(null);
     (async () => {
       try {
-        // TODO: wire to GET /api/invites/:token (P5.3)
         const res = await fetch(`/api/invites/${token}`);
         if (cancelled) return;
         if (!res.ok) {
           const body = await res.text();
           throw new Error(body || `invite fetch failed ${res.status}`);
         }
-        const data = (await res.json()) as InviteDetails;
+        const data = (await res.json()) as Invite;
         setInvite(data);
       } catch (e) {
         if (!cancelled) setError((e as Error).message);
@@ -64,23 +51,17 @@ export function AcceptInvite({ token }: { token: string }) {
   }, [token]);
 
   const accept = useMutation({
-    mutationFn: async () => {
-      // TODO: wire to POST /api/invites/:token/accept (P5.3)
-      const res = await fetch(`/api/invites/${token}/accept`, {
-        method: "POST",
-        credentials: "include",
-      });
-      if (!res.ok) {
-        const body = await res.text();
-        throw new Error(body || `accept failed ${res.status}`);
-      }
-      return res.json() as Promise<{ app_id: string | null; org_id: string }>;
-    },
+    mutationFn: () => acceptInvite(token),
     onSuccess: (data) => {
+      toast.show({ kind: "success", title: "Invite accepted" });
       navigate(data.app_id ? `/apps/${data.app_id}` : "/");
     },
     onError: (e) =>
-      setError((e as Error).message),
+      toast.show({
+        kind: "error",
+        title: "Accept failed",
+        description: (e as Error).message,
+      }),
   });
 
   if (loading) {
@@ -112,8 +93,8 @@ export function AcceptInvite({ token }: { token: string }) {
       <div className="card !p-6">
         <h1 className="text-xl font-bold mb-2">You've been invited</h1>
         <p className="text-sm text-slate-600 mb-4">
-          <strong>{invite.invited_by_display_name}</strong> invited you to join{" "}
-          <strong>{invite.org_name}</strong>
+          <strong>{invite.invited_by_display_name ?? "Someone"}</strong> invited
+          you to join <strong>{invite.org_name ?? invite.org_id}</strong>
           {invite.app_name ? (
             <>
               {" "}with access to <strong>{invite.app_name}</strong> as{" "}
