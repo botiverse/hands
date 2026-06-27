@@ -31,12 +31,16 @@ export type AdminAccount = {
   created_at: number;
   updated_at: number;
   last_login_at: number;
+  org_id?: string | null;
+  org_role?: "owner" | "admin" | "member" | "viewer" | null;
 };
 
 export type AdminEnv = {
   Variables: {
     admin_account?: AdminAccount;
     admin_actor?: string;
+    org_id?: string;
+    org_role?: "owner" | "admin" | "member" | "viewer";
   };
 };
 
@@ -70,9 +74,15 @@ export async function loadAccountFromSession(
   const tokenHash = await sha256Hex(token);
   const now = Date.now();
   const account = await env.DB.prepare(
-    `SELECT a.*
+    `SELECT a.*, om.org_id, om.org_role
      FROM raft_sessions s
      JOIN raft_accounts a ON a.id = s.account_id
+     LEFT JOIN organizations o
+       ON o.external_provider = 'raft'
+      AND o.external_id = a.server_id
+     LEFT JOIN org_members om
+       ON om.org_id = o.id
+      AND om.account_id = a.id
      WHERE s.token_hash = ?1
        AND s.revoked_at IS NULL
        AND s.expires_at > ?2
@@ -100,6 +110,8 @@ export const authMiddleware: MiddlewareHandler<AdminEnv & { Bindings: Env }> =
     if (account) {
       c.set("admin_account", account);
       c.set("admin_actor", accountActor(account));
+      if (account.org_id) c.set("org_id", account.org_id);
+      if (account.org_role) c.set("org_role", account.org_role);
       await next();
       return;
     }

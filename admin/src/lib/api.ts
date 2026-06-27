@@ -24,6 +24,7 @@ export class ApiError extends Error {
 
 export interface App {
   id: string;
+  org_id: string | null;
   slug: string;
   name: string;
   platform: string;
@@ -201,6 +202,8 @@ export interface AuthAccount {
   server_slug: string | null;
   principal_type: "human" | "agent";
   server_role: string | null;
+  org_id: string | null;
+  org_role: "owner" | "admin" | "member" | "viewer" | null;
   username: string | null;
   display_name: string;
   avatar_url: string | null;

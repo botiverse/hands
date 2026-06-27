@@ -43,7 +43,7 @@ function makeMockDb() {
   sqlite.pragma("foreign_keys = ON");
   sqlite.exec(`
     CREATE TABLE apps (
-      id TEXT PRIMARY KEY, slug TEXT NOT NULL UNIQUE, name TEXT NOT NULL,
+      id TEXT PRIMARY KEY, org_id TEXT, slug TEXT NOT NULL UNIQUE, name TEXT NOT NULL,
       platform TEXT NOT NULL, created_at INTEGER NOT NULL
     );
     CREATE TABLE channels (
@@ -176,6 +176,7 @@ function makeMockDb() {
     CREATE TABLE audit_logs (
       id TEXT PRIMARY KEY, app_id TEXT NOT NULL, action TEXT NOT NULL,
       actor TEXT NOT NULL, payload TEXT NOT NULL, created_at INTEGER NOT NULL,
+      actor_id TEXT, actor_type TEXT,
       FOREIGN KEY (app_id) REFERENCES apps(id) ON DELETE CASCADE
     );
     CREATE TABLE raft_accounts (
@@ -205,6 +206,54 @@ function makeMockDb() {
       revoked_at INTEGER,
       FOREIGN KEY (account_id) REFERENCES raft_accounts(id) ON DELETE CASCADE
     );
+    CREATE TABLE organizations (
+      id TEXT PRIMARY KEY,
+      slug TEXT NOT NULL UNIQUE,
+      name TEXT NOT NULL,
+      external_provider TEXT NOT NULL DEFAULT 'raft',
+      external_id TEXT NOT NULL,
+      created_at INTEGER NOT NULL,
+      archived INTEGER NOT NULL DEFAULT 0,
+      UNIQUE (external_provider, external_id)
+    );
+    CREATE TABLE org_members (
+      id TEXT PRIMARY KEY,
+      org_id TEXT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+      account_id TEXT NOT NULL REFERENCES raft_accounts(id) ON DELETE CASCADE,
+      org_role TEXT NOT NULL,
+      invited_by TEXT REFERENCES raft_accounts(id) ON DELETE SET NULL,
+      joined_at INTEGER NOT NULL,
+      UNIQUE (org_id, account_id)
+    );
+    CREATE TABLE app_members (
+      id TEXT PRIMARY KEY,
+      app_id TEXT NOT NULL REFERENCES apps(id) ON DELETE CASCADE,
+      account_id TEXT NOT NULL REFERENCES raft_accounts(id) ON DELETE CASCADE,
+      app_role TEXT NOT NULL,
+      invited_by TEXT REFERENCES raft_accounts(id) ON DELETE SET NULL,
+      joined_at INTEGER NOT NULL,
+      UNIQUE (app_id, account_id)
+    );
+    CREATE TABLE invites (
+      id TEXT PRIMARY KEY,
+      org_id TEXT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+      app_id TEXT REFERENCES apps(id) ON DELETE CASCADE,
+      email TEXT NOT NULL,
+      role TEXT NOT NULL,
+      token TEXT NOT NULL UNIQUE,
+      invited_by TEXT NOT NULL REFERENCES raft_accounts(id) ON DELETE CASCADE,
+      status TEXT NOT NULL DEFAULT 'pending',
+      message TEXT,
+      created_at INTEGER NOT NULL,
+      expires_at INTEGER NOT NULL,
+      accepted_at INTEGER,
+      accepted_by TEXT REFERENCES raft_accounts(id) ON DELETE SET NULL,
+      revoked_at INTEGER,
+      revoked_by TEXT REFERENCES raft_accounts(id) ON DELETE SET NULL
+    );
+    INSERT INTO organizations
+      (id, slug, name, external_provider, external_id, created_at, archived)
+      VALUES ('default', 'default', 'Default', 'local', 'default', 1, 0);
   `);
 
   // Replace `?N` numbered placeholders with anonymous `?` (better-sqlite3 compat).
@@ -376,6 +425,95 @@ describe("quiver route handlers — SQL smoke", () => {
       .all();
     expect(logs.results).toHaveLength(1);
     expect(logs.results[0]).toMatchObject({ action: "app.create", actor: "admin" });
+  });
+
+  it("org membership treats Raft humans and agents as first-class principals", async () => {
+    const now = Date.now();
+    await env.DB
+      .prepare(
+        `INSERT INTO organizations
+         (id, slug, name, external_provider, external_id, created_at, archived)
+         VALUES (?, ?, ?, 'raft', ?, ?, 0)`,
+      )
+      .bind("raft_s1", "team-s1", "Team", "s1", now)
+      .run();
+    await env.DB
+      .prepare(
+        `INSERT INTO raft_accounts
+         (id, provider, provider_subject, server_id, server_slug, principal_type,
+          server_role, username, display_name, avatar_url, raw_profile,
+          created_at, updated_at, last_login_at)
+         VALUES (?, 'raft', ?, 's1', 'team', ?, NULL, ?, ?, NULL, '{}', ?, ?, ?)`,
+      )
+      .bind("human1", "sub-human", "human", "alice", "Alice", now, now, now)
+      .run();
+    await env.DB
+      .prepare(
+        `INSERT INTO raft_accounts
+         (id, provider, provider_subject, server_id, server_slug, principal_type,
+          server_role, username, display_name, avatar_url, raw_profile,
+          created_at, updated_at, last_login_at)
+         VALUES (?, 'raft', ?, 's1', 'team', ?, NULL, ?, ?, NULL, '{}', ?, ?, ?)`,
+      )
+      .bind("agent1", "sub-agent", "agent", "deploy-agent", "Deploy agent", now, now, now)
+      .run();
+    await env.DB
+      .prepare(
+        "INSERT INTO org_members (id, org_id, account_id, org_role, joined_at) VALUES (?, ?, ?, ?, ?)",
+      )
+      .bind("m1", "raft_s1", "human1", "owner", now)
+      .run();
+    await env.DB
+      .prepare(
+        "INSERT INTO org_members (id, org_id, account_id, org_role, joined_at) VALUES (?, ?, ?, ?, ?)",
+      )
+      .bind("m2", "raft_s1", "agent1", "viewer", now)
+      .run();
+
+    const members = await env.DB
+      .prepare(
+        `SELECT a.principal_type, om.org_role
+         FROM org_members om
+         JOIN raft_accounts a ON a.id = om.account_id
+         WHERE om.org_id = ?
+         ORDER BY a.principal_type ASC`,
+      )
+      .bind("raft_s1")
+      .all();
+
+    expect(members.results).toEqual([
+      { principal_type: "agent", org_role: "viewer" },
+      { principal_type: "human", org_role: "owner" },
+    ]);
+  });
+
+  it("apps are scoped by org_id", async () => {
+    const now = Date.now();
+    await env.DB
+      .prepare(
+        `INSERT INTO organizations
+         (id, slug, name, external_provider, external_id, created_at, archived)
+         VALUES (?, ?, ?, 'raft', ?, ?, 0)`,
+      )
+      .bind("raft_s2", "team-s2", "Team 2", "s2", now)
+      .run();
+    await env.DB
+      .prepare("INSERT INTO apps (id, org_id, slug, name, platform, created_at) VALUES (?, ?, ?, ?, ?, ?)")
+      .bind("a1", "default", "default-app", "Default App", "android", now)
+      .run();
+    await env.DB
+      .prepare("INSERT INTO apps (id, org_id, slug, name, platform, created_at) VALUES (?, ?, ?, ?, ?, ?)")
+      .bind("a2", "raft_s2", "team-app", "Team App", "android", now + 1)
+      .run();
+
+    const teamApps = await env.DB
+      .prepare("SELECT id, org_id, slug FROM apps WHERE org_id = ? ORDER BY created_at DESC")
+      .bind("raft_s2")
+      .all();
+
+    expect(teamApps.results).toEqual([
+      { id: "a2", org_id: "raft_s2", slug: "team-app" },
+    ]);
   });
 
   it("FK cascade deletes versions when app is deleted", async () => {

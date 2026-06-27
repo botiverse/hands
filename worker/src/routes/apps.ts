@@ -6,14 +6,40 @@
  */
 
 import type { Context } from "hono";
-import { currentActor } from "../middleware/auth";
+import { currentActor, type AdminEnv } from "../middleware/auth";
 
-export async function handleListApps(c: Context<{ Bindings: Env }>) {
+type AdminContext = Context<AdminEnv & { Bindings: Env }>;
+
+async function currentOrgId(c: AdminContext): Promise<string> {
+  const orgId = c.get("org_id");
+  if (orgId) return orgId;
+  const row = await c.env.DB.prepare(
+    "SELECT id FROM organizations WHERE id = 'default' LIMIT 1",
+  ).first<{ id: string }>();
+  return row?.id || "default";
+}
+
+export async function handleListApps(c: AdminContext) {
+  const orgId = c.get("org_id");
+  const query = orgId
+    ? {
+        sql: `SELECT id, org_id, slug, name, platform, description, archived, archived_at, created_at
+              FROM apps
+              WHERE org_id = ?1
+              ORDER BY archived ASC, created_at DESC`,
+        params: [orgId],
+      }
+    : {
+        sql: `SELECT id, org_id, slug, name, platform, description, archived, archived_at, created_at
+              FROM apps
+              ORDER BY archived ASC, created_at DESC`,
+        params: [],
+      };
   const { results } = await c.env.DB.prepare(
-    `SELECT id, slug, name, platform, description, archived, archived_at, created_at
-     FROM apps ORDER BY archived ASC, created_at DESC`,
-  ).all<{
+    query.sql,
+  ).bind(...query.params).all<{
     id: string;
+    org_id: string | null;
     slug: string;
     name: string;
     platform: string;
@@ -25,7 +51,7 @@ export async function handleListApps(c: Context<{ Bindings: Env }>) {
   return c.json({ apps: results });
 }
 
-export async function handleCreateApp(c: Context<{ Bindings: Env }>) {
+export async function handleCreateApp(c: AdminContext) {
   const body = (await c.req.json()) as {
     slug: string;
     name: string;
@@ -37,13 +63,14 @@ export async function handleCreateApp(c: Context<{ Bindings: Env }>) {
   }
   const id = crypto.randomUUID();
   const now = Date.now();
+  const orgId = await currentOrgId(c);
 
   // Seed default product_types, release_types, channels for the new app.
   // (Phase 2.3 app-creation wizard path; small enough to inline here.)
   await c.env.DB.batch([
     c.env.DB.prepare(
-      "INSERT INTO apps (id, slug, name, platform, description, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-    ).bind(id, body.slug, body.name, body.platform, body.description ?? null, now),
+      "INSERT INTO apps (id, org_id, slug, name, platform, description, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+    ).bind(id, orgId, body.slug, body.name, body.platform, body.description ?? null, now),
     // product_types
     c.env.DB.prepare(
       `INSERT INTO product_types (id, app_id, name, display_name, description, supported_platforms_json, default_assets_json, parser_kind, schema_json, created_at, updated_at) VALUES (?, ?, 'android-apk', 'Android APK', 'Android application package', '[]', '[{"platform":"android","filetype":"apk"}]', 'apk-aapt', '{"requires_native_codes":true}', ?, ?)`,
@@ -83,7 +110,7 @@ export async function handleCreateApp(c: Context<{ Bindings: Env }>) {
     ).bind(crypto.randomUUID(), id, "app.create", currentActor(c), JSON.stringify(body), now),
   ]);
 
-  return c.json({ id, slug: body.slug, name: body.name, platform: body.platform }, 201);
+  return c.json({ id, org_id: orgId, slug: body.slug, name: body.name, platform: body.platform }, 201);
 }
 
 export async function handleArchiveApp(c: Context<{ Bindings: Env }>) {
@@ -112,10 +139,11 @@ export async function handleArchiveApp(c: Context<{ Bindings: Env }>) {
 export async function handleGetApp(c: Context<{ Bindings: Env }>) {
   const appId = c.req.param("appId") ?? "";
   const row = await c.env.DB.prepare(
-    `SELECT id, slug, name, platform, description, archived, archived_at, created_at
+    `SELECT id, org_id, slug, name, platform, description, archived, archived_at, created_at
      FROM apps WHERE id = ?1`,
   ).bind(appId).first<{
     id: string;
+    org_id: string | null;
     slug: string;
     name: string;
     platform: string;

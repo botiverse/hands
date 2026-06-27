@@ -256,12 +256,12 @@ Depends on: existing Login with Raft migration `0004_raft_auth.sql`.
 
 | Task | Status | Estimate | Migration |
 |---|---|---|---|
-| P5.1.1 `organizations` table + bootstrap `default` org | 🔵 TODO | 30min | `0008_account_org_team.sql` |
-| P5.1.2 `org_members` table + indexes | 🔵 TODO | 30min | same |
-| P5.1.3 `app_members` table + indexes | 🔵 TODO | 30min | same |
-| P5.1.4 `invites` table + indexes + UNIQUE on pending | 🔵 TODO | 1h | same |
-| P5.1.5 `apps.org_id` column + backfill | 🔵 TODO | 30min | same |
-| P5.1.6 `audit_logs.actor_id` + `actor_type` + backfill | 🔵 TODO | 1h | same |
+| P5.1.1 `organizations` table + bootstrap `default` org | 🟡 IN_REVIEW | 30min | `0016_account_org_team.sql` |
+| P5.1.2 `org_members` table + indexes | 🟡 IN_REVIEW | 30min | same |
+| P5.1.3 `app_members` table + indexes | 🟡 IN_REVIEW | 30min | same |
+| P5.1.4 `invites` table + indexes + UNIQUE on pending | 🟡 IN_REVIEW | 1h | same |
+| P5.1.5 `apps.org_id` column + backfill | 🟡 IN_REVIEW | 30min | same |
+| P5.1.6 `audit_logs.actor_id` + `actor_type` + backfill | 🟡 IN_REVIEW | 1h | same |
 
 ### P5.2 — auth helpers + role middleware (2 days)
 
@@ -303,7 +303,7 @@ Depends on: existing Login with Raft migration `0004_raft_auth.sql`.
 
 | Task | Status | Estimate | Notes |
 |---|---|---|---|
-| P5.5.1 Raft agents default to org_role='member', app_role='viewer' | 🔵 TODO | 4h | |
+| P5.5.1 Raft agents default to org_role='viewer', app_role='viewer' | 🔵 TODO | 4h | |
 | P5.5.2 Audit all role changes + invite lifecycle events | 🔵 TODO | 1 day | invite.created / invite.accepted / member.role_changed / member.removed |
 
 ### P5.6 — tests + docs (2 days)

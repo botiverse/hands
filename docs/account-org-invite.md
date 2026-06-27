@@ -321,7 +321,7 @@ URL: /invites/:token
 
 This is a NEW phase (Phase 5), larger than Phase 1-2. Estimated ~3-4 weeks.
 
-### Phase 5.0 — auth context injection (prerequisite for 5.1) (0.5 day)
+### Phase 5.0 — auth context injection (implemented with 5.1) (0.5 day)
 
 Before adding org tables, the auth flow needs to know which org a principal is in. Modify `worker/src/routes/auth.ts`:
 - On successful Raft login, after upserting `raft_accounts`, **upsert the org** (idempotent: one org per `(external_provider='raft', external_id=server_id)`).
@@ -331,7 +331,7 @@ Before adding org tables, the auth flow needs to know which org a principal is i
   - Honor an explicit role in the JWT `server_role` claim if present (e.g., if Raft says the principal is an admin, set Quiver org_role='admin' on first join)
 - The new session is enriched with `c.get("org_id")` and `c.get("org_role")` for downstream middleware.
 
-This is a single small change to `worker/src/routes/auth.ts` that makes org context available everywhere, without yet touching the new tables (we'll add those in P5.1).
+This is a small change to `worker/src/routes/auth.ts` that makes org context available everywhere. The required tables are introduced by P5.1, so deployment order is: apply the P5.1 migration first, then deploy the auth-context code.
 
 ### Phase 5.1 — schema + bootstrap (1 day)
 
@@ -372,7 +372,7 @@ This is a single small change to `worker/src/routes/auth.ts` that makes org cont
 
 ### Phase 5.5 — agent permissions + audit (2 days)
 
-- Raft agent accounts default to org_role='member', app_role='viewer'
+- Raft agent accounts default to org_role='viewer', app_role='viewer'
 - Org admin can promote via UI
 - Audit log all role changes (invite.created, invite.accepted, member.role_changed, member.removed)
 

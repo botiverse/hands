@@ -124,6 +124,16 @@ function escapeHtml(value: string): string {
     .replace(/"/g, "&quot;");
 }
 
+function slugifyOrgPart(value: string): string {
+  return (
+    value
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, "")
+      .slice(0, 40) || "raft"
+  );
+}
+
 function isUserAllowed(env: Env, userinfo: RaftUserinfo): boolean {
   const serverIds = (env.RAFT_ALLOWED_SERVER_IDS || "")
     .split(",")
@@ -234,6 +244,101 @@ async function upsertRaftAccount(
   return account;
 }
 
+function roleFromRaftServerRole(role: string | null | undefined) {
+  const normalized = (role || "").toLowerCase();
+  if (normalized === "owner") return "owner";
+  if (normalized === "admin") return "admin";
+  return null;
+}
+
+async function isFirstHumanInServer(db: D1Database, serverId: string, accountId: string) {
+  const row = await db
+    .prepare(
+      `SELECT id
+       FROM raft_accounts
+       WHERE server_id = ?1 AND principal_type = 'human'
+       ORDER BY created_at ASC
+       LIMIT 1`,
+    )
+    .bind(serverId)
+    .first<{ id: string }>();
+  return row?.id === accountId;
+}
+
+async function isFirstPrincipalInServer(db: D1Database, serverId: string, accountId: string) {
+  const row = await db
+    .prepare(
+      `SELECT id
+       FROM raft_accounts
+       WHERE server_id = ?1
+       ORDER BY created_at ASC
+       LIMIT 1`,
+    )
+    .bind(serverId)
+    .first<{ id: string }>();
+  return row?.id === accountId;
+}
+
+async function defaultOrgRoleForAccount(
+  db: D1Database,
+  account: AdminAccount,
+): Promise<"owner" | "admin" | "member" | "viewer"> {
+  const raftRole = roleFromRaftServerRole(account.server_role);
+  if (raftRole) return raftRole;
+  if (account.principal_type === "human") {
+    return (await isFirstHumanInServer(db, account.server_id, account.id))
+      ? "owner"
+      : "member";
+  }
+  return (await isFirstPrincipalInServer(db, account.server_id, account.id))
+    ? "admin"
+    : "viewer";
+}
+
+async function upsertRaftOrgMembership(
+  db: D1Database,
+  account: AdminAccount,
+): Promise<{ org_id: string; org_role: "owner" | "admin" | "member" | "viewer" }> {
+  const timestamp = now();
+  const orgId = `raft_${account.server_id}`;
+  const slugBase = slugifyOrgPart(account.server_slug || account.server_id);
+  const slug = `${slugBase}-${account.server_id.slice(0, 8)}`;
+  const name = account.server_slug || `Raft server ${account.server_id.slice(0, 8)}`;
+  const orgRole = await defaultOrgRoleForAccount(db, account);
+
+  await db.batch([
+    db
+      .prepare(
+        `INSERT INTO organizations
+         (id, slug, name, external_provider, external_id, created_at, archived)
+         VALUES (?1, ?2, ?3, 'raft', ?4, ?5, 0)
+         ON CONFLICT(external_provider, external_id) DO UPDATE SET
+           slug = excluded.slug,
+           name = excluded.name`,
+      )
+      .bind(orgId, slug, name, account.server_id, timestamp),
+    db
+      .prepare(
+        `INSERT INTO org_members
+         (id, org_id, account_id, org_role, invited_by, joined_at)
+         VALUES (?1, ?2, ?3, ?4, NULL, ?5)
+         ON CONFLICT(org_id, account_id) DO NOTHING`,
+      )
+      .bind(`orgmem_${account.id}`, orgId, account.id, orgRole, timestamp),
+  ]);
+
+  const membership = await db
+    .prepare(
+      `SELECT org_id, org_role
+       FROM org_members
+       WHERE org_id = ?1 AND account_id = ?2`,
+    )
+    .bind(orgId, account.id)
+    .first<{ org_id: string; org_role: "owner" | "admin" | "member" | "viewer" }>();
+  if (!membership) throw new Error("Raft org membership upsert did not return a row");
+  return membership;
+}
+
 async function createSession(
   db: D1Database,
   accountId: string,
@@ -285,6 +390,8 @@ export async function handleAuthMe(c: Context<{ Bindings: Env }>) {
       server_slug: account.server_slug,
       principal_type: account.principal_type,
       server_role: account.server_role,
+      org_id: account.org_id ?? null,
+      org_role: account.org_role ?? null,
       username: account.username,
       display_name: account.display_name,
       avatar_url: account.avatar_url,
@@ -368,6 +475,9 @@ export async function handleRaftCallback(c: Context<{ Bindings: Env }>) {
     }
 
     const account = await upsertRaftAccount(c.env.DB, userinfo);
+    const membership = await upsertRaftOrgMembership(c.env.DB, account);
+    account.org_id = membership.org_id;
+    account.org_role = membership.org_role;
     const session = await createSession(c.env.DB, account.id);
     setCookie(c, SESSION_COOKIE, session.token, {
       httpOnly: true,
