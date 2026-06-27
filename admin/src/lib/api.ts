@@ -225,6 +225,18 @@ export const createChannel = (
     body: JSON.stringify(input),
   });
 
+export const listProductTypes = (appId: string) =>
+  request<{ product_types: ProductType[] }>(
+    `/api/apps/${appId}/product-types`,
+    { admin: true },
+  );
+
+export const listReleaseTypes = (appId: string) =>
+  request<{ release_types: ReleaseType[] }>(
+    `/api/apps/${appId}/release-types`,
+    { admin: true },
+  );
+
 export const updateChannel = (
   appId: string,
   channelId: string,

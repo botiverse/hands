@@ -13,6 +13,8 @@ import { AppDetail } from "./pages/AppDetail";
 import { AuditLog } from "./pages/AuditLog";
 import { Settings } from "./pages/Settings";
 import { Publishing } from "./pages/Publishing";
+import { Builds } from "./pages/Builds";
+import { Releases } from "./pages/Releases";
 import { getAuthMe, loginUrl, logout, type AuthAccount } from "./lib/api";
 
 function RaftIcon({ className = "" }: { className?: string }) {
@@ -128,6 +130,26 @@ function AppContextNav() {
           Publish
         </NavLink>
         <NavLink
+          to={`${base}/builds`}
+          className={({ isActive }) =>
+            `px-3 py-1 rounded-md text-sm ${
+              isActive ? "bg-slate-100 font-medium" : "hover:bg-slate-100"
+            }`
+          }
+        >
+          Builds
+        </NavLink>
+        <NavLink
+          to={`${base}/releases`}
+          className={({ isActive }) =>
+            `px-3 py-1 rounded-md text-sm ${
+              isActive ? "bg-slate-100 font-medium" : "hover:bg-slate-100"
+            }`
+          }
+        >
+          Releases
+        </NavLink>
+        <NavLink
           to={`${base}/audit`}
           className={({ isActive }) =>
             `px-3 py-1 rounded-md text-sm ${
@@ -165,6 +187,18 @@ function PublishingRoute() {
   const { appId } = useParams();
   if (!appId) return null;
   return <Publishing appId={appId} />;
+}
+
+function BuildsRoute() {
+  const { appId } = useParams();
+  if (!appId) return null;
+  return <Builds appId={appId} />;
+}
+
+function ReleasesRoute() {
+  const { appId } = useParams();
+  if (!appId) return null;
+  return <Releases appId={appId} />;
 }
 
 export function App() {
@@ -228,6 +262,8 @@ function AuthenticatedApp({ account }: { account: AuthAccount }) {
         <Route path="/apps/:appId" element={<AppShell />}>
           <Route index element={<AppDetailRoute />} />
           <Route path="publish" element={<PublishingRoute />} />
+          <Route path="builds" element={<BuildsRoute />} />
+          <Route path="releases" element={<ReleasesRoute />} />
           <Route path="audit" element={<AuditRoute />} />
         </Route>
         <Route

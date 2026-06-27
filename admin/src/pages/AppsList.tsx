@@ -1,6 +1,12 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
-import { listApps, type App } from "../lib/api";
+import {
+  listApps,
+  listProductTypes,
+  listReleaseTypes,
+  listChannels,
+  type App,
+} from "../lib/api";
 import { AppCreationWizard } from "../components/AppCreationWizard";
 
 export function AppsList({ onSelectApp }: { onSelectApp: (id: string) => void }) {
@@ -72,6 +78,26 @@ export function AppsList({ onSelectApp }: { onSelectApp: (id: string) => void })
 
 function AppRow({ app, onSelect }: { app: App; onSelect: () => void }) {
   const isArchived = !!app.archived;
+
+  // Fetch counts for product_types / release_types / channels per app.
+  // (Phase 2.3.A — lightweight stats inline on AppsList cards.)
+  const productTypes = useQuery({
+    queryKey: ["product-types", app.id],
+    queryFn: () => listProductTypes(app.id),
+  });
+  const releaseTypes = useQuery({
+    queryKey: ["release-types", app.id],
+    queryFn: () => listReleaseTypes(app.id),
+  });
+  const channels = useQuery({
+    queryKey: ["channels", app.id],
+    queryFn: () => listChannels(app.id),
+  });
+
+  const ptCount = productTypes.data?.product_types.length ?? 0;
+  const rtCount = releaseTypes.data?.release_types.length ?? 0;
+  const chCount = channels.data?.channels.length ?? 0;
+
   return (
     <button
       onClick={onSelect}
@@ -95,10 +121,29 @@ function AppRow({ app, onSelect }: { app: App; onSelect: () => void }) {
               {app.description}
             </div>
           )}
+          <div className="flex flex-wrap gap-2 mt-2 text-xs">
+            <span
+              className="badge-blue"
+              title="Product types (what we ship)"
+            >
+              📦 {ptCount} product type{ptCount === 1 ? "" : "s"}
+            </span>
+            <span
+              className="badge-green"
+              title="Release types (stable / beta / ...)"
+            >
+              🏷️ {rtCount} release type{rtCount === 1 ? "" : "s"}
+            </span>
+            <span
+              className="badge-gray"
+              title="Deployment channels (production / beta / ...)"
+            >
+              🚀 {chCount} channel{chCount === 1 ? "" : "s"}
+            </span>
+          </div>
         </div>
         <span className="badge-blue ml-3">{app.platform}</span>
       </div>
     </button>
   );
 }
-
