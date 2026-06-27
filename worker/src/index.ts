@@ -60,19 +60,26 @@ export class ApkParserContainer extends Container<Env> {
   sleepAfter = "2m";
 
   override async onStart() {
-    // Sanity check: aapt must be reachable. If not, this log line will show
-    // up in `wrangler tail` and we know exactly what's missing.
-    const proc = await this.ctx.container.exec([AAPT_BIN, "version"]);
-    const out = await proc.output();
+    // Sanity check + PATH/env diagnostics so we can see exactly what's wrong.
     const decoder = new TextDecoder();
+
+    const whereProc = await this.ctx.container.exec(["which", "aapt"]);
+    const whereOut = await whereProc.output();
     console.log(
-      `[apk-parser] aapt version: ${decoder.decode(out.stdout).trim() || "(empty)"}`,
+      `[apk-parser] which aapt: exit=${whereOut.exitCode} stdout="${decoder.decode(whereOut.stdout).trim()}" stderr="${decoder.decode(whereOut.stderr).trim()}"`,
     );
-    if (out.exitCode !== 0) {
-      console.error(
-        `[apk-parser] aapt version failed (exit ${out.exitCode}): ${decoder.decode(out.stderr)}`,
-      );
-    }
+
+    const directProc = await this.ctx.container.exec([AAPT_BIN, "version"]);
+    const directOut = await directProc.output();
+    console.log(
+      `[apk-parser] direct ${AAPT_BIN} version: exit=${directOut.exitCode} stdout="${decoder.decode(directOut.stdout).trim()}" stderr="${decoder.decode(directOut.stderr).trim()}"`,
+    );
+
+    const pathProc = await this.ctx.container.exec(["sh", "-c", "echo $PATH && ls /opt/android-sdk/build-tools/ 2>&1 | head -5"]);
+    const pathOut = await pathProc.output();
+    console.log(
+      `[apk-parser] PATH + ls: ${decoder.decode(pathOut.stdout).trim()}`,
+    );
   }
 
   override onStop() {
