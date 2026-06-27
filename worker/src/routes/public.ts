@@ -37,7 +37,7 @@ export async function handlePublicGetLatestVersion(
   const version = await c.env.DB.prepare(
     `SELECT id, version_name, version_code, package_name,
             signature_sha256, min_sdk, target_sdk, size_bytes, file_hash,
-            enabled, created_at
+            r2_key, enabled, created_at
      FROM versions
      WHERE app_id = ?1 AND channel = ?2 AND enabled = 1
      ORDER BY version_code DESC, created_at DESC
@@ -54,6 +54,7 @@ export async function handlePublicGetLatestVersion(
       target_sdk: number | null;
       size_bytes: number;
       file_hash: string;
+      r2_key: string;
       enabled: number;
       created_at: number;
     }>();
@@ -66,8 +67,10 @@ export async function handlePublicGetLatestVersion(
   }
 
   const ttl = Number(c.env.SIGNED_URL_TTL_SECONDS ?? "3600");
-  const r2Key = `apps/${app.id}/versions/${version.id}/binary.apk`;
-  const downloadUrl = await generateSignedR2Url(c.env, r2Key, ttl);
+  // Use the actual r2_key stored on the version row (upload path was
+  // apps/<appId>/pending/<hash>.apk); the previous code built a fake
+  // apps/<appId>/versions/<id>/binary.apk path that didn't exist in R2.
+  const downloadUrl = await generateSignedR2Url(c.env, version.r2_key, ttl);
 
   return c.json({
     app: { slug: app.slug, platform: app.platform },

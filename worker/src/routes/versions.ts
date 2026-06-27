@@ -31,7 +31,7 @@ export async function handleListVersions(c: Context<{ Bindings: Env }>) {
   const { results } = await c.env.DB.prepare(
     `SELECT id, app_id, channel, version_name, version_code, package_name,
             signature_sha256, min_sdk, target_sdk, size_bytes, file_hash,
-            enabled, created_at
+            r2_key, enabled, created_at
      FROM versions
      WHERE ${conditions.join(" AND ")}
      ORDER BY created_at DESC
@@ -48,13 +48,13 @@ export async function handleGetVersion(c: Context<{ Bindings: Env }>) {
     `SELECT v.*, a.slug AS app_slug
      FROM versions v JOIN apps a ON a.id = v.app_id
      WHERE v.app_id = ?1 AND v.id = ?2`,
-  ).bind(appId, versionId).first();
+  ).bind(appId, versionId).first<{ r2_key: string } & Record<string, unknown>>();
   if (!row) return c.json({ error: "not found" }, 404);
 
-  // Issue a signed R2 URL for download (TTL from env)
+  // Issue a signed R2 URL for download (TTL from env).
+  // Use the actual r2_key stored on the row (uploaded at apps/<appId>/pending/<hash>.apk).
   const ttl = Number(c.env.SIGNED_URL_TTL_SECONDS ?? "3600");
-  const r2Key = `apps/${appId}/versions/${versionId}/binary.apk`;
-  const downloadUrl = await generateSignedR2Url(c.env, r2Key, ttl);
+  const downloadUrl = await generateSignedR2Url(c.env, row.r2_key, ttl);
 
   return c.json({ ...row, download_url: downloadUrl });
 }
@@ -79,6 +79,16 @@ export async function handleCreateVersion(c: Context<{ Bindings: Env }>) {
     r2_key: string;
   };
 
+  // Validate required fields — versions.r2_key is NOT NULL in schema, so
+  // a missing r2_key surfaces as a SQLITE_CONSTRAINT_NOTNULL with no
+  // user-friendly error. Validate up front to surface clean 400s.
+  if (!body.r2_key) {
+    return c.json(
+      { error: "r2_key required (upload APK first via /api/apps/:appId/upload)" },
+      400,
+    );
+  }
+
   // Record operation log (publish step)
   const op = await createOperation(c.env.DB, {
     app_id: appId,
@@ -92,17 +102,7 @@ export async function handleCreateVersion(c: Context<{ Bindings: Env }>) {
 
   const id = crypto.randomUUID();
   try {
-    await c.env.DB.prepare(
-      `INSERT INTO versions
-       (id, app_id, channel, version_name, version_code, package_name,
-        signature_sha256, min_sdk, target_sdk, size_bytes, file_hash,
-        enabled, created_at)
-       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, 1, ?12)`,
-    ).bind(
-      id, appId, body.channel, body.version_name, body.version_code, body.package_name,
-      body.signature_sha256, body.min_sdk ?? null, body.target_sdk ?? null,
-      body.size_bytes, body.file_hash, Date.now(),
-    ).run();
+    await insertVersion(c.env.DB, appId, body, id);
 
     await c.env.DB.prepare(
       "INSERT INTO audit_logs (id, app_id, action, actor, payload, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
@@ -125,6 +125,55 @@ export async function handleCreateVersion(c: Context<{ Bindings: Env }>) {
     });
     throw e;
   }
+}
+
+/**
+ * Insert a versions row from a publish payload. Extracted from
+ * handleCreateVersion so the same logic can be re-invoked from the retry
+ * endpoint with the original input JSON stored on operation_logs.
+ */
+export async function insertVersion(
+  db: D1Database,
+  appId: string,
+  body: {
+    channel: string;
+    version_name: string;
+    version_code: number;
+    package_name: string;
+    signature_sha256: string;
+    min_sdk?: number;
+    target_sdk?: number;
+    size_bytes: number;
+    file_hash: string;
+    r2_key: string;
+  },
+  id: string = crypto.randomUUID(),
+): Promise<string> {
+  await db
+    .prepare(
+      `INSERT INTO versions
+       (id, app_id, channel, version_name, version_code, package_name,
+        signature_sha256, min_sdk, target_sdk, size_bytes, file_hash,
+        r2_key, enabled, created_at)
+       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, 1, ?13)`,
+    )
+    .bind(
+      id,
+      appId,
+      body.channel,
+      body.version_name,
+      body.version_code,
+      body.package_name,
+      body.signature_sha256,
+      body.min_sdk ?? null,
+      body.target_sdk ?? null,
+      body.size_bytes,
+      body.file_hash,
+      body.r2_key,
+      Date.now(),
+    )
+    .run();
+  return id;
 }
 
 export async function handleUpdateVersion(c: Context<{ Bindings: Env }>) {

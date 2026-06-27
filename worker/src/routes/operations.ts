@@ -175,10 +175,95 @@ export async function handleRetryOperation(c: Context<{ Bindings: Env }>) {
   const id = c.req.param("opId") ?? "";
   const existing = await getOperation(c.env.DB, id);
   if (!existing) return c.json({ error: "not found" }, 404);
+  if (existing.status === "in_progress") {
+    return c.json(
+      { error: "operation already in_progress; wait or cancel first" },
+      409,
+    );
+  }
 
-  // Increment retry_count and reset to pending so the client can pick it up
-  // again (the actual operation must be triggered by re-running the corresponding
-  // admin route; this endpoint just marks the op as retryable).
+  // Mark as in_progress + bump retry_count while we actually re-run the op.
+  await updateOperation(c.env.DB, id, {
+    status: "in_progress",
+    error: null,
+    progress: 0.1,
+    retry_count: existing.retry_count + 1,
+    completed_at: null,
+  });
+
+  // parse + upload ops don't store the original bytes (only metadata),
+  // so they can't be retried server-side — the user must re-trigger from
+  // the UI (Upload dialog). We mark them back to failed with a clear hint.
+  if (existing.kind === "parse" || existing.kind === "upload") {
+    const retried = await updateOperation(c.env.DB, id, {
+      status: "failed",
+      error: `retry not supported for kind='${existing.kind}'; re-trigger from admin UI`,
+      completed_at: Date.now(),
+    });
+    return c.json(retried, 400);
+  }
+
+  // publish ops store the full metadata JSON in `input` — re-run insertVersion.
+  if (existing.kind === "publish") {
+    if (!existing.app_id) {
+      const failed = await updateOperation(c.env.DB, id, {
+        status: "failed",
+        error: "publish op has no app_id; cannot retry",
+        completed_at: Date.now(),
+      });
+      return c.json(failed, 400);
+    }
+    try {
+      const input = JSON.parse(existing.input) as {
+        channel: string;
+        version_name: string;
+        version_code: number;
+        package_name: string;
+        signature_sha256: string;
+        min_sdk?: number;
+        target_sdk?: number;
+        size_bytes: number;
+        file_hash: string;
+        r2_key: string;
+      };
+      const { insertVersion } = await import("./versions");
+      const newVersionId = await insertVersion(
+        c.env.DB,
+        existing.app_id,
+        input,
+      );
+      await c.env.DB
+        .prepare(
+          "INSERT INTO audit_logs (id, app_id, action, actor, payload, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        )
+        .bind(
+          crypto.randomUUID(),
+          existing.app_id,
+          "version.create",
+          "admin",
+          JSON.stringify({ ...input, retried_from: existing.id }),
+          Date.now(),
+        )
+        .run();
+      const success = await updateOperation(c.env.DB, id, {
+        status: "success",
+        progress: 1,
+        output: JSON.stringify({ version_id: newVersionId }),
+        completed_at: Date.now(),
+      });
+      return c.json(success);
+    } catch (e) {
+      const failed = await updateOperation(c.env.DB, id, {
+        status: "failed",
+        error: (e as Error).message,
+        progress: 1,
+        completed_at: Date.now(),
+      });
+      return c.json(failed, 500);
+    }
+  }
+
+  // Unknown kind — fall back to state reset.
   const retried = await updateOperation(c.env.DB, id, {
     status: "pending",
     error: null,

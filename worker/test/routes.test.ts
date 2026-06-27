@@ -288,6 +288,86 @@ describe("quiver route handlers — SQL smoke", () => {
   });
 });
 
+describe("quiver publish + retry — version row + r2_key required", () => {
+  let env: MockEnv;
+
+  beforeEach(async () => {
+    env = makeMockEnv();
+    const now = Date.now();
+    // Seed an app + channel
+    await env.DB
+      .prepare("INSERT INTO apps (id, slug, name, platform, created_at) VALUES (?, ?, ?, ?, ?)")
+      .bind("a1", "retry-test", "Retry Test", "android", now)
+      .run();
+    await env.DB
+      .prepare("INSERT INTO channels (id, app_id, slug, name, created_at) VALUES (?, ?, ?, ?, ?)")
+      .bind("c1", "a1", "production", "Production", now)
+      .run();
+  });
+
+  it("insertVersion stores the r2_key passed in the publish payload", async () => {
+    const { insertVersion } = await import("../src/routes/versions");
+    const id = await insertVersion(env.DB as any, "a1", {
+      channel: "production",
+      version_name: "1.0.0",
+      version_code: 1,
+      package_name: "com.example",
+      signature_sha256: "abc123",
+      min_sdk: 24,
+      target_sdk: 34,
+      size_bytes: 1234,
+      file_hash: "deadbeef",
+      r2_key: "apps/a1/pending/deadbeef.apk",
+    });
+
+    expect(id).toMatch(/^[0-9a-f-]{36}$/);
+    const row = await env.DB
+      .prepare("SELECT r2_key, version_name, file_hash FROM versions WHERE id = ?")
+      .bind(id)
+      .first();
+    expect(row).toMatchObject({
+      r2_key: "apps/a1/pending/deadbeef.apk",
+      version_name: "1.0.0",
+      file_hash: "deadbeef",
+    });
+  });
+
+  it("insertVersion re-uses an explicit id (retry-friendly)", async () => {
+    const { insertVersion } = await import("../src/routes/versions");
+    const fixedId = "11111111-1111-1111-1111-111111111111";
+    const returnedId = await insertVersion(
+      env.DB as any,
+      "a1",
+      {
+        channel: "production",
+        version_name: "2.0.0",
+        version_code: 2,
+        package_name: "com.example",
+        signature_sha256: "sig",
+        size_bytes: 1,
+        file_hash: "hash",
+        r2_key: "apps/a1/pending/hash.apk",
+      },
+      fixedId,
+    );
+    expect(returnedId).toBe(fixedId);
+  });
+
+  it("versions.r2_key is NOT NULL in schema (matches production D1)", async () => {
+    // Schema-level guard: if someone removes NOT NULL on r2_key in the future,
+    // this test will fail and remind them that the create-version handler
+    // depends on r2_key being required.
+    const cols = await env.DB
+      .prepare("PRAGMA table_info(versions)")
+      .bind()
+      .all();
+    const r2KeyCol = (cols.results as Array<{ name: string; notnull: number }>)
+      .find((c) => c.name === "r2_key");
+    expect(r2KeyCol).toBeDefined();
+    expect(r2KeyCol!.notnull).toBe(1);
+  });
+});
+
 describe("quiver Hono app — auth + dispatch", () => {
   // We can't easily import the full route modules in Node (they import from
   // "@cloudflare/containers" which uses the cloudflare:workers module specifier
