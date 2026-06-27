@@ -295,10 +295,11 @@ Depends on: existing Login with Raft migration `0004_raft_auth.sql`.
 | P5.4.3 Invites tab: pending invites table + resend/revoke + create-invite modal | 🔵 TODO | 4h | After P5.3 invite endpoints |
 | P5.4.4 AppDetail: new "Access" tab (app_members + invite-to-app) | 🟡 IN_PROGRESS | 1 day | Page scaffold (commit `62d6c9b`); endpoint notes for GET/POST /api/apps/:appId/members. Real data after P5.3 invite endpoints + P5.2 role middleware |
 | P5.4.5 `admin/src/pages/AcceptInvite.tsx` (public magic link landing) | 🟡 IN_PROGRESS | 4h | Page scaffold + sign-in-or-accept UI; endpoint calls are TODO for P5.3 (commit `5eb1a1c`) |
-| P5.4.6 Top-bar org switcher dropdown | 🔵 TODO | 4h | Needs `/me.org_id` (have) + org list endpoint (TODO) |
+| P5.4.6 Top-bar org switcher dropdown | 🟡 IN_PROGRESS | 4h | Header 'Org' link now shows role chip (owner=purple, admin=blue) + title with role. Multi-org list endpoint pending #14. (commit `57ed0e6`) |
 | P5.4.7 Router: add `/orgs/:orgId` and `/invites/:token` routes | ✅ DONE | 2h | Both top-level (cross-cutting). commit `5eb1a1c` |
 | P5.4.8 Top-bar agent badge for principal_type='agent' | ✅ DONE | 10min | commit `5eb1a1c` |
 | P5.4.9 "Manage access →" link in AppDetail header | ✅ DONE | 5min | commit `62d6c9b` |
+| P5.4.10 Settings page surfaces current org context (display name, principal_type, org_id, org_role, server_role) | ✅ DONE | 20min | commit `57ed0e6` |
 
 ### P5.5 — agent permissions + audit (2 days)
 
@@ -342,11 +343,11 @@ Depends on: existing Login with Raft migration `0004_raft_auth.sql`.
 | Phase 2 (P2.1 + P2.2) | 13 | 0 | 24 | 37 | ~50 hours remaining |
 | Phase 3 | 0 | 0 | 14 | 14 | ~3 weeks |
 | Phase 4 | 0 | 0 | 7 | 7 | ~6 weeks (deferred) |
-| Phase 5 | 5 | 2 | 21 | 28 | ~13 days (~2.5 weeks) |
+| Phase 5 | 7 | 1 | 20 | 28 | ~13 days (~2.5 weeks) |
 | Cross-cutting | 2 | 1 | 3 | 6 | ongoing |
-| **Total** | **44** | **4** | **69** | **117** | |
+| **Total** | **46** | **3** | **68** | **117** | |
 
-Last sync: 2026-06-28 03:45 UTC
+Last sync: 2026-06-28 03:55 UTC
 
 **Phase 2.1 + P2.2 complete** (commits `c6322ab`): 5 new tables created on remote D1, product_types / release_types / default channels seeded for the 1 existing app, 1 legacy versions row backfilled into builds + build_assets + releases + release_scopes. Builds table now has parity with versions on `should_force_update` / `availability_at` / `provenance_json`.
 
