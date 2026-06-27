@@ -228,6 +228,24 @@ const admin = new Hono<{
 }>();
 admin.use("*", authMiddleware);
 
+// Global error handler: surface unhandled exceptions as JSON instead of
+// Hono's default empty "Internal Server Error" body. This makes every
+// admin endpoint behave consistently when something downstream (D1 / R2 /
+// Container / Access) throws, instead of forcing operators to read
+// wrangler tail to figure out what went wrong.
+admin.onError((err, c) => {
+  console.error(
+    `[admin ${c.req.method} ${c.req.path}] unhandled error: ${err instanceof Error ? err.stack ?? err.message : String(err)}`,
+  );
+  return c.json(
+    {
+      error: "internal server error",
+      detail: err instanceof Error ? err.message : String(err),
+    },
+    500,
+  );
+});
+
 admin.get("/api/apps", handleListApps);
 admin.post("/api/apps", handleCreateApp);
 admin.get("/api/apps/:appId", handleGetApp);
@@ -254,9 +272,12 @@ admin.post("/api/parse-apk", async (c) => {
     return c.json({ error: "APK too large (>200MB)" }, 413);
   }
 
-  // Record operation log entry (start as in_progress)
+  // Record operation log entry (start as in_progress).
+  // NOTE: app_id is NULL for parse — parse runs before the user picks an app
+  // (it's the very first step in the Upload dialog flow). operation_logs
+  // app_id is nullable (migration 0003).
   const op = await createOperation(c.env.DB, {
-    app_id: "00000000-0000-0000-0000-000000000000", // placeholder; not tied to an app
+    app_id: null,
     kind: "parse",
     input: JSON.stringify({ size_bytes: ab.byteLength }),
   });
@@ -291,6 +312,9 @@ admin.post("/api/parse-apk", async (c) => {
     const res = await container.fetch(fakeRequest);
     const text = await res.text();
     if (!res.ok) {
+      console.error(
+        `[parse-apk] container returned ${res.status}: ${text.slice(0, 500)}`,
+      );
       await updateOperation(c.env.DB, op.id, {
         status: "failed",
         error: text.slice(0, 500),
@@ -320,13 +344,25 @@ admin.post("/api/parse-apk", async (c) => {
 
     return c.json(metadata);
   } catch (err) {
+    console.error(
+      `[parse-apk] unexpected error: ${err instanceof Error ? err.stack ?? err.message : String(err)}`,
+    );
     await updateOperation(c.env.DB, op.id, {
       status: "failed",
       error: (err as Error).message,
       progress: 1,
       completed_at: Date.now(),
     });
-    throw err;
+    // Return JSON error instead of letting Hono's default handler return
+    // empty "Internal Server Error" — this is what masked the real cause
+    // of the upload-500 bug for hours.
+    return c.json(
+      {
+        error: "parse failed",
+        detail: (err as Error).message,
+      },
+      500,
+    );
   }
 });
 

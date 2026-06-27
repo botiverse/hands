@@ -17,7 +17,8 @@ import type { Context } from "hono";
 
 export interface OperationLog {
   id: string;
-  app_id: string;
+  /** Nullable — parse operations are app-less (run before the user picks an app). */
+  app_id: string | null;
   kind: "parse" | "upload" | "publish" | "signed_url";
   status: "pending" | "in_progress" | "success" | "failed" | "cancelled";
   parent_op_id: string | null;
