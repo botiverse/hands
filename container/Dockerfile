@@ -1,5 +1,7 @@
 # syntax=docker/dockerfile:1
 # APK metadata parser — Cloudflare Container image
+# Force rebuild 1782558219 for bookworm-slim migration
+
 #
 # Bumped from `node:20-alpine` (musl libc) to `node:24-bookworm-slim` (glibc)
 # so the Android SDK build-tools (aapt, apksigner) — which are glibc ELFs —
