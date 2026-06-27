@@ -15,6 +15,7 @@ import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   addAppMember,
+  createOrgInvite,
   getAuthMe,
   listAppMembers,
   listOrgMembers,
@@ -45,6 +46,7 @@ export function AppAccess({ appId }: { appId: string }) {
       </div>
       <AppMemberList appId={appId} canManage={isOrgAdmin} currentAccountId={account?.id ?? null} />
       {isOrgAdmin && <AddAppMemberForm appId={appId} />}
+      {isOrgAdmin && <InviteToAppForm appId={appId} />}
     </div>
   );
 }
@@ -337,6 +339,128 @@ function AddAppMemberForm({ appId }: { appId: string }) {
         Direct add — principal must already be an org member. For inviting
         new people, use the Org settings → Invites tab.
       </p>
+    </div>
+  );
+}
+
+function InviteToAppForm({ appId }: { appId: string }) {
+  const qc = useQueryClient();
+  const toast = useToast();
+  const me = useQuery({ queryKey: ["auth-me"], queryFn: () => getAuthMe() });
+  const orgId = me.data?.account.org_id ?? null;
+  const [showForm, setShowForm] = useState(false);
+  const [email, setEmail] = useState("");
+  const [role, setRole] = useState<"publisher" | "viewer">("publisher");
+  const [message, setMessage] = useState("");
+
+  const invite = useMutation({
+    mutationFn: () =>
+      createOrgInvite(orgId!, {
+        email: email.trim().toLowerCase(),
+        role,
+        app_id: appId,
+        message: message.trim() ? message.trim() : null,
+      }),
+    onSuccess: (data) => {
+      toast.show({
+        kind: "success",
+        title: `Invite sent to ${email}`,
+        description: `URL: ${data.invite_url.slice(0, 60)}…`,
+      });
+      navigator.clipboard?.writeText(data.invite_url).catch(() => {});
+      qc.invalidateQueries({ queryKey: ["org-invites", orgId!] });
+      qc.invalidateQueries({ queryKey: ["org-members", orgId!] });
+      setEmail("");
+      setMessage("");
+      setShowForm(false);
+    },
+    onError: (e) =>
+      toast.show({
+        kind: "error",
+        title: "Invite failed",
+        description: (e as Error).message,
+      }),
+  });
+
+  if (!orgId) return null;
+
+  return (
+    <div className="card !p-4 text-sm">
+      <div className="flex items-center justify-between mb-3">
+        <h3 className="text-base font-semibold">Invite to this app</h3>
+        {!showForm && (
+          <button
+            className="btn-secondary text-xs"
+            onClick={() => setShowForm(true)}
+          >
+            + Invite
+          </button>
+        )}
+      </div>
+      {showForm ? (
+        <form
+          onSubmit={(e) => {
+            e.preventDefault();
+            invite.mutate();
+          }}
+          className="space-y-2"
+        >
+          <div className="grid grid-cols-2 gap-2">
+            <input
+              type="email"
+              className="input text-sm"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              placeholder="email@example.com"
+              required
+              autoFocus
+            />
+            <select
+              className="input text-sm"
+              value={role}
+              onChange={(e) =>
+                setRole(e.target.value as "publisher" | "viewer")
+              }
+            >
+              <option value="publisher">publisher</option>
+              <option value="viewer">viewer</option>
+            </select>
+          </div>
+          <textarea
+            className="input text-xs min-h-[40px]"
+            value={message}
+            onChange={(e) => setMessage(e.target.value)}
+            placeholder="Optional message"
+          />
+          <p className="text-xs text-slate-500">
+            The invitee needs an account with this email; accepting the
+            invite makes them an org viewer (auto) and grants app access
+            with the role you pick. URL is copied to clipboard after send.
+          </p>
+          <div className="flex gap-2">
+            <button
+              type="submit"
+              className="btn-primary text-xs"
+              disabled={invite.isPending || !email.trim()}
+            >
+              {invite.isPending ? "Sending…" : "Send invite"}
+            </button>
+            <button
+              type="button"
+              className="btn-secondary text-xs"
+              onClick={() => setShowForm(false)}
+            >
+              Cancel
+            </button>
+          </div>
+        </form>
+      ) : (
+        <p className="text-xs text-slate-500">
+          Send an invite to grant app access. The invitee is added to the
+          org as a viewer automatically when they accept; the picked role
+          (publisher / viewer) controls what they can do on this app.
+        </p>
+      )}
     </div>
   );
 }

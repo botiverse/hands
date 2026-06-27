@@ -361,10 +361,13 @@ function InvitesTab({
   const qc = useQueryClient();
   const toast = useToast();
   const [showCreate, setShowCreate] = useState(false);
+  const [statusFilter, setStatusFilter] = useState<string>("all");
   const invites = useQuery({
     queryKey: ["org-invites", orgId],
-    queryFn: () => listOrgInvites(orgId),
+    queryFn: () => listOrgInvites(orgId, statusFilter === "all" ? undefined : statusFilter),
+    enabled: statusFilter !== "all" || true,
   });
+  const filteredInvites = invites.data?.invites ?? [];
 
   const revoke = useMutation({
     mutationFn: (inviteId: string) => revokeOrgInvite(orgId, inviteId),
@@ -402,14 +405,28 @@ function InvitesTab({
     <div className="card !p-4 text-sm">
       <div className="flex items-center justify-between mb-3">
         <h3 className="text-base font-semibold">Invites</h3>
-        {canManage && (
-          <button
-            className="btn-primary text-xs"
-            onClick={() => setShowCreate(true)}
+        <div className="flex items-center gap-2">
+          <select
+            className="input text-xs py-0.5"
+            value={statusFilter}
+            onChange={(e) => setStatusFilter(e.target.value)}
+            title="Filter by invite status"
           >
-            + Invite member
-          </button>
-        )}
+            <option value="all">All statuses</option>
+            <option value="pending">Pending</option>
+            <option value="accepted">Accepted</option>
+            <option value="revoked">Revoked</option>
+            <option value="expired">Expired</option>
+          </select>
+          {canManage && (
+            <button
+              className="btn-primary text-xs"
+              onClick={() => setShowCreate(true)}
+            >
+              + Invite member
+            </button>
+          )}
+        </div>
       </div>
       {!canManage && (
         <p className="text-xs text-yellow-700 mb-2">
@@ -420,10 +437,14 @@ function InvitesTab({
       {invites.error && (
         <p className="text-red-600">Failed: {(invites.error as Error).message}</p>
       )}
-      {invites.data && invites.data.invites.length === 0 && (
-        <p className="text-slate-500 text-sm">No pending invites.</p>
+      {invites.data && filteredInvites.length === 0 && (
+        <p className="text-slate-500 text-sm">
+          {statusFilter === "all"
+            ? "No pending invites."
+            : `No ${statusFilter} invites.`}
+        </p>
       )}
-      {invites.data && invites.data.invites.length > 0 && (
+      {invites.data && filteredInvites.length > 0 && (
         <table className="w-full text-sm">
           <thead>
             <tr className="text-slate-500 text-left border-b border-slate-100">
@@ -435,7 +456,7 @@ function InvitesTab({
             </tr>
           </thead>
           <tbody>
-            {invites.data.invites.map((inv) => (
+            {filteredInvites.map((inv) => (
               <tr
                 key={inv.id}
                 className="border-b border-slate-50 hover:bg-slate-50"
