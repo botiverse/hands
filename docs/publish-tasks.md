@@ -93,22 +93,25 @@ Goal: introduce `product_types`, `release_types`, `build_assets`, `releases`, `r
 
 | Task | Status | Estimate | Migration |
 |---|---|---|---|
-| P2.1.1 `product_types` table + indexes | 🔵 TODO | 30min | `0008_product_types.sql` |
-| P2.1.2 `release_types` table + seed defaults | 🔵 TODO | 30min | `0008_product_types.sql` |
-| P2.1.3 `build_assets` table | 🔵 TODO | 30min | `0009_build_assets.sql` |
-| P2.1.4 `releases` table + indexes | 🔵 TODO | 30min | `0010_releases.sql` |
-| P2.1.5 `release_scopes` table + indexes | 🔵 TODO | 30min | `0010_releases.sql` |
+| P2.1.1 `product_types` table + indexes | ✅ DONE | 30min | `0008_product_types.sql` |
+| P2.1.2 `release_types` table | ✅ DONE | 30min | `0009_release_types.sql` |
+| P2.1.3 `build_assets` table | ✅ DONE | 30min | `0010_build_assets.sql` |
+| P2.1.4 `releases` table + indexes | ✅ DONE | 30min | `0011_releases.sql` |
+| P2.1.5 `release_scopes` table + indexes | ✅ DONE | 30min | `0012_release_scopes.sql` |
+| P2.1.6 `builds` table gets `should_force_update` / `availability_at` / `provenance_json` | ✅ DONE | 30min | `0015_builds_publish_fields.sql` |
 
 ### P2.2 — Backfill from existing `versions`
 
 | Task | Status | Estimate | Notes |
 |---|---|---|---|
-| P2.2.1 Seed default `product_types` (android-apk, electron-installer, rn-bundle, etc.) per existing app | 🔵 TODO | 1h | on migration apply |
-| P2.2.2 Seed default `release_types` (stable/rc/beta/internal) per existing app | 🔵 TODO | 30min | |
-| P2.2.3 Seed default channels (production/beta/internal) per existing app | 🔵 TODO | 1h | with bundle_id defaults |
-| P2.2.4 Backfill each `versions` row → `builds` + `build_assets` | 🔵 TODO | 1h | platform='android', filetype='apk' |
-| P2.2.5 Backfill each `versions` row → `releases` + `release_scopes` (full) | 🔵 TODO | 1h | status='active', is_full=1 |
-| P2.2.6 Deprecate `versions` table (rename to `_versions_legacy`) | 🔵 TODO | 30min | Phase 2 final migration |
+| P2.2.1 Seed default `product_types` per existing app | ✅ DONE | 1h | `0013_phase2_backfill.sql` |
+| P2.2.2 Seed default `release_types` per existing app | ✅ DONE | 30min | same |
+| P2.2.3 Seed default channels (production/beta/internal) per existing app | ✅ DONE | 1h | with bundle_id defaults |
+| P2.2.4 Backfill each `versions` row → `builds` + `build_assets` | ✅ DONE | 1h | platform='android', filetype='apk' |
+| P2.2.5 Backfill each `versions` row → `releases` + `release_scopes` (full) | ✅ DONE | 1h | status='active', is_full=1, scope=full/all |
+| P2.2.6 Backfill builds fields from versions (provenance, force-update) | ✅ DONE | 30min | one-time UPDATE applied after 0015 |
+| P2.2.7 Idempotent seed migration for apps created post-0013 | ✅ DONE | 30min | `0014_phase2_seed_existing.sql` |
+| P2.2.8 Deprecate `versions` table (rename to `_versions_legacy`) | 🔵 TODO | 30min | Phase 2 final migration; keep until admin UI migrated |
 
 ### P2.3 — App creation wizard (3 steps)
 
@@ -334,14 +337,13 @@ Depends on: existing Login with Raft migration `0004_raft_auth.sql`.
 | Phase | DONE | IN_PROGRESS | TODO | Total | ETA |
 |---|---|---|---|---|---|
 | Phase 1 | 24 | 1 (this doc) | 0 | 25 | ✅ COMPLETE |
-| Phase 2 | 0 | 0 | 25 | 25 | ~50 hours |
+| Phase 2 (P2.1 + P2.2) | 13 | 0 | 24 | 37 | ~50 hours remaining |
 | Phase 3 | 0 | 0 | 14 | 14 | ~3 weeks |
 | Phase 4 | 0 | 0 | 7 | 7 | ~6 weeks (deferred) |
 | Phase 5 | 0 | 0 | 28 | 28 | ~13 days (~2.5 weeks) |
 | Cross-cutting | 2 | 1 | 3 | 6 | ongoing |
-| **Total** | **26** | **2** | **77** | **105** | |
+| **Total** | **39** | **2** | **76** | **117** | |
 
-Last sync: 2026-06-28 02:10 UTC
+Last sync: 2026-06-28 02:30 UTC
 
-**Phase 1 complete**: All 24 admin UI + schema tasks done. Channel CRUD UI shipped in `ac54c1a`.
-**Phase 5 added**: 28 tasks across 6 sub-phases for account/org/team/invite/RBAC. Documented in `account-org-invite.md`.
+**Phase 2.1 + P2.2 complete** (commits `c6322ab`): 5 new tables created on remote D1, product_types / release_types / default channels seeded for the 1 existing app, 1 legacy versions row backfilled into builds + build_assets + releases + release_scopes. Builds table now has parity with versions on `should_force_update` / `availability_at` / `provenance_json`.
