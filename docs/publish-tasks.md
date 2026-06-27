@@ -242,7 +242,7 @@ Goal: introduce `product_types`, `release_types`, `build_assets`, `releases`, `r
 | X.2.1 Unit tests for handlers (currently 11 passing) | 🟡 IN_PROGRESS | need to grow as schema grows |
 | X.2.2 E2E test: full build → release → public API flow | 🔵 TODO | |
 | X.2.3 CLI integration tests | 🔵 TODO | Phase 3 |
-| X.2.4 RBAC tests (Phase 5) | 🔵 TODO | invite flow, role enforcement, cross-org leakage |
+| X.2.4 RBAC tests (Phase 5) | 🟡 IN_PROGRESS | Invite flow, role enforcement, cross-org leakage. Attempted unit tests in `worker/test/routes.test.ts` but the mock better-sqlite3 has a subtle issue with the new org tables (inserts report success but queries return empty). Left as TODO — better as integration tests against deployed Worker with dev-token bypass. |
 
 ---
 
@@ -344,10 +344,10 @@ Depends on: existing Login with Raft migration `0004_raft_auth.sql`.
 | Phase 3 | 0 | 0 | 14 | 14 | ~3 weeks |
 | Phase 4 | 0 | 0 | 7 | 7 | ~6 weeks (deferred) |
 | Phase 5 | 12 | 0 | 16 | 28 | ~13 days (~2.5 weeks) |
-| Cross-cutting | 5 | 0 | 1 | 6 | ongoing |
-| **Total** | **54** | **0** | **63** | **117** | |
+| Cross-cutting | 5 | 1 | 0 | 6 | ongoing |
+| **Total** | **54** | **1** | **62** | **117** | |
 
-Last sync: 2026-06-28 04:30 UTC
+Last sync: 2026-06-28 04:35 UTC
 
 **Phase 2.1 + P2.2 complete** (commits `c6322ab`): 5 new tables created on remote D1, product_types / release_types / default channels seeded for the 1 existing app, 1 legacy versions row backfilled into builds + build_assets + releases + release_scopes. Builds table now has parity with versions on `should_force_update` / `availability_at` / `provenance_json`.
 
