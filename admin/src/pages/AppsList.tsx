@@ -1,7 +1,7 @@
-import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
-import { listApps, createApp, type App } from "../lib/api";
-import { useToast } from "../components/Toast";
+import { listApps, type App } from "../lib/api";
+import { AppCreationWizard } from "../components/AppCreationWizard";
 
 export function AppsList({ onSelectApp }: { onSelectApp: (id: string) => void }) {
   const qc = useQueryClient();
@@ -58,7 +58,7 @@ export function AppsList({ onSelectApp }: { onSelectApp: (id: string) => void })
       </div>
 
       {showCreate && (
-        <CreateAppDialog
+        <AppCreationWizard
           onClose={() => setShowCreate(false)}
           onCreated={() => {
             setShowCreate(false);
@@ -102,115 +102,3 @@ function AppRow({ app, onSelect }: { app: App; onSelect: () => void }) {
   );
 }
 
-function CreateAppDialog({
-  onClose,
-  onCreated,
-}: {
-  onClose: () => void;
-  onCreated: () => void;
-}) {
-  const [slug, setSlug] = useState("");
-  const [name, setName] = useState("");
-  const [platform, setPlatform] = useState("android");
-  const toast = useToast();
-
-  const create = useMutation({
-    mutationFn: () => createApp({ slug, name, platform }),
-    onMutate: () =>
-      toast.show({
-        kind: "loading",
-        title: `Creating app '${slug}'…`,
-      }),
-    onSuccess: () => {
-      toast.show({ kind: "success", title: `App '${slug}' created` });
-      onCreated();
-    },
-    onError: (e) =>
-      toast.show({
-        kind: "error",
-        title: "Failed to create app",
-        description: (e as Error).message,
-      }),
-  });
-
-  return (
-    <div
-      className="fixed inset-0 bg-black/30 flex items-center justify-center p-4 z-10"
-      onClick={(e) => {
-        if (e.target === e.currentTarget) onClose();
-      }}
-      onKeyDown={(e) => {
-        if (e.key === "Escape") onClose();
-      }}
-    >
-      <div className="card max-w-md w-full relative">
-        <button
-          type="button"
-          onClick={onClose}
-          aria-label="Close"
-          className="absolute top-3 right-3 text-slate-400 hover:text-slate-700 w-8 h-8 flex items-center justify-center rounded-md hover:bg-slate-100"
-        >
-          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="w-5 h-5">
-            <path fillRule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clipRule="evenodd" />
-          </svg>
-        </button>
-        <h2 className="text-lg font-bold mb-4 pr-8">Create app</h2>
-        <form
-          onSubmit={(e) => {
-            e.preventDefault();
-            create.mutate();
-          }}
-          className="space-y-3"
-        >
-          <div>
-            <label className="label">Slug (e.g. myapp-android)</label>
-            <input
-              className="input"
-              value={slug}
-              onChange={(e) => setSlug(e.target.value)}
-              placeholder="myapp-android"
-              required
-            />
-          </div>
-          <div>
-            <label className="label">Name</label>
-            <input
-              className="input"
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              placeholder="My App"
-              required
-            />
-          </div>
-          <div>
-            <label className="label">Platform</label>
-            <select
-              className="input"
-              value={platform}
-              onChange={(e) => setPlatform(e.target.value)}
-            >
-              <option value="android">Android</option>
-              <option value="ios">iOS</option>
-            </select>
-          </div>
-          <div className="flex gap-2 justify-end pt-2">
-            <button
-              type="button"
-              className="btn-secondary"
-              onClick={onClose}
-            >
-              Cancel
-            </button>
-            <button
-              type="submit"
-              className="btn-primary"
-              disabled={create.isPending}
-            >
-              {create.isPending ? "Creating..." : "Create"}
-            </button>
-          </div>
-        </form>
-      </div>
-    </div>
-  );
-}

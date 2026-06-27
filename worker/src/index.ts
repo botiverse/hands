@@ -46,6 +46,8 @@ import {
   handleDeleteVersion,
 } from "./routes/versions";
 import { handleListChannels, handleCreateChannel, handleUpdateChannel, handleDeleteChannel } from "./routes/channels";
+import { handleListProductTypes, handleCreateProductType, handleUpdateProductType, handleDeleteProductType } from "./routes/product_types";
+import { handleListReleaseTypes, handleCreateReleaseType, handleUpdateReleaseType, handleDeleteReleaseType } from "./routes/release_types";
 import { handleListAuditLogs } from "./routes/audit";
 import { handleHealth } from "./routes/health";
 
@@ -390,6 +392,16 @@ admin.get("/api/apps/:appId/channels", handleListChannels);
 admin.post("/api/apps/:appId/channels", handleCreateChannel);
 admin.patch("/api/apps/:appId/channels/:channelId", handleUpdateChannel);
 admin.delete("/api/apps/:appId/channels/:channelId", handleDeleteChannel);
+
+admin.get("/api/apps/:appId/product-types", handleListProductTypes);
+admin.post("/api/apps/:appId/product-types", handleCreateProductType);
+admin.patch("/api/apps/:appId/product-types/:ptId", handleUpdateProductType);
+admin.delete("/api/apps/:appId/product-types/:ptId", handleDeleteProductType);
+
+admin.get("/api/apps/:appId/release-types", handleListReleaseTypes);
+admin.post("/api/apps/:appId/release-types", handleCreateReleaseType);
+admin.patch("/api/apps/:appId/release-types/:rtId", handleUpdateReleaseType);
+admin.delete("/api/apps/:appId/release-types/:rtId", handleDeleteReleaseType);
 
 admin.get("/api/apps/:appId/audit-logs", handleListAuditLogs);
 

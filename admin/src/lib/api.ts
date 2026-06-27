@@ -33,6 +33,33 @@ export interface App {
   created_at: number;
 }
 
+export interface ProductType {
+  id: string;
+  app_id: string;
+  name: string;
+  display_name: string;
+  description: string | null;
+  icon: string | null;
+  supported_platforms_json: string;  // '[]' or '["darwin-arm64", ...]'
+  default_assets_json: string;
+  parser_kind: string;
+  schema_json: string;
+  parent_product_type_id: string | null;
+  created_at: number;
+  updated_at: number;
+}
+
+export interface ReleaseType {
+  id: string;
+  app_id: string;
+  name: string;
+  display_name: string;
+  color: string | null;
+  description: string | null;
+  created_at: number;
+  updated_at: number;
+}
+
 export interface Version {
   id: string;
   app_id: string;
@@ -169,7 +196,12 @@ export const getPublicVersion = (appId: string, versionId: string) =>
 export const listApps = () =>
   request<{ apps: App[] }>(`/api/apps`, { admin: true });
 
-export const createApp = (input: { slug: string; name: string; platform: string }) =>
+export const createApp = (input: {
+  slug: string;
+  name: string;
+  platform: string;
+  description?: string | undefined;
+}) =>
   request<App>(`/api/apps`, {
     method: "POST",
     admin: true,

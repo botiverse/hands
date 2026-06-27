@@ -36,22 +36,52 @@ export async function handleCreateApp(c: Context<{ Bindings: Env }>) {
     return c.json({ error: "slug, name, platform required" }, 400);
   }
   const id = crypto.randomUUID();
-  await c.env.DB.prepare(
-    "INSERT INTO apps (id, slug, name, platform, description, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-  ).bind(id, body.slug, body.name, body.platform, body.description ?? null, Date.now()).run();
+  const now = Date.now();
 
-  await c.env.DB.prepare(
-    "INSERT INTO audit_logs (id, app_id, action, actor, payload, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-  )
-    .bind(
-      crypto.randomUUID(),
-      id,
-      "app.create",
-      currentActor(c),
-      JSON.stringify(body),
-      Date.now(),
-    )
-    .run();
+  // Seed default product_types, release_types, channels for the new app.
+  // (Phase 2.3 app-creation wizard path; small enough to inline here.)
+  await c.env.DB.batch([
+    c.env.DB.prepare(
+      "INSERT INTO apps (id, slug, name, platform, description, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+    ).bind(id, body.slug, body.name, body.platform, body.description ?? null, now),
+    // product_types
+    c.env.DB.prepare(
+      `INSERT INTO product_types (id, app_id, name, display_name, description, supported_platforms_json, default_assets_json, parser_kind, schema_json, created_at, updated_at) VALUES (?, ?, 'android-apk', 'Android APK', 'Android application package', '[]', '[{"platform":"android","filetype":"apk"}]', 'apk-aapt', '{"requires_native_codes":true}', ?, ?)`,
+    ).bind(crypto.randomUUID(), id, now, now),
+    c.env.DB.prepare(
+      `INSERT INTO product_types (id, app_id, name, display_name, description, supported_platforms_json, default_assets_json, parser_kind, schema_json, created_at, updated_at) VALUES (?, ?, 'electron-installer', 'Electron desktop app', 'Cross-platform desktop app', '["darwin-arm64","darwin-x64","linux-x64","linux-arm64","win32-x64","win32-arm64"]', '[{"platform":"darwin-arm64","filetype":"dmg"}]', 'electron-asar', '{}', ?, ?)`,
+    ).bind(crypto.randomUUID(), id, now, now),
+    c.env.DB.prepare(
+      `INSERT INTO product_types (id, app_id, name, display_name, description, supported_platforms_json, default_assets_json, parser_kind, schema_json, created_at, updated_at) VALUES (?, ?, 'rn-bundle', 'React Native OTA bundle', 'JS bundle hot-update', '[]', '[{"platform":"rn","filetype":"bundle"}]', 'rn-bundle', '{}', ?, ?)`,
+    ).bind(crypto.randomUUID(), id, now, now),
+    // release_types
+    c.env.DB.prepare(
+      `INSERT INTO release_types (id, app_id, name, display_name, color, description, created_at, updated_at) VALUES (?, ?, 'stable', 'Stable', '#10b981', 'Production-ready', ?, ?)`,
+    ).bind(crypto.randomUUID(), id, now, now),
+    c.env.DB.prepare(
+      `INSERT INTO release_types (id, app_id, name, display_name, color, description, created_at, updated_at) VALUES (?, ?, 'rc', 'RC', '#3b82f6', 'Release candidate', ?, ?)`,
+    ).bind(crypto.randomUUID(), id, now, now),
+    c.env.DB.prepare(
+      `INSERT INTO release_types (id, app_id, name, display_name, color, description, created_at, updated_at) VALUES (?, ?, 'beta', 'Beta', '#f59e0b', 'Public beta', ?, ?)`,
+    ).bind(crypto.randomUUID(), id, now, now),
+    c.env.DB.prepare(
+      `INSERT INTO release_types (id, app_id, name, display_name, color, description, created_at, updated_at) VALUES (?, ?, 'internal', 'Internal', '#6b7280', 'Internal team only', ?, ?)`,
+    ).bind(crypto.randomUUID(), id, now, now),
+    // channels (with default bundle_id overrides for parallel install)
+    c.env.DB.prepare(
+      `INSERT INTO channels (id, app_id, slug, name, bundle_id, password, git_url, enabled_product_types_json, metadata_json, created_at) VALUES (?, ?, 'production', 'Production', NULL, NULL, NULL, '["android-apk","electron-installer","rn-bundle"]', '{}', ?)`,
+    ).bind(crypto.randomUUID(), id, now),
+    c.env.DB.prepare(
+      `INSERT INTO channels (id, app_id, slug, name, bundle_id, password, git_url, enabled_product_types_json, metadata_json, created_at) VALUES (?, ?, 'beta', 'Beta', ?, NULL, NULL, '["android-apk","rn-bundle"]', '{}', ?)`,
+    ).bind(crypto.randomUUID(), id, body.slug + '.beta', now),
+    c.env.DB.prepare(
+      `INSERT INTO channels (id, app_id, slug, name, bundle_id, password, git_url, enabled_product_types_json, metadata_json, created_at) VALUES (?, ?, 'internal', 'Internal', ?, NULL, NULL, '["android-apk"]', '{}', ?)`,
+    ).bind(crypto.randomUUID(), id, body.slug + '.internal', now),
+    // audit log
+    c.env.DB.prepare(
+      "INSERT INTO audit_logs (id, app_id, action, actor, payload, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+    ).bind(crypto.randomUUID(), id, "app.create", currentActor(c), JSON.stringify(body), now),
+  ]);
 
   return c.json({ id, slug: body.slug, name: body.name, platform: body.platform }, 201);
 }
