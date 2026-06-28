@@ -322,70 +322,94 @@ export function PendingFileRow({
   onChange: (patch: Partial<PendingFile>) => void;
   onRemove: () => void;
 }) {
+  const [editing, setEditing] = useState(false);
+  const canEdit = pending.status === "pending";
+  const detectedSummary = [
+    pending.platform,
+    pending.arch,
+    pending.variant,
+    pending.filetype,
+  ].filter(Boolean).join(" / ");
+
   return (
-    <div className="flex items-center gap-2 text-xs bg-slate-50 rounded p-1.5">
-      <span
-        className={`w-2 h-2 rounded-full shrink-0 ${
-          pending.status === "done"
-            ? "bg-green-500"
-            : pending.status === "error"
-              ? "bg-red-500"
-              : "bg-blue-500 animate-pulse"
-        }`}
-      />
-      <span className="font-mono truncate flex-1 min-w-0">
-        {pending.file.name}
-      </span>
-      <select
-        className="input !py-0.5 !text-xs w-24"
-        value={pending.platform}
-        disabled={pending.status !== "pending"}
-        onChange={(e) => onChange({ platform: e.target.value })}
-      >
-        {KNOWN_PLATFORMS.map((p) => (
-          <option key={p} value={p}>
-            {p}
-          </option>
-        ))}
-      </select>
-      <input
-        className="input !py-0.5 !text-xs w-24"
-        placeholder="arch"
-        value={pending.arch ?? ""}
-        disabled={pending.status !== "pending"}
-        onChange={(e) => onChange({ arch: e.target.value || null })}
-      />
-      <input
-        className="input !py-0.5 !text-xs w-20"
-        placeholder="variant"
-        value={pending.variant ?? ""}
-        disabled={pending.status !== "pending"}
-        onChange={(e) => onChange({ variant: e.target.value || null })}
-      />
-      <select
-        className="input !py-0.5 !text-xs w-20"
-        value={pending.filetype}
-        disabled={pending.status !== "pending"}
-        onChange={(e) => onChange({ filetype: e.target.value })}
-      >
-        {KNOWN_FILETYPES.map((f) => (
-          <option key={f} value={f}>
-            {f}
-          </option>
-        ))}
-      </select>
-      {pending.status === "error" && (
-        <span className="text-red-600 text-[10px] truncate max-w-[20ch]">
-          {pending.error}
+    <div className="text-xs bg-slate-50 rounded p-2">
+      <div className="flex items-center gap-2">
+        <span
+          className={`w-2 h-2 rounded-full shrink-0 ${
+            pending.status === "done"
+              ? "bg-green-500"
+              : pending.status === "error"
+                ? "bg-red-500"
+                : "bg-blue-500 animate-pulse"
+          }`}
+        />
+        <span className="font-mono truncate flex-1 min-w-0">
+          {pending.file.name}
         </span>
+        <span className="font-mono text-[11px] text-slate-600 whitespace-nowrap">
+          {detectedSummary}
+        </span>
+        {canEdit && (
+          <button
+            type="button"
+            className="text-blue-600 hover:underline text-[11px]"
+            onClick={() => setEditing((v) => !v)}
+          >
+            {editing ? "Done" : "Edit metadata"}
+          </button>
+        )}
+        {pending.status === "error" && (
+          <span className="text-red-600 text-[10px] truncate max-w-[20ch]">
+            {pending.error}
+          </span>
+        )}
+        <button
+          className="text-slate-400 hover:text-red-600 text-xs"
+          onClick={onRemove}
+          aria-label="Dismiss"
+        >
+          ✕
+        </button>
+      </div>
+
+      {editing && canEdit && (
+        <div className="grid grid-cols-4 gap-2 mt-2">
+          <select
+            className="input !py-0.5 !text-xs"
+            value={pending.platform}
+            onChange={(e) => onChange({ platform: e.target.value })}
+          >
+            {KNOWN_PLATFORMS.map((p) => (
+              <option key={p} value={p}>
+                {p}
+              </option>
+            ))}
+          </select>
+          <input
+            className="input !py-0.5 !text-xs"
+            placeholder="arch (optional)"
+            value={pending.arch ?? ""}
+            onChange={(e) => onChange({ arch: e.target.value || null })}
+          />
+          <input
+            className="input !py-0.5 !text-xs"
+            placeholder="variant (optional)"
+            value={pending.variant ?? ""}
+            onChange={(e) => onChange({ variant: e.target.value || null })}
+          />
+          <select
+            className="input !py-0.5 !text-xs"
+            value={pending.filetype}
+            onChange={(e) => onChange({ filetype: e.target.value })}
+          >
+            {KNOWN_FILETYPES.map((f) => (
+              <option key={f} value={f}>
+                {f}
+              </option>
+            ))}
+          </select>
+        </div>
       )}
-      <button
-        className="text-slate-400 hover:text-red-600 text-xs"
-        onClick={onRemove}
-        aria-label="Dismiss"
-      >
-        ✕
-      </button>
     </div>
   );
 }

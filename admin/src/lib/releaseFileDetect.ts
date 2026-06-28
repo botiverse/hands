@@ -111,19 +111,32 @@ export interface PendingFile {
   arch: string | null;
   variant: string | null;
   filetype: string;
+  detected: DetectedFileMeta;
   status: "pending" | "uploading" | "registering" | "done" | "error";
   error?: string;
   assetId?: string;
 }
 
+function platformFromHint(hint?: string): string | null {
+  if (!hint) return null;
+  if ((KNOWN_PLATFORMS as readonly string[]).includes(hint)) return hint;
+  if (hint.startsWith("android-")) return "android";
+  if (hint.startsWith("ios-")) return "ios";
+  if (hint.includes("electron")) return "darwin";
+  if (hint.includes("rn") || hint.includes("bundle")) return "rn-bundle";
+  return null;
+}
+
 export function pendingFileFromFile(file: File, platformHint?: string): PendingFile {
   const det = detectFromFilename(file.name);
+  const hintedPlatform = platformFromHint(platformHint);
   return {
     file,
-    platform: platformHint || det.platform,
+    platform: hintedPlatform || det.platform,
     arch: det.arch,
     variant: det.variant,
     filetype: det.filetype,
+    detected: det,
     status: "pending",
   };
 }

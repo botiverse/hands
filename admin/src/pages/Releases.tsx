@@ -20,12 +20,47 @@ import {
   rollbackRelease,
   type Release,
   type ReleaseScope,
+  type ProductType,
 } from "../lib/api";
 import { useToast } from "../components/Toast";
 import { ReleaseAssetsPanel } from "../components/ReleaseAssetsPanel";
 import { ReleaseAssetUploader } from "../components/ReleaseAssetUploader";
 import { createBuildAsset, uploadApk } from "../lib/api";
 import type { PendingFile } from "../lib/releaseFileDetect";
+
+function parseJsonStringArray(value: string): string[] {
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    return Array.isArray(parsed)
+      ? parsed.filter((item): item is string => typeof item === "string")
+      : [];
+  } catch {
+    return [];
+  }
+}
+
+function productTypeMatchesPlatform(productType: ProductType, appPlatform?: string | null): boolean {
+  if (!appPlatform) return true;
+  const platform = appPlatform.toLowerCase();
+  const supported = parseJsonStringArray(productType.supported_platforms_json)
+    .map((item) => item.toLowerCase());
+  if (supported.some((item) => item === platform || item.startsWith(`${platform}-`))) {
+    return true;
+  }
+  if (platform === "android") {
+    return productType.name.startsWith("android-") || productType.parser_kind === "apk-aapt";
+  }
+  if (platform === "ios") {
+    return productType.name.startsWith("ios-") || supported.some((item) => item.includes("iphone"));
+  }
+  if (platform === "electron") {
+    return productType.name.includes("electron") || productType.parser_kind === "electron-asar";
+  }
+  if (platform === "rn" || platform === "react-native") {
+    return productType.name.includes("rn") || productType.parser_kind === "rn-bundle";
+  }
+  return productType.name.includes(platform) || productType.parser_kind.includes(platform);
+}
 
 export function Releases({ appId }: { appId: string }) {
   const qc = useQueryClient();
@@ -426,6 +461,16 @@ function NewReleaseDialog({
   // AppDetail Settings). Falls back to first channel if no default.
   const apps = useQuery({ queryKey: ["apps"], queryFn: () => listApps() });
   const thisApp = apps.data?.apps.find((a) => a.id === appId);
+  const matchingProductTypes =
+    productTypes.data?.product_types.filter((p) =>
+      productTypeMatchesPlatform(p, thisApp?.platform),
+    ) ?? [];
+  const targetProductTypes =
+    matchingProductTypes.length > 0
+      ? matchingProductTypes
+      : productTypes.data?.product_types ?? [];
+  const showProductTypePicker = targetProductTypes.length > 1;
+  const selectedProductType = targetProductTypes.find((p) => p.name === productType);
   const defaultChannelSlug =
     thisApp?.default_channel_slug ??
     channels.data?.channels
@@ -466,11 +511,11 @@ function NewReleaseDialog({
   const [ptInit, setPtInit] = useState(false);
   useEffect(() => {
     if (ptInit) return;
-    if (productTypes.data && productTypes.data.product_types.length > 0) {
-      setProductType(productTypes.data.product_types[0]!.name);
+    if (targetProductTypes.length > 0) {
+      setProductType(targetProductTypes[0]!.name);
       setPtInit(true);
     }
-  }, [productTypes.data, ptInit]);
+  }, [targetProductTypes, ptInit]);
 
   // ---------------- validation ----------------
   const step1Valid =
@@ -615,7 +660,7 @@ function NewReleaseDialog({
           {/* ---------------- Step 1: Target ---------------- */}
           {step === 1 && (
             <div className="space-y-3">
-              <div className="grid grid-cols-2 gap-3">
+              <div className={showProductTypePicker ? "grid grid-cols-2 gap-3" : "grid grid-cols-1 gap-3"}>
                 <div>
                   <label className="label">Channel</label>
                   <select
@@ -632,22 +677,30 @@ function NewReleaseDialog({
                     ))}
                   </select>
                 </div>
-                <div>
-                  <label className="label">Product type</label>
-                  <select
-                    className="input"
-                    value={productType}
-                    onChange={(e) => setProductType(e.target.value)}
-                  >
-                    <option value="">— pick —</option>
-                    {productTypes.data?.product_types.map((p) => (
-                      <option key={p.name} value={p.name}>
-                        {p.display_name}
-                      </option>
-                    ))}
-                  </select>
-                </div>
+                {showProductTypePicker && (
+                  <div>
+                    <label className="label">Package type</label>
+                    <select
+                      className="input"
+                      value={productType}
+                      onChange={(e) => setProductType(e.target.value)}
+                    >
+                      <option value="">— pick —</option>
+                      {targetProductTypes.map((p) => (
+                        <option key={p.name} value={p.name}>
+                          {p.display_name}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                )}
               </div>
+              {!showProductTypePicker && selectedProductType && (
+                <p className="text-xs text-slate-500">
+                  Package type is set by this app:{" "}
+                  <span className="font-medium">{selectedProductType.display_name}</span>.
+                </p>
+              )}
               {(!channels.data || channels.data.channels.length === 0) && (
                 <p className="text-xs text-yellow-700">
                   ⚠ This app has no channels yet. Create one in AppDetail → Channels first.
@@ -698,7 +751,8 @@ function NewReleaseDialog({
             <div className="space-y-2">
               <p className="text-xs text-slate-500">
                 Drop one or more binaries. We auto-detect platform / arch /
-                filetype from the filename — you can override per file.
+                filetype from the filename and keep optional fields blank when
+                they are not needed.
                 <br />
                 <em>Optional</em>: you can publish without binaries and attach
                 them later from the release row.
