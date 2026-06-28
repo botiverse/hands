@@ -1,5 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   archiveApp,
   getAuthMe,
@@ -10,6 +10,7 @@ import {
   deleteChannel,
   listPublicVersions,
   updateVersion,
+  updateApp,
   type App,
   type Channel,
   type Version,
@@ -215,6 +216,9 @@ function AppSettings({
     <div className="card !p-4 text-sm space-y-3">
       <h2 className="text-base font-semibold">Settings</h2>
 
+      {/* Default release channel picker */}
+      <DefaultChannelPicker appId={appId} app={app} isOrgAdmin={isOrgAdmin} />
+
       {/* Danger zone: archive / unarchive */}
       <div className="border-t border-slate-100 pt-3">
         <h3 className="text-sm font-medium text-slate-700 mb-2">
@@ -277,10 +281,102 @@ function AppSettings({
             ))}
         </div>
         <p className="text-xs text-slate-500 mt-2">
-          Future: default channel config, signing credential binding,
-          custom domains, app ownership transfer.
+          Future: signing credential binding, custom domains, app
+          ownership transfer.
         </p>
       </div>
+    </div>
+  );
+}
+
+function DefaultChannelPicker({
+  appId,
+  app,
+  isOrgAdmin,
+}: {
+  appId: string;
+  app:
+    | (App & {
+        default_channel_id?: string | null;
+        default_channel_slug?: string | null;
+        default_channel_name?: string | null;
+      })
+    | undefined;
+  isOrgAdmin: boolean;
+}) {
+  const qc = useQueryClient();
+  const toast = useToast();
+  const channels = useQuery({
+    queryKey: ["channels", appId],
+    queryFn: () => listChannels(appId),
+  });
+  const [selected, setSelected] = useState<string | null>(
+    app?.default_channel_id ?? null,
+  );
+  useEffect(() => {
+    setSelected(app?.default_channel_id ?? null);
+  }, [app?.default_channel_id]);
+
+  const save = useMutation({
+    mutationFn: () => updateApp(appId, { default_channel_id: selected }),
+    onSuccess: () => {
+      toast.show({
+        kind: "success",
+        title: selected
+          ? "Default release channel updated"
+          : "Default channel cleared (will fall back to first channel)",
+      });
+      qc.invalidateQueries({ queryKey: ["apps"] });
+      qc.invalidateQueries({ queryKey: ["app-detail", appId] });
+    },
+    onError: (e) =>
+      toast.show({
+        kind: "error",
+        title: "Save failed",
+        description: (e as Error).message,
+      }),
+  });
+
+  const dirty = selected !== (app?.default_channel_id ?? null);
+
+  return (
+    <div className="border-t border-slate-100 pt-3">
+      <h3 className="text-sm font-medium text-slate-700 mb-2">
+        Default release channel
+      </h3>
+      <p className="text-xs text-slate-500 mb-2">
+        Pre-fills the channel dropdown in the New Release dialog. Falls
+        back to the first channel (by created_at) if unset.
+      </p>
+      <div className="flex items-center gap-2">
+        <select
+          className="input text-sm flex-1"
+          value={selected ?? ""}
+          onChange={(e) => setSelected(e.target.value || null)}
+          disabled={!isOrgAdmin || save.isPending}
+        >
+          <option value="">— none (use first channel) —</option>
+          {channels.data?.channels.map((c: Channel) => (
+            <option key={c.id} value={c.id}>
+              {c.slug} ({c.name})
+            </option>
+          ))}
+        </select>
+        {isOrgAdmin && (
+          <button
+            className="btn-primary text-xs"
+            onClick={() => save.mutate()}
+            disabled={!dirty || save.isPending}
+          >
+            {save.isPending ? "Saving…" : "Save"}
+          </button>
+        )}
+      </div>
+      {!isOrgAdmin && (
+        <p className="text-xs text-yellow-700 mt-2">
+          ⚠ Org owner / admin required to change settings.
+        </p>
+      )}
     </div>
   );
 }

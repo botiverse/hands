@@ -139,8 +139,14 @@ export async function handleArchiveApp(c: Context<{ Bindings: Env }>) {
 export async function handleGetApp(c: Context<{ Bindings: Env }>) {
   const appId = c.req.param("appId") ?? "";
   const row = await c.env.DB.prepare(
-    `SELECT id, org_id, slug, name, platform, description, archived, archived_at, created_at
-     FROM apps WHERE id = ?1`,
+    `SELECT a.id, a.org_id, a.slug, a.name, a.platform, a.description,
+            a.archived, a.archived_at, a.created_at,
+            a.default_channel_id,
+            ch.slug AS default_channel_slug,
+            ch.name AS default_channel_name
+     FROM apps a
+     LEFT JOIN channels ch ON ch.id = a.default_channel_id
+     WHERE a.id = ?1`,
   ).bind(appId).first<{
     id: string;
     org_id: string | null;
@@ -151,7 +157,77 @@ export async function handleGetApp(c: Context<{ Bindings: Env }>) {
     archived: number;
     archived_at: number | null;
     created_at: number;
+    default_channel_id: string | null;
+    default_channel_slug: string | null;
+    default_channel_name: string | null;
   }>();
   if (!row) return c.json({ error: "not found" }, 404);
   return c.json(row);
+}
+
+export async function handleUpdateApp(c: AdminContext) {
+  const appId = c.req.param("appId") ?? "";
+  const body = (await c.req.json().catch(() => ({}))) as {
+    name?: string;
+    description?: string | null;
+    default_channel_id?: string | null;
+  };
+  // Confirm app exists.
+  const existing = await c.env.DB.prepare(
+    `SELECT id FROM apps WHERE id = ?1`,
+  ).bind(appId).first<{ id: string }>();
+  if (!existing) return c.json({ error: "not found" }, 404);
+
+  const updates: string[] = [];
+  const binds: (string | number | null)[] = [];
+  if (body.name !== undefined) {
+    if (typeof body.name !== "string" || !body.name.trim()) {
+      return c.json({ error: "name must be a non-empty string" }, 400);
+    }
+    updates.push("name = ?");
+    binds.push(body.name.trim());
+  }
+  if (body.description !== undefined) {
+    updates.push("description = ?");
+    binds.push(body.description ?? null);
+  }
+  if (body.default_channel_id !== undefined) {
+    if (body.default_channel_id === null) {
+      updates.push("default_channel_id = ?");
+      binds.push(null);
+    } else {
+      const ch = await c.env.DB
+        .prepare("SELECT id FROM channels WHERE id = ?1 AND app_id = ?2")
+        .bind(body.default_channel_id, appId)
+        .first<{ id: string }>();
+      if (!ch) {
+        return c.json(
+          { error: "default_channel_id does not belong to this app" },
+          400,
+        );
+      }
+      updates.push("default_channel_id = ?");
+      binds.push(body.default_channel_id);
+    }
+  }
+  if (updates.length === 0) return c.json({ error: "nothing to update" }, 400);
+
+  await c.env.DB.prepare(
+    `UPDATE apps SET ${updates.join(", ")} WHERE id = ?${binds.length + 1}`,
+  ).bind(...binds, appId).run();
+
+  await c.env.DB.prepare(
+    "INSERT INTO audit_logs (id, app_id, action, actor, payload, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+  )
+    .bind(
+      crypto.randomUUID(),
+      appId,
+      "app.update",
+      currentActor(c),
+      JSON.stringify(body),
+      Date.now(),
+    )
+    .run();
+
+  return c.json({ ok: true });
 }

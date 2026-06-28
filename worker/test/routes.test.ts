@@ -271,6 +271,10 @@ function makeMockDb() {
       updated_at INTEGER NOT NULL,
       archived_at INTEGER
     );
+    -- Migration 0018: apps.default_channel_id (nullable FK to channels).
+    -- SQLite ALTER TABLE ADD COLUMN is non-destructive; add inline so the
+    -- test schema matches the migration shape.
+    ALTER TABLE apps ADD COLUMN default_channel_id TEXT REFERENCES channels(id) ON DELETE SET NULL;
     CREATE TABLE webhook_deliveries (
       id TEXT PRIMARY KEY,
       webhook_id TEXT NOT NULL REFERENCES webhooks(id) ON DELETE CASCADE,
@@ -1082,5 +1086,102 @@ describe("quiver audit log — actor display JOIN", () => {
       .all();
     expect(results.length).toBe(1);
     expect(results[0].id).toBe("audit-5");
+  });
+});
+
+// =============================================================================
+// P2.5.9 / P5.7 — apps.default_channel_id (migration 0018)
+// =============================================================================
+
+describe("quiver apps — default_channel_id", () => {
+  function makeEnv() {
+    const env = makeMockEnv();
+    env.DB.prepare(
+      "INSERT OR IGNORE INTO apps (id, org_id, slug, name, platform, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+    ).bind("app-dc", "default", "dc-app", "DC App", "android", 1).run();
+    env.DB.prepare(
+      `INSERT INTO channels (id, app_id, slug, name, enabled_product_types_json, metadata_json, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    ).bind("ch-prod", "app-dc", "production", "Production", "[]", "{}", 10).run();
+    env.DB.prepare(
+      `INSERT INTO channels (id, app_id, slug, name, enabled_product_types_json, metadata_json, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    ).bind("ch-beta", "app-dc", "beta", "Beta", "[]", "{}", 20).run();
+    return env;
+  }
+
+  it("column exists and is nullable", async () => {
+    const env = makeEnv();
+    const { results } = await env.DB.prepare(
+      `SELECT name, "notnull" FROM pragma_table_info('apps') WHERE name = 'default_channel_id'`,
+    )
+      .bind()
+      .all();
+    expect(results.length).toBe(1);
+    expect((results[0] as any).notnull).toBe(0);
+  });
+
+  it("default_channel_id can be set + read back with JOIN slug", async () => {
+    const env = makeEnv();
+    await env.DB.prepare(
+      `UPDATE apps SET default_channel_id = ?1 WHERE id = ?2`,
+    )
+      .bind("ch-prod", "app-dc")
+      .run();
+    // Mirror the production handleGetApp JOIN.
+    const { results } = await env.DB.prepare(
+      `SELECT a.default_channel_id, ch.slug AS default_channel_slug
+       FROM apps a
+       LEFT JOIN channels ch ON ch.id = a.default_channel_id
+       WHERE a.id = ?1`,
+    )
+      .bind("app-dc")
+      .all();
+    expect(results.length).toBe(1);
+    expect((results[0] as any).default_channel_id).toBe("ch-prod");
+    expect((results[0] as any).default_channel_slug).toBe("production");
+  });
+
+  it("rejects setting default_channel_id to a channel belonging to another app", async () => {
+    const env = makeEnv();
+    // Create a sibling app with its own channel.
+    env.DB.prepare(
+      "INSERT OR IGNORE INTO apps (id, org_id, slug, name, platform, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+    ).bind("app-other", "default", "other", "Other", "android", 2).run();
+    env.DB.prepare(
+      `INSERT INTO channels (id, app_id, slug, name, enabled_product_types_json, metadata_json, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    ).bind("ch-other", "app-other", "other-channel", "Other", "[]", "{}", 30).run();
+    // Mirror the production handleUpdateApp validation: query must return
+    // 0 rows because ch-other doesn't belong to app-dc.
+    const { results } = await env.DB.prepare(
+      `SELECT id FROM channels WHERE id = ?1 AND app_id = ?2`,
+    )
+      .bind("ch-other", "app-dc")
+      .all();
+    expect(results.length).toBe(0);
+    // The legitimate channel returns a row.
+    const ok = await env.DB.prepare(
+      `SELECT id FROM channels WHERE id = ?1 AND app_id = ?2`,
+    )
+      .bind("ch-prod", "app-dc")
+      .all();
+    expect(ok.results.length).toBe(1);
+  });
+
+  it("ON DELETE SET NULL works when channel is removed", async () => {
+    const env = makeEnv();
+    await env.DB.prepare(
+      `UPDATE apps SET default_channel_id = ?1 WHERE id = ?2`,
+    )
+      .bind("ch-prod", "app-dc")
+      .run();
+    await env.DB.prepare(`DELETE FROM channels WHERE id = ?1`).bind("ch-prod").run();
+    const { results } = await env.DB.prepare(
+      `SELECT default_channel_id FROM apps WHERE id = ?1`,
+    )
+      .bind("app-dc")
+      .all();
+    expect((results[0] as any).default_channel_id).toBeNull();
   });
 });

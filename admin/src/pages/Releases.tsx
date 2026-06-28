@@ -5,7 +5,7 @@
  * endpoints. Shows: status badge, scope visualization, action buttons.
  */
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   bumpRollout,
@@ -442,6 +442,17 @@ function NewReleaseDialog({
     queryFn: () => listReleaseTypes(appId),
   });
 
+  // Pre-fill the channel with the app's default release channel (set in
+  // AppDetail Settings). Falls back to first channel if no default.
+  const apps = useQuery({ queryKey: ["apps"], queryFn: () => listApps() });
+  const thisApp = apps.data?.apps.find((a) => a.id === appId);
+  const defaultChannelSlug =
+    thisApp?.default_channel_slug ??
+    channels.data?.channels
+      .slice()
+      .sort((a, b) => a.slug.localeCompare(b.slug))[0]?.slug ??
+    "";
+
   const [channelSlug, setChannelSlug] = useState<string>("");
   const [productType, setProductType] = useState<string>("");
   const [releaseType, setReleaseType] = useState<string>("");
@@ -452,6 +463,16 @@ function NewReleaseDialog({
     "full",
   );
   const [scopeValue, setScopeValue] = useState<string>("all");
+
+  // Pre-fill channel from app default once channels are loaded.
+  const [channelInit, setChannelInit] = useState(false);
+  useEffect(() => {
+    if (channelInit) return;
+    if (channels.data && defaultChannelSlug) {
+      setChannelSlug(defaultChannelSlug);
+      setChannelInit(true);
+    }
+  }, [channels.data, defaultChannelSlug, channelInit]);
 
   const create = useMutation({
     mutationFn: async () => {

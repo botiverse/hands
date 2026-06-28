@@ -32,6 +32,11 @@ export interface App {
   archived: number;       // 0 = active, 1 = archived (soft-delete)
   archived_at: number | null;
   created_at: number;
+  // Default release channel (P2.5.9 / migration 0018). pre-fills the
+  // NewReleaseDialog channel dropdown so onboarding is one fewer click.
+  default_channel_id?: string | null;
+  default_channel_slug?: string | null;
+  default_channel_name?: string | null;
 }
 
 export interface ProductType {
@@ -349,6 +354,20 @@ export const getPublicVersion = (appId: string, versionId: string) =>
 
 export const listApps = () =>
   request<{ apps: App[] }>(`/api/apps`, { admin: true });
+
+export const updateApp = (
+  appId: string,
+  input: {
+    name?: string;
+    description?: string | null;
+    default_channel_id?: string | null;
+  },
+) =>
+  request<{ ok: true }>(`/api/apps/${appId}`, {
+    method: "PATCH",
+    admin: true,
+    body: JSON.stringify(input),
+  });
 
 export const listOrgs = () =>
   request<{ orgs: Org[] }>(`/api/orgs`, { admin: true });

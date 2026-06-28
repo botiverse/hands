@@ -23,7 +23,7 @@ import {
   handleAuthMe,
   handleRaftCallback,
 } from "./routes/auth";
-import { handleListApps, handleCreateApp, handleGetApp, handleArchiveApp } from "./routes/apps";
+import { handleListApps, handleCreateApp, handleGetApp, handleArchiveApp, handleUpdateApp } from "./routes/apps";
 import {
   handlePublicGetLatestVersion,
   handlePublicListChannels,
@@ -342,6 +342,7 @@ admin.post("/api/invites/:token/accept", handleAcceptInvite);
 admin.get("/api/apps", requireCurrentOrgRole("viewer"), handleListApps);
 admin.post("/api/apps", requireCurrentOrgRole("admin"), handleCreateApp);
 admin.get("/api/apps/:appId", requireAppRole("viewer"), handleGetApp);
+admin.patch("/api/apps/:appId", requireAppRole("admin"), handleUpdateApp);
 admin.post("/api/apps/:appId/archive", requireAppRole("admin"), handleArchiveApp);
 
 admin.post("/api/apps/:appId/versions", requireAppRole("publisher"), handleCreateVersion);
