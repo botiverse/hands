@@ -13,6 +13,7 @@
 import { Container, getRandom } from "@cloudflare/containers";
 import { Hono } from "hono";
 import { cors } from "hono/cors";
+import { swaggerUI } from "@hono/swagger-ui";
 
 import { authMiddleware, currentActor } from "./middleware/auth";
 import {
@@ -99,6 +100,7 @@ import {
   requireCurrentOrgRole,
   requireOrgRole,
 } from "./lib/permissions";
+import { openApiDocument } from "./openapi";
 
 // ---------- Container binding (APK parser) ----------
 //
@@ -274,6 +276,14 @@ app.use(
 // Public — health check (no auth)
 app.get("/health", handleHealth);
 app.get("/.well-known/slock-agent-manifest.json", handleAgentManifest);
+app.get("/openapi.json", (c) => c.json(openApiDocument));
+app.get(
+  "/docs",
+  swaggerUI({
+    url: "/openapi.json",
+    persistAuthorization: true,
+  }),
+);
 
 app.get("/api/auth/config", handleAuthConfig);
 app.get("/api/auth/login", handleAuthLogin);

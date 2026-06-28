@@ -104,6 +104,9 @@ importers:
       '@cloudflare/containers':
         specifier: ^0.0.30
         version: 0.0.30
+      '@hono/swagger-ui':
+        specifier: ^0.6.1
+        version: 0.6.1(hono@4.12.27)
       hono:
         specifier: ^4.11.1
         version: 4.12.27
@@ -618,6 +621,11 @@ packages:
     engines: {node: '>=18.14.1'}
     peerDependencies:
       hono: ^4
+
+  '@hono/swagger-ui@0.6.1':
+    resolution: {integrity: sha512-sJTvldu1GPeEPfyeLG7gRj+W4vEuD+JDi+JjJ3TJs/DvMUtBLs0KJO5yokGegWWdy5qrbdnQGekbhgNRmPmYKQ==}
+    peerDependencies:
+      hono: '>=4.0.0'
 
   '@humanfs/core@0.19.2':
     resolution: {integrity: sha512-UhXNm+CFMWcbChXywFwkmhqjs3PRCmcSa/hfBgLIb7oQ5HNb1wS0icWsGtSAUNgefHeI+eBrA8I1fxmbHsGdvA==}
@@ -2426,6 +2434,10 @@ snapshots:
       levn: 0.4.1
 
   '@hono/node-server@1.19.14(hono@4.12.27)':
+    dependencies:
+      hono: 4.12.27
+
+  '@hono/swagger-ui@0.6.1(hono@4.12.27)':
     dependencies:
       hono: 4.12.27
 

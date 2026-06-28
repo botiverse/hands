@@ -1416,7 +1416,7 @@ describe("quiver public API v2 — scope resolution", () => {
     await seedRelease(env, "rel-elsewhere", "b3", [
       ["ip_range", "192.168.1.0/24"],
     ]);
-    const matches = [["ip_range", "192.168.1.0/24"]].filter(([st, sv]) =>
+    const matches = ([["ip_range", "192.168.1.0/24"]] as const).filter(([st, sv]) =>
       matchesScope(st, sv, null, null, "10.0.0.1"),
     );
     expect(matches.length).toBe(0);

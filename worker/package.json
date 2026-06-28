@@ -18,6 +18,7 @@
   },
   "dependencies": {
     "@cloudflare/containers": "^0.0.30",
+    "@hono/swagger-ui": "^0.6.1",
     "hono": "^4.11.1",
     "jose": "^5.9.6"
   },
