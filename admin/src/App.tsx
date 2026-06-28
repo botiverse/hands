@@ -8,6 +8,7 @@ import {
   Link,
 } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
+import { useState } from "react";
 import { AppsList } from "./pages/AppsList";
 import { AppDetail } from "./pages/AppDetail";
 import { AuditLog } from "./pages/AuditLog";
@@ -18,6 +19,7 @@ import { Releases } from "./pages/Releases";
 import { OrgSettings } from "./pages/OrgSettings";
 import { AcceptInvite } from "./pages/AcceptInvite";
 import { AppAccess } from "./pages/AppAccess";
+import { OrgSwitcher } from "./components/OrgSwitcher";
 import { getAuthMe, listOrgs, loginUrl, logout, type AuthAccount } from "./lib/api";
 
 function RaftIcon({ className = "" }: { className?: string }) {
@@ -48,6 +50,7 @@ function Header({ account }: { account: AuthAccount }) {
     queryFn: () => listOrgs(),
     enabled: !!account.id,
   });
+  const [showOrgSwitcher, setShowOrgSwitcher] = useState(false);
   return (
     <header className="bg-white border-b border-slate-200">
       <div className="max-w-5xl mx-auto px-4 py-4 flex items-center justify-between gap-6">
@@ -67,46 +70,65 @@ function Header({ account }: { account: AuthAccount }) {
             >
               Apps
             </NavLink>
-            <NavLink
-              to={orgHref}
-              className={({ isActive }) =>
-                `px-3 py-1.5 rounded-md text-sm ${
-                  isActive ? "bg-slate-100 font-medium" : "hover:bg-slate-100"
-                }`
-              }
-              title={
-                account.org_id
-                  ? `Org ${account.server_slug ?? account.server_id} — your role: ${account.org_role ?? "—"}`
-                  : "Org settings (no org yet — first login required)"
-              }
-            >
-              <span className="inline-flex items-center gap-1">
-                Org
-                {account.org_role && (
-                  <span
-                    className="text-xs px-1 rounded"
-                    style={{
-                      color:
-                        account.org_role === "owner"
-                          ? "#a855f7"
-                          : account.org_role === "admin"
-                            ? "#3b82f6"
-                            : "#6b7280",
-                    }}
-                  >
-                    {account.org_role}
-                  </span>
+            <div className="relative">
+              <NavLink
+                to={orgHref}
+                onClick={(e) => {
+                  if (orgs.data && orgs.data.orgs.length > 1) {
+                    e.preventDefault();
+                    setShowOrgSwitcher((s) => !s);
+                  }
+                }}
+                className={({ isActive }) =>
+                  `px-3 py-1.5 rounded-md text-sm ${
+                    isActive ? "bg-slate-100 font-medium" : "hover:bg-slate-100"
+                  }`
+                }
+                title={
+                  account.org_id
+                    ? `Org ${account.server_slug ?? account.server_id} — your role: ${account.org_role ?? "—"}`
+                    : "Org settings (no org yet — first login required)"
+                }
+              >
+                <span className="inline-flex items-center gap-1">
+                  Org
+                  {account.org_role && (
+                    <span
+                      className="text-xs px-1 rounded"
+                      style={{
+                        color:
+                          account.org_role === "owner"
+                            ? "#a855f7"
+                            : account.org_role === "admin"
+                              ? "#3b82f6"
+                              : "#6b7280",
+                      }}
+                    >
+                      {account.org_role}
+                    </span>
+                  )}
+                  {orgs.data && orgs.data.orgs.length > 1 && (
+                    <span
+                      className="text-xs text-slate-400"
+                      title={`Member of ${orgs.data.orgs.length} organizations`}
+                    >
+                      ▾
+                    </span>
+                  )}
+                </span>
+              </NavLink>
+              {showOrgSwitcher &&
+                orgs.data &&
+                orgs.data.orgs.length > 1 && (
+                  <OrgSwitcher
+                    currentOrgId={account.org_id ?? null}
+                    buttonLabel={`Switch organization (${
+                      orgs.data.orgs.length
+                    } members of)`}
+                    onClose={() => setShowOrgSwitcher(false)}
+                  />
                 )}
-                {orgs.data && orgs.data.orgs.length > 1 && (
-                  <span
-                    className="text-xs text-slate-400"
-                    title={`Member of ${orgs.data.orgs.length} organizations`}
-                  >
-                    ▾
-                  </span>
-                )}
-              </span>
-            </NavLink>
+            </div>
             <NavLink
               to="/settings"
               className={({ isActive }) =>
