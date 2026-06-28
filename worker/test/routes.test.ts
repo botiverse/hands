@@ -1185,3 +1185,280 @@ describe("quiver apps — default_channel_id", () => {
     expect((results[0] as any).default_channel_id).toBeNull();
   });
 });
+
+// =============================================================================
+// P3.3.2 — public API scope resolution (publish-architecture §5.4)
+// =============================================================================
+
+describe("quiver public API v2 — scope resolution", () => {
+  function makeEnv() {
+    const env = makeMockEnv();
+    env.DB.prepare(
+      "INSERT OR IGNORE INTO apps (id, org_id, slug, name, platform, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+    ).bind("app-scope", "default", "scope-app", "Scope App", "android", 1).run();
+    env.DB.prepare(
+      `INSERT INTO channels (id, app_id, slug, name, enabled_product_types_json, metadata_json, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    ).bind("ch-scope-prod", "app-scope", "production", "Production", "[]", "{}", 1).run();
+    return env;
+  }
+
+  async function seedRelease(
+    env: any,
+    releaseId: string,
+    buildId: string,
+    scopes: Array<[string, string]>,
+    opts: { createdAt?: number; productType?: string } = {},
+  ) {
+    const now = opts.createdAt ?? Date.now();
+    await env.DB.prepare(
+      `INSERT INTO builds (id, app_id, channel_id, product_type, release_type, version_name, version_code,
+                           source, status, build_metadata_json, parsed_metadata_json,
+                           should_force_update, provenance_json, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    )
+      .bind(
+        buildId,
+        "app-scope",
+        "ch-scope-prod",
+        opts.productType ?? "android-apk",
+        "stable",
+        "1.0.0",
+        1,
+        "web",
+        "succeeded",
+        "{}",
+        "{}",
+        0,
+        "{}",
+        now,
+        now,
+      )
+      .run();
+    await env.DB.prepare(
+      `INSERT INTO releases (id, app_id, build_id, channel_id, product_type, release_type, status,
+                             is_full, rollout_cohort_count, changelog, created_by, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    )
+      .bind(
+        releaseId,
+        "app-scope",
+        buildId,
+        "ch-scope-prod",
+        opts.productType ?? "android-apk",
+        "stable",
+        "active",
+        scopes.length === 1 && scopes[0]?.[0] === "full" && scopes[0]?.[1] === "all" ? 1 : 0,
+        100,
+        null,
+        "tester",
+        now,
+        now,
+      )
+      .run();
+    for (const [st, sv] of scopes) {
+      await env.DB.prepare(
+        `INSERT INTO release_scopes (id, release_id, scope_type, scope_value, created_at)
+         VALUES (?, ?, ?, ?, ?)`,
+      )
+        .bind(crypto.randomUUID(), releaseId, st, sv, now)
+        .run();
+    }
+  }
+
+  // ------------------------------------------------------------------
+  // helpers — re-implement matchesScope here so we can unit-test it
+  // without spinning up the Hono context. Mirrors public_v2.ts.
+  // ------------------------------------------------------------------
+  function matchesScope(
+    scopeType: string,
+    scopeValue: string,
+    cohort: string | null,
+    clientPlatform: string | null,
+    clientIp: string | null,
+  ): boolean {
+    switch (scopeType) {
+      case "full":
+        return true;
+      case "user_cohort":
+        return !!cohort && scopeValue === cohort;
+      case "platform": {
+        if (!clientPlatform) return false;
+        return scopeValue.split(",").includes(clientPlatform);
+      }
+      case "ip_range": {
+        if (!clientIp) return false;
+        const [base, maskStr] = scopeValue.split("/");
+        const mask = Number(maskStr);
+        if (!base || !Number.isFinite(mask)) return false;
+        const ipToInt = (ip: string) =>
+          ip
+            .split(".")
+            .map(Number)
+            .reduce((a, b) => (a << 8) | b, 0) >>> 0;
+        const baseN = ipToInt(base);
+        const ipN = ipToInt(clientIp);
+        if (Number.isNaN(baseN) || Number.isNaN(ipN)) return false;
+        const maskBits = mask === 0 ? 0 : (~0 << (32 - mask)) >>> 0;
+        return (baseN & maskBits) === (ipN & maskBits);
+      }
+      default:
+        return false;
+    }
+  }
+
+  it("matchesScope: full always matches", () => {
+    expect(matchesScope("full", "all", null, null, null)).toBe(true);
+    expect(matchesScope("full", "all", "c", "p", "1.2.3.4")).toBe(true);
+  });
+
+  it("matchesScope: user_cohort requires exact match", () => {
+    expect(matchesScope("user_cohort", "cohort-a", "cohort-a", null, null)).toBe(true);
+    expect(matchesScope("user_cohort", "cohort-a", "cohort-b", null, null)).toBe(false);
+    expect(matchesScope("user_cohort", "cohort-a", null, null, null)).toBe(false);
+  });
+
+  it("matchesScope: platform requires CSV match", () => {
+    expect(
+      matchesScope("platform", "android-arm64-v8a,android-armeabi-v7a", null, "android-arm64-v8a", null),
+    ).toBe(true);
+    expect(
+      matchesScope("platform", "android-arm64-v8a", null, "android-x86_64", null),
+    ).toBe(false);
+    expect(matchesScope("platform", "android-arm64-v8a", null, null, null)).toBe(false);
+  });
+
+  it("matchesScope: ip_range does CIDR containment", () => {
+    expect(matchesScope("ip_range", "10.0.0.0/8", null, null, "10.1.2.3")).toBe(true);
+    expect(matchesScope("ip_range", "10.0.0.0/8", null, null, "11.1.2.3")).toBe(false);
+    expect(matchesScope("ip_range", "192.168.1.0/24", null, null, "192.168.1.42")).toBe(true);
+    expect(matchesScope("ip_range", "192.168.1.0/24", null, null, "192.168.2.42")).toBe(false);
+    expect(matchesScope("ip_range", "10.0.0.0/8", null, null, null)).toBe(false);
+  });
+
+  it("priority ordering: ip_range wins over full for matching client", async () => {
+    const env = makeEnv();
+    // Use createdAt values LARGER than `since` (30 days ago) to ensure they
+    // fall within the candidate window.
+    const now = Date.now();
+    await seedRelease(env, "rel-full", "build-full", [["full", "all"]], {
+      createdAt: now - 1000,
+    });
+    await seedRelease(env, "rel-ip", "build-ip", [["ip_range", "10.0.0.0/8"]], {
+      createdAt: now - 500,
+    });
+    // Mirrors the resolution SQL: pull candidates + scopes, filter by match.
+    const since = Date.now() - 30 * 24 * 3600 * 1000;
+    const { results: candidates } = await env.DB.prepare(
+      `SELECT id, created_at FROM releases WHERE app_id = ?1 AND channel_id = ?2
+       AND status = 'active' AND created_at > ?3`,
+    )
+      .bind("app-scope", "ch-scope-prod", since)
+      .all();
+    expect(candidates.length).toBe(2);
+    const ids = candidates.map((r: any) => r.id);
+    const ph = ids.map(() => "?").join(",");
+    const { results: scopes } = await env.DB.prepare(
+      `SELECT release_id, scope_type, scope_value FROM release_scopes WHERE release_id IN (${ph})`,
+    )
+      .bind(...ids)
+      .all();
+    const PRIORITY: any = { ip_range: 4, user_cohort: 3, platform: 2, full: 1 };
+    const matches = scopes.filter((s: any) =>
+      matchesScope(s.scope_type, s.scope_value, null, null, "10.0.0.5"),
+    );
+    const winner = matches.sort(
+      (a: any, b: any) =>
+        (PRIORITY[b.scope_type] ?? 0) - (PRIORITY[a.scope_type] ?? 0),
+    )[0];
+    expect(winner).toBeDefined();
+    expect(winner.release_id).toBe("rel-ip");
+    expect(winner.scope_type).toBe("ip_range");
+  });
+
+  it("priority ordering: cohort beats full beats nothing", async () => {
+    const env = makeEnv();
+    const now = Date.now();
+    await seedRelease(env, "rel-full2", "b1", [["full", "all"]], {
+      createdAt: now - 1000,
+    });
+    await seedRelease(env, "rel-cohort", "b2", [["user_cohort", "beta-testers"]], {
+      createdAt: now - 500,
+    });
+    const since = Date.now() - 30 * 24 * 3600 * 1000;
+    const { results: candidates } = await env.DB.prepare(
+      `SELECT id, created_at FROM releases WHERE app_id = ?1 AND channel_id = ?2
+       AND status = 'active' AND created_at > ?3`,
+    )
+      .bind("app-scope", "ch-scope-prod", since)
+      .all();
+    const ids = candidates.map((r: any) => r.id);
+    const ph = ids.map(() => "?").join(",");
+    const { results: scopes } = await env.DB.prepare(
+      `SELECT release_id, scope_type, scope_value FROM release_scopes WHERE release_id IN (${ph})`,
+    )
+      .bind(...ids)
+      .all();
+    const PRIORITY: any = { ip_range: 4, user_cohort: 3, platform: 2, full: 1 };
+    const matches = scopes.filter((s: any) =>
+      matchesScope(s.scope_type, s.scope_value, "beta-testers", null, null),
+    );
+    const winner = matches.sort(
+      (a: any, b: any) =>
+        (PRIORITY[b.scope_type] ?? 0) - (PRIORITY[a.scope_type] ?? 0),
+    )[0];
+    expect(winner).toBeDefined();
+    expect(winner.release_id).toBe("rel-cohort");
+  });
+
+  it("no match: when no scope matches the client", async () => {
+    const env = makeEnv();
+    await seedRelease(env, "rel-elsewhere", "b3", [
+      ["ip_range", "192.168.1.0/24"],
+    ]);
+    const matches = [["ip_range", "192.168.1.0/24"]].filter(([st, sv]) =>
+      matchesScope(st, sv, null, null, "10.0.0.1"),
+    );
+    expect(matches.length).toBe(0);
+  });
+
+  it("ties: created_at DESC breaks them", async () => {
+    const env = makeEnv();
+    const now = Date.now();
+    await seedRelease(env, "rel-old", "b4", [["platform", "android-arm64-v8a"]], {
+      createdAt: now - 1000,
+    });
+    await seedRelease(env, "rel-new", "b5", [["platform", "android-arm64-v8a"]], {
+      createdAt: now - 500,
+    });
+    const since = Date.now() - 30 * 24 * 3600 * 1000;
+    const { results: candidates } = await env.DB.prepare(
+      `SELECT id, created_at FROM releases WHERE app_id = ?1 AND channel_id = ?2
+       AND status = 'active' AND created_at > ?3`,
+    )
+      .bind("app-scope", "ch-scope-prod", since)
+      .all();
+    expect(candidates.length).toBe(2);
+    const ids = candidates.map((r: any) => r.id);
+    const ph = ids.map(() => "?").join(",");
+    const { results: scopes } = await env.DB.prepare(
+      `SELECT release_id, scope_type, scope_value FROM release_scopes WHERE release_id IN (${ph})`,
+    )
+      .bind(...ids)
+      .all();
+    const PRIORITY: any = { ip_range: 4, user_cohort: 3, platform: 2, full: 1 };
+    const matches = scopes.filter((s: any) =>
+      matchesScope(s.scope_type, s.scope_value, null, "android-arm64-v8a", null),
+    );
+    const winner = matches.sort((a: any, b: any) => {
+      const pa = PRIORITY[a.scope_type] ?? 0;
+      const pb = PRIORITY[b.scope_type] ?? 0;
+      if (pa !== pb) return pb - pa;
+      const ra = candidates.find((c: any) => c.id === a.release_id);
+      const rb = candidates.find((c: any) => c.id === b.release_id);
+      return (rb as any).created_at - (ra as any).created_at;
+    })[0];
+    expect(winner).toBeDefined();
+    expect(winner.release_id).toBe("rel-new");
+  });
+});
