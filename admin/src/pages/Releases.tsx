@@ -473,7 +473,7 @@ function NewReleaseDialog({
         release_type: releaseType,
         version_name: versionName.trim(),
         version_code: vCodeNum,
-        changelog: changelog.trim() || null,
+        changelog: changelog.trim() || undefined,
         source: "web",
         status: "pending",
       });

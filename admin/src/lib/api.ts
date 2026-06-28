@@ -610,70 +610,6 @@ export function streamOperations(
   return es;
 }
 
-// Parse APK via Container (admin route)
-export const parseApk = async (file: File): Promise<{
-  package_name: string;
-  version_name: string;
-  version_code: number;
-  signature_sha256?: string | null;
-  min_sdk?: number | null;
-  target_sdk?: number | null;
-  size_bytes?: number;
-  file_hash?: string;
-  [k: string]: unknown;
-}> => {
-  const res = await fetch(`${API_BASE}/api/parse-apk`, {
-    method: "POST",
-    headers: { "content-type": "application/octet-stream" },
-    body: file,
-    credentials: "include",
-  });
-  if (!res.ok) {
-    throw new ApiError(res.status, await readErrorBody(res), `parse failed ${res.status}`);
-  }
-  const data = (await res.json()) as Record<string, unknown>;
-  // Validate required metadata. The server may return a parsed APK but
-  // aapt can't always extract version_name/version_code (e.g. for non-APK
-  // inputs uploaded by mistake). Surface as a typed error so the UI can
-  // show a real "couldn't parse version" message instead of failing
-  // later with a 400 on /api/apps/:appId/builds.
-  const vName = String(data.version_name ?? "").trim();
-  const vCode = Number(data.version_code ?? 0);
-  if (!vName) {
-    throw new ApiError(
-      422,
-      { error: "missing version_name", detail: data },
-      "couldn't extract version_name from APK (is this a valid APK file?)",
-    );
-  }
-  if (!Number.isFinite(vCode) || vCode <= 0) {
-    throw new ApiError(
-      422,
-      { error: "missing version_code", detail: data },
-      `couldn't extract version_code from APK (got "${data.version_code}")`,
-    );
-  }
-  const pkg = String(data.package_name ?? "").trim();
-  if (!pkg) {
-    throw new ApiError(
-      422,
-      { error: "missing package_name", detail: data },
-      "couldn't extract package_name from APK",
-    );
-  }
-  return data as {
-    package_name: string;
-    version_name: string;
-    version_code: number;
-    signature_sha256?: string | null;
-    min_sdk?: number | null;
-    target_sdk?: number | null;
-    size_bytes?: number;
-    file_hash?: string;
-    [k: string]: unknown;
-  };
-};
-
 // Multipart upload to the Worker, which stores in R2 and returns file_hash + r2_key.
 export const uploadApk = async (
   appId: string,
@@ -720,6 +656,7 @@ export const createBuild = (
     version_code: number;
     changelog?: string | undefined;
     source?: string | undefined;
+    status?: string | undefined;
     build_metadata_json?: unknown;
     parsed_metadata_json?: unknown;
     provenance_json?: unknown;

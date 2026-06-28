@@ -19,7 +19,7 @@ import {
   type BuildAsset,
 } from "../lib/api";
 import { useToast } from "../components/Toast";
-import { UploadDialog } from "../components/UploadDialog";
+// Legacy UploadDialog removed — create releases from the Releases tab.
 
 export function Builds({ appId }: { appId: string }) {
   const qc = useQueryClient();
@@ -46,7 +46,7 @@ export function Builds({ appId }: { appId: string }) {
   const thisApp = app.data?.apps.find((a) => a.id === appId);
   const [expandedBuildId, setExpandedBuildId] = useState<string | null>(null);
   const [prepareBuild, setPrepareBuild] = useState<Build | null>(null);
-  const [showUpload, setShowUpload] = useState(false);
+  // (legacy UploadDialog state removed; releases are created from the Releases tab)
 
   return (
     <div className="p-4">
@@ -60,18 +60,17 @@ export function Builds({ appId }: { appId: string }) {
             </h1>
             <div className="text-sm text-slate-500 font-mono">{thisApp?.slug}</div>
           </div>
-          <button
-            className="btn-primary text-sm"
-            disabled={!channels.data?.channels.length}
-            onClick={() => setShowUpload(true)}
+          <a
+            href={`/apps/${appId}/releases`}
+            className="btn-primary text-sm no-underline"
             title={
               !channels.data?.channels.length
                 ? "Create a channel first"
-                : "Upload a new build"
+                : "Create a release + attach APK assets"
             }
           >
-            + Upload build
-          </button>
+            + New release
+          </a>
         </div>
       </div>
 
@@ -165,19 +164,7 @@ export function Builds({ appId }: { appId: string }) {
           }}
         />
       )}
-      {showUpload && (
-        <UploadDialog
-          appId={appId}
-          channels={channels.data?.channels ?? []}
-          onClose={() => setShowUpload(false)}
-          onCreated={() => {
-            setShowUpload(false);
-            qc.invalidateQueries({ queryKey: ["versions", appId] });
-            qc.invalidateQueries({ queryKey: ["builds", appId] });
-            qc.invalidateQueries({ queryKey: ["releases", appId] });
-          }}
-        />
-      )}
+      {/* Legacy UploadDialog removed; create releases from the Releases tab. */}
     </div>
   );
 }

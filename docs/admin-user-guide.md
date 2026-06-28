@@ -75,7 +75,7 @@ Default route. Shows:
 - 3 quick links: "View audit log →", "Manage publishing →", "Manage access →"
 - **Versions section** (default tab content):
   - Each version row: name (code) + channel + enabled/disabled badge + ⚠ force / scheduled badges
-  - "Upload APK" button (only enabled when channels exist)
+  - "Upload APK" button replaced by "+ New release" link to the Releases tab (legacy UploadDialog removed; release-first flow only)
   - "+ New channel" button → CreateChannelDialog (name/slug + optional bundle_id/password/git_url)
   - Each channel rendered as a `ChannelRow` card with Edit button → EditChannelDialog (change name, bundle_id, password, git_url, 2-step delete confirm with ref-check)
 - **Operations section** (embed): recent parse/upload/publish operations with retry/delete actions
@@ -204,15 +204,22 @@ Below: static infrastructure info (Raft callback URL, Cloudflare account, D1 db,
 
 ## 4. Common workflows
 
-### 4.1 Publish a new Android build
+### 4.1 Publish a new release (release-first, multi-asset)
 
-1. Navigate to the app → Overview tab.
-2. Click "Upload APK" → 4-step wizard:
-   - **Step 1 Target**: select channel (e.g. `production`), product_type (default `android-apk`), release_type (e.g. `stable`)
-   - **Step 2 File**: pick the .apk; container parses it; metadata shown inline (package, version, signature, minSdk, size, SHA-256)
-   - **Step 3 Details**: confirm version name + code (auto-filled from parsed metadata), changelog markdown, should_force_update checkbox, availability datetime, provenance (git commit / branch / CI URL / source: web/cli/ci)
-   - **Step 4 Review**: summary card → "Publish to production" button
-3. After publish: app appears on next "Apps list" refresh; version visible in Versions section; release created in Releases tab (active status)
+The current publish flow is **release-first**. One release can carry multiple binaries (multi-arch Android / multi-OS Electron) — the schema's `build_assets` table holds one row per (platform, arch, variant, filetype).
+
+1. Go to `/apps/:appId/releases`.
+2. Click **"+ New release"** → modal opens:
+   - Pick **channel** (e.g. `production`), **product_type** (e.g. `android-apk`), **release_type** (e.g. `stable`)
+   - Enter **version name** (e.g. `1.2.3`) + **version code** (integer, e.g. `42`) — manual; the release is metadata-first, binaries attach separately
+   - Optional **changelog** (markdown; multi-line; first line is the summary shown in the row)
+   - Pick **scope**: `full` (default, all users), `platform` (CSV like `android-arm64-v8a,darwin-arm64`), `user_cohort` (UUID), `ip_range` (CIDR)
+3. Click **Create release** → POST `/api/apps/:appId/builds` (status=pending) + POST `/api/apps/:appId/releases` atomically. The release row appears immediately.
+4. Below the new row is the **Assets drop zone** — drag one or more APK / dmg / deb / exe files. The panel auto-detects platform/arch/filetype from the filename (e.g. `myapp-arm64-v8a.apk` → `android / arm64-v8a / apk`); you can override any field per file.
+5. Each file is uploaded to R2 (`POST /api/apps/:appId/upload`) and registered as a `build_asset` (`POST /api/apps/:appId/builds/:buildId/assets`). Status dot turns green when done.
+6. As soon as the build has ≥1 asset the release becomes available to the public API. (Full scope resolution lands with P3.3 — see `publish-architecture.md` §5.4 for the v2 contract.)
+
+**Legacy `/api/upload` + `/api/versions` routes** are still present and used by external CLIs / scripts. They are NOT exposed as UI entry points anymore. The `Publishing` tab is read-only legacy data and shows a banner pointing to Releases.
 
 ### 4.2 Roll back a bad release
 

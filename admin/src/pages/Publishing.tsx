@@ -14,7 +14,7 @@
  */
 
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { useState } from "react";
+import { useRef, useState } from "react";
 import {
   listApps,
   listChannels,
@@ -78,21 +78,24 @@ export function Publishing({ appId }: { appId: string }) {
     ),
   };
 
-  const toggle = useMutation<
-    void,
-    Error,
-    { v: Version; enabled: boolean },
-    number | undefined
-  >({
-    mutationFn: ({ v, enabled }) =>
+  // Loading-toast refs so we can update them in place after the mutation
+  // settles. (TanStack v5 mutation context typing doesn't easily carry
+  // extra fields, so refs are simpler than typing the generics.)
+  const toggleToastRef = useRef<number | null>(null);
+  const moveToastRef = useRef<number | null>(null);
+  const forceToastRef = useRef<number | null>(null);
+
+  const toggle = useMutation({
+    mutationFn: ({ v, enabled }: { v: Version; enabled: boolean }) =>
       updateVersion(appId, v.id, { enabled }),
-    onMutate: ({ enabled }) =>
-      toast.show({
+    onMutate: ({ enabled }) => {
+      toggleToastRef.current = toast.show({
         kind: "loading",
         title: enabled ? "Enabling version…" : "Disabling version…",
-      }),
-    onSuccess: (_data, vars, _id, mutation) => {
-      const id = mutation.context;
+      });
+    },
+    onSuccess: (_data, vars) => {
+      const id = toggleToastRef.current;
       const patch = {
         kind: "success" as const,
         title: vars.enabled ? "Version enabled" : "Version disabled",
@@ -100,8 +103,8 @@ export function Publishing({ appId }: { appId: string }) {
       if (id != null) toast.update(id, patch);
       else toast.show(patch);
     },
-    onError: (e, _vars, _id, mutation) => {
-      const id = mutation.context;
+    onError: (e) => {
+      const id = toggleToastRef.current;
       const patch = {
         kind: "error" as const,
         title: "Toggle failed",
@@ -110,21 +113,20 @@ export function Publishing({ appId }: { appId: string }) {
       if (id != null) toast.update(id, patch);
       else toast.show(patch);
     },
-    onSettled: () => qc.invalidateQueries({ queryKey: ["versions", appId] }),
+    onSettled: () => {
+      toggleToastRef.current = null;
+      qc.invalidateQueries({ queryKey: ["versions", appId] });
+    },
   });
 
-  const moveChannel = useMutation<
-    unknown,
-    Error,
-    { v: Version; channel: string },
-    number | undefined
-  >({
-    mutationFn: ({ v, channel }) =>
+  const moveChannel = useMutation({
+    mutationFn: ({ v, channel }: { v: Version; channel: string }) =>
       updateVersion(appId, v.id, { channel }),
-    onMutate: () =>
-      toast.show({ kind: "loading", title: "Moving version…" }),
-    onSuccess: (_data, vars, _id, mutation) => {
-      const id = mutation.context;
+    onMutate: () => {
+      moveToastRef.current = toast.show({ kind: "loading", title: "Moving version…" });
+    },
+    onSuccess: (_data, vars) => {
+      const id = moveToastRef.current;
       const patch = {
         kind: "success" as const,
         title: `Moved v${vars.v.version_name} → ${vars.channel}`,
@@ -133,8 +135,8 @@ export function Publishing({ appId }: { appId: string }) {
       else toast.show(patch);
       qc.invalidateQueries({ queryKey: ["versions", appId] });
     },
-    onError: (e, _vars, _id, mutation) => {
-      const id = mutation.context;
+    onError: (e) => {
+      const id = moveToastRef.current;
       const patch = {
         kind: "error" as const,
         title: "Move failed",
@@ -143,31 +145,32 @@ export function Publishing({ appId }: { appId: string }) {
       if (id != null) toast.update(id, patch);
       else toast.show(patch);
     },
+    onSettled: () => {
+      moveToastRef.current = null;
+    },
   });
 
-  const toggleForceUpdate = useMutation<
-    void,
-    Error,
-    { v: Version; next: boolean },
-    number | undefined
-  >({
-    mutationFn: ({ v, next }) =>
+  const toggleForceUpdate = useMutation({
+    mutationFn: ({ v, next }: { v: Version; next: boolean }) =>
       updateVersion(appId, v.id, { should_force_update: next }),
-    // Return the loading-toast id from onMutate so onSuccess/onError can
-    // `toast.update()` it in place — the spinner disappears and a single
-    // success/error toast replaces it (no stacking).
-    onMutate: () => toast.show({ kind: "loading", title: "Updating force-update flag…" }),
-    onSuccess: (_data, vars, _id, mutation) => {
-      const id = mutation.context;
+    onMutate: () => {
+      forceToastRef.current = toast.show({
+        kind: "loading",
+        title: "Updating force-update flag…",
+      });
+    },
+    onSuccess: (_data, vars) => {
+      const id = forceToastRef.current;
       const title = vars.next
         ? `v${vars.v.version_name} now requires install`
         : `v${vars.v.version_name} no longer forced`;
-      if (id != null) toast.update(id, { kind: "success", title });
-      else toast.show({ kind: "success", title });
+      const patch = { kind: "success" as const, title };
+      if (id != null) toast.update(id, patch);
+      else toast.show(patch);
       qc.invalidateQueries({ queryKey: ["versions", appId] });
     },
-    onError: (e, _vars, _id, mutation) => {
-      const id = mutation.context;
+    onError: (e) => {
+      const id = forceToastRef.current;
       const patch = {
         kind: "error" as const,
         title: "Force-update toggle failed",
@@ -175,6 +178,9 @@ export function Publishing({ appId }: { appId: string }) {
       };
       if (id != null) toast.update(id, patch);
       else toast.show(patch);
+    },
+    onSettled: () => {
+      forceToastRef.current = null;
     },
   });
 
@@ -225,12 +231,20 @@ export function Publishing({ appId }: { appId: string }) {
         </select>
       </div>
 
-      {/* Versions table */}
+      {/* Versions table (legacy read-only view) */}
+      <div className="card !p-3 mb-3 bg-blue-50 border-blue-200 text-blue-900 text-xs">
+        <strong>New flow:</strong> versions are created as releases with attached
+        binaries (multi-arch Android / multi-OS Electron). Go to{" "}
+        <a href={`/apps/${appId}/releases`} className="underline">
+          Releases
+        </a>{" "}
+        to create one. This page is read-only legacy data.
+      </div>
       <div className="space-y-2">
         {versions.isLoading && <p className="text-slate-500">Loading…</p>}
         {filtered.length === 0 && !versions.isLoading && (
           <p className="text-slate-500 text-sm">
-            No versions match your filter. Upload an APK to publish one.
+            No legacy versions. Use the Releases tab to publish a new one.
           </p>
         )}
         {filtered.map((v) => (

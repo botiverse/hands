@@ -67,9 +67,9 @@ function ActorBadge({
   avatarUrl,
 }: {
   displayName: string;
-  username?: string | null;
-  actorType?: "human" | "agent" | "system" | null;
-  avatarUrl?: string | null;
+  username?: string | null | undefined;
+  actorType?: "human" | "agent" | "system" | null | undefined;
+  avatarUrl?: string | null | undefined;
 }) {
   const isAgent = actorType === "agent";
   const isSystem = actorType === "system";

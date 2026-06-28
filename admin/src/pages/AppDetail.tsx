@@ -16,7 +16,6 @@ import {
 } from "../lib/api";
 import { useToast } from "../components/Toast";
 import { Operations } from "./Operations";
-import { UploadDialog } from "../components/UploadDialog";
 
 export function AppDetail({
   appId,
@@ -42,7 +41,7 @@ export function AppDetail({
     queryFn: () => listPublicVersions(appId),
   });
 
-  const [showUpload, setShowUpload] = useState(false);
+  // (legacy UploadDialog state removed — releases are created via the Releases tab)
   const [showCreateChannel, setShowCreateChannel] = useState(false);
   const [editingChannel, setEditingChannel] = useState<Channel | null>(null);
 
@@ -125,18 +124,17 @@ export function AppDetail({
       <section>
         <div className="flex items-center justify-between mb-3">
           <h2 className="text-lg font-semibold">Versions</h2>
-          <button
-            className="btn-primary text-sm"
-            disabled={!channels.data?.channels.length}
-            onClick={() => setShowUpload(true)}
+          <a
+            href={`/apps/${appId}/releases`}
+            className="btn-primary text-sm no-underline"
             title={
               !channels.data?.channels.length
                 ? "Create a channel first"
-                : "Upload a new APK"
+                : "Create a release + attach APK assets"
             }
           >
-            + Upload APK
-          </button>
+            + New release
+          </a>
         </div>
         {versions.isLoading && <p className="text-slate-500">Loading...</p>}
         {versions.data?.versions.length === 0 && (
@@ -156,17 +154,7 @@ export function AppDetail({
             />
           ))}
         </div>
-        {showUpload && (
-          <UploadDialog
-            appId={appId}
-            channels={channels.data?.channels ?? []}
-            onClose={() => setShowUpload(false)}
-            onCreated={() => {
-              setShowUpload(false);
-              qc.invalidateQueries({ queryKey: ["versions", appId] });
-            }}
-          />
-        )}
+        {/* Legacy UploadDialog removed — create releases from the Releases tab. */}
       </section>
 
       <section className="mt-8">
