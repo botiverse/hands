@@ -315,7 +315,7 @@ function AppSettings({
             )
           }
           confirmLabel={app.archived ? "Unarchive app" : "Archive app"}
-          cancelLabel="Keep active"
+          cancelLabel={app.archived ? "Keep archived" : "Keep active"}
           confirmKind="primary"
           pending={archive.isPending}
           onCancel={() => setConfirmArchive(false)}
@@ -898,4 +898,3 @@ function EditChannelDialog({
     </div>
   );
 }
-
