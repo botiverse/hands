@@ -68,65 +68,43 @@ WHERE NOT EXISTS (
   WHERE pt.app_id = a.id AND pt.name = 'rn-bundle'
 );
 
--- ---------- Seed default release_types for every app that doesn't have them ----------
-
-INSERT INTO release_types (id, app_id, name, display_name, color, description, created_at, updated_at)
-SELECT lower(hex(randomblob(16))), a.id, 'stable', 'Stable', '#10b981', 'Production-ready', unixepoch() * 1000, unixepoch() * 1000
-FROM apps a
-WHERE NOT EXISTS (SELECT 1 FROM release_types rt WHERE rt.app_id = a.id AND rt.name = 'stable');
-
-INSERT INTO release_types (id, app_id, name, display_name, color, description, created_at, updated_at)
-SELECT lower(hex(randomblob(16))), a.id, 'rc', 'RC', '#3b82f6', 'Release candidate', unixepoch() * 1000, unixepoch() * 1000
-FROM apps a
-WHERE NOT EXISTS (SELECT 1 FROM release_types rt WHERE rt.app_id = a.id AND rt.name = 'rc');
-
-INSERT INTO release_types (id, app_id, name, display_name, color, description, created_at, updated_at)
-SELECT lower(hex(randomblob(16))), a.id, 'beta', 'Beta', '#f59e0b', 'Public beta', unixepoch() * 1000, unixepoch() * 1000
-FROM apps a
-WHERE NOT EXISTS (SELECT 1 FROM release_types rt WHERE rt.app_id = a.id AND rt.name = 'beta');
-
-INSERT INTO release_types (id, app_id, name, display_name, color, description, created_at, updated_at)
-SELECT lower(hex(randomblob(16))), a.id, 'internal', 'Internal', '#6b7280', 'Internal team only', unixepoch() * 1000, unixepoch() * 1000
-FROM apps a
-WHERE NOT EXISTS (SELECT 1 FROM release_types rt WHERE rt.app_id = a.id AND rt.name = 'internal');
-
 -- ---------- Ensure default channels for every app ----------
 
 INSERT INTO channels (id, app_id, slug, name, bundle_id, password, git_url,
                      enabled_product_types_json, metadata_json, created_at)
 SELECT
-  lower(hex(randomblob(16))), a.id, 'production', 'Production',
+  lower(hex(randomblob(16))), a.id, 'main', 'Main',
   NULL, NULL, NULL,
   '["android-apk","electron-installer","rn-bundle"]',
   '{}',
   unixepoch() * 1000
 FROM apps a
 WHERE NOT EXISTS (
-  SELECT 1 FROM channels c WHERE c.app_id = a.id AND c.slug = 'production'
+  SELECT 1 FROM channels c WHERE c.app_id = a.id AND c.slug = 'main'
 );
 
 INSERT INTO channels (id, app_id, slug, name, bundle_id, password, git_url,
                      enabled_product_types_json, metadata_json, created_at)
 SELECT
-  lower(hex(randomblob(16))), a.id, 'beta', 'Beta',
-  a.slug || '.beta', NULL, NULL,
+  lower(hex(randomblob(16))), a.id, 'preview', 'Preview',
+  a.slug || '.preview', NULL, NULL,
   '["android-apk","rn-bundle"]',
   '{}',
   unixepoch() * 1000
 FROM apps a
 WHERE NOT EXISTS (
-  SELECT 1 FROM channels c WHERE c.app_id = a.id AND c.slug = 'beta'
+  SELECT 1 FROM channels c WHERE c.app_id = a.id AND c.slug = 'preview'
 );
 
 INSERT INTO channels (id, app_id, slug, name, bundle_id, password, git_url,
                      enabled_product_types_json, metadata_json, created_at)
 SELECT
-  lower(hex(randomblob(16))), a.id, 'internal', 'Internal',
-  a.slug || '.internal', NULL, NULL,
+  lower(hex(randomblob(16))), a.id, 'nightly', 'Nightly',
+  a.slug || '.nightly', NULL, NULL,
   '["android-apk"]',
   '{}',
   unixepoch() * 1000
 FROM apps a
 WHERE NOT EXISTS (
-  SELECT 1 FROM channels c WHERE c.app_id = a.id AND c.slug = 'internal'
+  SELECT 1 FROM channels c WHERE c.app_id = a.id AND c.slug = 'nightly'
 );

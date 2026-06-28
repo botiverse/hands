@@ -1,5 +1,5 @@
 /**
- * Releases tab — live releases per (channel, product_type, release_type).
+ * Releases tab — live releases per channel and product type.
  *
  * Wires the new /api/apps/:appId/releases + /releases/:id/{rollback,bump-rollout,force-update}
  * endpoints. Shows: status badge, scope visualization, action buttons.
@@ -16,7 +16,6 @@ import {
   listApps,
   listChannels,
   listProductTypes,
-  listReleaseTypes,
   listReleases,
   rollbackRelease,
   type Release,
@@ -47,10 +46,6 @@ export function Releases({ appId }: { appId: string }) {
   const productTypes = useQuery({
     queryKey: ["product-types", appId],
     queryFn: () => listProductTypes(appId),
-  });
-  const releaseTypes = useQuery({
-    queryKey: ["release-types", appId],
-    queryFn: () => listReleaseTypes(appId),
   });
 
   const thisApp = app.data?.apps.find((a) => a.id === appId);
@@ -145,7 +140,6 @@ export function Releases({ appId }: { appId: string }) {
         {filtered.map((r) => {
           const channel = channels.data?.channels.find((c) => c.id === r.channel_id);
           const pt = productTypes.data?.product_types.find((p) => p.name === r.product_type);
-          const rt = releaseTypes.data?.release_types.find((x) => x.name === r.release_type);
           return (
             <ReleaseRow
               key={r.id}
@@ -153,8 +147,6 @@ export function Releases({ appId }: { appId: string }) {
               appId={appId}
               channelSlug={channel?.slug ?? "?"}
               productTypeName={pt?.display_name ?? r.product_type}
-              releaseTypeName={rt?.display_name ?? r.release_type}
-              releaseTypeColor={rt?.color ?? null}
               onAction={() => {
                 qc.invalidateQueries({ queryKey: ["releases", appId] });
               }}
@@ -191,16 +183,12 @@ function ReleaseRow({
   appId,
   channelSlug,
   productTypeName,
-  releaseTypeName,
-  releaseTypeColor,
   onAction,
 }: {
   release: Release;
   appId: string;
   channelSlug: string;
   productTypeName: string;
-  releaseTypeName: string;
-  releaseTypeColor: string | null;
   onAction: () => void;
 }) {
   const toast = useToast();
@@ -217,7 +205,7 @@ function ReleaseRow({
   const rollback = useMutation({
     mutationFn: () => rollbackRelease(appId, r.id, {}),
     onSuccess: () => {
-      toast.show({ kind: "success", title: `Rolled back from ${releaseTypeName} ${channelSlug}` });
+      toast.show({ kind: "success", title: `Rolled back ${channelSlug}` });
       onAction();
     },
     onError: (e) =>
@@ -269,14 +257,7 @@ function ReleaseRow({
     <div className="card">
       <div className="flex items-center gap-3 flex-wrap">
         <ReleaseStatusBadge status={r.status} />
-        {releaseTypeColor && (
-          <span
-            className="inline-block w-2 h-2 rounded-full"
-            style={{ backgroundColor: releaseTypeColor }}
-          />
-        )}
-        <span className="font-medium">{releaseTypeName}</span>
-        <span className="badge-blue">{channelSlug}</span>
+        <span className="font-medium">{channelSlug}</span>
         <span className="text-xs text-slate-500">{productTypeName}</span>
         {r.is_full ? (
           <span className="badge-green text-xs">full</span>
@@ -440,10 +421,6 @@ function NewReleaseDialog({
     queryKey: ["product-types", appId],
     queryFn: () => listProductTypes(appId),
   });
-  const releaseTypes = useQuery({
-    queryKey: ["release-types", appId],
-    queryFn: () => listReleaseTypes(appId),
-  });
 
   // Pre-fill the channel with the app's default release channel (set in
   // AppDetail Settings). Falls back to first channel if no default.
@@ -463,7 +440,6 @@ function NewReleaseDialog({
 
   const [channelSlug, setChannelSlug] = useState<string>("");
   const [productType, setProductType] = useState<string>("");
-  const [releaseType, setReleaseType] = useState<string>("");
   const [versionName, setVersionName] = useState<string>("");
   const [versionCode, setVersionCode] = useState<string>("");
   const [changelog, setChangelog] = useState<string>("");
@@ -496,18 +472,9 @@ function NewReleaseDialog({
     }
   }, [productTypes.data, ptInit]);
 
-  const [rtInit, setRtInit] = useState(false);
-  useEffect(() => {
-    if (rtInit) return;
-    if (releaseTypes.data && releaseTypes.data.release_types.length > 0) {
-      setReleaseType(releaseTypes.data.release_types[0]!.name);
-      setRtInit(true);
-    }
-  }, [releaseTypes.data, rtInit]);
-
   // ---------------- validation ----------------
   const step1Valid =
-    !!channelSlug && !!productType && !!releaseType;
+    !!channelSlug && !!productType;
   const step2Valid =
     versionName.trim().length > 0 &&
     Number.isFinite(Number(versionCode)) &&
@@ -528,7 +495,7 @@ function NewReleaseDialog({
       const build = await createBuild(appId, {
         channel_id: channel.id,
         product_type: productType,
-        release_type: releaseType,
+        release_type: "stable",
         version_name: versionName.trim(),
         version_code: Number(versionCode),
         changelog: changelog.trim() || undefined,
@@ -648,7 +615,7 @@ function NewReleaseDialog({
           {/* ---------------- Step 1: Target ---------------- */}
           {step === 1 && (
             <div className="space-y-3">
-              <div className="grid grid-cols-3 gap-3">
+              <div className="grid grid-cols-2 gap-3">
                 <div>
                   <label className="label">Channel</label>
                   <select
@@ -676,21 +643,6 @@ function NewReleaseDialog({
                     {productTypes.data?.product_types.map((p) => (
                       <option key={p.name} value={p.name}>
                         {p.display_name}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-                <div>
-                  <label className="label">Release type</label>
-                  <select
-                    className="input"
-                    value={releaseType}
-                    onChange={(e) => setReleaseType(e.target.value)}
-                  >
-                    <option value="">— pick —</option>
-                    {releaseTypes.data?.release_types.map((rt) => (
-                      <option key={rt.name} value={rt.name}>
-                        {rt.display_name}
                       </option>
                     ))}
                   </select>
@@ -772,7 +724,6 @@ function NewReleaseDialog({
               <div className="border border-slate-200 rounded p-3 space-y-1">
                 <Row k="Channel" v={channelSlug || "—"} />
                 <Row k="Product type" v={productType || "—"} />
-                <Row k="Release type" v={releaseType || "—"} />
                 <Row k="Version" v={`${versionName || "—"} (${versionCode || "?"})`} />
                 <Row
                   k="Scope"

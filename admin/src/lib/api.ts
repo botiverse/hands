@@ -670,7 +670,7 @@ export const createBuild = (
     channel_id?: string | undefined;
     channel_slug?: string | undefined;
     product_type: string;
-    release_type: string;
+    release_type?: string | undefined;
     version_name: string;
     version_code: number;
     changelog?: string | undefined;

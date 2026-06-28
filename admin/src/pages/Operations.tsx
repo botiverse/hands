@@ -1,5 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   listOperations,
   retryOperation,
@@ -20,6 +20,7 @@ const STATUS_COLORS: Record<Operation["status"], string> = {
 export function Operations({ appId }: { appId: string }) {
   const qc = useQueryClient();
   const toast = useToast();
+  const retryToastRef = useRef<number | null>(null);
   const { data, isLoading, error } = useQuery({
     queryKey: ["operations", appId],
     queryFn: () => listOperations(appId, 50),
@@ -44,21 +45,33 @@ export function Operations({ appId }: { appId: string }) {
 
   const retry = useMutation({
     mutationFn: (opId: string) => retryOperation(appId, opId),
-    onMutate: (opId) =>
-      toast.show({ kind: "loading", title: "Retrying operation…", ttlMs: 0 }),
+    onMutate: () => {
+      retryToastRef.current = toast.show({
+        kind: "loading",
+        title: "Retrying operation...",
+        ttlMs: 0,
+      });
+    },
     onSuccess: (op) => {
-      toast.show({
+      const patch = {
         kind: "success",
         title: `Retry queued (attempt #${op.retry_count + 1})`,
-      });
+      } as const;
+      if (retryToastRef.current !== null) toast.update(retryToastRef.current, patch);
+      else toast.show(patch);
+      retryToastRef.current = null;
       qc.invalidateQueries({ queryKey: ["operations", appId] });
     },
-    onError: (e) =>
-      toast.show({
+    onError: (e) => {
+      const patch = {
         kind: "error",
         title: "Retry failed",
         description: (e as Error).message,
-      }),
+      } as const;
+      if (retryToastRef.current !== null) toast.update(retryToastRef.current, patch);
+      else toast.show(patch);
+      retryToastRef.current = null;
+    },
   });
 
   const remove = useMutation({

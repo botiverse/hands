@@ -2,8 +2,7 @@
 --
 -- For every existing app, seed:
 --   product_types  (android-apk, electron-installer, rn-bundle)
---   release_types  (stable, rc, beta, internal)
---   channels       (ensure production/beta/internal exist; fill in bundle_id defaults)
+--   channels       (ensure main/preview/nightly exist; fill in bundle_id defaults)
 --
 -- For every existing versions row, backfill into builds + build_assets
 -- + releases + release_scopes.
@@ -76,67 +75,45 @@ WHERE NOT EXISTS (
   WHERE pt.app_id = a.id AND pt.name = 'rn-bundle'
 );
 
--- ---------- 2. Seed default release_types for every app ----------
-
-INSERT INTO release_types (id, app_id, name, display_name, color, description, created_at, updated_at)
-SELECT lower(hex(randomblob(16))), a.id, 'stable', 'Stable', '#10b981', 'Production-ready', unixepoch() * 1000, unixepoch() * 1000
-FROM apps a
-WHERE NOT EXISTS (SELECT 1 FROM release_types rt WHERE rt.app_id = a.id AND rt.name = 'stable');
-
-INSERT INTO release_types (id, app_id, name, display_name, color, description, created_at, updated_at)
-SELECT lower(hex(randomblob(16))), a.id, 'rc', 'RC', '#3b82f6', 'Release candidate', unixepoch() * 1000, unixepoch() * 1000
-FROM apps a
-WHERE NOT EXISTS (SELECT 1 FROM release_types rt WHERE rt.app_id = a.id AND rt.name = 'rc');
-
-INSERT INTO release_types (id, app_id, name, display_name, color, description, created_at, updated_at)
-SELECT lower(hex(randomblob(16))), a.id, 'beta', 'Beta', '#f59e0b', 'Public beta', unixepoch() * 1000, unixepoch() * 1000
-FROM apps a
-WHERE NOT EXISTS (SELECT 1 FROM release_types rt WHERE rt.app_id = a.id AND rt.name = 'beta');
-
-INSERT INTO release_types (id, app_id, name, display_name, color, description, created_at, updated_at)
-SELECT lower(hex(randomblob(16))), a.id, 'internal', 'Internal', '#6b7280', 'Internal team only', unixepoch() * 1000, unixepoch() * 1000
-FROM apps a
-WHERE NOT EXISTS (SELECT 1 FROM release_types rt WHERE rt.app_id = a.id AND rt.name = 'internal');
-
--- ---------- 3. Ensure default channels (production/beta/internal) for every app ----------
+-- ---------- 3. Ensure default channels (main/preview/nightly) for every app ----------
 
 INSERT INTO channels (id, app_id, slug, name, bundle_id, password, git_url,
                      enabled_product_types_json, metadata_json, created_at)
 SELECT
-  lower(hex(randomblob(16))), a.id, 'production', 'Production',
+  lower(hex(randomblob(16))), a.id, 'main', 'Main',
   NULL, NULL, NULL,
   '["android-apk","electron-installer","rn-bundle"]',
   '{}',
   unixepoch() * 1000
 FROM apps a
 WHERE NOT EXISTS (
-  SELECT 1 FROM channels c WHERE c.app_id = a.id AND c.slug = 'production'
+  SELECT 1 FROM channels c WHERE c.app_id = a.id AND c.slug = 'main'
 );
 
 INSERT INTO channels (id, app_id, slug, name, bundle_id, password, git_url,
                      enabled_product_types_json, metadata_json, created_at)
 SELECT
-  lower(hex(randomblob(16))), a.id, 'beta', 'Beta',
-  a.slug || '.beta', NULL, NULL,
+  lower(hex(randomblob(16))), a.id, 'preview', 'Preview',
+  a.slug || '.preview', NULL, NULL,
   '["android-apk","rn-bundle"]',
   '{}',
   unixepoch() * 1000
 FROM apps a
 WHERE NOT EXISTS (
-  SELECT 1 FROM channels c WHERE c.app_id = a.id AND c.slug = 'beta'
+  SELECT 1 FROM channels c WHERE c.app_id = a.id AND c.slug = 'preview'
 );
 
 INSERT INTO channels (id, app_id, slug, name, bundle_id, password, git_url,
                      enabled_product_types_json, metadata_json, created_at)
 SELECT
-  lower(hex(randomblob(16))), a.id, 'internal', 'Internal',
-  a.slug || '.internal', NULL, NULL,
+  lower(hex(randomblob(16))), a.id, 'nightly', 'Nightly',
+  a.slug || '.nightly', NULL, NULL,
   '["android-apk"]',
   '{}',
   unixepoch() * 1000
 FROM apps a
 WHERE NOT EXISTS (
-  SELECT 1 FROM channels c WHERE c.app_id = a.id AND c.slug = 'internal'
+  SELECT 1 FROM channels c WHERE c.app_id = a.id AND c.slug = 'nightly'
 );
 
 -- ---------- 4. Backfill existing versions into builds + build_assets + releases + release_scopes ----------

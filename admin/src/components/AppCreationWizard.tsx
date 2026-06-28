@@ -1,74 +1,70 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { useMutation } from "@tanstack/react-query";
-import { createApp, type ProductType, type ReleaseType } from "../lib/api";
+import { createApp } from "../lib/api";
 import { useToast } from "./Toast";
 
 /**
  * App creation wizard — 3 steps:
  *   1. Basics: name / slug / description
- *   2. Product types: pick which artifacts we ship (with supported_platforms
- *      sub-picker for Electron)
- *   3. Release types: review defaults, customize
+ *   2. Product types: review parser/product families that will be seeded
+ *   3. Channels: review seeded distribution lanes
  *
  * On save, the backend `POST /api/apps` handler now seeds default
- * product_types / release_types / channels via a single batch insert
+ * product_types / channels via a single batch insert
  * (see worker/src/routes/apps.ts handleCreateApp). The wizard just
  * collects the basics — the seeding is automatic.
  *
  * The wizard is currently "informational" — it shows what's being created
- * so the user understands the consequences. Future phases can add per-step
- * customization (custom product_types beyond defaults, custom channels, etc.)
+ * so the user understands the consequences. It should not expose checkboxes
+ * for values that the backend does not yet accept.
  */
 
 const DEFAULT_PRODUCT_TYPES: Array<{
   name: string;
   display_name: string;
   description: string;
-  supported_platforms: string[];
+  artifact_note: string;
 }> = [
   {
     name: "android-apk",
     display_name: "Android APK",
     description: "Android application package — direct install",
-    supported_platforms: [],
+    artifact_note: "APK assets are selected later when creating builds/releases.",
   },
   {
     name: "electron-installer",
     display_name: "Electron desktop app",
     description: "Cross-platform desktop (darwin / linux / win32)",
-    supported_platforms: [
-      "darwin-arm64",
-      "darwin-x64",
-      "linux-x64",
-      "linux-arm64",
-      "win32-x64",
-      "win32-arm64",
-    ],
+    artifact_note:
+      "Platform-specific installers such as dmg, exe, AppImage, and arch variants are chosen at artifact upload time.",
   },
   {
     name: "rn-bundle",
     display_name: "React Native OTA bundle",
     description: "JS bundle hot-update (replaces JS layer only)",
-    supported_platforms: [],
+    artifact_note: "Bundle assets are selected later when creating builds/releases.",
   },
 ];
 
-const DEFAULT_RELEASE_TYPES: Array<{
-  name: string;
-  display_name: string;
-  color: string;
-  description: string;
-}> = [
-  { name: "stable", display_name: "Stable", color: "#10b981", description: "Production-ready" },
-  { name: "rc", display_name: "RC", color: "#3b82f6", description: "Release candidate" },
-  { name: "beta", display_name: "Beta", color: "#f59e0b", description: "Public beta" },
-  { name: "internal", display_name: "Internal", color: "#6b7280", description: "Internal team only" },
-];
-
 const DEFAULT_CHANNELS = [
-  { slug: "production", name: "Production", enabled_product_types: ["android-apk", "electron-installer", "rn-bundle"] },
-  { slug: "beta", name: "Beta", enabled_product_types: ["android-apk", "rn-bundle"] },
-  { slug: "internal", name: "Internal", enabled_product_types: ["android-apk"] },
+  {
+    slug: "main",
+    name: "Main",
+    description: "Primary stable lane for normal users",
+    enabled_product_types: ["android-apk", "electron-installer", "rn-bundle"],
+  },
+  {
+    slug: "preview",
+    name: "Preview",
+    description: "Pre-release lane for QA and selected testers",
+    enabled_product_types: ["android-apk", "rn-bundle"],
+  },
+  {
+    slug: "nightly",
+    name: "Nightly",
+    description: "Fast-moving lane for internal daily validation",
+    enabled_product_types: ["android-apk"],
+  },
 ];
 
 function slugify(s: string): string {
@@ -92,23 +88,7 @@ export function AppCreationWizard({
   const [slug, setSlug] = useState("");
   const [slugAuto, setSlugAuto] = useState(true);
   const [description, setDescription] = useState("");
-  const [selectedProductTypes, setSelectedProductTypes] = useState<Set<string>>(
-    () => new Set(["android-apk", "electron-installer", "rn-bundle"]),
-  );
-  const [selectedPlatforms, setSelectedPlatforms] = useState<Set<string>>(
-    () =>
-      new Set([
-        "darwin-arm64",
-        "darwin-x64",
-        "linux-x64",
-        "linux-arm64",
-        "win32-x64",
-        "win32-arm64",
-      ]),
-  );
-  const [selectedReleaseTypes, setSelectedReleaseTypes] = useState<Set<string>>(
-    () => new Set(["stable", "rc", "beta", "internal"]),
-  );
+  const createToastId = useRef<number | null>(null);
 
   const toast = useToast();
 
@@ -120,22 +100,34 @@ export function AppCreationWizard({
         platform: "android",
         description: description.trim() || undefined,
       }),
-    onMutate: () =>
-      toast.show({ kind: "loading", title: `Creating app '${name}'…` }),
+    onMutate: () => {
+      createToastId.current = toast.show({
+        kind: "loading",
+        title: `Creating app '${name}'...`,
+        ttlMs: 0,
+      });
+    },
     onSuccess: () => {
-      toast.show({
+      const patch = {
         kind: "success",
         title: `App '${slug || slugify(name)}' created`,
-        description: `Seeded ${selectedProductTypes.size} product types, ${selectedReleaseTypes.size} release types, ${DEFAULT_CHANNELS.length} channels`,
-      });
+        description: `Seeded ${DEFAULT_PRODUCT_TYPES.length} product types and ${DEFAULT_CHANNELS.length} channels`,
+      } as const;
+      if (createToastId.current !== null) toast.update(createToastId.current, patch);
+      else toast.show(patch);
+      createToastId.current = null;
       onCreated();
     },
-    onError: (e) =>
-      toast.show({
+    onError: (e) => {
+      const patch = {
         kind: "error",
         title: "Failed to create app",
         description: (e as Error).message,
-      }),
+      } as const;
+      if (createToastId.current !== null) toast.update(createToastId.current, patch);
+      else toast.show(patch);
+      createToastId.current = null;
+    },
   });
 
   const canAdvance =
@@ -181,7 +173,7 @@ export function AppCreationWizard({
                 {n < step ? "✓" : n}
               </div>
               <span className={n === step ? "font-medium text-slate-700" : ""}>
-                {n === 1 ? "Basics" : n === 2 ? "Product types" : "Release types"}
+                {n === 1 ? "Basics" : n === 2 ? "Product types" : "Channels"}
               </span>
               {n < 3 && <span className="text-slate-300 mx-2">→</span>}
             </div>
@@ -234,113 +226,60 @@ export function AppCreationWizard({
           <div>
             <h2 className="text-lg font-bold mb-4">Create app — Product types</h2>
             <p className="text-sm text-slate-500 mb-4">
-              What kinds of artifacts will you ship? Each product type gets its own parser
-              + UI flow. Defaults below can be removed if not needed.
+              These product families will be seeded for the app. They define parsers
+              and release flows; concrete platform artifacts are picked later when
+              you upload assets for a release.
             </p>
             <div className="space-y-3 max-h-96 overflow-y-auto">
-              {DEFAULT_PRODUCT_TYPES.map((pt) => {
-                const checked = selectedProductTypes.has(pt.name);
-                return (
-                  <div key={pt.name} className="border border-slate-200 rounded-lg p-3">
-                    <label className="flex items-start gap-3 cursor-pointer">
-                      <input
-                        type="checkbox"
-                        checked={checked}
-                        onChange={(e) => {
-                          const next = new Set(selectedProductTypes);
-                          if (e.target.checked) next.add(pt.name);
-                          else next.delete(pt.name);
-                          setSelectedProductTypes(next);
-                        }}
-                        className="mt-1"
-                      />
-                      <div className="flex-1 min-w-0">
-                        <div className="font-medium">{pt.display_name}</div>
-                        <div className="text-xs font-mono text-slate-500">{pt.name}</div>
-                        <div className="text-xs text-slate-600 mt-1">{pt.description}</div>
-                        {checked && pt.supported_platforms.length > 0 && (
-                          <div className="mt-3 pl-3 border-l-2 border-slate-100">
-                            <div className="text-xs font-medium text-slate-700 mb-1">
-                              Supported platforms (sub-pick):
-                            </div>
-                            <div className="grid grid-cols-2 gap-1">
-                              {pt.supported_platforms.map((platform) => (
-                                <label
-                                  key={platform}
-                                  className="flex items-center gap-1 text-xs font-mono cursor-pointer"
-                                >
-                                  <input
-                                    type="checkbox"
-                                    checked={selectedPlatforms.has(platform)}
-                                    onChange={(e) => {
-                                      const next = new Set(selectedPlatforms);
-                                      if (e.target.checked) next.add(platform);
-                                      else next.delete(platform);
-                                      setSelectedPlatforms(next);
-                                    }}
-                                  />
-                                  <span>{platform}</span>
-                                </label>
-                              ))}
-                            </div>
-                          </div>
-                        )}
+              {DEFAULT_PRODUCT_TYPES.map((pt) => (
+                <div key={pt.name} className="border border-slate-200 rounded-lg p-3">
+                  <div className="flex items-start gap-3">
+                    <div className="mt-0.5 h-5 w-5 rounded-full bg-blue-100 text-blue-700 flex items-center justify-center text-xs font-medium">
+                      ✓
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <div className="font-medium">{pt.display_name}</div>
+                      <div className="text-xs font-mono text-slate-500">{pt.name}</div>
+                      <div className="text-xs text-slate-600 mt-1">{pt.description}</div>
+                      <div className="text-xs text-slate-500 mt-2">
+                        {pt.artifact_note}
                       </div>
-                    </label>
+                    </div>
                   </div>
-                );
-              })}
+                </div>
+              ))}
             </div>
           </div>
         )}
 
         {step === 3 && (
           <div>
-            <h2 className="text-lg font-bold mb-4">Create app — Release types</h2>
+            <h2 className="text-lg font-bold mb-4">Create app — Channels</h2>
             <p className="text-sm text-slate-500 mb-4">
-              How will you label releases? Defaults below are seeded. Uncheck any you
-              don't want — you can re-add later in the app settings.
+              Channels are the delivery lanes clients use to fetch updates.
+              Quiver keeps maturity simple: publish to main for stable users,
+              preview for validation, and nightly for fast internal iteration.
             </p>
-            <div className="space-y-2 max-h-72 overflow-y-auto">
-              {DEFAULT_RELEASE_TYPES.map((rt) => (
-                <label
-                  key={rt.name}
-                  className="flex items-center gap-3 p-2 border border-slate-200 rounded-md cursor-pointer hover:bg-slate-50"
-                >
-                  <input
-                    type="checkbox"
-                    checked={selectedReleaseTypes.has(rt.name)}
-                    onChange={(e) => {
-                      const next = new Set(selectedReleaseTypes);
-                      if (e.target.checked) next.add(rt.name);
-                      else next.delete(rt.name);
-                      setSelectedReleaseTypes(next);
-                    }}
-                  />
-                  <span
-                    className="w-3 h-3 rounded-full"
-                    style={{ backgroundColor: rt.color }}
-                  />
-                  <span className="font-medium">{rt.display_name}</span>
-                  <span className="text-xs font-mono text-slate-500">{rt.name}</span>
-                  <span className="text-xs text-slate-600 ml-auto">{rt.description}</span>
-                </label>
-              ))}
-            </div>
 
-            <div className="mt-6 pt-4 border-t border-slate-100">
+            <div className="pt-1">
               <div className="text-xs font-medium text-slate-700 mb-2">
-                Default channels (will be seeded):
+                Default distribution channels (will be seeded):
               </div>
-              <div className="flex flex-wrap gap-2">
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
                 {DEFAULT_CHANNELS.map((c) => (
-                  <span
+                  <div
                     key={c.slug}
-                    className="badge-gray text-xs"
-                    title={`product_types: ${c.enabled_product_types.join(", ")}`}
+                    className="border border-slate-200 rounded-md p-2 bg-slate-50"
                   >
-                    {c.slug}
-                  </span>
+                    <div className="font-medium text-sm">{c.name}</div>
+                    <div className="text-xs font-mono text-slate-500">{c.slug}</div>
+                    <div className="text-xs text-slate-600 mt-1">
+                      {c.description}
+                    </div>
+                    <div className="text-[11px] text-slate-400 mt-2">
+                      Products: {c.enabled_product_types.join(", ")}
+                    </div>
+                  </div>
                 ))}
               </div>
             </div>
@@ -371,9 +310,7 @@ export function AppCreationWizard({
               onClick={() => create.mutate()}
               disabled={
                 create.isPending ||
-                !name.trim() ||
-                selectedProductTypes.size === 0 ||
-                selectedReleaseTypes.size === 0
+                !name.trim()
               }
             >
               {create.isPending ? "Creating…" : "Create app + seed defaults"}

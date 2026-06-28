@@ -4,7 +4,6 @@ import {
   getAuthMe,
   listApps,
   listProductTypes,
-  listReleaseTypes,
   listChannels,
   type App,
 } from "../lib/api";
@@ -80,15 +79,11 @@ export function AppsList({ onSelectApp }: { onSelectApp: (id: string) => void })
 function AppRow({ app, onSelect }: { app: App; onSelect: () => void }) {
   const isArchived = !!app.archived;
 
-  // Fetch counts for product_types / release_types / channels per app.
+  // Fetch counts for product_types / channels per app.
   // (Phase 2.3.A — lightweight stats inline on AppsList cards.)
   const productTypes = useQuery({
     queryKey: ["product-types", app.id],
     queryFn: () => listProductTypes(app.id),
-  });
-  const releaseTypes = useQuery({
-    queryKey: ["release-types", app.id],
-    queryFn: () => listReleaseTypes(app.id),
   });
   const channels = useQuery({
     queryKey: ["channels", app.id],
@@ -98,7 +93,6 @@ function AppRow({ app, onSelect }: { app: App; onSelect: () => void }) {
   const sameOrg = !app.org_id || app.org_id === me.data?.account.org_id;
 
   const ptCount = productTypes.data?.product_types.length ?? 0;
-  const rtCount = releaseTypes.data?.release_types.length ?? 0;
   const chCount = channels.data?.channels.length ?? 0;
 
   return (
@@ -140,14 +134,8 @@ function AppRow({ app, onSelect }: { app: App; onSelect: () => void }) {
               📦 {ptCount} product type{ptCount === 1 ? "" : "s"}
             </span>
             <span
-              className="badge-green"
-              title="Release types (stable / beta / ...)"
-            >
-              🏷️ {rtCount} release type{rtCount === 1 ? "" : "s"}
-            </span>
-            <span
               className="badge-gray"
-              title="Deployment channels (production / beta / ...)"
+              title="Distribution channels (main / preview / nightly)"
             >
               🚀 {chCount} channel{chCount === 1 ? "" : "s"}
             </span>

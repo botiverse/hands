@@ -14,7 +14,6 @@ import {
   listBuilds,
   listChannels,
   listProductTypes,
-  listReleaseTypes,
   type Build,
   type BuildAsset,
 } from "../lib/api";
@@ -37,10 +36,6 @@ export function Builds({ appId }: { appId: string }) {
   const productTypes = useQuery({
     queryKey: ["product-types", appId],
     queryFn: () => listProductTypes(appId),
-  });
-  const releaseTypes = useQuery({
-    queryKey: ["release-types", appId],
-    queryFn: () => listReleaseTypes(appId),
   });
 
   const thisApp = app.data?.apps.find((a) => a.id === appId);
@@ -89,7 +84,6 @@ export function Builds({ appId }: { appId: string }) {
         {builds.data?.builds.map((b) => {
           const channel = channels.data?.channels.find((c) => c.id === b.channel_id);
           const pt = productTypes.data?.product_types.find((p) => p.name === b.product_type);
-          const rt = releaseTypes.data?.release_types.find((r) => r.name === b.release_type);
           const isExpanded = expandedBuildId === b.id;
           return (
             <div key={b.id} className="card !p-3">
@@ -98,14 +92,6 @@ export function Builds({ appId }: { appId: string }) {
                   v{b.version_name} ({b.version_code})
                 </span>
                 <span className="badge-gray">{b.product_type}</span>
-                {rt && (
-                  <span
-                    className="text-xs"
-                    style={{ color: rt.color ?? "#6b7280" }}
-                  >
-                    {rt.display_name}
-                  </span>
-                )}
                 {channel && <span className="badge-blue">{channel.slug}</span>}
                 <BuildStatusBadge status={b.status} />
                 {b.should_force_update ? (

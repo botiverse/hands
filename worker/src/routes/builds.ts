@@ -95,8 +95,8 @@ export async function createBuild(
   actor: string,
   id = crypto.randomUUID(),
 ): Promise<string> {
-  if (!input.channel_id || !input.product_type || !input.release_type) {
-    throw new Error("channel_id, product_type, release_type required");
+  if (!input.channel_id || !input.product_type) {
+    throw new Error("channel_id, product_type required");
   }
   if (!input.version_name || !Number.isFinite(Number(input.version_code))) {
     throw new Error("version_name, version_code required");
@@ -123,7 +123,7 @@ export async function createBuild(
       appId,
       input.channel_id,
       input.product_type,
-      input.release_type,
+      input.release_type ?? "stable",
       input.version_name,
       Number(input.version_code),
       input.changelog ?? null,
@@ -140,7 +140,14 @@ export async function createBuild(
     )
     .run();
 
-  await insertAuditLog(db, appId, "build.create", actor, { id, ...input }, now);
+  await insertAuditLog(
+    db,
+    appId,
+    "build.create",
+    actor,
+    { id, ...input, release_type: input.release_type ?? "stable" },
+    now,
+  );
   return id;
 }
 

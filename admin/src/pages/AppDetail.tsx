@@ -1,5 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { ConfirmActionDialog, TypedConfirmField } from "../components/ConfirmActionDialog";
 import {
   archiveApp,
@@ -435,28 +435,36 @@ function VersionRow({
   onToggled: () => void;
 }) {
   const toast = useToast();
+  const toggleToastRef = useRef<number | null>(null);
   const toggle = useMutation({
     mutationFn: (enabled: boolean) =>
       updateVersion(appId, version.id, { enabled }),
     onMutate: (enabled) => {
-      return toast.show({
+      toggleToastRef.current = toast.show({
         kind: "loading",
         title: enabled ? "Enabling version..." : "Disabling version...",
         ttlMs: 0,
       });
     },
     onSuccess: (_data, enabled) => {
-      // The loading toast is updated in onSettled (we can't reach it here
-      // without capturing the id; we just dismiss any "loading" toast by
-      // re-using its pattern: show a fresh success toast).
-      toast.show({
+      const patch = {
         kind: "success",
         title: enabled ? "Version enabled" : "Version disabled",
-      });
+      } as const;
+      if (toggleToastRef.current !== null) toast.update(toggleToastRef.current, patch);
+      else toast.show(patch);
+      toggleToastRef.current = null;
       onToggled();
     },
     onError: (e) => {
-      toast.show({ kind: "error", title: "Toggle failed", description: (e as Error).message });
+      const patch = {
+        kind: "error",
+        title: "Toggle failed",
+        description: (e as Error).message,
+      } as const;
+      if (toggleToastRef.current !== null) toast.update(toggleToastRef.current, patch);
+      else toast.show(patch);
+      toggleToastRef.current = null;
     },
   });
   return (
@@ -500,8 +508,8 @@ function CreateChannelDialog({
   onClose: () => void;
   onCreated: () => void;
 }) {
-  const [slug, setSlug] = useState("production");
-  const [name, setName] = useState("Production");
+  const [slug, setSlug] = useState("main");
+  const [name, setName] = useState("Main");
   const [bundleId, setBundleId] = useState("");
   const [password, setPassword] = useState("");
   const [gitUrl, setGitUrl] = useState("");
