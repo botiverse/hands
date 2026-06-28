@@ -48,6 +48,8 @@ export interface ConfirmActionDialogProps {
   typeToConfirm?: string | undefined;
   /** Disable the confirm button (e.g. while a mutation is in flight). */
   pending?: boolean | undefined;
+  /** Caller-controlled disable, e.g. for a typed-confirm gate. */
+  confirmDisabled?: boolean | undefined;
   onConfirm: () => void;
   onCancel: () => void;
 }
@@ -64,6 +66,7 @@ export function ConfirmActionDialog({
   confirmKind = "primary",
   typeToConfirm,
   pending = false,
+  confirmDisabled = false,
   onConfirm,
   onCancel,
 }: ConfirmActionDialogProps) {
@@ -80,6 +83,7 @@ export function ConfirmActionDialog({
       confirmKind={confirmKind}
       typeToConfirm={typeToConfirm}
       pending={pending}
+      confirmDisabled={confirmDisabled}
       onConfirm={onConfirm}
       onCancel={onCancel}
     />
@@ -97,6 +101,7 @@ function ConfirmActionDialogInner({
   confirmKind,
   typeToConfirm,
   pending,
+  confirmDisabled,
   onConfirm,
   onCancel,
 }: Omit<ConfirmActionDialogProps, "open">) {
@@ -148,7 +153,7 @@ function ConfirmActionDialogInner({
             type="button"
             className={confirmBtnClass}
             onClick={onConfirm}
-            disabled={pending || (typeToConfirm !== undefined ? false : false)}
+            disabled={pending || confirmDisabled}
           >
             {pending ? `${confirmLabel}…` : confirmLabel}
           </button>

@@ -1,5 +1,6 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
+import { ConfirmActionDialog, TypedConfirmField } from "../components/ConfirmActionDialog";
 import {
   archiveApp,
   getAuthMe,
@@ -112,6 +113,7 @@ export function AppDetail({
         {editingChannel && (
           <EditChannelDialog
             appId={appId}
+            app={app}
             channel={editingChannel}
             onClose={() => setEditingChannel(null)}
             onSaved={() => {
@@ -252,7 +254,7 @@ function AppSettings({
             <div className="text-xs text-slate-500">
               {app.archived
                 ? "Archived apps reject new uploads but remain viewable. " +
-                  "Re-archive / unarchive to toggle."
+                  "You can unarchive any time to restore normal operation."
                 : "Active apps accept uploads + releases normally."}
             </div>
             {app.archived_at && (
@@ -261,39 +263,67 @@ function AppSettings({
               </div>
             )}
           </div>
-          {isOrgAdmin &&
-            (confirmArchive ? (
-              <div className="flex items-center gap-2">
-                <button
-                  className={app.archived ? "btn-secondary" : "btn-secondary"}
-                  onClick={() => setConfirmArchive(false)}
-                >
-                  Cancel
-                </button>
-                <button
-                  className="btn-primary text-xs"
-                  onClick={() => archive.mutate(!app.archived)}
-                  disabled={archive.isPending}
-                >
-                  {archive.isPending
-                    ? app.archived
-                      ? "Unarchiving…"
-                      : "Archiving…"
-                    : app.archived
-                      ? "Confirm unarchive"
-                      : "Confirm archive"}
-                </button>
-              </div>
-            ) : (
-              <button
-                className="btn-secondary text-xs"
-                onClick={() => setConfirmArchive(true)}
-                disabled={archive.isPending}
-              >
-                {app.archived ? "Unarchive" : "Archive"}
-              </button>
-            ))}
+          {isOrgAdmin && (
+            <button
+              className="btn-secondary text-xs"
+              onClick={() => setConfirmArchive(true)}
+              disabled={archive.isPending}
+            >
+              {app.archived ? "Unarchive" : "Archive"}
+            </button>
+          )}
         </div>
+
+        <ConfirmActionDialog
+          open={confirmArchive}
+          title={app.archived ? "Unarchive this app?" : "Archive this app?"}
+          objectLabel={app.name ?? app.slug ?? app.id}
+          objectHint={`slug: ${app.slug}`}
+          objectSummary={
+            <div className="grid grid-cols-2 gap-x-3 gap-y-1 font-mono">
+              <div className="text-slate-500">id</div>
+              <div>{app.id.slice(0, 8)}…</div>
+              <div className="text-slate-500">slug</div>
+              <div>{app.slug}</div>
+              <div className="text-slate-500">status</div>
+              <div>{app.archived ? "archived" : "active"}</div>
+            </div>
+          }
+          body={
+            app.archived ? (
+              <>
+                Unarchiving restores the app to <strong>active</strong> status.{" "}
+                New uploads and releases will be accepted again.
+                <br />
+                <span className="text-xs text-slate-500">
+                  This is a soft-delete reversal — all existing builds,
+                  releases, and assets are kept as-is.
+                </span>
+              </>
+            ) : (
+              <>
+                Archiving marks the app as <strong>archived (soft delete)</strong>.
+                The app remains viewable in lists and admin pages, but{" "}
+                <strong>new uploads are rejected</strong>.
+                <br />
+                <span className="text-xs text-slate-500">
+                  This is reversible: you can unarchive any time. Builds,
+                  releases, and assets are kept as-is. The underlying binary
+                  data in R2 is not deleted.
+                </span>
+              </>
+            )
+          }
+          confirmLabel={app.archived ? "Unarchive app" : "Archive app"}
+          cancelLabel="Keep active"
+          confirmKind="primary"
+          pending={archive.isPending}
+          onCancel={() => setConfirmArchive(false)}
+          onConfirm={() => {
+            archive.mutate(!app.archived);
+            setConfirmArchive(false);
+          }}
+        />
         <p className="text-xs text-slate-500 mt-2">
           Future: signing credential binding, custom domains, app
           ownership transfer.
@@ -648,11 +678,20 @@ function ChannelRow({
 
 function EditChannelDialog({
   appId,
+  app,
   channel,
   onClose,
   onSaved,
 }: {
   appId: string;
+  app:
+    | (App & {
+        default_channel_id?: string | null;
+        default_channel_slug?: string | null;
+        default_channel_name?: string | null;
+      })
+    | null
+    | undefined;
   channel: Channel;
   onClose: () => void;
   onSaved: () => void;
@@ -664,6 +703,7 @@ function EditChannelDialog({
   const [password, setPassword] = useState(channel.password ?? "");
   const [gitUrl, setGitUrl] = useState(channel.git_url ?? "");
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [typedConfirm, setTypedConfirm] = useState("");
 
   const save = useMutation({
     mutationFn: () =>
@@ -774,58 +814,87 @@ function EditChannelDialog({
             />
           </div>
           <div className="flex gap-2 justify-between pt-2 border-t border-slate-100">
-            {confirmDelete ? (
-              <>
-                <button
-                  type="button"
-                  className="text-red-600 text-sm hover:underline"
-                  onClick={() => setConfirmDelete(false)}
-                  disabled={remove.isPending}
-                >
-                  Cancel delete
-                </button>
-                <button
-                  type="button"
-                  className="bg-red-600 text-white text-sm px-3 py-1 rounded-md hover:bg-red-700"
-                  onClick={() => remove.mutate()}
-                  disabled={remove.isPending}
-                >
-                  {remove.isPending
-                    ? "Deleting…"
-                    : "Confirm delete"}
-                </button>
-              </>
-            ) : (
-              <>
-                <button
-                  type="button"
-                  className="text-red-600 text-sm hover:underline"
-                  onClick={() => setConfirmDelete(true)}
-                  disabled={save.isPending || remove.isPending}
-                >
-                  Delete channel
-                </button>
-                <div className="flex gap-2">
-                  <button
-                    type="button"
-                    className="btn-secondary"
-                    onClick={onClose}
-                  >
-                    Cancel
-                  </button>
-                  <button
-                    type="submit"
-                    className="btn-primary"
-                    disabled={save.isPending}
-                  >
-                    {save.isPending ? "Saving…" : "Save"}
-                  </button>
-                </div>
-              </>
-            )}
+            <button
+              type="button"
+              className="text-red-600 text-sm hover:underline"
+              onClick={() => setConfirmDelete(true)}
+              disabled={save.isPending || remove.isPending}
+            >
+              Delete channel
+            </button>
+            <div className="flex gap-2">
+              <button
+                type="button"
+                className="btn-secondary"
+                onClick={onClose}
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                className="btn-primary"
+                disabled={save.isPending}
+              >
+                {save.isPending ? "Saving…" : "Save"}
+              </button>
+            </div>
           </div>
         </form>
       </div>
+
+      {/* Channel delete confirmation (typed-confirm + default-channel warning) */}
+      <ConfirmActionDialog
+        open={confirmDelete}
+        title="Delete channel?"
+        objectLabel={channel.slug}
+        objectHint={`id: ${channel.id.slice(0, 8)}…`}
+        objectSummary={
+          <div className="grid grid-cols-2 gap-x-3 gap-y-1 font-mono">
+            <div className="text-slate-500">slug</div>
+            <div>{channel.slug}</div>
+            <div className="text-slate-500">name</div>
+            <div>{channel.name}</div>
+            <div className="text-slate-500">bundle_id</div>
+            <div>{channel.bundle_id ?? "—"}</div>
+          </div>
+        }
+        body={
+          <>
+            Deleting this channel removes it from this app.{" "}
+            <strong>
+              All releases pointing at this channel must be cancelled or moved
+              first
+            </strong>{" "}
+            — otherwise the public API will start 404'ing your clients.
+            {app?.default_channel_id === channel.id && (
+              <div className="mt-2 p-2 bg-yellow-50 border border-yellow-200 rounded text-xs text-yellow-900">
+                ⚠ This is the app's <strong>default release channel</strong>.
+                After deletion, the New Release wizard will fall back to the
+                first channel by created_at.
+              </div>
+            )}
+            <TypedConfirmField
+              required={channel.slug}
+              value={typedConfirm}
+              onChange={setTypedConfirm}
+            />
+          </>
+        }
+        confirmLabel="Delete channel"
+        cancelLabel="Keep channel"
+        confirmKind="danger"
+        confirmDisabled={typedConfirm !== channel.slug}
+        pending={remove.isPending}
+        onCancel={() => {
+          setConfirmDelete(false);
+          setTypedConfirm("");
+        }}
+        onConfirm={() => {
+          remove.mutate();
+          setConfirmDelete(false);
+          setTypedConfirm("");
+        }}
+      />
     </div>
   );
 }
