@@ -111,14 +111,15 @@ Click "Prepare release" to open `PrepareReleaseDialog`:
 
 ### 3.7 `/apps/:appId/releases` Releases tab
 
-List of live releases. Stats cards: Total / Active / Superseded / Channels. Filter by channel and status. Each `ReleaseRow`:
-- Status badge (active=green, superseded=gray, rolled_back=yellow, cancelled=red)
+List of releases and drafts. Stats cards: Total / Active / Draft / Channels. Filter by channel and status. Each `ReleaseRow`:
+- Status badge (draft=blue, active=green, superseded=gray, cancelled=red)
 - Release type colored chip
 - Channel + product type
 - full/scoped badge + ⚠ force badge + rollout % badge
 - Build ID hash
 - Changelog (collapsible)
-- Actions on active releases: **Bump rollout** (slider 0-100% → `POST /bump-rollout`), **Force** / **Unforce** (`POST /force-update`), **Roll back** (creates a new release pointing to the current build)
+- Actions on drafts: **Publish**, **Edit**, **Delete draft**
+- Actions on active releases: **Edit**, **Bump rollout** (slider 0-100% → `POST /bump-rollout`), **Force** / **Unforce** (`POST /force-update`), **Roll back** (creates a new release pointing to the current build), **Cancel release**
 - "Show detail" → loads `getRelease` → shows build info + asset count + scope table (type/value pairs)
 
 ### 3.8 `/apps/:appId/access` App access tab
@@ -147,7 +148,7 @@ Per-app audit log (`audit_logs WHERE app_id = ?`). Columns: when / actor (with a
 | `build.create` / `build.update` | New build uploaded or patched (status changes append here) |
 | `build_asset.create` / `build_asset.delete` | Per-(platform, arch, variant, filetype) binary upload or removal |
 | `build.delete` | Whole build removal (only allowed when zero assets and zero releases) |
-| `release.create` / `release.rollback` / `release.bump_rollout` / `release.force_update` | Release promotion, rollback, staged rollout bump, force-update toggle |
+| `release.create` / `release.update` / `release.publish` / `release.cancel` / `release.rollback` / `release.bump_rollout` / `release.force_update` | Release draft, edit, publish, cancel, rollback, staged rollout bump, force-update toggle |
 | `channel.create` / `channel.update` / `channel.delete` | Channel CRUD |
 | `product_type.create/update/delete` / `release_type.create/update/delete` | Schema-row CRUD |
 | `apk.upload` | Legacy APK upload (pre-P2.4 flow; still emitted when `/api/upload` is called) |
@@ -214,10 +215,10 @@ The current publish flow is **release-first**. One release can carry multiple bi
    - Enter **version name** (e.g. `1.2.3`) + **version code** (integer, e.g. `42`) — manual; the release is metadata-first, binaries attach separately
    - Optional **changelog** (markdown; multi-line; first line is the summary shown in the row)
    - Pick **scope**: `full` (default, all users), `platform` (CSV like `android-arm64-v8a,darwin-arm64`), `user_cohort` (UUID), `ip_range` (CIDR)
-3. Click **Create release** → POST `/api/apps/:appId/builds` (status=pending) + POST `/api/apps/:appId/releases` atomically. The release row appears immediately.
-4. Below the new row is the **Assets drop zone** — drag one or more APK / dmg / deb / exe files. The panel auto-detects platform/arch/filetype from the filename (e.g. `myapp-arm64-v8a.apk` → `android / arm64-v8a / apk`); you can override any field per file.
-5. Each file is uploaded to R2 (`POST /api/apps/:appId/upload`) and registered as a `build_asset` (`POST /api/apps/:appId/builds/:buildId/assets`). Status dot turns green when done.
-6. As soon as the build has ≥1 asset the release becomes available to the public API. (Full scope resolution lands with P3.3 — see `publish-architecture.md` §5.4 for the v2 contract.)
+3. Review the release, then click **Save draft** or **Publish now**. Both paths create the build and a draft release first; Publish now then calls `POST /api/apps/:appId/releases/:releaseId/publish`.
+4. Queued files are uploaded to R2 (`POST /api/apps/:appId/upload`) and registered as `build_asset` rows (`POST /api/apps/:appId/builds/:buildId/assets`). Asset failures preserve the release row so operators can retry from the row.
+5. Draft releases are editable and not visible to public update checks. Published releases become available to the public API when scope/channel/product match.
+6. Release rows keep the **Assets drop zone** for adding or removing APK / dmg / deb / exe files after creation. The panel auto-detects platform/arch/filetype from the filename (e.g. `myapp-arm64-v8a.apk` → `android / arm64-v8a / apk`); you can override optional metadata per file.
 
 **Legacy `/api/upload` + `/api/versions` routes** are still present and used by external CLIs / scripts. They are NOT exposed as UI entry points anymore. The `Publishing` tab is read-only legacy data and shows a banner pointing to Releases.
 

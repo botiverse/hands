@@ -15,6 +15,17 @@ export interface ReleaseInput {
   channel_id?: string;
   product_type?: string;
   release_type?: string;
+  status?: "draft" | "active";
+  changelog?: string | null;
+  should_force_update?: boolean;
+  rollout_cohort_count?: number | null;
+  rollout_target_cohorts_json?: unknown;
+  availability_at?: number | null;
+  provenance_json?: unknown;
+  scopes?: ReleaseScopeInput[];
+}
+
+interface ReleaseUpdateInput {
   changelog?: string | null;
   should_force_update?: boolean;
   rollout_cohort_count?: number | null;
@@ -80,6 +91,14 @@ async function insertAuditLog(
     .run();
 }
 
+function releaseStatus(inputStatus: ReleaseInput["status"] | undefined): "draft" | "active" {
+  if (!inputStatus) return "active";
+  if (inputStatus !== "draft" && inputStatus !== "active") {
+    throw new Error("status must be 'draft' or 'active'");
+  }
+  return inputStatus;
+}
+
 export async function getReleaseForApp(
   db: D1Database,
   appId: string,
@@ -112,6 +131,7 @@ export async function createRelease(
 
   const productType = input.product_type ?? build.product_type;
   const releaseType = input.release_type ?? build.release_type;
+  const status = releaseStatus(input.status);
   const scopes = normalizeScopes(input.scopes);
   const now = Date.now();
 
@@ -123,7 +143,7 @@ export async function createRelease(
           is_full, rollout_cohort_count, rollout_target_cohorts_json,
           availability_at, should_force_update, changelog, provenance_json,
           created_by, created_at, updated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'active', ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)`,
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)`,
       )
       .bind(
         id,
@@ -132,6 +152,7 @@ export async function createRelease(
         channelId,
         productType,
         releaseType,
+        status,
         isFullRelease(scopes),
         input.rollout_cohort_count ?? null,
         jsonString(input.rollout_target_cohorts_json, []),
@@ -152,14 +173,6 @@ export async function createRelease(
     ),
     db
       .prepare(
-        `UPDATE releases
-         SET status = 'superseded', superseded_by_release_id = ?1, updated_at = ?2
-         WHERE app_id = ?3 AND channel_id = ?4 AND product_type = ?5
-           AND release_type = ?6 AND status = 'active' AND id <> ?7`,
-      )
-      .bind(id, now, appId, channelId, productType, releaseType, id),
-    db
-      .prepare(
         "INSERT INTO audit_logs (id, app_id, action, actor, payload, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
       )
       .bind(
@@ -167,13 +180,117 @@ export async function createRelease(
         appId,
         "release.create",
         actor,
-        JSON.stringify({ id, ...input, channel_id: channelId, product_type: productType, release_type: releaseType, scopes }),
+        JSON.stringify({ id, ...input, status, channel_id: channelId, product_type: productType, release_type: releaseType, scopes }),
         now,
       ),
   ];
 
+  if (status === "active") {
+    statements.push(
+      db
+        .prepare(
+          `UPDATE releases
+           SET status = 'superseded', superseded_by_release_id = ?1, updated_at = ?2
+           WHERE app_id = ?3 AND channel_id = ?4 AND product_type = ?5
+             AND release_type = ?6 AND status = 'active' AND id <> ?7`,
+        )
+        .bind(id, now, appId, channelId, productType, releaseType, id),
+    );
+  }
+
   await db.batch(statements);
   return id;
+}
+
+async function updateReleaseFields(
+  db: D1Database,
+  appId: string,
+  release: ReleaseRow,
+  input: ReleaseUpdateInput,
+  actor: string,
+): Promise<ReleaseRow> {
+  if (release.status === "cancelled" || release.status === "superseded") {
+    throw new Error(`cannot update ${release.status} release`);
+  }
+  const now = Date.now();
+  const sets: string[] = [];
+  const binds: (string | number | null)[] = [];
+  if (input.changelog !== undefined) {
+    sets.push(`changelog = ?${binds.length + 1}`);
+    binds.push(input.changelog);
+  }
+  if (input.should_force_update !== undefined) {
+    sets.push(`should_force_update = ?${binds.length + 1}`);
+    binds.push(input.should_force_update ? 1 : 0);
+  }
+  if (input.rollout_cohort_count !== undefined) {
+    const next = input.rollout_cohort_count;
+    if (next !== null && (!Number.isFinite(next) || next < 0)) {
+      throw new Error("rollout_cohort_count must be a non-negative number");
+    }
+    sets.push(`rollout_cohort_count = ?${binds.length + 1}`);
+    binds.push(next);
+  }
+  if (input.rollout_target_cohorts_json !== undefined) {
+    sets.push(`rollout_target_cohorts_json = ?${binds.length + 1}`);
+    binds.push(jsonString(input.rollout_target_cohorts_json, []));
+  }
+  if (input.availability_at !== undefined) {
+    sets.push(`availability_at = ?${binds.length + 1}`);
+    binds.push(input.availability_at);
+  }
+  if (input.provenance_json !== undefined) {
+    sets.push(`provenance_json = ?${binds.length + 1}`);
+    binds.push(jsonString(input.provenance_json));
+  }
+
+  const statements: D1PreparedStatement[] = [];
+  if (sets.length > 0) {
+    sets.push(`updated_at = ?${binds.length + 1}`);
+    binds.push(now);
+    statements.push(
+      db
+        .prepare(`UPDATE releases SET ${sets.join(", ")} WHERE id = ?${binds.length + 1} AND app_id = ?${binds.length + 2}`)
+        .bind(...binds, release.id, appId),
+    );
+  }
+
+  let scopes: ReleaseScopeInput[] | undefined;
+  if (input.scopes !== undefined) {
+    scopes = normalizeScopes(input.scopes);
+    statements.push(
+      db.prepare("DELETE FROM release_scopes WHERE release_id = ?1").bind(release.id),
+      ...scopes.map((scope) =>
+        db
+          .prepare(
+            "INSERT INTO release_scopes (id, release_id, scope_type, scope_value, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+          )
+          .bind(crypto.randomUUID(), release.id, scope.scope_type, scope.scope_value, now),
+      ),
+      db
+        .prepare("UPDATE releases SET is_full = ?1, updated_at = ?2 WHERE id = ?3 AND app_id = ?4")
+        .bind(isFullRelease(scopes), now, release.id, appId),
+    );
+  }
+
+  statements.push(
+    db
+      .prepare(
+        "INSERT INTO audit_logs (id, app_id, action, actor, payload, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+      )
+      .bind(
+        crypto.randomUUID(),
+        appId,
+        "release.update",
+        actor,
+        JSON.stringify({ release_id: release.id, ...input, scopes }),
+        now,
+      ),
+  );
+  await db.batch(statements);
+  const updated = await getReleaseForApp(db, appId, release.id);
+  if (!updated) throw new Error("release not found after update");
+  return updated;
 }
 
 export async function handleListReleases(c: Context<{ Bindings: Env }>) {
@@ -260,9 +377,10 @@ export async function handleCreateRelease(c: AdminContext) {
   const body = (await c.req.json()) as ReleaseInput;
   try {
     const id = await createRelease(c.env.DB, appId, body, currentActor(c));
-    // Emit webhook event (P2.5.8). Best-effort; failures must not block the API response.
+    const status = releaseStatus(body.status);
+    // Emit webhook event only when the release is actually live.
     const orgId = c.get("org_id");
-    if (orgId) {
+    if (status === "active" && orgId) {
       c.executionCtx?.waitUntil(
         emitWebhookEvent(c.env.DB, {
           orgId,
@@ -272,10 +390,139 @@ export async function handleCreateRelease(c: AdminContext) {
         }),
       );
     }
-    return c.json({ id, app_id: appId, status: "active", ...body }, 201);
+    return c.json({ id, app_id: appId, status, ...body }, 201);
   } catch (e) {
     return c.json({ error: (e as Error).message }, 400);
   }
+}
+
+export async function handleUpdateRelease(c: AdminContext) {
+  const appId = c.req.param("appId") ?? "";
+  const releaseId = c.req.param("releaseId") ?? "";
+  const body = (await c.req.json().catch(() => ({}))) as ReleaseUpdateInput;
+  const existing = await getReleaseForApp(c.env.DB, appId, releaseId);
+  if (!existing) return c.json({ error: "not found" }, 404);
+  try {
+    const release = await updateReleaseFields(c.env.DB, appId, existing, body, currentActor(c));
+    return c.json(release);
+  } catch (e) {
+    return c.json({ error: (e as Error).message }, 400);
+  }
+}
+
+export async function handlePublishRelease(c: AdminContext) {
+  const appId = c.req.param("appId") ?? "";
+  const releaseId = c.req.param("releaseId") ?? "";
+  const existing = await getReleaseForApp(c.env.DB, appId, releaseId);
+  if (!existing) return c.json({ error: "not found" }, 404);
+  if (existing.status === "active") return c.json(existing);
+  if (existing.status !== "draft") {
+    return c.json({ error: `cannot publish ${existing.status} release` }, 409);
+  }
+  const now = Date.now();
+  await c.env.DB.batch([
+    c.env.DB
+      .prepare(
+        `UPDATE releases
+         SET status = 'active', updated_at = ?1
+         WHERE id = ?2 AND app_id = ?3 AND status = 'draft'`,
+      )
+      .bind(now, releaseId, appId),
+    c.env.DB
+      .prepare(
+        `UPDATE releases
+         SET status = 'superseded', superseded_by_release_id = ?1, updated_at = ?2
+         WHERE app_id = ?3 AND channel_id = ?4 AND product_type = ?5
+           AND release_type = ?6 AND status = 'active' AND id <> ?7`,
+      )
+      .bind(
+        releaseId,
+        now,
+        appId,
+        existing.channel_id,
+        existing.product_type,
+        existing.release_type,
+        releaseId,
+      ),
+    c.env.DB
+      .prepare(
+        "INSERT INTO audit_logs (id, app_id, action, actor, payload, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+      )
+      .bind(
+        crypto.randomUUID(),
+        appId,
+        "release.publish",
+        currentActor(c),
+        JSON.stringify({ release_id: releaseId, build_id: existing.build_id }),
+        now,
+      ),
+  ]);
+
+  const orgId = c.get("org_id");
+  if (orgId) {
+    c.executionCtx?.waitUntil(
+      emitWebhookEvent(c.env.DB, {
+        orgId,
+        appId,
+        event: "release:new",
+        body: {
+          release_id: releaseId,
+          app_id: appId,
+          build_id: existing.build_id,
+          channel_id: existing.channel_id,
+        },
+      }),
+    );
+  }
+  const published = await getReleaseForApp(c.env.DB, appId, releaseId);
+  return c.json(published);
+}
+
+export async function handleDeleteRelease(c: AdminContext) {
+  const appId = c.req.param("appId") ?? "";
+  const releaseId = c.req.param("releaseId") ?? "";
+  const existing = await getReleaseForApp(c.env.DB, appId, releaseId);
+  if (!existing) return c.json({ error: "not found" }, 404);
+  if (existing.status === "cancelled") {
+    return c.json({ ok: true, id: releaseId, status: "cancelled" });
+  }
+  if (existing.status === "superseded") {
+    return c.json({ error: "cannot cancel superseded release" }, 409);
+  }
+  const now = Date.now();
+  await c.env.DB.batch([
+    c.env.DB
+      .prepare(
+        `UPDATE releases
+         SET status = 'cancelled', superseded_by_release_id = NULL, updated_at = ?1
+         WHERE id = ?2 AND app_id = ?3`,
+      )
+      .bind(now, releaseId, appId),
+    c.env.DB
+      .prepare(
+        "INSERT INTO audit_logs (id, app_id, action, actor, payload, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+      )
+      .bind(
+        crypto.randomUUID(),
+        appId,
+        "release.cancel",
+        currentActor(c),
+        JSON.stringify({ release_id: releaseId, previous_status: existing.status }),
+        now,
+      ),
+  ]);
+  const orgId = c.get("org_id");
+  if (orgId && existing.status === "active") {
+    c.executionCtx?.waitUntil(
+      emitWebhookEvent(c.env.DB, {
+        orgId,
+        appId,
+        event: "release:cancelled",
+        body: { release_id: releaseId, app_id: appId, build_id: existing.build_id },
+      }),
+    );
+  }
+  return c.json({ ok: true, id: releaseId, status: "cancelled" });
 }
 
 export async function handleRollbackRelease(c: AdminContext) {

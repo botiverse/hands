@@ -138,7 +138,7 @@ export interface Release {
   channel_id: string;
   product_type: string;
   release_type: string;
-  status: string;            // 'active' | 'superseded' | 'rolled_back' | 'cancelled'
+  status: string;            // 'draft' | 'active' | 'superseded' | 'cancelled'
   is_full: number;
   superseded_by_release_id: string | null;
   rollout_cohort_count: number | null;
@@ -766,6 +766,7 @@ export const createRelease = (
     channel_slug?: string | undefined;
     product_type?: string | undefined;
     release_type?: string | undefined;
+    status?: "draft" | "active" | undefined;
     changelog?: string | undefined;
     should_force_update?: boolean | undefined;
     rollout_cohort_count?: number | undefined;
@@ -780,6 +781,37 @@ export const createRelease = (
     admin: true,
     body: JSON.stringify(input),
   });
+
+export const updateRelease = (
+  appId: string,
+  releaseId: string,
+  input: {
+    changelog?: string | null | undefined;
+    should_force_update?: boolean | undefined;
+    rollout_cohort_count?: number | null | undefined;
+    rollout_target_cohorts_json?: unknown;
+    availability_at?: number | null | undefined;
+    provenance_json?: unknown;
+    scopes?: { scope_type: string; scope_value: string }[];
+  },
+) =>
+  request<Release>(`/api/apps/${appId}/releases/${releaseId}`, {
+    method: "PATCH",
+    admin: true,
+    body: JSON.stringify(input),
+  });
+
+export const publishRelease = (appId: string, releaseId: string) =>
+  request<Release>(`/api/apps/${appId}/releases/${releaseId}/publish`, {
+    method: "POST",
+    admin: true,
+  });
+
+export const deleteRelease = (appId: string, releaseId: string) =>
+  request<{ ok: boolean; id: string; status: "cancelled" }>(
+    `/api/apps/${appId}/releases/${releaseId}`,
+    { method: "DELETE", admin: true },
+  );
 
 export const rollbackRelease = (
   appId: string,

@@ -11,18 +11,22 @@ import {
   bumpRollout,
   createBuild,
   createRelease,
+  deleteRelease,
   forceUpdate,
   getRelease,
   listApps,
   listChannels,
   listProductTypes,
   listReleases,
+  publishRelease,
   rollbackRelease,
+  updateRelease,
   type Release,
   type ReleaseScope,
   type ProductType,
 } from "../lib/api";
 import { useToast } from "../components/Toast";
+import { ConfirmActionDialog } from "../components/ConfirmActionDialog";
 import { ReleaseAssetsPanel } from "../components/ReleaseAssetsPanel";
 import { ReleaseAssetUploader } from "../components/ReleaseAssetUploader";
 import { createBuildAsset, uploadApk } from "../lib/api";
@@ -123,8 +127,8 @@ export function Releases({ appId }: { appId: string }) {
           value={releases.data?.releases.filter((r) => r.status === "active").length ?? 0}
         />
         <Stat
-          label="Superseded"
-          value={releases.data?.releases.filter((r) => r.status === "superseded").length ?? 0}
+          label="Draft"
+          value={releases.data?.releases.filter((r) => r.status === "draft").length ?? 0}
         />
         <Stat
           label="Channels"
@@ -152,9 +156,9 @@ export function Releases({ appId }: { appId: string }) {
           onChange={(e) => setStatusFilter(e.target.value)}
         >
           <option value="all">All statuses</option>
+          <option value="draft">Draft</option>
           <option value="active">Active</option>
           <option value="superseded">Superseded</option>
-          <option value="rolled_back">Rolled back</option>
           <option value="cancelled">Cancelled</option>
         </select>
       </div>
@@ -229,12 +233,28 @@ function ReleaseRow({
   const toast = useToast();
   const [showDetail, setShowDetail] = useState(false);
   const [showRollout, setShowRollout] = useState(false);
+  const [showEdit, setShowEdit] = useState(false);
+  const [confirmCancel, setConfirmCancel] = useState(false);
   const [newPercent, setNewPercent] = useState<number>(r.rollout_cohort_count ?? 100);
 
   const detail = useQuery({
     queryKey: ["release-detail", r.id],
     queryFn: () => getRelease(appId, r.id),
-    enabled: showDetail,
+    enabled: showDetail || showEdit,
+  });
+
+  const publish = useMutation({
+    mutationFn: () => publishRelease(appId, r.id),
+    onSuccess: () => {
+      toast.show({ kind: "success", title: `Published ${channelSlug}` });
+      onAction();
+    },
+    onError: (e) =>
+      toast.show({
+        kind: "error",
+        title: "Publish failed",
+        description: (e as Error).message,
+      }),
   });
 
   const rollback = useMutation({
@@ -288,6 +308,24 @@ function ReleaseRow({
       }),
   });
 
+  const cancel = useMutation({
+    mutationFn: () => deleteRelease(appId, r.id),
+    onSuccess: () => {
+      toast.show({
+        kind: "success",
+        title: r.status === "draft" ? "Draft deleted" : "Release cancelled",
+      });
+      setConfirmCancel(false);
+      onAction();
+    },
+    onError: (e) =>
+      toast.show({
+        kind: "error",
+        title: r.status === "draft" ? "Delete failed" : "Cancel failed",
+        description: (e as Error).message,
+      }),
+  });
+
   return (
     <div className="card">
       <div className="flex items-center gap-3 flex-wrap">
@@ -326,6 +364,23 @@ function ReleaseRow({
         </details>
       )}
       <div className="flex flex-wrap gap-2 mt-2">
+        {r.status === "draft" && (
+          <button
+            className="btn-primary text-xs"
+            onClick={() => publish.mutate()}
+            disabled={publish.isPending}
+          >
+            {publish.isPending ? "Publishing..." : "Publish"}
+          </button>
+        )}
+        {(r.status === "draft" || r.status === "active") && (
+          <button
+            className="btn-secondary text-xs"
+            onClick={() => setShowEdit(true)}
+          >
+            Edit
+          </button>
+        )}
         {r.status === "active" && (
           <>
             <button
@@ -349,6 +404,14 @@ function ReleaseRow({
               Roll back
             </button>
           </>
+        )}
+        {(r.status === "draft" || r.status === "active") && (
+          <button
+            className="btn-danger text-xs"
+            onClick={() => setConfirmCancel(true)}
+          >
+            {r.status === "draft" ? "Delete draft" : "Cancel release"}
+          </button>
         )}
         <button
           className="btn-secondary text-xs"
@@ -414,15 +477,46 @@ function ReleaseRow({
         buildId={r.build_id}
         productTypeHint={r.product_type}
       />
+
+      {showEdit && (
+        <EditReleaseDialog
+          appId={appId}
+          release={r}
+          detail={detail.data}
+          loading={detail.isLoading}
+          onClose={() => setShowEdit(false)}
+          onSaved={() => {
+            setShowEdit(false);
+            onAction();
+          }}
+        />
+      )}
+
+      <ConfirmActionDialog
+        open={confirmCancel}
+        title={r.status === "draft" ? "Delete this draft?" : "Cancel this release?"}
+        objectLabel={`${channelSlug} / ${r.product_type}`}
+        objectHint={r.id.slice(0, 8)}
+        body={
+          r.status === "draft"
+            ? "The draft will be marked cancelled. The build metadata and any uploaded assets stay available in storage; no live release is affected."
+            : "This release will stop being served by update checks. The build metadata and uploaded assets stay available in storage."
+        }
+        confirmLabel={r.status === "draft" ? "Delete draft" : "Cancel release"}
+        confirmKind="danger"
+        pending={cancel.isPending}
+        onCancel={() => setConfirmCancel(false)}
+        onConfirm={() => cancel.mutate()}
+      />
     </div>
   );
 }
 
 function ReleaseStatusBadge({ status }: { status: string }) {
   const colorMap: Record<string, string> = {
+    draft: "bg-blue-100 text-blue-700",
     active: "bg-green-200 text-green-700",
     superseded: "bg-gray-200 text-gray-700",
-    rolled_back: "bg-yellow-200 text-yellow-700",
     cancelled: "bg-red-200 text-red-700",
   };
   return (
@@ -431,6 +525,158 @@ function ReleaseStatusBadge({ status }: { status: string }) {
     >
       {status}
     </span>
+  );
+}
+
+function EditReleaseDialog({
+  appId,
+  release,
+  detail,
+  loading,
+  onClose,
+  onSaved,
+}: {
+  appId: string;
+  release: Release;
+  detail?: { release: Release; scopes: ReleaseScope[] } | undefined;
+  loading: boolean;
+  onClose: () => void;
+  onSaved: () => void;
+}) {
+  const toast = useToast();
+  const [changelog, setChangelog] = useState(release.changelog ?? "");
+  const [scopeType, setScopeType] = useState<"full" | "platform" | "user_cohort" | "ip_range">("full");
+  const [scopeValue, setScopeValue] = useState("all");
+  const [shouldForceUpdate, setShouldForceUpdate] = useState(Boolean(release.should_force_update));
+  const [rolloutPercent, setRolloutPercent] = useState<number>(release.rollout_cohort_count ?? 100);
+
+  useEffect(() => {
+    if (!detail) return;
+    const firstScope = detail.scopes[0];
+    setChangelog(detail.release.changelog ?? "");
+    setShouldForceUpdate(Boolean(detail.release.should_force_update));
+    setRolloutPercent(detail.release.rollout_cohort_count ?? 100);
+    if (
+      firstScope &&
+      (firstScope.scope_type === "full" ||
+        firstScope.scope_type === "platform" ||
+        firstScope.scope_type === "user_cohort" ||
+        firstScope.scope_type === "ip_range")
+    ) {
+      setScopeType(firstScope.scope_type);
+      setScopeValue(firstScope.scope_value);
+    }
+  }, [detail]);
+
+  const save = useMutation({
+    mutationFn: () =>
+      updateRelease(appId, release.id, {
+        changelog: changelog.trim() || null,
+        should_force_update: shouldForceUpdate,
+        rollout_cohort_count: rolloutPercent < 100 ? rolloutPercent : null,
+        scopes:
+          scopeType === "full"
+            ? [{ scope_type: "full", scope_value: "all" }]
+            : [{ scope_type: scopeType, scope_value: scopeValue.trim() }],
+      }),
+    onSuccess: () => {
+      toast.show({ kind: "success", title: "Release updated" });
+      onSaved();
+    },
+    onError: (e) =>
+      toast.show({
+        kind: "error",
+        title: "Update failed",
+        description: (e as Error).message,
+      }),
+  });
+
+  const scopeValid = scopeType === "full" || scopeValue.trim().length > 0;
+
+  return (
+    <div
+      className="fixed inset-0 bg-black/30 flex items-center justify-center p-4 z-10"
+      onClick={(e) => {
+        if (e.target === e.currentTarget) onClose();
+      }}
+    >
+      <div className="card max-w-lg w-full relative">
+        <h2 className="text-lg font-bold mb-1">Edit release</h2>
+        <p className="text-xs text-slate-500 mb-3 font-mono">{release.id}</p>
+        {loading && <p className="text-sm text-slate-500">Loading release details...</p>}
+        <div className="space-y-3">
+          <div>
+            <label className="label">Release notes</label>
+            <textarea
+              className="input text-xs min-h-[120px]"
+              value={changelog}
+              onChange={(e) => setChangelog(e.target.value)}
+            />
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="label">Scope type</label>
+              <select
+                className="input"
+                value={scopeType}
+                onChange={(e) => {
+                  const next = e.target.value as typeof scopeType;
+                  setScopeType(next);
+                  setScopeValue(next === "full" ? "all" : "");
+                }}
+              >
+                <option value="full">Full</option>
+                <option value="platform">Platform</option>
+                <option value="user_cohort">User cohort</option>
+                <option value="ip_range">IP range</option>
+              </select>
+            </div>
+            <div>
+              <label className="label">Scope value</label>
+              <input
+                className="input"
+                value={scopeValue}
+                disabled={scopeType === "full"}
+                onChange={(e) => setScopeValue(e.target.value)}
+                placeholder={scopeType === "full" ? "all" : "android-arm64-v8a"}
+              />
+            </div>
+          </div>
+          <label className="flex items-center gap-2 text-xs">
+            <input
+              type="checkbox"
+              checked={shouldForceUpdate}
+              onChange={(e) => setShouldForceUpdate(e.target.checked)}
+            />
+            Force update
+          </label>
+          <div className="flex items-center gap-2 text-xs">
+            <label className="flex-1">Rollout cohort %</label>
+            <input
+              type="range"
+              min={0}
+              max={100}
+              step={5}
+              value={rolloutPercent}
+              onChange={(e) => setRolloutPercent(Number(e.target.value))}
+            />
+            <span className="font-mono w-10 text-right">{rolloutPercent}%</span>
+          </div>
+        </div>
+        <div className="flex gap-2 justify-end pt-4 mt-3 border-t border-slate-100">
+          <button className="btn-secondary" onClick={onClose} disabled={save.isPending}>
+            Cancel
+          </button>
+          <button
+            className="btn-primary"
+            onClick={() => save.mutate()}
+            disabled={save.isPending || loading || !scopeValid}
+          >
+            {save.isPending ? "Saving..." : "Save changes"}
+          </button>
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -526,9 +772,9 @@ function NewReleaseDialog({
     Number(versionCode) > 0 &&
     (scopeType === "full" || scopeValue.trim().length > 0);
 
-  // ---------------- submit (step 4 → publish) ----------------
-  const publish = useMutation({
-    mutationFn: async () => {
+  // ---------------- submit (step 4 → draft / publish) ----------------
+  const submitRelease = useMutation({
+    mutationFn: async (mode: "draft" | "publish") => {
       if (!step1Valid) throw new Error("Target incomplete");
       if (!step2Valid) throw new Error("Version incomplete");
       const channel = channels.data?.channels.find(
@@ -548,13 +794,15 @@ function NewReleaseDialog({
         status: "pending",
         should_force_update: shouldForceUpdate || undefined,
       });
-      // 2. create release
+      // 2. create draft release. Publishing is an explicit lifecycle step,
+      //    which keeps the release editable while assets are queued.
       const scopes =
         scopeType === "full"
           ? [{ scope_type: "full", scope_value: "all" }]
           : [{ scope_type: scopeType, scope_value: scopeValue.trim() }];
       const release = await createRelease(appId, {
         build_id: build.id,
+        status: "draft",
         scopes,
         should_force_update: shouldForceUpdate || undefined,
         rollout_cohort_count: rolloutPercent < 100 ? rolloutPercent : undefined,
@@ -579,19 +827,24 @@ function NewReleaseDialog({
           assetFailures.push(`${slot.file.name}: ${(e as Error).message}`);
         }
       }
-      return { release, assetFailures };
+      if (mode === "publish") {
+        const published = await publishRelease(appId, release.id);
+        return { release: published, assetFailures, mode };
+      }
+      return { release, assetFailures, mode };
     },
-    onSuccess: ({ release, assetFailures }) => {
+    onSuccess: ({ release, assetFailures, mode }) => {
+      const action = mode === "publish" ? "published" : "saved as draft";
       if (assetFailures.length === 0) {
         toast.show({
           kind: "success",
-          title: `Release ${release.id.slice(0, 8)}… published`,
+          title: `Release ${release.id.slice(0, 8)}… ${action}`,
           description: `${pendingFiles.length} asset${pendingFiles.length === 1 ? "" : "s"} attached.`,
         });
       } else {
         toast.show({
           kind: "error",
-          title: `Release ${release.id.slice(0, 8)}… published but ${assetFailures.length} asset(s) failed`,
+          title: `Release ${release.id.slice(0, 8)}… ${action} but ${assetFailures.length} asset(s) failed`,
           description: `${assetFailures[0]?.slice(0, 80)}… — fix from the release row.`,
         });
       }
@@ -600,7 +853,7 @@ function NewReleaseDialog({
     onError: (e) =>
       toast.show({
         kind: "error",
-        title: "Release publish failed",
+        title: "Release save failed",
         description: (e as Error).message,
       }),
   });
@@ -859,7 +1112,7 @@ function NewReleaseDialog({
                 type="button"
                 className="btn-secondary"
                 onClick={() => setStep((step - 1) as Step)}
-                disabled={publish.isPending}
+                disabled={submitRelease.isPending}
               >
                 Back
               </button>
@@ -878,14 +1131,24 @@ function NewReleaseDialog({
               </button>
             )}
             {step === 4 && (
-              <button
-                type="button"
-                className="btn-primary"
-                disabled={publish.isPending || !step1Valid || !step2Valid}
-                onClick={() => publish.mutate()}
-              >
-                {publish.isPending ? "Publishing…" : "Publish release"}
-              </button>
+              <>
+                <button
+                  type="button"
+                  className="btn-secondary"
+                  disabled={submitRelease.isPending || !step1Valid || !step2Valid}
+                  onClick={() => submitRelease.mutate("draft")}
+                >
+                  {submitRelease.isPending ? "Saving..." : "Save draft"}
+                </button>
+                <button
+                  type="button"
+                  className="btn-primary"
+                  disabled={submitRelease.isPending || !step1Valid || !step2Valid}
+                  onClick={() => submitRelease.mutate("publish")}
+                >
+                  {submitRelease.isPending ? "Publishing..." : "Publish now"}
+                </button>
+              </>
             )}
           </div>
         </div>

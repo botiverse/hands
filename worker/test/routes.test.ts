@@ -1186,6 +1186,194 @@ describe("quiver apps — default_channel_id", () => {
   });
 });
 
+describe("quiver releases — draft lifecycle", () => {
+  let env: MockEnv;
+
+  beforeEach(async () => {
+    env = makeMockEnv();
+    const now = Date.now();
+    await env.DB
+      .prepare("INSERT INTO apps (id, org_id, slug, name, platform, created_at) VALUES (?, ?, ?, ?, ?, ?)")
+      .bind("app-release", "default", "release-app", "Release App", "android", now)
+      .run();
+    await env.DB
+      .prepare("INSERT INTO channels (id, app_id, slug, name, created_at) VALUES (?, ?, ?, ?, ?)")
+      .bind("ch-main", "app-release", "main", "Main", now)
+      .run();
+    for (const [buildId, versionCode] of [
+      ["build-active", 1],
+      ["build-draft", 2],
+    ] as const) {
+      await env.DB
+        .prepare(
+          `INSERT INTO builds (id, app_id, channel_id, product_type, release_type, version_name, version_code,
+                               source, status, build_metadata_json, parsed_metadata_json,
+                               should_force_update, provenance_json, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        )
+        .bind(
+          buildId,
+          "app-release",
+          "ch-main",
+          "android-apk",
+          "stable",
+          "1.0.0",
+          versionCode,
+          "web",
+          "succeeded",
+          "{}",
+          "{}",
+          0,
+          "{}",
+          now,
+          now,
+        )
+        .run();
+    }
+  });
+
+  function makeReleaseContext(
+    releaseId: string,
+    body: unknown = {},
+  ) {
+    return {
+      env,
+      req: {
+        param: (name: string) =>
+          name === "appId" ? "app-release" : name === "releaseId" ? releaseId : "",
+        json: async () => body,
+        query: () => undefined,
+      },
+      get: (key: string) => (key === "admin_actor" ? "tester" : undefined),
+      executionCtx: { waitUntil: () => undefined },
+      json: (data: unknown, status = 200) =>
+        new Response(JSON.stringify(data), {
+          status,
+          headers: { "content-type": "application/json" },
+        }),
+    } as any;
+  }
+
+  async function responseJson<T>(response: Response): Promise<T> {
+    return (await response.json()) as T;
+  }
+
+  it("creates draft releases without superseding the active release", async () => {
+    const { createRelease } = await import("../src/routes/releases");
+    await createRelease(env.DB as any, "app-release", {
+      build_id: "build-active",
+      status: "active",
+    }, "tester", "rel-active");
+    await createRelease(env.DB as any, "app-release", {
+      build_id: "build-draft",
+      status: "draft",
+      changelog: "Draft notes",
+    }, "tester", "rel-draft");
+
+    const { results } = await env.DB
+      .prepare("SELECT id, status, superseded_by_release_id FROM releases ORDER BY created_at ASC")
+      .bind()
+      .all();
+
+    expect(results).toEqual([
+      { id: "rel-active", status: "active", superseded_by_release_id: null },
+      { id: "rel-draft", status: "draft", superseded_by_release_id: null },
+    ]);
+  });
+
+  it("publishes a draft and supersedes the previous active release", async () => {
+    const { createRelease, handlePublishRelease } = await import("../src/routes/releases");
+    await createRelease(env.DB as any, "app-release", {
+      build_id: "build-active",
+      status: "active",
+    }, "tester", "rel-active");
+    await createRelease(env.DB as any, "app-release", {
+      build_id: "build-draft",
+      status: "draft",
+    }, "tester", "rel-draft");
+
+    const response = await handlePublishRelease(makeReleaseContext("rel-draft"));
+    expect(response.status).toBe(200);
+    const published = await responseJson<any>(response);
+    expect(published.status).toBe("active");
+
+    const { results } = await env.DB
+      .prepare("SELECT id, status, superseded_by_release_id FROM releases ORDER BY id ASC")
+      .bind()
+      .all();
+    expect(results).toEqual([
+      { id: "rel-active", status: "superseded", superseded_by_release_id: "rel-draft" },
+      { id: "rel-draft", status: "active", superseded_by_release_id: null },
+    ]);
+  });
+
+  it("updates editable release metadata and replaces scopes", async () => {
+    const { createRelease, handleUpdateRelease } = await import("../src/routes/releases");
+    await createRelease(env.DB as any, "app-release", {
+      build_id: "build-draft",
+      status: "draft",
+      scopes: [{ scope_type: "full", scope_value: "all" }],
+    }, "tester", "rel-draft");
+
+    const response = await handleUpdateRelease(makeReleaseContext("rel-draft", {
+      changelog: "Edited notes",
+      should_force_update: true,
+      rollout_cohort_count: 25,
+      scopes: [{ scope_type: "platform", scope_value: "android-arm64-v8a" }],
+    }));
+    expect(response.status).toBe(200);
+    const release = await responseJson<any>(response);
+    expect(release).toMatchObject({
+      changelog: "Edited notes",
+      should_force_update: 1,
+      rollout_cohort_count: 25,
+      is_full: 0,
+    });
+
+    const scopes = await env.DB
+      .prepare("SELECT scope_type, scope_value FROM release_scopes WHERE release_id = ? ORDER BY created_at ASC")
+      .bind("rel-draft")
+      .all();
+    expect(scopes.results).toEqual([
+      { scope_type: "platform", scope_value: "android-arm64-v8a" },
+    ]);
+  });
+
+  it("soft-cancels a release without deleting build or asset rows", async () => {
+    const { createRelease, handleDeleteRelease } = await import("../src/routes/releases");
+    await createRelease(env.DB as any, "app-release", {
+      build_id: "build-draft",
+      status: "draft",
+    }, "tester", "rel-draft");
+    await env.DB
+      .prepare(
+        `INSERT INTO build_assets (id, build_id, platform, arch, variant, filetype, r2_key, file_hash, size_bytes, metadata_json, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .bind("asset-1", "build-draft", "android", null, null, "apk", "apps/x.apk", "hash", 42, "{}", Date.now())
+      .run();
+
+    const response = await handleDeleteRelease(makeReleaseContext("rel-draft"));
+    expect(response.status).toBe(200);
+
+    const release = await env.DB
+      .prepare("SELECT status FROM releases WHERE id = ?")
+      .bind("rel-draft")
+      .first();
+    const build = await env.DB
+      .prepare("SELECT id FROM builds WHERE id = ?")
+      .bind("build-draft")
+      .first();
+    const asset = await env.DB
+      .prepare("SELECT id FROM build_assets WHERE id = ?")
+      .bind("asset-1")
+      .first();
+    expect(release).toMatchObject({ status: "cancelled" });
+    expect(build).toMatchObject({ id: "build-draft" });
+    expect(asset).toMatchObject({ id: "asset-1" });
+  });
+});
+
 // =============================================================================
 // P3.3.2 — public API scope resolution (publish-architecture §5.4)
 // =============================================================================

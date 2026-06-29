@@ -262,7 +262,7 @@ releases
   channel_id              TEXT NOT NULL REFERENCES channels(id) ON DELETE CASCADE
   product_type            TEXT NOT NULL         -- denormalized from build for query speed
   release_type            TEXT NOT NULL         -- denormalized from build
-  status                  TEXT NOT NULL         -- 'active' | 'superseded' | 'rolled_back' | 'cancelled'
+  status                  TEXT NOT NULL         -- 'draft' | 'active' | 'superseded' | 'cancelled'
   is_full                 INTEGER NOT NULL     -- 1 if this release covers all users; 0 if scoped
   superseded_by_release_id TEXT REFERENCES releases(id)
   rollout_cohort_count    INTEGER              -- null = 100%, otherwise staged %
@@ -279,10 +279,10 @@ releases
 ```
 
 A release goes through status:
-- `active` — currently the live version for this (channel, product_type, release_type)
-- `superseded` — newer release came along
-- `rolled_back` — admin manually rolled back to a previous build
-- `cancelled` — release never actually went live (validation failed mid-flight)
+- `draft` — editable release metadata and scopes; not returned by public update checks and does not supersede active releases.
+- `active` — currently live for this (channel, product_type, release_type).
+- `superseded` — newer release was published on the same lane.
+- `cancelled` — soft-deleted / cancelled release; build rows and assets remain in storage.
 
 ### 3.10 `release_scopes` — partial release overrides
 
@@ -356,13 +356,14 @@ ToDesktop runs builds on actual Win/Mac/Linux VMs, captures screenshots + auto-u
    Optional: availability_at datetime (schedule for later)
    Optional: should_force_update checkbox
 
-5. Click "Release"
+5. Click "Save draft" or "Publish now"
 6. Server:
-   a. Insert releases row (status='active')
+   a. Insert releases row (status='draft')
    b. Insert release_scopes row(s)
-   c. Mark previous release(s) on same (channel, product_type, release_type) as 'superseded' (link via superseded_by_release_id)
-   d. Emit SSE event "release:new"
-   e. Fire webhook (if configured)
+   c. If publishing now, set the release to `active`
+   d. If publishing now, mark previous release(s) on same (channel, product_type, release_type) as 'superseded' (link via superseded_by_release_id)
+   e. If publishing now, emit SSE event "release:new"
+   f. If publishing now, fire webhook (if configured)
 ```
 
 ### 4.4 Rollback

@@ -60,10 +60,13 @@ import {
 import {
   handleBumpRollout,
   handleCreateRelease,
+  handleDeleteRelease,
   handleForceUpdate,
   handleGetRelease,
   handleListReleases,
+  handlePublishRelease,
   handleRollbackRelease,
+  handleUpdateRelease,
 } from "./routes/releases";
 import { handleListChannels, handleCreateChannel, handleUpdateChannel, handleDeleteChannel } from "./routes/channels";
 import { handleListProductTypes, handleCreateProductType, handleUpdateProductType, handleDeleteProductType } from "./routes/product_types";
@@ -379,6 +382,9 @@ admin.delete(
 admin.get("/api/apps/:appId/releases", requireAppRole("viewer"), handleListReleases);
 admin.post("/api/apps/:appId/releases", requireAppRole("publisher"), handleCreateRelease);
 admin.get("/api/apps/:appId/releases/:releaseId", requireAppRole("viewer"), handleGetRelease);
+admin.patch("/api/apps/:appId/releases/:releaseId", requireAppRole("publisher"), handleUpdateRelease);
+admin.post("/api/apps/:appId/releases/:releaseId/publish", requireAppRole("publisher"), handlePublishRelease);
+admin.delete("/api/apps/:appId/releases/:releaseId", requireAppRole("publisher"), handleDeleteRelease);
 admin.post("/api/apps/:appId/releases/:releaseId/rollback", requireAppRole("publisher"), handleRollbackRelease);
 admin.post("/api/apps/:appId/releases/:releaseId/bump-rollout", requireAppRole("publisher"), handleBumpRollout);
 admin.post("/api/apps/:appId/releases/:releaseId/force-update", requireAppRole("publisher"), handleForceUpdate);
