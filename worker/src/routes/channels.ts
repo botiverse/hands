@@ -135,14 +135,15 @@ export async function handleDeleteChannel(c: Context<{ Bindings: Env }>) {
   const appId = c.req.param("appId") ?? "";
   const channelId = c.req.param("channelId") ?? "";
 
-  // Check if any versions still reference this channel — refuse if so.
-  const versionCount = await c.env.DB.prepare(
-    "SELECT COUNT(*) as cnt FROM versions WHERE app_id = ?1 AND channel = (SELECT slug FROM channels WHERE id = ?2 AND app_id = ?1)",
-  ).bind(appId, channelId).first<{ cnt: number }>();
-  if (versionCount && versionCount.cnt > 0) {
+  const usageCount = await c.env.DB.prepare(
+    `SELECT
+       (SELECT COUNT(*) FROM releases WHERE app_id = ?1 AND channel_id = ?2) AS release_count,
+       (SELECT COUNT(*) FROM builds WHERE app_id = ?1 AND channel_id = ?2) AS build_count`,
+  ).bind(appId, channelId).first<{ release_count: number; build_count: number }>();
+  if (usageCount && (usageCount.release_count > 0 || usageCount.build_count > 0)) {
     return c.json(
       {
-        error: `cannot delete channel with ${versionCount.cnt} version(s); move or delete them first`,
+        error: `cannot delete channel with ${usageCount.release_count} release(s) and ${usageCount.build_count} build(s); move or delete them first`,
       },
       409,
     );
