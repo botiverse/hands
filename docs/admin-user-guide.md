@@ -83,20 +83,12 @@ Default route. Shows:
 ### 3.4 App context nav (under the top bar)
 
 ```
-App context:  [Versions]  [Publish]  [Builds]  [Releases]  [Access]  [Audit]
+App context:  [Releases]  [Overview]  [Builds]  [Access]  [Audit]
 ```
 
 Each link navigates to a sub-route under `/apps/:appId/`.
 
-### 3.5 `/apps/:appId/publish` Publishing dashboard
-
-Lists all versions for the app with stats (Total / Enabled / Channels / Total size). Search by version, package, hash. Filter by channel. Each `PublishRow` shows:
-- Version name (code) + channel badge + enabled/disabled badge
-- Package name + size + date
-- SHA-256 prefix
-- Actions: **Move** (re-route to a different channel) / **Disable** (toggle `enabled=0`) / **Force** (toggle `should_force_update=1`)
-
-### 3.6 `/apps/:appId/builds` Builds tab
+### 3.5 `/apps/:appId/builds` Builds tab
 
 List of build artifacts. Each row: version (code) + product_type badge + release_type (colored chip) + channel + status badge (pending/building/succeeded/failed/smoke_testing/smoke_test_passed/smoke_test_failed) + ⚠ force badge + scheduled badge + date.
 
@@ -109,7 +101,7 @@ Click "Prepare release" to open `PrepareReleaseDialog`:
 - Click "Release" → `POST /api/apps/:appId/releases` with built scopes
 - Backend defaults to `full/all` if scopes omitted
 
-### 3.7 `/apps/:appId/releases` Releases tab
+### 3.6 `/apps/:appId/releases` Releases tab
 
 List of releases and drafts. Stats cards: Total / Active / Draft / Channels. Filter by channel and status. Each `ReleaseRow`:
 - Status badge (draft=blue, active=green, superseded=gray, cancelled=red)
@@ -117,12 +109,11 @@ List of releases and drafts. Stats cards: Total / Active / Draft / Channels. Fil
 - Channel + product type
 - full/scoped badge + ⚠ force badge + rollout % badge
 - Build ID hash
-- Changelog (collapsible)
+- Changelog and build/scope details shown inline
 - Actions on drafts: **Publish**, **Edit**, **Delete draft**
 - Actions on active releases: **Edit**, **Bump rollout** (slider 0-100% → `POST /bump-rollout`), **Force** / **Unforce** (`POST /force-update`), **Roll back** (creates a new release pointing to the current build), **Cancel release**
-- "Show detail" → loads `getRelease` → shows build info + asset count + scope table (type/value pairs)
 
-### 3.8 `/apps/:appId/access` App access tab
+### 3.7 `/apps/:appId/access` App access tab
 
 Per-app member management. Shows current principal's `org_role` + a guard ("can manage members" if owner/admin).
 
@@ -220,7 +211,7 @@ The current publish flow is **release-first**. One release can carry multiple bi
 5. Draft releases are editable and not visible to public update checks. Published releases become available to the public API when scope/channel/product match.
 6. Release rows keep the **Assets drop zone** for adding or removing APK / dmg / deb / exe files after creation. The panel auto-detects platform/arch/filetype from the filename (e.g. `myapp-arm64-v8a.apk` → `android / arm64-v8a / apk`); you can override optional metadata per file.
 
-**Legacy `/api/upload` + `/api/versions` routes** are still present and used by external CLIs / scripts. They are NOT exposed as UI entry points anymore. The `Publishing` tab is read-only legacy data and shows a banner pointing to Releases.
+Quiver no longer exposes the legacy versions publishing UI. Operators publish through Releases; the old `/apps/:appId/publish` route redirects to `/apps/:appId/releases`.
 
 ### 4.2 Roll back a bad release
 

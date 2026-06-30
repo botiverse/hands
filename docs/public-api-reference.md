@@ -27,7 +27,8 @@ All `/public/*` and `/api/invites/:token` (GET) endpoints:
 
 The v2 public API reads from `builds` / `releases` / `release_scopes` and
 performs server-side scope resolution (full / platform / ip_range / cohort).
-The legacy `/public/apps/:slug/latest` endpoint remains for compatibility.
+The legacy `/public/apps/:slug/latest` path is wired to the same release-backed
+resolver so clients and SDKs use one release model.
 
 ---
 
@@ -112,7 +113,8 @@ compatible assets for debugging and non-SDK clients. Prefer
 
 ### 2.3 `GET /public/apps/:slug/latest`
 
-Get the latest enabled version of an app for a given channel.
+Alias for the release-backed latest resolver used by
+`GET /public/v2/apps/:slug/latest`.
 
 **Auth**: none.
 

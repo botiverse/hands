@@ -1,5 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { ConfirmActionDialog, TypedConfirmField } from "../components/ConfirmActionDialog";
 import {
   archiveApp,
@@ -9,12 +9,9 @@ import {
   createChannel,
   updateChannel,
   deleteChannel,
-  listPublicVersions,
-  updateVersion,
   updateApp,
   type App,
   type Channel,
-  type Version,
 } from "../lib/api";
 import { useToast } from "../components/Toast";
 import { Operations } from "./Operations";
@@ -22,12 +19,12 @@ import { Operations } from "./Operations";
 export function AppDetail({
   appId,
   onShowAudit,
-  onShowPublish,
+  onShowReleases,
   onShowAccess,
 }: {
   appId: string;
   onShowAudit: () => void;
-  onShowPublish: () => void;
+  onShowReleases: () => void;
   onShowAccess: () => void;
 }) {
   const qc = useQueryClient();
@@ -38,12 +35,7 @@ export function AppDetail({
     queryKey: ["channels", appId],
     queryFn: () => listChannels(appId),
   });
-  const versions = useQuery({
-    queryKey: ["versions", appId],
-    queryFn: () => listPublicVersions(appId),
-  });
 
-  // (legacy UploadDialog state removed — releases are created via the Releases tab)
   const [showCreateChannel, setShowCreateChannel] = useState(false);
   const [editingChannel, setEditingChannel] = useState<Channel | null>(null);
 
@@ -63,10 +55,10 @@ export function AppDetail({
           View audit log →
         </button>
         <button
-          onClick={onShowPublish}
+          onClick={onShowReleases}
           className="mt-2 text-sm text-blue-600 hover:underline inline-block mr-3"
         >
-          Manage publishing →
+          Manage releases →
         </button>
         <button
           onClick={onShowAccess}
@@ -129,7 +121,7 @@ export function AppDetail({
           <div>
             <h2 className="text-lg font-semibold">App overview</h2>
             <p className="text-xs text-slate-500">
-              Versions &amp; status overview. For new releases, use the{" "}
+              Releases are managed from the{" "}
               <a href={`/apps/${appId}/releases`} className="underline">
                 Releases
               </a>{" "}
@@ -153,25 +145,6 @@ export function AppDetail({
             </button>
           )}
         </div>
-        {versions.isLoading && <p className="text-slate-500">Loading...</p>}
-        {versions.data?.versions.length === 0 && (
-          <p className="text-slate-500 text-sm">
-            No versions yet. Use Releases → New release to publish one.
-          </p>
-        )}
-        <div className="space-y-2">
-          {versions.data?.versions.map((v) => (
-            <VersionRow
-              key={v.id}
-              version={v}
-              appId={appId}
-              onToggled={() =>
-                qc.invalidateQueries({ queryKey: ["versions", appId] })
-              }
-            />
-          ))}
-        </div>
-        {/* Legacy UploadDialog removed — create releases from the Releases tab. */}
       </section>
 
       <section className="mt-8">
@@ -210,10 +183,9 @@ function AppSettings({
     onSuccess: (_, archived) => {
       toast.show({
         kind: "success",
-        title: archived ? "App archived" : "App unarchived",
+        title: archived ? "App deleted" : "App restored",
       });
       qc.invalidateQueries({ queryKey: ["apps"] });
-      qc.invalidateQueries({ queryKey: ["versions", appId] });
       qc.invalidateQueries({ queryKey: ["builds", appId] });
       qc.invalidateQueries({ queryKey: ["releases", appId] });
       setConfirmArchive(false);
@@ -221,7 +193,7 @@ function AppSettings({
     onError: (e) =>
       toast.show({
         kind: "error",
-        title: "Archive failed",
+        title: "Delete failed",
         description: (e as Error).message,
       }),
   });
@@ -235,31 +207,31 @@ function AppSettings({
       {/* Default release channel picker */}
       <DefaultChannelPicker appId={appId} app={app} isOrgAdmin={isOrgAdmin} />
 
-      {/* Danger zone: archive / unarchive */}
+      {/* Danger zone: delete / restore */}
       <div className="border-t border-slate-100 pt-3">
         <h3 className="text-sm font-medium text-slate-700 mb-2">
           Danger zone
         </h3>
         {!isOrgAdmin && (
           <p className="text-xs text-yellow-700 mb-2">
-            ⚠ Org owner / admin required to archive.
+            ⚠ Org owner / admin required to delete apps.
           </p>
         )}
 
         <div className="flex items-center justify-between gap-2 p-3 border border-slate-200 rounded-md">
           <div>
             <div className="font-medium">
-              {app.archived ? "App is archived" : "App is active"}
+              {app.archived ? "App is deleted" : "App is active"}
             </div>
             <div className="text-xs text-slate-500">
               {app.archived
-                ? "Archived apps reject new uploads but remain viewable. " +
-                  "You can unarchive any time to restore normal operation."
+                ? "Deleted apps reject new uploads but remain restorable. " +
+                  "Restore the app to resume normal operation."
                 : "Active apps accept uploads + releases normally."}
             </div>
             {app.archived_at && (
               <div className="text-xs text-slate-400 mt-1">
-                archived_at: {new Date(app.archived_at).toISOString()}
+                deleted_at: {new Date(app.archived_at).toISOString()}
               </div>
             )}
           </div>
@@ -269,14 +241,14 @@ function AppSettings({
               onClick={() => setConfirmArchive(true)}
               disabled={archive.isPending}
             >
-              {app.archived ? "Unarchive" : "Archive"}
+              {app.archived ? "Restore app" : "Delete app"}
             </button>
           )}
         </div>
 
         <ConfirmActionDialog
           open={confirmArchive}
-          title={app.archived ? "Unarchive this app?" : "Archive this app?"}
+          title={app.archived ? "Restore this app?" : "Delete this app?"}
           objectLabel={app.name ?? app.slug ?? app.id}
           objectHint={`slug: ${app.slug}`}
           objectSummary={
@@ -292,31 +264,30 @@ function AppSettings({
           body={
             app.archived ? (
               <>
-                Unarchiving restores the app to <strong>active</strong> status.{" "}
+                Restoring returns the app to <strong>active</strong> status.{" "}
                 New uploads and releases will be accepted again.
                 <br />
                 <span className="text-xs text-slate-500">
-                  This is a soft-delete reversal — all existing builds,
-                  releases, and assets are kept as-is.
+                  Existing builds, releases, and assets are kept as-is.
                 </span>
               </>
             ) : (
               <>
-                Archiving marks the app as <strong>archived (soft delete)</strong>.
+                Deleting marks the app as <strong>deleted</strong>.
                 The app remains viewable in lists and admin pages, but{" "}
                 <strong>new uploads are rejected</strong>.
                 <br />
                 <span className="text-xs text-slate-500">
-                  This is reversible: you can unarchive any time. Builds,
+                  This is a reversible delete: builds,
                   releases, and assets are kept as-is. The underlying binary
                   data in R2 is not deleted.
                 </span>
               </>
             )
           }
-          confirmLabel={app.archived ? "Unarchive app" : "Archive app"}
-          cancelLabel={app.archived ? "Keep archived" : "Keep active"}
-          confirmKind="primary"
+          confirmLabel={app.archived ? "Restore app" : "Delete app"}
+          cancelLabel={app.archived ? "Keep deleted" : "Keep app"}
+          confirmKind={app.archived ? "primary" : "danger"}
           pending={archive.isPending}
           onCancel={() => setConfirmArchive(false)}
           onConfirm={() => {
@@ -421,80 +392,6 @@ function DefaultChannelPicker({
           ⚠ Org owner / admin required to change settings.
         </p>
       )}
-    </div>
-  );
-}
-
-function VersionRow({
-  version,
-  appId,
-  onToggled,
-}: {
-  version: Version;
-  appId: string;
-  onToggled: () => void;
-}) {
-  const toast = useToast();
-  const toggleToastRef = useRef<number | null>(null);
-  const toggle = useMutation({
-    mutationFn: (enabled: boolean) =>
-      updateVersion(appId, version.id, { enabled }),
-    onMutate: (enabled) => {
-      toggleToastRef.current = toast.show({
-        kind: "loading",
-        title: enabled ? "Enabling version..." : "Disabling version...",
-        ttlMs: 0,
-      });
-    },
-    onSuccess: (_data, enabled) => {
-      const patch = {
-        kind: "success",
-        title: enabled ? "Version enabled" : "Version disabled",
-      } as const;
-      if (toggleToastRef.current !== null) toast.update(toggleToastRef.current, patch);
-      else toast.show(patch);
-      toggleToastRef.current = null;
-      onToggled();
-    },
-    onError: (e) => {
-      const patch = {
-        kind: "error",
-        title: "Toggle failed",
-        description: (e as Error).message,
-      } as const;
-      if (toggleToastRef.current !== null) toast.update(toggleToastRef.current, patch);
-      else toast.show(patch);
-      toggleToastRef.current = null;
-    },
-  });
-  return (
-    <div className="card flex items-center gap-4">
-      <div className="flex-1">
-        <div className="flex items-center gap-2">
-          <span className="font-mono font-medium">
-            v{version.version_name} ({version.version_code})
-          </span>
-          <span className="badge-gray">{version.channel}</span>
-          {version.enabled ? (
-            <span className="badge-green">enabled</span>
-          ) : (
-            <span className="badge-gray">disabled</span>
-          )}
-        </div>
-        <div className="text-xs text-slate-500 font-mono mt-1 truncate">
-          {version.package_name} · {(version.size_bytes / 1024 / 1024).toFixed(2)} MB
-        </div>
-        <div className="text-xs text-slate-400 font-mono mt-0.5">
-          sha256: {version.signature_sha256.slice(0, 16)}...
-        </div>
-      </div>
-      <button
-        onClick={() => toggle.mutate(!version.enabled)}
-        className={version.enabled ? "btn-secondary text-sm" : "btn-primary text-sm"}
-        disabled={toggle.isPending}
-      >
-        {version.enabled ? "Disable" : "Enable"}
-      </button>
     </div>
   );
 }

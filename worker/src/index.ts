@@ -2,7 +2,7 @@
  * quiver Worker entry
  *
  * Adapted from cloudflare/templates/containers-template (Hono + Containers pattern).
- * Extends with D1 (apps / versions / channels / audit_logs) and R2 (APK binaries + icons).
+ * Extends with D1 (apps / builds / releases / channels / audit_logs) and R2 (APK binaries + icons).
  *
  * The ApkParserContainer class is bundled into the container image and runs
  * inside it. Class methods (onStart, parseApk) can use `(this.ctx as any).container.exec.bind((this.ctx as any).container)()`
@@ -26,7 +26,6 @@ import {
 } from "./routes/auth";
 import { handleListApps, handleCreateApp, handleGetApp, handleArchiveApp, handleUpdateApp } from "./routes/apps";
 import {
-  handlePublicGetLatestVersion,
   handlePublicListChannels,
 } from "./routes/public";
 import { handlePublicV2Latest, handlePublicV2UpdateCheck } from "./routes/public_v2";
@@ -40,13 +39,6 @@ import {
   createOperation,
   updateOperation,
 } from "./routes/operations";
-import {
-  handleListVersions,
-  handleCreateVersion,
-  handleGetVersion,
-  handleUpdateVersion,
-  handleDeleteVersion,
-} from "./routes/versions";
 import {
   handleCreateBuild,
   handleCreateBuildAsset,
@@ -294,10 +286,7 @@ app.get("/login/raft/callback", handleRaftCallback);
 app.get("/api/auth/me", handleAuthMe);
 app.post("/api/auth/logout", handleAuthLogout);
 
-app.get("/api/apps/:appId/versions", handleListVersions);
-app.get("/api/apps/:appId/versions/:versionId", handleGetVersion);
-
-app.get("/public/apps/:slug/latest", handlePublicGetLatestVersion);
+app.get("/public/apps/:slug/latest", handlePublicV2Latest);
 app.get("/public/apps/:slug/channels", handlePublicListChannels);
 
 // v2 endpoints with scope resolution (publish-architecture §5.4).
@@ -362,10 +351,6 @@ admin.post("/api/apps", requireCurrentOrgRole("admin"), handleCreateApp);
 admin.get("/api/apps/:appId", requireAppRole("viewer"), handleGetApp);
 admin.patch("/api/apps/:appId", requireAppRole("admin"), handleUpdateApp);
 admin.post("/api/apps/:appId/archive", requireAppRole("admin"), handleArchiveApp);
-
-admin.post("/api/apps/:appId/versions", requireAppRole("publisher"), handleCreateVersion);
-admin.patch("/api/apps/:appId/versions/:versionId", requireAppRole("publisher"), handleUpdateVersion);
-admin.delete("/api/apps/:appId/versions/:versionId", requireAppRole("admin"), handleDeleteVersion);
 
 admin.get("/api/apps/:appId/builds", requireAppRole("viewer"), handleListBuilds);
 admin.post("/api/apps/:appId/builds", requireAppRole("publisher"), handleCreateBuild);

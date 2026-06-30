@@ -3,6 +3,7 @@ import {
   Routes,
   Route,
   NavLink,
+  Navigate,
   useParams,
   useNavigate,
   Link,
@@ -13,7 +14,6 @@ import { AppsList } from "./pages/AppsList";
 import { AppDetail } from "./pages/AppDetail";
 import { AuditLog } from "./pages/AuditLog";
 import { Settings } from "./pages/Settings";
-import { Publishing } from "./pages/Publishing";
 import { Builds } from "./pages/Builds";
 import { Releases } from "./pages/Releases";
 import { OrgSettings } from "./pages/OrgSettings";
@@ -213,16 +213,6 @@ function AppContextNav() {
           Overview
         </NavLink>
         <NavLink
-          to={`${base}/publish`}
-          className={({ isActive }) =>
-            `px-3 py-1 rounded-md text-sm ${
-              isActive ? "bg-slate-100 font-medium" : "hover:bg-slate-100"
-            }`
-          }
-        >
-          Publish
-        </NavLink>
-        <NavLink
           to={`${base}/builds`}
           className={({ isActive }) =>
             `px-3 py-1 rounded-md text-sm ${
@@ -265,7 +255,7 @@ function AppDetailRoute() {
     <AppDetail
       appId={appId}
       onShowAudit={() => navigate(`/apps/${appId}/audit`)}
-      onShowPublish={() => navigate(`/apps/${appId}/publish`)}
+      onShowReleases={() => navigate(`/apps/${appId}/releases`)}
       onShowAccess={() => navigate(`/apps/${appId}/access`)}
     />
   );
@@ -283,12 +273,6 @@ function AuditRoute() {
   return <AuditLog appId={appId} />;
 }
 
-function PublishingRoute() {
-  const { appId } = useParams();
-  if (!appId) return null;
-  return <Publishing appId={appId} />;
-}
-
 function BuildsRoute() {
   const { appId } = useParams();
   if (!appId) return null;
@@ -299,6 +283,10 @@ function ReleasesRoute() {
   const { appId } = useParams();
   if (!appId) return null;
   return <Releases appId={appId} />;
+}
+
+function LegacyPublishRedirect() {
+  return <Navigate to="../releases" replace />;
 }
 
 function OrgSettingsRoute() {
@@ -375,7 +363,7 @@ function AuthenticatedApp({ account }: { account: AuthAccount }) {
         <Route path="/invites/:token" element={<AcceptInviteRoute />} />
         <Route path="/apps/:appId" element={<AppShell />}>
           <Route index element={<AppDetailRoute />} />
-          <Route path="publish" element={<PublishingRoute />} />
+          <Route path="publish" element={<LegacyPublishRedirect />} />
           <Route path="builds" element={<BuildsRoute />} />
           <Route path="releases" element={<ReleasesRoute />} />
           <Route path="access" element={<AppAccessRoute />} />
@@ -436,7 +424,7 @@ function AppShell() {
       <main className="flex-1 max-w-5xl mx-auto px-4 py-8 w-full">
         <Routes>
           <Route index element={<AppDetailRoute />} />
-          <Route path="publish" element={<PublishingRoute />} />
+          <Route path="publish" element={<LegacyPublishRedirect />} />
           <Route path="builds" element={<BuildsRoute />} />
           <Route path="releases" element={<ReleasesRoute />} />
           <Route path="access" element={<AppAccessRoute />} />

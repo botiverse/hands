@@ -85,9 +85,7 @@ export interface Version {
   provenance_json: string;
   created_at: number;
   download_url?: string;
-  // Phase 2 compat: legacy /versions response shape from
-  // worker/src/routes/builds.ts handleListVersionsCompat may also
-  // include build_id / release_id / release_status.
+  // Kept for historical rows that were backfilled into the release model.
   build_id?: string;
   release_id?: string;
   release_status?: string;
@@ -340,16 +338,6 @@ export const normalizeLoginReturnPath = (returnTo = window.location.pathname) =>
 export const loginUrl = (returnTo = window.location.pathname) =>
   `${API_BASE}/api/auth/login?return=${encodeURIComponent(normalizeLoginReturnPath(returnTo))}`;
 
-// ---------- Public API (no auth) ----------
-
-export const listPublicVersions = (appId: string) =>
-  request<{ versions: Version[] }>(`/api/apps/${appId}/versions`);
-
-export const getPublicVersion = (appId: string, versionId: string) =>
-  request<Version & { download_url: string }>(
-    `/api/apps/${appId}/versions/${versionId}`,
-  );
-
 // ---------- Admin API (requires Login with Raft session cookie in prod) ----------
 
 export const listApps = () =>
@@ -503,27 +491,6 @@ export const deleteChannel = (appId: string, channelId: string) =>
 
 export const listChannels = (appId: string) =>
   request<{ channels: Channel[] }>(`/api/apps/${appId}/channels`, { admin: true });
-
-export const updateVersion = (
-  appId: string,
-  versionId: string,
-  patch: { enabled?: boolean; channel?: string; should_force_update?: boolean },
-) =>
-  request<{ ok: boolean }>(`/api/apps/${appId}/versions/${versionId}`, {
-    method: "PATCH",
-    admin: true,
-    body: JSON.stringify(patch),
-  });
-
-export const createVersion = (
-  appId: string,
-  input: any,
-) =>
-  request<Version>(`/api/apps/${appId}/versions`, {
-    method: "POST",
-    admin: true,
-    body: JSON.stringify(input),
-  });
 
 export const listAuditLogs = (appId: string, filters?: { actorId?: string; actionPrefix?: string; since?: number }) => {
   const q = new URLSearchParams();

@@ -13,9 +13,8 @@
  *
  * Within a priority level, ties broken by created_at DESC, then release_id.
  *
- * Backward compat: v1 /public/apps/:slug/latest still uses the legacy
- * `versions` table and is unchanged. v2 only kicks in when the app has
- * any rows in the `releases` table.
+ * `/public/apps/:slug/latest` is also wired to this resolver so Quiver has
+ * a single release-backed public lookup path.
  */
 
 import type { Context } from "hono";
