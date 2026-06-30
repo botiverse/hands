@@ -231,7 +231,6 @@ function ReleaseRow({
   onAction: () => void;
 }) {
   const toast = useToast();
-  const [showDetail, setShowDetail] = useState(false);
   const [showRollout, setShowRollout] = useState(false);
   const [showEdit, setShowEdit] = useState(false);
   const [confirmCancel, setConfirmCancel] = useState(false);
@@ -240,7 +239,6 @@ function ReleaseRow({
   const detail = useQuery({
     queryKey: ["release-detail", r.id],
     queryFn: () => getRelease(appId, r.id),
-    enabled: showDetail || showEdit,
   });
 
   const publish = useMutation({
@@ -353,15 +351,9 @@ function ReleaseRow({
         {r.id} (build {r.build_id.slice(0, 8)}…)
       </div>
       {r.changelog && (
-        <details className="text-xs text-slate-600 mt-1">
-          <summary className="cursor-pointer hover:text-slate-800">
-            {(r.changelog.split("\n")[0] ?? "").slice(0, 80)}
-            {r.changelog.split("\n").length > 1 ? "…" : ""}
-          </summary>
-          <pre className="mt-1 pl-2 border-l-2 border-slate-100 font-mono whitespace-pre-wrap text-xs max-h-32 overflow-y-auto">
-            {r.changelog}
-          </pre>
-        </details>
+        <pre className="mt-2 pl-2 border-l-2 border-slate-100 font-mono whitespace-pre-wrap text-xs text-slate-600 max-h-32 overflow-y-auto">
+          {r.changelog}
+        </pre>
       )}
       <div className="flex flex-wrap gap-2 mt-2">
         {r.status === "draft" && (
@@ -413,12 +405,6 @@ function ReleaseRow({
             {r.status === "draft" ? "Delete draft" : "Cancel release"}
           </button>
         )}
-        <button
-          className="btn-secondary text-xs"
-          onClick={() => setShowDetail(!showDetail)}
-        >
-          {showDetail ? "Hide detail" : "Show detail"}
-        </button>
       </div>
       {showRollout && (
         <div className="mt-2 pt-2 border-t border-slate-100 flex items-center gap-2 text-xs">
@@ -442,7 +428,12 @@ function ReleaseRow({
           </button>
         </div>
       )}
-      {showDetail && detail.data && (
+      {detail.isLoading && (
+        <div className="mt-2 pt-2 border-t border-slate-100 text-xs text-slate-500">
+          Loading release details...
+        </div>
+      )}
+      {detail.data && (
         <div className="mt-2 pt-2 border-t border-slate-100 text-xs">
           <div className="text-slate-500 mb-1">Build: {detail.data.build?.version_name} ({detail.data.build?.version_code})</div>
           <div className="text-slate-500 mb-1">
