@@ -1,0 +1,49 @@
+name: Publish Android SDK
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "SDK version to publish, for example 0.1.0"
+        required: true
+        default: "0.1.0"
+  push:
+    tags:
+      - "android-sdk-v*"
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.10.2"
+
+      - name: Resolve version
+        id: version
+        shell: bash
+        run: |
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            echo "value=${GITHUB_REF_NAME#android-sdk-v}" >> "$GITHUB_OUTPUT"
+          else
+            echo "value=${{ github.event.inputs.version }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build SDK
+        run: gradle -p clients/android assembleRelease
+
+      - name: Publish SDK to GitHub Packages
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gradle -p clients/android publish -PVERSION_NAME=${{ steps.version.outputs.value }}

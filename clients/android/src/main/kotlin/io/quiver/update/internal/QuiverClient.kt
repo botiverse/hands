@@ -4,6 +4,7 @@ import io.quiver.update.models.UpdateCheckResponse
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
+import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.util.concurrent.TimeUnit
@@ -11,7 +12,7 @@ import java.util.concurrent.TimeUnit
 /**
  * Low-level HTTP client for the quiver public API.
  *
- * No auth needed — the `/public/*` endpoints are intentionally unauthenticated.
+ * No auth needed; Quiver public endpoints are intentionally unauthenticated.
  * Designed to be replaceable (e.g. swap OkHttp for Ktor) without touching the
  * higher-level UpdateChecker.
  */
@@ -36,25 +37,19 @@ class QuiverClient(
         arch: String? = null,
         filetype: String = "apk",
     ): UpdateCheckResponse = withContext(Dispatchers.IO) {
-        val url = buildString {
-            append(baseUrl.trimEnd('/'))
-            append("/public/v2/apps/")
-            append(slug)
-            append("/updates/check?channel=")
-            append(channel)
-            append("&product_type=")
-            append(productType)
-            append("&current_version_code=")
-            append(currentVersionCode)
-            append("&platform=")
-            append(platform)
-            append("&filetype=")
-            append(filetype)
-            if (!arch.isNullOrBlank()) {
-                append("&arch=")
-                append(arch)
-            }
+        val urlBuilder = baseUrl.trimEnd('/').toHttpUrl().newBuilder()
+            .addPathSegments("public/v2/apps")
+            .addPathSegment(slug)
+            .addPathSegments("updates/check")
+            .addQueryParameter("channel", channel)
+            .addQueryParameter("product_type", productType)
+            .addQueryParameter("current_version_code", currentVersionCode.toString())
+            .addQueryParameter("platform", platform)
+            .addQueryParameter("filetype", filetype)
+        if (!arch.isNullOrBlank()) {
+            urlBuilder.addQueryParameter("arch", arch)
         }
+        val url = urlBuilder.build()
         val request = Request.Builder()
             .url(url)
             .header("accept", "application/json")
@@ -89,7 +84,7 @@ class QuiverClient(
     }
 }
 
-sealed class QuiverException(message: String) : RuntimeException(message) {
+sealed class QuiverException(message: String, cause: Throwable? = null) : RuntimeException(message, cause) {
     class NoSuchApp(slug: String, channel: String) :
         QuiverException("app '$slug' has no enabled version for channel '$channel'")
     class NetworkError(detail: String) :
