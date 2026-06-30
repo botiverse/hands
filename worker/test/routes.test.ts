@@ -730,103 +730,64 @@ describe("quiver route handlers — SQL smoke", () => {
   });
 });
 
-describe("quiver publish + retry — version row + r2_key required", () => {
+describe("quiver operation retry — legacy publish is not replayed", () => {
   let env: MockEnv;
 
   beforeEach(async () => {
     env = makeMockEnv();
     const now = Date.now();
-    // Seed an app + channel
     await env.DB
       .prepare("INSERT INTO apps (id, slug, name, platform, created_at) VALUES (?, ?, ?, ?, ?)")
       .bind("a1", "retry-test", "Retry Test", "android", now)
       .run();
+  });
+
+  it("marks legacy publish retries failed instead of re-creating versions", async () => {
+    const now = Date.now();
     await env.DB
-      .prepare("INSERT INTO channels (id, app_id, slug, name, created_at) VALUES (?, ?, ?, ?, ?)")
-      .bind("c1", "a1", "production", "Production", now)
+      .prepare(
+        `INSERT INTO operation_logs
+         (id, app_id, kind, status, actor, input, output, progress, retry_count, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .bind(
+        "op-publish",
+        "a1",
+        "publish",
+        "failed",
+        "tester",
+        JSON.stringify({ version_name: "1.0.0", version_code: 1 }),
+        "{}",
+        1,
+        0,
+        now,
+        now,
+      )
       .run();
-  });
 
-  it("insertVersion maps the legacy publish payload into build + asset + release rows", async () => {
-    const { insertVersion } = await import("../src/routes/versions");
-    const id = await insertVersion(env.DB as any, "a1", {
-      channel: "production",
-      version_name: "1.0.0",
-      version_code: 1,
-      package_name: "com.example",
-      signature_sha256: "abc123",
-      min_sdk: 24,
-      target_sdk: 34,
-      size_bytes: 1234,
-      file_hash: "deadbeef",
-      r2_key: "apps/a1/pending/deadbeef.apk",
-    });
+    const { handleRetryOperation } = await import("../src/routes/operations");
+    const response = await handleRetryOperation({
+      env,
+      req: { param: (name: string) => (name === "opId" ? "op-publish" : "") },
+      json: (body: unknown, status = 200) =>
+        new Response(JSON.stringify(body), { status }),
+    } as any);
 
-    expect(id).toMatch(/^[0-9a-f-]{36}$/);
-    const release = await env.DB
-      .prepare("SELECT id, build_id, status, is_full FROM releases WHERE id = ?")
-      .bind(id)
-      .first();
-    expect(release).toMatchObject({ id, status: "active", is_full: 1 });
+    expect(response.status).toBe(400);
+    const body = await response.json() as {
+      status: string;
+      error: string;
+      retry_count: number;
+    };
+    expect(body.status).toBe("failed");
+    expect(body.retry_count).toBe(1);
+    expect(body.error).toContain("create a new release from the Releases tab");
 
-    const build = await env.DB
-      .prepare("SELECT id, version_name, version_code, status FROM builds WHERE id = ?")
-      .bind((release as any).build_id)
-      .first();
-    expect(build).toMatchObject({
-      version_name: "1.0.0",
-      version_code: 1,
-      status: "succeeded",
-    });
-
-    const asset = await env.DB
-      .prepare("SELECT r2_key, file_hash, signature FROM build_assets WHERE build_id = ?")
-      .bind((release as any).build_id)
-      .first();
-    expect(asset).toMatchObject({
-      r2_key: "apps/a1/pending/deadbeef.apk",
-      file_hash: "deadbeef",
-      signature: "abc123",
-    });
-  });
-
-  it("insertVersion re-uses an explicit build id (retry-friendly)", async () => {
-    const { insertVersion } = await import("../src/routes/versions");
-    const fixedId = "11111111-1111-1111-1111-111111111111";
-    const releaseId = await insertVersion(
-      env.DB as any,
-      "a1",
-      {
-        channel: "production",
-        version_name: "2.0.0",
-        version_code: 2,
-        package_name: "com.example",
-        signature_sha256: "sig",
-        size_bytes: 1,
-        file_hash: "hash",
-        r2_key: "apps/a1/pending/hash.apk",
-      },
-      fixedId,
-    );
-    const release = await env.DB
-      .prepare("SELECT id, build_id FROM releases WHERE id = ?")
-      .bind(releaseId)
-      .first();
-    expect(release).toMatchObject({ build_id: fixedId });
-  });
-
-  it("versions.r2_key is NOT NULL in schema (matches production D1)", async () => {
-    // Schema-level guard: if someone removes NOT NULL on r2_key in the future,
-    // this test will fail and remind them that the create-version handler
-    // depends on r2_key being required.
-    const cols = await env.DB
-      .prepare("PRAGMA table_info(versions)")
-      .bind()
+    const releases = await env.DB
+      .prepare("SELECT id FROM releases WHERE app_id = ?")
+      .bind("a1")
       .all();
-    const r2KeyCol = (cols.results as Array<{ name: string; notnull: number }>)
-      .find((c) => c.name === "r2_key");
-    expect(r2KeyCol).toBeDefined();
-    expect(r2KeyCol!.notnull).toBe(1);
+    expect(releases.results).toHaveLength(0);
   });
 });
 

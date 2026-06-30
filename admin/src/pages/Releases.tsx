@@ -170,8 +170,8 @@ export function Releases({ appId }: { appId: string }) {
 
       {filtered.length === 0 && !releases.isLoading && (
         <p className="text-slate-500 text-sm">
-          No releases match your filter. Create a build first via Versions tab
-          and promote it to a release.
+          No releases match your filter. Create a new release and upload the
+          required assets from this tab.
         </p>
       )}
 

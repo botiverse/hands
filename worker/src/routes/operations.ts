@@ -14,7 +14,6 @@
  */
 
 import type { Context } from "hono";
-import { currentActor } from "../middleware/auth";
 
 export interface OperationLog {
   id: string;
@@ -194,76 +193,20 @@ export async function handleRetryOperation(c: Context<{ Bindings: Env }>) {
     completed_at: null,
   });
 
-  // parse + upload ops don't store the original bytes (only metadata),
-  // so they can't be retried server-side — the user must re-trigger from
-  // the UI (Upload dialog). We mark them back to failed with a clear hint.
-  if (existing.kind === "parse" || existing.kind === "upload") {
+  // Historical parse/upload/publish ops don't store enough source data to
+  // safely replay the current release-backed workflow, so the user must
+  // re-trigger from the current release UI.
+  if (
+    existing.kind === "parse" ||
+    existing.kind === "upload" ||
+    existing.kind === "publish"
+  ) {
     const retried = await updateOperation(c.env.DB, id, {
       status: "failed",
-      error: `retry not supported for kind='${existing.kind}'; re-trigger from admin UI`,
+      error: `retry not supported for legacy kind='${existing.kind}'; create a new release from the Releases tab`,
       completed_at: Date.now(),
     });
     return c.json(retried, 400);
-  }
-
-  // publish ops store the full metadata JSON in `input` — re-run insertVersion.
-  if (existing.kind === "publish") {
-    if (!existing.app_id) {
-      const failed = await updateOperation(c.env.DB, id, {
-        status: "failed",
-        error: "publish op has no app_id; cannot retry",
-        completed_at: Date.now(),
-      });
-      return c.json(failed, 400);
-    }
-    try {
-      const input = JSON.parse(existing.input) as {
-        channel: string;
-        version_name: string;
-        version_code: number;
-        package_name: string;
-        signature_sha256: string;
-        min_sdk?: number;
-        target_sdk?: number;
-        size_bytes: number;
-        file_hash: string;
-        r2_key: string;
-      };
-      const { insertVersion } = await import("./versions");
-      const newVersionId = await insertVersion(
-        c.env.DB,
-        existing.app_id,
-        input,
-      );
-      await c.env.DB
-        .prepare(
-          "INSERT INTO audit_logs (id, app_id, action, actor, payload, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-        )
-        .bind(
-          crypto.randomUUID(),
-          existing.app_id,
-          "version.create",
-          currentActor(c),
-          JSON.stringify({ ...input, retried_from: existing.id }),
-          Date.now(),
-        )
-        .run();
-      const success = await updateOperation(c.env.DB, id, {
-        status: "success",
-        progress: 1,
-        output: JSON.stringify({ version_id: newVersionId }),
-        completed_at: Date.now(),
-      });
-      return c.json(success);
-    } catch (e) {
-      const failed = await updateOperation(c.env.DB, id, {
-        status: "failed",
-        error: (e as Error).message,
-        progress: 1,
-        completed_at: Date.now(),
-      });
-      return c.json(failed, 500);
-    }
   }
 
   // Unknown kind — fall back to state reset.

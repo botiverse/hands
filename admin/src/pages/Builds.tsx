@@ -18,7 +18,6 @@ import {
   type BuildAsset,
 } from "../lib/api";
 import { useToast } from "../components/Toast";
-// Legacy UploadDialog removed — create releases from the Releases tab.
 
 export function Builds({ appId }: { appId: string }) {
   const qc = useQueryClient();
@@ -41,7 +40,6 @@ export function Builds({ appId }: { appId: string }) {
   const thisApp = app.data?.apps.find((a) => a.id === appId);
   const [expandedBuildId, setExpandedBuildId] = useState<string | null>(null);
   const [prepareBuild, setPrepareBuild] = useState<Build | null>(null);
-  // (legacy UploadDialog state removed; releases are created from the Releases tab)
 
   return (
     <div className="p-4">
@@ -76,7 +74,7 @@ export function Builds({ appId }: { appId: string }) {
 
       {builds.data && builds.data.builds.length === 0 && !builds.isLoading && (
         <p className="text-slate-500 text-sm">
-          No builds yet. Upload a file via the Versions tab to create one.
+          No builds yet. Create a release from the Releases tab to upload assets.
         </p>
       )}
 
@@ -150,7 +148,6 @@ export function Builds({ appId }: { appId: string }) {
           }}
         />
       )}
-      {/* Legacy UploadDialog removed; create releases from the Releases tab. */}
     </div>
   );
 }

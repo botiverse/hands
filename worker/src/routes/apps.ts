@@ -2,7 +2,7 @@
  * /api/apps — CRUD on app definitions
  *
  * An "app" = a logical application (e.g., `myapp-android`).
- * Each app has many versions and channels.
+ * Each app has channels, builds, and releases.
  */
 
 import type { Context } from "hono";
