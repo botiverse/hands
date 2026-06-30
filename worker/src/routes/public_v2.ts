@@ -28,6 +28,38 @@ interface ScopedResolution {
   release_created_at: number;
 }
 
+type PublicAssetResponse = {
+  platform: string;
+  arch: string | null;
+  variant: string | null;
+  filetype: string;
+  size_bytes: number;
+  signature: string | null;
+  download_url: string;
+};
+
+type PublicLatestResponse = {
+  app: { slug: string; platform: string };
+  channel: string;
+  build: {
+    id: string;
+    version: string;
+    version_code: number;
+    release_type: string;
+    changelog: string | null;
+    force_update: boolean;
+    released_at: number;
+  };
+  assets: PublicAssetResponse[];
+  scoped: {
+    scope_type: "full" | "platform" | "user_cohort" | "ip_range";
+    scope_value: string;
+    release_id: string;
+  };
+  fallback_release: unknown | null;
+  expires_in: number;
+};
+
 const PRIORITY = {
   ip_range: 4,
   user_cohort: 3,
@@ -37,10 +69,10 @@ const PRIORITY = {
 
 export async function handlePublicV2Latest(c: Context<{ Bindings: Env }>) {
   const slug = c.req.param("slug");
-  const channel = c.req.query("channel") ?? "production";
+  const channel = c.req.query("channel") ?? "main";
   const productType = c.req.query("product_type"); // optional; if null, picks most recent across all
   const cohort = c.req.header("X-Quiver-Cohort") ?? null;
-  const clientPlatform = c.req.header("X-Quiver-Client-Platform") ?? null;
+  const clientPlatform = effectiveClientPlatform(c);
   // cf.clientIp is server-only (we never trust X-Forwarded-For here).
   const clientIp =
     (c.req.raw?.cf as { clientIp?: string } | undefined)?.clientIp ?? null;
@@ -211,12 +243,9 @@ export async function handlePublicV2Latest(c: Context<{ Bindings: Env }>) {
 
   const filteredAssets = clientPlatform
     ? assets.results.filter((a) => {
-        if (a.platform === clientPlatform) return true;
-        // Some clients send "android-arm64-v8a" — match the arch tuple too.
-        if (clientPlatform.includes("-")) {
-          const [plat, arch] = clientPlatform.split("-");
-          if (a.platform === plat && a.arch === arch) return true;
-        }
+        const parsed = splitPlatformArch(clientPlatform);
+        if (a.platform === parsed.platform && parsed.arch === null) return true;
+        if (a.platform === parsed.platform && a.arch === parsed.arch) return true;
         return false;
       })
     : assets.results;
@@ -258,6 +287,7 @@ export async function handlePublicV2Latest(c: Context<{ Bindings: Env }>) {
       version_code: build.version_code,
       release_type: "stable",
       changelog: build.changelog,
+      force_update: Boolean(build.should_force_update),
       released_at: build.completed_at ?? build.created_at,
     },
     assets: assetsWithUrls,
@@ -269,6 +299,142 @@ export async function handlePublicV2Latest(c: Context<{ Bindings: Env }>) {
     fallback_release: fallbackRelease,
     expires_in: ttl,
   });
+}
+
+export async function handlePublicV2UpdateCheck(c: Context<{ Bindings: Env }>) {
+  const currentVersionCodeRaw =
+    c.req.query("current_version_code") ??
+    c.req.query("currentVersionCode") ??
+    c.req.header("X-Quiver-Current-Version-Code");
+  const currentVersionCode = Number(currentVersionCodeRaw);
+  if (
+    !currentVersionCodeRaw ||
+    !Number.isFinite(currentVersionCode) ||
+    currentVersionCode < 0
+  ) {
+    return c.json(
+      { error: "current_version_code must be a non-negative number" },
+      400,
+    );
+  }
+
+  const latestResponse = await handlePublicV2Latest(c);
+  if (latestResponse.status !== 200) return latestResponse;
+  const latest = (await latestResponse.json()) as PublicLatestResponse;
+
+  if (latest.build.version_code <= currentVersionCode) {
+    return c.json({
+      update_available: false,
+      app: latest.app,
+      channel: latest.channel,
+      current_version_code: currentVersionCode,
+      latest_version_code: latest.build.version_code,
+      scoped: latest.scoped,
+      checked_at: Date.now(),
+    });
+  }
+
+  const requestedPlatform =
+    c.req.query("platform") ??
+    c.req.query("client_platform") ??
+    c.req.header("X-Quiver-Client-Platform") ??
+    latest.app.platform;
+  const requestedArch =
+    c.req.query("arch") ??
+    c.req.header("X-Quiver-Client-Arch") ??
+    splitPlatformArch(requestedPlatform).arch;
+  const requestedFiletype = c.req.query("filetype") ?? "apk";
+  const asset = selectBestAsset(latest.assets, {
+    platform: requestedPlatform,
+    arch: requestedArch,
+    filetype: requestedFiletype,
+  });
+  if (!asset) {
+    return c.json(
+      {
+        error: "matched release has no compatible asset",
+        app: latest.app,
+        channel: latest.channel,
+        build: latest.build,
+        requested: {
+          platform: requestedPlatform,
+          arch: requestedArch,
+          filetype: requestedFiletype,
+        },
+      },
+      404,
+    );
+  }
+
+  return c.json({
+    update_available: true,
+    app: latest.app,
+    channel: latest.channel,
+    current_version_code: currentVersionCode,
+    latest: {
+      build_id: latest.build.id,
+      version: latest.build.version,
+      version_code: latest.build.version_code,
+      changelog: latest.build.changelog,
+      force_update: latest.build.force_update,
+      released_at: latest.build.released_at,
+    },
+    asset,
+    scoped: latest.scoped,
+    expires_in: latest.expires_in,
+  });
+}
+
+export function selectBestAsset(
+  assets: PublicAssetResponse[],
+  requested: {
+    platform: string | null;
+    arch: string | null;
+    filetype: string;
+  },
+): PublicAssetResponse | null {
+  const filetypeMatches = assets.filter((a) => a.filetype === requested.filetype);
+  if (filetypeMatches.length === 0) return null;
+  const pool = filetypeMatches;
+  const parsed = splitPlatformArch(requested.platform);
+  const platform = parsed.platform;
+  const arch = requested.arch ?? parsed.arch;
+  const platformMatches = platform
+    ? pool.filter((a) => a.platform === platform)
+    : pool;
+  const candidates = platformMatches.length > 0 ? platformMatches : pool;
+  if (arch) {
+    const archMatch = candidates.find((a) => a.arch === arch);
+    if (archMatch) return archMatch;
+  }
+  return candidates.find((a) => a.arch === null) ?? candidates[0] ?? null;
+}
+
+function splitPlatformArch(value: string | null): {
+  platform: string | null;
+  arch: string | null;
+} {
+  if (!value) return { platform: null, arch: null };
+  const knownPlatforms = ["android", "darwin", "win32", "linux", "ios"];
+  for (const platform of knownPlatforms) {
+    if (value === platform) return { platform, arch: null };
+    const prefix = `${platform}-`;
+    if (value.startsWith(prefix)) {
+      return { platform, arch: value.slice(prefix.length) || null };
+    }
+  }
+  return { platform: value, arch: null };
+}
+
+function effectiveClientPlatform(c: Context<{ Bindings: Env }>): string | null {
+  const explicit =
+    c.req.header("X-Quiver-Client-Platform") ??
+    c.req.query("client_platform");
+  if (explicit) return explicit;
+  const platform = c.req.query("platform");
+  const arch = c.req.query("arch") ?? c.req.header("X-Quiver-Client-Arch");
+  if (platform && arch) return `${platform}-${arch}`;
+  return platform ?? null;
 }
 
 function matchesScope(

@@ -1,11 +1,11 @@
 package io.quiver.update
 
+import android.app.DownloadManager
 import android.content.Context
 import android.content.IntentFilter
 import io.quiver.update.installer.ApkInstaller
 import io.quiver.update.internal.QuiverClient
-import io.quiver.update.models.LatestVersionResponse
-import io.quiver.update.models.Version
+import io.quiver.update.models.UpdateCheckResponse
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -36,19 +36,23 @@ import kotlinx.coroutines.launch
  * ```
  *
  * Behavior:
- *  1. Hits `GET /public/apps/{slug}/latest?channel=production`.
- *  2. If the response's version_code is strictly greater than
- *     [installedVersionCode], queues a download via DownloadManager.
- *  3. Registers a [BroadcastReceiver] that fires ACTION_INSTALL_PACKAGE
+ *  1. Hits `GET /public/v2/apps/{slug}/updates/check`.
+ *  2. The server resolves scope/rollout, compares version_code, and picks
+ *     one APK asset for this device.
+ *  3. If `update_available` is true, queues a download via DownloadManager.
+ *  4. Registers a [BroadcastReceiver] that fires ACTION_INSTALL_PACKAGE
  *     when the download finishes.
- *  4. If no update is available, returns silently.
+ *  5. If no update is available, returns silently.
  */
 class UpdateChecker(
     private val context: Context,
     private val baseUrl: String,
     private val appSlug: String,
     private val installedVersionCode: Long,
-    private val channel: String = "production",
+    private val channel: String = "main",
+    private val productType: String = "android-apk",
+    private val platform: String = "android",
+    private val arch: String? = null,
     private val client: QuiverClient = QuiverClient(baseUrl),
     private val installer: ApkInstaller = ApkInstaller(context),
 ) {
@@ -62,12 +66,19 @@ class UpdateChecker(
      * For shorter-lived receivers, use [checkForUpdate] and manage
      * installation yourself.
      *
-     * @return LatestVersionResponse (always, even when no update) so the
+     * @return UpdateCheckResponse (always, even when no update) so the
      *         caller can display a "you are up to date" message.
      */
-    suspend fun checkAndInstall(): LatestVersionResponse {
-        val response = client.getLatestVersion(appSlug, channel)
-        if (response.version.isNewerThan(installedVersionCode)) {
+    suspend fun checkAndInstall(): UpdateCheckResponse {
+        val response = client.checkForUpdate(
+            slug = appSlug,
+            channel = channel,
+            currentVersionCode = installedVersionCode,
+            productType = productType,
+            platform = platform,
+            arch = arch,
+        )
+        if (response.requireUpdate() != null) {
             installUpdate(response)
         }
         return response
@@ -90,11 +101,12 @@ class UpdateChecker(
         }
     }
 
-    private fun installUpdate(response: LatestVersionResponse) {
+    private fun installUpdate(response: UpdateCheckResponse) {
+        val (latest, asset) = response.requireUpdate() ?: return
         val downloadId = installer.downloadAndInstall(
-            downloadUrl = response.download_url,
-            fileName = "quiver-${appSlug}-${response.version.version_code}.apk",
-            title = "${response.app.slug} v${response.version.version_name}",
+            downloadUrl = asset.download_url,
+            fileName = "quiver-${appSlug}-${latest.version_code}.apk",
+            title = "${response.app.slug} v${latest.version}",
         )
         val receiver = installer.createInstallReceiver(downloadId)
         // Register on Application context so the receiver survives Activity death.
@@ -104,10 +116,5 @@ class UpdateChecker(
                 IntentFilter(DownloadManager.ACTION_DOWNLOAD_COMPLETE),
             )
         }
-    }
-
-    companion object {
-        // Re-export for convenience.
-        private const val DownloadManager = android.app.DownloadManager.ACTION_DOWNLOAD_COMPLETE
     }
 }

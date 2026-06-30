@@ -1396,7 +1396,13 @@ describe("quiver public API v2 — scope resolution", () => {
     releaseId: string,
     buildId: string,
     scopes: Array<[string, string]>,
-    opts: { createdAt?: number; productType?: string } = {},
+    opts: {
+      createdAt?: number;
+      productType?: string;
+      versionCode?: number;
+      versionName?: string;
+      shouldForceUpdate?: number;
+    } = {},
   ) {
     const now = opts.createdAt ?? Date.now();
     await env.DB.prepare(
@@ -1411,13 +1417,13 @@ describe("quiver public API v2 — scope resolution", () => {
         "ch-scope-prod",
         opts.productType ?? "android-apk",
         "stable",
-        "1.0.0",
-        1,
+        opts.versionName ?? "1.0.0",
+        opts.versionCode ?? 1,
         "web",
         "succeeded",
         "{}",
         "{}",
-        0,
+        opts.shouldForceUpdate ?? 0,
         "{}",
         now,
         now,
@@ -1452,6 +1458,64 @@ describe("quiver public API v2 — scope resolution", () => {
         .bind(crypto.randomUUID(), releaseId, st, sv, now)
         .run();
     }
+  }
+
+  async function seedAsset(
+    env: any,
+    buildId: string,
+    assetId: string,
+    opts: {
+      platform?: string;
+      arch?: string | null;
+      filetype?: string;
+      sizeBytes?: number;
+    } = {},
+  ) {
+    await env.DB.prepare(
+      `INSERT INTO build_assets (id, build_id, platform, arch, variant, filetype, r2_key, file_hash,
+                                 size_bytes, signature, metadata_json, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    )
+      .bind(
+        assetId,
+        buildId,
+        opts.platform ?? "android",
+        opts.arch ?? null,
+        null,
+        opts.filetype ?? "apk",
+        `apps/app-scope/${assetId}.apk`,
+        `${assetId}-hash`,
+        opts.sizeBytes ?? 42,
+        `${assetId}-sig`,
+        "{}",
+        Date.now(),
+      )
+      .run();
+  }
+
+  function makePublicContext(
+    env: MockEnv,
+    query: Record<string, string | undefined>,
+    headers: Record<string, string | undefined> = {},
+  ) {
+    return {
+      env,
+      req: {
+        param: (name: string) => (name === "slug" ? "scope-app" : ""),
+        query: (name: string) => query[name],
+        header: (name: string) => headers[name],
+        raw: { cf: { clientIp: "10.0.0.5" } },
+      },
+      json: (data: unknown, status = 200) =>
+        new Response(JSON.stringify(data), {
+          status,
+          headers: { "content-type": "application/json" },
+        }),
+    } as any;
+  }
+
+  async function responseJson<T>(response: Response): Promise<T> {
+    return (await response.json()) as T;
   }
 
   // ------------------------------------------------------------------
@@ -1648,5 +1712,123 @@ describe("quiver public API v2 — scope resolution", () => {
     })[0];
     expect(winner).toBeDefined();
     expect(winner.release_id).toBe("rel-new");
+  });
+
+  it("selectBestAsset prefers requested Android arch without splitting it incorrectly", async () => {
+    const { selectBestAsset } = await import("../src/routes/public_v2");
+    const asset = selectBestAsset(
+      [
+        {
+          platform: "android",
+          arch: "armeabi-v7a",
+          variant: null,
+          filetype: "apk",
+          size_bytes: 1,
+          signature: null,
+          download_url: "/v7.apk",
+        },
+        {
+          platform: "android",
+          arch: "arm64-v8a",
+          variant: null,
+          filetype: "apk",
+          size_bytes: 1,
+          signature: null,
+          download_url: "/arm64.apk",
+        },
+      ],
+      { platform: "android-arm64-v8a", arch: null, filetype: "apk" },
+    );
+    expect(asset?.download_url).toBe("/arm64.apk");
+  });
+
+  it("updates/check returns no update without exposing assets when current version is latest", async () => {
+    const env = makeEnv();
+    const { handlePublicV2UpdateCheck } = await import("../src/routes/public_v2");
+    await seedRelease(env, "rel-current", "build-current", [["full", "all"]], {
+      versionCode: 10,
+      versionName: "1.0.10",
+    });
+    await seedAsset(env, "build-current", "asset-current", { arch: "arm64-v8a" });
+
+    const response = await handlePublicV2UpdateCheck(
+      makePublicContext(env, {
+        channel: "production",
+        product_type: "android-apk",
+        current_version_code: "10",
+        platform: "android",
+        arch: "arm64-v8a",
+      }),
+    );
+    expect(response.status).toBe(200);
+    const body = await responseJson<any>(response);
+    expect(body).toMatchObject({
+      update_available: false,
+      current_version_code: 10,
+      latest_version_code: 10,
+    });
+    expect(body.asset).toBeUndefined();
+  });
+
+  it("updates/check compares server-side and returns one compatible apk asset", async () => {
+    const env = makeEnv();
+    const { handlePublicV2UpdateCheck } = await import("../src/routes/public_v2");
+    await seedRelease(env, "rel-latest", "build-latest", [["platform", "android-arm64-v8a"]], {
+      versionCode: 11,
+      versionName: "1.0.11",
+      shouldForceUpdate: 1,
+    });
+    await seedAsset(env, "build-latest", "asset-v7", { arch: "armeabi-v7a" });
+    await seedAsset(env, "build-latest", "asset-arm64", { arch: "arm64-v8a", sizeBytes: 99 });
+
+    const response = await handlePublicV2UpdateCheck(
+      makePublicContext(env, {
+        channel: "production",
+        product_type: "android-apk",
+        current_version_code: "10",
+        platform: "android",
+        arch: "arm64-v8a",
+      }),
+    );
+    expect(response.status).toBe(200);
+    const body = await responseJson<any>(response);
+    expect(body).toMatchObject({
+      update_available: true,
+      current_version_code: 10,
+      latest: {
+        version: "1.0.11",
+        version_code: 11,
+        force_update: true,
+      },
+      asset: {
+        platform: "android",
+        arch: "arm64-v8a",
+        filetype: "apk",
+        size_bytes: 99,
+      },
+    });
+    expect(body.asset.download_url).toContain("asset-arm64.apk");
+  });
+
+  it("updates/check returns 404 when an update has no compatible requested filetype", async () => {
+    const env = makeEnv();
+    const { handlePublicV2UpdateCheck } = await import("../src/routes/public_v2");
+    await seedRelease(env, "rel-latest", "build-latest", [["full", "all"]], {
+      versionCode: 11,
+    });
+    await seedAsset(env, "build-latest", "asset-aab", { filetype: "aab" });
+
+    const response = await handlePublicV2UpdateCheck(
+      makePublicContext(env, {
+        channel: "production",
+        product_type: "android-apk",
+        current_version_code: "10",
+        platform: "android",
+        filetype: "apk",
+      }),
+    );
+    expect(response.status).toBe(404);
+    const body = await responseJson<any>(response);
+    expect(body.error).toBe("matched release has no compatible asset");
   });
 });

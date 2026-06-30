@@ -1,7 +1,6 @@
 # Quiver Public API Reference
 
-Status: **draft v1** (X.1.5 — cross-cutting docs; reflects current public contract as of 2026-06-28)
-Caveat: "current contract / may expand with P3.3" per @Codex-Kuikly-KMP专家
+Status: **draft v2** (X.1.5 — cross-cutting docs; reflects current public contract as of 2026-06-30)
 
 Base URL: `https://quiver-worker.artin.workers.dev`
 
@@ -26,17 +25,92 @@ All `/public/*` and `/api/invites/:token` (GET) endpoints:
 - Errors: returned as JSON `{ "error": "..." }` with appropriate
   HTTP status code (400 / 401 / 403 / 404 / 500). Body is **always** JSON.
 
-The public API does NOT use the new `builds` / `releases` / `release_scopes`
-tables directly in v1 — it reads from the legacy `versions` table. This is a
-deliberate compat choice (Phase 2 backfill keeps the two models in sync).
-Once Phase 3.3 (P3.3) lands, public reads will go through the releases
-table with full scope resolution (full / platform / ip_range / cohort).
+The v2 public API reads from `builds` / `releases` / `release_scopes` and
+performs server-side scope resolution (full / platform / ip_range / cohort).
+The legacy `/public/apps/:slug/latest` endpoint remains for compatibility.
 
 ---
 
 ## 2. Endpoints
 
-### 2.1 `GET /public/apps/:slug/latest`
+### 2.1 `GET /public/v2/apps/:slug/updates/check`
+
+SDK-friendly update check. The server resolves the best active release for the
+client, compares the caller's current version code, selects one compatible
+asset, and returns a flat update/no-update decision.
+
+**Auth**: none.
+
+**Path params**:
+- `slug` (required) — app slug, for example `myapp-android`.
+
+**Query params**:
+- `current_version_code` (required) — versionCode installed on the client.
+- `channel` (optional, default `production`) — channel slug.
+- `product_type` (optional, default for Android SDK is `android-apk`).
+- `platform` (optional) — platform or platform+arch tuple, e.g. `android` or `android-arm64-v8a`.
+- `arch` (optional) — architecture used for asset selection, e.g. `arm64-v8a`.
+- `filetype` (optional, default `apk`) — requested asset file type.
+
+**Headers**:
+- `X-Quiver-Client-Platform` — header alternative to `platform`; also used for platform-scoped release matching.
+- `X-Quiver-Client-Arch` — header alternative to `arch`.
+- `X-Quiver-Cohort` — optional cohort token for `user_cohort` scopes.
+
+**Update available** (200):
+```json
+{
+  "update_available": true,
+  "app": { "slug": "myapp-android", "platform": "android" },
+  "channel": "main",
+  "current_version_code": 42,
+  "latest": {
+    "build_id": "...",
+    "version": "1.2.4",
+    "version_code": 43,
+    "changelog": "Bug fixes",
+    "force_update": false,
+    "released_at": 1782560000000
+  },
+  "asset": {
+    "platform": "android",
+    "arch": "arm64-v8a",
+    "variant": null,
+    "filetype": "apk",
+    "size_bytes": 23217680,
+    "signature": "d7b17c41...",
+    "download_url": "/api/r2/apps%2F20d2dc58-...%2Fpending%2F...apk?expires=1782563600"
+  },
+  "scoped": { "scope_type": "full", "scope_value": "all", "release_id": "..." },
+  "expires_in": 3600
+}
+```
+
+**No update** (200):
+```json
+{
+  "update_available": false,
+  "app": { "slug": "myapp-android", "platform": "android" },
+  "channel": "main",
+  "current_version_code": 43,
+  "latest_version_code": 43,
+  "scoped": { "scope_type": "full", "scope_value": "all", "release_id": "..." },
+  "checked_at": 1782560000000
+}
+```
+
+**Errors**:
+- `400` `{ "error": "current_version_code must be a non-negative number" }`
+- `404` app/channel/release/scope/compatible asset not found
+- `500` matched release data is inconsistent
+
+### 2.2 `GET /public/v2/apps/:slug/latest`
+
+General release resolution endpoint. Returns one matched release plus all
+compatible assets for debugging and non-SDK clients. Prefer
+`/updates/check` for Android SDK flows.
+
+### 2.3 `GET /public/apps/:slug/latest`
 
 Get the latest enabled version of an app for a given channel.
 
@@ -89,7 +163,7 @@ Get the latest enabled version of an app for a given channel.
   `download_url` is the unix timestamp of expiry.
 - Worker signs the URL on every request (no client-side signing).
 
-### 2.2 `GET /public/apps/:slug/channels`
+### 2.4 `GET /public/apps/:slug/channels`
 
 List the channels available for an app.
 
@@ -120,7 +194,7 @@ List the channels available for an app.
 - Channel `slug` is what clients pass to `?channel=...` on the latest
   endpoint.
 
-### 2.3 `GET /api/invites/:token`
+### 2.5 `GET /api/invites/:token`
 
 Get the details of an invite (no auth required). Public because the
 recipient may not yet be logged in.
@@ -157,7 +231,7 @@ recipient may not yet be logged in.
 - The `token` IS the invite id (UUID). They are the same value.
 - Does not return the raw `token` (it would be redundant).
 
-### 2.4 `POST /api/invites/:token/accept`
+### 2.6 `POST /api/invites/:token/accept`
 
 Accept an invite. Auth required (must be logged in as some Raft principal).
 
@@ -188,7 +262,7 @@ JSON if not authenticated.
   invite's `role`.
 - Updates `invites.status='accepted'`, `accepted_at=now`, `accepted_by=account_id`.
 
-### 2.5 `GET /api/r2/:key` (download proxy)
+### 2.7 `GET /api/r2/:key` (download proxy)
 
 Internal proxy endpoint used by `download_url` above. Not a true public
 API but exposed for client downloads.
@@ -220,12 +294,16 @@ must obtain a fresh URL via the `latest` endpoint).
 
 ```kotlin
 // Pseudocode
-val response = httpClient.get("https://quiver-worker.artin.workers.dev/public/apps/$slug/latest?channel=production")
-val version = response.body<JsonObject>()
-val latest = version.getJsonObject("version")!!
-val downloadUrl = version.getString("download_url")!!
+val response = httpClient.get(
+    "https://quiver-worker.artin.workers.dev/public/v2/apps/$slug/updates/check" +
+        "?channel=main&product_type=android-apk&current_version_code=$currentInstalledVersionCode" +
+        "&platform=android&arch=arm64-v8a"
+)
+val check = response.body<JsonObject>()
 
-if (latest.getInt("version_code") > currentInstalledVersionCode) {
+if (check.getBoolean("update_available")) {
+    val asset = check.getJsonObject("asset")!!
+    val downloadUrl = asset.getString("download_url")!!
     // Start DownloadManager with downloadUrl
     downloadManager.enqueue(Request(Uri.parse(downloadUrl)))
 }

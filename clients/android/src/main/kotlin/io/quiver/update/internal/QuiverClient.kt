@@ -1,6 +1,6 @@
 package io.quiver.update.internal
 
-import io.quiver.update.models.LatestVersionResponse
+import io.quiver.update.models.UpdateCheckResponse
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
@@ -21,17 +21,40 @@ class QuiverClient(
     private val json: Json = defaultJson(),
 ) {
     /**
-     * Fetch the latest enabled version of [slug] for [channel].
+     * Ask the server whether this client should update.
      *
      * @throws QuiverException.NoSuchApp        if 404
      * @throws QuiverException.NetworkError     on IO failure
      * @throws QuiverException.InvalidResponse  on parse failure
      */
-    suspend fun getLatestVersion(
+    suspend fun checkForUpdate(
         slug: String,
-        channel: String = "production",
-    ): LatestVersionResponse = withContext(Dispatchers.IO) {
-        val url = "$baseUrl/public/apps/$slug/latest?channel=$channel"
+        channel: String = "main",
+        currentVersionCode: Long,
+        productType: String = "android-apk",
+        platform: String = "android",
+        arch: String? = null,
+        filetype: String = "apk",
+    ): UpdateCheckResponse = withContext(Dispatchers.IO) {
+        val url = buildString {
+            append(baseUrl.trimEnd('/'))
+            append("/public/v2/apps/")
+            append(slug)
+            append("/updates/check?channel=")
+            append(channel)
+            append("&product_type=")
+            append(productType)
+            append("&current_version_code=")
+            append(currentVersionCode)
+            append("&platform=")
+            append(platform)
+            append("&filetype=")
+            append(filetype)
+            if (!arch.isNullOrBlank()) {
+                append("&arch=")
+                append(arch)
+            }
+        }
         val request = Request.Builder()
             .url(url)
             .header("accept", "application/json")
@@ -43,7 +66,7 @@ class QuiverClient(
 
             when (response.code) {
                 200 -> try {
-                    json.decodeFromString(LatestVersionResponse.serializer(), body)
+                    json.decodeFromString(UpdateCheckResponse.serializer(), body)
                 } catch (e: Exception) {
                     throw QuiverException.InvalidResponse(body, e)
                 }

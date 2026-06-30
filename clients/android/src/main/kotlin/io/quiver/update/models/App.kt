@@ -2,7 +2,7 @@ package io.quiver.update.models
 
 import kotlinx.serialization.Serializable
 
-/** Top-level app metadata returned by `/public/apps/:slug/latest`. */
+/** Top-level app metadata returned by Quiver public update endpoints. */
 @Serializable
 data class App(
     val slug: String,
