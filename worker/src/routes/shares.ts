@@ -269,6 +269,7 @@ function htmlResponse(html: string, status = 200): Response {
 
 function renderSharePage(row: SharePageRow, downloadUrl: string): string {
   const title = `${row.app_slug} ${row.version_name} (${row.version_code})`;
+  const expiresIso = new Date(row.expires_at).toISOString();
   return `<!doctype html>
 <html lang="en">
 <head>
@@ -303,11 +304,27 @@ function renderSharePage(row: SharePageRow, downloadUrl: string): string {
       <dt>Artifact</dt><dd>${escapeHtml(row.filetype.toUpperCase())} · ${formatBytes(row.size_bytes)}</dd>
       <dt>Platform</dt><dd>${escapeHtml([row.platform, row.arch, row.variant].filter(Boolean).join(" / "))}</dd>
       <dt>Checksum</dt><dd>${escapeHtml(row.file_hash)}</dd>
-      <dt>Expires</dt><dd>${escapeHtml(new Date(row.expires_at).toISOString())}</dd>
+      <dt>Expires</dt><dd><time id="expires-at" datetime="${escapeAttribute(expiresIso)}" data-expires-at="${row.expires_at}">${escapeHtml(expiresIso)}</time></dd>
     </dl>
     <a class="download" href="${escapeAttribute(downloadUrl)}">Download APK</a>
     ${row.changelog ? `<div class="notes">${escapeHtml(row.changelog)}</div>` : ""}
   </main>
+  <script>
+    (() => {
+      const el = document.getElementById("expires-at");
+      const ms = Number(el?.dataset.expiresAt);
+      if (!el || !Number.isFinite(ms)) return;
+      try {
+        el.textContent = new Intl.DateTimeFormat(undefined, {
+          dateStyle: "medium",
+          timeStyle: "short",
+          timeZoneName: "short",
+        }).format(new Date(ms));
+      } catch {
+        el.textContent = new Date(ms).toLocaleString();
+      }
+    })();
+  </script>
 </body>
 </html>`;
 }

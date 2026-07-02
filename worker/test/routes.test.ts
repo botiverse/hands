@@ -1988,6 +1988,9 @@ describe("quiver public API v2 — scope resolution", () => {
     expect(html).toContain("arm64-v8a");
     expect(html).toContain("/public/r2/apps%2Fapp-scope%2Fasset-share.apk");
     expect(html).toContain("&amp;sig=");
+    expect(html).toContain('id="expires-at"');
+    expect(html).toContain("data-expires-at=");
+    expect(html).toContain("Intl.DateTimeFormat");
   });
 
   it("public release shares stop working after revoke", async () => {
