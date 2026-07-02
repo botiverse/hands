@@ -59,6 +59,8 @@ type PublicLatestResponse = {
   expires_in: number;
 };
 
+const PUBLIC_DOWNLOAD_PREFIX = "/public/r2";
+
 const PRIORITY = {
   ip_range: 4,
   user_cohort: 3,
@@ -250,6 +252,7 @@ export async function handlePublicV2Latest(c: Context<{ Bindings: Env }>) {
     : assets.results;
 
   const ttl = Number(c.env.SIGNED_URL_TTL_SECONDS ?? "3600");
+  const origin = publicRequestOrigin(c);
   const assetsWithUrls = await Promise.all(
     filteredAssets.map(async (a) => ({
       platform: a.platform,
@@ -258,7 +261,7 @@ export async function handlePublicV2Latest(c: Context<{ Bindings: Env }>) {
       filetype: a.filetype,
       size_bytes: a.size_bytes,
       signature: a.signature,
-      download_url: await generateSignedR2Url(c.env, a.r2_key, ttl),
+      download_url: await generateSignedR2Url(c.env, a.r2_key, ttl, origin),
     })),
   );
 
@@ -538,10 +541,11 @@ async function buildFallbackRelease(
     .bind(fb.build_id)
     .all<{ platform: string; r2_key: string }>();
   const ttl = Number(c.env.SIGNED_URL_TTL_SECONDS ?? "3600");
+  const origin = publicRequestOrigin(c);
   const urls = await Promise.all(
     fbAssets.results.map(async (a) => ({
       platform: a.platform,
-      download_url: await generateSignedR2Url(c.env, a.r2_key, ttl),
+      download_url: await generateSignedR2Url(c.env, a.r2_key, ttl, origin),
     })),
   );
   return {
@@ -558,8 +562,103 @@ async function generateSignedR2Url(
   env: Env,
   key: string,
   ttlSeconds: number,
+  origin?: string,
 ): Promise<string> {
-  // Same placeholder as the v1 endpoint — real R2 signed URLs land in
-  // P3.5 alongside the asset rewrite.
-  return `/api/r2/${encodeURIComponent(key)}?expires=${Math.floor(Date.now() / 1000) + ttlSeconds}`;
+  const expires = Math.floor(Date.now() / 1000) + ttlSeconds;
+  const sig = await signDownloadUrl(env, key, expires);
+  const path = `${PUBLIC_DOWNLOAD_PREFIX}/${encodeURIComponent(key)}?expires=${expires}&sig=${sig}`;
+  return origin ? new URL(path, origin).toString() : path;
+}
+
+function publicRequestOrigin(c: Context<{ Bindings: Env }>): string {
+  return c.env.APP_ORIGIN || new URL(c.req.url).origin;
+}
+
+export async function handlePublicR2Download(c: Context<{ Bindings: Env }>) {
+  const key = c.req.param("key");
+  const expires = Number(c.req.query("expires"));
+  const sig = c.req.query("sig") ?? "";
+  if (!key) return c.json({ error: "key required" }, 400);
+  if (!Number.isFinite(expires)) {
+    return c.json({ error: "expires must be a unix timestamp" }, 400);
+  }
+  if (expires < Math.floor(Date.now() / 1000)) {
+    return c.json({ error: "download URL expired" }, 403);
+  }
+  const expectedSig = await signDownloadUrl(c.env, key, expires);
+  if (!sig || !constantTimeEqual(sig, expectedSig)) {
+    return c.json({ error: "invalid download signature" }, 403);
+  }
+
+  const asset = await c.env.DB.prepare(
+    `SELECT ba.filetype, ba.size_bytes
+     FROM build_assets ba
+     JOIN builds b ON b.id = ba.build_id
+     JOIN releases r ON r.build_id = b.id
+     WHERE ba.r2_key = ?1
+       AND r.status = 'active'
+     LIMIT 1`,
+  )
+    .bind(key)
+    .first<{ filetype: string; size_bytes: number }>();
+  if (!asset) return c.json({ error: "asset not found" }, 404);
+
+  const object = await c.env.APK_BUCKET.get(key);
+  if (!object) return c.json({ error: "object not found" }, 404);
+
+  const headers = new Headers();
+  object.writeHttpMetadata(headers);
+  headers.set("etag", object.httpEtag);
+  headers.set("cache-control", "private, max-age=0, no-store");
+  headers.set("content-type", contentTypeForAsset(asset.filetype));
+  headers.set("content-length", String(asset.size_bytes));
+  return new Response(object.body, { headers });
+}
+
+function contentTypeForAsset(filetype: string): string {
+  switch (filetype) {
+    case "apk":
+      return "application/vnd.android.package-archive";
+    case "aab":
+      return "application/octet-stream";
+    case "zip":
+      return "application/zip";
+    default:
+      return "application/octet-stream";
+  }
+}
+
+async function signDownloadUrl(
+  env: Env,
+  key: string,
+  expires: number,
+): Promise<string> {
+  const secret = env.SIGNED_URL_SECRET || env.ADMIN_API_TOKEN || env.RAFT_CLIENT_SECRET;
+  if (!secret) {
+    throw new Error("SIGNED_URL_SECRET, ADMIN_API_TOKEN, or RAFT_CLIENT_SECRET must be configured");
+  }
+  const cryptoKey = await crypto.subtle.importKey(
+    "raw",
+    new TextEncoder().encode(secret),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"],
+  );
+  const signature = await crypto.subtle.sign(
+    "HMAC",
+    cryptoKey,
+    new TextEncoder().encode(`${key}:${expires}`),
+  );
+  return Array.from(new Uint8Array(signature))
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
+}
+
+function constantTimeEqual(a: string, b: string): boolean {
+  if (a.length !== b.length) return false;
+  let result = 0;
+  for (let i = 0; i < a.length; i += 1) {
+    result |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  }
+  return result === 0;
 }

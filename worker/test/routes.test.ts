@@ -33,6 +33,7 @@ interface MockEnv {
   RAFT_ORIGIN: string;
   RAFT_API_ORIGIN: string;
   APP_ORIGIN: string;
+  SIGNED_URL_SECRET?: string;
   SIGNED_URL_TTL_SECONDS: string;
   APK_PARSER: unknown;
   MAX_APK_SIZE_MB: string;
@@ -340,6 +341,7 @@ function makeMockEnv(): MockEnv {
     RAFT_ORIGIN: "https://app.raft.build",
     RAFT_API_ORIGIN: "https://api.raft.build",
     APP_ORIGIN: "https://quiver.example.test",
+    SIGNED_URL_SECRET: "test-signed-url-secret",
     SIGNED_URL_TTL_SECONDS: "3600",
     APK_PARSER: null,
     MAX_APK_SIZE_MB: "200",
@@ -1509,10 +1511,30 @@ describe("quiver public API v2 — scope resolution", () => {
     return {
       env,
       req: {
+        url: "https://quiver-worker.test/public/v2/apps/scope-app/updates/check",
         param: (name: string) => (name === "slug" ? "scope-app" : ""),
         query: (name: string) => query[name],
         header: (name: string) => headers[name],
         raw: { cf: { clientIp: "10.0.0.5" } },
+      },
+      json: (data: unknown, status = 200) =>
+        new Response(JSON.stringify(data), {
+          status,
+          headers: { "content-type": "application/json" },
+        }),
+    } as any;
+  }
+
+  function makePublicDownloadContext(
+    env: MockEnv,
+    key: string,
+    query: Record<string, string | undefined>,
+  ) {
+    return {
+      env,
+      req: {
+        param: (name: string) => (name === "key" ? key : ""),
+        query: (name: string) => query[name],
       },
       json: (data: unknown, status = 200) =>
         new Response(JSON.stringify(data), {
@@ -1816,6 +1838,77 @@ describe("quiver public API v2 — scope resolution", () => {
       },
     });
     expect(body.asset.download_url).toContain("asset-arm64.apk");
+    expect(body.asset.download_url).toMatch(/^https:\/\/quiver\.example\.test\/public\/r2\//);
+    expect(body.asset.download_url).toContain("&sig=");
+  });
+
+  it("public R2 download serves active release assets with a valid signature", async () => {
+    const env = makeEnv();
+    const { handlePublicR2Download, handlePublicV2UpdateCheck } = await import("../src/routes/public_v2");
+    await seedRelease(env, "rel-download", "build-download", [["full", "all"]], {
+      versionCode: 11,
+    });
+    await seedAsset(env, "build-download", "asset-download", {
+      arch: "arm64-v8a",
+      sizeBytes: 3,
+    });
+    const key = "apps/app-scope/asset-download.apk";
+    env.APK_BUCKET = {
+      get: async (requestedKey: string) => {
+        if (requestedKey !== key) return null;
+        return {
+          body: new Blob(["apk"]).stream(),
+          httpEtag: "\"asset-download\"",
+          writeHttpMetadata: (headers: Headers) => {
+            headers.set("content-type", "application/octet-stream");
+          },
+        };
+      },
+    };
+
+    const check = await handlePublicV2UpdateCheck(
+      makePublicContext(env, {
+        channel: "production",
+        product_type: "android-apk",
+        current_version_code: "10",
+        platform: "android",
+        arch: "arm64-v8a",
+      }),
+    );
+    const body = await responseJson<any>(check);
+    const url = new URL(body.asset.download_url);
+    const response = await handlePublicR2Download(
+      makePublicDownloadContext(env, decodeURIComponent(url.pathname.replace("/public/r2/", "")), {
+        expires: url.searchParams.get("expires") ?? undefined,
+        sig: url.searchParams.get("sig") ?? undefined,
+      }),
+    );
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-type")).toBe("application/vnd.android.package-archive");
+    expect(response.headers.get("content-length")).toBe("3");
+    expect(await response.text()).toBe("apk");
+  });
+
+  it("public R2 download rejects unsigned active release assets", async () => {
+    const env = makeEnv();
+    const { handlePublicR2Download } = await import("../src/routes/public_v2");
+    await seedRelease(env, "rel-unsigned", "build-unsigned", [["full", "all"]], {
+      versionCode: 11,
+    });
+    await seedAsset(env, "build-unsigned", "asset-unsigned", {
+      arch: "arm64-v8a",
+    });
+
+    const response = await handlePublicR2Download(
+      makePublicDownloadContext(env, "apps/app-scope/asset-unsigned.apk", {
+        expires: String(Math.floor(Date.now() / 1000) + 3600),
+      }),
+    );
+
+    expect(response.status).toBe(403);
+    const body = await responseJson<any>(response);
+    expect(body.error).toBe("invalid download signature");
   });
 
   it("updates/check returns 404 when an update has no compatible requested filetype", async () => {

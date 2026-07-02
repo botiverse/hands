@@ -28,7 +28,11 @@ import { handleListApps, handleCreateApp, handleGetApp, handleArchiveApp, handle
 import {
   handlePublicListChannels,
 } from "./routes/public";
-import { handlePublicV2Latest, handlePublicV2UpdateCheck } from "./routes/public_v2";
+import {
+  handlePublicR2Download,
+  handlePublicV2Latest,
+  handlePublicV2UpdateCheck,
+} from "./routes/public_v2";
 import { handleUploadApk } from "./routes/upload";
 import {
   handleListOperations,
@@ -293,6 +297,7 @@ app.get("/public/apps/:slug/channels", handlePublicListChannels);
 // v2 endpoints with scope resolution (publish-architecture §5.4).
 app.get("/public/v2/apps/:slug/latest", handlePublicV2Latest);
 app.get("/public/v2/apps/:slug/updates/check", handlePublicV2UpdateCheck);
+app.get("/public/r2/:key", handlePublicR2Download);
 app.get("/api/invites/:token", handleGetInvite);
 
 // Admin — protected by Quiver's Login with Raft session cookie.
