@@ -17,6 +17,7 @@
 
 import { describe, it, expect, beforeEach } from "vitest";
 import Database from "better-sqlite3";
+import { createHash } from "node:crypto";
 
 // ---------- Test harness ----------
 
@@ -816,6 +817,52 @@ describe("quiver Hono app — auth + dispatch", () => {
     expect(env.ENVIRONMENT).toBe("development");
     expect(env.RAFT_CLIENT_ID).toBe("quiver-test");
     expect(env.RAFT_CLIENT_SECRET).toBe("test-secret");
+  });
+
+  it("loads a Raft account from a Quiver auth token for Bearer transport", async () => {
+    const env = makeMockEnv();
+    const now = Date.now();
+    const token = "quiver-test-token";
+    const tokenHash = createHash("sha256").update(token).digest("hex");
+
+    await env.DB.prepare(
+      `INSERT INTO organizations
+       (id, slug, name, external_provider, external_id, created_at, archived)
+       VALUES (?, ?, ?, 'raft', ?, ?, 0)`,
+    ).bind("raft_server1", "server1", "Server 1", "server1", now).run();
+    await env.DB.prepare(
+      `INSERT INTO raft_accounts
+       (id, provider, provider_subject, server_id, server_slug, principal_type,
+        server_role, username, display_name, raw_profile, created_at, updated_at, last_login_at)
+       VALUES (?, 'raft', ?, ?, ?, 'agent', NULL, ?, ?, '{}', ?, ?, ?)`,
+    ).bind(
+      "acct-token",
+      "agent-sub",
+      "server1",
+      "server-one",
+      "qa-agent",
+      "QA Agent",
+      now,
+      now,
+      now,
+    ).run();
+    await env.DB.prepare(
+      "INSERT INTO org_members (id, org_id, account_id, org_role, joined_at) VALUES (?, ?, ?, ?, ?)",
+    ).bind("orgmem-token", "raft_server1", "acct-token", "viewer", now).run();
+    await env.DB.prepare(
+      `INSERT INTO raft_sessions
+       (id, account_id, token_hash, created_at, expires_at, last_seen_at)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+    ).bind("session-token", "acct-token", tokenHash, now, now + 60_000, now).run();
+
+    const { loadAccountFromAuthToken } = await import("../src/middleware/auth");
+    await expect(loadAccountFromAuthToken(env as any, token)).resolves.toMatchObject({
+      id: "acct-token",
+      principal_type: "agent",
+      username: "qa-agent",
+      org_id: "raft_server1",
+      org_role: "viewer",
+    });
   });
 });
 

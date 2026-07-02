@@ -4,7 +4,8 @@
  * Production uses Login with Raft exclusively:
  *   - /api/auth/login redirects to Raft setup.
  *   - /login/raft/callback exchanges the code server-side.
- *   - Admin routes require the Quiver HttpOnly session cookie.
+ *   - Admin routes require a Quiver auth token. Browsers carry it in the
+ *     HttpOnly cookie; agents/CLIs carry the same token as Bearer auth.
  *
  * A static bearer token is accepted only when ENVIRONMENT !== "production",
  * so local development and unit smoke tests can still call admin endpoints
@@ -86,7 +87,7 @@ export function currentActorInfo(c: Context<any>): {
   };
 }
 
-export async function loadAccountFromSession(
+export async function loadAccountFromAuthToken(
   env: Env,
   token: string | undefined,
 ): Promise<AdminAccount | null> {
@@ -123,9 +124,14 @@ export async function loadAccountFromSession(
 
 export const authMiddleware: MiddlewareHandler<AdminEnv & { Bindings: Env }> =
   async (c, next) => {
-    const account = await loadAccountFromSession(
+    const cookieToken = getCookie(c, SESSION_COOKIE);
+    const authHeader = c.req.header("authorization");
+    const bearerToken = authHeader?.startsWith("Bearer ")
+      ? authHeader.slice("Bearer ".length).trim()
+      : undefined;
+    const account = await loadAccountFromAuthToken(
       c.env,
-      getCookie(c, SESSION_COOKIE),
+      cookieToken || bearerToken,
     );
     if (account) {
       c.set("admin_account", account);

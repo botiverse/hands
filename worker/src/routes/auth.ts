@@ -9,7 +9,7 @@ import type { Context } from "hono";
 import { deleteCookie, getCookie, setCookie } from "hono/cookie";
 import {
   accountActor,
-  loadAccountFromSession,
+  loadAccountFromAuthToken,
   SESSION_COOKIE,
   type AdminAccount,
 } from "../middleware/auth";
@@ -38,6 +38,11 @@ type RaftUserinfo = {
   avatar_url?: string | null;
   picture?: string | null;
   description?: string | null;
+};
+
+type LoginResult = {
+  account: AdminAccount;
+  authToken: { token: string; expiresAt: number };
 };
 
 function now() {
@@ -339,7 +344,7 @@ async function upsertRaftOrgMembership(
   return membership;
 }
 
-async function createSession(
+async function createAuthToken(
   db: D1Database,
   accountId: string,
 ): Promise<{ token: string; expiresAt: number }> {
@@ -359,6 +364,73 @@ async function createSession(
   return { token, expiresAt };
 }
 
+async function finalizeRaftLogin(
+  c: Context<{ Bindings: Env }>,
+  config: {
+    raftApiOrigin: string;
+    clientId: string;
+    clientSecret: string;
+  },
+  code: string,
+): Promise<LoginResult | Response> {
+  const token = await exchangeRaftCode(
+    config.raftApiOrigin,
+    config.clientId,
+    config.clientSecret,
+    code,
+  );
+  const userinfo = await fetchRaftUserinfo(
+    config.raftApiOrigin,
+    token.access_token,
+  );
+  if (!isUserAllowed(c.env, userinfo)) {
+    return c.text("This Raft server is not allowed for this Quiver admin.", 403);
+  }
+
+  const account = await upsertRaftAccount(c.env.DB, userinfo);
+  const membership = await upsertRaftOrgMembership(c.env.DB, account);
+  account.org_id = membership.org_id;
+  account.org_role = membership.org_role;
+  const authToken = await createAuthToken(c.env.DB, account.id);
+  return { account, authToken };
+}
+
+function setAuthCookie(
+  c: Context<{ Bindings: Env }>,
+  authToken: LoginResult["authToken"],
+) {
+  setCookie(c, SESSION_COOKIE, authToken.token, {
+    httpOnly: true,
+    secure: secureCookie(c),
+    sameSite: "Lax",
+    path: "/",
+    expires: new Date(authToken.expiresAt),
+  });
+}
+
+function agentLoginJson(result: LoginResult) {
+  return {
+    ok: true,
+    token_type: "Bearer",
+    access_token: result.authToken.token,
+    expires_at: result.authToken.expiresAt,
+    account: {
+      id: result.account.id,
+      server_id: result.account.server_id,
+      server_slug: result.account.server_slug,
+      principal_type: result.account.principal_type,
+      username: result.account.username,
+      display_name: result.account.display_name,
+      actor: accountActor(result.account),
+      org_id: result.account.org_id ?? null,
+      org_role: result.account.org_role ?? null,
+    },
+    usage: {
+      authorization: "Authorization: Bearer <access_token>",
+    },
+  };
+}
+
 export async function handleAuthConfig(c: Context<{ Bindings: Env }>) {
   return c.json({
     provider: "raft",
@@ -368,9 +440,13 @@ export async function handleAuthConfig(c: Context<{ Bindings: Env }>) {
 }
 
 export async function handleAuthMe(c: Context<{ Bindings: Env }>) {
-  const account = await loadAccountFromSession(
+  const authHeader = c.req.header("authorization");
+  const bearerToken = authHeader?.startsWith("Bearer ")
+    ? authHeader.slice("Bearer ".length).trim()
+    : undefined;
+  const account = await loadAccountFromAuthToken(
     c.env,
-    getCookie(c, SESSION_COOKIE),
+    getCookie(c, SESSION_COOKIE) || bearerToken,
   );
   if (!account) {
     return c.json(
@@ -452,40 +528,24 @@ export async function handleRaftCallback(c: Context<{ Bindings: Env }>) {
   const config = requireRaftConfig(c);
   if (!config.ok) return config.response;
 
-  if (!getCookie(c, LOGIN_PENDING_COOKIE)) {
-    return c.text("Missing local login state. Start again from /api/auth/login.", 400);
-  }
-
   const code = c.req.query("code") || "";
   if (!code) return c.text("Missing Raft callback code", 400);
 
   try {
-    const token = await exchangeRaftCode(
-      config.raftApiOrigin,
-      config.clientId,
-      config.clientSecret,
-      code,
-    );
-    const userinfo = await fetchRaftUserinfo(
-      config.raftApiOrigin,
-      token.access_token,
-    );
-    if (!isUserAllowed(c.env, userinfo)) {
-      return c.text("This Raft server is not allowed for this Quiver admin.", 403);
+    const hasPendingBrowserLogin = Boolean(getCookie(c, LOGIN_PENDING_COOKIE));
+    const result = await finalizeRaftLogin(c, config, code);
+    if (result instanceof Response) return result;
+
+    if (!hasPendingBrowserLogin) {
+      if (result.account.principal_type !== "agent") {
+        return c.text("Missing local login state. Start again from /api/auth/login.", 400);
+      }
+      setAuthCookie(c, result.authToken);
+      c.header("cache-control", "no-store");
+      return c.json(agentLoginJson(result));
     }
 
-    const account = await upsertRaftAccount(c.env.DB, userinfo);
-    const membership = await upsertRaftOrgMembership(c.env.DB, account);
-    account.org_id = membership.org_id;
-    account.org_role = membership.org_role;
-    const session = await createSession(c.env.DB, account.id);
-    setCookie(c, SESSION_COOKIE, session.token, {
-      httpOnly: true,
-      secure: secureCookie(c),
-      sameSite: "Lax",
-      path: "/",
-      expires: new Date(session.expiresAt),
-    });
+    setAuthCookie(c, result.authToken);
     deleteCookie(c, LOGIN_PENDING_COOKIE, { path: "/" });
     const returnPath = normalizeReturnPath(getCookie(c, LOGIN_RETURN_COOKIE));
     deleteCookie(c, LOGIN_RETURN_COOKIE, { path: "/" });
@@ -499,7 +559,11 @@ export async function handleRaftCallback(c: Context<{ Bindings: Env }>) {
 }
 
 export async function handleAuthLogout(c: Context<{ Bindings: Env }>) {
-  const token = getCookie(c, SESSION_COOKIE);
+  const authHeader = c.req.header("authorization");
+  const bearerToken = authHeader?.startsWith("Bearer ")
+    ? authHeader.slice("Bearer ".length).trim()
+    : undefined;
+  const token = getCookie(c, SESSION_COOKIE) || bearerToken;
   if (token) {
     const tokenHash = await sha256Hex(token);
     await c.env.DB.prepare(
