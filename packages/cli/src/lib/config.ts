@@ -21,7 +21,7 @@ export interface CliConfig {
   sessionCookie?: string;
 }
 
-const DEFAULT_API_BASE = "https://quiver-worker.artin.workers.dev";
+const DEFAULT_API_BASE = "https://quiver.oranix.io";
 
 function configPath(): string {
   const xdg = process.env.XDG_CONFIG_HOME;

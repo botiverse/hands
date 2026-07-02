@@ -33,7 +33,7 @@ Companion to: `publish-architecture.md` §6, `public-api-reference.md`
 - Global (occasional use): `npm install -g @oranix/quiver-cli`
 - One-off execution: `npm exec --package @oranix/quiver-cli@0.1.0 -- quiver --help`
 
-**Distribution**: public npm package. The CLI talks to any Quiver Worker instance (public `quiver-worker.artin.workers.dev` or self-hosted).
+**Distribution**: public npm package. The CLI talks to any Quiver Worker instance (public `quiver.oranix.io` or self-hosted).
 
 ---
 
@@ -43,7 +43,7 @@ Companion to: `publish-architecture.md` §6, `public-api-reference.md`
 
 ```
 $ quiver login
-? Quiver server URL: https://quiver-worker.artin.workers.dev
+? Quiver server URL: https://quiver.oranix.io
 ? Email: alice@example.com
 ? Access token: ****************************
 ✓ Authenticated as alice@example.com (server_role: admin)
@@ -55,7 +55,7 @@ The access token is generated from the Quiver admin web UI: **Settings → Acces
 ### 2.2 CI mode (env vars)
 
 ```bash
-export QUIVER_SERVER="https://quiver-worker.artin.workers.dev"
+export QUIVER_SERVER="https://quiver.oranix.io"
 export QUIVER_EMAIL="ci-bot@example.com"
 export QUIVER_TOKEN="..."
 
@@ -72,7 +72,7 @@ $ quiver logout
 
 $ quiver whoami
 alice@example.com (server_role: admin)
-server: https://quiver-worker.artin.workers.dev
+server: https://quiver.oranix.io
 ```
 
 ---
@@ -742,7 +742,7 @@ fi
 
 | Variable | Description |
 |---|---|
-| `QUIVER_SERVER` | Server URL (e.g. `https://quiver-worker.artin.workers.dev`) |
+| `QUIVER_SERVER` | Server URL (e.g. `https://quiver.oranix.io`) |
 | `QUIVER_EMAIL` | Email for token lookup (or service account email) |
 | `QUIVER_TOKEN` | Access token |
 | `QUIVER_CONFIG_DIR` | Override config dir (default `~/.quiver`) |
@@ -759,7 +759,7 @@ Location: `~/.quiver/config.json`
 
 ```json
 {
-  "server": "https://quiver-worker.artin.workers.dev",
+  "server": "https://quiver.oranix.io",
   "email": "alice@example.com",
   "token_hash": "...",
   "log_level": "info",

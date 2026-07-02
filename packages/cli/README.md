@@ -47,7 +47,7 @@ quiver builds publish-android raft-android \
 ## CI mode
 
 ```bash
-export QUIVER_API=https://quiver-worker.artin.workers.dev
+export QUIVER_API=https://quiver.oranix.io
 export QUIVER_SESSION_COOKIE=...   # paste from browser DevTools
 quiver whoami
 quiver builds list myapp-android

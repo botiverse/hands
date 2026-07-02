@@ -2,7 +2,7 @@
 
 Status: **draft v2** (X.1.5 — cross-cutting docs; reflects current public contract as of 2026-06-30)
 
-Base URL: `https://quiver-worker.artin.workers.dev`
+Base URL: `https://quiver.oranix.io`
 
 ---
 
@@ -19,7 +19,7 @@ All `/public/*` and `/api/invites/:token` (GET) endpoints:
   routes them to `app.get("/public/...", ...)` (not `admin.get`) so the
   per-route RBAC middleware (added in P5.2) is bypassed.
 - CORS: same-origin allowed by default. Cross-origin: configure CORS on
-  the Worker (currently permissive for `quiver-worker.artin.workers.dev`).
+  the Worker (currently permissive for `quiver.oranix.io`).
 - Cache-Control: currently `no-store`; clients should not assume
   long-TTL caching without explicit `ETag` support (deferred to v2).
 - Errors: returned as JSON `{ "error": "..." }` with appropriate
@@ -297,7 +297,7 @@ must obtain a fresh URL via the `latest` endpoint).
 ```kotlin
 // Pseudocode
 val response = httpClient.get(
-    "https://quiver-worker.artin.workers.dev/public/v2/apps/$slug/updates/check" +
+    "https://quiver.oranix.io/public/v2/apps/$slug/updates/check" +
         "?channel=main&product_type=android-apk&current_version_code=$currentInstalledVersionCode" +
         "&platform=android&arch=arm64-v8a"
 )
@@ -314,7 +314,7 @@ if (check.getBoolean("update_available")) {
 ### 3.2 Electron — auto-update
 
 ```js
-const r = await fetch(`https://quiver-worker.artin.workers.dev/public/apps/my-electron/latest?channel=production`);
+const r = await fetch(`https://quiver.oranix.io/public/apps/my-electron/latest?channel=production`);
 const { version, download_url } = await r.json();
 if (semver.gt(version.version_name, currentVersion)) {
   autoUpdater.onUpdateAvailable = () => autoUpdater.download(download_url);

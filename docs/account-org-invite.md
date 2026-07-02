@@ -176,7 +176,7 @@ The existing `actor` TEXT column becomes display name; `actor_id` is the FK. Bac
    - Insert into invites (status='pending', expires_at=now+7d)
    - Generate signed magic-link token: `${invite.id}.${hmac_sha256(secret, invite.id)}`
    - Send email: "You've been invited to Acme Corp. Click here to accept."
-     Link: https://quiver-worker.artin.workers.dev/invites/${token}
+     Link: https://quiver.oranix.io/invites/${token}
 
 3. If email not in raft_accounts yet, also send a "sign up to claim invite" hint
 ```
@@ -361,7 +361,7 @@ This is a small change to `worker/src/routes/auth.ts` that makes org context ava
   - `GET /api/invites/:token` (public) — show invite details
   - `POST /api/invites/:token/accept` (auth required) — link account, create membership
 - Email sender: use Cloudflare Email Service with a transactional template
-- Magic link format: `https://quiver-worker.artin.workers.dev/invites/${token}` with HMAC signature
+- Magic link format: `https://quiver.oranix.io/invites/${token}` with HMAC signature
 
 ### Phase 5.4 — org settings UI + access tab (3 days)
 
@@ -392,7 +392,7 @@ This is a small change to `worker/src/routes/auth.ts` that makes org context ava
 
 3. **Email delivery** — Cloudflare Email Service (worker binding) vs Resend vs SendGrid? Recommendation: Cloudflare Email Service (free, integrated). Fall back to SMTP if missing binding.
 
-4. **Invite link domain** — for self-hosted, the magic link should use the worker's domain. For SaaS, a vanity domain. Use `c.env.APP_ORIGIN` env var.
+4. **Invite link domain** — for self-hosted, the magic link should use the worker's domain. For SaaS, use the vanity domain. The backend now derives the origin from the incoming request instead of a fixed `APP_ORIGIN` env var.
 
 5. **Role hierarchy** — is `org_owner` > `org_admin` > `org_member` enough? Or do we need custom roles (like Discord)? Recommendation: v1 fixed roles; v2 custom role builder if needed.
 

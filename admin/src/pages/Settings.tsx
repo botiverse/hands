@@ -4,6 +4,7 @@ import { getAuthMe } from "../lib/api";
 export function Settings() {
   const me = useQuery({ queryKey: ["auth-me"], queryFn: () => getAuthMe() });
   const account = me.data?.account;
+  const raftCallbackUrl = `${window.location.origin}/login/raft/callback`;
 
   return (
     <div>
@@ -60,7 +61,7 @@ export function Settings() {
         </p>
         <div>
           <div className="text-slate-500">Raft Callback URL</div>
-          <div className="font-mono">https://quiver-worker.artin.workers.dev/login/raft/callback</div>
+          <div className="font-mono">{raftCallbackUrl}</div>
         </div>
         <div>
           <div className="text-slate-500">Cloudflare Account</div>

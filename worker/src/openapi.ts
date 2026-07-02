@@ -8,8 +8,8 @@ export const openApiDocument = {
   },
   servers: [
     {
-      url: "https://quiver-worker.artin.workers.dev",
-      description: "Production worker",
+      url: "/",
+      description: "Current origin",
     },
     {
       url: "http://localhost:8787",

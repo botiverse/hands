@@ -50,7 +50,7 @@ function now() {
 }
 
 function appOrigin(c: Context<{ Bindings: Env }>): string {
-  return c.env.APP_ORIGIN || new URL(c.req.url).origin;
+  return new URL(c.req.url).origin;
 }
 
 function secureCookie(c: Context<{ Bindings: Env }>): boolean {

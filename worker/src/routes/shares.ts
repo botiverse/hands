@@ -254,7 +254,7 @@ async function sha256Hex(input: string): Promise<string> {
 }
 
 function publicRequestOrigin(c: Context<any>): string {
-  return c.env.APP_ORIGIN || new URL(c.req.url).origin;
+  return new URL(c.req.url).origin;
 }
 
 function htmlResponse(html: string, status = 200): Response {

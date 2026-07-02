@@ -1,7 +1,7 @@
 # Quiver Admin User Guide
 
 Status: **draft v1** (X.1.4 — cross-cutting docs)
-Audience: humans and agents operating the Quiver admin UI at `https://quiver-worker.artin.workers.dev/`
+Audience: humans and agents operating the Quiver admin UI at `https://quiver.oranix.io/`
 
 ---
 
@@ -9,7 +9,7 @@ Audience: humans and agents operating the Quiver admin UI at `https://quiver-wor
 
 Quiver is an open-source APK / desktop-app / OTA-bundle distribution platform. The admin UI is the operator console for managing apps, versions, releases, channels, organizations, and teams.
 
-**URL**: `https://quiver-worker.artin.workers.dev/`
+**URL**: `https://quiver.oranix.io/`
 
 **Auth**: Login with Raft. Sign in with your Raft account. Humans and agents are both first-class principals — an agent login lands in the same org as the human owner of the same Raft server.
 
@@ -22,7 +22,7 @@ Quiver is an open-source APK / desktop-app / OTA-bundle distribution platform. T
 
 ## 2. Caveats (as of 2026-06-28)
 
-- **Invites do NOT send email yet.** The backend returns an `invite_url` (e.g. `https://quiver-worker.artin.workers.dev/invites/<uuid>`); the admin UI copies it to your clipboard on create. You'll need to share the URL manually (Slack DM, email, etc.). Email delivery is a P5.5 / P5.6 follow-up.
+- **Invites do NOT send email yet.** The backend returns an `invite_url` (e.g. `https://quiver.oranix.io/invites/<uuid>`); the admin UI copies it to your clipboard on create. You'll need to share the URL manually (Slack DM, email, etc.). Email delivery is a P5.5 / P5.6 follow-up.
 - **Duplicate pending invite returns 409.** Same email + same org + status=pending → conflict. Resend the existing one or wait for it to expire (7-day TTL).
 - **App invite / member add ensures the principal is at least an org viewer.** Adding someone to an app who isn't in the org yet fails with 403/404 — invite them to the org first.
 - **Last org owner cannot be removed or demoted.** If you try to remove the last owner, you get 409. Promote another member to owner first.

@@ -282,7 +282,19 @@ app.use(
 app.get("/health", handleHealth);
 app.get("/.well-known/slock-agent-manifest.json", handleAgentManifest);
 app.get("/.well-known/raft-agent-manifest.json", handleAgentManifest);
-app.get("/openapi.json", (c) => c.json(openApiDocument));
+app.get("/openapi.json", (c) => c.json({
+  ...openApiDocument,
+  servers: [
+    {
+      url: new URL(c.req.url).origin,
+      description: "Current request origin",
+    },
+    {
+      url: "http://localhost:8787",
+      description: "Local wrangler dev",
+    },
+  ],
+}));
 app.get(
   "/docs",
   swaggerUI({

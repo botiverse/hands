@@ -65,7 +65,6 @@
     "ENVIRONMENT": "production",
     "MAX_APK_SIZE_MB": "200",
     "SIGNED_URL_TTL_SECONDS": "3600",
-    "APP_ORIGIN": "https://quiver-worker.artin.workers.dev",
     "RAFT_ORIGIN": "https://app.raft.build",
     "RAFT_API_ORIGIN": "https://api.raft.build",
     "RAFT_CLIENT_ID": "quiver"

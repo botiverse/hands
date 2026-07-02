@@ -54,14 +54,14 @@ Admin access uses Login with Raft as the only production login path.
 Register the app in Raft with callback URL:
 
 ```text
-https://quiver-worker.artin.workers.dev/login/raft/callback
+https://quiver.oranix.io/login/raft/callback
 ```
 
 Worker configuration:
 
 - `RAFT_CLIENT_ID` in `worker/wrangler.jsonc`
 - `RAFT_CLIENT_SECRET` as a Worker secret (`wrangler secret put RAFT_CLIENT_SECRET`)
-- `APP_ORIGIN` must exactly match the origin used in the registered callback URL
+- Public URLs and Raft callback URLs are generated from the incoming request origin. Register each public origin that should support login, for example `https://quiver.oranix.io/login/raft/callback`.
 - Optional `RAFT_ALLOWED_SERVER_IDS` / `RAFT_ALLOWED_SERVER_SLUGS` can restrict admin login to specific Raft servers
 
 Do not put Raft client secrets in browser JavaScript, repository files, logs, or public channels.

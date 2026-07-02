@@ -22,7 +22,7 @@ function now() {
 }
 
 function appOrigin(c: Context<any>) {
-  return c.env.APP_ORIGIN || new URL(c.req.url).origin;
+  return new URL(c.req.url).origin;
 }
 
 function normalizeEmail(email: unknown) {

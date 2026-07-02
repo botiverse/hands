@@ -32,7 +32,6 @@ interface MockEnv {
   RAFT_CLIENT_SECRET: string;
   RAFT_ORIGIN: string;
   RAFT_API_ORIGIN: string;
-  APP_ORIGIN: string;
   SIGNED_URL_SECRET?: string;
   SIGNED_URL_TTL_SECONDS: string;
   APK_PARSER: unknown;
@@ -350,7 +349,6 @@ function makeMockEnv(): MockEnv {
     RAFT_CLIENT_SECRET: "test-secret",
     RAFT_ORIGIN: "https://app.raft.build",
     RAFT_API_ORIGIN: "https://api.raft.build",
-    APP_ORIGIN: "https://quiver.example.test",
     SIGNED_URL_SECRET: "test-signed-url-secret",
     SIGNED_URL_TTL_SECONDS: "3600",
     APK_PARSER: null,
@@ -1881,7 +1879,7 @@ describe("quiver public API v2 — scope resolution", () => {
       },
     });
     expect(body.asset.download_url).toContain("asset-arm64.apk");
-    expect(body.asset.download_url).toMatch(/^https:\/\/quiver\.example\.test\/public\/r2\//);
+    expect(body.asset.download_url).toMatch(/^https:\/\/quiver-worker\.test\/public\/r2\//);
     expect(body.asset.download_url).toContain("&sig=");
   });
 
@@ -1951,7 +1949,7 @@ describe("quiver public API v2 — scope resolution", () => {
     expect(response.status).toBe(201);
     const body = await responseJson<any>(response);
     expect(body.release_id).toBe("rel-share");
-    expect(body.share_url).toMatch(/^https:\/\/quiver\.example\.test\/share\//);
+    expect(body.share_url).toMatch(/^https:\/\/quiver-worker\.test\/share\//);
     const token = new URL(body.share_url).pathname.replace("/share/", "");
     const rows = await env.DB.prepare("SELECT id, token_hash, expires_at, revoked_at FROM release_shares WHERE id = ?")
       .bind(body.id)

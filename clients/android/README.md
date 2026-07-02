@@ -25,7 +25,7 @@ dependencies {
 ```kotlin
 val checker = UpdateChecker(
     context = applicationContext,
-    baseUrl = "https://quiver-worker.artin.workers.dev",
+    baseUrl = "https://quiver.oranix.io",
     appSlug = "myapp-android",
     installedVersionCode = BuildConfig.VERSION_CODE.toLong(),
     channel = "main",

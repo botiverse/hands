@@ -12,7 +12,6 @@ declare global {
     RAFT_ORIGIN?: string;
     RAFT_API_ORIGIN?: string;
     RAFT_CLIENT_ID?: string;
-    APP_ORIGIN?: string;
     SIGNED_URL_SECRET?: string;
     RAFT_ALLOWED_SERVER_IDS?: string;
     RAFT_ALLOWED_SERVER_SLUGS?: string;

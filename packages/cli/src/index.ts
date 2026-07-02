@@ -34,7 +34,7 @@ program
   .version("0.1.0")
   .option(
     "--api <url>",
-    "Quiver Worker base URL (default: https://quiver-worker.artin.workers.dev or $QUIVER_API)",
+    "Quiver Worker base URL (default: https://quiver.oranix.io or $QUIVER_API)",
   )
   .option("--json", "Output machine-readable JSON (suppresses human output)", false)
   .option("--verbose", "Print HTTP request details for debugging", false);

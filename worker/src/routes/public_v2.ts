@@ -575,7 +575,7 @@ export async function generateSignedR2Url(
 }
 
 function publicRequestOrigin(c: Context<{ Bindings: Env }>): string {
-  return c.env.APP_ORIGIN || new URL(c.req.url).origin;
+  return new URL(c.req.url).origin;
 }
 
 export async function handlePublicR2Download(c: Context<{ Bindings: Env }>) {
