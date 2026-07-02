@@ -184,7 +184,6 @@ export function ReleaseAssetUploader(props: Props) {
             <tr className="text-slate-500 text-left border-b border-slate-100">
               <th className="font-normal pr-2 py-1">Platform</th>
               <th className="font-normal pr-2 py-1">Arch</th>
-              <th className="font-normal pr-2 py-1">Variant</th>
               <th className="font-normal pr-2 py-1">Filetype</th>
               <th className="font-normal pr-2 py-1">Size</th>
               <th className="font-normal pr-2 py-1"></th>
@@ -195,7 +194,6 @@ export function ReleaseAssetUploader(props: Props) {
               <tr key={a.id} className="border-b border-slate-50">
                 <td className="pr-2 py-1 font-mono">{a.platform}</td>
                 <td className="pr-2 py-1 font-mono">{a.arch ?? "—"}</td>
-                <td className="pr-2 py-1 font-mono">{a.variant ?? "—"}</td>
                 <td className="pr-2 py-1 font-mono">{a.filetype}</td>
                 <td className="pr-2 py-1 font-mono">
                   {(a.size_bytes / 1024 / 1024).toFixed(2)} MB
@@ -277,8 +275,6 @@ export function ReleaseAssetUploader(props: Props) {
               <div>{removeTarget.platform}</div>
               <div className="text-slate-500">arch</div>
               <div>{removeTarget.arch ?? "—"}</div>
-              <div className="text-slate-500">variant</div>
-              <div>{removeTarget.variant ?? "—"}</div>
               <div className="text-slate-500">filetype</div>
               <div>{removeTarget.filetype}</div>
               <div className="text-slate-500">r2_key</div>
@@ -373,7 +369,7 @@ export function PendingFileRow({
       </div>
 
       {editing && canEdit && (
-        <div className="grid grid-cols-4 gap-2 mt-2">
+        <div className="grid grid-cols-3 gap-2 mt-2">
           <select
             className="input !py-0.5 !text-xs"
             value={pending.platform}
@@ -390,12 +386,6 @@ export function PendingFileRow({
             placeholder="arch (optional)"
             value={pending.arch ?? ""}
             onChange={(e) => onChange({ arch: e.target.value || null })}
-          />
-          <input
-            className="input !py-0.5 !text-xs"
-            placeholder="variant (optional)"
-            value={pending.variant ?? ""}
-            onChange={(e) => onChange({ variant: e.target.value || null })}
           />
           <select
             className="input !py-0.5 !text-xs"

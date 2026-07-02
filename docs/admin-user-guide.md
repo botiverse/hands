@@ -92,7 +92,7 @@ Each link navigates to a sub-route under `/apps/:appId/`.
 
 List of build artifacts. Each row: version (code) + product_type badge + release_type (colored chip) + channel + status badge (pending/building/succeeded/failed/smoke_testing/smoke_test_passed/smoke_test_failed) + ⚠ force badge + scheduled badge + date.
 
-Click "Show assets" to expand an `BuildAssetList` table: platform / arch / variant / filetype / size / sha256 prefix.
+Click "Show assets" to expand an `BuildAssetList` table: platform / arch / filetype / size / sha256 prefix.
 
 Click "Prepare release" to open `PrepareReleaseDialog`:
 - Radio: full / platform / ip_range scope
@@ -137,7 +137,7 @@ Per-app audit log (`audit_logs WHERE app_id = ?`). Columns: when / actor (with a
 |--------|-----------------|
 | `app.create` / `app.update` / `app.archive` / `app.unarchive` | App CRUD via wizard or AppDetail Settings |
 | `build.create` / `build.update` | New build uploaded or patched (status changes append here) |
-| `build_asset.create` / `build_asset.delete` | Per-(platform, arch, variant, filetype) binary upload or removal |
+| `build_asset.create` / `build_asset.delete` | Per-(platform, arch, filetype) binary upload or removal |
 | `build.delete` | Whole build removal (only allowed when zero assets and zero releases) |
 | `release.create` / `release.update` / `release.publish` / `release.cancel` / `release.rollback` / `release.bump_rollout` / `release.force_update` | Release draft, edit, publish, cancel, rollback, staged rollout bump, force-update toggle |
 | `channel.create` / `channel.update` / `channel.delete` | Channel CRUD |
@@ -198,7 +198,7 @@ Below: static infrastructure info (Raft callback URL, Cloudflare account, D1 db,
 
 ### 4.1 Publish a new release (release-first, multi-asset)
 
-The current publish flow is **release-first**. One release can carry multiple binaries (multi-arch Android / multi-OS Electron) — the schema's `build_assets` table holds one row per (platform, arch, variant, filetype).
+The current publish flow is **release-first**. One release can carry multiple binaries (multi-arch Android / multi-OS Electron) — the schema's `build_assets` table holds one row per (platform, arch, filetype).
 
 1. Go to `/apps/:appId/releases`.
 2. Click **"+ New release"** → modal opens:

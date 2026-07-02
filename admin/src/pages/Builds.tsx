@@ -189,7 +189,6 @@ function BuildAssetList({ appId, buildId }: { appId: string; buildId: string }) 
             <tr className="text-slate-500 text-left">
               <th className="font-normal pr-2">platform</th>
               <th className="font-normal pr-2">arch</th>
-              <th className="font-normal pr-2">variant</th>
               <th className="font-normal pr-2">filetype</th>
               <th className="font-normal pr-2">size</th>
               <th className="font-normal pr-2">sha256</th>
@@ -200,7 +199,6 @@ function BuildAssetList({ appId, buildId }: { appId: string; buildId: string }) 
               <tr key={a.id}>
                 <td className="pr-2">{a.platform}</td>
                 <td className="pr-2">{a.arch ?? "-"}</td>
-                <td className="pr-2">{a.variant ?? "-"}</td>
                 <td className="pr-2">{a.filetype}</td>
                 <td className="pr-2">{(a.size_bytes / 1024 / 1024).toFixed(2)} MB</td>
                 <td className="pr-2 truncate max-w-xs">
