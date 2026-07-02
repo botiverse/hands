@@ -227,6 +227,7 @@ export async function handlePublicV2Latest(c: Context<{ Bindings: Env }>) {
             size_bytes, signature
      FROM build_assets
      WHERE build_id = ?1
+       AND artifact_kind = 'installable'
      ORDER BY platform ASC, arch ASC, filetype ASC`,
   )
     .bind(build.id)
@@ -536,7 +537,10 @@ async function buildFallbackRelease(
     .first<{ version_name: string; version_code: number }>();
   if (!fbBuild) return null;
   const fbAssets = await c.env.DB.prepare(
-    `SELECT platform, r2_key FROM build_assets WHERE build_id = ?1 LIMIT 5`,
+    `SELECT platform, r2_key
+     FROM build_assets
+     WHERE build_id = ?1 AND artifact_kind = 'installable'
+     LIMIT 5`,
   )
     .bind(fb.build_id)
     .all<{ platform: string; r2_key: string }>();
@@ -596,6 +600,7 @@ export async function handlePublicR2Download(c: Context<{ Bindings: Env }>) {
      JOIN builds b ON b.id = ba.build_id
      JOIN releases r ON r.build_id = b.id
      WHERE ba.r2_key = ?1
+       AND ba.artifact_kind = 'installable'
        AND r.status = 'active'
      LIMIT 1`,
   )

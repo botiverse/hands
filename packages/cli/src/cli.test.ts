@@ -50,10 +50,12 @@ describe("apiRequest", () => {
   let server: ReturnType<typeof createServer>;
   let baseUrl: string;
   let lastCookie: string | null = null;
+  let lastAuthorization: string | null = null;
 
   beforeEach(async () => {
     server = createServer((req, res) => {
       lastCookie = req.headers.cookie ?? null;
+      lastAuthorization = req.headers.authorization ?? null;
       res.setHeader("content-type", "application/json");
       if (req.url === "/api/auth/me") {
         res.end(JSON.stringify({ account: { id: "u1", display_name: "Test" } }));
@@ -84,6 +86,20 @@ describe("apiRequest", () => {
     expect(me.account.id).toBe("u1");
     expect(lastCookie).toBe("abc123");
     delete process.env.QUIVER_SESSION_COOKIE;
+    delete process.env.QUIVER_API;
+  });
+
+  it("prefers QUIVER_AUTH_TOKEN as a bearer token over cookie auth", async () => {
+    process.env.QUIVER_SESSION_COOKIE = "cookie-token";
+    process.env.QUIVER_AUTH_TOKEN = "bearer-token";
+    process.env.QUIVER_API = baseUrl;
+    const { apiRequest } = await import("../src/lib/api.js");
+    const me = await apiRequest<{ account: { id: string } }>("/api/auth/me");
+    expect(me.account.id).toBe("u1");
+    expect(lastAuthorization).toBe("Bearer bearer-token");
+    expect(lastCookie).toBeNull();
+    delete process.env.QUIVER_SESSION_COOKIE;
+    delete process.env.QUIVER_AUTH_TOKEN;
     delete process.env.QUIVER_API;
   });
 

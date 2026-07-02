@@ -10,6 +10,9 @@
  */
 
 import { resolveApiBase, resolveSessionCookie } from "./config.js";
+import { Blob } from "node:buffer";
+import { readFile } from "node:fs/promises";
+import { basename } from "node:path";
 
 export class QuiverApiError extends Error {
   readonly status: number;
@@ -53,8 +56,10 @@ export async function apiRequest<T = unknown>(
   const headers: Record<string, string> = {
     accept: "application/json",
   };
+  const bearer = process.env.QUIVER_AUTH_TOKEN ?? process.env.QUIVER_BEARER_TOKEN;
+  if (bearer) headers.authorization = `Bearer ${bearer}`;
   const cookie = resolveSessionCookie();
-  if (cookie) headers["cookie"] = cookie;
+  if (!bearer && cookie) headers["cookie"] = cookie;
   let body: string | undefined;
   if (opts.body !== undefined) {
     headers["content-type"] = "application/json";
@@ -70,6 +75,52 @@ export async function apiRequest<T = unknown>(
     console.error(`< ${res.status}`);
   }
   if (opts.raw) return (res as unknown) as T;
+  const text = await res.text();
+  let data: unknown = text;
+  if (text.length > 0) {
+    try {
+      data = JSON.parse(text);
+    } catch {
+      // keep as text
+    }
+  }
+  if (!res.ok) {
+    const msg =
+      typeof data === "object" && data && "error" in data
+        ? String((data as { error: unknown }).error)
+        : `${res.status} ${res.statusText}`;
+    throw new QuiverApiError(res.status, data, msg);
+  }
+  return data as T;
+}
+
+export async function apiUploadFile<T = unknown>(
+  path: string,
+  filePath: string,
+  fieldName = "apk",
+): Promise<T> {
+  const url = new URL(path.startsWith("/") ? path : `/${path}`, getApiBase());
+  const cookie = resolveSessionCookie();
+  const form = new FormData();
+  const bytes = await readFile(filePath);
+  form.append(fieldName, new Blob([bytes]), basename(filePath));
+
+  const headers: Record<string, string> = {
+    accept: "application/json",
+  };
+  const bearer = process.env.QUIVER_AUTH_TOKEN ?? process.env.QUIVER_BEARER_TOKEN;
+  if (bearer) headers.authorization = `Bearer ${bearer}`;
+  if (!bearer && cookie) headers.cookie = cookie;
+
+  const res = await fetch(url.toString(), {
+    method: "POST",
+    headers,
+    body: form,
+  });
+  if (process.env.QUIVER_VERBOSE === "1") {
+    console.error(`> POST ${url}`);
+    console.error(`< ${res.status}`);
+  }
   const text = await res.text();
   let data: unknown = text;
   if (text.length > 0) {

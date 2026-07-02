@@ -111,6 +111,7 @@ function makeMockDb() {
     CREATE TABLE build_assets (
       id TEXT PRIMARY KEY,
       build_id TEXT NOT NULL,
+      artifact_kind TEXT NOT NULL DEFAULT 'installable',
       platform TEXT NOT NULL,
       arch TEXT,
       variant TEXT,
@@ -1357,10 +1358,10 @@ describe("quiver releases — draft lifecycle", () => {
     }, "tester", "rel-draft");
     await env.DB
       .prepare(
-        `INSERT INTO build_assets (id, build_id, platform, arch, variant, filetype, r2_key, file_hash, size_bytes, metadata_json, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO build_assets (id, build_id, artifact_kind, platform, arch, variant, filetype, r2_key, file_hash, size_bytes, metadata_json, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
-      .bind("asset-1", "build-draft", "android", null, null, "apk", "apps/x.apk", "hash", 42, "{}", Date.now())
+      .bind("asset-1", "build-draft", "installable", "android", null, null, "apk", "apps/x.apk", "hash", 42, "{}", Date.now())
       .run();
 
     const response = await handleDeleteRelease(makeReleaseContext("rel-draft"));
@@ -1475,6 +1476,7 @@ describe("quiver public API v2 — scope resolution", () => {
     buildId: string,
     assetId: string,
     opts: {
+      artifactKind?: string;
       platform?: string;
       arch?: string | null;
       filetype?: string;
@@ -1482,13 +1484,14 @@ describe("quiver public API v2 — scope resolution", () => {
     } = {},
   ) {
     await env.DB.prepare(
-      `INSERT INTO build_assets (id, build_id, platform, arch, variant, filetype, r2_key, file_hash,
+      `INSERT INTO build_assets (id, build_id, artifact_kind, platform, arch, variant, filetype, r2_key, file_hash,
                                  size_bytes, signature, metadata_json, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
       .bind(
         assetId,
         buildId,
+        opts.artifactKind ?? "installable",
         opts.platform ?? "android",
         opts.arch ?? null,
         null,
@@ -1909,6 +1912,45 @@ describe("quiver public API v2 — scope resolution", () => {
     expect(response.status).toBe(403);
     const body = await responseJson<any>(response);
     expect(body.error).toBe("invalid download signature");
+  });
+
+  it("updates/check excludes support artifacts from public asset selection", async () => {
+    const env = makeEnv();
+    const { handlePublicV2UpdateCheck } = await import("../src/routes/public_v2");
+    await seedRelease(env, "rel-support", "build-support", [["full", "all"]], {
+      versionCode: 11,
+    });
+    await seedAsset(env, "build-support", "asset-apk", {
+      arch: "arm64-v8a",
+      filetype: "apk",
+    });
+    await seedAsset(env, "build-support", "asset-mapping", {
+      artifactKind: "proguard-mapping",
+      arch: null,
+      filetype: "mapping.txt",
+    });
+    await seedAsset(env, "build-support", "asset-symbols", {
+      artifactKind: "native-symbols",
+      arch: null,
+      filetype: "symbols.zip",
+    });
+
+    const response = await handlePublicV2UpdateCheck(
+      makePublicContext(env, {
+        channel: "production",
+        product_type: "android-apk",
+        current_version_code: "10",
+        platform: "android",
+        arch: "arm64-v8a",
+        filetype: "apk",
+      }),
+    );
+    expect(response.status).toBe(200);
+    const body = await responseJson<any>(response);
+    expect(body.asset.filetype).toBe("apk");
+    expect(body.asset.download_url).toContain("asset-apk.apk");
+    expect(JSON.stringify(body)).not.toContain("asset-mapping");
+    expect(JSON.stringify(body)).not.toContain("asset-symbols");
   });
 
   it("updates/check returns 404 when an update has no compatible requested filetype", async () => {

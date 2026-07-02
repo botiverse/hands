@@ -23,6 +23,7 @@ export interface BuildInput {
 }
 
 export interface BuildAssetInput {
+  artifact_kind?: string;
   platform: string;
   arch?: string | null;
   variant?: string | null;
@@ -172,14 +173,15 @@ export async function createBuildAsset(
   await db
     .prepare(
       `INSERT INTO build_assets
-       (id, build_id, platform, arch, variant, filetype, r2_key, file_hash,
+       (id, build_id, artifact_kind, platform, arch, variant, filetype, r2_key, file_hash,
         size_bytes, signature, signing_credential_id, metadata_json,
         download_count, created_at)
-       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, 0, ?13)`,
+       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, 0, ?14)`,
     )
     .bind(
       id,
       buildId,
+      input.artifact_kind ?? "installable",
       input.platform,
       input.arch ?? null,
       input.variant ?? null,
@@ -362,7 +364,7 @@ export async function handleListBuildAssets(c: Context<{ Bindings: Env }>) {
   const build = await getBuildForApp(c.env.DB, appId, buildId);
   if (!build) return c.json({ error: "build not found" }, 404);
   const { results } = await c.env.DB.prepare(
-    `SELECT id, build_id, platform, arch, variant, filetype, r2_key,
+    `SELECT id, build_id, artifact_kind, platform, arch, variant, filetype, r2_key,
             file_hash, size_bytes, signature, signing_credential_id,
             metadata_json, download_count, created_at
      FROM build_assets
