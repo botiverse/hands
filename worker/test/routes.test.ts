@@ -1890,6 +1890,9 @@ describe("quiver public API v2 — scope resolution", () => {
     expect(response.status).toBe(200);
     expect(response.headers.get("content-type")).toBe("application/vnd.android.package-archive");
     expect(response.headers.get("content-length")).toBe("3");
+    expect(response.headers.get("content-disposition")).toBe(
+      `attachment; filename="scope-app-1.0.0-11.apk"; filename*=UTF-8''scope-app-1.0.0-11.apk`,
+    );
     expect(await response.text()).toBe("apk");
   });
 

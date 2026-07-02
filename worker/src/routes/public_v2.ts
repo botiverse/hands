@@ -595,9 +595,12 @@ export async function handlePublicR2Download(c: Context<{ Bindings: Env }>) {
   }
 
   const asset = await c.env.DB.prepare(
-    `SELECT ba.filetype, ba.size_bytes
+    `SELECT ba.filetype, ba.size_bytes, ba.variant,
+            b.version_name, b.version_code,
+            a.slug AS app_slug
      FROM build_assets ba
      JOIN builds b ON b.id = ba.build_id
+     JOIN apps a ON a.id = b.app_id
      JOIN releases r ON r.build_id = b.id
      WHERE ba.r2_key = ?1
        AND ba.artifact_kind = 'installable'
@@ -605,7 +608,14 @@ export async function handlePublicR2Download(c: Context<{ Bindings: Env }>) {
      LIMIT 1`,
   )
     .bind(key)
-    .first<{ filetype: string; size_bytes: number }>();
+    .first<{
+      filetype: string;
+      size_bytes: number;
+      variant: string | null;
+      version_name: string;
+      version_code: number;
+      app_slug: string;
+    }>();
   if (!asset) return c.json({ error: "asset not found" }, 404);
 
   const object = await c.env.APK_BUCKET.get(key);
@@ -617,7 +627,32 @@ export async function handlePublicR2Download(c: Context<{ Bindings: Env }>) {
   headers.set("cache-control", "private, max-age=0, no-store");
   headers.set("content-type", contentTypeForAsset(asset.filetype));
   headers.set("content-length", String(asset.size_bytes));
+  headers.set("content-disposition", contentDispositionForAsset(asset));
   return new Response(object.body, { headers });
+}
+
+function contentDispositionForAsset(asset: {
+  app_slug: string;
+  version_name: string;
+  version_code: number;
+  variant: string | null;
+  filetype: string;
+}): string {
+  const variant =
+    asset.variant && asset.variant !== "release"
+      ? `-${safeFilenameSegment(asset.variant)}`
+      : "";
+  const extension = safeFilenameSegment(asset.filetype || "bin");
+  const filename = `${safeFilenameSegment(asset.app_slug)}-${safeFilenameSegment(asset.version_name)}-${asset.version_code}${variant}.${extension}`;
+  return `attachment; filename="${filename}"; filename*=UTF-8''${encodeURIComponent(filename)}`;
+}
+
+function safeFilenameSegment(value: string): string {
+  const normalized = value
+    .trim()
+    .replace(/[^A-Za-z0-9._-]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  return normalized || "artifact";
 }
 
 function contentTypeForAsset(filetype: string): string {
