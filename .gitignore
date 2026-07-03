@@ -41,3 +41,4 @@ coverage/
 # Generated
 *.tsbuildinfo
 worker-configuration.d.ts
+admin/public/docs/

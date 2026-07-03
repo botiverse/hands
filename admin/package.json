@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "vite build",
+    "build": "node scripts/build-docs.mjs && vite build",
     "preview": "vite preview",
     "deploy": "wrangler pages deploy ./dist",
     "typecheck": "tsc --noEmit"

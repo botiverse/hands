@@ -306,7 +306,7 @@ app.get("/openapi.json", (c) => c.json({
   ],
 }));
 app.get(
-  "/docs",
+  "/api-docs",
   swaggerUI({
     url: "/openapi.json",
     persistAuthorization: true,

@@ -410,15 +410,13 @@ function PublicLanding() {
               href="/docs"
               className="hidden h-10 items-center rounded-md px-3 text-slate-600 hover:bg-slate-100 hover:text-slate-950 sm:inline-flex"
             >
-              API docs
+              Docs
             </a>
             <a
-              href="https://github.com/oranix-io/quiver/blob/main/docs/cli-reference.md"
-              target="_blank"
-              rel="noopener noreferrer"
+              href="/api-docs"
               className="hidden h-10 items-center rounded-md px-3 text-slate-600 hover:bg-slate-100 hover:text-slate-950 sm:inline-flex"
             >
-              CLI
+              API explorer
             </a>
             <a
               className="inline-flex h-10 items-center justify-center gap-2 rounded-md border border-slate-900 bg-slate-950 px-4 font-medium text-white hover:bg-slate-800"
@@ -458,7 +456,7 @@ function PublicLanding() {
                   className="inline-flex h-11 items-center justify-center rounded-md border border-slate-300 bg-white px-5 text-sm font-medium text-slate-800 hover:bg-slate-100"
                   href="/docs"
                 >
-                  Open API docs
+                  Read docs
                 </a>
                 <a
                   className="inline-flex h-11 items-center justify-center rounded-md border border-slate-300 bg-white px-5 text-sm font-medium text-slate-800 hover:bg-slate-100"
@@ -520,17 +518,13 @@ function PublicLanding() {
             <div className="flex flex-col gap-2 sm:flex-row">
               <a
                 className="inline-flex h-10 items-center justify-center rounded-md border border-slate-300 bg-white px-4 text-sm font-medium text-slate-800 hover:bg-slate-100"
-                href="https://github.com/oranix-io/quiver/blob/main/docs/cli-reference.md"
-                target="_blank"
-                rel="noopener noreferrer"
+                href="/docs/cli-reference/"
               >
                 CLI reference
               </a>
               <a
                 className="inline-flex h-10 items-center justify-center rounded-md border border-slate-300 bg-white px-4 text-sm font-medium text-slate-800 hover:bg-slate-100"
-                href="https://github.com/oranix-io/quiver/blob/main/docs/admin-user-guide.md"
-                target="_blank"
-                rel="noopener noreferrer"
+                href="/docs/admin-user-guide/"
               >
                 Admin guide
               </a>

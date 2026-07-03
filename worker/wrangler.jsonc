@@ -81,8 +81,7 @@
       "/public/*",
       "/share/*",
       "/openapi.json",
-      "/docs",
-      "/docs/*",
+      "/api-docs",
       "/login/raft/callback",
       "/.well-known/*",
       "/health"
