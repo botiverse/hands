@@ -79,7 +79,7 @@ function QuiverMark({ className = "" }: { className?: string }) {
 function Header({ account }: { account: AuthAccount }) {
   const onLogout = async () => {
     await logout();
-    window.location.assign(loginUrl("/"));
+    window.location.assign("/");
   };
   const orgHref = account.org_id ? `/orgs/${account.org_id}` : "/orgs/placeholder";
   const orgs = useQuery({
@@ -103,7 +103,7 @@ function Header({ account }: { account: AuthAccount }) {
           </Link>
           <nav className="flex items-center gap-2">
             <NavLink
-              to="/"
+              to="/apps"
               end
               className={({ isActive }) =>
                 `inline-flex h-10 items-center rounded-md px-3 text-sm leading-none ${
@@ -341,7 +341,8 @@ function PageTitle() {
   const appName = appId ? apps.data?.apps.find((app) => app.id === appId)?.name : null;
 
   const section = (() => {
-    if (pathname === "/") return "Apps";
+    if (pathname === "/") return "Home";
+    if (pathname === "/apps") return "Apps";
     if (pathname === "/settings") return "Settings";
     if (pathname.startsWith("/orgs/")) return "Org";
     if (pathname.startsWith("/invites/")) return "Invite";
@@ -371,6 +372,7 @@ export function App() {
 }
 
 function AuthGate() {
+  const location = useLocation();
   const me = useQuery({
     queryKey: ["auth", "me"],
     queryFn: getAuthMe,
@@ -389,10 +391,14 @@ function AuthGate() {
     return <PublicLanding />;
   }
 
+  if (location.pathname === "/") {
+    return <PublicLanding account={me.data.account} />;
+  }
+
   return <AuthenticatedApp account={me.data.account} />;
 }
 
-function PublicLanding() {
+function PublicLanding({ account }: { account?: AuthAccount }) {
   useEffect(() => {
     document.title = "Quiver - Android release distribution";
   }, []);
@@ -420,10 +426,10 @@ function PublicLanding() {
             </a>
             <a
               className="inline-flex h-10 items-center justify-center gap-2 rounded-md border border-slate-900 bg-slate-950 px-4 font-medium text-white hover:bg-slate-800"
-              href={loginUrl()}
+              href={account ? "/apps" : loginUrl("/apps")}
             >
               <RaftIcon className="h-5 w-5" />
-              Login
+              {account ? "Open dashboard" : "Login"}
             </a>
           </nav>
         </div>
@@ -447,10 +453,10 @@ function PublicLanding() {
               <div className="mt-8 flex flex-col gap-3 sm:flex-row">
                 <a
                   className="inline-flex h-11 items-center justify-center gap-2 rounded-md bg-slate-950 px-5 text-sm font-medium text-white hover:bg-slate-800"
-                  href={loginUrl()}
+                  href={account ? "/apps" : loginUrl("/apps")}
                 >
                   <RaftIcon className="h-5 w-5" />
-                  Login with Raft
+                  {account ? "Open dashboard" : "Login with Raft"}
                 </a>
                 <a
                   className="inline-flex h-11 items-center justify-center rounded-md border border-slate-300 bg-white px-5 text-sm font-medium text-slate-800 hover:bg-slate-100"
@@ -550,7 +556,8 @@ function AuthenticatedApp({ account }: { account: AuthAccount }) {
     <div className="min-h-screen flex flex-col">
       <Header account={account} />
       <Routes>
-        <Route path="/" element={<AppsListWithNav />} />
+        <Route path="/" element={<Navigate to="/apps" replace />} />
+        <Route path="/apps" element={<AppsListWithNav />} />
         <Route path="/settings" element={<Settings />} />
         <Route path="/orgs/:orgId" element={<OrgSettingsRoute />} />
         <Route path="/invites/:token" element={<AcceptInviteRoute />} />
