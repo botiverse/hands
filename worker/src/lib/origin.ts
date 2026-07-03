@@ -21,9 +21,13 @@ function isLocalHost(hostname: string): boolean {
   return hostname === "localhost" || hostname === "127.0.0.1" || hostname === "::1";
 }
 
+function requestScheme(c: Context<any>, url: URL): string {
+  return headerScheme(c) ?? url.protocol.replace(/:$/, "");
+}
+
 export function requestOrigin(c: Context<any>): string {
   const url = new URL(c.req.url);
-  let scheme = headerScheme(c) ?? url.protocol.replace(/:$/, "");
+  let scheme = requestScheme(c, url);
   if (scheme === "http" && !isLocalHost(url.hostname)) {
     scheme = "https";
   }
@@ -32,4 +36,13 @@ export function requestOrigin(c: Context<any>): string {
 
 export function isSecureRequest(c: Context<any>): boolean {
   return requestOrigin(c).startsWith("https://");
+}
+
+export function httpsRedirectUrl(c: Context<any>): string | null {
+  const url = new URL(c.req.url);
+  if (requestScheme(c, url) !== "http" || isLocalHost(url.hostname)) {
+    return null;
+  }
+  url.protocol = "https:";
+  return url.toString();
 }

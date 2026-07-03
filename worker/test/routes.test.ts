@@ -18,7 +18,7 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import Database from "better-sqlite3";
 import { createHash } from "node:crypto";
-import { isSecureRequest, requestOrigin } from "../src/lib/origin";
+import { httpsRedirectUrl, isSecureRequest, requestOrigin } from "../src/lib/origin";
 
 // ---------- Test harness ----------
 
@@ -929,6 +929,7 @@ describe("auth origin handling", () => {
     };
     expect(requestOrigin(ctx as any)).toBe("https://quiver.oranix.io");
     expect(isSecureRequest(ctx as any)).toBe(true);
+    expect(httpsRedirectUrl(ctx as any)).toBe("https://quiver.oranix.io/api/auth/login?return=/apps");
   });
 
   it("preserves localhost http origins for local development", () => {
@@ -940,6 +941,19 @@ describe("auth origin handling", () => {
     };
     expect(requestOrigin(ctx as any)).toBe("http://localhost:8787");
     expect(isSecureRequest(ctx as any)).toBe(false);
+    expect(httpsRedirectUrl(ctx as any)).toBeNull();
+  });
+
+  it("respects forwarded https scheme", () => {
+    const ctx = {
+      req: {
+        url: "http://quiver.oranix.io/api/auth/login?return=/apps",
+        header: (name: string) => (name === "x-forwarded-proto" ? "https" : null),
+      },
+    };
+    expect(requestOrigin(ctx as any)).toBe("https://quiver.oranix.io");
+    expect(isSecureRequest(ctx as any)).toBe(true);
+    expect(httpsRedirectUrl(ctx as any)).toBeNull();
   });
 });
 

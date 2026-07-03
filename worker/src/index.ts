@@ -116,7 +116,7 @@ import {
   requireOrgRole,
 } from "./lib/permissions";
 import { openApiDocument } from "./openapi";
-import { requestOrigin } from "./lib/origin";
+import { httpsRedirectUrl, requestOrigin } from "./lib/origin";
 
 // ---------- Container binding (APK parser) ----------
 //
@@ -268,6 +268,14 @@ function parseBadgingAndCerts(
 // ---------- Hono app ----------
 
 const app = new Hono<{ Bindings: Env }>();
+
+app.use("*", async (c, next) => {
+  const redirectUrl = httpsRedirectUrl(c);
+  if (redirectUrl) {
+    return c.redirect(redirectUrl, 308);
+  }
+  return next();
+});
 
 function allowedCorsOrigin(origin: string, env: Env): string | null {
   if (!origin) return "*";
