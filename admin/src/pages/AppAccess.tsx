@@ -25,9 +25,7 @@ import {
   removeAppMember,
   removeAppServerGrant,
   updateAppMember,
-  updateAppServerGrant,
   type AppMember,
-  type AppServerGrant,
   type App,
 } from "../lib/api";
 import { useToast } from "../components/Toast";
@@ -71,12 +69,14 @@ export function AppAccess({ appId }: { appId: string }) {
       <div className="card !p-4 text-sm">
         <div className="text-slate-600 mb-2">
           <strong>Access.</strong> Review inherited owner-server access,
-          external Raft server grants, and direct per-app member grants.
+          external Raft server visibility, and direct per-app member grants.
         </div>
         <div className="text-xs text-slate-500">
           Your current access: <span className="font-mono">{currentAccess ?? "—"}</span>{" "}
           {isOwningOrg && <span>(inherited from owning org)</span>}
-          {!isOwningOrg && currentServerGrantRole && <span>(server grant)</span>}
+          {!isOwningOrg && currentServerGrantRole && (
+            <span>(server visibility)</span>
+          )}
           {!isOwningOrg && currentAppRole && <span>(direct app member)</span>}{" "}
           {canManage ? "(can manage access)" : "(read-only)"}
         </div>
@@ -142,35 +142,6 @@ function AppServerGrantList({
     queryFn: () => listAppServerGrants(appId),
   });
 
-  const update = useMutation({
-    mutationFn: ({
-      grantKey,
-      serverId,
-      serverSlug,
-      role,
-    }: {
-      grantKey: string;
-      serverId: string | null;
-      serverSlug: string | null;
-      role: AppServerGrant["app_role"];
-    }) =>
-      updateAppServerGrant(appId, grantKey, {
-        server_id: serverId,
-        server_slug: serverSlug,
-        app_role: role,
-      }),
-    onSuccess: () => {
-      toast.show({ kind: "success", title: "Server grant updated" });
-      qc.invalidateQueries({ queryKey: ["app-server-grants", appId] });
-    },
-    onError: (e) =>
-      toast.show({
-        kind: "error",
-        title: "Update failed",
-        description: (e as Error).message,
-      }),
-  });
-
   const remove = useMutation({
     mutationFn: (grantKey: string) => removeAppServerGrant(appId, grantKey),
     onSuccess: () => {
@@ -216,7 +187,7 @@ function AppServerGrantList({
             <tr className="text-slate-500 text-left border-b border-slate-100">
               <th className="font-normal py-1 pr-2">Server</th>
               <th className="font-normal py-1 pr-2">Server ID</th>
-              <th className="font-normal py-1 pr-2">App role</th>
+              <th className="font-normal py-1 pr-2">Access</th>
               <th className="font-normal py-1 pr-2">Source</th>
               {canManage && <th className="font-normal py-1">Actions</th>}
             </tr>
@@ -236,7 +207,7 @@ function AppServerGrantList({
                   </span>
                 </td>
                 <td className="py-2 pr-2">
-                  <span className="text-xs font-medium">{orgRole ?? "—"}</span>
+                  <span className="text-xs font-medium">Inherited</span>
                 </td>
                 <td className="py-2 pr-2 text-xs text-slate-500">
                   Owning org
@@ -266,32 +237,10 @@ function AppServerGrantList({
                   </span>
                 </td>
                 <td className="py-2 pr-2">
-                  {canManage ? (
-                    <select
-                      className="input text-xs py-0.5"
-                      value={grant.app_role}
-                      onChange={(e) =>
-                        update.mutate({
-                          grantKey: grant.id,
-                          serverId: grant.server_id,
-                          serverSlug: grant.server_slug,
-                          role: e.target.value as AppServerGrant["app_role"],
-                        })
-                      }
-                      disabled={update.isPending}
-                    >
-                      {(["admin", "publisher", "viewer"] as const).map((r) => (
-                        <option key={r} value={r}>
-                          {r}
-                        </option>
-                      ))}
-                    </select>
-                  ) : (
-                    <span className="text-xs font-medium">{grant.app_role}</span>
-                  )}
+                  <span className="text-xs font-medium">Visible</span>
                 </td>
                 <td className="py-2 pr-2 text-xs text-slate-500">
-                  Server grant
+                  Server visibility
                 </td>
                 {canManage && (
                   <td className="py-2 text-xs">
@@ -319,7 +268,7 @@ function AppServerGrantList({
       )}
       {grants.data && isOwningOrg && rows.length === 0 && (
         <p className="text-xs text-slate-500 mt-2">
-          No external server grants yet. The current server has access because it owns this app.
+          No external server visibility grants yet. The current server has access because it owns this app.
         </p>
       )}
     </div>
@@ -339,21 +288,19 @@ function AddAppServerGrantDialog({
   const toast = useToast();
   const [serverId, setServerId] = useState("");
   const [serverSlug, setServerSlug] = useState("");
-  const [role, setRole] = useState<AppServerGrant["app_role"]>("viewer");
 
   const add = useMutation({
     mutationFn: () =>
       addAppServerGrant(appId, {
         server_id: serverId.trim() || null,
         server_slug: serverSlug.trim() || null,
-        app_role: role,
+        app_role: "viewer",
       }),
     onSuccess: () => {
       toast.show({ kind: "success", title: "Server grant added" });
       qc.invalidateQueries({ queryKey: ["app-server-grants", appId] });
       setServerId("");
       setServerSlug("");
-      setRole("viewer");
       onAdded();
     },
     onError: (e) =>
@@ -409,18 +356,6 @@ function AddAppServerGrantDialog({
               onChange={(e) => setServerId(e.target.value)}
               placeholder="optional"
             />
-          </div>
-          <div>
-            <label className="label">Role</label>
-            <select
-              className="input"
-              value={role}
-              onChange={(e) => setRole(e.target.value as AppServerGrant["app_role"])}
-            >
-              <option value="admin">admin</option>
-              <option value="publisher">publisher</option>
-              <option value="viewer">viewer</option>
-            </select>
           </div>
           <div className="flex justify-end gap-2 pt-2">
             <button type="button" className="btn-secondary" onClick={onClose}>
