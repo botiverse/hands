@@ -31,7 +31,7 @@ Companion to: `publish-architecture.md` §6, `public-api-reference.md`
 **Where to install**:
 - Per-project dev dependency (recommended): `npm install --save-dev @oranix/quiver-cli`
 - Global (occasional use): `npm install -g @oranix/quiver-cli`
-- One-off execution: `npm exec --package @oranix/quiver-cli@0.1.0 -- quiver --help`
+- One-off execution: `npm exec --package @oranix/quiver-cli@0.1.1 -- quiver --help`
 
 **Distribution**: public npm package. The CLI talks to any Quiver Worker instance (public `quiver.oranix.io` or self-hosted).
 
@@ -782,7 +782,7 @@ planned command in this document is implemented yet.
 
 - **Phase 2.1 + P2.2 (schema + backfill)** — ✅ DONE (commit `c6322ab`): product_types, release_types, channels, build_assets, releases, release_scopes tables on remote D1. 1 app + 1 legacy versions row backfilled. Builds table has parity with versions on `should_force_update` / `availability_at` / `provenance_json`.
 - **Phase 2.4.6 + P2.5.4-7 (backend)** — ✅ DONE (commit `2c77b97` by @Codex-Kuikly-KMP专家): builds + build_assets + releases + release_scopes CRUD with transactional supersede + audit + legacy /versions compat shim. **The CLI can talk to these endpoints today** via `curl + Authorization: Bearer $QUIVER_TOKEN`.
-- **Phase 3.4 (CLI npm package)** — 🟡 ALPHA: `packages/cli/` is published as public npm package `@oranix/quiver-cli@0.1.0`. Current binary covers auth, app/build listing, and Android release publishing via `quiver builds publish-android`. Releases/ops/webhooks commands remain planned.
+- **Phase 3.4 (CLI npm package)** — 🟡 ALPHA: `packages/cli/` is published as public npm package `@oranix/quiver-cli@0.1.1`. Current binary covers auth, app/build listing, Android release publishing via `quiver builds publish-android`, and release share management via `quiver releases`. Ops/webhooks commands remain planned.
 - **Phase 3.3 (public API scope)** — 🔵 TODO: P3.3 endpoints (`/public/apps/:slug/bundles`, scope resolution on `/latest`) will get CLI commands like `quiver bundles list` / `quiver releases scope`. The doc will get a new section then.
 
 **Install**:
@@ -791,7 +791,7 @@ npm install --save-dev @oranix/quiver-cli
 # or
 npm install -g @oranix/quiver-cli
 # or one-off
-npm exec --package @oranix/quiver-cli@0.1.0 -- quiver --help
+npm exec --package @oranix/quiver-cli@0.1.1 -- quiver --help
 ```
 
 ---

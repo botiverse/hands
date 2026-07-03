@@ -14,7 +14,7 @@ npm install -g @oranix/quiver-cli
 quiver --help
 
 # Or run without installing globally:
-npm exec --package @oranix/quiver-cli@0.1.0 -- quiver --help
+npm exec --package @oranix/quiver-cli@0.1.1 -- quiver --help
 
 # Local repo development:
 pnpm --filter @oranix/quiver-cli build
