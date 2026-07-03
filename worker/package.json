@@ -19,8 +19,10 @@
   "dependencies": {
     "@cloudflare/containers": "^0.0.30",
     "@hono/swagger-ui": "^0.6.1",
+    "@hono/zod-openapi": "^1.4.0",
     "hono": "^4.11.1",
-    "jose": "^5.9.6"
+    "jose": "^5.9.6",
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20250101.0",
