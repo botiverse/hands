@@ -56,15 +56,15 @@ function Header({ account }: { account: AuthAccount }) {
     <header className="bg-white border-b border-slate-200">
       <div className="max-w-5xl mx-auto px-4 py-4 flex items-center justify-between gap-6">
         <div className="flex items-center gap-6">
-          <Link to="/" className="text-xl font-bold tracking-tight">
+          <Link to="/" className="inline-flex h-10 items-center text-xl font-bold tracking-tight leading-none">
             quiver
           </Link>
-          <nav className="flex gap-2">
+          <nav className="flex items-center gap-2">
             <NavLink
               to="/"
               end
               className={({ isActive }) =>
-                `px-3 py-1.5 rounded-md text-sm ${
+                `inline-flex h-10 items-center rounded-md px-3 text-sm leading-none ${
                   isActive ? "bg-slate-100 font-medium" : "hover:bg-slate-100"
                 }`
               }
@@ -81,21 +81,21 @@ function Header({ account }: { account: AuthAccount }) {
                   }
                 }}
                 className={({ isActive }) =>
-                  `px-3 py-1.5 rounded-md text-sm ${
+                  `inline-flex h-10 items-center rounded-md px-3 text-sm leading-none ${
                     isActive ? "bg-slate-100 font-medium" : "hover:bg-slate-100"
                   }`
                 }
-                title={
+                aria-label={
                   account.org_id
-                    ? `Org ${account.server_slug ?? account.server_id} — your role: ${account.org_role ?? "—"}`
-                    : "Org settings (no org yet — first login required)"
+                    ? `Org ${account.server_slug ?? account.server_id}, role ${account.org_role ?? "none"}`
+                    : "Org settings"
                 }
               >
-                <span className="inline-flex items-center gap-1">
+                <span className="inline-flex items-center gap-1 leading-none">
                   Org
                   {account.org_role && (
                     <span
-                      className="text-xs px-1 rounded"
+                      className="inline-flex items-center rounded px-1 text-xs leading-none"
                       style={{
                         color:
                           account.org_role === "owner"
@@ -134,7 +134,7 @@ function Header({ account }: { account: AuthAccount }) {
             <NavLink
               to="/settings"
               className={({ isActive }) =>
-                `px-3 py-1.5 rounded-md text-sm ${
+                `inline-flex h-10 items-center rounded-md px-3 text-sm leading-none ${
                   isActive ? "bg-slate-100 font-medium" : "hover:bg-slate-100"
                 }`
               }
