@@ -18,6 +18,7 @@ import {
   addAppServerGrant,
   createOrgInvite,
   getAuthMe,
+  listApps,
   listAppMembers,
   listAppServerGrants,
   listOrgMembers,
@@ -27,14 +28,20 @@ import {
   updateAppServerGrant,
   type AppMember,
   type AppServerGrant,
+  type App,
 } from "../lib/api";
 import { useToast } from "../components/Toast";
 
 export function AppAccess({ appId }: { appId: string }) {
+  const [showAddServer, setShowAddServer] = useState(false);
+  const [showAddMember, setShowAddMember] = useState(false);
   const me = useQuery({ queryKey: ["auth-me"], queryFn: () => getAuthMe() });
   const account = me.data?.account;
   const orgRole = account?.org_role ?? null;
   const isOrgAdmin = orgRole === "owner" || orgRole === "admin";
+  const apps = useQuery({ queryKey: ["apps"], queryFn: () => listApps() });
+  const app = apps.data?.apps.find((a) => a.id === appId) ?? null;
+  const isOwningOrg = !!app?.org_id && app.org_id === account?.org_id;
   const appMembers = useQuery({
     queryKey: ["app-members", appId],
     queryFn: () => listAppMembers(appId),
@@ -56,43 +63,75 @@ export function AppAccess({ appId }: { appId: string }) {
     )?.app_role ?? null;
   const canManage =
     isOrgAdmin || currentAppRole === "admin" || currentServerGrantRole === "admin";
+  const inheritedRole = isOwningOrg ? orgRole : null;
+  const currentAccess = currentAppRole ?? currentServerGrantRole ?? inheritedRole ?? null;
 
   return (
     <div className="space-y-4">
       <div className="card !p-4 text-sm">
         <div className="text-slate-600 mb-2">
-          <strong>App Access tab.</strong> Manage app members and Raft server
-          visibility for this app.
+          <strong>Access.</strong> Review inherited owner-server access,
+          external Raft server grants, and direct per-app member grants.
         </div>
         <div className="text-xs text-slate-500">
-          Your current access: org{" "}
-          <span className="font-mono">{orgRole ?? "—"}</span>, app{" "}
-          <span className="font-mono">{currentAppRole ?? currentServerGrantRole ?? "—"}</span>{" "}
+          Your current access: <span className="font-mono">{currentAccess ?? "—"}</span>{" "}
+          {isOwningOrg && <span>(inherited from owning org)</span>}
+          {!isOwningOrg && currentServerGrantRole && <span>(server grant)</span>}
+          {!isOwningOrg && currentAppRole && <span>(direct app member)</span>}{" "}
           {canManage ? "(can manage access)" : "(read-only)"}
         </div>
       </div>
       <AppServerGrantList
         appId={appId}
+        app={app}
+        isOwningOrg={isOwningOrg}
         canManage={canManage}
+        onAdd={() => setShowAddServer(true)}
+        orgRole={orgRole}
         currentServerId={account?.server_id ?? null}
         currentServerSlug={account?.server_slug ?? null}
       />
-      {canManage && <AddAppServerGrantForm appId={appId} />}
-      <AppMemberList appId={appId} canManage={canManage} currentAccountId={account?.id ?? null} />
-      {canManage && <AddAppMemberForm appId={appId} />}
+      <AppMemberList
+        appId={appId}
+        canManage={canManage}
+        currentAccountId={account?.id ?? null}
+        onAdd={() => setShowAddMember(true)}
+      />
       {canManage && <InviteToAppForm appId={appId} />}
+      {showAddServer && (
+        <AddAppServerGrantDialog
+          appId={appId}
+          onClose={() => setShowAddServer(false)}
+          onAdded={() => setShowAddServer(false)}
+        />
+      )}
+      {showAddMember && (
+        <AddAppMemberDialog
+          appId={appId}
+          onClose={() => setShowAddMember(false)}
+          onAdded={() => setShowAddMember(false)}
+        />
+      )}
     </div>
   );
 }
 
 function AppServerGrantList({
   appId,
+  app,
+  isOwningOrg,
   canManage,
+  onAdd,
+  orgRole,
   currentServerId,
   currentServerSlug,
 }: {
   appId: string;
+  app: App | null;
+  isOwningOrg: boolean;
   canManage: boolean;
+  onAdd: () => void;
+  orgRole: string | null;
   currentServerId: string | null;
   currentServerSlug: string | null;
 }) {
@@ -147,6 +186,7 @@ function AppServerGrantList({
   });
 
   const rows = grants.data?.server_grants ?? [];
+  const visibleRowCount = rows.length + (isOwningOrg ? 1 : 0);
 
   return (
     <div className="card !p-4 text-sm">
@@ -155,26 +195,57 @@ function AppServerGrantList({
         <p className="text-red-600">Failed: {(grants.error as Error).message}</p>
       )}
       <div className="flex items-center justify-between mb-3">
-        <h3 className="text-base font-semibold">Raft servers</h3>
-        <span className="text-xs text-slate-500">
-          {rows.length} server{rows.length === 1 ? "" : "s"}
-        </span>
+        <h3 className="text-base font-semibold">Server access</h3>
+        <div className="flex items-center gap-2">
+          <span className="text-xs text-slate-500">
+            {visibleRowCount} server{visibleRowCount === 1 ? "" : "s"}
+          </span>
+          {canManage && (
+            <button className="btn-secondary !py-1 !px-2 !text-xs" onClick={onAdd}>
+              + Add
+            </button>
+          )}
+        </div>
       </div>
-      {grants.data && rows.length === 0 && (
-        <p className="text-slate-500 text-sm">No server grants yet.</p>
+      {grants.data && visibleRowCount === 0 && (
+        <p className="text-slate-500 text-sm">No server-level access rows visible.</p>
       )}
-      {grants.data && rows.length > 0 && (
+      {grants.data && visibleRowCount > 0 && (
         <table className="w-full text-sm">
           <thead>
             <tr className="text-slate-500 text-left border-b border-slate-100">
               <th className="font-normal py-1 pr-2">Server</th>
               <th className="font-normal py-1 pr-2">Server ID</th>
               <th className="font-normal py-1 pr-2">App role</th>
-              <th className="font-normal py-1 pr-2">Updated</th>
+              <th className="font-normal py-1 pr-2">Source</th>
               {canManage && <th className="font-normal py-1">Actions</th>}
             </tr>
           </thead>
           <tbody>
+            {isOwningOrg && (
+              <tr className="border-b border-slate-50 bg-slate-50/60">
+                <td className="py-2 pr-2">
+                  <div className="font-medium">
+                    {currentServerSlug || app?.org_id || "Current server"}
+                    <span className="ml-1 text-xs text-slate-500">(current)</span>
+                  </div>
+                </td>
+                <td className="py-2 pr-2">
+                  <span className="font-mono text-xs text-slate-600">
+                    {currentServerId || "—"}
+                  </span>
+                </td>
+                <td className="py-2 pr-2">
+                  <span className="text-xs font-medium">{orgRole ?? "—"}</span>
+                </td>
+                <td className="py-2 pr-2 text-xs text-slate-500">
+                  Owning org
+                </td>
+                {canManage && (
+                  <td className="py-2 text-xs text-slate-400">Inherited</td>
+                )}
+              </tr>
+            )}
             {rows.map((grant) => (
               <tr
                 key={grant.id}
@@ -220,7 +291,7 @@ function AppServerGrantList({
                   )}
                 </td>
                 <td className="py-2 pr-2 text-xs text-slate-500">
-                  {new Date(grant.updated_at).toISOString().slice(0, 10)}
+                  Server grant
                 </td>
                 {canManage && (
                   <td className="py-2 text-xs">
@@ -246,11 +317,24 @@ function AppServerGrantList({
           </tbody>
         </table>
       )}
+      {grants.data && isOwningOrg && rows.length === 0 && (
+        <p className="text-xs text-slate-500 mt-2">
+          No external server grants yet. The current server has access because it owns this app.
+        </p>
+      )}
     </div>
   );
 }
 
-function AddAppServerGrantForm({ appId }: { appId: string }) {
+function AddAppServerGrantDialog({
+  appId,
+  onClose,
+  onAdded,
+}: {
+  appId: string;
+  onClose: () => void;
+  onAdded: () => void;
+}) {
   const qc = useQueryClient();
   const toast = useToast();
   const [serverId, setServerId] = useState("");
@@ -270,6 +354,7 @@ function AddAppServerGrantForm({ appId }: { appId: string }) {
       setServerId("");
       setServerSlug("");
       setRole("viewer");
+      onAdded();
     },
     onError: (e) =>
       toast.show({
@@ -280,46 +365,76 @@ function AddAppServerGrantForm({ appId }: { appId: string }) {
   });
 
   return (
-    <div className="card !p-4 text-sm">
-      <h3 className="text-base font-semibold mb-3">Add Raft server</h3>
-      <div className="flex flex-wrap items-end gap-2">
-        <div className="flex-1 min-w-40">
-          <label className="label">Server slug</label>
-          <input
-            className="input"
-            value={serverSlug}
-            onChange={(e) => setServerSlug(e.target.value)}
-            placeholder="server slug"
-          />
-        </div>
-        <div className="flex-1 min-w-56">
-          <label className="label">Server ID</label>
-          <input
-            className="input"
-            value={serverId}
-            onChange={(e) => setServerId(e.target.value)}
-            placeholder="optional"
-          />
-        </div>
-        <div className="w-32">
-          <label className="label">Role</label>
-          <select
-            className="input"
-            value={role}
-            onChange={(e) => setRole(e.target.value as AppServerGrant["app_role"])}
-          >
-            <option value="admin">admin</option>
-            <option value="publisher">publisher</option>
-            <option value="viewer">viewer</option>
-          </select>
-        </div>
+    <div
+      className="fixed inset-0 bg-black/30 flex items-center justify-center p-4 z-10"
+      onClick={(e) => {
+        if (e.target === e.currentTarget) onClose();
+      }}
+      onKeyDown={(e) => {
+        if (e.key === "Escape") onClose();
+      }}
+    >
+      <div className="card max-w-md w-full relative">
         <button
-          className="btn-primary"
-          onClick={() => add.mutate()}
-          disabled={(!serverId.trim() && !serverSlug.trim()) || add.isPending}
+          type="button"
+          onClick={onClose}
+          aria-label="Close"
+          className="absolute top-3 right-3 text-slate-400 hover:text-slate-700 w-8 h-8 flex items-center justify-center rounded-md hover:bg-slate-100"
         >
-          {add.isPending ? "Adding…" : "Add"}
+          ×
         </button>
+        <h2 className="text-lg font-bold mb-4 pr-8">Add Raft server</h2>
+        <form
+          className="space-y-3"
+          onSubmit={(e) => {
+            e.preventDefault();
+            add.mutate();
+          }}
+        >
+          <div>
+            <label className="label">Server slug</label>
+            <input
+              className="input"
+              value={serverSlug}
+              onChange={(e) => setServerSlug(e.target.value)}
+              placeholder="server slug"
+              autoFocus
+            />
+          </div>
+          <div>
+            <label className="label">Server ID</label>
+            <input
+              className="input"
+              value={serverId}
+              onChange={(e) => setServerId(e.target.value)}
+              placeholder="optional"
+            />
+          </div>
+          <div>
+            <label className="label">Role</label>
+            <select
+              className="input"
+              value={role}
+              onChange={(e) => setRole(e.target.value as AppServerGrant["app_role"])}
+            >
+              <option value="admin">admin</option>
+              <option value="publisher">publisher</option>
+              <option value="viewer">viewer</option>
+            </select>
+          </div>
+          <div className="flex justify-end gap-2 pt-2">
+            <button type="button" className="btn-secondary" onClick={onClose}>
+              Cancel
+            </button>
+            <button
+              type="submit"
+              className="btn-primary"
+              disabled={(!serverId.trim() && !serverSlug.trim()) || add.isPending}
+            >
+              {add.isPending ? "Adding…" : "Add"}
+            </button>
+          </div>
+        </form>
       </div>
     </div>
   );
@@ -329,10 +444,12 @@ function AppMemberList({
   appId,
   canManage,
   currentAccountId,
+  onAdd,
 }: {
   appId: string;
   canManage: boolean;
   currentAccountId: string | null;
+  onAdd: () => void;
 }) {
   const qc = useQueryClient();
   const toast = useToast();
@@ -383,7 +500,7 @@ function AppMemberList({
         <p className="text-red-600">Failed: {(members.error as Error).message}</p>
       )}
       <div className="flex items-center justify-between mb-3">
-        <h3 className="text-base font-semibold">App members</h3>
+        <h3 className="text-base font-semibold">Direct app members</h3>
         <div className="flex items-center gap-2">
           <select
             className="input text-xs py-0.5"
@@ -403,12 +520,17 @@ function AppMemberList({
               <span className="ml-1">({principalFilter})</span>
             )}
           </span>
+          {canManage && (
+            <button className="btn-secondary !py-1 !px-2 !text-xs" onClick={onAdd}>
+              + Add
+            </button>
+          )}
         </div>
       </div>
       {members.data && filteredMembers.length === 0 && (
         <p className="text-slate-500 text-sm">
           {principalFilter === "all"
-            ? "No app members yet. Add someone below or wait for them to accept an invite."
+            ? "No direct app members yet. Org members may still have inherited access."
             : `No ${principalFilter} app members.`}
         </p>
       )}
@@ -515,10 +637,19 @@ function AppMemberList({
   );
 }
 
-function AddAppMemberForm({ appId }: { appId: string }) {
+function AddAppMemberDialog({
+  appId,
+  onClose,
+  onAdded,
+}: {
+  appId: string;
+  onClose: () => void;
+  onAdded: () => void;
+}) {
   const qc = useQueryClient();
   const toast = useToast();
   const me = useQuery({ queryKey: ["auth-me"], queryFn: () => getAuthMe() });
+  const currentAccountId = me.data?.account.id ?? null;
   const orgId = me.data?.account.org_id ?? null;
 
   const orgMembers = useQuery({
@@ -545,6 +676,7 @@ function AddAppMemberForm({ appId }: { appId: string }) {
       toast.show({ kind: "success", title: "App member added" });
       qc.invalidateQueries({ queryKey: ["app-members", appId] });
       setSelectedAccount("");
+      onAdded();
     },
     onError: (e) =>
       toast.show({
@@ -554,65 +686,124 @@ function AddAppMemberForm({ appId }: { appId: string }) {
       }),
   });
 
-  // Filter out members already on this app
+  // Filter out principals that already have direct app access or inherited
+  // org-admin access. The form is for app-scoped grants, not re-adding yourself.
   const appAccountIds = new Set(
     appMembers.data?.members.map((m) => m.account_id) ?? [],
   );
   const candidates =
-    orgMembers.data?.members.filter((m) => !appAccountIds.has(m.account_id)) ??
+    orgMembers.data?.members.filter((m) =>
+      m.account_id !== currentAccountId &&
+      !appAccountIds.has(m.account_id) &&
+      m.org_role !== "owner" &&
+      m.org_role !== "admin",
+    ) ??
     [];
 
   if (candidates.length === 0) {
     return (
-      <div className="card !p-4 text-sm text-slate-500">
-        All org members are already on this app.
+      <div
+        className="fixed inset-0 bg-black/30 flex items-center justify-center p-4 z-10"
+        onClick={(e) => {
+          if (e.target === e.currentTarget) onClose();
+        }}
+      >
+        <div className="card max-w-md w-full relative text-sm">
+          <button
+            type="button"
+            onClick={onClose}
+            aria-label="Close"
+            className="absolute top-3 right-3 text-slate-400 hover:text-slate-700 w-8 h-8 flex items-center justify-center rounded-md hover:bg-slate-100"
+          >
+            ×
+          </button>
+          <h2 className="text-lg font-bold mb-3 pr-8">Add direct app member</h2>
+          <p className="text-slate-500">
+            No eligible org members need a direct app grant.
+          </p>
+          <div className="flex justify-end pt-4">
+            <button type="button" className="btn-secondary" onClick={onClose}>
+              Close
+            </button>
+          </div>
+        </div>
       </div>
     );
   }
 
   return (
-    <div className="card !p-4 text-sm">
-      <h3 className="text-base font-semibold mb-3">Add app member</h3>
-      <div className="flex flex-wrap items-end gap-2">
-        <div className="flex-1 min-w-48">
-          <label className="label">Principal</label>
-          <select
-            className="input"
-            value={selectedAccount}
-            onChange={(e) => setSelectedAccount(e.target.value)}
-          >
-            <option value="">— select —</option>
-            {candidates.map((m) => (
-              <option key={m.account_id} value={m.account_id}>
-                {m.display_name} ({m.username ?? m.provider_subject.slice(0, 8)})
-              </option>
-            ))}
-          </select>
-        </div>
-        <div className="w-32">
-          <label className="label">Role</label>
-          <select
-            className="input"
-            value={role}
-            onChange={(e) => setRole(e.target.value as AppMember["app_role"])}
-          >
-            <option value="admin">admin</option>
-            <option value="publisher">publisher</option>
-            <option value="viewer">viewer</option>
-          </select>
-        </div>
+    <div
+      className="fixed inset-0 bg-black/30 flex items-center justify-center p-4 z-10"
+      onClick={(e) => {
+        if (e.target === e.currentTarget) onClose();
+      }}
+      onKeyDown={(e) => {
+        if (e.key === "Escape") onClose();
+      }}
+    >
+      <div className="card max-w-md w-full relative text-sm">
         <button
-          className="btn-primary"
-          onClick={() => add.mutate()}
-          disabled={!selectedAccount || add.isPending}
+          type="button"
+          onClick={onClose}
+          aria-label="Close"
+          className="absolute top-3 right-3 text-slate-400 hover:text-slate-700 w-8 h-8 flex items-center justify-center rounded-md hover:bg-slate-100"
         >
-          {add.isPending ? "Adding…" : "Add"}
+          ×
         </button>
+        <h2 className="text-lg font-bold mb-4 pr-8">Add direct app member</h2>
+        <form
+          className="space-y-3"
+          onSubmit={(e) => {
+            e.preventDefault();
+            add.mutate();
+          }}
+        >
+          <div>
+            <label className="label">Principal</label>
+            <select
+              className="input"
+              value={selectedAccount}
+              onChange={(e) => setSelectedAccount(e.target.value)}
+              autoFocus
+            >
+              <option value="">— select —</option>
+              {candidates.map((m) => (
+                <option key={m.account_id} value={m.account_id}>
+                  {m.display_name} ({m.username ?? m.provider_subject.slice(0, 8)})
+                </option>
+              ))}
+            </select>
+          </div>
+          <div>
+            <label className="label">Role</label>
+            <select
+              className="input"
+              value={role}
+              onChange={(e) => setRole(e.target.value as AppMember["app_role"])}
+            >
+              <option value="admin">admin</option>
+              <option value="publisher">publisher</option>
+              <option value="viewer">viewer</option>
+            </select>
+          </div>
+          <p className="text-xs text-slate-500">
+            Direct app members are for org members who need app-scoped access.
+            Owners and org admins already inherit app administration.
+          </p>
+          <div className="flex justify-end gap-2 pt-2">
+            <button type="button" className="btn-secondary" onClick={onClose}>
+              Cancel
+            </button>
+            <button
+              type="submit"
+              className="btn-primary"
+              disabled={!selectedAccount || add.isPending}
+            >
+              {add.isPending ? "Adding…" : "Add"}
+            </button>
+          </div>
+        </form>
       </div>
-      <p className="text-xs text-slate-500 mt-2">
-        Direct add — principal must already be an org member. For inviting
-        new people, use the Org settings → Invites tab.
-      </p>
     </div>
   );
 }
