@@ -323,6 +323,30 @@ function OrgSettingsRoute() {
   return <OrgSettings orgId={orgId} />;
 }
 
+function SettingsPage() {
+  return (
+    <StandardPageShell>
+      <Settings />
+    </StandardPageShell>
+  );
+}
+
+function OrgSettingsPage() {
+  return (
+    <StandardPageShell>
+      <OrgSettingsRoute />
+    </StandardPageShell>
+  );
+}
+
+function StandardPageShell({ children }: { children: React.ReactNode }) {
+  return (
+    <main className="flex-1 max-w-5xl mx-auto px-4 py-8 w-full">
+      {children}
+    </main>
+  );
+}
+
 function AcceptInviteRoute() {
   const { token } = useParams();
   if (!token) return null;
@@ -558,8 +582,8 @@ function AuthenticatedApp({ account }: { account: AuthAccount }) {
       <Routes>
         <Route path="/" element={<Navigate to="/apps" replace />} />
         <Route path="/apps" element={<AppsListWithNav />} />
-        <Route path="/settings" element={<Settings />} />
-        <Route path="/orgs/:orgId" element={<OrgSettingsRoute />} />
+        <Route path="/settings" element={<SettingsPage />} />
+        <Route path="/orgs/:orgId" element={<OrgSettingsPage />} />
         <Route path="/invites/:token" element={<AcceptInviteRoute />} />
         <Route path="/apps/:appId" element={<AppShell />}>
           <Route index element={<AppDetailRoute />} />
@@ -611,9 +635,9 @@ function AuthenticatedApp({ account }: { account: AuthAccount }) {
 function AppsListWithNav() {
   const navigate = useNavigate();
   return (
-    <main className="flex-1 max-w-5xl mx-auto px-4 py-8 w-full">
+    <StandardPageShell>
       <AppsList onSelectApp={(appId) => navigate(`/apps/${appId}`)} />
-    </main>
+    </StandardPageShell>
   );
 }
 

@@ -50,7 +50,7 @@ export function OrgSettings({ orgId }: { orgId: string }) {
   const isCurrentOrg = currentOrgId === orgId;
 
   return (
-    <div className="p-4">
+    <div>
       <div className="mb-6">
         <div className="text-sm text-slate-500">Organization</div>
         <h1 className="text-2xl font-bold">
