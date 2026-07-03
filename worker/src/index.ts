@@ -12,6 +12,7 @@
 
 import { Container, getRandom } from "@cloudflare/containers";
 import { Hono } from "hono";
+import type { Context } from "hono";
 import { cors } from "hono/cors";
 import { swaggerUI } from "@hono/swagger-ui";
 
@@ -312,6 +313,24 @@ app.get(
     persistAuthorization: true,
   }),
 );
+const publicDocs = new Set([
+  "/docs/",
+  "/docs/admin-user-guide/",
+  "/docs/cli-reference/",
+  "/docs/public-api-reference/",
+]);
+
+async function handlePublicDocs(c: Context<{ Bindings: Env }>) {
+  const path = new URL(c.req.url).pathname;
+  const normalizedPath = path.endsWith("/") ? path : `${path}/`;
+  if (!publicDocs.has(normalizedPath)) {
+    return c.text("Not found", 404);
+  }
+  return c.env.ASSETS.fetch(new Request(new URL(normalizedPath, c.req.url), c.req.raw));
+}
+
+app.get("/docs", handlePublicDocs);
+app.get("/docs/*", handlePublicDocs);
 
 app.get("/api/auth/config", handleAuthConfig);
 app.get("/api/auth/login", handleAuthLogin);

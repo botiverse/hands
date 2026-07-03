@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(here, "../..");
-const docsRoot = path.join(repoRoot, "docs");
+const docsRoot = path.join(repoRoot, "docs/public");
 const outRoot = path.join(repoRoot, "admin/public/docs");
 
 const pages = [
@@ -25,24 +25,6 @@ const pages = [
     title: "Public API Reference",
     description: "Public update-check, latest-release, and client integration contracts.",
     source: "public-api-reference.md",
-  },
-  {
-    slug: "publish-architecture",
-    title: "Publishing Architecture",
-    description: "Product model, release model, build assets, channels, and roadmap decisions.",
-    source: "publish-architecture.md",
-  },
-  {
-    slug: "account-org-invite",
-    title: "Accounts, Orgs, and Invites",
-    description: "Raft login, org membership, app access, agents, and invite flows.",
-    source: "account-org-invite.md",
-  },
-  {
-    slug: "publish-tasks",
-    title: "Publishing Tasks",
-    description: "Implementation task history and remaining roadmap notes.",
-    source: "publish-tasks.md",
   },
 ];
 

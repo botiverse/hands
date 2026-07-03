@@ -80,6 +80,8 @@
       "/api/*",
       "/public/*",
       "/share/*",
+      "/docs",
+      "/docs/*",
       "/openapi.json",
       "/api-docs",
       "/login/raft/callback",
