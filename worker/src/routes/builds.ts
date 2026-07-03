@@ -57,6 +57,20 @@ interface BuildRow {
   completed_at: number | null;
 }
 
+interface BuildAssetDownloadRow {
+  id: string;
+  artifact_kind: string;
+  platform: string;
+  arch: string | null;
+  variant: string | null;
+  filetype: string;
+  r2_key: string;
+  size_bytes: number;
+  app_slug: string;
+  version_name: string;
+  version_code: number;
+}
+
 function jsonString(value: unknown, fallback: JsonRecord = {}): string {
   if (typeof value === "string") return value;
   return JSON.stringify(value ?? fallback);
@@ -388,6 +402,44 @@ export async function handleCreateBuildAsset(c: Context<{ Bindings: Env }>) {
   }
 }
 
+export async function handleDownloadBuildAsset(c: Context<{ Bindings: Env }>) {
+  const appId = c.req.param("appId") ?? "";
+  const buildId = c.req.param("buildId") ?? "";
+  const assetId = c.req.param("assetId") ?? "";
+  const asset = await c.env.DB.prepare(
+    `SELECT ba.id, ba.artifact_kind, ba.platform, ba.arch, ba.variant, ba.filetype,
+            ba.r2_key, ba.size_bytes,
+            a.slug AS app_slug,
+            b.version_name, b.version_code
+     FROM build_assets ba
+     JOIN builds b ON b.id = ba.build_id
+     JOIN apps a ON a.id = b.app_id
+     WHERE a.id = ?1 AND b.id = ?2 AND ba.id = ?3
+     LIMIT 1`,
+  )
+    .bind(appId, buildId, assetId)
+    .first<BuildAssetDownloadRow>();
+  if (!asset) return c.json({ error: "asset not found" }, 404);
+
+  const object = await c.env.APK_BUCKET.get(asset.r2_key);
+  if (!object) return c.json({ error: "object not found" }, 404);
+
+  await c.env.DB.prepare(
+    "UPDATE build_assets SET download_count = download_count + 1 WHERE id = ?1 AND build_id = ?2",
+  )
+    .bind(assetId, buildId)
+    .run();
+
+  const headers = new Headers();
+  object.writeHttpMetadata(headers);
+  headers.set("etag", object.httpEtag);
+  headers.set("cache-control", "private, max-age=0, no-store");
+  headers.set("content-type", contentTypeForAsset(asset.filetype));
+  headers.set("content-length", String(asset.size_bytes));
+  headers.set("content-disposition", contentDispositionForBuildAsset(asset));
+  return new Response(object.body, { headers });
+}
+
 export async function handleDeleteBuildAsset(c: Context<{ Bindings: Env }>) {
   const appId = c.req.param("appId") ?? "";
   const buildId = c.req.param("buildId") ?? "";
@@ -436,4 +488,41 @@ export async function handleDeleteBuild(c: Context<{ Bindings: Env }>) {
     .run();
   await insertAuditLog(c.env.DB, appId, "build.delete", currentActor(c), { buildId });
   return c.json({ ok: true });
+}
+
+function contentDispositionForBuildAsset(asset: BuildAssetDownloadRow): string {
+  const kind = asset.artifact_kind !== "installable"
+    ? `-${safeFilenameSegment(asset.artifact_kind)}`
+    : "";
+  const platform = asset.platform ? `-${safeFilenameSegment(asset.platform)}` : "";
+  const arch = asset.arch ? `-${safeFilenameSegment(asset.arch)}` : "";
+  const variant = asset.variant ? `-${safeFilenameSegment(asset.variant)}` : "";
+  const extension = safeFilenameSegment(asset.filetype || "bin");
+  const filename = `${safeFilenameSegment(asset.app_slug)}-${safeFilenameSegment(asset.version_name)}-${asset.version_code}${kind}${platform}${arch}${variant}.${extension}`;
+  return `attachment; filename="${filename}"; filename*=UTF-8''${encodeURIComponent(filename)}`;
+}
+
+function safeFilenameSegment(value: string): string {
+  const normalized = value
+    .trim()
+    .replace(/[^A-Za-z0-9._-]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  return normalized || "artifact";
+}
+
+function contentTypeForAsset(filetype: string): string {
+  switch (filetype) {
+    case "apk":
+      return "application/vnd.android.package-archive";
+    case "aab":
+      return "application/octet-stream";
+    case "zip":
+      return "application/zip";
+    case "json":
+      return "application/json";
+    case "txt":
+      return "text/plain; charset=utf-8";
+    default:
+      return "application/octet-stream";
+  }
 }

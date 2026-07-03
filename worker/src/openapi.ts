@@ -37,10 +37,25 @@ const TokenIdParam = z.object({
   }),
 });
 
+const BuildIdParam = z.object({
+  buildId: z.string().openapi({
+    param: { name: "buildId", in: "path" },
+    example: "build_123",
+  }),
+});
+
+const AssetIdParam = z.object({
+  assetId: z.string().openapi({
+    param: { name: "assetId", in: "path" },
+    example: "asset_123",
+  }),
+});
+
 const AppReleaseParams = AppIdParam.merge(ReleaseIdParam);
 const AppReleaseShareParams = AppReleaseParams.merge(ShareIdParam);
 const AppServerGrantParams = AppIdParam.merge(ServerIdParam);
 const AppDeployTokenParams = AppIdParam.merge(TokenIdParam);
+const AppBuildAssetParams = AppIdParam.merge(BuildIdParam).merge(AssetIdParam);
 
 const ErrorResponse = z
   .object({
@@ -346,6 +361,39 @@ docs.openAPIRegistry.registerPath(createRoute({
 
 docs.openAPIRegistry.registerPath(createRoute({
   method: "get",
+  path: "/api/apps/{appId}/builds/{buildId}/assets/{assetId}/download",
+  tags: ["Builds"],
+  summary: "Download a build asset",
+  description:
+    "Streams an authenticated build asset, including installable and support artifacts such as metadata, mapping, or symbols.",
+  security: auth,
+  request: { params: AppBuildAssetParams },
+  responses: {
+    200: {
+      description: "Binary asset stream. Content-Disposition contains the suggested filename.",
+      content: {
+        "application/octet-stream": {
+          schema: { type: "string", format: "binary" },
+        },
+        "application/vnd.android.package-archive": {
+          schema: { type: "string", format: "binary" },
+        },
+        "application/json": {
+          schema: { type: "string", format: "binary" },
+        },
+        "application/zip": {
+          schema: { type: "string", format: "binary" },
+        },
+      },
+    },
+    401: error("Missing or invalid authentication."),
+    403: error("Authenticated account or token does not have the required role."),
+    404: error("Build asset or stored object was not found."),
+  },
+}));
+
+docs.openAPIRegistry.registerPath(createRoute({
+  method: "get",
   path: "/api/apps/{appId}/releases/{releaseId}/shares",
   tags: ["Release shares"],
   summary: "List release share links",
@@ -577,6 +625,10 @@ export const openApiDocument = docs.getOpenAPI31Document({
     {
       name: "Public update",
       description: "Client-facing release resolution endpoints.",
+    },
+    {
+      name: "Builds",
+      description: "Inspect and download build artifacts.",
     },
     {
       name: "Release shares",

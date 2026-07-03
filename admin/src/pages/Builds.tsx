@@ -9,6 +9,7 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
+  buildAssetDownloadUrl,
   getBuild,
   listBuildAssets,
   listBuilds,
@@ -190,8 +191,10 @@ function BuildAssetList({ appId, buildId }: { appId: string; buildId: string }) 
               <th className="font-normal pr-2">platform</th>
               <th className="font-normal pr-2">arch</th>
               <th className="font-normal pr-2">filetype</th>
+              <th className="font-normal pr-2">kind</th>
               <th className="font-normal pr-2">size</th>
               <th className="font-normal pr-2">sha256</th>
+              <th className="font-normal pr-2 text-right">download</th>
             </tr>
           </thead>
           <tbody>
@@ -200,9 +203,18 @@ function BuildAssetList({ appId, buildId }: { appId: string; buildId: string }) 
                 <td className="pr-2">{a.platform}</td>
                 <td className="pr-2">{a.arch ?? "-"}</td>
                 <td className="pr-2">{a.filetype}</td>
+                <td className="pr-2">{a.artifact_kind}</td>
                 <td className="pr-2">{(a.size_bytes / 1024 / 1024).toFixed(2)} MB</td>
                 <td className="pr-2 truncate max-w-xs">
                   {a.file_hash.slice(0, 16)}…
+                </td>
+                <td className="pr-2 text-right">
+                  <a
+                    className="btn-secondary text-xs no-underline inline-flex"
+                    href={buildAssetDownloadUrl(appId, buildId, a.id)}
+                  >
+                    Download
+                  </a>
                 </td>
               </tr>
             ))}

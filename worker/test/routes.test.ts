@@ -1894,6 +1894,31 @@ describe("quiver public API v2 — scope resolution", () => {
     } as any;
   }
 
+  function makeBuildAssetDownloadContext(
+    env: MockEnv,
+    buildId: string,
+    assetId: string,
+  ) {
+    return {
+      env,
+      req: {
+        param: (name: string) =>
+          name === "appId"
+            ? "app-scope"
+            : name === "buildId"
+              ? buildId
+              : name === "assetId"
+                ? assetId
+                : "",
+      },
+      json: (data: unknown, status = 200) =>
+        new Response(JSON.stringify(data), {
+          status,
+          headers: { "content-type": "application/json" },
+        }),
+    } as any;
+  }
+
   function makeShareAdminContext(
     env: MockEnv,
     params: Record<string, string>,
@@ -2287,6 +2312,49 @@ describe("quiver public API v2 — scope resolution", () => {
       `attachment; filename="scope-app-1.0.0-11.apk"; filename*=UTF-8''scope-app-1.0.0-11.apk`,
     );
     expect(await response.text()).toBe("apk");
+  });
+
+  it("authenticated build asset download serves support artifacts", async () => {
+    const env = makeEnv();
+    const { handleDownloadBuildAsset } = await import("../src/routes/builds");
+    await seedRelease(env, "rel-support-download", "build-support-download", [["full", "all"]], {
+      versionCode: 12,
+      versionName: "1.0.12",
+    });
+    await seedAsset(env, "build-support-download", "asset-metadata", {
+      artifactKind: "metadata-file",
+      filetype: "json",
+      sizeBytes: 14,
+    });
+    const key = "apps/app-scope/asset-metadata.apk";
+    env.APK_BUCKET = {
+      get: async (requestedKey: string) => {
+        if (requestedKey !== key) return null;
+        return {
+          body: new Blob(['{"ok":true}\n']).stream(),
+          httpEtag: "\"asset-metadata\"",
+          writeHttpMetadata: (headers: Headers) => {
+            headers.set("content-type", "application/octet-stream");
+          },
+        };
+      },
+    };
+
+    const response = await handleDownloadBuildAsset(
+      makeBuildAssetDownloadContext(env, "build-support-download", "asset-metadata"),
+    );
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-type")).toBe("application/json");
+    expect(response.headers.get("content-length")).toBe("14");
+    expect(response.headers.get("content-disposition")).toContain(
+      "scope-app-1.0.12-12-metadata-file-android.json",
+    );
+    expect(await response.text()).toBe('{"ok":true}\n');
+    const row = await env.DB.prepare("SELECT download_count FROM build_assets WHERE id = ?")
+      .bind("asset-metadata")
+      .first() as { download_count: number } | null;
+    expect(row?.download_count).toBe(1);
   });
 
   it("creates public release shares with hashed tokens only", async () => {

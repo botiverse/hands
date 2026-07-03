@@ -115,6 +115,7 @@ export interface Build {
 export interface BuildAsset {
   id: string;
   build_id: string;
+  artifact_kind: string;
   platform: string;
   arch: string | null;
   variant: string | null;
@@ -818,6 +819,13 @@ export const deleteBuildAsset = (
     `/api/apps/${appId}/builds/${buildId}/assets/${assetId}`,
     { method: "DELETE", admin: true },
   );
+
+export const buildAssetDownloadUrl = (
+  appId: string,
+  buildId: string,
+  assetId: string,
+) =>
+  `${API_BASE}/api/apps/${encodeURIComponent(appId)}/builds/${encodeURIComponent(buildId)}/assets/${encodeURIComponent(assetId)}/download`;
 
 export const listReleases = (appId: string) =>
   request<{ releases: Release[] }>(`/api/apps/${appId}/releases`, { admin: true });

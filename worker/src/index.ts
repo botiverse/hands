@@ -60,6 +60,7 @@ import {
   handleCreateBuildAsset,
   handleDeleteBuild,
   handleDeleteBuildAsset,
+  handleDownloadBuildAsset,
   handleGetBuild,
   handleListBuildAssets,
   handleListBuilds,
@@ -502,6 +503,11 @@ admin.patch("/api/apps/:appId/builds/:buildId", requireAppRole("publisher"), han
 admin.delete("/api/apps/:appId/builds/:buildId", requireAppRole("admin"), handleDeleteBuild);
 admin.get("/api/apps/:appId/builds/:buildId/assets", requireAppRole("viewer"), handleListBuildAssets);
 admin.post("/api/apps/:appId/builds/:buildId/assets", requireAppRole("publisher"), handleCreateBuildAsset);
+admin.get(
+  "/api/apps/:appId/builds/:buildId/assets/:assetId/download",
+  requireAppRole("viewer"),
+  handleDownloadBuildAsset,
+);
 admin.delete(
   "/api/apps/:appId/builds/:buildId/assets/:assetId",
   requireAppRole("admin"),
