@@ -269,6 +269,17 @@ export interface AppMember {
   last_login_at: number;
 }
 
+export interface AppServerGrant {
+  id: string;
+  app_id: string;
+  server_id: string | null;
+  server_slug: string | null;
+  app_role: "admin" | "publisher" | "viewer";
+  granted_by: string | null;
+  created_at: number;
+  updated_at: number;
+}
+
 export interface Invite {
   id: string;
   org_id: string;
@@ -539,6 +550,52 @@ export const removeAppMember = (appId: string, accountId: string) =>
     method: "DELETE",
     admin: true,
   });
+
+export const listAppServerGrants = (appId: string) =>
+  request<{ server_grants: AppServerGrant[] }>(`/api/apps/${appId}/server-grants`, {
+    admin: true,
+  });
+
+export const addAppServerGrant = (
+  appId: string,
+  input: {
+    server_id?: string | null;
+    server_slug?: string | null;
+    app_role: AppServerGrant["app_role"];
+  },
+) =>
+  request<{ ok: boolean }>(`/api/apps/${appId}/server-grants`, {
+    method: "POST",
+    admin: true,
+    body: JSON.stringify(input),
+  });
+
+export const updateAppServerGrant = (
+  appId: string,
+  grantKey: string,
+  input: {
+    server_id?: string | null;
+    server_slug?: string | null;
+    app_role: AppServerGrant["app_role"];
+  },
+) =>
+  request<{ ok: boolean }>(
+    `/api/apps/${appId}/server-grants/${encodeURIComponent(grantKey)}`,
+    {
+      method: "PATCH",
+      admin: true,
+      body: JSON.stringify(input),
+    },
+  );
+
+export const removeAppServerGrant = (appId: string, serverId: string) =>
+  request<{ ok: boolean }>(
+    `/api/apps/${appId}/server-grants/${encodeURIComponent(serverId)}`,
+    {
+      method: "DELETE",
+      admin: true,
+    },
+  );
 
 export const getInvite = (token: string) =>
   request<Invite>(`/api/invites/${token}`);

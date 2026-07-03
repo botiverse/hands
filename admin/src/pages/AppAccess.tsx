@@ -15,13 +15,18 @@ import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   addAppMember,
+  addAppServerGrant,
   createOrgInvite,
   getAuthMe,
   listAppMembers,
+  listAppServerGrants,
   listOrgMembers,
   removeAppMember,
+  removeAppServerGrant,
   updateAppMember,
+  updateAppServerGrant,
   type AppMember,
+  type AppServerGrant,
 } from "../lib/api";
 import { useToast } from "../components/Toast";
 
@@ -30,23 +35,292 @@ export function AppAccess({ appId }: { appId: string }) {
   const account = me.data?.account;
   const orgRole = account?.org_role ?? null;
   const isOrgAdmin = orgRole === "owner" || orgRole === "admin";
+  const appMembers = useQuery({
+    queryKey: ["app-members", appId],
+    queryFn: () => listAppMembers(appId),
+    enabled: !!account?.id,
+  });
+  const serverGrants = useQuery({
+    queryKey: ["app-server-grants", appId],
+    queryFn: () => listAppServerGrants(appId),
+    enabled: !!account?.server_id,
+  });
+  const currentAppRole =
+    appMembers.data?.members.find((m) => m.account_id === account?.id)?.app_role ??
+    null;
+  const currentServerGrantRole =
+    serverGrants.data?.server_grants.find(
+      (g) =>
+        g.server_id === account?.server_id ||
+        (!!g.server_slug && g.server_slug === account?.server_slug),
+    )?.app_role ?? null;
+  const canManage =
+    isOrgAdmin || currentAppRole === "admin" || currentServerGrantRole === "admin";
 
   return (
     <div className="space-y-4">
       <div className="card !p-4 text-sm">
         <div className="text-slate-600 mb-2">
-          <strong>App Access tab.</strong> Manage which principals can publish
-          to this app. App members have per-app roles in addition to their
-          org role.
+          <strong>App Access tab.</strong> Manage app members and Raft server
+          visibility for this app.
         </div>
         <div className="text-xs text-slate-500">
-          Your current access: <span className="font-mono">{orgRole ?? "—"}</span>{" "}
-          {isOrgAdmin ? "(can manage members)" : "(read-only)"}
+          Your current access: org{" "}
+          <span className="font-mono">{orgRole ?? "—"}</span>, app{" "}
+          <span className="font-mono">{currentAppRole ?? currentServerGrantRole ?? "—"}</span>{" "}
+          {canManage ? "(can manage access)" : "(read-only)"}
         </div>
       </div>
-      <AppMemberList appId={appId} canManage={isOrgAdmin} currentAccountId={account?.id ?? null} />
-      {isOrgAdmin && <AddAppMemberForm appId={appId} />}
-      {isOrgAdmin && <InviteToAppForm appId={appId} />}
+      <AppServerGrantList
+        appId={appId}
+        canManage={canManage}
+        currentServerId={account?.server_id ?? null}
+        currentServerSlug={account?.server_slug ?? null}
+      />
+      {canManage && <AddAppServerGrantForm appId={appId} />}
+      <AppMemberList appId={appId} canManage={canManage} currentAccountId={account?.id ?? null} />
+      {canManage && <AddAppMemberForm appId={appId} />}
+      {canManage && <InviteToAppForm appId={appId} />}
+    </div>
+  );
+}
+
+function AppServerGrantList({
+  appId,
+  canManage,
+  currentServerId,
+  currentServerSlug,
+}: {
+  appId: string;
+  canManage: boolean;
+  currentServerId: string | null;
+  currentServerSlug: string | null;
+}) {
+  const qc = useQueryClient();
+  const toast = useToast();
+  const grants = useQuery({
+    queryKey: ["app-server-grants", appId],
+    queryFn: () => listAppServerGrants(appId),
+  });
+
+  const update = useMutation({
+    mutationFn: ({
+      grantKey,
+      serverId,
+      serverSlug,
+      role,
+    }: {
+      grantKey: string;
+      serverId: string | null;
+      serverSlug: string | null;
+      role: AppServerGrant["app_role"];
+    }) =>
+      updateAppServerGrant(appId, grantKey, {
+        server_id: serverId,
+        server_slug: serverSlug,
+        app_role: role,
+      }),
+    onSuccess: () => {
+      toast.show({ kind: "success", title: "Server grant updated" });
+      qc.invalidateQueries({ queryKey: ["app-server-grants", appId] });
+    },
+    onError: (e) =>
+      toast.show({
+        kind: "error",
+        title: "Update failed",
+        description: (e as Error).message,
+      }),
+  });
+
+  const remove = useMutation({
+    mutationFn: (grantKey: string) => removeAppServerGrant(appId, grantKey),
+    onSuccess: () => {
+      toast.show({ kind: "success", title: "Server grant removed" });
+      qc.invalidateQueries({ queryKey: ["app-server-grants", appId] });
+    },
+    onError: (e) =>
+      toast.show({
+        kind: "error",
+        title: "Remove failed",
+        description: (e as Error).message,
+      }),
+  });
+
+  const rows = grants.data?.server_grants ?? [];
+
+  return (
+    <div className="card !p-4 text-sm">
+      {grants.isLoading && <p className="text-slate-500">Loading…</p>}
+      {grants.error && (
+        <p className="text-red-600">Failed: {(grants.error as Error).message}</p>
+      )}
+      <div className="flex items-center justify-between mb-3">
+        <h3 className="text-base font-semibold">Raft servers</h3>
+        <span className="text-xs text-slate-500">
+          {rows.length} server{rows.length === 1 ? "" : "s"}
+        </span>
+      </div>
+      {grants.data && rows.length === 0 && (
+        <p className="text-slate-500 text-sm">No server grants yet.</p>
+      )}
+      {grants.data && rows.length > 0 && (
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="text-slate-500 text-left border-b border-slate-100">
+              <th className="font-normal py-1 pr-2">Server</th>
+              <th className="font-normal py-1 pr-2">Server ID</th>
+              <th className="font-normal py-1 pr-2">App role</th>
+              <th className="font-normal py-1 pr-2">Updated</th>
+              {canManage && <th className="font-normal py-1">Actions</th>}
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((grant) => (
+              <tr
+                key={grant.id}
+                className="border-b border-slate-50 hover:bg-slate-50"
+              >
+                <td className="py-2 pr-2">
+                  <div className="font-medium">
+                    {grant.server_slug || grant.server_id}
+                    {(grant.server_id === currentServerId ||
+                      (!!grant.server_slug && grant.server_slug === currentServerSlug)) && (
+                      <span className="ml-1 text-xs text-slate-500">(current)</span>
+                    )}
+                  </div>
+                </td>
+                <td className="py-2 pr-2">
+                  <span className="font-mono text-xs text-slate-600">
+                    {grant.server_id || "—"}
+                  </span>
+                </td>
+                <td className="py-2 pr-2">
+                  {canManage ? (
+                    <select
+                      className="input text-xs py-0.5"
+                      value={grant.app_role}
+                      onChange={(e) =>
+                        update.mutate({
+                          grantKey: grant.id,
+                          serverId: grant.server_id,
+                          serverSlug: grant.server_slug,
+                          role: e.target.value as AppServerGrant["app_role"],
+                        })
+                      }
+                      disabled={update.isPending}
+                    >
+                      {(["admin", "publisher", "viewer"] as const).map((r) => (
+                        <option key={r} value={r}>
+                          {r}
+                        </option>
+                      ))}
+                    </select>
+                  ) : (
+                    <span className="text-xs font-medium">{grant.app_role}</span>
+                  )}
+                </td>
+                <td className="py-2 pr-2 text-xs text-slate-500">
+                  {new Date(grant.updated_at).toISOString().slice(0, 10)}
+                </td>
+                {canManage && (
+                  <td className="py-2 text-xs">
+                    <button
+                      className="text-red-600 hover:underline"
+                      onClick={() => {
+                        if (
+                          confirm(
+                            `Remove server grant for ${grant.server_slug || grant.server_id}?`,
+                          )
+                        ) {
+                          remove.mutate(grant.id);
+                        }
+                      }}
+                      disabled={remove.isPending}
+                    >
+                      Remove
+                    </button>
+                  </td>
+                )}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+    </div>
+  );
+}
+
+function AddAppServerGrantForm({ appId }: { appId: string }) {
+  const qc = useQueryClient();
+  const toast = useToast();
+  const [serverId, setServerId] = useState("");
+  const [serverSlug, setServerSlug] = useState("");
+  const [role, setRole] = useState<AppServerGrant["app_role"]>("viewer");
+
+  const add = useMutation({
+    mutationFn: () =>
+      addAppServerGrant(appId, {
+        server_id: serverId.trim() || null,
+        server_slug: serverSlug.trim() || null,
+        app_role: role,
+      }),
+    onSuccess: () => {
+      toast.show({ kind: "success", title: "Server grant added" });
+      qc.invalidateQueries({ queryKey: ["app-server-grants", appId] });
+      setServerId("");
+      setServerSlug("");
+      setRole("viewer");
+    },
+    onError: (e) =>
+      toast.show({
+        kind: "error",
+        title: "Add failed",
+        description: (e as Error).message,
+      }),
+  });
+
+  return (
+    <div className="card !p-4 text-sm">
+      <h3 className="text-base font-semibold mb-3">Add Raft server</h3>
+      <div className="flex flex-wrap items-end gap-2">
+        <div className="flex-1 min-w-40">
+          <label className="label">Server slug</label>
+          <input
+            className="input"
+            value={serverSlug}
+            onChange={(e) => setServerSlug(e.target.value)}
+            placeholder="server slug"
+          />
+        </div>
+        <div className="flex-1 min-w-56">
+          <label className="label">Server ID</label>
+          <input
+            className="input"
+            value={serverId}
+            onChange={(e) => setServerId(e.target.value)}
+            placeholder="optional"
+          />
+        </div>
+        <div className="w-32">
+          <label className="label">Role</label>
+          <select
+            className="input"
+            value={role}
+            onChange={(e) => setRole(e.target.value as AppServerGrant["app_role"])}
+          >
+            <option value="admin">admin</option>
+            <option value="publisher">publisher</option>
+            <option value="viewer">viewer</option>
+          </select>
+        </div>
+        <button
+          className="btn-primary"
+          onClick={() => add.mutate()}
+          disabled={(!serverId.trim() && !serverSlug.trim()) || add.isPending}
+        >
+          {add.isPending ? "Adding…" : "Add"}
+        </button>
+      </div>
     </div>
   );
 }

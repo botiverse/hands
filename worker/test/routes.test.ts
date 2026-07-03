@@ -45,7 +45,8 @@ function makeMockDb() {
   sqlite.exec(`
     CREATE TABLE apps (
       id TEXT PRIMARY KEY, org_id TEXT, slug TEXT NOT NULL UNIQUE, name TEXT NOT NULL,
-      platform TEXT NOT NULL, created_at INTEGER NOT NULL
+      platform TEXT NOT NULL, description TEXT, archived INTEGER NOT NULL DEFAULT 0,
+      archived_at INTEGER, created_at INTEGER NOT NULL
     );
     CREATE TABLE channels (
       id TEXT PRIMARY KEY, app_id TEXT NOT NULL, slug TEXT NOT NULL,
@@ -251,6 +252,19 @@ function makeMockDb() {
       invited_by TEXT REFERENCES raft_accounts(id) ON DELETE SET NULL,
       joined_at INTEGER NOT NULL,
       UNIQUE (app_id, account_id)
+    );
+    CREATE TABLE app_server_grants (
+      id TEXT PRIMARY KEY,
+      app_id TEXT NOT NULL REFERENCES apps(id) ON DELETE CASCADE,
+      server_id TEXT,
+      server_slug TEXT,
+      app_role TEXT NOT NULL CHECK (app_role IN ('admin', 'publisher', 'viewer')),
+      granted_by TEXT REFERENCES raft_accounts(id) ON DELETE SET NULL,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL,
+      CHECK (server_id IS NOT NULL OR server_slug IS NOT NULL),
+      UNIQUE (app_id, server_id),
+      UNIQUE (app_id, server_slug)
     );
     CREATE TABLE invites (
       id TEXT PRIMARY KEY,
@@ -572,6 +586,88 @@ describe("quiver route handlers — SQL smoke", () => {
     ]);
   });
 
+  it("app server grants expose selected apps to another Raft server", async () => {
+    const now = Date.now();
+    const env = makeMockEnv();
+    await env.DB
+      .prepare(
+        `INSERT INTO organizations
+         (id, slug, name, external_provider, external_id, created_at, archived)
+         VALUES (?, ?, ?, 'raft', ?, ?, 0), (?, ?, ?, 'raft', ?, ?, 0)`,
+      )
+      .bind(
+        "raft_owner",
+        "owner",
+        "Owner Server",
+        "owner-server",
+        now,
+        "raft_external",
+        "external",
+        "External Server",
+        "external-server",
+        now,
+      )
+      .run();
+    await env.DB
+      .prepare(
+        `INSERT INTO raft_accounts
+         (id, provider, provider_subject, server_id, server_slug, principal_type,
+          server_role, username, display_name, avatar_url, raw_profile,
+          created_at, updated_at, last_login_at)
+         VALUES (?, 'raft', ?, ?, ?, 'human', NULL, ?, ?, NULL, '{}', ?, ?, ?)`,
+      )
+      .bind("external-user", "external-sub", "external-server", "external", "external", "External User", now, now, now)
+      .run();
+    await env.DB
+      .prepare("INSERT INTO org_members (id, org_id, account_id, org_role, joined_at) VALUES (?, ?, ?, ?, ?)")
+      .bind("orgmem-external", "raft_external", "external-user", "viewer", now)
+      .run();
+    await env.DB
+      .prepare("INSERT INTO apps (id, org_id, slug, name, platform, created_at) VALUES (?, ?, ?, ?, ?, ?), (?, ?, ?, ?, ?, ?)")
+      .bind(
+        "app-owner-granted",
+        "raft_owner",
+        "granted-app",
+        "Granted App",
+        "android",
+        now,
+        "app-owner-hidden",
+        "raft_owner",
+        "hidden-app",
+        "Hidden App",
+        "android",
+        now + 1,
+      )
+      .run();
+    await env.DB
+      .prepare(
+        `INSERT INTO app_server_grants
+         (id, app_id, server_id, server_slug, app_role, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .bind("grant-external", "app-owner-granted", null, "external", "viewer", now, now)
+      .run();
+
+    const { handleListApps } = await import("../src/routes/apps");
+    const response = await handleListApps({
+      env,
+      get: (name: string) => {
+        if (name === "org_id") return "raft_external";
+        if (name === "admin_account") {
+          return { id: "external-user", server_id: "external-server", server_slug: "external" };
+        }
+        return undefined;
+      },
+      json: (data: unknown, status = 200) =>
+        new Response(JSON.stringify(data), {
+          status,
+          headers: { "content-type": "application/json" },
+        }),
+    } as any);
+    const body = await response.json() as any;
+    expect(body.apps.map((a: any) => a.id)).toEqual(["app-owner-granted"]);
+  });
+
   it("permission helpers resolve org/app roles", async () => {
     const now = Date.now();
     await env.DB
@@ -627,6 +723,66 @@ describe("quiver route handlers — SQL smoke", () => {
     expect(isOrgAtLeast("viewer", "member")).toBe(false);
     expect(isAppAtLeast("publisher", "viewer")).toBe(true);
     expect(isAppAtLeast("viewer", "publisher")).toBe(false);
+  });
+
+  it("permission helpers include Raft server app grants", async () => {
+    const now = Date.now();
+    await env.DB
+      .prepare(
+        `INSERT INTO organizations
+         (id, slug, name, external_provider, external_id, created_at, archived)
+         VALUES (?, ?, ?, 'raft', ?, ?, 0), (?, ?, ?, 'raft', ?, ?, 0)`,
+      )
+      .bind(
+        "raft_owner2",
+        "owner2",
+        "Owner 2",
+        "owner2",
+        now,
+        "raft_external2",
+        "external2",
+        "External 2",
+        "external2",
+        now,
+      )
+      .run();
+    await env.DB
+      .prepare(
+        `INSERT INTO raft_accounts
+         (id, provider, provider_subject, server_id, server_slug, principal_type,
+          server_role, username, display_name, avatar_url, raw_profile,
+          created_at, updated_at, last_login_at)
+         VALUES (?, 'raft', ?, ?, ?, 'human', NULL, ?, ?, NULL, '{}', ?, ?, ?)`,
+      )
+      .bind("external2-user", "external2-sub", "external2", "external2", "external2", "External 2 User", now, now, now)
+      .run();
+    await env.DB
+      .prepare("INSERT INTO org_members (id, org_id, account_id, org_role, joined_at) VALUES (?, ?, ?, ?, ?)")
+      .bind("orgmem-external2", "raft_external2", "external2-user", "viewer", now)
+      .run();
+    await env.DB
+      .prepare("INSERT INTO apps (id, org_id, slug, name, platform, created_at) VALUES (?, ?, ?, ?, ?, ?)")
+      .bind("app-server-grant", "raft_owner2", "server-grant-app", "Server Grant App", "android", now)
+      .run();
+    await env.DB
+      .prepare(
+        `INSERT INTO app_server_grants
+         (id, app_id, server_id, server_slug, app_role, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .bind("grant-external2", "app-server-grant", null, "external2", "publisher", now, now)
+      .run();
+
+    const { getEffectiveRole, getAppServerGrantRole } = await import("../src/lib/permissions");
+    await expect(getAppServerGrantRole(env.DB as any, "app-server-grant", null, "external2"))
+      .resolves.toBe("publisher");
+    await expect(getEffectiveRole(env.DB as any, "external2-user", { appId: "app-server-grant" }))
+      .resolves.toMatchObject({
+        org_id: "raft_owner2",
+        org_role: null,
+        app_role: "publisher",
+        server_app_role: "publisher",
+      });
   });
 
   it("invites allow only one pending email per org", async () => {

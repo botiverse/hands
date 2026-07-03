@@ -81,6 +81,29 @@ export async function getAppMemberRole(
   return row?.app_role ?? null;
 }
 
+export async function getAppServerGrantRole(
+  db: D1Database,
+  appId: string,
+  serverId: string | null | undefined,
+  serverSlug?: string | null,
+): Promise<AppRole | null> {
+  if (!serverId && !serverSlug) return null;
+  const row = await db
+    .prepare(
+      `SELECT app_role
+       FROM app_server_grants
+       WHERE app_id = ?1
+         AND (
+           (?2 IS NOT NULL AND server_id = ?3)
+           OR (?4 IS NOT NULL AND server_slug = ?5)
+         )
+       LIMIT 1`,
+    )
+    .bind(appId, serverId ?? null, serverId ?? null, serverSlug ?? null, serverSlug ?? null)
+    .first<{ app_role: AppRole }>();
+  return row?.app_role ?? null;
+}
+
 export async function getAppOrgId(db: D1Database, appId: string): Promise<string | null> {
   const row = await db
     .prepare("SELECT org_id FROM apps WHERE id = ?1 LIMIT 1")
@@ -93,13 +116,23 @@ export async function getEffectiveRole(
   db: D1Database,
   accountId: string,
   input: { orgId?: string | null; appId?: string | null },
-): Promise<{ org_role: OrgRole | null; app_role: AppRole | null; org_id: string | null }> {
+): Promise<{ org_role: OrgRole | null; app_role: AppRole | null; server_app_role: AppRole | null; org_id: string | null }> {
   const orgId = input.orgId ?? (input.appId ? await getAppOrgId(db, input.appId) : null);
-  const [orgRole, appRole] = await Promise.all([
+  const account = input.appId
+    ? (await db.prepare("SELECT server_id, server_slug FROM raft_accounts WHERE id = ?1 LIMIT 1")
+      .bind(accountId)
+      .first<{ server_id: string; server_slug: string | null }>()) ?? null
+    : null;
+  const [orgRole, appRole, serverAppRole] = await Promise.all([
     orgId ? getOrgMemberRole(db, orgId, accountId) : Promise.resolve(null),
     input.appId ? getAppMemberRole(db, input.appId, accountId) : Promise.resolve(null),
+    input.appId && account
+      ? getAppServerGrantRole(db, input.appId, account.server_id, account.server_slug)
+      : Promise.resolve(null),
   ]);
-  return { org_role: orgRole, app_role: appRole, org_id: orgId };
+  const roles = [appRole, serverAppRole].filter(Boolean) as AppRole[];
+  const effectiveAppRole = roles.sort((a, b) => appRank[b] - appRank[a])[0] ?? null;
+  return { org_role: orgRole, app_role: effectiveAppRole, server_app_role: serverAppRole, org_id: orgId };
 }
 
 export async function ensureOrgRole(c: AdminContext, orgId: string, minimum: OrgRole) {

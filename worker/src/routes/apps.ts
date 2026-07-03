@@ -7,6 +7,7 @@
 
 import type { Context } from "hono";
 import { currentActor, type AdminEnv } from "../middleware/auth";
+import { currentAccount } from "../lib/permissions";
 
 type AdminContext = Context<AdminEnv & { Bindings: Env }>;
 
@@ -21,16 +22,37 @@ async function currentOrgId(c: AdminContext): Promise<string> {
 
 export async function handleListApps(c: AdminContext) {
   const orgId = c.get("org_id");
-  const query = orgId
+  const account = currentAccount(c);
+  const query = orgId && account
     ? {
-        sql: `SELECT id, org_id, slug, name, platform, description, archived, archived_at, created_at
+        sql: `SELECT a.id, a.org_id, a.slug, a.name, a.platform,
+                     a.description, a.archived, a.archived_at, a.created_at
+              FROM apps a
+              WHERE a.org_id = ?1
+                 OR EXISTS (
+                   SELECT 1
+                   FROM app_server_grants asg
+                   WHERE asg.app_id = a.id
+                     AND (
+                       asg.server_id = ?2
+                       OR (?3 IS NOT NULL AND asg.server_slug = ?4)
+                     )
+                 )
+              ORDER BY a.archived ASC, a.created_at DESC`,
+        params: [orgId, account.server_id, account.server_slug ?? null, account.server_slug ?? null],
+      }
+    : orgId
+    ? {
+        sql: `SELECT id, org_id, slug, name, platform,
+                     description, archived, archived_at, created_at
               FROM apps
               WHERE org_id = ?1
               ORDER BY archived ASC, created_at DESC`,
         params: [orgId],
       }
     : {
-        sql: `SELECT id, org_id, slug, name, platform, description, archived, archived_at, created_at
+        sql: `SELECT id, org_id, slug, name, platform,
+                     description, archived, archived_at, created_at
               FROM apps
               ORDER BY archived ASC, created_at DESC`,
         params: [],

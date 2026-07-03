@@ -87,18 +87,22 @@ import { handleHealth } from "./routes/health";
 import {
   handleAcceptInvite,
   handleAddAppMember,
+  handleAddAppServerGrant,
   handleCreateOrgInvite,
   handleGetInvite,
   handleListAppMembers,
+  handleListAppServerGrants,
   handleListOrgAuditLogs,
   handleListOrgInvites,
   handleListOrgMembers,
   handleListOrgs,
   handleRemoveAppMember,
+  handleRemoveAppServerGrant,
   handleRemoveOrgMember,
   handleResendOrgInvite,
   handleRevokeOrgInvite,
   handleUpdateAppMember,
+  handleUpdateAppServerGrant,
   handleUpdateOrgMember,
 } from "./routes/orgs";
 import {
@@ -541,6 +545,10 @@ admin.get("/api/apps/:appId/members", requireAppRole("viewer"), handleListAppMem
 admin.post("/api/apps/:appId/members", requireAppRole("admin"), handleAddAppMember);
 admin.patch("/api/apps/:appId/members/:accountId", requireAppRole("admin"), handleUpdateAppMember);
 admin.delete("/api/apps/:appId/members/:accountId", requireAppRole("admin"), handleRemoveAppMember);
+admin.get("/api/apps/:appId/server-grants", requireAppRole("viewer"), handleListAppServerGrants);
+admin.post("/api/apps/:appId/server-grants", requireAppRole("admin"), handleAddAppServerGrant);
+admin.patch("/api/apps/:appId/server-grants/:serverId", requireAppRole("admin"), handleUpdateAppServerGrant);
+admin.delete("/api/apps/:appId/server-grants/:serverId", requireAppRole("admin"), handleRemoveAppServerGrant);
 
 app.route("/", admin);
 

@@ -410,6 +410,124 @@ export async function handleListAppMembers(c: AdminContext) {
   return c.json({ members: results });
 }
 
+export async function handleListAppServerGrants(c: AdminContext) {
+  const appId = c.req.param("appId") ?? "";
+  const allowed = await ensureAppRole(c, appId, "viewer");
+  if (!allowed.ok) return allowed.response;
+  const { results } = await c.env.DB.prepare(
+    `SELECT id, app_id, server_id, server_slug, app_role, granted_by, created_at, updated_at
+     FROM app_server_grants
+     WHERE app_id = ?1
+     ORDER BY lower(COALESCE(server_slug, server_id)) ASC`,
+  ).bind(appId).all();
+  return c.json({ server_grants: results });
+}
+
+export async function handleAddAppServerGrant(c: AdminContext) {
+  const appId = c.req.param("appId") ?? "";
+  const allowed = await ensureAppRole(c, appId, "admin");
+  if (!allowed.ok) return allowed.response;
+  const actor = currentActorInfo(c);
+  const body = (await c.req.json().catch(() => ({}))) as {
+    server_id?: unknown;
+    server_slug?: unknown;
+    app_role?: unknown;
+  };
+  const serverId = String(body.server_id ?? "").trim() || null;
+  const serverSlug = body.server_slug === undefined || body.server_slug === null
+    ? null
+    : String(body.server_slug).trim() || null;
+  if (!serverId && !serverSlug) return c.json({ error: "server_id or server_slug required" }, 400);
+  if (!isAppRole(body.app_role)) return c.json({ error: "app_role must be admin/publisher/viewer" }, 400);
+  const timestamp = now();
+  const existing = await c.env.DB.prepare(
+    `SELECT id
+     FROM app_server_grants
+     WHERE app_id = ?1
+       AND (
+         (?2 IS NOT NULL AND server_id = ?3)
+         OR (?4 IS NOT NULL AND server_slug = ?5)
+       )
+     LIMIT 1`,
+  ).bind(appId, serverId, serverId, serverSlug, serverSlug).first<{ id: string }>();
+  if (existing) {
+    await c.env.DB.prepare(
+      `UPDATE app_server_grants
+       SET server_id = ?1, server_slug = ?2, app_role = ?3, granted_by = ?4, updated_at = ?5
+       WHERE id = ?6`,
+    ).bind(serverId, serverSlug, body.app_role, actor.id, timestamp, existing.id).run();
+  } else {
+    await c.env.DB.prepare(
+      `INSERT INTO app_server_grants
+       (id, app_id, server_id, server_slug, app_role, granted_by, created_at, updated_at)
+       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7)`,
+    ).bind(
+      crypto.randomUUID(),
+      appId,
+      serverId,
+      serverSlug,
+      body.app_role,
+      actor.id,
+      timestamp,
+    ).run();
+  }
+  await insertAuditLog(c.env.DB, c, {
+    app_id: appId,
+    action: "app_server_grant.upsert",
+    payload: { server_id: serverId, server_slug: serverSlug, app_role: body.app_role },
+    created_at: timestamp,
+  });
+  return c.json({ ok: true, app_id: appId, server_id: serverId, server_slug: serverSlug, app_role: body.app_role }, 201);
+}
+
+export async function handleUpdateAppServerGrant(c: AdminContext) {
+  const appId = c.req.param("appId") ?? "";
+  const serverKey = c.req.param("serverId") ?? "";
+  const allowed = await ensureAppRole(c, appId, "admin");
+  if (!allowed.ok) return allowed.response;
+  const body = (await c.req.json().catch(() => ({}))) as {
+    server_id?: unknown;
+    server_slug?: unknown;
+    app_role?: unknown;
+  };
+  if (!isAppRole(body.app_role)) return c.json({ error: "app_role must be admin/publisher/viewer" }, 400);
+  const serverId = body.server_id === undefined || body.server_id === null
+    ? null
+    : String(body.server_id).trim() || null;
+  const serverSlug = body.server_slug === undefined || body.server_slug === null
+    ? null
+    : String(body.server_slug).trim() || null;
+  if (!serverId && !serverSlug) return c.json({ error: "server_id or server_slug required" }, 400);
+  await c.env.DB.prepare(
+    `UPDATE app_server_grants
+     SET server_id = ?1, server_slug = ?2, app_role = ?3, updated_at = ?4
+     WHERE app_id = ?5
+       AND (id = ?6 OR server_id = ?7 OR server_slug = ?8)`,
+  ).bind(serverId, serverSlug, body.app_role, now(), appId, serverKey, serverKey, serverKey).run();
+  await insertAuditLog(c.env.DB, c, {
+    app_id: appId,
+    action: "app_server_grant.role_changed",
+    payload: { server_id: serverId, server_slug: serverSlug, app_role: body.app_role },
+  });
+  return c.json({ ok: true, app_id: appId, server_id: serverId, server_slug: serverSlug, app_role: body.app_role });
+}
+
+export async function handleRemoveAppServerGrant(c: AdminContext) {
+  const appId = c.req.param("appId") ?? "";
+  const serverKey = c.req.param("serverId") ?? "";
+  const allowed = await ensureAppRole(c, appId, "admin");
+  if (!allowed.ok) return allowed.response;
+  await c.env.DB.prepare(
+    "DELETE FROM app_server_grants WHERE app_id = ?1 AND (id = ?2 OR server_id = ?3 OR server_slug = ?4)",
+  ).bind(appId, serverKey, serverKey, serverKey).run();
+  await insertAuditLog(c.env.DB, c, {
+    app_id: appId,
+    action: "app_server_grant.removed",
+    payload: { server_key: serverKey },
+  });
+  return c.json({ ok: true, app_id: appId, server_key: serverKey });
+}
+
 export async function handleAddAppMember(c: AdminContext) {
   const appId = c.req.param("appId") ?? "";
   const allowed = await ensureAppRole(c, appId, "admin");
