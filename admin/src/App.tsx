@@ -10,7 +10,7 @@ import {
   Link,
 } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { AppsList } from "./pages/AppsList";
 import { AppDetail } from "./pages/AppDetail";
 import { AuditLog } from "./pages/AuditLog";
@@ -89,6 +89,30 @@ function Header({ account }: { account: AuthAccount }) {
   });
   const switchOrg = useClearOrgCache();
   const [showOrgSwitcher, setShowOrgSwitcher] = useState(false);
+  const [showAccountMenu, setShowAccountMenu] = useState(false);
+  const accountMenuRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (!showAccountMenu) return;
+    function onPointerDown(event: MouseEvent) {
+      if (
+        accountMenuRef.current &&
+        !accountMenuRef.current.contains(event.target as Node)
+      ) {
+        setShowAccountMenu(false);
+      }
+    }
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") setShowAccountMenu(false);
+    }
+    document.addEventListener("mousedown", onPointerDown);
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("mousedown", onPointerDown);
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, [showAccountMenu]);
+
   return (
     <header className="bg-white border-b border-slate-200">
       <div className="max-w-5xl mx-auto px-4 py-4 flex items-center justify-between gap-6">
@@ -185,40 +209,69 @@ function Header({ account }: { account: AuthAccount }) {
             </NavLink>
           </nav>
         </div>
-        <div className="flex items-center gap-3 text-sm">
-          <div className="text-right leading-tight">
-            <div className="font-medium flex items-center gap-1 justify-end">
-              {account.display_name}
-              {account.principal_type === "agent" && (
-                <span
-                  className="badge-purple text-xs"
-                  title="Raft agent principal"
-                >
-                  agent
-                </span>
-              )}
-            </div>
-            <div className="text-xs text-slate-500">
-              {account.server_slug || account.server_id}
-            </div>
-          </div>
-          {account.avatar_url ? (
-            <img
-              src={account.avatar_url}
-              alt=""
-              className="h-8 w-8 rounded-full border border-slate-200"
-            />
-          ) : (
-            <div className="h-8 w-8 rounded-full border border-slate-200 bg-slate-100 flex items-center justify-center text-xs font-semibold text-slate-600">
-              {account.display_name.slice(0, 1).toUpperCase()}
+        <div ref={accountMenuRef} className="relative text-sm">
+          <button
+            type="button"
+            className="inline-flex h-10 items-center gap-3 rounded-md px-2 hover:bg-slate-100"
+            onClick={() => setShowAccountMenu((open) => !open)}
+            aria-haspopup="menu"
+            aria-expanded={showAccountMenu}
+          >
+            <span className="text-right leading-tight">
+              <span className="font-medium flex items-center gap-1 justify-end">
+                {account.display_name}
+                {account.principal_type === "agent" && (
+                  <span
+                    className="badge-purple text-xs"
+                    title="Raft agent principal"
+                  >
+                    agent
+                  </span>
+                )}
+              </span>
+              <span className="block text-xs text-slate-500">
+                {account.server_slug || account.server_id}
+              </span>
+            </span>
+            {account.avatar_url ? (
+              <img
+                src={account.avatar_url}
+                alt=""
+                className="h-8 w-8 rounded-full border border-slate-200"
+              />
+            ) : (
+              <span className="h-8 w-8 rounded-full border border-slate-200 bg-slate-100 flex items-center justify-center text-xs font-semibold text-slate-600">
+                {account.display_name.slice(0, 1).toUpperCase()}
+              </span>
+            )}
+            <span className="text-xs text-slate-400" aria-hidden="true">
+              ▾
+            </span>
+          </button>
+          {showAccountMenu && (
+            <div className="absolute right-0 top-full z-30 mt-2 w-64 rounded-md border border-slate-200 bg-white p-2 shadow-lg">
+              <div className="px-2 py-2 border-b border-slate-100">
+                <div className="font-medium text-slate-900">
+                  {account.display_name}
+                </div>
+                <div className="text-xs text-slate-500">
+                  {account.server_slug || account.server_id}
+                </div>
+                <div className="mt-1 text-xs text-slate-500">
+                  {account.principal_type === "agent" ? "Raft agent" : "Raft user"}
+                </div>
+              </div>
+              <button
+                type="button"
+                role="menuitem"
+                className="mt-2 flex w-full items-center justify-between rounded-md px-2 py-2 text-left text-sm text-red-600 hover:bg-red-50"
+                onClick={onLogout}
+              >
+                <span>Logout</span>
+                <span aria-hidden="true">↗</span>
+              </button>
             </div>
           )}
-          <button
-            className="px-3 py-1.5 rounded-md border border-slate-200 hover:bg-slate-50"
-            onClick={onLogout}
-          >
-            Logout
-          </button>
         </div>
       </div>
     </header>
