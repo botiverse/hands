@@ -14,7 +14,7 @@ import { Container, getRandom } from "@cloudflare/containers";
 import { Hono } from "hono";
 import type { Context } from "hono";
 import { cors } from "hono/cors";
-import { swaggerUI } from "@hono/swagger-ui";
+import { apiReference } from "@scalar/hono-api-reference";
 
 import { authMiddleware, currentActor } from "./middleware/auth";
 import {
@@ -308,9 +308,9 @@ app.get("/openapi.json", (c) => c.json({
 }));
 app.get(
   "/api-docs",
-  swaggerUI({
+  apiReference({
     url: "/openapi.json",
-    persistAuthorization: true,
+    theme: "default",
   }),
 );
 const publicDocs = new Set([
