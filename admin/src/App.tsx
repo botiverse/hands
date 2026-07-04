@@ -708,13 +708,13 @@ function AuthenticatedApp({ account }: { account: AuthAccount }) {
       </Routes>
       <footer className="bg-white border-t border-slate-200 py-4 mt-8">
         <div className="max-w-5xl mx-auto px-4 text-xs text-slate-500 flex items-center justify-between">
-          <span>quiver admin - Login with Raft</span>
+          <span>Quiver - Login with Raft</span>
           <a
             href="https://github.com/oranix-io/quiver"
             target="_blank"
             rel="noopener noreferrer"
             className="btn-secondary !py-1 !px-2 !text-xs inline-flex items-center gap-1.5"
-            title="View quiver source on GitHub"
+            title="View Quiver source on GitHub"
           >
             <svg
               viewBox="0 0 24 24"
