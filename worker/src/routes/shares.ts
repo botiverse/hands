@@ -228,6 +228,7 @@ export async function handleUpdateReleaseShare(c: AdminContext) {
   const body = await c.req.json().catch(() => ({})) as {
     ttl_seconds?: number;
     expires_at?: number;
+    password?: string | null;
   };
   const now = Date.now();
 
@@ -252,9 +253,32 @@ export async function handleUpdateReleaseShare(c: AdminContext) {
     return c.json({ error: err instanceof Error ? err.message : String(err) }, 400);
   }
 
+  // password: undefined = leave unchanged, null/"" = clear, string = set.
+  let passwordChange: "unchanged" | "cleared" | "set" = "unchanged";
+  let passwordHash: string | null = null;
+  if (body.password !== undefined) {
+    const trimmed = typeof body.password === "string" ? body.password.trim() : "";
+    if (trimmed.length > 128) {
+      return c.json({ error: "password too long (max 128 chars)" }, 400);
+    }
+    if (trimmed) {
+      passwordHash = await sharePasswordHash(existing.id, trimmed);
+      passwordChange = "set";
+    } else {
+      passwordChange = "cleared";
+    }
+  }
+
+  const updateStmt =
+    passwordChange === "unchanged"
+      ? c.env.DB.prepare("UPDATE release_shares SET expires_at = ?1 WHERE id = ?2")
+          .bind(expiresAt, shareId)
+      : c.env.DB.prepare(
+          "UPDATE release_shares SET expires_at = ?1, password_hash = ?2 WHERE id = ?3",
+        ).bind(expiresAt, passwordHash, shareId);
+
   await c.env.DB.batch([
-    c.env.DB.prepare("UPDATE release_shares SET expires_at = ?1 WHERE id = ?2")
-      .bind(expiresAt, shareId),
+    updateStmt,
     c.env.DB.prepare(
       `INSERT INTO audit_logs (id, app_id, action, actor, payload, created_at)
        VALUES (?1, ?2, ?3, ?4, ?5, ?6)`,
@@ -268,6 +292,7 @@ export async function handleUpdateReleaseShare(c: AdminContext) {
         release_id: releaseId,
         previous_expires_at: existing.expires_at,
         expires_at: expiresAt,
+        password_change: passwordChange,
       }),
       now,
     ),
