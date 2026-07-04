@@ -58,7 +58,7 @@ Release share pages provide a temporary public download page for a release. New 
 
 Use share pages for human review and manual testing. Use the public update API for in-app update checks.
 
-CLI examples:
+CLI examples (`update-share` is available in source version `0.1.2`; use the HTTP API directly until that CLI version is published to npm):
 
 ```bash
 quiver releases share raft-android <release-id>
