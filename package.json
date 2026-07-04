@@ -2,7 +2,7 @@
   "name": "quiver",
   "private": true,
   "version": "0.1.0",
-  "description": "Open-Source APK distribution platform — Cloudflare Native (Workers + Container + D1 + R2 + Pages).",
+  "description": "Ship Android builds, releases, and share links from one place — Cloudflare-native (Workers + Container + D1 + R2).",
   "license": "MIT",
   "type": "module",
   "packageManager": "pnpm@9.12.0",
