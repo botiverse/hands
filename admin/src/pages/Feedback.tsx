@@ -58,7 +58,7 @@ export function AppFeedback({ appId }: { appId: string }) {
         </div>
         <div className="flex items-center gap-2 text-sm">
           <select
-            className="rounded border border-slate-300 px-2 py-1.5"
+            className="input !w-auto !py-1.5"
             value={statusFilter}
             onChange={(e) => setStatusFilter(e.target.value)}
           >
@@ -68,7 +68,7 @@ export function AppFeedback({ appId }: { appId: string }) {
             ))}
           </select>
           <select
-            className="rounded border border-slate-300 px-2 py-1.5"
+            className="input !w-auto !py-1.5"
             value={kindFilter}
             onChange={(e) => setKindFilter(e.target.value)}
           >

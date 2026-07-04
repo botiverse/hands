@@ -24,6 +24,14 @@
   .input {
     @apply block w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500;
   }
+  /* Native select arrows render flush against the border; draw our own
+     chevron with breathing room instead. */
+  select.input {
+    @apply appearance-none bg-no-repeat !pr-8;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20' fill='none'%3E%3Cpath d='M6 8l4 4 4-4' stroke='%2364748b' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+    background-position: right 0.625rem center;
+    background-size: 1rem 1rem;
+  }
   .label {
     @apply block text-sm font-medium text-slate-700 mb-1;
   }
