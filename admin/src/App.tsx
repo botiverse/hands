@@ -278,7 +278,9 @@ function Header({ account }: { account: AuthAccount }) {
 
 function AppContextNav() {
   const { appId } = useParams();
+  const apps = useQuery({ queryKey: ["apps"], queryFn: listApps });
   if (!appId) return null;
+  const app = apps.data?.apps.find((a) => a.id === appId);
   const base = `/apps/${appId}`;
   const tabClass = ({ isActive }: { isActive: boolean }) =>
     `inline-flex h-9 items-center rounded-md px-3 text-sm ${
@@ -289,6 +291,22 @@ function AppContextNav() {
 
   return (
     <div className="bg-white border-b border-slate-200 -mt-px">
+      <div className="max-w-5xl mx-auto px-4 pt-4 flex items-baseline gap-3">
+        <h1 className="text-xl font-bold leading-tight">
+          {app?.name ?? "…"}
+        </h1>
+        {app?.platform && (
+          <span className="badge-blue align-middle">{app.platform}</span>
+        )}
+        {app?.slug && (
+          <span className="text-sm text-slate-500 font-mono">{app.slug}</span>
+        )}
+        {Boolean(app?.archived) && (
+          <span className="rounded bg-amber-100 px-1.5 py-0.5 text-xs font-medium text-amber-800">
+            archived
+          </span>
+        )}
+      </div>
       <div className="max-w-5xl mx-auto px-4 py-2 flex items-center gap-1">
         <NavLink
           to={base}

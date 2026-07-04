@@ -27,7 +27,6 @@ export function AppDetail({ appId }: { appId: string }) {
 
   return (
     <div>
-      <AppHeading app={app} />
       {apps.error && (
         <AppErrorBanner
           title="Cannot load apps"
@@ -103,19 +102,6 @@ function AppErrorBanner({
   );
 }
 
-function AppHeading({ app }: { app?: App }) {
-  return (
-    <div className="mb-6">
-      <div className="text-sm text-slate-500">App</div>
-      <h1 className="text-2xl font-bold">
-        {app?.name ?? "..."}{" "}
-        <span className="badge-blue align-middle">{app?.platform}</span>
-      </h1>
-      <div className="text-sm text-slate-500 font-mono">{app?.slug}</div>
-    </div>
-  );
-}
-
 export function AppChannels({ appId }: { appId: string }) {
   const qc = useQueryClient();
   const apps = useQuery({ queryKey: ["apps"], queryFn: listApps });
@@ -129,7 +115,6 @@ export function AppChannels({ appId }: { appId: string }) {
 
   return (
     <div>
-      <AppHeading app={app} />
 
       <section>
         <div className="flex items-center justify-between mb-3">
@@ -218,7 +203,6 @@ export function AppSettings({ appId }: { appId: string }) {
 
   return (
     <div>
-      <AppHeading app={app} />
 
       <div className="card !p-4 text-sm space-y-3">
         <h2 className="text-base font-semibold">Settings</h2>

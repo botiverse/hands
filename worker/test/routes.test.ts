@@ -2797,6 +2797,50 @@ describe("quiver public API v2 — scope resolution", () => {
     expect(failures?.count).toBe(1);
   });
 
+  it("share PATCH can set and clear a password on an existing share", async () => {
+    const env = makeEnv();
+    const {
+      handleCreateReleaseShare,
+      handleUpdateReleaseShare,
+      handlePublicReleaseShare,
+    } = await import("../src/routes/shares");
+    await seedRelease(env, "rel-pw2", "build-pw2", [["full", "all"]], {
+      versionCode: 13,
+      versionName: "1.0.13",
+    });
+    await seedAsset(env, "build-pw2", "asset-pw2", { arch: "arm64-v8a" });
+    const created = await handleCreateReleaseShare(
+      makeShareAdminContext(env, { appId: "app-scope", releaseId: "rel-pw2" }, { ttl_seconds: 600 }),
+    );
+    const createdBody = await responseJson<any>(created);
+    expect(createdBody.has_password).toBe(false);
+    const token = new URL(createdBody.share_url).pathname.replace("/share/", "");
+
+    // Set a password on the existing share.
+    const setResp = await handleUpdateReleaseShare(
+      makeShareAdminContext(
+        env,
+        { appId: "app-scope", releaseId: "rel-pw2", shareId: createdBody.id },
+        { expires_at: createdBody.expires_at, password: "s3cret" },
+      ),
+    );
+    expect(setResp.status).toBe(200);
+    const gated = await handlePublicReleaseShare(makeSharePublicContext(env, token));
+    expect(await gated.text()).toContain("Password required");
+
+    // Clear it again.
+    const clearResp = await handleUpdateReleaseShare(
+      makeShareAdminContext(
+        env,
+        { appId: "app-scope", releaseId: "rel-pw2", shareId: createdBody.id },
+        { expires_at: createdBody.expires_at, password: null },
+      ),
+    );
+    expect(clearResp.status).toBe(200);
+    const open = await handlePublicReleaseShare(makeSharePublicContext(env, token));
+    expect(await open.text()).toContain("Download APK");
+  });
+
   it("share download redirects to signed R2 and records download stats", async () => {
     const env = makeEnv();
     const {

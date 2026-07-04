@@ -1048,7 +1048,7 @@ export const renewReleaseShare = (
   appId: string,
   releaseId: string,
   shareId: string,
-  body: { ttl_seconds?: number; expires_at?: number },
+  body: { ttl_seconds?: number; expires_at?: number; password?: string | null },
 ) =>
   request<{ id: string; expires_at: number }>(
     `/api/apps/${appId}/releases/${releaseId}/shares/${shareId}`,

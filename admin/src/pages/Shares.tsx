@@ -50,6 +50,28 @@ export function AppShares({ appId }: { appId: string }) {
       }),
   });
 
+  const setPassword = useMutation({
+    mutationFn: ({ share, password }: { share: AppShare; password: string | null }) =>
+      renewReleaseShare(appId, share.release_id, share.id, {
+        // PATCH requires an expiry; keep the current one.
+        expires_at: share.expires_at,
+        password,
+      }),
+    onSuccess: (_data, vars) => {
+      toast.show({
+        kind: "success",
+        title: vars.password ? "Password set" : "Password removed",
+      });
+      invalidate();
+    },
+    onError: (e) =>
+      toast.show({
+        kind: "error",
+        title: "Password update failed",
+        description: (e as Error).message,
+      }),
+  });
+
   const revoke = useMutation({
     mutationFn: (share: AppShare) =>
       revokeReleaseShare(appId, share.release_id, share.id),
@@ -68,7 +90,7 @@ export function AppShares({ appId }: { appId: string }) {
   const rows = shares.data?.shares ?? [];
 
   return (
-    <div className="max-w-5xl mx-auto px-4 py-6 space-y-4">
+    <div className="space-y-4">
       <div className="flex items-center justify-between">
         <div>
           <h2 className="text-lg font-bold">Shares</h2>
@@ -133,7 +155,19 @@ export function AppShares({ appId }: { appId: string }) {
                   share={share}
                   onRenew={() => renew.mutate(share)}
                   onRevoke={() => revoke.mutate(share)}
-                  busy={renew.isPending || revoke.isPending}
+                  onSetPassword={() => {
+                    const next = window.prompt(
+                      share.has_password
+                        ? "New password (leave empty to remove the password):"
+                        : "Password for this share:",
+                    );
+                    if (next === null) return;
+                    setPassword.mutate({
+                      share,
+                      password: next.trim() ? next.trim() : null,
+                    });
+                  }}
+                  busy={renew.isPending || revoke.isPending || setPassword.isPending}
                 />
               ))}
             </tbody>
@@ -166,11 +200,13 @@ function ShareRow({
   share,
   onRenew,
   onRevoke,
+  onSetPassword,
   busy,
 }: {
   share: AppShare;
   onRenew: () => void;
   onRevoke: () => void;
+  onSetPassword: () => void;
   busy: boolean;
 }) {
   const state = shareState(share);
@@ -213,6 +249,9 @@ function ShareRow({
           <>
             <button className="text-blue-600 hover:underline mr-2" onClick={onRenew} disabled={busy}>
               +7 days
+            </button>
+            <button className="text-blue-600 hover:underline mr-2" onClick={onSetPassword} disabled={busy}>
+              {share.has_password ? "Password…" : "Set password"}
             </button>
             <button className="text-red-600 hover:underline" onClick={onRevoke} disabled={busy}>
               Revoke
