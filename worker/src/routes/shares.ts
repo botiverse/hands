@@ -330,7 +330,7 @@ export async function handlePublicReleaseShare(c: Context<{ Bindings: Env }>) {
   const shareUrl = new URL(`/share/${token}`, origin).toString();
   const lang = (c.req.header("accept-language") ?? "").split(",")[0]?.trim().split(";")[0] ?? null;
   const localized = { ...row, changelog: resolveChangelog(row.changelog, lang) };
-  return htmlResponse(renderSharePage(localized, stats, downloadUrl, shareUrl));
+  return htmlResponse(renderSharePage(localized, stats, downloadUrl, shareUrl, token));
 }
 
 export async function handlePublicReleaseShareDownload(c: Context<{ Bindings: Env }>) {
@@ -355,6 +355,18 @@ export async function handlePublicReleaseShareDownload(c: Context<{ Bindings: En
     publicRequestOrigin(c),
   );
   return c.redirect(signedUrl, 302);
+}
+
+export async function handlePublicReleaseShareIcon(c: Context<{ Bindings: Env }>) {
+  const token = c.req.param("token");
+  if (!token) return c.json({ error: "missing token" }, 400);
+  const row = await findActiveShare(c.env.DB, token);
+  if (!row?.icon_r2_key) return c.json({ error: "no icon" }, 404);
+  const object = await c.env.APK_BUCKET.get(row.icon_r2_key);
+  if (!object) return c.json({ error: "no icon" }, 404);
+  const headers = new Headers({ "cache-control": "public, max-age=300" });
+  object.writeHttpMetadata?.(headers);
+  return new Response(object.body, { headers });
 }
 
 export async function handlePublicReleaseShareUnlock(c: Context<{ Bindings: Env }>) {
@@ -449,7 +461,12 @@ async function findActiveShare(db: D1Database, token: string): Promise<SharePage
        rs.password_hash AS password_hash,
        a.slug AS app_slug,
        a.name AS app_name,
-       a.icon_r2_key AS icon_r2_key,
+       COALESCE(
+         (SELECT ia.r2_key FROM build_assets ia
+          WHERE ia.build_id = b.id AND ia.artifact_kind = 'app-icon'
+          ORDER BY ia.created_at DESC LIMIT 1),
+         a.icon_r2_key
+       ) AS icon_r2_key,
        COALESCE(
          json_extract(b.parsed_metadata_json, '$.package_id'),
          json_extract(b.parsed_metadata_json, '$.package_name'),
@@ -603,6 +620,7 @@ function renderSharePage(
   stats: ShareStats,
   downloadUrl: string,
   shareUrl: string,
+  shareToken: string,
 ): string {
   const title = `${row.app_slug} ${row.version_name} (${row.version_code})`;
   const expiresIso = new Date(row.expires_at).toISOString();
@@ -646,7 +664,7 @@ function renderSharePage(
 <body>
   <main>
     <div class="apphead">
-      ${row.icon_r2_key ? `<img class="appicon" src="/public/apps/${escapeAttribute(row.app_slug)}/icon" alt="" width="56" height="56">` : ""}
+      ${row.icon_r2_key ? `<img class="appicon" src="/share/${escapeAttribute(encodeURIComponent(shareToken))}/icon" alt="" width="56" height="56">` : ""}
       <div>
         <h1>${escapeHtml(row.app_name || row.app_slug)}</h1>
         <p>${escapeHtml(row.version_name)} · build ${row.version_code} · ${escapeHtml(row.channel_slug)}</p>

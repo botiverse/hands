@@ -56,6 +56,39 @@ export async function parseApk(
     const appLabel =
       badging.match(/^application-label(?:-[a-z]+)?:'([^']+)'/m)?.[1] ?? null;
 
+    // Launcher icon: prefer the highest-density PNG/WebP entry from
+    // application-icon-<density> lines; adaptive-icon XML entries are
+    // skipped (no rasterizer in this container).
+    let iconBase64: string | null = null;
+    let iconContentType: string | null = null;
+    const iconCandidates = [
+      ...badging.matchAll(/^application-icon-(\d+):'([^']+)'/gm),
+    ]
+      .map((m) => ({ density: Number(m[1]), path: m[2]! }))
+      .sort((a, b) => b.density - a.density);
+    const singleIcon = badging.match(/^application:.*icon='([^']+)'/m)?.[1];
+    if (singleIcon) iconCandidates.push({ density: 0, path: singleIcon });
+    for (const candidate of iconCandidates) {
+      const lower = candidate.path.toLowerCase();
+      const isPng = lower.endsWith(".png");
+      const isWebp = lower.endsWith(".webp");
+      if (!isPng && !isWebp) continue;
+      try {
+        const { stdout: iconBytes } = await execFileAsync(
+          "unzip",
+          ["-p", apkPath, candidate.path],
+          { maxBuffer: 5 * 1024 * 1024, encoding: "buffer" },
+        );
+        const buf = iconBytes as unknown as Buffer;
+        if (buf.length === 0) continue;
+        iconBase64 = buf.toString("base64");
+        iconContentType = isPng ? "image/png" : "image/webp";
+        break;
+      } catch {
+        // entry missing or unzip failure — try the next density
+      }
+    }
+
     const { stdout: certsOut } = await execFileAsync(
       APKSIGNER_BIN,
       ["verify", "--print-certs", apkPath],
@@ -73,6 +106,8 @@ export async function parseApk(
       version_code: Number.isFinite(versionCode) ? versionCode : null,
       package_id: packageName || null,
       app_label: appLabel,
+      icon_base64: iconBase64,
+      icon_content_type: iconContentType,
       size_bytes: bytes.byteLength,
       file_hash_sha256: sha256Hex(bytes),
       raw: {

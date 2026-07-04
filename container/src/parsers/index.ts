@@ -32,6 +32,9 @@ export interface ParsedMetadata {
   size_bytes: number;
   file_hash_sha256: string;
   raw: Record<string, unknown>; // parser-specific extras
+  /** Launcher icon extracted from the package, when available. */
+  icon_base64?: string | null;
+  icon_content_type?: string | null;
 }
 
 const EXT_TO_KIND: Record<string, ParserKind> = {

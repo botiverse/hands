@@ -50,6 +50,7 @@ import {
   handleUpdateReleaseShare,
   handleListAppShares,
   handlePublicReleaseShareUnlock,
+  handlePublicReleaseShareIcon,
 } from "./routes/shares";
 import {
   handlePublicFeedbackSubmit,
@@ -435,6 +436,7 @@ app.get("/public/r2/:key", handlePublicR2Download);
 app.get("/share/:token/download", handlePublicReleaseShareDownload);
 app.get("/share/:token", handlePublicReleaseShare);
 app.post("/share/:token/unlock", handlePublicReleaseShareUnlock);
+app.get("/share/:token/icon", handlePublicReleaseShareIcon);
 app.post("/public/v2/apps/:slug/feedback", handlePublicFeedbackSubmit);
 app.get("/public/apps/:slug/icon", handlePublicAppIcon);
 app.get("/api/invites/:token", handleGetInvite);

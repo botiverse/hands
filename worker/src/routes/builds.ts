@@ -397,9 +397,100 @@ export async function handleCreateBuildAsset(c: Context<{ Bindings: Env }>) {
   const body = (await c.req.json()) as BuildAssetInput;
   try {
     const id = await createBuildAsset(c.env.DB, appId, buildId, body, currentActor(c));
+    // Installable Android APKs get parsed automatically in the background:
+    // aapt metadata merges into builds.parsed_metadata_json and the real
+    // launcher icon becomes an app-icon build asset (per-version icons on
+    // share pages, no extra CI/CLI parameters).
+    if (
+      (body.artifact_kind ?? "installable") === "installable" &&
+      body.platform === "android" &&
+      body.filetype === "apk" &&
+      body.r2_key
+    ) {
+      try {
+        c.executionCtx.waitUntil(
+          autoParseApkAsset(c.env, appId, buildId, body.r2_key),
+        );
+      } catch {
+        // executionCtx unavailable (tests) — parse inline, best effort.
+        autoParseApkAsset(c.env, appId, buildId, body.r2_key).catch(() => {});
+      }
+    }
     return c.json({ id, build_id: buildId, ...body }, 201);
   } catch (e) {
     return c.json({ error: (e as Error).message }, 400);
+  }
+}
+
+/**
+ * Fetch the APK from R2, parse it in the apk-parser container, merge the
+ * metadata into the build row, and register the extracted launcher icon as
+ * an app-icon asset. Best-effort: failures only log.
+ */
+export async function autoParseApkAsset(
+  env: Env,
+  appId: string,
+  buildId: string,
+  r2Key: string,
+): Promise<void> {
+  try {
+    const object = await env.APK_BUCKET.get(r2Key);
+    if (!object) return;
+    const bytes = await object.arrayBuffer();
+    // Lazy import: @cloudflare/containers pulls in the cloudflare:workers
+    // builtin, which only exists in the Workers runtime (not vitest/node).
+    const { getRandom } = await import("@cloudflare/containers");
+    const container = await getRandom(env.APK_PARSER, 1);
+    const res = await container.fetch(
+      new Request("http://container/parse?parser_kind=apk-aapt", {
+        method: "POST",
+        body: bytes,
+        headers: { "content-type": "application/octet-stream" },
+      }),
+    );
+    if (!res.ok) {
+      console.error(`[auto-parse] container ${res.status} for build ${buildId}`);
+      return;
+    }
+    const metadata = (await res.json()) as Record<string, unknown> & {
+      icon_base64?: string | null;
+      icon_content_type?: string | null;
+    };
+    const { icon_base64, icon_content_type, ...parsed } = metadata;
+    await env.DB.prepare(
+      "UPDATE builds SET parsed_metadata_json = ?1, updated_at = ?2 WHERE id = ?3",
+    )
+      .bind(JSON.stringify(parsed), Date.now(), buildId)
+      .run();
+
+    if (icon_base64) {
+      const iconBytes = Uint8Array.from(atob(icon_base64), (ch) => ch.charCodeAt(0));
+      const ext = icon_content_type === "image/webp" ? "webp" : "png";
+      const iconKey = `apps/${appId}/builds/${buildId}/icon.${ext}`;
+      await env.APK_BUCKET.put(iconKey, iconBytes, {
+        httpMetadata: { contentType: icon_content_type ?? "image/png" },
+      });
+      const digest = await crypto.subtle.digest("SHA-256", iconBytes);
+      const hash = Array.from(new Uint8Array(digest))
+        .map((b) => b.toString(16).padStart(2, "0"))
+        .join("");
+      const now = Date.now();
+      await env.DB.batch([
+        env.DB.prepare(
+          "DELETE FROM build_assets WHERE build_id = ?1 AND artifact_kind = 'app-icon'",
+        ).bind(buildId),
+        env.DB.prepare(
+          `INSERT INTO build_assets
+           (id, build_id, artifact_kind, platform, arch, variant, filetype, r2_key,
+            file_hash, size_bytes, signature, metadata_json, created_at)
+           VALUES (?1, ?2, 'app-icon', 'android', NULL, NULL, ?3, ?4, ?5, ?6, NULL, '{}', ?7)`,
+        ).bind(crypto.randomUUID(), buildId, ext, iconKey, hash, iconBytes.length, now),
+      ]);
+    }
+  } catch (err) {
+    console.error(
+      `[auto-parse] failed for build ${buildId}: ${err instanceof Error ? err.message : String(err)}`,
+    );
   }
 }
 
