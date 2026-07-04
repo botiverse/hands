@@ -186,11 +186,11 @@ function AppServerGrantList({
       <div className="flex items-center justify-between mb-3">
         <h3 className="text-base font-semibold">Server access</h3>
         <div className="flex items-center gap-2">
-          <span className="text-xs text-slate-500">
+          <span className="text-xs text-slate-500 whitespace-nowrap">
             {visibleRowCount} server{visibleRowCount === 1 ? "" : "s"}
           </span>
           {canManage && (
-            <button className="btn-secondary !py-1 !px-2 !text-xs" onClick={onAdd}>
+            <button className="btn-secondary !py-1 !px-2 !text-xs whitespace-nowrap" onClick={onAdd}>
               + Add
             </button>
           )}
@@ -456,7 +456,7 @@ function AppMemberList({
         <h3 className="text-base font-semibold">Direct app members</h3>
         <div className="flex items-center gap-2">
           <select
-            className="input text-xs py-0.5"
+            className="input !w-auto text-xs py-0.5 pr-7"
             value={principalFilter}
             onChange={(e) =>
               setPrincipalFilter(e.target.value as "all" | "human" | "agent")
@@ -467,14 +467,14 @@ function AppMemberList({
             <option value="human">Humans only</option>
             <option value="agent">Agents only</option>
           </select>
-          <span className="text-xs text-slate-500">
+          <span className="text-xs text-slate-500 whitespace-nowrap">
             {filteredMembers.length} member{filteredMembers.length === 1 ? "" : "s"}
             {principalFilter !== "all" && (
               <span className="ml-1">({principalFilter})</span>
             )}
           </span>
           {canManage && (
-            <button className="btn-secondary !py-1 !px-2 !text-xs" onClick={onAdd}>
+            <button className="btn-secondary !py-1 !px-2 !text-xs whitespace-nowrap" onClick={onAdd}>
               + Add
             </button>
           )}
@@ -627,10 +627,10 @@ function AppDeployTokenList({
       <div className="flex items-center justify-between mb-3">
         <h3 className="text-base font-semibold">Deploy tokens</h3>
         <div className="flex items-center gap-2">
-          <span className="text-xs text-slate-500">
+          <span className="text-xs text-slate-500 whitespace-nowrap">
             {rows.length} token{rows.length === 1 ? "" : "s"}
           </span>
-          <button className="btn-secondary !py-1 !px-2 !text-xs" onClick={onAdd}>
+          <button className="btn-secondary !py-1 !px-2 !text-xs whitespace-nowrap" onClick={onAdd}>
             + Add
           </button>
         </div>
