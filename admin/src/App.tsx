@@ -78,32 +78,6 @@ function QuiverMark({ className = "" }: { className?: string }) {
   );
 }
 
-function HeaderAppBreadcrumb() {
-  const location = useLocation();
-  const apps = useQuery({ queryKey: ["apps"], queryFn: listApps });
-  const match = location.pathname.match(/^\/apps\/([0-9a-f-]{36})(?:\/|$)/);
-  if (!match) return null;
-  const app = apps.data?.apps.find((a) => a.id === match[1]);
-  if (!app) return null;
-  return (
-    <span className="hidden md:flex items-center gap-2 min-w-0 text-sm">
-      <span className="text-slate-300">/</span>
-      <Link
-        to={`/apps/${app.id}`}
-        className="font-semibold text-slate-900 truncate max-w-[220px] hover:underline"
-      >
-        {app.name}
-      </Link>
-      <span className="badge-blue">{app.platform}</span>
-      {Boolean(app.archived) && (
-        <span className="rounded bg-amber-100 px-1.5 py-0.5 text-xs font-medium text-amber-800">
-          archived
-        </span>
-      )}
-    </span>
-  );
-}
-
 function Header({ account }: { account: AuthAccount }) {
   const onLogout = async () => {
     await logout();
@@ -153,7 +127,6 @@ function Header({ account }: { account: AuthAccount }) {
             <QuiverMark className="h-8 w-8 flex-none" />
             <span>Quiver</span>
           </Link>
-          <HeaderAppBreadcrumb />
           <nav className="flex items-center gap-2">
             <NavLink
               to="/apps"
@@ -771,11 +744,128 @@ function AppsListWithNav() {
   );
 }
 
+const APP_NAV_SECTIONS: Array<{ label: string; items: Array<{ to: string; label: string; end?: boolean }> }> = [
+  {
+    label: "Distribute",
+    items: [
+      { to: "", label: "Overview", end: true },
+      { to: "channels", label: "Channels" },
+      { to: "releases", label: "Releases" },
+      { to: "builds", label: "Builds" },
+      { to: "shares", label: "Shares" },
+    ],
+  },
+  {
+    label: "Operate",
+    items: [
+      { to: "feedback", label: "Feedback" },
+      { to: "access", label: "Access" },
+      { to: "audit", label: "Audit" },
+      { to: "settings", label: "Settings" },
+    ],
+  },
+];
+
+function AppSidebar() {
+  const { appId } = useParams();
+  const navigate = useNavigate();
+  const [switcherOpen, setSwitcherOpen] = useState(false);
+  const apps = useQuery({ queryKey: ["apps"], queryFn: listApps });
+  if (!appId) return null;
+  const app = apps.data?.apps.find((a) => a.id === appId);
+  const others = (apps.data?.apps ?? []).filter((a) => a.id !== appId && !a.archived);
+  const base = `/apps/${appId}`;
+
+  return (
+    <aside className="hidden md:flex w-60 flex-none flex-col border-r border-slate-200 bg-white">
+      <div className="relative border-b border-slate-100 p-3">
+        <button
+          type="button"
+          className="flex w-full items-center justify-between gap-2 rounded-md px-2 py-2 text-left hover:bg-slate-50"
+          onClick={() => setSwitcherOpen((v) => !v)}
+          aria-haspopup="menu"
+          aria-expanded={switcherOpen}
+        >
+          <span className="min-w-0">
+            <span className="block truncate text-sm font-semibold text-slate-900">
+              {app?.name ?? "…"}
+            </span>
+            <span className="mt-0.5 flex items-center gap-1.5">
+              {app?.platform && <span className="badge-blue">{app.platform}</span>}
+              <span className="truncate text-xs text-slate-400 font-mono">{app?.slug}</span>
+            </span>
+          </span>
+          <span className="text-slate-400" aria-hidden="true">⌄</span>
+        </button>
+        {switcherOpen && (
+          <div className="absolute left-3 right-3 top-full z-30 -mt-1 rounded-md border border-slate-200 bg-white py-1 shadow-lg">
+            {others.map((a) => (
+              <button
+                key={a.id}
+                type="button"
+                className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm hover:bg-slate-50"
+                onClick={() => {
+                  setSwitcherOpen(false);
+                  navigate(`/apps/${a.id}`);
+                }}
+              >
+                <span className="truncate">{a.name}</span>
+                <span className="badge-blue ml-auto">{a.platform}</span>
+              </button>
+            ))}
+            {others.length === 0 && (
+              <div className="px-3 py-2 text-xs text-slate-400">No other apps</div>
+            )}
+            <Link
+              to="/apps"
+              className="mt-1 flex items-center gap-1 border-t border-slate-100 px-3 py-2 text-xs text-slate-500 hover:bg-slate-50"
+              onClick={() => setSwitcherOpen(false)}
+            >
+              ← All apps
+            </Link>
+          </div>
+        )}
+      </div>
+      <nav className="flex-1 overflow-y-auto p-3">
+        {APP_NAV_SECTIONS.map((section) => (
+          <div key={section.label} className="mb-4">
+            <div className="px-2 pb-1 text-[11px] font-semibold uppercase tracking-wide text-slate-400">
+              {section.label}
+            </div>
+            <div className="space-y-0.5">
+              {section.items.map((item) => (
+                <NavLink
+                  key={item.label}
+                  to={item.to ? `${base}/${item.to}` : base}
+                  end={item.end ?? false}
+                  className={({ isActive }) =>
+                    `block rounded-md px-2 py-1.5 text-sm ${
+                      isActive
+                        ? "bg-slate-100 font-medium text-slate-950"
+                        : "text-slate-600 hover:bg-slate-50 hover:text-slate-950"
+                    }`
+                  }
+                >
+                  {item.label}
+                </NavLink>
+              ))}
+            </div>
+          </div>
+        ))}
+      </nav>
+    </aside>
+  );
+}
+
 function AppShell() {
   return (
-    <>
-      <AppContextNav />
-      <main className="flex-1 max-w-5xl mx-auto px-4 py-8 w-full">
+    <div className="flex flex-1 min-h-0 items-stretch">
+      <AppSidebar />
+      <div className="min-w-0 flex-1">
+        <div className="md:hidden">
+          <AppContextNav />
+        </div>
+        <main className="max-w-5xl px-6 py-6 w-full">
         <Routes>
           <Route index element={<AppDetailRoute />} />
           <Route path="publish" element={<LegacyPublishRedirect />} />
@@ -789,7 +879,8 @@ function AppShell() {
           <Route path="audit" element={<AuditRoute />} />
           <Route path="settings" element={<AppSettingsRoute />} />
         </Routes>
-      </main>
-    </>
+        </main>
+      </div>
+    </div>
   );
 }
