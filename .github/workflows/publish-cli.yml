@@ -12,28 +12,25 @@ on:
         required: true
         type: boolean
         default: false
-      otp:
-        description: "Optional npm one-time password. Prefer an automation token for unattended publishes."
-        required: false
-        type: string
   push:
     tags:
       - "cli-v*"
 
 permissions:
   contents: read
+  id-token: write
 
 jobs:
   publish:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6
         with:
           version: 9.12.0
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
           node-version: "22"
           registry-url: "https://registry.npmjs.org"
@@ -76,21 +73,10 @@ jobs:
       - name: Publish to npm
         if: ${{ github.event_name != 'workflow_dispatch' || !inputs.dry_run }}
         working-directory: packages/cli
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-          NPM_OTP: ${{ inputs.otp }}
         shell: bash
         run: |
           set -euo pipefail
-          if [[ -z "${NODE_AUTH_TOKEN:-}" ]]; then
-            echo "Missing GitHub secret NPM_TOKEN for npm publish." >&2
-            exit 1
-          fi
-          publish_args=(--access public)
-          if [[ -n "${NPM_OTP:-}" ]]; then
-            publish_args+=(--otp "${NPM_OTP}")
-          fi
-          npm publish "${publish_args[@]}"
+          npm publish --access public
 
       - name: Summary
         shell: bash
