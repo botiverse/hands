@@ -30,6 +30,7 @@ export interface App {
   platform: string;
   description: string | null;
   archived: number;       // 0 = active, 1 = archived (soft-delete)
+  public_history?: number; // 1 = public /apps/:slug/history page enabled
   archived_at: number | null;
   created_at: number;
   // Default release channel (P2.5.9 / migration 0018). pre-fills the
@@ -1141,6 +1142,13 @@ export const addFeedbackComment = (appId: string, ticketId: string, body: string
 
 export const feedbackAttachmentUrl = (appId: string, ticketId: string, attachmentId: string) =>
   `/api/apps/${appId}/feedback/${ticketId}/attachments/${attachmentId}`;
+
+export const updateAppPublicHistory = (appId: string, enabled: boolean) =>
+  request<{ ok: boolean }>(`/api/apps/${appId}`, {
+    method: "PATCH",
+    body: JSON.stringify({ public_history: enabled }),
+    admin: true,
+  });
 
 export const uploadAppIcon = async (appId: string, file: File) => {
   const res = await fetch(`${API_BASE}/api/apps/${appId}/icon`, {

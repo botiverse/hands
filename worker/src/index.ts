@@ -61,6 +61,10 @@ import {
   handleDownloadFeedbackAttachment,
 } from "./routes/feedback";
 import {
+  handlePublicAppHistory,
+  handlePublicAppHistoryDownload,
+} from "./routes/history";
+import {
   handleCreateAppDeployToken,
   handleListAppDeployTokens,
   handleRevokeAppDeployToken,
@@ -439,6 +443,8 @@ app.post("/share/:token/unlock", handlePublicReleaseShareUnlock);
 app.get("/share/:token/icon", handlePublicReleaseShareIcon);
 app.post("/public/v2/apps/:slug/feedback", handlePublicFeedbackSubmit);
 app.get("/public/apps/:slug/icon", handlePublicAppIcon);
+app.get("/apps/:slug/history", handlePublicAppHistory);
+app.get("/apps/:slug/history/:releaseId/download", handlePublicAppHistoryDownload);
 app.get("/api/invites/:token", handleGetInvite);
 
 function isWorkerRoute(pathname: string): boolean {
