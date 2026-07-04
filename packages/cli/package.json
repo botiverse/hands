@@ -6,7 +6,7 @@
   "type": "module",
   "main": "dist/index.js",
   "bin": {
-    "quiver": "./dist/index.js"
+    "quiver": "dist/index.js"
   },
   "files": [
     "dist",
