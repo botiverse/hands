@@ -1,37 +1,43 @@
 # Admin User Guide
 
-Quiver is a release and update distribution console for apps that need controlled binary delivery. Use the admin console to create apps, upload builds, publish releases, manage release channels, and give teammates or automation the access they need.
+Quiver is a release and update distribution console for apps that need controlled binary delivery. Use the admin console to create apps, upload builds, publish releases with staged rollouts, manage share links and feedback tickets, and give teammates or automation the access they need.
 
 ## Sign in
 
-Open the Quiver site and use Login with Raft. After sign-in, Quiver shows the apps you can access in the current organization.
+Open the Quiver site and use Login with Raft. After sign-in, Quiver drops you into your first app (or the app creation wizard if none exist). The left rail navigates between Apps, Org, and your account menu (Settings, Logout).
 
 If you can sign in but do not see an expected app, ask an organization admin to grant you app access or make the app visible to your Raft server.
 
 ## Apps
 
-The Apps page lists the apps visible to your account. Select an app to open its detail pages:
+Each app has a left sidebar with its sections; the app switcher at the top of the sidebar jumps between apps, creates new ones, or returns to the full list.
 
-- Overview: current app metadata and the default entry point.
-- Releases: published and draft releases by channel.
+- Overview: current app metadata and recent operations.
+- Channels: release tracks (`main`, `preview`, `nightly`, `debug`).
+- Releases: published and draft releases, staged rollout controls.
 - Builds: uploaded build artifacts and their metadata.
+- Shares: every public share link with stats, renewal, revocation, and passwords.
+- Feedback: tickets submitted from the app, with assignees, statuses, and comments.
 - Access: direct app members, deploy tokens, and Raft server visibility.
 - Audit: recent app activity.
+- Settings: app icon, default channel, public version history toggle, archive.
 
 Create one Quiver app per product distribution target. For example, an Android app should have its own Quiver app and release channels.
 
 ## Releases
 
-Use Releases to prepare and publish updates.
+The standard flow follows the draft-first policy: CI creates a **draft** release with a generated changelog; a human or agent reviews it, writes the final (optionally bilingual) changelog, and publishes explicitly. See the release runbook in the repository docs.
 
-1. Choose the app.
-2. Open Releases.
-3. Create a release or select an existing draft.
-4. Upload the installable artifact.
-5. Add release notes and metadata.
-6. Publish to the intended channel.
+1. CI (or `quiver builds publish-android --draft`) creates the draft.
+2. Review it in Releases (or `quiver releases show`).
+3. Write the final changelog — per-language notes are supported (`quiver releases update … --changelog-file zh=zh.md --changelog-file en=en.md`); clients receive the language matching their system locale.
+4. Publish from the release row (or `quiver releases publish`).
 
 For Android, Quiver selects updates by `version_code`. A device receives an update only when the published release has a higher `version_code` than the client reports.
+
+### Staged rollouts
+
+Set a rollout percentage when creating or editing a release (number input with 5/25/50/100 presets), and raise it with **Bump rollout**. Devices are bucketed by their stable device id, keep their bucket while the percentage climbs, and gated-out devices receive the previous active release. Clients without a device id (older SDKs) only receive fully rolled-out releases.
 
 ## Builds
 
@@ -43,8 +49,9 @@ Builds hold uploaded artifacts and provenance. Quiver distinguishes installable 
 | `proguard-mapping` | Android R8/ProGuard mapping file for crash symbolication. |
 | `native-symbols` | Native debug symbols. |
 | `metadata-file` | CI or build metadata archived with the build. |
+| `app-icon` | Launcher icon extracted automatically from the uploaded APK. |
 
-Public update checks only return installable artifacts. Support artifacts remain available to authenticated admins and publishers.
+Registering an installable APK triggers automatic parsing: package id, SDK levels, and the launcher icon are extracted server-side (aapt) with no extra CI parameters. Public update checks only return installable artifacts; support artifacts remain available to authenticated admins and publishers.
 
 ## Channels
 
@@ -52,20 +59,31 @@ Channels let you separate release tracks such as `main`, `preview`, `nightly`, o
 
 Android clients should send the channel they are configured to use. Debug builds can point at `debug`; release builds typically point at `main`.
 
-## Public Share Pages
+## Shares
 
-Release share pages provide a temporary public download page for a release. New share pages expire after 7 days by default. A share page can show basic view and download stats. Renew or change the expiration when a manual review window needs more time; revoke a share when it should no longer be accessible.
+The Shares tab lists every public share link for the app: release, creator, expiry, status, password badge, and view/download stats. From there you can create links (with an optional password), extend them by 7 days, set or remove passwords on existing links, and revoke them. Share URLs are shown once at creation — tokens are stored hashed.
+
+Share pages show the release's real app icon, a QR code on desktop, localized release notes, and live stats. Password-protected pages ask for the password before showing the download.
+
+```bash
+quiver releases share raft-android <release-id> --password <pw>   # optional password
+quiver releases update-share raft-android <release-id> <share-id> --ttl-seconds 1209600
+quiver releases revoke-share raft-android <release-id> <share-id>
+```
 
 Use share pages for human review and manual testing. Use the public update API for in-app update checks.
 
-CLI examples (`update-share` is available in source version `0.1.2`; use the HTTP API directly until that CLI version is published to npm):
+## Feedback
 
-```bash
-quiver releases share raft-android <release-id>
-quiver releases update-share raft-android <release-id> <share-id>
-quiver releases update-share raft-android <release-id> <share-id> --ttl-seconds 1209600
-quiver releases update-share raft-android <release-id> <share-id> --expires-at 1783742182499
-```
+The Feedback tab is a lightweight ticket system for reports submitted from the app (via the SDK's `QuiverFeedback` or the public feedback endpoint). Each ticket carries the message, contact, app version, device context (including the rollout device id), and up to three attachments.
+
+- Tickets are shareable pages (`/apps/<id>/feedback/<ticket>`).
+- Triage with statuses (`open → in_progress → resolved/closed`), an assignee (Assign to me / edit / unassign), and a comment trail.
+- A `feedback:new` webhook fires on submission for org webhook subscribers.
+
+## Version history
+
+Settings → **Public version history** exposes `/apps/<slug>/history`: a public page listing published versions with localized changelogs and per-version downloads. It is off by default; when disabled the page returns 404.
 
 ## Access
 
@@ -77,13 +95,13 @@ The Access page controls who can see or publish an app.
 | Raft server visibility | Make the app visible to accounts from another Raft server. |
 | Deploy token | Give CI or an agent scoped API access to this app. |
 
-Deploy tokens are app-scoped bearer tokens. Create them for automation instead of reusing a human browser session. Copy the token when it is created; Quiver only shows the raw token once.
+Deploy tokens are app-scoped bearer tokens. Create them for automation instead of reusing a human browser session. Copy the token when it is created; Quiver only shows the raw token once. Each token records who created it, and actions performed with it are attributed as `deploy-token:<name>@<app>` in audit logs and release provenance.
 
 ## Common Issues
 
 ### No update is found
 
-Check that the published release is on the same channel as the client, has a higher `version_code`, and contains a compatible installable artifact.
+Check that the published release is on the same channel as the client, has a higher `version_code`, contains a compatible installable artifact, and — for partially rolled-out releases — that the device's bucket falls inside the rollout percentage.
 
 ### Download link is expired
 

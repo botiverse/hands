@@ -13,7 +13,7 @@ npm install -g @oranix/quiver-cli
 Or run it without a permanent install:
 
 ```bash
-npm exec --package @oranix/quiver-cli@0.1.1 -- quiver --help
+npm exec --package @oranix/quiver-cli@0.2.1 -- quiver --help
 ```
 
 In CI, pin a version so release scripts stay reproducible.
@@ -53,7 +53,9 @@ quiver builds list raft-android
 
 ## Publish Android
 
-Use `builds publish-android` to upload an APK and create or publish a release.
+Use `builds publish-android` to upload an APK and create a release. Per the
+release policy, CI should pass `--draft` so a human or agent reviews the
+changelog before the release goes live.
 
 ```bash
 quiver builds publish-android raft-android \
@@ -61,9 +63,12 @@ quiver builds publish-android raft-android \
   --channel preview \
   --version-name 1.0.0 \
   --version-code 1000000 \
-  --package-name build.raft.app \
-  --release-notes "Preview build"
+  --changelog-file ./changelog.txt \
+  --draft
 ```
+
+Package id, SDK levels, and the launcher icon are extracted from the APK
+automatically on the server — no extra flags needed.
 
 Add support artifacts when available:
 
@@ -79,6 +84,40 @@ quiver builds publish-android raft-android \
 ```
 
 Public update checks only use the installable artifact. Mapping files, native symbols, and metadata stay available through authenticated admin APIs.
+
+## Review and Publish (draft flow)
+
+CI creates drafts; publishing is an explicit step after changelog review:
+
+```bash
+# inspect the draft (status, rollout, changelog)
+quiver releases show raft-android <release-id>
+
+# write the reviewed changelog; repeatable [lang=]file entries
+quiver releases update raft-android <release-id> \
+  --changelog-file zh=changelog.zh.md \
+  --changelog-file en=changelog.en.md
+
+# make it live
+quiver releases publish raft-android <release-id>
+```
+
+Bilingual changelogs are stored per language; clients receive the language
+matching their locale (`zh` normalizes to `zh-CN`; plain single-value
+changelogs are served as-is).
+
+## Share Links
+
+```bash
+quiver releases share raft-android <release-id> --password <pw>   # password optional
+quiver releases shares raft-android <release-id>                   # list
+quiver releases update-share raft-android <release-id> <share-id> --ttl-seconds 1209600
+quiver releases revoke-share raft-android <release-id> <share-id>
+```
+
+`--password` can also come from `QUIVER_SHARE_PASSWORD` to keep it out of
+shell history. Share URLs are printed once at creation; tokens are stored
+hashed.
 
 ## CI Environment Variables
 
