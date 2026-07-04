@@ -58,6 +58,15 @@ Release share pages provide a temporary public download page for a release. New 
 
 Use share pages for human review and manual testing. Use the public update API for in-app update checks.
 
+CLI examples:
+
+```bash
+quiver releases share raft-android <release-id>
+quiver releases update-share raft-android <release-id> <share-id>
+quiver releases update-share raft-android <release-id> <share-id> --ttl-seconds 1209600
+quiver releases update-share raft-android <release-id> <share-id> --expires-at 1783742182499
+```
+
 ## Access
 
 The Access page controls who can see or publish an app.
