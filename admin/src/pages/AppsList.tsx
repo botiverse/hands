@@ -9,14 +9,14 @@ import {
 } from "../lib/api";
 import { AppCreationWizard } from "../components/AppCreationWizard";
 
-export function AppsList({ onSelectApp }: { onSelectApp: (id: string) => void }) {
+export function AppsList({ onSelectApp, initialShowCreate }: { onSelectApp: (id: string) => void; initialShowCreate?: boolean }) {
   const qc = useQueryClient();
   const { data, error, isLoading } = useQuery({
     queryKey: ["apps"],
     queryFn: () => listApps(),
   });
 
-  const [showCreate, setShowCreate] = useState(false);
+  const [showCreate, setShowCreate] = useState(initialShowCreate ?? false);
   const [showArchived, setShowArchived] = useState(false);
 
   // Phase 1: filter archived client-side (server doesn't yet support query param).

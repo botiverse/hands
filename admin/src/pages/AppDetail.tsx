@@ -12,6 +12,8 @@ import {
   updateApp,
   type App,
   type Channel,
+  uploadAppIcon,
+  publicAppIconUrl,
 } from "../lib/api";
 import { useToast } from "../components/Toast";
 import { Operations } from "./Operations";
@@ -167,6 +169,60 @@ export function AppChannels({ appId }: { appId: string }) {
   );
 }
 
+function AppIconUploader({ appId, slug }: { appId: string; slug: string }) {
+  const toast = useToast();
+  const [bust, setBust] = useState(0);
+  const upload = useMutation({
+    mutationFn: (file: File) => uploadAppIcon(appId, file),
+    onSuccess: () => {
+      toast.show({ kind: "success", title: "App icon updated" });
+      setBust(Date.now());
+    },
+    onError: (e) =>
+      toast.show({
+        kind: "error",
+        title: "Icon upload failed",
+        description: (e as Error).message,
+      }),
+  });
+  return (
+    <div className="flex items-center gap-3">
+      <img
+        src={`${publicAppIconUrl(slug)}${bust ? `?v=${bust}` : ""}`}
+        alt=""
+        width={44}
+        height={44}
+        className="h-11 w-11 rounded-lg border border-slate-200 bg-slate-50 object-cover"
+        onError={(e) => {
+          (e.target as HTMLImageElement).style.visibility = "hidden";
+        }}
+        onLoad={(e) => {
+          (e.target as HTMLImageElement).style.visibility = "visible";
+        }}
+      />
+      <div>
+        <div className="text-sm font-medium">App icon</div>
+        <div className="text-xs text-slate-500">
+          Shown on share/download pages. PNG/WebP/JPEG, max 1MB.
+        </div>
+      </div>
+      <label className="btn-secondary !py-1 !px-2 !text-xs ml-auto cursor-pointer">
+        {upload.isPending ? "Uploading…" : "Upload"}
+        <input
+          type="file"
+          accept="image/png,image/webp,image/jpeg"
+          className="hidden"
+          onChange={(e) => {
+            const file = e.target.files?.[0];
+            if (file) upload.mutate(file);
+            e.currentTarget.value = "";
+          }}
+        />
+      </label>
+    </div>
+  );
+}
+
 export function AppSettings({ appId }: { appId: string }) {
   const qc = useQueryClient();
   const toast = useToast();
@@ -206,6 +262,9 @@ export function AppSettings({ appId }: { appId: string }) {
 
       <div className="card !p-4 text-sm space-y-3">
         <h2 className="text-base font-semibold">Settings</h2>
+
+        {/* App icon */}
+        <AppIconUploader appId={appId} slug={app.slug} />
 
         {/* Default release channel picker */}
         <DefaultChannelPicker appId={appId} app={app} isOrgAdmin={isOrgAdmin} />

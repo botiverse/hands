@@ -10,6 +10,7 @@ import {
   Link,
 } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
+import { Building2, ChevronsUpDown, LayoutGrid, Plus } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { AppsList } from "./pages/AppsList";
 import { AppChannels, AppDetail, AppSettings } from "./pages/AppDetail";
@@ -129,7 +130,7 @@ function Header({ account }: { account: AuthAccount }) {
       </Link>
       <nav className="flex w-full flex-col items-stretch gap-1 px-2">
         <NavLink to="/apps" end={false} className={railItem}>
-          <span aria-hidden="true" className="text-base leading-none">▦</span>
+          <LayoutGrid className="h-4 w-4" aria-hidden="true" />
           Apps
         </NavLink>
         <div className="relative w-full">
@@ -148,7 +149,7 @@ function Header({ account }: { account: AuthAccount }) {
                 : "Org settings"
             }
           >
-            <span aria-hidden="true" className="text-base leading-none">◫</span>
+            <Building2 className="h-4 w-4" aria-hidden="true" />
             Org
           </NavLink>
           {showOrgSwitcher && orgs.data && orgs.data.orgs.length > 1 && (
@@ -690,9 +691,28 @@ function AuthenticatedApp({ account }: { account: AuthAccount }) {
 
 function AppsListWithNav() {
   const navigate = useNavigate();
+  const location = useLocation();
+  const params = new URLSearchParams(location.search);
+  const showAll = params.get("all") === "1";
+  const openNew = params.get("new") === "1";
+  const apps = useQuery({ queryKey: ["apps"], queryFn: listApps });
+
+  // Default behavior per artin: /apps drops you into the first app; the
+  // full list is reachable via ?all=1 (sidebar "All apps"), and with zero
+  // apps we go straight to the creation wizard.
+  if (!showAll && !openNew && apps.data) {
+    const active = apps.data.apps.filter((a) => !a.archived);
+    if (active.length > 0) {
+      return <Navigate to={`/apps/${active[0]!.id}`} replace />;
+    }
+  }
+  const zeroApps = apps.data ? apps.data.apps.filter((a) => !a.archived).length === 0 : false;
   return (
     <StandardPageShell>
-      <AppsList onSelectApp={(appId) => navigate(`/apps/${appId}`)} />
+      <AppsList
+        onSelectApp={(appId) => navigate(`/apps/${appId}`)}
+        initialShowCreate={openNew || zeroApps}
+      />
     </StandardPageShell>
   );
 }
@@ -722,6 +742,7 @@ const APP_NAV_SECTIONS: Array<{ label: string; items: Array<{ to: string; label:
 function AppSidebar() {
   const { appId } = useParams();
   const navigate = useNavigate();
+  const location = useLocation();
   const [switcherOpen, setSwitcherOpen] = useState(false);
   const apps = useQuery({ queryKey: ["apps"], queryFn: listApps });
   if (!appId) return null;
@@ -748,7 +769,7 @@ function AppSidebar() {
               <span className="truncate text-xs text-slate-400 font-mono">{app?.slug}</span>
             </span>
           </span>
-          <span className="text-slate-400" aria-hidden="true">⌄</span>
+          <ChevronsUpDown className="h-4 w-4 text-slate-400" aria-hidden="true" />
         </button>
         {switcherOpen && (
           <div className="absolute left-3 right-3 top-full z-30 -mt-1 rounded-md border border-slate-200 bg-white py-1 shadow-lg">
@@ -759,7 +780,8 @@ function AppSidebar() {
                 className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm hover:bg-slate-50"
                 onClick={() => {
                   setSwitcherOpen(false);
-                  navigate(`/apps/${a.id}`);
+                  const section = location.pathname.split("/")[3] ?? "";
+                  navigate(section ? `/apps/${a.id}/${section}` : `/apps/${a.id}`);
                 }}
               >
                 <span className="truncate">{a.name}</span>
@@ -770,11 +792,18 @@ function AppSidebar() {
               <div className="px-3 py-2 text-xs text-slate-400">No other apps</div>
             )}
             <Link
-              to="/apps"
-              className="mt-1 flex items-center gap-1 border-t border-slate-100 px-3 py-2 text-xs text-slate-500 hover:bg-slate-50"
+              to="/apps?new=1"
+              className="mt-1 flex items-center gap-1.5 border-t border-slate-100 px-3 py-2 text-xs text-slate-600 hover:bg-slate-50"
               onClick={() => setSwitcherOpen(false)}
             >
-              ← All apps
+              <Plus className="h-3.5 w-3.5" aria-hidden="true" /> New app
+            </Link>
+            <Link
+              to="/apps?all=1"
+              className="flex items-center gap-1.5 px-3 py-2 text-xs text-slate-500 hover:bg-slate-50"
+              onClick={() => setSwitcherOpen(false)}
+            >
+              <LayoutGrid className="h-3.5 w-3.5" aria-hidden="true" /> All apps
             </Link>
           </div>
         )}

@@ -1141,3 +1141,19 @@ export const addFeedbackComment = (appId: string, ticketId: string, body: string
 
 export const feedbackAttachmentUrl = (appId: string, ticketId: string, attachmentId: string) =>
   `/api/apps/${appId}/feedback/${ticketId}/attachments/${attachmentId}`;
+
+export const uploadAppIcon = async (appId: string, file: File) => {
+  const res = await fetch(`${API_BASE}/api/apps/${appId}/icon`, {
+    method: "PUT",
+    headers: { "content-type": file.type || "image/png" },
+    body: file,
+    credentials: "include",
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new ApiError(res.status, text, text || `${res.status} ${res.statusText}`);
+  }
+  return res.json() as Promise<{ ok: boolean; icon_r2_key: string }>;
+};
+
+export const publicAppIconUrl = (slug: string) => `${API_BASE}/public/apps/${slug}/icon`;
