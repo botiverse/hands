@@ -865,7 +865,7 @@ function AppShell() {
         <div className="md:hidden">
           <AppContextNav />
         </div>
-        <main className="max-w-5xl px-6 py-6 w-full">
+        <main className="max-w-5xl mx-auto px-6 py-6 w-full">
         <Routes>
           <Route index element={<AppDetailRoute />} />
           <Route path="publish" element={<LegacyPublishRedirect />} />
