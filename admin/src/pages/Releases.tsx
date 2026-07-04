@@ -146,15 +146,8 @@ export function Releases({ appId }: { appId: string }) {
 
   return (
     <div>
-      <div className="mb-6 flex items-start justify-between gap-4 flex-wrap">
-        <div>
-          <div className="text-sm text-slate-500">Releases</div>
-          <h1 className="text-2xl font-bold">
-            {thisApp?.name ?? "..."}
-            <span className="badge-blue align-middle ml-2">{thisApp?.platform}</span>
-          </h1>
-          <div className="text-sm text-slate-500 font-mono">{thisApp?.slug}</div>
-        </div>
+      <div className="mb-4 flex items-center justify-between gap-4 flex-wrap">
+        <h2 className="text-lg font-semibold">Releases</h2>
         <button
           className="btn-primary text-sm"
           onClick={() => setShowNewRelease(true)}

@@ -43,17 +43,10 @@ export function Builds({ appId }: { appId: string }) {
   const [prepareBuild, setPrepareBuild] = useState<Build | null>(null);
 
   return (
-    <div className="p-4">
-      <div className="mb-6">
+    <div>
+      <div className="mb-4">
         <div className="flex items-center justify-between">
-          <div>
-            <div className="text-sm text-slate-500">Builds</div>
-            <h1 className="text-2xl font-bold">
-              {thisApp?.name ?? "..."}
-              <span className="badge-blue align-middle ml-2">{thisApp?.platform}</span>
-            </h1>
-            <div className="text-sm text-slate-500 font-mono">{thisApp?.slug}</div>
-          </div>
+          <h2 className="text-lg font-semibold">Builds</h2>
           <a
             href={`/apps/${appId}/releases`}
             className="btn-primary text-sm no-underline"
