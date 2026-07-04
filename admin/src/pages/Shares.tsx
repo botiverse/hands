@@ -317,7 +317,7 @@ function CreateShareModal({
         <label className="block text-xs text-slate-600">
           Release
           <select
-            className="mt-1 w-full rounded border border-slate-300 px-2 py-1.5 text-sm"
+            className="input mt-1 !py-1.5"
             value={releaseId}
             onChange={(e) => setReleaseId(e.target.value)}
           >
@@ -337,7 +337,7 @@ function CreateShareModal({
             max={30}
             value={ttlDays}
             onChange={(e) => setTtlDays(Math.min(30, Math.max(1, Number(e.target.value) || 7)))}
-            className="mt-1 w-full rounded border border-slate-300 px-2 py-1.5 text-sm"
+            className="input mt-1 !py-1.5"
           />
         </label>
         <label className="block text-xs text-slate-600">
@@ -347,7 +347,7 @@ function CreateShareModal({
             value={password}
             onChange={(e) => setPassword(e.target.value)}
             placeholder="Leave empty for a public link"
-            className="mt-1 w-full rounded border border-slate-300 px-2 py-1.5 text-sm"
+            className="input mt-1 !py-1.5"
           />
         </label>
         <div className="flex justify-end gap-2 pt-2">
