@@ -1,10 +1,31 @@
-# quiver
+# Quiver
 
-**Open-Source APK distribution platform** — Cloudflare Native (Workers + Container + D1 + R2).
+**Ship Android builds, releases, and share links from one place.**
 
-Reference feature set inspired by [Zealot (tryzealot/zealot)](https://github.com/tryzealot/zealot).
+Quiver manages APK uploads, release channels, public update checks, share pages, and Raft-based access control for humans and agents — fully Cloudflare-native (Workers + Container + D1 + R2).
+
+- **Live instance:** <https://quiver.oranix.io>
+- **Docs:** <https://quiver.oranix.io/docs> · [Admin guide](https://quiver.oranix.io/docs/admin-user-guide/) · [CLI reference](https://quiver.oranix.io/docs/cli-reference/)
+- **API explorer:** <https://quiver.oranix.io/api-docs>
+- **CLI on npm:** [`@oranix/quiver-cli`](https://www.npmjs.com/package/@oranix/quiver-cli)
 
 The "quiver" metaphor: admins load APK arrows into channels; clients pick the right one for their channel.
+
+## Features
+
+- **Channels** — keep main, preview, nightly, or debug releases separated by app. Publish to `main` for stable users, `preview` for validation, `nightly` for fast internal iteration.
+- **Update checks** — serve public latest/update responses with signed APK downloads; an Android SDK (`clients/android`) handles in-app update checks and installation.
+- **Share pages** — create revocable, expiring public download pages with view and download counts.
+- **Raft access** — Login with Raft, org roles, direct app members, per-server visibility grants, and app-level deploy tokens for CI and agents.
+- **CI-friendly publishing** — the public npm CLI publishes Android releases and creates share links from GitHub Actions, local packaging lanes, or Raft agents:
+
+```sh
+$ npm exec --package @oranix/quiver-cli -- quiver builds publish-android raft-android
+uploading APK and metadata...
+creating release on channel main...
+release: 14998dba-cfde-4002-8c01-230a2760f662
+share: https://quiver.oranix.io/share/...
+```
 
 ## Architecture
 
@@ -40,11 +61,14 @@ The "quiver" metaphor: admins load APK arrows into channels; clients pick the ri
                              └─────────────────┘
 ```
 
-## Modules
+## Repository layout
 
 - `worker/` — Cloudflare Worker (Hono) — admin SPA, API routes, Login with Raft, D1 CRUD, R2 signed URLs
+- `admin/` — admin SPA and public landing (React + Vite + Tailwind) served by the Worker
 - `container/` — Cloudflare Container — APK metadata parser (aapt + apksigner)
-- `admin/` — SPA assets (React + Vite + Tailwind) served by the Worker
+- `packages/cli/` — `@oranix/quiver-cli` npm package
+- `clients/android/` — Quiver Android Updater SDK (update checks + APK install)
+- `docs/` — admin user guide, CLI reference, public API reference, architecture notes
 - `migrations/` — D1 SQL schema migrations
 
 ## Login with Raft
@@ -82,6 +106,8 @@ pnpm --filter @oranix/quiver-admin dev
 docker build -t apk-parser container/
 ```
 
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the worktree workflow and merge rules.
+
 ## Release automation
 
 GitHub Actions owns production publishing so local machines do not need long-lived npm or Cloudflare credentials.
@@ -96,6 +122,6 @@ Workflows:
 - `Publish CLI` publishes `@oranix/quiver-cli` to npm through npm Trusted Publishing / GitHub OIDC. Configure the npm package trusted publisher for this repository and workflow, then trigger it manually with the package version from `packages/cli/package.json`, or push a tag like `cli-v0.1.2`.
 - `Deploy Quiver Server` deploys the Worker plus bundled admin/docs assets. Trigger it manually, or push a tag like `server-v2026.07.04`. The default container rollout is `none`; choose `immediate` or `gradual` only when the APK parser container image changed.
 
-## Status
+## Credits
 
-🚧 Initial scaffold. See `docs/architecture.md` (TODO) for design notes.
+Reference feature set inspired by [Zealot (tryzealot/zealot)](https://github.com/tryzealot/zealot).
