@@ -171,7 +171,8 @@ function makeMockDb() {
       created_by TEXT NOT NULL,
       created_at INTEGER NOT NULL,
       expires_at INTEGER NOT NULL,
-      revoked_at INTEGER
+      revoked_at INTEGER,
+      password_hash TEXT
     );
     CREATE TABLE release_share_events (
       id TEXT PRIMARY KEY,
@@ -2699,6 +2700,101 @@ describe("quiver public API v2 — scope resolution", () => {
       .bind()
       .all();
     expect(events.results).toEqual([{ event_type: "view", count: 1 }]);
+  });
+
+  it("password-protected share gates page and download until unlocked", async () => {
+    const env = makeEnv();
+    const {
+      handleCreateReleaseShare,
+      handlePublicReleaseShare,
+      handlePublicReleaseShareDownload,
+      handlePublicReleaseShareUnlock,
+    } = await import("../src/routes/shares");
+    await seedRelease(env, "rel-pw", "build-pw", [["full", "all"]], {
+      versionCode: 12,
+      versionName: "1.0.12",
+    });
+    await seedAsset(env, "build-pw", "asset-pw", { arch: "arm64-v8a" });
+    const created = await handleCreateReleaseShare(
+      makeShareAdminContext(
+        env,
+        { appId: "app-scope", releaseId: "rel-pw" },
+        { ttl_seconds: 600, password: "hunter2" },
+      ),
+    );
+    const createdBody = await responseJson<any>(created);
+    expect(createdBody.has_password).toBe(true);
+    const token = new URL(createdBody.share_url).pathname.replace("/share/", "");
+
+    // Page shows the password form, not the download.
+    const gated = await handlePublicReleaseShare(makeSharePublicContext(env, token));
+    expect(gated.status).toBe(200);
+    const gatedHtml = await gated.text();
+    expect(gatedHtml).toContain("Password required");
+    expect(gatedHtml).not.toContain("Download APK");
+
+    // Download without unlock bounces back to the page.
+    const blocked = await handlePublicReleaseShareDownload(makeSharePublicContext(env, token));
+    expect(blocked.status).toBe(302);
+    expect(blocked.headers.get("location")).toBe(`/share/${token}`);
+
+    const makeUnlockContext = (password: string, cookie?: string) =>
+      ({
+        env,
+        req: {
+          url: `https://quiver-worker.test/share/${token}/unlock`,
+          param: (name: string) => (name === "token" ? token : ""),
+          query: () => undefined,
+          header: (name: string) =>
+            name.toLowerCase() === "cookie" ? cookie : undefined,
+          parseBody: async () => ({ password }),
+          raw: { cf: { clientIp: "203.0.113.10" } },
+        },
+        redirect: (url: string, status = 302) =>
+          new Response(null, { status, headers: { location: url } }),
+        json: (data: unknown, status = 200) =>
+          new Response(JSON.stringify(data), { status }),
+      }) as any;
+
+    // Wrong password: 401 + failure recorded.
+    const denied = await handlePublicReleaseShareUnlock(makeUnlockContext("nope"));
+    expect(denied.status).toBe(401);
+
+    // Right password: 303 + unlock cookie.
+    const unlocked = await handlePublicReleaseShareUnlock(makeUnlockContext("hunter2"));
+    expect(unlocked.status).toBe(303);
+    const setCookie = unlocked.headers.get("set-cookie") ?? "";
+    expect(setCookie).toContain("qshare_");
+    const cookiePair = setCookie.split(";")[0]!;
+
+    // With the cookie both page and download work.
+    const open = await handlePublicReleaseShare(
+      makeSharePublicContext(env, token, {
+        "cf-connecting-ip": "203.0.113.10",
+        "user-agent": "vitest",
+        "accept-language": "en-US",
+        cookie: cookiePair,
+      }),
+    );
+    expect(open.status).toBe(200);
+    expect(await open.text()).toContain("Download APK");
+
+    const download = await handlePublicReleaseShareDownload(
+      makeSharePublicContext(env, token, {
+        "cf-connecting-ip": "203.0.113.10",
+        "user-agent": "vitest",
+        cookie: cookiePair,
+      }),
+    );
+    expect(download.status).toBe(302);
+    expect(download.headers.get("location") ?? "").not.toBe(`/share/${token}`);
+
+    const failures = (await env.DB.prepare(
+      "SELECT COUNT(*) AS count FROM audit_logs WHERE action = 'release_share.unlock_failed'",
+    )
+      .bind()
+      .first()) as { count: number } | null;
+    expect(failures?.count).toBe(1);
   });
 
   it("share download redirects to signed R2 and records download stats", async () => {

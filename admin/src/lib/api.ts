@@ -1010,3 +1010,53 @@ export const listWebhookDeliveries = (orgId: string, webhookId: string) =>
     `/api/orgs/${orgId}/webhooks/${webhookId}/deliveries`,
     { admin: true },
   );
+
+// ---- Release shares (P1: share management tab) ----
+
+export interface AppShare {
+  id: string;
+  release_id: string;
+  created_by: string;
+  created_at: number;
+  expires_at: number;
+  revoked_at: number | null;
+  has_password: number; // 0 | 1 from SQLite
+  release_status: string;
+  channel_slug: string;
+  version_name: string;
+  version_code: number;
+  view_count: number;
+  unique_view_count: number;
+  download_count: number;
+  unique_download_count: number;
+}
+
+export const listAppShares = (appId: string) =>
+  request<{ shares: AppShare[] }>(`/api/apps/${appId}/shares`, { admin: true });
+
+export const createReleaseShare = (
+  appId: string,
+  releaseId: string,
+  body: { ttl_seconds?: number; expires_at?: number; password?: string },
+) =>
+  request<{ id: string; share_url: string; expires_at: number; has_password: boolean }>(
+    `/api/apps/${appId}/releases/${releaseId}/shares`,
+    { method: "POST", body: JSON.stringify(body), admin: true },
+  );
+
+export const renewReleaseShare = (
+  appId: string,
+  releaseId: string,
+  shareId: string,
+  body: { ttl_seconds?: number; expires_at?: number },
+) =>
+  request<{ id: string; expires_at: number }>(
+    `/api/apps/${appId}/releases/${releaseId}/shares/${shareId}`,
+    { method: "PATCH", body: JSON.stringify(body), admin: true },
+  );
+
+export const revokeReleaseShare = (appId: string, releaseId: string, shareId: string) =>
+  request<{ id: string }>(
+    `/api/apps/${appId}/releases/${releaseId}/shares/${shareId}`,
+    { method: "DELETE", admin: true },
+  );

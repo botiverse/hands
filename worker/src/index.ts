@@ -40,6 +40,8 @@ import {
   handlePublicReleaseShare,
   handleRevokeReleaseShare,
   handleUpdateReleaseShare,
+  handleListAppShares,
+  handlePublicReleaseShareUnlock,
 } from "./routes/shares";
 import {
   handleCreateAppDeployToken,
@@ -416,6 +418,7 @@ app.get("/public/v2/apps/:slug/updates/check", handlePublicV2UpdateCheck);
 app.get("/public/r2/:key", handlePublicR2Download);
 app.get("/share/:token/download", handlePublicReleaseShareDownload);
 app.get("/share/:token", handlePublicReleaseShare);
+app.post("/share/:token/unlock", handlePublicReleaseShareUnlock);
 app.get("/api/invites/:token", handleGetInvite);
 
 function isWorkerRoute(pathname: string): boolean {
@@ -524,6 +527,7 @@ admin.delete("/api/apps/:appId/releases/:releaseId", requireAppRole("publisher")
 admin.post("/api/apps/:appId/releases/:releaseId/rollback", requireAppRole("publisher"), handleRollbackRelease);
 admin.post("/api/apps/:appId/releases/:releaseId/bump-rollout", requireAppRole("publisher"), handleBumpRollout);
 admin.post("/api/apps/:appId/releases/:releaseId/force-update", requireAppRole("publisher"), handleForceUpdate);
+admin.get("/api/apps/:appId/shares", requireAppRole("viewer"), handleListAppShares);
 admin.get("/api/apps/:appId/releases/:releaseId/shares", requireAppRole("viewer"), handleListReleaseShares);
 admin.post("/api/apps/:appId/releases/:releaseId/shares", requireAppRole("publisher"), handleCreateReleaseShare);
 admin.patch("/api/apps/:appId/releases/:releaseId/shares/:shareId", requireAppRole("publisher"), handleUpdateReleaseShare);

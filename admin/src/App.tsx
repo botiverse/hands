@@ -17,6 +17,7 @@ import { AuditLog } from "./pages/AuditLog";
 import { Settings } from "./pages/Settings";
 import { Builds } from "./pages/Builds";
 import { Releases } from "./pages/Releases";
+import { AppShares } from "./pages/Shares";
 import { OrgSettings } from "./pages/OrgSettings";
 import { AcceptInvite } from "./pages/AcceptInvite";
 import { AppAccess } from "./pages/AppAccess";
@@ -309,6 +310,12 @@ function AppContextNav() {
           Releases
         </NavLink>
         <NavLink
+          to={`${base}/shares`}
+          className={tabClass}
+        >
+          Shares
+        </NavLink>
+        <NavLink
           to={`${base}/builds`}
           className={tabClass}
         >
@@ -353,6 +360,12 @@ function AppSettingsRoute() {
   const { appId } = useParams();
   if (!appId) return null;
   return <AppSettings appId={appId} />;
+}
+
+function AppSharesRoute() {
+  const { appId } = useParams();
+  if (!appId) return null;
+  return <AppShares appId={appId} />;
 }
 
 function AppAccessRoute() {
@@ -659,6 +672,7 @@ function AuthenticatedApp({ account }: { account: AuthAccount }) {
           <Route path="channels" element={<AppChannelsRoute />} />
           <Route path="builds" element={<BuildsRoute />} />
           <Route path="releases" element={<ReleasesRoute />} />
+          <Route path="shares" element={<AppSharesRoute />} />
           <Route path="access" element={<AppAccessRoute />} />
           <Route path="audit" element={<AuditRoute />} />
           <Route path="settings" element={<AppSettingsRoute />} />
@@ -722,6 +736,7 @@ function AppShell() {
           <Route path="channels" element={<AppChannelsRoute />} />
           <Route path="builds" element={<BuildsRoute />} />
           <Route path="releases" element={<ReleasesRoute />} />
+          <Route path="shares" element={<AppSharesRoute />} />
           <Route path="access" element={<AppAccessRoute />} />
           <Route path="audit" element={<AuditRoute />} />
           <Route path="settings" element={<AppSettingsRoute />} />

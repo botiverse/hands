@@ -69,6 +69,16 @@ jobs:
             echo "value=${{ inputs.containers_rollout }}" >> "$GITHUB_OUTPUT"
           fi
 
+      - name: Apply D1 migrations
+        working-directory: worker
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          pnpm exec wrangler d1 migrations apply quiver-db --remote
+
       - name: Deploy Worker and admin assets
         working-directory: worker
         env:

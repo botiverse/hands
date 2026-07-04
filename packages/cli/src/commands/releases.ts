@@ -31,20 +31,26 @@ export function registerReleaseCommands(program: Command): void {
     .description("Create a revocable public share page for a release.")
     .option("--ttl-seconds <seconds>", "Share lifetime in seconds.", DEFAULT_SHARE_TTL_SECONDS)
     .option("--expires-at <millis>", "Absolute expiration as Unix milliseconds.")
+    .option(
+      "--password <password>",
+      "Password-protect the share page (or set QUIVER_SHARE_PASSWORD to keep it out of shell history).",
+    )
     .option("--json", "Output JSON.", false)
     .action(
       async (
         appIdOrSlug: string,
         releaseId: string,
-        opts: { ttlSeconds?: string; expiresAt?: string; json?: boolean },
+        opts: { ttlSeconds?: string; expiresAt?: string; password?: string; json?: boolean },
       ) => {
         const appId = await resolveAppId(appIdOrSlug);
-        const body: { ttl_seconds?: number; expires_at?: number } = {};
+        const body: { ttl_seconds?: number; expires_at?: number; password?: string } = {};
         if (opts.expiresAt) {
           body.expires_at = parsePositiveNumber(opts.expiresAt, "--expires-at");
         } else {
           body.ttl_seconds = parsePositiveNumber(opts.ttlSeconds ?? DEFAULT_SHARE_TTL_SECONDS, "--ttl-seconds");
         }
+        const password = opts.password ?? process.env.QUIVER_SHARE_PASSWORD;
+        if (password) body.password = password;
         const share = await apiRequest<ReleaseShare>(
           `/api/apps/${appId}/releases/${releaseId}/shares`,
           { method: "POST", body },
@@ -56,6 +62,7 @@ export function registerReleaseCommands(program: Command): void {
         console.log(`Created release share ${share.id}`);
         console.log(`  url:        ${share.share_url ?? ""}`);
         console.log(`  expires_at: ${new Date(share.expires_at).toISOString()}`);
+        if (body.password) console.log("  password:   protected");
       },
     );
 
