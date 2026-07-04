@@ -3,6 +3,10 @@
   "version": "0.1.2",
   "description": "Quiver CLI — manage apps, builds, releases from the terminal.",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/oranix-io/quiver"
+  },
   "type": "module",
   "main": "dist/index.js",
   "bin": {
