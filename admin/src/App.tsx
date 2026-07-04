@@ -18,7 +18,7 @@ import { Settings } from "./pages/Settings";
 import { Builds } from "./pages/Builds";
 import { Releases } from "./pages/Releases";
 import { AppShares } from "./pages/Shares";
-import { AppFeedback } from "./pages/Feedback";
+import { AppFeedback, FeedbackTicketPage } from "./pages/Feedback";
 import { OrgSettings } from "./pages/OrgSettings";
 import { AcceptInvite } from "./pages/AcceptInvite";
 import { AppAccess } from "./pages/AppAccess";
@@ -78,6 +78,32 @@ function QuiverMark({ className = "" }: { className?: string }) {
   );
 }
 
+function HeaderAppBreadcrumb() {
+  const location = useLocation();
+  const apps = useQuery({ queryKey: ["apps"], queryFn: listApps });
+  const match = location.pathname.match(/^\/apps\/([0-9a-f-]{36})(?:\/|$)/);
+  if (!match) return null;
+  const app = apps.data?.apps.find((a) => a.id === match[1]);
+  if (!app) return null;
+  return (
+    <span className="hidden md:flex items-center gap-2 min-w-0 text-sm">
+      <span className="text-slate-300">/</span>
+      <Link
+        to={`/apps/${app.id}`}
+        className="font-semibold text-slate-900 truncate max-w-[220px] hover:underline"
+      >
+        {app.name}
+      </Link>
+      <span className="badge-blue">{app.platform}</span>
+      {Boolean(app.archived) && (
+        <span className="rounded bg-amber-100 px-1.5 py-0.5 text-xs font-medium text-amber-800">
+          archived
+        </span>
+      )}
+    </span>
+  );
+}
+
 function Header({ account }: { account: AuthAccount }) {
   const onLogout = async () => {
     await logout();
@@ -127,6 +153,7 @@ function Header({ account }: { account: AuthAccount }) {
             <QuiverMark className="h-8 w-8 flex-none" />
             <span>Quiver</span>
           </Link>
+          <HeaderAppBreadcrumb />
           <nav className="flex items-center gap-2">
             <NavLink
               to="/apps"
@@ -277,9 +304,7 @@ function Header({ account }: { account: AuthAccount }) {
 
 function AppContextNav() {
   const { appId } = useParams();
-  const apps = useQuery({ queryKey: ["apps"], queryFn: listApps });
   if (!appId) return null;
-  const app = apps.data?.apps.find((a) => a.id === appId);
   const base = `/apps/${appId}`;
   const tabClass = ({ isActive }: { isActive: boolean }) =>
     `inline-flex h-9 items-center rounded-md px-3 text-sm ${
@@ -290,26 +315,7 @@ function AppContextNav() {
 
   return (
     <div className="bg-white border-b border-slate-200 -mt-px">
-      <div className="max-w-5xl mx-auto px-4 py-2 flex flex-wrap items-center gap-x-3 gap-y-1">
-        <div className="flex items-center gap-2 mr-3 min-w-0">
-          <h1 className="text-base font-semibold leading-none truncate">
-            {app?.name ?? "…"}
-          </h1>
-          {app?.platform && (
-            <span className="badge-blue">{app.platform}</span>
-          )}
-          {app?.slug && (
-            <span className="hidden sm:inline text-xs text-slate-500 font-mono">
-              {app.slug}
-            </span>
-          )}
-          {Boolean(app?.archived) && (
-            <span className="rounded bg-amber-100 px-1.5 py-0.5 text-xs font-medium text-amber-800">
-              archived
-            </span>
-          )}
-        </div>
-        <div className="flex items-center gap-1 overflow-x-auto">
+      <div className="max-w-5xl mx-auto px-4 py-2 flex items-center gap-1 overflow-x-auto">
         <NavLink
           to={base}
           end
@@ -365,7 +371,6 @@ function AppContextNav() {
         >
           Settings
         </NavLink>
-        </div>
       </div>
     </div>
   );
@@ -393,6 +398,12 @@ function AppFeedbackRoute() {
   const { appId } = useParams();
   if (!appId) return null;
   return <AppFeedback appId={appId} />;
+}
+
+function FeedbackTicketRoute() {
+  const { appId, ticketId } = useParams();
+  if (!appId || !ticketId) return null;
+  return <FeedbackTicketPage appId={appId} ticketId={ticketId} />;
 }
 
 function AppSharesRoute() {
@@ -707,6 +718,7 @@ function AuthenticatedApp({ account }: { account: AuthAccount }) {
           <Route path="releases" element={<ReleasesRoute />} />
           <Route path="shares" element={<AppSharesRoute />} />
           <Route path="feedback" element={<AppFeedbackRoute />} />
+          <Route path="feedback/:ticketId" element={<FeedbackTicketRoute />} />
           <Route path="access" element={<AppAccessRoute />} />
           <Route path="audit" element={<AuditRoute />} />
           <Route path="settings" element={<AppSettingsRoute />} />
@@ -772,6 +784,7 @@ function AppShell() {
           <Route path="releases" element={<ReleasesRoute />} />
           <Route path="shares" element={<AppSharesRoute />} />
           <Route path="feedback" element={<AppFeedbackRoute />} />
+          <Route path="feedback/:ticketId" element={<FeedbackTicketRoute />} />
           <Route path="access" element={<AppAccessRoute />} />
           <Route path="audit" element={<AuditRoute />} />
           <Route path="settings" element={<AppSettingsRoute />} />

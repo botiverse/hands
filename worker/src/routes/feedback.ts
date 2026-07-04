@@ -201,7 +201,7 @@ export async function handleListFeedback(c: AdminContext) {
     where += ` AND kind = ?${binds.length}`;
   }
   const { results } = await c.env.DB.prepare(
-    `SELECT t.id, t.kind, t.status, t.message, t.contact, t.version_name,
+    `SELECT t.id, t.kind, t.status, t.assignee, t.message, t.contact, t.version_name,
             t.version_code, t.channel, t.device_model, t.os_version,
             t.created_at, t.updated_at,
             (SELECT COUNT(*) FROM feedback_attachments fa WHERE fa.ticket_id = t.id) AS attachment_count,
@@ -243,38 +243,58 @@ export async function handleGetFeedback(c: AdminContext) {
 export async function handleUpdateFeedback(c: AdminContext) {
   const appId = c.req.param("appId");
   const ticketId = c.req.param("ticketId");
-  const body = (await c.req.json().catch(() => ({}))) as { status?: string };
-  if (!body.status || !(TICKET_STATUSES as readonly string[]).includes(body.status)) {
-    return c.json({ error: `status must be one of ${TICKET_STATUSES.join(", ")}` }, 400);
+  const body = (await c.req.json().catch(() => ({}))) as {
+    status?: string;
+    assignee?: string | null;
+  };
+  const sets: string[] = [];
+  const binds: unknown[] = [];
+  if (body.status !== undefined) {
+    if (!(TICKET_STATUSES as readonly string[]).includes(body.status)) {
+      return c.json({ error: `status must be one of ${TICKET_STATUSES.join(", ")}` }, 400);
+    }
+    binds.push(body.status);
+    sets.push(`status = ?${binds.length}`);
   }
-  const now = Date.now();
-  const result = await c.env.DB.prepare(
-    `UPDATE feedback_tickets SET status = ?1, updated_at = ?2
-     WHERE app_id = ?3 AND id = ?4`,
+  if (body.assignee !== undefined) {
+    const assignee =
+      typeof body.assignee === "string" ? body.assignee.trim().slice(0, 120) : "";
+    binds.push(assignee || null);
+    sets.push(`assignee = ?${binds.length}`);
+  }
+  if (sets.length === 0) {
+    return c.json({ error: "nothing to update (status or assignee required)" }, 400);
+  }
+  const exists = await c.env.DB.prepare(
+    "SELECT id FROM feedback_tickets WHERE app_id = ?1 AND id = ?2",
   )
-    .bind(body.status, now, appId, ticketId)
+    .bind(appId, ticketId)
+    .first();
+  if (!exists) return c.json({ error: "ticket not found" }, 404);
+
+  const now = Date.now();
+  binds.push(now);
+  sets.push(`updated_at = ?${binds.length}`);
+  binds.push(appId, ticketId);
+  await c.env.DB.prepare(
+    `UPDATE feedback_tickets SET ${sets.join(", ")}
+     WHERE app_id = ?${binds.length - 1} AND id = ?${binds.length}`,
+  )
+    .bind(...binds)
     .run();
-  if (!result.meta || result.meta.changes === 0) {
-    const exists = await c.env.DB.prepare(
-      "SELECT id FROM feedback_tickets WHERE app_id = ?1 AND id = ?2",
-    )
-      .bind(appId, ticketId)
-      .first();
-    if (!exists) return c.json({ error: "ticket not found" }, 404);
-  }
   await c.env.DB.prepare(
     `INSERT INTO audit_logs (id, app_id, action, actor, payload, created_at)
-     VALUES (?1, ?2, 'feedback.status', ?3, ?4, ?5)`,
+     VALUES (?1, ?2, 'feedback.update', ?3, ?4, ?5)`,
   )
     .bind(
       crypto.randomUUID(),
       appId,
       currentActor(c),
-      JSON.stringify({ ticket_id: ticketId, status: body.status }),
+      JSON.stringify({ ticket_id: ticketId, status: body.status ?? null, assignee: body.assignee === undefined ? null : (body.assignee || null) }),
       now,
     )
     .run();
-  return c.json({ id: ticketId, status: body.status, updated_at: now });
+  return c.json({ id: ticketId, status: body.status ?? null, assignee: body.assignee ?? null, updated_at: now });
 }
 
 export async function handleAddFeedbackComment(c: AdminContext) {

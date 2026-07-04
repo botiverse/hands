@@ -1067,6 +1067,7 @@ export interface FeedbackTicket {
   id: string;
   kind: "feedback" | "bug" | "crash";
   status: "open" | "in_progress" | "resolved" | "closed";
+  assignee: string | null;
   message: string;
   contact: string | null;
   version_name: string | null;
@@ -1117,12 +1118,19 @@ export const listFeedback = (appId: string, filters?: { status?: string | undefi
 export const getFeedback = (appId: string, ticketId: string) =>
   request<FeedbackDetail>(`/api/apps/${appId}/feedback/${ticketId}`, { admin: true });
 
-export const updateFeedbackStatus = (appId: string, ticketId: string, status: string) =>
-  request<{ id: string; status: string }>(`/api/apps/${appId}/feedback/${ticketId}`, {
-    method: "PATCH",
-    body: JSON.stringify({ status }),
-    admin: true,
-  });
+export const updateFeedbackTicket = (
+  appId: string,
+  ticketId: string,
+  body: { status?: string; assignee?: string | null },
+) =>
+  request<{ id: string; status: string | null; assignee: string | null }>(
+    `/api/apps/${appId}/feedback/${ticketId}`,
+    {
+      method: "PATCH",
+      body: JSON.stringify(body),
+      admin: true,
+    },
+  );
 
 export const addFeedbackComment = (appId: string, ticketId: string, body: string) =>
   request<{ id: string }>(`/api/apps/${appId}/feedback/${ticketId}/comments`, {

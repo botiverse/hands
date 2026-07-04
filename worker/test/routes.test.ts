@@ -216,6 +216,7 @@ function makeMockDb() {
       locale TEXT,
       metadata_json TEXT NOT NULL DEFAULT '{}',
       client_ip_hash TEXT,
+      assignee TEXT,
       created_at INTEGER NOT NULL,
       updated_at INTEGER NOT NULL
     );
@@ -2961,7 +2962,7 @@ describe("quiver public API v2 — scope resolution", () => {
     const ticketId = listBody.tickets[0].id as string;
 
     const updated = await handleUpdateFeedback(
-      adminContext({ appId: "app-scope", ticketId }, { body: { status: "in_progress" } }),
+      adminContext({ appId: "app-scope", ticketId }, { body: { status: "in_progress", assignee: "cc-quiver-owner" } }),
     );
     expect(updated.status).toBe(200);
 
@@ -2973,6 +2974,7 @@ describe("quiver public API v2 — scope resolution", () => {
     const detail = await handleGetFeedback(adminContext({ appId: "app-scope", ticketId }));
     const detailBody = await responseJson<any>(detail);
     expect(detailBody.ticket.status).toBe("in_progress");
+    expect(detailBody.ticket.assignee).toBe("cc-quiver-owner");
     expect(detailBody.ticket.device_id).toBe("dev-123");
     expect(detailBody.attachments.length).toBe(1);
     expect(detailBody.comments.length).toBe(1);
