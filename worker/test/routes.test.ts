@@ -199,6 +199,43 @@ function makeMockDb() {
       completed_at INTEGER,
       FOREIGN KEY (app_id) REFERENCES apps(id) ON DELETE CASCADE
     );
+    CREATE TABLE feedback_tickets (
+      id TEXT PRIMARY KEY,
+      app_id TEXT NOT NULL,
+      kind TEXT NOT NULL DEFAULT 'feedback',
+      status TEXT NOT NULL DEFAULT 'open',
+      message TEXT NOT NULL,
+      contact TEXT,
+      version_name TEXT,
+      version_code INTEGER,
+      channel TEXT,
+      device_id TEXT,
+      device_model TEXT,
+      os_version TEXT,
+      arch TEXT,
+      locale TEXT,
+      metadata_json TEXT NOT NULL DEFAULT '{}',
+      client_ip_hash TEXT,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    );
+    CREATE TABLE feedback_attachments (
+      id TEXT PRIMARY KEY,
+      ticket_id TEXT NOT NULL,
+      r2_key TEXT NOT NULL,
+      filename TEXT NOT NULL,
+      content_type TEXT,
+      size_bytes INTEGER NOT NULL,
+      created_at INTEGER NOT NULL
+    );
+    CREATE TABLE feedback_comments (
+      id TEXT PRIMARY KEY,
+      ticket_id TEXT NOT NULL,
+      author_actor TEXT NOT NULL,
+      body TEXT NOT NULL,
+      internal INTEGER NOT NULL DEFAULT 0,
+      created_at INTEGER NOT NULL
+    );
     CREATE TABLE audit_logs (
       id TEXT PRIMARY KEY, app_id TEXT NOT NULL, action TEXT NOT NULL,
       actor TEXT NOT NULL, payload TEXT NOT NULL, created_at INTEGER NOT NULL,
@@ -2839,6 +2876,112 @@ describe("quiver public API v2 — scope resolution", () => {
     expect(clearResp.status).toBe(200);
     const open = await handlePublicReleaseShare(makeSharePublicContext(env, token));
     expect(await open.text()).toContain("Download APK");
+  });
+
+  it("feedback: public submit stores ticket + attachment, admin can triage", async () => {
+    const env = makeEnv();
+    const putCalls: Array<{ key: string; bytes: number }> = [];
+    env.APK_BUCKET = {
+      put: async (key: string, body: ArrayBuffer) => {
+        putCalls.push({ key, bytes: body.byteLength ?? 0 });
+      },
+      get: async (key: string) => {
+        const hit = putCalls.find((p) => p.key === key);
+        if (!hit) return null;
+        return { body: new Blob(["log"]).stream() };
+      },
+    };
+    const {
+      handlePublicFeedbackSubmit,
+      handleListFeedback,
+      handleUpdateFeedback,
+      handleAddFeedbackComment,
+      handleGetFeedback,
+      handleDownloadFeedbackAttachment,
+    } = await import("../src/routes/feedback");
+
+    const form = new FormData();
+    form.set("message", "首页打开就闪退");
+    form.set("kind", "bug");
+    form.set("contact", "artin@cat.ms");
+    form.set(
+      "metadata",
+      JSON.stringify({
+        version_name: "1.0.1",
+        version_code: 1000101,
+        channel: "main",
+        device_id: "dev-123",
+        device_model: "HUAWEI SGT-AL10",
+        os_version: "12",
+        arch: "arm64-v8a",
+        locale: "zh-CN",
+      }),
+    );
+    form.append(
+      "attachments",
+      new File([new Uint8Array([1, 2, 3])], "logcat.txt", { type: "text/plain" }),
+    );
+
+    const submitContext = {
+      env,
+      req: {
+        param: (name: string) => (name === "slug" ? "scope-app" : ""),
+        header: () => undefined,
+        formData: async () => form,
+        raw: { cf: { clientIp: "203.0.113.9" } },
+      },
+      json: (data: unknown, status = 200) =>
+        new Response(JSON.stringify(data), { status }),
+    } as any;
+
+    const submitted = await handlePublicFeedbackSubmit(submitContext);
+    expect(submitted.status).toBe(201);
+    const submittedBody = await responseJson<any>(submitted);
+    expect(submittedBody.attachments).toBe(1);
+    expect(putCalls.length).toBe(1);
+    expect(putCalls[0]!.key).toContain("feedback/app-scope/");
+
+    const adminContext = (params: Record<string, string>, opts: { query?: Record<string, string>; body?: unknown } = {}) =>
+      ({
+        env,
+        req: {
+          param: (name: string) => params[name] ?? "",
+          query: (name: string) => opts.query?.[name],
+          json: async () => opts.body ?? {},
+        },
+        get: (name: string) => (name === "admin_actor" ? "tester" : undefined),
+        json: (data: unknown, status = 200) =>
+          new Response(JSON.stringify(data), { status }),
+      }) as any;
+
+    const listed = await handleListFeedback(adminContext({ appId: "app-scope" }, { query: { kind: "bug" } }));
+    const listBody = await responseJson<any>(listed);
+    expect(listBody.tickets.length).toBe(1);
+    expect(listBody.tickets[0].attachment_count).toBe(1);
+    const ticketId = listBody.tickets[0].id as string;
+
+    const updated = await handleUpdateFeedback(
+      adminContext({ appId: "app-scope", ticketId }, { body: { status: "in_progress" } }),
+    );
+    expect(updated.status).toBe(200);
+
+    const commented = await handleAddFeedbackComment(
+      adminContext({ appId: "app-scope", ticketId }, { body: { body: "已复现，排查中" } }),
+    );
+    expect(commented.status).toBe(201);
+
+    const detail = await handleGetFeedback(adminContext({ appId: "app-scope", ticketId }));
+    const detailBody = await responseJson<any>(detail);
+    expect(detailBody.ticket.status).toBe("in_progress");
+    expect(detailBody.ticket.device_id).toBe("dev-123");
+    expect(detailBody.attachments.length).toBe(1);
+    expect(detailBody.comments.length).toBe(1);
+
+    const download = await handleDownloadFeedbackAttachment(
+      adminContext({ appId: "app-scope", ticketId, attachmentId: detailBody.attachments[0].id }),
+    );
+    expect(download.status).toBe(200);
+    expect(download.headers.get("content-disposition")).toContain("logcat.txt");
   });
 
   it("share download redirects to signed R2 and records download stats", async () => {

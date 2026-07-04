@@ -44,6 +44,14 @@ import {
   handlePublicReleaseShareUnlock,
 } from "./routes/shares";
 import {
+  handlePublicFeedbackSubmit,
+  handleListFeedback,
+  handleGetFeedback,
+  handleUpdateFeedback,
+  handleAddFeedbackComment,
+  handleDownloadFeedbackAttachment,
+} from "./routes/feedback";
+import {
   handleCreateAppDeployToken,
   handleListAppDeployTokens,
   handleRevokeAppDeployToken,
@@ -419,6 +427,7 @@ app.get("/public/r2/:key", handlePublicR2Download);
 app.get("/share/:token/download", handlePublicReleaseShareDownload);
 app.get("/share/:token", handlePublicReleaseShare);
 app.post("/share/:token/unlock", handlePublicReleaseShareUnlock);
+app.post("/public/v2/apps/:slug/feedback", handlePublicFeedbackSubmit);
 app.get("/api/invites/:token", handleGetInvite);
 
 function isWorkerRoute(pathname: string): boolean {
@@ -528,6 +537,11 @@ admin.post("/api/apps/:appId/releases/:releaseId/rollback", requireAppRole("publ
 admin.post("/api/apps/:appId/releases/:releaseId/bump-rollout", requireAppRole("publisher"), handleBumpRollout);
 admin.post("/api/apps/:appId/releases/:releaseId/force-update", requireAppRole("publisher"), handleForceUpdate);
 admin.get("/api/apps/:appId/shares", requireAppRole("viewer"), handleListAppShares);
+admin.get("/api/apps/:appId/feedback", requireAppRole("viewer"), handleListFeedback);
+admin.get("/api/apps/:appId/feedback/:ticketId", requireAppRole("viewer"), handleGetFeedback);
+admin.patch("/api/apps/:appId/feedback/:ticketId", requireAppRole("publisher"), handleUpdateFeedback);
+admin.post("/api/apps/:appId/feedback/:ticketId/comments", requireAppRole("publisher"), handleAddFeedbackComment);
+admin.get("/api/apps/:appId/feedback/:ticketId/attachments/:attachmentId", requireAppRole("viewer"), handleDownloadFeedbackAttachment);
 admin.get("/api/apps/:appId/releases/:releaseId/shares", requireAppRole("viewer"), handleListReleaseShares);
 admin.post("/api/apps/:appId/releases/:releaseId/shares", requireAppRole("publisher"), handleCreateReleaseShare);
 admin.patch("/api/apps/:appId/releases/:releaseId/shares/:shareId", requireAppRole("publisher"), handleUpdateReleaseShare);

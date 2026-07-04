@@ -18,6 +18,7 @@ import { Settings } from "./pages/Settings";
 import { Builds } from "./pages/Builds";
 import { Releases } from "./pages/Releases";
 import { AppShares } from "./pages/Shares";
+import { AppFeedback } from "./pages/Feedback";
 import { OrgSettings } from "./pages/OrgSettings";
 import { AcceptInvite } from "./pages/AcceptInvite";
 import { AppAccess } from "./pages/AppAccess";
@@ -335,6 +336,12 @@ function AppContextNav() {
           Shares
         </NavLink>
         <NavLink
+          to={`${base}/feedback`}
+          className={tabClass}
+        >
+          Feedback
+        </NavLink>
+        <NavLink
           to={`${base}/builds`}
           className={tabClass}
         >
@@ -380,6 +387,12 @@ function AppSettingsRoute() {
   const { appId } = useParams();
   if (!appId) return null;
   return <AppSettings appId={appId} />;
+}
+
+function AppFeedbackRoute() {
+  const { appId } = useParams();
+  if (!appId) return null;
+  return <AppFeedback appId={appId} />;
 }
 
 function AppSharesRoute() {
@@ -693,6 +706,7 @@ function AuthenticatedApp({ account }: { account: AuthAccount }) {
           <Route path="builds" element={<BuildsRoute />} />
           <Route path="releases" element={<ReleasesRoute />} />
           <Route path="shares" element={<AppSharesRoute />} />
+          <Route path="feedback" element={<AppFeedbackRoute />} />
           <Route path="access" element={<AppAccessRoute />} />
           <Route path="audit" element={<AuditRoute />} />
           <Route path="settings" element={<AppSettingsRoute />} />
@@ -757,6 +771,7 @@ function AppShell() {
           <Route path="builds" element={<BuildsRoute />} />
           <Route path="releases" element={<ReleasesRoute />} />
           <Route path="shares" element={<AppSharesRoute />} />
+          <Route path="feedback" element={<AppFeedbackRoute />} />
           <Route path="access" element={<AppAccessRoute />} />
           <Route path="audit" element={<AuditRoute />} />
           <Route path="settings" element={<AppSettingsRoute />} />

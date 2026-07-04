@@ -24,6 +24,7 @@ import { currentActorInfo } from "../middleware/auth";
 import type { AdminContext } from "../lib/permissions";
 
 type WebhookEventType =
+  | "feedback:new"
   | "release:new"
   | "release:superseded"
   | "release:rolled_back"

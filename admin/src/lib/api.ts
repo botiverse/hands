@@ -1060,3 +1060,76 @@ export const revokeReleaseShare = (appId: string, releaseId: string, shareId: st
     `/api/apps/${appId}/releases/${releaseId}/shares/${shareId}`,
     { method: "DELETE", admin: true },
   );
+
+// ---- Feedback tickets (task #66) ----
+
+export interface FeedbackTicket {
+  id: string;
+  kind: "feedback" | "bug" | "crash";
+  status: "open" | "in_progress" | "resolved" | "closed";
+  message: string;
+  contact: string | null;
+  version_name: string | null;
+  version_code: number | null;
+  channel: string | null;
+  device_model: string | null;
+  os_version: string | null;
+  created_at: number;
+  updated_at: number;
+  attachment_count: number;
+  comment_count: number;
+}
+
+export interface FeedbackDetail {
+  ticket: FeedbackTicket & {
+    device_id: string | null;
+    arch: string | null;
+    locale: string | null;
+    metadata_json: string;
+  };
+  attachments: Array<{
+    id: string;
+    filename: string;
+    content_type: string | null;
+    size_bytes: number;
+    created_at: number;
+  }>;
+  comments: Array<{
+    id: string;
+    author_actor: string;
+    body: string;
+    internal: number;
+    created_at: number;
+  }>;
+}
+
+export const listFeedback = (appId: string, filters?: { status?: string | undefined; kind?: string | undefined }) => {
+  const params = new URLSearchParams();
+  if (filters?.status) params.set("status", filters.status);
+  if (filters?.kind) params.set("kind", filters.kind);
+  const qs = params.toString();
+  return request<{ tickets: FeedbackTicket[] }>(
+    `/api/apps/${appId}/feedback${qs ? `?${qs}` : ""}`,
+    { admin: true },
+  );
+};
+
+export const getFeedback = (appId: string, ticketId: string) =>
+  request<FeedbackDetail>(`/api/apps/${appId}/feedback/${ticketId}`, { admin: true });
+
+export const updateFeedbackStatus = (appId: string, ticketId: string, status: string) =>
+  request<{ id: string; status: string }>(`/api/apps/${appId}/feedback/${ticketId}`, {
+    method: "PATCH",
+    body: JSON.stringify({ status }),
+    admin: true,
+  });
+
+export const addFeedbackComment = (appId: string, ticketId: string, body: string) =>
+  request<{ id: string }>(`/api/apps/${appId}/feedback/${ticketId}/comments`, {
+    method: "POST",
+    body: JSON.stringify({ body }),
+    admin: true,
+  });
+
+export const feedbackAttachmentUrl = (appId: string, ticketId: string, attachmentId: string) =>
+  `/api/apps/${appId}/feedback/${ticketId}/attachments/${attachmentId}`;
