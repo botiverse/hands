@@ -1,7 +1,7 @@
 {
   "name": "@oranix/quiver-cli",
-  "version": "0.1.2",
-  "description": "Quiver CLI — manage apps, builds, releases from the terminal.",
+  "version": "0.2.0",
+  "description": "Quiver CLI \u2014 manage apps, builds, releases from the terminal.",
   "license": "MIT",
   "repository": {
     "type": "git",
