@@ -36,6 +36,7 @@ class QuiverClient(
         platform: String = "android",
         arch: String? = null,
         filetype: String = "apk",
+        deviceId: String? = null,
     ): UpdateCheckResponse = withContext(Dispatchers.IO) {
         val urlBuilder = baseUrl.trimEnd('/').toHttpUrl().newBuilder()
             .addPathSegments("public/v2/apps")
@@ -50,10 +51,14 @@ class QuiverClient(
             urlBuilder.addQueryParameter("arch", arch)
         }
         val url = urlBuilder.build()
-        val request = Request.Builder()
+        val requestBuilder = Request.Builder()
             .url(url)
             .header("accept", "application/json")
-            .build()
+        if (!deviceId.isNullOrBlank()) {
+            // Stable per-install id; the server uses it to bucket staged rollouts.
+            requestBuilder.header("X-Quiver-Device-Id", deviceId)
+        }
+        val request = requestBuilder.build()
 
         httpClient.newCall(request).execute().use { response ->
             val body = response.body?.string()

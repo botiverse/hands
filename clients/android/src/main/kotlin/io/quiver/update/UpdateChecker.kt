@@ -55,6 +55,7 @@ class UpdateChecker(
     private val arch: String? = null,
     private val client: QuiverClient = QuiverClient(baseUrl),
     private val installer: ApkInstaller = ApkInstaller(context),
+    private val deviceId: String? = null,
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
 
@@ -77,6 +78,7 @@ class UpdateChecker(
             productType = productType,
             platform = platform,
             arch = arch,
+            deviceId = deviceId ?: QuiverDeviceId.get(context),
         )
         if (response.requireUpdate() != null) {
             installUpdate(response)
