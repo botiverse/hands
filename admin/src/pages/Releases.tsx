@@ -32,6 +32,50 @@ import { ReleaseAssetUploader } from "../components/ReleaseAssetUploader";
 import { createBuildAsset, uploadApk } from "../lib/api";
 import type { PendingFile } from "../lib/releaseFileDetect";
 
+
+const ROLLOUT_PRESETS = [5, 25, 50, 100];
+
+function RolloutPercentInput({
+  value,
+  onChange,
+}: {
+  value: number;
+  onChange: (next: number) => void;
+}) {
+  return (
+    <span className="flex items-center gap-1">
+      <input
+        type="number"
+        min={0}
+        max={100}
+        step={1}
+        value={value}
+        onChange={(e) => {
+          const next = Number(e.target.value);
+          if (Number.isFinite(next)) onChange(Math.min(100, Math.max(0, Math.trunc(next))));
+        }}
+        className="w-16 rounded border border-slate-300 px-2 py-1 text-right font-mono text-xs"
+      />
+      <span className="text-slate-500">%</span>
+      {ROLLOUT_PRESETS.map((preset) => (
+        <button
+          key={preset}
+          type="button"
+          onClick={() => onChange(preset)}
+          className={
+            "rounded border px-1.5 py-0.5 text-[11px] " +
+            (value === preset
+              ? "border-slate-900 bg-slate-900 text-white"
+              : "border-slate-300 text-slate-600 hover:bg-slate-100")
+          }
+        >
+          {preset}
+        </button>
+      ))}
+    </span>
+  );
+}
+
 function parseJsonStringArray(value: string): string[] {
   try {
     const parsed = JSON.parse(value) as unknown;
@@ -413,16 +457,7 @@ function ReleaseRow({
       {showRollout && (
         <div className="mt-2 pt-2 border-t border-slate-100 flex items-center gap-2 text-xs">
           <label>Rollout %:</label>
-          <input
-            type="range"
-            min={0}
-            max={100}
-            step={5}
-            value={newPercent}
-            onChange={(e) => setNewPercent(Number(e.target.value))}
-            className="flex-1"
-          />
-          <span className="font-mono w-10 text-right">{newPercent}%</span>
+          <RolloutPercentInput value={newPercent} onChange={setNewPercent} />
           <button
             className="btn-primary text-xs"
             onClick={() => bump.mutate(newPercent)}
@@ -647,15 +682,7 @@ function EditReleaseDialog({
           </label>
           <div className="flex items-center gap-2 text-xs">
             <label className="flex-1">Rollout cohort %</label>
-            <input
-              type="range"
-              min={0}
-              max={100}
-              step={5}
-              value={rolloutPercent}
-              onChange={(e) => setRolloutPercent(Number(e.target.value))}
-            />
-            <span className="font-mono w-10 text-right">{rolloutPercent}%</span>
+            <RolloutPercentInput value={rolloutPercent} onChange={setRolloutPercent} />
           </div>
         </div>
         <div className="flex gap-2 justify-end pt-4 mt-3 border-t border-slate-100">
@@ -1075,17 +1102,10 @@ function NewReleaseDialog({
                       <label className="flex-1">
                         Rollout cohort % (default 100)
                       </label>
-                      <input
-                        type="range"
-                        min={0}
-                        max={100}
-                        step={5}
+                      <RolloutPercentInput
                         value={rolloutPercent}
-                        onChange={(e) => setRolloutPercent(Number(e.target.value))}
+                        onChange={setRolloutPercent}
                       />
-                      <span className="font-mono w-10 text-right">
-                        {rolloutPercent}%
-                      </span>
                     </div>
                   </div>
                 )}

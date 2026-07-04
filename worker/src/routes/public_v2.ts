@@ -56,6 +56,7 @@ type PublicLatestResponse = {
     scope_type: "full" | "platform" | "user_cohort" | "ip_range";
     scope_value: string;
     release_id: string;
+    rollout_cohort_count?: number | null;
   };
   fallback_release: unknown | null;
   expires_in: number;
@@ -75,6 +76,8 @@ export async function handlePublicV2Latest(c: Context<{ Bindings: Env }>) {
   const channel = c.req.query("channel") ?? "main";
   const productType = c.req.query("product_type"); // optional; if null, picks most recent across all
   const cohort = c.req.header("X-Quiver-Cohort") ?? null;
+  const deviceId =
+    c.req.header("X-Quiver-Device-Id") ?? c.req.query("device_id") ?? null;
   const clientPlatform = effectiveClientPlatform(c);
   // cf.clientIp is server-only (we never trust X-Forwarded-For here).
   const clientIp =
@@ -102,29 +105,40 @@ export async function handlePublicV2Latest(c: Context<{ Bindings: Env }>) {
     );
   }
 
-  // Candidates: active releases on (channel, [product_type]) within last 30 days.
-  const since = Date.now() - 30 * 24 * 3600 * 1000;
+  // Candidates: active releases on (channel, [product_type]). No time window:
+  // an active release must stay resolvable no matter how old it is.
   const candidateSql = productType
-    ? `SELECT id, build_id, created_at, product_type
+    ? `SELECT id, build_id, created_at, product_type, rollout_cohort_count
        FROM releases
        WHERE app_id = ?1 AND channel_id = ?2 AND product_type = ?3
-         AND status = 'active' AND created_at > ?4
+         AND status = 'active'
        ORDER BY created_at DESC`
-    : `SELECT id, build_id, created_at, product_type
+    : `SELECT id, build_id, created_at, product_type, rollout_cohort_count
        FROM releases
        WHERE app_id = ?1 AND channel_id = ?2
-         AND status = 'active' AND created_at > ?3
+         AND status = 'active'
        ORDER BY created_at DESC`;
   const candidateStmt = c.env.DB.prepare(candidateSql);
-  const candidates = await (productType
-    ? candidateStmt.bind(app.id, channelRow.id, productType, since)
-    : candidateStmt.bind(app.id, channelRow.id, since)
+  const allCandidates = await (productType
+    ? candidateStmt.bind(app.id, channelRow.id, productType)
+    : candidateStmt.bind(app.id, channelRow.id)
   ).all<{
     id: string;
     build_id: string;
     created_at: number;
     product_type: string;
+    rollout_cohort_count: number | null;
   }>();
+
+  // Rollout gate: a release with rollout_cohort_count < 100 is only served to
+  // clients whose stable per-release bucket falls below the percentage.
+  // Clients that do not send a device id only ever see fully rolled-out
+  // releases. Gated-out clients fall through to the previous active release.
+  const candidates = {
+    results: allCandidates.results.filter((release) =>
+      rolloutIncludes(release.id, release.rollout_cohort_count, deviceId),
+    ),
+  };
   if (candidates.results.length === 0) {
     return c.json(
       {
@@ -300,6 +314,9 @@ export async function handlePublicV2Latest(c: Context<{ Bindings: Env }>) {
       scope_type: winner.scope_type,
       scope_value: winner.scope_value,
       release_id: winner.release_id,
+      rollout_cohort_count:
+        candidates.results.find((r) => r.id === winner.release_id)
+          ?.rollout_cohort_count ?? null,
     },
     fallback_release: fallbackRelease,
     expires_in: ttl,
@@ -413,6 +430,43 @@ export function selectBestAsset(
     if (archMatch) return archMatch;
   }
   return candidates.find((a) => a.arch === null) ?? candidates[0] ?? null;
+}
+
+/**
+ * Stable 32-bit FNV-1a hash. Deterministic across runtimes so a device keeps
+ * the same bucket for a given release while the rollout percentage climbs.
+ */
+export function fnv1a32(input: string): number {
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < input.length; i++) {
+    hash ^= input.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return hash >>> 0;
+}
+
+/** Bucket in [0, 100). Salted by release id so cohorts reshuffle per release. */
+export function rolloutBucket(releaseId: string, deviceId: string): number {
+  return fnv1a32(`${releaseId}:${deviceId}`) % 100;
+}
+
+/**
+ * true when the release should be served to this client.
+ * - null / >=100 cohort count: fully rolled out, everyone matches.
+ * - gated release + no device id: excluded (legacy clients only get full
+ *   releases; they fall through to the previous active release).
+ * - gated release + device id: stable bucket must fall under the percentage.
+ */
+export function rolloutIncludes(
+  releaseId: string,
+  cohortCount: number | null,
+  deviceId: string | null,
+): boolean {
+  if (cohortCount === null || cohortCount === undefined) return true;
+  if (cohortCount >= 100) return true;
+  if (cohortCount <= 0) return false;
+  if (!deviceId) return false;
+  return rolloutBucket(releaseId, deviceId) < cohortCount;
 }
 
 function splitPlatformArch(value: string | null): {

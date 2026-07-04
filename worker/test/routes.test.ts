@@ -1773,6 +1773,7 @@ describe("quiver public API v2 — scope resolution", () => {
       versionCode?: number;
       versionName?: string;
       shouldForceUpdate?: number;
+      rolloutCohortCount?: number | null;
     } = {},
   ) {
     const now = opts.createdAt ?? Date.now();
@@ -1814,7 +1815,7 @@ describe("quiver public API v2 — scope resolution", () => {
         "stable",
         "active",
         scopes.length === 1 && scopes[0]?.[0] === "full" && scopes[0]?.[1] === "all" ? 1 : 0,
-        100,
+        opts.rolloutCohortCount === undefined ? 100 : opts.rolloutCohortCount,
         null,
         "tester",
         now,
@@ -2242,6 +2243,113 @@ describe("quiver public API v2 — scope resolution", () => {
       latest_version_code: 10,
     });
     expect(body.asset).toBeUndefined();
+  });
+
+  it("rollout helpers are deterministic and clamp edge counts", async () => {
+    const { fnv1a32, rolloutBucket, rolloutIncludes } = await import(
+      "../src/routes/public_v2"
+    );
+    expect(fnv1a32("abc")).toBe(fnv1a32("abc"));
+    expect(rolloutBucket("rel-x", "device-1")).toBe(
+      rolloutBucket("rel-x", "device-1"),
+    );
+    expect(rolloutIncludes("rel-x", null, null)).toBe(true);
+    expect(rolloutIncludes("rel-x", 100, null)).toBe(true);
+    expect(rolloutIncludes("rel-x", 0, "device-1")).toBe(false);
+    expect(rolloutIncludes("rel-x", 50, null)).toBe(false);
+    const bucket = rolloutBucket("rel-x", "device-1");
+    expect(rolloutIncludes("rel-x", bucket + 1, "device-1")).toBe(true);
+    expect(rolloutIncludes("rel-x", bucket, "device-1")).toBe(false);
+  });
+
+  it("updates/check gates a partial rollout by device bucket and falls back to the previous release", async () => {
+    const env = makeEnv();
+    const { handlePublicV2UpdateCheck, rolloutBucket } = await import(
+      "../src/routes/public_v2"
+    );
+    await seedRelease(env, "rel-stable", "build-stable", [["full", "all"]], {
+      versionCode: 10,
+      versionName: "1.0.10",
+      createdAt: Date.now() - 1000,
+    });
+    await seedAsset(env, "build-stable", "asset-stable", { arch: "arm64-v8a" });
+    await seedRelease(env, "rel-gated", "build-gated", [["full", "all"]], {
+      versionCode: 11,
+      versionName: "1.0.11",
+      rolloutCohortCount: 30,
+    });
+    await seedAsset(env, "build-gated", "asset-gated", { arch: "arm64-v8a" });
+
+    let inDevice = "";
+    let outDevice = "";
+    for (let i = 0; i < 1000 && (!inDevice || !outDevice); i++) {
+      const candidate = `device-${i}`;
+      if (rolloutBucket("rel-gated", candidate) < 30) {
+        inDevice = inDevice || candidate;
+      } else {
+        outDevice = outDevice || candidate;
+      }
+    }
+    expect(inDevice).not.toBe("");
+    expect(outDevice).not.toBe("");
+
+    const query = {
+      channel: "production",
+      product_type: "android-apk",
+      current_version_code: "9",
+      platform: "android",
+      arch: "arm64-v8a",
+    };
+
+    const inResponse = await handlePublicV2UpdateCheck(
+      makePublicContext(env, query, { "X-Quiver-Device-Id": inDevice }),
+    );
+    expect(inResponse.status).toBe(200);
+    const inBody = await responseJson<any>(inResponse);
+    expect(inBody.update_available).toBe(true);
+    expect(inBody.latest.version_code).toBe(11);
+    expect(inBody.scoped.rollout_cohort_count).toBe(30);
+
+    const outResponse = await handlePublicV2UpdateCheck(
+      makePublicContext(env, query, { "X-Quiver-Device-Id": outDevice }),
+    );
+    expect(outResponse.status).toBe(200);
+    const outBody = await responseJson<any>(outResponse);
+    expect(outBody.update_available).toBe(true);
+    expect(outBody.latest.version_code).toBe(10);
+
+    const legacyResponse = await handlePublicV2UpdateCheck(
+      makePublicContext(env, query),
+    );
+    expect(legacyResponse.status).toBe(200);
+    const legacyBody = await responseJson<any>(legacyResponse);
+    expect(legacyBody.update_available).toBe(true);
+    expect(legacyBody.latest.version_code).toBe(10);
+  });
+
+  it("updates/check still resolves an active release older than 30 days", async () => {
+    const env = makeEnv();
+    const { handlePublicV2UpdateCheck } = await import("../src/routes/public_v2");
+    await seedRelease(env, "rel-old", "build-old", [["full", "all"]], {
+      versionCode: 10,
+      versionName: "1.0.10",
+      createdAt: Date.now() - 60 * 24 * 3600 * 1000,
+    });
+    await seedAsset(env, "build-old", "asset-old", { arch: "arm64-v8a" });
+
+    const response = await handlePublicV2UpdateCheck(
+      makePublicContext(env, {
+        channel: "production",
+        product_type: "android-apk",
+        current_version_code: "1",
+        platform: "android",
+        arch: "arm64-v8a",
+      }),
+    );
+    expect(response.status).toBe(200);
+    const body = await responseJson<any>(response);
+    expect(body.update_available).toBe(true);
+    expect(body.latest.version_code).toBe(10);
   });
 
   it("updates/check compares server-side and returns one compatible apk asset", async () => {
