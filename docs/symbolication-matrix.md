@@ -12,16 +12,21 @@ lane exists.
 | Lane | Client uploads | Build asset | Server pipeline | Status |
 |---|---|---|---|---|
 | Android Java/R8 | stack text (kind=crash ticket, `crash_*` signature fields) | `proguard-mapping` (mapping.txt) | container `retrace` → internal ticket comment | ✅ |
-| Android native (NDK) | tombstone-style dump: abort message, signal, per-frame `#NN pc <offset> <soname> (BuildId: …)` | `native-symbols` (zip of unstripped `.so`) | container `llvm-symbolizer --obj=<so> <offset>` per frame, matched by BuildId | 🔨 next |
-| iOS | crash record with a **binary images section** (image UUID + load address + slide) and frame addresses — `backtrace_symbols` text alone is NOT symbolicatable | `dsym` (zip of dSYM bundles) | container `llvm-symbolizer`/`symbolic` by image UUID + address-slide; no mac/atos dependency | 📐 (SDK prerequisite: images section) |
+| Android native (NDK) | tombstone-style dump: abort message, signal, per-frame `#NN pc <offset> <soname> (BuildId: …)` | `native-symbols` (zip of unstripped `.so`) | container: `symbolic` (rust) resolves offset→symbol per frame, matched by BuildId (`llvm-symbolizer` as fallback) | 🔨 next |
+| iOS | crash record with a **binary images section** (image UUID + load address + slide) and frame addresses — `backtrace_symbols` text alone is NOT symbolicatable | `dsym` (zip of dSYM bundles) | container: `symbolic` by image UUID + address-slide; no mac/atos dependency | 📐 (SDK prerequisite: images section) |
 | Electron / Crashpad | minidump | Breakpad `.sym` files | `minidump-stackwalk` (rust-minidump) | ⏸ no electron lane yet |
 
 ## Decisions
 
-1. **Server tooling is Linux-only.** iOS symbolication uses LLVM/`symbolic`
-   inside the existing apk-parser container (extend, don't add a second
-   container). `atos`/`symbolicatecrash` are rejected — they would chain the
-   pipeline to macOS runners.
+1. **Server tooling is Linux-only, standardized on the Rust symbolication
+   stack** (owner call, 2026-07-05): Sentry's `symbolic` for dSYM/ELF
+   frame resolution and Mozilla's `rust-minidump`/`minidump-stackwalk` for
+   any minidump input, both installed in the existing apk-parser container
+   (extend, don't add a second container). `llvm-symbolizer` stays as a
+   fallback; `atos`/`symbolicatecrash` are rejected — they would chain the
+   pipeline to macOS runners. A useful side effect: if a client lane later
+   upgrades to Crashpad-quality minidumps, the server is already able to
+   process them — capture format and server tooling stay decoupled.
 2. **Artifact keying.** Every symbol artifact is a build asset on the
    version_code/build that produced it (same as `proguard-mapping` today):
    `native-symbols` and `dsym` are new asset kinds. Retrace-style lookup
