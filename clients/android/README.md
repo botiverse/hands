@@ -16,7 +16,7 @@ repositories {
 }
 
 dependencies {
-    implementation("io.quiver:quiver-android-updater:0.1.0")
+    implementation("io.quiver:quiver-android-updater:0.4.0")
 }
 ```
 
