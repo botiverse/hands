@@ -474,7 +474,7 @@ function AuthGate() {
 
 function PublicLanding({ account }: { account?: AuthAccount }) {
   useEffect(() => {
-    document.title = "Quiver - Android release distribution";
+    document.title = "Quiver - Mobile release operations";
   }, []);
 
   return (
@@ -514,15 +514,17 @@ function PublicLanding({ account }: { account?: AuthAccount }) {
           <div className="mx-auto grid max-w-6xl gap-10 px-4 py-14 md:grid-cols-[1.1fr_0.9fr] md:items-center md:py-20">
             <div className="max-w-2xl">
               <div className="mb-4 inline-flex items-center rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-xs font-medium text-slate-600">
-                Release distribution for Raft-built apps
+                Release operations for Raft-built apps
               </div>
               <h1 className="text-4xl font-bold leading-tight sm:text-5xl">
-                Ship Android builds, releases, and share links from one place.
+                Ship it, roll it out, hear it break, fix it — one platform.
               </h1>
               <p className="mt-5 text-lg leading-8 text-slate-600">
-                Quiver manages APK uploads, release channels, public update
-                checks, share pages, and Raft-based access control for humans
-                and agents.
+                Quiver runs the whole release loop: builds land as drafts,
+                agents review and publish with bilingual changelogs, staged
+                rollouts meter exposure, and in-app feedback and crash
+                reports come back as tickets — grouped, deobfuscated, and
+                triageable by humans and agents alike.
               </p>
               <div className="mt-8 flex flex-col gap-3 sm:flex-row">
                 <a
@@ -569,20 +571,20 @@ function PublicLanding({ account }: { account?: AuthAccount }) {
 
         <section className="mx-auto grid max-w-6xl gap-4 px-4 py-8 sm:grid-cols-2 lg:grid-cols-4">
           <LandingFeature
-            title="Channels"
-            body="Keep main, preview, nightly, or debug releases separated by app."
+            title="Channels & staged rollouts"
+            body="Separate main, preview, and nightly; publish at 5% and raise it as confidence grows — devices keep their cohort."
           />
           <LandingFeature
-            title="Update checks"
-            body="Serve public latest/update responses with signed APK downloads."
+            title="Share pages & history"
+            body="Expiring, password-protectable download pages with QR codes, real app icons, and opt-in public version history."
           />
           <LandingFeature
-            title="Share pages"
-            body="Create expiring download pages with view and download counts."
+            title="Feedback tickets"
+            body="In-app feedback with attachments and device context lands in a built-in ticket system with assignees and comments."
           />
           <LandingFeature
-            title="Raft access"
-            body="Use Raft login, org roles, direct app members, and server visibility."
+            title="Crash reporting"
+            body="Store-then-send crash capture on Android and HarmonyOS, grouped by signature and auto-deobfuscated via mapping files."
           />
         </section>
 
