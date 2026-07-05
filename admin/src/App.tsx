@@ -517,7 +517,7 @@ function PublicLanding({ account }: { account?: AuthAccount }) {
                 Release operations for Raft-built apps
               </div>
               <h1 className="text-4xl font-bold leading-tight sm:text-5xl">
-                Ship it, roll it out, hear it break, fix it — one platform.
+                Ship it, roll it out, hear it break, fix it — one mobile release platform.
               </h1>
               <p className="mt-5 text-lg leading-8 text-slate-600">
                 Quiver runs the whole release loop: builds land as drafts,
@@ -598,21 +598,21 @@ function PublicLanding({ account }: { account?: AuthAccount }) {
                 releases and share links from CI or Raft agents.
               </p>
             </div>
-            <div className="flex flex-col gap-2 sm:flex-row">
+            <div className="flex flex-none flex-col gap-2 sm:flex-row">
               <a
-                className="inline-flex h-10 items-center justify-center rounded-md border border-slate-300 bg-white px-4 text-sm font-medium text-slate-800 hover:bg-slate-100"
+                className="inline-flex h-10 items-center justify-center whitespace-nowrap rounded-md border border-slate-300 bg-white px-4 text-sm font-medium text-slate-800 hover:bg-slate-100"
                 href="/docs/android-sdk/"
               >
                 Android SDK
               </a>
               <a
-                className="inline-flex h-10 items-center justify-center rounded-md border border-slate-300 bg-white px-4 text-sm font-medium text-slate-800 hover:bg-slate-100"
+                className="inline-flex h-10 items-center justify-center whitespace-nowrap rounded-md border border-slate-300 bg-white px-4 text-sm font-medium text-slate-800 hover:bg-slate-100"
                 href="/docs/cli-reference/"
               >
                 CLI reference
               </a>
               <a
-                className="inline-flex h-10 items-center justify-center rounded-md border border-slate-300 bg-white px-4 text-sm font-medium text-slate-800 hover:bg-slate-100"
+                className="inline-flex h-10 items-center justify-center whitespace-nowrap rounded-md border border-slate-300 bg-white px-4 text-sm font-medium text-slate-800 hover:bg-slate-100"
                 href="/docs/admin-user-guide/"
               >
                 Admin guide

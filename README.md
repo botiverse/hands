@@ -1,6 +1,6 @@
 # Quiver
 
-**Ship it, roll it out, hear it break, fix it — one platform for mobile release operations.**
+**Ship it, roll it out, hear it break, fix it — one mobile release platform.**
 
 Quiver runs the whole release loop: CI lands builds as drafts, agents review and publish with bilingual changelogs, staged rollouts meter exposure by device cohort, share pages handle ad-hoc distribution, and in-app feedback and crash reports come back as tickets — grouped by signature, auto-deobfuscated, and triageable by humans and AI agents through the same API. Reporting SDKs cover Android and HarmonyOS today (iOS next) — fully Cloudflare-native (Workers + Container + D1 + R2).
 
