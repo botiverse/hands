@@ -21,6 +21,12 @@ const pages = [
     source: "cli-reference.md",
   },
   {
+    slug: "android-sdk",
+    title: "Android SDK",
+    description: "In-app update checks, staged rollouts, feedback, and crash reporting for Android.",
+    source: "android-sdk.md",
+  },
+  {
     slug: "public-api-reference",
     title: "Public API Reference",
     description: "Public update-check, latest-release, and client integration contracts.",

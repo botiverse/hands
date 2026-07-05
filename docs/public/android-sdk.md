@@ -1,0 +1,121 @@
+# Android SDK
+
+`io.quiver:quiver-android-updater` is the Android SDK for Quiver. It handles
+in-app update checks and installation, staged-rollout device bucketing,
+feedback submission, and crash reporting.
+
+## Install
+
+The SDK is published to GitHub Packages.
+
+```kotlin
+// settings.gradle.kts or the module repositories block
+repositories {
+    maven {
+        url = uri("https://maven.pkg.github.com/oranix-io/quiver")
+        credentials {
+            username = providers.gradleProperty("gpr.user").orNull ?: System.getenv("GITHUB_ACTOR")
+            password = providers.gradleProperty("gpr.key").orNull ?: System.getenv("GITHUB_TOKEN")
+        }
+    }
+}
+
+dependencies {
+    implementation("io.quiver:quiver-android-updater:0.4.0")
+}
+```
+
+Configuration (`BuildConfig` fields are a convenient place to keep these):
+
+| Value | Example |
+|---|---|
+| Base URL | `https://quiver.oranix.io` |
+| App slug | `raft-android` |
+| Channel | `main` / `preview` / `nightly` / `debug` |
+
+## Update checks and installation
+
+`UpdateChecker` hits the public update-check endpoint, compares
+`versionCode`, and (optionally) downloads + installs the APK.
+
+```kotlin
+val checker = UpdateChecker(
+    context = applicationContext,
+    baseUrl = BuildConfig.QUIVER_BASE_URL,
+    appSlug = BuildConfig.QUIVER_APP_SLUG,
+    installedVersionCode = BuildConfig.VERSION_CODE.toLong(),
+    channel = BuildConfig.QUIVER_CHANNEL,
+    arch = Build.SUPPORTED_ABIS.firstOrNull(),
+)
+
+// suspending; returns the response even when no update is available
+val response = checker.checkAndInstall()
+```
+
+The SDK sends a stable per-install id (`X-Quiver-Device-Id`, from
+`QuiverDeviceId`) so the server can bucket the device for **staged rollouts**
+— a release published at 25% only installs on the matching fraction of
+devices, and each device keeps its bucket as you raise the percentage.
+
+To check without installing (e.g. to render your own "update available" UI),
+call `QuiverClient(baseUrl).checkForUpdate(...)` and act on the result.
+
+## Feedback
+
+`QuiverFeedback` submits user feedback (with attachments) to the Quiver
+ticket system; it auto-attaches app/device metadata and the device id.
+
+```kotlin
+val ticketId = QuiverFeedback(
+    context = applicationContext,
+    baseUrl = BuildConfig.QUIVER_BASE_URL,
+    appSlug = BuildConfig.QUIVER_APP_SLUG,
+    versionName = BuildConfig.VERSION_NAME,
+    versionCode = BuildConfig.VERSION_CODE.toLong(),
+    channel = BuildConfig.QUIVER_CHANNEL,
+).submit(
+    message = "Feed doesn't refresh after login.",
+    kind = "bug",                       // "feedback" | "bug" | "crash"
+    contact = "user@example.com",       // optional
+    attachments = listOf(screenshot),   // up to 3 files, 10 MB each
+)
+```
+
+Tickets appear in the app's **Feedback** tab and are triageable from the
+admin console or the CLI (`quiver feedback ...`).
+
+## Crash reporting
+
+`QuiverCrash` captures uncaught exceptions, stores them locally, and uploads
+them as `kind=crash` tickets on the next launch (store-then-send, so no
+network runs in the dying process). Crash tickets are grouped by signature
+and auto-deobfuscated when the build's `mapping.txt` was uploaded.
+
+```kotlin
+class App : Application() {
+    override fun onCreate() {
+        super.onCreate()
+        QuiverCrash.install(
+            context = this,
+            baseUrl = BuildConfig.QUIVER_BASE_URL,
+            appSlug = BuildConfig.QUIVER_APP_SLUG,
+            versionName = BuildConfig.VERSION_NAME,
+            versionCode = BuildConfig.VERSION_CODE.toLong(),
+            channel = BuildConfig.QUIVER_CHANNEL,
+            // optional: attach app-specific context (recent logs, etc.)
+            extraContext = { myDiagnostics.recentText() },
+        )
+    }
+}
+```
+
+The crash log includes an all-threads dump and process uptime. To get
+readable (deobfuscated) stacks in the console, publish the release with its
+R8/ProGuard `mapping.txt` as a `proguard-mapping` build asset — Quiver
+retraces crash reports for that `versionCode` automatically.
+
+## Notes
+
+- All network calls are suspend functions; call them off the main thread.
+- The device id is a random UUID in SharedPreferences, not a hardware id; it
+  resets on reinstall/clear-data, which is fine for rollout cohorting.

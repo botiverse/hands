@@ -589,13 +589,20 @@ function PublicLanding({ account }: { account?: AuthAccount }) {
         <section className="border-t border-slate-200 bg-white">
           <div className="mx-auto flex max-w-6xl flex-col gap-4 px-4 py-8 sm:flex-row sm:items-center sm:justify-between">
             <div>
-              <h2 className="text-lg font-semibold">Build from CI or local scripts.</h2>
+              <h2 className="text-lg font-semibold">Integrate the SDK, build from CI.</h2>
               <p className="mt-1 text-sm text-slate-600">
-                The public npm CLI can publish Android releases and create share
-                links from GitHub Actions, local packaging lanes, or Raft agents.
+                The Android SDK adds in-app update checks, staged rollouts,
+                feedback, and crash reporting; the public npm CLI publishes
+                releases and share links from CI or Raft agents.
               </p>
             </div>
             <div className="flex flex-col gap-2 sm:flex-row">
+              <a
+                className="inline-flex h-10 items-center justify-center rounded-md border border-slate-300 bg-white px-4 text-sm font-medium text-slate-800 hover:bg-slate-100"
+                href="/docs/android-sdk/"
+              >
+                Android SDK
+              </a>
               <a
                 className="inline-flex h-10 items-center justify-center rounded-md border border-slate-300 bg-white px-4 text-sm font-medium text-slate-800 hover:bg-slate-100"
                 href="/docs/cli-reference/"
