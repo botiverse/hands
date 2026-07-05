@@ -29,6 +29,7 @@ import {
   handleCreateApp,
   handleGetApp,
   handleArchiveApp,
+  handlePurgeApp,
   handleUpdateApp,
   handleUploadAppIcon,
   handlePublicAppIcon,
@@ -531,6 +532,7 @@ admin.post("/api/apps", requireCurrentOrgRole("admin"), handleCreateApp);
 admin.get("/api/apps/:appId", requireAppRole("viewer"), handleGetApp);
 admin.patch("/api/apps/:appId", requireAppRole("admin"), handleUpdateApp);
 admin.post("/api/apps/:appId/archive", requireAppRole("admin"), handleArchiveApp);
+admin.post("/api/apps/:appId/purge", requireAppRole("admin"), handlePurgeApp);
 
 admin.get("/api/apps/:appId/builds", requireAppRole("viewer"), handleListBuilds);
 admin.post("/api/apps/:appId/builds", requireAppRole("publisher"), handleCreateBuild);

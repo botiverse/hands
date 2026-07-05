@@ -170,6 +170,72 @@ export async function handleArchiveApp(c: Context<{ Bindings: Env }>) {
   return c.json({ ok: true, archived: targetArchived });
 }
 
+/**
+ * Hard delete: removes the app row (children cascade) and every R2 object it
+ * owns (build assets, feedback attachments, icon, apps/<id>/ prefix). Only
+ * allowed on archived apps — archive first, purge second. Irreversible; the
+ * DB keeps no tombstone (children cascade), so the response is the record.
+ */
+export async function handlePurgeApp(c: AdminContext) {
+  const appId = c.req.param("appId") ?? "";
+  const app = await c.env.DB.prepare(
+    "SELECT id, slug, archived, icon_r2_key FROM apps WHERE id = ?1",
+  )
+    .bind(appId)
+    .first<{ id: string; slug: string; archived: number; icon_r2_key: string | null }>();
+  if (!app) return c.json({ error: "not found" }, 404);
+  if (!app.archived) {
+    return c.json({ error: "archive the app before purging it" }, 409);
+  }
+  const body = (await c.req.json().catch(() => ({}))) as { confirm_slug?: string };
+  if (body.confirm_slug !== app.slug) {
+    return c.json({ error: "confirm_slug must match the app slug" }, 400);
+  }
+
+  // Collect every known R2 key, then sweep the app's prefixes for strays.
+  const keys = new Set<string>();
+  if (app.icon_r2_key) keys.add(app.icon_r2_key);
+  const [assets, attachments] = await Promise.all([
+    c.env.DB.prepare(
+      `SELECT a.r2_key AS r2_key FROM build_assets a
+       JOIN builds b ON b.id = a.build_id WHERE b.app_id = ?1`,
+    )
+      .bind(appId)
+      .all<{ r2_key: string }>(),
+    c.env.DB.prepare(
+      `SELECT fa.r2_key AS r2_key FROM feedback_attachments fa
+       JOIN feedback_tickets t ON t.id = fa.ticket_id WHERE t.app_id = ?1`,
+    )
+      .bind(appId)
+      .all<{ r2_key: string }>(),
+  ]);
+  for (const row of assets.results) keys.add(row.r2_key);
+  for (const row of attachments.results) keys.add(row.r2_key);
+  for (const prefix of [`apps/${appId}/`, `feedback/${appId}/`]) {
+    let cursor: string | undefined;
+    do {
+      const page = await c.env.APK_BUCKET.list(
+        cursor ? { prefix, cursor, limit: 1000 } : { prefix, limit: 1000 },
+      );
+      for (const obj of page.objects) keys.add(obj.key);
+      cursor = page.truncated ? page.cursor : undefined;
+    } while (cursor);
+  }
+
+  const keyList = [...keys];
+  for (let i = 0; i < keyList.length; i += 500) {
+    await c.env.APK_BUCKET.delete(keyList.slice(i, i + 500));
+  }
+
+  // Children (builds, releases, tickets, tokens, audit rows, …) cascade.
+  await c.env.DB.prepare("DELETE FROM apps WHERE id = ?1").bind(appId).run();
+
+  console.log(
+    `app purged: id=${appId} slug=${app.slug} actor=${currentActor(c)} r2_objects=${keyList.length}`,
+  );
+  return c.json({ ok: true, purged_app_id: appId, slug: app.slug, r2_objects_deleted: keyList.length });
+}
+
 export async function handleGetApp(c: Context<{ Bindings: Env }>) {
   const appId = c.req.param("appId") ?? "";
   const row = await c.env.DB.prepare(

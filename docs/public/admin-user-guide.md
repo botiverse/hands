@@ -20,7 +20,10 @@ Each app has a left sidebar with its sections; the app switcher at the top of th
 - Feedback: tickets submitted from the app, with assignees, statuses, and comments.
 - Access: direct app members, deploy tokens, and Raft server visibility.
 - Audit: recent app activity.
-- Settings: app icon, default channel, public version history toggle, archive.
+- Settings: app name/description, app icon, client key, default channel,
+  public version history toggle, archive. Archived apps can be **purged**
+  (permanent delete of the app, its builds/releases/tickets, and all stored
+  files — requires typing the slug to confirm; `POST /api/apps/:id/purge`).
 
 Create one Quiver app per product distribution target. For example, an Android app should have its own Quiver app and release channels.
 

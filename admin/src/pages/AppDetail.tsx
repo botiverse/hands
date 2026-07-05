@@ -17,6 +17,7 @@ import {
   updateAppPublicHistory,
   getAppClientKey,
   rotateAppClientKey,
+  purgeApp,
 } from "../lib/api";
 import { useToast } from "../components/Toast";
 import { Operations } from "./Operations";
@@ -443,6 +444,22 @@ export function AppSettings({ appId }: { appId: string }) {
 
   const [confirmArchive, setConfirmArchive] = useState(false);
 
+  const [confirmPurge, setConfirmPurge] = useState(false);
+  const purge = useMutation({
+    mutationFn: () => purgeApp(appId, app?.slug ?? ""),
+    onSuccess: (res) => {
+      toast.show({
+        kind: "success",
+        title: `App purged (${res.r2_objects_deleted} stored files removed)`,
+      });
+      setConfirmPurge(false);
+      qc.invalidateQueries({ queryKey: ["apps"] });
+      window.location.assign("/apps");
+    },
+    onError: (e) =>
+      toast.show({ kind: "error", title: "Purge failed", description: (e as Error).message }),
+  });
+
   const archive = useMutation({
     mutationFn: (archived: boolean) =>
       archiveApp(appId, { archived }),
@@ -519,15 +536,46 @@ export function AppSettings({ appId }: { appId: string }) {
               )}
             </div>
             {isOrgAdmin && (
-              <button
-                className="btn-secondary text-xs"
-                onClick={() => setConfirmArchive(true)}
-                disabled={archive.isPending}
-              >
-                {app.archived ? "Restore app" : "Archive app"}
-              </button>
+              <div className="flex flex-col items-end gap-2">
+                <button
+                  className="btn-secondary text-xs"
+                  onClick={() => setConfirmArchive(true)}
+                  disabled={archive.isPending}
+                >
+                  {app.archived ? "Restore app" : "Archive app"}
+                </button>
+                {Boolean(app.archived) && (
+                  <button
+                    className="btn-secondary !border-red-300 !text-red-700 text-xs"
+                    disabled={purge.isPending}
+                    onClick={() => setConfirmPurge(true)}
+                  >
+                    Purge permanently
+                  </button>
+                )}
+              </div>
             )}
           </div>
+
+          <ConfirmActionDialog
+            open={confirmPurge}
+            title="Purge this app permanently?"
+            objectLabel={app.name ?? app.slug ?? app.id}
+            objectHint={`slug: ${app.slug}`}
+            body={
+              <>
+                Deletes the app and <strong>everything it owns</strong> — builds,
+                releases, share links, feedback tickets, and all stored files in
+                R2. <strong>This cannot be undone.</strong>
+              </>
+            }
+            confirmLabel="Purge permanently"
+            confirmKind="danger"
+            typeToConfirm={app.slug}
+            pending={purge.isPending}
+            onConfirm={() => purge.mutate()}
+            onCancel={() => setConfirmPurge(false)}
+          />
 
           <ConfirmActionDialog
             open={confirmArchive}

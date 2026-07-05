@@ -1197,6 +1197,12 @@ export const getFeedbackStats = (appId: string) =>
 export const listCrashGroups = (appId: string) =>
   request<{ groups: CrashGroup[] }>(`/api/apps/${appId}/feedback/crash-groups`, { admin: true });
 
+export const purgeApp = (appId: string, confirmSlug: string) =>
+  request<{ ok: true; purged_app_id: string; r2_objects_deleted: number }>(
+    `/api/apps/${appId}/purge`,
+    { method: "POST", admin: true, body: JSON.stringify({ confirm_slug: confirmSlug }) },
+  );
+
 export const getAppClientKey = (appId: string) =>
   request<{ app_id: string; client_key: string | null }>(
     `/api/apps/${appId}/client-key`,

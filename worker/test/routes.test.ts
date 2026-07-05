@@ -2985,6 +2985,44 @@ describe("quiver public API v2 — scope resolution", () => {
     expect(home.open_count).toBe(2);
   });
 
+  it("apps: purge requires archived + slug confirm, deletes R2 + row", async () => {
+    const env = makeEnv();
+    const deleted: string[] = [];
+    env.APK_BUCKET = {
+      list: async ({ prefix }: { prefix: string }) => ({
+        objects: prefix === "apps/app-scope/" ? [{ key: "apps/app-scope/stray.apk" }] : [],
+        truncated: false,
+      }),
+      delete: async (keys: string | string[]) => {
+        deleted.push(...(Array.isArray(keys) ? keys : [keys]));
+      },
+    };
+    const { handlePurgeApp } = await import("../src/routes/apps");
+    const ctx = (body: Record<string, unknown>) =>
+      ({
+        env,
+        req: { param: () => "app-scope", json: async () => body },
+        get: () => "tester",
+        json: (data: unknown, status = 200) => new Response(JSON.stringify(data), { status }),
+      }) as any;
+
+    // active app -> 409
+    expect((await handlePurgeApp(ctx({ confirm_slug: "scope-app" }))).status).toBe(409);
+    await env.DB.prepare("UPDATE apps SET archived = 1 WHERE id = ?1").bind("app-scope").run();
+    // wrong confirm -> 400
+    expect((await handlePurgeApp(ctx({ confirm_slug: "nope" }))).status).toBe(400);
+    // correct -> 200, R2 sweep ran, row gone
+    const res = await handlePurgeApp(ctx({ confirm_slug: "scope-app" }));
+    expect(res.status).toBe(200);
+    expect(deleted).toContain("apps/app-scope/stray.apk");
+    const row = await env.DB.prepare("SELECT id FROM apps WHERE id = ?1").bind("app-scope").first();
+    expect(row).toBeNull();
+    // restore for later tests in this suite
+    await env.DB.prepare(
+      "INSERT INTO apps (id, org_id, slug, name, platform, client_key, created_at) VALUES (?1,?2,?3,?4,?5,?6,?7)",
+    ).bind("app-scope", "default", "scope-app", "Scope App", "android", "qk_test", 1).run();
+  });
+
   it("feedback: crash alert webhooks fire on new group only once", async () => {
     const env = makeEnv();
     env.APK_BUCKET = { put: async () => {}, get: async () => null };
