@@ -409,6 +409,7 @@ app.get("/api-docs", (c) => c.html(`<!doctype html>
 const publicDocs = new Set([
   "/docs/",
   "/docs/admin-user-guide/",
+  "/docs/android-sdk/",
   "/docs/cli-reference/",
   "/docs/public-api-reference/",
 ]);
