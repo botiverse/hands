@@ -108,12 +108,12 @@ export async function handlePublicV2Latest(c: Context<{ Bindings: Env }>) {
   // Candidates: active releases on (channel, [product_type]). No time window:
   // an active release must stay resolvable no matter how old it is.
   const candidateSql = productType
-    ? `SELECT id, build_id, created_at, product_type, rollout_cohort_count
+    ? `SELECT id, build_id, created_at, product_type, rollout_cohort_count, changelog
        FROM releases
        WHERE app_id = ?1 AND channel_id = ?2 AND product_type = ?3
          AND status = 'active'
        ORDER BY created_at DESC`
-    : `SELECT id, build_id, created_at, product_type, rollout_cohort_count
+    : `SELECT id, build_id, created_at, product_type, rollout_cohort_count, changelog
        FROM releases
        WHERE app_id = ?1 AND channel_id = ?2
          AND status = 'active'
