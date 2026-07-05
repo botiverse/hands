@@ -1,0 +1,186 @@
+name: Publish OHOS SDK
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/publish-ohos-sdk.yml"
+      - "clients/ohos/**"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "SDK version to publish. Must match clients/ohos/quiver/oh-package.json5."
+        required: true
+        default: "0.1.0"
+      dry_run:
+        description: "Build and prepublish only; skip ohpm publish."
+        required: true
+        type: boolean
+        default: true
+  push:
+    tags:
+      - "ohos-sdk-v*"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      OHOS_COMMANDLINE_TOOLS_URL: ${{ secrets.OHOS_COMMANDLINE_TOOLS_URL }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Resolve version
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+          package_version="$(node -e "const fs=require('fs'); const text=fs.readFileSync('clients/ohos/quiver/oh-package.json5','utf8'); const m=text.match(/\"version\"\\s*:\\s*\"([^\"]+)\"/); if (!m) process.exit(1); process.stdout.write(m[1]);")"
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            requested="${GITHUB_REF_NAME#ohos-sdk-v}"
+          elif [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            requested="${{ inputs.version }}"
+          else
+            requested="${package_version}"
+          fi
+          if [[ "${requested}" != "${package_version}" ]]; then
+            echo "Requested version ${requested} does not match clients/ohos/quiver/oh-package.json5 ${package_version}" >&2
+            exit 1
+          fi
+          echo "value=${package_version}" >> "$GITHUB_OUTPUT"
+
+      - name: Install HarmonyOS command-line tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -z "${OHOS_COMMANDLINE_TOOLS_URL:-}" ]]; then
+            {
+              echo "Missing GitHub secret OHOS_COMMANDLINE_TOOLS_URL."
+              echo
+              echo "Set it to an authenticated/downloadable HarmonyOS Command Line Tools"
+              echo "zip URL. The zip must contain ohpm/bin, hvigor/bin, node/bin, and sdk/."
+              echo "Huawei's current command-line-tools download is account-gated, so the"
+              echo "workflow keeps the URL in a repository secret instead of hardcoding it."
+            } >&2
+            exit 1
+          fi
+
+          mkdir -p "$RUNNER_TEMP/ohos-tools"
+          curl -fsSL "$OHOS_COMMANDLINE_TOOLS_URL" -o "$RUNNER_TEMP/ohos-tools/commandline-tools.zip"
+          unzip -q "$RUNNER_TEMP/ohos-tools/commandline-tools.zip" -d "$RUNNER_TEMP/ohos-tools/unpacked"
+
+          tool_home="$(find "$RUNNER_TEMP/ohos-tools/unpacked" -type d -name ohpm -prune -print -quit)"
+          if [[ -z "${tool_home}" ]]; then
+            echo "Could not find ohpm directory in command-line-tools zip." >&2
+            find "$RUNNER_TEMP/ohos-tools/unpacked" -maxdepth 3 -type d | sort >&2
+            exit 1
+          fi
+          tool_home="$(dirname "$tool_home")"
+
+          {
+            echo "OHOS_TOOL_HOME=${tool_home}"
+            echo "DEVECO_SDK_HOME=${tool_home}/sdk"
+          } >> "$GITHUB_ENV"
+          {
+            echo "${tool_home}/sdk"
+            echo "${tool_home}/node/bin"
+            echo "${tool_home}/ohpm/bin"
+            echo "${tool_home}/hvigor/bin"
+            echo "${tool_home}/sdk/default/openharmony/toolchains"
+          } >> "$GITHUB_PATH"
+
+      - name: Print tool versions
+        shell: bash
+        run: |
+          set -euo pipefail
+          ohpm --version
+          hvigorw --version
+
+      - name: Build HAR
+        working-directory: clients/ohos
+        shell: bash
+        run: |
+          set -euo pipefail
+          ohpm install --all
+          hvigorw --sync --analyze=normal --parallel
+          hvigorw clean --analyze=normal
+          hvigorw --mode module -p module=quiver@default assembleHar --analyze=normal --parallel
+
+      - name: Prepublish check
+        working-directory: clients/ohos
+        run: ohpm prepublish quiver/build/default/outputs/default/quiver.har --log_level info
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: oranix-quiver-ohos-${{ steps.version.outputs.value }}.har
+          path: clients/ohos/quiver/build/default/outputs/default/quiver.har
+          if-no-files-found: error
+
+      - name: Publish to OHPM
+        if: ${{ github.event_name != 'pull_request' && (github.event_name != 'workflow_dispatch' || !inputs.dry_run) }}
+        working-directory: clients/ohos
+        env:
+          OHPM_PUBLISH_ID: ${{ secrets.OHPM_PUBLISH_ID }}
+          OHPM_PRIVATE_KEY_B64: ${{ secrets.OHPM_PRIVATE_KEY_B64 }}
+          OHPM_KEY_PASSPHRASE: ${{ secrets.OHPM_KEY_PASSPHRASE }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -z "${OHPM_PUBLISH_ID:-}" || -z "${OHPM_PRIVATE_KEY_B64:-}" || -z "${OHPM_KEY_PASSPHRASE:-}" ]]; then
+            echo "Missing one of OHPM_PUBLISH_ID, OHPM_PRIVATE_KEY_B64, OHPM_KEY_PASSPHRASE." >&2
+            exit 1
+          fi
+
+          key_path="$RUNNER_TEMP/ohpm_publish_key"
+          crypto_path="$RUNNER_TEMP/ohpm_crypto"
+          printf '%s' "$OHPM_PRIVATE_KEY_B64" | base64 --decode > "$key_path"
+          chmod 600 "$key_path"
+
+          ohpm config set publish_registry https://ohpm.openharmony.cn/ohpm
+          ohpm config set publish_id "$OHPM_PUBLISH_ID"
+          ohpm config set key_path "$key_path"
+          ohpm config set crypto_path "$crypto_path"
+
+          ohpm_root="$(dirname "$(dirname "$(command -v ohpm)")")"
+          encrypted_passphrase="$(OHPM_ROOT="$ohpm_root" CRYPTO_PATH="$crypto_path" node <<'NODE'
+          const fs = require('node:fs');
+          const path = require('node:path');
+          const cryptoPath = process.env.CRYPTO_PATH;
+          const ohpmRoot = process.env.OHPM_ROOT;
+          const passphrase = process.env.OHPM_KEY_PASSPHRASE;
+          const mod = require(path.join(ohpmRoot, 'lib/core/config-encrypt/crypto/index.js'));
+
+          (async () => {
+            if (!fs.existsSync(cryptoPath) || fs.readdirSync(cryptoPath).length === 0) {
+              await mod.createCrypto(cryptoPath);
+            }
+            const crypto = mod.loadCustomCrypto(cryptoPath);
+            if (!crypto) {
+              throw new Error(`Failed to load ohpm crypto component at ${cryptoPath}`);
+            }
+            process.stdout.write(crypto.encrypt(passphrase));
+          })().catch((error) => {
+            console.error(error);
+            process.exit(1);
+          });
+          NODE
+          )"
+          ohpm config set key_passphrase "$encrypted_passphrase"
+          trap 'ohpm config delete key_passphrase >/dev/null 2>&1 || true' EXIT
+
+          ohpm publish quiver/build/default/outputs/default/quiver.har --log_level info
+
+      - name: Summary
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo "### OHOS SDK"
+            echo
+            echo "| Field | Value |"
+            echo "|---|---|"
+            echo "| Package | \`@oranix/quiver\` |"
+            echo "| Version | \`${{ steps.version.outputs.value }}\` |"
+            echo "| Dry run | \`${{ github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && inputs.dry_run) }}\` |"
+          } >> "$GITHUB_STEP_SUMMARY"
