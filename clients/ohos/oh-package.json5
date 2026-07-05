@@ -1,0 +1,11 @@
+{
+  "modelVersion": "6.1.0",
+  "name": "quiver-ohos-sdk",
+  "version": "0.1.0",
+  "description": "Workspace for the @oranix/quiver HarmonyOS SDK (HAR).",
+  "main": "",
+  "author": "Oranix",
+  "license": "MIT",
+  "dependencies": {},
+  "devDependencies": {}
+}

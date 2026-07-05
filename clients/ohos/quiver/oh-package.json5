@@ -1,0 +1,12 @@
+{
+  "name": "@oranix/quiver",
+  "version": "0.1.0",
+  "description": "Quiver feedback + crash reporting SDK for HarmonyOS (feedback tickets, store-then-send crash upload, device id).",
+  "main": "Index.ets",
+  "author": "Oranix",
+  "license": "MIT",
+  "homepage": "https://github.com/oranix-io/quiver",
+  "repository": "https://github.com/oranix-io/quiver",
+  "keywords": ["quiver", "crash", "feedback", "harmonyos"],
+  "dependencies": {}
+}
