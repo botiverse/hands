@@ -15,19 +15,31 @@ static NSTimeInterval const QuiverPendingUploadDelay = 3.0;
 
 @implementation QuiverReportConfig
 
+- (instancetype)initWithBaseUrl:(NSString *)baseUrl
+                        appSlug:(NSString *)appSlug
+                        channel:(NSString *)channel
+                      clientKey:(NSString *)clientKey {
+    self = [super init];
+    if (self) {
+        // Normalize the base URL once so callers can pass either form.
+        _baseUrl = [baseUrl hasSuffix:@"/"]
+            ? [[baseUrl substringToIndex:baseUrl.length - 1] copy]
+            : [baseUrl copy];
+        _appSlug = [appSlug copy];
+        _channel = [channel copy];
+        _clientKey = [clientKey copy];
+    }
+    return self;
+}
+
 + (instancetype)configWithBaseUrl:(NSString *)baseUrl
                           appSlug:(NSString *)appSlug
                           channel:(NSString *)channel
                         clientKey:(NSString *)clientKey {
-    QuiverReportConfig *config = [[QuiverReportConfig alloc] init];
-    // Normalize the base URL once so callers can pass either form.
-    config.baseUrl = [baseUrl hasSuffix:@"/"]
-        ? [baseUrl substringToIndex:baseUrl.length - 1]
-        : [baseUrl copy];
-    config.appSlug = [appSlug copy];
-    config.channel = [channel copy];
-    config.clientKey = [clientKey copy];
-    return config;
+    return [[QuiverReportConfig alloc] initWithBaseUrl:baseUrl
+                                               appSlug:appSlug
+                                               channel:channel
+                                             clientKey:clientKey];
 }
 
 @end

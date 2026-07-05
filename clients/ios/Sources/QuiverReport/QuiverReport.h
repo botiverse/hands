@@ -13,10 +13,18 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, copy, readonly) NSString *channel;
 @property (nonatomic, copy, readonly) NSString *clientKey;
 
+- (instancetype)initWithBaseUrl:(NSString *)baseUrl
+                        appSlug:(NSString *)appSlug
+                        channel:(NSString *)channel
+                      clientKey:(NSString *)clientKey NS_DESIGNATED_INITIALIZER;
+
 + (instancetype)configWithBaseUrl:(NSString *)baseUrl
                           appSlug:(NSString *)appSlug
                           channel:(NSString *)channel
                         clientKey:(NSString *)clientKey;
+
+- (instancetype)init NS_UNAVAILABLE;
++ (instancetype)new NS_UNAVAILABLE;
 
 @end
 
