@@ -387,6 +387,21 @@ function ReleaseRow({
       <div className="text-xs text-slate-500 font-mono mt-1 truncate">
         {r.id} (build {r.build_id.slice(0, 8)}…)
       </div>
+      {(r.offered_count || r.current_count) ? (
+        <div className="mt-1 flex items-center gap-3 text-xs text-slate-500">
+          <span title="Devices already on this version at update check">
+            <strong className="text-slate-700">{r.current_count ?? 0}</strong> on this version
+          </span>
+          <span title="Update-check responses offering this version to older clients">
+            <strong className="text-slate-700">{r.offered_count ?? 0}</strong> offered
+          </span>
+          {r.last_checked_at ? (
+            <span className="text-slate-400">
+              last check {new Date(r.last_checked_at).toLocaleString()}
+            </span>
+          ) : null}
+        </div>
+      ) : null}
       {r.changelog && (
         <pre className="mt-2 pl-2 border-l-2 border-slate-100 font-mono whitespace-pre-wrap text-xs text-slate-600 max-h-32 overflow-y-auto">
           {r.changelog}

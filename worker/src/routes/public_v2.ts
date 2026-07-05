@@ -323,6 +323,35 @@ export async function handlePublicV2Latest(c: Context<{ Bindings: Env }>) {
   });
 }
 
+/**
+ * Best-effort per-release counter: `current` when the client is already on
+ * this release, `offered` when it is being offered an update to it. Runs in
+ * the background; never affects the response.
+ */
+function bumpReleaseMetric(
+  c: Context<{ Bindings: Env }>,
+  releaseId: string | undefined,
+  kind: "offered" | "current",
+): void {
+  if (!releaseId) return;
+  const column = kind === "offered" ? "offered_count" : "current_count";
+  const now = Date.now();
+  const run = c.env.DB.prepare(
+    `INSERT INTO release_metrics (release_id, ${column}, last_checked_at)
+     VALUES (?1, 1, ?2)
+     ON CONFLICT(release_id) DO UPDATE SET
+       ${column} = ${column} + 1,
+       last_checked_at = ?3`,
+  )
+    .bind(releaseId, now, now)
+    .run();
+  try {
+    c.executionCtx.waitUntil(run.catch(() => {}));
+  } catch {
+    void run.catch(() => {});
+  }
+}
+
 export async function handlePublicV2UpdateCheck(c: Context<{ Bindings: Env }>) {
   const currentVersionCodeRaw =
     c.req.query("current_version_code") ??
@@ -345,6 +374,9 @@ export async function handlePublicV2UpdateCheck(c: Context<{ Bindings: Env }>) {
   const latest = (await latestResponse.json()) as PublicLatestResponse;
 
   if (latest.build.version_code <= currentVersionCode) {
+    if (latest.build.version_code === currentVersionCode) {
+      bumpReleaseMetric(c, latest.scoped?.release_id, "current");
+    }
     return c.json({
       update_available: false,
       app: latest.app,
@@ -388,6 +420,7 @@ export async function handlePublicV2UpdateCheck(c: Context<{ Bindings: Env }>) {
     );
   }
 
+  bumpReleaseMetric(c, latest.scoped?.release_id, "offered");
   return c.json({
     update_available: true,
     app: latest.app,

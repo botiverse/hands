@@ -39,6 +39,10 @@ For Android, Quiver selects updates by `version_code`. A device receives an upda
 
 Set a rollout percentage when creating or editing a release (number input with 5/25/50/100 presets), and raise it with **Bump rollout**. Devices are bucketed by their stable device id, keep their bucket while the percentage climbs, and gated-out devices receive the previous active release. Clients without a device id (older SDKs) only receive fully rolled-out releases.
 
+Each release row shows update-check analytics: how many devices are already
+**on this version** and how many were **offered** it (update checks from older
+clients), so you can see real rollout coverage as the percentage climbs.
+
 ## Builds
 
 Builds hold uploaded artifacts and provenance. Quiver distinguishes installable artifacts from support artifacts:

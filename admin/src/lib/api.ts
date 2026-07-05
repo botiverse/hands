@@ -150,6 +150,10 @@ export interface Release {
   created_by: string;
   created_at: number;
   updated_at: number;
+  // release_metrics (nullable when never checked)
+  offered_count?: number | null;
+  current_count?: number | null;
+  last_checked_at?: number | null;
 }
 
 export interface ReleaseScope {

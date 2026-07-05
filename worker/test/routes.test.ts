@@ -164,6 +164,12 @@ function makeMockDb() {
       created_at INTEGER NOT NULL,
       FOREIGN KEY (release_id) REFERENCES releases(id) ON DELETE CASCADE
     );
+    CREATE TABLE release_metrics (
+      release_id TEXT PRIMARY KEY,
+      offered_count INTEGER NOT NULL DEFAULT 0,
+      current_count INTEGER NOT NULL DEFAULT 0,
+      last_checked_at INTEGER
+    );
     CREATE TABLE release_shares (
       id TEXT PRIMARY KEY,
       release_id TEXT NOT NULL REFERENCES releases(id) ON DELETE CASCADE,
@@ -2314,6 +2320,36 @@ describe("quiver public API v2 — scope resolution", () => {
     const bucket = rolloutBucket("rel-x", "device-1");
     expect(rolloutIncludes("rel-x", bucket + 1, "device-1")).toBe(true);
     expect(rolloutIncludes("rel-x", bucket, "device-1")).toBe(false);
+  });
+
+  it("updates/check records offered/current release metrics", async () => {
+    const env = makeEnv();
+    const { handlePublicV2UpdateCheck } = await import("../src/routes/public_v2");
+    await seedRelease(env, "rel-metric", "build-metric", [["full", "all"]], {
+      versionCode: 20,
+      versionName: "2.0.0",
+    });
+    await seedAsset(env, "build-metric", "asset-metric", { arch: "arm64-v8a" });
+
+    const query = (code: string) => ({
+      channel: "production",
+      product_type: "android-apk",
+      current_version_code: code,
+      platform: "android",
+      arch: "arm64-v8a",
+    });
+    // Two older clients (offered) + one already-current client.
+    await handlePublicV2UpdateCheck(makePublicContext(env, query("10")));
+    await handlePublicV2UpdateCheck(makePublicContext(env, query("15")));
+    await handlePublicV2UpdateCheck(makePublicContext(env, query("20")));
+
+    const row = (await env.DB.prepare(
+      "SELECT offered_count, current_count FROM release_metrics WHERE release_id = ?1",
+    )
+      .bind("rel-metric")
+      .first()) as { offered_count: number; current_count: number } | null;
+    expect(row?.offered_count).toBe(2);
+    expect(row?.current_count).toBe(1);
   });
 
   it("updates/check gates a partial rollout by device bucket and falls back to the previous release", async () => {

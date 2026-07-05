@@ -320,10 +320,12 @@ export async function handleListReleases(c: Context<{ Bindings: Env }>) {
   }
 
   const { results } = await c.env.DB.prepare(
-    `SELECT r.*, c.slug AS channel, b.version_name, b.version_code
+    `SELECT r.*, c.slug AS channel, b.version_name, b.version_code,
+            rm.offered_count, rm.current_count, rm.last_checked_at
      FROM releases r
      JOIN builds b ON b.id = r.build_id
      LEFT JOIN channels c ON c.id = r.channel_id
+     LEFT JOIN release_metrics rm ON rm.release_id = r.id
      WHERE ${conditions.join(" AND ")}
      ORDER BY r.created_at DESC
      LIMIT 200`,
@@ -337,9 +339,11 @@ export async function handleGetRelease(c: Context<{ Bindings: Env }>) {
   const appId = c.req.param("appId") ?? "";
   const releaseId = c.req.param("releaseId") ?? "";
   const release = await c.env.DB.prepare(
-    `SELECT r.*, c.slug AS channel
+    `SELECT r.*, c.slug AS channel,
+            rm.offered_count, rm.current_count, rm.last_checked_at
      FROM releases r
      LEFT JOIN channels c ON c.id = r.channel_id
+     LEFT JOIN release_metrics rm ON rm.release_id = r.id
      WHERE r.app_id = ?1 AND r.id = ?2`,
   )
     .bind(appId, releaseId)
