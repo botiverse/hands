@@ -215,6 +215,46 @@ function AppNamePanel({ appId, app }: { appId: string; app: App }) {
   );
 }
 
+function AppDescriptionPanel({ appId, app }: { appId: string; app: App }) {
+  const toast = useToast();
+  const qc = useQueryClient();
+  const [description, setDescription] = useState(app.description ?? "");
+  const save = useMutation({
+    mutationFn: () => updateApp(appId, { description: description.trim() || null }),
+    onSuccess: () => {
+      toast.show({ kind: "success", title: "Description saved" });
+      qc.invalidateQueries({ queryKey: ["apps"] });
+    },
+    onError: (e) =>
+      toast.show({ kind: "error", title: "Save failed", description: (e as Error).message }),
+  });
+  const dirty = description.trim() !== (app.description ?? "");
+  return (
+    <div className="flex items-start gap-3">
+      <div className="flex-1 min-w-0">
+        <div className="text-sm font-medium">Description</div>
+        <div className="text-xs text-slate-500">
+          Internal note about what this app is — shown in the console app
+          list, not on public pages.
+        </div>
+      </div>
+      <textarea
+        className="input w-72 !text-sm !h-16 resize-y"
+        value={description}
+        placeholder="What is this app?"
+        onChange={(e) => setDescription(e.target.value)}
+      />
+      <button
+        className="btn-secondary !py-1 !px-2 !text-xs"
+        disabled={!dirty || save.isPending}
+        onClick={() => save.mutate()}
+      >
+        {save.isPending ? "…" : "Save"}
+      </button>
+    </div>
+  );
+}
+
 function ClientKeyPanel({ appId }: { appId: string }) {
   const toast = useToast();
   const qc = useQueryClient();
@@ -434,6 +474,9 @@ export function AppSettings({ appId }: { appId: string }) {
 
         {/* App name (slug is immutable) */}
         <AppNamePanel appId={appId} app={app} />
+
+        {/* App description */}
+        <AppDescriptionPanel appId={appId} app={app} />
 
         {/* App icon */}
         <AppIconUploader appId={appId} slug={app.slug} />
