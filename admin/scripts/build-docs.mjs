@@ -9,6 +9,12 @@ const outRoot = path.join(repoRoot, "admin/public/docs");
 
 const pages = [
   {
+    slug: "agent-guide",
+    title: "Agent Guide",
+    description: "How AI agents authenticate (Raft Agent Login, deploy tokens) and run releases, tickets, and shares.",
+    source: "agent-guide.md",
+  },
+  {
     slug: "admin-user-guide",
     title: "Admin User Guide",
     description: "Using the Quiver admin console: apps, releases, builds, access, and troubleshooting.",
