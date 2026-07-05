@@ -2069,6 +2069,236 @@ describe("quiver public API v2 — scope resolution", () => {
     return (await response.json()) as T;
   }
 
+  it("e2e smoke: build draft publish update share history feedback and webhooks", async () => {
+    const env = makeEnv();
+    await env.DB.prepare("UPDATE apps SET public_history = 1 WHERE id = ?1")
+      .bind("app-scope")
+      .run();
+    await env.DB.prepare(
+      `INSERT INTO webhooks (id, org_id, app_id, url, secret, events_json, enabled, created_at, updated_at)
+       VALUES (?1, ?2, NULL, ?3, ?4, ?5, 1, ?6, ?7)`,
+    )
+      .bind(
+        "wh-e2e",
+        "default",
+        "https://example.test/quiver",
+        "secret",
+        JSON.stringify(["build:succeeded", "release:new", "feedback:new", "crash:new_group"]),
+        Date.now(),
+        Date.now(),
+      )
+      .run();
+
+    env.APK_BUCKET = {
+      put: async () => undefined,
+      get: async () => null,
+    };
+
+    const {
+      handleCreateBuild,
+      handleCreateBuildAsset,
+    } = await import("../src/routes/builds");
+    const {
+      handleCreateRelease,
+      handlePublishRelease,
+    } = await import("../src/routes/releases");
+    const { handlePublicV2UpdateCheck } = await import("../src/routes/public_v2");
+    const { handleCreateReleaseShare, handlePublicReleaseShare } = await import("../src/routes/shares");
+    const { handlePublicAppHistory } = await import("../src/routes/history");
+    const { handlePublicFeedbackSubmit } = await import("../src/routes/feedback");
+
+    const waited: Promise<unknown>[] = [];
+    const adminContext = (
+      params: Record<string, string>,
+      body: unknown = {},
+      waitUntil: (p: Promise<unknown>) => void = (p) => waited.push(p),
+    ) => ({
+      env,
+      executionCtx: { waitUntil },
+      req: {
+        url: "https://quiver-worker.test/api/apps/app-scope",
+        param: (name: string) => params[name] ?? "",
+        query: () => undefined,
+        json: async () => body,
+      },
+      get: (name: string) =>
+        name === "admin_actor"
+          ? "e2e-tester"
+          : name === "org_id"
+            ? "default"
+            : undefined,
+      json: (data: unknown, status = 200) =>
+        new Response(JSON.stringify(data), {
+          status,
+          headers: { "content-type": "application/json" },
+        }),
+    }) as any;
+
+    const buildResponse = await handleCreateBuild(
+      adminContext(
+        { appId: "app-scope" },
+        {
+          channel_id: "ch-scope-prod",
+          product_type: "android-apk",
+          release_type: "stable",
+          version_name: "9.9.9",
+          version_code: 9090900,
+          changelog: JSON.stringify({ en: "- E2E smoke release", "zh-CN": "- E2E 冒烟发布" }),
+          source: "ci",
+          status: "succeeded",
+          provenance_json: { ci_provider: "vitest" },
+        },
+      ),
+    );
+    expect(buildResponse.status).toBe(201);
+    await Promise.all(waited.splice(0));
+    const build = await responseJson<any>(buildResponse);
+    expect(build.id).toBeTruthy();
+
+    const assetResponse = await handleCreateBuildAsset(
+      adminContext(
+        { appId: "app-scope", buildId: build.id },
+        {
+          artifact_kind: "installable",
+          platform: "android",
+          arch: "arm64-v8a",
+          filetype: "apk",
+          r2_key: "apps/app-scope/e2e.apk",
+          file_hash: "sha256-e2e",
+          size_bytes: 123456,
+          signature: "sig-e2e",
+        },
+        () => undefined,
+      ),
+    );
+    expect(assetResponse.status).toBe(201);
+
+    const draftResponse = await handleCreateRelease(
+      adminContext(
+        { appId: "app-scope" },
+        {
+          build_id: build.id,
+          channel_id: "ch-scope-prod",
+          product_type: "android-apk",
+          release_type: "stable",
+          status: "draft",
+          changelog: JSON.stringify({ en: "- E2E smoke release", "zh-CN": "- E2E 冒烟发布" }),
+          scopes: [{ scope_type: "full", scope_value: "all" }],
+        },
+      ),
+    );
+    expect(draftResponse.status).toBe(201);
+    const draft = await responseJson<any>(draftResponse);
+    expect(draft.status).toBe("draft");
+
+    const publishResponse = await handlePublishRelease(
+      adminContext({ appId: "app-scope", releaseId: draft.id }),
+    );
+    expect(publishResponse.status).toBe(200);
+    await Promise.all(waited.splice(0));
+    const published = await responseJson<any>(publishResponse);
+    expect(published.status).toBe("active");
+
+    const updateResponse = await handlePublicV2UpdateCheck(
+      makePublicContext(env, {
+        channel: "production",
+        product_type: "android-apk",
+        current_version_code: "1",
+        platform: "android",
+        arch: "arm64-v8a",
+        filetype: "apk",
+        lang: "zh-CN",
+      }, {
+        "X-Quiver-Device-Id": "e2e-device",
+        "X-Quiver-Lang": "zh-CN",
+      }),
+    );
+    expect(updateResponse.status).toBe(200);
+    const update = await responseJson<any>(updateResponse);
+    expect(update.update_available).toBe(true);
+    expect(update.latest.version_code).toBe(9090900);
+    expect(update.latest.changelog).toContain("E2E 冒烟发布");
+    expect(update.asset.download_url).toContain("/public/r2/");
+
+    const shareResponse = await handleCreateReleaseShare(
+      makeShareAdminContext(env, { appId: "app-scope", releaseId: draft.id }, { ttl_seconds: 604800 }),
+    );
+    expect(shareResponse.status).toBe(201);
+    const share = await responseJson<any>(shareResponse);
+    const shareToken = new URL(share.share_url).pathname.replace("/share/", "");
+    const sharePage = await handlePublicReleaseShare(makeSharePublicContext(env, shareToken));
+    expect(sharePage.status).toBe(200);
+    expect(await sharePage.text()).toContain("Download APK");
+
+    const historyPage = await handlePublicAppHistory({
+      env,
+      req: {
+        url: "https://quiver-worker.test/apps/scope-app/history",
+        param: (name: string) => (name === "slug" ? "scope-app" : ""),
+        header: (name: string) => (name === "accept-language" ? "zh-CN" : undefined),
+      },
+      json: (data: unknown, status = 200) => new Response(JSON.stringify(data), { status }),
+    } as any);
+    expect(historyPage.status).toBe(200);
+    const historyHtml = await historyPage.text();
+    expect(historyHtml).toContain("9.9.9");
+    expect(historyHtml).toContain("E2E 冒烟发布");
+
+    const crashForm = new FormData();
+    crashForm.set("message", "E2E crash smoke");
+    crashForm.set("kind", "crash");
+    crashForm.set(
+      "metadata",
+      JSON.stringify({
+        version_name: "9.9.9",
+        version_code: 9090900,
+        channel: "production",
+        device_id: "e2e-device",
+        crash_exception_class: "java.lang.IllegalStateException",
+        crash_top_frame: "build.raft.app.E2ESmoke.run(E2E.kt:42)",
+      }),
+    );
+    const feedbackWaited: Promise<unknown>[] = [];
+    const feedbackResponse = await handlePublicFeedbackSubmit({
+      env,
+      executionCtx: { waitUntil: (p: Promise<unknown>) => feedbackWaited.push(p) },
+      req: {
+        param: (name: string) => (name === "slug" ? "scope-app" : ""),
+        header: (name: string) => (name === "X-Quiver-Client-Key" ? "qk_test" : undefined),
+        query: () => undefined,
+        formData: async () => crashForm,
+        raw: { cf: { clientIp: "203.0.113.99" } },
+      },
+      json: (data: unknown, status = 200) => new Response(JSON.stringify(data), { status }),
+    } as any);
+    expect(feedbackResponse.status).toBe(201);
+    await Promise.all(feedbackWaited);
+    const feedback = await responseJson<any>(feedbackResponse);
+    expect(feedback.status).toBe("open");
+    expect(feedback.attachments).toBe(0);
+    const feedbackTicket = (await env.DB.prepare(
+      "SELECT kind, status, version_code FROM feedback_tickets WHERE id = ?1",
+    )
+      .bind(feedback.id)
+      .first()) as { kind: string; status: string; version_code: number } | null;
+    expect(feedbackTicket).toMatchObject({
+      kind: "crash",
+      status: "open",
+      version_code: 9090900,
+    });
+
+    const deliveryRows = (await env.DB.prepare(
+      "SELECT event_type FROM webhook_deliveries WHERE webhook_id = ?1 ORDER BY created_at",
+    )
+      .bind("wh-e2e")
+      .all()).results as Array<{ event_type: string }>;
+    const eventTypes = deliveryRows.map((row) => row.event_type);
+    expect(eventTypes).toContain("build:succeeded");
+    expect(eventTypes).toContain("release:new");
+    expect(eventTypes).toContain("feedback:new");
+    expect(eventTypes).toContain("crash:new_group");
+  });
+
   // ------------------------------------------------------------------
   // helpers — re-implement matchesScope here so we can unit-test it
   // without spinning up the Hono context. Mirrors public_v2.ts.
