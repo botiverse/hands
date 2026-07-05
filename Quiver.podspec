@@ -1,6 +1,6 @@
 Pod::Spec.new do |s|
-  s.name             = 'QuiverReport'
-  s.version          = '0.1.0'
+  s.name             = 'Quiver'
+  s.version          = '0.1.1'
   s.summary          = 'Quiver feedback + crash reporting for iOS.'
   s.description      = <<-DESC
     Native iOS reporting layer for Quiver: in-app feedback tickets

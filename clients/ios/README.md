@@ -1,4 +1,4 @@
-# QuiverReport (iOS)
+# Quiver (iOS)
 
 Native iOS reporting layer for Quiver: feedback tickets and store-then-send
 crash reporting. Objective-C, no dependencies, iOS 14.1+.
@@ -6,7 +6,7 @@ crash reporting. Objective-C, no dependencies, iOS 14.1+.
 ## Install (CocoaPods, via git)
 
 ```ruby
-pod 'QuiverReport', :git => 'https://github.com/oranix-io/quiver.git', :tag => 'ios-v0.1.0'
+pod 'Quiver', :git => 'https://github.com/oranix-io/quiver.git', :tag => 'ios-v0.1.1'
 ```
 
 ## Configure & start
