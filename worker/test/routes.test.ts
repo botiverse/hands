@@ -2985,6 +2985,58 @@ describe("quiver public API v2 — scope resolution", () => {
     expect(home.open_count).toBe(2);
   });
 
+  it("feedback: crash alert webhooks fire on new group only once", async () => {
+    const env = makeEnv();
+    env.APK_BUCKET = { put: async () => {}, get: async () => null };
+    const { handlePublicFeedbackSubmit } = await import("../src/routes/feedback");
+
+    await env.DB.prepare(
+      `INSERT INTO webhooks (id, org_id, app_id, url, secret, events_json, enabled, created_at, updated_at)
+       VALUES (?1, ?2, NULL, ?3, ?4, ?5, 1, ?6, ?7)`,
+    )
+      .bind("wh-crash", "default", "https://example.test/hook", "s3cret", JSON.stringify(["crash:new_group", "crash:spike"]), Date.now(), Date.now())
+      .run();
+
+    const submitCrash = async (topFrame: string, ip: string) => {
+      const form = new FormData();
+      form.set("message", "crash");
+      form.set("kind", "crash");
+      form.set(
+        "metadata",
+        JSON.stringify({
+          crash_exception_class: "java.lang.IllegalStateException",
+          crash_top_frame: topFrame,
+        }),
+      );
+      const waited: Promise<unknown>[] = [];
+      const ctx = {
+        env,
+        executionCtx: { waitUntil: (p: Promise<unknown>) => waited.push(p) },
+        req: {
+          param: (n: string) => (n === "slug" ? "scope-app" : ""),
+          header: (n: string) => (n === "X-Quiver-Client-Key" ? "qk_test" : undefined),
+          query: () => undefined,
+          formData: async () => form,
+          raw: { cf: { clientIp: ip } },
+        },
+        json: (data: unknown, status = 200) => new Response(JSON.stringify(data), { status }),
+      } as any;
+      const res = await handlePublicFeedbackSubmit(ctx);
+      await Promise.all(waited);
+      return res;
+    };
+
+    expect((await submitCrash("app.Main.boot(Main.kt:1)", "10.1.0.1")).status).toBe(201);
+    expect((await submitCrash("app.Main.boot(Main.kt:9)", "10.1.0.2")).status).toBe(201); // same signature
+    expect((await submitCrash("app.Feed.load(Feed.kt:3)", "10.1.0.3")).status).toBe(201); // new signature
+
+    const deliveries = (await env.DB.prepare(
+      "SELECT event_type FROM webhook_deliveries WHERE webhook_id = ?1 ORDER BY created_at",
+    ).bind("wh-crash").all()).results as Array<{ event_type: string }>;
+    expect(deliveries.filter((d) => d.event_type === "crash:new_group").length).toBe(2);
+    expect(deliveries.filter((d) => d.event_type === "crash:spike").length).toBe(0);
+  });
+
   it("feedback: client key is always required", async () => {
     const env = makeEnv();
     const { handlePublicFeedbackSubmit } = await import("../src/routes/feedback");

@@ -110,7 +110,8 @@ find and rotate the key in the app's Settings tab or via
 
 Returns `201` with `{ "id": "<ticket id>", "status": "open" }`. Rate limit:
 10 submissions per hour per app + client IP. Tickets appear in the admin
-Feedback tab; a `feedback:new` webhook fires for subscribed endpoints. The
+Feedback tab; a `feedback:new` webhook fires for subscribed endpoints (crash
+tickets can additionally trigger `crash:new_group` / `crash:spike`). The
 Android SDK's `QuiverFeedback.submit(...)` wraps this endpoint and attaches
 device metadata automatically.
 

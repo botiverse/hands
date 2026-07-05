@@ -25,6 +25,8 @@ import type { AdminContext } from "../lib/permissions";
 
 type WebhookEventType =
   | "feedback:new"
+  | "crash:new_group"
+  | "crash:spike"
   | "release:new"
   | "release:superseded"
   | "release:rolled_back"
@@ -256,9 +258,9 @@ export async function emitWebhookEvent(
          (id, webhook_id, event_type, payload_json, status,
           attempts, max_attempts, last_attempt_at, next_attempt_at,
           created_at, updated_at)
-         VALUES (?1, ?2, ?3, ?4, 'pending', 0, 3, NULL, ?5, ?5, ?5)`,
+         VALUES (?1, ?2, ?3, ?4, 'pending', 0, 3, NULL, ?5, ?6, ?7)`,
       )
-      .bind(crypto.randomUUID(), s.id, payload.event, body, now),
+      .bind(crypto.randomUUID(), s.id, payload.event, body, now, now, now),
   );
   await db.batch(stmts);
 }

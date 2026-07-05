@@ -935,6 +935,9 @@ export const forceUpdate = (
 // =============================================================================
 
 export type WebhookEventType =
+  | "feedback:new"
+  | "crash:new_group"
+  | "crash:spike"
   | "release:new"
   | "release:superseded"
   | "release:rolled_back"
@@ -943,6 +946,9 @@ export type WebhookEventType =
   | "build:failed";
 
 export const WEBHOOK_EVENT_TYPES: WebhookEventType[] = [
+  "feedback:new",
+  "crash:new_group",
+  "crash:spike",
   "release:new",
   "release:superseded",
   "release:rolled_back",

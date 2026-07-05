@@ -191,6 +191,61 @@ export async function handlePublicFeedbackSubmit(c: Context<{ Bindings: Env }>) 
     }
   }
 
+  // Crash alerting: fire webhooks when a signature is first seen or when it
+  // spikes (10/50/100 tickets within an hour — fires once per tier as the
+  // count crosses it, so no extra state table is needed).
+  if (kind === "crash" && signature && app.org_id) {
+    const orgId = app.org_id;
+    const alert = async () => {
+      const prior = await c.env.DB.prepare(
+        `SELECT COUNT(*) AS n FROM feedback_tickets
+         WHERE app_id = ?1 AND signature = ?2 AND id != ?3`,
+      )
+        .bind(app.id, signature, ticketId)
+        .first<{ n: number }>();
+      const base = {
+        app_slug: app.slug,
+        signature,
+        ticket_id: ticketId,
+        message: message.slice(0, 300),
+        version_name: meta("version_name"),
+        version_code: versionCode,
+      };
+      if ((prior?.n ?? 0) === 0) {
+        await emitWebhookEvent(c.env.DB, {
+          orgId,
+          appId: app.id,
+          event: "crash:new_group",
+          body: base,
+        });
+        return;
+      }
+      const recent = await c.env.DB.prepare(
+        `SELECT COUNT(*) AS n FROM feedback_tickets
+         WHERE app_id = ?1 AND signature = ?2 AND created_at >= ?3`,
+      )
+        .bind(app.id, signature, now - 60 * 60 * 1000)
+        .first<{ n: number }>();
+      const hourCount = recent?.n ?? 0;
+      if (hourCount === 10 || hourCount === 50 || hourCount === 100) {
+        await emitWebhookEvent(c.env.DB, {
+          orgId,
+          appId: app.id,
+          event: "crash:spike",
+          body: { ...base, count_last_hour: hourCount },
+        });
+      }
+    };
+    const guarded = alert().catch(() => {
+      // alerting must never fail the submission
+    });
+    try {
+      c.executionCtx.waitUntil(guarded);
+    } catch {
+      await guarded;
+    }
+  }
+
   if (app.org_id) {
     await emitWebhookEvent(c.env.DB, {
       orgId: app.org_id,

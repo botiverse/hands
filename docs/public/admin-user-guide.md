@@ -84,6 +84,10 @@ The Feedback tab is a lightweight ticket system for reports submitted from the a
 - Tickets are shareable pages (`/apps/<id>/feedback/<ticket>`).
 - Triage with statuses (`open → in_progress → resolved/closed`), an assignee (Assign to me / edit / unassign), and a comment trail.
 - A `feedback:new` webhook fires on submission for org webhook subscribers.
+- Crash alerting: `crash:new_group` fires the first time a crash signature is
+  seen for an app; `crash:spike` fires as a signature crosses 10, 50, and 100
+  occurrences within an hour. Subscribe a webhook to either event (Org
+  settings → Webhooks) to get paged instead of polling the console.
 
 Crash tickets (`kind=crash`, submitted automatically by the SDK's crash
 reporter) get a grouping **signature** (exception class + top app frame) and a
