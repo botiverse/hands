@@ -63,6 +63,13 @@ jobs:
               echo "Huawei's current command-line-tools download is account-gated, so the"
               echo "workflow keeps the URL in a repository secret instead of hardcoding it."
             } >&2
+            if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+              # Don't leave every clients/ohos PR permanently red while the
+              # secret is unset — skip the build and say so.
+              echo "SKIP_OHOS_BUILD=1" >> "$GITHUB_ENV"
+              echo "::warning::OHOS_COMMANDLINE_TOOLS_URL secret not set; skipping HAR build check."
+              exit 0
+            fi
             exit 1
           fi
 
@@ -91,6 +98,7 @@ jobs:
           } >> "$GITHUB_PATH"
 
       - name: Print tool versions
+        if: ${{ env.SKIP_OHOS_BUILD != '1' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -98,6 +106,7 @@ jobs:
           hvigorw --version
 
       - name: Build HAR
+        if: ${{ env.SKIP_OHOS_BUILD != '1' }}
         working-directory: clients/ohos
         shell: bash
         run: |
@@ -108,10 +117,12 @@ jobs:
           hvigorw --mode module -p module=quiver@default assembleHar --analyze=normal --parallel
 
       - name: Prepublish check
+        if: ${{ env.SKIP_OHOS_BUILD != '1' }}
         working-directory: clients/ohos
         run: ohpm prepublish quiver/build/default/outputs/default/quiver.har --log_level info
 
       - uses: actions/upload-artifact@v4
+        if: ${{ env.SKIP_OHOS_BUILD != '1' }}
         with:
           name: oranix-quiver-ohos-${{ steps.version.outputs.value }}.har
           path: clients/ohos/quiver/build/default/outputs/default/quiver.har
