@@ -6,7 +6,7 @@ crash reporting. Objective-C, no dependencies, iOS 14.1+.
 ## Install (CocoaPods, via git)
 
 ```ruby
-pod 'Quiver', :git => 'https://github.com/oranix-io/quiver.git', :tag => 'ios-v0.1.1'
+pod 'Quiver', :git => 'https://github.com/oranix-io/quiver.git', :tag => 'ios-v0.1.2'
 ```
 
 ## Configure & start
