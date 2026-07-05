@@ -20,6 +20,7 @@ import { Builds } from "./pages/Builds";
 import { Releases } from "./pages/Releases";
 import { AppShares } from "./pages/Shares";
 import { AppFeedback, FeedbackTicketPage } from "./pages/Feedback";
+import { AppCrashes } from "./pages/Crashes";
 import { OrgSettings } from "./pages/OrgSettings";
 import { AcceptInvite } from "./pages/AcceptInvite";
 import { AppAccess } from "./pages/AppAccess";
@@ -323,6 +324,12 @@ function AppFeedbackRoute() {
   const { appId } = useParams();
   if (!appId) return null;
   return <AppFeedback appId={appId} />;
+}
+
+function AppCrashesRoute() {
+  const { appId } = useParams();
+  if (!appId) return null;
+  return <AppCrashes appId={appId} />;
 }
 
 function FeedbackTicketRoute() {
@@ -653,6 +660,7 @@ function AuthenticatedApp({ account }: { account: AuthAccount }) {
           <Route path="releases" element={<ReleasesRoute />} />
           <Route path="shares" element={<AppSharesRoute />} />
           <Route path="feedback" element={<AppFeedbackRoute />} />
+          <Route path="crashes" element={<AppCrashesRoute />} />
           <Route path="feedback/:ticketId" element={<FeedbackTicketRoute />} />
           <Route path="access" element={<AppAccessRoute />} />
           <Route path="audit" element={<AuditRoute />} />
@@ -741,6 +749,7 @@ const APP_NAV_SECTIONS: Array<{ label: string; items: Array<{ to: string; label:
     label: "Operate",
     items: [
       { to: "feedback", label: "Feedback" },
+      { to: "crashes", label: "Crashes" },
       { to: "access", label: "Access" },
       { to: "audit", label: "Audit" },
       { to: "settings", label: "Settings" },
@@ -865,6 +874,7 @@ function AppShell() {
           <Route path="releases" element={<ReleasesRoute />} />
           <Route path="shares" element={<AppSharesRoute />} />
           <Route path="feedback" element={<AppFeedbackRoute />} />
+          <Route path="crashes" element={<AppCrashesRoute />} />
           <Route path="feedback/:ticketId" element={<FeedbackTicketRoute />} />
           <Route path="access" element={<AppAccessRoute />} />
           <Route path="audit" element={<AuditRoute />} />

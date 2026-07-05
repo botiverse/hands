@@ -60,7 +60,7 @@ export function FeedbackTrends({ appId }: { appId: string }) {
 
   if (stats.isLoading) return null;
   if (!stats.data) return null;
-  if (total === 0 && stats.data.crashes_by_version.length === 0) return null;
+  if (total === 0) return null;
 
   return (
     <div className="card !p-4 mb-4">
@@ -96,10 +96,7 @@ export function FeedbackTrends({ appId }: { appId: string }) {
       {showTable ? (
         <TrendTable days={days} />
       ) : (
-        <div className="grid gap-6 md:grid-cols-[1fr_260px]">
-          <StackedDaily days={days} />
-          <CrashByVersion rows={stats.data.crashes_by_version} />
-        </div>
+        <StackedDaily days={days} />
       )}
     </div>
   );
@@ -191,7 +188,7 @@ function StackedDaily({
   );
 }
 
-function CrashByVersion({
+export function CrashByVersion({
   rows,
 }: {
   rows: Array<{ version_name: string; version_code: number | null; n: number }>;

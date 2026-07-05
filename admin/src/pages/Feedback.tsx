@@ -4,14 +4,13 @@
  * shareable links. Tickets carry an assignee, status flow, and comments.
  */
 import { useState } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   addFeedbackComment,
   feedbackAttachmentUrl,
   getAuthMe,
   getFeedback,
-  listCrashGroups,
   listFeedback,
   updateFeedbackTicket,
 } from "../lib/api";
@@ -35,9 +34,9 @@ const KIND_STYLES: Record<string, string> = {
 
 export function AppFeedback({ appId }: { appId: string }) {
   const navigate = useNavigate();
-  const [view, setView] = useState<"tickets" | "crashes">("tickets");
+  const [searchParams] = useSearchParams();
   const [statusFilter, setStatusFilter] = useState<string>("");
-  const [kindFilter, setKindFilter] = useState<string>("");
+  const [kindFilter, setKindFilter] = useState<string>(searchParams.get("kind") ?? "");
 
   const tickets = useQuery({
     queryKey: ["feedback", appId, statusFilter, kindFilter],
@@ -84,35 +83,6 @@ export function AppFeedback({ appId }: { appId: string }) {
         </div>
       </div>
 
-      <div className="flex gap-1 text-sm">
-        <button
-          className={view === "tickets"
-            ? "rounded-md bg-slate-100 px-3 py-1 font-medium"
-            : "rounded-md px-3 py-1 text-slate-600 hover:bg-slate-50"}
-          onClick={() => setView("tickets")}
-        >
-          All tickets
-        </button>
-        <button
-          className={view === "crashes"
-            ? "rounded-md bg-slate-100 px-3 py-1 font-medium"
-            : "rounded-md px-3 py-1 text-slate-600 hover:bg-slate-50"}
-          onClick={() => setView("crashes")}
-        >
-          Crash groups
-        </button>
-      </div>
-
-      {view === "crashes" && (
-        <CrashGroups
-          appId={appId}
-          onOpenGroup={() => {
-            setKindFilter("crash");
-            setView("tickets");
-          }}
-        />
-      )}
-      {view === "tickets" && (
 
       <div className="card overflow-x-auto">
         {tickets.isLoading && <p className="text-sm text-slate-500">Loading…</p>}
@@ -174,67 +144,6 @@ export function AppFeedback({ appId }: { appId: string }) {
           </table>
         )}
       </div>
-      )}
-    </div>
-  );
-}
-
-function CrashGroups({ appId, onOpenGroup }: { appId: string; onOpenGroup: () => void }) {
-  const groups = useQuery({
-    queryKey: ["crash-groups", appId],
-    queryFn: () => listCrashGroups(appId),
-  });
-  const rows = groups.data?.groups ?? [];
-  return (
-    <div className="card overflow-x-auto">
-      {groups.isLoading && <p className="text-sm text-slate-500">Loading…</p>}
-      {groups.error && (
-        <p className="text-sm text-red-600">Failed to load: {(groups.error as Error).message}</p>
-      )}
-      {!groups.isLoading && rows.length === 0 && (
-        <p className="text-sm text-slate-500">No crashes reported yet.</p>
-      )}
-      {rows.length > 0 && (
-        <table className="w-full text-sm">
-          <thead>
-            <tr className="text-left text-xs text-slate-500 border-b border-slate-200">
-              <th className="py-2 pr-3">Crash signature</th>
-              <th className="py-2 pr-3">Count</th>
-              <th className="py-2 pr-3">Devices</th>
-              <th className="py-2 pr-3">Open</th>
-              <th className="py-2 pr-3">Versions</th>
-              <th className="py-2 pr-3">Last seen</th>
-            </tr>
-          </thead>
-          <tbody>
-            {rows.map((g) => (
-              <tr
-                key={g.signature}
-                className="border-b border-slate-100 last:border-0 cursor-pointer hover:bg-slate-50"
-                onClick={onOpenGroup}
-                title="Open crash tickets"
-              >
-                <td className="py-2 pr-3 max-w-lg font-mono text-xs">{g.signature}</td>
-                <td className="py-2 pr-3 font-semibold">{g.count}</td>
-                <td className="py-2 pr-3 text-slate-600">{g.device_count}</td>
-                <td className="py-2 pr-3">
-                  {g.open_count > 0 ? (
-                    <span className="rounded bg-red-100 px-1.5 py-0.5 text-xs font-medium text-red-800">
-                      {g.open_count} open
-                    </span>
-                  ) : (
-                    <span className="text-xs text-slate-400">—</span>
-                  )}
-                </td>
-                <td className="py-2 pr-3 text-xs text-slate-600">{g.versions ?? "—"}</td>
-                <td className="py-2 pr-3 text-xs text-slate-600">
-                  {new Date(g.last_seen).toLocaleString()}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      )}
     </div>
   );
 }
