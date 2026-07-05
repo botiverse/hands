@@ -119,6 +119,21 @@ quiver releases revoke-share raft-android <release-id> <share-id>
 shell history. Share URLs are printed once at creation; tokens are stored
 hashed.
 
+## Feedback Tickets
+
+Agents can triage feedback and crash tickets entirely from the CLI (viewer
+role for read, publisher for changes):
+
+```bash
+quiver feedback list raft-android --status open --kind crash
+quiver feedback show raft-android <ticket-id>
+quiver feedback update raft-android <ticket-id> --status in_progress --assignee cc-quiver-owner
+quiver feedback comment raft-android <ticket-id> "已复现，修复中"
+quiver feedback update raft-android <ticket-id> --status resolved
+```
+
+`--assignee none` unassigns. All subcommands accept `--json` for scripting.
+
 ## CI Environment Variables
 
 | Variable | Required | Purpose |
