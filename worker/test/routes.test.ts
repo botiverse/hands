@@ -19,6 +19,7 @@ import { describe, it, expect, beforeEach } from "vitest";
 import Database from "better-sqlite3";
 import { createHash } from "node:crypto";
 import { httpsRedirectUrl, isSecureRequest, requestOrigin } from "../src/lib/origin";
+import { openApiDocument } from "../src/openapi";
 
 // ---------- Test harness ----------
 
@@ -43,6 +44,35 @@ interface MockEnv {
   APK_PARSER: unknown;
   MAX_APK_SIZE_MB: string;
 }
+
+describe("quiver OpenAPI document", () => {
+  it("covers representative public, admin, feedback, access, and operations routes", () => {
+    const paths = openApiDocument.paths ?? {};
+
+    for (const path of [
+      "/public/v2/apps/{slug}/updates/check",
+      "/public/v2/apps/{slug}/feedback",
+      "/apps/{slug}/history",
+      "/api/apps",
+      "/api/apps/{appId}/builds",
+      "/api/apps/{appId}/releases/{releaseId}/publish",
+      "/api/apps/{appId}/feedback/{ticketId}/comments",
+      "/api/apps/{appId}/client-key",
+      "/api/orgs/{orgId}/invites",
+      "/api/orgs/{orgId}/webhooks/{webhookId}/deliveries",
+      "/api/apps/{appId}/channels/{channelId}",
+      "/api/apps/{appId}/operations/{opId}/retry",
+      "/api/apps/{appId}/deploy-tokens",
+    ]) {
+      expect(paths[path], path).toBeDefined();
+    }
+
+    expect(paths["/api/apps/{appId}/releases/{releaseId}/publish"]?.post).toBeDefined();
+    expect(paths["/api/apps/{appId}/feedback/{ticketId}/comments"]?.post).toBeDefined();
+    expect(paths["/public/v2/apps/{slug}/feedback"]?.post).toBeDefined();
+    expect(Object.keys(paths).length).toBeGreaterThanOrEqual(60);
+  });
+});
 
 /** Spin up an in-memory SQLite that mimics D1's bind/run/all/first shape. */
 function makeMockDb() {
