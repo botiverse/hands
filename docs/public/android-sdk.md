@@ -118,23 +118,11 @@ retraces crash reports for that `versionCode` automatically.
 
 ## Device analytics
 
-`QuiverAnalytics.reportDevice(...)` sends a lightweight launch ping
-(throttled to ≤1/day/install) that powers the console's active-device and
-version-distribution views. No PII — only the random per-install device id
-and build/OS metadata.
-
-```kotlin
-// e.g. from Application.onCreate, in a coroutine
-QuiverAnalytics.reportDevice(
-    context = this,
-    baseUrl = BuildConfig.QUIVER_BASE_URL,
-    appSlug = BuildConfig.QUIVER_APP_SLUG,
-    versionName = BuildConfig.VERSION_NAME,
-    versionCode = BuildConfig.VERSION_CODE.toLong(),
-    channel = BuildConfig.QUIVER_CHANNEL,
-    clientKey = BuildConfig.QUIVER_CLIENT_KEY,
-)
-```
+`QuiverCrash.install(...)` already sends a lightweight launch ping (throttled
+to ≤1/day/install) that powers the console's active-device and
+version-distribution views — no separate call needed. No PII: only the
+random per-install device id and build/OS metadata. Pass
+`reportDeviceAnalytics = false` to `install` to opt out.
 
 ## Notes
 

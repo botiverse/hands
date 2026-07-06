@@ -59,6 +59,12 @@ NS_ASSUME_NONNULL_BEGIN
 /// Stable per-install device id (random UUID persisted in NSUserDefaults).
 + (NSString *)deviceId;
 
+/// Lightweight launch ping for active-device / version-distribution
+/// analytics. Throttled to once per 24h per install; safe to call every
+/// launch. startWithConfig: already calls this — call it directly only to
+/// force an extra ping. No PII: device id + build/OS metadata only.
++ (void)reportDevice;
+
 @end
 
 NS_ASSUME_NONNULL_END

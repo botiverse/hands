@@ -49,6 +49,7 @@ object QuiverCrash {
         copyToClipboard: Boolean = true,
         uploadOnLaunch: Boolean = true,
         captureNativeCrashes: Boolean = true,
+        reportDeviceAnalytics: Boolean = true,
         extraContext: (() -> String)? = null,
     ) {
         if (captureNativeCrashes) {
@@ -82,9 +83,18 @@ object QuiverCrash {
                 }
         }
 
-        if (uploadOnLaunch) {
+        if (uploadOnLaunch || reportDeviceAnalytics) {
             thread(name = "quiver-crash-upload", isDaemon = true) {
-                runCatching {
+                if (reportDeviceAnalytics) {
+                    runCatching {
+                        kotlinx.coroutines.runBlocking {
+                            QuiverAnalytics.reportDevice(
+                                appContext, baseUrl, appSlug, versionName, versionCode, channel, clientKey,
+                            )
+                        }
+                    }
+                }
+                if (uploadOnLaunch) runCatching {
                     uploadPending(appContext, baseUrl, appSlug, versionName, versionCode, channel, clientKey)
                     if (captureNativeCrashes) {
                         // Dedicated background thread — blocking here is fine.

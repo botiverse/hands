@@ -24,16 +24,20 @@ console if it leaks).
 ```ts
 import { Quiver } from '@oranix/quiver';
 
+// In UIAbility onCreate — pass the context to wire the internal launch
+// logic (throttled device-analytics ping + pending-crash upload).
 Quiver.start({
   baseUrl: 'https://quiver.example.com',
   appSlug: 'my-app',
   channel: 'main',          // Quiver release-channel routing field
   clientKey: 'qk_…',
-});
+}, this.context);
 ```
 
-Call it as early as possible (UIAbility `onCreate`). The app also needs the
-`ohos.permission.INTERNET` permission declared in its `module.json5`.
+Call it as early as possible (UIAbility `onCreate`). The app needs the
+`ohos.permission.INTERNET` permission declared in its `module.json5`. With
+the context passed, `start` handles device analytics and pending-crash
+upload for you — no separate calls needed.
 
 ## Feedback
 
@@ -78,3 +82,10 @@ await QuiverCrashUploader.uploadPending(context);
 
 Pending crashes upload as `kind=crash` tickets, grouped by signature
 server-side; local retention cap is 5.
+
+## Device analytics
+
+`Quiver.start(config, context)` sends a throttled launch ping
+(≤1/day/install) that powers the console's active-device and
+version-distribution views — no separate call. No PII: random device id +
+build/OS metadata only.

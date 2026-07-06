@@ -1,3 +1,7 @@
+import { common } from '@kit.AbilityKit';
+import { QuiverAnalytics } from './QuiverAnalytics';
+import { QuiverCrashUploader } from './QuiverCrashUploader';
+
 /**
  * Quiver SDK entry point for HarmonyOS. All configuration is runtime
  * parameters — the SDK ships nothing app-specific; the client key follows
@@ -18,8 +22,13 @@ export interface QuiverConfig {
 export class Quiver {
   private static current: QuiverConfig | null = null;
 
-  /** Call once, as early as possible (ability onCreate). */
-  static start(config: QuiverConfig): void {
+  /**
+   * Call once, as early as possible (UIAbility onCreate). Passing the
+   * ability context also wires the internal launch logic — a throttled
+   * device-analytics ping and upload of any pending crash reports — so the
+   * app only calls this one method.
+   */
+  static start(config: QuiverConfig, context?: common.UIAbilityContext): void {
     const trimmed: QuiverConfig = {
       baseUrl: config.baseUrl.endsWith('/')
         ? config.baseUrl.substring(0, config.baseUrl.length - 1)
@@ -29,6 +38,14 @@ export class Quiver {
       clientKey: config.clientKey,
     };
     Quiver.current = trimmed;
+    if (context) {
+      // Fire-and-forget; off the launch critical path.
+      setTimeout(() => {
+        QuiverAnalytics.reportDevice(context).catch((): void => {});
+        QuiverCrashUploader.enforceRetention(context);
+        QuiverCrashUploader.uploadPending(context).catch((): void => {});
+      }, 3000);
+    }
   }
 
   static get config(): QuiverConfig {
