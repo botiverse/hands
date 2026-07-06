@@ -13,6 +13,7 @@ import {
   getAuthMe,
   getFeedback,
   listFeedback,
+  getDeviceDetail,
   updateFeedbackTicket,
 } from "../lib/api";
 import { useToast } from "../components/Toast";
@@ -35,24 +36,51 @@ const KIND_STYLES: Record<string, string> = {
 
 export function AppFeedback({ appId }: { appId: string }) {
   const navigate = useNavigate();
-  const [searchParams] = useSearchParams();
+  const [searchParams, setSearchParams] = useSearchParams();
   const [statusFilter, setStatusFilter] = useState<string>("");
   const [kindFilter, setKindFilter] = useState<string>(searchParams.get("kind") ?? "");
+  const deviceFilter = searchParams.get("device_id") ?? "";
+  const versionFilter = searchParams.get("version_code") ?? "";
 
   const tickets = useQuery({
-    queryKey: ["feedback", appId, statusFilter, kindFilter],
+    queryKey: ["feedback", appId, statusFilter, kindFilter, deviceFilter, versionFilter],
     queryFn: () =>
       listFeedback(appId, {
         status: statusFilter || undefined,
         kind: kindFilter || undefined,
+        deviceId: deviceFilter || undefined,
+        versionCode: versionFilter ? Number(versionFilter) : undefined,
       }),
   });
+
+  const clearScopeFilter = (key: "device_id" | "version_code") => {
+    const next = new URLSearchParams(searchParams);
+    next.delete(key);
+    setSearchParams(next);
+  };
 
   const rows = tickets.data?.tickets ?? [];
 
   return (
     <div className="space-y-4">
-      <FeedbackTrends appId={appId} />
+      {deviceFilter && (
+        <DeviceScopeBanner
+          appId={appId}
+          deviceId={deviceFilter}
+          onClear={() => clearScopeFilter("device_id")}
+        />
+      )}
+      {versionFilter && (
+        <div className="card !py-2 !px-3 flex items-center justify-between text-sm">
+          <span>
+            Filtered to version code <span className="font-mono">{versionFilter}</span>
+          </span>
+          <button className="text-blue-600 hover:underline text-xs" onClick={() => clearScopeFilter("version_code")}>
+            clear
+          </button>
+        </div>
+      )}
+      {!deviceFilter && !versionFilter && <FeedbackTrends appId={appId} />}
       <div className="flex items-center justify-between flex-wrap gap-2">
         <div>
           <h2 className="text-lg font-semibold">Feedback</h2>
@@ -145,6 +173,58 @@ export function AppFeedback({ appId }: { appId: string }) {
           </table>
         )}
       </div>
+    </div>
+  );
+}
+
+function DeviceScopeBanner({
+  appId,
+  deviceId,
+  onClear,
+}: {
+  appId: string;
+  deviceId: string;
+  onClear: () => void;
+}) {
+  const detail = useQuery({
+    queryKey: ["device-detail", appId, deviceId],
+    queryFn: () => getDeviceDetail(appId, deviceId),
+  });
+  const d = detail.data?.device;
+  return (
+    <div className="card !p-3">
+      <div className="flex items-center justify-between">
+        <h4 className="text-sm font-semibold">
+          Device <span className="font-mono text-xs">{deviceId}</span>
+        </h4>
+        <button className="text-blue-600 hover:underline text-xs" onClick={onClear}>
+          clear
+        </button>
+      </div>
+      {d ? (
+        <dl className="mt-2 grid grid-cols-2 gap-x-4 gap-y-1 text-xs sm:grid-cols-4">
+          <div>
+            <dt className="text-slate-500">Latest version</dt>
+            <dd>{d.version_name ?? "—"}{d.version_code ? ` (${d.version_code})` : ""}</dd>
+          </div>
+          <div>
+            <dt className="text-slate-500">Model</dt>
+            <dd>{d.device_model ?? "—"}</dd>
+          </div>
+          <div>
+            <dt className="text-slate-500">Platform / OS</dt>
+            <dd>{[d.platform, d.os_version].filter(Boolean).join(" · ") || "—"}</dd>
+          </div>
+          <div>
+            <dt className="text-slate-500">Last seen</dt>
+            <dd>{new Date(d.last_seen).toLocaleString()}</dd>
+          </div>
+        </dl>
+      ) : (
+        <p className="mt-1 text-xs text-slate-500">
+          No analytics ping from this device yet — showing its tickets below.
+        </p>
+      )}
     </div>
   );
 }
@@ -248,6 +328,7 @@ export function FeedbackTicketPage({
   ticketId: string;
 }) {
   const toast = useToast();
+  const navigate = useNavigate();
   const queryClient = useQueryClient();
   const [comment, setComment] = useState("");
   const [assigneeDraft, setAssigneeDraft] = useState<string | null>(null);
@@ -397,7 +478,18 @@ export function FeedbackTicketPage({
             <h4 className="text-sm font-semibold mb-2">Device context</h4>
             <dl className="grid grid-cols-2 gap-x-4 gap-y-1 text-xs">
               <dt className="text-slate-500">App version</dt>
-              <dd>{t.version_name ?? "—"} {t.version_code ? `(${t.version_code})` : ""}</dd>
+              <dd>
+                {t.version_name ?? "—"}{" "}
+                {t.version_code ? (
+                  <button
+                    className="text-blue-600 hover:underline"
+                    title="All feedback on this version"
+                    onClick={() => navigate(`/apps/${appId}/feedback?version_code=${t.version_code}`)}
+                  >
+                    ({t.version_code})
+                  </button>
+                ) : null}
+              </dd>
               <dt className="text-slate-500">Channel</dt>
               <dd>{t.channel ?? "—"}</dd>
               <dt className="text-slate-500">Device</dt>
@@ -407,7 +499,19 @@ export function FeedbackTicketPage({
               <dt className="text-slate-500">Locale</dt>
               <dd>{t.locale ?? "—"}</dd>
               <dt className="text-slate-500">Device id</dt>
-              <dd className="font-mono">{t.device_id ?? "—"}</dd>
+              <dd className="font-mono">
+                {t.device_id ? (
+                  <button
+                    className="text-blue-600 hover:underline font-mono"
+                    title="This device's history"
+                    onClick={() => navigate(`/apps/${appId}/feedback?device_id=${encodeURIComponent(t.device_id!)}`)}
+                  >
+                    {t.device_id}
+                  </button>
+                ) : (
+                  "—"
+                )}
+              </dd>
             </dl>
           </div>
 

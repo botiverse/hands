@@ -554,6 +554,16 @@ export async function handleListFeedback(c: AdminContext) {
     binds.push(kind);
     where += ` AND kind = ?${binds.length}`;
   }
+  const deviceId = c.req.query("device_id");
+  if (deviceId) {
+    binds.push(deviceId);
+    where += ` AND device_id = ?${binds.length}`;
+  }
+  const versionCodeFilter = c.req.query("version_code");
+  if (versionCodeFilter && /^\d+$/.test(versionCodeFilter)) {
+    binds.push(Number(versionCodeFilter));
+    where += ` AND version_code = ?${binds.length}`;
+  }
   const { results } = await c.env.DB.prepare(
     `SELECT t.id, t.kind, t.status, t.assignee, t.message, t.contact, t.version_name,
             t.version_code, t.channel, t.device_model, t.os_version,

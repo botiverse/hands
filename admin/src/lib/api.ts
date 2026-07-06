@@ -1115,10 +1115,20 @@ export interface FeedbackDetail {
   }>;
 }
 
-export const listFeedback = (appId: string, filters?: { status?: string | undefined; kind?: string | undefined }) => {
+export const listFeedback = (
+  appId: string,
+  filters?: {
+    status?: string | undefined;
+    kind?: string | undefined;
+    deviceId?: string | undefined;
+    versionCode?: number | undefined;
+  },
+) => {
   const params = new URLSearchParams();
   if (filters?.status) params.set("status", filters.status);
   if (filters?.kind) params.set("kind", filters.kind);
+  if (filters?.deviceId) params.set("device_id", filters.deviceId);
+  if (filters?.versionCode != null) params.set("version_code", String(filters.versionCode));
   const qs = params.toString();
   return request<{ tickets: FeedbackTicket[] }>(
     `/api/apps/${appId}/feedback${qs ? `?${qs}` : ""}`,
@@ -1196,6 +1206,27 @@ export interface DeviceAnalytics {
   by_platform: Array<{ platform: string; devices: number }>;
   by_channel: Array<{ channel: string; devices: number }>;
 }
+
+export interface DeviceDetail {
+  device_id: string;
+  version_name: string | null;
+  version_code: number | null;
+  channel: string | null;
+  platform: string | null;
+  arch: string | null;
+  os_version: string | null;
+  device_model: string | null;
+  locale: string | null;
+  first_seen: number;
+  last_seen: number;
+  ping_count: number;
+}
+
+export const getDeviceDetail = (appId: string, deviceId: string) =>
+  request<{ device: DeviceDetail | null }>(
+    `/api/apps/${appId}/analytics/devices/${encodeURIComponent(deviceId)}`,
+    { admin: true },
+  );
 
 export const getDeviceAnalytics = (appId: string, windowDays = 30) =>
   request<DeviceAnalytics>(

@@ -65,7 +65,7 @@ import {
   handleListCrashGroups,
   handleFeedbackStats,
 } from "./routes/feedback";
-import { handleDeviceRegister, handleDeviceAnalytics } from "./routes/analytics";
+import { handleDeviceRegister, handleDeviceAnalytics, handleDeviceDetail } from "./routes/analytics";
 import {
   handlePublicAppHistory,
   handlePublicAppHistoryDownload,
@@ -573,6 +573,7 @@ admin.post("/api/apps/:appId/rotate-client-key", requireAppRole("admin"), handle
 admin.get("/api/apps/:appId/feedback/crash-groups", requireAppRole("viewer"), handleListCrashGroups);
 admin.get("/api/apps/:appId/feedback/stats", requireAppRole("viewer"), handleFeedbackStats);
 admin.get("/api/apps/:appId/analytics/devices", requireAppRole("viewer"), handleDeviceAnalytics);
+admin.get("/api/apps/:appId/analytics/devices/:deviceId", requireAppRole("viewer"), handleDeviceDetail);
 admin.get("/api/apps/:appId/feedback", requireAppRole("viewer"), handleListFeedback);
 admin.get("/api/apps/:appId/feedback/:ticketId", requireAppRole("viewer"), handleGetFeedback);
 admin.patch("/api/apps/:appId/feedback/:ticketId", requireAppRole("publisher"), handleUpdateFeedback);
