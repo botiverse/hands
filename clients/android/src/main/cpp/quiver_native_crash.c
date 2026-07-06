@@ -21,6 +21,7 @@
 #define QUIVER_DIR_MAX 512
 
 static char g_crash_dir[QUIVER_DIR_MAX];
+static volatile sig_atomic_t g_handling = 0;
 static int g_fatal_signals[] = {SIGSEGV, SIGABRT, SIGBUS, SIGILL, SIGFPE, SIGTRAP};
 static struct sigaction g_previous[sizeof(g_fatal_signals) / sizeof(int)];
 static char g_altstack[SIGSTKSZ * 2];
@@ -89,6 +90,15 @@ static void quiver_copy_maps(int out_fd) {
 
 static void quiver_signal_handler(int signo, siginfo_t *info, void *ucontext) {
   (void)ucontext;
+  /* Re-entrancy guard (sentry-native inproc pattern): a crash inside the
+   * handler — e.g. unwinding a corrupted stack — must not recurse; fall
+   * straight through to the default disposition. */
+  if (g_handling) {
+    signal(signo, SIG_DFL);
+    raise(signo);
+    return;
+  }
+  g_handling = 1;
   if (g_crash_dir[0] != '\0') {
     long long ts = (long long)time(NULL) * 1000LL;
 
