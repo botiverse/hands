@@ -26,10 +26,33 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/bytemain/harmony-next-pipeline-docker/harmonyos-ci-image:latest
     env:
-      OHOS_COMMANDLINE_TOOLS_URL: ${{ secrets.OHOS_COMMANDLINE_TOOLS_URL }}
+      OHOS_TOOL_HOME: /opt/harmonyos-tools/command-line-tools
+      DEVECO_SDK_HOME: /opt/harmonyos-tools/command-line-tools/sdk
     steps:
       - uses: actions/checkout@v6
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Setup HarmonyOS command-line tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          for required_path in \
+            "$OHOS_TOOL_HOME/sdk" \
+            "$OHOS_TOOL_HOME/bin" \
+            "$OHOS_TOOL_HOME/sdk/default/openharmony/toolchains"
+          do
+            if [[ ! -d "$required_path" ]]; then
+              echo "Missing HarmonyOS tool path: $required_path" >&2
+              exit 1
+            fi
+            echo "$required_path" >> "$GITHUB_PATH"
+          done
 
       - name: Resolve version
         id: version
@@ -50,63 +73,17 @@ jobs:
           fi
           echo "value=${package_version}" >> "$GITHUB_OUTPUT"
 
-      - name: Install HarmonyOS command-line tools
-        shell: bash
-        run: |
-          set -euo pipefail
-          if [[ -z "${OHOS_COMMANDLINE_TOOLS_URL:-}" ]]; then
-            {
-              echo "Missing GitHub secret OHOS_COMMANDLINE_TOOLS_URL."
-              echo
-              echo "Set it to an authenticated/downloadable HarmonyOS Command Line Tools"
-              echo "zip URL. The zip must contain ohpm/bin, hvigor/bin, node/bin, and sdk/."
-              echo "Huawei's current command-line-tools download is account-gated, so the"
-              echo "workflow keeps the URL in a repository secret instead of hardcoding it."
-            } >&2
-            if [[ "${{ github.event_name }}" == "pull_request" ]]; then
-              # Don't leave every clients/ohos PR permanently red while the
-              # secret is unset — skip the build and say so.
-              echo "SKIP_OHOS_BUILD=1" >> "$GITHUB_ENV"
-              echo "::warning::OHOS_COMMANDLINE_TOOLS_URL secret not set; skipping HAR build check."
-              exit 0
-            fi
-            exit 1
-          fi
-
-          mkdir -p "$RUNNER_TEMP/ohos-tools"
-          curl -fsSL "$OHOS_COMMANDLINE_TOOLS_URL" -o "$RUNNER_TEMP/ohos-tools/commandline-tools.zip"
-          unzip -q "$RUNNER_TEMP/ohos-tools/commandline-tools.zip" -d "$RUNNER_TEMP/ohos-tools/unpacked"
-
-          tool_home="$(find "$RUNNER_TEMP/ohos-tools/unpacked" -type d -name ohpm -prune -print -quit)"
-          if [[ -z "${tool_home}" ]]; then
-            echo "Could not find ohpm directory in command-line-tools zip." >&2
-            find "$RUNNER_TEMP/ohos-tools/unpacked" -maxdepth 3 -type d | sort >&2
-            exit 1
-          fi
-          tool_home="$(dirname "$tool_home")"
-
-          {
-            echo "OHOS_TOOL_HOME=${tool_home}"
-            echo "DEVECO_SDK_HOME=${tool_home}/sdk"
-          } >> "$GITHUB_ENV"
-          {
-            echo "${tool_home}/sdk"
-            echo "${tool_home}/node/bin"
-            echo "${tool_home}/ohpm/bin"
-            echo "${tool_home}/hvigor/bin"
-            echo "${tool_home}/sdk/default/openharmony/toolchains"
-          } >> "$GITHUB_PATH"
-
       - name: Print tool versions
-        if: ${{ env.SKIP_OHOS_BUILD != '1' }}
         shell: bash
         run: |
           set -euo pipefail
+          command -v node
+          command -v ohpm
+          command -v hvigorw
           ohpm --version
           hvigorw --version
 
       - name: Build HAR
-        if: ${{ env.SKIP_OHOS_BUILD != '1' }}
         working-directory: clients/ohos
         shell: bash
         run: |
@@ -117,12 +94,10 @@ jobs:
           hvigorw --mode module -p module=quiver@default assembleHar --analyze=normal --parallel
 
       - name: Prepublish check
-        if: ${{ env.SKIP_OHOS_BUILD != '1' }}
         working-directory: clients/ohos
         run: ohpm prepublish quiver/build/default/outputs/default/quiver.har --log_level info
 
       - uses: actions/upload-artifact@v4
-        if: ${{ env.SKIP_OHOS_BUILD != '1' }}
         with:
           name: oranix-quiver-ohos-${{ steps.version.outputs.value }}.har
           path: clients/ohos/quiver/build/default/outputs/default/quiver.har
