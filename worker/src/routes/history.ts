@@ -68,6 +68,25 @@ export async function handlePublicAppHistory(c: Context<{ Bindings: Env }>) {
 }
 
 /**
+ * A raw CI changelog is a non-empty plain string (e.g. "Slock Android release
+ * APK #69 from local main abc123 (…)"). Curated release notes are stored as a
+ * bilingual JSON object ({"zh-cn":…,"en":…}); null means "no notes yet". Only
+ * raw strings are hidden from the public release-notes page.
+ */
+function isRawChangelog(changelog: string | null): boolean {
+  if (changelog == null) return false;
+  const trimmed = changelog.trim();
+  if (trimmed === "") return false;
+  if (!trimmed.startsWith("{")) return true;
+  try {
+    const parsed = JSON.parse(trimmed);
+    return typeof parsed !== "object" || parsed === null || Array.isArray(parsed);
+  } catch {
+    return true;
+  }
+}
+
+/**
  * Public raft-style release-notes page (task #90). Same data as the history
  * page (non-cancelled published releases, bilingual changelog) but
  * changelog-first and addressable by ?version_code=: the requested version is
@@ -93,11 +112,15 @@ export async function handlePublicReleaseNotes(c: Context<{ Bindings: Env }>) {
       ? Number(rawVc)
       : null;
   // With a version_code: show that version and everything older (previous
-  // non-cancelled versions). Without it: the full history.
-  const visible =
-    requestedCode != null
-      ? (results ?? []).filter((r) => r.version_code <= requestedCode)
-      : (results ?? []);
+  // non-cancelled versions). Without it: the full history. Also drop versions
+  // whose changelog is a raw CI string (not a curated bilingual note) — these
+  // are seed/pre-policy builds that don't belong on a user-facing page. Null
+  // changelogs are kept (they render a neutral "no release notes" line).
+  const visible = (results ?? []).filter(
+    (r) =>
+      (requestedCode == null || r.version_code <= requestedCode) &&
+      !isRawChangelog(r.changelog),
+  );
 
   const lang =
     c.req.query("lang")?.trim() ||
