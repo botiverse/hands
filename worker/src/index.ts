@@ -65,6 +65,7 @@ import {
   handleListCrashGroups,
   handleFeedbackStats,
 } from "./routes/feedback";
+import { handleDeviceRegister, handleDeviceAnalytics } from "./routes/analytics";
 import {
   handlePublicAppHistory,
   handlePublicAppHistoryDownload,
@@ -452,6 +453,7 @@ app.get("/share/:token", handlePublicReleaseShare);
 app.post("/share/:token/unlock", handlePublicReleaseShareUnlock);
 app.get("/share/:token/icon", handlePublicReleaseShareIcon);
 app.post("/public/v2/apps/:slug/feedback", handlePublicFeedbackSubmit);
+app.post("/public/v2/apps/:slug/devices", handleDeviceRegister);
 app.get("/public/apps/:slug/icon", handlePublicAppIcon);
 app.get("/apps/:slug/history", handlePublicAppHistory);
 app.get("/apps/:slug/history/:releaseId/download", handlePublicAppHistoryDownload);
@@ -570,6 +572,7 @@ admin.get("/api/apps/:appId/client-key", requireAppRole("admin"), handleGetClien
 admin.post("/api/apps/:appId/rotate-client-key", requireAppRole("admin"), handleRotateClientKey);
 admin.get("/api/apps/:appId/feedback/crash-groups", requireAppRole("viewer"), handleListCrashGroups);
 admin.get("/api/apps/:appId/feedback/stats", requireAppRole("viewer"), handleFeedbackStats);
+admin.get("/api/apps/:appId/analytics/devices", requireAppRole("viewer"), handleDeviceAnalytics);
 admin.get("/api/apps/:appId/feedback", requireAppRole("viewer"), handleListFeedback);
 admin.get("/api/apps/:appId/feedback/:ticketId", requireAppRole("viewer"), handleGetFeedback);
 admin.patch("/api/apps/:appId/feedback/:ticketId", requireAppRole("publisher"), handleUpdateFeedback);

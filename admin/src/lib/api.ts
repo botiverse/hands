@@ -1186,6 +1186,20 @@ export interface CrashGroup {
   open_count: number;
 }
 
+export interface DeviceAnalytics {
+  active_devices: number;
+  window_start: number;
+  by_version: Array<{ version_name: string; version_code: number | null; devices: number }>;
+  by_platform: Array<{ platform: string; devices: number }>;
+  by_channel: Array<{ channel: string; devices: number }>;
+}
+
+export const getDeviceAnalytics = (appId: string, windowDays = 30) =>
+  request<DeviceAnalytics>(
+    `/api/apps/${appId}/analytics/devices?window_days=${windowDays}`,
+    { admin: true },
+  );
+
 export interface FeedbackStats {
   daily: Array<{ day: string; kind: string; n: number }>;
   crashes_by_version: Array<{ version_name: string; version_code: number | null; n: number }>;

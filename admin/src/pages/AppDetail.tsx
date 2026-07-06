@@ -1,3 +1,4 @@
+import { DeviceAnalytics } from "../components/DeviceAnalytics";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 import { ConfirmActionDialog, TypedConfirmField } from "../components/ConfirmActionDialog";
@@ -80,6 +81,10 @@ export function AppDetail({ appId }: { appId: string }) {
             </a>
           )}
         </div>
+      </section>
+
+      <section className="mt-6">
+        <DeviceAnalytics appId={appId} />
       </section>
 
       <section className="mt-8">

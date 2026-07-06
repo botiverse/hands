@@ -115,6 +115,22 @@ tickets can additionally trigger `crash:new_group` / `crash:spike`). The
 Android SDK's `QuiverFeedback.submit(...)` wraps this endpoint and attaches
 device metadata automatically.
 
+## Device Register (telemetry)
+
+```http
+POST /public/v2/apps/:appSlug/devices
+Content-Type: application/json
+X-Quiver-Client-Key: qk_...
+X-Quiver-Device-Id: <stable per-install uuid>
+```
+
+A lightweight launch ping (client throttles to ≤1/day/device) that powers
+active-device and version-distribution analytics. Body is a JSON metadata
+object (`version_name`, `version_code`, `channel`, `platform`, `arch`,
+`os_version`, `device_model`, `locale`). The server upserts one row per
+`(app, device id)` — no PII; the device id is a random per-install UUID.
+Requires the app **client key** (same as feedback). Returns `202`.
+
 ## Share Pages
 
 - `GET /share/:token` — public download page for one release (view/download

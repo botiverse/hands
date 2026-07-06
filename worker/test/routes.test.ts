@@ -257,6 +257,22 @@ function makeMockDb() {
       created_at INTEGER NOT NULL,
       updated_at INTEGER NOT NULL
     );
+    CREATE TABLE device_pings (
+      app_id TEXT NOT NULL,
+      device_id TEXT NOT NULL,
+      version_name TEXT,
+      version_code INTEGER,
+      channel TEXT,
+      platform TEXT,
+      arch TEXT,
+      os_version TEXT,
+      device_model TEXT,
+      locale TEXT,
+      first_seen INTEGER NOT NULL,
+      last_seen INTEGER NOT NULL,
+      ping_count INTEGER NOT NULL DEFAULT 1,
+      PRIMARY KEY (app_id, device_id)
+    );
     CREATE TABLE feedback_attachments (
       id TEXT PRIMARY KEY,
       ticket_id TEXT NOT NULL,
@@ -3377,6 +3393,54 @@ describe("quiver public API v2 — scope resolution", () => {
     ).bind("wh-crash").all()).results as Array<{ event_type: string }>;
     expect(deliveries.filter((d) => d.event_type === "crash:new_group").length).toBe(2);
     expect(deliveries.filter((d) => d.event_type === "crash:spike").length).toBe(0);
+  });
+
+  it("devices: register upserts per device and analytics aggregates by version", async () => {
+    const env = makeEnv();
+    const { handleDeviceRegister, handleDeviceAnalytics } = await import("../src/routes/analytics");
+    const ping = (deviceId: string, versionName: string, versionCode: number, platform: string) => {
+      const body = { version_name: versionName, version_code: versionCode, platform, channel: "main" };
+      return handleDeviceRegister({
+        env,
+        req: {
+          param: (n: string) => (n === "slug" ? "scope-app" : ""),
+          header: (n: string) =>
+            n === "X-Quiver-Client-Key" ? "qk_test" : n === "X-Quiver-Device-Id" ? deviceId : undefined,
+          query: () => undefined,
+          json: async () => body,
+        },
+        json: (data: unknown, status = 200) => new Response(JSON.stringify(data), { status }),
+      } as any);
+    };
+    // wrong key -> 401
+    const bad = await handleDeviceRegister({
+      env,
+      req: {
+        param: (n: string) => (n === "slug" ? "scope-app" : ""),
+        header: () => undefined,
+        query: () => undefined,
+        json: async () => ({}),
+      },
+      json: (data: unknown, status = 200) => new Response(JSON.stringify(data), { status }),
+    } as any);
+    expect(bad.status).toBe(401);
+
+    expect((await ping("devA", "1.0.2", 1000200, "android")).status).toBe(202);
+    expect((await ping("devB", "1.0.2", 1000200, "android")).status).toBe(202);
+    expect((await ping("devA", "1.0.2", 1000200, "android")).status).toBe(202); // upsert, not a new row
+    expect((await ping("devC", "1.0.1", 1000101, "android")).status).toBe(202);
+
+    const res = await handleDeviceAnalytics({
+      env,
+      req: { param: (n: string) => (n === "appId" ? "app-scope" : ""), query: () => undefined },
+      json: (data: unknown, status = 200) => new Response(JSON.stringify(data), { status }),
+    } as any);
+    const body = await responseJson<any>(res);
+    expect(body.active_devices).toBe(3); // devA (deduped), devB, devC
+    const v102 = body.by_version.find((v: any) => v.version_code === 1000200);
+    expect(v102.devices).toBe(2);
+    expect(body.by_platform[0].platform).toBe("android");
+    expect(body.by_platform[0].devices).toBe(3);
   });
 
   it("feedback: client key is always required", async () => {
