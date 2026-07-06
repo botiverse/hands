@@ -48,6 +48,20 @@ const pages = [
     source: "android-sdk.md",
   },
   {
+    slug: "ios-sdk",
+    title: "iOS SDK",
+    category: "SDKs & API",
+    description: "Feedback tickets and store-then-send crash reporting for iOS (the Quiver CocoaPod).",
+    source: "ios-sdk.md",
+  },
+  {
+    slug: "ohos-sdk",
+    title: "HarmonyOS SDK",
+    category: "SDKs & API",
+    description: "Feedback tickets and crash reporting for HarmonyOS (the @oranix/quiver ohpm package).",
+    source: "ohos-sdk.md",
+  },
+  {
     slug: "public-api-reference",
     title: "Public API Reference",
     category: "SDKs & API",
