@@ -41,19 +41,21 @@ export function AppFeedback({ appId }: { appId: string }) {
   const [kindFilter, setKindFilter] = useState<string>(searchParams.get("kind") ?? "");
   const deviceFilter = searchParams.get("device_id") ?? "";
   const versionFilter = searchParams.get("version_code") ?? "";
+  const signatureFilter = searchParams.get("signature") ?? "";
 
   const tickets = useQuery({
-    queryKey: ["feedback", appId, statusFilter, kindFilter, deviceFilter, versionFilter],
+    queryKey: ["feedback", appId, statusFilter, kindFilter, deviceFilter, versionFilter, signatureFilter],
     queryFn: () =>
       listFeedback(appId, {
         status: statusFilter || undefined,
         kind: kindFilter || undefined,
         deviceId: deviceFilter || undefined,
         versionCode: versionFilter ? Number(versionFilter) : undefined,
+        signature: signatureFilter || undefined,
       }),
   });
 
-  const clearScopeFilter = (key: "device_id" | "version_code") => {
+  const clearScopeFilter = (key: "device_id" | "version_code" | "signature") => {
     const next = new URLSearchParams(searchParams);
     next.delete(key);
     setSearchParams(next);
@@ -80,7 +82,27 @@ export function AppFeedback({ appId }: { appId: string }) {
           </button>
         </div>
       )}
-      {!deviceFilter && !versionFilter && <FeedbackTrends appId={appId} />}
+      {signatureFilter && (
+        <div className="card !p-3">
+          <div className="flex items-start justify-between gap-3">
+            <div className="min-w-0">
+              <div className="text-xs text-slate-500">Crash signature</div>
+              <code className="text-xs break-all">{signatureFilter}</code>
+              {rows.length > 0 && (
+                <div className="mt-1 text-xs text-slate-500">
+                  {rows.length} instance{rows.length === 1 ? "" : "s"} ·{" "}
+                  {new Set(rows.map((r) => r.version_code).filter(Boolean)).size} version(s) ·{" "}
+                  {new Set(rows.map((r) => r.device_id).filter(Boolean)).size} device(s)
+                </div>
+              )}
+            </div>
+            <button className="text-blue-600 hover:underline text-xs flex-none" onClick={() => clearScopeFilter("signature")}>
+              clear
+            </button>
+          </div>
+        </div>
+      )}
+      {!deviceFilter && !versionFilter && !signatureFilter && <FeedbackTrends appId={appId} />}
       <div className="flex items-center justify-between flex-wrap gap-2">
         <div>
           <h2 className="text-lg font-semibold">Feedback</h2>

@@ -1084,6 +1084,7 @@ export interface FeedbackTicket {
   version_name: string | null;
   version_code: number | null;
   channel: string | null;
+  device_id: string | null;
   device_model: string | null;
   os_version: string | null;
   created_at: number;
@@ -1094,7 +1095,6 @@ export interface FeedbackTicket {
 
 export interface FeedbackDetail {
   ticket: FeedbackTicket & {
-    device_id: string | null;
     arch: string | null;
     locale: string | null;
     metadata_json: string;
@@ -1122,6 +1122,7 @@ export const listFeedback = (
     kind?: string | undefined;
     deviceId?: string | undefined;
     versionCode?: number | undefined;
+    signature?: string | undefined;
   },
 ) => {
   const params = new URLSearchParams();
@@ -1129,6 +1130,7 @@ export const listFeedback = (
   if (filters?.kind) params.set("kind", filters.kind);
   if (filters?.deviceId) params.set("device_id", filters.deviceId);
   if (filters?.versionCode != null) params.set("version_code", String(filters.versionCode));
+  if (filters?.signature) params.set("signature", filters.signature);
   const qs = params.toString();
   return request<{ tickets: FeedbackTicket[] }>(
     `/api/apps/${appId}/feedback${qs ? `?${qs}` : ""}`,
