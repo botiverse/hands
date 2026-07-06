@@ -128,14 +128,26 @@ jobs:
           ohpm config set key_path "$key_path"
           ohpm config set crypto_path "$crypto_path"
 
-          ohpm_root="$(dirname "$(dirname "$(command -v ohpm)")")"
-          encrypted_passphrase="$(OHPM_ROOT="$ohpm_root" CRYPTO_PATH="$crypto_path" node <<'NODE'
+          ohpm_bin="$(command -v ohpm)"
+          crypto_module="$(
+            find \
+              "$(dirname "$(dirname "$ohpm_bin")")" \
+              "$(dirname "$(dirname "$(dirname "$ohpm_bin")")")" \
+              "${OHOS_TOOL_HOME:-}" \
+              -path '*/lib/core/config-encrypt/crypto/index.js' \
+              -print -quit 2>/dev/null || true
+          )"
+          if [[ -z "$crypto_module" ]]; then
+            echo "Unable to locate OHPM crypto module near $ohpm_bin" >&2
+            exit 1
+          fi
+
+          encrypted_passphrase="$(OHPM_CRYPTO_MODULE="$crypto_module" CRYPTO_PATH="$crypto_path" node <<'NODE'
           const fs = require('node:fs');
-          const path = require('node:path');
           const cryptoPath = process.env.CRYPTO_PATH;
-          const ohpmRoot = process.env.OHPM_ROOT;
+          const cryptoModule = process.env.OHPM_CRYPTO_MODULE;
           const passphrase = process.env.OHPM_KEY_PASSPHRASE;
-          const mod = require(path.join(ohpmRoot, 'lib/core/config-encrypt/crypto/index.js'));
+          const mod = require(cryptoModule);
 
           (async () => {
             if (!fs.existsSync(cryptoPath) || fs.readdirSync(cryptoPath).length === 0) {
