@@ -67,14 +67,13 @@ cookies, or other credentials into public Raft channels.
 
 - Always use worktrees for coding work. Do not create new commits directly on
   the canonical `main` checkout.
-- Never push remote `main` directly unless the owner explicitly authorizes that
-  push for the specific task. Merge finished work into local `main` only after
-  validation.
+- Do not push remote `main` directly. GitHub `main` is protected; finish work
+  on a task branch and open a pull request.
 - Do not revert or clean unrelated dirty files. If the canonical checkout is
   dirty, inspect carefully and preserve other agents' changes.
 - Every meaningful progress or completion report must say whether the work is
-  branch/worktree-only, merged into local `main`, pushed to remote `main`, or
-  not applicable. If merged, include the local `main` commit hash.
+  branch/worktree-only, opened as a PR, merged, or not applicable. Include the
+  branch, commit, and PR link when they exist.
 
 Create a worktree from the canonical checkout:
 
@@ -156,6 +155,11 @@ publish`).
 - `docs/public/*` is the canonical user-facing documentation, served at
   `/docs` on the production origin. Update it in the same PR as behavior
   changes.
+- `docs/public/raft-app-template.md` captures the reusable Raft-native app
+  pattern: Login with Raft, Agent Login manifest, generated OpenAPI,
+  agent-friendly CLI/docs, auditability, and production-change governance.
+  Use it when designing or reviewing new Raft apps that should be operated by
+  both humans and agents.
 - Top-level `docs/{admin-user-guide,cli-reference,public-api-reference}.md`
   are retired pointer stubs — do not resurrect them.
 - `docs/publish-architecture.md`, `docs/publish-tasks.md`, and

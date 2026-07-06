@@ -27,6 +27,13 @@ const pages = [
     source: "agent-cli-feedback.md",
   },
   {
+    slug: "raft-app-template",
+    title: "Raft App Template",
+    category: "For agents",
+    description: "Reusable app patterns for Raft login, Agent Login, OpenAPI, docs, CLI, and auditability.",
+    source: "raft-app-template.md",
+  },
+  {
     slug: "admin-user-guide",
     title: "Admin User Guide",
     category: "Console",
