@@ -290,15 +290,13 @@ function renderReleaseNotesPage(
     h1 { margin: 0; font-size: 22px; letter-spacing: -0.01em; }
     .sub { color: #707782; font-size: 13px; margin-top: 3px; }
     ul { list-style: none; margin: 0; padding: 0; }
-    .entry { display: grid; grid-template-columns: 20px 1fr; gap: 0; }
-    .rail { position: relative; }
-    .rail .dot { position: absolute; top: 22px; left: 4px; width: 9px; height: 9px; border-radius: 50%; background: #c3c7cd; box-shadow: 0 0 0 4px #f5f5f2; }
-    .entry::before { content: ""; grid-column: 1; justify-self: center; width: 2px; background: #e0e0dc; }
-    .entry:first-child::before { margin-top: 22px; }
-    .entry:last-child::before { margin-bottom: calc(100% - 22px); }
-    .card { padding: 14px 0 22px 8px; min-width: 0; }
+    .entry { position: relative; padding: 0 0 24px 26px; }
+    .entry::before { content: ""; position: absolute; left: 4px; top: 10px; bottom: 0; width: 2px; background: #e0e0dc; }
+    .entry:last-child::before { display: none; }
+    .rail .dot { position: absolute; left: 0; top: 8px; width: 9px; height: 9px; border-radius: 50%; background: #c3c7cd; box-shadow: 0 0 0 3px #f5f5f2; }
     .featured .rail .dot { background: var(--accent); }
-    .featured .card { background: rgba(23,111,93,0.06); border-radius: 10px; padding: 14px 16px 18px; margin-bottom: 8px; }
+    .card { min-width: 0; }
+    .featured .card { background: rgba(23,111,93,0.06); border-radius: 10px; padding: 12px 14px; margin: -6px -14px 0; }
     .head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
     .title strong { font-size: 16px; }
     .meta { color: #707782; font-size: 13px; margin-left: 8px; }
