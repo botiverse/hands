@@ -720,7 +720,16 @@ function AppsListWithNav() {
   if (!showAll && !openNew && apps.data) {
     const active = apps.data.apps.filter((a) => !a.archived);
     if (active.length > 0) {
-      return <Navigate to={`/apps/${active[0]!.id}`} replace />;
+      // Remember the last app the operator was in; fall back to the first
+      // active app when there's no stored choice or it no longer exists.
+      let target = active[0]!.id;
+      try {
+        const last = window.localStorage.getItem(LAST_APP_KEY);
+        if (last && active.some((a) => a.id === last)) target = last;
+      } catch {
+        // storage disabled — use the default
+      }
+      return <Navigate to={`/apps/${target}`} replace />;
     }
   }
   const zeroApps = apps.data ? apps.data.apps.filter((a) => !a.archived).length === 0 : false;
@@ -857,7 +866,19 @@ function AppSidebar() {
   );
 }
 
+const LAST_APP_KEY = "quiver:last-app-id";
+
 function AppShell() {
+  const { appId } = useParams();
+  useEffect(() => {
+    if (appId) {
+      try {
+        window.localStorage.setItem(LAST_APP_KEY, appId);
+      } catch {
+        // private-mode / storage disabled — non-fatal
+      }
+    }
+  }, [appId]);
   return (
     <div className="flex flex-1 min-h-0 items-stretch">
       <AppSidebar />
