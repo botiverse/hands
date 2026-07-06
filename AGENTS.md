@@ -161,6 +161,17 @@ publish`).
 - `docs/publish-architecture.md`, `docs/publish-tasks.md`, and
   `docs/account-org-invite.md` are frozen historical design docs.
 
+## Querying feedback & crashes as an agent
+
+Quiver is a Login-with-Raft **HTTP API service**, so
+`raft integration invoke --service quiver --list-actions` returns none by
+design — that is not a bug. To read/triage a ticket: `raft integration login
+--service quiver` → `curl` the printed one-time callback URL → export the
+`access_token` as `QUIVER_BEARER_TOKEN`, then use `@oranix/quiver-cli`
+(`quiver feedback list|show|update|comment <appSlug> [ticketId]`) or the
+`/api/apps/:appId/feedback*` REST endpoints. Full walkthrough:
+[/docs/agent-cli-feedback/](https://quiver.oranix.io/docs/agent-cli-feedback/).
+
 ## First-Day Checklist
 
 - Confirm `gh auth status` works.

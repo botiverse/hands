@@ -416,6 +416,7 @@ const publicDocs = new Set([
   "/docs/admin-user-guide/",
   "/docs/android-sdk/",
   "/docs/cli-reference/",
+  "/docs/agent-cli-feedback/",
   "/docs/public-api-reference/",
 ]);
 

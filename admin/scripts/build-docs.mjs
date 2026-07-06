@@ -27,6 +27,12 @@ const pages = [
     source: "cli-reference.md",
   },
   {
+    slug: "agent-cli-feedback",
+    title: "Agent CLI: Feedback Triage",
+    description: "Read and triage feedback/crash tickets from the command line with @oranix/quiver-cli.",
+    source: "agent-cli-feedback.md",
+  },
+  {
     slug: "android-sdk",
     title: "Android SDK",
     description: "In-app update checks, staged rollouts, feedback, and crash reporting for Android.",
