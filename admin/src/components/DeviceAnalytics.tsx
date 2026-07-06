@@ -4,11 +4,13 @@
  * Inline SVG-free (CSS bars); colors use the validated categorical blue.
  */
 import { useQuery } from "@tanstack/react-query";
+import { useNavigate } from "react-router-dom";
 import { getDeviceAnalytics } from "../lib/api";
 
 const BAR_COLOR = "#2a78d6";
 
 export function DeviceAnalytics({ appId }: { appId: string }) {
+  const navigate = useNavigate();
   const analytics = useQuery({
     queryKey: ["device-analytics", appId],
     queryFn: () => getDeviceAnalytics(appId, 30),
@@ -41,14 +43,17 @@ export function DeviceAnalytics({ appId }: { appId: string }) {
             {data.by_version.map((v) => {
               const pct = Math.round((v.devices / data.active_devices) * 100);
               return (
-                <div
+                <button
                   key={`${v.version_name}-${v.version_code}`}
-                  className="flex items-center gap-2 text-xs"
+                  type="button"
+                  className="flex w-full items-center gap-2 text-xs hover:opacity-80"
+                  title={v.version_code ? `Feedback on version ${v.version_code}` : v.version_name}
+                  onClick={() =>
+                    v.version_code != null &&
+                    navigate(`/apps/${appId}/feedback?version_code=${v.version_code}`)
+                  }
                 >
-                  <span
-                    className="w-24 truncate text-slate-600"
-                    title={`${v.version_name} (${v.version_code ?? "?"})`}
-                  >
+                  <span className="w-24 truncate text-left text-slate-600">
                     {v.version_name}
                   </span>
                   <div className="flex-1 h-3.5">
@@ -64,7 +69,7 @@ export function DeviceAnalytics({ appId }: { appId: string }) {
                   <span className="w-14 text-right tabular-nums text-slate-700">
                     {v.devices} · {pct}%
                   </span>
-                </div>
+                </button>
               );
             })}
           </div>

@@ -103,6 +103,21 @@ function windowStart(c: AdminContext): number {
  * Active-device analytics: total active devices in the window, plus version,
  * platform, and channel breakdowns. "Active" = last_seen within the window.
  */
+/** One device's telemetry row (version, model, seen times, ping count). */
+export async function handleDeviceDetail(c: AdminContext) {
+  const appId = c.req.param("appId");
+  const deviceId = c.req.param("deviceId");
+  const row = await c.env.DB.prepare(
+    `SELECT device_id, version_name, version_code, channel, platform, arch,
+            os_version, device_model, locale, first_seen, last_seen, ping_count
+     FROM device_pings WHERE app_id = ?1 AND device_id = ?2`,
+  )
+    .bind(appId, deviceId)
+    .first();
+  if (!row) return c.json({ device: null });
+  return c.json({ device: row });
+}
+
 export async function handleDeviceAnalytics(c: AdminContext) {
   const appId = c.req.param("appId");
   const since = windowStart(c);
