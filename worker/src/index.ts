@@ -70,6 +70,7 @@ import { handleDeviceRegister, handleDeviceAnalytics, handleDeviceDetail } from 
 import {
   handlePublicAppHistory,
   handlePublicAppHistoryDownload,
+  handlePublicReleaseNotes,
 } from "./routes/history";
 import {
   handleCreateAppDeployToken,
@@ -459,6 +460,7 @@ app.post("/public/v2/apps/:slug/feedback/presign", handlePresignFeedbackAttachme
 app.get("/public/apps/:slug/icon", handlePublicAppIcon);
 app.get("/apps/:slug/history", handlePublicAppHistory);
 app.get("/apps/:slug/history/:releaseId/download", handlePublicAppHistoryDownload);
+app.get("/notes/:slug", handlePublicReleaseNotes);
 app.get("/api/invites/:token", handleGetInvite);
 
 function isWorkerRoute(pathname: string): boolean {
