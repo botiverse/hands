@@ -7,40 +7,50 @@ const repoRoot = path.resolve(here, "../..");
 const docsRoot = path.join(repoRoot, "docs/public");
 const outRoot = path.join(repoRoot, "admin/public/docs");
 
+// Docs are grouped by audience; CATEGORY_ORDER controls section order in the
+// sidebar and on the index. Quiver is agent-native, so "For agents" leads.
+const CATEGORY_ORDER = ["For agents", "Console", "SDKs & API"];
+
 const pages = [
   {
     slug: "agent-guide",
     title: "Agent Guide",
+    category: "For agents",
     description: "How AI agents authenticate (Raft Agent Login, deploy tokens) and run releases, tickets, and shares.",
     source: "agent-guide.md",
   },
   {
+    slug: "agent-cli-feedback",
+    title: "Agent CLI: Feedback Triage",
+    category: "For agents",
+    description: "Read and triage feedback/crash tickets from the command line with @oranix/quiver-cli.",
+    source: "agent-cli-feedback.md",
+  },
+  {
     slug: "admin-user-guide",
     title: "Admin User Guide",
+    category: "Console",
     description: "Using the Quiver admin console: apps, releases, builds, access, and troubleshooting.",
     source: "admin-user-guide.md",
   },
   {
     slug: "cli-reference",
     title: "CLI Reference",
+    category: "SDKs & API",
     description: "Install and use @oranix/quiver-cli from local scripts or CI.",
     source: "cli-reference.md",
   },
   {
-    slug: "agent-cli-feedback",
-    title: "Agent CLI: Feedback Triage",
-    description: "Read and triage feedback/crash tickets from the command line with @oranix/quiver-cli.",
-    source: "agent-cli-feedback.md",
-  },
-  {
     slug: "android-sdk",
     title: "Android SDK",
+    category: "SDKs & API",
     description: "In-app update checks, staged rollouts, feedback, and crash reporting for Android.",
     source: "android-sdk.md",
   },
   {
     slug: "public-api-reference",
     title: "Public API Reference",
+    category: "SDKs & API",
     description: "Public update-check, latest-release, and client integration contracts.",
     source: "public-api-reference.md",
   },
@@ -182,11 +192,33 @@ function renderMarkdown(markdown) {
   return html.join("\n");
 }
 
+function pagesByCategory() {
+  const groups = new Map();
+  for (const page of pages) {
+    const cat = page.category ?? "Other";
+    if (!groups.has(cat)) groups.set(cat, []);
+    groups.get(cat).push(page);
+  }
+  const ordered = [];
+  for (const cat of CATEGORY_ORDER) {
+    if (groups.has(cat)) ordered.push([cat, groups.get(cat)]);
+  }
+  for (const [cat, list] of groups) {
+    if (!CATEGORY_ORDER.includes(cat)) ordered.push([cat, list]);
+  }
+  return ordered;
+}
+
 function layout({ title, description, body, activeSlug }) {
-  const nav = pages
+  const nav = pagesByCategory()
     .map(
-      (page) =>
-        `<a class="${page.slug === activeSlug ? "active" : ""}" href="/docs/${page.slug}/">${escapeHtml(page.title)}</a>`,
+      ([category, list]) =>
+        `<div class="nav-group"><div class="nav-cat">${escapeHtml(category)}</div>${list
+          .map(
+            (page) =>
+              `<a class="${page.slug === activeSlug ? "active" : ""}" href="/docs/${page.slug}/">${escapeHtml(page.title)}</a>`,
+          )
+          .join("")}</div>`,
     )
     .join("");
   return `<!doctype html>
@@ -213,6 +245,8 @@ function layout({ title, description, body, activeSlug }) {
     aside { position: sticky; top: 18px; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 10px; }
     aside a { display: block; padding: 9px 10px; border-radius: 6px; color: var(--muted); font-size: 14px; }
     aside a.active { background: #f1f5f9; color: var(--ink); font-weight: 700; }
+    .nav-group + .nav-group { margin-top: 12px; }
+    .nav-cat { padding: 6px 10px 4px; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; color: #94a3b8; }
     main { min-width: 0; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 28px; }
     .eyebrow { color: var(--muted); font-size: 13px; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; }
     h1 { margin: 8px 0 10px; font-size: 38px; line-height: 1.12; letter-spacing: 0; }
@@ -234,6 +268,8 @@ function layout({ title, description, body, activeSlug }) {
     .card { display: block; border: 1px solid var(--line); border-radius: 8px; padding: 16px; background: var(--panel); color: var(--ink); }
     .card strong { display: block; margin-bottom: 6px; }
     .card span { color: var(--muted); font-size: 14px; line-height: 1.55; }
+    .cat-heading { margin: 28px 0 4px; padding-top: 0; border-top: 0; font-size: 15px; text-transform: uppercase; letter-spacing: .06em; color: #64748b; }
+    .cat-heading:first-child { margin-top: 8px; }
     @media (max-width: 820px) {
       .top { align-items: flex-start; flex-direction: column; }
       .shell { grid-template-columns: 1fr; padding: 18px 16px 42px; }
@@ -269,13 +305,17 @@ function layout({ title, description, body, activeSlug }) {
 }
 
 function indexPage() {
-  const cards = pages
+  const body = pagesByCategory()
     .map(
-      (page) =>
-        `<a class="card" href="/docs/${page.slug}/"><strong>${escapeHtml(page.title)}</strong><span>${escapeHtml(page.description)}</span></a>`,
+      ([category, list]) =>
+        `<h2 class="cat-heading">${escapeHtml(category)}</h2><div class="cards">${list
+          .map(
+            (page) =>
+              `<a class="card" href="/docs/${page.slug}/"><strong>${escapeHtml(page.title)}</strong><span>${escapeHtml(page.description)}</span></a>`,
+          )
+          .join("")}</div>`,
     )
     .join("");
-  const body = `<div class="cards">${cards}</div>`;
   return layout({
     title: "Documentation",
     description: "Product, admin, CLI, and API documentation for Quiver.",
