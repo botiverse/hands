@@ -769,8 +769,30 @@ function renderPasswordPage(token: string, failed: boolean): string {
 function renderErrorPage(message: string): string {
   return `<!doctype html>
 <html lang="en">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Share unavailable</title></head>
-<body><main><h1>Share unavailable</h1><p>${escapeHtml(message)}</p></main></body>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Share unavailable</title>
+  <style>
+    :root { color-scheme: light dark; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+    body { margin: 0; min-height: 100vh; display: grid; place-items: center; background: #f5f5f2; color: #1e1f22; }
+    main { width: min(360px, calc(100vw - 32px)); text-align: center; }
+    .badge { width: 44px; height: 44px; margin: 0 auto 16px; border-radius: 12px; display: grid; place-items: center; background: rgba(125,125,125,0.12); font-size: 22px; }
+    h1 { margin: 0 0 8px; font-size: 22px; line-height: 1.2; }
+    p { margin: 0; color: #5b616e; line-height: 1.5; }
+    @media (prefers-color-scheme: dark) {
+      body { background: #17191c; color: #f5f5f2; }
+      p { color: #aeb5bf; }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <div class="badge" aria-hidden="true">🔗</div>
+    <h1>Share unavailable</h1>
+    <p>${escapeHtml(message)}</p>
+  </main>
+</body>
 </html>`;
 }
 
