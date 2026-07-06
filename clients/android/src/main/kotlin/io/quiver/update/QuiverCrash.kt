@@ -48,8 +48,12 @@ object QuiverCrash {
         clientKey: String? = null,
         copyToClipboard: Boolean = true,
         uploadOnLaunch: Boolean = true,
+        captureNativeCrashes: Boolean = true,
         extraContext: (() -> String)? = null,
     ) {
+        if (captureNativeCrashes) {
+            QuiverNativeCrash.install(context.applicationContext)
+        }
         if (!installed.compareAndSet(false, true)) return
         val appContext = context.applicationContext
         val defaultHandler = Thread.getDefaultUncaughtExceptionHandler()
@@ -82,6 +86,13 @@ object QuiverCrash {
             thread(name = "quiver-crash-upload", isDaemon = true) {
                 runCatching {
                     uploadPending(appContext, baseUrl, appSlug, versionName, versionCode, channel, clientKey)
+                    if (captureNativeCrashes) {
+                        runCatching {
+                            QuiverNativeCrash.uploadPending(
+                                appContext, baseUrl, appSlug, versionName, versionCode, channel, clientKey,
+                            )
+                        }
+                    }
                 }
                     .onFailure { Log.w(TAG, "Crash upload pass failed", it) }
             }
