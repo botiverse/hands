@@ -307,7 +307,8 @@ function renderReleaseNotesPage(
   <title>${esc(app.name)} — Release Notes</title>
   <style>
     :root { color-scheme: light dark; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; --accent: #176f5d; }
-    body { margin: 0; background: #f5f5f2; color: #1e1f22; }
+    html { background: #f5f5f2; }
+    body { margin: 0; min-height: 100vh; background: #f5f5f2; color: #1e1f22; }
     main { max-width: 640px; margin: 0 auto; padding: 28px 16px 56px; }
     header { margin-bottom: 20px; }
     h1 { margin: 0; font-size: 22px; letter-spacing: -0.01em; }
@@ -335,6 +336,7 @@ function renderReleaseNotesPage(
     .notes code { background: rgba(125,125,125,0.15); border-radius: 4px; padding: 1px 4px; font-size: 0.92em; }
     .empty { color: #707782; font-size: 14px; }
     @media (prefers-color-scheme: dark) {
+      html { background: #17191c; }
       body { background: #17191c; color: #f5f5f2; }
       .sub, .meta, .date, .notes.muted { color: #aeb5bf; }
       .notes { color: #d2d6dc; }
