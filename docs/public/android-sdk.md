@@ -116,6 +116,26 @@ readable (deobfuscated) stacks in the console, publish the release with its
 R8/ProGuard `mapping.txt` as a `proguard-mapping` build asset — Quiver
 retraces crash reports for that `versionCode` automatically.
 
+## Device analytics
+
+`QuiverAnalytics.reportDevice(...)` sends a lightweight launch ping
+(throttled to ≤1/day/install) that powers the console's active-device and
+version-distribution views. No PII — only the random per-install device id
+and build/OS metadata.
+
+```kotlin
+// e.g. from Application.onCreate, in a coroutine
+QuiverAnalytics.reportDevice(
+    context = this,
+    baseUrl = BuildConfig.QUIVER_BASE_URL,
+    appSlug = BuildConfig.QUIVER_APP_SLUG,
+    versionName = BuildConfig.VERSION_NAME,
+    versionCode = BuildConfig.VERSION_CODE.toLong(),
+    channel = BuildConfig.QUIVER_CHANNEL,
+    clientKey = BuildConfig.QUIVER_CLIENT_KEY,
+)
+```
+
 ## Notes
 
 - All network calls are suspend functions; call them off the main thread.
