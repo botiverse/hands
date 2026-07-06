@@ -1,5 +1,9 @@
 # Public API Reference
 
+> **Interactive API explorer:** the full request/response schemas live in
+> the OpenAPI spec — browse and try them at [/api-docs](/api-docs)
+> ([openapi.json](/openapi.json)).
+
 Quiver's public API lets apps check for updates, download release artifacts, submit feedback, and view share/history pages without a Quiver admin session.
 
 Use the admin API or CLI for publishing. Use the public API from clients.
