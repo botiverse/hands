@@ -34,6 +34,12 @@ interface QuiverPresignResponse {
   uploads?: QuiverPresignUpload[];
 }
 
+interface QuiverPresignRequestFile {
+  filename: string;
+  content_type: string;
+  size: number;
+}
+
 interface QuiverPresignedRef {
   r2_key: string;
   filename: string;
@@ -188,7 +194,7 @@ export class QuiverFeedbackClient {
     client: http.HttpRequest,
     paths: string[],
   ): Promise<QuiverPresignedRef[]> {
-    const requestFiles = paths.map((path) => {
+    const requestFiles: QuiverPresignRequestFile[] = paths.map((path): QuiverPresignRequestFile => {
       const fileName = path.split('/').pop() ?? 'attachment';
       return {
         filename: fileName,
