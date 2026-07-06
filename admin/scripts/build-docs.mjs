@@ -11,6 +11,9 @@ const outRoot = path.join(repoRoot, "admin/public/docs");
 // sidebar and on the index. Quiver is agent-native, so "For agents" leads.
 const CATEGORY_ORDER = ["For agents", "Console", "SDKs & API"];
 
+// Lucide "external-link" (24x24), used for the OpenAPI explorer nav entry.
+const EXTERNAL_ICON = ` <svg class="ext-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 3h6v6"/><path d="M10 14 21 3"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/></svg>`;
+
 const pages = [
   {
     slug: "agent-guide",
@@ -232,7 +235,10 @@ function layout({ title, description, body, activeSlug }) {
             (page) =>
               `<a class="${page.slug === activeSlug ? "active" : ""}" href="/docs/${page.slug}/">${escapeHtml(page.title)}</a>`,
           )
-          .join("")}</div>`,
+          .join("")}</div>` +
+        (category === "SDKs & API"
+          ? `<a class="nav-external" href="/api-docs" target="_blank" rel="noopener noreferrer">API explorer${EXTERNAL_ICON}</a>`
+          : ""),
     )
     .join("");
   return `<!doctype html>
@@ -261,6 +267,8 @@ function layout({ title, description, body, activeSlug }) {
     aside a.active { background: #f1f5f9; color: var(--ink); font-weight: 700; }
     .nav-group + .nav-group { margin-top: 12px; }
     .nav-cat { padding: 6px 10px 4px; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; color: #94a3b8; }
+    .nav-external { display: flex; align-items: center; justify-content: space-between; gap: 6px; }
+    .ext-icon { width: 13px; height: 13px; flex: none; opacity: .6; }
     main { min-width: 0; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 28px; }
     .eyebrow { color: var(--muted); font-size: 13px; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; }
     h1 { margin: 8px 0 10px; font-size: 38px; line-height: 1.12; letter-spacing: 0; }
