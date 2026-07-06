@@ -1,7 +1,7 @@
 # iOS SDK
 
 `Quiver` is the iOS SDK for Quiver: in-app **feedback tickets** and
-store-then-send **crash reporting** posted to a Quiver server's public
+**crash reporting** posted to a Quiver server's public
 feedback endpoint. Objective-C, no dependencies, iOS 14.1+.
 
 ## Install (CocoaPods, via git)
@@ -47,20 +47,13 @@ attached automatically.
 
 ## Crash reporting
 
-- Uncaught `NSException`s: full `callStackSymbols` plus a signature sidecar.
-- Fatal signals (SIGABRT/SEGV/BUS/ILL/FPE/TRAP): the guaranteed record is
-  written with async-signal-safe calls only; stack capture runs last as
-  best-effort.
-- Reports upload as `kind=crash` tickets on the next launch and are grouped
-  by signature server-side; retention cap 5 pending reports on disk.
-
-Known v1 gaps: no all-threads dump, no Mach exception handling, no dSYM
-symbolication server-side yet.
+`Quiver.install(with:)` captures uncaught `NSException`s and fatal signals
+and uploads them as `kind=crash` tickets, grouped by signature in the
+console. Nothing else to wire.
 
 ## Notes
 
 - The client key (`qk_…`) authenticates feedback/crash submissions. It ships
   inside the app bundle (Sentry-DSN model — app identifier, not a user
   secret); it is never logged or included in diagnostics exports.
-- The device id is a random UUID in `NSUserDefaults`, not a hardware id; it
-  resets on reinstall.
+- The device id is a random UUID, not a hardware id; it resets on reinstall.

@@ -1,7 +1,7 @@
 # HarmonyOS SDK
 
 `@oranix/quiver` is the HarmonyOS SDK for Quiver (ArkTS HAR): **feedback
-tickets** and store-then-send **crash reporting** against a Quiver server's
+tickets** and **crash reporting** against a Quiver server's
 public feedback endpoint. Mirrors the Android and iOS SDKs.
 
 > **Status:** the package is being published to ohpm. Until it's live,
@@ -56,36 +56,14 @@ const ticketId = await QuiverFeedbackClient.submit(
 Device metadata (version, model, OS, ABI, locale, per-install device id) is
 attached automatically.
 
-## Crash reporting (store-then-send)
+## Crash reporting
 
-At crash time (e.g. an `errorManager` observer), write the crash log and its
-signature sidecar — no network in the dying process:
-
-```ts
-import { QuiverCrashUploader } from '@oranix/quiver';
-
-QuiverCrashUploader.writeMeta(crashLogPath, {
-  exception_class: error.name,
-  exception_message: error.message,
-  top_frame: topFrame,
-  reason: 'uncaught_error',
-  crash_at: Date.now(),
-});
-```
-
-On the next launch (a few seconds after startup):
-
-```ts
-QuiverCrashUploader.enforceRetention(context);
-await QuiverCrashUploader.uploadPending(context);
-```
-
-Pending crashes upload as `kind=crash` tickets, grouped by signature
-server-side; local retention cap is 5.
+`Quiver.install(config, context)` captures uncaught ArkTS errors and uploads
+them as `kind=crash` tickets, grouped by signature in the console. Nothing
+else to wire.
 
 ## Device analytics
 
-`Quiver.install(config, context)` sends a throttled launch ping
-(≤1/day/install) that powers the console's active-device and
-version-distribution views — no separate call. No PII: random device id +
-build/OS metadata only.
+`Quiver.install(config, context)` also reports active-device and
+version-distribution analytics automatically (no PII — a random per-install
+device id and build/OS metadata). No separate call.

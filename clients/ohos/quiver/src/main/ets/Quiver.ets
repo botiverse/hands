@@ -1,6 +1,7 @@
 import { common } from '@kit.AbilityKit';
 import { QuiverAnalytics } from './QuiverAnalytics';
 import { QuiverCrashUploader } from './QuiverCrashUploader';
+import { QuiverCrashReporter } from './QuiverCrashReporter';
 
 /**
  * Quiver SDK entry point for HarmonyOS. All configuration is runtime
@@ -39,7 +40,10 @@ export class Quiver {
     };
     Quiver.current = trimmed;
     if (context) {
-      // Fire-and-forget; off the launch critical path.
+      // Register the crash observer synchronously so a crash during startup
+      // is still captured.
+      QuiverCrashReporter.install(context);
+      // Device ping + pending-crash upload off the launch critical path.
       setTimeout(() => {
         QuiverAnalytics.reportDevice(context).catch((): void => {});
         QuiverCrashUploader.enforceRetention(context);

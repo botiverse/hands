@@ -87,10 +87,9 @@ admin console or the CLI (`quiver feedback ...`).
 
 ## Crash reporting
 
-`QuiverCrash` captures uncaught exceptions, stores them locally, and uploads
-them as `kind=crash` tickets on the next launch (store-then-send, so no
-network runs in the dying process). Crash tickets are grouped by signature
-and auto-deobfuscated when the build's `mapping.txt` was uploaded.
+`Quiver.install(...)` captures uncaught JVM exceptions and NDK/native
+crashes and uploads them as `kind=crash` tickets, grouped by signature and
+symbolicated in the console.
 
 ```kotlin
 class App : Application() {
@@ -111,10 +110,10 @@ class App : Application() {
 }
 ```
 
-The crash log includes an all-threads dump and process uptime. To get
-readable (deobfuscated) stacks in the console, publish the release with its
-R8/ProGuard `mapping.txt` as a `proguard-mapping` build asset — Quiver
-retraces crash reports for that `versionCode` automatically.
+To get readable (deobfuscated) stacks in the console, publish the release
+with its R8/ProGuard `mapping.txt` (and, for NDK crashes, the unstripped
+`.so` archive) — Quiver symbolicates crash reports for that `versionCode`
+automatically.
 
 ## Device analytics
 
