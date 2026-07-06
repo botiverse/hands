@@ -3,7 +3,10 @@ package io.quiver.update
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
+import android.app.ActivityManager
+import android.content.Context.ACTIVITY_SERVICE
 import android.os.Build
+import android.os.Debug
 import android.util.Log
 import java.io.File
 import java.text.SimpleDateFormat
@@ -258,6 +261,15 @@ object QuiverCrash {
             appendLine()
             appendLine("Process uptime: ${System.currentTimeMillis() - processStartMs} ms")
             appendLine()
+            appendLine("Process info:")
+            appendProcessInfo(context)
+            appendLine()
+            appendLine("Open file descriptors:")
+            appendFdInfo()
+            appendLine()
+            appendLine("Recent logcat:")
+            appendLogcatTail()
+            appendLine()
             appendLine("All threads:")
             runCatching {
                 for ((t, frames) in Thread.getAllStackTraces()) {
@@ -277,6 +289,58 @@ object QuiverCrash {
                 }
             }
         }
+
+    /** Memory/thread/foreground snapshot — the "scene data" tab equivalent. */
+    private fun StringBuilder.appendProcessInfo(context: Context) {
+        runCatching {
+            val runtime = Runtime.getRuntime()
+            appendLine("  JVM heap: used ${(runtime.totalMemory() - runtime.freeMemory()) / 1048576} MB / " +
+                "max ${runtime.maxMemory() / 1048576} MB")
+            val mi = Debug.MemoryInfo()
+            Debug.getMemoryInfo(mi)
+            appendLine("  Native PSS: ${mi.nativePss / 1024} MB · Dalvik PSS: ${mi.dalvikPss / 1024} MB · " +
+                "Total PSS: ${mi.totalPss / 1024} MB")
+            val am = context.getSystemService(ACTIVITY_SERVICE) as? ActivityManager
+            if (am != null) {
+                val sys = ActivityManager.MemoryInfo()
+                am.getMemoryInfo(sys)
+                appendLine("  System RAM: avail ${sys.availMem / 1048576} MB / total ${sys.totalMem / 1048576} MB" +
+                    if (sys.lowMemory) " (LOW MEMORY)" else "")
+            }
+            appendLine("  Active threads: ${Thread.activeCount()}")
+        }.onFailure { appendLine("  (unavailable: ${it.javaClass.simpleName})") }
+    }
+
+    /** Open file descriptor count + a bounded sample of their targets. */
+    private fun StringBuilder.appendFdInfo() {
+        runCatching {
+            val fdDir = File("/proc/self/fd")
+            val fds = fdDir.listFiles()
+            if (fds == null) {
+                appendLine("  (unavailable)")
+                return
+            }
+            appendLine("  Count: ${fds.size}")
+            fds.sortedBy { it.name.toIntOrNull() ?: Int.MAX_VALUE }.take(40).forEach { fd ->
+                val target = runCatching { fd.canonicalPath }.getOrDefault("?")
+                appendLine("  ${fd.name} -> $target")
+            }
+            if (fds.size > 40) appendLine("  … ${fds.size - 40} more")
+        }.onFailure { appendLine("  (unavailable: ${it.javaClass.simpleName})") }
+    }
+
+    /** Tail of this process's logcat (own-process only on modern Android). */
+    private fun StringBuilder.appendLogcatTail() {
+        runCatching {
+            val process = ProcessBuilder("logcat", "-d", "-v", "time", "-t", "200")
+                .redirectErrorStream(true)
+                .start()
+            val output = process.inputStream.bufferedReader().use { it.readText() }
+            process.waitFor()
+            val trimmed = if (output.length > 20_000) output.takeLast(20_000) else output
+            appendLine(if (trimmed.isBlank()) "  (empty)" else trimmed.trimEnd())
+        }.onFailure { appendLine("  (unavailable: ${it.javaClass.simpleName})") }
+    }
 
     private fun buildFallbackCrashLog(
         thread: Thread,
