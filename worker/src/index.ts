@@ -415,6 +415,8 @@ const publicDocs = new Set([
   "/docs/agent-guide/",
   "/docs/admin-user-guide/",
   "/docs/android-sdk/",
+  "/docs/ios-sdk/",
+  "/docs/ohos-sdk/",
   "/docs/cli-reference/",
   "/docs/agent-cli-feedback/",
   "/docs/public-api-reference/",
