@@ -564,9 +564,14 @@ export async function handleListFeedback(c: AdminContext) {
     binds.push(Number(versionCodeFilter));
     where += ` AND version_code = ?${binds.length}`;
   }
+  const signatureFilter = c.req.query("signature");
+  if (signatureFilter) {
+    binds.push(signatureFilter);
+    where += ` AND signature = ?${binds.length}`;
+  }
   const { results } = await c.env.DB.prepare(
     `SELECT t.id, t.kind, t.status, t.assignee, t.message, t.contact, t.version_name,
-            t.version_code, t.channel, t.device_model, t.os_version,
+            t.version_code, t.channel, t.device_id, t.device_model, t.os_version,
             t.created_at, t.updated_at,
             (SELECT COUNT(*) FROM feedback_attachments fa WHERE fa.ticket_id = t.id) AS attachment_count,
             (SELECT COUNT(*) FROM feedback_comments fc WHERE fc.ticket_id = t.id) AS comment_count

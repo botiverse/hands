@@ -66,7 +66,11 @@ export function AppCrashes({ appId }: { appId: string }) {
                 <tr
                   key={g.signature}
                   className="border-b border-slate-100 last:border-0 cursor-pointer hover:bg-slate-50"
-                  onClick={() => navigate(`/apps/${appId}/feedback?kind=crash`)}
+                  onClick={() =>
+                    navigate(
+                      `/apps/${appId}/feedback?kind=crash&signature=${encodeURIComponent(g.signature)}`,
+                    )
+                  }
                 >
                   <td className="py-2 pr-3 max-w-lg">
                     <code className="text-xs break-all">{g.signature}</code>
