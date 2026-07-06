@@ -3,7 +3,7 @@
  * per-ticket page (/apps/:appId/feedback/:ticketId) so tickets are
  * shareable links. Tickets carry an assignee, status flow, and comments.
  */
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
@@ -202,30 +202,109 @@ export function AppFeedback({ appId }: { appId: string }) {
   );
 }
 
+type CrashSection = { key: string; label: string; body: string };
+
+/**
+ * Split a Quiver crash log into sections by its known headers, so the ticket
+ * UI can present them as tabs (like Bugly's stack / scene / logs panels).
+ */
+function parseCrashLog(text: string): CrashSection[] {
+  const headers: Array<{ marker: string; key: string; label: string }> = [
+    { marker: "Stack trace:", key: "stack", label: "Stack" },
+    { marker: "All threads:", key: "threads", label: "All threads" },
+    { marker: "Process info:", key: "process", label: "Process" },
+    { marker: "Open file descriptors:", key: "fds", label: "File descriptors" },
+    { marker: "Recent logcat:", key: "logs", label: "Logs" },
+    { marker: "App context:", key: "context", label: "App context" },
+  ];
+  const lines = text.split("\n");
+  // Everything before the first known header is the summary/device header.
+  const marks: Array<{ i: number; key: string; label: string }> = [];
+  lines.forEach((line, i) => {
+    const h = headers.find((x) => line.trim() === x.marker);
+    if (h) marks.push({ i, key: h.key, label: h.label });
+  });
+  const sections: CrashSection[] = [];
+  const head = lines.slice(0, marks.length ? marks[0]!.i : lines.length).join("\n").trim();
+  if (head) sections.push({ key: "summary", label: "Summary", body: head });
+  marks.forEach((m, idx) => {
+    const end = idx + 1 < marks.length ? marks[idx + 1]!.i : lines.length;
+    const body = lines.slice(m.i + 1, end).join("\n").trimEnd();
+    if (body.trim()) sections.push({ key: m.key, label: m.label, body });
+  });
+  return sections;
+}
+
 function CrashLogView({
   appId,
   ticketId,
   attachmentId,
+  deobfuscated,
 }: {
   appId: string;
   ticketId: string;
   attachmentId: string;
+  deobfuscated?: string | undefined;
 }) {
   const log = useQuery({
     queryKey: ["crash-log", appId, ticketId, attachmentId],
     queryFn: () => getFeedbackAttachmentText(appId, ticketId, attachmentId),
   });
+  const [active, setActive] = useState<string>("stack");
+  const [showDeobf, setShowDeobf] = useState(true);
+
+  const sections = useMemo(() => (log.data ? parseCrashLog(log.data) : []), [log.data]);
+  const activeSection =
+    sections.find((x) => x.key === active) ?? sections[0];
+
   return (
     <div className="card">
-      <h4 className="text-sm font-semibold mb-2">Stack trace</h4>
+      <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+        <h4 className="text-sm font-semibold">Crash detail</h4>
+        {deobfuscated && (active === "stack" || (activeSection?.key === "stack")) && (
+          <div className="flex overflow-hidden rounded-md border border-slate-200 text-xs">
+            <button
+              className={`px-2 py-0.5 ${showDeobf ? "bg-slate-100 font-medium" : "text-slate-500"}`}
+              onClick={() => setShowDeobf(true)}
+            >
+              Deobfuscated
+            </button>
+            <button
+              className={`px-2 py-0.5 ${!showDeobf ? "bg-slate-100 font-medium" : "text-slate-500"}`}
+              onClick={() => setShowDeobf(false)}
+            >
+              Raw
+            </button>
+          </div>
+        )}
+      </div>
+
       {log.isLoading && <p className="text-xs text-slate-500">Loading…</p>}
-      {log.error && (
-        <p className="text-xs text-red-600">Could not load crash log.</p>
-      )}
-      {log.data && (
-        <pre className="max-h-[28rem] overflow-auto rounded-md bg-slate-950 p-3 text-xs leading-relaxed text-slate-100">
-          {log.data}
-        </pre>
+      {log.error && <p className="text-xs text-red-600">Could not load crash log.</p>}
+
+      {sections.length > 0 && (
+        <>
+          <div className="mb-2 flex flex-wrap gap-1 border-b border-slate-100 pb-2 text-xs">
+            {sections.map((sec) => (
+              <button
+                key={sec.key}
+                className={`rounded-md px-2 py-1 ${
+                  (activeSection?.key ?? "") === sec.key
+                    ? "bg-slate-100 font-medium text-slate-950"
+                    : "text-slate-600 hover:bg-slate-50"
+                }`}
+                onClick={() => setActive(sec.key)}
+              >
+                {sec.label}
+              </button>
+            ))}
+          </div>
+          <pre className="max-h-[28rem] overflow-auto rounded-md bg-slate-950 p-3 text-xs leading-relaxed text-slate-100">
+            {activeSection?.key === "stack" && deobfuscated && showDeobf
+              ? deobfuscated
+              : activeSection?.body}
+          </pre>
+        </>
       )}
     </div>
   );
@@ -574,8 +653,16 @@ export function FeedbackTicketPage({
               const log = detail.data!.attachments.find(
                 (a) => (a.content_type?.startsWith("text/") ?? false) || /\.txt$/i.test(a.filename),
               );
+              const deobfuscated = detail.data!.comments.find(
+                (cm) => cm.author_actor === "quiver-retrace" || cm.author_actor === "quiver-symbolicate",
+              )?.body;
               return log ? (
-                <CrashLogView appId={appId} ticketId={ticketId} attachmentId={log.id} />
+                <CrashLogView
+                  appId={appId}
+                  ticketId={ticketId}
+                  attachmentId={log.id}
+                  deobfuscated={deobfuscated}
+                />
               ) : null;
             })()}
 
