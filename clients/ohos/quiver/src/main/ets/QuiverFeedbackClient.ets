@@ -15,8 +15,15 @@ const UPLOAD_TIMEOUT_MS: number = 120000;
 const MAX_ATTACHMENTS: number = 9;
 /** Files up to this size stream inline in the multipart body. */
 const MULTIPART_MAX_BYTES: number = 10 * 1024 * 1024;
-/** Files up to this size upload via presigned direct-to-R2 PUT. */
-const PRESIGN_MAX_BYTES: number = 200 * 1024 * 1024;
+/**
+ * Files up to this size upload via presigned direct-to-R2 PUT. Capped at
+ * 50 MB on OHOS (vs 200 MB on Android/iOS): ArkTS has no file-path raw-PUT
+ * API, so the file is read fully into an ArrayBuffer, and a 200 MB upload can
+ * spike memory into an OOM process-kill rather than a handleable error. This
+ * returns a clean cap error instead. A follow-up will switch to a NAPI/native
+ * streaming PUT and raise this to 200 MB.
+ */
+const PRESIGN_MAX_BYTES: number = 50 * 1024 * 1024;
 
 export interface QuiverFeedbackExtras {
   key: string;
@@ -84,9 +91,11 @@ function readFileBytes(path: string): ArrayBuffer {
  * QuiverFeedback. Device and app metadata are attached automatically.
  *
  * Attachments: up to 9 files. Small files (<= 10 MB) stream inline in the
- * multipart body. Larger files (up to 200 MB) upload directly to R2 via a
- * server-issued presigned URL and are referenced in the ticket, so big logs /
- * recordings never pass through the Worker body limit.
+ * multipart body. Larger files (up to 50 MB on OHOS) upload directly to R2 via
+ * a server-issued presigned URL and are referenced in the ticket, so bigger
+ * logs / recordings never pass through the Worker body limit. (Android/iOS
+ * stream the presigned PUT and allow up to 200 MB; OHOS reads the file into
+ * memory — see PRESIGN_MAX_BYTES.)
  */
 export class QuiverFeedbackClient {
   /**
