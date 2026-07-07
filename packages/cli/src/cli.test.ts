@@ -110,3 +110,22 @@ describe("apiRequest", () => {
     delete process.env.QUIVER_API;
   });
 });
+
+describe("electron build helpers", () => {
+  it("infers Electron platforms from metadata and artifact filenames", async () => {
+    const { inferElectronPlatform } = await import("../src/commands/builds.js");
+    expect(inferElectronPlatform("dist/latest.yml")).toBe("win32");
+    expect(inferElectronPlatform("dist/latest-mac.yml")).toBe("darwin");
+    expect(inferElectronPlatform("dist/latest-linux.yml")).toBe("linux");
+    expect(inferElectronPlatform("dist/Raft-1.2.3.AppImage")).toBe("linux");
+    expect(inferElectronPlatform("dist/Raft-1.2.3.dmg")).toBe("darwin");
+  });
+
+  it("infers Electron filetypes without lowercasing AppImage", async () => {
+    const { inferElectronFiletype } = await import("../src/commands/builds.js");
+    expect(inferElectronFiletype("dist/latest.yml")).toBe("yml");
+    expect(inferElectronFiletype("dist/Raft Setup 1.2.3.exe")).toBe("exe");
+    expect(inferElectronFiletype("dist/Raft-1.2.3.AppImage")).toBe("AppImage");
+    expect(inferElectronFiletype("dist/Raft Setup 1.2.3.exe.blockmap")).toBe("blockmap");
+  });
+});
