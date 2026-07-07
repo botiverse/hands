@@ -9,7 +9,18 @@
 # Uses `aapt` + `apksigner` from Android SDK build-tools (NOT full Android SDK).
 # These are small standalone binaries that read APK files, which is all we need.
 
+# Build minidump-stackwalk (Mozilla rust-minidump) for the Electron/Crashpad
+# crash-symbolication lane. Built on bookworm so the resulting glibc binary
+# runs unmodified in the node:24-bookworm-slim runtime below.
+FROM rust:1-bookworm AS minidump-builder
+ARG MINIDUMP_STACKWALK_VERSION=0.22.0
+RUN cargo install minidump-stackwalk --version ${MINIDUMP_STACKWALK_VERSION} \
+    && cp "$(command -v minidump-stackwalk)" /minidump-stackwalk
+
 FROM node:24-bookworm-slim AS base
+
+# minidump-stackwalk binary for the Electron/Crashpad symbolication lane.
+COPY --from=minidump-builder /minidump-stackwalk /usr/local/bin/minidump-stackwalk
 
 # Install aapt + apksigner from Android SDK build-tools
 # Source: https://github.com/iBotPeaches/Apktool/blob/master/INSTALL.md
