@@ -16,6 +16,30 @@ publishes explicitly.
   **draft** release (invisible to update checks and share pages)
 - job summary shows the draft release id and the raw changelog
 
+For Electron apps, CI should follow the same draft-first rule. Build with
+electron-builder, then upload the generated generic-provider files to an
+`electron-installer` build/release:
+
+- `latest.yml`, `latest-mac.yml`, or `latest-linux.yml`
+- installer artifacts such as `.exe`, signed macOS `.zip` / `.dmg`, or
+  `AppImage`
+- `.blockmap` files when electron-builder generated them
+
+Quiver serves the active release at
+`/electron/:appSlug/:channel/:file`, so the Electron app can configure:
+
+```ts
+autoUpdater.setFeedURL({
+  provider: "generic",
+  url: "https://quiver.oranix.io/electron/<appSlug>/<channel>"
+});
+```
+
+Until `quiver builds publish-electron` exists, CI should call the build,
+asset, and release APIs directly and preserve original filenames in
+`variant` or `metadata_json.filename`. The Electron release should remain
+`draft` until changelog review is complete.
+
 ## 2. Review + bilingual changelog (agent/human)
 
 ```sh

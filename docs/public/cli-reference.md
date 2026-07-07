@@ -85,6 +85,48 @@ quiver builds publish-android raft-android \
 
 Public update checks only use the installable artifact. Mapping files, native symbols, and metadata stay available through authenticated admin APIs.
 
+## Publish Electron (generic provider)
+
+Quiver can host Electron apps that use `electron-updater` with the generic
+provider:
+
+```ts
+autoUpdater.setFeedURL({
+  provider: "generic",
+  url: "https://quiver.oranix.io/electron/raft-desktop/main"
+});
+```
+
+Phase 1 hosts electron-builder output **as-is**. CI should upload the files
+from `dist/` as build assets on an `electron-installer` build/release, then
+create a draft release for review. A dedicated `quiver builds publish-electron`
+command is planned; until then, scripts should call the build, asset, and
+release APIs using an app deploy token.
+
+Required files depend on target OS:
+
+| Target | Required files |
+|---|---|
+| Windows NSIS | `latest.yml`, installer `.exe`, optional `.exe.blockmap` |
+| macOS | `latest-mac.yml`, signed `.zip` for auto-update, optional `.dmg` for downloads, `.blockmap` files if generated |
+| Linux | `latest-linux.yml`, `AppImage` or other configured target, `.blockmap` files if generated |
+
+Register the original filenames so relative URLs inside `latest*.yml` resolve
+unchanged:
+
+| File | `platform` | `arch` | `filetype` | `artifact_kind` | Filename field |
+|---|---|---|---|---|---|
+| `latest.yml` | `win32` | `x64` or null | `yml` | `electron-metadata` | `variant` or `metadata_json.filename` |
+| `latest-mac.yml` | `darwin` | `arm64` or `x64` | `yml` | `electron-metadata` | `variant` or `metadata_json.filename` |
+| `latest-linux.yml` | `linux` | `x64` or `arm64` | `yml` | `electron-metadata` | `variant` or `metadata_json.filename` |
+| `Raft Setup 1.2.3.exe` | `win32` | `x64` | `exe` | `installable` | `metadata_json.filename` |
+| `Raft Setup 1.2.3.exe.blockmap` | `win32` | `x64` | `blockmap` | `electron-blockmap` | `metadata_json.filename` |
+
+Keep the same draft-first policy as Android: CI creates a draft Electron
+release, then a human or agent reviews release notes and explicitly publishes.
+macOS update artifacts must be signed before upload; Quiver hosts the signed
+files but does not sign Electron applications.
+
 ## Review and Publish (draft flow)
 
 CI creates drafts; publishing is an explicit step after changelog review:
