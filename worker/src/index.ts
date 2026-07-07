@@ -72,6 +72,7 @@ import {
   handlePublicAppHistory,
   handlePublicAppHistoryDownload,
   handlePublicReleaseNotes,
+  handlePublicReleaseNotesJson,
 } from "./routes/history";
 import {
   handleCreateAppDeployToken,
@@ -450,6 +451,7 @@ app.get("/public/apps/:slug/channels", handlePublicListChannels);
 // v2 endpoints with scope resolution (publish-architecture §5.4).
 app.get("/public/v2/apps/:slug/latest", handlePublicV2Latest);
 app.get("/public/v2/apps/:slug/updates/check", handlePublicV2UpdateCheck);
+app.get("/public/v2/apps/:slug/release-notes", handlePublicReleaseNotesJson);
 app.get("/public/r2/:key", handlePublicR2Download);
 app.get("/electron/:slug/:channel/:file", handleElectronGenericAsset);
 app.get("/share/:token/download", handlePublicReleaseShareDownload);

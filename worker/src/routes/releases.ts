@@ -1,6 +1,7 @@
 import type { Context } from "hono";
 import { currentActor, type AdminEnv } from "../middleware/auth";
 import { emitWebhookEvent } from "./webhooks";
+import { parseReleaseNotes, stringifyReleaseNotes, type ReleaseNotes } from "../lib/release_notes";
 
 type AdminContext = Context<AdminEnv & { Bindings: Env }>;
 import { getBuildForApp } from "./builds";
@@ -17,6 +18,8 @@ export interface ReleaseInput {
   release_type?: string;
   status?: "draft" | "active";
   changelog?: string | null;
+  release_notes?: ReleaseNotes | null;
+  changelog_i18n?: ReleaseNotes | null;
   should_force_update?: boolean;
   rollout_cohort_count?: number | null;
   rollout_target_cohorts_json?: unknown;
@@ -27,6 +30,8 @@ export interface ReleaseInput {
 
 interface ReleaseUpdateInput {
   changelog?: string | null;
+  release_notes?: ReleaseNotes | null;
+  changelog_i18n?: ReleaseNotes | null;
   should_force_update?: boolean;
   rollout_cohort_count?: number | null;
   rollout_target_cohorts_json?: unknown;
@@ -99,6 +104,25 @@ function releaseStatus(inputStatus: ReleaseInput["status"] | undefined): "draft"
   return inputStatus;
 }
 
+function inputChangelog(input: {
+  changelog?: string | null;
+  release_notes?: ReleaseNotes | null;
+  changelog_i18n?: ReleaseNotes | null;
+}): string | null | undefined {
+  if (input.release_notes !== undefined) return stringifyReleaseNotes(input.release_notes);
+  if (input.changelog_i18n !== undefined) return stringifyReleaseNotes(input.changelog_i18n);
+  return input.changelog;
+}
+
+function withReleaseNotes<T extends { changelog?: string | null }>(
+  row: T,
+): T & { release_notes: ReleaseNotes | null } {
+  return {
+    ...row,
+    release_notes: parseReleaseNotes(row.changelog ?? null),
+  };
+}
+
 export async function getReleaseForApp(
   db: D1Database,
   appId: string,
@@ -134,6 +158,7 @@ export async function createRelease(
   const status = releaseStatus(input.status);
   const scopes = normalizeScopes(input.scopes);
   const now = Date.now();
+  const changelog = inputChangelog(input);
 
   const statements = [
     db
@@ -158,7 +183,7 @@ export async function createRelease(
         jsonString(input.rollout_target_cohorts_json, []),
         input.availability_at ?? build.availability_at ?? null,
         input.should_force_update ?? Boolean(build.should_force_update) ? 1 : 0,
-        input.changelog ?? build.changelog ?? null,
+        changelog === undefined ? build.changelog ?? null : changelog,
         jsonString(input.provenance_json ?? build.provenance_json),
         actor,
         now,
@@ -214,7 +239,9 @@ async function updateReleaseFields(
     // reformatting an old version's release notes), never the fields with live
     // rollout/scope/availability semantics.
     const onlyChangelog =
-      input.changelog !== undefined &&
+      (input.changelog !== undefined ||
+        input.release_notes !== undefined ||
+        input.changelog_i18n !== undefined) &&
       input.should_force_update === undefined &&
       input.rollout_cohort_count === undefined &&
       input.rollout_target_cohorts_json === undefined &&
@@ -230,7 +257,10 @@ async function updateReleaseFields(
   const now = Date.now();
   const sets: string[] = [];
   const binds: (string | number | null)[] = [];
-  if (input.changelog !== undefined) {
+  if (input.release_notes !== undefined || input.changelog_i18n !== undefined) {
+    sets.push(`changelog = ?${binds.length + 1}`);
+    binds.push(inputChangelog(input) ?? null);
+  } else if (input.changelog !== undefined) {
     sets.push(`changelog = ?${binds.length + 1}`);
     binds.push(input.changelog);
   }
@@ -347,7 +377,7 @@ export async function handleListReleases(c: Context<{ Bindings: Env }>) {
   )
     .bind(...binds)
     .all();
-  return c.json({ releases: results });
+  return c.json({ releases: results.map((release) => withReleaseNotes(release as { changelog?: string | null })) });
 }
 
 export async function handleGetRelease(c: Context<{ Bindings: Env }>) {
@@ -388,7 +418,12 @@ export async function handleGetRelease(c: Context<{ Bindings: Env }>) {
     .bind(releaseId)
     .all();
 
-  return c.json({ release, build, assets, scopes });
+  return c.json({
+    release: withReleaseNotes(release as { changelog?: string | null }),
+    build,
+    assets,
+    scopes,
+  });
 }
 
 export async function handleCreateRelease(c: AdminContext) {
@@ -409,7 +444,15 @@ export async function handleCreateRelease(c: AdminContext) {
         }),
       );
     }
-    return c.json({ id, app_id: appId, status, ...body }, 201);
+    const changelog = inputChangelog(body) ?? null;
+    return c.json({
+      id,
+      app_id: appId,
+      status,
+      ...body,
+      changelog,
+      release_notes: parseReleaseNotes(changelog),
+    }, 201);
   } catch (e) {
     return c.json({ error: (e as Error).message }, 400);
   }
@@ -423,7 +466,7 @@ export async function handleUpdateRelease(c: AdminContext) {
   if (!existing) return c.json({ error: "not found" }, 404);
   try {
     const release = await updateReleaseFields(c.env.DB, appId, existing, body, currentActor(c));
-    return c.json(release);
+    return c.json(withReleaseNotes(release));
   } catch (e) {
     return c.json({ error: (e as Error).message }, 400);
   }
@@ -494,7 +537,7 @@ export async function handlePublishRelease(c: AdminContext) {
     );
   }
   const published = await getReleaseForApp(c.env.DB, appId, releaseId);
-  return c.json(published);
+  return c.json(published ? withReleaseNotes(published) : published);
 }
 
 export async function handleDeleteRelease(c: AdminContext) {
@@ -557,6 +600,7 @@ export async function handleRollbackRelease(c: AdminContext) {
     .bind(releaseId)
     .all<ReleaseScopeInput>();
   const buildId = body.build_id ?? c.req.query("build_id") ?? existing.build_id;
+  const rollbackChangelog = inputChangelog(body);
   try {
     const id = await createRelease(
       c.env.DB,
@@ -566,7 +610,7 @@ export async function handleRollbackRelease(c: AdminContext) {
         channel_id: body.channel_id ?? existing.channel_id,
         product_type: body.product_type ?? existing.product_type,
         release_type: body.release_type ?? existing.release_type,
-        changelog: body.changelog ?? existing.changelog,
+        changelog: rollbackChangelog === undefined ? existing.changelog : rollbackChangelog,
         should_force_update: body.should_force_update ?? Boolean(existing.should_force_update),
         rollout_cohort_count: body.rollout_cohort_count ?? existing.rollout_cohort_count,
         availability_at: body.availability_at ?? existing.availability_at,
@@ -591,7 +635,14 @@ export async function handleRollbackRelease(c: AdminContext) {
         }),
       );
     }
-    return c.json({ id, app_id: appId, build_id: buildId, rolled_back_from: releaseId }, 201);
+    const release = await getReleaseForApp(c.env.DB, appId, id);
+    return c.json({
+      id,
+      app_id: appId,
+      build_id: buildId,
+      rolled_back_from: releaseId,
+      release_notes: parseReleaseNotes(release?.changelog ?? null),
+    }, 201);
   } catch (e) {
     return c.json({ error: (e as Error).message }, 400);
   }

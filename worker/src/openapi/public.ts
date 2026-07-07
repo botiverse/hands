@@ -44,6 +44,8 @@ const PublicAsset = z
   })
   .openapi("PublicAsset");
 
+const ReleaseNotes = z.record(z.string(), z.string()).nullable().openapi("ReleaseNotes");
+
 const PublicLatestResponse = z
   .object({
     app: PublicApp,
@@ -54,6 +56,7 @@ const PublicLatestResponse = z
       version_code: z.number().int(),
       release_type: z.string().optional(),
       changelog: z.string().nullable().optional(),
+      release_notes: ReleaseNotes.optional(),
       force_update: z.boolean().optional(),
       released_at: z.number().int(),
     }),
@@ -75,6 +78,7 @@ const PublicUpdateAvailableResponse = z
       version: z.string(),
       version_code: z.number().int(),
       changelog: z.string().nullable().optional(),
+      release_notes: ReleaseNotes.optional(),
       force_update: z.boolean(),
       released_at: z.number().int(),
     }),
@@ -106,6 +110,28 @@ const PublicChannelsResponse = z
     channels: z.array(GenericObject),
   })
   .openapi("PublicChannelsResponse");
+
+const PublicReleaseNotesResponse = z
+  .object({
+    app: z.object({
+      slug: z.string(),
+      name: z.string(),
+      platform: z.string(),
+    }),
+    requested_version_code: z.number().int().nullable(),
+    lang: z.string().nullable(),
+    releases: z.array(z.object({
+      release_id: z.string(),
+      status: z.string(),
+      channel: z.string(),
+      version: z.string(),
+      version_code: z.number().int(),
+      released_at: z.number().int(),
+      changelog: z.string().nullable(),
+      release_notes: ReleaseNotes,
+    })),
+  })
+  .openapi("PublicReleaseNotesResponse");
 
 const FeedbackSubmitResponse = z
   .object({
@@ -196,6 +222,29 @@ export function registerPublicRoutes(registry: OpenApiRegistry) {
       400: error("current_version_code is missing or invalid."),
       404: error("No matching app, channel, release, or compatible asset was found."),
       500: error("Matched release data is inconsistent or signing failed."),
+    },
+  });
+
+  register(registry, {
+    method: "get",
+    path: "/public/v2/apps/{slug}/release-notes",
+    tags: ["Public update"],
+    summary: "Get structured public release notes",
+    description:
+      "Returns public release notes as structured per-language objects for consumers that need JSON instead of the HTML /notes page.",
+    request: {
+      params: SlugParam,
+      query: z.object({
+        version_code: z.number().int().optional(),
+        lang: z.string().optional(),
+      }),
+      headers: z.object({
+        "Accept-Language": z.string().optional(),
+      }),
+    },
+    responses: {
+      200: success("Structured release notes.", PublicReleaseNotesResponse),
+      404: error("App was not found or public history/release notes are disabled."),
     },
   });
 

@@ -56,6 +56,10 @@ active release. The Android SDK sends the header automatically.
     "version": "1.0.1",
     "version_code": 1000100,
     "changelog": "Bug fixes and improvements",
+    "release_notes": {
+      "en": "Bug fixes and improvements",
+      "zh-CN": "修复问题并优化体验"
+    },
     "force_update": false,
     "released_at": 1783162273735
   },
@@ -72,7 +76,9 @@ active release. The Android SDK sends the header automatically.
 
 `changelog` is localized: releases may carry per-language notes and the
 server returns the best match for the requested language (exact tag →
-language prefix → `en` → first available).
+language prefix → `en` → first available). `release_notes` is the structured
+per-language object for consumers that need all available languages without
+parsing the legacy `changelog` string.
 
 ### No Update
 
@@ -89,6 +95,60 @@ GET /public/v2/apps/:appSlug/latest?channel=main&product_type=android-apk
 Returns the latest compatible installable release for the channel,
 independent of the client's installed version. Accepts the same `lang` and
 `device_id` inputs as the update check.
+
+## Release Notes JSON
+
+```http
+GET /public/v2/apps/:appSlug/release-notes?version_code=1000100&lang=zh-CN
+```
+
+Returns public release notes as JSON for clients that should not parse the
+HTML `/notes/:appSlug` page. The app must have public history enabled.
+`version_code` is optional; when present, the response includes that version
+and older non-cancelled versions. Draft notes are returned only when the draft
+matches the requested `version_code`, which supports preview flows before
+publish.
+
+```json
+{
+  "app": { "slug": "raft-android", "name": "Raft Android", "platform": "android" },
+  "requested_version_code": 1000100,
+  "lang": "zh-CN",
+  "releases": [
+    {
+      "release_id": "…",
+      "status": "active",
+      "channel": "main",
+      "version": "1.0.1",
+      "version_code": 1000100,
+      "released_at": 1783162273735,
+      "changelog": "修复问题并优化体验",
+      "release_notes": {
+        "en": "Bug fixes and improvements",
+        "zh-CN": "修复问题并优化体验"
+      }
+    }
+  ]
+}
+```
+
+Authenticated release APIs also expose `release.release_notes` on
+`GET /api/apps/:appId/releases/:releaseId` and release list rows. Publishers
+can write structured notes with `release_notes`:
+
+```http
+PATCH /api/apps/:appId/releases/:releaseId
+Content-Type: application/json
+
+{
+  "release_notes": {
+    "en": "Bug fixes and improvements",
+    "zh-CN": "修复问题并优化体验"
+  }
+}
+```
+
+The legacy `changelog` string field remains for backward compatibility.
 
 ## Electron Generic Provider
 

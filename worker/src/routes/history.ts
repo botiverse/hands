@@ -5,6 +5,7 @@
  */
 import type { Context } from "hono";
 import { requestOrigin } from "../lib/origin";
+import { parseReleaseNotes } from "../lib/release_notes";
 import { generateSignedR2Url, resolveChangelog, changelogToHtml } from "./public_v2";
 
 type HistoryRow = {
@@ -160,6 +161,50 @@ export async function handlePublicReleaseNotes(c: Context<{ Bindings: Env }>) {
     renderReleaseNotesPage(app, visible, requestedCode, lang),
     { headers: { "content-type": "text/html; charset=utf-8" } },
   );
+}
+
+export async function handlePublicReleaseNotesJson(c: Context<{ Bindings: Env }>) {
+  const slug = c.req.param("slug");
+  if (!slug) return c.json({ error: "slug required" }, 400);
+  const app = await loadHistoryApp(c.env.DB, slug);
+  if (!app || !app.public_history) {
+    return c.json({ error: "not found" }, 404);
+  }
+  const rawVc = c.req.query("version_code");
+  const requestedCode =
+    rawVc != null && rawVc !== "" && Number.isFinite(Number(rawVc))
+      ? Number(rawVc)
+      : null;
+  const { results } = await c.env.DB.prepare(NOTES_SQL)
+    .bind(app.id, requestedCode ?? -1)
+    .all<HistoryRow>();
+  const lang =
+    c.req.query("lang")?.trim() ||
+    (c.req.header("accept-language") ?? "").split(",")[0]?.trim().split(";")[0] ||
+    null;
+  const releases = (results ?? [])
+    .filter(
+      (row) =>
+        (requestedCode == null || row.version_code <= requestedCode) &&
+        !isRawChangelog(row.changelog),
+    )
+    .map((row) => ({
+      release_id: row.release_id,
+      status: row.release_status,
+      channel: row.channel_slug,
+      version: row.version_name,
+      version_code: row.version_code,
+      released_at: row.released_at,
+      changelog: resolveChangelog(row.changelog, lang),
+      release_notes: parseReleaseNotes(row.changelog),
+    }));
+
+  return c.json({
+    app: { slug: app.slug, name: app.name, platform: app.platform },
+    requested_version_code: requestedCode,
+    lang,
+    releases,
+  });
 }
 
 export async function handlePublicAppHistoryDownload(

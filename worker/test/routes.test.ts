@@ -1795,6 +1795,30 @@ describe("quiver releases — draft lifecycle", () => {
     ]);
   });
 
+  it("accepts and returns structured release notes on admin release APIs", async () => {
+    const { createRelease, handleUpdateRelease, handleGetRelease } = await import("../src/routes/releases");
+    await createRelease(env.DB as any, "app-release", {
+      build_id: "build-draft",
+      status: "draft",
+    }, "tester", "rel-draft");
+
+    const response = await handleUpdateRelease(makeReleaseContext("rel-draft", {
+      release_notes: {
+        zh: "中文说明",
+        en: "English notes",
+      },
+    }));
+    expect(response.status).toBe(200);
+    const release = await responseJson<any>(response);
+    expect(release.changelog).toBe(JSON.stringify({ "zh-CN": "中文说明", en: "English notes" }));
+    expect(release.release_notes).toEqual({ "zh-CN": "中文说明", en: "English notes" });
+
+    const getResponse = await handleGetRelease(makeReleaseContext("rel-draft"));
+    expect(getResponse.status).toBe(200);
+    const detail = await responseJson<any>(getResponse);
+    expect(detail.release.release_notes).toEqual({ "zh-CN": "中文说明", en: "English notes" });
+  });
+
   it("soft-cancels a release without deleting build or asset rows", async () => {
     const { createRelease, handleDeleteRelease } = await import("../src/routes/releases");
     await createRelease(env.DB as any, "app-release", {
@@ -2148,7 +2172,7 @@ describe("quiver public API v2 — scope resolution", () => {
     } = await import("../src/routes/releases");
     const { handlePublicV2UpdateCheck } = await import("../src/routes/public_v2");
     const { handleCreateReleaseShare, handlePublicReleaseShare } = await import("../src/routes/shares");
-    const { handlePublicAppHistory } = await import("../src/routes/history");
+    const { handlePublicAppHistory, handlePublicReleaseNotesJson } = await import("../src/routes/history");
     const { handlePublicFeedbackSubmit } = await import("../src/routes/feedback");
 
     const waited: Promise<unknown>[] = [];
@@ -2262,6 +2286,10 @@ describe("quiver public API v2 — scope resolution", () => {
     expect(update.update_available).toBe(true);
     expect(update.latest.version_code).toBe(9090900);
     expect(update.latest.changelog).toContain("E2E 冒烟发布");
+    expect(update.latest.release_notes).toEqual({
+      en: "- E2E smoke release",
+      "zh-CN": "- E2E 冒烟发布",
+    });
     expect(update.asset.download_url).toContain("/public/r2/");
 
     const shareResponse = await handleCreateReleaseShare(
@@ -2287,6 +2315,23 @@ describe("quiver public API v2 — scope resolution", () => {
     const historyHtml = await historyPage.text();
     expect(historyHtml).toContain("9.9.9");
     expect(historyHtml).toContain("E2E 冒烟发布");
+
+    const notesJsonResponse = await handlePublicReleaseNotesJson({
+      env,
+      req: {
+        param: (name: string) => (name === "slug" ? "scope-app" : ""),
+        query: (name: string) => (name === "version_code" ? "9090900" : name === "lang" ? "zh-CN" : undefined),
+        header: () => undefined,
+      },
+      json: (data: unknown, status = 200) => new Response(JSON.stringify(data), { status }),
+    } as any);
+    expect(notesJsonResponse.status).toBe(200);
+    const notesJson = await responseJson<any>(notesJsonResponse);
+    expect(notesJson.releases[0].changelog).toContain("E2E 冒烟发布");
+    expect(notesJson.releases[0].release_notes).toEqual({
+      en: "- E2E smoke release",
+      "zh-CN": "- E2E 冒烟发布",
+    });
 
     const crashForm = new FormData();
     crashForm.set("message", "E2E crash smoke");
