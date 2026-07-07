@@ -127,4 +127,19 @@ Public artifact URLs are signed and time-limited. Refresh the share page or run 
 
 ### 403 forbidden
 
-Your account or deploy token does not have the required role for the action. Ask an app admin to grant access or use a token with the correct role.
+Your account or deploy token does not have the required role for the action. The response is machine-readable so an agent or the CLI can point you straight to the fix:
+
+```json
+{
+  "error": "insufficient_org_role",       // or "insufficient_app_role"
+  "required_role": "admin",
+  "current_role": "viewer",
+  "resource": "POST /api/apps",            // the action you attempted
+  "org_id": "…", "app_id": null,
+  "manage_url": "https://quiver.oranix.io/orgs/{orgId}/members"
+}
+```
+
+To resolve, an organization **admin/owner** opens `manage_url` — **Org → Members** for org roles, or an app's **Access** tab for app-level roles — and raises the account's role to `required_role`. Then retry the same request.
+
+Note: creating an app (`POST /api/apps`) requires an **org admin/owner** — an app-level member role or a deploy token is not enough. A newly Agent-Login'd account usually starts as **viewer**, so this 403 is expected on the first admin-scoped call.

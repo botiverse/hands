@@ -112,6 +112,37 @@ curl -X POST -H "Authorization: Bearer $QUIVER_BEARER_TOKEN" \
 Rotation invalidates the old key immediately — client builds must be updated
 with the new one.
 
+## Handling permission (403) errors
+
+Right after Agent Login your org role is usually **viewer**, so the first
+admin-scoped call (e.g. creating an app) will 403. Quiver's role-403s are
+**machine-readable** — act on them instead of failing silently:
+
+```json
+{
+  "error": "insufficient_org_role",       // or "insufficient_app_role"
+  "required_role": "admin",
+  "current_role": "viewer",
+  "resource": "POST /api/apps",            // the action you attempted
+  "org_id": "…", "app_id": null,
+  "manage_url": "https://quiver.oranix.io/orgs/{orgId}/members"
+}
+```
+
+On this response:
+
+1. **Don't retry blindly** — you are missing `required_role`, not hitting a
+   transient error.
+2. **Tell the human the exact next step**, quoting `manage_url`: e.g. "I need
+   **admin** on this org to run `<resource>` (currently **viewer**). An org
+   admin can raise my role at `<manage_url>`, then I'll retry."
+3. **Retry the same request** once they confirm the role change.
+
+App creation (`POST /api/apps`) needs an **org** admin/owner specifically — an
+app-member role or deploy token is not enough. If an app should live under a
+different organization, that org's admin creates it there rather than bumping
+your role in this one.
+
 ## Rules for agents
 
 1. **Draft-first**: CI never completes a release; publishing is an explicit,
