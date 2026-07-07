@@ -330,12 +330,6 @@ function renderReleaseNotesPage(
     })
     .join("\n");
 
-  // Auto-scroll the requested version into view when it isn't the first entry.
-  const anchor =
-    requestedCode != null && rows.some((r) => r.version_code === requestedCode)
-      ? `v${requestedCode}`
-      : "";
-
   return `<!doctype html>
 <html lang="en">
 <head>
@@ -400,11 +394,6 @@ function renderReleaseNotesPage(
         el.textContent = new Intl.DateTimeFormat(undefined, { dateStyle: "medium" }).format(new Date(ms));
       } catch { el.textContent = new Date(ms).toLocaleDateString(); }
     });
-    ${
-      anchor
-        ? `try { document.getElementById(${JSON.stringify(anchor)})?.scrollIntoView({ block: "start" }); } catch {}`
-        : ""
-    }
   </script>
 </body>
 </html>`;
