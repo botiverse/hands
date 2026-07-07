@@ -148,7 +148,8 @@ Content-Type: application/json
 }
 ```
 
-The legacy `changelog` string field remains for backward compatibility.
+`changelog` remains the localized display string. `release_notes` is the
+canonical structured object for consumers that need every language.
 
 ## Electron Generic Provider
 

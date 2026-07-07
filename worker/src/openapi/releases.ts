@@ -30,7 +30,6 @@ const ReleaseInput = z
     status: z.enum(["draft", "active"]).optional(),
     changelog: z.string().nullable().optional(),
     release_notes: z.record(z.string(), z.string()).nullable().optional(),
-    changelog_i18n: z.record(z.string(), z.string()).optional(),
     rollout_cohort_count: z.number().int().nullable().optional(),
     should_force_update: z.boolean().optional(),
     scopes: z.array(GenericObject).optional(),

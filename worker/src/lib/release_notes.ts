@@ -26,11 +26,11 @@ export function parseReleaseNotes(raw: string | null): ReleaseNotes | null {
   if (!raw) return null;
   const trimmed = raw.trim();
   if (!trimmed) return null;
-  if (!trimmed.startsWith("{")) return { en: raw };
+  if (!trimmed.startsWith("{")) return null;
   try {
     return normalizeReleaseNotes(JSON.parse(trimmed));
   } catch {
-    return { en: raw };
+    return null;
   }
 }
 
@@ -40,7 +40,15 @@ export function stringifyReleaseNotes(value: unknown): string | null {
 }
 
 export function resolveReleaseNote(raw: string | null, lang: string | null): string | null {
-  const notes = parseReleaseNotes(raw);
+  if (!raw) return raw;
+  const trimmed = raw.trim();
+  if (!trimmed.startsWith("{")) return raw;
+  let notes: ReleaseNotes | null;
+  try {
+    notes = normalizeReleaseNotes(JSON.parse(trimmed));
+  } catch {
+    return raw;
+  }
   if (!notes) return null;
   const entries = Object.entries(notes).filter(([, value]) => value.length > 0);
   if (entries.length === 0) return null;

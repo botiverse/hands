@@ -19,7 +19,6 @@ export interface ReleaseInput {
   status?: "draft" | "active";
   changelog?: string | null;
   release_notes?: ReleaseNotes | null;
-  changelog_i18n?: ReleaseNotes | null;
   should_force_update?: boolean;
   rollout_cohort_count?: number | null;
   rollout_target_cohorts_json?: unknown;
@@ -31,7 +30,6 @@ export interface ReleaseInput {
 interface ReleaseUpdateInput {
   changelog?: string | null;
   release_notes?: ReleaseNotes | null;
-  changelog_i18n?: ReleaseNotes | null;
   should_force_update?: boolean;
   rollout_cohort_count?: number | null;
   rollout_target_cohorts_json?: unknown;
@@ -107,10 +105,8 @@ function releaseStatus(inputStatus: ReleaseInput["status"] | undefined): "draft"
 function inputChangelog(input: {
   changelog?: string | null;
   release_notes?: ReleaseNotes | null;
-  changelog_i18n?: ReleaseNotes | null;
 }): string | null | undefined {
   if (input.release_notes !== undefined) return stringifyReleaseNotes(input.release_notes);
-  if (input.changelog_i18n !== undefined) return stringifyReleaseNotes(input.changelog_i18n);
   return input.changelog;
 }
 
@@ -240,8 +236,7 @@ async function updateReleaseFields(
     // rollout/scope/availability semantics.
     const onlyChangelog =
       (input.changelog !== undefined ||
-        input.release_notes !== undefined ||
-        input.changelog_i18n !== undefined) &&
+        input.release_notes !== undefined) &&
       input.should_force_update === undefined &&
       input.rollout_cohort_count === undefined &&
       input.rollout_target_cohorts_json === undefined &&
@@ -257,7 +252,7 @@ async function updateReleaseFields(
   const now = Date.now();
   const sets: string[] = [];
   const binds: (string | number | null)[] = [];
-  if (input.release_notes !== undefined || input.changelog_i18n !== undefined) {
+  if (input.release_notes !== undefined) {
     sets.push(`changelog = ?${binds.length + 1}`);
     binds.push(inputChangelog(input) ?? null);
   } else if (input.changelog !== undefined) {
