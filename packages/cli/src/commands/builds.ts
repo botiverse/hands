@@ -124,6 +124,7 @@ export function registerBuildCommands(program: Command): void {
     .option("--product-type <type>", "Product type metadata.", "android-apk")
     .option("--mapping <path>", "R8/ProGuard mapping.txt support artifact.")
     .option("--symbols <path>", "Native symbols archive support artifact.")
+    .option("--dsym <path>", "iOS dSYM archive (dSYM.zip) support artifact.")
     .option("--metadata <path>", "Build metadata JSON support artifact.")
     .option("--changelog <text>", "Inline changelog.")
     .option("--changelog-file <path>", "Read changelog from file.")
@@ -149,6 +150,7 @@ export function registerBuildCommands(program: Command): void {
           productType: string;
           mapping?: string;
           symbols?: string;
+          dsym?: string;
           metadata?: string;
           changelog?: string;
           changelogFile?: string;
@@ -169,7 +171,7 @@ export function registerBuildCommands(program: Command): void {
         if (!Number.isFinite(versionCode) || versionCode < 0) {
           throw new Error("--version-code must be a non-negative number");
         }
-        for (const file of [opts.apk, opts.mapping, opts.symbols, opts.metadata].filter(Boolean) as string[]) {
+        for (const file of [opts.apk, opts.mapping, opts.symbols, opts.dsym, opts.metadata].filter(Boolean) as string[]) {
           if (!existsSync(file)) throw new Error(`missing file: ${file}`);
         }
         const changelog = opts.changelogFile
@@ -230,6 +232,16 @@ export function registerBuildCommands(program: Command): void {
               platform: "android",
               arch: null,
               filetype: "symbols.zip",
+            }),
+          );
+        }
+        if (opts.dsym) {
+          assets.push(
+            await uploadAndRegisterAsset(appId, build.id, opts.dsym, {
+              artifact_kind: "dsym",
+              platform: "ios",
+              arch: null,
+              filetype: "dsym.zip",
             }),
           );
         }
