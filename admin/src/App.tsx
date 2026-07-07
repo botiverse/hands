@@ -481,7 +481,7 @@ function AuthGate() {
 
 function PublicLanding({ account }: { account?: AuthAccount }) {
   useEffect(() => {
-    document.title = "Quiver - Mobile release operations";
+    document.title = "Quiver - Client release operations";
   }, []);
 
   return (
@@ -521,7 +521,7 @@ function PublicLanding({ account }: { account?: AuthAccount }) {
           <div className="mx-auto grid max-w-6xl gap-10 px-4 py-14 md:grid-cols-[1.1fr_0.9fr] md:items-center md:py-20">
             <div className="max-w-2xl">
               <div className="mb-4 inline-flex items-center rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-xs font-medium text-slate-600">
-                The mobile release platform for Raft-built apps
+                The release platform for Raft-built client apps
               </div>
               <h1 className="text-4xl font-bold leading-tight sm:text-5xl">
                 Ship it, roll it out, hear it break, fix it.
@@ -591,18 +591,19 @@ function PublicLanding({ account }: { account?: AuthAccount }) {
           />
           <LandingFeature
             title="Crash reporting"
-            body="Store-then-send crash capture on Android and HarmonyOS, grouped by signature and auto-deobfuscated via mapping files."
+            body="Crash capture across Android, iOS, HarmonyOS, and Electron — grouped by signature and symbolicated server-side (R8 mappings, native symbols, dSYM, minidumps)."
           />
         </section>
 
         <section className="border-t border-slate-200 bg-white">
           <div className="mx-auto flex max-w-6xl flex-col gap-4 px-4 py-8 sm:flex-row sm:items-center sm:justify-between">
             <div>
-              <h2 className="text-lg font-semibold">Integrate the SDK, build from CI.</h2>
+              <h2 className="text-lg font-semibold">Integrate an SDK, build from CI.</h2>
               <p className="mt-1 text-sm text-slate-600">
-                The Android SDK adds in-app update checks, staged rollouts,
-                feedback, and crash reporting; the public npm CLI publishes
-                releases and share links from CI or Raft agents.
+                SDKs for Android, iOS, HarmonyOS, and Electron add feedback and
+                crash reporting (plus in-app update checks and staged rollouts
+                on Android); the public npm CLI publishes releases and share
+                links from CI or Raft agents.
               </p>
             </div>
             <div className="flex flex-none flex-col gap-2 sm:flex-row">
@@ -611,6 +612,12 @@ function PublicLanding({ account }: { account?: AuthAccount }) {
                 href="/docs/android-sdk/"
               >
                 Android SDK
+              </a>
+              <a
+                className="inline-flex h-10 items-center justify-center whitespace-nowrap rounded-md border border-slate-300 bg-white px-4 text-sm font-medium text-slate-800 hover:bg-slate-100"
+                href="/docs/electron-sdk/"
+              >
+                Electron SDK
               </a>
               <a
                 className="inline-flex h-10 items-center justify-center whitespace-nowrap rounded-md border border-slate-300 bg-white px-4 text-sm font-medium text-slate-800 hover:bg-slate-100"

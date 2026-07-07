@@ -2,24 +2,24 @@
 
 **Ship it, roll it out, hear it break, fix it.**
 
-The mobile release platform, full loop.
+The release platform for client apps, full loop.
 
-Quiver runs the whole release loop: CI lands builds as drafts, agents review and publish with bilingual changelogs, staged rollouts meter exposure by device cohort, share pages handle ad-hoc distribution, and in-app feedback and crash reports come back as tickets — grouped by signature, auto-deobfuscated, and triageable by humans and AI agents through the same API. Reporting SDKs cover Android and HarmonyOS today (iOS next) — fully Cloudflare-native (Workers + Container + D1 + R2).
+Quiver runs the whole release loop: CI lands builds as drafts, agents review and publish with bilingual changelogs, staged rollouts meter exposure by device cohort, share pages handle ad-hoc distribution, and in-app feedback and crash reports come back as tickets — grouped by signature, symbolicated, and triageable by humans and AI agents through the same API. Reporting SDKs cover Android, iOS, HarmonyOS, and Electron — fully Cloudflare-native (Workers + Container + D1 + R2).
 
 - **Live instance:** <https://quiver.oranix.io>
 - **Docs:** <https://quiver.oranix.io/docs> · [Admin guide](https://quiver.oranix.io/docs/admin-user-guide/) · [CLI reference](https://quiver.oranix.io/docs/cli-reference/)
 - **API explorer:** <https://quiver.oranix.io/api-docs>
 - **CLI on npm:** [`@oranix/quiver-cli`](https://www.npmjs.com/package/@oranix/quiver-cli)
 
-The "quiver" metaphor: admins load APK arrows into channels; clients pick the right one for their channel — and tell you where it landed.
+The "quiver" metaphor: admins load build arrows into channels; clients pick the right one for their channel — and tell you where it landed.
 
 ## Features
 
 - **Channels** — keep main, preview, nightly, or debug releases separated by app. Publish to `main` for stable users, `preview` for validation, `nightly` for fast internal iteration.
-- **Update checks & staged rollouts** — public latest/update responses with signed APK downloads, percentage rollouts bucketed by stable device id, and per-language changelogs; the Android SDK (`clients/android`) handles in-app checks, installation, and feedback and crash submission; a HarmonyOS (ArkTS) reporting layer mirrors it.
+- **Update checks & staged rollouts** — public latest/update responses with signed downloads, percentage rollouts bucketed by stable device id, and per-language changelogs; the Android SDK (`clients/android`) handles in-app checks, installation, and feedback/crash submission; iOS, HarmonyOS (ArkTS), and Electron (`@oranix/quiver-electron`) SDKs mirror the feedback and crash lanes.
 - **Share pages & version history** — revocable, expiring, optionally password-protected download pages with QR codes and view/download stats, plus an opt-in public version history page per app.
 - **Feedback tickets** — in-app feedback (attachments, device context) lands in a built-in ticket system with assignees, statuses, comments, and webhooks; submissions are authenticated with a per-app client key.
-- **Crash reporting** — store-then-send crash capture on Android and HarmonyOS uploads on next launch, groups by signature, and auto-retraces stacks against uploaded R8/ProGuard mappings.
+- **Crash reporting** — crash capture across Android, iOS, HarmonyOS, and Electron uploads on next launch, groups by signature, and symbolicates stacks server-side against uploaded R8/ProGuard mappings, native symbols, dSYMs, or Breakpad symbols (minidumps).
 - **Draft-first releases** — CI creates draft releases with generated changelogs; an agent reviews, writes bilingual notes, and publishes explicitly (`docs/release-runbook.md`).
 - **Raft access** — Login with Raft, org roles, direct app members, per-server visibility grants, and app-level deploy tokens for CI and agents.
 - **CI-friendly publishing** — the public npm CLI publishes Android releases and creates share links from GitHub Actions, local packaging lanes, or Raft agents:
