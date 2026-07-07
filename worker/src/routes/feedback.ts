@@ -312,6 +312,19 @@ export async function handlePublicFeedbackSubmit(c: Context<{ Bindings: Env }>) 
     }
   }
 
+  // iOS crashes: symbolicate frames against the dSYM asset.
+  const dsymImages = parseBinaryImages(metadata["crash_binary_images"]);
+  const dsymFrames = parseCrashFrames(metadata["crash_frames"]);
+  if (kind === "crash" && dsymImages.length > 0 && dsymFrames.length > 0) {
+    const run = () =>
+      symbolicateDsymCrashTicket(c.env, app.id, ticketId, versionCode, dsymImages, dsymFrames);
+    try {
+      c.executionCtx.waitUntil(run());
+    } catch {
+      run().catch(() => {});
+    }
+  }
+
   // Crash alerting: fire webhooks when a signature is first seen or when it
   // spikes (10/50/100 tickets within an hour — fires once per tier as the
   // count crosses it, so no extra state table is needed).
@@ -623,6 +636,195 @@ export async function symbolicateNativeCrashTicket(
   } catch (err) {
     console.error(
       `[symbolicate] failed for ticket ${ticketId}: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+}
+
+export interface DsymImage {
+  uuid: string;
+  load_address: bigint;
+  end_address: bigint;
+  name: string;
+}
+
+export interface DsymFrame {
+  index: number;
+  address: bigint;
+}
+
+function parseHexBig(v: unknown): bigint | null {
+  if (typeof v !== "string" && typeof v !== "number") return null;
+  const s = String(v).trim();
+  if (!s) return null;
+  try {
+    if (s.startsWith("0x") || s.startsWith("0X")) return BigInt(s);
+    if (/^\d+$/.test(s)) return BigInt(s);
+    if (/^[0-9a-fA-F]+$/.test(s)) return BigInt("0x" + s);
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * SDK contract (symbolication matrix, iOS lane): metadata.crash_binary_images
+ * is a JSON array of { uuid, load_address, base_address, end_address, slide,
+ * path, name }. load_address / end_address are RUNTIME addresses (already
+ * include the ASLR slide), so a frame address inside [load, end] maps to that
+ * image and its file offset is `address - load_address`.
+ */
+export function parseBinaryImages(raw: unknown): DsymImage[] {
+  let value = raw;
+  if (typeof value === "string") {
+    try {
+      value = JSON.parse(value);
+    } catch {
+      return [];
+    }
+  }
+  if (!Array.isArray(value)) return [];
+  const out: DsymImage[] = [];
+  for (const entry of value.slice(0, 512)) {
+    if (!entry || typeof entry !== "object") continue;
+    const e = entry as Record<string, unknown>;
+    const load = parseHexBig(e["load_address"]);
+    if (load === null) continue;
+    const end = parseHexBig(e["end_address"]) ?? load;
+    const pathName =
+      typeof e["path"] === "string" ? (e["path"] as string).split("/").pop() ?? "" : "";
+    const name = String(e["name"] ?? pathName ?? "").trim();
+    if (!name) continue;
+    out.push({ uuid: String(e["uuid"] ?? "").trim(), load_address: load, end_address: end, name });
+  }
+  return out;
+}
+
+/**
+ * metadata.crash_frames is a JSON array of { index, address } where address is
+ * the RUNTIME instruction address (post-slide). Bounded and shape-checked.
+ */
+export function parseCrashFrames(raw: unknown): DsymFrame[] {
+  let value = raw;
+  if (typeof value === "string") {
+    try {
+      value = JSON.parse(value);
+    } catch {
+      return [];
+    }
+  }
+  if (!Array.isArray(value)) return [];
+  const out: DsymFrame[] = [];
+  for (const entry of value.slice(0, 256)) {
+    if (!entry || typeof entry !== "object") continue;
+    const e = entry as Record<string, unknown>;
+    const address = parseHexBig(e["address"]);
+    const index = typeof e["index"] === "number" ? e["index"] : Number(e["index"]);
+    if (address === null || !Number.isFinite(index)) continue;
+    out.push({ index, address });
+  }
+  return out;
+}
+
+/**
+ * Resolve iOS crash frames against the build's dSYM asset via the container's
+ * llvm-symbolizer endpoint and append the result as an internal comment —
+ * mirrors symbolicateNativeCrashTicket. Missing dSYM leaves an
+ * operator-actionable comment.
+ */
+export async function symbolicateDsymCrashTicket(
+  env: Env,
+  appId: string,
+  ticketId: string,
+  versionCode: number | null,
+  images: DsymImage[],
+  frames: DsymFrame[],
+): Promise<void> {
+  try {
+    if (versionCode === null || frames.length === 0 || images.length === 0) return;
+    const appendComment = async (body: string) => {
+      await env.DB.batch([
+        env.DB.prepare(
+          `INSERT INTO feedback_comments (id, ticket_id, author_actor, body, internal, created_at)
+           VALUES (?1, ?2, 'quiver-symbolicate', ?3, 1, ?4)`,
+        ).bind(crypto.randomUUID(), ticketId, body, Date.now()),
+        env.DB.prepare("UPDATE feedback_tickets SET updated_at = ?1 WHERE id = ?2").bind(
+          Date.now(),
+          ticketId,
+        ),
+      ]);
+    };
+
+    // Map each frame to its containing image → { index, offset(hex), image }.
+    const containerFrames: Array<{ index: number; offset: string; image: string }> = [];
+    for (const f of frames) {
+      const img =
+        images.find((i) => f.address >= i.load_address && f.address <= i.end_address) ?? images[0];
+      if (!img) continue;
+      const offset = f.address - img.load_address;
+      if (offset < 0n) continue;
+      containerFrames.push({
+        index: f.index,
+        offset: "0x" + offset.toString(16),
+        image: img.name,
+      });
+    }
+    if (containerFrames.length === 0) return;
+
+    const dsym = await env.DB.prepare(
+      `SELECT ba.r2_key FROM build_assets ba
+       JOIN builds b ON b.id = ba.build_id
+       WHERE b.app_id = ?1 AND b.version_code = ?2
+         AND ba.artifact_kind = 'dsym'
+       ORDER BY ba.created_at DESC LIMIT 1`,
+    )
+      .bind(appId, versionCode)
+      .first<{ r2_key: string }>();
+    if (!dsym) {
+      const uuids = [...new Set(images.map((i) => i.uuid).filter(Boolean))].slice(0, 6).join(", ");
+      await appendComment(
+        `iOS crash could not be symbolicated: no 'dsym' build asset for ` +
+          `version_code ${versionCode}${uuids ? ` (image UUIDs: ${uuids})` : ""}. ` +
+          `Publish the build with its dSYM archive (quiver builds publish-android --dsym).`,
+      );
+      return;
+    }
+
+    const zipObj = await env.APK_BUCKET.get(dsym.r2_key);
+    if (!zipObj) return;
+    const zipBytes = await zipObj.arrayBuffer();
+
+    const { getRandom } = await import("@cloudflare/containers");
+    const container = await getRandom(env.APK_PARSER, 1);
+    const res = await container.fetch(
+      new Request("http://container/symbolicate-dsym", {
+        method: "POST",
+        body: zipBytes,
+        headers: {
+          "content-type": "application/zip",
+          "X-Quiver-Frames": JSON.stringify(containerFrames),
+        },
+      }),
+    );
+    if (!res.ok) return;
+    const parsed = (await res.json()) as {
+      frames?: Array<{ index: number; resolved?: string; error?: string }>;
+    };
+    const resolved = parsed.frames ?? [];
+    if (resolved.length === 0) return;
+
+    const byIndex = new Map(resolved.map((f) => [f.index, f]));
+    const lines = containerFrames.map((cf) => {
+      const r = byIndex.get(cf.index);
+      const outcome = r?.resolved ?? (r?.error ? `?? (${r.error})` : "??");
+      return `#${String(cf.index).padStart(2, "0")} ${cf.image} ${cf.offset} — ${outcome}`;
+    });
+    await appendComment(
+      "Symbolicated iOS stack (auto-resolved from dSYM):\n\n" +
+        lines.join("\n").slice(0, 20_000),
+    );
+  } catch (err) {
+    console.error(
+      `[symbolicate-dsym] failed for ticket ${ticketId}: ${err instanceof Error ? err.message : String(err)}`,
     );
   }
 }

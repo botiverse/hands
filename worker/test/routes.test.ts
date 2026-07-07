@@ -3472,6 +3472,58 @@ describe("quiver public API v2 — scope resolution", () => {
     expect(comment.body).toContain("abcd1234");
   });
 
+  it("parseBinaryImages/parseCrashFrames bound and shape-check SDK input", async () => {
+    const { parseBinaryImages, parseCrashFrames } = await import("../src/routes/feedback");
+    const images = parseBinaryImages(JSON.stringify([
+      { uuid: "A1", load_address: "0x104abc000", end_address: "0x104b00000", name: "Raft" },
+      { uuid: "B2", load_address: "nonsense", name: "Bad" },
+      { uuid: "C3", load_address: "0x1", name: "" },
+      { path: "/x/y/UIKit", load_address: 4368 },
+      "garbage",
+    ]));
+    expect(images).toEqual([
+      { uuid: "A1", load_address: 0x104abc000n, end_address: 0x104b00000n, name: "Raft" },
+      { uuid: "", load_address: 4368n, end_address: 4368n, name: "UIKit" },
+    ]);
+    expect(parseBinaryImages("not json")).toEqual([]);
+
+    const frames = parseCrashFrames(JSON.stringify([
+      { index: 0, address: "0x104abc123" },
+      { index: 1, address: "junk" },
+      { address: "0x2" },
+      { index: 2, address: 100 },
+    ]));
+    expect(frames).toEqual([
+      { index: 0, address: 0x104abc123n },
+      { index: 2, address: 100n },
+    ]);
+    expect(parseCrashFrames(42)).toEqual([]);
+  });
+
+  it("symbolicateDsymCrashTicket leaves an actionable comment when dSYM is missing", async () => {
+    const env = makeEnv();
+    const { symbolicateDsymCrashTicket } = await import("../src/routes/feedback");
+    await env.DB.prepare(
+      `INSERT INTO feedback_tickets (id, app_id, kind, status, message, metadata_json, created_at, updated_at)
+       VALUES (?1, ?2, 'crash', 'open', 'ios crash', '{}', ?3, ?4)`,
+    ).bind("tick-dsym", "app-scope", 1, 1).run();
+    await symbolicateDsymCrashTicket(
+      env as any,
+      "app-scope",
+      "tick-dsym",
+      1000200,
+      [{ uuid: "DEADBEEF", load_address: 0x100000000n, end_address: 0x100100000n, name: "Raft" }],
+      [{ index: 0, address: 0x100004000n }],
+    );
+    const comment = (await env.DB.prepare(
+      "SELECT author_actor, body FROM feedback_comments WHERE ticket_id = ?1",
+    ).bind("tick-dsym").all()).results[0] as { author_actor: string; body: string };
+    expect(comment.author_actor).toBe("quiver-symbolicate");
+    expect(comment.body).toContain("dsym");
+    expect(comment.body).toContain("1000200");
+    expect(comment.body).toContain("DEADBEEF");
+  });
+
   it("changelogToHtml renders bullets safely", async () => {
     const { changelogToHtml } = await import("../src/routes/public_v2");
     const html = changelogToHtml("- one **bold**\n- two <script>x</script>\n\nplain `c`");

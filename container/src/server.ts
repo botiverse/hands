@@ -195,6 +195,106 @@ app.post("/symbolicate-native", async (c) => {
   }
 });
 
+/**
+ * POST /symbolicate-dsym — body = raw dSYM zip (one or more .dSYM bundles),
+ * X-Quiver-Frames header = JSON array of { index, offset, image } where
+ * `offset` is the address minus the image's runtime load address (hex) and
+ * `image` is the binary/image name. Extracts the zip, indexes the DWARF
+ * Mach-O binaries (`*.dSYM/Contents/Resources/DWARF/*`) by basename, and
+ * resolves each frame with llvm-symbolizer at `IOS_TEXT_VMADDR + offset`.
+ * Returns { frames: [{ index, resolved | error }] }.
+ *
+ * IOS_TEXT_VMADDR is the standard arm64 iOS PIE __TEXT base (0x100000000),
+ * which is the link-time base every app main executable's offsets are
+ * relative to. (Reading it per-binary is a robustness follow-up; system
+ * frameworks usually ship no dSYM and fall back to name+offset anyway.)
+ */
+const IOS_TEXT_VMADDR = 0x100000000n;
+app.post("/symbolicate-dsym", async (c) => {
+  const framesHeader = c.req.header("X-Quiver-Frames") ?? "[]";
+  let frames: Array<{ index: number; offset: string; image: string }>;
+  try {
+    frames = JSON.parse(framesHeader);
+    if (!Array.isArray(frames)) throw new Error("not an array");
+  } catch {
+    return c.json({ error: "X-Quiver-Frames must be a JSON array" }, 400);
+  }
+  if (frames.length === 0 || frames.length > 256) {
+    return c.json({ error: "frames must contain 1-256 entries" }, 400);
+  }
+  const ab = await c.req.arrayBuffer();
+  if (ab.byteLength === 0) return c.json({ error: "empty dSYM zip" }, 400);
+  if (ab.byteLength > 500 * 1024 * 1024) return c.json({ error: "dSYM zip too large" }, 413);
+
+  const dir = join(tmpdir(), `dsym-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+  const zipPath = join(dir, "dsym.zip");
+  const outDir = join(dir, "dsym");
+  try {
+    await mkdir(outDir, { recursive: true });
+    await writeFile(zipPath, Buffer.from(ab));
+    await execFileAsync("unzip", ["-o", "-q", zipPath, "-d", outDir], {
+      maxBuffer: 8 * 1024 * 1024,
+    });
+
+    // Index DWARF Mach-O binaries (…/Contents/Resources/DWARF/<name>) by name.
+    const dwarfByName = new Map<string, string>();
+    const walk = async (d: string): Promise<void> => {
+      for (const entry of await readdir(d, { withFileTypes: true })) {
+        const full = join(d, entry.name);
+        if (entry.isDirectory()) await walk(full);
+        else if (full.includes("/DWARF/") && !dwarfByName.has(entry.name)) {
+          dwarfByName.set(entry.name, full);
+        }
+      }
+    };
+    await walk(outDir);
+
+    const results: Array<{ index: number; resolved?: string; error?: string }> = [];
+    for (const frame of frames) {
+      const image = String(frame.image ?? "").split("/").pop() ?? "";
+      const dwarfPath = image ? dwarfByName.get(image) : undefined;
+      if (!dwarfPath) {
+        results.push({ index: frame.index, error: `no dSYM for ${image || "(missing image)"}` });
+        continue;
+      }
+      let offsetBig: bigint;
+      try {
+        const raw = String(frame.offset ?? "").trim();
+        offsetBig = BigInt(raw.startsWith("0x") ? raw : `0x${raw}`);
+      } catch {
+        results.push({ index: frame.index, error: `bad offset: ${frame.offset}` });
+        continue;
+      }
+      const staticAddr = "0x" + (IOS_TEXT_VMADDR + offsetBig).toString(16);
+      try {
+        const { stdout } = await execFileAsync(
+          "llvm-symbolizer",
+          ["--obj=" + dwarfPath, "--output-style=GNU", "--demangle", "--functions=linkage", staticAddr],
+          { maxBuffer: 4 * 1024 * 1024 },
+        );
+        const lines = stdout.trim().split("\n").filter(Boolean);
+        results.push({
+          index: frame.index,
+          resolved: lines.length > 0 ? `${lines[0]}${lines[1] ? ` (${lines[1]})` : ""}` : "??",
+        });
+      } catch (err) {
+        results.push({
+          index: frame.index,
+          error: `symbolizer failed: ${err instanceof Error ? err.message : String(err)}`,
+        });
+      }
+    }
+    return c.json({ frames: results });
+  } catch (err) {
+    return c.json(
+      { error: `symbolicate-dsym failed: ${err instanceof Error ? err.message : String(err)}` },
+      500,
+    );
+  } finally {
+    await rm(dir, { recursive: true, force: true }).catch(() => {});
+  }
+});
+
 app.post("/parse", async (c) => {
   const ab = await c.req.arrayBuffer();
   if (ab.byteLength === 0) return c.json({ error: "empty body" }, 400);
