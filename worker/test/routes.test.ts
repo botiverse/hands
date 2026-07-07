@@ -3524,6 +3524,88 @@ describe("quiver public API v2 — scope resolution", () => {
     expect(comment.body).toContain("DEADBEEF");
   });
 
+  it("handlePublicMinidumpSubmit ingests a Crashpad minidump as an electron crash ticket", async () => {
+    const env = makeEnv();
+    const store = new Map<string, Uint8Array>();
+    env.APK_BUCKET = {
+      put: async (key: string, body: ArrayBuffer) => { store.set(key, new Uint8Array(body)); },
+      get: async (key: string) =>
+        store.has(key) ? { arrayBuffer: async () => store.get(key)!.buffer } : null,
+      head: async (key: string) =>
+        store.has(key) ? { size: store.get(key)!.byteLength } : null,
+    } as any;
+    const { handlePublicMinidumpSubmit } = await import("../src/routes/feedback");
+
+    const form = new FormData();
+    form.set(
+      "upload_file_minidump",
+      new File([new Uint8Array([77, 68, 77, 80])], "crash.dmp", { type: "application/x-minidump" }),
+    );
+    form.set("version", "1.2.3");
+    form.set("version_code", "1020300");
+    form.set("process_type", "renderer");
+    form.set("channel", "stable");
+    form.set("guid", "abc-guid");
+    form.set("custom_note", "hello");
+
+    const waited: Promise<unknown>[] = [];
+    const res = await handlePublicMinidumpSubmit({
+      env,
+      executionCtx: { waitUntil: (p: Promise<unknown>) => waited.push(p) },
+      req: {
+        param: (n: string) => (n === "slug" ? "scope-app" : ""),
+        header: (n: string) => (n === "X-Quiver-Client-Key" ? "qk_test" : undefined),
+        query: () => undefined,
+        formData: async () => form,
+        raw: { cf: { clientIp: "203.0.113.7" } },
+      },
+      json: (data: unknown, status = 200) => new Response(JSON.stringify(data), { status }),
+    } as any);
+    expect(res.status).toBe(201);
+    await Promise.all(waited).catch(() => {});
+    const body = await responseJson<any>(res);
+
+    const ticket = (await env.DB.prepare(
+      "SELECT kind, version_name, version_code, channel, device_id, metadata_json FROM feedback_tickets WHERE id = ?1",
+    ).bind(body.id).first()) as any;
+    expect(ticket.kind).toBe("crash");
+    expect(ticket.version_name).toBe("1.2.3");
+    expect(ticket.version_code).toBe(1020300);
+    expect(ticket.channel).toBe("stable");
+    expect(ticket.device_id).toBe("abc-guid");
+    const meta = JSON.parse(ticket.metadata_json);
+    expect(meta.product_type).toBe("electron");
+    expect(meta.process_type).toBe("renderer");
+    expect(meta.custom_note).toBe("hello");
+
+    const att = (await env.DB.prepare(
+      "SELECT filename, content_type, size_bytes FROM feedback_attachments WHERE ticket_id = ?1",
+    ).bind(body.id).first()) as any;
+    expect(att.filename).toBe("minidump.dmp");
+    expect(att.content_type).toBe("application/x-minidump");
+    expect(att.size_bytes).toBe(4);
+  });
+
+  it("handlePublicMinidumpSubmit rejects an invalid client key", async () => {
+    const env = makeEnv();
+    const { handlePublicMinidumpSubmit } = await import("../src/routes/feedback");
+    const form = new FormData();
+    form.set("upload_file_minidump", new File([new Uint8Array([1])], "c.dmp"));
+    const res = await handlePublicMinidumpSubmit({
+      env,
+      executionCtx: { waitUntil: () => {} },
+      req: {
+        param: (n: string) => (n === "slug" ? "scope-app" : ""),
+        header: () => "wrong-key",
+        query: () => undefined,
+        formData: async () => form,
+        raw: { cf: {} },
+      },
+      json: (data: unknown, status = 200) => new Response(JSON.stringify(data), { status }),
+    } as any);
+    expect(res.status).toBe(401);
+  });
+
   it("changelogToHtml renders bullets safely", async () => {
     const { changelogToHtml } = await import("../src/routes/public_v2");
     const html = changelogToHtml("- one **bold**\n- two <script>x</script>\n\nplain `c`");

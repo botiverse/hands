@@ -432,6 +432,168 @@ export async function handlePublicFeedbackSubmit(c: Context<{ Bindings: Env }>) 
   );
 }
 
+const MINIDUMP_MAX_BYTES = 64 * 1024 * 1024; // Crashpad dumps are usually < a few MB
+
+/**
+ * Electron/Crashpad crash ingest. Electron's built-in crashReporter POSTs a
+ * multipart/form-data with the minidump under `upload_file_minidump` plus a
+ * flat set of annotation fields (productName, version, and any `extra`/
+ * `globalExtra` the SDK set). We store the dump as a crash-ticket attachment,
+ * fold every annotation into metadata (product_type=electron), and fire the
+ * minidump symbolication lane against the version's breakpad-symbols asset.
+ *
+ * Client-key gate: the SDK puts it in the submitURL query (`?client_key=`),
+ * which Crashpad preserves, or an X-Quiver-Client-Key header.
+ */
+export async function handlePublicMinidumpSubmit(c: Context<{ Bindings: Env }>) {
+  const slug = c.req.param("slug");
+  if (!slug) return c.json({ error: "slug required" }, 400);
+  const app = await c.env.DB.prepare(
+    "SELECT id, org_id, slug, client_key FROM apps WHERE slug = ?1 AND archived = 0",
+  )
+    .bind(slug)
+    .first<{ id: string; org_id: string | null; slug: string; client_key: string | null }>();
+  if (!app) return c.json({ error: `app '${slug}' not found` }, 404);
+
+  const presented =
+    c.req.header("X-Quiver-Client-Key") ?? c.req.query("client_key") ?? "";
+  if (!app.client_key || presented !== app.client_key) {
+    return c.json({ error: "invalid or missing client key" }, 401);
+  }
+
+  let form: FormData;
+  try {
+    form = await c.req.formData();
+  } catch {
+    return c.json({ error: "multipart/form-data body required" }, 400);
+  }
+
+  // Crashpad names the dump field `upload_file_minidump`; accept `minidump` too.
+  const dumpEntry = form.get("upload_file_minidump") ?? form.get("minidump");
+  if (dumpEntry === null || typeof dumpEntry === "string") {
+    return c.json({ error: "missing minidump (upload_file_minidump)" }, 400);
+  }
+  const dump = dumpEntry as File;
+  if (dump.size === 0) {
+    return c.json({ error: "missing minidump (upload_file_minidump)" }, 400);
+  }
+  if (dump.size > MINIDUMP_MAX_BYTES) {
+    return c.json({ error: `minidump too large (max ${MINIDUMP_MAX_BYTES} bytes)` }, 413);
+  }
+
+  // Every other string field is a Crashpad annotation → metadata. Map the
+  // Sentry-electron-style well-known keys to ticket columns.
+  const annotations: Record<string, string> = {};
+  for (const [key, value] of form.entries()) {
+    if (typeof value !== "string") continue;
+    if (key === "upload_file_minidump" || key === "minidump") continue;
+    annotations[key] = value.slice(0, 2000);
+  }
+  const pick = (...keys: string[]): string | null => {
+    for (const k of keys) {
+      const v = annotations[k];
+      if (v !== undefined && v !== null && v !== "") return v;
+    }
+    return null;
+  };
+
+  const versionName = pick("version", "app_version", "appVersion", "version_name", "release");
+  const versionCodeRaw = pick("version_code", "versionCode", "build");
+  const versionCode =
+    versionCodeRaw && /^\d+$/.test(versionCodeRaw) ? Math.trunc(Number(versionCodeRaw)) : null;
+  const processType = pick("process_type", "ptype", "type"); // main / renderer / gpu / utility
+  const metadata: Record<string, unknown> = {
+    ...annotations,
+    product_type: "electron",
+    process_type: processType,
+    crash_platform: pick("platform", "os") ?? "electron",
+  };
+
+  const clientIp =
+    (c.req.raw?.cf as { clientIp?: string } | undefined)?.clientIp ??
+    c.req.header("cf-connecting-ip") ??
+    "unknown";
+  const clientIpHash = await sha256Hex(`feedback:${app.id}:${clientIp}`);
+  const recent = await c.env.DB.prepare(
+    `SELECT COUNT(*) AS count FROM feedback_tickets
+     WHERE app_id = ?1 AND client_ip_hash = ?2 AND created_at > ?3`,
+  )
+    .bind(app.id, clientIpHash, Date.now() - 3600_000)
+    .first<{ count: number }>();
+  if ((recent?.count ?? 0) >= RATE_LIMIT_PER_HOUR) {
+    return c.json({ error: "too many crash reports; try again later" }, 429);
+  }
+
+  const now = Date.now();
+  const ticketId = crypto.randomUUID();
+  const dumpKey = `feedback/${app.id}/${ticketId}/minidump.dmp`;
+  await c.env.APK_BUCKET.put(dumpKey, await dump.arrayBuffer(), {
+    httpMetadata: { contentType: "application/x-minidump" },
+  });
+
+  const reasonBits = [processType, versionName].filter(Boolean).join(" · ");
+  const message = `Electron crash${reasonBits ? ` (${reasonBits})` : ""}`;
+
+  await c.env.DB.batch([
+    c.env.DB.prepare(
+      `INSERT INTO feedback_tickets
+       (id, app_id, kind, status, message, contact, version_name, version_code,
+        channel, device_id, device_model, os_version, arch, locale,
+        metadata_json, client_ip_hash, signature, created_at, updated_at)
+       VALUES (?1, ?2, 'crash', 'open', ?3, NULL, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, NULL, ?14, ?15)`,
+    ).bind(
+      ticketId,
+      app.id,
+      message,
+      versionName,
+      versionCode,
+      pick("channel", "environment"),
+      pick("device_id", "guid"),
+      pick("device_model", "model"),
+      pick("os_version", "os_release"),
+      pick("arch", "cpu_arch"),
+      (pick("locale") ?? "").slice(0, 40) || null,
+      JSON.stringify(metadata),
+      clientIpHash,
+      now,
+      now,
+    ),
+    c.env.DB.prepare(
+      `INSERT INTO feedback_attachments
+       (id, ticket_id, r2_key, filename, content_type, size_bytes, created_at)
+       VALUES (?1, ?2, ?3, 'minidump.dmp', 'application/x-minidump', ?4, ?5)`,
+    ).bind(crypto.randomUUID(), ticketId, dumpKey, dump.size, now),
+  ]);
+
+  // Symbolicate against the version's breakpad-symbols asset (background).
+  const run = () => symbolicateMinidumpCrashTicket(c.env, app.id, ticketId, versionCode, dumpKey);
+  try {
+    c.executionCtx.waitUntil(run());
+  } catch {
+    run().catch(() => {});
+  }
+
+  if (app.org_id) {
+    await emitWebhookEvent(c.env.DB, {
+      orgId: app.org_id,
+      appId: app.id,
+      event: "feedback:new",
+      body: {
+        ticket_id: ticketId,
+        app_slug: app.slug,
+        kind: "crash",
+        message,
+        version_name: versionName,
+        version_code: versionCode,
+        attachments: 1,
+      },
+    }).catch(() => {});
+  }
+
+  // Crashpad only checks for a 2xx; a short id body is conventional.
+  return c.json({ id: ticketId, status: "open" }, 201);
+}
+
 /** Signature = "<ExceptionClass>@<top app frame>", trimmed and bounded. */
 function crashSignature(metadata: Record<string, unknown>): string | null {
   const exc = String(metadata["crash_exception_class"] ?? metadata["exception_class"] ?? "").trim();
@@ -825,6 +987,98 @@ export async function symbolicateDsymCrashTicket(
   } catch (err) {
     console.error(
       `[symbolicate-dsym] failed for ticket ${ticketId}: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+}
+
+/**
+ * Resolve an Electron/Crashpad minidump against the version's breakpad-symbols
+ * asset via the container's minidump-stackwalk lane and append the result as an
+ * internal comment — mirrors the native/dSYM symbolication flows. Missing
+ * symbols leaves an operator-actionable comment.
+ */
+export async function symbolicateMinidumpCrashTicket(
+  env: Env,
+  appId: string,
+  ticketId: string,
+  versionCode: number | null,
+  minidumpR2Key: string,
+): Promise<void> {
+  try {
+    const appendComment = async (body: string) => {
+      await env.DB.batch([
+        env.DB.prepare(
+          `INSERT INTO feedback_comments (id, ticket_id, author_actor, body, internal, created_at)
+           VALUES (?1, ?2, 'quiver-symbolicate', ?3, 1, ?4)`,
+        ).bind(crypto.randomUUID(), ticketId, body, Date.now()),
+        env.DB.prepare("UPDATE feedback_tickets SET updated_at = ?1 WHERE id = ?2").bind(
+          Date.now(),
+          ticketId,
+        ),
+      ]);
+    };
+
+    const dumpObj = await env.APK_BUCKET.get(minidumpR2Key);
+    if (!dumpObj) return;
+    const dumpBytes = await dumpObj.arrayBuffer();
+
+    // breakpad-symbols asset for this version (optional — stackwalk still
+    // returns module+offset frames without it, which is worth posting).
+    let symBytes: ArrayBuffer | null = null;
+    if (versionCode !== null) {
+      const sym = await env.DB.prepare(
+        `SELECT ba.r2_key FROM build_assets ba
+         JOIN builds b ON b.id = ba.build_id
+         WHERE b.app_id = ?1 AND b.version_code = ?2
+           AND ba.artifact_kind = 'breakpad-symbols'
+         ORDER BY ba.created_at DESC LIMIT 1`,
+      )
+        .bind(appId, versionCode)
+        .first<{ r2_key: string }>();
+      if (sym) {
+        const symObj = await env.APK_BUCKET.get(sym.r2_key);
+        if (symObj) symBytes = await symObj.arrayBuffer();
+      }
+    }
+
+    const form = new FormData();
+    form.append("minidump", new Blob([dumpBytes], { type: "application/x-minidump" }), "crash.dmp");
+    if (symBytes) {
+      form.append("symbols", new Blob([symBytes], { type: "application/zip" }), "symbols.zip");
+    }
+
+    const { getRandom } = await import("@cloudflare/containers");
+    const container = await getRandom(env.APK_PARSER, 1);
+    const res = await container.fetch(
+      new Request("http://container/symbolicate-minidump", { method: "POST", body: form }),
+    );
+    if (!res.ok) return;
+    const parsed = (await res.json()) as {
+      crash_reason?: string | null;
+      crash_address?: string | null;
+      symbol_modules?: number;
+      stack_text?: string;
+      frames?: unknown[];
+    };
+    const stack = (parsed.stack_text ?? "").trim();
+    if (!stack) return;
+
+    const header =
+      `Symbolicated Electron crash (minidump-stackwalk` +
+      `${symBytes ? "" : ", no breakpad-symbols asset — module+offset only"}):` +
+      `${parsed.crash_reason ? `\nReason: ${parsed.crash_reason}${parsed.crash_address ? ` @ ${parsed.crash_address}` : ""}` : ""}`;
+    await appendComment(`${header}\n\n${stack}`.slice(0, 20_000));
+
+    if (!symBytes && versionCode !== null) {
+      await appendComment(
+        `Tip: upload the version's Breakpad symbols (dump_syms → quiver builds ` +
+          `publish-electron --symbols) for version_code ${versionCode} to get ` +
+          `function/file:line resolution instead of raw module+offset.`,
+      );
+    }
+  } catch (err) {
+    console.error(
+      `[symbolicate-minidump] failed for ticket ${ticketId}: ${err instanceof Error ? err.message : String(err)}`,
     );
   }
 }

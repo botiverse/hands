@@ -21,7 +21,7 @@
 
 import { Hono } from "hono";
 import { serve } from "@hono/node-server";
-import { writeFile, unlink, mkdir, rm, readdir } from "node:fs/promises";
+import { writeFile, readFile, unlink, mkdir, rm, readdir } from "node:fs/promises";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { tmpdir } from "node:os";
@@ -37,6 +37,22 @@ const app = new Hono();
 const execFileAsync = promisify(execFile);
 
 const RETRACE_BIN = "/opt/android-sdk/cmdline-tools/latest/bin/retrace";
+
+/** Subset of minidump-stackwalk --json output we consume (rust-minidump). */
+interface MinidumpFrame {
+  frame: number;
+  module?: string;
+  function?: string;
+  file?: string;
+  line?: number;
+  offset?: string;
+  module_offset?: string;
+  trust?: string;
+}
+interface MinidumpReport {
+  crash_info?: { type?: string; address?: string; crashing_thread?: number };
+  crashing_thread?: { thread_index?: number; frames?: MinidumpFrame[] };
+}
 
 app.get("/health", (c) => c.json({ ok: true, service: "multi-parser" }));
 
@@ -288,6 +304,113 @@ app.post("/symbolicate-dsym", async (c) => {
   } catch (err) {
     return c.json(
       { error: `symbolicate-dsym failed: ${err instanceof Error ? err.message : String(err)}` },
+      500,
+    );
+  } finally {
+    await rm(dir, { recursive: true, force: true }).catch(() => {});
+  }
+});
+
+/**
+ * POST /symbolicate-minidump — multipart/form-data with two files:
+ *   - `minidump`: the raw Crashpad/Breakpad .dmp
+ *   - `symbols`:  a zip of Breakpad `.sym` files (dump_syms output), any layout
+ * Rebuilds the Breakpad symbol tree (`<name>/<id>/<name>.sym`, keyed off each
+ * file's `MODULE <os> <arch> <id> <name>` header so CI can zip them flat),
+ * runs `minidump-stackwalk --json` and returns the crashing thread's
+ * symbolicated frames + a rendered text stack. (Electron/Crashpad lane.)
+ */
+app.post("/symbolicate-minidump", async (c) => {
+  let form: FormData;
+  try {
+    form = await c.req.formData();
+  } catch {
+    return c.json({ error: "expected multipart/form-data" }, 400);
+  }
+  const minidump = form.get("minidump");
+  const symbols = form.get("symbols");
+  if (!(minidump instanceof File) || minidump.size === 0) {
+    return c.json({ error: "missing `minidump` file" }, 400);
+  }
+  if (minidump.size > 128 * 1024 * 1024) return c.json({ error: "minidump too large" }, 413);
+
+  const dir = join(tmpdir(), `mdump-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+  const dmpPath = join(dir, "crash.dmp");
+  const symZip = join(dir, "symbols.zip");
+  const symRaw = join(dir, "raw");
+  const symTree = join(dir, "symbols");
+  try {
+    await mkdir(symRaw, { recursive: true });
+    await mkdir(symTree, { recursive: true });
+    await writeFile(dmpPath, Buffer.from(await minidump.arrayBuffer()));
+
+    // Lay out uploaded .sym files into the Breakpad tree minidump-stackwalk
+    // expects. Reading the MODULE header makes us layout-agnostic.
+    let symbolCount = 0;
+    if (symbols instanceof File && symbols.size > 0) {
+      if (symbols.size > 512 * 1024 * 1024) return c.json({ error: "symbols zip too large" }, 413);
+      await writeFile(symZip, Buffer.from(await symbols.arrayBuffer()));
+      await execFileAsync("unzip", ["-o", "-q", symZip, "-d", symRaw], {
+        maxBuffer: 8 * 1024 * 1024,
+      });
+      const symFiles: string[] = [];
+      const walk = async (d: string): Promise<void> => {
+        for (const entry of await readdir(d, { withFileTypes: true })) {
+          const full = join(d, entry.name);
+          if (entry.isDirectory()) await walk(full);
+          else if (entry.name.endsWith(".sym")) symFiles.push(full);
+        }
+      };
+      await walk(symRaw);
+      for (const symFile of symFiles) {
+        // MODULE <os> <arch> <id> <name> — must be the first line.
+        const head = (await readFile(symFile, "utf8")).slice(0, 4096).split("\n")[0]?.trim() ?? "";
+        const m = /^MODULE\s+\S+\s+\S+\s+(\S+)\s+(.+)$/.exec(head);
+        if (!m || !m[1] || !m[2]) continue;
+        const debugId = m[1];
+        const debugName = m[2].trim();
+        const dest = join(symTree, debugName, debugId);
+        await mkdir(dest, { recursive: true });
+        await writeFile(join(dest, `${debugName}.sym`), await readFile(symFile));
+        symbolCount++;
+      }
+    }
+
+    const { stdout } = await execFileAsync(
+      "minidump-stackwalk",
+      ["--json", "--symbols-path", symTree, dmpPath],
+      { maxBuffer: 32 * 1024 * 1024 },
+    );
+    const report = JSON.parse(stdout) as MinidumpReport;
+
+    const crashing = report.crashing_thread;
+    const frames = (crashing?.frames ?? []).map((f) => ({
+      index: f.frame,
+      module: f.module ?? null,
+      function: f.function ?? null,
+      file: f.file ?? null,
+      line: f.line ?? null,
+      offset: f.module_offset ?? f.offset ?? null,
+      trust: f.trust ?? null,
+    }));
+    const textLines = frames.map((f) => {
+      const loc = f.function
+        ? `${f.function}${f.file ? ` (${f.file}${f.line ? `:${f.line}` : ""})` : ""}`
+        : `${f.module ?? "?"}${f.offset ? ` + ${f.offset}` : ""}`;
+      return `#${String(f.index).padStart(2, "0")} ${f.module ?? "?"} — ${loc}`;
+    });
+
+    return c.json({
+      crash_reason: report.crash_info?.type ?? null,
+      crash_address: report.crash_info?.address ?? null,
+      crashing_thread: report.crash_info?.crashing_thread ?? crashing?.thread_index ?? null,
+      symbol_modules: symbolCount,
+      frames,
+      stack_text: textLines.join("\n"),
+    });
+  } catch (err) {
+    return c.json(
+      { error: `symbolicate-minidump failed: ${err instanceof Error ? err.message : String(err)}` },
       500,
     );
   } finally {

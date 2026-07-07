@@ -300,6 +300,12 @@ export function registerBuildCommands(program: Command): void {
     .option("--metadata <path>", "electron-builder latest*.yml file. Repeatable.", collect, [])
     .option("--installer <path>", "Electron installer/update artifact. Repeatable.", collect, [])
     .option("--blockmap <path>", "Electron .blockmap artifact. Repeatable.", collect, [])
+    .option(
+      "--symbols <path>",
+      "Breakpad symbols archive (dump_syms output, .zip) for crash symbolication. Repeatable.",
+      collect,
+      [],
+    )
     .option("--channel <slug>", "Quiver channel slug.", "main")
     .option("--platform <platform>", "Electron platform metadata. Defaults from metadata filename or win32.")
     .option("--arch <arch>", "Electron arch metadata.")
@@ -325,6 +331,7 @@ export function registerBuildCommands(program: Command): void {
           metadata: string[];
           installer: string[];
           blockmap: string[];
+          symbols: string[];
           channel: string;
           platform?: string;
           arch?: string;
@@ -343,13 +350,14 @@ export function registerBuildCommands(program: Command): void {
           json?: boolean;
         },
       ) => {
-        const files = [...opts.metadata, ...opts.installer, ...opts.blockmap];
+        const files = [...opts.metadata, ...opts.installer, ...opts.blockmap, ...opts.symbols];
         if (files.length === 0) {
-          throw new Error("provide at least one --metadata, --installer, or --blockmap file");
+          throw new Error("provide at least one --metadata, --installer, --blockmap, or --symbols file");
         }
         const metadataFiles = opts.metadata;
         const installerFiles = opts.installer;
         const blockmapFiles = opts.blockmap;
+        const symbolsFiles = opts.symbols;
         for (const file of files) {
           if (!existsSync(file)) throw new Error(`missing file: ${file}`);
         }
@@ -436,6 +444,18 @@ export function registerBuildCommands(program: Command): void {
               platform: primaryPlatform,
               arch,
               filetype: "blockmap",
+              metadata_json: { filename: fileName },
+            }),
+          );
+        }
+        for (const file of symbolsFiles) {
+          const fileName = basename(file);
+          assets.push(
+            await uploadAndRegisterAsset(appId, build.id, file, {
+              artifact_kind: "breakpad-symbols",
+              platform: primaryPlatform,
+              arch,
+              filetype: "breakpad.zip",
               metadata_json: { filename: fileName },
             }),
           );
