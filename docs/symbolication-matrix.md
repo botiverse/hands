@@ -51,6 +51,10 @@ lane exists.
 5. **iOS SDK prerequisite before any server work:** extend the crash record
    with the loaded-images table (`dyld` image list: UUID, address, path) so
    offsets are computable. Until then, dSYM upload is accepted but unused.
+   SDK metadata keys are `crash_binary_images` and `crash_frames`, both JSON
+   strings. `crash_binary_images[].load_address` is the runtime loaded header
+   address and already includes ASLR slide; the server computes frame offsets
+   as `crash_frames[].address - crash_binary_images[].load_address`.
 6. **Auto-retrace flow is shared:** on crash-ticket creation, the worker
    looks up the lane by `metadata.platform` + artifact availability and
    appends one internal comment with the symbolicated stack (same UX as
