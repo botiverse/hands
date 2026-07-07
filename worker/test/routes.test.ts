@@ -51,6 +51,7 @@ describe("quiver OpenAPI document", () => {
 
     for (const path of [
       "/public/v2/apps/{slug}/updates/check",
+      "/electron/{slug}/{channel}/{file}",
       "/public/v2/apps/{slug}/feedback",
       "/apps/{slug}/history",
       "/api/apps",
@@ -1934,6 +1935,9 @@ describe("quiver public API v2 — scope resolution", () => {
       arch?: string | null;
       filetype?: string;
       sizeBytes?: number;
+      variant?: string | null;
+      r2Key?: string;
+      metadata?: Record<string, unknown>;
     } = {},
   ) {
     await env.DB.prepare(
@@ -1947,13 +1951,13 @@ describe("quiver public API v2 — scope resolution", () => {
         opts.artifactKind ?? "installable",
         opts.platform ?? "android",
         opts.arch ?? null,
-        null,
+        opts.variant ?? null,
         opts.filetype ?? "apk",
-        `apps/app-scope/${assetId}.apk`,
+        opts.r2Key ?? `apps/app-scope/${assetId}.apk`,
         `${assetId}-hash`,
         opts.sizeBytes ?? 42,
         `${assetId}-sig`,
-        "{}",
+        JSON.stringify(opts.metadata ?? {}),
         Date.now(),
       )
       .run();
@@ -2001,6 +2005,30 @@ describe("quiver public API v2 — scope resolution", () => {
         new Response(null, {
           status,
           headers: { location: url },
+        }),
+    } as any;
+  }
+
+  function makeElectronContext(
+    env: MockEnv,
+    file: string,
+    query: Record<string, string | undefined> = {},
+  ) {
+    return {
+      env,
+      req: {
+        param: (name: string) => {
+          if (name === "slug") return "scope-app";
+          if (name === "channel") return "production";
+          if (name === "file") return file;
+          return "";
+        },
+        query: (name: string) => query[name],
+      },
+      json: (data: unknown, status = 200) =>
+        new Response(JSON.stringify(data), {
+          status,
+          headers: { "content-type": "application/json" },
         }),
     } as any;
   }
@@ -2865,6 +2893,108 @@ describe("quiver public API v2 — scope resolution", () => {
     expect(location.searchParams.get("X-Amz-Expires")).toBe("600");
     expect(location.searchParams.get("X-Amz-Signature")).toMatch(/^[0-9a-f]{64}$/);
     expect(location.searchParams.get("response-content-disposition")).toContain("scope-app-1.0.0-11.apk");
+  });
+
+  it("serves electron-updater generic metadata from the active release", async () => {
+    const env = makeEnv();
+    const { handleElectronGenericAsset } = await import("../src/routes/electron");
+    await seedRelease(env, "rel-electron", "build-electron", [["full", "all"]], {
+      productType: "electron-installer",
+      versionCode: 10203,
+      versionName: "1.2.3",
+    });
+    await seedAsset(env, "build-electron", "asset-latest-yml", {
+      artifactKind: "electron-metadata",
+      platform: "win32",
+      filetype: "yml",
+      variant: "latest.yml",
+      r2Key: "apps/scope-app/electron/latest.yml",
+      sizeBytes: 121,
+      metadata: { filename: "latest.yml" },
+    });
+    env.APK_BUCKET = {
+      get: async (requestedKey: string) => {
+        if (requestedKey !== "apps/scope-app/electron/latest.yml") return null;
+        return {
+          body: new Blob(["version: 1.2.3\nfiles: []\n"]).stream(),
+          httpEtag: "\"latest-yml\"",
+          writeHttpMetadata: (headers: Headers) => {
+            headers.set("content-type", "application/octet-stream");
+          },
+        };
+      },
+    };
+
+    const response = await handleElectronGenericAsset(makeElectronContext(env, "latest.yml"));
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-type")).toBe("text/yaml; charset=utf-8");
+    expect(response.headers.get("cache-control")).toBe("public, max-age=60, must-revalidate");
+    expect(response.headers.get("content-disposition")).toContain("inline");
+    expect(await response.text()).toBe("version: 1.2.3\nfiles: []\n");
+  });
+
+  it("serves electron-updater installer and blockmap assets by original filename", async () => {
+    const env = makeEnv();
+    const { handleElectronGenericAsset } = await import("../src/routes/electron");
+    await seedRelease(env, "rel-electron-files", "build-electron-files", [["full", "all"]], {
+      productType: "electron-installer",
+      versionCode: 10203,
+      versionName: "1.2.3",
+    });
+    await seedAsset(env, "build-electron-files", "asset-exe", {
+      artifactKind: "installable",
+      platform: "win32",
+      arch: "x64",
+      filetype: "exe",
+      r2Key: "apps/scope-app/electron/Raft Setup 1.2.3.exe",
+      sizeBytes: 3,
+      metadata: { filename: "Raft Setup 1.2.3.exe" },
+    });
+    await seedAsset(env, "build-electron-files", "asset-blockmap", {
+      artifactKind: "electron-blockmap",
+      platform: "win32",
+      arch: "x64",
+      filetype: "blockmap",
+      r2Key: "apps/scope-app/electron/Raft Setup 1.2.3.exe.blockmap",
+      sizeBytes: 8,
+      metadata: { filename: "Raft Setup 1.2.3.exe.blockmap" },
+    });
+    env.APK_BUCKET = {
+      get: async (requestedKey: string) => {
+        if (requestedKey.endsWith(".blockmap")) {
+          return {
+            body: new Blob(["blockmap"]).stream(),
+            httpEtag: "\"blockmap\"",
+            writeHttpMetadata: () => undefined,
+          };
+        }
+        if (requestedKey.endsWith(".exe")) {
+          return {
+            body: new Blob(["exe"]).stream(),
+            httpEtag: "\"exe\"",
+            writeHttpMetadata: () => undefined,
+          };
+        }
+        return null;
+      },
+    };
+
+    const installer = await handleElectronGenericAsset(
+      makeElectronContext(env, "Raft%20Setup%201.2.3.exe"),
+    );
+    expect(installer.status).toBe(200);
+    expect(installer.headers.get("content-type")).toBe("application/vnd.microsoft.portable-executable");
+    expect(installer.headers.get("cache-control")).toBe("public, max-age=31536000, immutable");
+    expect(installer.headers.get("content-disposition")).toContain("attachment");
+    expect(await installer.text()).toBe("exe");
+
+    const blockmap = await handleElectronGenericAsset(
+      makeElectronContext(env, "Raft%20Setup%201.2.3.exe.blockmap"),
+    );
+    expect(blockmap.status).toBe(200);
+    expect(blockmap.headers.get("content-type")).toBe("application/octet-stream");
+    expect(await blockmap.text()).toBe("blockmap");
   });
 
   it("authenticated build asset download serves support artifacts", async () => {

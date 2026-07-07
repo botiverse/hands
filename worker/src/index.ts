@@ -44,6 +44,7 @@ import {
   handlePublicV2Latest,
   handlePublicV2UpdateCheck,
 } from "./routes/public_v2";
+import { handleElectronGenericAsset } from "./routes/electron";
 import {
   handleCreateReleaseShare,
   handleListReleaseShares,
@@ -450,6 +451,7 @@ app.get("/public/apps/:slug/channels", handlePublicListChannels);
 app.get("/public/v2/apps/:slug/latest", handlePublicV2Latest);
 app.get("/public/v2/apps/:slug/updates/check", handlePublicV2UpdateCheck);
 app.get("/public/r2/:key", handlePublicR2Download);
+app.get("/electron/:slug/:channel/:file", handleElectronGenericAsset);
 app.get("/share/:token/download", handlePublicReleaseShareDownload);
 app.get("/share/:token", handlePublicReleaseShare);
 app.post("/share/:token/unlock", handlePublicReleaseShareUnlock);
@@ -470,6 +472,7 @@ function isWorkerRoute(pathname: string): boolean {
     pathname === "/docs" ||
     pathname === "/login/raft/callback" ||
     pathname.startsWith("/api/") ||
+    pathname.startsWith("/electron/") ||
     pathname.startsWith("/public/") ||
     pathname.startsWith("/share/") ||
     pathname.startsWith("/docs/") ||

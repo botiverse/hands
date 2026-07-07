@@ -90,6 +90,48 @@ Returns the latest compatible installable release for the channel,
 independent of the client's installed version. Accepts the same `lang` and
 `device_id` inputs as the update check.
 
+## Electron Generic Provider
+
+Electron apps using `electron-updater` can point the generic provider at
+Quiver:
+
+```ts
+autoUpdater.setFeedURL({
+  provider: "generic",
+  url: "https://quiver.oranix.io/electron/:appSlug/:channel"
+});
+```
+
+The app then requests electron-builder's standard files directly:
+
+```http
+GET /electron/:appSlug/:channel/latest.yml
+GET /electron/:appSlug/:channel/latest-mac.yml
+GET /electron/:appSlug/:channel/latest-linux.yml
+GET /electron/:appSlug/:channel/:installerFile
+GET /electron/:appSlug/:channel/:installerFile.blockmap
+```
+
+Quiver serves these from the active `electron-installer` release on that
+channel. Phase 1 intentionally hosts electron-builder's generated files
+as-is: upload `latest*.yml`, installers, and `.blockmap` files as build
+assets. Use `artifact_kind = electron-metadata` for `latest*.yml`; use the
+original filename in `variant` or `metadata_json.filename` so relative URLs
+inside the yml resolve unchanged.
+
+Example asset conventions:
+
+| File | `platform` | `arch` | `filetype` | `artifact_kind` |
+|---|---|---|---|---|
+| `latest.yml` | `win32` | `x64` or null | `yml` | `electron-metadata` |
+| `latest-mac.yml` | `darwin` | `arm64` or `x64` | `yml` | `electron-metadata` |
+| `latest-linux.yml` | `linux` | `x64` or `arm64` | `yml` | `electron-metadata` |
+| `Raft Setup 1.2.3.exe` | `win32` | `x64` | `exe` | `installable` |
+| `Raft Setup 1.2.3.exe.blockmap` | `win32` | `x64` | `blockmap` | `electron-blockmap` |
+
+macOS updates still require signed app artifacts. Quiver only hosts the
+already-built and signed files; it does not sign Electron applications.
+
 ## Submit Feedback
 
 ```http

@@ -250,6 +250,32 @@ export function registerPublicRoutes(registry: OpenApiRegistry) {
 
   register(registry, {
     method: "get",
+    path: "/electron/{slug}/{channel}/{file}",
+    tags: ["Public update"],
+    summary: "Serve Electron generic-provider update metadata or artifacts",
+    description:
+      "Hosts electron-builder generated files as-is for electron-updater's generic provider. Store latest*.yml, installers, and .blockmap files as build assets on an active electron-installer release.",
+    request: {
+      params: z.object({
+        slug: z.string().openapi({ param: { name: "slug", in: "path" } }),
+        channel: z.string().openapi({ param: { name: "channel", in: "path" } }),
+        file: z.string().openapi({
+          param: { name: "file", in: "path" },
+          example: "latest.yml",
+        }),
+      }),
+      query: z.object({
+        product_type: z.string().default("electron-installer").optional(),
+      }),
+    },
+    responses: {
+      200: { description: "Electron updater metadata or binary artifact.", content: binary() },
+      404: error("No active Electron release or matching asset was found."),
+    },
+  });
+
+  register(registry, {
+    method: "get",
     path: "/public/r2/{key}",
     tags: ["Public downloads"],
     summary: "Download a signed public release artifact",
@@ -372,4 +398,3 @@ export function registerPublicRoutes(registry: OpenApiRegistry) {
 }
 
 export { ErrorResponse };
-
