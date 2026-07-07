@@ -1,0 +1,38 @@
+{
+  "name": "@oranix/quiver-electron",
+  "version": "0.1.0",
+  "description": "Quiver crash reporting for Electron apps — main + renderer, Crashpad minidumps auto-uploaded and symbolicated server-side.",
+  "license": "MIT",
+  "type": "module",
+  "exports": {
+    "./main": {
+      "types": "./dist/main.d.ts",
+      "import": "./dist/main.js"
+    },
+    "./renderer": {
+      "types": "./dist/renderer.d.ts",
+      "import": "./dist/renderer.js"
+    },
+    "./preload": {
+      "types": "./dist/preload.d.ts",
+      "import": "./dist/preload.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit"
+  },
+  "peerDependencies": {
+    "electron": ">=22"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.3"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

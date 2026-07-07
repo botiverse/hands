@@ -65,6 +65,13 @@ const pages = [
     source: "ohos-sdk.md",
   },
   {
+    slug: "electron-sdk",
+    title: "Electron SDK",
+    category: "SDKs & API",
+    description: "Crashpad minidump crash reporting for Electron apps (main + renderer) via @oranix/quiver-electron.",
+    source: "electron-sdk.md",
+  },
+  {
     slug: "public-api-reference",
     title: "Public API Reference",
     category: "SDKs & API",

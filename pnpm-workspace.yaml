@@ -4,3 +4,4 @@ packages:
   - "admin"
   - "migrations"
   - "packages/*"
+  - "clients/electron"
