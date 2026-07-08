@@ -1,0 +1,96 @@
+name: Publish Electron SDK
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Electron SDK version to publish. Defaults to clients/electron/package.json."
+        required: false
+        type: string
+      dry_run:
+        description: "Run npm publish --dry-run only."
+        required: true
+        type: boolean
+        default: false
+  push:
+    tags:
+      - "electron-sdk-v*"
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: pnpm/action-setup@v6
+        with:
+          version: 9.12.0
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+          cache: "pnpm"
+
+      - name: Use npm with trusted publishing support
+        run: |
+          npm install -g npm@^11.5.1
+          npm --version
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Resolve version
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+          package_version="$(node -p "require('./clients/electron/package.json').version")"
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            requested="${GITHUB_REF_NAME#electron-sdk-v}"
+          elif [[ -n "${{ inputs.version }}" ]]; then
+            requested="${{ inputs.version }}"
+          else
+            requested="${package_version}"
+          fi
+          if [[ "${requested}" != "${package_version}" ]]; then
+            echo "Requested version ${requested} does not match clients/electron/package.json ${package_version}" >&2
+            exit 1
+          fi
+          echo "value=${package_version}" >> "$GITHUB_OUTPUT"
+
+      - name: Build Electron SDK
+        run: pnpm --filter @oranix/quiver-electron build
+
+      - name: Pack check
+        working-directory: clients/electron
+        run: npm pack --dry-run
+
+      - name: Publish dry run
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run }}
+        working-directory: clients/electron
+        run: npm publish --access public --dry-run
+
+      - name: Publish to npm
+        if: ${{ github.event_name != 'workflow_dispatch' || !inputs.dry_run }}
+        working-directory: clients/electron
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm publish --access public
+
+      - name: Summary
+        shell: bash
+        run: |
+          {
+            echo "### Electron SDK publish"
+            echo
+            echo "| Field | Value |"
+            echo "|---|---|"
+            echo "| Package | \`@oranix/quiver-electron\` |"
+            echo "| Version | \`${{ steps.version.outputs.value }}\` |"
+            echo "| Dry run | \`${{ github.event_name == 'workflow_dispatch' && inputs.dry_run }}\` |"
+          } >> "$GITHUB_STEP_SUMMARY"
