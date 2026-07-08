@@ -98,6 +98,18 @@ export async function handlePublicAppHistory(c: Context<{ Bindings: Env }>) {
  * bilingual JSON object ({"zh-cn":…,"en":…}); null means "no notes yet". Only
  * raw strings are hidden from the public release-notes page.
  */
+/**
+ * A curated bilingual note is required for a version to appear on the public
+ * release-notes page. Null or blank changelogs (versions never given release
+ * notes, incl. redundant same-version rebuild records) are hidden rather than
+ * rendered as a noisy "No release notes for this version." row — this also
+ * collapses duplicate records of one version_code down to the single one that
+ * actually carries notes.
+ */
+function isEmptyChangelog(changelog: string | null): boolean {
+  return changelog == null || changelog.trim() === "";
+}
+
 function isRawChangelog(changelog: string | null): boolean {
   if (changelog == null) return false;
   const trimmed = changelog.trim();
@@ -149,7 +161,8 @@ export async function handlePublicReleaseNotes(c: Context<{ Bindings: Env }>) {
   const visible = (results ?? []).filter(
     (r) =>
       (requestedCode == null || r.version_code <= requestedCode) &&
-      !isRawChangelog(r.changelog),
+      !isRawChangelog(r.changelog) &&
+      !isEmptyChangelog(r.changelog),
   );
 
   const lang =
@@ -186,7 +199,8 @@ export async function handlePublicReleaseNotesJson(c: Context<{ Bindings: Env }>
     .filter(
       (row) =>
         (requestedCode == null || row.version_code <= requestedCode) &&
-        !isRawChangelog(row.changelog),
+        !isRawChangelog(row.changelog) &&
+        !isEmptyChangelog(row.changelog),
     )
     .map((row) => ({
       release_id: row.release_id,
