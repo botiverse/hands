@@ -591,5 +591,52 @@ export async function handleAgentManifest(c: Context<{ Bindings: Env }>) {
       url: `${origin}/api/auth/me`,
       method: "GET",
     },
+    // HTTP API actions an agent can self-serve via `raft integration invoke`.
+    // Paths are relative to execution.base_url (`${origin}/api`). Focused on the
+    // feedback-read/log-retrieval flow; Quiver serves raw attachments and does
+    // not interpret their contents.
+    actions: [
+      {
+        name: "list-apps",
+        description: "List apps the caller can access.",
+        method: "GET",
+        path: "/apps",
+      },
+      {
+        name: "list-feedback",
+        description:
+          "List feedback/crash tickets for an app, newest first. Optional status/kind filters.",
+        method: "GET",
+        path: "/apps/{app_id}/feedback",
+        parameters: [
+          { name: "app_id", in: "path", required: true, description: "App UUID." },
+          { name: "status", in: "query", required: false, description: "open|in_progress|resolved|closed" },
+          { name: "kind", in: "query", required: false, description: "feedback|bug|crash (comma-separated)" },
+        ],
+      },
+      {
+        name: "get-feedback",
+        description:
+          "Get a feedback/crash ticket with device context, attachments, and comments. ticket_id may be a full UUID or a unique short-id prefix.",
+        method: "GET",
+        path: "/apps/{app_id}/feedback/{ticket_id}",
+        parameters: [
+          { name: "app_id", in: "path", required: true, description: "App UUID." },
+          { name: "ticket_id", in: "path", required: true, description: "Ticket UUID or unique short-id prefix." },
+        ],
+      },
+      {
+        name: "download-feedback-attachment",
+        description:
+          "Download a raw feedback attachment (bytes as-is; Quiver does not unzip or interpret it).",
+        method: "GET",
+        path: "/apps/{app_id}/feedback/{ticket_id}/attachments/{attachment_id}",
+        parameters: [
+          { name: "app_id", in: "path", required: true, description: "App UUID." },
+          { name: "ticket_id", in: "path", required: true, description: "Ticket UUID or unique short-id prefix." },
+          { name: "attachment_id", in: "path", required: true, description: "Attachment UUID from the ticket detail." },
+        ],
+      },
+    ],
   });
 }
