@@ -610,9 +610,9 @@ export async function handleAgentManifest(c: Context<{ Bindings: Env }>) {
           "List feedback/crash tickets for an app, newest first. Optional status/kind filters.",
         endpoint: { method: "GET", path: "/apps/{app_id}/feedback" },
         parameters: {
-          app_id: { in: "path", required: true, description: "App UUID." },
-          status: { in: "query", required: false, description: "open|in_progress|resolved|closed" },
-          kind: { in: "query", required: false, description: "feedback|bug|crash (comma-separated)" },
+          app_id: { type: "string", in: "path", required: true, description: "App UUID." },
+          status: { type: "string", in: "query", required: false, description: "open|in_progress|resolved|closed" },
+          kind: { type: "string", in: "query", required: false, description: "feedback|bug|crash (comma-separated)" },
         },
       },
       {
@@ -621,8 +621,8 @@ export async function handleAgentManifest(c: Context<{ Bindings: Env }>) {
           "Get a feedback/crash ticket with device context, attachments, and comments. ticket_id may be a full UUID or a unique short-id prefix.",
         endpoint: { method: "GET", path: "/apps/{app_id}/feedback/{ticket_id}" },
         parameters: {
-          app_id: { in: "path", required: true, description: "App UUID." },
-          ticket_id: { in: "path", required: true, description: "Ticket UUID or unique short-id prefix." },
+          app_id: { type: "string", in: "path", required: true, description: "App UUID." },
+          ticket_id: { type: "string", in: "path", required: true, description: "Ticket UUID or unique short-id prefix." },
         },
       },
       {
@@ -634,9 +634,9 @@ export async function handleAgentManifest(c: Context<{ Bindings: Env }>) {
           path: "/apps/{app_id}/feedback/{ticket_id}/attachments/{attachment_id}",
         },
         parameters: {
-          app_id: { in: "path", required: true, description: "App UUID." },
-          ticket_id: { in: "path", required: true, description: "Ticket UUID or unique short-id prefix." },
-          attachment_id: { in: "path", required: true, description: "Attachment UUID from the ticket detail." },
+          app_id: { type: "string", in: "path", required: true, description: "App UUID." },
+          ticket_id: { type: "string", in: "path", required: true, description: "Ticket UUID or unique short-id prefix." },
+          attachment_id: { type: "string", in: "path", required: true, description: "Attachment UUID from the ticket detail." },
         },
       },
     ],
