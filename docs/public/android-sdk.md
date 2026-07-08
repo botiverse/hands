@@ -21,7 +21,7 @@ repositories {
 }
 
 dependencies {
-    implementation("io.quiver:quiver-android-updater:0.4.0")
+    implementation("io.quiver:quiver-android-updater:0.9.0")
 }
 ```
 
@@ -78,7 +78,7 @@ val ticketId = QuiverFeedback(
     message = "Feed doesn't refresh after login.",
     kind = "bug",                       // "feedback" | "bug" | "crash"
     contact = "user@example.com",       // optional
-    attachments = listOf(screenshot),   // up to 3 files, 10 MB each
+    attachments = listOf(screenshot),   // up to 9 files, 200 MB each (large files upload directly to storage via presigned URLs)
 )
 ```
 
