@@ -4,10 +4,27 @@ import http from '@ohos.net.http';
 import fs from '@ohos.file.fs';
 import i18n from '@ohos.i18n';
 import hilog from '@ohos.hilog';
+import display from '@ohos.display';
+import statvfs from '@ohos.file.statvfs';
+import batteryInfo from '@ohos.batteryInfo';
 import { Quiver } from './Quiver';
 import { QuiverDeviceId } from './QuiverDeviceId';
 
 const TAG: string = 'QuiverFeedbackClient';
+
+// Quiver OHOS SDK version — reported in feedback/crash environment metadata.
+// Keep in sync with oh-package.json5 on release.
+const QUIVER_SDK_VERSION: string = '0.1.0';
+
+// @ohos.batteryInfo BatteryChargeState: NONE=0, ENABLE=1, DISABLE=2, FULL=3.
+function ohBatteryStateName(status: number): string {
+  switch (status) {
+    case 1: return 'charging';
+    case 2: return 'discharging';
+    case 3: return 'full';
+    default: return 'unknown';
+  }
+}
 const REQUEST_TIMEOUT_MS: number = 30000;
 const UPLOAD_TIMEOUT_MS: number = 120000;
 
@@ -110,16 +127,47 @@ export class QuiverFeedbackClient {
   ): Promise<string> {
     const bundleInfo = bundleManager.getBundleInfoForSelfSync(bundleManager.BundleFlag.GET_BUNDLE_INFO_DEFAULT);
     const metadata: Record<string, string | number> = {
+      // App / build identity
       'version_name': bundleInfo.versionName,
       'version_code': bundleInfo.versionCode,
+      'bundle_id': bundleInfo.name,
+      'platform': 'ohos',
+      'quiver_sdk': QUIVER_SDK_VERSION,
       'channel': Quiver.config.channel,
+      // Device
       'device_id': QuiverDeviceId.get(context),
       'device_model': `${deviceInfo.manufacture} ${deviceInfo.productModel}`.trim(),
+      'device_manufacturer': deviceInfo.manufacture,
+      'device_brand': deviceInfo.brand,
+      'device_type': deviceInfo.deviceType,
+      'market_name': deviceInfo.marketName,
+      // OS
+      'os': deviceInfo.osFullName,
       'os_version': `${deviceInfo.osFullName} (API ${deviceInfo.sdkApiVersion})`,
+      'sdk_api_version': deviceInfo.sdkApiVersion,
       'arch': deviceInfo.abiList ?? 'unknown',
       'locale': i18n.System.getSystemLocale(),
-      'platform': 'ohos',
+      'system_language': i18n.System.getSystemLanguage(),
     };
+
+    // Runtime state (best-effort; a metadata read must never fail submit).
+    try {
+      metadata['timezone'] = i18n.getTimeZone().getID();
+    } catch (e) { /* ignore */ }
+    try {
+      const screen = display.getDefaultDisplaySync();
+      metadata['screen'] = `${screen.width}x${screen.height}@${screen.densityDPI}`;
+    } catch (e) { /* ignore */ }
+    try {
+      metadata['disk_total'] = statvfs.getTotalSizeSync(context.filesDir);
+      metadata['disk_free'] = statvfs.getFreeSizeSync(context.filesDir);
+    } catch (e) { /* ignore */ }
+    try {
+      metadata['battery_level'] = batteryInfo.batterySOC;
+      metadata['battery_state'] = ohBatteryStateName(batteryInfo.chargingStatus);
+    } catch (e) { /* ignore */ }
+
+    // Caller extras (crash_* fields etc.) override/augment the above.
     for (const extra of extras) {
       metadata[extra.key] = extra.value;
     }
