@@ -29,7 +29,27 @@ export QUIVER_BEARER_TOKEN=<deploy-token>
 
 `QUIVER_AUTH_TOKEN` is also accepted as an alias for `QUIVER_BEARER_TOKEN`.
 
-Use app-scoped deploy tokens for CI. Create them in the app's Access page, choose the minimum role required, and store the raw token in your CI secret store.
+Use app-scoped deploy tokens for CI. Mint them with `quiver deploy-tokens create` (below) or in the app's Access page, choose the minimum role required, and store the raw token in your CI secret store.
+
+## Deploy Tokens
+
+App-scoped tokens for CI to publish (`publisher`) or read (`viewer`). Managing them requires **app admin**; if you lack it, the CLI prints an actionable error (which role you need, who can grant it, and that an admin can do it for you).
+
+```bash
+# Mint a publisher token for CI (printed ONCE — capture it immediately)
+quiver deploy-tokens create raft-android --name github-ci --role publisher
+
+# Optional expiry, and machine-readable output for scripting
+quiver deploy-tokens create raft-android --name github-ci --expires-in-days 90 --json
+
+# List an app's tokens (metadata only, never the secret)
+quiver deploy-tokens list raft-android
+
+# Revoke by id
+quiver deploy-tokens revoke raft-android <tokenId>
+```
+
+The created token is what you set as `QUIVER_BEARER_TOKEN` in CI. The server stores only a hash, so a lost token can only be revoked and re-minted, never recovered.
 
 ## Basic Commands
 
