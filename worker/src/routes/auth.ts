@@ -298,7 +298,7 @@ async function defaultOrgRoleForAccount(
   }
   return (await isFirstPrincipalInServer(db, account.server_id, account.id))
     ? "admin"
-    : "viewer";
+    : "member";
 }
 
 async function upsertRaftOrgMembership(

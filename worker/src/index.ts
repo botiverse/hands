@@ -545,7 +545,7 @@ admin.get("/api/orgs/:orgId/webhooks/:webhookId/deliveries", requireOrgRole("org
 admin.post("/api/invites/:token/accept", handleAcceptInvite);
 
 admin.get("/api/apps", requireCurrentOrgRole("viewer"), handleListApps);
-admin.post("/api/apps", requireCurrentOrgRole("admin"), handleCreateApp);
+admin.post("/api/apps", requireCurrentOrgRole("member"), handleCreateApp);
 admin.get("/api/apps/:appId", requireAppRole("viewer"), handleGetApp);
 admin.patch("/api/apps/:appId", requireAppRole("admin"), handleUpdateApp);
 admin.post("/api/apps/:appId/archive", requireAppRole("admin"), handleArchiveApp);

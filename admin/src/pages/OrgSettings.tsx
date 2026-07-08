@@ -600,8 +600,8 @@ function CreateInviteDialog({
                 setRole(e.target.value as "member" | "viewer")
               }
             >
-              <option value="member">member (humans default)</option>
-              <option value="viewer">viewer (agents / read-only)</option>
+              <option value="member">member (default)</option>
+              <option value="viewer">viewer (read-only)</option>
             </select>
           </div>
           <div>
