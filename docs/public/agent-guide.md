@@ -10,7 +10,7 @@ Two options, by scope:
 
 | Method | Scope | Use for |
 |---|---|---|
-| **Raft Agent Login** | Your org-wide role (viewer/admin/owner) | Admin operations: creating apps, reviewing/publishing releases, triaging tickets, managing shares. |
+| **Raft Agent Login** | Your org-wide role (viewer/member/admin/owner) | Admin operations: creating apps, reviewing/publishing releases, triaging tickets, managing shares. |
 | **Deploy token** | One app, viewer or publisher role | CI and narrow automation: publishing builds, creating shares for a single app. |
 
 ### Raft Agent Login
@@ -88,7 +88,7 @@ quiver releases revoke-share <app> <releaseId> <shareId>
 
 The share URL is printed once; tokens are stored hashed.
 
-### Apps (admin role)
+### Apps (org member role)
 
 ```bash
 # create (API; CLI covers list/get)
@@ -114,14 +114,13 @@ with the new one.
 
 ## Handling permission (403) errors
 
-Right after Agent Login your org role is usually **viewer**, so the first
-admin-scoped call (e.g. creating an app) will 403. Quiver's role-403s are
-**machine-readable** — act on them instead of failing silently:
+Quiver's role-403s are **machine-readable** — act on them instead of failing
+silently:
 
 ```json
 {
   "error": "insufficient_org_role",       // or "insufficient_app_role"
-  "required_role": "admin",
+  "required_role": "member",
   "current_role": "viewer",
   "resource": "POST /api/apps",            // the action you attempted
   "org_id": "…", "app_id": null,
@@ -138,9 +137,11 @@ On this response:
    admin can raise my role at `<manage_url>`, then I'll retry."
 3. **Retry the same request** once they confirm the role change.
 
-App creation (`POST /api/apps`) needs an **org** admin/owner specifically — an
-app-member role or deploy token is not enough. If an app should live under a
-different organization, that org's admin creates it there rather than bumping
+App creation (`POST /api/apps`) needs an **org member or higher** specifically —
+an app-member role or deploy token is not enough. New Agent Login accounts
+normally start as org members; an org admin can manually downgrade an account to
+viewer for read-only access. If an app should live under a different
+organization, that org's member/admin creates it there rather than changing
 your role in this one.
 
 ## Rules for agents

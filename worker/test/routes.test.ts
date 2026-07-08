@@ -18,8 +18,12 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import Database from "better-sqlite3";
 import { createHash } from "node:crypto";
+import { Hono } from "hono";
+import { authMiddleware } from "../src/middleware/auth";
+import { requireCurrentOrgRole } from "../src/lib/permissions";
 import { httpsRedirectUrl, isSecureRequest, requestOrigin } from "../src/lib/origin";
 import { openApiDocument } from "../src/openapi";
+import { handleCreateApp } from "../src/routes/apps";
 
 // ---------- Test harness ----------
 
@@ -92,6 +96,21 @@ function makeMockDb() {
       metadata_json TEXT NOT NULL DEFAULT '{}',
       created_at INTEGER NOT NULL,
       UNIQUE (app_id, slug),
+      FOREIGN KEY (app_id) REFERENCES apps(id) ON DELETE CASCADE
+    );
+    CREATE TABLE product_types (
+      id TEXT PRIMARY KEY,
+      app_id TEXT NOT NULL,
+      name TEXT NOT NULL,
+      display_name TEXT NOT NULL,
+      description TEXT,
+      supported_platforms_json TEXT NOT NULL DEFAULT '[]',
+      default_assets_json TEXT NOT NULL DEFAULT '[]',
+      parser_kind TEXT,
+      schema_json TEXT NOT NULL DEFAULT '{}',
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL,
+      UNIQUE (app_id, name),
       FOREIGN KEY (app_id) REFERENCES apps(id) ON DELETE CASCADE
     );
     CREATE TABLE versions (
@@ -650,7 +669,7 @@ describe("quiver route handlers — SQL smoke", () => {
       .prepare(
         "INSERT INTO org_members (id, org_id, account_id, org_role, joined_at) VALUES (?, ?, ?, ?, ?)",
       )
-      .bind("m2", "raft_s1", "agent1", "viewer", now)
+      .bind("m2", "raft_s1", "agent1", "member", now)
       .run();
 
     const members = await env.DB
@@ -665,9 +684,110 @@ describe("quiver route handlers — SQL smoke", () => {
       .all();
 
     expect(members.results).toEqual([
-      { principal_type: "agent", org_role: "viewer" },
+      { principal_type: "agent", org_role: "member" },
       { principal_type: "human", org_role: "owner" },
     ]);
+  });
+
+  it("lets org members create apps while viewers remain read-only", async () => {
+    const now = Date.now();
+    const memberToken = "member-create-token";
+    const viewerToken = "viewer-create-token";
+
+    await env.DB
+      .prepare(
+        `INSERT INTO organizations
+         (id, slug, name, external_provider, external_id, created_at, archived)
+         VALUES (?, ?, ?, 'raft', ?, ?, 0)`,
+      )
+      .bind("raft_create", "create-org", "Create Org", "create-server", now)
+      .run();
+
+    for (const account of [
+      { id: "member-agent", subject: "member-sub", role: "member", token: memberToken },
+      { id: "viewer-agent", subject: "viewer-sub", role: "viewer", token: viewerToken },
+    ]) {
+      await env.DB
+        .prepare(
+          `INSERT INTO raft_accounts
+           (id, provider, provider_subject, server_id, server_slug, principal_type,
+            server_role, username, display_name, avatar_url, raw_profile,
+            created_at, updated_at, last_login_at)
+           VALUES (?, 'raft', ?, 'create-server', 'create-org', 'agent',
+                   NULL, ?, ?, NULL, '{}', ?, ?, ?)`,
+        )
+        .bind(account.id, account.subject, account.id, account.id, now, now, now)
+        .run();
+      await env.DB
+        .prepare(
+          "INSERT INTO org_members (id, org_id, account_id, org_role, joined_at) VALUES (?, ?, ?, ?, ?)",
+        )
+        .bind(`orgmem-${account.id}`, "raft_create", account.id, account.role, now)
+        .run();
+      await env.DB
+        .prepare(
+          "INSERT INTO raft_sessions (id, account_id, token_hash, created_at, expires_at, last_seen_at) VALUES (?, ?, ?, ?, ?, ?)",
+        )
+        .bind(
+          `session-${account.id}`,
+          account.id,
+          createHash("sha256").update(account.token).digest("hex"),
+          now,
+          now + 60_000,
+          now,
+        )
+        .run();
+    }
+
+    const testApp = new Hono<{ Bindings: Env }>();
+    testApp.use("*", authMiddleware as any);
+    testApp.post("/api/apps", requireCurrentOrgRole("member") as any, handleCreateApp as any);
+
+    const viewerResponse = await testApp.request(
+      "https://quiver-worker.test/api/apps",
+      {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${viewerToken}`,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ slug: "viewer-app", name: "Viewer App", platform: "android" }),
+      },
+      env as any,
+    );
+    expect(viewerResponse.status).toBe(403);
+    await expect(viewerResponse.json()).resolves.toMatchObject({
+      error: "insufficient_org_role",
+      required_role: "member",
+      current_role: "viewer",
+      resource: "POST /api/apps",
+    });
+
+    const memberResponse = await testApp.request(
+      "https://quiver-worker.test/api/apps",
+      {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${memberToken}`,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ slug: "member-app", name: "Member App", platform: "android" }),
+      },
+      env as any,
+    );
+    expect(memberResponse.status).toBe(201);
+    await expect(memberResponse.json()).resolves.toMatchObject({
+      org_id: "raft_create",
+      slug: "member-app",
+      name: "Member App",
+      platform: "android",
+    });
+
+    const seededChannels = await env.DB
+      .prepare("SELECT slug FROM channels WHERE app_id = (SELECT id FROM apps WHERE slug = ?) ORDER BY slug")
+      .bind("member-app")
+      .all();
+    expect(seededChannels.results.map((row: any) => row.slug)).toEqual(["main", "nightly", "preview"]);
   });
 
   it("apps are scoped by org_id", async () => {
@@ -1221,7 +1341,7 @@ describe("quiver Hono app — auth + dispatch", () => {
     ).run();
     await env.DB.prepare(
       "INSERT INTO org_members (id, org_id, account_id, org_role, joined_at) VALUES (?, ?, ?, ?, ?)",
-    ).bind("orgmem-token", "raft_server1", "acct-token", "viewer", now).run();
+    ).bind("orgmem-token", "raft_server1", "acct-token", "member", now).run();
     await env.DB.prepare(
       `INSERT INTO raft_sessions
        (id, account_id, token_hash, created_at, expires_at, last_seen_at)
@@ -1234,7 +1354,7 @@ describe("quiver Hono app — auth + dispatch", () => {
       principal_type: "agent",
       username: "qa-agent",
       org_id: "raft_server1",
-      org_role: "viewer",
+      org_role: "member",
     });
   });
 
