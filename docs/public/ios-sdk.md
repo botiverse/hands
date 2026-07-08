@@ -45,6 +45,11 @@ Quiver.submitFeedback(
 Device metadata (version, model, OS, arch, locale, per-install device id) is
 attached automatically.
 
+`Quiver.install(with:)` also sends a throttled launch/install metrics ping for
+active-device and version-distribution analytics. It carries no PII beyond the
+random per-install Quiver device id and build/OS metadata, and should not be
+treated as a true online heartbeat.
+
 ## Crash reporting
 
 `Quiver.install(with:)` captures uncaught `NSException`s and fatal signals

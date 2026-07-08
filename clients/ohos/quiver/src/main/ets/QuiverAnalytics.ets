@@ -45,7 +45,7 @@ export class QuiverAnalytics {
     const client = http.createHttp();
     try {
       const response = await client.request(
-        `${Quiver.config.baseUrl}/public/v2/apps/${Quiver.config.appSlug}/devices`,
+        `${Quiver.config.baseUrl}/public/v2/apps/${Quiver.config.appSlug}/metrics`,
         {
           method: http.RequestMethod.POST,
           header: {

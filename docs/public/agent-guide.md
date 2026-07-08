@@ -66,9 +66,11 @@ so you can watch real coverage.
 For a fuller per-version view, call
 `GET /api/apps/:id/analytics/versions?window_days=30` with Agent Login or a
 viewer-capable app token. The response includes one row per release-backed or
-telemetry-only version with active device count, total devices seen,
+telemetry-only version with devices reported in the selected window, total devices seen,
 update-check current/offered counts, feedback/crash counts, and artifact
-downloads.
+downloads. `window_minutes` is also accepted for recent-report windows, but
+SDK metrics pings are throttled, so this should not be labeled as true online
+presence.
 
 ### Ticket triage (feedback + crashes)
 

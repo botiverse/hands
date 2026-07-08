@@ -1249,6 +1249,7 @@ export interface VersionMetric {
 export interface VersionMetrics {
   window_start: number;
   window_days: number;
+  window_minutes: number;
   versions: VersionMetric[];
 }
 

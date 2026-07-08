@@ -35,12 +35,17 @@ const WindowDaysQuery = z.object({
     param: { name: "window_days", in: "query" },
     example: 30,
   }),
+  window_minutes: z.coerce.number().int().positive().max(525600).optional().openapi({
+    param: { name: "window_minutes", in: "query" },
+    example: 15,
+  }),
 });
 
 const VersionMetricsResponse = z
   .object({
     window_start: z.number().int(),
     window_days: z.number().int(),
+    window_minutes: z.number().int(),
     versions: z.array(
       z.object({
         release_id: z.string().nullable(),

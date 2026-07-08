@@ -92,7 +92,7 @@ static QuiverConfig *gQuiverConfig = nil;
     NSData *bodyData = [NSJSONSerialization dataWithJSONObject:metadata options:0 error:nil];
     if (!bodyData) return;
 
-    NSString *urlText = [NSString stringWithFormat:@"%@/public/v2/apps/%@/devices",
+    NSString *urlText = [NSString stringWithFormat:@"%@/public/v2/apps/%@/metrics",
                                                    config.baseUrl, config.appSlug];
     NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:[NSURL URLWithString:urlText]];
     request.HTTPMethod = @"POST";

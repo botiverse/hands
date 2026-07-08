@@ -463,6 +463,7 @@ app.get("/share/:token/icon", handlePublicReleaseShareIcon);
 app.post("/public/v2/apps/:slug/feedback", handlePublicFeedbackSubmit);
 app.post("/public/v2/apps/:slug/minidump", handlePublicMinidumpSubmit);
 app.post("/public/v2/apps/:slug/devices", handleDeviceRegister);
+app.post("/public/v2/apps/:slug/metrics", handleDeviceRegister);
 app.post("/public/v2/apps/:slug/feedback/presign", handlePresignFeedbackAttachments);
 app.get("/public/apps/:slug/icon", handlePublicAppIcon);
 app.get("/apps/:slug/history", handlePublicAppHistory);

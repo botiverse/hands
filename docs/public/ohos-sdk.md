@@ -65,5 +65,6 @@ else to wire.
 ## Device analytics
 
 `Quiver.install(config, context)` also reports active-device and
-version-distribution analytics automatically (no PII — a random per-install
-device id and build/OS metadata). No separate call.
+version-distribution metrics automatically (no PII — a random per-install
+device id and build/OS metadata). The ping is throttled and is not a true
+online heartbeat. No separate call.

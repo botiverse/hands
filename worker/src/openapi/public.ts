@@ -143,6 +143,22 @@ const FeedbackSubmitResponse = z
   })
   .openapi("FeedbackSubmitResponse");
 
+const MetricsIngestRequest = z
+  .object({
+    version_name: z.string().optional(),
+    version_code: z.number().int().optional(),
+    channel: z.string().optional(),
+    platform: z.string().optional(),
+    arch: z.string().optional(),
+    os_version: z.string().optional(),
+    device_model: z.string().optional(),
+    locale: z.string().optional(),
+  })
+  .catchall(z.unknown())
+  .openapi("MetricsIngestRequest");
+
+const MetricsIngestResponse = z.object({ ok: z.boolean() }).openapi("MetricsIngestResponse");
+
 const InviteResponse = GenericObject.openapi("InviteResponse");
 
 export function registerPublicRoutes(registry: OpenApiRegistry) {
@@ -259,6 +275,54 @@ export function registerPublicRoutes(registry: OpenApiRegistry) {
     request: { params: SlugParam },
     responses: {
       200: success("Channel list.", PublicChannelsResponse),
+      404: error("App was not found."),
+    },
+  });
+
+  register(registry, {
+    method: "post",
+    path: "/public/v2/apps/{slug}/metrics",
+    tags: ["Public metrics"],
+    summary: "Report SDK runtime metrics",
+    description:
+      "Canonical SDK metrics ingest endpoint. Clients send a throttled launch/install ping with a stable per-install X-Quiver-Device-Id and build/runtime metadata. This powers active-device and version-distribution analytics; it is not an unthrottled online heartbeat.",
+    request: {
+      params: SlugParam,
+      query: z.object({ client_key: z.string().optional(), device_id: z.string().optional() }),
+      headers: z.object({
+        "X-Quiver-Client-Key": z.string().optional(),
+        "X-Quiver-Device-Id": z.string().optional(),
+      }),
+      body: { content: json(MetricsIngestRequest), required: false },
+    },
+    responses: {
+      202: success("Metrics accepted.", MetricsIngestResponse),
+      400: error("Device id is missing or invalid."),
+      401: error("Missing or invalid client key."),
+      404: error("App was not found."),
+    },
+  });
+
+  register(registry, {
+    method: "post",
+    path: "/public/v2/apps/{slug}/devices",
+    tags: ["Public metrics"],
+    summary: "Compatibility alias for SDK runtime metrics",
+    description:
+      "Legacy alias for /public/v2/apps/{slug}/metrics. New SDKs should use /metrics.",
+    request: {
+      params: SlugParam,
+      query: z.object({ client_key: z.string().optional(), device_id: z.string().optional() }),
+      headers: z.object({
+        "X-Quiver-Client-Key": z.string().optional(),
+        "X-Quiver-Device-Id": z.string().optional(),
+      }),
+      body: { content: json(MetricsIngestRequest), required: false },
+    },
+    responses: {
+      202: success("Metrics accepted.", MetricsIngestResponse),
+      400: error("Device id is missing or invalid."),
+      401: error("Missing or invalid client key."),
       404: error("App was not found."),
     },
   });

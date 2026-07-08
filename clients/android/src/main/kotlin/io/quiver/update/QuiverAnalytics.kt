@@ -71,7 +71,7 @@ object QuiverAnalytics {
         val url = baseUrl.trimEnd('/').toHttpUrl().newBuilder()
             .addPathSegments("public/v2/apps")
             .addPathSegment(appSlug)
-            .addPathSegment("devices")
+            .addPathSegment("metrics")
             .build()
         val requestBuilder = Request.Builder()
             .url(url)

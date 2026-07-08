@@ -10,6 +10,9 @@
 
 import { app, crashReporter, ipcMain } from "electron";
 import type { ChildProcessGoneDetails, RenderProcessGoneDetails, WebContents } from "electron";
+import { randomUUID } from "node:crypto";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import {
   CONTEXT_CHANNEL,
   buildGlobalExtra,
@@ -21,6 +24,7 @@ import {
 } from "./common.js";
 
 const MAX_BREADCRUMBS = 100;
+const METRICS_INTERVAL_MS = 24 * 60 * 60 * 1000;
 
 let started = false;
 const context: CrashContext = { tags: {}, extra: {}, user: null, breadcrumbs: [] };
@@ -37,6 +41,8 @@ export function init(options: QuiverElectronOptions): void {
     compress: true,
     globalExtra: buildGlobalExtra(options, process, app.getVersion()),
   });
+
+  void reportMetrics(options);
 
   // Renderer / child-process crashes: Crashpad already captured a minidump for
   // real crashes; annotate the reason and surface every termination (including
@@ -63,6 +69,11 @@ export function init(options: QuiverElectronOptions): void {
 
   // Scope forwarded from renderer processes.
   ipcMain.on(CONTEXT_CHANNEL, (_event: unknown, patch: Partial<CrashContext>) => applyContext(patch));
+}
+
+/** Force a runtime metrics ping outside the normal 24h throttle. */
+export function reportDevice(options: QuiverElectronOptions): Promise<boolean> {
+  return reportMetrics(options, true);
 }
 
 /** Attach user identity to subsequent crashes (or clear with null). */
@@ -95,4 +106,74 @@ function applyContext(patch: Partial<CrashContext>): void {
   if (patch.tags) for (const [k, v] of Object.entries(patch.tags)) setTag(k, v);
   if (patch.extra) for (const [k, v] of Object.entries(patch.extra)) setExtra(k, v);
   if (patch.breadcrumbs) for (const b of patch.breadcrumbs) addBreadcrumb(b);
+}
+
+async function reportMetrics(options: QuiverElectronOptions, force = false): Promise<boolean> {
+  const state = loadMetricsState();
+  const now = Date.now();
+  if (!force && state.lastPingAt > 0 && now - state.lastPingAt < METRICS_INTERVAL_MS) return false;
+
+  const deviceId = state.deviceId || randomUUID();
+  const endpoint = (options.endpoint ?? "https://quiver.oranix.io").replace(/\/+$/, "");
+  const url = `${endpoint}/public/v2/apps/${encodeURIComponent(options.appSlug)}/metrics`;
+  const env = options.environment ?? "production";
+  const metadata = {
+    version_name: options.release ?? app.getVersion(),
+    version_code: options.versionCode,
+    channel: env,
+    platform: `electron-${process.platform}`,
+    arch: process.arch,
+    os_version: process.versions.electron ? `Electron ${process.versions.electron}` : "Electron",
+    device_model: app.getName(),
+    locale: app.getLocale(),
+    product_type: "electron",
+    electron_version: process.versions.electron,
+    chrome_version: process.versions.chrome,
+    node_version: process.versions.node,
+  };
+
+  try {
+    const response = await fetch(url, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "X-Quiver-Client-Key": options.clientKey,
+        "X-Quiver-Device-Id": deviceId,
+      },
+      body: JSON.stringify(metadata),
+    });
+    if (!response.ok) return false;
+    saveMetricsState({ deviceId, lastPingAt: now });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function statePath(): string {
+  return join(app.getPath("userData"), "quiver-metrics.json");
+}
+
+function loadMetricsState(): { deviceId: string; lastPingAt: number } {
+  const path = statePath();
+  try {
+    if (!existsSync(path)) return { deviceId: "", lastPingAt: 0 };
+    const parsed = JSON.parse(readFileSync(path, "utf8")) as { deviceId?: unknown; lastPingAt?: unknown };
+    return {
+      deviceId: typeof parsed.deviceId === "string" ? parsed.deviceId : "",
+      lastPingAt: typeof parsed.lastPingAt === "number" ? parsed.lastPingAt : 0,
+    };
+  } catch {
+    return { deviceId: "", lastPingAt: 0 };
+  }
+}
+
+function saveMetricsState(state: { deviceId: string; lastPingAt: number }): void {
+  const path = statePath();
+  try {
+    mkdirSync(app.getPath("userData"), { recursive: true });
+    writeFileSync(path, JSON.stringify(state), "utf8");
+  } catch {
+    /* metrics state is best-effort */
+  }
 }

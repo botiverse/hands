@@ -30,13 +30,13 @@ export function DeviceAnalytics({ appId }: { appId: string }) {
     <div className="card !p-4">
       <div className="flex items-baseline justify-between mb-3">
         <h3 className="text-sm font-semibold">Active devices</h3>
-        <span className="text-xs text-slate-500">last 30 days</span>
+        <span className="text-xs text-slate-500">reported in last 30 days</span>
       </div>
 
       <div className="flex items-end gap-2 mb-4">
         <span className="text-3xl font-semibold tabular-nums">{data.active_devices}</span>
         <span className="text-xs text-slate-500 mb-1">
-          device{data.active_devices === 1 ? "" : "s"} reported in
+          device{data.active_devices === 1 ? "" : "s"} reported
         </span>
       </div>
 
@@ -98,7 +98,7 @@ export function DeviceAnalytics({ appId }: { appId: string }) {
         <div className="mt-5 border-t border-slate-100 pt-4">
           <div className="flex items-baseline justify-between mb-2">
             <h4 className="text-xs font-medium text-slate-600">Version metrics</h4>
-            <span className="text-xs text-slate-500">last {versionMetrics.data?.window_days ?? 30} days</span>
+            <span className="text-xs text-slate-500">reported in last {versionMetrics.data?.window_days ?? 30} days</span>
           </div>
           <div className="overflow-x-auto">
             <table className="w-full text-xs">

@@ -49,6 +49,12 @@ Quiver.setExtra("open_docs", 3);
 Quiver.addBreadcrumb({ message: "opened project", category: "ui" });
 ```
 
+`init()` also sends a throttled launch/install metrics ping to Quiver using a
+random per-install device id stored under Electron `userData`. This powers
+active-device and version-distribution analytics; it is not a true online
+heartbeat. Use `Quiver.reportDevice(options)` if you need to force a metrics
+ping outside the normal 24h throttle.
+
 ## Renderer process
 
 Renderer crashes are captured by the main-process Crashpad automatically — the

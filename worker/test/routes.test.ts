@@ -57,6 +57,7 @@ describe("quiver OpenAPI document", () => {
       "/public/v2/apps/{slug}/updates/check",
       "/electron/{slug}/{channel}/{file}",
       "/public/v2/apps/{slug}/feedback",
+      "/public/v2/apps/{slug}/metrics",
       "/apps/{slug}/history",
       "/api/apps",
       "/api/apps/{appId}/builds",
@@ -3910,6 +3911,7 @@ describe("quiver public API v2 — scope resolution", () => {
     expect((await ping("devB", "1.0.2", 1000200, "android")).status).toBe(202);
     expect((await ping("devA", "1.0.2", 1000200, "android")).status).toBe(202); // upsert, not a new row
     expect((await ping("devC", "1.0.1", 1000101, "android")).status).toBe(202);
+    expect((await ping("devD", "1.0.3", 1000300, "android")).status).toBe(202);
 
     const res = await handleDeviceAnalytics({
       env,
@@ -3917,11 +3919,11 @@ describe("quiver public API v2 — scope resolution", () => {
       json: (data: unknown, status = 200) => new Response(JSON.stringify(data), { status }),
     } as any);
     const body = await responseJson<any>(res);
-    expect(body.active_devices).toBe(3); // devA (deduped), devB, devC
+    expect(body.active_devices).toBe(4); // devA (deduped), devB, devC, devD
     const v102 = body.by_version.find((v: any) => v.version_code === 1000200);
     expect(v102.devices).toBe(2);
     expect(body.by_platform[0].platform).toBe("android");
-    expect(body.by_platform[0].devices).toBe(3);
+    expect(body.by_platform[0].devices).toBe(4);
   });
 
   it("analytics: versions aggregates release metrics, devices, feedback, and downloads", async () => {
@@ -3972,10 +3974,19 @@ describe("quiver public API v2 — scope resolution", () => {
 
     const res = await handleVersionAnalytics({
       env,
-      req: { param: (n: string) => (n === "appId" ? "app-scope" : ""), query: () => "30" },
+      req: { param: (n: string) => (n === "appId" ? "app-scope" : ""), query: (n: string) => (n === "window_days" ? "30" : undefined) },
       json: (data: unknown, status = 200) => new Response(JSON.stringify(data), { status }),
     } as any);
     const body = await responseJson<any>(res);
+    expect(body.window_minutes).toBe(30 * 24 * 60);
+    const minutesRes = await handleVersionAnalytics({
+      env,
+      req: { param: (n: string) => (n === "appId" ? "app-scope" : ""), query: (n: string) => (n === "window_minutes" ? "30" : undefined) },
+      json: (data: unknown, status = 200) => new Response(JSON.stringify(data), { status }),
+    } as any);
+    const minutesBody = await responseJson<any>(minutesRes);
+    expect(minutesBody.window_minutes).toBe(30);
+    expect(minutesBody.window_days).toBe(1);
     const releaseRow = body.versions.find((v: any) => v.release_id === "rel-metrics");
     expect(releaseRow).toMatchObject({
       build_id: "build-metrics",

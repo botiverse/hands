@@ -13,6 +13,7 @@ type AdminContext = Context<AdminEnv & { Bindings: Env }>;
 
 const WINDOW_DEFAULT_DAYS = 30;
 const WINDOW_MAX_DAYS = 365;
+const WINDOW_MAX_MINUTES = WINDOW_MAX_DAYS * 24 * 60;
 
 export async function handleDeviceRegister(c: Context<{ Bindings: Env }>) {
   const slug = c.req.param("slug");
@@ -91,12 +92,28 @@ export async function handleDeviceRegister(c: Context<{ Bindings: Env }>) {
   return c.json({ ok: true }, 202);
 }
 
-function windowStart(c: AdminContext): number {
+function windowRange(c: AdminContext): { since: number; windowDays: number; windowMinutes: number } {
+  const minuteRaw = c.req.query("window_minutes");
+  if (minuteRaw) {
+    let minutes = Number(minuteRaw);
+    if (!Number.isFinite(minutes) || minutes <= 0) minutes = WINDOW_DEFAULT_DAYS * 24 * 60;
+    minutes = Math.min(Math.ceil(minutes), WINDOW_MAX_MINUTES);
+    return {
+      since: Date.now() - minutes * 60 * 1000,
+      windowDays: Math.max(1, Math.ceil(minutes / (24 * 60))),
+      windowMinutes: minutes,
+    };
+  }
   const raw = c.req.query("window_days");
   let days = raw ? Number(raw) : WINDOW_DEFAULT_DAYS;
   if (!Number.isFinite(days) || days <= 0) days = WINDOW_DEFAULT_DAYS;
   days = Math.min(days, WINDOW_MAX_DAYS);
-  return Date.now() - days * 24 * 60 * 60 * 1000;
+  days = Math.ceil(days);
+  return {
+    since: Date.now() - days * 24 * 60 * 60 * 1000,
+    windowDays: days,
+    windowMinutes: days * 24 * 60,
+  };
 }
 
 /**
@@ -120,7 +137,7 @@ export async function handleDeviceDetail(c: AdminContext) {
 
 export async function handleDeviceAnalytics(c: AdminContext) {
   const appId = c.req.param("appId");
-  const since = windowStart(c);
+  const { since } = windowRange(c);
 
   const [total, byVersion, byPlatform, byChannel] = await Promise.all([
     c.env.DB.prepare(
@@ -182,8 +199,7 @@ export async function handleDeviceAnalytics(c: AdminContext) {
  */
 export async function handleVersionAnalytics(c: AdminContext) {
   const appId = c.req.param("appId");
-  const since = windowStart(c);
-  const windowDays = Math.round((Date.now() - since) / (24 * 60 * 60 * 1000));
+  const { since, windowDays, windowMinutes } = windowRange(c);
 
   const { results } = await c.env.DB.prepare(
     `WITH
@@ -324,6 +340,7 @@ export async function handleVersionAnalytics(c: AdminContext) {
   return c.json({
     window_start: since,
     window_days: windowDays,
+    window_minutes: windowMinutes,
     versions: results.map((row) => ({
       ...row,
       telemetry_only: Boolean(row.telemetry_only),

@@ -47,10 +47,12 @@ Each release row shows update-check analytics: how many devices are already
 clients), so you can see real rollout coverage as the percentage climbs.
 
 The app overview also exposes version-level metrics from
-`GET /api/apps/:id/analytics/versions`: active devices in the selected window,
-total devices seen, update-check current/offered counts, feedback/crash volume,
-and artifact downloads for each version/channel. The data comes from SDK device
-pings, update checks, feedback tickets, and build asset download counters.
+`GET /api/apps/:id/analytics/versions`: devices that reported in the selected
+window, total devices seen, update-check current/offered counts,
+feedback/crash volume, and artifact downloads for each version/channel. The
+data comes from throttled SDK metrics pings, update checks, feedback tickets,
+and build asset download counters. These metrics show active/recent devices,
+not a true unthrottled online heartbeat.
 
 ## Builds
 

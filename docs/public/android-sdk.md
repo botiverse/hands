@@ -117,10 +117,11 @@ automatically.
 
 ## Device analytics
 
-`Quiver.install(...)` already sends a lightweight launch ping (throttled
+`Quiver.install(...)` already sends a lightweight launch/install metrics ping (throttled
 to ≤1/day/install) that powers the console's active-device and
-version-distribution views — no separate call needed. No PII: only the
-random per-install device id and build/OS metadata. Pass
+version-distribution views — no separate call needed. This is not a true
+online heartbeat. No PII: only the random per-install device id and build/OS
+metadata. Pass
 `reportDeviceAnalytics = false` to `Quiver.install` to opt out.
 
 ## Notes

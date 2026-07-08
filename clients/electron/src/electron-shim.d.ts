@@ -35,6 +35,8 @@ declare module "electron" {
   export interface App {
     getVersion(): string;
     getName(): string;
+    getLocale(): string;
+    getPath(name: "userData"): string;
     on(
       event: "render-process-gone",
       listener: (event: unknown, webContents: WebContents, details: RenderProcessGoneDetails) => void,
@@ -68,3 +70,27 @@ declare const process: {
   arch: string;
   versions: Record<string, string | undefined>;
 };
+
+declare module "node:crypto" {
+  export function randomUUID(): string;
+}
+
+declare module "node:fs" {
+  export function existsSync(path: string): boolean;
+  export function mkdirSync(path: string, options?: { recursive?: boolean }): void;
+  export function readFileSync(path: string, encoding: "utf8"): string;
+  export function writeFileSync(path: string, data: string, encoding: "utf8"): void;
+}
+
+declare module "node:path" {
+  export function join(...parts: string[]): string;
+}
+
+declare const fetch: (
+  input: string,
+  init?: {
+    method?: string;
+    headers?: Record<string, string>;
+    body?: string;
+  },
+) => Promise<{ ok: boolean }>;
