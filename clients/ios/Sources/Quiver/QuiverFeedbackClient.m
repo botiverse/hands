@@ -2,6 +2,7 @@
 
 #import "Quiver.h"
 
+#import <TargetConditionals.h>
 #import <UIKit/UIKit.h>
 #import <sys/utsname.h>
 
@@ -10,6 +11,10 @@
 static NSString *const QuiverErrorDomain = @"Quiver";
 static NSTimeInterval const QuiverRequestTimeout = 30.0;
 static NSTimeInterval const QuiverUploadTimeout = 120.0;
+
+// Quiver iOS SDK version — reported in feedback/crash environment metadata.
+// Keep in sync with Quiver.podspec on release.
+static NSString *const kQuiverSDKVersion = @"0.1.5";
 
 // Server-enforced: at most 9 attachments per ticket.
 static NSUInteger const QuiverMaxAttachments = 9;
@@ -35,6 +40,47 @@ static NSString *QuiverArch(void) {
 #else
     return @"unknown";
 #endif
+}
+
+static BOOL QuiverIsSimulator(void) {
+#if TARGET_OS_SIMULATOR
+    return YES;
+#else
+    return NSProcessInfo.processInfo.environment[@"SIMULATOR_DEVICE_NAME"] != nil;
+#endif
+}
+
+static NSString *QuiverThermalState(void) {
+    switch (NSProcessInfo.processInfo.thermalState) {
+        case NSProcessInfoThermalStateNominal: return @"nominal";
+        case NSProcessInfoThermalStateFair: return @"fair";
+        case NSProcessInfoThermalStateSerious: return @"serious";
+        case NSProcessInfoThermalStateCritical: return @"critical";
+    }
+    return @"unknown";
+}
+
+static NSString *QuiverBatteryStateString(UIDeviceBatteryState state) {
+    switch (state) {
+        case UIDeviceBatteryStateUnplugged: return @"unplugged";
+        case UIDeviceBatteryStateCharging: return @"charging";
+        case UIDeviceBatteryStateFull: return @"full";
+        case UIDeviceBatteryStateUnknown:
+        default: return @"unknown";
+    }
+}
+
+// The app's build git commit, injected into Info.plist at build time. The SDK
+// only reports it; the host build is responsible for setting one of these keys
+// (preferred: QuiverBuildCommit). Returns nil when not injected.
+static NSString *QuiverBuildCommit(NSDictionary *info) {
+    for (NSString *key in @[ @"QuiverBuildCommit", @"GitCommit", @"CommitHash" ]) {
+        id value = info[key];
+        if ([value isKindOfClass:NSString.class] && [(NSString *)value length] > 0) {
+            return value;
+        }
+    }
+    return nil;
 }
 
 static NSString *QuiverContentType(NSString *name) {
@@ -75,15 +121,57 @@ static NSError *QuiverErrorWithMessage(NSInteger code, NSString *detail) {
     NSDictionary *info = NSBundle.mainBundle.infoDictionary ?: @{};
     UIDevice *device = UIDevice.currentDevice;
     NSMutableDictionary<NSString *, id> *metadata = [NSMutableDictionary dictionary];
+    NSProcessInfo *process = NSProcessInfo.processInfo;
+
+    // App / build identity
     metadata[@"version_name"] = info[@"CFBundleShortVersionString"] ?: @"";
     metadata[@"version_code"] = @([(info[@"CFBundleVersion"] ?: @"0") longLongValue]);
+    metadata[@"bundle_id"] = info[@"CFBundleIdentifier"] ?: @"";
+    NSString *commit = QuiverBuildCommit(info);
+    if (commit) metadata[@"commit"] = commit;
     metadata[@"channel"] = (Quiver.config.channel ?: @"");
-    metadata[@"device_id"] = [QuiverDeviceId deviceId];
-    metadata[@"device_model"] = QuiverHardwareModel();
+    metadata[@"quiver_sdk"] = kQuiverSDKVersion;
+
+    // Platform / OS
+    metadata[@"platform"] = @"ios";
+    metadata[@"os"] = device.systemName ?: @"iOS";
     metadata[@"os_version"] = [NSString stringWithFormat:@"%@ %@", device.systemName ?: @"iOS", device.systemVersion ?: @""];
     metadata[@"arch"] = QuiverArch();
     metadata[@"locale"] = NSLocale.currentLocale.localeIdentifier ?: @"";
-    metadata[@"platform"] = @"ios";
+    metadata[@"timezone"] = NSTimeZone.localTimeZone.name ?: @"";
+    NSArray<NSString *> *languages = NSLocale.preferredLanguages;
+    if (languages.count > 0) {
+        metadata[@"preferred_languages"] = [languages componentsJoinedByString:@","];
+    }
+
+    // Device
+    metadata[@"device_id"] = [QuiverDeviceId deviceId];
+    metadata[@"device_model"] = QuiverHardwareModel();
+    metadata[@"device_name"] = device.name ?: @"";
+    metadata[@"is_simulator"] = QuiverIsSimulator() ? @"true" : @"false";
+    CGRect bounds = UIScreen.mainScreen.bounds;
+    CGFloat scale = UIScreen.mainScreen.scale;
+    metadata[@"screen"] = [NSString stringWithFormat:@"%.0fx%.0f@%.0fx",
+                           bounds.size.width * scale, bounds.size.height * scale, scale];
+
+    // Runtime state
+    metadata[@"physical_memory"] = @(process.physicalMemory);
+    metadata[@"uptime_seconds"] = @((long long)process.systemUptime);
+    metadata[@"low_power_mode"] = process.isLowPowerModeEnabled ? @"true" : @"false";
+    metadata[@"thermal_state"] = QuiverThermalState();
+    NSDictionary *fsAttrs = [NSFileManager.defaultManager attributesOfFileSystemForPath:NSHomeDirectory() error:nil];
+    if (fsAttrs[NSFileSystemSize]) metadata[@"disk_total"] = fsAttrs[NSFileSystemSize];
+    if (fsAttrs[NSFileSystemFreeSize]) metadata[@"disk_free"] = fsAttrs[NSFileSystemFreeSize];
+    // Only read battery when the host already enabled monitoring — toggling it
+    // is a main-thread-only UIKit mutation and this runs on a background queue
+    // during crash upload.
+    if (device.batteryMonitoringEnabled) {
+        float batteryLevel = device.batteryLevel;
+        if (batteryLevel >= 0) metadata[@"battery_level"] = @((int)(batteryLevel * 100));
+        metadata[@"battery_state"] = QuiverBatteryStateString(device.batteryState);
+    }
+
+    // Caller-supplied extras (crash_* fields etc.) override/augment the above.
     [extras enumerateKeysAndObjectsUsingBlock:^(NSString *key, NSString *value, BOOL *stop) {
         metadata[key] = value;
     }];

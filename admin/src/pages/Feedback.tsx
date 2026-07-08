@@ -3,7 +3,7 @@
  * per-ticket page (/apps/:appId/feedback/:ticketId) so tickets are
  * shareable links. Tickets carry an assignee, status flow, and comments.
  */
-import { useMemo, useState } from "react";
+import { Fragment, useMemo, useState } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
@@ -185,7 +185,7 @@ export function AppFeedback({ appId }: { appId: string }) {
                     {t.version_name ?? "—"}{t.version_code ? ` (${t.version_code})` : ""}
                   </td>
                   <td className="py-2 pr-3 text-xs text-slate-600">
-                    {[t.device_model, t.os_version && `Android ${t.os_version}`].filter(Boolean).join(" · ") || "—"}
+                    {[t.device_model, t.os_version].filter(Boolean).join(" · ") || "—"}
                   </td>
                   <td className="py-2 pr-3 text-xs text-slate-600">
                     {new Date(t.created_at).toLocaleString()}
@@ -608,44 +608,84 @@ export function FeedbackTicketPage({
           </div>
 
           <div className="card">
-            <h4 className="text-sm font-semibold mb-2">Device context</h4>
-            <dl className="grid grid-cols-2 gap-x-4 gap-y-1 text-xs">
-              <dt className="text-slate-500">App version</dt>
-              <dd>
-                {t.version_name ?? "—"}{" "}
-                {t.version_code ? (
-                  <button
-                    className="text-blue-600 hover:underline"
-                    title="All feedback on this version"
-                    onClick={() => navigate(`/apps/${appId}/feedback?version_code=${t.version_code}`)}
-                  >
-                    ({t.version_code})
-                  </button>
-                ) : null}
-              </dd>
-              <dt className="text-slate-500">Channel</dt>
-              <dd>{t.channel ?? "—"}</dd>
-              <dt className="text-slate-500">Device</dt>
-              <dd>{t.device_model ?? "—"}</dd>
-              <dt className="text-slate-500">OS / arch</dt>
-              <dd>{[t.os_version, t.arch].filter(Boolean).join(" / ") || "—"}</dd>
-              <dt className="text-slate-500">Locale</dt>
-              <dd>{t.locale ?? "—"}</dd>
-              <dt className="text-slate-500">Device id</dt>
-              <dd className="font-mono">
-                {t.device_id ? (
-                  <button
-                    className="text-blue-600 hover:underline font-mono"
-                    title="This device's history"
-                    onClick={() => navigate(`/apps/${appId}/feedback?device_id=${encodeURIComponent(t.device_id!)}`)}
-                  >
-                    {t.device_id}
-                  </button>
-                ) : (
-                  "—"
-                )}
-              </dd>
-            </dl>
+            <h4 className="text-sm font-semibold mb-2">Environment</h4>
+            {(() => {
+              // Generic render of every reported environment field (task #105):
+              // no hardcoded property allowlist — parse the ticket metadata and
+              // list each field, so new SDK-reported fields show up with zero
+              // UI changes. crash_* keys feed the symbolication panel below and
+              // are excluded here. version_code / device_id keep their filter
+              // links; commit is shown monospace.
+              let meta: Record<string, unknown> = {};
+              try {
+                const parsed = JSON.parse(t.metadata_json || "{}");
+                if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+                  meta = parsed as Record<string, unknown>;
+                }
+              } catch {
+                /* malformed metadata — fall through to empty */
+              }
+              const entries = Object.entries(meta)
+                .filter(
+                  ([k, v]) =>
+                    !k.startsWith("crash_") &&
+                    v !== null &&
+                    v !== undefined &&
+                    v !== "",
+                )
+                .sort(([a], [b]) => a.localeCompare(b));
+              if (entries.length === 0) {
+                return (
+                  <p className="text-xs text-slate-500">
+                    No environment data reported.
+                  </p>
+                );
+              }
+              const label = (k: string) =>
+                k.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+              const format = (v: unknown) =>
+                typeof v === "object" ? JSON.stringify(v) : String(v);
+              const mono = (k: string) =>
+                k === "device_id" || k === "commit" || k === "git_commit";
+              return (
+                <dl className="grid grid-cols-2 gap-x-4 gap-y-1 text-xs">
+                  {entries.map(([k, v]) => (
+                    <Fragment key={k}>
+                      <dt className="text-slate-500">{label(k)}</dt>
+                      <dd className={mono(k) ? "font-mono break-all" : "break-all"}>
+                        {k === "version_code" ? (
+                          <button
+                            className="text-blue-600 hover:underline"
+                            title="All feedback on this version"
+                            onClick={() =>
+                              navigate(
+                                `/apps/${appId}/feedback?version_code=${encodeURIComponent(format(v))}`,
+                              )
+                            }
+                          >
+                            {format(v)}
+                          </button>
+                        ) : k === "device_id" ? (
+                          <button
+                            className="text-blue-600 hover:underline font-mono break-all"
+                            title="This device's history"
+                            onClick={() =>
+                              navigate(
+                                `/apps/${appId}/feedback?device_id=${encodeURIComponent(format(v))}`,
+                              )
+                            }
+                          >
+                            {format(v)}
+                          </button>
+                        ) : (
+                          format(v)
+                        )}
+                      </dd>
+                    </Fragment>
+                  ))}
+                </dl>
+              );
+            })()}
           </div>
 
           {t.kind === "crash" &&
