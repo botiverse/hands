@@ -437,7 +437,13 @@ async function handlePublicDocs(c: Context<{ Bindings: Env }>) {
   // files) with a markdown content type — no trailing-slash normalization.
   if (path.endsWith(".md")) {
     const asset = await c.env.ASSETS.fetch(new Request(new URL(path, c.req.url), c.req.raw));
-    if (asset.status === 404) return c.text("Not found", 404);
+    // ASSETS runs in single-page-app mode: unknown paths fall back to
+    // index.html (200, text/html). Treat that HTML fallback as not-found for a
+    // .md request — only a real markdown asset should be served here.
+    const assetType = asset.headers.get("content-type") ?? "";
+    if (asset.status === 404 || assetType.includes("text/html")) {
+      return c.text("Not found", 404);
+    }
     const headers = new Headers(asset.headers);
     headers.set("content-type", "text/markdown; charset=utf-8");
     return new Response(asset.body, { status: asset.status, headers });
