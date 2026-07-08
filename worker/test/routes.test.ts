@@ -756,12 +756,20 @@ describe("quiver route handlers — SQL smoke", () => {
       env as any,
     );
     expect(viewerResponse.status).toBe(403);
-    await expect(viewerResponse.json()).resolves.toMatchObject({
+    const viewerBody = (await viewerResponse.json()) as Record<string, unknown>;
+    expect(viewerBody).toMatchObject({
       error: "insufficient_org_role",
+      code: "INSUFFICIENT_ORG_ROLE",
       required_role: "member",
       current_role: "viewer",
       resource: "POST /api/apps",
+      admin_can_grant: true,
     });
+    // Admin-native actionable error: next_action names the required role and
+    // points at where an admin grants it.
+    expect(typeof viewerBody.next_action).toBe("string");
+    expect(viewerBody.next_action as string).toContain("member");
+    expect(viewerBody.next_action as string).toContain("/members");
 
     const memberResponse = await testApp.request(
       "https://quiver-worker.test/api/apps",
