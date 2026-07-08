@@ -431,6 +431,17 @@ const publicDocs = new Set([
 
 async function handlePublicDocs(c: Context<{ Bindings: Env }>) {
   const path = new URL(c.req.url).pathname;
+  // Raw-markdown twins: /docs.md (machine index) and /docs/<slug>.md. The build
+  // (admin/scripts/build-docs.mjs) emits these from the same source as the HTML,
+  // so they stay in lockstep. Serve the asset as-is (ASSETS 404s for unknown
+  // files) with a markdown content type — no trailing-slash normalization.
+  if (path.endsWith(".md")) {
+    const asset = await c.env.ASSETS.fetch(new Request(new URL(path, c.req.url), c.req.raw));
+    if (asset.status === 404) return c.text("Not found", 404);
+    const headers = new Headers(asset.headers);
+    headers.set("content-type", "text/markdown; charset=utf-8");
+    return new Response(asset.body, { status: asset.status, headers });
+  }
   const normalizedPath = path.endsWith("/") ? path : `${path}/`;
   if (!publicDocs.has(normalizedPath)) {
     return c.text("Not found", 404);
@@ -439,6 +450,7 @@ async function handlePublicDocs(c: Context<{ Bindings: Env }>) {
 }
 
 app.get("/docs", handlePublicDocs);
+app.get("/docs.md", handlePublicDocs);
 app.get("/docs/*", handlePublicDocs);
 
 app.get("/api/auth/config", handleAuthConfig);

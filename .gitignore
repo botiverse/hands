@@ -44,3 +44,4 @@ coverage/
 *.tsbuildinfo
 worker-configuration.d.ts
 admin/public/docs/
+admin/public/docs.md

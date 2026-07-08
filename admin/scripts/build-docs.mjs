@@ -363,6 +363,28 @@ function indexPage() {
   });
 }
 
+// Agent-facing machine index (mirrors exe.dev's /docs.md): every page listed
+// with its description and a link to its raw-markdown twin. Generated from the
+// same pages[] as the HTML, so it never drifts.
+function markdownIndex() {
+  const lines = [
+    "# Quiver Documentation",
+    "",
+    "Machine-readable index. Every page below has a raw-markdown twin at",
+    "`/docs/<slug>.md` (this index is `/docs.md`). Fetch those for clean,",
+    "chrome-free content — no HTML or JavaScript.",
+    "",
+  ];
+  for (const [category, list] of pagesByCategory()) {
+    lines.push(`## ${category}`, "");
+    for (const page of list) {
+      lines.push(`- [${page.title}](/docs/${page.slug}.md) — ${page.description}`);
+    }
+    lines.push("");
+  }
+  return `${lines.join("\n").trimEnd()}\n`;
+}
+
 await rm(outRoot, { recursive: true, force: true });
 await mkdir(outRoot, { recursive: true });
 await writeFile(path.join(outRoot, "index.html"), indexPage());
@@ -380,6 +402,14 @@ for (const page of pages) {
       activeSlug: page.slug,
     }),
   );
+  // Raw-markdown twin at /docs/<slug>.md — the exact source, always in sync.
+  await writeFile(path.join(outRoot, `${page.slug}.md`), markdown);
 }
 
-console.log(`Built ${pages.length + 1} docs pages in ${path.relative(repoRoot, outRoot)}`);
+// /docs.md machine index lives one level up (admin/public/docs.md) so its URL
+// is /docs.md, alongside the /docs/ HTML tree.
+await writeFile(path.join(outRoot, "..", "docs.md"), markdownIndex());
+
+console.log(
+  `Built ${pages.length + 1} docs pages + ${pages.length} markdown twins + docs.md index in ${path.relative(repoRoot, outRoot)}`,
+);
