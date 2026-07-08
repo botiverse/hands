@@ -1,9 +1,18 @@
 package io.quiver.update
 
+import android.app.ActivityManager
 import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
+import android.content.pm.PackageManager
+import android.os.BatteryManager
 import android.os.Build
+import android.os.PowerManager
+import android.os.StatFs
+import android.os.SystemClock
 import java.io.File
 import java.util.Locale
+import java.util.TimeZone
 import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -74,14 +83,34 @@ class QuiverFeedback(
         val presignedRefs = if (large.isNotEmpty()) uploadLargeAttachments(large) else emptyList()
 
         val metadata = JSONObject().apply {
+            // App / build identity
             versionName?.let { put("version_name", it) }
             versionCode?.let { put("version_code", it) }
+            put("platform", "android")
+            put("bundle_id", context.packageName)
+            put("quiver_sdk", SDK_VERSION)
             channel?.let { put("channel", it) }
+            buildCommit(context)?.let { put("commit", it) }
+
+            // Device
             put("device_id", QuiverDeviceId.get(context))
             put("device_model", "${Build.MANUFACTURER} ${Build.MODEL}".trim())
+            put("device_manufacturer", Build.MANUFACTURER ?: "")
+            put("device_brand", Build.BRAND ?: "")
+            put("is_emulator", isProbablyEmulator())
+
+            // OS
+            put("os", "Android")
             put("os_version", Build.VERSION.RELEASE ?: Build.VERSION.SDK_INT.toString())
+            put("sdk_int", Build.VERSION.SDK_INT)
             put("arch", Build.SUPPORTED_ABIS.firstOrNull() ?: "unknown")
             put("locale", Locale.getDefault().toLanguageTag())
+            put("timezone", TimeZone.getDefault().id)
+
+            // Runtime state (best-effort; a metadata read must never fail submit)
+            putRuntimeEnvironment(context)
+
+            // Caller extras (crash_* fields etc.) override/augment the above.
             for ((key, value) in extras) put(key, value ?: JSONObject.NULL)
         }
 
@@ -219,6 +248,10 @@ class QuiverFeedback(
     }
 
     companion object {
+        /** Quiver Android SDK version — reported in feedback/crash environment
+         *  metadata. Keep in sync with the SDK's published version. */
+        const val SDK_VERSION = "0.9.0"
+
         /** Server-enforced: at most 9 attachments per ticket. */
         const val MAX_ATTACHMENTS = 9
 
@@ -238,3 +271,100 @@ class QuiverFeedback(
 
 class QuiverFeedbackException(val code: Int, detail: String) :
     RuntimeException("feedback submission failed (HTTP $code): $detail")
+
+/**
+ * The app's build git commit, read from an AndroidManifest <meta-data> the host
+ * app injects (mirrors iOS Info.plist QuiverBuildCommit). The SDK only reports
+ * it; the host build sets it. Returns null when not present.
+ */
+private fun buildCommit(context: Context): String? = runCatching {
+    val info = context.packageManager.getApplicationInfo(
+        context.packageName,
+        PackageManager.GET_META_DATA,
+    )
+    info.metaData?.getString("io.quiver.build_commit")?.takeIf { it.isNotBlank() }
+}.getOrNull()
+
+/** Heuristic emulator detection for the environment report. */
+private fun isProbablyEmulator(): Boolean {
+    val fingerprint = Build.FINGERPRINT ?: ""
+    val model = Build.MODEL ?: ""
+    val product = Build.PRODUCT ?: ""
+    val hardware = Build.HARDWARE ?: ""
+    return fingerprint.startsWith("generic") ||
+        fingerprint.startsWith("unknown") ||
+        fingerprint.contains("emulator") ||
+        model.contains("google_sdk") ||
+        model.contains("Emulator") ||
+        model.contains("Android SDK") ||
+        product.contains("sdk") ||
+        hardware == "goldfish" ||
+        hardware == "ranchu" ||
+        (Build.MANUFACTURER ?: "").contains("Genymotion")
+}
+
+private fun thermalStatusName(status: Int): String = when (status) {
+    PowerManager.THERMAL_STATUS_NONE -> "none"
+    PowerManager.THERMAL_STATUS_LIGHT -> "light"
+    PowerManager.THERMAL_STATUS_MODERATE -> "moderate"
+    PowerManager.THERMAL_STATUS_SEVERE -> "severe"
+    PowerManager.THERMAL_STATUS_CRITICAL -> "critical"
+    PowerManager.THERMAL_STATUS_EMERGENCY -> "emergency"
+    PowerManager.THERMAL_STATUS_SHUTDOWN -> "shutdown"
+    else -> "unknown"
+}
+
+private fun batteryStatusName(status: Int): String = when (status) {
+    BatteryManager.BATTERY_STATUS_CHARGING -> "charging"
+    BatteryManager.BATTERY_STATUS_DISCHARGING -> "discharging"
+    BatteryManager.BATTERY_STATUS_FULL -> "full"
+    BatteryManager.BATTERY_STATUS_NOT_CHARGING -> "not_charging"
+    else -> "unknown"
+}
+
+/**
+ * Best-effort runtime environment facts (screen, memory, disk, battery, power,
+ * uptime). Each group is guarded so a failing system-service read can never
+ * break feedback/crash submission.
+ */
+private fun JSONObject.putRuntimeEnvironment(context: Context) {
+    runCatching { put("uptime_seconds", SystemClock.elapsedRealtime() / 1000) }
+    runCatching {
+        val dm = context.resources.displayMetrics
+        put("screen", "${dm.widthPixels}x${dm.heightPixels}@${dm.density}")
+        put("density_dpi", dm.densityDpi)
+    }
+    runCatching {
+        val am = context.getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager
+        if (am != null) {
+            val info = ActivityManager.MemoryInfo()
+            am.getMemoryInfo(info)
+            put("physical_memory", info.totalMem)
+            put("available_memory", info.availMem)
+            put("low_memory", info.lowMemory)
+        }
+    }
+    runCatching {
+        val stat = StatFs(context.filesDir.absolutePath)
+        put("disk_total", stat.totalBytes)
+        put("disk_free", stat.availableBytes)
+    }
+    runCatching {
+        val pm = context.getSystemService(Context.POWER_SERVICE) as? PowerManager
+        if (pm != null) {
+            put("low_power_mode", pm.isPowerSaveMode)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                put("thermal_state", thermalStatusName(pm.currentThermalStatus))
+            }
+        }
+    }
+    runCatching {
+        val intent = context.registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
+        if (intent != null) {
+            val level = intent.getIntExtra(BatteryManager.EXTRA_LEVEL, -1)
+            val scale = intent.getIntExtra(BatteryManager.EXTRA_SCALE, -1)
+            if (level >= 0 && scale > 0) put("battery_level", level * 100 / scale)
+            put("battery_state", batteryStatusName(intent.getIntExtra(BatteryManager.EXTRA_STATUS, -1)))
+        }
+    }
+}
