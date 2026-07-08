@@ -165,9 +165,23 @@ function forbiddenRole(
     : ids.app_id
       ? `${origin}/apps/${ids.app_id}/access`
       : null;
+  // Admin-native, actionable error: tell the caller (agent or human) exactly
+  // what to do next — who can grant the role, where, and that an admin can
+  // perform the action on their behalf — instead of a bare "forbidden". Code is
+  // a stable UPPER_SNAKE machine token; next_action is a ready-to-print
+  // sentence. admin_can_grant signals an admin path exists.
+  const target = scope === "org" ? "this org" : "this app";
+  const nextAction =
+    `You have role '${currentRole ?? "none"}' but '${requiredRole}' is required for ${target}. ` +
+    `Ask an admin of ${target} to grant you the '${requiredRole}' role` +
+    (manageUrl ? ` (manage roles at ${manageUrl})` : "") +
+    `, or have an admin perform this action for you.`;
   return c.json(
     {
       error: scope === "org" ? "insufficient_org_role" : "insufficient_app_role",
+      code: scope === "org" ? "INSUFFICIENT_ORG_ROLE" : "INSUFFICIENT_APP_ROLE",
+      next_action: nextAction,
+      admin_can_grant: true,
       required_role: requiredRole,
       current_role: currentRole,
       resource,

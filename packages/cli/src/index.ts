@@ -66,7 +66,19 @@ program
 
 program.parseAsync(process.argv).catch((err) => {
   if (err instanceof Error && err.name === "QuiverApiError") {
-    console.error(`error: ${err.message}`);
+    // Admin-native, actionable error print (mirrors the Raft CLI discipline):
+    // surface the server's stable Code and Next action so an agent knows what
+    // to do — request a role, or have an admin act — not just "forbidden".
+    const body = (err as { body?: unknown }).body;
+    const info =
+      body && typeof body === "object" ? (body as Record<string, unknown>) : {};
+    console.error(`Error: ${err.message}`);
+    if (typeof info.code === "string") console.error(`Code: ${info.code}`);
+    if (typeof info.next_action === "string") {
+      console.error(`Next action: ${info.next_action}`);
+    } else if (typeof info.manage_url === "string") {
+      console.error(`Next action: see ${info.manage_url}`);
+    }
     if (process.env.QUIVER_VERBOSE === "1" && err.stack) {
       console.error(err.stack);
     }
