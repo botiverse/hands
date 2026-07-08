@@ -579,6 +579,9 @@ export async function handleAuthLogout(c: Context<{ Bindings: Env }>) {
 
 export async function handleAgentManifest(c: Context<{ Bindings: Env }>) {
   const origin = appOrigin(c);
+  // Never edge-cache the manifest — the integration daemon must always see the
+  // current action list (a stale cached copy makes schema changes invisible).
+  c.header("Cache-Control", "no-store");
   return c.json({
     schema: "slock-agent-manifest.v0",
     service: c.env.RAFT_CLIENT_ID || "quiver",
