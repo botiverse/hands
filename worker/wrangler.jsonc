@@ -27,5 +27,17 @@
     "PROXY_TARGET": "https://hands.build",
     // Canonical domain humans are 302-redirected to. No trailing slash.
     "REDIRECT_TARGET": "https://hands.build"
-  }
+  },
+
+  // The business quiver-worker previously bound the ApkParserContainer Durable
+  // Object (Cloudflare Container for APK parsing). The shim drops it, but
+  // Cloudflare refuses to deploy a script that no longer exports a class still
+  // referenced by existing Durable Objects (error 10064) without an explicit
+  // delete-class migration. v1 is the already-applied original; v2 deletes the
+  // class. APK parsing now happens on hands-worker (its own ApkParserContainer),
+  // so removing this one is safe.
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["ApkParserContainer"] },
+    { "tag": "v2", "deleted_classes": ["ApkParserContainer"] }
+  ]
 }
