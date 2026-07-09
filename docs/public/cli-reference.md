@@ -23,11 +23,17 @@ In CI, pin a version so release scripts stay reproducible.
 The CLI reads a Hands API server and bearer token from environment variables:
 
 ```bash
-export QUIVER_SERVER=https://quiver.oranix.io
-export QUIVER_BEARER_TOKEN=<deploy-token>
+export HANDS_API=https://hands.build
+export HANDS_BEARER_TOKEN=<deploy-token>
 ```
 
-`QUIVER_AUTH_TOKEN` is also accepted as an alias for `QUIVER_BEARER_TOKEN`.
+If `HANDS_API` is unset, the CLI defaults to `https://quiver.oranix.io`, which
+transparently proxies to `hands.build`; set `HANDS_API=https://hands.build` to
+call the current domain directly. `HANDS_AUTH_TOKEN` is also accepted as an
+alias for `HANDS_BEARER_TOKEN`.
+
+Legacy `QUIVER_*` names still work: every variable is read as `HANDS_<name>`
+first, then `QUIVER_<name>`, so existing CI keeps working unchanged.
 
 Use app-scoped deploy tokens for CI. Mint them with `hands deploy-tokens create` (below) or in the app's Access page, choose the minimum role required, and store the raw token in your CI secret store.
 
@@ -49,7 +55,7 @@ hands deploy-tokens list raft-android
 hands deploy-tokens revoke raft-android <tokenId>
 ```
 
-The created token is what you set as `QUIVER_BEARER_TOKEN` in CI. The server stores only a hash, so a lost token can only be revoked and re-minted, never recovered.
+The created token is what you set as `HANDS_BEARER_TOKEN` in CI. The server stores only a hash, so a lost token can only be revoked and re-minted, never recovered.
 
 ## Basic Commands
 
@@ -238,8 +244,8 @@ hands releases update-share raft-android <release-id> <share-id> --ttl-seconds 1
 hands releases revoke-share raft-android <release-id> <share-id>
 ```
 
-`--password` can also come from `QUIVER_SHARE_PASSWORD` to keep it out of
-shell history. Share URLs are printed once at creation; tokens are stored
+`--password` can also come from `HANDS_SHARE_PASSWORD` (legacy
+`QUIVER_SHARE_PASSWORD` still works) to keep it out of shell history. Share URLs are printed once at creation; tokens are stored
 hashed.
 
 ## Feedback Tickets
@@ -259,13 +265,17 @@ hands feedback update raft-android <ticket-id> --status resolved
 
 ## CI Environment Variables
 
+Every variable is read as `HANDS_<name>` first, then the legacy `QUIVER_<name>`,
+so existing CI keeps working unchanged.
+
 | Variable | Required | Purpose |
 |---|---|---|
-| `QUIVER_SERVER` | No | Hands server URL. Defaults to `https://quiver.oranix.io` in most scripts. |
-| `QUIVER_BEARER_TOKEN` | Yes | App-scoped deploy token for CI. |
-| `QUIVER_AUTH_TOKEN` | No | Alias for `QUIVER_BEARER_TOKEN`. |
-| `QUIVER_API_TIMEOUT_MS` | No | Request timeout in milliseconds. |
-| `QUIVER_RETRIES` | No | Retry count for transient server errors. |
+| `HANDS_API` | No | Hands server base URL. Defaults to `https://quiver.oranix.io` (which proxies to `hands.build`). Set to `https://hands.build` to call the current domain directly. `HANDS_CLI_API` takes precedence if set. |
+| `HANDS_BEARER_TOKEN` | Yes | App-scoped deploy token for CI. |
+| `HANDS_AUTH_TOKEN` | No | Alias for `HANDS_BEARER_TOKEN` (tried first). |
+
+Legacy equivalents `QUIVER_API`, `QUIVER_BEARER_TOKEN`, `QUIVER_AUTH_TOKEN` are
+still accepted.
 
 ## Versioning Guidance
 
