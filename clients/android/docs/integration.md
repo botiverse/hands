@@ -49,7 +49,7 @@ R2 URL that expires in `expires_in` seconds.
 | File | Purpose |
 |---|---|
 | `UpdateChecker.kt`            | Public API — high-level "check + download + install" entry point |
-| `QuiverClient.kt`             | Internal HTTP client (OkHttp + kotlinx.serialization) |
+| `HandsClient.kt`              | Internal HTTP client (OkHttp + kotlinx.serialization) |
 | `models/Version.kt`           | Wire-model for `/public/v2/apps/:slug/updates/check` response |
 | `models/App.kt`               | Same, app metadata |
 | `installer/ApkInstaller.kt`   | DownloadManager + Intent.ACTION_INSTALL_PACKAGE |

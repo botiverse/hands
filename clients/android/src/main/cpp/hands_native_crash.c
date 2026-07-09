@@ -154,7 +154,7 @@ static void quiver_signal_handler(int signo, siginfo_t *info, void *ucontext) {
 }
 
 JNIEXPORT void JNICALL
-Java_build_hands_update_QuiverNativeCrash_nativeInstall(JNIEnv *env, jclass clazz, jstring crash_dir) {
+Java_build_hands_update_HandsNativeCrash_nativeInstall(JNIEnv *env, jclass clazz, jstring crash_dir) {
   (void)clazz;
   const char *dir = (*env)->GetStringUTFChars(env, crash_dir, NULL);
   if (dir == NULL) return;

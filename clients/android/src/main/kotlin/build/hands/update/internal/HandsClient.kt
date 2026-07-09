@@ -16,7 +16,7 @@ import java.util.concurrent.TimeUnit
  * Designed to be replaceable (e.g. swap OkHttp for Ktor) without touching the
  * higher-level UpdateChecker.
  */
-class QuiverClient(
+class HandsClient(
     private val baseUrl: String,
     private val httpClient: OkHttpClient = defaultClient(),
     private val json: Json = defaultJson(),
@@ -24,9 +24,9 @@ class QuiverClient(
     /**
      * Ask the server whether this client should update.
      *
-     * @throws QuiverException.NoSuchApp        if 404
-     * @throws QuiverException.NetworkError     on IO failure
-     * @throws QuiverException.InvalidResponse  on parse failure
+     * @throws HandsException.NoSuchApp        if 404
+     * @throws HandsException.NetworkError     on IO failure
+     * @throws HandsException.InvalidResponse  on parse failure
      */
     suspend fun checkForUpdate(
         slug: String,
@@ -62,16 +62,16 @@ class QuiverClient(
 
         httpClient.newCall(request).execute().use { response ->
             val body = response.body?.string()
-                ?: throw QuiverException.NetworkError("empty response body")
+                ?: throw HandsException.NetworkError("empty response body")
 
             when (response.code) {
                 200 -> try {
                     json.decodeFromString(UpdateCheckResponse.serializer(), body)
                 } catch (e: Exception) {
-                    throw QuiverException.InvalidResponse(body, e)
+                    throw HandsException.InvalidResponse(body, e)
                 }
-                404 -> throw QuiverException.NoSuchApp(slug, channel)
-                else -> throw QuiverException.HttpError(response.code, body)
+                404 -> throw HandsException.NoSuchApp(slug, channel)
+                else -> throw HandsException.HttpError(response.code, body)
             }
         }
     }
@@ -89,13 +89,13 @@ class QuiverClient(
     }
 }
 
-sealed class QuiverException(message: String, cause: Throwable? = null) : RuntimeException(message, cause) {
+sealed class HandsException(message: String, cause: Throwable? = null) : RuntimeException(message, cause) {
     class NoSuchApp(slug: String, channel: String) :
-        QuiverException("app '$slug' has no enabled version for channel '$channel'")
+        HandsException("app '$slug' has no enabled version for channel '$channel'")
     class NetworkError(detail: String) :
-        QuiverException("network error: $detail")
+        HandsException("network error: $detail")
     class InvalidResponse(body: String, cause: Throwable) :
-        QuiverException("invalid server response: ${body.take(200)}", cause)
+        HandsException("invalid server response: ${body.take(200)}", cause)
     class HttpError(code: Int, body: String) :
-        QuiverException("server returned HTTP $code: ${body.take(200)}")
+        HandsException("server returned HTTP $code: ${body.take(200)}")
 }

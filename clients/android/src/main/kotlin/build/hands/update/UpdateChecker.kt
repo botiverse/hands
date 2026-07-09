@@ -4,7 +4,7 @@ import android.app.DownloadManager
 import android.content.Context
 import android.content.IntentFilter
 import build.hands.update.installer.ApkInstaller
-import build.hands.update.internal.QuiverClient
+import build.hands.update.internal.HandsClient
 import build.hands.update.models.UpdateCheckResponse
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -53,7 +53,7 @@ class UpdateChecker(
     private val productType: String = "android-apk",
     private val platform: String = "android",
     private val arch: String? = null,
-    private val client: QuiverClient = QuiverClient(baseUrl),
+    private val client: HandsClient = HandsClient(baseUrl),
     private val installer: ApkInstaller = ApkInstaller(context),
     private val deviceId: String? = null,
 ) {
@@ -78,7 +78,7 @@ class UpdateChecker(
             productType = productType,
             platform = platform,
             arch = arch,
-            deviceId = deviceId ?: QuiverDeviceId.get(context),
+            deviceId = deviceId ?: HandsDeviceId.get(context),
         )
         if (response.requireUpdate() != null) {
             installUpdate(response)

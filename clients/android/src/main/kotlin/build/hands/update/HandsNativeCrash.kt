@@ -11,7 +11,7 @@ import java.io.File
  * submits them as kind=crash tickets. The server symbolicates against the
  * build's native-symbols asset.
  */
-object QuiverNativeCrash {
+object HandsNativeCrash {
 
     private const val MAX_STORED = 5
     private const val MAX_FRAMES = 64
@@ -27,7 +27,7 @@ object QuiverNativeCrash {
         return runCatching {
             val dir = crashDir(context)
             dir.mkdirs()
-            System.loadLibrary("quivercrash")
+            System.loadLibrary("handscrash")
             nativeInstall(dir.absolutePath)
             true
         }.getOrDefault(false)
@@ -47,10 +47,10 @@ object QuiverNativeCrash {
         val records = (dir.listFiles { f -> f.name.endsWith(".qnc") } ?: emptyArray())
             .sortedBy { it.name }
         if (records.isEmpty()) return
-        // Retention: newest survive, same policy as QuiverCrash.
+        // Retention: newest survive, same policy as HandsCrash.
         records.dropLast(MAX_STORED).forEach { it.delete() }
 
-        val feedback = QuiverFeedback(
+        val feedback = HandsFeedback(
             context = context,
             baseUrl = baseUrl,
             appSlug = appSlug,

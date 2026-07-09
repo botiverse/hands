@@ -3,15 +3,15 @@ package build.hands.update
 import android.content.Context
 
 /**
- * Single entry point for the Quiver SDK. `Quiver.install(...)` wires
+ * Single entry point for the Hands SDK. `Hands.install(...)` wires
  * everything the app needs at launch — JVM + native crash capture,
  * store-then-send upload of pending crashes, and the throttled
  * device-analytics ping — so the app calls one method.
  *
  * Feedback submission is a user action, kept as a separate call
- * ([QuiverFeedback]).
+ * ([HandsFeedback]).
  */
-object Quiver {
+object Hands {
 
     /**
      * Install crash capture and fire launch-time reporting. Call once, as
@@ -31,7 +31,7 @@ object Quiver {
         reportDeviceAnalytics: Boolean = true,
         extraContext: (() -> String)? = null,
     ) {
-        QuiverCrash.install(
+        HandsCrash.install(
             context = context,
             baseUrl = baseUrl,
             appSlug = appSlug,

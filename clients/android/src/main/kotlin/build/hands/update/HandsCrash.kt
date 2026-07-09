@@ -34,8 +34,8 @@ import org.json.JSONObject
  * This replaces the app-side SlockCrashReporter; app-specific context (e.g.
  * recent diagnostics) is injected via [extraContext].
  */
-object QuiverCrash {
-    private const val TAG = "QuiverCrash"
+object HandsCrash {
+    private const val TAG = "HandsCrash"
     private const val CRASH_LOG_MAX_CHARS = 180_000
     private const val MAX_STORED_CRASHES = 5
     private val installed = AtomicBoolean(false)
@@ -56,7 +56,7 @@ object QuiverCrash {
         extraContext: (() -> String)? = null,
     ) {
         if (captureNativeCrashes) {
-            QuiverNativeCrash.install(context.applicationContext)
+            HandsNativeCrash.install(context.applicationContext)
         }
         if (!installed.compareAndSet(false, true)) return
         val appContext = context.applicationContext
@@ -91,7 +91,7 @@ object QuiverCrash {
                 if (reportDeviceAnalytics) {
                     runCatching {
                         kotlinx.coroutines.runBlocking {
-                            QuiverAnalytics.reportDevice(
+                            HandsAnalytics.reportDevice(
                                 appContext, baseUrl, appSlug, versionName, versionCode, channel, clientKey,
                             )
                         }
@@ -103,7 +103,7 @@ object QuiverCrash {
                         // Dedicated background thread — blocking here is fine.
                         runCatching {
                             kotlinx.coroutines.runBlocking {
-                                QuiverNativeCrash.uploadPending(
+                                HandsNativeCrash.uploadPending(
                                     appContext, baseUrl, appSlug, versionName, versionCode, channel, clientKey,
                                 )
                             }
@@ -134,7 +134,7 @@ object QuiverCrash {
             dir.listFiles { f -> f.name.endsWith(".meta.json") }?.sortedBy { it.name } ?: return
         if (sidecars.isEmpty()) return
         val feedback =
-            QuiverFeedback(
+            HandsFeedback(
                 context = context,
                 baseUrl = baseUrl,
                 appSlug = appSlug,
@@ -251,7 +251,7 @@ object QuiverCrash {
             )
             appendLine("Device: ${Build.MANUFACTURER} ${Build.MODEL}".trim())
             appendLine("Android: ${Build.VERSION.RELEASE} / SDK ${Build.VERSION.SDK_INT}")
-            appendLine("Device id: ${QuiverDeviceId.get(context)}")
+            appendLine("Device id: ${HandsDeviceId.get(context)}")
             appendLine("Thread: ${thread.name}")
             appendLine("Exception: ${throwable.javaClass.name}")
             appendLine("Message: ${throwable.message.orEmpty()}")

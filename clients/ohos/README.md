@@ -83,6 +83,6 @@ server-side; local retention cap is 5.
 ```bash
 # from clients/ohos, with DevEco/hvigor toolchain
 ohpm install --all
-hvigorw --mode module -p module=quiver@default assembleHar
-ohpm publish quiver/build/default/outputs/default/quiver.har   # needs the org's ohpm publish token
+hvigorw --mode module -p module=hands@default assembleHar
+ohpm publish hands/build/default/outputs/default/hands.har   # needs the org's ohpm publish token
 ```

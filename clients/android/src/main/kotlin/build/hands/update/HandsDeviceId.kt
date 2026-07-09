@@ -11,7 +11,7 @@ import java.util.UUID
  * SharedPreferences. It is not derived from hardware identifiers and resets
  * on reinstall / clear-data, which is acceptable for rollout cohorting.
  */
-object QuiverDeviceId {
+object HandsDeviceId {
     private const val PREFS_NAME = "quiver_update"
     private const val KEY_DEVICE_ID = "device_id"
 

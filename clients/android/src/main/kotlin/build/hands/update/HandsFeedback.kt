@@ -39,7 +39,7 @@ import org.json.JSONObject
  * a server-issued presigned URL and referenced in the ticket, so big logs /
  * screen recordings never pass through the Worker body limit.
  */
-class QuiverFeedback(
+class HandsFeedback(
     private val context: Context,
     private val baseUrl: String,
     private val appSlug: String,
@@ -93,7 +93,7 @@ class QuiverFeedback(
             buildCommit(context)?.let { put("commit", it) }
 
             // Device
-            put("device_id", QuiverDeviceId.get(context))
+            put("device_id", HandsDeviceId.get(context))
             put("device_model", "${Build.MANUFACTURER} ${Build.MODEL}".trim())
             put("device_manufacturer", Build.MANUFACTURER ?: "")
             put("device_brand", Build.BRAND ?: "")
@@ -151,11 +151,11 @@ class QuiverFeedback(
         httpClient.newCall(request).execute().use { response ->
             val body = response.body?.string().orEmpty()
             if (response.code !in 200..299) {
-                throw QuiverFeedbackException(response.code, body.take(300))
+                throw HandsFeedbackException(response.code, body.take(300))
             }
             // {"id":"…","status":"open","attachments":N}
             JSONObject(body).optString("id").ifBlank {
-                throw QuiverFeedbackException(response.code, "missing ticket id in response")
+                throw HandsFeedbackException(response.code, "missing ticket id in response")
             }
         }
     }
@@ -195,21 +195,21 @@ class QuiverFeedback(
         val uploads = httpClient.newCall(presignRequest.build()).execute().use { response ->
             val body = response.body?.string().orEmpty()
             if (response.code !in 200..299) {
-                throw QuiverFeedbackException(response.code, body.take(300))
+                throw HandsFeedbackException(response.code, body.take(300))
             }
             JSONObject(body).optJSONArray("uploads")
-                ?: throw QuiverFeedbackException(response.code, "presign response missing uploads")
+                ?: throw HandsFeedbackException(response.code, "presign response missing uploads")
         }
 
         val refs = ArrayList<JSONObject>(files.size)
         for (index in files.indices) {
             val file = files[index]
             val upload = uploads.optJSONObject(index)
-                ?: throw QuiverFeedbackException(0, "presign response missing entry $index")
+                ?: throw HandsFeedbackException(0, "presign response missing entry $index")
             val uploadUrl = upload.optString("upload_url")
             val r2Key = upload.optString("r2_key")
             if (uploadUrl.isBlank() || r2Key.isBlank()) {
-                throw QuiverFeedbackException(0, "presign entry $index missing upload_url/r2_key")
+                throw HandsFeedbackException(0, "presign entry $index missing upload_url/r2_key")
             }
             val contentType = guessMediaType(file.name)
             // The presigned PUT signs the content-type, so it must match exactly.
@@ -219,7 +219,7 @@ class QuiverFeedback(
                 .build()
             httpClient.newCall(putRequest).execute().use { response ->
                 if (response.code !in 200..299) {
-                    throw QuiverFeedbackException(
+                    throw HandsFeedbackException(
                         response.code,
                         "R2 upload failed for ${file.name}: ${response.body?.string().orEmpty().take(200)}",
                     )
@@ -269,7 +269,7 @@ class QuiverFeedback(
     }
 }
 
-class QuiverFeedbackException(val code: Int, detail: String) :
+class HandsFeedbackException(val code: Int, detail: String) :
     RuntimeException("feedback submission failed (HTTP $code): $detail")
 
 /**

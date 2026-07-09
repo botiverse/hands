@@ -22,7 +22,7 @@ import org.json.JSONObject
  * launch is cheap. Carries no PII — only the random per-install device id
  * and build/OS metadata.
  */
-object QuiverAnalytics {
+object HandsAnalytics {
     private const val PREFS_NAME = "quiver_update"
     private const val KEY_LAST_PING = "last_device_ping_at"
     private val MIN_INTERVAL_MS = TimeUnit.HOURS.toMillis(24)
@@ -76,7 +76,7 @@ object QuiverAnalytics {
         val requestBuilder = Request.Builder()
             .url(url)
             .header("accept", "application/json")
-            .header("X-Hands-Device-Id", QuiverDeviceId.get(appContext))
+            .header("X-Hands-Device-Id", HandsDeviceId.get(appContext))
             .post(metadata.toString().toRequestBody("application/json".toMediaTypeOrNull()))
         if (!clientKey.isNullOrBlank()) {
             requestBuilder.header("X-Hands-Client-Key", clientKey)

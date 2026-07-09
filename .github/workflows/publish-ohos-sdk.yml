@@ -8,7 +8,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "SDK version to publish. Must match clients/ohos/quiver/oh-package.json5."
+        description: "SDK version to publish. Must match clients/ohos/hands/oh-package.json5."
         required: true
         default: "0.1.0"
       dry_run:
@@ -59,7 +59,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          package_version="$(node -e "const fs=require('fs'); const text=fs.readFileSync('clients/ohos/quiver/oh-package.json5','utf8'); const m=text.match(/\"version\"\\s*:\\s*\"([^\"]+)\"/); if (!m) process.exit(1); process.stdout.write(m[1]);")"
+          package_version="$(node -e "const fs=require('fs'); const text=fs.readFileSync('clients/ohos/hands/oh-package.json5','utf8'); const m=text.match(/\"version\"\\s*:\\s*\"([^\"]+)\"/); if (!m) process.exit(1); process.stdout.write(m[1]);")"
           if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
             requested="${GITHUB_REF_NAME#ohos-sdk-v}"
           elif [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
@@ -68,7 +68,7 @@ jobs:
             requested="${package_version}"
           fi
           if [[ "${requested}" != "${package_version}" ]]; then
-            echo "Requested version ${requested} does not match clients/ohos/quiver/oh-package.json5 ${package_version}" >&2
+            echo "Requested version ${requested} does not match clients/ohos/hands/oh-package.json5 ${package_version}" >&2
             exit 1
           fi
           echo "value=${package_version}" >> "$GITHUB_OUTPUT"
@@ -91,16 +91,16 @@ jobs:
           ohpm install --all
           hvigorw --sync --analyze=normal --parallel
           hvigorw clean --analyze=normal
-          hvigorw --mode module -p module=quiver@default assembleHar --analyze=normal --parallel
+          hvigorw --mode module -p module=hands@default assembleHar --analyze=normal --parallel
 
       - name: Prepublish check
         working-directory: clients/ohos
-        run: ohpm prepublish quiver/build/default/outputs/default/quiver.har --log_level info
+        run: ohpm prepublish hands/build/default/outputs/default/hands.har --log_level info
 
       - uses: actions/upload-artifact@v4
         with:
-          name: oranix-quiver-ohos-${{ steps.version.outputs.value }}.har
-          path: clients/ohos/quiver/build/default/outputs/default/quiver.har
+          name: botiverse-hands-ohos-${{ steps.version.outputs.value }}.har
+          path: clients/ohos/hands/build/default/outputs/default/hands.har
           if-no-files-found: error
 
       - name: Publish to OHPM
@@ -167,7 +167,7 @@ jobs:
           ohpm config set key_passphrase "$encrypted_passphrase"
           trap 'ohpm config delete key_passphrase >/dev/null 2>&1 || true' EXIT
 
-          ohpm publish quiver/build/default/outputs/default/quiver.har --log_level info
+          ohpm publish hands/build/default/outputs/default/hands.har --log_level info
 
       - name: Summary
         if: always()
@@ -178,7 +178,7 @@ jobs:
             echo
             echo "| Field | Value |"
             echo "|---|---|"
-            echo "| Package | \`@oranix/quiver\` |"
+            echo "| Package | \`@botiverse/hands\` |"
             echo "| Version | \`${{ steps.version.outputs.value }}\` |"
             echo "| Dry run | \`${{ github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && inputs.dry_run) }}\` |"
           } >> "$GITHUB_STEP_SUMMARY"
