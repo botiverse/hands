@@ -3,6 +3,7 @@
  *
  * Supported parser_kinds:
  *   - apk-aapt    (Android APK + AAB; existing, re-exported)
+ *   - ipa-info    (iOS IPA Info.plist metadata)
  *   - electron-asar (zip-with-asar Electron installers — mac/win/linux)
  *   - rn-bundle   (React Native Metro bundle)
  *   - cli-binary  (single-file ELF executable — Linux/macOS CLI tools)
@@ -15,11 +16,12 @@
  */
 
 import { parseApk } from "./apk.js";
+import { parseIpa } from "./ipa.js";
 import { parseElectronAsar } from "./electron_asar.js";
 import { parseRnBundle } from "./rn_bundle.js";
 import { parseCliBinary } from "./cli_binary.js";
 
-export type ParserKind = "apk-aapt" | "electron-asar" | "rn-bundle" | "cli-binary";
+export type ParserKind = "apk-aapt" | "ipa-info" | "electron-asar" | "rn-bundle" | "cli-binary";
 
 export interface ParsedMetadata {
   parser_kind: ParserKind;
@@ -40,6 +42,7 @@ export interface ParsedMetadata {
 const EXT_TO_KIND: Record<string, ParserKind> = {
   apk: "apk-aapt",
   aab: "apk-aapt",
+  ipa: "ipa-info",
   asar: "electron-asar",
   dmg: "electron-asar",   // dmg is a macOS installer; we read any embedded asar via the parent zip
   pkg: "electron-asar",
@@ -86,6 +89,8 @@ export async function parseWithDispatcher(opts: {
   switch (opts.parserKind) {
     case "apk-aapt":
       return parseApk(opts.bytes, opts.filePath ?? null);
+    case "ipa-info":
+      return parseIpa(opts.bytes);
     case "electron-asar":
       return parseElectronAsar(opts.bytes, opts.filePath ?? null);
     case "rn-bundle":
@@ -98,7 +103,7 @@ export async function parseWithDispatcher(opts: {
 // ---------- magic-byte helpers ----------
 
 function isKnownKind(s: string): s is ParserKind {
-  return ["apk-aapt", "electron-asar", "rn-bundle", "cli-binary"].includes(s);
+  return ["apk-aapt", "ipa-info", "electron-asar", "rn-bundle", "cli-binary"].includes(s);
 }
 
 function isZip(b: Uint8Array): boolean {

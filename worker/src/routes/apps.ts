@@ -128,12 +128,15 @@ export async function handleCreateApp(c: AdminContext) {
     c.env.DB.prepare(
       `INSERT INTO product_types (id, app_id, name, display_name, description, supported_platforms_json, default_assets_json, parser_kind, schema_json, created_at, updated_at) VALUES (?, ?, 'rn-bundle', 'React Native OTA bundle', 'JS bundle hot-update', '[]', '[{"platform":"rn","filetype":"bundle"}]', 'rn-bundle', '{}', ?, ?)`,
     ).bind(crypto.randomUUID(), id, now, now),
+    c.env.DB.prepare(
+      `INSERT INTO product_types (id, app_id, name, display_name, description, supported_platforms_json, default_assets_json, parser_kind, schema_json, created_at, updated_at) VALUES (?, ?, 'ios-ipa', 'iOS app', 'iOS IPA distributed through TestFlight, ad-hoc, or enterprise lanes', '["ios"]', '[{"platform":"ios","filetype":"ipa"},{"platform":"ios","filetype":"dsym.zip","artifact_kind":"dsym"}]', 'ipa-info', '{"distribution_profile_required":true}', ?, ?)`,
+    ).bind(crypto.randomUUID(), id, now, now),
     // channels (with default bundle_id overrides for parallel install)
     c.env.DB.prepare(
-      `INSERT INTO channels (id, app_id, slug, name, bundle_id, password, git_url, enabled_product_types_json, metadata_json, created_at) VALUES (?, ?, 'main', 'Main', NULL, NULL, NULL, '["android-apk","electron-installer","rn-bundle"]', '{}', ?)`,
+      `INSERT INTO channels (id, app_id, slug, name, bundle_id, password, git_url, enabled_product_types_json, metadata_json, created_at) VALUES (?, ?, 'main', 'Main', NULL, NULL, NULL, '["android-apk","electron-installer","rn-bundle","ios-ipa"]', '{}', ?)`,
     ).bind(crypto.randomUUID(), id, now),
     c.env.DB.prepare(
-      `INSERT INTO channels (id, app_id, slug, name, bundle_id, password, git_url, enabled_product_types_json, metadata_json, created_at) VALUES (?, ?, 'preview', 'Preview', ?, NULL, NULL, '["android-apk","rn-bundle"]', '{}', ?)`,
+      `INSERT INTO channels (id, app_id, slug, name, bundle_id, password, git_url, enabled_product_types_json, metadata_json, created_at) VALUES (?, ?, 'preview', 'Preview', ?, NULL, NULL, '["android-apk","rn-bundle","ios-ipa"]', '{}', ?)`,
     ).bind(crypto.randomUUID(), id, body.slug + '.preview', now),
     c.env.DB.prepare(
       `INSERT INTO channels (id, app_id, slug, name, bundle_id, password, git_url, enabled_product_types_json, metadata_json, created_at) VALUES (?, ?, 'nightly', 'Nightly', ?, NULL, NULL, '["android-apk"]', '{}', ?)`,

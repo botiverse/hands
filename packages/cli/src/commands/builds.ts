@@ -41,6 +41,41 @@ function collect(value: string, previous: string[]): string[] {
   return previous.concat(value);
 }
 
+export function parseChangelogOptions(opts: {
+  changelog?: string | string[];
+  changelogFile?: string | string[];
+}): string | null {
+  const langAliases: Record<string, string> = { zh: "zh-CN", cn: "zh-CN" };
+  const byLang: Record<string, string> = {};
+  let plain: string | undefined;
+  const values = (value?: string | string[]): string[] => {
+    if (value === undefined) return [];
+    return Array.isArray(value) ? value : [value];
+  };
+  const consume = (entry: string, fromFile: boolean) => {
+    const eq = entry.indexOf("=");
+    if (eq > 0 && eq <= 10) {
+      const langRaw = entry.slice(0, eq).trim().toLowerCase();
+      const lang = langAliases[langRaw] ?? langRaw;
+      const value = entry.slice(eq + 1);
+      byLang[lang] = (fromFile ? readFileSync(value, "utf8") : value).trim();
+    } else {
+      plain = (fromFile ? readFileSync(entry, "utf8") : entry).trim();
+    }
+  };
+  for (const entry of values(opts.changelog)) consume(entry, false);
+  for (const entry of values(opts.changelogFile)) consume(entry, true);
+
+  const langs = Object.keys(byLang);
+  if (langs.length > 0) {
+    if (plain !== undefined) {
+      throw new Error("mix of plain and lang= changelog entries; pick one style");
+    }
+    return JSON.stringify(byLang);
+  }
+  return plain ?? null;
+}
+
 export function registerBuildCommands(program: Command): void {
   const builds = program
     .command("builds")
@@ -126,8 +161,18 @@ export function registerBuildCommands(program: Command): void {
     .option("--symbols <path>", "Native symbols archive support artifact.")
     .option("--dsym <path>", "iOS dSYM archive (dSYM.zip) support artifact.")
     .option("--metadata <path>", "Build metadata JSON support artifact.")
-    .option("--changelog <text>", "Inline changelog.")
-    .option("--changelog-file <path>", "Read changelog from file.")
+    .option(
+      "--changelog <text>",
+      "Inline changelog. Repeatable with lang=text for multiple languages.",
+      collect,
+      [],
+    )
+    .option(
+      "--changelog-file <path>",
+      "Read changelog from file. Repeatable with lang=path, e.g. --changelog-file zh=zh.md --changelog-file en=en.md.",
+      collect,
+      [],
+    )
     .option("--source-commit <sha>", "Source commit SHA.")
     .option("--source-branch <branch>", "Source branch.")
     .option("--build-time <iso>", "Build time. Defaults to now.")
@@ -152,8 +197,8 @@ export function registerBuildCommands(program: Command): void {
           symbols?: string;
           dsym?: string;
           metadata?: string;
-          changelog?: string;
-          changelogFile?: string;
+          changelog?: string[];
+          changelogFile?: string[];
           sourceCommit?: string;
           sourceBranch?: string;
           buildTime?: string;
@@ -174,9 +219,7 @@ export function registerBuildCommands(program: Command): void {
         for (const file of [opts.apk, opts.mapping, opts.symbols, opts.dsym, opts.metadata].filter(Boolean) as string[]) {
           if (!existsSync(file)) throw new Error(`missing file: ${file}`);
         }
-        const changelog = opts.changelogFile
-          ? readFileSync(opts.changelogFile, "utf8")
-          : opts.changelog ?? null;
+        const changelog = parseChangelogOptions(opts);
         const metadataJson = opts.metadata
           ? JSON.parse(readFileSync(opts.metadata, "utf8"))
           : {};
@@ -241,7 +284,8 @@ export function registerBuildCommands(program: Command): void {
               artifact_kind: "dsym",
               platform: "ios",
               arch: null,
-              filetype: "dsym.zip",
+              filetype: inferIosFiletype(opts.dsym),
+              metadata_json: { filename: basename(opts.dsym) },
             }),
           );
         }
@@ -251,7 +295,8 @@ export function registerBuildCommands(program: Command): void {
               artifact_kind: "metadata-file",
               platform: "android",
               arch: null,
-              filetype: "metadata.json",
+              filetype: inferIosFiletype(opts.metadata),
+              metadata_json: { filename: basename(opts.metadata) },
             }),
           );
         }
@@ -308,8 +353,18 @@ export function registerBuildCommands(program: Command): void {
     .option("--product-type <type>", "Product type metadata.", "ios-ipa")
     .option("--dsym <path>", "dSYM archive (dSYM.zip) for crash symbolication (strongly recommended).")
     .option("--metadata <path>", "Build metadata JSON support artifact.")
-    .option("--changelog <text>", "Inline changelog.")
-    .option("--changelog-file <path>", "Read changelog from file.")
+    .option(
+      "--changelog <text>",
+      "Inline changelog. Repeatable with lang=text for multiple languages.",
+      collect,
+      [],
+    )
+    .option(
+      "--changelog-file <path>",
+      "Read changelog from file. Repeatable with lang=path, e.g. --changelog-file zh=zh.md --changelog-file en=en.md.",
+      collect,
+      [],
+    )
     .option("--source-commit <sha>", "Source commit SHA.")
     .option("--source-branch <branch>", "Source branch.")
     .option("--build-time <iso>", "Build time. Defaults to now.")
@@ -334,8 +389,8 @@ export function registerBuildCommands(program: Command): void {
           productType: string;
           dsym?: string;
           metadata?: string;
-          changelog?: string;
-          changelogFile?: string;
+          changelog?: string[];
+          changelogFile?: string[];
           sourceCommit?: string;
           sourceBranch?: string;
           buildTime?: string;
@@ -359,16 +414,22 @@ export function registerBuildCommands(program: Command): void {
         for (const file of [opts.ipa, opts.dsym, opts.metadata].filter(Boolean) as string[]) {
           if (!existsSync(file)) throw new Error(`missing file: ${file}`);
         }
-        const changelog = opts.changelogFile
-          ? readFileSync(opts.changelogFile, "utf8")
-          : opts.changelog ?? null;
-        const metadataJson = {
-          ...(opts.metadata ? JSON.parse(readFileSync(opts.metadata, "utf8")) : {}),
-          ...(opts.exportMethod ? { export_method: opts.exportMethod } : {}),
-          ...(opts.appstoreBuildNumber
-            ? { appstore_build_number: opts.appstoreBuildNumber }
-            : {}),
-          ...(opts.testflightStatus ? { testflight_status: opts.testflightStatus } : {}),
+        const ipaName = basename(opts.ipa);
+        const changelog = parseChangelogOptions(opts);
+        const metadataJson = opts.metadata
+          ? JSON.parse(readFileSync(opts.metadata, "utf8"))
+          : {};
+        const buildMetadata = {
+          ...metadataJson,
+          ios: {
+            ipa: ipaName,
+            dsym: opts.dsym ? basename(opts.dsym) : null,
+            signed: true,
+            signing_owner: "ci",
+            export_method: opts.exportMethod ?? null,
+            appstore_build_number: opts.appstoreBuildNumber ?? null,
+            testflight_status: opts.testflightStatus ?? null,
+          },
         };
         const provenance = {
           source_commit: opts.sourceCommit ?? null,
@@ -390,7 +451,7 @@ export function registerBuildCommands(program: Command): void {
             changelog,
             source: "cli",
             status: "succeeded",
-            build_metadata_json: metadataJson,
+            build_metadata_json: buildMetadata,
             provenance_json: provenance,
             should_force_update: Boolean(opts.forceUpdate),
           },
@@ -402,7 +463,12 @@ export function registerBuildCommands(program: Command): void {
             artifact_kind: "installable",
             platform: "ios",
             arch: null,
-            filetype: "ipa",
+            filetype: inferIosFiletype(opts.ipa),
+            metadata_json: {
+              filename: ipaName,
+              signed: true,
+              distribution: "testflight",
+            },
           }),
         );
         if (opts.dsym) {
@@ -411,7 +477,8 @@ export function registerBuildCommands(program: Command): void {
               artifact_kind: "dsym",
               platform: "ios",
               arch: null,
-              filetype: "dsym.zip",
+              filetype: inferIosFiletype(opts.dsym),
+              metadata_json: { filename: basename(opts.dsym) },
             }),
           );
         }
@@ -421,7 +488,8 @@ export function registerBuildCommands(program: Command): void {
               artifact_kind: "metadata-file",
               platform: "ios",
               arch: null,
-              filetype: "metadata.json",
+              filetype: inferIosFiletype(opts.metadata),
+              metadata_json: { filename: basename(opts.metadata) },
             }),
           );
         }
@@ -464,6 +532,7 @@ export function registerBuildCommands(program: Command): void {
             "warning: no --dsym uploaded; iOS crashes for this version_code won't symbolicate.",
           );
         }
+        console.log("  note:    upload the same signed IPA to TestFlight from macOS CI.");
       },
     );
 
@@ -486,8 +555,18 @@ export function registerBuildCommands(program: Command): void {
     .option("--arch <arch>", "Electron arch metadata.")
     .option("--release-type <type>", "Release type metadata.", "stable")
     .option("--product-type <type>", "Product type metadata.", "electron-installer")
-    .option("--changelog <text>", "Inline changelog.")
-    .option("--changelog-file <path>", "Read changelog from file.")
+    .option(
+      "--changelog <text>",
+      "Inline changelog. Repeatable with lang=text for multiple languages.",
+      collect,
+      [],
+    )
+    .option(
+      "--changelog-file <path>",
+      "Read changelog from file. Repeatable with lang=path, e.g. --changelog-file zh=zh.md --changelog-file en=en.md.",
+      collect,
+      [],
+    )
     .option("--source-commit <sha>", "Source commit SHA.")
     .option("--source-branch <branch>", "Source branch.")
     .option("--build-time <iso>", "Build time. Defaults to now.")
@@ -512,8 +591,8 @@ export function registerBuildCommands(program: Command): void {
           arch?: string;
           releaseType: string;
           productType: string;
-          changelog?: string;
-          changelogFile?: string;
+          changelog?: string[];
+          changelogFile?: string[];
           sourceCommit?: string;
           sourceBranch?: string;
           buildTime?: string;
@@ -546,9 +625,7 @@ export function registerBuildCommands(program: Command): void {
 
         const primaryPlatform = opts.platform ?? inferElectronPlatform(metadataFiles[0] ?? installerFiles[0]);
         const arch = opts.arch ?? null;
-        const changelog = opts.changelogFile
-          ? readFileSync(opts.changelogFile, "utf8")
-          : opts.changelog ?? null;
+        const changelog = parseChangelogOptions(opts);
         const provenance = {
           source_commit: opts.sourceCommit ?? null,
           source_branch: opts.sourceBranch ?? null,
@@ -671,6 +748,7 @@ export function registerBuildCommands(program: Command): void {
         console.log(`  assets:  ${assets.map((a) => `${a.artifact_kind}:${a.filetype}`).join(", ")}`);
       },
     );
+
 }
 
 async function resolveAppId(slugOrId: string): Promise<string> {
@@ -757,6 +835,15 @@ export function inferElectronFiletype(filePath: string): string {
   const name = basename(filePath);
   if (name.endsWith(".blockmap")) return "blockmap";
   if (name.endsWith(".AppImage")) return "AppImage";
+  const ext = extname(name).replace(/^\./, "");
+  return ext || "bin";
+}
+
+export function inferIosFiletype(filePath: string): string {
+  const name = basename(filePath).toLowerCase();
+  if (name.endsWith(".dsym.zip")) return "dsym.zip";
+  if (name.endsWith(".ipa")) return "ipa";
+  if (name.endsWith(".json")) return "metadata.json";
   const ext = extname(name).replace(/^\./, "");
   return ext || "bin";
 }

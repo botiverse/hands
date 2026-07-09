@@ -105,21 +105,48 @@ hands builds publish-android raft-android \
 
 Public update checks only use the installable artifact. Mapping files, native symbols, and metadata stay available through authenticated admin APIs.
 
-## Publish iOS
+## Publish iOS / TestFlight
 
-Register an iOS build/release and upload the signed `.ipa` plus its dSYM archive. Hands stores and associates the build and holds the dSYM for crash symbolication — it does **not** sign (your macOS CI produces the signed `.ipa` via `xcodebuild archive` + `-exportArchive`).
+CI should upload the **signed IPA** exported by macOS/Xcode, not an unsigned
+intermediate IPA. Hands stores and parses the IPA, but Apple signing material
+stays in the CI secret boundary.
+
+Use `builds publish-ios` after `xcodebuild archive` and
+`xcodebuild -exportArchive`:
 
 ```bash
 hands builds publish-ios raft-ios \
-  --ipa build/Raft.ipa \
-  --version-name 1.1.0 --version-code 1010000 \
-  --channel main --release-type stable \
-  --dsym build/Raft.dSYM.zip \
-  --source-commit "$GITHUB_SHA" --ci-url "$RUN_URL" \
-  --export-method app-store --appstore-build-number 42
+  --ipa ./build/Raft.ipa \
+  --dsym ./build/Raft.dSYM.zip \
+  --channel main \
+  --version-name 1.0.0 \
+  --version-code 1000000 \
+  --changelog-file zh=./changelog.zh.md \
+  --changelog-file en=./changelog.en.md \
+  --source-commit "$GITHUB_SHA" \
+  --ci-provider github-actions \
+  --ci-run-id "$GITHUB_RUN_ID" \
+  --ci-url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
+  --export-method app-store \
+  --appstore-build-number 42 \
+  --draft
 ```
 
-`--version-code` **must match the value the app reports** (`CFBundleVersion`), or iOS crashes won't symbolicate against the right dSYM. The `--dsym` is a `dSYM.zip` of the archive's `*.dSYM` bundles; without it, iOS crashes for that version show only raw frames. `--export-method`, `--appstore-build-number`, and `--testflight-status` are recorded as build metadata.
+`--version-code` **must match the value the app reports**
+(`CFBundleVersion`), or iOS crashes will not symbolicate against the right
+dSYM. The `--dsym` file is a `.dSYM.zip` of the archive's `*.dSYM` bundles;
+without it, iOS crashes for that version show only raw frames.
+`--export-method`, `--appstore-build-number`, and `--testflight-status` are
+recorded as build metadata.
+
+The same signed IPA should then be uploaded to App Store Connect/TestFlight
+from the macOS CI job using Apple-supported tooling such as Transporter or
+fastlane `pilot`. Hands does not sign IPA files and should not receive Apple
+`.p8`, `.p12`, provisioning profiles, or passwords.
+
+For raw CI drafts, a single `--changelog-file ./changelog.txt` is still valid.
+For reviewed notes, prefer repeatable `lang=file` entries such as
+`--changelog-file zh=zh.md --changelog-file en=en.md`.
 
 ## Publish Electron (generic provider)
 

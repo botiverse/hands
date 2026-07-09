@@ -8,7 +8,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { mkdtempSync, readFileSync, rmSync, existsSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, existsSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer } from "node:http";
@@ -127,5 +127,48 @@ describe("electron build helpers", () => {
     expect(inferElectronFiletype("dist/Raft Setup 1.2.3.exe")).toBe("exe");
     expect(inferElectronFiletype("dist/Raft-1.2.3.AppImage")).toBe("AppImage");
     expect(inferElectronFiletype("dist/Raft Setup 1.2.3.exe.blockmap")).toBe("blockmap");
+  });
+});
+
+describe("iOS build helper contract", () => {
+  it("documents signed IPA as the installable artifact shape", async () => {
+    const { inferIosFiletype } = await import("../src/commands/builds.js");
+    expect(inferIosFiletype("build/App.ipa")).toBe("ipa");
+    expect(inferIosFiletype("build/App.dSYM.zip")).toBe("dsym.zip");
+    expect(inferIosFiletype("build/metadata.json")).toBe("metadata.json");
+  });
+
+  it("serializes localized publish changelogs like release updates", async () => {
+    const { parseChangelogOptions } = await import("../src/commands/builds.js");
+    expect(
+      parseChangelogOptions({
+        changelog: ["zh=中文更新", "en=English update"],
+      }),
+    ).toBe(JSON.stringify({ "zh-CN": "中文更新", en: "English update" }));
+    expect(parseChangelogOptions({ changelog: ["plain update"] })).toBe("plain update");
+    expect(parseChangelogOptions({})).toBeNull();
+    expect(() =>
+      parseChangelogOptions({ changelog: ["plain update", "en=English update"] }),
+    ).toThrow("mix of plain and lang= changelog entries");
+  });
+});
+
+describe("build publish changelog options", () => {
+  it("supports repeatable lang=file changelogs", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "quiver-changelog-"));
+    try {
+      const zh = join(dir, "zh.md");
+      const en = join(dir, "en.md");
+      writeFileSync(zh, "中文更新\n");
+      writeFileSync(en, "English update\n");
+      const { parseChangelogOptions } = await import("../src/commands/builds.js");
+      expect(
+        parseChangelogOptions({
+          changelogFile: [`zh=${zh}`, `en=${en}`],
+        }),
+      ).toBe(JSON.stringify({ "zh-CN": "中文更新", en: "English update" }));
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

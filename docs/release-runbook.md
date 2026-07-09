@@ -56,6 +56,48 @@ autoUpdater.setFeedURL({
 release APIs directly using the same asset conventions. The Electron release
 should remain `draft` until changelog review is complete.
 
+For iOS/TestFlight, the CI boundary is different: macOS CI signs the app, and
+Hands receives the signed output. Do not upload unsigned IPA intermediates to
+Hands as the release artifact, and do not move Apple signing credentials into
+Hands.
+
+```sh
+# after xcodebuild archive + xcodebuild -exportArchive
+hands builds publish-ios raft-ios \
+  --channel main \
+  --version-name 1.0.0 \
+  --version-code 1000000 \
+  --ipa build/Raft.ipa \
+  --dsym build/Raft.dSYM.zip \
+  --changelog-file ./changelog.txt \
+  --source-commit "$GITHUB_SHA" \
+  --ci-provider github-actions \
+  --ci-run-id "$GITHUB_RUN_ID" \
+  --ci-url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
+  --draft
+
+# then upload that same signed IPA to App Store Connect/TestFlight
+# with Transporter or fastlane pilot in the same macOS CI job.
+```
+
+Hands stores the signed `.ipa` as the installable artifact and `.dSYM.zip` as a
+support artifact for symbolication. TestFlight processing status can be written
+back through metadata/status follow-ups, but the release should still remain
+`draft` until changelog review is complete.
+
+If CI already has reviewed localized release notes, use repeatable
+`lang=file` entries instead of the raw plain changelog:
+
+```sh
+hands builds publish-ios raft-ios \
+  --version-name 1.0.0 \
+  --version-code 1000000 \
+  --ipa build/Raft.ipa \
+  --changelog-file zh=changelog.zh.md \
+  --changelog-file en=changelog.en.md \
+  --draft
+```
+
 ## 2. Review + bilingual changelog (agent/human)
 
 ```sh
