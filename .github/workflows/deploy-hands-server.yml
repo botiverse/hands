@@ -56,10 +56,10 @@ jobs:
       - name: Run checks
         if: ${{ inputs.run_checks }}
         run: |
-          pnpm --filter @oranix/quiver-worker test
-          pnpm --filter @oranix/quiver-worker build
-          pnpm --filter @oranix/quiver-cli build
-          pnpm --filter @oranix/quiver-admin build
+          pnpm --filter @botiverse/hands-worker test
+          pnpm --filter @botiverse/hands-worker build
+          pnpm --filter @botiverse/hands-cli build
+          pnpm --filter @botiverse/hands-admin build
 
       - name: Bootstrap Hands Cloudflare resources
         working-directory: worker
@@ -73,12 +73,12 @@ jobs:
             exit 1
           fi
 
-          pnpm exec wrangler d1 list --json > /tmp/hands-d1-before.json
-          D1_ID="$(node -e 'const fs=require("fs"); const name=process.env.HANDS_D1_DATABASE_NAME; const rows=JSON.parse(fs.readFileSync("/tmp/hands-d1-before.json","utf8")); const db=rows.find((row)=>row.name===name); if (db) process.stdout.write(db.uuid || db.id || db.database_id || "");')"
+          pnpm exec wrangler d1 list --json > /tmp/hands-d1-before.txt
+          D1_ID="$(node -e 'const fs=require("fs"); const name=process.env.HANDS_D1_DATABASE_NAME; const raw=fs.readFileSync("/tmp/hands-d1-before.txt","utf8"); let rows=[]; for (const m of raw.matchAll(/\\[[\\s\\S]*?\\]/g)) { try { const parsed=JSON.parse(m[0]); if (Array.isArray(parsed)) { rows=parsed; break; } } catch {} } const db=rows.find((row)=>row.name===name); if (db) process.stdout.write(db.uuid || db.id || db.database_id || "");')"
           if [[ -z "${D1_ID}" ]]; then
             pnpm exec wrangler d1 create "${HANDS_D1_DATABASE_NAME}"
-            pnpm exec wrangler d1 list --json > /tmp/hands-d1-after.json
-            D1_ID="$(node -e 'const fs=require("fs"); const name=process.env.HANDS_D1_DATABASE_NAME; const rows=JSON.parse(fs.readFileSync("/tmp/hands-d1-after.json","utf8")); const db=rows.find((row)=>row.name===name); if (!db) process.exit(1); process.stdout.write(db.uuid || db.id || db.database_id || "");')"
+            pnpm exec wrangler d1 list --json > /tmp/hands-d1-after.txt
+            D1_ID="$(node -e 'const fs=require("fs"); const name=process.env.HANDS_D1_DATABASE_NAME; const raw=fs.readFileSync("/tmp/hands-d1-after.txt","utf8"); let rows=[]; for (const m of raw.matchAll(/\\[[\\s\\S]*?\\]/g)) { try { const parsed=JSON.parse(m[0]); if (Array.isArray(parsed)) { rows=parsed; break; } } catch {} } const db=rows.find((row)=>row.name===name); if (!db) process.exit(1); process.stdout.write(db.uuid || db.id || db.database_id || "");')"
           fi
           if [[ -z "${D1_ID}" ]]; then
             echo "Could not resolve D1 database id for ${HANDS_D1_DATABASE_NAME}." >&2
