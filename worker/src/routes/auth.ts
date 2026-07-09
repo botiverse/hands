@@ -67,14 +67,20 @@ function requireRaftConfig(c: Context<{ Bindings: Env }>) {
   const clientSecret = c.env.RAFT_CLIENT_SECRET;
   const raftOrigin = c.env.RAFT_ORIGIN;
   const raftApiOrigin = c.env.RAFT_API_ORIGIN;
-  if (!clientId || !clientSecret || !raftOrigin || !raftApiOrigin) {
+  const missing = [
+    clientId ? undefined : "RAFT_CLIENT_ID",
+    clientSecret ? undefined : "RAFT_CLIENT_SECRET",
+    raftOrigin ? undefined : "RAFT_ORIGIN",
+    raftApiOrigin ? undefined : "RAFT_API_ORIGIN",
+  ].filter((key): key is string => Boolean(key));
+  if (missing.length > 0) {
     return {
       ok: false as const,
       response: c.json(
         {
           error: "Login with Raft is not configured",
-          detail:
-            "Set RAFT_CLIENT_ID, RAFT_CLIENT_SECRET, RAFT_ORIGIN, and RAFT_API_ORIGIN on the Worker before disabling Cloudflare Access.",
+          missing,
+          detail: `Set ${missing.join(", ")} on the Worker before using Login with Raft.`,
         },
         503,
       ),
@@ -82,10 +88,10 @@ function requireRaftConfig(c: Context<{ Bindings: Env }>) {
   }
   return {
     ok: true as const,
-    clientId,
-    clientSecret,
-    raftOrigin,
-    raftApiOrigin,
+    clientId: clientId!,
+    clientSecret: clientSecret!,
+    raftOrigin: raftOrigin!,
+    raftApiOrigin: raftApiOrigin!,
   };
 }
 
