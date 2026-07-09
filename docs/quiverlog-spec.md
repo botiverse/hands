@@ -42,13 +42,21 @@ Quiver.log.*  →  rotating JSONL on disk + in-memory ring
 
 ## Concepts
 
-- **Entry** — one JSONL object per line:
+- **Entry** — one JSONL object per line. The shape is an explicit **superset of
+  the existing Slock diagnostics fields**, not a new schema, so current
+  server/UI/human `grep` keeps working after migration:
   ```json
-  {"ts":"2026-07-09T14:01:02.345+08:00","level":"info","tag":"auth",
-   "message":"login ok","fields":{"server":"slock-android"},"thread":"main","seq":123}
+  {"ts":"2026-07-09T14:01:02.345+08:00","level":"info","event":"login_ok",
+   "tag":"auth","message":"login ok","fields":{"server":"slock-android"},
+   "thread":"main","seq":123,"dropped":0,"truncated":false}
   ```
-  `ts` (ISO-8601 with offset), `level`, `tag` (string, the 染色 hook), `message`,
-  optional `fields` (flat map), optional `thread`, monotonic `seq`.
+  `ts` (ISO-8601 with offset), `level`, **`event`** (distinct machine key — kept
+  separate, **not** folded into `tag`, so filters like
+  `event=kuikly_unhandled_exception` / `event=release_notes_open` don't
+  regress), `tag` (the 染色 hook), `message`, optional `fields` (flat map),
+  optional `thread`, monotonic `seq`, and back-pressure markers `dropped` /
+  `truncated`. `event` and `tag` are orthogonal: `event` = what happened, `tag` =
+  which stream/color it belongs to.
 - **Levels** — `verbose | debug | info | warn | error`. A minimum level gates writes.
 - **File sink** — append-only JSONL with rotation (below). Optional console sink in debug builds.
 - **Ring buffer** — last N entries kept in memory so a crash-time snapshot needs
@@ -107,20 +115,38 @@ Quiver.log.snapshot() -> [entries]     // ring buffer, for crash-time capture
 ## Migration (slock-diagnostics → QuiverLog)
 
 The Slock app's `slock-diagnostics` writer (KMP, task #101) is replaced by
-`Quiver.log`. Coordinate with @KMP-专家:
+`Quiver.log`. Three hard constraints (from KMP review) protect the existing
+crash/feedback evidence chain during migration:
 
-1. Keep the JSONL entry shape compatible (fields above are a superset) so server
-   parsing and existing crash tickets are unaffected.
-2. KMP swaps their writer + ring buffer for `Quiver.log`; the crash diagnostics
-   provider returns `Quiver.log.currentFiles()`.
-3. Remove the bespoke rotation once parity is verified end-to-end (trigger a
-   crash → confirm the ticket's diagnostics zip contains QuiverLog files).
+1. **Superset entry shape, `event` preserved.** The JSONL fields above are a
+   strict superset of today's `slock-diagnostics` (`ts/level/event/tag/message/
+   thread/seq/dropped/truncated`). `event` stays a distinct field — do not fold
+   it into `tag` — or `event=…` grep/filters regress.
+2. **Filename-agnostic attach.** Do not assume the server keys off filenames.
+   P1 may default to `quiver-<name>-YYYY-MM-DD.jsonl`, but the crash/feedback
+   attach must keep a compatibility entry: **either** `currentFiles()` also
+   returns a legacy `slock-diagnostics*.jsonl` alias/manifest, **or** the server
+   is confirmed to parse by JSONL *content*, not filename. Pin this in the spec —
+   it's the most likely "zip has files but nobody can see them" break.
+3. **Slock-side adapter, not a rewrite.** Slock keeps its call sites and red
+   lines (app-owned logs only; never read system logcat/hilog; redact sensitive
+   fields first) behind a thin `SlockDiagnosticsSink → Quiver.log` adapter.
+   QuiverLog owns only disk/rotation/ring/`currentFiles`/`snapshot`. This keeps
+   P1 a minimal swap instead of touching business call sites on all three
+   platforms at once.
+
+Verify end-to-end (trigger a crash → confirm the ticket's diagnostics zip
+contains the QuiverLog files and the backend/UI still renders them) before
+removing the bespoke writer/rotation.
 
 ## Phasing
 
-- **P1** — core capture in iOS/Android/OHOS: levels, tags, structured JSONL,
-  size+daily rotation, ring buffer, redaction, retention; wire into the existing
-  crash-diagnostics attach; migrate `slock-diagnostics`. (Electron: optional in P1.)
+- **P1** — core capture: levels, tags, structured JSONL, size+daily rotation,
+  ring buffer, redaction, retention; wire into the existing crash-diagnostics
+  attach; migrate `slock-diagnostics` via the adapter above. Platforms: **iOS +
+  Android are must-do**; OHOS ships the same batch if its SDK writes to disk
+  reliably, otherwise interface-placeholder now + wire attach right after.
+  (Electron: P2, unless the website/Electron story is wanted immediately.)
 - **P2** — server-assisted **distribution/collection** (on-demand log pull,
   remote minimum level per device/cohort) and **染色 / tag-based selective
   capture** (mark a tag/session for verbose capture + eager upload). Needs new
