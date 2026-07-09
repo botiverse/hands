@@ -14,7 +14,7 @@ npm install -g @botiverse/hands-cli
 hands --help
 
 # Or run without installing globally:
-npm exec --package @botiverse/hands-cli@0.3.2 -- hands --help
+npm exec --package @botiverse/hands-cli@0.5.0 -- hands --help
 
 # Local repo development:
 pnpm --filter @botiverse/hands-cli build
@@ -69,3 +69,25 @@ For CI, pass it via `QUIVER_SESSION_COOKIE` instead.
 
 v2 will swap this for a true headless flow (Raft Device Flow or a
 `--token-stdin` service-user mode). See `publish-tasks.md` P3.4.x.
+
+## Local logs
+
+The CLI writes best-effort, redacted JSONL logs under
+`$XDG_STATE_HOME/hands/logs` (or `~/.local/state/hands/logs`). Logging failures
+never change command output or exit status. Override the directory with
+`HANDS_LOG_DIR`.
+
+Create a gzip bundle only when you have a signed, unexpired collect policy and
+its Ed25519 public key:
+
+```bash
+hands logs collect \
+  --policy ./collect-policy.json \
+  --public-key ./hands-log-policy-public.pem \
+  --output ./hands-logs.json.gz
+```
+
+Policy signature, version, expiry, downgrade state, redaction, daily size,
+per-collection size, concurrency, and network budgets are enforced locally.
+Rejected collection stays fail-closed and writes an audit log without changing
+the CLI process exit behavior.

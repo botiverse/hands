@@ -1,10 +1,10 @@
-name: Publish CLI
+name: Publish Hands Node SDK
 
 on:
   workflow_dispatch:
     inputs:
       version:
-        description: "CLI package version to publish. Defaults to packages/cli/package.json."
+        description: "Node SDK version to publish. Defaults to packages/node/package.json."
         required: false
         type: string
       dry_run:
@@ -14,7 +14,7 @@ on:
         default: false
   push:
     tags:
-      - "cli-v*"
+      - "node-v*"
 
 permissions:
   contents: read
@@ -48,62 +48,48 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          package_version="$(node -p "require('./packages/cli/package.json').version")"
+          package_version="$(node -p "require('./packages/node/package.json').version")"
           if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
-            requested="${GITHUB_REF_NAME#cli-v}"
+            requested="${GITHUB_REF_NAME#node-v}"
           elif [[ -n "${{ inputs.version }}" ]]; then
             requested="${{ inputs.version }}"
           else
             requested="${package_version}"
           fi
           if [[ "${requested}" != "${package_version}" ]]; then
-            echo "Requested version ${requested} does not match packages/cli/package.json ${package_version}" >&2
+            echo "Requested version ${requested} does not match packages/node/package.json ${package_version}" >&2
             exit 1
           fi
           echo "value=${package_version}" >> "$GITHUB_OUTPUT"
 
-      - name: Verify Hands Node SDK dependency is published
-        shell: bash
+      - name: Test and build Node SDK
         run: |
-          set -euo pipefail
-          dependency="$(node -p "require('./packages/cli/package.json').dependencies['@botiverse/hands-node']")"
-          version="${dependency#workspace:^}"
-          npm view "@botiverse/hands-node@${version}" version
-
-      - name: Build Node SDK and CLI
-        run: |
+          pnpm --filter @botiverse/hands-node test
           pnpm --filter @botiverse/hands-node build
-          pnpm --filter @botiverse/hands-cli build
 
-      - name: Pack CLI
-        id: pack
-        working-directory: packages/cli
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p "$GITHUB_WORKSPACE/dist-packages"
-          pnpm pack --pack-destination "$GITHUB_WORKSPACE/dist-packages"
-          package_path="$(find "$GITHUB_WORKSPACE/dist-packages" -maxdepth 1 -name 'botiverse-hands-cli-*.tgz' -print -quit)"
-          test -n "${package_path}"
-          echo "path=${package_path}" >> "$GITHUB_OUTPUT"
+      - name: Pack check
+        working-directory: packages/node
+        run: npm pack --dry-run
 
       - name: Publish dry run
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run }}
-        run: npm publish "${{ steps.pack.outputs.path }}" --access public --dry-run
+        working-directory: packages/node
+        run: npm publish --access public --dry-run
 
       - name: Publish to npm
         if: ${{ github.event_name != 'workflow_dispatch' || !inputs.dry_run }}
-        run: npm publish "${{ steps.pack.outputs.path }}" --access public
+        working-directory: packages/node
+        run: npm publish --access public
 
       - name: Summary
         shell: bash
         run: |
           {
-            echo "### CLI publish"
+            echo "### Hands Node SDK publish"
             echo
             echo "| Field | Value |"
             echo "|---|---|"
-            echo "| Package | \`@botiverse/hands-cli\` |"
+            echo "| Package | \`@botiverse/hands-node\` |"
             echo "| Version | \`${{ steps.version.outputs.value }}\` |"
             echo "| Dry run | \`${{ github.event_name == 'workflow_dispatch' && inputs.dry_run }}\` |"
           } >> "$GITHUB_STEP_SUMMARY"

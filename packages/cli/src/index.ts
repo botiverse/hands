@@ -25,16 +25,18 @@ import { registerReleaseCommands } from "./commands/releases.js";
 import { registerFeedbackCommands } from "./commands/feedback.js";
 import { registerDeployTokenCommands } from "./commands/deploy_tokens.js";
 import { registerWhoamiCommand } from "./commands/whoami.js";
+import { registerLogsCommands } from "./commands/logs.js";
 import { getConfig } from "./lib/config.js";
 import { readEnv } from "./lib/env.js";
 import { setApiBase } from "./lib/api.js";
+import { recordCliEvent } from "./lib/logging.js";
 
 const program = new Command();
 
 program
   .name("hands")
   .description("Hands CLI — manage apps, builds, releases from the terminal.")
-  .version("0.4.0")
+  .version("0.5.0")
   .option(
     "--api <url>",
     "Quiver Worker base URL (default: https://quiver.oranix.io or $QUIVER_API)",
@@ -43,12 +45,21 @@ program
   .option("--verbose", "Print HTTP request details for debugging", false);
 
 // Re-read global options after parse to wire into the API client.
-program.hook("preAction", (thisCommand) => {
-  const opts = thisCommand.opts<{ api?: string; json?: boolean; verbose?: boolean }>();
+program.hook("preAction", (_rootCommand, actionCommand) => {
+  const opts = program.opts<{ api?: string; json?: boolean; verbose?: boolean }>();
   const cfg = getConfig();
   const apiBase = opts.api ?? readEnv("API") ?? cfg.apiBase;
   if (apiBase) setApiBase(apiBase);
   if (opts.verbose) process.env.HANDS_VERBOSE = "1";
+  recordCliEvent("info", "command_start", "CLI command started", {
+    command: actionCommand.name(),
+  });
+});
+
+program.hook("postAction", (_rootCommand, actionCommand) => {
+  recordCliEvent("info", "command_success", "CLI command completed", {
+    command: actionCommand.name(),
+  });
 });
 
 // --- Subcommand groups ---
@@ -59,6 +70,7 @@ registerBuildCommands(program);
 registerReleaseCommands(program);
 registerFeedbackCommands(program);
 registerDeployTokenCommands(program);
+registerLogsCommands(program);
 
 program
   .command("version")
@@ -68,6 +80,10 @@ program
   });
 
 program.parseAsync(process.argv).catch((err) => {
+  recordCliEvent("error", "command_error", "CLI command failed", {
+    command: program.args[0] ?? "unknown",
+    error_name: err instanceof Error ? err.name : "unknown",
+  });
   if (err instanceof Error && err.name === "QuiverApiError") {
     // Admin-native, actionable error print (mirrors the Raft CLI discipline):
     // surface the server's stable Code and Next action so an agent knows what

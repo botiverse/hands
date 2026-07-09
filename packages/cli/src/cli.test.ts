@@ -12,6 +12,7 @@ import { mkdtempSync, readFileSync, rmSync, existsSync, writeFileSync } from "no
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer } from "node:http";
+import fixturePolicy from "./fixtures/collect-policy.json";
 
 describe("config round-trip", () => {
   let dir: string;
@@ -168,6 +169,31 @@ describe("build publish changelog options", () => {
         }),
       ).toBe(JSON.stringify({ "zh-CN": "中文更新", en: "English update" }));
     } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("Hands logging integration", () => {
+  it("validates the CLI collect-policy fixture against hands-node schema", async () => {
+    const { validateCollectPolicy } = await import("@botiverse/hands-node/logs/schema");
+    expect(validateCollectPolicy(fixturePolicy)).toEqual({ valid: true, errors: [] });
+  });
+
+  it("never throws when the configured log directory cannot be created", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "hands-cli-logging-"));
+    const blocked = join(dir, "not-a-directory");
+    writeFileSync(blocked, "file");
+    const original = process.env.HANDS_LOG_DIR;
+    process.env.HANDS_LOG_DIR = blocked;
+    try {
+      const { recordCliEvent, resetCliLoggerForTests } = await import("./lib/logging.js");
+      resetCliLoggerForTests();
+      expect(() => recordCliEvent("info", "test", "test event")).not.toThrow();
+      resetCliLoggerForTests();
+    } finally {
+      if (original === undefined) delete process.env.HANDS_LOG_DIR;
+      else process.env.HANDS_LOG_DIR = original;
       rmSync(dir, { recursive: true, force: true });
     }
   });

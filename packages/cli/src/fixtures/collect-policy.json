@@ -1,0 +1,22 @@
+{
+  "signature_algorithm": "ed25519",
+  "signature": "fixture-signature",
+  "payload": {
+    "schema_version": 1,
+    "policy_id": "fixture-policy",
+    "revision": 1,
+    "key_id": "fixture-key",
+    "issued_at": "2026-07-10T00:00:00.000Z",
+    "expires_at": "2026-07-11T00:00:00.000Z",
+    "selection": {
+      "levels": ["info", "warn", "error"],
+      "tags": ["cli"]
+    },
+    "budgets": {
+      "max_collection_bytes": 1048576,
+      "max_daily_bytes": 4194304,
+      "max_concurrency": 1,
+      "weak_network_backoff_ms": 30000
+    }
+  }
+}

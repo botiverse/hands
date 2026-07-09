@@ -127,7 +127,8 @@ Required repository secrets:
 
 Workflows:
 
-- `Publish CLI` publishes `@botiverse/hands-cli` to npm through npm Trusted Publishing / GitHub OIDC. Configure the npm package trusted publisher for this repository and workflow, then trigger it manually with the package version from `packages/cli/package.json`, or push a tag like `cli-v0.1.2`.
+- `Publish Hands Node SDK` publishes `@botiverse/hands-node` to npm through npm Trusted Publishing / GitHub OIDC. Configure the npm package trusted publisher for `.github/workflows/publish-node.yml`, then trigger it manually with the package version from `packages/node/package.json`, or push a tag like `node-v0.1.0`.
+- `Publish CLI` publishes `@botiverse/hands-cli` to npm through npm Trusted Publishing / GitHub OIDC. Publish the package's declared `@botiverse/hands-node` version first; the workflow verifies it exists, packs with pnpm so the workspace range becomes a normal npm semver range, and then publishes the tarball. Configure the npm package trusted publisher for this repository and workflow, then trigger it manually with the package version from `packages/cli/package.json`, or push a tag like `cli-v0.5.0`.
 - `Deploy Quiver Server` deploys the Worker plus bundled admin/docs assets. Trigger it manually, or push a tag like `server-v2026.07.04`. The default container rollout is `none`; choose `immediate` or `gradual` only when the APK parser container image changed.
 - `Deploy Hands Server` deploys the same Worker/admin bundle to `hands.build` in the separate Hands Cloudflare account. It bootstraps `hands-db` and `hands-artifacts` if they do not exist, applies D1 migrations, and deploys with `worker/wrangler.hands.jsonc`. This workflow is manual-only so it cannot replace the existing Quiver deploy path accidentally.
 

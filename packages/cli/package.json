@@ -1,6 +1,6 @@
 {
   "name": "@botiverse/hands-cli",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "Hands CLI \u2014 manage apps, builds, releases from the terminal.",
   "license": "MIT",
   "repository": {
@@ -26,6 +26,7 @@
     "lint:fix": "eslint --fix src/"
   },
   "dependencies": {
+    "@botiverse/hands-node": "workspace:^0.1.0",
     "commander": "^12.1.0"
   },
   "devDependencies": {

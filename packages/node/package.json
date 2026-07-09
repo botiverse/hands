@@ -1,0 +1,39 @@
+{
+  "name": "@botiverse/hands-node",
+  "version": "0.1.0",
+  "description": "Hands logging, redaction, and policy-governed log collection for Node.js.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/oranix-io/hands.git"
+  },
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./logs/schema": {
+      "types": "./dist/logs/schema.d.ts",
+      "import": "./dist/logs/schema.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "typescript": "^5.9.3",
+    "vitest": "^2.1.9"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

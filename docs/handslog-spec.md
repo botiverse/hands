@@ -102,9 +102,9 @@ contract everywhere.
 
 Support **both** schemes, configurable, because the tradeoff is real:
 
-- `rotate: "size"` — `quiver-<name>.jsonl`, `.1`, `.2`, … (fixed file count,
+- `rotate: "size"` — `hands-<name>.jsonl`, `.1`, `.2`, … (fixed file count,
   simple). This is what `slock-diagnostics` does today.
-- `rotate: "daily"` — `quiver-<name>-YYYY-MM-DD.jsonl` (one file per calendar
+- `rotate: "daily"` — `hands-<name>-YYYY-MM-DD.jsonl` (one file per calendar
   day). Trivially correlates to a crash timestamp and to age-based retention;
   costs more files if the app launches many times a day.
 
@@ -156,7 +156,7 @@ crash/feedback evidence chain during migration:
    thread/seq/dropped/truncated`). `event` stays a distinct field — do not fold
    it into `tag` — or `event=…` grep/filters regress.
 2. **Filename-agnostic attach.** Do not assume the server keys off filenames.
-   P1 may default to `quiver-<name>-YYYY-MM-DD.jsonl`, but the crash/feedback
+   P1 defaults to `hands-<name>-YYYY-MM-DD.jsonl`, but the crash/feedback
    attach must keep a compatibility entry: **either** `currentFiles()` also
    returns a legacy `slock-diagnostics*.jsonl` alias/manifest, **or** the server
    is confirmed to parse by JSONL *content*, not filename. Pin this in the spec —
