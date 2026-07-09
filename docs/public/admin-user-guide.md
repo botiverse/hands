@@ -1,10 +1,10 @@
 # Admin User Guide
 
-Quiver is a release and update distribution console for apps that need controlled binary delivery. Use the admin console to create apps, upload builds, publish releases with staged rollouts, manage share links and feedback tickets, and give teammates or automation the access they need.
+Hands is a release and update distribution console for apps that need controlled binary delivery. Use the admin console to create apps, upload builds, publish releases with staged rollouts, manage share links and feedback tickets, and give teammates or automation the access they need.
 
 ## Sign in
 
-Open the Quiver site and use Login with Raft. After sign-in, Quiver drops you into your first app (or the app creation wizard if none exist). The left rail navigates between Apps, Org, and your account menu (Settings, Logout).
+Open the Hands site and use Login with Raft. After sign-in, Hands drops you into your first app (or the app creation wizard if none exist). The left rail navigates between Apps, Org, and your account menu (Settings, Logout).
 
 If you can sign in but do not see an expected app, ask an organization admin to grant you app access or make the app visible to your Raft server.
 
@@ -25,18 +25,18 @@ Each app has a left sidebar with its sections; the app switcher at the top of th
   (permanent delete of the app, its builds/releases/tickets, and all stored
   files — requires typing the slug to confirm; `POST /api/apps/:id/purge`).
 
-Create one Quiver app per product distribution target. For example, an Android app should have its own Quiver app and release channels.
+Create one Hands app per product distribution target. For example, an Android app should have its own Hands app and release channels.
 
 ## Releases
 
 The standard flow follows the draft-first policy: CI creates a **draft** release with a generated changelog; a human or agent reviews it, writes the final (optionally bilingual) changelog, and publishes explicitly. See the release runbook in the repository docs.
 
-1. CI (or `quiver builds publish-android --draft`) creates the draft.
-2. Review it in Releases (or `quiver releases show`).
-3. Write the final changelog — per-language notes are supported (`quiver releases update … --changelog-file zh=zh.md --changelog-file en=en.md`); clients receive the language matching their system locale.
-4. Publish from the release row (or `quiver releases publish`).
+1. CI (or `hands builds publish-android --draft`) creates the draft.
+2. Review it in Releases (or `hands releases show`).
+3. Write the final changelog — per-language notes are supported (`hands releases update … --changelog-file zh=zh.md --changelog-file en=en.md`); clients receive the language matching their system locale.
+4. Publish from the release row (or `hands releases publish`).
 
-For Android, Quiver selects updates by `version_code`. A device receives an update only when the published release has a higher `version_code` than the client reports.
+For Android, Hands selects updates by `version_code`. A device receives an update only when the published release has a higher `version_code` than the client reports.
 
 ### Staged rollouts
 
@@ -56,7 +56,7 @@ not a true unthrottled online heartbeat.
 
 ## Builds
 
-Builds hold uploaded artifacts and provenance. Quiver distinguishes installable artifacts from support artifacts:
+Builds hold uploaded artifacts and provenance. Hands distinguishes installable artifacts from support artifacts:
 
 | Artifact kind | Purpose |
 |---|---|
@@ -81,16 +81,16 @@ The Shares tab lists every public share link for the app: release, creator, expi
 Share pages show the release's real app icon, a QR code on desktop, localized release notes, and live stats. Password-protected pages ask for the password before showing the download.
 
 ```bash
-quiver releases share raft-android <release-id> --password <pw>   # optional password
-quiver releases update-share raft-android <release-id> <share-id> --ttl-seconds 1209600
-quiver releases revoke-share raft-android <release-id> <share-id>
+hands releases share raft-android <release-id> --password <pw>   # optional password
+hands releases update-share raft-android <release-id> <share-id> --ttl-seconds 1209600
+hands releases revoke-share raft-android <release-id> <share-id>
 ```
 
 Use share pages for human review and manual testing. Use the public update API for in-app update checks.
 
 ## Feedback
 
-The Feedback tab is a lightweight ticket system for reports submitted from the app (via the SDK's `QuiverFeedback` or the public feedback endpoint). Each ticket carries the message, contact, app version, device context (including the rollout device id), and up to three attachments.
+The Feedback tab is a lightweight ticket system for reports submitted from the app (via the SDK's `HandsFeedback` or the public feedback endpoint). Each ticket carries the message, contact, app version, device context (including the rollout device id), and up to three attachments.
 
 - Tickets are shareable pages (`/apps/<id>/feedback/<ticket>`).
 - Triage with statuses (`open → in_progress → resolved/closed`), an assignee (Assign to me / edit / unassign), and a comment trail.
@@ -104,7 +104,7 @@ Crash tickets (`kind=crash`, submitted automatically by the SDK's crash
 reporter) get a grouping **signature** (exception class + top app frame) and a
 **Crash groups** view that aggregates by signature with occurrence and device
 counts. When a build's ProGuard/R8 `mapping.txt` was uploaded as a
-`proguard-mapping` asset for that version, Quiver auto-deobfuscates the stack
+`proguard-mapping` asset for that version, Hands auto-deobfuscates the stack
 in the container and posts the retraced trace as a ticket comment.
 
 ## Version history
@@ -121,7 +121,7 @@ The Access page controls who can see or publish an app.
 | Raft server visibility | Make the app visible to accounts from another Raft server. |
 | Deploy token | Give CI or an agent scoped API access to this app. |
 
-Deploy tokens are app-scoped bearer tokens. Create them for automation instead of reusing a human browser session. Copy the token when it is created; Quiver only shows the raw token once. Each token records who created it, and actions performed with it are attributed as `deploy-token:<name>@<app>` in audit logs and release provenance.
+Deploy tokens are app-scoped bearer tokens. Create them for automation instead of reusing a human browser session. Copy the token when it is created; Hands only shows the raw token once. Each token records who created it, and actions performed with it are attributed as `deploy-token:<name>@<app>` in audit logs and release provenance.
 
 ## Common Issues
 

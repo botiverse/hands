@@ -26,14 +26,15 @@ import { registerFeedbackCommands } from "./commands/feedback.js";
 import { registerDeployTokenCommands } from "./commands/deploy_tokens.js";
 import { registerWhoamiCommand } from "./commands/whoami.js";
 import { getConfig } from "./lib/config.js";
+import { readEnv } from "./lib/env.js";
 import { setApiBase } from "./lib/api.js";
 
 const program = new Command();
 
 program
-  .name("quiver")
-  .description("Quiver CLI — manage apps, builds, releases from the terminal.")
-  .version("0.1.1")
+  .name("hands")
+  .description("Hands CLI — manage apps, builds, releases from the terminal.")
+  .version("0.4.0")
   .option(
     "--api <url>",
     "Quiver Worker base URL (default: https://quiver.oranix.io or $QUIVER_API)",
@@ -45,9 +46,9 @@ program
 program.hook("preAction", (thisCommand) => {
   const opts = thisCommand.opts<{ api?: string; json?: boolean; verbose?: boolean }>();
   const cfg = getConfig();
-  const apiBase = opts.api ?? process.env.QUIVER_API ?? cfg.apiBase;
+  const apiBase = opts.api ?? readEnv("API") ?? cfg.apiBase;
   if (apiBase) setApiBase(apiBase);
-  if (opts.verbose) process.env.QUIVER_VERBOSE = "1";
+  if (opts.verbose) process.env.HANDS_VERBOSE = "1";
 });
 
 // --- Subcommand groups ---
@@ -81,7 +82,7 @@ program.parseAsync(process.argv).catch((err) => {
     } else if (typeof info.manage_url === "string") {
       console.error(`Next action: see ${info.manage_url}`);
     }
-    if (process.env.QUIVER_VERBOSE === "1" && err.stack) {
+    if (readEnv("VERBOSE") === "1" && err.stack) {
       console.error(err.stack);
     }
     process.exit(1);

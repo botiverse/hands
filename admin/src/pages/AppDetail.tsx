@@ -284,8 +284,8 @@ function ClientKeyPanel({ appId }: { appId: string }) {
       <div className="flex-1 min-w-0">
         <div className="text-sm font-medium">Client key</div>
         <div className="text-xs text-slate-500">
-          Required on feedback/crash submissions (X-Quiver-Client-Key). Embedded in
-          client builds; rotate if leaked.
+          Required on feedback/crash submissions (X-Hands-Client-Key; legacy
+          X-Quiver-Client-Key still accepted). Embedded in client builds; rotate if leaked.
         </div>
         {key && revealed && (
           <div className="mt-1 font-mono text-xs break-all">{key}</div>

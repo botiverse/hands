@@ -22,7 +22,7 @@ registerSettingsRoutes(docs.openAPIRegistry);
 export const openApiDocument = docs.getOpenAPI31Document({
   openapi: "3.1.0",
   info: {
-    title: "Quiver API",
+    title: "Hands API",
     version: "0.1.0",
     description:
       "Interactive API reference for Quiver. Generated from modular Hono/Zod route definitions.",

@@ -1,14 +1,14 @@
-# quiver Android Client Integration
+# Hands Android Client Integration
 
 A reference implementation showing Slock Android (or any Android app) how to
-check for the latest APK version hosted on a quiver server and trigger a
+check for the latest APK version hosted on a Hands server and trigger a
 download + install.
 
 > ⚠️ This is reference code, not a published library. Drop the
-> `io.quiver.update` package into your codebase and adapt the package
+> `build.hands.update` package into your codebase and adapt the package
 > name + the endpoint base URL to match your deployment.
 
-## What quiver exposes
+## What Hands exposes
 
 ```
 GET /public/v2/apps/{slug}/updates/check?channel=main&product_type=android-apk&current_version_code=42&platform=android&arch=arm64-v8a
@@ -49,7 +49,7 @@ R2 URL that expires in `expires_in` seconds.
 | File | Purpose |
 |---|---|
 | `UpdateChecker.kt`            | Public API — high-level "check + download + install" entry point |
-| `QuiverClient.kt`             | Internal HTTP client (OkHttp + kotlinx.serialization) |
+| `HandsClient.kt`              | Internal HTTP client (OkHttp + kotlinx.serialization) |
 | `models/Version.kt`           | Wire-model for `/public/v2/apps/:slug/updates/check` response |
 | `models/App.kt`               | Same, app metadata |
 | `installer/ApkInstaller.kt`   | DownloadManager + Intent.ACTION_INSTALL_PACKAGE |

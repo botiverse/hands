@@ -1,0 +1,417 @@
+name: Sync Hands Data
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: "Type CONFIRM_SYNC_HANDS_FROM_QUIVER to copy Quiver production D1/R2 data into Hands."
+        required: true
+        type: string
+      sync_d1:
+        description: "Export quiver-db and import it into hands-db."
+        required: true
+        type: boolean
+        default: true
+      reset_hands_d1:
+        description: "Delete target Hands D1 application data before import. Leaves d1_migrations intact."
+        required: true
+        type: boolean
+        default: true
+      sync_r2:
+        description: "Copy D1-referenced objects from quiver-apks to hands-artifacts."
+        required: true
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: hands-data-sync
+  cancel-in-progress: false
+
+env:
+  SOURCE_D1_DATABASE_NAME: quiver-db
+  TARGET_D1_DATABASE_NAME: hands-db
+  SOURCE_R2_BUCKET_NAME: quiver-apks
+  TARGET_R2_BUCKET_NAME: hands-artifacts
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: pnpm/action-setup@v6
+        with:
+          version: 9.12.0
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+          cache: "pnpm"
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Confirm one-way sync
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${{ inputs.confirm }}" != "CONFIRM_SYNC_HANDS_FROM_QUIVER" ]]; then
+            echo "Refusing to run without exact confirmation phrase." >&2
+            exit 1
+          fi
+
+      - name: Export Quiver D1 data
+        if: ${{ inputs.sync_d1 || inputs.sync_r2 }}
+        working-directory: worker
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p ../tmp/hands-sync
+          pnpm exec wrangler d1 export "${SOURCE_D1_DATABASE_NAME}" \
+            --remote \
+            --config wrangler.jsonc \
+            --output ../tmp/hands-sync/quiver-data.sql \
+            --no-schema \
+            --skip-confirmation
+
+          grep -v -E '^INSERT INTO "(d1_migrations|sqlite_sequence)"' \
+            ../tmp/hands-sync/quiver-data.sql \
+            > ../tmp/hands-sync/quiver-data-filtered.sql
+
+          node <<'NODE'
+          const fs = require("node:fs");
+          const sql = fs.readFileSync("../tmp/hands-sync/quiver-data-filtered.sql", "utf8");
+          const insertRe = /^INSERT INTO "([^"]+)" \((.*)\) VALUES\((.*)\);$/s;
+          const seen = new Set();
+          const tables = [];
+          const groups = new Map();
+          const LARGE_SQL_VALUE_LIMIT = 50000;
+          const LARGE_SQL_CHUNK_SIZE = 16000;
+
+          function parseInsert(line) {
+            const match = insertRe.exec(line);
+            if (!match) return null;
+            const columns = [...match[2].matchAll(/"([^"]+)"/g)].map((m) => m[1]);
+            const values = splitSqlValues(match[3]);
+            if (columns.length !== values.length) {
+              throw new Error(`Column/value mismatch in ${match[1]}`);
+            }
+            return { table: match[1], columns, values };
+          }
+
+          function splitSqlValues(input) {
+            const values = [];
+            let current = "";
+            let inString = false;
+            let depth = 0;
+            for (let i = 0; i < input.length; i += 1) {
+              const ch = input[i];
+              if (ch === "'") {
+                current += ch;
+                if (inString && input[i + 1] === "'") {
+                  current += input[i + 1];
+                  i += 1;
+                } else {
+                  inString = !inString;
+                }
+                continue;
+              }
+              if (!inString && ch === "(") depth += 1;
+              if (!inString && ch === ")") depth -= 1;
+              if (ch === "," && !inString && depth === 0) {
+                values.push(current);
+                current = "";
+                continue;
+              }
+              current += ch;
+            }
+            values.push(current);
+            return values;
+          }
+
+          function splitSqlStatements(input) {
+            const statements = [];
+            let current = "";
+            let inString = false;
+            for (let i = 0; i < input.length; i += 1) {
+              const ch = input[i];
+              current += ch;
+              if (ch === "'") {
+                if (inString && input[i + 1] === "'") {
+                  current += input[i + 1];
+                  i += 1;
+                } else {
+                  inString = !inString;
+                }
+                continue;
+              }
+              if (ch === ";" && !inString) {
+                statements.push(current.trim());
+                current = "";
+              }
+            }
+            if (current.trim()) statements.push(current.trim());
+            return statements;
+          }
+
+          function quoteIdent(name) {
+            return `"${name.replace(/"/g, '""')}"`;
+          }
+
+          function rewriteInsert(parsed, nullColumn, restoreUpdates) {
+            const values = [...parsed.values];
+            const idIndex = parsed.columns.indexOf("id");
+            const columnIndex = parsed.columns.indexOf(nullColumn);
+            if (idIndex !== -1 && columnIndex !== -1) {
+              const previous = values[columnIndex];
+              if (previous.toUpperCase() !== "NULL") {
+                restoreUpdates.push(
+                  `UPDATE ${quoteIdent(parsed.table)} SET ${quoteIdent(nullColumn)} = ${previous} WHERE "id" = ${values[idIndex]};`,
+                );
+                values[columnIndex] = "NULL";
+              }
+            }
+            const largeValueUpdates = extractLargeValueUpdates(parsed, values);
+            return [formatInsert(parsed.table, parsed.columns, values), ...largeValueUpdates];
+          }
+
+          function emitInsert(parsed) {
+            const values = [...parsed.values];
+            const largeValueUpdates = extractLargeValueUpdates(parsed, values);
+            return [formatInsert(parsed.table, parsed.columns, values), ...largeValueUpdates];
+          }
+
+          function extractLargeValueUpdates(parsed, values) {
+            const idIndex = parsed.columns.indexOf("id");
+            if (idIndex === -1) return [];
+            const idValue = values[idIndex];
+            const updates = [];
+            for (let i = 0; i < values.length; i += 1) {
+              const value = values[i];
+              if (value.length <= LARGE_SQL_VALUE_LIMIT || !value.startsWith("'") || !value.endsWith("'")) {
+                continue;
+              }
+              values[i] = "''";
+              for (const chunk of splitSqlStringLiteral(value, LARGE_SQL_CHUNK_SIZE)) {
+                updates.push(
+                  `UPDATE ${quoteIdent(parsed.table)} SET ${quoteIdent(parsed.columns[i])} = ${quoteIdent(parsed.columns[i])} || ${chunk} WHERE "id" = ${idValue};`,
+                );
+              }
+            }
+            return updates;
+          }
+
+          function splitSqlStringLiteral(value, chunkSize) {
+            const inner = value.slice(1, -1);
+            const chunks = [];
+            let current = "";
+            for (let i = 0; i < inner.length; i += 1) {
+              let token = inner[i];
+              if (inner[i] === "'" && inner[i + 1] === "'") {
+                token += inner[i + 1];
+                i += 1;
+              }
+              if (current.length > 0 && current.length + token.length > chunkSize) {
+                chunks.push(`'${current}'`);
+                current = "";
+              }
+              current += token;
+            }
+            if (current.length > 0) chunks.push(`'${current}'`);
+            return chunks;
+          }
+
+          function formatInsert(table, columns, values) {
+            return `INSERT INTO ${quoteIdent(table)} (${columns.map(quoteIdent).join(",")}) VALUES(${values.join(",")});`;
+          }
+
+          for (const statement of splitSqlStatements(sql)) {
+            if (statement.startsWith("PRAGMA ")) continue;
+            const parsed = parseInsert(statement);
+            if (!parsed) continue;
+            if (!seen.has(parsed.table)) {
+              seen.add(parsed.table);
+              tables.push(parsed.table);
+            }
+            const rows = groups.get(parsed.table) ?? [];
+            rows.push(parsed);
+            groups.set(parsed.table, rows);
+          }
+
+          const escapeIdent = (name) => name.replace(/"/g, '""');
+          const resetSql = [
+            "PRAGMA defer_foreign_keys=TRUE;",
+            ...tables.reverse().map((table) => `DELETE FROM "${escapeIdent(table)}";`),
+          ].join("\n");
+          fs.writeFileSync("../tmp/hands-sync/reset-hands-data.sql", `${resetSql}\n`);
+
+          const importOrder = [
+            "raft_accounts",
+            "organizations",
+            "apps",
+            "channels",
+            "versions",
+            "raft_sessions",
+            "operation_logs",
+            "audit_logs",
+            "org_members",
+            "app_members",
+            "builds",
+            "signing_credentials",
+            "product_types",
+            "release_types",
+            "build_assets",
+            "releases",
+            "release_scopes",
+            "release_shares",
+            "release_share_events",
+            "release_metrics",
+            "app_server_grants",
+            "app_deploy_tokens",
+            "feedback_tickets",
+            "feedback_attachments",
+            "feedback_comments",
+            "webhooks",
+            "webhook_deliveries",
+            "invites",
+            "device_pings",
+          ];
+
+          const remaining = tables.filter((table) => !importOrder.includes(table));
+          const appDefaultChannelUpdates = [];
+          const productParentUpdates = [];
+          const supersededReleaseUpdates = [];
+          const importLines = ["PRAGMA defer_foreign_keys=TRUE;"];
+          for (const table of [...importOrder, ...remaining]) {
+            const rows = groups.get(table) ?? [];
+            for (const row of rows) {
+              if (table === "apps") {
+                importLines.push(...rewriteInsert(row, "default_channel_id", appDefaultChannelUpdates));
+              } else if (table === "product_types") {
+                importLines.push(...rewriteInsert(row, "parent_product_type_id", productParentUpdates));
+              } else if (table === "releases") {
+                importLines.push(...rewriteInsert(row, "superseded_by_release_id", supersededReleaseUpdates));
+              } else {
+                importLines.push(...emitInsert(row));
+              }
+            }
+            if (table === "channels") importLines.push(...appDefaultChannelUpdates);
+            if (table === "product_types") importLines.push(...productParentUpdates);
+            if (table === "releases") importLines.push(...supersededReleaseUpdates);
+          }
+          fs.writeFileSync("../tmp/hands-sync/quiver-data-ordered.sql", `${importLines.join("\n")}\n`);
+          console.log(`Prepared D1 data export for ${tables.length} tables.`);
+          NODE
+
+      - name: Reset Hands D1 data
+        if: ${{ inputs.sync_d1 && inputs.reset_hands_d1 }}
+        working-directory: worker
+        env:
+          CLOUDFLARE_ACCOUNT_ID: a084c4564dfdce5a7775b08ece638a79
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_BOTIVERSE_API_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          pnpm exec wrangler d1 execute "${TARGET_D1_DATABASE_NAME}" \
+            --remote \
+            --config wrangler.hands.jsonc \
+            --file ../tmp/hands-sync/reset-hands-data.sql \
+            --yes
+
+      - name: Import Quiver D1 data into Hands
+        if: ${{ inputs.sync_d1 }}
+        working-directory: worker
+        env:
+          CLOUDFLARE_ACCOUNT_ID: a084c4564dfdce5a7775b08ece638a79
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_BOTIVERSE_API_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          pnpm exec wrangler d1 execute "${TARGET_D1_DATABASE_NAME}" \
+            --remote \
+            --config wrangler.hands.jsonc \
+            --file ../tmp/hands-sync/quiver-data-ordered.sql \
+            --yes
+
+      - name: Build R2 key manifest from Quiver D1
+        if: ${{ inputs.sync_r2 }}
+        working-directory: worker
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          pnpm exec wrangler d1 execute "${SOURCE_D1_DATABASE_NAME}" \
+            --remote \
+            --config wrangler.jsonc \
+            --json \
+            --command "SELECT r2_key FROM build_assets UNION SELECT r2_key FROM feedback_attachments UNION SELECT icon_r2_key AS r2_key FROM apps WHERE icon_r2_key IS NOT NULL ORDER BY r2_key" \
+            > ../tmp/hands-sync/r2-keys.json
+
+          node <<'NODE'
+          const fs = require("node:fs");
+          const raw = fs.readFileSync("../tmp/hands-sync/r2-keys.json", "utf8");
+          const payload = JSON.parse(raw);
+          const keys = [];
+          for (const statement of payload) {
+            for (const row of statement.results ?? []) {
+              if (row.r2_key) keys.push(row.r2_key);
+            }
+          }
+          fs.writeFileSync("../tmp/hands-sync/r2-keys.txt", `${keys.join("\n")}\n`);
+          console.log(`Prepared ${keys.length} R2 keys.`);
+          NODE
+
+      - name: Copy referenced R2 objects into Hands
+        if: ${{ inputs.sync_r2 }}
+        working-directory: worker
+        shell: bash
+        run: |
+          set -euo pipefail
+          copied=0
+          missing=0
+          while IFS= read -r key; do
+            [[ -n "${key}" ]] || continue
+            file="../tmp/hands-sync/r2/${key}"
+            mkdir -p "$(dirname "${file}")"
+
+            if ! CLOUDFLARE_ACCOUNT_ID="${{ secrets.CLOUDFLARE_ACCOUNT_ID }}" \
+              CLOUDFLARE_API_TOKEN="${{ secrets.CLOUDFLARE_API_TOKEN }}" \
+              pnpm exec wrangler r2 object get "${SOURCE_R2_BUCKET_NAME}/${key}" --file "${file}" --remote; then
+              echo "Missing source R2 object: ${key}" >&2
+              missing=$((missing + 1))
+              continue
+            fi
+
+            CLOUDFLARE_ACCOUNT_ID="a084c4564dfdce5a7775b08ece638a79" \
+              CLOUDFLARE_API_TOKEN="${{ secrets.CLOUDFLARE_BOTIVERSE_API_TOKEN }}" \
+              pnpm exec wrangler r2 object put "${TARGET_R2_BUCKET_NAME}/${key}" --file "${file}" --remote --force >/dev/null
+            copied=$((copied + 1))
+          done < ../tmp/hands-sync/r2-keys.txt
+
+          echo "Copied ${copied} R2 objects; missing ${missing}."
+          if [[ "${missing}" -gt 0 ]]; then
+            exit 1
+          fi
+
+      - name: Verify Hands data counts
+        if: ${{ always() && (inputs.sync_d1 || inputs.sync_r2) }}
+        working-directory: worker
+        env:
+          CLOUDFLARE_ACCOUNT_ID: a084c4564dfdce5a7775b08ece638a79
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_BOTIVERSE_API_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          pnpm exec wrangler d1 execute "${TARGET_D1_DATABASE_NAME}" \
+            --remote \
+            --config wrangler.hands.jsonc \
+            --json \
+            --command "SELECT COUNT(*) AS apps FROM apps; SELECT COUNT(*) AS builds FROM builds; SELECT COUNT(*) AS build_assets FROM build_assets; SELECT COUNT(*) AS releases FROM releases; SELECT COUNT(*) AS feedback_tickets FROM feedback_tickets; SELECT COUNT(*) AS feedback_attachments FROM feedback_attachments; SELECT COUNT(*) AS device_pings FROM device_pings;"

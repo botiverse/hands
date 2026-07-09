@@ -5,11 +5,11 @@ plugins {
     id("maven-publish")
 }
 
-group = "io.quiver"
+group = "build.hands"
 version = providers.gradleProperty("VERSION_NAME").orElse("0.1.0-SNAPSHOT").get()
 
 android {
-    namespace = "io.quiver.update"
+    namespace = "build.hands.update"
     compileSdk = 34
 
     defaultConfig {
@@ -51,13 +51,13 @@ afterEvaluate {
         publications {
             create<MavenPublication>("release") {
                 from(components["release"])
-                groupId = "io.quiver"
-                artifactId = "quiver-android-updater"
+                groupId = "build.hands"
+                artifactId = "hands-android-sdk"
                 version = project.version.toString()
 
                 pom {
-                    name.set("Quiver Android Updater")
-                    description.set("Android SDK for server-side Quiver update checks and APK installation.")
+                    name.set("Hands Android SDK")
+                    description.set("Android SDK for server-side Hands update checks and APK installation.")
                     url.set("https://github.com/oranix-io/quiver")
                     licenses {
                         license {

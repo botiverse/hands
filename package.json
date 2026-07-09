@@ -14,12 +14,12 @@
     "test": "pnpm -r test",
     "lint": "pnpm -r lint",
     "lint:fix": "pnpm -r lint:fix",
-    "dev:worker": "pnpm --filter @oranix/quiver-worker dev",
-    "dev:admin": "pnpm --filter @oranix/quiver-admin dev",
-    "deploy:worker": "pnpm --filter @oranix/quiver-worker run deploy",
-    "deploy:admin": "pnpm --filter @oranix/quiver-admin run deploy",
-    "db:migrate:local": "pnpm --filter @oranix/quiver-worker db:migrate:local",
-    "db:migrate:remote": "pnpm --filter @oranix/quiver-worker db:migrate:remote"
+    "dev:worker": "pnpm --filter @botiverse/hands-worker dev",
+    "dev:admin": "pnpm --filter @botiverse/hands-admin dev",
+    "deploy:worker": "pnpm --filter @botiverse/hands-worker run deploy",
+    "deploy:admin": "pnpm --filter @botiverse/hands-admin run deploy",
+    "db:migrate:local": "pnpm --filter @botiverse/hands-worker db:migrate:local",
+    "db:migrate:remote": "pnpm --filter @botiverse/hands-worker db:migrate:remote"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",

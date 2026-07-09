@@ -1,14 +1,14 @@
-# @oranix/quiver (HarmonyOS)
+# @botiverse/hands (HarmonyOS)
 
-Official Quiver SDK for HarmonyOS (ArkTS HAR): feedback tickets and
-store-then-send crash reporting against a Quiver server's public feedback
-endpoint. Mirrors the Android SDK (`io.quiver:quiver-android-updater`) and
-the iOS `Quiver` pod.
+Official Hands SDK for HarmonyOS (ArkTS HAR): feedback tickets and
+store-then-send crash reporting against a Hands server's public feedback
+endpoint. Mirrors the Android SDK (`build.hands:hands-android-sdk`) and
+the iOS `Hands` pod.
 
 ## Install
 
 ```bash
-ohpm install @oranix/quiver
+ohpm install @botiverse/hands
 ```
 
 (Until the first ohpm release, consume the HAR from a local build of
@@ -17,17 +17,17 @@ ohpm install @oranix/quiver
 ## Configure & start
 
 All configuration is runtime parameters — the SDK ships nothing
-app-specific. Get the client key from your app's Settings tab in the Quiver
+app-specific. Get the client key from your app's Settings tab in the Hands
 console (Sentry-DSN model: it identifies the app; rotate it from the console
 if it leaks).
 
 ```ts
-import { Quiver } from '@oranix/quiver';
+import { Hands } from '@botiverse/hands';
 
-Quiver.install({
+Hands.install({
   baseUrl: 'https://quiver.example.com',
   appSlug: 'my-app',
-  channel: 'main',          // Quiver release-channel routing field
+  channel: 'main',          // Hands release-channel routing field
   clientKey: 'qk_…',
 });
 ```
@@ -37,9 +37,9 @@ Call it as early as possible (UIAbility `onCreate`).
 ## Feedback
 
 ```ts
-import { QuiverFeedbackClient } from '@oranix/quiver';
+import { HandsFeedbackClient } from '@botiverse/hands';
 
-const ticketId = await QuiverFeedbackClient.submit(
+const ticketId = await HandsFeedbackClient.submit(
   context,                    // common.UIAbilityContext
   'Feed does not refresh',    // message
   'bug',                      // 'feedback' | 'bug' | 'crash'
@@ -57,9 +57,9 @@ At crash time (e.g. an `errorManager` observer), write the crash log and its
 signature sidecar — no network in the dying process:
 
 ```ts
-import { QuiverCrashUploader } from '@oranix/quiver';
+import { HandsCrashUploader } from '@botiverse/hands';
 
-QuiverCrashUploader.writeMeta(crashLogPath, {
+HandsCrashUploader.writeMeta(crashLogPath, {
   exception_class: error.name,
   exception_message: error.message,
   top_frame: topFrame,
@@ -71,8 +71,8 @@ QuiverCrashUploader.writeMeta(crashLogPath, {
 On the next launch (a few seconds after startup):
 
 ```ts
-QuiverCrashUploader.enforceRetention(context);
-await QuiverCrashUploader.uploadPending(context);
+HandsCrashUploader.enforceRetention(context);
+await HandsCrashUploader.uploadPending(context);
 ```
 
 Pending crashes upload as `kind=crash` tickets, grouped by signature
@@ -83,6 +83,6 @@ server-side; local retention cap is 5.
 ```bash
 # from clients/ohos, with DevEco/hvigor toolchain
 ohpm install --all
-hvigorw --mode module -p module=quiver@default assembleHar
-ohpm publish quiver/build/default/outputs/default/quiver.har   # needs the org's ohpm publish token
+hvigorw --mode module -p module=hands@default assembleHar
+ohpm publish hands/build/default/outputs/default/hands.har   # needs the org's ohpm publish token
 ```

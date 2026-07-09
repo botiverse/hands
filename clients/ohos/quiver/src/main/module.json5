@@ -1,7 +1,0 @@
-{
-  "module": {
-    "name": "quiver",
-    "type": "har",
-    "deviceTypes": ["phone", "tablet", "2in1"]
-  }
-}

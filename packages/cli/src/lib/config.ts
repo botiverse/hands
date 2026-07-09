@@ -13,6 +13,7 @@
  */
 
 import { mkdirSync, readFileSync, writeFileSync, existsSync } from "node:fs";
+import { readEnv } from "./env.js";
 import { dirname, join } from "node:path";
 import { homedir } from "node:os";
 
@@ -59,9 +60,9 @@ export function clearConfig(): void {
 }
 
 export function resolveApiBase(): string {
-  const cliFlag = process.env.QUIVER_CLI_API;
+  const cliFlag = readEnv("CLI_API");
   if (cliFlag) return cliFlag;
-  const env = process.env.QUIVER_API;
+  const env = readEnv("API");
   if (env) return env;
   const cfg = getConfig();
   if (cfg.apiBase) return cfg.apiBase;
@@ -70,7 +71,7 @@ export function resolveApiBase(): string {
 
 export function resolveSessionCookie(): string | undefined {
   // CI mode wins over file config (env vars are explicit).
-  const env = process.env.QUIVER_SESSION_COOKIE;
+  const env = readEnv("SESSION_COOKIE");
   if (env) return env;
   return getConfig().sessionCookie;
 }

@@ -77,9 +77,9 @@ export async function handlePublicV2Latest(c: Context<{ Bindings: Env }>) {
   const slug = c.req.param("slug");
   const channel = c.req.query("channel") ?? "main";
   const productType = c.req.query("product_type"); // optional; if null, picks most recent across all
-  const cohort = c.req.header("X-Quiver-Cohort") ?? null;
+  const cohort = c.req.header("X-Hands-Cohort") ?? c.req.header("X-Quiver-Cohort") ?? null;
   const deviceId =
-    c.req.header("X-Quiver-Device-Id") ?? c.req.query("device_id") ?? null;
+    c.req.header("X-Hands-Device-Id") ?? c.req.header("X-Quiver-Device-Id") ?? c.req.query("device_id") ?? null;
   const clientPlatform = effectiveClientPlatform(c);
   // cf.clientIp is server-only (we never trust X-Forwarded-For here).
   const clientIp =
@@ -367,7 +367,7 @@ export async function handlePublicV2UpdateCheck(c: Context<{ Bindings: Env }>) {
   const currentVersionCodeRaw =
     c.req.query("current_version_code") ??
     c.req.query("currentVersionCode") ??
-    c.req.header("X-Quiver-Current-Version-Code");
+    c.req.header("X-Hands-Current-Version-Code") ?? c.req.header("X-Quiver-Current-Version-Code");
   const currentVersionCode = Number(currentVersionCodeRaw);
   if (
     !currentVersionCodeRaw ||
@@ -402,11 +402,11 @@ export async function handlePublicV2UpdateCheck(c: Context<{ Bindings: Env }>) {
   const requestedPlatform =
     c.req.query("platform") ??
     c.req.query("client_platform") ??
-    c.req.header("X-Quiver-Client-Platform") ??
+    c.req.header("X-Hands-Client-Platform") ?? c.req.header("X-Quiver-Client-Platform") ??
     latest.app.platform;
   const requestedArch =
     c.req.query("arch") ??
-    c.req.header("X-Quiver-Client-Arch") ??
+    c.req.header("X-Hands-Client-Arch") ?? c.req.header("X-Quiver-Client-Arch") ??
     splitPlatformArch(requestedPlatform).arch;
   const requestedFiletype = c.req.query("filetype") ?? "apk";
   const asset = selectBestAsset(latest.assets, {
@@ -564,7 +564,7 @@ export function resolveChangelog(raw: string | null, lang: string | null): strin
 }
 
 function requestedLang(c: Context<{ Bindings: Env }>): string | null {
-  const explicit = c.req.query("lang") ?? c.req.header("X-Quiver-Lang");
+  const explicit = c.req.query("lang") ?? c.req.header("X-Hands-Lang") ?? c.req.header("X-Quiver-Lang");
   if (explicit) return explicit;
   const accept = c.req.header("accept-language");
   if (!accept) return null;
@@ -589,11 +589,11 @@ function splitPlatformArch(value: string | null): {
 
 function effectiveClientPlatform(c: Context<{ Bindings: Env }>): string | null {
   const explicit =
-    c.req.header("X-Quiver-Client-Platform") ??
+    c.req.header("X-Hands-Client-Platform") ?? c.req.header("X-Quiver-Client-Platform") ??
     c.req.query("client_platform");
   if (explicit) return explicit;
   const platform = c.req.query("platform");
-  const arch = c.req.query("arch") ?? c.req.header("X-Quiver-Client-Arch");
+  const arch = c.req.query("arch") ?? c.req.header("X-Hands-Client-Arch") ?? c.req.header("X-Quiver-Client-Arch");
   if (platform && arch) return `${platform}-${arch}`;
   return platform ?? null;
 }

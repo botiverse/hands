@@ -126,7 +126,7 @@ function Header({ account }: { account: AuthAccount }) {
 
   return (
     <header className="sticky top-0 h-screen flex w-16 flex-none flex-col items-center border-r border-slate-200 bg-white py-3">
-      <Link to="/" aria-label="Quiver" className="mb-4">
+      <Link to="/" aria-label="Hands" className="mb-4">
         <QuiverMark className="h-9 w-9" />
       </Link>
       <nav className="flex w-full flex-col items-stretch gap-1 px-2">
@@ -437,7 +437,7 @@ function PageTitle() {
   const title = appId && appName ? `${section} - ${appName}` : section;
 
   useEffect(() => {
-    document.title = `${title} - Quiver`;
+    document.title = `${title} - Hands`;
   }, [title]);
 
   return null;
@@ -481,7 +481,7 @@ function AuthGate() {
 
 function PublicLanding({ account }: { account?: AuthAccount }) {
   useEffect(() => {
-    document.title = "Quiver - Client release operations";
+    document.title = "Hands - Client release operations";
   }, []);
 
   return (
@@ -490,7 +490,7 @@ function PublicLanding({ account }: { account?: AuthAccount }) {
         <div className="mx-auto flex h-16 max-w-6xl items-center justify-between px-4">
           <a href="/" className="inline-flex items-center gap-2 font-medium">
             <QuiverMark className="h-9 w-9 flex-none" />
-            <span className="text-xl leading-none">Quiver</span>
+            <span className="text-xl leading-none">Hands</span>
           </a>
           <nav className="flex items-center gap-2 text-sm">
             <a
@@ -527,12 +527,25 @@ function PublicLanding({ account }: { account?: AuthAccount }) {
                 Ship it, roll it out, hear it break, fix it.
               </h1>
               <p className="mt-5 text-lg leading-8 text-slate-600">
-                Quiver runs the whole release loop: builds land as drafts,
+                Hands runs the whole release loop: builds land as drafts,
                 agents review and publish with bilingual changelogs, staged
                 rollouts meter exposure, and in-app feedback and crash
                 reports come back as tickets — grouped, deobfuscated, and
                 triageable by humans and agents alike.
               </p>
+              <div className="mt-6 flex flex-wrap items-center gap-2">
+                <span className="text-xs font-medium text-slate-500">
+                  Client platforms:
+                </span>
+                {["Android", "iOS", "HarmonyOS", "Electron"].map((p) => (
+                  <span
+                    key={p}
+                    className="inline-flex items-center rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 text-xs font-medium text-slate-700"
+                  >
+                    {p}
+                  </span>
+                ))}
+              </div>
               <div className="mt-8 flex flex-col gap-3 sm:flex-row">
                 <a
                   className="inline-flex h-11 items-center justify-center gap-2 rounded-md bg-slate-950 px-5 text-sm font-medium text-white hover:bg-slate-800"
@@ -566,7 +579,7 @@ function PublicLanding({ account }: { account?: AuthAccount }) {
                 </span>
               </div>
               <div className="space-y-3 font-mono text-xs leading-6 text-slate-300">
-                <div>$ npm exec --package @oranix/quiver-cli -- quiver builds publish-android raft-android</div>
+                <div>$ npm exec --package @botiverse/hands-cli -- quiver builds publish-android raft-android</div>
                 <div className="text-slate-500">uploading APK and metadata...</div>
                 <div className="text-slate-500">creating release on channel main...</div>
                 <div className="text-emerald-300">release: 14998dba-cfde-4002-8c01-230a2760f662</div>
@@ -612,6 +625,18 @@ function PublicLanding({ account }: { account?: AuthAccount }) {
                 href="/docs/android-sdk/"
               >
                 Android SDK
+              </a>
+              <a
+                className="inline-flex h-10 items-center justify-center whitespace-nowrap rounded-md border border-slate-300 bg-white px-4 text-sm font-medium text-slate-800 hover:bg-slate-100"
+                href="/docs/ios-sdk/"
+              >
+                iOS SDK
+              </a>
+              <a
+                className="inline-flex h-10 items-center justify-center whitespace-nowrap rounded-md border border-slate-300 bg-white px-4 text-sm font-medium text-slate-800 hover:bg-slate-100"
+                href="/docs/ohos-sdk/"
+              >
+                HarmonyOS SDK
               </a>
               <a
                 className="inline-flex h-10 items-center justify-center whitespace-nowrap rounded-md border border-slate-300 bg-white px-4 text-sm font-medium text-slate-800 hover:bg-slate-100"
@@ -684,13 +709,13 @@ function AuthenticatedApp({ account }: { account: AuthAccount }) {
       </Routes>
       <footer className="bg-white border-t border-slate-200 py-4 mt-8">
         <div className="max-w-5xl mx-auto px-4 text-xs text-slate-500 flex items-center justify-between">
-          <span>Quiver - Login with Raft</span>
+          <span>Hands - Login with Raft</span>
           <a
             href="https://github.com/oranix-io/quiver"
             target="_blank"
             rel="noopener noreferrer"
             className="btn-secondary !py-1 !px-2 !text-xs inline-flex items-center gap-1.5"
-            title="View Quiver source on GitHub"
+            title="View Hands source on GitHub"
           >
             <svg
               viewBox="0 0 24 24"

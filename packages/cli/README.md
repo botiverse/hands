@@ -1,8 +1,8 @@
-# @oranix/quiver-cli
+# @botiverse/hands-cli
 
-Quiver CLI — manage apps, builds, releases from the terminal.
+Hands CLI — manage apps, builds, releases from the terminal.
 
-Status: **alpha**. The npm package is public as `@oranix/quiver-cli`; v1 ships
+Status: **alpha**. The npm package is public as `@botiverse/hands-cli`; v1 ships
 `login`, `logout`, `whoami`, `apps list/get`, `builds list/get`, and
 `builds publish-android`. Other commands listed in `docs/cli-reference.md` land
 incrementally as backend endpoints become available.
@@ -10,34 +10,34 @@ incrementally as backend endpoints become available.
 ## Install
 
 ```bash
-npm install -g @oranix/quiver-cli
-quiver --help
+npm install -g @botiverse/hands-cli
+hands --help
 
 # Or run without installing globally:
-npm exec --package @oranix/quiver-cli@0.3.2 -- quiver --help
+npm exec --package @botiverse/hands-cli@0.3.2 -- hands --help
 
 # Local repo development:
-pnpm --filter @oranix/quiver-cli build
-pnpm --filter @oranix/quiver-cli start -- whoami
+pnpm --filter @botiverse/hands-cli build
+pnpm --filter @botiverse/hands-cli start -- whoami
 ```
 
 ## Quickstart
 
 ```bash
 # 1. Log in. The CLI prints a URL you must open in a browser.
-quiver login
+hands login
 
 # 2. Verify who you are.
-quiver whoami
+hands whoami
 
 # 3. List your apps.
-quiver apps list
+hands apps list
 
 # 4. List builds for an app (by slug or id).
-quiver builds list myapp-android
+hands builds list myapp-android
 
 # 5. Publish an Android APK release.
-quiver builds publish-android raft-android \
+hands builds publish-android raft-android \
   --channel main \
   --apk ./app-release.apk \
   --version-name 1.0.3 \
@@ -49,14 +49,14 @@ quiver builds publish-android raft-android \
 ```bash
 export QUIVER_API=https://quiver.oranix.io
 export QUIVER_SESSION_COOKIE=...   # paste from browser DevTools
-quiver whoami
-quiver builds list myapp-android
+hands whoami
+hands builds list myapp-android
 ```
 
 ## How auth works (v1)
 
 Raft OAuth today only supports the browser-redirect flow with HttpOnly
-cookies. The CLI can't intercept the redirect, so `quiver login` asks
+cookies. The CLI can't intercept the redirect, so `hands login` asks
 you to:
 
 1. Open the printed URL in any browser.

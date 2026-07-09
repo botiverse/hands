@@ -1,0 +1,132 @@
+name: Deploy Hands Server
+
+on:
+  workflow_dispatch:
+    inputs:
+      containers_rollout:
+        description: "Cloudflare Containers rollout strategy. Use none when only Worker/API/admin assets changed."
+        required: true
+        type: choice
+        options:
+          - none
+          - immediate
+          - gradual
+        default: none
+      run_checks:
+        description: "Run Worker tests/build, CLI build, and admin build before deploy."
+        required: true
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: hands-server-production
+  cancel-in-progress: false
+
+env:
+  CLOUDFLARE_ACCOUNT_ID: a084c4564dfdce5a7775b08ece638a79
+  HANDS_D1_DATABASE_NAME: hands-db
+  HANDS_R2_BUCKET_NAME: hands-artifacts
+  HANDS_WORKER_DOMAIN: hands.build
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: pnpm/action-setup@v6
+        with:
+          version: 9.12.0
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+          cache: "pnpm"
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Generate Worker types
+        working-directory: worker
+        run: pnpm exec wrangler types
+
+      - name: Run checks
+        if: ${{ inputs.run_checks }}
+        run: |
+          pnpm --filter @botiverse/hands-worker test
+          pnpm --filter @botiverse/hands-worker build
+          pnpm --filter @botiverse/hands-cli build
+          pnpm --filter @botiverse/hands-admin build
+
+      - name: Bootstrap Hands Cloudflare resources
+        working-directory: worker
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_BOTIVERSE_API_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -z "${CLOUDFLARE_API_TOKEN:-}" ]]; then
+            echo "Missing GitHub secret CLOUDFLARE_BOTIVERSE_API_TOKEN." >&2
+            exit 1
+          fi
+
+          pnpm exec wrangler d1 info "${HANDS_D1_DATABASE_NAME}" --config wrangler.hands.jsonc >/dev/null
+
+          if ! pnpm exec wrangler r2 bucket info "${HANDS_R2_BUCKET_NAME}" >/dev/null 2>&1; then
+            pnpm exec wrangler r2 bucket create "${HANDS_R2_BUCKET_NAME}"
+          fi
+
+      - name: Apply Hands D1 migrations
+        working-directory: worker
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_BOTIVERSE_API_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          pnpm exec wrangler d1 migrations apply "${HANDS_D1_DATABASE_NAME}" --remote --config wrangler.hands.jsonc
+
+      - name: Configure Hands Worker secrets
+        working-directory: worker
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_BOTIVERSE_API_TOKEN }}
+          SIGNED_URL_SECRET: ${{ secrets.HANDS_SIGNED_URL_SECRET }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -z "${SIGNED_URL_SECRET:-}" ]]; then
+            echo "Missing GitHub secret HANDS_SIGNED_URL_SECRET." >&2
+            exit 1
+          fi
+          printf '%s' "${SIGNED_URL_SECRET}" | pnpm exec wrangler secret put SIGNED_URL_SECRET --config wrangler.hands.jsonc
+
+      - name: Deploy Hands Worker and admin assets
+        working-directory: worker
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_BOTIVERSE_API_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          pnpm exec wrangler deploy \
+            --config wrangler.hands.jsonc \
+            --containers-rollout "${{ inputs.containers_rollout }}" \
+            --domain "${HANDS_WORKER_DOMAIN}"
+
+      - name: Summary
+        shell: bash
+        run: |
+          {
+            echo "### Hands server deploy"
+            echo
+            echo "| Field | Value |"
+            echo "|---|---|"
+            echo "| Ref | \`${GITHUB_REF_NAME}\` |"
+            echo "| SHA | \`${GITHUB_SHA}\` |"
+            echo "| Account | \`${CLOUDFLARE_ACCOUNT_ID}\` |"
+            echo "| Domain | \`${HANDS_WORKER_DOMAIN}\` |"
+            echo "| D1 | \`${HANDS_D1_DATABASE_NAME}\` |"
+            echo "| R2 | \`${HANDS_R2_BUCKET_NAME}\` |"
+            echo "| Containers rollout | \`${{ inputs.containers_rollout }}\` |"
+          } >> "$GITHUB_STEP_SUMMARY"

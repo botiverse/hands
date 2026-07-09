@@ -1,6 +1,6 @@
 # Agent Guide
 
-Quiver is agent-native: everything an operator can do in the console, an AI
+Hands is agent-native: everything an operator can do in the console, an AI
 agent can do through the API and CLI. This guide covers how agents
 authenticate and run the standard operations.
 
@@ -32,7 +32,7 @@ export QUIVER_BEARER_TOKEN=<access_token>
 ```
 
 Callback codes are one-time; re-run the login for a fresh session. Your
-capabilities follow your Quiver org role — `403` responses name the required
+capabilities follow your Hands org role — `403` responses name the required
 role (ask an org owner to adjust membership in Org settings).
 
 ### Deploy tokens
@@ -52,10 +52,10 @@ CI creates drafts; an agent reviews and publishes. **Never publish without
 reviewing the changelog.**
 
 ```bash
-quiver releases show <app> <releaseId>                 # inspect draft + raw changelog
-quiver releases update <app> <releaseId> \
+hands releases show <app> <releaseId>                 # inspect draft + raw changelog
+hands releases update <app> <releaseId> \
   --changelog-file zh=zh.md --changelog-file en=en.md  # reviewed, per-language
-quiver releases publish <app> <releaseId>              # explicit go-live
+hands releases publish <app> <releaseId>              # explicit go-live
 ```
 
 Staged rollout: publish, then raise `rollout_cohort_count` from the console
@@ -75,11 +75,11 @@ presence.
 ### Ticket triage (feedback + crashes)
 
 ```bash
-quiver feedback list <app> --status open --kind crash
-quiver feedback show <app> <ticketId>
-quiver feedback update <app> <ticketId> --status in_progress --assignee <name>
-quiver feedback comment <app> <ticketId> "reproduced; fix in progress"
-quiver feedback update <app> <ticketId> --status resolved
+hands feedback list <app> --status open --kind crash
+hands feedback show <app> <ticketId>
+hands feedback update <app> <ticketId> --status in_progress --assignee <name>
+hands feedback comment <app> <ticketId> "reproduced; fix in progress"
+hands feedback update <app> <ticketId> --status resolved
 ```
 
 Crash tickets carry a grouping signature and, when the build's
@@ -89,10 +89,10 @@ Crash tickets carry a grouping signature and, when the build's
 ### Share links
 
 ```bash
-quiver releases share <app> <releaseId> --password <pw>   # password optional
-quiver releases shares <app> <releaseId>
-quiver releases update-share <app> <releaseId> <shareId> --ttl-seconds 1209600
-quiver releases revoke-share <app> <releaseId> <shareId>
+hands releases share <app> <releaseId> --password <pw>   # password optional
+hands releases shares <app> <releaseId>
+hands releases update-share <app> <releaseId> <shareId> --ttl-seconds 1209600
+hands releases revoke-share <app> <releaseId> <shareId>
 ```
 
 The share URL is printed once; tokens are stored hashed.
@@ -109,7 +109,8 @@ curl -X POST https://quiver.oranix.io/api/apps \
 
 New apps are seeded with default channels (`main`, `preview`, `nightly`) and
 product types, and get a **client key** (`qk_…`) that clients must send as
-`X-Quiver-Client-Key` on feedback/crash submissions:
+`X-Hands-Client-Key` on feedback/crash submissions (the legacy
+`X-Quiver-Client-Key` header is still accepted):
 
 ```bash
 curl -H "Authorization: Bearer $QUIVER_BEARER_TOKEN" \
@@ -123,7 +124,7 @@ with the new one.
 
 ## Handling permission (403) errors
 
-Quiver's role-403s are **machine-readable** — act on them instead of failing
+Hands's role-403s are **machine-readable** — act on them instead of failing
 silently:
 
 ```json

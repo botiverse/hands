@@ -178,10 +178,10 @@ export function registerPublicRoutes(registry: OpenApiRegistry) {
         device_id: z.string().optional(),
       }),
       headers: z.object({
-        "X-Quiver-Client-Platform": z.string().optional(),
-        "X-Quiver-Cohort": z.string().optional(),
-        "X-Quiver-Lang": z.string().optional(),
-        "X-Quiver-Device-Id": z.string().optional(),
+        "X-Hands-Client-Platform": z.string().optional(),
+        "X-Hands-Cohort": z.string().optional(),
+        "X-Hands-Lang": z.string().optional(),
+        "X-Hands-Device-Id": z.string().optional(),
       }),
     },
     responses: {
@@ -229,11 +229,11 @@ export function registerPublicRoutes(registry: OpenApiRegistry) {
         device_id: z.string().optional(),
       }),
       headers: z.object({
-        "X-Quiver-Client-Platform": z.string().optional(),
-        "X-Quiver-Client-Arch": z.string().optional(),
-        "X-Quiver-Cohort": z.string().optional(),
-        "X-Quiver-Lang": z.string().optional(),
-        "X-Quiver-Device-Id": z.string().optional(),
+        "X-Hands-Client-Platform": z.string().optional(),
+        "X-Hands-Client-Arch": z.string().optional(),
+        "X-Hands-Cohort": z.string().optional(),
+        "X-Hands-Lang": z.string().optional(),
+        "X-Hands-Device-Id": z.string().optional(),
       }),
     },
     responses: {
@@ -285,13 +285,13 @@ export function registerPublicRoutes(registry: OpenApiRegistry) {
     tags: ["Public metrics"],
     summary: "Report SDK runtime metrics",
     description:
-      "Canonical SDK metrics ingest endpoint. Clients send a throttled launch/install ping with a stable per-install X-Quiver-Device-Id and build/runtime metadata. This powers active-device and version-distribution analytics; it is not an unthrottled online heartbeat.",
+      "Canonical SDK metrics ingest endpoint. Clients send a throttled launch/install ping with a stable per-install X-Hands-Device-Id and build/runtime metadata. This powers active-device and version-distribution analytics; it is not an unthrottled online heartbeat.",
     request: {
       params: SlugParam,
       query: z.object({ client_key: z.string().optional(), device_id: z.string().optional() }),
       headers: z.object({
-        "X-Quiver-Client-Key": z.string().optional(),
-        "X-Quiver-Device-Id": z.string().optional(),
+        "X-Hands-Client-Key": z.string().optional(),
+        "X-Hands-Device-Id": z.string().optional(),
       }),
       body: { content: json(MetricsIngestRequest), required: false },
     },
@@ -314,8 +314,8 @@ export function registerPublicRoutes(registry: OpenApiRegistry) {
       params: SlugParam,
       query: z.object({ client_key: z.string().optional(), device_id: z.string().optional() }),
       headers: z.object({
-        "X-Quiver-Client-Key": z.string().optional(),
-        "X-Quiver-Device-Id": z.string().optional(),
+        "X-Hands-Client-Key": z.string().optional(),
+        "X-Hands-Device-Id": z.string().optional(),
       }),
       body: { content: json(MetricsIngestRequest), required: false },
     },
@@ -333,11 +333,11 @@ export function registerPublicRoutes(registry: OpenApiRegistry) {
     tags: ["Public feedback"],
     summary: "Submit feedback or crash report",
     description:
-      "Accepts SDK/client feedback, bug reports, and crash reports. Requires the app client key in X-Quiver-Client-Key or client_key.",
+      "Accepts SDK/client feedback, bug reports, and crash reports. Requires the app client key in X-Hands-Client-Key or client_key.",
     request: {
       params: SlugParam,
       query: z.object({ client_key: z.string().optional() }),
-      headers: z.object({ "X-Quiver-Client-Key": z.string().optional() }),
+      headers: z.object({ "X-Hands-Client-Key": z.string().optional() }),
       body: {
         content: multipart(),
         required: true,

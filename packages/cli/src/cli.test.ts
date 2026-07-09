@@ -1,7 +1,7 @@
 /**
  * Smoke tests for the quiver CLI.
  *
- * Run: `pnpm --filter @oranix/quiver-cli test`
+ * Run: `pnpm --filter @botiverse/hands-cli test`
  *
  * v1 tests cover: config load/save (without leaking the real file),
  * + apiRequest routing (against a tiny local http.createServer stub).

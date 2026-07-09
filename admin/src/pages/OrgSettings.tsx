@@ -820,7 +820,7 @@ function WebhooksTab({
             <p className="text-xs text-slate-500">
               Subscribe external HTTP endpoints to release and build events.
               Deliveries are signed with HMAC SHA-256
-              (<code className="font-mono">X-Quiver-Signature</code>).
+              (<code className="font-mono">X-Hands-Signature</code>).
             </p>
           </div>
           {canManage && (
@@ -886,8 +886,9 @@ function WebhooksTab({
           </li>
           <li>
             Receiver must verify
-            <code className="font-mono"> X-Quiver-Signature: sha256=&lt;hmac&gt;</code>
-            using the webhook&apos;s secret.
+            <code className="font-mono"> X-Hands-Signature: sha256=&lt;hmac&gt;</code>
+            using the webhook&apos;s secret (legacy{" "}
+            <code className="font-mono">X-Quiver-Signature</code> is still sent too).
           </li>
         </ul>
       </div>
@@ -1140,7 +1141,7 @@ function CreateWebhookDialog({
             />
             <p className="text-xs text-slate-500 mt-1">
               Used to sign deliveries via{" "}
-              <code className="font-mono">X-Quiver-Signature</code>. Choose a
+              <code className="font-mono">X-Hands-Signature</code>. Choose a
               strong secret; receivers must verify the signature.
             </p>
           </div>

@@ -27,13 +27,13 @@ export async function handleDeviceRegister(c: Context<{ Bindings: Env }>) {
 
   // Same DSN-model client-key gate as feedback.
   const presented =
-    c.req.header("X-Quiver-Client-Key") ?? c.req.query("client_key") ?? "";
+    c.req.header("X-Hands-Client-Key") ?? c.req.header("X-Quiver-Client-Key") ?? c.req.query("client_key") ?? "";
   if (!app.client_key || presented !== app.client_key) {
     return c.json({ error: "invalid or missing client key" }, 401);
   }
 
   const deviceId =
-    c.req.header("X-Quiver-Device-Id") ?? c.req.query("device_id") ?? "";
+    c.req.header("X-Hands-Device-Id") ?? c.req.header("X-Quiver-Device-Id") ?? c.req.query("device_id") ?? "";
   if (!deviceId || deviceId.length > 200) {
     return c.json({ error: "device id required" }, 400);
   }

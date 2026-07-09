@@ -1,7 +1,7 @@
-// Quiver Electron SDK — renderer-process entry.
+// Hands Electron SDK — renderer-process entry.
 //
-//   import * as Quiver from "@oranix/quiver-electron/renderer";
-//   Quiver.setTag("route", location.pathname);
+//   import * as Hands from "@botiverse/hands-electron/renderer";
+//   Hands.setTag("route", location.pathname);
 //
 // Modern Electron captures renderer crashes through the main-process Crashpad
 // automatically, so this module does NOT start a second reporter. It manages
@@ -11,7 +11,7 @@
 // the ./preload helper.
 
 import { ipcRenderer } from "electron";
-import { CONTEXT_CHANNEL, type QuiverBreadcrumb } from "./common.js";
+import { CONTEXT_CHANNEL, type HandsBreadcrumb } from "./common.js";
 
 /** Reserved hook — a place to wire renderer JS-error capture in the future. */
 export function init(): void {
@@ -30,6 +30,6 @@ export function setExtra(key: string, value: unknown): void {
   ipcRenderer.send(CONTEXT_CHANNEL, { extra: { [key]: value } });
 }
 
-export function addBreadcrumb(crumb: QuiverBreadcrumb): void {
+export function addBreadcrumb(crumb: HandsBreadcrumb): void {
   ipcRenderer.send(CONTEXT_CHANNEL, { breadcrumbs: [crumb] });
 }

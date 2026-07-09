@@ -257,7 +257,7 @@ export function AppCreationWizard({
             <h2 className="text-lg font-bold mb-4">Create app — Channels</h2>
             <p className="text-sm text-slate-500 mb-4">
               Channels are the delivery lanes clients use to fetch updates.
-              Quiver keeps maturity simple: publish to main for stable users,
+              Hands keeps maturity simple: publish to main for stable users,
               preview for validation, and nightly for fast internal iteration.
             </p>
 

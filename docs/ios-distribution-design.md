@@ -14,12 +14,12 @@ identity, so the plan is phased by which Apple program we hold.
 | Do we want the Apple Developer **Enterprise** Program ($299/yr, DUNS, strict review)? | Only path to UDID-free in-house OTA installs. Hard to get since 2020; many orgs are rejected. |
 | Is TestFlight acceptable for testers? | If yes, phases 2–3 shrink a lot. |
 
-Recommendation: **TestFlight for humans, ad-hoc OTA via Quiver for
+Recommendation: **TestFlight for humans, ad-hoc OTA via Hands for
 machines/CI smoke devices.** Enterprise only if we already qualify.
 
 ## 1. Phase 1 — ipa hosting + OTA install (ad-hoc / enterprise signed)
 
-What Quiver needs regardless of program:
+What Hands needs regardless of program:
 
 - **Product type `ios-ipa`** (schema already supports product types; seed it).
 - **Container parser**: unzip ipa → `Payload/*.app/Info.plist` (binary plist →
@@ -54,16 +54,16 @@ Ad-hoc profiles require each device UDID in the provisioning profile
   developer portal or feed fastlane `register_devices`).
 - **Re-provisioning**: after adding UDIDs, the app must be re-signed with the
   updated profile. CI job (macOS runner) with `fastlane sigh`/`match`-style
-  secrets: cert (.p12) + profile, or App Store Connect API key. Quiver just
+  secrets: cert (.p12) + profile, or App Store Connect API key. Hands just
   hosts the resulting ipa; re-sign automation is a mobile-repo workflow.
 
 ## 3. Phase 3 — TestFlight lane (parallel, recommended for humans)
 
 - CI (macOS runner) builds + uploads via App Store Connect API key
   (`fastlane pilot` / `xcrun altool` successor `notarytool`-era APIs).
-- Quiver's role is bookkeeping only: record the build/version + TestFlight
+- Hands's role is bookkeeping only: record the build/version + TestFlight
   link on the release (new optional `external_url` on releases), so the
-  release timeline stays single-source in Quiver even when Apple hosts the
+  release timeline stays single-source in Hands even when Apple hosts the
   binary.
 
 ## 4. What we explicitly skip

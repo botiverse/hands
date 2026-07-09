@@ -1,0 +1,101 @@
+package build.hands.update.internal
+
+import build.hands.update.models.UpdateCheckResponse
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import kotlinx.serialization.json.Json
+import okhttp3.HttpUrl.Companion.toHttpUrl
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import java.util.concurrent.TimeUnit
+
+/**
+ * Low-level HTTP client for the quiver public API.
+ *
+ * No auth needed; Quiver public endpoints are intentionally unauthenticated.
+ * Designed to be replaceable (e.g. swap OkHttp for Ktor) without touching the
+ * higher-level UpdateChecker.
+ */
+class HandsClient(
+    private val baseUrl: String,
+    private val httpClient: OkHttpClient = defaultClient(),
+    private val json: Json = defaultJson(),
+) {
+    /**
+     * Ask the server whether this client should update.
+     *
+     * @throws HandsException.NoSuchApp        if 404
+     * @throws HandsException.NetworkError     on IO failure
+     * @throws HandsException.InvalidResponse  on parse failure
+     */
+    suspend fun checkForUpdate(
+        slug: String,
+        channel: String = "main",
+        currentVersionCode: Long,
+        productType: String = "android-apk",
+        platform: String = "android",
+        arch: String? = null,
+        filetype: String = "apk",
+        deviceId: String? = null,
+    ): UpdateCheckResponse = withContext(Dispatchers.IO) {
+        val urlBuilder = baseUrl.trimEnd('/').toHttpUrl().newBuilder()
+            .addPathSegments("public/v2/apps")
+            .addPathSegment(slug)
+            .addPathSegments("updates/check")
+            .addQueryParameter("channel", channel)
+            .addQueryParameter("product_type", productType)
+            .addQueryParameter("current_version_code", currentVersionCode.toString())
+            .addQueryParameter("platform", platform)
+            .addQueryParameter("filetype", filetype)
+        if (!arch.isNullOrBlank()) {
+            urlBuilder.addQueryParameter("arch", arch)
+        }
+        val url = urlBuilder.build()
+        val requestBuilder = Request.Builder()
+            .url(url)
+            .header("accept", "application/json")
+        if (!deviceId.isNullOrBlank()) {
+            // Stable per-install id; the server uses it to bucket staged rollouts.
+            requestBuilder.header("X-Hands-Device-Id", deviceId)
+        }
+        val request = requestBuilder.build()
+
+        httpClient.newCall(request).execute().use { response ->
+            val body = response.body?.string()
+                ?: throw HandsException.NetworkError("empty response body")
+
+            when (response.code) {
+                200 -> try {
+                    json.decodeFromString(UpdateCheckResponse.serializer(), body)
+                } catch (e: Exception) {
+                    throw HandsException.InvalidResponse(body, e)
+                }
+                404 -> throw HandsException.NoSuchApp(slug, channel)
+                else -> throw HandsException.HttpError(response.code, body)
+            }
+        }
+    }
+
+    companion object {
+        fun defaultClient(): OkHttpClient = OkHttpClient.Builder()
+            .connectTimeout(10, TimeUnit.SECONDS)
+            .readTimeout(30, TimeUnit.SECONDS)
+            .build()
+
+        fun defaultJson(): Json = Json {
+            ignoreUnknownKeys = true
+            isLenient = true
+        }
+    }
+}
+
+sealed class HandsException(message: String, cause: Throwable? = null) : RuntimeException(message, cause) {
+    class NoSuchApp(slug: String, channel: String) :
+        HandsException("app '$slug' has no enabled version for channel '$channel'")
+    class NetworkError(detail: String) :
+        HandsException("network error: $detail")
+    class InvalidResponse(body: String, cause: Throwable) :
+        HandsException("invalid server response: ${body.take(200)}", cause)
+    class HttpError(code: Int, body: String) :
+        HandsException("server returned HTTP $code: ${body.take(200)}")
+}

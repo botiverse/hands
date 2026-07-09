@@ -370,7 +370,7 @@ app.get("/openapi.json", (c) => c.json({
 app.get("/api-docs", (c) => c.html(`<!doctype html>
 <html lang="en">
   <head>
-    <title>Quiver API Reference</title>
+    <title>Hands API Reference</title>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
@@ -400,9 +400,9 @@ app.get("/api-docs", (c) => c.html(`<!doctype html>
   </head>
   <body>
     <header class="quiver-api-header">
-      <a href="/" aria-label="Quiver home">
+      <a href="/" aria-label="Hands home">
         <img src="/favicon.svg" alt="" />
-        <span>Quiver</span>
+        <span>Hands</span>
       </a>
     </header>
     <div id="app"></div>

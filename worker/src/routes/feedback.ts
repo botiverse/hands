@@ -41,7 +41,7 @@ export async function handlePresignFeedbackAttachments(c: Context<{ Bindings: En
     .first<{ id: string; client_key: string | null }>();
   if (!app) return c.json({ error: `app '${slug}' not found` }, 404);
   const presented =
-    c.req.header("X-Quiver-Client-Key") ?? c.req.query("client_key") ?? "";
+    c.req.header("X-Hands-Client-Key") ?? c.req.header("X-Quiver-Client-Key") ?? c.req.query("client_key") ?? "";
   if (!app.client_key || presented !== app.client_key) {
     return c.json({ error: "invalid or missing client key" }, 401);
   }
@@ -106,7 +106,7 @@ export async function handlePublicFeedbackSubmit(c: Context<{ Bindings: Env }>) 
   // key column have none until an admin generates one — their submissions
   // are rejected rather than silently open.
   const presented =
-    c.req.header("X-Quiver-Client-Key") ?? c.req.query("client_key") ?? "";
+    c.req.header("X-Hands-Client-Key") ?? c.req.header("X-Quiver-Client-Key") ?? c.req.query("client_key") ?? "";
   if (!app.client_key || presented !== app.client_key) {
     return c.json({ error: "invalid or missing client key" }, 401);
   }
@@ -456,7 +456,7 @@ export async function handlePublicMinidumpSubmit(c: Context<{ Bindings: Env }>) 
   if (!app) return c.json({ error: `app '${slug}' not found` }, 404);
 
   const presented =
-    c.req.header("X-Quiver-Client-Key") ?? c.req.query("client_key") ?? "";
+    c.req.header("X-Hands-Client-Key") ?? c.req.header("X-Quiver-Client-Key") ?? c.req.query("client_key") ?? "";
   if (!app.client_key || presented !== app.client_key) {
     return c.json({ error: "invalid or missing client key" }, 401);
   }

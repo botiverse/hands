@@ -14,4 +14,4 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "quiver-android-updater"
+rootProject.name = "hands-android-sdk"

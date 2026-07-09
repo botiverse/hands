@@ -1,0 +1,12 @@
+{
+  "name": "@botiverse/hands",
+  "version": "0.2.0",
+  "description": "Hands feedback + crash reporting SDK for HarmonyOS (feedback tickets, store-then-send crash upload, device id).",
+  "main": "Index.ets",
+  "author": "Oranix",
+  "license": "MIT",
+  "homepage": "https://github.com/oranix-io/quiver",
+  "repository": "https://github.com/oranix-io/quiver",
+  "keywords": ["hands", "crash", "feedback", "harmonyos"],
+  "dependencies": {}
+}

@@ -1,6 +1,6 @@
 # Android SDK
 
-`io.quiver:quiver-android-updater` is the Android SDK for Quiver. It handles
+`build.hands:hands-android-sdk` is the Android SDK for Hands. It handles
 in-app update checks and installation, staged-rollout device bucketing,
 feedback submission, and crash reporting.
 
@@ -21,7 +21,7 @@ repositories {
 }
 
 dependencies {
-    implementation("io.quiver:quiver-android-updater:0.9.0")
+    implementation("build.hands:hands-android-sdk:0.9.0")
 }
 ```
 
@@ -41,10 +41,10 @@ Configuration (`BuildConfig` fields are a convenient place to keep these):
 ```kotlin
 val checker = UpdateChecker(
     context = applicationContext,
-    baseUrl = BuildConfig.QUIVER_BASE_URL,
-    appSlug = BuildConfig.QUIVER_APP_SLUG,
+    baseUrl = BuildConfig.HANDS_BASE_URL,
+    appSlug = BuildConfig.HANDS_APP_SLUG,
     installedVersionCode = BuildConfig.VERSION_CODE.toLong(),
-    channel = BuildConfig.QUIVER_CHANNEL,
+    channel = BuildConfig.HANDS_CHANNEL,
     arch = Build.SUPPORTED_ABIS.firstOrNull(),
 )
 
@@ -52,28 +52,29 @@ val checker = UpdateChecker(
 val response = checker.checkAndInstall()
 ```
 
-The SDK sends a stable per-install id (`X-Quiver-Device-Id`, from
-`QuiverDeviceId`) so the server can bucket the device for **staged rollouts**
+The SDK sends a stable per-install id (`X-Hands-Device-Id`, from
+`HandsDeviceId`; the server still accepts the legacy `X-Quiver-Device-Id`) so
+the server can bucket the device for **staged rollouts**
 — a release published at 25% only installs on the matching fraction of
 devices, and each device keeps its bucket as you raise the percentage.
 
 To check without installing (e.g. to render your own "update available" UI),
-call `QuiverClient(baseUrl).checkForUpdate(...)` and act on the result.
+call `HandsClient(baseUrl).checkForUpdate(...)` and act on the result.
 
 ## Feedback
 
-`QuiverFeedback` submits user feedback (with attachments) to the Quiver
+`HandsFeedback` submits user feedback (with attachments) to the Hands
 ticket system; it auto-attaches app/device metadata and the device id.
 
 ```kotlin
-val ticketId = QuiverFeedback(
+val ticketId = HandsFeedback(
     context = applicationContext,
-    baseUrl = BuildConfig.QUIVER_BASE_URL,
-    appSlug = BuildConfig.QUIVER_APP_SLUG,
+    baseUrl = BuildConfig.HANDS_BASE_URL,
+    appSlug = BuildConfig.HANDS_APP_SLUG,
     versionName = BuildConfig.VERSION_NAME,
     versionCode = BuildConfig.VERSION_CODE.toLong(),
-    channel = BuildConfig.QUIVER_CHANNEL,
-    clientKey = BuildConfig.QUIVER_CLIENT_KEY,   // app Settings → Client key
+    channel = BuildConfig.HANDS_CHANNEL,
+    clientKey = BuildConfig.HANDS_CLIENT_KEY,   // app Settings → Client key
 ).submit(
     message = "Feed doesn't refresh after login.",
     kind = "bug",                       // "feedback" | "bug" | "crash"
@@ -83,11 +84,11 @@ val ticketId = QuiverFeedback(
 ```
 
 Tickets appear in the app's **Feedback** tab and are triageable from the
-admin console or the CLI (`quiver feedback ...`).
+admin console or the CLI (`hands feedback ...`).
 
 ## Crash reporting
 
-`Quiver.install(...)` captures uncaught JVM exceptions and NDK/native
+`Hands.install(...)` captures uncaught JVM exceptions and NDK/native
 crashes and uploads them as `kind=crash` tickets, grouped by signature and
 symbolicated in the console.
 
@@ -95,14 +96,14 @@ symbolicated in the console.
 class App : Application() {
     override fun onCreate() {
         super.onCreate()
-        Quiver.install(
+        Hands.install(
             context = this,
-            baseUrl = BuildConfig.QUIVER_BASE_URL,
-            appSlug = BuildConfig.QUIVER_APP_SLUG,
+            baseUrl = BuildConfig.HANDS_BASE_URL,
+            appSlug = BuildConfig.HANDS_APP_SLUG,
             versionName = BuildConfig.VERSION_NAME,
             versionCode = BuildConfig.VERSION_CODE.toLong(),
-            channel = BuildConfig.QUIVER_CHANNEL,
-            clientKey = BuildConfig.QUIVER_CLIENT_KEY,
+            channel = BuildConfig.HANDS_CHANNEL,
+            clientKey = BuildConfig.HANDS_CLIENT_KEY,
             // optional: attach app-specific context (recent logs, etc.)
             extraContext = { myDiagnostics.recentText() },
         )
@@ -112,17 +113,17 @@ class App : Application() {
 
 To get readable (deobfuscated) stacks in the console, publish the release
 with its R8/ProGuard `mapping.txt` (and, for NDK crashes, the unstripped
-`.so` archive) — Quiver symbolicates crash reports for that `versionCode`
+`.so` archive) — Hands symbolicates crash reports for that `versionCode`
 automatically.
 
 ## Device analytics
 
-`Quiver.install(...)` already sends a lightweight launch/install metrics ping (throttled
+`Hands.install(...)` already sends a lightweight launch/install metrics ping (throttled
 to ≤1/day/install) that powers the console's active-device and
 version-distribution views — no separate call needed. This is not a true
 online heartbeat. No PII: only the random per-install device id and build/OS
 metadata. Pass
-`reportDeviceAnalytics = false` to `Quiver.install` to opt out.
+`reportDeviceAnalytics = false` to `Hands.install` to opt out.
 
 ## Notes
 

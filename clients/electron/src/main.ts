@@ -1,10 +1,10 @@
-// Quiver Electron SDK — main-process entry.
+// Hands Electron SDK — main-process entry.
 //
-//   import * as Quiver from "@oranix/quiver-electron/main";
-//   Quiver.init({ appSlug: "my-app", clientKey: "qk_...", versionCode: 1020300 });
+//   import * as Hands from "@botiverse/hands-electron/main";
+//   Hands.init({ appSlug: "my-app", clientKey: "qk_...", versionCode: 1020300 });
 //
 // Starts Crashpad (which captures both main- and renderer-process minidumps and
-// uploads them to Quiver), listens for renderer/child-process termination, and
+// uploads them to Hands), listens for renderer/child-process termination, and
 // manages a crash scope (user/tags/extra/breadcrumbs) that rides along on the
 // next dump. Renderers forward their scope here over IPC (see ./renderer).
 
@@ -19,8 +19,8 @@ import {
   buildSubmitURL,
   toParam,
   type CrashContext,
-  type QuiverBreadcrumb,
-  type QuiverElectronOptions,
+  type HandsBreadcrumb,
+  type HandsElectronOptions,
 } from "./common.js";
 
 const MAX_BREADCRUMBS = 100;
@@ -30,7 +30,7 @@ let started = false;
 const context: CrashContext = { tags: {}, extra: {}, user: null, breadcrumbs: [] };
 
 /** Initialise crash reporting. Call once in the main process before app ready. */
-export function init(options: QuiverElectronOptions): void {
+export function init(options: HandsElectronOptions): void {
   if (started) return;
   started = true;
 
@@ -72,7 +72,7 @@ export function init(options: QuiverElectronOptions): void {
 }
 
 /** Force a runtime metrics ping outside the normal 24h throttle. */
-export function reportDevice(options: QuiverElectronOptions): Promise<boolean> {
+export function reportDevice(options: HandsElectronOptions): Promise<boolean> {
   return reportMetrics(options, true);
 }
 
@@ -95,7 +95,7 @@ export function setExtra(key: string, value: unknown): void {
 }
 
 /** Record a breadcrumb; the most recent are attached to the next crash. */
-export function addBreadcrumb(crumb: QuiverBreadcrumb): void {
+export function addBreadcrumb(crumb: HandsBreadcrumb): void {
   context.breadcrumbs.push({ timestamp: Date.now(), ...crumb });
   while (context.breadcrumbs.length > MAX_BREADCRUMBS) context.breadcrumbs.shift();
   crashReporter.addExtraParameter("breadcrumbs", JSON.stringify(context.breadcrumbs).slice(0, 8000));
@@ -108,7 +108,7 @@ function applyContext(patch: Partial<CrashContext>): void {
   if (patch.breadcrumbs) for (const b of patch.breadcrumbs) addBreadcrumb(b);
 }
 
-async function reportMetrics(options: QuiverElectronOptions, force = false): Promise<boolean> {
+async function reportMetrics(options: HandsElectronOptions, force = false): Promise<boolean> {
   const state = loadMetricsState();
   const now = Date.now();
   if (!force && state.lastPingAt > 0 && now - state.lastPingAt < METRICS_INTERVAL_MS) return false;
@@ -137,8 +137,8 @@ async function reportMetrics(options: QuiverElectronOptions, force = false): Pro
       method: "POST",
       headers: {
         "content-type": "application/json",
-        "X-Quiver-Client-Key": options.clientKey,
-        "X-Quiver-Device-Id": deviceId,
+        "X-Hands-Client-Key": options.clientKey,
+        "X-Hands-Device-Id": deviceId,
       },
       body: JSON.stringify(metadata),
     });

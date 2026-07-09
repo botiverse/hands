@@ -1,4 +1,4 @@
-# Quiver Publish Architecture — Android (now) + Electron / OTA (later)
+# Hands Publish Architecture — Android (now) + Electron / OTA (later)
 
 > **Status: historical design document (frozen).** Written during the
 > 2026-06 build-out; several sections describe plans that shipped
@@ -27,7 +27,7 @@ v3 builds on these decisions. Re-read all of ToDesktop's docs (building / signin
 
 ## 2. Goals
 
-Quiver ships and updates software for multiple product types:
+Hands ships and updates software for multiple product types:
 
 | Product type | Update mechanism | Sample format |
 |---|---|---|
@@ -45,7 +45,7 @@ User-defined per app: each app picks which product_types it supports at creation
 ### 3.1 Entity-relationship overview
 
 ```
-accounts                    -- (or orgs/quivers — multi-tenancy; see §6)
+accounts                    -- (or orgs/hands — multi-tenancy; see §6)
 └── signing_credentials     -- Mac/Windows certs (account-level, inherited)
 
 apps
@@ -58,7 +58,7 @@ apps
             └── release_scopes -- individual scope records (each platform / IP range)
 ```
 
-A **Channel** in quiver = ToDesktop's "main app + sub-apps + channels" combined. Each channel is a deployment environment that carries:
+A **Channel** in Hands = ToDesktop's "main app + sub-apps + channels" combined. Each channel is a deployment environment that carries:
 - App identity (inherited from app)
 - Bundle ID override (per channel, e.g. `com.example.myapp.dev` for dev channel)
 - Code signing credentials (inherited from account)
@@ -320,7 +320,7 @@ A release can have **multiple scope records** (e.g. full + a single IP override 
 
 ```
 1. User uploads build artifact(s) via CLI or Web
-   CLI: quiver build push ./release.zip --channel production --product-type electron-installer --release-type stable --version 1.2.3 --changelog ./CHANGELOG.md
+   CLI: hands build push ./release.zip --channel production --product-type electron-installer --release-type stable --version 1.2.3 --changelog ./CHANGELOG.md
    Web: UploadDialog 5-step wizard
 
 2. Server:
@@ -341,7 +341,7 @@ A release can have **multiple scope records** (e.g. full + a single IP override 
 
 ### 4.2 Smoke test (optional, before release)
 
-ToDesktop runs builds on actual Win/Mac/Linux VMs, captures screenshots + auto-update tests. quiver v1 will skip this; v2 can integrate with container-based macOS VMs (complex) or just CI-based smoke tests.
+ToDesktop runs builds on actual Win/Mac/Linux VMs, captures screenshots + auto-update tests. Hands v1 will skip this; v2 can integrate with container-based macOS VMs (complex) or just CI-based smoke tests.
 
 ### 4.3 Release flow (promote build to live)
 
@@ -467,7 +467,7 @@ GET /public/apps/:slug/channels
 | `full`     | `all`             | always matches |
 | `platform` | CSV of platform-arch tuples, e.g. `darwin-arm64,darwin-x64,darwin-universal,win32-x64` | matches if client's `User-Agent` (Electron) or `Build.MANUFACTURER+MODEL` / `Build.SUPPORTED_ABIS` (Android) matches any value |
 | `ip_range` | CIDR, e.g. `10.0.0.0/8`, `203.0.113.0/24` | matches if client IP (Worker `request.cf?.clientIp`) is in the CIDR |
-| `user_cohort` | cohort UUID, e.g. `a1b2c3d4-...` | matches if client sends `X-Quiver-Cohort: <uuid>` header AND that cohort is in the release's scopes |
+| `user_cohort` | cohort UUID, e.g. `a1b2c3d4-...` | matches if client sends `X-Hands-Cohort: <uuid>` header (legacy `X-Quiver-Cohort` still accepted) AND that cohort is in the release's scopes |
 
 **Resolution priority** (highest specificity first):
 
@@ -490,9 +490,9 @@ GET /public/v2/apps/:slug/latest
   &client_version=1.2.3
   &cohort=a1b2c3d4-...     # optional, sent only if app passed it explicitly
 
-Headers (v2 client):
-  X-Quiver-Client-Platform: android-arm64-v8a   # required for platform-scoped releases
-  X-Quiver-Cohort: a1b2c3d4-...                  # optional, for cohort-scoped releases
+Headers (v2 client; legacy X-Quiver-* still accepted):
+  X-Hands-Client-Platform: android-arm64-v8a    # required for platform-scoped releases
+  X-Hands-Cohort: a1b2c3d4-...                   # optional, for cohort-scoped releases
 
 Server-side (always available):
   request.cf?.clientIp   # for ip_range scope matching
@@ -585,34 +585,34 @@ LIMIT 1;
 
 **Implementation owner:** P3.3 (public API scope resolution). The SQL above is the contract; the Hono handler is mechanical (params → bind → query → respond). Tests in `worker/test/routes.test.ts` under a new `describe("scope resolution — v2 public API")` block.
 
-## 6. CLI — `quiver-cli`
+## 6. CLI — `hands-cli`
 
-Public npm package. The current alpha covers Quiver login, app/build inspection,
+Public npm package. The current alpha covers Hands login, app/build inspection,
 and Android release publishing; planned commands continue to mirror the
 `todesktop` CLI shape.
 
 ### 6.1 Install
 
 ```
-npm install --save-dev @oranix/quiver-cli
+npm install --save-dev @botiverse/hands-cli
 # or global
-npm install -g @oranix/quiver-cli
+npm install -g @botiverse/hands-cli
 # or one-off
-npm exec --package @oranix/quiver-cli@0.1.0 -- quiver --help
+npm exec --package @botiverse/hands-cli@0.1.0 -- hands --help
 ```
 
 ### 6.2 Auth
 
 ```
-quiver login                         # browser-assisted login, saved to ~/.config/quiver/auth.json
-QUIVER_AUTH_TOKEN=... quiver whoami  # CI / agent mode: bearer token env var
+hands login                         # browser-assisted login, saved to ~/.config/quiver/auth.json
+QUIVER_AUTH_TOKEN=... hands whoami  # CI / agent mode: bearer token env var
 ```
 
 ### 6.3 Commands
 
 ```
 # Build & push (upload-only mode — no code-sign or smoke test)
-quiver build push ./release.zip \
+hands build push ./release.zip \
   --app myapp-android \
   --channel production \
   --product-type electron-installer \
@@ -622,39 +622,39 @@ quiver build push ./release.zip \
   --changelog ./CHANGELOG.md
 
 # Build with full pipeline (parse → sign → upload to R2)
-quiver build push ./release.zip --sign --async --webhook https://ci.example.com/hook
+hands build push ./release.zip --sign --async --webhook https://ci.example.com/hook
 
 # List recent builds
-quiver builds --app myapp-android --limit 20
+hands builds --app myapp-android --limit 20
 
 # Release a build (promote to live)
-quiver release create --build <buildId>
-quiver release create --build <buildId> --scope platform --platforms darwin-arm64,darwin-x64
-quiver release create --build <buildId> --scope ip --cidrs 10.0.0.0/8,192.168.0.0/16
-quiver release create --build <buildId> --full --force   # skip interactive confirmation
-quiver release create --latest                              # release most recent build
+hands release create --build <buildId>
+hands release create --build <buildId> --scope platform --platforms darwin-arm64,darwin-x64
+hands release create --build <buildId> --scope ip --cidrs 10.0.0.0/8,192.168.0.0/16
+hands release create --build <buildId> --full --force   # skip interactive confirmation
+hands release create --latest                              # release most recent build
 
 # List releases
-quiver releases --app myapp-android --channel production --limit 20
+hands releases --app myapp-android --channel production --limit 20
 
 # Rollback
-quiver release rollback --release <releaseId> --reason "Critical bug in 1.2.3"
+hands release rollback --release <releaseId> --reason "Critical bug in 1.2.3"
 
 # Operations (parse / upload / publish ops logs)
-quiver ops list --app myapp-android
-quiver ops retry --op <opId>
-quiver ops delete --op <opId>
+hands ops list --app myapp-android
+hands ops retry --op <opId>
+hands ops delete --op <opId>
 
 # Channels
-quiver channels list --app myapp-android
-quiver channels create --app myapp-android --slug beta --name Beta --bundle-id com.example.myapp.beta
+hands channels list --app myapp-android
+hands channels create --app myapp-android --slug beta --name Beta --bundle-id com.example.myapp.beta
 
 # Product types
-quiver product-types list --app myapp-android
+hands product-types list --app myapp-android
 
 # Webhooks
-quiver webhooks list
-quiver webhooks create --url https://ci.example.com/quiver-hook --events release:new,release:superseded
+hands webhooks list
+hands webhooks create --url https://ci.example.com/hands-hook --events release:new,release:superseded
 ```
 
 ### 6.4 CI integration
@@ -663,7 +663,7 @@ quiver webhooks create --url https://ci.example.com/quiver-hook --events release
 # package.json
 {
   "scripts": {
-    "release": "npm run compile && quiver build push ./release.zip --async --webhook https://ci/quiver && quiver release create --latest --force"
+    "release": "npm run compile && hands build push ./release.zip --async --webhook https://ci/hands && hands release create --latest --force"
   }
 }
 ```
@@ -850,7 +850,7 @@ Availability:
 - Migration 0009: add `build_assets.target_app_version`, `build_assets.fingerprint_hash`. Add `releases.metadata` (per-release custom fields).
 - Container: add `electron-asar` + `rn-bundle` parsers.
 - API: add `/public/apps/:slug/bundles` endpoint. Add `release_scopes` resolution logic.
-- CLI: public alpha `@oranix/quiver-cli@0.1.0` is published to npm; remaining
+- CLI: public alpha `@botiverse/hands-cli@0.1.0` is published to npm; remaining
   planned commands continue incrementally.
 - ~1-2 weeks.
 
@@ -860,8 +860,8 @@ Each phase is shippable independently.
 
 1. **Multi-tenancy** — `accounts` table? orgs? teams? v1: single-account model, defer multi-tenant. Affects `signing_credentials.owner_id` (currently `account`).
 
-2. **CLI distribution** — resolved 2026-07-02: `@oranix/quiver-cli` is public on
-   npm. Default server is the public Quiver Worker, and self-hosted Workers can
+2. **CLI distribution** — resolved 2026-07-02: `@botiverse/hands-cli` is public on
+   npm. Default server is the public Hands Worker, and self-hosted Workers can
    be selected with `--api` / `QUIVER_API`.
 
 3. **Webhook delivery reliability** — fire-and-forget or retry-with-backoff? hot-updater doesn't have webhooks. ToDesktop has them but doesn't document reliability. Recommendation: in-D1 queue + Worker Cron trigger (every 5 min) to retry failed webhook deliveries. v2 concern.
@@ -893,6 +893,6 @@ Each phase is shippable independently.
 4. App creation wizard (3 steps). Deploy. ~3 hours.
 5. Build/Release split in admin UI (Builds tab + Releases tab + Prepare release modal). Deploy. ~6 hours.
 6. Phase 3 schema + container parsers + bundles endpoint. ~1-2 weeks.
-7. CLI (`@oranix/quiver-cli`). ~1 week.
+7. CLI (`@botiverse/hands-cli`). ~1 week.
 
 Each step independently shippable.

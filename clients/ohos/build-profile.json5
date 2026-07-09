@@ -22,8 +22,8 @@
   },
   "modules": [
     {
-      "name": "quiver",
-      "srcPath": "./quiver",
+      "name": "hands",
+      "srcPath": "./hands",
       "targets": [
         {
           "name": "default",

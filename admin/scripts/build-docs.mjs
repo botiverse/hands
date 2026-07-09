@@ -26,7 +26,7 @@ const pages = [
     slug: "agent-cli-feedback",
     title: "Agent CLI: Feedback Triage",
     category: "For agents",
-    description: "Read and triage feedback/crash tickets from the command line with @oranix/quiver-cli.",
+    description: "Read and triage feedback/crash tickets from the command line with @botiverse/hands-cli.",
     source: "agent-cli-feedback.md",
   },
   {
@@ -40,7 +40,7 @@ const pages = [
     slug: "cli-reference",
     title: "CLI Reference",
     category: "SDKs & API",
-    description: "Install and use @oranix/quiver-cli from local scripts or CI.",
+    description: "Install and use @botiverse/hands-cli from local scripts or CI.",
     source: "cli-reference.md",
   },
   {
@@ -68,7 +68,7 @@ const pages = [
     slug: "electron-sdk",
     title: "Electron SDK",
     category: "SDKs & API",
-    description: "Crashpad minidump crash reporting for Electron apps (main + renderer) via @oranix/quiver-electron.",
+    description: "Crashpad minidump crash reporting for Electron apps (main + renderer) via @botiverse/hands-electron.",
     source: "electron-sdk.md",
   },
   {
@@ -263,7 +263,7 @@ function layout({ title, description, body, activeSlug }) {
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>${escapeHtml(title)} - Quiver Docs</title>
+  <title>${escapeHtml(title)} - Hands Docs</title>
   <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
   <style>
     :root { color-scheme: light; --ink:#020617; --muted:#475569; --line:#e2e8f0; --bg:#f8fafc; --panel:#fff; --accent:#0f172a; }
@@ -322,7 +322,7 @@ function layout({ title, description, body, activeSlug }) {
 <body>
   <header>
     <div class="top">
-      <a class="brand" href="/"><img src="/favicon.svg" alt="" /> Quiver</a>
+      <a class="brand" href="/"><img src="/favicon.svg" alt="" /> Hands</a>
       <nav>
         <a href="/docs/">Docs</a>
         <a href="/api-docs">API explorer</a>
@@ -333,7 +333,7 @@ function layout({ title, description, body, activeSlug }) {
   <div class="shell">
     <aside>${nav}</aside>
     <main>
-      <div class="eyebrow">Quiver Docs</div>
+      <div class="eyebrow">Hands Docs</div>
       <h1>${escapeHtml(title)}</h1>
       <p class="lede">${escapeHtml(description)}</p>
       ${body}

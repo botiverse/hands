@@ -205,7 +205,7 @@ export function AppFeedback({ appId }: { appId: string }) {
 type CrashSection = { key: string; label: string; body: string };
 
 /**
- * Split a Quiver crash log into sections by its known headers, so the ticket
+ * Split a Hands crash log into sections by its known headers, so the ticket
  * UI can present them as tabs (like Bugly's stack / scene / logs panels).
  */
 function parseCrashLog(text: string): CrashSection[] {

@@ -4,7 +4,7 @@
 > the OpenAPI spec — browse and try them at [/api-docs](/api-docs)
 > ([openapi.json](/openapi.json)).
 
-Quiver's public API lets apps check for updates, download release artifacts, submit feedback, and view share/history pages without a Quiver admin session.
+Hands's public API lets apps check for updates, download release artifacts, submit feedback, and view share/history pages without a Hands admin session.
 
 Use the admin API or CLI for publishing. Use the public API from clients.
 
@@ -32,8 +32,8 @@ GET /public/v2/apps/:appSlug/updates/check?channel=main&product_type=android-apk
 | `platform` | No | Client platform, such as `android`. |
 | `arch` | No | Client architecture, such as `arm64-v8a`. |
 | `filetype` | No | Desired installable file type. Defaults to `apk`. |
-| `lang` | No | Preferred changelog language, such as `zh-CN` or `en`. Also read from `X-Quiver-Lang` or `Accept-Language`. |
-| `device_id` | No | Stable per-install identifier. Also read from `X-Quiver-Device-Id`. Required to participate in staged rollouts. |
+| `lang` | No | Preferred changelog language, such as `zh-CN` or `en`. Also read from `X-Hands-Lang` or `Accept-Language`. |
+| `device_id` | No | Stable per-install identifier. Also read from `X-Hands-Device-Id`. Required to participate in staged rollouts. |
 
 ### Staged rollouts
 
@@ -154,7 +154,7 @@ canonical structured object for consumers that need every language.
 ## Electron Generic Provider
 
 Electron apps using `electron-updater` can point the generic provider at
-Quiver:
+Hands:
 
 ```ts
 autoUpdater.setFeedURL({
@@ -173,7 +173,7 @@ GET /electron/:appSlug/:channel/:installerFile
 GET /electron/:appSlug/:channel/:installerFile.blockmap
 ```
 
-Quiver serves these from the active `electron-installer` release on that
+Hands serves these from the active `electron-installer` release on that
 channel. Phase 1 intentionally hosts electron-builder's generated files
 as-is: upload `latest*.yml`, installers, and `.blockmap` files as build
 assets. Use `artifact_kind = electron-metadata` for `latest*.yml`; use the
@@ -190,7 +190,7 @@ Example asset conventions:
 | `Raft Setup 1.2.3.exe` | `win32` | `x64` | `exe` | `installable` |
 | `Raft Setup 1.2.3.exe.blockmap` | `win32` | `x64` | `blockmap` | `electron-blockmap` |
 
-macOS updates still require signed app artifacts. Quiver only hosts the
+macOS updates still require signed app artifacts. Hands only hosts the
 already-built and signed files; it does not sign Electron applications.
 
 ## Submit Feedback
@@ -198,12 +198,13 @@ already-built and signed files; it does not sign Electron applications.
 ```http
 POST /public/v2/apps/:appSlug/feedback
 Content-Type: multipart/form-data
-X-Quiver-Client-Key: qk_...
+X-Hands-Client-Key: qk_...
 ```
 
 Requires the app's **client key** (Sentry-DSN model: it identifies the app,
-it is not a user secret). Pass it in the `X-Quiver-Client-Key` header (or a
-`client_key` query parameter); missing or mismatched keys get `401`. Admins
+it is not a user secret). Pass it in the `X-Hands-Client-Key` header (or a
+`client_key` query parameter); missing or mismatched keys get `401`. The legacy
+`X-Quiver-Client-Key` header is still accepted for backward compatibility. Admins
 find and rotate the key in the app's Settings tab or via
 `GET /api/apps/:id/client-key` / `POST /api/apps/:id/rotate-client-key`.
 
@@ -223,7 +224,7 @@ and `ticket_url`, for example `{ "id": "<ticket UUID>", "status": "open",
 Rate limit: 10 submissions per hour per app + client IP. Tickets appear in
 the admin Feedback tab; a `feedback:new` webhook fires for subscribed
 endpoints (crash tickets can additionally trigger `crash:new_group` /
-`crash:spike`). The Android SDK's `QuiverFeedback.submit(...)` wraps this
+`crash:spike`). The Android SDK's `HandsFeedback.submit(...)` wraps this
 endpoint and attaches device metadata automatically.
 
 ## Metrics Ingest
@@ -231,8 +232,8 @@ endpoint and attaches device metadata automatically.
 ```http
 POST /public/v2/apps/:appSlug/metrics
 Content-Type: application/json
-X-Quiver-Client-Key: qk_...
-X-Quiver-Device-Id: <stable per-install uuid>
+X-Hands-Client-Key: qk_...
+X-Hands-Device-Id: <stable per-install uuid>
 ```
 
 A lightweight launch/install ping (client throttles to ≤1/day/device) that powers
@@ -262,7 +263,7 @@ ticket referencing the uploaded object.
 ```http
 POST /public/v2/apps/:appSlug/feedback/presign
 Content-Type: application/json
-X-Quiver-Client-Key: qk_...
+X-Hands-Client-Key: qk_...
 ```
 
 Body: `{ "files": [{ "filename": "...", "content_type": "...", "size": <bytes> }] }`
@@ -335,8 +336,8 @@ Recommended client flow:
 | `410` | Signed download URL expired. |
 | `401` | Missing/invalid client key (feedback submissions). |
 | `429` | Rate limited (feedback submissions). |
-| `500` | Server error. Retry later or contact the Quiver operator. |
+| `500` | Server error. Retry later or contact the Hands operator. |
 
 ## Compatibility
 
-Public update checks are read-only and do not require authentication. Admin and publishing APIs require Quiver auth or an app-scoped deploy token.
+Public update checks are read-only and do not require authentication. Admin and publishing APIs require Hands auth or an app-scoped deploy token.

@@ -1,4 +1,4 @@
-# @oranix/quiver-admin
+# @botiverse/hands-admin
 
 SPA assets for quiver admin, served by the Cloudflare Worker.
 

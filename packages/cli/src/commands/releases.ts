@@ -5,6 +5,7 @@
 import { readFileSync } from "node:fs";
 import type { Command } from "commander";
 import { apiRequest } from "../lib/api.js";
+import { readEnv } from "../lib/env.js";
 
 interface AppRow {
   id: string;
@@ -166,7 +167,7 @@ export function registerReleaseCommands(program: Command): void {
         } else {
           body.ttl_seconds = parsePositiveNumber(opts.ttlSeconds ?? DEFAULT_SHARE_TTL_SECONDS, "--ttl-seconds");
         }
-        const password = opts.password ?? process.env.QUIVER_SHARE_PASSWORD;
+        const password = opts.password ?? readEnv("SHARE_PASSWORD");
         if (password) body.password = password;
         const share = await apiRequest<ReleaseShare>(
           `/api/apps/${appId}/releases/${releaseId}/shares`,

@@ -363,14 +363,19 @@ async function postOnce(
 ): Promise<{ ok: boolean; status: number; body?: string; error?: string }> {
   try {
     const sig = await hmacSha256Hex(secret, body);
+    const event = (() => {
+      try { return JSON.parse(body).event ?? ""; } catch { return ""; }
+    })();
     const r = await fetch(url, {
       method: "POST",
       headers: {
         "content-type": "application/json",
+        // New canonical headers; legacy X-Quiver-* sent too so existing
+        // webhook consumers keep verifying without a change.
+        "X-Hands-Signature": `sha256=${sig}`,
+        "X-Hands-Event": event,
         "X-Quiver-Signature": `sha256=${sig}`,
-        "X-Quiver-Event": (() => {
-          try { return JSON.parse(body).event ?? ""; } catch { return ""; }
-        })(),
+        "X-Quiver-Event": event,
       },
       body,
     });

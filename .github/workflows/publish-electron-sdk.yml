@@ -63,7 +63,7 @@ jobs:
           echo "value=${package_version}" >> "$GITHUB_OUTPUT"
 
       - name: Build Electron SDK
-        run: pnpm --filter @oranix/quiver-electron build
+        run: pnpm --filter @botiverse/hands-electron build
 
       - name: Pack check
         working-directory: clients/electron
@@ -90,7 +90,7 @@ jobs:
             echo
             echo "| Field | Value |"
             echo "|---|---|"
-            echo "| Package | \`@oranix/quiver-electron\` |"
+            echo "| Package | \`@botiverse/hands-electron\` |"
             echo "| Version | \`${{ steps.version.outputs.value }}\` |"
             echo "| Dry run | \`${{ github.event_name == 'workflow_dispatch' && inputs.dry_run }}\` |"
           } >> "$GITHUB_STEP_SUMMARY"

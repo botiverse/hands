@@ -10,6 +10,7 @@
  */
 
 import { resolveApiBase, resolveSessionCookie } from "./config.js";
+import { readEnv } from "./env.js";
 import { Blob } from "node:buffer";
 import { readFile } from "node:fs/promises";
 import { basename } from "node:path";
@@ -56,7 +57,7 @@ export async function apiRequest<T = unknown>(
   const headers: Record<string, string> = {
     accept: "application/json",
   };
-  const bearer = process.env.QUIVER_AUTH_TOKEN ?? process.env.QUIVER_BEARER_TOKEN;
+  const bearer = readEnv("AUTH_TOKEN") ?? readEnv("BEARER_TOKEN");
   if (bearer) headers.authorization = `Bearer ${bearer}`;
   const cookie = resolveSessionCookie();
   if (!bearer && cookie) headers["cookie"] = cookie;
@@ -70,7 +71,7 @@ export async function apiRequest<T = unknown>(
     headers,
     ...(body !== undefined ? { body } : {}),
   });
-  if (process.env.QUIVER_VERBOSE === "1") {
+  if (readEnv("VERBOSE") === "1") {
     console.error(`> ${opts.method ?? "GET"} ${url}`);
     console.error(`< ${res.status}`);
   }
@@ -108,7 +109,7 @@ export async function apiUploadFile<T = unknown>(
   const headers: Record<string, string> = {
     accept: "application/json",
   };
-  const bearer = process.env.QUIVER_AUTH_TOKEN ?? process.env.QUIVER_BEARER_TOKEN;
+  const bearer = readEnv("AUTH_TOKEN") ?? readEnv("BEARER_TOKEN");
   if (bearer) headers.authorization = `Bearer ${bearer}`;
   if (!bearer && cookie) headers.cookie = cookie;
 
@@ -117,7 +118,7 @@ export async function apiUploadFile<T = unknown>(
     headers,
     body: form,
   });
-  if (process.env.QUIVER_VERBOSE === "1") {
+  if (readEnv("VERBOSE") === "1") {
     console.error(`> POST ${url}`);
     console.error(`< ${res.status}`);
   }

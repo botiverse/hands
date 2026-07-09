@@ -1,7 +1,7 @@
 {
-  "name": "@oranix/quiver-electron",
-  "version": "0.1.0",
-  "description": "Quiver crash reporting for Electron apps — main + renderer, Crashpad minidumps auto-uploaded and symbolicated server-side.",
+  "name": "@botiverse/hands-electron",
+  "version": "0.2.0",
+  "description": "Hands crash reporting for Electron apps — main + renderer, Crashpad minidumps auto-uploaded and symbolicated server-side.",
   "license": "MIT",
   "type": "module",
   "exports": {

@@ -1,4 +1,4 @@
-# Quiver Account / Organization / Team / Invite Architecture
+# Hands Account / Organization / Team / Invite Architecture
 
 > **Status: historical design document (frozen).** Written during the
 > 2026-06 build-out; several sections describe plans that shipped
@@ -14,7 +14,7 @@ Scope: long-lived schema and admin UX for organizations, teams, memberships, inv
 
 ## 1. Goals
 
-Quiver today authenticates via Login with Raft (migration 0004) — `raft_accounts` + `raft_sessions`. A human account can sign in and operate on any app. **Agents (Raft `type='agent'`) are also first-class principals** — they can log in, get a session cookie, and act on Quiver.
+Hands today authenticates via Login with Raft (migration 0004) — `raft_accounts` + `raft_sessions`. A human account can sign in and operate on any app. **Agents (Raft `type='agent'`) are also first-class principals** — they can log in, get a session cookie, and act on Hands.
 
 What's missing:
 - **Organizations** — group of apps owned by one team (humans + agents can co-own)
@@ -25,15 +25,15 @@ What's missing:
 
 ### 1.1 Design decision: org boundary = Raft `server_id`
 
-**Key principle:** A Quiver organization aligns 1:1 with a Raft server. Every principal (human or agent) that logs in to a given Raft server is automatically a member of that server's org.
+**Key principle:** A Hands organization aligns 1:1 with a Raft server. Every principal (human or agent) that logs in to a given Raft server is automatically a member of that server's org.
 
 Rationale (from @Codex-Kuikly-KMP专家 review):
-- Agents in particular benefit — no separate "invite" ceremony needed for every agent; the moment a Raft agent is provisioned to a server, they can act on Quiver.
+- Agents in particular benefit — no separate "invite" ceremony needed for every agent; the moment a Raft agent is provisioned to a server, they can act on Hands.
 - Same-server login → same org. Cross-server → different org. No manual linking.
 - Org identity = `(external_provider='raft', external_id=server_id)`.
 
 ```
-Single Raft server "acme-corp"      →  One Quiver organization
+Single Raft server "acme-corp"      →  One Hands organization
   ├─ human alice@acme.com           →  org_member(role='owner')
   ├─ human bob@acme.com             →  org_member(role='admin')
   ├─ agent  assistant-1              →  org_member(role='member')
@@ -77,7 +77,7 @@ organizations
   archived        INTEGER NOT NULL DEFAULT 0
 ```
 
-Quiver at install time has a single bootstrap org (`slug='default'`, `name='Default'`). All existing apps and accounts get associated with this org in the Phase 5 backfill migration.
+Hands at install time has a single bootstrap org (`slug='default'`, `name='Default'`). All existing apps and accounts get associated with this org in the Phase 5 backfill migration.
 
 ### 3.2 `org_members`
 
@@ -265,7 +265,7 @@ const url = new URL(c.req.url);
 
 ### 5.3 Agent (Raft `type='agent'`) handling
 
-**Agents are first-class principals.** They can log in via Login with Raft the same way humans do, get a session cookie, and act on Quiver with the same per-endpoint RBAC checks.
+**Agents are first-class principals.** They can log in via Login with Raft the same way humans do, get a session cookie, and act on Hands with the same per-endpoint RBAC checks.
 
 Default role assignment on first login:
 - Human: `org_role='member'`, `app_role=null` (not a member of any app yet — must be granted per app)
@@ -275,14 +275,14 @@ Admin can promote an agent to `publisher` or `admin` explicitly via the same UI 
 
 Audit log captures `actor_type='agent'` for all agent actions. UI shows an "agent" badge next to the actor's name.
 
-**Why we didn't do "first-class agent permissions" as a separate dimension:** Humans and agents have the same actions in Quiver (create app, upload build, release, etc.). The only difference is the default role + UI affordances. A future "automation only" or "agent-token" distinction can be added on top of `actor_type` if needed (e.g., a "machine tokens" page).
+**Why we didn't do "first-class agent permissions" as a separate dimension:** Humans and agents have the same actions in Hands (create app, upload build, release, etc.). The only difference is the default role + UI affordances. A future "automation only" or "agent-token" distinction can be added on top of `actor_type` if needed (e.g., a "machine tokens" page).
 
 ## 6. Admin UI changes
 
 ### 6.1 Top-bar: org switcher
 
 ```
-[ Quiver ]  [ Acme Corp ▾ ]   [ alice@acme.com ▾ ]
+[ Hands ]  [ Acme Corp ▾ ]   [ alice@acme.com ▾ ]
                               ├─ Switch organization…
                               ├─ Org settings
                               ├─ Team members
@@ -334,7 +334,7 @@ Before adding org tables, the auth flow needs to know which org a principal is i
 - Upsert `org_members` row linking `raft_accounts.id` to `org.id`:
   - First principal on a server: role='owner' if human, 'admin' if agent
   - Subsequent principals: default role='member' (human) or 'viewer' (agent)
-  - Honor an explicit role in the JWT `server_role` claim if present (e.g., if Raft says the principal is an admin, set Quiver org_role='admin' on first join)
+  - Honor an explicit role in the JWT `server_role` claim if present (e.g., if Raft says the principal is an admin, set Hands org_role='admin' on first join)
 - The new session is enriched with `c.get("org_id")` and `c.get("org_role")` for downstream middleware.
 
 This is a small change to `worker/src/routes/auth.ts` that makes org context available everywhere. The required tables are introduced by P5.1, so deployment order is: apply the P5.1 migration first, then deploy the auth-context code.
@@ -392,7 +392,7 @@ This is a small change to `worker/src/routes/auth.ts` that makes org context ava
 
 ## 8. Open questions
 
-1. **Multi-org membership** — can a Raft account be in multiple quiver orgs? **Yes** (raft_accounts.org_id is the *primary* org from Login with Raft, but they can be members of many quiver orgs). Implementation: `org_members` already supports this.
+1. **Multi-org membership** — can a Raft account be in multiple Hands orgs? **Yes** (raft_accounts.org_id is the *primary* org from Login with Raft, but they can be members of many Hands orgs). Implementation: `org_members` already supports this.
 
 2. **Self-hosted vs SaaS** — does this design work for self-hosted? **Yes** — single bootstrap org for self-hosted, multi-org SaaS for cloud. Migration handles both.
 
@@ -413,8 +413,8 @@ This is a small change to `worker/src/routes/auth.ts` that makes org context ava
 - Vercel Teams model: https://vercel.com/docs/teams
 - Supabase Organizations: https://supabase.com/docs/guides/platform/orgs
 - Cloudflare Accounts: https://developers.cloudflare.com/fundamentals/accounts/
-- Quiver existing auth: `worker/src/middleware/auth.ts` + `migrations/sql/0004_raft_auth.sql`
-- Quiver audit log: `migrations/sql/0001_init.sql` + `worker/src/routes/audit.ts`
+- Hands existing auth: `worker/src/middleware/auth.ts` + `migrations/sql/0004_raft_auth.sql`
+- Hands audit log: `migrations/sql/0001_init.sql` + `worker/src/routes/audit.ts`
 
 ## 10. Tracking
 

@@ -1,23 +1,23 @@
-# Quiver (iOS)
+# Hands (iOS)
 
-Native iOS reporting layer for Quiver: feedback tickets and store-then-send
+Native iOS reporting layer for Hands: feedback tickets and store-then-send
 crash reporting. Objective-C, no dependencies, iOS 14.1+.
 
 ## Install (CocoaPods, via git)
 
 ```ruby
-pod 'Quiver', :git => 'https://github.com/oranix-io/quiver.git', :tag => 'ios-v0.1.3'
+pod 'Hands', :git => 'https://github.com/oranix-io/quiver.git', :tag => 'ios-v0.1.3'
 ```
 
 ## Configure & start
 
 All configuration is runtime parameters — the SDK ships nothing app-specific.
-Get the client key from your app's Settings tab in the Quiver console
+Get the client key from your app's Settings tab in the Hands console
 (Sentry-DSN model: it identifies the app and ships in the bundle; rotate it
 from the console if it leaks).
 
 ```swift
-Quiver.install(with: QuiverConfig(
+Hands.install(with: HandsConfig(
     baseUrl: "https://quiver.example.com",
     appSlug: "my-app",
     channel: "main",
@@ -31,7 +31,7 @@ reports a few seconds after launch. Call it as early as possible (app init).
 ## Feedback
 
 ```swift
-Quiver.submitFeedback(
+Hands.submitFeedback(
     "Feed doesn't refresh after login.",
     kind: "bug",                      // "feedback" | "bug" | "crash"
     attachmentPaths: [logFilePath],   // up to 3 files, 10 MB each

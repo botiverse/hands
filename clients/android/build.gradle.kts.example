@@ -15,7 +15,7 @@ android {
         applicationId = "com.bytemain.slock"
         minSdk = 24
         targetSdk = 34
-        versionCode = 42                 // ← quiver UpdateChecker compares against this
+        versionCode = 42                 // ← Hands UpdateChecker compares against this
         versionName = "1.2.3"
     }
 

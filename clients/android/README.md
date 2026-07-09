@@ -1,6 +1,6 @@
-# Quiver Android Updater
+# Hands Android Updater
 
-Android SDK for Quiver server-side update checks and APK installation.
+Android SDK for Hands server-side update checks and APK installation.
 
 ## Coordinates
 
@@ -16,7 +16,7 @@ repositories {
 }
 
 dependencies {
-    implementation("io.quiver:quiver-android-updater:0.4.0")
+    implementation("build.hands:hands-android-sdk:0.4.0")
 }
 ```
 
