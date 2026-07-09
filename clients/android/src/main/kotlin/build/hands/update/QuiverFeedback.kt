@@ -1,4 +1,4 @@
-package io.quiver.update
+package build.hands.update
 
 import android.app.ActivityManager
 import android.content.Context

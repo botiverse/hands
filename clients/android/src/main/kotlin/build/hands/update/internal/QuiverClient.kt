@@ -1,6 +1,6 @@
-package io.quiver.update.internal
+package build.hands.update.internal
 
-import io.quiver.update.models.UpdateCheckResponse
+import build.hands.update.models.UpdateCheckResponse
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json

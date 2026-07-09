@@ -1,4 +1,4 @@
-package io.quiver.update.installer
+package build.hands.update.installer
 
 import android.app.DownloadManager
 import android.content.BroadcastReceiver

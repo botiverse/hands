@@ -1,11 +1,11 @@
-package io.quiver.update
+package build.hands.update
 
 import android.app.DownloadManager
 import android.content.Context
 import android.content.IntentFilter
-import io.quiver.update.installer.ApkInstaller
-import io.quiver.update.internal.QuiverClient
-import io.quiver.update.models.UpdateCheckResponse
+import build.hands.update.installer.ApkInstaller
+import build.hands.update.internal.QuiverClient
+import build.hands.update.models.UpdateCheckResponse
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob

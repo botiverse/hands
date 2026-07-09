@@ -9,7 +9,7 @@ group = "build.hands"
 version = providers.gradleProperty("VERSION_NAME").orElse("0.1.0-SNAPSHOT").get()
 
 android {
-    namespace = "io.quiver.update"
+    namespace = "build.hands.update"
     compileSdk = 34
 
     defaultConfig {

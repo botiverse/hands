@@ -1,4 +1,4 @@
-package io.quiver.update
+package build.hands.update
 
 import android.os.Bundle
 import androidx.activity.ComponentActivity
@@ -9,7 +9,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
-import io.quiver.update.models.UpdateCheckResponse
+import build.hands.update.models.UpdateCheckResponse
 import kotlinx.coroutines.runBlocking
 
 /**

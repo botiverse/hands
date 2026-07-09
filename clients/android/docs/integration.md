@@ -5,7 +5,7 @@ check for the latest APK version hosted on a quiver server and trigger a
 download + install.
 
 > ⚠️ This is reference code, not a published library. Drop the
-> `io.quiver.update` package into your codebase and adapt the package
+> `build.hands.update` package into your codebase and adapt the package
 > name + the endpoint base URL to match your deployment.
 
 ## What quiver exposes

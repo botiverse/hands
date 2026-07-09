@@ -1,4 +1,4 @@
-package io.quiver.update.models
+package build.hands.update.models
 
 import kotlinx.serialization.Serializable
 
