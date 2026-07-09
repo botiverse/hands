@@ -53,12 +53,9 @@
 
   // Cron trigger — reaps pending webhook deliveries every 5 minutes.
   // Invokes handleReapDeliveries via the "scheduled" handler in src/index.ts.
-  "triggers": [
-    {
-      "type": "scheduled",
-      "cron": "*/5 * * * *"
-    }
-  ],
+  "triggers": {
+    "crons": ["*/5 * * * *"]
+  },
 
   // Non-secret config
   "vars": {

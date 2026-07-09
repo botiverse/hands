@@ -1,0 +1,212 @@
+name: Sync Hands Data
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: "Type CONFIRM_SYNC_HANDS_FROM_QUIVER to copy Quiver production D1/R2 data into Hands."
+        required: true
+        type: string
+      sync_d1:
+        description: "Export quiver-db and import it into hands-db."
+        required: true
+        type: boolean
+        default: true
+      reset_hands_d1:
+        description: "Delete target Hands D1 application data before import. Leaves d1_migrations intact."
+        required: true
+        type: boolean
+        default: true
+      sync_r2:
+        description: "Copy D1-referenced objects from quiver-apks to hands-artifacts."
+        required: true
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: hands-data-sync
+  cancel-in-progress: false
+
+env:
+  SOURCE_D1_DATABASE_NAME: quiver-db
+  TARGET_D1_DATABASE_NAME: hands-db
+  SOURCE_R2_BUCKET_NAME: quiver-apks
+  TARGET_R2_BUCKET_NAME: hands-artifacts
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: pnpm/action-setup@v6
+        with:
+          version: 9.12.0
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+          cache: "pnpm"
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Confirm one-way sync
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${{ inputs.confirm }}" != "CONFIRM_SYNC_HANDS_FROM_QUIVER" ]]; then
+            echo "Refusing to run without exact confirmation phrase." >&2
+            exit 1
+          fi
+
+      - name: Export Quiver D1 data
+        if: ${{ inputs.sync_d1 || inputs.sync_r2 }}
+        working-directory: worker
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p ../tmp/hands-sync
+          pnpm exec wrangler d1 export "${SOURCE_D1_DATABASE_NAME}" \
+            --remote \
+            --config wrangler.jsonc \
+            --output ../tmp/hands-sync/quiver-data.sql \
+            --no-schema \
+            --skip-confirmation
+
+          grep -v -E '^INSERT INTO "(d1_migrations|sqlite_sequence)"' \
+            ../tmp/hands-sync/quiver-data.sql \
+            > ../tmp/hands-sync/quiver-data-filtered.sql
+
+          node <<'NODE'
+          const fs = require("node:fs");
+          const sql = fs.readFileSync("../tmp/hands-sync/quiver-data-filtered.sql", "utf8");
+          const seen = new Set();
+          const tables = [];
+          for (const match of sql.matchAll(/^INSERT INTO "([^"]+)"/gm)) {
+            if (!seen.has(match[1])) {
+              seen.add(match[1]);
+              tables.push(match[1]);
+            }
+          }
+          const escapeIdent = (name) => name.replace(/"/g, '""');
+          const resetSql = [
+            "PRAGMA defer_foreign_keys=TRUE;",
+            ...tables.reverse().map((table) => `DELETE FROM "${escapeIdent(table)}";`),
+          ].join("\n");
+          fs.writeFileSync("../tmp/hands-sync/reset-hands-data.sql", `${resetSql}\n`);
+          console.log(`Prepared D1 data export for ${tables.length} tables.`);
+          NODE
+
+      - name: Reset Hands D1 data
+        if: ${{ inputs.sync_d1 && inputs.reset_hands_d1 }}
+        working-directory: worker
+        env:
+          CLOUDFLARE_ACCOUNT_ID: a084c4564dfdce5a7775b08ece638a79
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_BOTIVERSE_API_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          pnpm exec wrangler d1 execute "${TARGET_D1_DATABASE_NAME}" \
+            --remote \
+            --config wrangler.hands.jsonc \
+            --file ../tmp/hands-sync/reset-hands-data.sql \
+            --yes
+
+      - name: Import Quiver D1 data into Hands
+        if: ${{ inputs.sync_d1 }}
+        working-directory: worker
+        env:
+          CLOUDFLARE_ACCOUNT_ID: a084c4564dfdce5a7775b08ece638a79
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_BOTIVERSE_API_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          pnpm exec wrangler d1 execute "${TARGET_D1_DATABASE_NAME}" \
+            --remote \
+            --config wrangler.hands.jsonc \
+            --file ../tmp/hands-sync/quiver-data-filtered.sql \
+            --yes
+
+      - name: Build R2 key manifest from Quiver D1
+        if: ${{ inputs.sync_r2 }}
+        working-directory: worker
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          pnpm exec wrangler d1 execute "${SOURCE_D1_DATABASE_NAME}" \
+            --remote \
+            --config wrangler.jsonc \
+            --json \
+            --command "SELECT r2_key FROM build_assets UNION SELECT r2_key FROM feedback_attachments UNION SELECT icon_r2_key AS r2_key FROM apps WHERE icon_r2_key IS NOT NULL ORDER BY r2_key" \
+            > ../tmp/hands-sync/r2-keys.json
+
+          node <<'NODE'
+          const fs = require("node:fs");
+          const raw = fs.readFileSync("../tmp/hands-sync/r2-keys.json", "utf8");
+          const payload = JSON.parse(raw);
+          const keys = [];
+          for (const statement of payload) {
+            for (const row of statement.results ?? []) {
+              if (row.r2_key) keys.push(row.r2_key);
+            }
+          }
+          fs.writeFileSync("../tmp/hands-sync/r2-keys.txt", `${keys.join("\n")}\n`);
+          console.log(`Prepared ${keys.length} R2 keys.`);
+          NODE
+
+      - name: Copy referenced R2 objects into Hands
+        if: ${{ inputs.sync_r2 }}
+        working-directory: worker
+        shell: bash
+        run: |
+          set -euo pipefail
+          copied=0
+          missing=0
+          while IFS= read -r key; do
+            [[ -n "${key}" ]] || continue
+            file="../tmp/hands-sync/r2/${key}"
+            mkdir -p "$(dirname "${file}")"
+
+            if ! CLOUDFLARE_ACCOUNT_ID="${{ secrets.CLOUDFLARE_ACCOUNT_ID }}" \
+              CLOUDFLARE_API_TOKEN="${{ secrets.CLOUDFLARE_API_TOKEN }}" \
+              pnpm exec wrangler r2 object get "${SOURCE_R2_BUCKET_NAME}/${key}" --file "${file}" --remote; then
+              echo "Missing source R2 object: ${key}" >&2
+              missing=$((missing + 1))
+              continue
+            fi
+
+            CLOUDFLARE_ACCOUNT_ID="a084c4564dfdce5a7775b08ece638a79" \
+              CLOUDFLARE_API_TOKEN="${{ secrets.CLOUDFLARE_BOTIVERSE_API_TOKEN }}" \
+              pnpm exec wrangler r2 object put "${TARGET_R2_BUCKET_NAME}/${key}" --file "${file}" --remote --force >/dev/null
+            copied=$((copied + 1))
+          done < ../tmp/hands-sync/r2-keys.txt
+
+          echo "Copied ${copied} R2 objects; missing ${missing}."
+          if [[ "${missing}" -gt 0 ]]; then
+            exit 1
+          fi
+
+      - name: Verify Hands data counts
+        if: ${{ always() && (inputs.sync_d1 || inputs.sync_r2) }}
+        working-directory: worker
+        env:
+          CLOUDFLARE_ACCOUNT_ID: a084c4564dfdce5a7775b08ece638a79
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_BOTIVERSE_API_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          pnpm exec wrangler d1 execute "${TARGET_D1_DATABASE_NAME}" \
+            --remote \
+            --config wrangler.hands.jsonc \
+            --json \
+            --command "SELECT COUNT(*) AS apps FROM apps; SELECT COUNT(*) AS builds FROM builds; SELECT COUNT(*) AS build_assets FROM build_assets; SELECT COUNT(*) AS releases FROM releases; SELECT COUNT(*) AS feedback_tickets FROM feedback_tickets; SELECT COUNT(*) AS feedback_attachments FROM feedback_attachments; SELECT COUNT(*) AS device_pings FROM device_pings;"
