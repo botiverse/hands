@@ -93,37 +93,6 @@ export async function handlePublicAppHistory(c: Context<{ Bindings: Env }>) {
 }
 
 /**
- * A raw CI changelog is a non-empty plain string (e.g. "Slock Android release
- * APK #69 from local main abc123 (…)"). Curated release notes are stored as a
- * bilingual JSON object ({"zh-cn":…,"en":…}); null means "no notes yet". Only
- * raw strings are hidden from the public release-notes page.
- */
-/**
- * A curated bilingual note is required for a version to appear on the public
- * release-notes page. Null or blank changelogs (versions never given release
- * notes, incl. redundant same-version rebuild records) are hidden rather than
- * rendered as a noisy "No release notes for this version." row — this also
- * collapses duplicate records of one version_code down to the single one that
- * actually carries notes.
- */
-function isEmptyChangelog(changelog: string | null): boolean {
-  return changelog == null || changelog.trim() === "";
-}
-
-function isRawChangelog(changelog: string | null): boolean {
-  if (changelog == null) return false;
-  const trimmed = changelog.trim();
-  if (trimmed === "") return false;
-  if (!trimmed.startsWith("{")) return true;
-  try {
-    const parsed = JSON.parse(trimmed);
-    return typeof parsed !== "object" || parsed === null || Array.isArray(parsed);
-  } catch {
-    return true;
-  }
-}
-
-/**
  * Public raft-style release-notes page (task #90). Same data as the history
  * page (non-cancelled published releases, bilingual changelog) but
  * changelog-first and addressable by ?version_code=: the requested version is
@@ -154,15 +123,13 @@ export async function handlePublicReleaseNotes(c: Context<{ Bindings: Env }>) {
     .all<HistoryRow>();
 
   // With a version_code: show that version and everything older (previous
-  // non-cancelled versions). Without it: the full history. Also drop versions
-  // whose changelog is a raw CI string (not a curated bilingual note) — these
-  // are seed/pre-policy builds that don't belong on a user-facing page. Null
-  // changelogs are kept (they render a neutral "no release notes" line).
+  // non-cancelled versions). Without it: the full history. Changelogs are
+  // rendered as stored — raw text included — matching the share page; a
+  // version without notes shows a neutral "no release notes" line rather
+  // than being hidden (hiding made the page silently fall back to an older
+  // version's notes, which read as the wrong changelog for the version).
   const visible = (results ?? []).filter(
-    (r) =>
-      (requestedCode == null || r.version_code <= requestedCode) &&
-      !isRawChangelog(r.changelog) &&
-      !isEmptyChangelog(r.changelog),
+    (r) => requestedCode == null || r.version_code <= requestedCode,
   );
 
   const lang =
@@ -197,10 +164,7 @@ export async function handlePublicReleaseNotesJson(c: Context<{ Bindings: Env }>
     null;
   const releases = (results ?? [])
     .filter(
-      (row) =>
-        (requestedCode == null || row.version_code <= requestedCode) &&
-        !isRawChangelog(row.changelog) &&
-        !isEmptyChangelog(row.changelog),
+      (row) => requestedCode == null || row.version_code <= requestedCode,
     )
     .map((row) => ({
       release_id: row.release_id,
