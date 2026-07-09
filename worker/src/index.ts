@@ -18,6 +18,7 @@ import { cors } from "hono/cors";
 import { authMiddleware, currentActor } from "./middleware/auth";
 import {
   handleAgentManifest,
+  handleAgentHelp,
   handleAuthConfig,
   handleAuthLogin,
   handleAuthLogout,
@@ -469,6 +470,7 @@ app.get("/api/auth/config", handleAuthConfig);
 app.get("/api/auth/login", handleAuthLogin);
 app.get("/login/raft/callback", handleRaftCallback);
 app.get("/api/auth/me", handleAuthMe);
+app.get("/api/agent/help", handleAgentHelp);
 app.post("/api/auth/logout", handleAuthLogout);
 
 app.get("/public/apps/:slug/latest", handlePublicV2Latest);

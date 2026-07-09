@@ -480,6 +480,12 @@ export async function handleAuthMe(c: Context<{ Bindings: Env }>) {
       avatar_url: account.avatar_url,
       actor: accountActor(account),
     },
+    // Post-login orientation for agents/scripts: /api/auth/me is the manifest's
+    // context_check, so it's the first thing a fresh login sees.
+    help: {
+      hint: "New here? GET /api/agent/help (the manifest's `help` action) for auth model, action list, crash-triage flow, and docs.",
+      url: "/api/agent/help",
+    },
   });
 }
 
@@ -583,6 +589,46 @@ export async function handleAuthLogout(c: Context<{ Bindings: Env }>) {
   return c.json({ ok: true });
 }
 
+/**
+ * Agent/API quick-start (the manifest's `help` action). Public by design —
+ * this is how a caller learns to authenticate in the first place. Content
+ * mirrors the CLI's --help recipes and /docs/agent-cli-feedback.
+ */
+export async function handleAgentHelp(c: Context<{ Bindings: Env }>) {
+  const origin = appOrigin(c);
+  c.header("Cache-Control", "no-store");
+  return c.json({
+    service: "hands",
+    start_here: [
+      "1. Authenticate (see `auth` below), then GET /api/apps to find your app_id.",
+      "2. Crash triage: list-feedback (kind=crash) → get-feedback (device context + attachments) → download-feedback-attachment (raw bytes).",
+      "3. Update tickets as you work: PATCH status/assignee, POST comments (see `write_endpoints`).",
+    ],
+    auth: {
+      raft_agents:
+        "Run `raft integration login --service <hands-service>` once; then call actions via `raft integration invoke --service <hands-service> --action <name>`. The stored session authenticates you automatically.",
+      bearer_token:
+        "CI/scripts: send `Authorization: Bearer <deploy token>` (create one in the console: App → Settings → Deploy Tokens; viewer role is enough for reads).",
+      humans:
+        "Use the CLI: `npm i -g @botiverse/hands-cli` then `hands login` (browser flow). `hands --help` lists common recipes.",
+    },
+    actions_list:
+      "GET /.well-known/raft-agent-manifest.json — or `raft integration invoke --service <hands-service> --list-actions`.",
+    write_endpoints: {
+      update_ticket:
+        "PATCH /api/apps/{app_id}/feedback/{ticket_id} — body: {status?: open|in_progress|resolved|closed, assignee?: string|null}",
+      comment_ticket:
+        "POST /api/apps/{app_id}/feedback/{ticket_id}/comments — body: {text: string}",
+    },
+    docs: {
+      agent_guide: `${origin}/docs/agent-cli-feedback`,
+      cli_reference: `${origin}/docs/cli-reference`,
+      api_reference: `${origin}/docs/public-api-reference`,
+      openapi: `${origin}/openapi.json`,
+    },
+  });
+}
+
 export async function handleAgentManifest(c: Context<{ Bindings: Env }>) {
   const origin = appOrigin(c);
   // Never edge-cache the manifest — the integration daemon must always see the
@@ -605,6 +651,12 @@ export async function handleAgentManifest(c: Context<{ Bindings: Env }>) {
     // feedback-read/log-retrieval flow; Hands serves raw attachments and does
     // not interpret their contents.
     actions: [
+      {
+        name: "help",
+        description:
+          "Start here — how to authenticate, what each action does, common crash/feedback flows, and docs links.",
+        endpoint: { method: "GET", path: "/api/agent/help" },
+      },
       {
         name: "list-apps",
         description: "List apps the caller can access.",
