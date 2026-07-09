@@ -305,13 +305,13 @@ function AppContextNav() {
 function AppDetailRoute() {
   const { appId } = useParams();
   if (!appId) return null;
-  return <AppDetail appId={appId} />;
+  return <AppDetail key={appId} appId={appId} />;
 }
 
 function AppChannelsRoute() {
   const { appId } = useParams();
   if (!appId) return null;
-  return <AppChannels appId={appId} />;
+  return <AppChannels key={appId} appId={appId} />;
 }
 
 function AppSettingsRoute() {
@@ -323,49 +323,55 @@ function AppSettingsRoute() {
 function AppFeedbackRoute() {
   const { appId } = useParams();
   if (!appId) return null;
-  return <AppFeedback appId={appId} />;
+  return <AppFeedback key={appId} appId={appId} />;
 }
 
 function AppCrashesRoute() {
   const { appId } = useParams();
   if (!appId) return null;
-  return <AppCrashes appId={appId} />;
+  return <AppCrashes key={appId} appId={appId} />;
 }
 
 function FeedbackTicketRoute() {
   const { appId, ticketId } = useParams();
   if (!appId || !ticketId) return null;
-  return <FeedbackTicketPage appId={appId} ticketId={ticketId} />;
+  return (
+    <FeedbackTicketPage
+      key={`${appId}:${ticketId}`}
+      appId={appId}
+      ticketId={ticketId}
+    />
+  );
 }
 
 function AppSharesRoute() {
   const { appId } = useParams();
   if (!appId) return null;
-  return <AppShares appId={appId} />;
+  return <AppShares key={appId} appId={appId} />;
 }
 
 function AppAccessRoute() {
   const { appId } = useParams();
   if (!appId) return null;
-  return <AppAccess appId={appId} />;
+  return <AppAccess key={appId} appId={appId} />;
 }
 
 function AuditRoute() {
   const { appId } = useParams();
   if (!appId) return null;
-  return <AuditLog appId={appId} />;
+  return <AuditLog key={appId} appId={appId} />;
 }
 
 function BuildsRoute() {
   const { appId } = useParams();
   if (!appId) return null;
-  return <Builds appId={appId} />;
+  return <Builds key={appId} appId={appId} />;
 }
 
 function ReleasesRoute() {
   const { appId } = useParams();
   if (!appId) return null;
-  return <Releases appId={appId} />;
+  return <Releases key={appId} appId={appId} />;
 }
 
 function LegacyPublishRedirect() {
