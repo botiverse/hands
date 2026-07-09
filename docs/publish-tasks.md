@@ -190,7 +190,7 @@ Goal: introduce `product_types`, `release_types`, `build_assets`, `releases`, `r
 | P3.3.3 IP range → user matching (Cloudflare `cf-connecting-ip`) | ✅ DONE | 2h | covered by P3.3.2; cf.clientIp is the only source (X-Forwarded-For never trusted). |
 | P3.3.4 User cohort matching (cookie / auth) | 🟡 PARTIAL | 4h | P3.3.2 reads cohort from `X-Quiver-Cohort` header; cookie / Raft-session-based cohort lookup deferred to v2 (needs auth at the public edge, which the current edge doesn't have). |
 
-### P3.4 — CLI (`@oranix/quiver-cli`)
+### P3.4 — CLI (`@botiverse/hands-cli`)
 
 | Task | Status | Estimate | Notes |
 |---|---|---|---|

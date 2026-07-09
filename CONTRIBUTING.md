@@ -25,11 +25,11 @@ cd ../quiver-<slice>
 
 ```sh
 # 1. apply D1 migrations
-pnpm --filter @oranix/quiver-worker exec wrangler d1 migrations apply quiver-db
+pnpm --filter @botiverse/hands-worker exec wrangler d1 migrations apply quiver-db
 
 # 2. deploy worker + container
-pnpm --filter @oranix/quiver-worker exec wrangler deploy
+pnpm --filter @botiverse/hands-worker exec wrangler deploy
 
 # 3. deploy admin UI
-pnpm --filter @oranix/quiver-admin exec wrangler pages deploy ./dist
+pnpm --filter @botiverse/hands-admin exec wrangler pages deploy ./dist
 ```

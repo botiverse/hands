@@ -31,9 +31,9 @@ import { setApiBase } from "./lib/api.js";
 const program = new Command();
 
 program
-  .name("quiver")
-  .description("Quiver CLI — manage apps, builds, releases from the terminal.")
-  .version("0.1.1")
+  .name("hands")
+  .description("Hands CLI — manage apps, builds, releases from the terminal.")
+  .version("0.4.0")
   .option(
     "--api <url>",
     "Quiver Worker base URL (default: https://quiver.oranix.io or $QUIVER_API)",

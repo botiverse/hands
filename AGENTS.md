@@ -58,7 +58,7 @@ cookies, or other credentials into public Raft channels.
 | Worker | `worker/` | Hono Worker, API routes, Login with Raft, D1/R2 access |
 | Admin UI | `admin/` | React + Vite + Tailwind admin SPA and docs shell |
 | APK parser container | `container/` | Cloudflare Container using `aapt` / `apksigner` |
-| CLI package | `packages/cli/` | `@oranix/quiver-cli` |
+| CLI package | `packages/cli/` | `@botiverse/hands-cli` |
 | Android updater SDK | `clients/android/` | Update checks and APK installation |
 | Docs | `docs/` | Admin guide, CLI reference, API reference, architecture notes |
 | Migrations | `migrations/` | D1 SQL schema migrations |
@@ -103,17 +103,17 @@ pnpm -w lint
 Focused commands:
 
 ```bash
-pnpm --filter @oranix/quiver-worker build
-pnpm --filter @oranix/quiver-worker test
-pnpm --filter @oranix/quiver-admin build
-pnpm --filter @oranix/quiver-cli test
+pnpm --filter @botiverse/hands-worker build
+pnpm --filter @botiverse/hands-worker test
+pnpm --filter @botiverse/hands-admin build
+pnpm --filter @botiverse/hands-cli test
 ```
 
 Local development:
 
 ```bash
-pnpm --filter @oranix/quiver-worker dev
-pnpm --filter @oranix/quiver-admin dev
+pnpm --filter @botiverse/hands-worker dev
+pnpm --filter @botiverse/hands-admin dev
 docker build -t apk-parser container/
 ```
 
@@ -136,7 +136,7 @@ docker build -t apk-parser container/
 GitHub Actions owns production publishing so local machines do not need
 long-lived npm or Cloudflare credentials.
 
-- `Publish CLI` publishes `@oranix/quiver-cli` to npm through npm Trusted
+- `Publish CLI` publishes `@botiverse/hands-cli` to npm through npm Trusted
   Publishing / GitHub OIDC.
 - `Deploy Quiver Server` applies D1 migrations (`wrangler d1 migrations
   apply quiver-db --remote`) and then deploys the Worker plus bundled
@@ -167,7 +167,7 @@ Quiver is a Login-with-Raft **HTTP API service**, so
 `raft integration invoke --service quiver --list-actions` returns none by
 design — that is not a bug. To read/triage a ticket: `raft integration login
 --service quiver` → `curl` the printed one-time callback URL → export the
-`access_token` as `QUIVER_BEARER_TOKEN`, then use `@oranix/quiver-cli`
+`access_token` as `QUIVER_BEARER_TOKEN`, then use `@botiverse/hands-cli`
 (`quiver feedback list|show|update|comment <appSlug> [ticketId]`) or the
 `/api/apps/:appId/feedback*` REST endpoints. Full walkthrough:
 [/docs/agent-cli-feedback/](https://quiver.oranix.io/docs/agent-cli-feedback/).

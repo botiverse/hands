@@ -26,7 +26,7 @@ const pages = [
     slug: "agent-cli-feedback",
     title: "Agent CLI: Feedback Triage",
     category: "For agents",
-    description: "Read and triage feedback/crash tickets from the command line with @oranix/quiver-cli.",
+    description: "Read and triage feedback/crash tickets from the command line with @botiverse/hands-cli.",
     source: "agent-cli-feedback.md",
   },
   {
@@ -40,7 +40,7 @@ const pages = [
     slug: "cli-reference",
     title: "CLI Reference",
     category: "SDKs & API",
-    description: "Install and use @oranix/quiver-cli from local scripts or CI.",
+    description: "Install and use @botiverse/hands-cli from local scripts or CI.",
     source: "cli-reference.md",
   },
   {
@@ -68,7 +68,7 @@ const pages = [
     slug: "electron-sdk",
     title: "Electron SDK",
     category: "SDKs & API",
-    description: "Crashpad minidump crash reporting for Electron apps (main + renderer) via @oranix/quiver-electron.",
+    description: "Crashpad minidump crash reporting for Electron apps (main + renderer) via @botiverse/hands-electron.",
     source: "electron-sdk.md",
   },
   {

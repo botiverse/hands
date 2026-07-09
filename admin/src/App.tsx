@@ -579,7 +579,7 @@ function PublicLanding({ account }: { account?: AuthAccount }) {
                 </span>
               </div>
               <div className="space-y-3 font-mono text-xs leading-6 text-slate-300">
-                <div>$ npm exec --package @oranix/quiver-cli -- quiver builds publish-android raft-android</div>
+                <div>$ npm exec --package @botiverse/hands-cli -- quiver builds publish-android raft-android</div>
                 <div className="text-slate-500">uploading APK and metadata...</div>
                 <div className="text-slate-500">creating release on channel main...</div>
                 <div className="text-emerald-300">release: 14998dba-cfde-4002-8c01-230a2760f662</div>

@@ -594,11 +594,11 @@ and Android release publishing; planned commands continue to mirror the
 ### 6.1 Install
 
 ```
-npm install --save-dev @oranix/quiver-cli
+npm install --save-dev @botiverse/hands-cli
 # or global
-npm install -g @oranix/quiver-cli
+npm install -g @botiverse/hands-cli
 # or one-off
-npm exec --package @oranix/quiver-cli@0.1.0 -- quiver --help
+npm exec --package @botiverse/hands-cli@0.1.0 -- quiver --help
 ```
 
 ### 6.2 Auth
@@ -850,7 +850,7 @@ Availability:
 - Migration 0009: add `build_assets.target_app_version`, `build_assets.fingerprint_hash`. Add `releases.metadata` (per-release custom fields).
 - Container: add `electron-asar` + `rn-bundle` parsers.
 - API: add `/public/apps/:slug/bundles` endpoint. Add `release_scopes` resolution logic.
-- CLI: public alpha `@oranix/quiver-cli@0.1.0` is published to npm; remaining
+- CLI: public alpha `@botiverse/hands-cli@0.1.0` is published to npm; remaining
   planned commands continue incrementally.
 - ~1-2 weeks.
 
@@ -860,7 +860,7 @@ Each phase is shippable independently.
 
 1. **Multi-tenancy** — `accounts` table? orgs? teams? v1: single-account model, defer multi-tenant. Affects `signing_credentials.owner_id` (currently `account`).
 
-2. **CLI distribution** — resolved 2026-07-02: `@oranix/quiver-cli` is public on
+2. **CLI distribution** — resolved 2026-07-02: `@botiverse/hands-cli` is public on
    npm. Default server is the public Quiver Worker, and self-hosted Workers can
    be selected with `--api` / `QUIVER_API`.
 
@@ -893,6 +893,6 @@ Each phase is shippable independently.
 4. App creation wizard (3 steps). Deploy. ~3 hours.
 5. Build/Release split in admin UI (Builds tab + Releases tab + Prepare release modal). Deploy. ~6 hours.
 6. Phase 3 schema + container parsers + bundles endpoint. ~1-2 weeks.
-7. CLI (`@oranix/quiver-cli`). ~1 week.
+7. CLI (`@botiverse/hands-cli`). ~1 week.
 
 Each step independently shippable.

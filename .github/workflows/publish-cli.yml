@@ -63,7 +63,7 @@ jobs:
           echo "value=${package_version}" >> "$GITHUB_OUTPUT"
 
       - name: Build CLI
-        run: pnpm --filter @oranix/quiver-cli build
+        run: pnpm --filter @botiverse/hands-cli build
 
       - name: Pack check
         working-directory: packages/cli
@@ -90,7 +90,7 @@ jobs:
             echo
             echo "| Field | Value |"
             echo "|---|---|"
-            echo "| Package | \`@oranix/quiver-cli\` |"
+            echo "| Package | \`@botiverse/hands-cli\` |"
             echo "| Version | \`${{ steps.version.outputs.value }}\` |"
             echo "| Dry run | \`${{ github.event_name == 'workflow_dispatch' && inputs.dry_run }}\` |"
           } >> "$GITHUB_STEP_SUMMARY"

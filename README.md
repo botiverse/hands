@@ -9,14 +9,14 @@ Quiver runs the whole release loop: CI lands builds as drafts, agents review and
 - **Live instance:** <https://quiver.oranix.io>
 - **Docs:** <https://quiver.oranix.io/docs> · [Admin guide](https://quiver.oranix.io/docs/admin-user-guide/) · [CLI reference](https://quiver.oranix.io/docs/cli-reference/)
 - **API explorer:** <https://quiver.oranix.io/api-docs>
-- **CLI on npm:** [`@oranix/quiver-cli`](https://www.npmjs.com/package/@oranix/quiver-cli)
+- **CLI on npm:** [`@botiverse/hands-cli`](https://www.npmjs.com/package/@botiverse/hands-cli)
 
 The "quiver" metaphor: admins load build arrows into channels; clients pick the right one for their channel — and tell you where it landed.
 
 ## Features
 
 - **Channels** — keep main, preview, nightly, or debug releases separated by app. Publish to `main` for stable users, `preview` for validation, `nightly` for fast internal iteration.
-- **Update checks & staged rollouts** — public latest/update responses with signed downloads, percentage rollouts bucketed by stable device id, and per-language changelogs; the Android SDK (`clients/android`) handles in-app checks, installation, and feedback/crash submission; iOS, HarmonyOS (ArkTS), and Electron (`@oranix/quiver-electron`) SDKs mirror the feedback and crash lanes.
+- **Update checks & staged rollouts** — public latest/update responses with signed downloads, percentage rollouts bucketed by stable device id, and per-language changelogs; the Android SDK (`clients/android`) handles in-app checks, installation, and feedback/crash submission; iOS, HarmonyOS (ArkTS), and Electron (`@botiverse/hands-electron`) SDKs mirror the feedback and crash lanes.
 - **Share pages & version history** — revocable, expiring, optionally password-protected download pages with QR codes and view/download stats, plus an opt-in public version history page per app.
 - **Feedback tickets** — in-app feedback (attachments, device context) lands in a built-in ticket system with assignees, statuses, comments, and webhooks; submissions are authenticated with a per-app client key.
 - **Crash reporting** — crash capture across Android, iOS, HarmonyOS, and Electron uploads on next launch, groups by signature, and symbolicates stacks server-side against uploaded R8/ProGuard mappings, native symbols, dSYMs, or Breakpad symbols (minidumps).
@@ -25,7 +25,7 @@ The "quiver" metaphor: admins load build arrows into channels; clients pick the 
 - **CI-friendly publishing** — the public npm CLI publishes Android releases and creates share links from GitHub Actions, local packaging lanes, or Raft agents:
 
 ```sh
-$ npm exec --package @oranix/quiver-cli -- quiver builds publish-android raft-android
+$ npm exec --package @botiverse/hands-cli -- quiver builds publish-android raft-android
 uploading APK and metadata...
 creating release on channel main...
 release: 14998dba-cfde-4002-8c01-230a2760f662
@@ -71,7 +71,7 @@ share: https://quiver.oranix.io/share/...
 - `worker/` — Cloudflare Worker (Hono) — admin SPA, API routes, Login with Raft, D1 CRUD, R2 signed URLs
 - `admin/` — admin SPA and public landing (React + Vite + Tailwind) served by the Worker
 - `container/` — Cloudflare Container — APK metadata parser (aapt + apksigner)
-- `packages/cli/` — `@oranix/quiver-cli` npm package
+- `packages/cli/` — `@botiverse/hands-cli` npm package
 - `clients/android/` — Quiver Android Updater SDK (update checks + APK install)
 - `docs/` — admin user guide, CLI reference, public API reference, architecture notes
 - `migrations/` — D1 SQL schema migrations
@@ -102,10 +102,10 @@ Do not put Raft client secrets in browser JavaScript, repository files, logs, or
 pnpm install
 
 # local worker dev (D1 + R2 local emulators)
-pnpm --filter @oranix/quiver-worker dev
+pnpm --filter @botiverse/hands-worker dev
 
 # local admin UI
-pnpm --filter @oranix/quiver-admin dev
+pnpm --filter @botiverse/hands-admin dev
 
 # local container (Docker required)
 docker build -t apk-parser container/
@@ -124,7 +124,7 @@ Required repository secrets:
 
 Workflows:
 
-- `Publish CLI` publishes `@oranix/quiver-cli` to npm through npm Trusted Publishing / GitHub OIDC. Configure the npm package trusted publisher for this repository and workflow, then trigger it manually with the package version from `packages/cli/package.json`, or push a tag like `cli-v0.1.2`.
+- `Publish CLI` publishes `@botiverse/hands-cli` to npm through npm Trusted Publishing / GitHub OIDC. Configure the npm package trusted publisher for this repository and workflow, then trigger it manually with the package version from `packages/cli/package.json`, or push a tag like `cli-v0.1.2`.
 - `Deploy Quiver Server` deploys the Worker plus bundled admin/docs assets. Trigger it manually, or push a tag like `server-v2026.07.04`. The default container rollout is `none`; choose `immediate` or `gradual` only when the APK parser container image changed.
 
 ## Credits

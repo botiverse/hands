@@ -1,6 +1,6 @@
 // Quiver Electron SDK — renderer-process entry.
 //
-//   import * as Quiver from "@oranix/quiver-electron/renderer";
+//   import * as Quiver from "@botiverse/hands-electron/renderer";
 //   Quiver.setTag("route", location.pathname);
 //
 // Modern Electron captures renderer crashes through the main-process Crashpad

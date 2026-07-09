@@ -1,4 +1,4 @@
-# @oranix/quiver-electron
+# @botiverse/hands-electron
 
 Crash reporting for Electron apps, backed by [Quiver](https://quiver.oranix.io).
 
@@ -15,7 +15,7 @@ process and one for the **renderer**.
 ## Install
 
 ```bash
-npm install @oranix/quiver-electron
+npm install @botiverse/hands-electron
 ```
 
 `electron` is a peer dependency (provided by your app).
@@ -26,7 +26,7 @@ Call `init()` once, before the app is ready:
 
 ```ts
 import { app } from "electron";
-import * as Quiver from "@oranix/quiver-electron/main";
+import * as Quiver from "@botiverse/hands-electron/main";
 
 Quiver.init({
   appSlug: "my-desktop-app",     // your Quiver app slug
@@ -61,7 +61,7 @@ Renderer crashes are captured by the main-process Crashpad automatically — the
 renderer entry only manages scope and forwards it to main over IPC:
 
 ```ts
-import * as Quiver from "@oranix/quiver-electron/renderer";
+import * as Quiver from "@botiverse/hands-electron/renderer";
 
 Quiver.setTag("route", location.pathname);
 Quiver.addBreadcrumb({ message: "clicked export" });
@@ -72,7 +72,7 @@ preload script instead:
 
 ```ts
 // preload.ts
-import { exposeQuiver } from "@oranix/quiver-electron/preload";
+import { exposeQuiver } from "@botiverse/hands-electron/preload";
 exposeQuiver(); // → window.quiver.setTag(...), window.quiver.addBreadcrumb(...)
 ```
 

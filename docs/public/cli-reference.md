@@ -1,19 +1,19 @@
 # CLI Reference
 
-`@oranix/quiver-cli` is the command-line client for Quiver. Use it from local scripts or CI to inspect apps, upload Android builds, and publish releases.
+`@botiverse/hands-cli` is the command-line client for Quiver. Use it from local scripts or CI to inspect apps, upload Android builds, and publish releases.
 
 ## Install
 
 Install it globally:
 
 ```bash
-npm install -g @oranix/quiver-cli
+npm install -g @botiverse/hands-cli
 ```
 
 Or run it without a permanent install:
 
 ```bash
-npm exec --package @oranix/quiver-cli@0.3.2 -- quiver --help
+npm exec --package @botiverse/hands-cli@0.3.2 -- quiver --help
 ```
 
 In CI, pin a version so release scripts stay reproducible.

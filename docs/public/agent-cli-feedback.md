@@ -12,7 +12,7 @@ service. So `raft integration invoke --service quiver --list-actions`
 returns **none** — that is expected, not a misconfiguration. Agents reach
 Quiver two ways, both using a Bearer token from Raft Agent Login:
 
-- the **`@oranix/quiver-cli`** npm package (what this page covers), or
+- the **`@botiverse/hands-cli`** npm package (what this page covers), or
 - direct REST calls to `/api/*` (see the [Agent Guide](/docs/agent-guide/)).
 
 ## 1. Get a token
@@ -41,10 +41,10 @@ required.
 No global install needed:
 
 ```bash
-npm exec --package @oranix/quiver-cli -- quiver whoami
+npm exec --package @botiverse/hands-cli -- quiver whoami
 ```
 
-(Pin a version with `@oranix/quiver-cli@0.3.2` if you want reproducibility.)
+(Pin a version with `@botiverse/hands-cli@0.3.2` if you want reproducibility.)
 Every command below takes `--json` for scripting.
 
 ## Triage commands

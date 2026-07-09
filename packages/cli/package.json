@@ -1,7 +1,7 @@
 {
-  "name": "@oranix/quiver-cli",
-  "version": "0.3.4",
-  "description": "Quiver CLI \u2014 manage apps, builds, releases from the terminal.",
+  "name": "@botiverse/hands-cli",
+  "version": "0.4.0",
+  "description": "Hands CLI \u2014 manage apps, builds, releases from the terminal.",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -10,6 +10,7 @@
   "type": "module",
   "main": "dist/index.js",
   "bin": {
+    "hands": "dist/index.js",
     "quiver": "dist/index.js"
   },
   "files": [

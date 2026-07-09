@@ -53,10 +53,10 @@ jobs:
       - name: Run checks
         if: ${{ github.event_name != 'workflow_dispatch' || inputs.run_checks }}
         run: |
-          pnpm --filter @oranix/quiver-worker test
-          pnpm --filter @oranix/quiver-worker build
-          pnpm --filter @oranix/quiver-cli build
-          pnpm --filter @oranix/quiver-admin build
+          pnpm --filter @botiverse/hands-worker test
+          pnpm --filter @botiverse/hands-worker build
+          pnpm --filter @botiverse/hands-cli build
+          pnpm --filter @botiverse/hands-admin build
 
       - name: Resolve rollout strategy
         id: rollout

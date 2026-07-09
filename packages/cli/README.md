@@ -1,8 +1,8 @@
-# @oranix/quiver-cli
+# @botiverse/hands-cli
 
 Quiver CLI — manage apps, builds, releases from the terminal.
 
-Status: **alpha**. The npm package is public as `@oranix/quiver-cli`; v1 ships
+Status: **alpha**. The npm package is public as `@botiverse/hands-cli`; v1 ships
 `login`, `logout`, `whoami`, `apps list/get`, `builds list/get`, and
 `builds publish-android`. Other commands listed in `docs/cli-reference.md` land
 incrementally as backend endpoints become available.
@@ -10,15 +10,15 @@ incrementally as backend endpoints become available.
 ## Install
 
 ```bash
-npm install -g @oranix/quiver-cli
+npm install -g @botiverse/hands-cli
 quiver --help
 
 # Or run without installing globally:
-npm exec --package @oranix/quiver-cli@0.3.2 -- quiver --help
+npm exec --package @botiverse/hands-cli@0.3.2 -- quiver --help
 
 # Local repo development:
-pnpm --filter @oranix/quiver-cli build
-pnpm --filter @oranix/quiver-cli start -- whoami
+pnpm --filter @botiverse/hands-cli build
+pnpm --filter @botiverse/hands-cli start -- whoami
 ```
 
 ## Quickstart

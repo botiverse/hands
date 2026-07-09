@@ -3,7 +3,7 @@
 // For sandboxed renderers (contextIsolation: true), import this from your
 // preload script to expose a safe `window.quiver` scope API:
 //
-//   import { exposeQuiver } from "@oranix/quiver-electron/preload";
+//   import { exposeQuiver } from "@botiverse/hands-electron/preload";
 //   exposeQuiver();
 //
 // then in renderer code: window.quiver.setTag("route", location.pathname).

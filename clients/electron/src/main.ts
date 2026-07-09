@@ -1,6 +1,6 @@
 // Quiver Electron SDK — main-process entry.
 //
-//   import * as Quiver from "@oranix/quiver-electron/main";
+//   import * as Quiver from "@botiverse/hands-electron/main";
 //   Quiver.init({ appSlug: "my-app", clientKey: "qk_...", versionCode: 1020300 });
 //
 // Starts Crashpad (which captures both main- and renderer-process minidumps and
