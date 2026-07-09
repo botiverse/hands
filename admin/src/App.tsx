@@ -562,7 +562,7 @@ function PublicLanding({ account }: { account?: AuthAccount }) {
                 </a>
                 <a
                   className="inline-flex h-11 items-center justify-center rounded-md border border-slate-300 bg-white px-5 text-sm font-medium text-slate-800 hover:bg-slate-100"
-                  href="https://github.com/oranix-io/quiver"
+                  href="https://github.com/oranix-io/hands"
                   target="_blank"
                   rel="noopener noreferrer"
                 >
@@ -571,21 +571,7 @@ function PublicLanding({ account }: { account?: AuthAccount }) {
               </div>
             </div>
 
-            <div className="rounded-lg border border-slate-200 bg-slate-950 p-5 text-sm text-slate-100 shadow-sm">
-              <div className="mb-4 flex items-center justify-between border-b border-slate-700 pb-3">
-                <span className="font-medium">quiver release</span>
-                <span className="rounded bg-sky-400/15 px-2 py-0.5 text-xs text-sky-200">
-                  main
-                </span>
-              </div>
-              <div className="space-y-3 font-mono text-xs leading-6 text-slate-300">
-                <div>$ npm exec --package @botiverse/hands-cli -- quiver builds publish-android raft-android</div>
-                <div className="text-slate-500">uploading APK and metadata...</div>
-                <div className="text-slate-500">creating release on channel main...</div>
-                <div className="text-emerald-300">release: 14998dba-cfde-4002-8c01-230a2760f662</div>
-                <div className="text-emerald-300">share: https://quiver.oranix.io/share/...</div>
-              </div>
-            </div>
+            <LandingTerminal />
           </div>
         </section>
 
@@ -660,6 +646,100 @@ function PublicLanding({ account }: { account?: AuthAccount }) {
           </div>
         </section>
       </main>
+    </div>
+  );
+}
+
+type TerminalLine = { text: string; tone?: "muted" | "ok" | "warn" };
+
+const TERMINAL_DEMOS: {
+  key: string;
+  label: string;
+  badge: string;
+  lines: TerminalLine[];
+}[] = [
+  {
+    key: "release",
+    label: "Release",
+    badge: "main",
+    lines: [
+      { text: "$ hands builds publish-android raft-android --apk app-release.apk --channel main" },
+      { text: "uploading APK and metadata...", tone: "muted" },
+      { text: "creating release on channel main...", tone: "muted" },
+      { text: "release: 14998dba-cfde-4002-8c01-230a2760f662", tone: "ok" },
+      { text: "share: https://hands.build/share/...", tone: "ok" },
+    ],
+  },
+  {
+    key: "ios",
+    label: "iOS + dSYM",
+    badge: "stable",
+    lines: [
+      { text: "$ hands builds publish-ios raft-ios --ipa Raft.ipa --dsym Raft.dSYM.zip \\" },
+      { text: "    --version-name 1.1.0 --version-code 1010000", tone: "muted" },
+      { text: "uploading signed .ipa + dSYM for symbolication...", tone: "muted" },
+      { text: "release: b0b3aeac-8201-4ab6-a3cc-a0229987953a", tone: "ok" },
+      { text: "iOS crashes will now symbolicate against this dSYM", tone: "ok" },
+    ],
+  },
+  {
+    key: "feedback",
+    label: "Feedback",
+    badge: "triage",
+    lines: [
+      { text: "$ hands feedback list raft-android --status open --kind crash" },
+      { text: "crash   1.1.0   NullPointerException in FeedView   37 devices", tone: "warn" },
+      { text: "$ hands feedback update raft-android <id> --status in_progress --assignee cc" },
+      { text: "ticket -> in_progress, assigned cc", tone: "ok" },
+      { text: "$ hands feedback comment raft-android <id> \"repro'd, fixing\"", tone: "muted" },
+    ],
+  },
+];
+
+const DEFAULT_TERMINAL_DEMO = TERMINAL_DEMOS[0]!;
+
+function LandingTerminal() {
+  const [active, setActive] = useState(DEFAULT_TERMINAL_DEMO.key);
+  const demo =
+    TERMINAL_DEMOS.find((d) => d.key === active) ?? DEFAULT_TERMINAL_DEMO;
+  const toneClass = (tone?: TerminalLine["tone"]) =>
+    tone === "ok"
+      ? "text-emerald-300"
+      : tone === "warn"
+        ? "text-amber-300"
+        : tone === "muted"
+          ? "text-slate-500"
+          : "text-slate-200";
+  return (
+    <div className="rounded-lg border border-slate-200 bg-slate-950 p-5 text-sm text-slate-100 shadow-sm">
+      <div className="mb-4 flex items-center justify-between border-b border-slate-700 pb-3">
+        <div className="flex flex-wrap gap-1">
+          {TERMINAL_DEMOS.map((d) => (
+            <button
+              key={d.key}
+              type="button"
+              onClick={() => setActive(d.key)}
+              className={`rounded px-2.5 py-1 text-xs font-medium transition ${
+                d.key === active
+                  ? "bg-slate-100 text-slate-900"
+                  : "text-slate-400 hover:text-slate-200"
+              }`}
+            >
+              {d.label}
+            </button>
+          ))}
+        </div>
+        <span className="rounded bg-sky-400/15 px-2 py-0.5 text-xs text-sky-200">
+          {demo.badge}
+        </span>
+      </div>
+      <div className="space-y-3 font-mono text-xs leading-6">
+        {demo.lines.map((line, i) => (
+          <div key={i} className={toneClass(line.tone)}>
+            {line.text}
+          </div>
+        ))}
+      </div>
     </div>
   );
 }
