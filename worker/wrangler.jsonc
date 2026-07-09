@@ -19,9 +19,12 @@
 
   // Non-secret config for the shim.
   "vars": {
-    // Direct workers.dev origin of the Hands business worker — NOT hands.build,
-    // to skip the edge cache and avoid a custom-domain loop. No trailing slash.
-    "PROXY_TARGET": "https://hands-worker.botiverse.workers.dev",
+    // Origin serving the Hands business worker. hands.build routes to
+    // hands-worker; quiver never appears in that path, so there is no loop.
+    // (The direct hands-worker.botiverse.workers.dev route is not enabled, so
+    // we proxy via the custom domain; GET edge-caching there is benign, POSTs
+    // are not cached.) No trailing slash.
+    "PROXY_TARGET": "https://hands.build",
     // Canonical domain humans are 302-redirected to. No trailing slash.
     "REDIRECT_TARGET": "https://hands.build"
   }

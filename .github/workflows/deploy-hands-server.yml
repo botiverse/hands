@@ -51,7 +51,11 @@ jobs:
 
       - name: Generate Worker types
         working-directory: worker
-        run: pnpm exec wrangler types
+        # Generate the business worker's Env from the hands config. The default
+        # wrangler.jsonc is now the legacy proxy shim (shim-only vars), so
+        # without --config the generated Env would lack DB/APK_BUCKET/ASSETS and
+        # the src/index.ts typecheck below would fail.
+        run: pnpm exec wrangler types --config wrangler.hands.jsonc
 
       - name: Run checks
         if: ${{ inputs.run_checks }}

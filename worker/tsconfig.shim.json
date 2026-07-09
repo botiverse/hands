@@ -1,0 +1,14 @@
+{
+  // Type-checks ONLY the legacy proxy shim (src/proxy-shim.ts), in isolation
+  // from the business worker (src/index.ts). The shim uses its own ShimEnv
+  // interface — not the Cloudflare-generated global Env — so it must NOT depend
+  // on `wrangler types` output (worker-configuration.d.ts), which is generated
+  // per wrangler config. This lets the shim deploy validate independently of
+  // whichever Env the business worker's config would produce.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "types": ["@cloudflare/workers-types"]
+  },
+  "include": ["src/proxy-shim.ts"],
+  "exclude": ["node_modules", "dist"]
+}

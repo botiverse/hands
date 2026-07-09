@@ -3,17 +3,8 @@ name: Deploy Quiver Server
 on:
   workflow_dispatch:
     inputs:
-      containers_rollout:
-        description: "Cloudflare Containers rollout strategy. Use none when only Worker/API/admin assets changed."
-        required: true
-        type: choice
-        options:
-          - none
-          - immediate
-          - gradual
-        default: none
       run_checks:
-        description: "Run Worker tests/build and admin build before deploy."
+        description: "Type-check the proxy shim before deploy."
         required: true
         type: boolean
         default: true
@@ -46,40 +37,14 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Generate Worker types
-        working-directory: worker
-        run: pnpm exec wrangler types
-
-      - name: Run checks
+      - name: Check shim
         if: ${{ github.event_name != 'workflow_dispatch' || inputs.run_checks }}
-        run: |
-          pnpm --filter @botiverse/hands-worker test
-          pnpm --filter @botiverse/hands-worker build
-          pnpm --filter @botiverse/hands-cli build
-          pnpm --filter @botiverse/hands-admin build
+        # quiver-worker now deploys ONLY the legacy proxy shim. Type-check it in
+        # isolation (its own tsconfig + ShimEnv) — no `wrangler types` needed,
+        # and NOT the business worker (that lives in deploy-hands-server.yml).
+        run: pnpm --filter @botiverse/hands-worker build:shim
 
-      - name: Resolve rollout strategy
-        id: rollout
-        shell: bash
-        run: |
-          set -euo pipefail
-          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
-            echo "value=none" >> "$GITHUB_OUTPUT"
-          else
-            echo "value=${{ inputs.containers_rollout }}" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Apply D1 migrations
-        working-directory: worker
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          pnpm exec wrangler d1 migrations apply quiver-db --remote
-
-      - name: Deploy Worker and admin assets
+      - name: Deploy proxy shim
         working-directory: worker
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -91,17 +56,18 @@ jobs:
             echo "Missing GitHub secret CLOUDFLARE_API_TOKEN." >&2
             exit 1
           fi
-          pnpm exec wrangler deploy --containers-rollout "${{ steps.rollout.outputs.value }}"
+          # Default wrangler.jsonc is the shim: no D1 migrations, no containers.
+          pnpm exec wrangler deploy
 
       - name: Summary
         shell: bash
         run: |
           {
-            echo "### Quiver server deploy"
+            echo "### Quiver proxy shim deploy"
             echo
             echo "| Field | Value |"
             echo "|---|---|"
             echo "| Ref | \`${GITHUB_REF_NAME}\` |"
             echo "| SHA | \`${GITHUB_SHA}\` |"
-            echo "| Containers rollout | \`${{ steps.rollout.outputs.value }}\` |"
+            echo "| Role | \`legacy proxy shim -> hands.build\` |"
           } >> "$GITHUB_STEP_SUMMARY"

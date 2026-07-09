@@ -8,6 +8,7 @@
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
     "build": "tsc --noEmit",
+    "build:shim": "tsc -p tsconfig.shim.json --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
     "lint": "eslint src/",

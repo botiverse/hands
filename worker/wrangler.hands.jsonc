@@ -58,7 +58,11 @@
     "R2_ACCOUNT_ID": "a084c4564dfdce5a7775b08ece638a79",
     "R2_BUCKET_NAME": "hands-artifacts",
     "R2_PRESIGNED_DOWNLOAD_TTL_SECONDS": "3600",
-    "CORS_ALLOWED_ORIGINS": "https://hands.build,http://localhost:5173",
+    // quiver.oranix.io is included as a cutover/cache safety net: a browser
+    // still running a cached admin SPA from the legacy domain may fire /api/*
+    // (proxied through the shim) with Origin: https://quiver.oranix.io before it
+    // follows the 302 to hands.build. Native SDKs don't use CORS.
+    "CORS_ALLOWED_ORIGINS": "https://hands.build,https://quiver.oranix.io,http://localhost:5173",
     "RAFT_ORIGIN": "https://app.raft.build",
     "RAFT_API_ORIGIN": "https://api.raft.build",
     "RAFT_CLIENT_ID": "hands-4cc7a2"
