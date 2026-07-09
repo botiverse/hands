@@ -19,6 +19,9 @@ import {
   getAppClientKey,
   rotateAppClientKey,
   purgeApp,
+  getAscCredentials,
+  setAscCredentials,
+  deleteAscCredentials,
 } from "../lib/api";
 import { useToast } from "../components/Toast";
 import { Operations } from "./Operations";
@@ -330,6 +333,226 @@ function ClientKeyPanel({ appId }: { appId: string }) {
   );
 }
 
+function TestFlightPanel({ appId }: { appId: string }) {
+  const toast = useToast();
+  const qc = useQueryClient();
+  const creds = useQuery({
+    queryKey: ["asc-credentials", appId],
+    queryFn: () => getAscCredentials(appId),
+  });
+  const meta = creds.data?.asc_credentials ?? null;
+  const [editing, setEditing] = useState(false);
+  const [keyId, setKeyId] = useState("");
+  const [issuerId, setIssuerId] = useState("");
+  const [p8, setP8] = useState("");
+
+  const save = useMutation({
+    mutationFn: () =>
+      setAscCredentials(appId, {
+        key_id: keyId.trim(),
+        issuer_id: issuerId.trim(),
+        p8: p8.trim(),
+      }),
+    onSuccess: () => {
+      toast.show({ kind: "success", title: "TestFlight credentials saved" });
+      setEditing(false);
+      setKeyId("");
+      setIssuerId("");
+      setP8("");
+      qc.invalidateQueries({ queryKey: ["asc-credentials", appId] });
+    },
+    onError: (e) =>
+      toast.show({ kind: "error", title: "Save failed", description: (e as Error).message }),
+  });
+  const remove = useMutation({
+    mutationFn: () => deleteAscCredentials(appId),
+    onSuccess: () => {
+      toast.show({ kind: "success", title: "TestFlight credentials removed" });
+      qc.invalidateQueries({ queryKey: ["asc-credentials", appId] });
+    },
+    onError: (e) =>
+      toast.show({ kind: "error", title: "Remove failed", description: (e as Error).message }),
+  });
+
+  const readP8File = (file: File | undefined) => {
+    if (!file) return;
+    file.text().then(
+      (text) => setP8(text),
+      () => toast.show({ kind: "error", title: "Could not read the .p8 file" }),
+    );
+  };
+
+  const formValid =
+    keyId.trim().length > 0 && issuerId.trim().length > 0 && p8.includes("BEGIN PRIVATE KEY");
+  const showForm = editing || (!meta && !creds.isLoading);
+
+  return (
+    <div className="border-t border-slate-100 pt-3">
+      <div className="flex items-center gap-3">
+        <div className="flex-1 min-w-0">
+          <div className="text-sm font-medium">TestFlight</div>
+          <div className="text-xs text-slate-500">
+            App Store Connect API key used to upload builds of this app to
+            TestFlight. Stored encrypted; the private key is never shown again
+            after saving.
+          </div>
+          {meta && (
+            <div className="mt-1 text-xs">
+              <span className="text-green-700 font-medium">Configured</span>
+              {" — "}
+              <span className="font-mono">Key ID {meta.key_id}</span>
+              {" · "}
+              <span className="font-mono">Issuer {meta.issuer_id}</span>
+              {" · updated "}
+              {new Date(meta.updated_at).toISOString().slice(0, 10)}
+            </div>
+          )}
+        </div>
+        {meta && !editing && (
+          <>
+            <button
+              className="btn-secondary !py-1 !px-2 !text-xs"
+              onClick={() => setEditing(true)}
+            >
+              Replace key
+            </button>
+            <button
+              className="btn-secondary !border-red-300 !text-red-700 !py-1 !px-2 !text-xs"
+              disabled={remove.isPending}
+              onClick={() => {
+                if (
+                  window.confirm(
+                    "Remove the App Store Connect key? TestFlight uploads for this app stop until a new key is saved.",
+                  )
+                ) {
+                  remove.mutate();
+                }
+              }}
+            >
+              {remove.isPending ? "…" : "Remove"}
+            </button>
+          </>
+        )}
+      </div>
+
+      {showForm && (
+        <div className="mt-3 p-3 border border-slate-200 rounded-md space-y-3">
+          {!meta && (
+            <ol className="text-xs text-slate-600 list-decimal pl-4 space-y-1">
+              <li>
+                In{" "}
+                <a
+                  className="underline"
+                  href="https://appstoreconnect.apple.com"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                >
+                  App Store Connect
+                </a>
+                {" → My Apps, create an app record for this bundle ID if one "}
+                does not exist yet (TestFlight only needs the record — no store
+                listing or review required).
+              </li>
+              <li>
+                Go to{" "}
+                <a
+                  className="underline"
+                  href="https://appstoreconnect.apple.com/access/integrations/api"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                >
+                  Users and Access → Integrations → App Store Connect API
+                </a>
+                {" and generate a Team Key with the "}
+                <strong>App Manager</strong> role (requires an Admin account).
+              </li>
+              <li>
+                Note the <strong>Issuer ID</strong> (top of that page) and the
+                key's <strong>Key ID</strong>, then download the{" "}
+                <span className="font-mono">AuthKey_XXXXXXXXXX.p8</span> file —
+                Apple lets you download it <strong>once</strong>.
+              </li>
+              <li>Paste all three below and save.</li>
+            </ol>
+          )}
+          <div className="flex gap-3">
+            <label className="flex-1 text-xs text-slate-600">
+              Key ID
+              <input
+                className="input !h-8 w-full !text-sm font-mono mt-1"
+                placeholder="ABC123DEFG"
+                value={keyId}
+                onChange={(e) => setKeyId(e.target.value)}
+              />
+            </label>
+            <label className="flex-1 text-xs text-slate-600">
+              Issuer ID
+              <input
+                className="input !h-8 w-full !text-sm font-mono mt-1"
+                placeholder="12345678-90ab-cdef-1234-567890abcdef"
+                value={issuerId}
+                onChange={(e) => setIssuerId(e.target.value)}
+              />
+            </label>
+          </div>
+          <label className="block text-xs text-slate-600">
+            Private key (.p8 contents)
+            <textarea
+              className="input w-full !text-xs font-mono !h-24 resize-y mt-1"
+              placeholder={"-----BEGIN PRIVATE KEY-----\n…\n-----END PRIVATE KEY-----"}
+              value={p8}
+              onChange={(e) => setP8(e.target.value)}
+            />
+          </label>
+          <div className="flex items-center gap-2">
+            <label className="btn-secondary !py-1 !px-2 !text-xs cursor-pointer">
+              Load from .p8 file
+              <input
+                type="file"
+                accept=".p8,.pem"
+                className="hidden"
+                onChange={(e) => readP8File(e.target.files?.[0])}
+              />
+            </label>
+            <div className="flex-1" />
+            {editing && (
+              <button
+                className="btn-secondary !py-1 !px-2 !text-xs"
+                onClick={() => {
+                  setEditing(false);
+                  setKeyId("");
+                  setIssuerId("");
+                  setP8("");
+                }}
+              >
+                Cancel
+              </button>
+            )}
+            <button
+              className="btn-secondary !py-1 !px-2 !text-xs"
+              disabled={!formValid || save.isPending}
+              onClick={() => save.mutate()}
+            >
+              {save.isPending ? "…" : meta ? "Replace credentials" : "Save & enable"}
+            </button>
+          </div>
+          {p8.trim().length > 0 && !p8.includes("BEGIN PRIVATE KEY") && (
+            <p className="text-xs text-amber-700">
+              This does not look like a .p8 private key — paste the full PEM
+              contents of the downloaded AuthKey file, including the BEGIN/END
+              lines.
+            </p>
+          )}
+          <p className="text-xs text-slate-400">
+            The App Store Connect app record must match the bundle ID your IPAs
+            are signed with.
+          </p>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function PublicHistoryToggle({ appId, app }: { appId: string; app: App }) {
   const toast = useToast();
   const qc = useQueryClient();
@@ -508,6 +731,9 @@ export function AppSettings({ appId }: { appId: string }) {
 
         {/* Client key (feedback/crash reporting auth) */}
         <ClientKeyPanel appId={appId} />
+
+        {/* TestFlight upload credentials — iOS apps only */}
+        {app.platform === "ios" && <TestFlightPanel appId={appId} />}
 
         {/* Default release channel picker */}
         <DefaultChannelPicker appId={appId} app={app} isOrgAdmin={isOrgAdmin} />

@@ -617,6 +617,39 @@ export const removeAppServerGrant = (appId: string, serverId: string) =>
     },
   );
 
+// ---------- App Store Connect credentials (TestFlight) ----------
+
+export interface AscCredentialsMeta {
+  id: string;
+  app_id: string;
+  key_id: string;
+  issuer_id: string;
+  created_by_actor: string | null;
+  created_at: number;
+  updated_at: number;
+}
+
+export const getAscCredentials = (appId: string) =>
+  request<{ asc_credentials: AscCredentialsMeta | null }>(
+    `/api/apps/${appId}/asc-credentials`,
+    { admin: true },
+  );
+
+export const setAscCredentials = (
+  appId: string,
+  input: { key_id: string; issuer_id: string; p8: string },
+) =>
+  request<{ asc_credentials: AscCredentialsMeta }>(
+    `/api/apps/${appId}/asc-credentials`,
+    { method: "PUT", admin: true, body: JSON.stringify(input) },
+  );
+
+export const deleteAscCredentials = (appId: string) =>
+  request<{ ok: boolean }>(`/api/apps/${appId}/asc-credentials`, {
+    method: "DELETE",
+    admin: true,
+  });
+
 export const listAppDeployTokens = (appId: string) =>
   request<{ deploy_tokens: AppDeployToken[] }>(
     `/api/apps/${appId}/deploy-tokens`,
