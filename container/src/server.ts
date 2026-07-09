@@ -6,7 +6,7 @@
  *   POST /parse        — body = raw binary bytes, optional X-Quiver-Filename
  *                        header; optional ?parser_kind=... or
  *                        X-Quiver-Parser-Kind header to force dispatch.
- *                        Auto-detects apk / aab / asar / RN bundle / ELF CLI
+ *                        Auto-detects apk / aab / ipa / asar / RN bundle / ELF CLI
  *                        binary and returns { parser_kind, platform, arch,
  *                        version, version_code, package_id, app_label,
  *                        size_bytes, file_hash_sha256, raw }.

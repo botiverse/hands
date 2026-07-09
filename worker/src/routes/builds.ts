@@ -397,23 +397,23 @@ export async function handleCreateBuildAsset(c: Context<{ Bindings: Env }>) {
   const body = (await c.req.json()) as BuildAssetInput;
   try {
     const id = await createBuildAsset(c.env.DB, appId, buildId, body, currentActor(c));
-    // Installable Android APKs get parsed automatically in the background:
-    // aapt metadata merges into builds.parsed_metadata_json and the real
-    // launcher icon becomes an app-icon build asset (per-version icons on
-    // share pages, no extra CI/CLI parameters).
+    // Installable package assets get parsed automatically in the background:
+    // parser metadata merges into builds.parsed_metadata_json. Android APKs
+    // may also register a per-version app-icon asset.
     if (
       (body.artifact_kind ?? "installable") === "installable" &&
-      body.platform === "android" &&
-      body.filetype === "apk" &&
+      ((body.platform === "android" && body.filetype === "apk") ||
+        (body.platform === "ios" && body.filetype === "ipa")) &&
       body.r2_key
     ) {
+      const parserKind = body.platform === "ios" ? "ipa-info" : "apk-aapt";
       try {
         c.executionCtx.waitUntil(
-          autoParseApkAsset(c.env, appId, buildId, body.r2_key),
+          autoParseInstallableAsset(c.env, appId, buildId, body.r2_key, parserKind),
         );
       } catch {
         // executionCtx unavailable (tests) — parse inline, best effort.
-        autoParseApkAsset(c.env, appId, buildId, body.r2_key).catch(() => {});
+        autoParseInstallableAsset(c.env, appId, buildId, body.r2_key, parserKind).catch(() => {});
       }
     }
     return c.json({ id, build_id: buildId, ...body }, 201);
@@ -423,15 +423,16 @@ export async function handleCreateBuildAsset(c: Context<{ Bindings: Env }>) {
 }
 
 /**
- * Fetch the APK from R2, parse it in the apk-parser container, merge the
- * metadata into the build row, and register the extracted launcher icon as
- * an app-icon asset. Best-effort: failures only log.
+ * Fetch an installable asset from R2, parse it in the multi-parser container,
+ * merge the metadata into the build row, and register extracted Android
+ * launcher icons as app-icon assets. Best-effort: failures only log.
  */
-export async function autoParseApkAsset(
+export async function autoParseInstallableAsset(
   env: Env,
   appId: string,
   buildId: string,
   r2Key: string,
+  parserKind: "apk-aapt" | "ipa-info" = "apk-aapt",
 ): Promise<void> {
   try {
     const object = await env.APK_BUCKET.get(r2Key);
@@ -442,7 +443,7 @@ export async function autoParseApkAsset(
     const { getRandom } = await import("@cloudflare/containers");
     const container = await getRandom(env.APK_PARSER, 1);
     const res = await container.fetch(
-      new Request("http://container/parse?parser_kind=apk-aapt", {
+      new Request(`http://container/parse?parser_kind=${parserKind}`, {
         method: "POST",
         body: bytes,
         headers: { "content-type": "application/octet-stream" },
