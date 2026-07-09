@@ -296,6 +296,22 @@ function makeMockDb() {
       ping_count INTEGER NOT NULL DEFAULT 1,
       PRIMARY KEY (app_id, device_id)
     );
+    CREATE TABLE app_sessions (
+      app_id TEXT NOT NULL,
+      session_id TEXT NOT NULL,
+      device_id TEXT NOT NULL,
+      version_name TEXT,
+      version_code INTEGER,
+      channel TEXT,
+      platform TEXT,
+      os_version TEXT,
+      device_model TEXT,
+      started_at INTEGER NOT NULL,
+      ended_at INTEGER,
+      duration_ms INTEGER,
+      crashed INTEGER NOT NULL DEFAULT 0,
+      PRIMARY KEY (app_id, session_id)
+    );
     CREATE TABLE feedback_attachments (
       id TEXT PRIMARY KEY,
       ticket_id TEXT NOT NULL,
@@ -3955,6 +3971,61 @@ describe("quiver public API v2 — scope resolution", () => {
     expect(v102.devices).toBe(2);
     expect(body.by_platform[0].platform).toBe("android");
     expect(body.by_platform[0].devices).toBe(4);
+  });
+
+  it("sessions: start/end/crash events roll up into crash-free release health", async () => {
+    const env = makeEnv();
+    const { handleSessionEvent, handleReleaseHealth } = await import("../src/routes/sessions");
+    const post = (body: Record<string, unknown>, key = "qk_test") =>
+      handleSessionEvent({
+        env,
+        req: {
+          param: (n: string) => (n === "slug" ? "scope-app" : ""),
+          header: (n: string) => (n === "X-Hands-Client-Key" ? key : undefined),
+          json: async () => body,
+        },
+        json: (data: unknown, status = 200) => new Response(JSON.stringify(data), { status }),
+      } as any);
+
+    // wrong key -> 401; bad event -> 400
+    expect((await post({ session_id: "s1", device_id: "d1", event: "start" }, "wrong")).status).toBe(401);
+    expect((await post({ session_id: "s1", device_id: "d1", event: "nope" })).status).toBe(400);
+
+    const base = { version_name: "1.2.0", version_code: 1020000, platform: "android" };
+    // devA: one clean session (start+end), one crashed session
+    expect((await post({ ...base, session_id: "s1", device_id: "devA", event: "start" })).status).toBe(202);
+    expect((await post({ ...base, session_id: "s1", device_id: "devA", event: "end", duration_ms: 60000 })).status).toBe(202);
+    expect((await post({ ...base, session_id: "s2", device_id: "devA", event: "start" })).status).toBe(202);
+    expect((await post({ ...base, session_id: "s2", device_id: "devA", event: "crash" })).status).toBe(202);
+    // devB: clean session; duplicate start is idempotent
+    expect((await post({ ...base, session_id: "s3", device_id: "devB", event: "start" })).status).toBe(202);
+    expect((await post({ ...base, session_id: "s3", device_id: "devB", event: "start" })).status).toBe(202);
+    // devC: end arrives with no start (lost offline) — still counts as a session
+    expect((await post({ ...base, session_id: "s4", device_id: "devC", event: "end" })).status).toBe(202);
+    // older version, crashed
+    expect((await post({ session_id: "s5", device_id: "devD", event: "crash", version_name: "1.1.0", version_code: 1010000 })).status).toBe(202);
+
+    const res = await handleReleaseHealth({
+      env,
+      req: { param: (n: string) => (n === "appId" ? "app-scope" : ""), query: () => undefined },
+      json: (data: unknown, status = 200) => new Response(JSON.stringify(data), { status }),
+    } as any);
+    const body = await responseJson<any>(res);
+
+    expect(body.totals.sessions).toBe(5);
+    expect(body.totals.crashed_sessions).toBe(2);
+    expect(body.totals.crash_free_sessions_pct).toBe(60);
+
+    const v12 = body.versions.find((v: any) => v.version_code === 1020000);
+    expect(v12.sessions).toBe(4); // s1, s2, s3 (deduped start), s4
+    expect(v12.crashed_sessions).toBe(1);
+    expect(v12.crash_free_sessions_pct).toBe(75);
+    expect(v12.devices).toBe(3); // devA, devB, devC
+    expect(v12.crashed_devices).toBe(1); // devA
+    expect(v12.crash_free_devices_pct).toBeCloseTo(66.67, 1);
+
+    const v11 = body.versions.find((v: any) => v.version_code === 1010000);
+    expect(v11.crash_free_sessions_pct).toBe(0);
   });
 
   it("analytics: versions aggregates release metrics, devices, feedback, and downloads", async () => {
