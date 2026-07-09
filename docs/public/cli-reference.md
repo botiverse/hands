@@ -105,6 +105,22 @@ hands builds publish-android raft-android \
 
 Public update checks only use the installable artifact. Mapping files, native symbols, and metadata stay available through authenticated admin APIs.
 
+## Publish iOS
+
+Register an iOS build/release and upload the signed `.ipa` plus its dSYM archive. Hands stores and associates the build and holds the dSYM for crash symbolication — it does **not** sign (your macOS CI produces the signed `.ipa` via `xcodebuild archive` + `-exportArchive`).
+
+```bash
+hands builds publish-ios raft-ios \
+  --ipa build/Raft.ipa \
+  --version-name 1.1.0 --version-code 1010000 \
+  --channel main --release-type stable \
+  --dsym build/Raft.dSYM.zip \
+  --source-commit "$GITHUB_SHA" --ci-url "$RUN_URL" \
+  --export-method app-store --appstore-build-number 42
+```
+
+`--version-code` **must match the value the app reports** (`CFBundleVersion`), or iOS crashes won't symbolicate against the right dSYM. The `--dsym` is a `dSYM.zip` of the archive's `*.dSYM` bundles; without it, iOS crashes for that version show only raw frames. `--export-method`, `--appstore-build-number`, and `--testflight-status` are recorded as build metadata.
+
 ## Publish Electron (generic provider)
 
 Hands can host Electron apps that use `electron-updater` with the generic

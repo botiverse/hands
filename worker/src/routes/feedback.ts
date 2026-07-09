@@ -946,7 +946,7 @@ export async function symbolicateDsymCrashTicket(
       await appendComment(
         `iOS crash could not be symbolicated: no 'dsym' build asset for ` +
           `version_code ${versionCode}${uuids ? ` (image UUIDs: ${uuids})` : ""}. ` +
-          `Publish the build with its dSYM archive (quiver builds publish-android --dsym).`,
+          `Publish the build with its dSYM archive (hands builds publish-ios --dsym).`,
       );
       return;
     }

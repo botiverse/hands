@@ -293,6 +293,181 @@ export function registerBuildCommands(program: Command): void {
     );
 
   builds
+    .command("publish-ios <appIdOrSlug>")
+    .description(
+      "Register an iOS build/release and upload the signed .ipa plus its dSYM archive for crash symbolication. Hands stores and associates the build; it does not sign (macOS CI produces the signed .ipa).",
+    )
+    .requiredOption("--ipa <path>", "Signed .ipa installable artifact.")
+    .requiredOption("--version-name <name>", "iOS CFBundleShortVersionString.")
+    .requiredOption(
+      "--version-code <code>",
+      "iOS CFBundleVersion — must match what the app reports so crashes symbolicate against the right dSYM.",
+    )
+    .option("--channel <slug>", "Hands channel slug.", "main")
+    .option("--release-type <type>", "Release type metadata.", "stable")
+    .option("--product-type <type>", "Product type metadata.", "ios-ipa")
+    .option("--dsym <path>", "dSYM archive (dSYM.zip) for crash symbolication (strongly recommended).")
+    .option("--metadata <path>", "Build metadata JSON support artifact.")
+    .option("--changelog <text>", "Inline changelog.")
+    .option("--changelog-file <path>", "Read changelog from file.")
+    .option("--source-commit <sha>", "Source commit SHA.")
+    .option("--source-branch <branch>", "Source branch.")
+    .option("--build-time <iso>", "Build time. Defaults to now.")
+    .option("--ci-provider <name>", "CI provider name.")
+    .option("--ci-run-id <id>", "CI run id.")
+    .option("--ci-url <url>", "CI run URL.")
+    .option("--export-method <method>", "Xcode export method (app-store, ad-hoc, development, enterprise).")
+    .option("--appstore-build-number <n>", "App Store Connect build number.")
+    .option("--testflight-status <status>", "TestFlight processing status.")
+    .option("--force-update", "Mark release as force update.", false)
+    .option("--draft", "Create draft release instead of active.", false)
+    .option("--json", "Output JSON.", false)
+    .action(
+      async (
+        appIdOrSlug: string,
+        opts: {
+          ipa: string;
+          versionName: string;
+          versionCode: string;
+          channel: string;
+          releaseType: string;
+          productType: string;
+          dsym?: string;
+          metadata?: string;
+          changelog?: string;
+          changelogFile?: string;
+          sourceCommit?: string;
+          sourceBranch?: string;
+          buildTime?: string;
+          ciProvider?: string;
+          ciRunId?: string;
+          ciUrl?: string;
+          exportMethod?: string;
+          appstoreBuildNumber?: string;
+          testflightStatus?: string;
+          forceUpdate?: boolean;
+          draft?: boolean;
+          json?: boolean;
+        },
+      ) => {
+        const appId = await resolveAppId(appIdOrSlug);
+        const channelId = await resolveChannelId(appId, opts.channel);
+        const versionCode = Number(opts.versionCode);
+        if (!Number.isFinite(versionCode) || versionCode < 0) {
+          throw new Error("--version-code must be a non-negative number");
+        }
+        for (const file of [opts.ipa, opts.dsym, opts.metadata].filter(Boolean) as string[]) {
+          if (!existsSync(file)) throw new Error(`missing file: ${file}`);
+        }
+        const changelog = opts.changelogFile
+          ? readFileSync(opts.changelogFile, "utf8")
+          : opts.changelog ?? null;
+        const metadataJson = {
+          ...(opts.metadata ? JSON.parse(readFileSync(opts.metadata, "utf8")) : {}),
+          ...(opts.exportMethod ? { export_method: opts.exportMethod } : {}),
+          ...(opts.appstoreBuildNumber
+            ? { appstore_build_number: opts.appstoreBuildNumber }
+            : {}),
+          ...(opts.testflightStatus ? { testflight_status: opts.testflightStatus } : {}),
+        };
+        const provenance = {
+          source_commit: opts.sourceCommit ?? null,
+          source_branch: opts.sourceBranch ?? null,
+          build_time: opts.buildTime ?? new Date().toISOString(),
+          ci_provider: opts.ciProvider ?? null,
+          ci_run_id: opts.ciRunId ?? null,
+          ci_url: opts.ciUrl ?? null,
+        };
+
+        const build = await apiRequest<{ id: string }>(`/api/apps/${appId}/builds`, {
+          method: "POST",
+          body: {
+            channel_id: channelId,
+            product_type: opts.productType,
+            release_type: opts.releaseType,
+            version_name: opts.versionName,
+            version_code: versionCode,
+            changelog,
+            source: "cli",
+            status: "succeeded",
+            build_metadata_json: metadataJson,
+            provenance_json: provenance,
+            should_force_update: Boolean(opts.forceUpdate),
+          },
+        });
+
+        const assets = [];
+        assets.push(
+          await uploadAndRegisterAsset(appId, build.id, opts.ipa, {
+            artifact_kind: "installable",
+            platform: "ios",
+            arch: null,
+            filetype: "ipa",
+          }),
+        );
+        if (opts.dsym) {
+          assets.push(
+            await uploadAndRegisterAsset(appId, build.id, opts.dsym, {
+              artifact_kind: "dsym",
+              platform: "ios",
+              arch: null,
+              filetype: "dsym.zip",
+            }),
+          );
+        }
+        if (opts.metadata) {
+          assets.push(
+            await uploadAndRegisterAsset(appId, build.id, opts.metadata, {
+              artifact_kind: "metadata-file",
+              platform: "ios",
+              arch: null,
+              filetype: "metadata.json",
+            }),
+          );
+        }
+
+        const release = await apiRequest<{ id: string }>(`/api/apps/${appId}/releases`, {
+          method: "POST",
+          body: {
+            build_id: build.id,
+            channel_id: channelId,
+            product_type: opts.productType,
+            release_type: opts.releaseType,
+            status: opts.draft ? "draft" : "active",
+            changelog,
+            should_force_update: Boolean(opts.forceUpdate),
+            provenance_json: provenance,
+            scopes: [{ scope_type: "full", scope_value: "all" }],
+          },
+        });
+
+        const result = {
+          app_id: appId,
+          build_id: build.id,
+          release_id: release.id,
+          channel: opts.channel,
+          version_name: opts.versionName,
+          version_code: versionCode,
+          assets,
+        };
+        if (opts.json) {
+          console.log(JSON.stringify(result, null, 2));
+          return;
+        }
+        console.log(`Published iOS release ${opts.versionName} (${versionCode})`);
+        console.log(`  build:   ${build.id}`);
+        console.log(`  release: ${release.id}`);
+        console.log(`  channel: ${opts.channel}`);
+        console.log(`  assets:  ${assets.map((a) => `${a.artifact_kind}:${a.filetype}`).join(", ")}`);
+        if (!opts.dsym) {
+          console.error(
+            "warning: no --dsym uploaded; iOS crashes for this version_code won't symbolicate.",
+          );
+        }
+      },
+    );
+
+  builds
     .command("publish-electron <appIdOrSlug>")
     .description("Create an Electron generic-provider build/release and upload electron-builder output.")
     .requiredOption("--version-name <name>", "Electron app version.")
