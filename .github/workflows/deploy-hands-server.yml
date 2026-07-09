@@ -61,6 +61,10 @@ jobs:
           pnpm --filter @botiverse/hands-cli build
           pnpm --filter @botiverse/hands-admin build
 
+      - name: Build deploy assets
+        if: ${{ !inputs.run_checks }}
+        run: pnpm --filter @botiverse/hands-admin build
+
       - name: Bootstrap Hands Cloudflare resources
         working-directory: worker
         env:
