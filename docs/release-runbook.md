@@ -85,6 +85,19 @@ support artifact for symbolication. TestFlight processing status can be written
 back through metadata/status follow-ups, but the release should still remain
 `draft` until changelog review is complete.
 
+If CI already has reviewed localized release notes, use repeatable
+`lang=file` entries instead of the raw plain changelog:
+
+```sh
+hands builds publish-ios raft-ios \
+  --version-name 1.0.0 \
+  --version-code 1000000 \
+  --ipa build/Raft.ipa \
+  --changelog-file zh=changelog.zh.md \
+  --changelog-file en=changelog.en.md \
+  --draft
+```
+
 ## 2. Review + bilingual changelog (agent/human)
 
 ```sh

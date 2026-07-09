@@ -8,7 +8,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { mkdtempSync, readFileSync, rmSync, existsSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, existsSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer } from "node:http";
@@ -150,5 +150,25 @@ describe("iOS build helper contract", () => {
     expect(() =>
       parseChangelogOptions({ changelog: ["plain update", "en=English update"] }),
     ).toThrow("mix of plain and lang= changelog entries");
+  });
+});
+
+describe("build publish changelog options", () => {
+  it("supports repeatable lang=file changelogs", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "quiver-changelog-"));
+    try {
+      const zh = join(dir, "zh.md");
+      const en = join(dir, "en.md");
+      writeFileSync(zh, "中文更新\n");
+      writeFileSync(en, "English update\n");
+      const { parseChangelogOptions } = await import("../src/commands/builds.js");
+      expect(
+        parseChangelogOptions({
+          changelogFile: [`zh=${zh}`, `en=${en}`],
+        }),
+      ).toBe(JSON.stringify({ "zh-CN": "中文更新", en: "English update" }));
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

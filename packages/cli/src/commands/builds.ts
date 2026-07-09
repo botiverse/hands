@@ -555,8 +555,18 @@ export function registerBuildCommands(program: Command): void {
     .option("--arch <arch>", "Electron arch metadata.")
     .option("--release-type <type>", "Release type metadata.", "stable")
     .option("--product-type <type>", "Product type metadata.", "electron-installer")
-    .option("--changelog <text>", "Inline changelog.")
-    .option("--changelog-file <path>", "Read changelog from file.")
+    .option(
+      "--changelog <text>",
+      "Inline changelog. Repeatable with lang=text for multiple languages.",
+      collect,
+      [],
+    )
+    .option(
+      "--changelog-file <path>",
+      "Read changelog from file. Repeatable with lang=path, e.g. --changelog-file zh=zh.md --changelog-file en=en.md.",
+      collect,
+      [],
+    )
     .option("--source-commit <sha>", "Source commit SHA.")
     .option("--source-branch <branch>", "Source branch.")
     .option("--build-time <iso>", "Build time. Defaults to now.")
@@ -581,8 +591,8 @@ export function registerBuildCommands(program: Command): void {
           arch?: string;
           releaseType: string;
           productType: string;
-          changelog?: string;
-          changelogFile?: string;
+          changelog?: string[];
+          changelogFile?: string[];
           sourceCommit?: string;
           sourceBranch?: string;
           buildTime?: string;
@@ -615,9 +625,7 @@ export function registerBuildCommands(program: Command): void {
 
         const primaryPlatform = opts.platform ?? inferElectronPlatform(metadataFiles[0] ?? installerFiles[0]);
         const arch = opts.arch ?? null;
-        const changelog = opts.changelogFile
-          ? readFileSync(opts.changelogFile, "utf8")
-          : opts.changelog ?? null;
+        const changelog = parseChangelogOptions(opts);
         const provenance = {
           source_commit: opts.sourceCommit ?? null,
           source_branch: opts.sourceBranch ?? null,
@@ -740,7 +748,6 @@ export function registerBuildCommands(program: Command): void {
         console.log(`  assets:  ${assets.map((a) => `${a.artifact_kind}:${a.filetype}`).join(", ")}`);
       },
     );
-
 
 }
 
