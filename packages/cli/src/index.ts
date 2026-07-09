@@ -36,13 +36,29 @@ const program = new Command();
 program
   .name("hands")
   .description("Hands CLI — manage apps, builds, releases from the terminal.")
-  .version("0.5.0")
+  .version("0.5.1")
   .option(
     "--api <url>",
     "Quiver Worker base URL (default: https://quiver.oranix.io or $QUIVER_API)",
   )
   .option("--json", "Output machine-readable JSON (suppresses human output)", false)
-  .option("--verbose", "Print HTTP request details for debugging", false);
+  .option("--verbose", "Print HTTP request details for debugging", false)
+  .addHelpText(
+    "after",
+    `
+Common recipes:
+  hands whoami                                        Who am I / is my auth valid?
+  hands apps list                                     Apps I can access
+  hands feedback list <app> --kind crash              Newest crash tickets
+  hands feedback show <app> <ticketId>                One ticket: device context + attachments
+  hands feedback download-attachment <app> <t> <a>    Pull a crash log / screenshot
+  hands releases list <app>                           Release history
+  hands logs collect                                  Bundle local CLI logs for a bug report
+
+Every command supports --json for scripts/agents. Full docs:
+  https://hands.build/docs/cli-reference
+  https://hands.build/docs/agent-cli-feedback   (crash/feedback triage guide)`,
+  );
 
 // Re-read global options after parse to wire into the API client.
 program.hook("preAction", (_rootCommand, actionCommand) => {

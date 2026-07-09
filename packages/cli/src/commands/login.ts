@@ -115,6 +115,14 @@ export function registerLoginCommands(program: Command): void {
         try {
           await apiRequest("/api/auth/me");
           console.log(`✔ Token verified — you're logged in.`);
+          console.log("");
+          console.log("Next steps:");
+          console.log("  hands whoami                            confirm who you are");
+          console.log("  hands apps list                         see your apps");
+          console.log("  hands feedback list <app> --kind crash  newest crash tickets");
+          console.log("  hands --help                            all commands + recipes");
+          console.log("");
+          console.log("Docs: https://hands.build/docs/cli-reference");
         } catch (e) {
           if (e instanceof QuiverApiError && e.status === 401) {
             console.error(
