@@ -533,6 +533,19 @@ function PublicLanding({ account }: { account?: AuthAccount }) {
                 reports come back as tickets — grouped, deobfuscated, and
                 triageable by humans and agents alike.
               </p>
+              <div className="mt-6 flex flex-wrap items-center gap-2">
+                <span className="text-xs font-medium text-slate-500">
+                  Client platforms:
+                </span>
+                {["Android", "iOS", "HarmonyOS", "Electron"].map((p) => (
+                  <span
+                    key={p}
+                    className="inline-flex items-center rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 text-xs font-medium text-slate-700"
+                  >
+                    {p}
+                  </span>
+                ))}
+              </div>
               <div className="mt-8 flex flex-col gap-3 sm:flex-row">
                 <a
                   className="inline-flex h-11 items-center justify-center gap-2 rounded-md bg-slate-950 px-5 text-sm font-medium text-white hover:bg-slate-800"
@@ -612,6 +625,18 @@ function PublicLanding({ account }: { account?: AuthAccount }) {
                 href="/docs/android-sdk/"
               >
                 Android SDK
+              </a>
+              <a
+                className="inline-flex h-10 items-center justify-center whitespace-nowrap rounded-md border border-slate-300 bg-white px-4 text-sm font-medium text-slate-800 hover:bg-slate-100"
+                href="/docs/ios-sdk/"
+              >
+                iOS SDK
+              </a>
+              <a
+                className="inline-flex h-10 items-center justify-center whitespace-nowrap rounded-md border border-slate-300 bg-white px-4 text-sm font-medium text-slate-800 hover:bg-slate-100"
+                href="/docs/ohos-sdk/"
+              >
+                HarmonyOS SDK
               </a>
               <a
                 className="inline-flex h-10 items-center justify-center whitespace-nowrap rounded-md border border-slate-300 bg-white px-4 text-sm font-medium text-slate-800 hover:bg-slate-100"
