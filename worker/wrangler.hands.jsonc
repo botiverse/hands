@@ -61,7 +61,7 @@
     "CORS_ALLOWED_ORIGINS": "https://hands.build,http://localhost:5173",
     "RAFT_ORIGIN": "https://app.raft.build",
     "RAFT_API_ORIGIN": "https://api.raft.build",
-    "RAFT_CLIENT_ID": "quiver"
+    "RAFT_CLIENT_ID": "hands"
   },
 
   "assets": {
