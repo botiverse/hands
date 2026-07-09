@@ -317,7 +317,7 @@ function AppChannelsRoute() {
 function AppSettingsRoute() {
   const { appId } = useParams();
   if (!appId) return null;
-  return <AppSettings appId={appId} />;
+  return <AppSettings key={appId} appId={appId} />;
 }
 
 function AppFeedbackRoute() {
