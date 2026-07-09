@@ -91,6 +91,8 @@ jobs:
           const seen = new Set();
           const tables = [];
           const groups = new Map();
+          const LARGE_SQL_VALUE_LIMIT = 50000;
+          const LARGE_SQL_CHUNK_SIZE = 16000;
 
           function parseInsert(line) {
             const match = insertRe.exec(line);
@@ -166,15 +168,63 @@ jobs:
             const values = [...parsed.values];
             const idIndex = parsed.columns.indexOf("id");
             const columnIndex = parsed.columns.indexOf(nullColumn);
-            if (idIndex === -1 || columnIndex === -1) return formatInsert(parsed.table, parsed.columns, values);
-            const previous = values[columnIndex];
-            if (previous.toUpperCase() !== "NULL") {
-              restoreUpdates.push(
-                `UPDATE ${quoteIdent(parsed.table)} SET ${quoteIdent(nullColumn)} = ${previous} WHERE "id" = ${values[idIndex]};`,
-              );
-              values[columnIndex] = "NULL";
+            if (idIndex !== -1 && columnIndex !== -1) {
+              const previous = values[columnIndex];
+              if (previous.toUpperCase() !== "NULL") {
+                restoreUpdates.push(
+                  `UPDATE ${quoteIdent(parsed.table)} SET ${quoteIdent(nullColumn)} = ${previous} WHERE "id" = ${values[idIndex]};`,
+                );
+                values[columnIndex] = "NULL";
+              }
             }
-            return formatInsert(parsed.table, parsed.columns, values);
+            const largeValueUpdates = extractLargeValueUpdates(parsed, values);
+            return [formatInsert(parsed.table, parsed.columns, values), ...largeValueUpdates];
+          }
+
+          function emitInsert(parsed) {
+            const values = [...parsed.values];
+            const largeValueUpdates = extractLargeValueUpdates(parsed, values);
+            return [formatInsert(parsed.table, parsed.columns, values), ...largeValueUpdates];
+          }
+
+          function extractLargeValueUpdates(parsed, values) {
+            const idIndex = parsed.columns.indexOf("id");
+            if (idIndex === -1) return [];
+            const idValue = values[idIndex];
+            const updates = [];
+            for (let i = 0; i < values.length; i += 1) {
+              const value = values[i];
+              if (value.length <= LARGE_SQL_VALUE_LIMIT || !value.startsWith("'") || !value.endsWith("'")) {
+                continue;
+              }
+              values[i] = "''";
+              for (const chunk of splitSqlStringLiteral(value, LARGE_SQL_CHUNK_SIZE)) {
+                updates.push(
+                  `UPDATE ${quoteIdent(parsed.table)} SET ${quoteIdent(parsed.columns[i])} = ${quoteIdent(parsed.columns[i])} || ${chunk} WHERE "id" = ${idValue};`,
+                );
+              }
+            }
+            return updates;
+          }
+
+          function splitSqlStringLiteral(value, chunkSize) {
+            const inner = value.slice(1, -1);
+            const chunks = [];
+            let current = "";
+            for (let i = 0; i < inner.length; i += 1) {
+              let token = inner[i];
+              if (inner[i] === "'" && inner[i + 1] === "'") {
+                token += inner[i + 1];
+                i += 1;
+              }
+              if (current.length > 0 && current.length + token.length > chunkSize) {
+                chunks.push(`'${current}'`);
+                current = "";
+              }
+              current += token;
+            }
+            if (current.length > 0) chunks.push(`'${current}'`);
+            return chunks;
           }
 
           function formatInsert(table, columns, values) {
@@ -242,13 +292,13 @@ jobs:
             const rows = groups.get(table) ?? [];
             for (const row of rows) {
               if (table === "apps") {
-                importLines.push(rewriteInsert(row, "default_channel_id", appDefaultChannelUpdates));
+                importLines.push(...rewriteInsert(row, "default_channel_id", appDefaultChannelUpdates));
               } else if (table === "product_types") {
-                importLines.push(rewriteInsert(row, "parent_product_type_id", productParentUpdates));
+                importLines.push(...rewriteInsert(row, "parent_product_type_id", productParentUpdates));
               } else if (table === "releases") {
-                importLines.push(rewriteInsert(row, "superseded_by_release_id", supersededReleaseUpdates));
+                importLines.push(...rewriteInsert(row, "superseded_by_release_id", supersededReleaseUpdates));
               } else {
-                importLines.push(formatInsert(row.table, row.columns, row.values));
+                importLines.push(...emitInsert(row));
               }
             }
             if (table === "channels") importLines.push(...appDefaultChannelUpdates);
