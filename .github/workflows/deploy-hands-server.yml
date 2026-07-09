@@ -1,0 +1,130 @@
+name: Deploy Hands Server
+
+on:
+  workflow_dispatch:
+    inputs:
+      containers_rollout:
+        description: "Cloudflare Containers rollout strategy. Use none when only Worker/API/admin assets changed."
+        required: true
+        type: choice
+        options:
+          - none
+          - immediate
+          - gradual
+        default: none
+      run_checks:
+        description: "Run Worker tests/build, CLI build, and admin build before deploy."
+        required: true
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: hands-server-production
+  cancel-in-progress: false
+
+env:
+  CLOUDFLARE_ACCOUNT_ID: a084c4564dfdce5a7775b08ece638a79
+  HANDS_D1_DATABASE_NAME: hands-db
+  HANDS_R2_BUCKET_NAME: hands-artifacts
+  HANDS_WORKER_DOMAIN: hands.build
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: pnpm/action-setup@v6
+        with:
+          version: 9.12.0
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+          cache: "pnpm"
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Generate Worker types
+        working-directory: worker
+        run: pnpm exec wrangler types
+
+      - name: Run checks
+        if: ${{ inputs.run_checks }}
+        run: |
+          pnpm --filter @oranix/quiver-worker test
+          pnpm --filter @oranix/quiver-worker build
+          pnpm --filter @oranix/quiver-cli build
+          pnpm --filter @oranix/quiver-admin build
+
+      - name: Bootstrap Hands Cloudflare resources
+        working-directory: worker
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_BOTIVERSE_API_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -z "${CLOUDFLARE_API_TOKEN:-}" ]]; then
+            echo "Missing GitHub secret CLOUDFLARE_BOTIVERSE_API_TOKEN." >&2
+            exit 1
+          fi
+
+          pnpm exec wrangler d1 list --json > /tmp/hands-d1-before.json
+          D1_ID="$(node -e 'const fs=require("fs"); const name=process.env.HANDS_D1_DATABASE_NAME; const rows=JSON.parse(fs.readFileSync("/tmp/hands-d1-before.json","utf8")); const db=rows.find((row)=>row.name===name); if (db) process.stdout.write(db.uuid || db.id || db.database_id || "");')"
+          if [[ -z "${D1_ID}" ]]; then
+            pnpm exec wrangler d1 create "${HANDS_D1_DATABASE_NAME}"
+            pnpm exec wrangler d1 list --json > /tmp/hands-d1-after.json
+            D1_ID="$(node -e 'const fs=require("fs"); const name=process.env.HANDS_D1_DATABASE_NAME; const rows=JSON.parse(fs.readFileSync("/tmp/hands-d1-after.json","utf8")); const db=rows.find((row)=>row.name===name); if (!db) process.exit(1); process.stdout.write(db.uuid || db.id || db.database_id || "");')"
+          fi
+          if [[ -z "${D1_ID}" ]]; then
+            echo "Could not resolve D1 database id for ${HANDS_D1_DATABASE_NAME}." >&2
+            exit 1
+          fi
+
+          if ! pnpm exec wrangler r2 bucket info "${HANDS_R2_BUCKET_NAME}" >/dev/null 2>&1; then
+            pnpm exec wrangler r2 bucket create "${HANDS_R2_BUCKET_NAME}"
+          fi
+
+          D1_ID="${D1_ID}" node -e 'const fs=require("fs"); const id=process.env.D1_ID; const src=fs.readFileSync("wrangler.hands.jsonc","utf8"); fs.writeFileSync("wrangler.hands.generated.jsonc", src.replace("__HANDS_D1_DATABASE_ID__", id));'
+
+      - name: Apply Hands D1 migrations
+        working-directory: worker
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_BOTIVERSE_API_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          pnpm exec wrangler d1 migrations apply "${HANDS_D1_DATABASE_NAME}" --remote --config wrangler.hands.generated.jsonc
+
+      - name: Deploy Hands Worker and admin assets
+        working-directory: worker
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_BOTIVERSE_API_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          pnpm exec wrangler deploy \
+            --config wrangler.hands.generated.jsonc \
+            --containers-rollout "${{ inputs.containers_rollout }}" \
+            --domain "${HANDS_WORKER_DOMAIN}"
+
+      - name: Summary
+        shell: bash
+        run: |
+          {
+            echo "### Hands server deploy"
+            echo
+            echo "| Field | Value |"
+            echo "|---|---|"
+            echo "| Ref | \`${GITHUB_REF_NAME}\` |"
+            echo "| SHA | \`${GITHUB_SHA}\` |"
+            echo "| Account | \`${CLOUDFLARE_ACCOUNT_ID}\` |"
+            echo "| Domain | \`${HANDS_WORKER_DOMAIN}\` |"
+            echo "| D1 | \`${HANDS_D1_DATABASE_NAME}\` |"
+            echo "| R2 | \`${HANDS_R2_BUCKET_NAME}\` |"
+            echo "| Containers rollout | \`${{ inputs.containers_rollout }}\` |"
+          } >> "$GITHUB_STEP_SUMMARY"

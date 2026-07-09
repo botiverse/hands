@@ -121,11 +121,13 @@ Required repository secrets:
 
 - `CLOUDFLARE_API_TOKEN` — Cloudflare API token allowed to deploy the Quiver Worker and its assets.
 - `CLOUDFLARE_ACCOUNT_ID` — Cloudflare account id for the Worker deploy.
+- `CLOUDFLARE_BOTIVERSE_API_TOKEN` — Cloudflare API token for the Hands/Botiverse account (`a084c4564dfdce5a7775b08ece638a79`). This is intentionally separate from the Quiver production token.
 
 Workflows:
 
 - `Publish CLI` publishes `@botiverse/hands-cli` to npm through npm Trusted Publishing / GitHub OIDC. Configure the npm package trusted publisher for this repository and workflow, then trigger it manually with the package version from `packages/cli/package.json`, or push a tag like `cli-v0.1.2`.
 - `Deploy Quiver Server` deploys the Worker plus bundled admin/docs assets. Trigger it manually, or push a tag like `server-v2026.07.04`. The default container rollout is `none`; choose `immediate` or `gradual` only when the APK parser container image changed.
+- `Deploy Hands Server` deploys the same Worker/admin bundle to `hands.build` in the separate Hands Cloudflare account. It bootstraps `hands-db` and `hands-artifacts` if they do not exist, applies D1 migrations, and deploys with `worker/wrangler.hands.jsonc`. This workflow is manual-only so it cannot replace the existing Quiver deploy path accidentally.
 
 ## Credits
 
