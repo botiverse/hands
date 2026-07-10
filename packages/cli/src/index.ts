@@ -36,7 +36,7 @@ const program = new Command();
 program
   .name("hands")
   .description("Hands CLI — manage apps, builds, releases from the terminal.")
-  .version("0.5.1")
+  .version("0.5.2")
   .option(
     "--api <url>",
     "Quiver Worker base URL (default: https://quiver.oranix.io or $QUIVER_API)",
