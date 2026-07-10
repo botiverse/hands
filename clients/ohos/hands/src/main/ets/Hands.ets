@@ -2,6 +2,7 @@ import { common } from '@kit.AbilityKit';
 import { HandsAnalytics } from './HandsAnalytics';
 import { HandsCrashUploader } from './HandsCrashUploader';
 import { HandsCrashReporter } from './HandsCrashReporter';
+import { HandsFaultWatcher } from './HandsFaultWatcher';
 
 /**
  * Hands SDK entry point for HarmonyOS. All configuration is runtime
@@ -43,6 +44,9 @@ export class Hands {
       // Register the crash observer synchronously so a crash during startup
       // is still captured.
       HandsCrashReporter.install(context);
+      // System-level fault watcher: native crashes + app freezes that never
+      // reach errorManager (delivered by the OS, including on next launch).
+      HandsFaultWatcher.install(context);
       // Device ping + pending-crash upload off the launch critical path.
       setTimeout(() => {
         HandsAnalytics.reportDevice(context).catch((): void => {});
