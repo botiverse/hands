@@ -88,6 +88,10 @@ import {
   handleDeleteAscCredentials,
   handleVerifyAscCredentials,
 } from "./routes/asc_credentials";
+import {
+  handleTestflightUpload,
+  handleTestflightUploadStatus,
+} from "./routes/testflight";
 import { handleUploadApk } from "./routes/upload";
 import {
   handleListOperations,
@@ -774,6 +778,8 @@ admin.delete("/api/apps/:appId/deploy-tokens/:tokenId", requireAppRole("admin"),
 // App Store Connect API credentials (for Hands-orchestrated TestFlight uploads).
 admin.get("/api/apps/:appId/asc-credentials", requireAppRole("admin"), handleGetAscCredentials);
 admin.post("/api/apps/:appId/asc-credentials/verify", requireAppRole("admin"), handleVerifyAscCredentials);
+admin.post("/api/apps/:appId/builds/:buildId/testflight-upload", requireAppRole("admin"), handleTestflightUpload);
+admin.get("/api/apps/:appId/testflight-uploads/:buildUploadId", requireAppRole("viewer"), handleTestflightUploadStatus);
 admin.put("/api/apps/:appId/asc-credentials", requireAppRole("admin"), handleSetAscCredentials);
 admin.delete("/api/apps/:appId/asc-credentials", requireAppRole("admin"), handleDeleteAscCredentials);
 

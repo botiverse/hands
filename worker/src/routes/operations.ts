@@ -19,7 +19,7 @@ export interface OperationLog {
   id: string;
   /** Nullable — parse operations are app-less (run before the user picks an app). */
   app_id: string | null;
-  kind: "parse" | "upload" | "publish" | "signed_url";
+  kind: "parse" | "upload" | "publish" | "signed_url" | "testflight-upload";
   status: "pending" | "in_progress" | "success" | "failed" | "cancelled";
   parent_op_id: string | null;
   step_number: number | null;

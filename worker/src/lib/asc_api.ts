@@ -244,7 +244,7 @@ export async function createBuildUploadFile(
 /** Tell Apple every part is uploaded so processing can start. */
 export async function commitBuildUploadFile(
   creds: AscApiCredentials,
-  args: { fileId: string; sha256?: string },
+  args: { fileId: string; sha256?: string | undefined },
 ): Promise<void> {
   await ascRequest(creds, "PATCH", `/v1/buildUploadFiles/${args.fileId}`, {
     data: {
