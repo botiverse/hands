@@ -78,14 +78,34 @@ app.post("/generate-patch", async (c) => {
   const oldPath = join(dir, "old.apk");
   const newPath = join(dir, "new.apk");
   const outPath = join(dir, "out.patch");
+  // Fetch with a timeout so a stuck/blocked egress fails fast with a diagnostic
+  // (which URL, timeout vs error) instead of hanging the whole request — the
+  // container reaching back to hands.build is the current unknown.
   const fetchApk = async (url: string, dest: string): Promise<number> => {
-    const res = await fetch(url);
-    if (!res.ok) {
-      throw new Error(`fetch ${dest} failed: HTTP ${res.status}`);
+    const started = Date.now();
+    const ac = new AbortController();
+    const timer = setTimeout(() => ac.abort(), 60_000);
+    try {
+      const res = await fetch(url, { signal: ac.signal });
+      if (!res.ok) {
+        throw new Error(`HTTP ${res.status}`);
+      }
+      const buf = Buffer.from(await res.arrayBuffer());
+      await writeFile(dest, buf);
+      return buf.length;
+    } catch (e) {
+      const why = ac.signal.aborted ? "timeout 60s" : String(e);
+      const host = (() => {
+        try {
+          return new URL(url).host;
+        } catch {
+          return "?";
+        }
+      })();
+      throw new Error(`fetch ${dest} from ${host} failed after ${Date.now() - started}ms: ${why}`);
+    } finally {
+      clearTimeout(timer);
     }
-    const buf = Buffer.from(await res.arrayBuffer());
-    await writeFile(dest, buf);
-    return buf.length;
   };
   try {
     const [oldLen, newLen] = await Promise.all([
