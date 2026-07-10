@@ -639,7 +639,10 @@ export function resolveChangelog(raw: string | null, lang: string | null): strin
 }
 
 export function requestedLang(c: Context<{ Bindings: Env }>): string | null {
-  const explicit = c.req.query("lang") ?? c.req.header("X-Hands-Lang") ?? c.req.header("X-Quiver-Lang");
+  // `query` is guarded because requestedLang is now called from several public
+  // handlers (share/history) whose contexts may not expose the query accessor.
+  const fromQuery = typeof c.req.query === "function" ? c.req.query("lang") : null;
+  const explicit = fromQuery ?? c.req.header("X-Hands-Lang") ?? c.req.header("X-Quiver-Lang");
   if (explicit) return explicit;
   const accept = c.req.header("accept-language");
   if (!accept) return null;
