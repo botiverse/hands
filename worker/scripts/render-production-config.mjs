@@ -76,6 +76,25 @@ config.vars = {
   R2_BUCKET_NAME: r2.bucket_name,
 };
 
+// Preview mode: a throwaway `hands-worker-preview` on a single fixed host
+// preview.<business> for UI review (one branch previewed at a time — Raft apps
+// allow only one callback, so a fixed host keeps a single registered callback).
+// Reuses production D1/R2 (read-only review) + the same container/DO bindings,
+// and points origins at the preview host so Login-with-Raft resolves there. Uses
+// a dedicated preview Raft app (HANDS_PREVIEW_RAFT_CLIENT_ID + its secret) so the
+// production hands-4cc7a2 app's single callback is untouched.
+if (process.argv.includes("--preview")) {
+  const previewHost = `preview.${businessDomain}`;
+  config.name = "hands-worker-preview";
+  config.routes = [{ pattern: previewHost, custom_domain: true }];
+  config.vars.ENVIRONMENT = "preview";
+  config.vars.BUSINESS_ORIGIN = `https://${previewHost}`;
+  config.vars.DASHBOARD_ORIGIN = `https://${previewHost}`;
+  config.vars.CORS_ALLOWED_ORIGINS = `https://${previewHost},http://localhost:5173`;
+  config.vars.RAFT_CLIENT_ID = required("HANDS_PREVIEW_RAFT_CLIENT_ID");
+  console.log(`Preview config: ${config.name} on https://${previewHost}`);
+}
+
 mkdirSync(dirname(outputPath), { recursive: true });
 writeFileSync(outputPath, `${JSON.stringify(config, null, 2)}\n`, { mode: 0o600 });
 console.log(`Rendered production Wrangler config: ${outputPath}`);
