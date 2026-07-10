@@ -22,6 +22,7 @@ import {
   getAscCredentials,
   setAscCredentials,
   deleteAscCredentials,
+  verifyAscCredentials,
 } from "../lib/api";
 import { useToast } from "../components/Toast";
 import { Operations } from "./Operations";
@@ -374,6 +375,38 @@ function TestFlightPanel({ appId }: { appId: string }) {
       toast.show({ kind: "error", title: "Remove failed", description: (e as Error).message }),
   });
 
+  const test = useMutation({
+    mutationFn: () => {
+      const bundleId = window.prompt(
+        "Bundle ID to verify against App Store Connect (e.g. build.raft.app):",
+        "",
+      );
+      if (!bundleId || !bundleId.trim()) throw new Error("cancelled");
+      return verifyAscCredentials(appId, bundleId.trim());
+    },
+    onSuccess: (res) => {
+      if (res.ok) {
+        toast.show({
+          kind: "success",
+          title: "Connection OK",
+          description: res.asc_app_id
+            ? `App Store Connect app ${res.asc_app_id} found.`
+            : res.detail ?? "",
+        });
+      } else {
+        toast.show({
+          kind: "error",
+          title: "Verification failed",
+          description: res.detail ?? res.error ?? "unknown",
+        });
+      }
+    },
+    onError: (e) => {
+      if ((e as Error).message === "cancelled") return;
+      toast.show({ kind: "error", title: "Test failed", description: (e as Error).message });
+    },
+  });
+
   const readP8File = (file: File | undefined) => {
     if (!file) return;
     file.text().then(
@@ -410,6 +443,14 @@ function TestFlightPanel({ appId }: { appId: string }) {
         </div>
         {meta && !editing && (
           <>
+            <button
+              className="btn-secondary !py-1 !px-2 !text-xs"
+              disabled={test.isPending}
+              onClick={() => test.mutate()}
+              title="Verify the stored key against App Store Connect for this app's bundle id"
+            >
+              {test.isPending ? "Testing…" : "Test connection"}
+            </button>
             <button
               className="btn-secondary !py-1 !px-2 !text-xs"
               onClick={() => setEditing(true)}

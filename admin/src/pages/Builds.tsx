@@ -15,6 +15,8 @@ import {
   listBuilds,
   listChannels,
   listProductTypes,
+  uploadBuildToTestflight,
+  getTestflightUploadStatus,
   type Build,
   type BuildAsset,
 } from "../lib/api";
@@ -125,6 +127,9 @@ export function Builds({ appId }: { appId: string }) {
                   </button>
                 )}
               </div>
+              {b.product_type === "ios-ipa" && (
+                <TestflightUploadPanel appId={appId} build={b} />
+              )}
               {isExpanded && <BuildAssetList appId={appId} buildId={b.id} />}
             </div>
           );
@@ -141,6 +146,98 @@ export function Builds({ appId }: { appId: string }) {
             qc.invalidateQueries({ queryKey: ["builds", appId] });
           }}
         />
+      )}
+    </div>
+  );
+}
+
+function TestflightUploadPanel({ appId, build }: { appId: string; build: Build }) {
+  const toast = useToast();
+  const [buildUploadId, setBuildUploadId] = useState<string | null>(null);
+
+  const upload = useMutation({
+    mutationFn: () => uploadBuildToTestflight(appId, build.id),
+    onSuccess: (res) => {
+      if (res.ok && res.build_upload_id) {
+        setBuildUploadId(res.build_upload_id);
+        toast.show({ kind: "success", title: "Uploaded to Apple — processing" });
+      } else {
+        toast.show({
+          kind: "error",
+          title: "Upload rejected",
+          description: res.error ?? res.detail ?? "unknown error",
+        });
+      }
+    },
+    onError: (e) =>
+      toast.show({ kind: "error", title: "Upload failed", description: (e as Error).message }),
+  });
+
+  const status = useQuery({
+    queryKey: ["testflight-status", appId, buildUploadId],
+    queryFn: () => getTestflightUploadStatus(appId, buildUploadId!),
+    enabled: buildUploadId != null,
+    refetchInterval: (q) => {
+      const s = q.state.data?.state?.state;
+      return s === "COMPLETE" || s === "FAILED" ? false : 5000;
+    },
+  });
+
+  const state = status.data?.state;
+  const stateName = state?.state;
+  const stateColor =
+    stateName === "COMPLETE"
+      ? "text-green-700"
+      : stateName === "FAILED"
+        ? "text-red-700"
+        : "text-blue-700";
+
+  return (
+    <div className="mt-2 pt-2 border-t border-slate-100">
+      <div className="flex items-center gap-2 flex-wrap text-xs">
+        <span className="badge-gray"> TestFlight</span>
+        <button
+          className="btn-secondary !py-1 !px-2 !text-xs"
+          disabled={upload.isPending || build.status !== "succeeded"}
+          onClick={() => upload.mutate()}
+          title={
+            build.status !== "succeeded"
+              ? "Build must be succeeded"
+              : "Upload this IPA to App Store Connect / TestFlight"
+          }
+        >
+          {upload.isPending ? "Uploading…" : "Upload to TestFlight"}
+        </button>
+        <a
+          className="btn-secondary !py-1 !px-2 !text-xs no-underline"
+          href="https://appstoreconnect.apple.com/apps"
+          target="_blank"
+          rel="noopener noreferrer"
+        >
+          Open App Store Connect ↗
+        </a>
+        {stateName && (
+          <span className={`font-medium ${stateColor}`}>
+            {stateName === "PROCESSING" || stateName === "AWAITING_UPLOAD"
+              ? "Apple processing…"
+              : stateName}
+          </span>
+        )}
+      </div>
+      {state?.errors && state.errors.length > 0 && (
+        <ul className="mt-1 text-xs text-red-700 list-disc pl-5">
+          {state.errors.map((e, i) => (
+            <li key={i}>
+              {e.code ? `[${e.code}] ` : ""}
+              {e.description}
+            </li>
+          ))}
+        </ul>
+      )}
+      {stateName === "COMPLETE" && (
+        <p className="mt-1 text-xs text-green-700">
+          Processed — add it to a tester group in App Store Connect → TestFlight.
+        </p>
       )}
     </div>
   );

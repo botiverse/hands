@@ -650,6 +650,60 @@ export const deleteAscCredentials = (appId: string) =>
     admin: true,
   });
 
+export const verifyAscCredentials = (appId: string, bundleId: string) =>
+  request<{
+    ok: boolean;
+    key_id?: string;
+    bundle_id?: string;
+    asc_app_id?: string | null;
+    detail?: string;
+    error?: string;
+    status?: number;
+  }>(`/api/apps/${appId}/asc-credentials/verify`, {
+    method: "POST",
+    admin: true,
+    body: JSON.stringify({ bundle_id: bundleId }),
+  });
+
+// ---------- TestFlight upload (Hands → Apple) ----------
+
+/** Apple's build-upload state is an object, not a bare string. */
+export interface AscUploadState {
+  state: "AWAITING_UPLOAD" | "PROCESSING" | "FAILED" | "COMPLETE" | string;
+  errors?: Array<{ code?: string; description?: string }>;
+  warnings?: Array<{ code?: string; description?: string }>;
+  infos?: Array<{ code?: string; description?: string }>;
+}
+
+export const uploadBuildToTestflight = (
+  appId: string,
+  buildId: string,
+  bundleId?: string,
+) =>
+  request<{
+    operation_id: string;
+    ok: boolean;
+    asc_app_id?: string;
+    build_upload_id?: string;
+    parts_uploaded?: number;
+    state?: AscUploadState;
+    error?: string;
+    detail?: string | null;
+  }>(`/api/apps/${appId}/builds/${buildId}/testflight-upload`, {
+    method: "POST",
+    admin: true,
+    body: JSON.stringify(bundleId ? { bundle_id: bundleId } : {}),
+  });
+
+export const getTestflightUploadStatus = (appId: string, buildUploadId: string) =>
+  request<{
+    build_upload_id: string;
+    state: AscUploadState | null;
+    version: string | null;
+    build_number: string | null;
+    uploaded_at: string | null;
+  }>(`/api/apps/${appId}/testflight-uploads/${buildUploadId}`, { admin: true });
+
 export const listAppDeployTokens = (appId: string) =>
   request<{ deploy_tokens: AppDeployToken[] }>(
     `/api/apps/${appId}/deploy-tokens`,
