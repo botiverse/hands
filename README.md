@@ -120,19 +120,12 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for the worktree workflow and merge rules
 
 GitHub Actions owns production publishing so local machines do not need long-lived npm or Cloudflare credentials.
 
-Required repository secrets:
-
-- `NPM_TOKEN` — npm automation token with publish access to the `@botiverse` scope, used by the Node SDK and CLI publishing workflows.
-- `CLOUDFLARE_API_TOKEN` — Cloudflare API token allowed to deploy the Hands Worker and its assets.
-- `CLOUDFLARE_ACCOUNT_ID` — Cloudflare account id for the Worker deploy.
-- `CLOUDFLARE_BOTIVERSE_API_TOKEN` — Cloudflare API token for the Hands.
-- `HANDS_SIGNED_URL_SECRET` — HMAC signing secret written to the Hands Worker as `SIGNED_URL_SECRET` so migrated release downloads and share pages can generate signed Worker download URLs.
-- `HANDS_RAFT_CLIENT_SECRET
+Publishing and deploys read their npm, Cloudflare, and Hands Worker secrets from the repository's GitHub Actions secrets — configured in the repository settings, not documented here.
 
 Workflows:
 
-- `Publish Hands Node SDK` publishes `@botiverse/hands-node` to npm with the repository `NPM_TOKEN`. Trigger it manually with the package version from `packages/node/package.json`, or push a tag like `node-v0.1.0`.
-- `Publish CLI` publishes `@botiverse/hands-cli` with the repository `NPM_TOKEN`. Publish the package's declared `@botiverse/hands-node` version first; the workflow verifies it exists, packs with pnpm so the workspace range becomes a normal npm semver range, and then publishes the tarball. Trigger it manually with the package version from `packages/cli/package.json`, or push a tag like `cli-v0.5.1`.
+- `Publish Hands Node SDK` publishes `@botiverse/hands-node` to npm with the repository npm token. Trigger it manually with the package version from `packages/node/package.json`, or push a tag like `node-v0.1.0`.
+- `Publish CLI` publishes `@botiverse/hands-cli` with the repository npm token. Publish the package's declared `@botiverse/hands-node` version first; the workflow verifies it exists, packs with pnpm so the workspace range becomes a normal npm semver range, and then publishes the tarball. Trigger it manually with the package version from `packages/cli/package.json`, or push a tag like `cli-v0.5.1`.
 - `Deploy Quiver Server` is the legacy compatibility deployment for `quiver.oranix.io`; it no longer owns the Hands dashboard or business data plane.
 - `Deploy Hands Server` deploys one Worker/admin bundle to the custom domains `hands.build` (business/API) and `app.hands.build` (dashboard/login) in the separate Hands Cloudflare account. It bootstraps `hands-db` and `hands-artifacts` if they do not exist, applies D1 migrations, and deploys with `worker/wrangler.hands.jsonc`. This workflow is manual-only so it cannot replace the existing Quiver deploy path accidentally.
 
