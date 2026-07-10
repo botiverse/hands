@@ -90,18 +90,19 @@ describe("apiRequest", () => {
     await new Promise<void>((r) => server.close(() => r()));
   });
 
-  it("sends the QUIVER_SESSION_COOKIE env var as a cookie header", async () => {
+  it("treats the legacy QUIVER_SESSION_COOKIE env var as bearer auth", async () => {
     process.env.QUIVER_SESSION_COOKIE = "abc123";
     process.env.QUIVER_API = baseUrl;
     const { apiRequest } = await import("../src/lib/api.js");
     const me = await apiRequest<{ account: { id: string } }>("/api/auth/me");
     expect(me.account.id).toBe("u1");
-    expect(lastCookie).toBe("abc123");
+    expect(lastAuthorization).toBe("Bearer abc123");
+    expect(lastCookie).toBeNull();
     delete process.env.QUIVER_SESSION_COOKIE;
     delete process.env.QUIVER_API;
   });
 
-  it("prefers QUIVER_AUTH_TOKEN as a bearer token over cookie auth", async () => {
+  it("prefers QUIVER_AUTH_TOKEN over the legacy session variable", async () => {
     process.env.QUIVER_SESSION_COOKIE = "cookie-token";
     process.env.QUIVER_AUTH_TOKEN = "bearer-token";
     process.env.QUIVER_API = baseUrl;

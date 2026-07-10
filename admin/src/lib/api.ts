@@ -5,9 +5,9 @@
  * In prod: Vite-built static assets are served by the Worker; /api calls are
  * same-origin.
  *
- * Admin auth is Login with Raft. The Worker sets an HttpOnly same-origin
- * session cookie after /login/raft/callback; browser code never sees Raft
- * codes, access tokens, or client secrets.
+ * Admin auth is Login with Raft. The callback returns a Hands JWT in the URL
+ * fragment; the SPA stores it locally and sends it as Authorization: Bearer.
+ * Raft codes and client secrets never enter browser storage.
  */
 
 // API base URL: in production, the Worker serves both admin UI + API under
@@ -15,6 +15,53 @@
 // and requests go to the same host. In dev, Vite proxies /api → wrangler dev.
 const API_BASE = (import.meta as any).env?.VITE_API_BASE_URL ?? "";
 export const ACTIVE_ORG_STORAGE_KEY = "hands:active-org-id";
+export const AUTH_TOKEN_STORAGE_KEY = "hands:auth-token";
+
+export function getAuthToken(): string | null {
+  try {
+    return window.localStorage.getItem(AUTH_TOKEN_STORAGE_KEY);
+  } catch {
+    return null;
+  }
+}
+
+export function clearAuthToken(): void {
+  try {
+    window.localStorage.removeItem(AUTH_TOKEN_STORAGE_KEY);
+  } catch {
+    // Storage can be unavailable in private/restricted browser contexts.
+  }
+}
+
+export function consumeAuthTokenFromUrl(): string | null {
+  if (typeof window === "undefined" || !window.location.hash) return null;
+  const params = new URLSearchParams(window.location.hash.slice(1));
+  const token = params.get("access_token");
+  if (!token) return null;
+  try {
+    window.localStorage.setItem(AUTH_TOKEN_STORAGE_KEY, token);
+  } catch {
+    return null;
+  }
+  params.delete("access_token");
+  params.delete("expires_at");
+  const remainingHash = params.toString();
+  window.history.replaceState(
+    null,
+    "",
+    `${window.location.pathname}${window.location.search}${remainingHash ? `#${remainingHash}` : ""}`,
+  );
+  return token;
+}
+
+function addAuthHeader(headers: Headers): void {
+  const token = getAuthToken();
+  if (token && !headers.has("authorization")) {
+    headers.set("authorization", `Bearer ${token}`);
+  }
+}
+
+consumeAuthTokenFromUrl();
 
 export function getActiveOrgId(): string | null {
   try {
@@ -353,12 +400,12 @@ async function request<T>(
 ): Promise<T> {
   const headers = new Headers(init.headers);
   headers.set("content-type", "application/json");
+  addAuthHeader(headers);
   const activeOrgId = getActiveOrgId();
   if (activeOrgId) headers.set("x-hands-org-id", activeOrgId);
   const res = await fetch(`${API_BASE}${path}`, {
     ...init,
     headers,
-    credentials: "include",
   });
   const text = await res.text();
   let body: unknown = text;
@@ -382,10 +429,15 @@ async function request<T>(
 export const getAuthMe = () =>
   request<{ authenticated: true; account: AuthAccount }>(`/api/auth/me`);
 
-export const logout = () =>
-  request<{ ok: boolean }>(`/api/auth/logout`, {
-    method: "POST",
-  });
+export const logout = async () => {
+  try {
+    return await request<{ ok: boolean }>(`/api/auth/logout`, {
+      method: "POST",
+    });
+  } finally {
+    clearAuthToken();
+  }
+};
 
 export const normalizeLoginReturnPath = (returnTo = window.location.pathname) => {
   if (!returnTo.startsWith("/") || returnTo.startsWith("//")) return "/";
@@ -396,7 +448,7 @@ export const normalizeLoginReturnPath = (returnTo = window.location.pathname) =>
 export const loginUrl = (returnTo = window.location.pathname) =>
   `${API_BASE}/api/auth/login?return=${encodeURIComponent(normalizeLoginReturnPath(returnTo))}`;
 
-// ---------- Admin API (requires Login with Raft session cookie in prod) ----------
+// ---------- Admin API (requires Login with Raft bearer JWT in prod) ----------
 
 export const listApps = () =>
   request<{ apps: App[] }>(`/api/apps`, { admin: true });
@@ -796,27 +848,42 @@ export const deleteOperation = (appId: string, opId: string) =>
   );
 
 /**
- * Open an EventSource (SSE) subscription for operation updates.
- * Returns the EventSource instance; caller is responsible for calling .close().
+ * Open a bearer-authenticated SSE subscription for operation updates.
  */
 export function streamOperations(
   appId: string,
   onOp: (op: Operation) => void,
   onError?: (e: unknown) => void,
-): EventSource {
+): { close: () => void } {
   const url = `${API_BASE}/api/apps/${appId}/operations/stream`;
-  const es = new EventSource(url, {
-    withCredentials: true,
-  });
-  es.addEventListener("op", (ev) => {
+  const controller = new AbortController();
+  void (async () => {
     try {
-      onOp(JSON.parse((ev as MessageEvent).data) as Operation);
-    } catch (e) {
-      onError?.(e);
+      const headers = new Headers({ accept: "text/event-stream" });
+      addAuthHeader(headers);
+      const response = await fetch(url, { headers, signal: controller.signal });
+      if (!response.ok || !response.body) throw new Error(`operation stream ${response.status}`);
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const events = buffer.split("\n\n");
+        buffer = events.pop() ?? "";
+        for (const event of events) {
+          const eventName = event.split("\n").find((line) => line.startsWith("event:"))?.slice(6).trim();
+          const data = event.split("\n").filter((line) => line.startsWith("data:"))
+            .map((line) => line.slice(5).trimStart()).join("\n");
+          if (eventName === "op" && data) onOp(JSON.parse(data) as Operation);
+        }
+      }
+    } catch (error) {
+      if (!controller.signal.aborted) onError?.(error);
     }
-  });
-  es.addEventListener("error", (ev) => onError?.(ev));
-  return es;
+  })();
+  return { close: () => controller.abort() };
 }
 
 // Multipart upload to the Worker, which stores in R2 and returns file_hash + r2_key.
@@ -826,10 +893,12 @@ export const uploadApk = async (
 ): Promise<{ file_hash: string; r2_key: string; size_bytes: number; original_filename: string }> => {
   const fd = new FormData();
   fd.append("apk", file);
+  const headers = new Headers();
+  addAuthHeader(headers);
   const res = await fetch(`${API_BASE}/api/apps/${appId}/upload`, {
     method: "POST",
+    headers,
     body: fd,
-    credentials: "include",
   });
   if (!res.ok) {
     throw new ApiError(res.status, await readErrorBody(res), `upload failed ${res.status}`);
@@ -1282,6 +1351,40 @@ export const feedbackAttachmentUrl = (appId: string, ticketId: string, attachmen
 export const feedbackAttachmentInlineUrl = (appId: string, ticketId: string, attachmentId: string) =>
   `/api/apps/${appId}/feedback/${ticketId}/attachments/${attachmentId}?inline=1`;
 
+export const getFeedbackAttachmentBlob = async (
+  appId: string,
+  ticketId: string,
+  attachmentId: string,
+  inline = false,
+): Promise<Blob> => {
+  const headers = new Headers();
+  addAuthHeader(headers);
+  const url = inline
+    ? feedbackAttachmentInlineUrl(appId, ticketId, attachmentId)
+    : feedbackAttachmentUrl(appId, ticketId, attachmentId);
+  const res = await fetch(url, { headers });
+  if (!res.ok) throw new Error(`attachment ${res.status}`);
+  return res.blob();
+};
+
+export const downloadFeedbackAttachment = async (
+  appId: string,
+  ticketId: string,
+  attachmentId: string,
+  filename: string,
+): Promise<void> => {
+  const blob = await getFeedbackAttachmentBlob(appId, ticketId, attachmentId);
+  const url = URL.createObjectURL(blob);
+  try {
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = filename;
+    anchor.click();
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+};
+
 export const getFeedbackAttachmentText = async (
   appId: string,
   ticketId: string,
@@ -1289,7 +1392,11 @@ export const getFeedbackAttachmentText = async (
   maxBytes = 200_000,
 ): Promise<string> => {
   const res = await fetch(feedbackAttachmentUrl(appId, ticketId, attachmentId), {
-    credentials: "include",
+    headers: (() => {
+      const headers = new Headers();
+      addAuthHeader(headers);
+      return headers;
+    })(),
   });
   if (!res.ok) throw new Error(`attachment ${res.status}`);
   const text = await res.text();
@@ -1304,11 +1411,12 @@ export const updateAppPublicHistory = (appId: string, enabled: boolean) =>
   });
 
 export const uploadAppIcon = async (appId: string, file: File) => {
+  const headers = new Headers({ "content-type": file.type || "image/png" });
+  addAuthHeader(headers);
   const res = await fetch(`${API_BASE}/api/apps/${appId}/icon`, {
     method: "PUT",
-    headers: { "content-type": file.type || "image/png" },
+    headers,
     body: file,
-    credentials: "include",
   });
   if (!res.ok) {
     const text = await res.text();

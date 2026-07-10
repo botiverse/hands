@@ -130,12 +130,7 @@ openApiDocument.components.securitySchemes = {
   bearerAuth: {
     type: "http",
     scheme: "bearer",
-    description: "Hands bearer token. Use app deploy tokens for CI and agents.",
-  },
-  cookieAuth: {
-    type: "apiKey",
-    in: "cookie",
-    name: "quiver_session",
-    description: "Browser session cookie set by Login with Raft.",
+    bearerFormat: "JWT",
+    description: "Hands JWT from Login with Raft, or an app deploy token for scoped CI/agent access.",
   },
 };

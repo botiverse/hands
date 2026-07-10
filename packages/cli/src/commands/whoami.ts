@@ -4,16 +4,16 @@
 
 import type { Command } from "commander";
 import { apiRequest, QuiverApiError, getApiBase } from "../lib/api.js";
-import { resolveSessionCookie } from "../lib/config.js";
+import { resolveAuthToken } from "../lib/config.js";
 import { readEnv } from "../lib/env.js";
 
 const NO_AUTH_HELP =
   "Not authenticated. Choose one:\n" +
   "  • Agents / CI: set HANDS_BEARER_TOKEN to a deploy token\n" +
   "      (console → App → Settings → Deploy Tokens; publisher role to release).\n" +
-  "  • Humans: run `hands login` (browser session).\n" +
-  "  • Raft agents: `raft integration login --service <hands-service>`, then export the\n" +
-  "      session as HANDS_SESSION_COOKIE.";
+  "  • Humans: run `hands login` and paste the browser callback JWT.\n" +
+  "  • Raft agents: run `raft integration login --service <hands-service>` and use\n" +
+  "      the integration session through `raft integration invoke`.";
 
 interface MeResponse {
   account?: {
@@ -39,7 +39,7 @@ export function registerWhoamiCommand(program: Command): void {
     .option("--json", "Output machine-readable JSON.", false)
     .action(async (opts: { json?: boolean }) => {
       const bearer = readEnv("AUTH_TOKEN") ?? readEnv("BEARER_TOKEN");
-      if (!bearer && !resolveSessionCookie()) {
+      if (!bearer && !resolveAuthToken()) {
         console.error(NO_AUTH_HELP);
         process.exit(1);
       }

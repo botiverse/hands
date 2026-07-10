@@ -45,7 +45,7 @@ share: https://hands.build/share/...
 │ Cloudflare Worker (Hands)                             │
 │ - API routes                                           │
 │ - Admin SPA static assets                              │
-│ - Auth (Login with Raft session cookie)                │
+│ - Auth (Login with Raft + signed Hands JWT)            │
 │ - Signed URL issuance for R2                           │
 │ - D1 read/write for metadata                           │
 └──────┬───────────────────────────┬────────────────────┘
@@ -84,7 +84,7 @@ Admin access uses Login with Raft as the only production login path.
 Register the app in Raft with callback URL:
 
 ```text
-https://app.hands.build/login/raft/callback
+https://hands.build/login/raft/callback
 ```
 
 Worker configuration:
@@ -93,7 +93,7 @@ Worker configuration:
 - `RAFT_CLIENT_SECRET` as a Worker secret (`wrangler secret put RAFT_CLIENT_SECRET`)
 - `app.hands.build` is the canonical dashboard/login origin. `hands.build` remains the business/API origin for SDKs, CLI/agents, share/download pages, release notes, and docs.
 - Dashboard deep links received on `hands.build` redirect to the same path on `app.hands.build`. Public share/docs/history links received on `app.hands.build` redirect back to `hands.build`.
-- The Raft connected app must register the exact canonical callback `https://app.hands.build/login/raft/callback` before the dashboard domain is deployed.
+- Login starts from `app.hands.build`, uses the registered `https://hands.build/login/raft/callback`, then returns a signed Hands JWT to the dashboard in the URL fragment. The SPA stores the JWT locally and sends `Authorization: Bearer`; no browser session cookie is used.
 - Optional `RAFT_ALLOWED_SERVER_IDS` / `RAFT_ALLOWED_SERVER_SLUGS` can restrict admin login to specific Raft servers
 
 Do not put Raft client secrets in browser JavaScript, repository files, logs, or public channels.
@@ -127,7 +127,7 @@ Required repository secrets:
 - `CLOUDFLARE_ACCOUNT_ID` — Cloudflare account id for the Worker deploy.
 - `CLOUDFLARE_BOTIVERSE_API_TOKEN` — Cloudflare API token for the Hands/Botiverse account (`a084c4564dfdce5a7775b08ece638a79`). This is intentionally separate from the legacy Quiver proxy token.
 - `HANDS_SIGNED_URL_SECRET` — HMAC signing secret written to the Hands Worker as `SIGNED_URL_SECRET` so migrated release downloads and share pages can generate signed Worker download URLs.
-- `HANDS_RAFT_CLIENT_SECRET` — Raft client secret for the `hands-4cc7a2` connected app, written to the Hands Worker as `RAFT_CLIENT_SECRET`. The app registration must allow the canonical return URL `https://app.hands.build/login/raft/callback`.
+- `HANDS_RAFT_CLIENT_SECRET` — Raft client secret for the `hands-4cc7a2` connected app, written to the Hands Worker as `RAFT_CLIENT_SECRET`. The registered return URL remains `https://hands.build/login/raft/callback`.
 
 Workflows:
 

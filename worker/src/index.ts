@@ -532,7 +532,7 @@ app.use("*", async (c, next) => {
   return next();
 });
 
-// Admin — protected by Quiver's Login with Raft session cookie.
+// Admin — protected by a Hands JWT or scoped deploy-token bearer auth.
 const admin = new Hono<{
   Bindings: Env;
   Variables: {

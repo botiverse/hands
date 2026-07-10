@@ -14,7 +14,7 @@ Scope: long-lived schema and admin UX for organizations, teams, memberships, inv
 
 ## 1. Goals
 
-Hands today authenticates via Login with Raft (migration 0004) — `raft_accounts` + `raft_sessions`. A human account can sign in and operate on any app. **Agents (Raft `type='agent'`) are also first-class principals** — they can log in, get a session cookie, and act on Hands.
+Hands authenticates via Login with Raft (migration 0004) — `raft_accounts` + `raft_sessions`. A human account can sign in and operate on any app. **Agents (Raft `type='agent'`) are also first-class principals** — they can log in, receive a signed Hands JWT, and act through bearer auth.
 
 What's missing:
 - **Organizations** — group of apps owned by one team (humans + agents can co-own)
@@ -220,7 +220,7 @@ The existing `actor` TEXT column becomes display name; `actor_id` is the FK. Bac
 
 ### 5.1 Replace current auth with role-aware auth
 
-Current `authMiddleware` (in `worker/src/middleware/auth.ts`) only verifies Raft session cookie. We need:
+Current `authMiddleware` (in `worker/src/middleware/auth.ts`) verifies Hands JWT and scoped deploy-token bearer credentials. We need:
 
 ```typescript
 // After Raft auth succeeds:
@@ -265,7 +265,7 @@ const url = new URL(c.req.url);
 
 ### 5.3 Agent (Raft `type='agent'`) handling
 
-**Agents are first-class principals.** They can log in via Login with Raft the same way humans do, get a session cookie, and act on Hands with the same per-endpoint RBAC checks.
+**Agents are first-class principals.** They can log in via Login with Raft the same way humans do, get a signed JWT, and act on Hands with the same per-endpoint RBAC checks.
 
 Default role assignment on first login:
 - Human: `org_role='member'`, `app_role=null` (not a member of any app yet — must be granted per app)

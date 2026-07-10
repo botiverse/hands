@@ -12,6 +12,7 @@ import {
 import { useQuery } from "@tanstack/react-query";
 import {
   Bug,
+  Check,
   ChevronDown,
   ChevronsUpDown,
   Gauge,
@@ -22,6 +23,7 @@ import {
   PanelLeftOpen,
   Plane,
   Plus,
+  Copy,
   Radio,
   Rocket,
   ScrollText,
@@ -46,6 +48,7 @@ import { AppAccess } from "./pages/AppAccess";
 import { OrgSwitcher, useClearOrgCache } from "./components/OrgSwitcher";
 import {
   clearActiveOrgId,
+  getAuthToken,
   getAuthMe,
   listApps,
   listOrgs,
@@ -730,7 +733,49 @@ function AuthGate() {
     return <PublicLanding account={me.data.account} />;
   }
 
+  if (location.pathname === "/cli/callback") {
+    return <CliCallback token={getAuthToken() ?? ""} />;
+  }
+
   return <AuthenticatedApp account={me.data.account} />;
+}
+
+function CliCallback({ token }: { token: string }) {
+  const [copied, setCopied] = useState(false);
+  return (
+    <main className="flex min-h-screen items-center justify-center bg-slate-50 px-4">
+      <section className="w-full max-w-xl rounded-md border border-slate-200 bg-white p-6 shadow-sm">
+        <div className="mb-5 flex items-center gap-3">
+          <QuiverMark className="h-9 w-9" />
+          <div>
+            <h1 className="text-lg font-semibold text-slate-950">Hands CLI login</h1>
+            <p className="text-sm text-slate-500">Signed in with Raft</p>
+          </div>
+        </div>
+        <div className="flex items-stretch gap-2">
+          <input
+            readOnly
+            value={token}
+            aria-label="Hands JWT"
+            className="min-w-0 flex-1 rounded-md border border-slate-300 bg-slate-50 px-3 font-mono text-xs text-slate-700"
+            onFocus={(event) => event.currentTarget.select()}
+          />
+          <button
+            type="button"
+            className="icon-button h-10 w-10"
+            title="Copy JWT"
+            aria-label="Copy JWT"
+            onClick={async () => {
+              await navigator.clipboard.writeText(token);
+              setCopied(true);
+            }}
+          >
+            {copied ? <Check className="h-4 w-4" /> : <Copy className="h-4 w-4" />}
+          </button>
+        </div>
+      </section>
+    </main>
+  );
 }
 
 function dashboardHref(account?: AuthAccount): string {

@@ -1,15 +1,14 @@
 /**
  * HTTP client for the Quiver Worker API.
  *
- * Mirrors the shape of admin/src/lib/api.ts but uses a CLI cookie instead
- * of the browser's `credentials: "include"` mechanism.
+ * Mirrors the shape of admin/src/lib/api.ts and sends the saved Hands JWT as
+ * Authorization: Bearer.
  *
  * Endpoints called by the CLI use `requireAppRole("viewer")` or
- * `requireOrgRole("member")` — they accept the HttpOnly session cookie
- * as long as the user has been logged in via `quiver login`.
+ * `requireOrgRole("member")` after the user has logged in via `hands login`.
  */
 
-import { resolveApiBase, resolveSessionCookie } from "./config.js";
+import { resolveApiBase, resolveAuthToken } from "./config.js";
 import { readEnv } from "./env.js";
 import { Blob } from "node:buffer";
 import { readFile } from "node:fs/promises";
@@ -57,10 +56,8 @@ export async function apiRequest<T = unknown>(
   const headers: Record<string, string> = {
     accept: "application/json",
   };
-  const bearer = readEnv("AUTH_TOKEN") ?? readEnv("BEARER_TOKEN");
+  const bearer = resolveAuthToken();
   if (bearer) headers.authorization = `Bearer ${bearer}`;
-  const cookie = resolveSessionCookie();
-  if (!bearer && cookie) headers["cookie"] = cookie;
   let body: string | undefined;
   if (opts.body !== undefined) {
     headers["content-type"] = "application/json";
@@ -101,7 +98,6 @@ export async function apiUploadFile<T = unknown>(
   fieldName = "apk",
 ): Promise<T> {
   const url = new URL(path.startsWith("/") ? path : `/${path}`, getApiBase());
-  const cookie = resolveSessionCookie();
   const form = new FormData();
   const bytes = await readFile(filePath);
   form.append(fieldName, new Blob([bytes]), basename(filePath));
@@ -109,9 +105,8 @@ export async function apiUploadFile<T = unknown>(
   const headers: Record<string, string> = {
     accept: "application/json",
   };
-  const bearer = readEnv("AUTH_TOKEN") ?? readEnv("BEARER_TOKEN");
+  const bearer = resolveAuthToken();
   if (bearer) headers.authorization = `Bearer ${bearer}`;
-  if (!bearer && cookie) headers.cookie = cookie;
 
   const res = await fetch(url.toString(), {
     method: "POST",

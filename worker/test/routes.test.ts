@@ -29,7 +29,7 @@ import {
 } from "../src/lib/origin";
 import { openApiDocument } from "../src/openapi";
 import { handleCreateApp, handleListApps } from "../src/routes/apps";
-import { handleAuthLogin, handleAuthMe } from "../src/routes/auth";
+import { createSignedJwt, handleAuthLogin, handleAuthMe } from "../src/routes/auth";
 import { handleListOrgs } from "../src/routes/orgs";
 
 // ---------- Test harness ----------
@@ -1394,6 +1394,24 @@ describe("auth origin handling", () => {
     },
   });
 
+  it("issues signed JWT-shaped Hands access tokens with scoped claims", async () => {
+    const env = makeMockEnv();
+    (env as any).SIGNED_URL_SECRET = "jwt-test-secret";
+    const token = await createSignedJwt(env as any, "account-1", 1_700_000_000_000, 1_700_001_000_000, "session-1");
+    const parts = token.split(".");
+    expect(parts).toHaveLength(3);
+    const payload = JSON.parse(Buffer.from(parts[1]!, "base64url").toString("utf8"));
+    expect(payload).toMatchObject({
+      iss: "https://hands.build",
+      aud: "hands-dashboard",
+      sub: "account-1",
+      jti: "session-1",
+      iat: 1_700_000_000,
+      exp: 1_700_001_000,
+    });
+    expect(parts[2]).toMatch(/^[A-Za-z0-9_-]+$/);
+  });
+
   it("redirects Login with Raft through the current Raft setup route", async () => {
     const env = makeMockEnv();
     env.RAFT_CLIENT_ID = "hands-4cc7a2";
@@ -1414,6 +1432,45 @@ describe("auth origin handling", () => {
     expect(location.searchParams.get("return_to")).toBe(
       "https://hands.build/login/raft/callback",
     );
+  });
+
+  it("shares browser login state across the dashboard and registered callback hosts", async () => {
+    const env = makeMockEnv();
+    env.RAFT_CLIENT_ID = "hands-4cc7a2";
+    const app = new Hono<{ Bindings: MockEnv }>();
+    app.get("/api/auth/login", handleAuthLogin);
+
+    const res = await app.request(
+      "https://app.hands.build/api/auth/login?return=%2Fapps%2Fapp-1%2Fsettings",
+      {},
+      env as any,
+    );
+
+    expect(res.status).toBe(302);
+    const location = new URL(res.headers.get("location") ?? "");
+    expect(location.searchParams.get("return_to")).toBe(
+      "https://hands.build/login/raft/callback",
+    );
+    expect(res.headers.get("set-cookie")?.toLowerCase()).toContain("domain=hands.build");
+  });
+
+  it("keeps localhost auth callbacks and cookies host-local", async () => {
+    const env = makeMockEnv();
+    env.RAFT_CLIENT_ID = "hands-4cc7a2";
+    const app = new Hono<{ Bindings: MockEnv }>();
+    app.get("/api/auth/login", handleAuthLogin);
+
+    const res = await app.request(
+      "http://localhost:8787/api/auth/login?return=%2Fapps",
+      {},
+      env as any,
+    );
+
+    const location = new URL(res.headers.get("location") ?? "");
+    expect(location.searchParams.get("return_to")).toBe(
+      "http://localhost:8787/login/raft/callback",
+    );
+    expect(res.headers.get("set-cookie")?.toLowerCase()).not.toContain("domain=");
   });
 
   it("canonicalizes public http custom-domain requests to https", () => {

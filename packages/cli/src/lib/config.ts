@@ -3,13 +3,12 @@
  *
  * Resolution order for any setting (first wins):
  *   1. CLI flag (--api, --token, ...)
- *   2. Environment variable (QUIVER_API, QUIVER_SESSION_COOKIE, ...)
+ *   2. Environment variable (HANDS_API, HANDS_AUTH_TOKEN, ...)
  *   3. File at $XDG_CONFIG_HOME/quiver/auth.json (default ~/.config/quiver/auth.json)
  *
  * The config file holds:
  *   - apiBase: the Quiver Worker URL the CLI talks to
- *   - sessionCookie: the HttpOnly `quiver_session` cookie value the
- *     Worker set after `quiver login` (or copied from the browser DevTools)
+ *   - authToken: the signed Hands JWT returned after `hands login`
  */
 
 import { mkdirSync, readFileSync, writeFileSync, existsSync } from "node:fs";
@@ -19,6 +18,8 @@ import { homedir } from "node:os";
 
 export interface CliConfig {
   apiBase?: string;
+  authToken?: string;
+  /** Legacy field read during migration from cookie-backed sessions. */
   sessionCookie?: string;
 }
 
@@ -47,7 +48,7 @@ export function saveConfig(patch: Partial<CliConfig>): CliConfig {
   const next: CliConfig = { ...current, ...patch };
   const path = configPath();
   mkdirSync(dirname(path), { recursive: true });
-  // 0600 — session cookie is sensitive.
+  // 0600 — the JWT is a sensitive bearer credential.
   writeFileSync(path, JSON.stringify(next, null, 2) + "\n", { mode: 0o600 });
   return next;
 }
@@ -55,6 +56,7 @@ export function saveConfig(patch: Partial<CliConfig>): CliConfig {
 export function clearConfig(): void {
   const current = getConfig();
   const next: CliConfig = { ...current };
+  delete next.authToken;
   delete next.sessionCookie;
   saveConfig(next);
 }
@@ -69,9 +71,10 @@ export function resolveApiBase(): string {
   return DEFAULT_API_BASE;
 }
 
-export function resolveSessionCookie(): string | undefined {
+export function resolveAuthToken(): string | undefined {
   // CI mode wins over file config (env vars are explicit).
-  const env = readEnv("SESSION_COOKIE");
+  const env = readEnv("AUTH_TOKEN") ?? readEnv("BEARER_TOKEN") ?? readEnv("SESSION_COOKIE");
   if (env) return env;
-  return getConfig().sessionCookie;
+  const config = getConfig();
+  return config.authToken ?? config.sessionCookie;
 }
