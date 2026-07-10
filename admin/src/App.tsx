@@ -822,7 +822,7 @@ function PublicLanding({ account }: { account?: AuthAccount }) {
 
       <main>
         <section className="border-b border-slate-200 bg-white">
-          <div className="mx-auto grid max-w-6xl gap-10 px-4 py-14 md:grid-cols-[1.1fr_0.9fr] md:items-center md:py-20">
+          <div className="mx-auto grid max-w-6xl gap-10 px-4 pt-7 pb-14 md:grid-cols-[1.1fr_0.9fr] md:items-center md:pt-10 md:pb-20">
             <div className="max-w-2xl">
               <Badge className="mb-4">
                 The agent-native platform for Raft-built client apps.
