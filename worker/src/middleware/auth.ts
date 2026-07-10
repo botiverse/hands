@@ -13,7 +13,14 @@
  */
 
 import type { Context, MiddlewareHandler } from "hono";
+import { getCookie } from "hono/cookie";
 import { loadDeployToken, sha256Hex, type AppDeployToken } from "../lib/deploy_tokens";
+
+// Session cookie carrying the Hands auth token. Set on the stateless agent-login
+// callback (routes/auth) so the raft CLI's Agent Login — which stores/replays a
+// Set-Cookie, not a JSON token — can authenticate; accepted here as a fallback
+// to Authorization: Bearer.
+export const SESSION_COOKIE = "hands_session";
 
 export const ACTIVE_ORG_HEADER = "x-hands-org-id";
 
@@ -155,9 +162,12 @@ export const authMiddleware: MiddlewareHandler<AdminEnv & { Bindings: Env }> =
     const bearerToken = authHeader?.startsWith("Bearer ")
       ? authHeader.slice("Bearer ".length).trim()
       : undefined;
+    // Fall back to the session cookie (raft CLI Agent Login) when there is no
+    // Authorization: Bearer header. Bearer still takes precedence.
+    const sessionToken = bearerToken ?? getCookie(c, SESSION_COOKIE);
     const sessionAccount = await loadAccountFromAuthToken(
       c.env,
-      bearerToken,
+      sessionToken,
     );
     if (sessionAccount) {
       const account = await accountForRequestedOrg(

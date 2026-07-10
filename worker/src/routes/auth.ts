@@ -12,6 +12,7 @@ import {
   accountForRequestedOrg,
   ACTIVE_ORG_HEADER,
   loadAccountFromAuthToken,
+  SESSION_COOKIE,
   type AdminAccount,
 } from "../middleware/auth";
 import {
@@ -623,6 +624,17 @@ export async function handleRaftCallback(c: Context<{ Bindings: Env }>) {
       if (result.account.principal_type !== "agent") {
         return c.text("Missing local login state. Start again from /api/auth/login.", 400);
       }
+      // Stateless agent login (e.g. raft CLI `integration login`). The CLI stores
+      // and replays a Set-Cookie rather than the JSON token, so set the session
+      // cookie in addition to returning the token in the body.
+      setCookie(c, SESSION_COOKIE, result.authToken.token, {
+        httpOnly: true,
+        secure: secureCookie(c),
+        sameSite: "Lax",
+        ...sharedCookieDomainOption(c),
+        path: "/",
+        expires: new Date(result.authToken.expiresAt),
+      });
       c.header("cache-control", "no-store");
       return c.json(agentLoginJson(result));
     }
@@ -655,7 +667,7 @@ export async function handleAuthLogout(c: Context<{ Bindings: Env }>) {
   const bearerToken = authHeader?.startsWith("Bearer ")
     ? authHeader.slice("Bearer ".length).trim()
     : undefined;
-  const token = bearerToken;
+  const token = bearerToken ?? getCookie(c, SESSION_COOKIE);
   if (token) {
     const tokenHash = await sha256Hex(token);
     await c.env.DB.prepare(
@@ -664,6 +676,10 @@ export async function handleAuthLogout(c: Context<{ Bindings: Env }>) {
       .bind(now(), tokenHash)
       .run();
   }
+  deleteCookie(c, SESSION_COOKIE, {
+    ...sharedCookieDomainOption(c),
+    path: "/",
+  });
   return c.json({ ok: true });
 }
 
