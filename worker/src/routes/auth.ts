@@ -1,8 +1,8 @@
 /**
  * Login with Raft routes.
  *
- * The Raft OAuth code and access token never leave the Worker. The browser
- * only receives Hands's own HttpOnly session cookie.
+ * The Raft OAuth code and Raft access token never leave the Worker. The
+ * browser receives a Hands-signed JWT for Authorization: Bearer requests.
  */
 
 import type { Context } from "hono";
@@ -12,10 +12,14 @@ import {
   accountForRequestedOrg,
   ACTIVE_ORG_HEADER,
   loadAccountFromAuthToken,
-  SESSION_COOKIE,
   type AdminAccount,
 } from "../middleware/auth";
-import { isSecureRequest, requestOrigin } from "../lib/origin";
+import {
+  BUSINESS_ORIGIN,
+  DASHBOARD_ORIGIN,
+  isSecureRequest,
+  requestOrigin,
+} from "../lib/origin";
 
 const LOGIN_PENDING_COOKIE = "quiver_raft_login_pending";
 const LOGIN_RETURN_COOKIE = "quiver_raft_return";
@@ -60,8 +64,27 @@ function secureCookie(c: Context<{ Bindings: Env }>): boolean {
   return isSecureRequest(c);
 }
 
+function isHandsProductionHost(c: Context<{ Bindings: Env }>): boolean {
+  const hostname = new URL(c.req.url).hostname;
+  return hostname === "hands.build" || hostname === "app.hands.build";
+}
+
+function sharedCookieDomainOption(
+  c: Context<{ Bindings: Env }>,
+): { domain: string } | Record<string, never> {
+  return isHandsProductionHost(c) ? { domain: "hands.build" } : {};
+}
+
 function callbackUrl(c: Context<{ Bindings: Env }>): string {
-  return `${appOrigin(c)}/login/raft/callback`;
+  const origin = isHandsProductionHost(c) ? BUSINESS_ORIGIN : appOrigin(c);
+  return `${origin}/login/raft/callback`;
+}
+
+function browserReturnUrl(
+  c: Context<{ Bindings: Env }>,
+  returnPath: string,
+): string {
+  return isHandsProductionHost(c) ? `${DASHBOARD_ORIGIN}${returnPath}` : returnPath;
 }
 
 function requireRaftConfig(c: Context<{ Bindings: Env }>) {
@@ -117,6 +140,56 @@ async function sha256Hex(input: string): Promise<string> {
   return Array.from(new Uint8Array(digest))
     .map((b) => b.toString(16).padStart(2, "0"))
     .join("");
+}
+
+function base64UrlUtf8(input: string): string {
+  return base64Utf8(input)
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_")
+    .replace(/=+$/g, "");
+}
+
+function base64UrlBytes(bytes: Uint8Array): string {
+  let binary = "";
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary)
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_")
+    .replace(/=+$/g, "");
+}
+
+export async function createSignedJwt(
+  env: Env,
+  accountId: string,
+  issuedAt: number,
+  expiresAt: number,
+  jwtId: string,
+): Promise<string> {
+  const secret = env.SIGNED_URL_SECRET || env.RAFT_CLIENT_SECRET;
+  if (!secret) throw new Error("SIGNED_URL_SECRET or RAFT_CLIENT_SECRET is required for auth JWTs");
+  const header = base64UrlUtf8(JSON.stringify({ alg: "HS256", typ: "JWT" }));
+  const payload = base64UrlUtf8(JSON.stringify({
+    iss: "https://hands.build",
+    aud: "hands-dashboard",
+    sub: accountId,
+    jti: jwtId,
+    iat: Math.floor(issuedAt / 1000),
+    exp: Math.floor(expiresAt / 1000),
+  }));
+  const signingInput = `${header}.${payload}`;
+  const key = await crypto.subtle.importKey(
+    "raw",
+    new TextEncoder().encode(`hands-auth-jwt-v1:${secret}`),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"],
+  );
+  const signature = await crypto.subtle.sign(
+    "HMAC",
+    key,
+    new TextEncoder().encode(signingInput),
+  );
+  return `${signingInput}.${base64UrlBytes(new Uint8Array(signature))}`;
 }
 
 function base64Utf8(input: string): string {
@@ -354,21 +427,22 @@ async function upsertRaftOrgMembership(
 }
 
 async function createAuthToken(
-  db: D1Database,
+  env: Env,
   accountId: string,
 ): Promise<{ token: string; expiresAt: number }> {
-  const token = randomToken();
-  const tokenHash = await sha256Hex(token);
   const timestamp = now();
   const ttlSeconds = 60 * 60 * 24 * 14;
   const expiresAt = timestamp + ttlSeconds * 1000;
-  await db
+  const sessionId = crypto.randomUUID();
+  const token = await createSignedJwt(env, accountId, timestamp, expiresAt, sessionId);
+  const tokenHash = await sha256Hex(token);
+  await env.DB
     .prepare(
       `INSERT INTO raft_sessions
        (id, account_id, token_hash, created_at, expires_at, last_seen_at, revoked_at)
        VALUES (?1, ?2, ?3, ?4, ?5, ?4, NULL)`,
     )
-    .bind(crypto.randomUUID(), accountId, tokenHash, timestamp, expiresAt)
+    .bind(sessionId, accountId, tokenHash, timestamp, expiresAt)
     .run();
   return { token, expiresAt };
 }
@@ -400,21 +474,8 @@ async function finalizeRaftLogin(
   const membership = await upsertRaftOrgMembership(c.env.DB, account);
   account.org_id = membership.org_id;
   account.org_role = membership.org_role;
-  const authToken = await createAuthToken(c.env.DB, account.id);
+  const authToken = await createAuthToken(c.env, account.id);
   return { account, authToken };
-}
-
-function setAuthCookie(
-  c: Context<{ Bindings: Env }>,
-  authToken: LoginResult["authToken"],
-) {
-  setCookie(c, SESSION_COOKIE, authToken.token, {
-    httpOnly: true,
-    secure: secureCookie(c),
-    sameSite: "Lax",
-    path: "/",
-    expires: new Date(authToken.expiresAt),
-  });
 }
 
 function agentLoginJson(result: LoginResult) {
@@ -455,7 +516,7 @@ export async function handleAuthMe(c: Context<{ Bindings: Env }>) {
     : undefined;
   const sessionAccount = await loadAccountFromAuthToken(
     c.env,
-    getCookie(c, SESSION_COOKIE) || bearerToken,
+    bearerToken,
   );
   if (!sessionAccount) {
     return c.json(
@@ -501,11 +562,12 @@ export async function handleAuthLogin(c: Context<{ Bindings: Env }>) {
   if (!config.ok) return config.response;
 
   const pending = randomToken(16);
-  const returnPath = normalizeReturnPath(c.req.query("return"));
+  const returnPath = normalizeReturnPath(c.req.query("return") ?? c.req.query("return_to"));
   setCookie(c, LOGIN_PENDING_COOKIE, pending, {
     httpOnly: true,
     secure: secureCookie(c),
     sameSite: "Lax",
+    ...sharedCookieDomainOption(c),
     path: "/",
     maxAge: 10 * 60,
   });
@@ -513,6 +575,7 @@ export async function handleAuthLogin(c: Context<{ Bindings: Env }>) {
     httpOnly: true,
     secure: secureCookie(c),
     sameSite: "Lax",
+    ...sharedCookieDomainOption(c),
     path: "/",
     maxAge: 10 * 60,
   });
@@ -560,16 +623,25 @@ export async function handleRaftCallback(c: Context<{ Bindings: Env }>) {
       if (result.account.principal_type !== "agent") {
         return c.text("Missing local login state. Start again from /api/auth/login.", 400);
       }
-      setAuthCookie(c, result.authToken);
       c.header("cache-control", "no-store");
       return c.json(agentLoginJson(result));
     }
 
-    setAuthCookie(c, result.authToken);
-    deleteCookie(c, LOGIN_PENDING_COOKIE, { path: "/" });
+    deleteCookie(c, LOGIN_PENDING_COOKIE, {
+      ...sharedCookieDomainOption(c),
+      path: "/",
+    });
     const returnPath = normalizeReturnPath(getCookie(c, LOGIN_RETURN_COOKIE));
-    deleteCookie(c, LOGIN_RETURN_COOKIE, { path: "/" });
-    return c.redirect(returnPath, 302);
+    deleteCookie(c, LOGIN_RETURN_COOKIE, {
+      ...sharedCookieDomainOption(c),
+      path: "/",
+    });
+    const destination = new URL(browserReturnUrl(c, returnPath), requestOrigin(c));
+    destination.hash = new URLSearchParams({
+      access_token: result.authToken.token,
+      expires_at: String(result.authToken.expiresAt),
+    }).toString();
+    return c.redirect(destination.toString(), 302);
   } catch (error) {
     console.error(
       `[raft-auth] callback failed: ${error instanceof Error ? error.message : String(error)}`,
@@ -583,7 +655,7 @@ export async function handleAuthLogout(c: Context<{ Bindings: Env }>) {
   const bearerToken = authHeader?.startsWith("Bearer ")
     ? authHeader.slice("Bearer ".length).trim()
     : undefined;
-  const token = getCookie(c, SESSION_COOKIE) || bearerToken;
+  const token = bearerToken;
   if (token) {
     const tokenHash = await sha256Hex(token);
     await c.env.DB.prepare(
@@ -592,7 +664,6 @@ export async function handleAuthLogout(c: Context<{ Bindings: Env }>) {
       .bind(now(), tokenHash)
       .run();
   }
-  deleteCookie(c, SESSION_COOKIE, { path: "/" });
   return c.json({ ok: true });
 }
 
@@ -663,6 +734,12 @@ export async function handleAgentManifest(c: Context<{ Bindings: Env }>) {
         description:
           "Start here — how to authenticate, what each action does, common crash/feedback flows, and docs links.",
         endpoint: { method: "GET", path: "/api/agent/help" },
+      },
+      {
+        name: "list-orgs",
+        description:
+          "List every organization the current Raft identity can access across linked servers, including role and server identity.",
+        endpoint: { method: "GET", path: "/api/orgs" },
       },
       {
         name: "list-apps",

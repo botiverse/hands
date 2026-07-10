@@ -1,6 +1,7 @@
 # @botiverse/hands-admin
 
-SPA assets for quiver admin, served by the Cloudflare Worker.
+SPA assets for the Hands dashboard, served by the Cloudflare Worker at
+`https://app.hands.build`.
 
 Production admin access is Login with Raft only. The Worker owns the OAuth
 callback and sets an HttpOnly same-origin session cookie; this package does

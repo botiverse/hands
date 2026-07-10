@@ -21,10 +21,15 @@ import { createHash } from "node:crypto";
 import { Hono } from "hono";
 import { authMiddleware } from "../src/middleware/auth";
 import { requireCurrentOrgRole } from "../src/lib/permissions";
-import { httpsRedirectUrl, isSecureRequest, requestOrigin } from "../src/lib/origin";
+import {
+  canonicalDomainRedirectUrl,
+  httpsRedirectUrl,
+  isSecureRequest,
+  requestOrigin,
+} from "../src/lib/origin";
 import { openApiDocument } from "../src/openapi";
 import { handleCreateApp, handleListApps } from "../src/routes/apps";
-import { handleAuthLogin, handleAuthMe } from "../src/routes/auth";
+import { createSignedJwt, handleAuthLogin, handleAuthMe } from "../src/routes/auth";
 import { handleListOrgs } from "../src/routes/orgs";
 
 // ---------- Test harness ----------
@@ -790,6 +795,9 @@ describe("quiver route handlers — SQL smoke", () => {
     expect(typeof viewerBody.next_action).toBe("string");
     expect(viewerBody.next_action as string).toContain("member");
     expect(viewerBody.next_action as string).toContain("/members");
+    expect(viewerBody.manage_url).toBe(
+      "https://app.hands.build/orgs/raft_create/members",
+    );
 
     const memberResponse = await testApp.request(
       "https://quiver-worker.test/api/apps",
@@ -1374,6 +1382,36 @@ describe("quiver route handlers — SQL smoke", () => {
 });
 
 describe("auth origin handling", () => {
+  const domainContext = (
+    url: string,
+    options: { method?: string; accept?: string } = {},
+  ) => ({
+    req: {
+      url,
+      method: options.method ?? "GET",
+      header: (name: string) =>
+        name.toLowerCase() === "accept" ? options.accept ?? null : null,
+    },
+  });
+
+  it("issues signed JWT-shaped Hands access tokens with scoped claims", async () => {
+    const env = makeMockEnv();
+    (env as any).SIGNED_URL_SECRET = "jwt-test-secret";
+    const token = await createSignedJwt(env as any, "account-1", 1_700_000_000_000, 1_700_001_000_000, "session-1");
+    const parts = token.split(".");
+    expect(parts).toHaveLength(3);
+    const payload = JSON.parse(Buffer.from(parts[1]!, "base64url").toString("utf8"));
+    expect(payload).toMatchObject({
+      iss: "https://hands.build",
+      aud: "hands-dashboard",
+      sub: "account-1",
+      jti: "session-1",
+      iat: 1_700_000_000,
+      exp: 1_700_001_000,
+    });
+    expect(parts[2]).toMatch(/^[A-Za-z0-9_-]+$/);
+  });
+
   it("redirects Login with Raft through the current Raft setup route", async () => {
     const env = makeMockEnv();
     env.RAFT_CLIENT_ID = "hands-4cc7a2";
@@ -1394,6 +1432,45 @@ describe("auth origin handling", () => {
     expect(location.searchParams.get("return_to")).toBe(
       "https://hands.build/login/raft/callback",
     );
+  });
+
+  it("shares browser login state across the dashboard and registered callback hosts", async () => {
+    const env = makeMockEnv();
+    env.RAFT_CLIENT_ID = "hands-4cc7a2";
+    const app = new Hono<{ Bindings: MockEnv }>();
+    app.get("/api/auth/login", handleAuthLogin);
+
+    const res = await app.request(
+      "https://app.hands.build/api/auth/login?return=%2Fapps%2Fapp-1%2Fsettings",
+      {},
+      env as any,
+    );
+
+    expect(res.status).toBe(302);
+    const location = new URL(res.headers.get("location") ?? "");
+    expect(location.searchParams.get("return_to")).toBe(
+      "https://hands.build/login/raft/callback",
+    );
+    expect(res.headers.get("set-cookie")?.toLowerCase()).toContain("domain=hands.build");
+  });
+
+  it("keeps localhost auth callbacks and cookies host-local", async () => {
+    const env = makeMockEnv();
+    env.RAFT_CLIENT_ID = "hands-4cc7a2";
+    const app = new Hono<{ Bindings: MockEnv }>();
+    app.get("/api/auth/login", handleAuthLogin);
+
+    const res = await app.request(
+      "http://localhost:8787/api/auth/login?return=%2Fapps",
+      {},
+      env as any,
+    );
+
+    const location = new URL(res.headers.get("location") ?? "");
+    expect(location.searchParams.get("return_to")).toBe(
+      "http://localhost:8787/login/raft/callback",
+    );
+    expect(res.headers.get("set-cookie")?.toLowerCase()).not.toContain("domain=");
   });
 
   it("canonicalizes public http custom-domain requests to https", () => {
@@ -1430,6 +1507,69 @@ describe("auth origin handling", () => {
     expect(requestOrigin(ctx as any)).toBe("https://quiver.oranix.io");
     expect(isSecureRequest(ctx as any)).toBe(true);
     expect(httpsRedirectUrl(ctx as any)).toBeNull();
+  });
+
+  it("moves dashboard deep links from hands.build to app.hands.build", () => {
+    const ctx = domainContext(
+      "https://hands.build/apps/app-1/settings?tab=access",
+    );
+    expect(canonicalDomainRedirectUrl(ctx as any)).toBe(
+      "https://app.hands.build/apps/app-1/settings?tab=access",
+    );
+  });
+
+  it("keeps public app history on the business domain", () => {
+    const ctx = domainContext(
+      "https://hands.build/apps/raft-android/history/release-1/download",
+    );
+    expect(canonicalDomainRedirectUrl(ctx as any)).toBeNull();
+  });
+
+  it("moves browser login to the dashboard domain but preserves API clients", () => {
+    const browser = domainContext(
+      "https://hands.build/api/auth/login?return=%2Fapps",
+      { accept: "text/html,application/xhtml+xml" },
+    );
+    expect(canonicalDomainRedirectUrl(browser as any)).toBe(
+      "https://app.hands.build/api/auth/login?return=%2Fapps",
+    );
+
+    const apiClient = domainContext(
+      "https://hands.build/api/auth/login?return=%2Fapps",
+      { accept: "application/json" },
+    );
+    expect(canonicalDomainRedirectUrl(apiClient as any)).toBeNull();
+  });
+
+  it("makes the dashboard root canonical and sends public pages back to hands.build", () => {
+    expect(
+      canonicalDomainRedirectUrl(
+        domainContext("https://app.hands.build/?from=bookmark") as any,
+      ),
+    ).toBe("https://app.hands.build/apps?from=bookmark");
+    expect(
+      canonicalDomainRedirectUrl(
+        domainContext("https://app.hands.build/share/token-1") as any,
+      ),
+    ).toBe("https://hands.build/share/token-1");
+    expect(
+      canonicalDomainRedirectUrl(
+        domainContext("https://app.hands.build/docs/cli-reference/") as any,
+      ),
+    ).toBe("https://hands.build/docs/cli-reference/");
+  });
+
+  it("keeps dashboard APIs on app.hands.build and never redirects mutations", () => {
+    expect(
+      canonicalDomainRedirectUrl(
+        domainContext("https://app.hands.build/api/apps") as any,
+      ),
+    ).toBeNull();
+    expect(
+      canonicalDomainRedirectUrl(
+        domainContext("https://hands.build/apps", { method: "POST" }) as any,
+      ),
+    ).toBeNull();
   });
 });
 
@@ -4485,7 +4625,9 @@ describe("quiver public API v2 — scope resolution", () => {
     expect(submittedBody.attachments).toBe(1);
     expect(submittedBody.id).toMatch(/^[0-9a-f-]{36}$/);
     expect(submittedBody.reference).toContain(`ticket ${submittedBody.id}`);
-    expect(submittedBody.ticket_url).toContain(`/apps/app-scope/feedback/${submittedBody.id}`);
+    expect(submittedBody.ticket_url).toBe(
+      `https://app.hands.build/apps/app-scope/feedback/${submittedBody.id}`,
+    );
     expect(putCalls.length).toBe(1);
     expect(putCalls[0]!.key).toContain("feedback/app-scope/");
 

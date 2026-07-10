@@ -47,7 +47,7 @@ Hands serves the active release at
 ```ts
 autoUpdater.setFeedURL({
   provider: "generic",
-  url: "https://quiver.oranix.io/electron/<appSlug>/<channel>"
+  url: "https://hands.build/electron/<appSlug>/<channel>"
 });
 ```
 

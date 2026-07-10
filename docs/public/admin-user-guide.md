@@ -144,7 +144,7 @@ Your account or deploy token does not have the required role for the action. The
   "current_role": "viewer",
   "resource": "POST /api/apps",            // the action you attempted
   "org_id": "…", "app_id": null,
-  "manage_url": "https://quiver.oranix.io/orgs/{orgId}/members"
+  "manage_url": "https://app.hands.build/orgs/{orgId}/members"
 }
 ```
 

@@ -4,8 +4,8 @@
  * Production uses Login with Raft exclusively:
  *   - /api/auth/login redirects to Raft setup.
  *   - /login/raft/callback exchanges the code server-side.
- *   - Admin routes require a Quiver auth token. Browsers carry it in the
- *     HttpOnly cookie; agents/CLIs carry the same token as Bearer auth.
+ *   - Admin routes require a signed Hands JWT in Authorization: Bearer.
+ *     Browsers, agents, and CLIs all use the same transport.
  *
  * A static bearer token is accepted only when ENVIRONMENT !== "production",
  * so local development and unit smoke tests can still call admin endpoints
@@ -13,10 +13,8 @@
  */
 
 import type { Context, MiddlewareHandler } from "hono";
-import { getCookie } from "hono/cookie";
 import { loadDeployToken, sha256Hex, type AppDeployToken } from "../lib/deploy_tokens";
 
-export const SESSION_COOKIE = "quiver_session";
 export const ACTIVE_ORG_HEADER = "x-hands-org-id";
 
 export type AdminAccount = {
@@ -153,14 +151,13 @@ export async function accountForRequestedOrg(
 
 export const authMiddleware: MiddlewareHandler<AdminEnv & { Bindings: Env }> =
   async (c, next) => {
-    const cookieToken = getCookie(c, SESSION_COOKIE);
     const authHeader = c.req.header("authorization");
     const bearerToken = authHeader?.startsWith("Bearer ")
       ? authHeader.slice("Bearer ".length).trim()
       : undefined;
     const sessionAccount = await loadAccountFromAuthToken(
       c.env,
-      cookieToken || bearerToken,
+      bearerToken,
     );
     if (sessionAccount) {
       const account = await accountForRequestedOrg(
@@ -176,7 +173,7 @@ export const authMiddleware: MiddlewareHandler<AdminEnv & { Bindings: Env }> =
       return;
     }
 
-    if (!cookieToken && bearerToken) {
+    if (bearerToken) {
       const deployToken = await loadDeployToken(c.env, bearerToken);
       if (deployToken) {
         c.set("admin_deploy_token", deployToken);

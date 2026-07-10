@@ -163,7 +163,7 @@ export const AppRole = z.enum(["viewer", "publisher", "admin"]);
 export const OrgRole = z.enum(["owner", "admin", "member", "viewer"]);
 export const DeployTokenRole = z.enum(["viewer", "publisher"]);
 
-export const auth = [{ bearerAuth: [] }, { cookieAuth: [] }];
+export const auth = [{ bearerAuth: [] }];
 
 export const json = (schema: z.ZodType) => ({
   "application/json": { schema },

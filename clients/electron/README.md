@@ -1,6 +1,6 @@
 # @botiverse/hands-electron
 
-Crash reporting for Electron apps, backed by [Hands](https://quiver.oranix.io).
+Crash reporting for Electron apps, backed by [Hands](https://hands.build).
 
 Electron's built-in [Crashpad](https://www.electronjs.org/docs/latest/api/crash-reporter)
 captures native minidumps for **both the main and renderer processes** and

@@ -3,15 +3,15 @@
  * per-ticket page (/apps/:appId/feedback/:ticketId) so tickets are
  * shareable links. Tickets carry an assignee, status flow, and comments.
  */
-import { Fragment, useMemo, useState } from "react";
+import { Fragment, useEffect, useMemo, useState } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   addFeedbackComment,
-  feedbackAttachmentUrl,
-  feedbackAttachmentInlineUrl,
+  downloadFeedbackAttachment,
   getAuthMe,
   getFeedback,
+  getFeedbackAttachmentBlob,
   listFeedback,
   getDeviceDetail,
   getFeedbackAttachmentText,
@@ -388,22 +388,14 @@ function AttachmentList({
       {images.length > 0 && (
         <div className="flex flex-wrap gap-2 mb-2">
           {images.map((a) => {
-            const url = feedbackAttachmentInlineUrl(appId, ticketId, a.id);
             return (
-              <button
+              <AttachmentImage
                 key={a.id}
-                type="button"
-                className="group relative h-24 w-24 overflow-hidden rounded-md border border-slate-200 bg-slate-50"
-                onClick={() => setLightbox(url)}
-                title={a.filename}
-              >
-                <img
-                  src={url}
-                  alt={a.filename}
-                  loading="lazy"
-                  className="h-full w-full object-cover transition group-hover:opacity-90"
-                />
-              </button>
+                appId={appId}
+                ticketId={ticketId}
+                attachment={a}
+                onOpen={setLightbox}
+              />
             );
           })}
         </div>
@@ -413,14 +405,13 @@ function AttachmentList({
         <ul className="space-y-1 text-sm">
           {others.map((a) => (
             <li key={a.id}>
-              <a
+              <button
+                type="button"
                 className="text-blue-600 hover:underline"
-                href={feedbackAttachmentUrl(appId, ticketId, a.id)}
-                target="_blank"
-                rel="noopener noreferrer"
+                onClick={() => void downloadFeedbackAttachment(appId, ticketId, a.id, a.filename)}
               >
                 {a.filename}
-              </a>
+              </button>
               <span className="ml-2 text-xs text-slate-400">
                 {(a.size_bytes / 1024).toFixed(1)} KB
               </span>
@@ -450,6 +441,52 @@ function AttachmentList({
         </div>
       )}
     </div>
+  );
+}
+
+function AttachmentImage({
+  appId,
+  ticketId,
+  attachment,
+  onOpen,
+}: {
+  appId: string;
+  ticketId: string;
+  attachment: { id: string; filename: string };
+  onOpen: (url: string) => void;
+}) {
+  const image = useQuery({
+    queryKey: ["feedback-attachment-image", appId, ticketId, attachment.id],
+    queryFn: async () => URL.createObjectURL(
+      await getFeedbackAttachmentBlob(appId, ticketId, attachment.id, true),
+    ),
+    staleTime: Infinity,
+  });
+
+  useEffect(() => {
+    const url = image.data;
+    return () => {
+      if (url) URL.revokeObjectURL(url);
+    };
+  }, [image.data]);
+
+  return (
+    <button
+      type="button"
+      className="group relative h-24 w-24 overflow-hidden rounded-md border border-slate-200 bg-slate-50"
+      onClick={() => image.data && onOpen(image.data)}
+      title={attachment.filename}
+      disabled={!image.data}
+    >
+      {image.data && (
+        <img
+          src={image.data}
+          alt={attachment.filename}
+          loading="lazy"
+          className="h-full w-full object-cover transition group-hover:opacity-90"
+        />
+      )}
+    </button>
   );
 }
 

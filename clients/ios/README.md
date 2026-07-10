@@ -6,7 +6,7 @@ crash reporting. Objective-C, no dependencies, iOS 14.1+.
 ## Install (CocoaPods, via git)
 
 ```ruby
-pod 'Hands', :git => 'https://github.com/oranix-io/hands.git', :tag => 'ios-v0.2.1'
+pod 'Hands', :git => 'https://github.com/botiverse/hands.git', :tag => 'ios-v0.2.1'
 ```
 
 ## Configure & start

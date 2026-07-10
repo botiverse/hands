@@ -27,10 +27,8 @@ export HANDS_API=https://hands.build
 export HANDS_BEARER_TOKEN=<deploy-token>
 ```
 
-If `HANDS_API` is unset, the CLI defaults to `https://quiver.oranix.io`, which
-transparently proxies to `hands.build`; set `HANDS_API=https://hands.build` to
-call the current domain directly. `HANDS_AUTH_TOKEN` is also accepted as an
-alias for `HANDS_BEARER_TOKEN`.
+If `HANDS_API` is unset, the CLI defaults to `https://hands.build`.
+`HANDS_AUTH_TOKEN` is also accepted as an alias for `HANDS_BEARER_TOKEN`.
 
 Legacy `QUIVER_*` names still work: every variable is read as `HANDS_<name>`
 first, then `QUIVER_<name>`, so existing CI keeps working unchanged.
@@ -162,7 +160,7 @@ provider:
 ```ts
 autoUpdater.setFeedURL({
   provider: "generic",
-  url: "https://quiver.oranix.io/electron/raft-desktop/main"
+  url: "https://hands.build/electron/raft-desktop/main"
 });
 ```
 
@@ -270,7 +268,7 @@ so existing CI keeps working unchanged.
 
 | Variable | Required | Purpose |
 |---|---|---|
-| `HANDS_API` | No | Hands server base URL. Defaults to `https://quiver.oranix.io` (which proxies to `hands.build`). Set to `https://hands.build` to call the current domain directly. `HANDS_CLI_API` takes precedence if set. |
+| `HANDS_API` | No | Hands business API base URL. Defaults to `https://hands.build`. `HANDS_CLI_API` takes precedence if set. |
 | `HANDS_BEARER_TOKEN` | Yes | App-scoped deploy token for CI. |
 | `HANDS_AUTH_TOKEN` | No | Alias for `HANDS_BEARER_TOKEN` (tried first). |
 

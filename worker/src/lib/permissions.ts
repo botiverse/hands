@@ -1,6 +1,7 @@
 import type { Context, MiddlewareHandler } from "hono";
 import { currentActorInfo, type AdminAccount, type AdminEnv } from "../middleware/auth";
 import type { AppDeployToken } from "./deploy_tokens";
+import { DASHBOARD_ORIGIN } from "./origin";
 
 export type OrgRole = "owner" | "admin" | "member" | "viewer";
 export type AppRole = "admin" | "publisher" | "viewer";
@@ -151,19 +152,17 @@ function forbiddenRole(
   currentRole: string | null,
   ids: { org_id?: string | null; app_id?: string | null },
 ) {
-  let origin = "https://quiver.oranix.io";
   let resource = "";
   try {
     const u = new URL(c.req.url);
-    origin = u.origin;
     resource = `${c.req.method} ${u.pathname}`;
   } catch {
     // request URL/method unavailable (e.g. tests) — keep defaults
   }
   const manageUrl = ids.org_id
-    ? `${origin}/orgs/${ids.org_id}/members`
+    ? `${DASHBOARD_ORIGIN}/orgs/${ids.org_id}/members`
     : ids.app_id
-      ? `${origin}/apps/${ids.app_id}/access`
+      ? `${DASHBOARD_ORIGIN}/apps/${ids.app_id}/settings`
       : null;
   // Admin-native, actionable error: tell the caller (agent or human) exactly
   // what to do next — who can grant the role, where, and that an admin can
@@ -239,12 +238,6 @@ export async function ensureAppRole(c: AdminContext, appId: string, minimum: App
     // Actionable 401: an agent that hit this with a valid-looking session got
     // no resolvable account — tell it how to authenticate and that admin API
     // access needs a role on the app, rather than a bare "unauthorized".
-    let origin = "https://hands.build";
-    try {
-      origin = new URL(c.req.url).origin;
-    } catch {
-      // keep default
-    }
     return {
       ok: false as const,
       response: c.json(
@@ -257,7 +250,7 @@ export async function ensureAppRole(c: AdminContext, appId: string, minimum: App
             `\`raft integration login --service <hands-service>\`. Then an admin must grant you the ` +
             `'${minimum}' role on this app (Access → Members). Admins can perform the release action on your behalf.`,
           login_url: `/api/auth/login?return=${encodeURIComponent("/")}`,
-          manage_url: `${origin}/apps/${appId}/access`,
+          manage_url: `${DASHBOARD_ORIGIN}/apps/${appId}/settings`,
         },
         401,
       ),

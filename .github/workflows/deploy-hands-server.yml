@@ -29,7 +29,8 @@ env:
   CLOUDFLARE_ACCOUNT_ID: a084c4564dfdce5a7775b08ece638a79
   HANDS_D1_DATABASE_NAME: hands-db
   HANDS_R2_BUCKET_NAME: hands-artifacts
-  HANDS_WORKER_DOMAIN: hands.build
+  HANDS_BUSINESS_DOMAIN: hands.build
+  HANDS_DASHBOARD_DOMAIN: app.hands.build
 
 jobs:
   deploy:
@@ -132,8 +133,7 @@ jobs:
           set -euo pipefail
           pnpm exec wrangler deploy \
             --config wrangler.hands.jsonc \
-            --containers-rollout "${{ inputs.containers_rollout }}" \
-            --domain "${HANDS_WORKER_DOMAIN}"
+            --containers-rollout "${{ inputs.containers_rollout }}"
 
       - name: Summary
         shell: bash
@@ -146,7 +146,8 @@ jobs:
             echo "| Ref | \`${GITHUB_REF_NAME}\` |"
             echo "| SHA | \`${GITHUB_SHA}\` |"
             echo "| Account | \`${CLOUDFLARE_ACCOUNT_ID}\` |"
-            echo "| Domain | \`${HANDS_WORKER_DOMAIN}\` |"
+            echo "| Business domain | \`${HANDS_BUSINESS_DOMAIN}\` |"
+            echo "| Dashboard domain | \`${HANDS_DASHBOARD_DOMAIN}\` |"
             echo "| D1 | \`${HANDS_D1_DATABASE_NAME}\` |"
             echo "| R2 | \`${HANDS_R2_BUCKET_NAME}\` |"
             echo "| Containers rollout | \`${{ inputs.containers_rollout }}\` |"

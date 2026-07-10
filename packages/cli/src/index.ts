@@ -5,14 +5,13 @@
  * Subcommands are registered via the registry module. This file only
  * handles top-level commander setup + global flags (--api, --json, --verbose).
  *
- * Auth model: the CLI doesn't store long-lived tokens. It uses the same
- * browser-cookie session as the admin SPA. Two ways to "log in":
+ * Auth model: the CLI stores the same signed Hands JWT as the admin SPA.
+ * Two ways to "log in":
  *   - `quiver login` — prints a URL to visit in any browser; the user
- *     completes Raft OAuth there, the Worker sets the quiver_session
- *     cookie, the user copies the cookie value back into the CLI.
- *   - `quiver login --token <cookie>` — paste an existing session cookie.
+ *     completes Raft OAuth there, then copies the JWT from the callback page.
+ *   - `hands login --token <jwt>` — paste an existing Hands JWT.
  *
- * For CI: `quiver login --token "$QUIVER_SESSION_COOKIE"`.
+ * For CI: set `HANDS_AUTH_TOKEN` or use an app-scoped deploy token.
  *
  * Token storage: ~/.config/quiver/auth.json (or $XDG_CONFIG_HOME/quiver/auth.json).
  */
@@ -39,7 +38,7 @@ program
   .version("0.5.3")
   .option(
     "--api <url>",
-    "Quiver Worker base URL (default: https://quiver.oranix.io or $QUIVER_API)",
+    "Hands business API URL (default: https://hands.build or $HANDS_API)",
   )
   .option("--json", "Output machine-readable JSON (suppresses human output)", false)
   .option("--verbose", "Print HTTP request details for debugging", false)
@@ -90,7 +89,7 @@ registerLogsCommands(program);
 
 program
   .command("version")
-  .description("Print quiver CLI version")
+  .description("Print Hands CLI version")
   .action(() => {
     console.log(program.version());
   });

@@ -12,6 +12,7 @@ import {
 import { useQuery } from "@tanstack/react-query";
 import {
   Bug,
+  Check,
   ChevronDown,
   ChevronsUpDown,
   Gauge,
@@ -22,6 +23,7 @@ import {
   PanelLeftOpen,
   Plane,
   Plus,
+  Copy,
   Radio,
   Rocket,
   ScrollText,
@@ -46,6 +48,7 @@ import { AppAccess } from "./pages/AppAccess";
 import { OrgSwitcher, useClearOrgCache } from "./components/OrgSwitcher";
 import {
   clearActiveOrgId,
+  getAuthToken,
   getAuthMe,
   listApps,
   listOrgs,
@@ -730,7 +733,59 @@ function AuthGate() {
     return <PublicLanding account={me.data.account} />;
   }
 
+  if (location.pathname === "/cli/callback") {
+    return <CliCallback token={getAuthToken() ?? ""} />;
+  }
+
   return <AuthenticatedApp account={me.data.account} />;
+}
+
+function CliCallback({ token }: { token: string }) {
+  const [copied, setCopied] = useState(false);
+  return (
+    <main className="flex min-h-screen items-center justify-center bg-slate-50 px-4">
+      <section className="w-full max-w-xl rounded-md border border-slate-200 bg-white p-6 shadow-sm">
+        <div className="mb-5 flex items-center gap-3">
+          <QuiverMark className="h-9 w-9" />
+          <div>
+            <h1 className="text-lg font-semibold text-slate-950">Hands CLI login</h1>
+            <p className="text-sm text-slate-500">Signed in with Raft</p>
+          </div>
+        </div>
+        <div className="flex items-stretch gap-2">
+          <input
+            readOnly
+            value={token}
+            aria-label="Hands JWT"
+            className="min-w-0 flex-1 rounded-md border border-slate-300 bg-slate-50 px-3 font-mono text-xs text-slate-700"
+            onFocus={(event) => event.currentTarget.select()}
+          />
+          <button
+            type="button"
+            className="icon-button h-10 w-10"
+            title="Copy JWT"
+            aria-label="Copy JWT"
+            onClick={async () => {
+              await navigator.clipboard.writeText(token);
+              setCopied(true);
+            }}
+          >
+            {copied ? <Check className="h-4 w-4" /> : <Copy className="h-4 w-4" />}
+          </button>
+        </div>
+      </section>
+    </main>
+  );
+}
+
+function dashboardHref(account?: AuthAccount): string {
+  const dashboardOrigin = window.location.hostname === "hands.build"
+    ? "https://app.hands.build"
+    : "";
+  if (account) return `${dashboardOrigin}/apps`;
+  return dashboardOrigin
+    ? `${dashboardOrigin}/api/auth/login?return=${encodeURIComponent("/apps")}`
+    : loginUrl("/apps");
 }
 
 function PublicLanding({ account }: { account?: AuthAccount }) {
@@ -761,7 +816,7 @@ function PublicLanding({ account }: { account?: AuthAccount }) {
             </a>
             <a
               className="inline-flex h-10 items-center justify-center gap-2 rounded-md border border-slate-900 bg-slate-950 px-4 font-medium text-white hover:bg-slate-800"
-              href={account ? "/apps" : loginUrl("/apps")}
+              href={dashboardHref(account)}
             >
               <RaftIcon className="h-5 w-5" />
               {account ? "Open dashboard" : "Login"}
@@ -803,7 +858,7 @@ function PublicLanding({ account }: { account?: AuthAccount }) {
               <div className="mt-8 flex flex-col gap-3 sm:flex-row">
                 <a
                   className="inline-flex h-11 items-center justify-center gap-2 rounded-md bg-slate-950 px-5 text-sm font-medium text-white hover:bg-slate-800"
-                  href={account ? "/apps" : loginUrl("/apps")}
+                  href={dashboardHref(account)}
                 >
                   <RaftIcon className="h-5 w-5" />
                   {account ? "Open dashboard" : "Login with Raft"}

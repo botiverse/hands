@@ -47,25 +47,25 @@ hands builds publish-android raft-android \
 ## CI mode
 
 ```bash
-export QUIVER_API=https://quiver.oranix.io
-export QUIVER_SESSION_COOKIE=...   # paste from browser DevTools
+export HANDS_API=https://hands.build
+export HANDS_AUTH_TOKEN=...       # Hands JWT or an app deploy token
 hands whoami
 hands builds list myapp-android
 ```
 
 ## How auth works (v1)
 
-Raft OAuth today only supports the browser-redirect flow with HttpOnly
-cookies. The CLI can't intercept the redirect, so `hands login` asks
-you to:
+Raft OAuth uses a browser redirect. Hands converts the successful login into
+a signed JWT, so `hands login` asks you to:
 
 1. Open the printed URL in any browser.
 2. Sign in with Raft.
-3. Copy the `quiver_session` cookie value from DevTools.
+3. Copy the JWT shown on the Hands CLI callback page.
 4. Paste it back into the CLI.
 
-The token is saved to `$XDG_CONFIG_HOME/quiver/auth.json` (mode 0600).
-For CI, pass it via `QUIVER_SESSION_COOKIE` instead.
+The JWT is saved to `$XDG_CONFIG_HOME/quiver/auth.json` (mode 0600).
+For CI, pass it via `HANDS_AUTH_TOKEN` or `HANDS_BEARER_TOKEN`. The legacy
+`QUIVER_*` aliases remain accepted for existing automation.
 
 v2 will swap this for a true headless flow (Raft Device Flow or a
 `--token-stdin` service-user mode). See `publish-tasks.md` P3.4.x.

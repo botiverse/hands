@@ -24,7 +24,7 @@ export interface HandsElectronOptions {
   appSlug: string;
   /** Public client key (Sentry-DSN model). Safe to ship in the app bundle. */
   clientKey: string;
-  /** Hands origin. Defaults to https://quiver.oranix.io. */
+  /** Hands business origin. Defaults to https://hands.build. */
   endpoint?: string;
   /** Crashpad productName; defaults to appSlug. */
   productName?: string;
@@ -96,7 +96,7 @@ export function buildGlobalExtra(
 
 /** Build the minidump submit URL Crashpad POSTs to (client key in the query). */
 export function buildSubmitURL(options: HandsElectronOptions): string {
-  const endpoint = (options.endpoint ?? "https://quiver.oranix.io").replace(/\/+$/, "");
+  const endpoint = (options.endpoint ?? "https://hands.build").replace(/\/+$/, "");
   return (
     `${endpoint}/public/v2/apps/${encodeURIComponent(options.appSlug)}/minidump` +
     `?client_key=${encodeURIComponent(options.clientKey)}`
