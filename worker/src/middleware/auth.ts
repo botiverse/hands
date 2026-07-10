@@ -125,7 +125,7 @@ export async function loadAccountFromAuthToken(
   return account;
 }
 
-async function withRequestedOrg(
+export async function accountForRequestedOrg(
   env: Env,
   account: AdminAccount,
   requestedOrgId: string | undefined,
@@ -134,23 +134,21 @@ async function withRequestedOrg(
   if (!orgId || orgId === account.org_id) return account;
 
   const membership = await env.DB.prepare(
-    `SELECT om.org_id, om.org_role
+    `SELECT linked.*, om.org_id, om.org_role
      FROM org_members om
      JOIN organizations o ON o.id = om.org_id
-     WHERE om.account_id = ?1
-       AND om.org_id = ?2
+     JOIN raft_accounts linked ON linked.id = om.account_id
+     WHERE linked.provider = ?1
+       AND linked.provider_subject = ?2
+       AND linked.principal_type = ?3
+       AND om.org_id = ?4
        AND o.archived = 0
      LIMIT 1`,
   )
-    .bind(account.id, orgId)
-    .first<{
-      org_id: string;
-      org_role: NonNullable<AdminAccount["org_role"]>;
-    }>();
+    .bind(account.provider, account.provider_subject, account.principal_type, orgId)
+    .first<AdminAccount>();
 
-  return membership
-    ? { ...account, org_id: membership.org_id, org_role: membership.org_role }
-    : account;
+  return membership ?? account;
 }
 
 export const authMiddleware: MiddlewareHandler<AdminEnv & { Bindings: Env }> =
@@ -165,7 +163,7 @@ export const authMiddleware: MiddlewareHandler<AdminEnv & { Bindings: Env }> =
       cookieToken || bearerToken,
     );
     if (sessionAccount) {
-      const account = await withRequestedOrg(
+      const account = await accountForRequestedOrg(
         c.env,
         sessionAccount,
         c.req.header(ACTIVE_ORG_HEADER),

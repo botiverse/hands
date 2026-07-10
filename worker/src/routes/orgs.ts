@@ -85,12 +85,28 @@ export async function handleListOrgs(c: AdminContext) {
   }
   const { results } = await c.env.DB.prepare(
     `SELECT o.id, o.slug, o.name, o.external_provider, o.external_id,
-            o.created_at, o.archived, om.org_role
+            o.created_at, o.archived,
+            CASE MAX(CASE om.org_role
+              WHEN 'owner' THEN 4
+              WHEN 'admin' THEN 3
+              WHEN 'member' THEN 2
+              ELSE 1
+            END)
+              WHEN 4 THEN 'owner'
+              WHEN 3 THEN 'admin'
+              WHEN 2 THEN 'member'
+              ELSE 'viewer'
+            END AS org_role
      FROM org_members om
      JOIN organizations o ON o.id = om.org_id
-     WHERE om.account_id = ?1
+     JOIN raft_accounts linked ON linked.id = om.account_id
+     WHERE linked.provider = ?1
+       AND linked.provider_subject = ?2
+       AND linked.principal_type = ?3
+     GROUP BY o.id, o.slug, o.name, o.external_provider, o.external_id,
+              o.created_at, o.archived
      ORDER BY o.created_at DESC`,
-  ).bind(account.id).all();
+  ).bind(account.provider, account.provider_subject, account.principal_type).all();
   return c.json({ orgs: results });
 }
 
