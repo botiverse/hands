@@ -52,6 +52,9 @@ import {
   DialogBody,
   DialogFooter,
   DialogClose,
+  EmptyState,
+  EmptyStateTitle,
+  Skeleton,
 } from "raft-ui";
 
 export function AppAccess({ appId }: { appId: string }) {
@@ -199,7 +202,12 @@ function AppServerGrantList({
 
   return (
     <div className="card p-4! text-sm">
-      {grants.isLoading && <p className="text-slate-500">Loading…</p>}
+      {grants.isLoading && (
+        <div className="space-y-2">
+          <Skeleton className="h-8 w-full" />
+          <Skeleton className="h-8 w-full" />
+        </div>
+      )}
       {grants.error && (
         <p className="text-red-600">Failed: {(grants.error as Error).message}</p>
       )}
@@ -217,7 +225,9 @@ function AppServerGrantList({
         </div>
       </div>
       {grants.data && visibleRowCount === 0 && (
-        <p className="text-slate-500 text-sm">No server-level access rows visible.</p>
+        <EmptyState>
+          <EmptyStateTitle>No server-level access rows visible.</EmptyStateTitle>
+        </EmptyState>
       )}
       {grants.data && visibleRowCount > 0 && (
         <table className="w-full text-sm">
@@ -475,7 +485,12 @@ function AppMemberList({
 
   return (
     <div className="card p-4! text-sm">
-      {members.isLoading && <p className="text-slate-500">Loading…</p>}
+      {members.isLoading && (
+        <div className="space-y-2">
+          <Skeleton className="h-8 w-full" />
+          <Skeleton className="h-8 w-full" />
+        </div>
+      )}
       {members.error && (
         <p className="text-red-600">Failed: {(members.error as Error).message}</p>
       )}
@@ -520,11 +535,13 @@ function AppMemberList({
         </div>
       </div>
       {members.data && filteredMembers.length === 0 && (
-        <p className="text-slate-500 text-sm">
-          {principalFilter === "all"
-            ? "No direct app members yet. Org members may still have inherited access."
-            : `No ${principalFilter} app members.`}
-        </p>
+        <EmptyState>
+          <EmptyStateTitle>
+            {principalFilter === "all"
+              ? "No direct app members yet. Org members may still have inherited access."
+              : `No ${principalFilter} app members.`}
+          </EmptyStateTitle>
+        </EmptyState>
       )}
       {members.data && filteredMembers.length > 0 && (
         <table className="w-full text-sm">
@@ -667,7 +684,12 @@ function AppDeployTokenList({
 
   return (
     <div className="card p-4! text-sm">
-      {tokens.isLoading && <p className="text-slate-500">Loading…</p>}
+      {tokens.isLoading && (
+        <div className="space-y-2">
+          <Skeleton className="h-8 w-full" />
+          <Skeleton className="h-8 w-full" />
+        </div>
+      )}
       {tokens.error && (
         <p className="text-red-600">Failed: {(tokens.error as Error).message}</p>
       )}
@@ -683,9 +705,9 @@ function AppDeployTokenList({
         </div>
       </div>
       {tokens.data && rows.length === 0 && (
-        <p className="text-slate-500 text-sm">
-          No deploy tokens yet.
-        </p>
+        <EmptyState>
+          <EmptyStateTitle>No deploy tokens yet.</EmptyStateTitle>
+        </EmptyState>
       )}
       {tokens.data && rows.length > 0 && (
         <table className="w-full text-sm">

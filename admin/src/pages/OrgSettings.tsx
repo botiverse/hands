@@ -60,6 +60,9 @@ import {
   DialogTitle,
   DialogBody,
   DialogFooter,
+  EmptyState,
+  EmptyStateTitle,
+  Skeleton,
 } from "raft-ui";
 
 export const ORG_SETTINGS_TABS = [
@@ -296,16 +299,24 @@ function MembersTab({
           members but not edit them.
         </p>
       )}
-      {members.isLoading && <p className="text-slate-500">Loading…</p>}
+      {members.isLoading && (
+        <div className="space-y-2">
+          <Skeleton className="h-8 w-full" />
+          <Skeleton className="h-8 w-full" />
+          <Skeleton className="h-8 w-full" />
+        </div>
+      )}
       {members.error && (
         <p className="text-red-600">Failed: {(members.error as Error).message}</p>
       )}
       {members.data && filteredMembers.length === 0 && (
-        <p className="text-slate-500">
-          {principalFilter === "all"
-            ? "No members yet."
-            : `No ${principalFilter} members.`}
-        </p>
+        <EmptyState>
+          <EmptyStateTitle>
+            {principalFilter === "all"
+              ? "No members yet."
+              : `No ${principalFilter} members.`}
+          </EmptyStateTitle>
+        </EmptyState>
       )}
       {members.data && filteredMembers.length > 0 && (
         <table className="w-full text-sm">
@@ -538,16 +549,23 @@ function InvitesTab({
           ⚠ Owner / admin required to manage invites.
         </p>
       )}
-      {invites.isLoading && <p className="text-slate-500">Loading…</p>}
+      {invites.isLoading && (
+        <div className="space-y-2">
+          <Skeleton className="h-8 w-full" />
+          <Skeleton className="h-8 w-full" />
+        </div>
+      )}
       {invites.error && (
         <p className="text-red-600">Failed: {(invites.error as Error).message}</p>
       )}
       {invites.data && filteredInvites.length === 0 && (
-        <p className="text-slate-500 text-sm">
-          {statusFilter === "all"
-            ? "No pending invites."
-            : `No ${statusFilter} invites.`}
-        </p>
+        <EmptyState>
+          <EmptyStateTitle>
+            {statusFilter === "all"
+              ? "No pending invites."
+              : `No ${statusFilter} invites.`}
+          </EmptyStateTitle>
+        </EmptyState>
       )}
       {invites.data && filteredInvites.length > 0 && (
         <table className="w-full text-sm">
@@ -763,12 +781,20 @@ function AuditTab({
           ⚠ Org member required to view audit log.
         </p>
       )}
-      {audit.isLoading && <p className="text-slate-500">Loading…</p>}
+      {audit.isLoading && (
+        <div className="space-y-2">
+          <Skeleton className="h-6 w-full" />
+          <Skeleton className="h-6 w-full" />
+          <Skeleton className="h-6 w-full" />
+        </div>
+      )}
       {audit.error && (
         <p className="text-red-600">Failed: {(audit.error as Error).message}</p>
       )}
       {audit.data && audit.data.logs.length === 0 && (
-        <p className="text-slate-500 text-sm">No audit log entries yet.</p>
+        <EmptyState>
+          <EmptyStateTitle>No audit log entries yet.</EmptyStateTitle>
+        </EmptyState>
       )}
       {audit.data && audit.data.logs.length > 0 && (
         <table className="w-full text-xs">
@@ -931,14 +957,21 @@ function WebhooksTab({
           </p>
         )}
 
-        {webhooks.isLoading && <p className="text-slate-500">Loading…</p>}
+        {webhooks.isLoading && (
+          <div className="space-y-2">
+            <Skeleton className="h-10 w-full" />
+            <Skeleton className="h-10 w-full" />
+          </div>
+        )}
         {webhooks.error && (
           <p className="text-red-600 text-xs">
             Failed: {(webhooks.error as Error).message}
           </p>
         )}
         {webhooks.data && webhooks.data.webhooks.length === 0 && (
-          <p className="text-slate-500 text-sm">No webhooks configured yet.</p>
+          <EmptyState>
+            <EmptyStateTitle>No webhooks configured yet.</EmptyStateTitle>
+          </EmptyState>
         )}
 
         {webhooks.data && webhooks.data.webhooks.length > 0 && (

@@ -17,6 +17,9 @@ import {
   DialogTitle,
   DialogBody,
   DialogFooter,
+  EmptyState,
+  EmptyStateTitle,
+  Skeleton,
 } from "raft-ui";
 import { DeviceAnalytics } from "../components/DeviceAnalytics";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
@@ -164,10 +167,17 @@ export function AppChannels({ appId }: { appId: string }) {
             + New channel
           </Button>
         </div>
-        {channels.isLoading && <p className="text-slate-500">Loading…</p>}
+        {channels.isLoading && (
+          <div className="space-y-2">
+            <Skeleton className="h-12 w-full" />
+            <Skeleton className="h-12 w-full" />
+          </div>
+        )}
         <div className="space-y-2">
           {channels.data?.channels.length === 0 && (
-            <p className="text-slate-500 text-sm">No channels yet.</p>
+            <EmptyState>
+              <EmptyStateTitle>No channels yet.</EmptyStateTitle>
+            </EmptyState>
           )}
           {channels.data?.channels.map((c) => (
             <ChannelRow

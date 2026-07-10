@@ -10,7 +10,7 @@
  */
 import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { Button, Tooltip, TooltipTrigger, TooltipContent } from "raft-ui";
+import { Button, Tooltip, TooltipTrigger, TooltipContent, Progress, ProgressTrack, ProgressIndicator } from "raft-ui";
 import { getFeedbackStats } from "../lib/api";
 
 const KINDS = ["feedback", "bug", "crash"] as const;
@@ -219,12 +219,14 @@ export function CrashByVersion({
               />
               <TooltipContent>{`${r.version_name} (${r.version_code ?? "?"})`}</TooltipContent>
             </Tooltip>
-            <div className="flex-1 h-3.5">
-              <div
-                className="h-full rounded-r-[4px]"
-                style={{ width: `${(r.n / max) * 100}%`, background: "#2a78d6", minWidth: 2 }}
-              />
-            </div>
+            <Progress value={(r.n / max) * 100} className="flex-1 gap-0">
+              <ProgressTrack className="h-3.5 bg-transparent rounded-none">
+                <ProgressIndicator
+                  className="rounded-r-[4px]"
+                  style={{ background: "#2a78d6", minWidth: 2 }}
+                />
+              </ProgressTrack>
+            </Progress>
             {/* value at the bar tip, in text ink */}
             <span className="w-8 text-right tabular-nums text-slate-700">{r.n}</span>
           </div>

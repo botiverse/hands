@@ -5,7 +5,7 @@
  */
 import { useQuery } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
-import { Tooltip, TooltipTrigger, TooltipContent } from "raft-ui";
+import { Tooltip, TooltipTrigger, TooltipContent, Progress, ProgressTrack, ProgressIndicator } from "raft-ui";
 import { getDeviceAnalytics, getVersionMetrics } from "../lib/api";
 
 const BAR_COLOR = "#2a78d6";
@@ -62,16 +62,17 @@ export function DeviceAnalytics({ appId }: { appId: string }) {
                         <span className="w-24 truncate text-left text-slate-600">
                           {v.version_name}
                         </span>
-                        <div className="flex-1 h-3.5">
-                          <div
-                            className="h-full rounded-r-[4px]"
-                            style={{
-                              width: `${(v.devices / maxVersion) * 100}%`,
-                              background: BAR_COLOR,
-                              minWidth: 2,
-                            }}
-                          />
-                        </div>
+                        <Progress
+                          value={(v.devices / maxVersion) * 100}
+                          className="flex-1 gap-0"
+                        >
+                          <ProgressTrack className="h-3.5 bg-transparent rounded-none">
+                            <ProgressIndicator
+                              className="rounded-r-[4px]"
+                              style={{ background: BAR_COLOR, minWidth: 2 }}
+                            />
+                          </ProgressTrack>
+                        </Progress>
                         <span className="w-14 text-right tabular-nums text-slate-700">
                           {v.devices} · {pct}%
                         </span>

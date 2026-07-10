@@ -7,7 +7,7 @@
  */
 import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Button, Input, Select, SelectTrigger, SelectValue, SelectIcon, SelectContent, SelectItem, Dialog, DialogContent, DialogHeader, DialogTitle, DialogBody, DialogFooter } from "raft-ui";
+import { Button, Input, Select, SelectTrigger, SelectValue, SelectIcon, SelectContent, SelectItem, Dialog, DialogContent, DialogHeader, DialogTitle, DialogBody, DialogFooter, EmptyState, EmptyStateTitle, EmptyStateDescription, Skeleton } from "raft-ui";
 import {
   AppShare,
   createReleaseShare,
@@ -125,17 +125,26 @@ export function AppShares({ appId }: { appId: string }) {
       )}
 
       <div className="card overflow-x-auto">
-        {shares.isLoading && <p className="text-sm text-slate-500">Loading…</p>}
+        {shares.isLoading && (
+          <div className="space-y-2">
+            <Skeleton className="h-10 w-full" />
+            <Skeleton className="h-10 w-full" />
+            <Skeleton className="h-10 w-full" />
+          </div>
+        )}
         {shares.error && (
           <p className="text-sm text-red-600">
             Failed to load shares: {(shares.error as Error).message}
           </p>
         )}
         {!shares.isLoading && rows.length === 0 && (
-          <p className="text-sm text-slate-500">
-            No shares yet. Create one here, from the CLI
-            (<code>hands releases share</code>), or from the release workflow.
-          </p>
+          <EmptyState>
+            <EmptyStateTitle>No shares yet.</EmptyStateTitle>
+            <EmptyStateDescription>
+              Create one here, from the CLI (<code>hands releases share</code>),
+              or from the release workflow.
+            </EmptyStateDescription>
+          </EmptyState>
         )}
         {rows.length > 0 && (
           <table className="w-full text-sm">

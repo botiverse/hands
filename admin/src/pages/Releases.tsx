@@ -46,6 +46,10 @@ import {
   DialogBody,
   DialogFooter,
   DialogClose,
+  EmptyState,
+  EmptyStateTitle,
+  EmptyStateDescription,
+  Skeleton,
 } from "raft-ui";
 import { useToast } from "../components/Toast";
 import { ConfirmActionDialog } from "../components/ConfirmActionDialog";
@@ -246,16 +250,24 @@ export function Releases({ appId }: { appId: string }) {
         </Select>
       </div>
 
-      {releases.isLoading && <p className="text-slate-500">Loading…</p>}
+      {releases.isLoading && (
+        <div className="space-y-2">
+          <Skeleton className="h-20 w-full" />
+          <Skeleton className="h-20 w-full" />
+          <Skeleton className="h-20 w-full" />
+        </div>
+      )}
       {releases.error && (
         <p className="text-red-600">Failed: {(releases.error as Error).message}</p>
       )}
 
       {filtered.length === 0 && !releases.isLoading && (
-        <p className="text-slate-500 text-sm">
-          No releases match your filter. Create a new release and upload the
-          required assets from this tab.
-        </p>
+        <EmptyState>
+          <EmptyStateTitle>No releases match your filter.</EmptyStateTitle>
+          <EmptyStateDescription>
+            Create a new release and upload the required assets from this tab.
+          </EmptyStateDescription>
+        </EmptyState>
       )}
 
       <div className="space-y-2">

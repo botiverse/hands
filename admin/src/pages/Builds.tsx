@@ -37,6 +37,9 @@ import {
   DialogBody,
   DialogFooter,
   DialogClose,
+  EmptyState,
+  EmptyStateTitle,
+  Skeleton,
 } from "raft-ui";
 
 export function Builds({ appId }: { appId: string }) {
@@ -87,15 +90,23 @@ export function Builds({ appId }: { appId: string }) {
         </div>
       </div>
 
-      {builds.isLoading && <p className="text-slate-500">Loading...</p>}
+      {builds.isLoading && (
+        <div className="space-y-2">
+          <Skeleton className="h-16 w-full" />
+          <Skeleton className="h-16 w-full" />
+          <Skeleton className="h-16 w-full" />
+        </div>
+      )}
       {builds.error && (
         <p className="text-red-600">Failed: {(builds.error as Error).message}</p>
       )}
 
       {builds.data && builds.data.builds.length === 0 && !builds.isLoading && (
-        <p className="text-slate-500 text-sm">
-          No builds yet. Create a release from the Releases tab to upload assets.
-        </p>
+        <EmptyState>
+          <EmptyStateTitle>
+            No builds yet. Create a release from the Releases tab to upload assets.
+          </EmptyStateTitle>
+        </EmptyState>
       )}
 
       <div className="space-y-2">

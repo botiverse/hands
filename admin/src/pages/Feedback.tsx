@@ -19,7 +19,7 @@ import {
 } from "../lib/api";
 import { useToast } from "../components/Toast";
 import { FeedbackTrends } from "../components/FeedbackTrends";
-import { Button, Input, Select, SelectTrigger, SelectValue, SelectIcon, SelectContent, SelectItem, Tooltip, TooltipTrigger, TooltipContent } from "raft-ui";
+import { Button, Input, Select, SelectTrigger, SelectValue, SelectIcon, SelectContent, SelectItem, Tooltip, TooltipTrigger, TooltipContent, EmptyState, EmptyStateTitle, Skeleton } from "raft-ui";
 
 const STATUSES = ["open", "in_progress", "resolved", "closed"] as const;
 
@@ -152,14 +152,22 @@ export function AppFeedback({ appId }: { appId: string }) {
 
 
       <div className="card overflow-x-auto">
-        {tickets.isLoading && <p className="text-sm text-slate-500">Loading…</p>}
+        {tickets.isLoading && (
+          <div className="space-y-2">
+            <Skeleton className="h-10 w-full" />
+            <Skeleton className="h-10 w-full" />
+            <Skeleton className="h-10 w-full" />
+          </div>
+        )}
         {tickets.error && (
           <p className="text-sm text-red-600">
             Failed to load feedback: {(tickets.error as Error).message}
           </p>
         )}
         {!tickets.isLoading && rows.length === 0 && (
-          <p className="text-sm text-slate-500">No feedback tickets yet.</p>
+          <EmptyState>
+            <EmptyStateTitle>No feedback tickets yet.</EmptyStateTitle>
+          </EmptyState>
         )}
         {rows.length > 0 && (
           <table className="w-full text-sm">

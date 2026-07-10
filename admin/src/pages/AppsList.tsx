@@ -14,6 +14,9 @@ import {
   TooltipTrigger,
   TooltipContent,
   Checkbox,
+  EmptyState,
+  EmptyStateTitle,
+  Skeleton,
 } from "raft-ui";
 
 export function AppsList({ onSelectApp, initialShowCreate }: { onSelectApp: (id: string) => void; initialShowCreate?: boolean }) {
@@ -48,19 +51,27 @@ export function AppsList({ onSelectApp, initialShowCreate }: { onSelectApp: (id:
         </div>
       </div>
 
-      {isLoading && <p className="text-slate-500">Loading...</p>}
+      {isLoading && (
+        <div className="grid gap-3">
+          <Skeleton className="h-16 w-full" />
+          <Skeleton className="h-16 w-full" />
+          <Skeleton className="h-16 w-full" />
+        </div>
+      )}
       {error && (
         <p className="text-red-600">Failed: {(error as Error).message}</p>
       )}
 
       {visible.length === 0 && !isLoading && (
-        <p className="text-slate-500">
-          {showArchived
-            ? "No apps yet. Click \"+ New app\" to create your first one."
-            : data?.apps.some((a) => a.archived)
-              ? "All apps are archived. Toggle \"Show archived\" to view them."
-              : "No apps yet. Click \"+ New app\" to create your first one."}
-        </p>
+        <EmptyState>
+          <EmptyStateTitle>
+            {showArchived
+              ? "No apps yet. Click \"+ New app\" to create your first one."
+              : data?.apps.some((a) => a.archived)
+                ? "All apps are archived. Toggle \"Show archived\" to view them."
+                : "No apps yet. Click \"+ New app\" to create your first one."}
+          </EmptyStateTitle>
+        </EmptyState>
       )}
 
       <div className="grid gap-3">
