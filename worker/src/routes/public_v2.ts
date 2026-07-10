@@ -774,7 +774,31 @@ export async function handlePublicR2Download(c: Context<{ Bindings: Env }>) {
       version_code: number;
       app_slug: string;
     }>();
-  if (!asset) return c.json({ error: "asset not found" }, 404);
+  if (!asset) {
+    // Not a build asset — the HMAC signature (key + expiry) already proves
+    // this URL came from an authenticated presign call, so also serve
+    // feedback attachments (task #123: agents fetch binaries via signed URL
+    // because agent transports corrupt raw bytes).
+    const attachment = await c.env.DB.prepare(
+      `SELECT filename, content_type, size_bytes FROM feedback_attachments WHERE r2_key = ?1 LIMIT 1`,
+    )
+      .bind(key)
+      .first<{ filename: string; content_type: string | null; size_bytes: number | null }>();
+    if (!attachment) return c.json({ error: "asset not found" }, 404);
+    const object = await c.env.APK_BUCKET.get(key);
+    if (!object) return c.json({ error: "object not found" }, 404);
+    const headers = new Headers();
+    object.writeHttpMetadata(headers);
+    headers.set("etag", object.httpEtag);
+    headers.set("cache-control", "private, max-age=0, no-store");
+    headers.set("content-type", attachment.content_type ?? "application/octet-stream");
+    if (attachment.size_bytes != null) headers.set("content-length", String(attachment.size_bytes));
+    headers.set(
+      "content-disposition",
+      `attachment; filename*=UTF-8''${encodeURIComponent(attachment.filename)}`,
+    );
+    return new Response(object.body, { headers });
+  }
 
   const contentDisposition = contentDispositionForAsset(asset);
   const directUrl = await presignR2DownloadUrl(c.env, {
