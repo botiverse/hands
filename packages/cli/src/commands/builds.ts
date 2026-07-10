@@ -162,6 +162,12 @@ export function registerBuildCommands(program: Command): void {
     .option("--dsym <path>", "iOS dSYM archive (dSYM.zip) support artifact.")
     .option("--metadata <path>", "Build metadata JSON support artifact.")
     .option(
+      "--delta-patch <spec>",
+      "Delta patch as <from_version_code>=<path> (archive-patcher). Repeatable — clients on that version get offered this patch instead of the full APK.",
+      collect,
+      [],
+    )
+    .option(
       "--changelog <text>",
       "Inline changelog. Repeatable with lang=text for multiple languages.",
       collect,
@@ -197,6 +203,7 @@ export function registerBuildCommands(program: Command): void {
           symbols?: string;
           dsym?: string;
           metadata?: string;
+          deltaPatch?: string[];
           changelog?: string[];
           changelogFile?: string[];
           sourceCommit?: string;
@@ -250,14 +257,38 @@ export function registerBuildCommands(program: Command): void {
         });
 
         const assets = [];
-        assets.push(
-          await uploadAndRegisterAsset(appId, build.id, opts.apk, {
-            artifact_kind: "installable",
-            platform: "android",
-            arch: opts.arch,
-            filetype: "apk",
-          }),
-        );
+        const installable = await uploadAndRegisterAsset(appId, build.id, opts.apk, {
+          artifact_kind: "installable",
+          platform: "android",
+          arch: opts.arch,
+          filetype: "apk",
+        });
+        assets.push(installable);
+        // Delta patches: <from_version_code>=<path>. target_sha256 is the new
+        // APK's hash so the client can verify the reconstructed file. The
+        // server offers a patch only when it beats the full APK size.
+        for (const spec of opts.deltaPatch ?? []) {
+          const eq = spec.indexOf("=");
+          if (eq <= 0) throw new Error(`--delta-patch must be <from_version_code>=<path>, got: ${spec}`);
+          const fromVersionCode = Number(spec.slice(0, eq).trim());
+          const patchPath = spec.slice(eq + 1).trim();
+          if (!Number.isFinite(fromVersionCode)) throw new Error(`bad from_version_code in --delta-patch: ${spec}`);
+          if (!existsSync(patchPath)) throw new Error(`missing delta patch file: ${patchPath}`);
+          assets.push(
+            await uploadAndRegisterAsset(appId, build.id, patchPath, {
+              artifact_kind: "delta-patch",
+              platform: "android",
+              arch: opts.arch,
+              filetype: "patch",
+              metadata_json: {
+                from_version_code: fromVersionCode,
+                to_version_code: versionCode,
+                algorithm: "archive-patcher-v1",
+                target_sha256: installable.file_hash,
+              },
+            }),
+          );
+        }
         if (opts.mapping) {
           assets.push(
             await uploadAndRegisterAsset(appId, build.id, opts.mapping, {
