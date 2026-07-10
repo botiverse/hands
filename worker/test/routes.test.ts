@@ -3002,6 +3002,70 @@ describe("quiver public API v2 — scope resolution", () => {
     expect(body.asset.download_url).toContain("&sig=");
   });
 
+  it("updates/check offers a delta patch when one applies and is small enough", async () => {
+    const env = makeEnv();
+    const { handlePublicV2UpdateCheck } = await import("../src/routes/public_v2");
+    await seedRelease(env, "rel-delta", "build-delta", [["full", "all"]], {
+      versionCode: 20,
+      versionName: "1.0.20",
+    });
+    // Full APK is 1000 bytes for arm64.
+    await seedAsset(env, "build-delta", "asset-full", { arch: "arm64-v8a", sizeBytes: 1000 });
+    // A patch 10→20 for arm64 that's 200 bytes (< 70% of 1000) → offered.
+    await seedAsset(env, "build-delta", "asset-patch-small", {
+      artifactKind: "delta-patch",
+      arch: "arm64-v8a",
+      filetype: "patch",
+      sizeBytes: 200,
+      r2Key: "apps/app-scope/patch-10-20.patch",
+      metadata: {
+        from_version_code: 10,
+        to_version_code: 20,
+        algorithm: "archive-patcher-v1",
+        target_sha256: "deadbeef",
+      },
+    });
+
+    const call = (currentCode: string) =>
+      handlePublicV2UpdateCheck(
+        makePublicContext(env, {
+          channel: "production",
+          product_type: "android-apk",
+          current_version_code: currentCode,
+          platform: "android",
+          arch: "arm64-v8a",
+        }),
+      );
+
+    // Client on 10 → patch offered with target hash + signed URL.
+    const offered = await responseJson<any>(await call("10"));
+    expect(offered.patch).toMatchObject({
+      from_version_code: 10,
+      algorithm: "archive-patcher-v1",
+      size_bytes: 200,
+      target_sha256: "deadbeef",
+    });
+    expect(offered.patch.download_url).toContain("patch-10-20.patch");
+    expect(offered.patch.download_url).toContain("&sig=");
+
+    // Client on 15 → no patch for that from-version → full only.
+    const noPatch = await responseJson<any>(await call("15"));
+    expect(noPatch.update_available).toBe(true);
+    expect(noPatch.patch).toBeUndefined();
+
+    // A too-large patch (>70% of full) is not offered.
+    await seedAsset(env, "build-delta", "asset-patch-big", {
+      artifactKind: "delta-patch",
+      arch: "arm64-v8a",
+      filetype: "patch",
+      sizeBytes: 900,
+      r2Key: "apps/app-scope/patch-5-20.patch",
+      metadata: { from_version_code: 5, to_version_code: 20, algorithm: "archive-patcher-v1" },
+    });
+    const bigPatch = await responseJson<any>(await call("5"));
+    expect(bigPatch.patch).toBeUndefined();
+  });
+
   it("public R2 download serves active release assets with a valid signature", async () => {
     const env = makeEnv();
     const { handlePublicR2Download, handlePublicV2UpdateCheck } = await import("../src/routes/public_v2");

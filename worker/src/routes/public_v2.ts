@@ -432,6 +432,22 @@ export async function handlePublicV2UpdateCheck(c: Context<{ Bindings: Env }>) {
   }
 
   bumpReleaseMetric(c, latest.scoped?.release_id, "offered");
+  // Delta (differential) download offer: if the client's installed version has
+  // a patch to the latest build for its arch, and that patch is meaningfully
+  // smaller than the full APK, offer it. The full `asset` stays the fallback;
+  // old SDKs ignore the extra `patch` field. See docs/delta-download-design.md.
+  const patch =
+    currentVersionCode > 0
+      ? await findDeltaPatch(c, {
+          buildId: latest.build.id,
+          fromVersionCode: currentVersionCode,
+          arch: requestedArch,
+          fullSizeBytes: asset.size_bytes,
+          origin: publicRequestOrigin(c),
+          ttl: latest.expires_in,
+        })
+      : null;
+
   return c.json({
     update_available: true,
     app: latest.app,
@@ -447,9 +463,68 @@ export async function handlePublicV2UpdateCheck(c: Context<{ Bindings: Env }>) {
       released_at: latest.build.released_at,
     },
     asset,
+    ...(patch ? { patch } : {}),
     scoped: latest.scoped,
     expires_in: latest.expires_in,
   });
+}
+
+/** Fraction of the full APK a patch must beat to be worth offering. */
+const DELTA_MAX_SIZE_RATIO = 0.7;
+
+/**
+ * Find a delta-patch asset on the target build that upgrades the client's
+ * installed version for its arch, returning a signed offer only when the patch
+ * is small enough to be a win. Patch assets carry
+ * metadata_json = {from_version_code, to_version_code, algorithm, target_sha256}.
+ */
+async function findDeltaPatch(
+  c: Context<{ Bindings: Env }>,
+  args: {
+    buildId: string;
+    fromVersionCode: number;
+    arch: string | null;
+    fullSizeBytes: number;
+    origin: string;
+    ttl: number;
+  },
+): Promise<{
+  from_version_code: number;
+  algorithm: string;
+  download_url: string;
+  size_bytes: number;
+  target_sha256: string | null;
+} | null> {
+  const row = await c.env.DB.prepare(
+    `SELECT r2_key, size_bytes, arch,
+            json_extract(metadata_json, '$.algorithm') AS algorithm,
+            json_extract(metadata_json, '$.target_sha256') AS target_sha256
+     FROM build_assets
+     WHERE build_id = ?1
+       AND artifact_kind = 'delta-patch'
+       AND CAST(json_extract(metadata_json, '$.from_version_code') AS INTEGER) = ?2
+       AND (arch = ?3 OR arch IS NULL)
+     ORDER BY (arch = ?4) DESC
+     LIMIT 1`,
+  )
+    .bind(args.buildId, args.fromVersionCode, args.arch, args.arch)
+    .first<{
+      r2_key: string;
+      size_bytes: number;
+      arch: string | null;
+      algorithm: string | null;
+      target_sha256: string | null;
+    }>();
+  if (!row) return null;
+  // Only a win if it's meaningfully smaller than the full download.
+  if (row.size_bytes > args.fullSizeBytes * DELTA_MAX_SIZE_RATIO) return null;
+  return {
+    from_version_code: args.fromVersionCode,
+    algorithm: row.algorithm ?? "archive-patcher-v1",
+    download_url: await generateSignedR2Url(c.env, row.r2_key, args.ttl, args.origin),
+    size_bytes: row.size_bytes,
+    target_sha256: row.target_sha256,
+  };
 }
 
 export function selectBestAsset(
