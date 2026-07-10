@@ -638,7 +638,7 @@ export function resolveChangelog(raw: string | null, lang: string | null): strin
   return resolveReleaseNote(raw, lang);
 }
 
-function requestedLang(c: Context<{ Bindings: Env }>): string | null {
+export function requestedLang(c: Context<{ Bindings: Env }>): string | null {
   const explicit = c.req.query("lang") ?? c.req.header("X-Hands-Lang") ?? c.req.header("X-Quiver-Lang");
   if (explicit) return explicit;
   const accept = c.req.header("accept-language");

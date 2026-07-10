@@ -2,7 +2,98 @@ import type { Context } from "hono";
 import qrcode from "qrcode-generator";
 import { requestOrigin } from "../lib/origin";
 import { currentActor, type AdminEnv } from "../middleware/auth";
-import { generateSignedR2Url, resolveChangelog , changelogToHtml } from "./public_v2";
+import { generateSignedR2Url, resolveChangelog , changelogToHtml, requestedLang } from "./public_v2";
+
+// UI-chrome localization for the public share/password/error pages. Detection
+// reuses requestedLang() (Accept-Language / ?lang=); anything not Chinese falls
+// back to English. The changelog itself is still localized separately via
+// resolveChangelog().
+type ShareStrings = {
+  htmlLang: string;
+  preRelease: string; // draft tag
+  build: string; // "build {code}"
+  packageLabel: string;
+  versionLabel: string;
+  artifactLabel: string;
+  platformLabel: string;
+  checksumLabel: string;
+  expiresLabel: string;
+  statsLabel: string;
+  visitors: string;
+  views: string;
+  downloaders: string;
+  downloads: string;
+  downloadApk: string;
+  scanHint: string;
+  passwordRequired: string; // password page title + heading
+  wrongPassword: string;
+  passwordProtected: string;
+  passwordPlaceholder: string;
+  unlock: string;
+  shareUnavailable: string; // error page title + heading
+  errMissingToken: string;
+  errUnavailable: string;
+};
+
+const SHARE_I18N: { en: ShareStrings; zh: ShareStrings } = {
+  en: {
+    htmlLang: "en",
+    preRelease: "Pre-release",
+    build: "build",
+    packageLabel: "Package",
+    versionLabel: "Version",
+    artifactLabel: "Artifact",
+    platformLabel: "Platform",
+    checksumLabel: "Checksum",
+    expiresLabel: "Expires",
+    statsLabel: "Stats",
+    visitors: "visitors",
+    views: "views",
+    downloaders: "downloaders",
+    downloads: "downloads",
+    downloadApk: "Download APK",
+    scanHint: "Scan to open on your phone",
+    passwordRequired: "Password required",
+    wrongPassword: "Wrong password. Try again.",
+    passwordProtected: "This download is password protected.",
+    passwordPlaceholder: "Password",
+    unlock: "Unlock",
+    shareUnavailable: "Share unavailable",
+    errMissingToken: "Missing share token",
+    errUnavailable: "This share link is expired, revoked, or unavailable.",
+  },
+  zh: {
+    htmlLang: "zh",
+    preRelease: "预发布",
+    build: "构建",
+    packageLabel: "包名",
+    versionLabel: "版本",
+    artifactLabel: "安装包",
+    platformLabel: "平台",
+    checksumLabel: "校验和",
+    expiresLabel: "过期时间",
+    statsLabel: "统计",
+    visitors: "访客数",
+    views: "浏览次数",
+    downloaders: "下载人数",
+    downloads: "下载次数",
+    downloadApk: "下载 APK",
+    scanHint: "扫码在手机上打开",
+    passwordRequired: "需要密码",
+    wrongPassword: "密码错误，请重试。",
+    passwordProtected: "此下载受密码保护。",
+    passwordPlaceholder: "密码",
+    unlock: "解锁",
+    shareUnavailable: "分享不可用",
+    errMissingToken: "缺少分享令牌",
+    errUnavailable: "此分享链接已过期、被撤销或不可用。",
+  },
+};
+
+function shareStrings(c: Context<{ Bindings: Env }>): ShareStrings {
+  const lang = (requestedLang(c) ?? "").toLowerCase();
+  return lang.startsWith("zh") ? SHARE_I18N.zh : SHARE_I18N.en;
+}
 
 type AdminContext = Context<AdminEnv & { Bindings: Env }>;
 
@@ -309,18 +400,19 @@ export async function handleUpdateReleaseShare(c: AdminContext) {
 }
 
 export async function handlePublicReleaseShare(c: Context<{ Bindings: Env }>) {
+  const t = shareStrings(c);
   const token = c.req.param("token");
-  if (!token) return htmlResponse(renderErrorPage("Missing share token"), 400);
+  if (!token) return htmlResponse(renderErrorPage(t, t.errMissingToken), 400);
 
   const row = await findActiveShare(c.env.DB, token);
 
   if (!row) {
-    return htmlResponse(renderErrorPage("This share link is expired, revoked, or unavailable."), 404);
+    return htmlResponse(renderErrorPage(t, t.errUnavailable), 404);
   }
 
   if (row.password_hash && !(await hasValidUnlockCookie(c, row))) {
     await recordShareEvent(c, row.share_id, "view");
-    return htmlResponse(renderPasswordPage(token, false));
+    return htmlResponse(renderPasswordPage(t, token, false));
   }
 
   await recordShareEvent(c, row.share_id, "view");
@@ -330,16 +422,17 @@ export async function handlePublicReleaseShare(c: Context<{ Bindings: Env }>) {
   const shareUrl = new URL(`/share/${token}`, origin).toString();
   const lang = (c.req.header("accept-language") ?? "").split(",")[0]?.trim().split(";")[0] ?? null;
   const localized = { ...row, changelog: resolveChangelog(row.changelog, lang) };
-  return htmlResponse(renderSharePage(localized, stats, downloadUrl, shareUrl, token));
+  return htmlResponse(renderSharePage(t, localized, stats, downloadUrl, shareUrl, token));
 }
 
 export async function handlePublicReleaseShareDownload(c: Context<{ Bindings: Env }>) {
+  const t = shareStrings(c);
   const token = c.req.param("token");
-  if (!token) return htmlResponse(renderErrorPage("Missing share token"), 400);
+  if (!token) return htmlResponse(renderErrorPage(t, t.errMissingToken), 400);
 
   const row = await findActiveShare(c.env.DB, token);
   if (!row) {
-    return htmlResponse(renderErrorPage("This share link is expired, revoked, or unavailable."), 404);
+    return htmlResponse(renderErrorPage(t, t.errUnavailable), 404);
   }
 
   if (row.password_hash && !(await hasValidUnlockCookie(c, row))) {
@@ -370,11 +463,12 @@ export async function handlePublicReleaseShareIcon(c: Context<{ Bindings: Env }>
 }
 
 export async function handlePublicReleaseShareUnlock(c: Context<{ Bindings: Env }>) {
+  const t = shareStrings(c);
   const token = c.req.param("token");
-  if (!token) return htmlResponse(renderErrorPage("Missing share token"), 400);
+  if (!token) return htmlResponse(renderErrorPage(t, t.errMissingToken), 400);
   const row = await findActiveShare(c.env.DB, token);
   if (!row) {
-    return htmlResponse(renderErrorPage("This share link is expired, revoked, or unavailable."), 404);
+    return htmlResponse(renderErrorPage(t, t.errUnavailable), 404);
   }
   if (!row.password_hash) return c.redirect(`/share/${token}`, 302);
 
@@ -396,7 +490,7 @@ export async function handlePublicReleaseShareUnlock(c: Context<{ Bindings: Env 
         row.release_id,
       )
       .run();
-    return htmlResponse(renderPasswordPage(token, true), 401);
+    return htmlResponse(renderPasswordPage(t, token, true), 401);
   }
 
   const proof = await shareUnlockProof(row, currentDayBucket());
@@ -618,6 +712,7 @@ function htmlResponse(html: string, status = 200): Response {
 }
 
 function renderSharePage(
+  t: ShareStrings,
   row: SharePageRow,
   stats: ShareStats,
   downloadUrl: string,
@@ -628,7 +723,7 @@ function renderSharePage(
   const expiresIso = new Date(row.expires_at).toISOString();
   const qrSvg = renderShareQrSvg(shareUrl);
   return `<!doctype html>
-<html lang="en">
+<html lang="${t.htmlLang}">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -675,30 +770,30 @@ function renderSharePage(
       <div>
         <h1>${escapeHtml(row.app_name || row.app_slug)}${
           row.release_status === "draft"
-            ? ' <span class="draft-tag">Pre-release</span>'
+            ? ` <span class="draft-tag">${t.preRelease}</span>`
             : ""
         }</h1>
-        <p>${escapeHtml(row.version_name)} · build ${row.version_code} · ${escapeHtml(row.channel_slug)}</p>
+        <p>${escapeHtml(row.version_name)} · ${t.build} ${row.version_code} · ${escapeHtml(row.channel_slug)}</p>
       </div>
     </div>
     <dl>
-      <dt>Package</dt><dd>${escapeHtml(row.package_id || row.app_slug)}</dd>
-      <dt>Version</dt><dd>${escapeHtml(row.version_name)} (${row.version_code})</dd>
-      <dt>Artifact</dt><dd>${escapeHtml(row.filetype.toUpperCase())} · ${formatBytes(row.size_bytes)}</dd>
-      <dt>Platform</dt><dd>${escapeHtml([row.platform, row.arch, row.variant].filter(Boolean).join(" / "))}</dd>
-      <dt>Checksum</dt><dd>${escapeHtml(row.file_hash)}</dd>
-      <dt>Expires</dt><dd><time id="expires-at" datetime="${escapeAttribute(expiresIso)}" data-expires-at="${row.expires_at}">${escapeHtml(expiresIso)}</time></dd>
-      <dt>Stats</dt>
+      <dt>${t.packageLabel}</dt><dd>${escapeHtml(row.package_id || row.app_slug)}</dd>
+      <dt>${t.versionLabel}</dt><dd>${escapeHtml(row.version_name)} (${row.version_code})</dd>
+      <dt>${t.artifactLabel}</dt><dd>${escapeHtml(row.filetype.toUpperCase())} · ${formatBytes(row.size_bytes)}</dd>
+      <dt>${t.platformLabel}</dt><dd>${escapeHtml([row.platform, row.arch, row.variant].filter(Boolean).join(" / "))}</dd>
+      <dt>${t.checksumLabel}</dt><dd>${escapeHtml(row.file_hash)}</dd>
+      <dt>${t.expiresLabel}</dt><dd><time id="expires-at" datetime="${escapeAttribute(expiresIso)}" data-expires-at="${row.expires_at}">${escapeHtml(expiresIso)}</time></dd>
+      <dt>${t.statsLabel}</dt>
       <dd class="stats">
-        <span class="stat"><strong>${stats.unique_view_count}</strong><span>visitors</span></span>
-        <span class="stat"><strong>${stats.view_count}</strong><span>views</span></span>
-        <span class="stat"><strong>${stats.unique_download_count}</strong><span>downloaders</span></span>
-        <span class="stat"><strong>${stats.download_count}</strong><span>downloads</span></span>
+        <span class="stat"><strong>${stats.unique_view_count}</strong><span>${t.visitors}</span></span>
+        <span class="stat"><strong>${stats.view_count}</strong><span>${t.views}</span></span>
+        <span class="stat"><strong>${stats.unique_download_count}</strong><span>${t.downloaders}</span></span>
+        <span class="stat"><strong>${stats.download_count}</strong><span>${t.downloads}</span></span>
       </dd>
     </dl>
     <div class="get-it">
-      <a class="download" href="${escapeAttribute(downloadUrl)}">Download APK</a>
-      <div class="qr">${qrSvg}<span>Scan to open on your phone</span></div>
+      <a class="download" href="${escapeAttribute(downloadUrl)}">${t.downloadApk}</a>
+      <div class="qr">${qrSvg}<span>${t.scanHint}</span></div>
     </div>
     ${row.changelog ? `<div class="notes">${changelogToHtml(row.changelog)}</div>` : ""}
   </main>
@@ -730,13 +825,13 @@ function renderShareQrSvg(url: string): string {
   return qr.createSvgTag({ cellSize: 4, margin: 0, scalable: true });
 }
 
-function renderPasswordPage(token: string, failed: boolean): string {
+function renderPasswordPage(t: ShareStrings, token: string, failed: boolean): string {
   return `<!doctype html>
-<html lang="en">
+<html lang="${t.htmlLang}">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Password required</title>
+  <title>${t.passwordRequired}</title>
   <style>
     :root { color-scheme: light dark; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
     body { margin: 0; min-height: 100vh; display: grid; place-items: center; background: #f5f5f2; color: #1e1f22; }
@@ -755,24 +850,24 @@ function renderPasswordPage(token: string, failed: boolean): string {
 </head>
 <body>
   <main>
-    <h1>Password required</h1>
-    <p>${failed ? '<span class="error">Wrong password. Try again.</span>' : "This download is password protected."}</p>
+    <h1>${t.passwordRequired}</h1>
+    <p>${failed ? `<span class="error">${t.wrongPassword}</span>` : t.passwordProtected}</p>
     <form method="post" action="/share/${escapeAttribute(encodeURIComponent(token))}/unlock">
-      <input type="password" name="password" placeholder="Password" autofocus autocomplete="off" required>
-      <button type="submit">Unlock</button>
+      <input type="password" name="password" placeholder="${escapeAttribute(t.passwordPlaceholder)}" autofocus autocomplete="off" required>
+      <button type="submit">${t.unlock}</button>
     </form>
   </main>
 </body>
 </html>`;
 }
 
-function renderErrorPage(message: string): string {
+function renderErrorPage(t: ShareStrings, message: string): string {
   return `<!doctype html>
-<html lang="en">
+<html lang="${t.htmlLang}">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Share unavailable</title>
+  <title>${t.shareUnavailable}</title>
   <style>
     :root { color-scheme: light dark; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
     body { margin: 0; min-height: 100vh; display: grid; place-items: center; background: #f5f5f2; color: #1e1f22; }
@@ -789,7 +884,7 @@ function renderErrorPage(message: string): string {
 <body>
   <main>
     <div class="badge" aria-hidden="true">🔗</div>
-    <h1>Share unavailable</h1>
+    <h1>${t.shareUnavailable}</h1>
     <p>${escapeHtml(message)}</p>
   </main>
 </body>

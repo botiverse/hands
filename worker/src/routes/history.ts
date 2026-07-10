@@ -6,7 +6,70 @@
 import type { Context } from "hono";
 import { requestOrigin } from "../lib/origin";
 import { parseReleaseNotes } from "../lib/release_notes";
-import { generateSignedR2Url, resolveChangelog, changelogToHtml } from "./public_v2";
+import { generateSignedR2Url, resolveChangelog, changelogToHtml, requestedLang } from "./public_v2";
+
+// UI-chrome localization (task: localize surrounding chrome, not just the
+// changelog). Detection reuses requestedLang() (Accept-Language / ?lang=);
+// anything that isn't Chinese falls back to English.
+type HistoryStrings = {
+  htmlLang: string;
+  versionsSuffix: string; // page <title>: "{app} — {suffix}"
+  versionHistory: string; // header sub-line
+  build: string; // "build {code}"
+  latest: string; // history-page badge
+  download: string; // download link
+  noVersions: string; // empty state
+  releaseNotesSuffix: string; // release-notes <title> suffix
+  whatsNewIn: (name: string) => string; // release-notes h1
+  releaseNotes: string; // release-notes sub-line
+  draft: string; // badge
+  current: string; // badge
+  latestBadge: string; // badge
+  noNotesForVersion: string; // per-version empty notes
+  noNotesYet: string; // page empty state
+};
+
+const HISTORY_I18N: { en: HistoryStrings; zh: HistoryStrings } = {
+  en: {
+    htmlLang: "en",
+    versionsSuffix: "Versions",
+    versionHistory: "version history",
+    build: "build",
+    latest: "latest",
+    download: "Download",
+    noVersions: "No published versions yet.",
+    releaseNotesSuffix: "Release Notes",
+    whatsNewIn: (name) => `What's new in ${name}`,
+    releaseNotes: "Release notes",
+    draft: "Draft",
+    current: "Current",
+    latestBadge: "Latest",
+    noNotesForVersion: "No release notes for this version.",
+    noNotesYet: "No release notes yet.",
+  },
+  zh: {
+    htmlLang: "zh",
+    versionsSuffix: "版本",
+    versionHistory: "版本历史",
+    build: "构建",
+    latest: "最新",
+    download: "下载",
+    noVersions: "暂无已发布的版本。",
+    releaseNotesSuffix: "更新日志",
+    whatsNewIn: (name) => `${name} 新功能`,
+    releaseNotes: "更新日志",
+    draft: "草稿",
+    current: "当前",
+    latestBadge: "最新",
+    noNotesForVersion: "此版本暂无更新说明。",
+    noNotesYet: "暂无更新说明。",
+  },
+};
+
+function historyStrings(c: Context<{ Bindings: Env }>): HistoryStrings {
+  const lang = (requestedLang(c) ?? "").toLowerCase();
+  return lang.startsWith("zh") ? HISTORY_I18N.zh : HISTORY_I18N.en;
+}
 
 type HistoryRow = {
   release_id: string;
@@ -87,7 +150,7 @@ export async function handlePublicAppHistory(c: Context<{ Bindings: Env }>) {
     .all<HistoryRow>();
   const lang =
     (c.req.header("accept-language") ?? "").split(",")[0]?.trim().split(";")[0] ?? null;
-  return new Response(renderHistoryPage(app, results, lang), {
+  return new Response(renderHistoryPage(app, results, lang, historyStrings(c)), {
     headers: { "content-type": "text/html; charset=utf-8" },
   });
 }
@@ -138,7 +201,7 @@ export async function handlePublicReleaseNotes(c: Context<{ Bindings: Env }>) {
     null;
 
   return new Response(
-    renderReleaseNotesPage(app, visible, requestedCode, lang),
+    renderReleaseNotesPage(app, visible, requestedCode, lang, historyStrings(c)),
     { headers: { "content-type": "text/html; charset=utf-8" } },
   );
 }
@@ -232,6 +295,7 @@ function renderHistoryPage(
   app: { slug: string; name: string; platform: string; icon_r2_key: string | null },
   rows: HistoryRow[],
   lang: string | null,
+  t: HistoryStrings,
 ): string {
   const items = rows
     .map((row) => {
@@ -241,11 +305,11 @@ function renderHistoryPage(
       <div class="head">
         <div>
           <strong>${esc(row.version_name)}</strong>
-          <span class="meta">build ${row.version_code} · ${esc(row.channel_slug)}</span>
-          ${row.release_status === "active" ? '<span class="badge">latest</span>' : ""}
+          <span class="meta">${t.build} ${row.version_code} · ${esc(row.channel_slug)}</span>
+          ${row.release_status === "active" ? `<span class="badge">${t.latest}</span>` : ""}
         </div>
         <a class="dl" href="/apps/${esc(app.slug)}/history/${esc(row.release_id)}/download">
-          Download${row.size_bytes ? ` · ${formatSize(row.size_bytes)}` : ""}
+          ${t.download}${row.size_bytes ? ` · ${formatSize(row.size_bytes)}` : ""}
         </a>
       </div>
       <div class="date" data-ts="${row.released_at}"></div>
@@ -255,11 +319,11 @@ function renderHistoryPage(
     .join("\n");
 
   return `<!doctype html>
-<html lang="en">
+<html lang="${t.htmlLang}">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>${esc(app.name)} — Versions</title>
+  <title>${esc(app.name)} — ${t.versionsSuffix}</title>
   <style>
     :root { color-scheme: light dark; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
     body { margin: 0; background: #f5f5f2; color: #1e1f22; }
@@ -294,10 +358,10 @@ function renderHistoryPage(
       ${app.icon_r2_key ? `<img src="/public/apps/${esc(app.slug)}/icon" alt="" width="56" height="56">` : ""}
       <div>
         <h1>${esc(app.name)}</h1>
-        <div class="sub">${esc(app.platform)} · version history</div>
+        <div class="sub">${esc(app.platform)} · ${t.versionHistory}</div>
       </div>
     </header>
-    ${rows.length === 0 ? '<p class="sub">No published versions yet.</p>' : `<ul>${items}</ul>`}
+    ${rows.length === 0 ? `<p class="sub">${t.noVersions}</p>` : `<ul>${items}</ul>`}
   </main>
   <script>
     document.querySelectorAll(".date").forEach((el) => {
@@ -317,6 +381,7 @@ function renderReleaseNotesPage(
   rows: HistoryRow[],
   requestedCode: number | null,
   lang: string | null,
+  t: HistoryStrings,
 ): string {
   const items = rows
     .map((row) => {
@@ -325,11 +390,11 @@ function renderReleaseNotesPage(
       const isDraft = row.release_status === "draft";
       const isLatest = row.release_status === "active";
       const badge = isDraft
-        ? '<span class="badge draft">Draft</span>'
+        ? `<span class="badge draft">${t.draft}</span>`
         : featured
-          ? '<span class="badge you">Current</span>'
+          ? `<span class="badge you">${t.current}</span>`
           : isLatest
-            ? '<span class="badge latest">Latest</span>'
+            ? `<span class="badge latest">${t.latestBadge}</span>`
             : "";
       return `
     <li class="entry${featured ? " featured" : ""}" id="v${row.version_code}">
@@ -338,7 +403,7 @@ function renderReleaseNotesPage(
         <div class="head">
           <div class="title">
             <strong>${esc(row.version_name)}</strong>
-            <span class="meta">build ${row.version_code}</span>
+            <span class="meta">${t.build} ${row.version_code}</span>
             ${badge}
           </div>
           <span class="date" data-ts="${row.released_at}"></span>
@@ -346,7 +411,7 @@ function renderReleaseNotesPage(
         ${
           changelog
             ? `<div class="notes">${changelogToHtml(changelog)}</div>`
-            : '<div class="notes muted">No release notes for this version.</div>'
+            : `<div class="notes muted">${t.noNotesForVersion}</div>`
         }
       </div>
     </li>`;
@@ -354,11 +419,11 @@ function renderReleaseNotesPage(
     .join("\n");
 
   return `<!doctype html>
-<html lang="en">
+<html lang="${t.htmlLang}">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>${esc(app.name)} — Release Notes</title>
+  <title>${esc(app.name)} — ${t.releaseNotesSuffix}</title>
   <style>
     :root { color-scheme: light dark; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; --accent: #176f5d; }
     html { background: #f5f5f2; }
@@ -404,10 +469,10 @@ function renderReleaseNotesPage(
 <body>
   <main>
     <header>
-      <h1>What's new in ${esc(app.name)}</h1>
-      <div class="sub">Release notes</div>
+      <h1>${t.whatsNewIn(esc(app.name))}</h1>
+      <div class="sub">${t.releaseNotes}</div>
     </header>
-    ${rows.length === 0 ? '<p class="empty">No release notes yet.</p>' : `<ul>${items}</ul>`}
+    ${rows.length === 0 ? `<p class="empty">${t.noNotesYet}</p>` : `<ul>${items}</ul>`}
   </main>
   <script>
     document.querySelectorAll(".date").forEach((el) => {
