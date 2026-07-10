@@ -1,4 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
+import { Avatar, AvatarImage, AvatarFallback } from "raft-ui";
 import { listAuditLogs, type AuditLogEntry } from "../lib/api";
 
 export function AuditLog({ appId }: { appId: string }) {
@@ -75,25 +76,10 @@ function ActorBadge({
   const isSystem = actorType === "system";
   return (
     <span className="inline-flex items-center gap-1.5">
-      {avatarUrl ? (
-        <img
-          src={avatarUrl}
-          alt=""
-          className="w-5 h-5 rounded-full object-cover"
-        />
-      ) : (
-        <span
-          className={`w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-bold ${
-            isAgent
-              ? "bg-purple-200 text-purple-800"
-              : isSystem
-                ? "bg-slate-200 text-slate-600"
-                : "bg-blue-200 text-blue-800"
-          }`}
-        >
-          {displayName.slice(0, 1).toUpperCase()}
-        </span>
-      )}
+      <Avatar size="xs" type={isAgent ? "agent" : "human"}>
+        {avatarUrl ? <AvatarImage src={avatarUrl} alt="" /> : null}
+        <AvatarFallback>{displayName.slice(0, 1).toUpperCase()}</AvatarFallback>
+      </Avatar>
       <span className="text-sm font-medium">{displayName}</span>
       {isAgent && <span className="badge-purple text-[10px]">agent</span>}
       {isSystem && <span className="badge-gray text-[10px]">system</span>}

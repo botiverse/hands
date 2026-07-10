@@ -47,6 +47,9 @@ import {
   SelectIcon,
   SelectContent,
   SelectItem,
+  Avatar,
+  AvatarImage,
+  AvatarFallback,
 } from "raft-ui";
 
 export const ORG_SETTINGS_TABS = [
@@ -770,25 +773,17 @@ function AuditTab({
                   </td>
                   <td className="py-1 pr-2">
                     <span className="inline-flex items-center gap-1">
-                      {log.actor_avatar_url ? (
-                        <img
-                          src={log.actor_avatar_url}
-                          alt=""
-                          className="w-4 h-4 rounded-full object-cover"
-                        />
-                      ) : (
-                        <span
-                          className={`w-4 h-4 rounded-full flex items-center justify-center text-[9px] font-bold ${
-                            log.actor_type === "agent"
-                              ? "bg-purple-200 text-purple-800"
-                              : log.actor_type === "system"
-                                ? "bg-slate-200 text-slate-600"
-                                : "bg-blue-200 text-blue-800"
-                          }`}
-                        >
+                      <Avatar
+                        size="xs"
+                        type={log.actor_type === "agent" ? "agent" : "human"}
+                      >
+                        {log.actor_avatar_url ? (
+                          <AvatarImage src={log.actor_avatar_url} alt="" />
+                        ) : null}
+                        <AvatarFallback>
                           {actorName.slice(0, 1).toUpperCase()}
-                        </span>
-                      )}
+                        </AvatarFallback>
+                      </Avatar>
                       <span>{actorName}</span>
                       {log.actor_type === "agent" && (
                         <span className="badge-purple text-[10px]">agent</span>
