@@ -89,7 +89,7 @@ export function AppCreationWizard({
   const [slug, setSlug] = useState("");
   const [slugAuto, setSlugAuto] = useState(true);
   const [description, setDescription] = useState("");
-  const createToastId = useRef<number | null>(null);
+  const createToastId = useRef<string | null>(null);
 
   const toast = useToast();
 

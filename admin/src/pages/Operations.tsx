@@ -21,7 +21,7 @@ const STATUS_COLORS: Record<Operation["status"], string> = {
 export function Operations({ appId }: { appId: string }) {
   const qc = useQueryClient();
   const toast = useToast();
-  const retryToastRef = useRef<number | null>(null);
+  const retryToastRef = useRef<string | null>(null);
   const { data, isLoading, error } = useQuery({
     queryKey: ["operations", appId],
     queryFn: () => listOperations(appId, 50),
