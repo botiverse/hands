@@ -1,0 +1,78 @@
+name: Preview Hands Server
+
+# Uploads a NON-production preview version of the Hands Worker + admin assets via
+# `wrangler versions upload` (no traffic shift) and prints the preview URL, so a
+# branch's UI changes can be eyeballed against production data before merge.
+# Dispatch with the branch to preview (Run workflow -> Use workflow from: <branch>).
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: hands-server-preview-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  preview:
+    runs-on: ubuntu-latest
+    env:
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_BOTIVERSE_ACCOUNT_ID }}
+      HANDS_WORKER_NAME: ${{ vars.HANDS_WORKER_NAME }}
+      HANDS_D1_DATABASE_NAME: ${{ vars.HANDS_D1_DATABASE_NAME }}
+      HANDS_D1_DATABASE_ID: ${{ vars.HANDS_D1_DATABASE_ID }}
+      HANDS_R2_BUCKET_NAME: ${{ vars.HANDS_R2_BUCKET_NAME }}
+      HANDS_BUSINESS_DOMAIN: ${{ vars.HANDS_BUSINESS_DOMAIN }}
+      HANDS_DASHBOARD_DOMAIN: ${{ vars.HANDS_DASHBOARD_DOMAIN }}
+      HANDS_CORS_ALLOWED_ORIGINS: ${{ vars.HANDS_CORS_ALLOWED_ORIGINS }}
+      HANDS_RAFT_ORIGIN: ${{ vars.HANDS_RAFT_ORIGIN }}
+      HANDS_RAFT_API_ORIGIN: ${{ vars.HANDS_RAFT_API_ORIGIN }}
+      HANDS_RAFT_CLIENT_ID: ${{ vars.HANDS_RAFT_CLIENT_ID }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: pnpm/action-setup@v6
+        with:
+          version: 9.12.0
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+          cache: "pnpm"
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Render production Wrangler config
+        working-directory: worker
+        run: node scripts/render-production-config.mjs --output wrangler.hands.generated.jsonc
+
+      - name: Generate Worker types
+        working-directory: worker
+        run: pnpm exec wrangler types --config wrangler.hands.generated.jsonc
+
+      - name: Build admin assets
+        run: pnpm --filter @botiverse/hands-admin build
+
+      - name: Upload preview version (no traffic shift)
+        working-directory: worker
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_BOTIVERSE_API_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          # A preview version reuses the live Worker's bindings + secrets; it does
+          # not receive production traffic. Wrangler prints a Preview URL.
+          pnpm exec wrangler versions upload --config wrangler.hands.generated.jsonc | tee versions-upload.log
+          url="$(grep -oE 'https://[a-z0-9-]+\.[a-z0-9-]+\.workers\.dev' versions-upload.log | head -n 1 || true)"
+          {
+            echo "### Hands preview version"
+            echo
+            echo "| Field | Value |"
+            echo "|---|---|"
+            echo "| Ref | \`${GITHUB_REF_NAME}\` |"
+            echo "| SHA | \`${GITHUB_SHA}\` |"
+            echo "| Preview URL | ${url:-see log} |"
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "Preview URL: ${url:-<see wrangler output above>}"
