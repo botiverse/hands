@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.3.1
+
+- Fix native-crash signal formatting: hiAppEvent can deliver `signal` as a
+  structured object, which rendered as `[object Object]` in the ticket
+  summary; extract the signal name/code instead, and pick the first named
+  stack frame for the summary's top frame.
+
 ## 0.3.0
 
 - System-level fault capture via hiAppEvent (`APP_CRASH` + `APP_FREEZE`):

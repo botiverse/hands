@@ -134,7 +134,7 @@ export class HandsFaultWatcher {
       const ex = exception as Record<string, Object>;
       const name = String(ex['name'] ?? '');
       const message = String(ex['message'] ?? '');
-      const signal = String(ex['signal'] ?? '');
+      const signal = HandsFaultWatcher.describeSignal(ex['signal']);
       if (name.length > 0) {
         result.cls = name;
       } else if (signal.length > 0) {
@@ -142,14 +142,51 @@ export class HandsFaultWatcher {
       }
       result.message = message;
       const frames = ex['frames'];
-      if (Array.isArray(frames) && frames.length > 0) {
-        const top = frames[0] as Record<string, Object>;
-        const file = String(top['file'] ?? top['symbol'] ?? '');
-        const offset = String(top['offset'] ?? '');
-        result.topFrame = offset.length > 0 ? `${file}+${offset}` : file;
+      if (Array.isArray(frames)) {
+        // The crashing frame is often a bare pc (empty file/symbol); use the
+        // first frame that actually names something.
+        for (const raw of frames as Array<Object>) {
+          const f = raw as Record<string, Object>;
+          const symbol = String(f['symbol'] ?? '');
+          const file = String(f['file'] ?? '');
+          const offset = String(f['offset'] ?? '');
+          const label = symbol.length > 0 ? symbol : file;
+          if (label.length > 0) {
+            result.topFrame = offset.length > 0 ? `${label}+${offset}` : label;
+            break;
+          }
+        }
       }
     }
     return result;
+  }
+
+  /**
+   * hiAppEvent may deliver the signal as a string or a structured object
+   * (e.g. { signal: 11, name: "SIGSEGV" }). String(obj) would produce
+   * "[object Object]", so pull out a human name/number instead.
+   */
+  private static describeSignal(signal: Object | undefined): string {
+    if (signal === undefined || signal === null) {
+      return '';
+    }
+    if (typeof signal !== 'object') {
+      return String(signal);
+    }
+    const s = signal as Record<string, Object>;
+    const parts: string[] = [];
+    const name = s['name'] ?? s['signal_name'];
+    const code = s['code'] ?? s['signal'] ?? s['number'];
+    if (name !== undefined && name !== null) parts.push(String(name));
+    if (code !== undefined && code !== null) parts.push(String(code));
+    if (parts.length > 0) {
+      return parts.join(' ');
+    }
+    try {
+      return JSON.stringify(signal);
+    } catch (error) {
+      return 'unknown';
+    }
   }
 
   private static joinLines(value: Object | undefined): string {

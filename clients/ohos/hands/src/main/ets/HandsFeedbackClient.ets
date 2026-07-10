@@ -14,7 +14,7 @@ const TAG: string = 'HandsFeedbackClient';
 
 // Hands OHOS SDK version — reported in feedback/crash environment metadata.
 // Keep in sync with oh-package.json5 on release.
-const HANDS_SDK_VERSION: string = '0.3.0';
+const HANDS_SDK_VERSION: string = '0.3.1';
 
 // @ohos.batteryInfo BatteryChargeState: NONE=0, ENABLE=1, DISABLE=2, FULL=3.
 function ohBatteryStateName(status: number): string {

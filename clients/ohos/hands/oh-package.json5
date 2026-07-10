@@ -1,6 +1,6 @@
 {
   "name": "@botiverse/hands",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Hands feedback + crash reporting SDK for HarmonyOS (feedback tickets, store-then-send crash upload, device id).",
   "main": "Index.ets",
   "author": "Oranix",
