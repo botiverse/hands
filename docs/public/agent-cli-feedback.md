@@ -123,7 +123,7 @@ aggregate by signature across a fleet, call the API directly:
 
 ```bash
 curl -s -H "Authorization: Bearer $QUIVER_BEARER_TOKEN" \
-  https://quiver.oranix.io/api/apps/<appId>/feedback/crash-groups
+  https://hands.build/api/apps/<appId>/feedback/crash-groups
 ```
 
 ## Attachments (diagnostics zips, logs)
@@ -150,9 +150,9 @@ APP_ID="$(hands apps get "$APP" --json \
   | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])')"
 
 curl -s -H "Authorization: Bearer $QUIVER_BEARER_TOKEN" \
-  "https://quiver.oranix.io/api/apps/$APP_ID/feedback/$TICKET_ID"                       # ticket detail
+  "https://hands.build/api/apps/$APP_ID/feedback/$TICKET_ID"                       # ticket detail
 curl -s -H "Authorization: Bearer $QUIVER_BEARER_TOKEN" \
-  "https://quiver.oranix.io/api/apps/$APP_ID/feedback/$TICKET_ID/attachments/<attachmentId>" \
+  "https://hands.build/api/apps/$APP_ID/feedback/$TICKET_ID/attachments/<attachmentId>" \
   -o diagnostics.zip                                                                     # raw attachment
 ```
 

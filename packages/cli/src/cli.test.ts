@@ -17,22 +17,33 @@ import fixturePolicy from "./fixtures/collect-policy.json";
 describe("config round-trip", () => {
   let dir: string;
   let originalXdg: string | undefined;
+  let originalHandsApi: string | undefined;
+  let originalQuiverApi: string | undefined;
 
   beforeEach(() => {
     dir = mkdtempSync(join(tmpdir(), "quiver-cli-"));
     originalXdg = process.env.XDG_CONFIG_HOME;
+    originalHandsApi = process.env.HANDS_API;
+    originalQuiverApi = process.env.QUIVER_API;
     process.env.XDG_CONFIG_HOME = dir;
+    delete process.env.HANDS_API;
+    delete process.env.QUIVER_API;
   });
 
   afterEach(() => {
     if (originalXdg === undefined) delete process.env.XDG_CONFIG_HOME;
     else process.env.XDG_CONFIG_HOME = originalXdg;
+    if (originalHandsApi === undefined) delete process.env.HANDS_API;
+    else process.env.HANDS_API = originalHandsApi;
+    if (originalQuiverApi === undefined) delete process.env.QUIVER_API;
+    else process.env.QUIVER_API = originalQuiverApi;
     if (existsSync(dir)) rmSync(dir, { recursive: true, force: true });
   });
 
   it("returns empty config when no file exists", async () => {
-    const { getConfig } = await import("../src/lib/config.js");
+    const { getConfig, resolveApiBase } = await import("../src/lib/config.js");
     expect(getConfig()).toEqual({});
+    expect(resolveApiBase()).toBe("https://hands.build");
   });
 
   it("saveConfig persists to the XDG path", async () => {

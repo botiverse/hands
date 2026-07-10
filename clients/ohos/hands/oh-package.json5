@@ -5,8 +5,8 @@
   "main": "Index.ets",
   "author": "Oranix",
   "license": "MIT",
-  "homepage": "https://github.com/oranix-io/hands",
-  "repository": "https://github.com/oranix-io/hands",
+  "homepage": "https://github.com/botiverse/hands",
+  "repository": "https://github.com/botiverse/hands",
   "keywords": ["hands", "crash", "feedback", "harmonyos"],
   "dependencies": {}
 }

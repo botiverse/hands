@@ -39,7 +39,7 @@ program
   .version("0.5.3")
   .option(
     "--api <url>",
-    "Quiver Worker base URL (default: https://quiver.oranix.io or $QUIVER_API)",
+    "Hands business API URL (default: https://hands.build or $HANDS_API)",
   )
   .option("--json", "Output machine-readable JSON (suppresses human output)", false)
   .option("--verbose", "Print HTTP request details for debugging", false)
@@ -90,7 +90,7 @@ registerLogsCommands(program);
 
 program
   .command("version")
-  .description("Print quiver CLI version")
+  .description("Print Hands CLI version")
   .action(() => {
     console.log(program.version());
   });

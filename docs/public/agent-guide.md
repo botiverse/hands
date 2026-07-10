@@ -101,7 +101,7 @@ The share URL is printed once; tokens are stored hashed.
 
 ```bash
 # create (API; CLI covers list/get)
-curl -X POST https://quiver.oranix.io/api/apps \
+curl -X POST https://hands.build/api/apps \
   -H "Authorization: Bearer $QUIVER_BEARER_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"slug":"my-app","name":"My App","platform":"android"}'
@@ -114,9 +114,9 @@ product types, and get a **client key** (`qk_…`) that clients must send as
 
 ```bash
 curl -H "Authorization: Bearer $QUIVER_BEARER_TOKEN" \
-  https://quiver.oranix.io/api/apps/<appId>/client-key          # read
+  https://hands.build/api/apps/<appId>/client-key          # read
 curl -X POST -H "Authorization: Bearer $QUIVER_BEARER_TOKEN" \
-  https://quiver.oranix.io/api/apps/<appId>/rotate-client-key   # (re)generate
+  https://hands.build/api/apps/<appId>/rotate-client-key   # (re)generate
 ```
 
 Rotation invalidates the old key immediately — client builds must be updated
@@ -134,7 +134,7 @@ silently:
   "current_role": "viewer",
   "resource": "POST /api/apps",            // the action you attempted
   "org_id": "…", "app_id": null,
-  "manage_url": "https://quiver.oranix.io/orgs/{orgId}/members"
+  "manage_url": "https://app.hands.build/orgs/{orgId}/members"
 }
 ```
 

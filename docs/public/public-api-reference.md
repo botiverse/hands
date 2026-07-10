@@ -11,7 +11,7 @@ Use the admin API or CLI for publishing. Use the public API from clients.
 ## Base URL
 
 ```text
-https://quiver.oranix.io
+https://hands.build
 ```
 
 Self-hosted deployments should use their own origin.
@@ -68,7 +68,7 @@ active release. The Android SDK sends the header automatically.
     "arch": "arm64-v8a",
     "filetype": "apk",
     "size_bytes": 29192396,
-    "download_url": "https://quiver.oranix.io/public/r2/…"
+    "download_url": "https://hands.build/public/r2/…"
   },
   "scoped": { "scope_type": "full", "scope_value": "all", "release_id": "…", "rollout_cohort_count": null }
 }
@@ -159,7 +159,7 @@ Hands:
 ```ts
 autoUpdater.setFeedURL({
   provider: "generic",
-  url: "https://quiver.oranix.io/electron/:appSlug/:channel"
+  url: "https://hands.build/electron/:appSlug/:channel"
 });
 ```
 
@@ -220,7 +220,7 @@ find and rotate the key in the app's Settings tab or via
 Returns `201` with the full ticket UUID in `id`, plus a copyable `reference`
 and `ticket_url`, for example `{ "id": "<ticket UUID>", "status": "open",
 "reference": "raft-android · 1.0.4 (1000400) · ticket <ticket UUID>",
-"ticket_url": "https://quiver.oranix.io/apps/<appId>/feedback/<ticket UUID>" }`.
+"ticket_url": "https://app.hands.build/apps/<appId>/feedback/<ticket UUID>" }`.
 Rate limit: 10 submissions per hour per app + client IP. Tickets appear in
 the admin Feedback tab; a `feedback:new` webhook fires for subscribed
 endpoints (crash tickets can additionally trigger `crash:new_group` /

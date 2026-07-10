@@ -61,14 +61,14 @@ async function promptSecret(message: string): Promise<string> {
 export function registerLoginCommands(program: Command): void {
   const cmd = program
     .command("login")
-    .description("Authenticate the CLI against the Quiver Worker.")
+    .description("Authenticate the CLI against Hands.")
     .option(
       "--token <cookie>",
       "Paste the quiver_session cookie value (from your browser's DevTools).",
     )
     .option(
       "--api <url>",
-      "Override the Quiver Worker base URL for this login only.",
+      "Override the Hands business API URL for this login only.",
     )
     .option("--print-url", "Just print the login URL; don't prompt for a token.", false)
     .action(
@@ -85,7 +85,7 @@ export function registerLoginCommands(program: Command): void {
           return;
         }
 
-        console.log("To authenticate the quiver CLI:");
+        console.log("To authenticate the Hands CLI:");
         console.log("");
         console.log(`  1. Open this URL in any browser:`);
         console.log(`     ${loginUrl}`);
@@ -126,7 +126,7 @@ export function registerLoginCommands(program: Command): void {
         } catch (e) {
           if (e instanceof QuiverApiError && e.status === 401) {
             console.error(
-              `✘ Token rejected (401). Run \`quiver logout\` and try again.`,
+              `✘ Token rejected (401). Run \`hands logout\` and try again.`,
             );
             process.exit(1);
           }

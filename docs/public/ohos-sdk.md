@@ -5,8 +5,8 @@ tickets** and **crash reporting** against a Hands server's
 public feedback endpoint. Mirrors the Android and iOS SDKs.
 
 > **Status:** the package is being published to ohpm. Until it's live,
-> consume the HAR from a local build of `clients/ohos` in the
-> [Hands repo](https://github.com/oranix-io/quiver).
+> consume the `@botiverse/hands@0.3.0` HAR from a local build of `clients/ohos`
+> in the [Hands repo](https://github.com/botiverse/hands).
 
 ## Install
 
@@ -27,7 +27,7 @@ import { Hands } from '@botiverse/hands';
 // In UIAbility onCreate — pass the context to wire the internal launch
 // logic (throttled device-analytics ping + pending-crash upload).
 Hands.install({
-  baseUrl: 'https://quiver.example.com',
+  baseUrl: 'https://hands.build',
   appSlug: 'my-app',
   channel: 'main',          // Hands release-channel routing field
   clientKey: 'qk_…',

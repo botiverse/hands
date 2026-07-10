@@ -12,7 +12,7 @@ The SDK is published to GitHub Packages.
 // settings.gradle.kts or the module repositories block
 repositories {
     maven {
-        url = uri("https://maven.pkg.github.com/oranix-io/quiver")
+        url = uri("https://maven.pkg.github.com/botiverse/hands")
         credentials {
             username = providers.gradleProperty("gpr.user").orNull ?: System.getenv("GITHUB_ACTOR")
             password = providers.gradleProperty("gpr.key").orNull ?: System.getenv("GITHUB_TOKEN")
@@ -21,7 +21,7 @@ repositories {
 }
 
 dependencies {
-    implementation("build.hands:hands-android-sdk:0.9.0")
+    implementation("build.hands:hands-android-sdk:0.10.1")
 }
 ```
 
@@ -29,7 +29,7 @@ Configuration (`BuildConfig` fields are a convenient place to keep these):
 
 | Value | Example |
 |---|---|
-| Base URL | `https://quiver.oranix.io` |
+| Base URL | `https://hands.build` |
 | App slug | `raft-android` |
 | Channel | `main` / `preview` / `nightly` / `debug` |
 

@@ -22,7 +22,7 @@ export interface CliConfig {
   sessionCookie?: string;
 }
 
-const DEFAULT_API_BASE = "https://quiver.oranix.io";
+const DEFAULT_API_BASE = "https://hands.build";
 
 function configPath(): string {
   const xdg = process.env.XDG_CONFIG_HOME;

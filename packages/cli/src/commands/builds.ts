@@ -153,7 +153,7 @@ export function registerBuildCommands(program: Command): void {
     .requiredOption("--apk <path>", "Installable APK path.")
     .requiredOption("--version-name <name>", "Android versionName.")
     .requiredOption("--version-code <code>", "Android versionCode.")
-    .option("--channel <slug>", "Quiver channel slug.", "main")
+    .option("--channel <slug>", "Hands release channel slug.", "main")
     .option("--arch <abi>", "APK ABI/arch metadata.", "arm64-v8a")
     .option("--release-type <type>", "Release type metadata.", "stable")
     .option("--product-type <type>", "Product type metadata.", "android-apk")
@@ -571,7 +571,7 @@ export function registerBuildCommands(program: Command): void {
     .command("publish-electron <appIdOrSlug>")
     .description("Create an Electron generic-provider build/release and upload electron-builder output.")
     .requiredOption("--version-name <name>", "Electron app version.")
-    .requiredOption("--version-code <code>", "Quiver version code used for ordering.")
+    .requiredOption("--version-code <code>", "Hands version code used for ordering.")
     .option("--metadata <path>", "electron-builder latest*.yml file. Repeatable.", collect, [])
     .option("--installer <path>", "Electron installer/update artifact. Repeatable.", collect, [])
     .option("--blockmap <path>", "Electron .blockmap artifact. Repeatable.", collect, [])
@@ -581,7 +581,7 @@ export function registerBuildCommands(program: Command): void {
       collect,
       [],
     )
-    .option("--channel <slug>", "Quiver channel slug.", "main")
+    .option("--channel <slug>", "Hands release channel slug.", "main")
     .option("--platform <platform>", "Electron platform metadata. Defaults from metadata filename or win32.")
     .option("--arch <arch>", "Electron arch metadata.")
     .option("--release-type <type>", "Release type metadata.", "stable")

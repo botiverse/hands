@@ -7,7 +7,7 @@ feedback endpoint. Objective-C, no dependencies, iOS 14.1+.
 ## Install (CocoaPods, via git)
 
 ```ruby
-pod 'Hands', :git => 'https://github.com/oranix-io/quiver.git', :tag => 'ios-v0.1.3'
+pod 'Hands', :git => 'https://github.com/botiverse/hands.git', :tag => 'ios-v0.2.1'
 ```
 
 ## Configure & start
@@ -21,7 +21,7 @@ bundle; rotate it from the console if it leaks).
 import Hands
 
 Hands.install(with: HandsConfig(
-    baseUrl: "https://quiver.example.com",
+    baseUrl: "https://hands.build",
     appSlug: "my-app",
     channel: "main",          // Hands release-channel routing field
     clientKey: "qk_…"

@@ -795,6 +795,9 @@ describe("quiver route handlers — SQL smoke", () => {
     expect(typeof viewerBody.next_action).toBe("string");
     expect(viewerBody.next_action as string).toContain("member");
     expect(viewerBody.next_action as string).toContain("/members");
+    expect(viewerBody.manage_url).toBe(
+      "https://app.hands.build/orgs/raft_create/members",
+    );
 
     const memberResponse = await testApp.request(
       "https://quiver-worker.test/api/apps",
@@ -4565,7 +4568,9 @@ describe("quiver public API v2 — scope resolution", () => {
     expect(submittedBody.attachments).toBe(1);
     expect(submittedBody.id).toMatch(/^[0-9a-f-]{36}$/);
     expect(submittedBody.reference).toContain(`ticket ${submittedBody.id}`);
-    expect(submittedBody.ticket_url).toContain(`/apps/app-scope/feedback/${submittedBody.id}`);
+    expect(submittedBody.ticket_url).toBe(
+      `https://app.hands.build/apps/app-scope/feedback/${submittedBody.id}`,
+    );
     expect(putCalls.length).toBe(1);
     expect(putCalls[0]!.key).toContain("feedback/app-scope/");
 

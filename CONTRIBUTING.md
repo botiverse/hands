@@ -10,15 +10,15 @@
 
 ```sh
 # clone
-gh repo clone oranix-io/quiver
-cd quiver
+gh repo clone botiverse/hands
+cd hands
 
 # install
 pnpm install
 
 # set up worktree for a feature
-git worktree add -b feat/<lane>-<slice> ../quiver-<slice> main
-cd ../quiver-<slice>
+git worktree add -b feat/<lane>-<slice> ../hands-<slice> main
+cd ../hands-<slice>
 ```
 
 ## Deploy

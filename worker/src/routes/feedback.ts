@@ -12,7 +12,7 @@ import { currentActor, type AdminEnv } from "../middleware/auth";
 import { emitWebhookEvent } from "./webhooks";
 import { presignR2UploadUrl } from "../lib/r2_presign";
 import { generateSignedR2Url } from "./public_v2";
-import { requestOrigin } from "../lib/origin";
+import { DASHBOARD_ORIGIN, requestOrigin } from "../lib/origin";
 
 type AdminContext = Context<AdminEnv & { Bindings: Env }>;
 
@@ -412,12 +412,7 @@ export async function handlePublicFeedbackSubmit(c: Context<{ Bindings: Env }>) 
     : versionCode != null
       ? String(versionCode)
       : null;
-  let ticketUrl: string | null = null;
-  try {
-    ticketUrl = `${new URL(c.req.url).origin}/apps/${app.id}/feedback/${ticketId}`;
-  } catch {
-    ticketUrl = null;
-  }
+  const ticketUrl = `${DASHBOARD_ORIGIN}/apps/${app.id}/feedback/${ticketId}`;
   const reference = [app.slug, versionLabel, `ticket ${ticketId}`]
     .filter(Boolean)
     .join(" · ");

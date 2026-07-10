@@ -163,7 +163,7 @@ export function registerFeedbackCommands(program: Command): void {
     .alias("download")
     .description(
       "Download a feedback attachment to a file. Saves the raw bytes as-is — " +
-        "Quiver does not unzip or interpret the contents (the producing app owns the format).",
+        "Hands does not unzip or interpret the contents (the producing app owns the format).",
     )
     .option("-o, --output <path>", "Output file path. Defaults to the server filename in the cwd.")
     .action(

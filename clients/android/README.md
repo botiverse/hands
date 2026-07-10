@@ -7,7 +7,7 @@ Android SDK for Hands server-side update checks and APK installation.
 ```kotlin
 repositories {
     maven {
-        url = uri("https://maven.pkg.github.com/oranix-io/hands")
+        url = uri("https://maven.pkg.github.com/botiverse/hands")
         credentials {
             username = providers.gradleProperty("gpr.user").orNull ?: System.getenv("GITHUB_ACTOR")
             password = providers.gradleProperty("gpr.key").orNull ?: System.getenv("GITHUB_TOKEN")

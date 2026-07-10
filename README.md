@@ -6,9 +6,10 @@ The release platform for client apps, full loop.
 
 Hands runs the whole release loop: CI lands builds as drafts, agents review and publish with bilingual changelogs, staged rollouts meter exposure by device cohort, share pages handle ad-hoc distribution, and in-app feedback and crash reports come back as tickets — grouped by signature, symbolicated, and triageable by humans and AI agents through the same API. Reporting SDKs cover Android, iOS, HarmonyOS, and Electron — fully Cloudflare-native (Workers + Container + D1 + R2).
 
-- **Live instance:** <https://quiver.oranix.io>
-- **Docs:** <https://quiver.oranix.io/docs> · [Admin guide](https://quiver.oranix.io/docs/admin-user-guide/) · [CLI reference](https://quiver.oranix.io/docs/cli-reference/)
-- **API explorer:** <https://quiver.oranix.io/api-docs>
+- **Dashboard:** <https://app.hands.build>
+- **Business origin:** <https://hands.build>
+- **Docs:** <https://hands.build/docs> · [Admin guide](https://hands.build/docs/admin-user-guide/) · [CLI reference](https://hands.build/docs/cli-reference/)
+- **API explorer:** <https://hands.build/api-docs>
 - **CLI on npm:** [`@botiverse/hands-cli`](https://www.npmjs.com/package/@botiverse/hands-cli)
 
 The "Hands" metaphor: admins load build arrows into channels; clients pick the right one for their channel — and tell you where it landed.
@@ -29,7 +30,7 @@ $ npm exec --package @botiverse/hands-cli -- hands builds publish-android raft-a
 uploading APK and metadata...
 creating release on channel main...
 release: 14998dba-cfde-4002-8c01-230a2760f662
-share: https://quiver.oranix.io/share/...
+share: https://hands.build/share/...
 ```
 
 ## Architecture
@@ -41,7 +42,7 @@ share: https://quiver.oranix.io/share/...
        │ upload / list / download │
        ▼                          │
 ┌────────────────────────────────────────────────────────┐
-│ Cloudflare Worker (quiver)                            │
+│ Cloudflare Worker (Hands)                             │
 │ - API routes                                           │
 │ - Admin SPA static assets                              │
 │ - Auth (Login with Raft session cookie)                │
@@ -92,7 +93,7 @@ Worker configuration:
 - `RAFT_CLIENT_SECRET` as a Worker secret (`wrangler secret put RAFT_CLIENT_SECRET`)
 - `app.hands.build` is the canonical dashboard/login origin. `hands.build` remains the business/API origin for SDKs, CLI/agents, share/download pages, release notes, and docs.
 - Dashboard deep links received on `hands.build` redirect to the same path on `app.hands.build`. Public share/docs/history links received on `app.hands.build` redirect back to `hands.build`.
-- Keep the legacy `https://hands.build/login/raft/callback` registration during the cutover if existing browser logins may still be in flight; new logins use `https://app.hands.build/login/raft/callback`.
+- The Raft connected app must register the exact canonical callback `https://app.hands.build/login/raft/callback` before the dashboard domain is deployed.
 - Optional `RAFT_ALLOWED_SERVER_IDS` / `RAFT_ALLOWED_SERVER_SLUGS` can restrict admin login to specific Raft servers
 
 Do not put Raft client secrets in browser JavaScript, repository files, logs, or public channels.
@@ -124,7 +125,7 @@ Required repository secrets:
 - `NPM_TOKEN` — npm automation token with publish access to the `@botiverse` scope, used by the Node SDK and CLI publishing workflows.
 - `CLOUDFLARE_API_TOKEN` — Cloudflare API token allowed to deploy the Hands Worker and its assets.
 - `CLOUDFLARE_ACCOUNT_ID` — Cloudflare account id for the Worker deploy.
-- `CLOUDFLARE_BOTIVERSE_API_TOKEN` — Cloudflare API token for the Hands/Botiverse account (`a084c4564dfdce5a7775b08ece638a79`). This is intentionally separate from the Quiver production token.
+- `CLOUDFLARE_BOTIVERSE_API_TOKEN` — Cloudflare API token for the Hands/Botiverse account (`a084c4564dfdce5a7775b08ece638a79`). This is intentionally separate from the legacy Quiver proxy token.
 - `HANDS_SIGNED_URL_SECRET` — HMAC signing secret written to the Hands Worker as `SIGNED_URL_SECRET` so migrated release downloads and share pages can generate signed Worker download URLs.
 - `HANDS_RAFT_CLIENT_SECRET` — Raft client secret for the `hands-4cc7a2` connected app, written to the Hands Worker as `RAFT_CLIENT_SECRET`. The app registration must allow the canonical return URL `https://app.hands.build/login/raft/callback`.
 
@@ -132,7 +133,7 @@ Workflows:
 
 - `Publish Hands Node SDK` publishes `@botiverse/hands-node` to npm with the repository `NPM_TOKEN`. Trigger it manually with the package version from `packages/node/package.json`, or push a tag like `node-v0.1.0`.
 - `Publish CLI` publishes `@botiverse/hands-cli` with the repository `NPM_TOKEN`. Publish the package's declared `@botiverse/hands-node` version first; the workflow verifies it exists, packs with pnpm so the workspace range becomes a normal npm semver range, and then publishes the tarball. Trigger it manually with the package version from `packages/cli/package.json`, or push a tag like `cli-v0.5.1`.
-- `Deploy Quiver Server` deploys the Worker plus bundled admin/docs assets. Trigger it manually, or push a tag like `server-v2026.07.04`. The default container rollout is `none`; choose `immediate` or `gradual` only when the APK parser container image changed.
+- `Deploy Quiver Server` is the legacy compatibility deployment for `quiver.oranix.io`; it no longer owns the Hands dashboard or business data plane.
 - `Deploy Hands Server` deploys one Worker/admin bundle to the custom domains `hands.build` (business/API) and `app.hands.build` (dashboard/login) in the separate Hands Cloudflare account. It bootstraps `hands-db` and `hands-artifacts` if they do not exist, applies D1 migrations, and deploys with `worker/wrangler.hands.jsonc`. This workflow is manual-only so it cannot replace the existing Quiver deploy path accidentally.
 
 ## Credits

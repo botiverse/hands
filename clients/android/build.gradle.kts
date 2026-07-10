@@ -58,7 +58,7 @@ afterEvaluate {
                 pom {
                     name.set("Hands Android SDK")
                     description.set("Android SDK for server-side Hands update checks and APK installation.")
-                    url.set("https://github.com/oranix-io/hands")
+                    url.set("https://github.com/botiverse/hands")
                     licenses {
                         license {
                             name.set("MIT License")
@@ -72,9 +72,9 @@ afterEvaluate {
                         }
                     }
                     scm {
-                        connection.set("scm:git:https://github.com/oranix-io/hands.git")
-                        developerConnection.set("scm:git:ssh://git@github.com/oranix-io/hands.git")
-                        url.set("https://github.com/oranix-io/hands")
+                        connection.set("scm:git:https://github.com/botiverse/hands.git")
+                        developerConnection.set("scm:git:ssh://git@github.com/botiverse/hands.git")
+                        url.set("https://github.com/botiverse/hands")
                     }
                 }
             }
@@ -83,7 +83,7 @@ afterEvaluate {
         repositories {
             maven {
                 name = "GitHubPackages"
-                val repository = System.getenv("GITHUB_REPOSITORY") ?: "oranix-io/quiver"
+                val repository = System.getenv("GITHUB_REPOSITORY") ?: "botiverse/hands"
                 url = uri("https://maven.pkg.github.com/$repository")
                 credentials {
                     username = findProperty("gpr.user") as String?

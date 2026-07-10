@@ -182,7 +182,7 @@ The existing `actor` TEXT column becomes display name; `actor_id` is the FK. Bac
    - Insert into invites (status='pending', expires_at=now+7d)
    - Generate signed magic-link token: `${invite.id}.${hmac_sha256(secret, invite.id)}`
    - Send email: "You've been invited to Acme Corp. Click here to accept."
-     Link: https://quiver.oranix.io/invites/${token}
+     Link: https://app.hands.build/invites/${token}
 
 3. If email not in raft_accounts yet, also send a "sign up to claim invite" hint
 ```
@@ -367,7 +367,7 @@ This is a small change to `worker/src/routes/auth.ts` that makes org context ava
   - `GET /api/invites/:token` (public) — show invite details
   - `POST /api/invites/:token/accept` (auth required) — link account, create membership
 - Email sender: use Cloudflare Email Service with a transactional template
-- Magic link format: `https://quiver.oranix.io/invites/${token}` with HMAC signature
+- Magic link format: `https://app.hands.build/invites/${token}` with HMAC signature
 
 ### Phase 5.4 — org settings UI + access tab (3 days)
 

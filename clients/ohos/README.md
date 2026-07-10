@@ -25,7 +25,7 @@ if it leaks).
 import { Hands } from '@botiverse/hands';
 
 Hands.install({
-  baseUrl: 'https://quiver.example.com',
+  baseUrl: 'https://hands.build',
   appSlug: 'my-app',
   channel: 'main',          // Hands release-channel routing field
   clientKey: 'qk_…',

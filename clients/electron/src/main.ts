@@ -114,7 +114,7 @@ async function reportMetrics(options: HandsElectronOptions, force = false): Prom
   if (!force && state.lastPingAt > 0 && now - state.lastPingAt < METRICS_INTERVAL_MS) return false;
 
   const deviceId = state.deviceId || randomUUID();
-  const endpoint = (options.endpoint ?? "https://quiver.oranix.io").replace(/\/+$/, "");
+  const endpoint = (options.endpoint ?? "https://hands.build").replace(/\/+$/, "");
   const url = `${endpoint}/public/v2/apps/${encodeURIComponent(options.appSlug)}/metrics`;
   const env = options.environment ?? "production";
   const metadata = {

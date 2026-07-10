@@ -47,8 +47,8 @@ hands builds publish-android raft-android \
 ## CI mode
 
 ```bash
-export QUIVER_API=https://quiver.oranix.io
-export QUIVER_SESSION_COOKIE=...   # paste from browser DevTools
+export HANDS_API=https://hands.build
+export HANDS_SESSION_COOKIE=...   # paste from browser DevTools
 hands whoami
 hands builds list myapp-android
 ```
@@ -65,7 +65,8 @@ you to:
 4. Paste it back into the CLI.
 
 The token is saved to `$XDG_CONFIG_HOME/quiver/auth.json` (mode 0600).
-For CI, pass it via `QUIVER_SESSION_COOKIE` instead.
+For CI, pass it via `HANDS_SESSION_COOKIE` instead. The legacy `QUIVER_*`
+aliases remain accepted for existing automation.
 
 v2 will swap this for a true headless flow (Raft Device Flow or a
 `--token-stdin` service-user mode). See `publish-tasks.md` P3.4.x.
