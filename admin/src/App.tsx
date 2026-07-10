@@ -230,15 +230,17 @@ function Header({ account }: { account: AuthAccount }) {
         )}
       </div>
       <nav className="flex min-h-0 w-full flex-1 flex-col items-stretch gap-1 px-2">
-        <NavLink
-          to="/apps"
-          end
-          className={railItem}
-          title={collapsed ? "Apps" : undefined}
-        >
-          <LayoutGrid className="h-4 w-4" aria-hidden="true" />
-          {!collapsed && <span className="hidden md:inline">Apps</span>}
-        </NavLink>
+        {!appId && (
+          <NavLink
+            to="/apps"
+            end
+            className={railItem}
+            title={collapsed ? "Apps" : undefined}
+          >
+            <LayoutGrid className="h-4 w-4" aria-hidden="true" />
+            {!collapsed && <span className="hidden md:inline">Apps</span>}
+          </NavLink>
+        )}
         <div className="relative w-full">
           <button
             type="button"
