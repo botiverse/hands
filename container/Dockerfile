@@ -28,9 +28,10 @@ COPY --from=minidump-builder /minidump-stackwalk /usr/local/bin/minidump-stackwa
 ARG ANDROID_SDK_VERSION=34.0.0
 ARG ANDROID_CMDLINE_TOOLS_URL=https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip
 
-# Install JDK + unzip + wget + ca-certificates (Java for sdkmanager runtime)
+# Install JDK + unzip + wget + ca-certificates. JDK (not JRE) so we can
+# compile the archive-patcher wrapper below; also the sdkmanager runtime.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    openjdk-17-jre-headless \
+    openjdk-17-jdk-headless \
     ca-certificates \
     wget \
     unzip \
@@ -52,6 +53,17 @@ ENV PATH=$PATH:/opt/android-sdk/cmdline-tools/latest/bin:/opt/android-sdk/build-
 # Accept licenses + install build-tools (aapt + apksigner are inside)
 RUN yes | sdkmanager --licenses >/dev/null 2>&1 || true && \
     sdkmanager "build-tools;${ANDROID_SDK_VERSION}" >/dev/null 2>&1
+
+# archive-patcher (delta/differential update generation) — com.eidu fork of
+# Google's Play-Store engine: a single self-contained jar (no transitive deps).
+# Compile the thin PatchGen wrapper against it so the container can generate
+# file-by-file APK patches. See docs/delta-download-design.md.
+ARG ARCHIVE_PATCHER_VERSION=3.0.0
+RUN mkdir -p /opt/patchgen && \
+    wget -q "https://repo1.maven.org/maven2/com/eidu/archive-patcher/${ARCHIVE_PATCHER_VERSION}/archive-patcher-${ARCHIVE_PATCHER_VERSION}.jar" \
+      -O /opt/patchgen/archive-patcher.jar
+COPY patchgen/PatchGen.java /opt/patchgen/PatchGen.java
+RUN javac -encoding UTF-8 -cp /opt/patchgen/archive-patcher.jar -d /opt/patchgen /opt/patchgen/PatchGen.java
 
 WORKDIR /app
 

@@ -92,6 +92,7 @@ import {
   handleTestflightUpload,
   handleTestflightUploadStatus,
 } from "./routes/testflight";
+import { handleGenerateDeltaPatches } from "./routes/delta";
 import { handleUploadApk } from "./routes/upload";
 import {
   handleListOperations,
@@ -782,6 +783,11 @@ admin.post("/api/apps/:appId/builds/:buildId/testflight-upload", requireAppRole(
 admin.get("/api/apps/:appId/testflight-uploads/:buildUploadId", requireAppRole("viewer"), handleTestflightUploadStatus);
 admin.put("/api/apps/:appId/asc-credentials", requireAppRole("admin"), handleSetAscCredentials);
 admin.delete("/api/apps/:appId/asc-credentials", requireAppRole("admin"), handleDeleteAscCredentials);
+admin.post(
+  "/api/apps/:appId/builds/:buildId/generate-delta-patches",
+  requireAppRole("publisher"),
+  handleGenerateDeltaPatches,
+);
 
 app.route("/", admin);
 
