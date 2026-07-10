@@ -99,13 +99,36 @@ meaningfully smaller than the full APK** (e.g. ≤ 70%); otherwise omit it and
 let the client take the full download. This keeps delta a strict win.
 
 ## Phasing
-- **P1 — server + generation**: archive-patcher generator in CI (patch matrix,
-  N=3), `delta-patch` asset kind + metadata, `/updates/check` patch offer with
-  the size-threshold guard. No client change yet (old SDKs ignore it).
+- **P1 — server + generation**: `/updates/check` patch offer with the
+  size-threshold guard, `delta-patch` asset storage, and archive-patcher
+  generation in CI (patch matrix, N=3). No client change yet (old SDKs ignore
+  the `patch` field).
 - **P2 — SDK apply**: archive-patcher applier + verify + fallback in
   `UpdateChecker`; new SDK version.
 - **P3 — metrics**: delta hit-rate and bytes-saved into the analytics/metrics
   ping so we can see the real win and tune N + the size threshold.
+
+## Implementation status
+- **P1a offer — DONE** (PR #208, deployed): `/updates/check` returns
+  `patch {from_version_code, algorithm, download_url (signed), size_bytes,
+  target_sha256}` when a matching `delta-patch` asset exists and is
+  < `DELTA_MAX_SIZE_RATIO` (0.7) of the full APK. Full asset stays the
+  fallback; old SDKs ignore the field.
+- **P1b storage — DONE (free)**: the existing build-asset API already accepts
+  any `artifact_kind` + `metadata_json`, so no server change was needed to
+  store `delta-patch` assets.
+- **P1b upload outlet — DONE** (CLI 0.5.3, PR #209): `hands builds
+  publish-android --delta-patch <from_version_code>=<path>` (repeatable)
+  uploads each patch as a `delta-patch` asset, stamping
+  `target_sha256` = the new APK's hash.
+- **P1b generation — NEXT**: an `android-release` CI step that, after building
+  the new APK, downloads the last N (=3) published raft-android APKs, runs
+  `FileByFileV1DeltaGenerator().generateDelta(old, new, out)`
+  (`com.google.archivepatcher`, a gradle dependency), and pipes the patches to
+  `publish-android --delta-patch`. Chosen over a Hands container-image rebuild
+  (untestable locally / deploy risk); the JVM + new APK already live in that CI.
+- **P2 (SDK apply)** and **P3 (metrics)** follow once generation is live and
+  the end-to-end path is verified.
 
 ## Open questions for @artin / #245 owner
 1. N (how many previous versions to keep patches for) — 3 is a sane default.
