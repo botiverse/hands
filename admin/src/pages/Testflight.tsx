@@ -21,6 +21,13 @@ interface UploadInput {
 }
 interface UploadOutput {
   build_upload_id?: string;
+  asc_app_id?: string;
+}
+
+function ascTestflightUrl(ascAppId: string | undefined): string {
+  return ascAppId
+    ? `https://appstoreconnect.apple.com/apps/${ascAppId}/testflight/ios`
+    : "https://appstoreconnect.apple.com/apps";
 }
 
 export function Testflight({ appId }: { appId: string }) {
@@ -106,6 +113,16 @@ function UploadRow({ appId, op }: { appId: string; op: Operation }) {
         </span>
         {input.bundle_id && <span className="badge-gray">{input.bundle_id}</span>}
         <StateBadge uploadFailed={uploadFailed} appleState={appleState} />
+        {!uploadFailed && (
+          <a
+            className="text-xs underline text-blue-700"
+            href={ascTestflightUrl(output.asc_app_id)}
+            target="_blank"
+            rel="noopener noreferrer"
+          >
+            View in App Store Connect ↗
+          </a>
+        )}
         <span className="text-xs text-slate-500 ml-auto">
           {new Date(op.created_at).toISOString().slice(0, 16)}Z
         </span>
@@ -131,7 +148,7 @@ function UploadRow({ appId, op }: { appId: string; op: Operation }) {
           Processed — add it to a tester group in{" "}
           <a
             className="underline"
-            href="https://appstoreconnect.apple.com/apps"
+            href={ascTestflightUrl(output.asc_app_id)}
             target="_blank"
             rel="noopener noreferrer"
           >
