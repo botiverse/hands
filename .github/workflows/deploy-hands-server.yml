@@ -107,6 +107,23 @@ jobs:
           set -euo pipefail
           pnpm exec wrangler d1 migrations apply "${HANDS_D1_DATABASE_NAME}" --remote --config wrangler.hands.generated.jsonc
 
+      # Deploy the Worker BEFORE putting secrets. `wrangler secret put` refuses
+      # when the latest uploaded Worker version isn't deployed (e.g. a stray
+      # `wrangler versions upload` left a pending version); deploying first makes
+      # latest == deployed so the secret puts succeed. Secrets already exist on
+      # the running Worker, so this initial deploy uses the current values and
+      # each subsequent `secret put` re-deploys idempotently.
+      - name: Deploy Hands Worker and admin assets
+        working-directory: worker
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_BOTIVERSE_API_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          pnpm exec wrangler deploy \
+            --config wrangler.hands.generated.jsonc \
+            --containers-rollout "${{ inputs.containers_rollout }}"
+
       - name: Configure Hands Worker secrets
         working-directory: worker
         env:
@@ -139,17 +156,6 @@ jobs:
           printf '%s' "${RAFT_CLIENT_SECRET}" | pnpm exec wrangler secret put RAFT_CLIENT_SECRET --config "${config}"
           printf '%s' "${ASC_CRED_ENC_KEY}" | pnpm exec wrangler secret put ASC_CRED_ENC_KEY --config "${config}"
           printf '%s' "${R2_ACCOUNT_ID}" | pnpm exec wrangler secret put R2_ACCOUNT_ID --config "${config}"
-
-      - name: Deploy Hands Worker and admin assets
-        working-directory: worker
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_BOTIVERSE_API_TOKEN }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          pnpm exec wrangler deploy \
-            --config wrangler.hands.generated.jsonc \
-            --containers-rollout "${{ inputs.containers_rollout }}"
 
       - name: Summary
         shell: bash
