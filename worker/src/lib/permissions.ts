@@ -236,7 +236,32 @@ export async function ensureAppRole(c: AdminContext, appId: string, minimum: App
   }
   const account = currentAccount(c);
   if (!account) {
-    return { ok: false as const, response: c.json({ error: "unauthorized" }, 401) };
+    // Actionable 401: an agent that hit this with a valid-looking session got
+    // no resolvable account — tell it how to authenticate and that admin API
+    // access needs a role on the app, rather than a bare "unauthorized".
+    let origin = "https://hands.build";
+    try {
+      origin = new URL(c.req.url).origin;
+    } catch {
+      // keep default
+    }
+    return {
+      ok: false as const,
+      response: c.json(
+        {
+          error: "unauthorized",
+          code: "NOT_AUTHENTICATED",
+          required_role: minimum,
+          next_action:
+            `Authenticate first: humans use \`hands login\`; agents run ` +
+            `\`raft integration login --service <hands-service>\`. Then an admin must grant you the ` +
+            `'${minimum}' role on this app (Access → Members). Admins can perform the release action on your behalf.`,
+          login_url: `/api/auth/login?return=${encodeURIComponent("/")}`,
+          manage_url: `${origin}/apps/${appId}/access`,
+        },
+        401,
+      ),
+    };
   }
   const role = await getEffectiveRole(c.env.DB, account.id, { appId });
   const orgAllows =
