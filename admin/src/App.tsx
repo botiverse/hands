@@ -10,7 +10,25 @@ import {
   Link,
 } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
-import { Building2, ChevronsUpDown, LayoutGrid, Plus } from "lucide-react";
+import {
+  Bug,
+  ChevronDown,
+  ChevronsUpDown,
+  Gauge,
+  LayoutGrid,
+  MessageSquare,
+  Package,
+  PanelLeftClose,
+  PanelLeftOpen,
+  Plane,
+  Plus,
+  Radio,
+  Rocket,
+  ScrollText,
+  Settings as SettingsIcon,
+  Share2,
+  type LucideIcon,
+} from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { AppsList } from "./pages/AppsList";
 import { AppChannels, AppDetail, AppSettings } from "./pages/AppDetail";
@@ -26,7 +44,15 @@ import { isOrgSettingsTab, OrgSettings } from "./pages/OrgSettings";
 import { AcceptInvite } from "./pages/AcceptInvite";
 import { AppAccess } from "./pages/AppAccess";
 import { OrgSwitcher, useClearOrgCache } from "./components/OrgSwitcher";
-import { getAuthMe, listApps, listOrgs, loginUrl, logout, type AuthAccount } from "./lib/api";
+import {
+  clearActiveOrgId,
+  getAuthMe,
+  listApps,
+  listOrgs,
+  loginUrl,
+  logout,
+  type AuthAccount,
+} from "./lib/api";
 
 function RaftIcon({ className = "" }: { className?: string }) {
   return (
@@ -81,21 +107,52 @@ function QuiverMark({ className = "" }: { className?: string }) {
   );
 }
 
+const SIDEBAR_COLLAPSED_KEY = "hands:sidebar-collapsed";
+
 function Header({ account }: { account: AuthAccount }) {
+  const navigate = useNavigate();
   const onLogout = async () => {
     await logout();
+    clearActiveOrgId();
     window.location.assign("/");
   };
-  const orgHref = account.org_id ? `/orgs/${account.org_id}` : "/orgs/placeholder";
+  const location = useLocation();
+  const appId = location.pathname.startsWith("/apps/")
+    ? location.pathname.split("/")[2] ?? null
+    : null;
   const orgs = useQuery({
-    queryKey: ["orgs", account.id],
+    queryKey: ["orgs"],
     queryFn: () => listOrgs(),
     enabled: !!account.id,
   });
+  const apps = useQuery({ queryKey: ["apps"], queryFn: listApps });
   const switchOrg = useClearOrgCache();
+  const [collapsed, setCollapsed] = useState(() => {
+    try {
+      return window.localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === "1";
+    } catch {
+      return false;
+    }
+  });
   const [showOrgSwitcher, setShowOrgSwitcher] = useState(false);
+  const [showAppSwitcher, setShowAppSwitcher] = useState(false);
   const [showAccountMenu, setShowAccountMenu] = useState(false);
+  const appSwitcherRef = useRef<HTMLDivElement | null>(null);
   const accountMenuRef = useRef<HTMLDivElement | null>(null);
+  const currentOrg = orgs.data?.orgs.find((org) => org.id === account.org_id);
+  const currentApp = apps.data?.apps.find((app) => app.id === appId);
+  const otherApps = (apps.data?.apps ?? []).filter(
+    (app) => app.id !== appId && !app.archived,
+  );
+  const appBase = appId ? `/apps/${appId}` : null;
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(SIDEBAR_COLLAPSED_KEY, collapsed ? "1" : "0");
+    } catch {
+      // Storage can be unavailable in private/restricted browser contexts.
+    }
+  }, [collapsed]);
 
   useEffect(() => {
     if (!showAccountMenu) return;
@@ -118,58 +175,231 @@ function Header({ account }: { account: AuthAccount }) {
     };
   }, [showAccountMenu]);
 
+  useEffect(() => {
+    if (!showAppSwitcher) return;
+    function onPointerDown(event: MouseEvent) {
+      if (
+        appSwitcherRef.current &&
+        !appSwitcherRef.current.contains(event.target as Node)
+      ) {
+        setShowAppSwitcher(false);
+      }
+    }
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") setShowAppSwitcher(false);
+    }
+    document.addEventListener("mousedown", onPointerDown);
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("mousedown", onPointerDown);
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, [showAppSwitcher]);
+
   const railItem = ({ isActive }: { isActive: boolean }) =>
-    `flex w-full flex-col items-center gap-0.5 rounded-md px-1 py-2 text-[11px] leading-none ${
+    `flex w-full items-center rounded-md py-2 text-sm ${collapsed ? "flex-col gap-0.5 px-1 text-[11px] leading-none" : "gap-2 px-2"} ${
       isActive
         ? "bg-slate-100 font-medium text-slate-950"
         : "text-slate-500 hover:bg-slate-100 hover:text-slate-950"
     }`;
 
   return (
-    <header className="sticky top-0 h-screen flex w-16 flex-none flex-col items-center border-r border-slate-200 bg-white py-3">
-      <Link to="/" aria-label="Hands" className="mb-4">
-        <QuiverMark className="h-9 w-9" />
-      </Link>
-      <nav className="flex w-full flex-col items-stretch gap-1 px-2">
-        <NavLink to="/apps" end={false} className={railItem}>
+    <header
+      className={`sticky top-0 flex h-screen flex-none flex-col border-r border-slate-200 bg-white py-3 transition-[width] duration-150 ${
+        collapsed ? "w-16 items-center" : "w-16 items-stretch md:w-60"
+      }`}
+    >
+      <div className={`mb-4 flex h-9 items-center ${collapsed ? "justify-center" : "justify-between px-3"}`}>
+        <Link to="/" aria-label="Hands" className="flex min-w-0 items-center gap-2">
+          <QuiverMark className="h-9 w-9 flex-none" />
+          {!collapsed && <span className="hidden truncate text-sm font-semibold text-slate-900 md:inline">Hands</span>}
+        </Link>
+        {!collapsed && (
+          <button
+            type="button"
+            className="icon-button hidden h-8 w-8 md:flex"
+            onClick={() => setCollapsed(true)}
+            title="Collapse sidebar"
+            aria-label="Collapse sidebar"
+          >
+            <PanelLeftClose className="h-4 w-4" aria-hidden="true" />
+          </button>
+        )}
+      </div>
+      <nav className="flex min-h-0 w-full flex-1 flex-col items-stretch gap-1 px-2">
+        <NavLink
+          to="/apps"
+          end
+          className={railItem}
+          title={collapsed ? "Apps" : undefined}
+        >
           <LayoutGrid className="h-4 w-4" aria-hidden="true" />
-          Apps
+          {!collapsed && <span className="hidden md:inline">Apps</span>}
         </NavLink>
         <div className="relative w-full">
-          <NavLink
-            to={orgHref}
-            onClick={(e) => {
-              if (orgs.data && orgs.data.orgs.length > 1) {
-                e.preventDefault();
-                setShowOrgSwitcher((s) => !s);
-              }
-            }}
-            className={railItem}
-            aria-label={
-              account.org_id
-                ? `Org ${account.server_slug ?? account.server_id}, role ${account.org_role ?? "none"}`
-                : "Org settings"
-            }
+          <button
+            type="button"
+            onClick={() => setShowOrgSwitcher((open) => !open)}
+            onMouseDown={(event) => event.stopPropagation()}
+            className={railItem({ isActive: location.pathname.startsWith("/orgs/") })}
+            aria-haspopup="menu"
+            aria-expanded={showOrgSwitcher}
+            aria-label={`Organization ${currentOrg?.name ?? account.server_slug ?? account.server_id}`}
+            title={collapsed ? currentOrg?.name ?? "Switch organization" : undefined}
           >
-            <Building2 className="h-4 w-4" aria-hidden="true" />
-            Org
-          </NavLink>
-          {showOrgSwitcher && orgs.data && orgs.data.orgs.length > 1 && (
-            <div className="absolute left-full top-0 z-40 ml-2">
+            <span className="flex h-6 w-6 flex-none items-center justify-center rounded-md border border-slate-200 bg-slate-50 text-[10px] font-semibold text-slate-600">
+              {(currentOrg?.name ?? account.server_slug ?? "O").slice(0, 1).toUpperCase()}
+            </span>
+            {!collapsed && (
+              <>
+                <span className="hidden min-w-0 flex-1 text-left md:block">
+                  <span className="block truncate font-medium text-slate-800">
+                    {currentOrg?.name ?? account.server_slug ?? "Organization"}
+                  </span>
+                  <span className="block truncate text-xs text-slate-400">
+                    {account.org_role ?? "member"}
+                  </span>
+                </span>
+                <ChevronDown className="hidden h-4 w-4 text-slate-400 md:block" aria-hidden="true" />
+              </>
+            )}
+          </button>
+          {showOrgSwitcher && (
+            <div
+              className={`absolute z-40 ${
+                collapsed ? "left-full top-0 ml-2" : "left-0 top-full mt-1"
+              }`}
+            >
               <OrgSwitcher
                 currentOrgId={account.org_id ?? null}
-                buttonLabel={`Switch organization (${orgs.data.orgs.length} members of)`}
+                buttonLabel="Switch organization"
                 onClose={() => setShowOrgSwitcher(false)}
-                onSwitch={switchOrg}
+                onSwitch={(org) => {
+                  switchOrg(org);
+                  setShowOrgSwitcher(false);
+                  window.location.assign("/apps");
+                }}
               />
             </div>
           )}
         </div>
+        {appId && appBase && (
+          <>
+            <div ref={appSwitcherRef} className="relative w-full border-t border-slate-100 pt-2">
+              <button
+                type="button"
+                className={railItem({ isActive: false })}
+                onClick={() => setShowAppSwitcher((open) => !open)}
+                aria-haspopup="menu"
+                aria-expanded={showAppSwitcher}
+                title={collapsed ? currentApp?.name ?? "Switch app" : undefined}
+              >
+                <span className="flex h-6 w-6 flex-none items-center justify-center rounded-md bg-sky-50 text-[10px] font-semibold text-sky-700">
+                  {(currentApp?.name ?? "A").slice(0, 1).toUpperCase()}
+                </span>
+                {!collapsed && (
+                  <>
+                    <span className="hidden min-w-0 flex-1 text-left md:block">
+                      <span className="block truncate font-medium text-slate-800">
+                        {currentApp?.name ?? "Loading app…"}
+                      </span>
+                      <span className="block truncate text-xs font-mono text-slate-400">
+                        {currentApp?.slug}
+                      </span>
+                    </span>
+                    <ChevronsUpDown className="hidden h-4 w-4 text-slate-400 md:block" aria-hidden="true" />
+                  </>
+                )}
+              </button>
+              {showAppSwitcher && (
+                <div
+                  className={`absolute z-40 w-64 rounded-md border border-slate-200 bg-white py-1 shadow-lg ${
+                    collapsed ? "left-full top-0 ml-2" : "left-0 top-full mt-1"
+                  }`}
+                >
+                  {otherApps.map((app) => (
+                    <button
+                      key={app.id}
+                      type="button"
+                      className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm hover:bg-slate-50"
+                      onClick={() => {
+                        setShowAppSwitcher(false);
+                        const section = location.pathname.split("/")[3] ?? "";
+                        navigate(section ? `/apps/${app.id}/${section}` : `/apps/${app.id}`);
+                      }}
+                    >
+                      <span className="truncate">{app.name}</span>
+                      <span className="badge-blue ml-auto">{app.platform}</span>
+                    </button>
+                  ))}
+                  {otherApps.length === 0 && (
+                    <div className="px-3 py-2 text-xs text-slate-400">No other apps</div>
+                  )}
+                  <Link
+                    to="/apps?new=1"
+                    className="mt-1 flex items-center gap-1.5 border-t border-slate-100 px-3 py-2 text-xs text-slate-600 hover:bg-slate-50"
+                    onClick={() => setShowAppSwitcher(false)}
+                  >
+                    <Plus className="h-3.5 w-3.5" aria-hidden="true" /> New app
+                  </Link>
+                  <Link
+                    to="/apps?all=1"
+                    className="flex items-center gap-1.5 px-3 py-2 text-xs text-slate-500 hover:bg-slate-50"
+                    onClick={() => setShowAppSwitcher(false)}
+                  >
+                    <LayoutGrid className="h-3.5 w-3.5" aria-hidden="true" /> All apps
+                  </Link>
+                </div>
+              )}
+            </div>
+            <div className="mt-1 flex-1 overflow-y-auto">
+              {APP_NAV_SECTIONS.map((section) => (
+                <div key={section.label} className="mb-3">
+                  {!collapsed && (
+                    <div className="hidden px-2 pb-1 text-[11px] font-semibold uppercase tracking-wide text-slate-400 md:block">
+                      {section.label}
+                    </div>
+                  )}
+                  <div className="space-y-0.5">
+                    {section.items.map((item) => {
+                      const Icon = item.icon;
+                      return (
+                        <NavLink
+                          key={item.label}
+                          to={item.to ? `${appBase}/${item.to}` : appBase}
+                          end={item.end ?? false}
+                          className={railItem}
+                          title={collapsed ? item.label : undefined}
+                        >
+                          <Icon className="h-4 w-4 flex-none" aria-hidden="true" />
+                          {!collapsed && <span className="hidden md:inline">{item.label}</span>}
+                        </NavLink>
+                      );
+                    })}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </>
+        )}
       </nav>
-      <div ref={accountMenuRef} className="relative mt-auto flex w-full flex-col items-center px-2">
+      <div ref={accountMenuRef} className="relative mt-auto flex w-full flex-col px-2">
+        {collapsed && (
+          <button
+            type="button"
+            className="mb-2 hidden h-9 w-full items-center justify-center rounded-md text-slate-500 hover:bg-slate-100 hover:text-slate-950 md:flex"
+            onClick={() => setCollapsed(false)}
+            title="Expand sidebar"
+            aria-label="Expand sidebar"
+          >
+            <PanelLeftOpen className="h-4 w-4" aria-hidden="true" />
+          </button>
+        )}
         <button
           type="button"
-          className="rounded-full outline-none hover:ring-2 hover:ring-slate-200"
+          className={`flex w-full items-center rounded-md outline-none hover:bg-slate-100 ${
+            collapsed ? "justify-center p-1" : "gap-2 px-2 py-2 text-left"
+          }`}
           onClick={() => setShowAccountMenu((open) => !open)}
           aria-haspopup="menu"
           aria-expanded={showAccountMenu}
@@ -184,6 +414,16 @@ function Header({ account }: { account: AuthAccount }) {
           ) : (
             <span className="flex h-9 w-9 items-center justify-center rounded-full border border-slate-200 bg-slate-100 text-xs font-semibold text-slate-600">
               {account.display_name.slice(0, 1).toUpperCase()}
+            </span>
+          )}
+          {!collapsed && (
+            <span className="hidden min-w-0 flex-1 md:block">
+              <span className="block truncate text-sm font-medium text-slate-800">
+                {account.display_name}
+              </span>
+              <span className="block truncate text-xs text-slate-400">
+                {account.server_slug || account.server_id}
+              </span>
             </span>
           )}
         </button>
@@ -880,128 +1120,31 @@ function AppsListWithNav() {
   );
 }
 
-const APP_NAV_SECTIONS: Array<{ label: string; items: Array<{ to: string; label: string; end?: boolean }> }> = [
+const APP_NAV_SECTIONS: Array<{
+  label: string;
+  items: Array<{ to: string; label: string; icon: LucideIcon; end?: boolean }>;
+}> = [
   {
     label: "Distribute",
     items: [
-      { to: "", label: "Overview", end: true },
-      { to: "channels", label: "Channels" },
-      { to: "releases", label: "Releases" },
-      { to: "builds", label: "Builds" },
-      { to: "testflight", label: "TestFlight" },
-      { to: "shares", label: "Shares" },
+      { to: "", label: "Overview", icon: Gauge, end: true },
+      { to: "channels", label: "Channels", icon: Radio },
+      { to: "releases", label: "Releases", icon: Rocket },
+      { to: "builds", label: "Builds", icon: Package },
+      { to: "testflight", label: "TestFlight", icon: Plane },
+      { to: "shares", label: "Shares", icon: Share2 },
     ],
   },
   {
     label: "Operate",
     items: [
-      { to: "feedback", label: "Feedback" },
-      { to: "crashes", label: "Crashes" },
-      { to: "audit", label: "Audit" },
-      { to: "settings", label: "Settings" },
+      { to: "feedback", label: "Feedback", icon: MessageSquare },
+      { to: "crashes", label: "Crashes", icon: Bug },
+      { to: "audit", label: "Audit", icon: ScrollText },
+      { to: "settings", label: "Settings", icon: SettingsIcon },
     ],
   },
 ];
-
-function AppSidebar() {
-  const { appId } = useParams();
-  const navigate = useNavigate();
-  const location = useLocation();
-  const [switcherOpen, setSwitcherOpen] = useState(false);
-  const apps = useQuery({ queryKey: ["apps"], queryFn: listApps });
-  if (!appId) return null;
-  const app = apps.data?.apps.find((a) => a.id === appId);
-  const others = (apps.data?.apps ?? []).filter((a) => a.id !== appId && !a.archived);
-  const base = `/apps/${appId}`;
-
-  return (
-    <aside className="hidden md:flex w-60 flex-none flex-col border-r border-slate-200 bg-white">
-      <div className="relative border-b border-slate-100 p-3">
-        <button
-          type="button"
-          className="flex w-full items-center justify-between gap-2 rounded-md px-2 py-2 text-left hover:bg-slate-50"
-          onClick={() => setSwitcherOpen((v) => !v)}
-          aria-haspopup="menu"
-          aria-expanded={switcherOpen}
-        >
-          <span className="min-w-0">
-            <span className="block truncate text-sm font-semibold text-slate-900">
-              {app?.name ?? "…"}
-            </span>
-            <span className="mt-0.5 flex items-center gap-1.5">
-              {app?.platform && <span className="badge-blue">{app.platform}</span>}
-              <span className="truncate text-xs text-slate-400 font-mono">{app?.slug}</span>
-            </span>
-          </span>
-          <ChevronsUpDown className="h-4 w-4 text-slate-400" aria-hidden="true" />
-        </button>
-        {switcherOpen && (
-          <div className="absolute left-3 right-3 top-full z-30 -mt-1 rounded-md border border-slate-200 bg-white py-1 shadow-lg">
-            {others.map((a) => (
-              <button
-                key={a.id}
-                type="button"
-                className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm hover:bg-slate-50"
-                onClick={() => {
-                  setSwitcherOpen(false);
-                  const section = location.pathname.split("/")[3] ?? "";
-                  navigate(section ? `/apps/${a.id}/${section}` : `/apps/${a.id}`);
-                }}
-              >
-                <span className="truncate">{a.name}</span>
-                <span className="badge-blue ml-auto">{a.platform}</span>
-              </button>
-            ))}
-            {others.length === 0 && (
-              <div className="px-3 py-2 text-xs text-slate-400">No other apps</div>
-            )}
-            <Link
-              to="/apps?new=1"
-              className="mt-1 flex items-center gap-1.5 border-t border-slate-100 px-3 py-2 text-xs text-slate-600 hover:bg-slate-50"
-              onClick={() => setSwitcherOpen(false)}
-            >
-              <Plus className="h-3.5 w-3.5" aria-hidden="true" /> New app
-            </Link>
-            <Link
-              to="/apps?all=1"
-              className="flex items-center gap-1.5 px-3 py-2 text-xs text-slate-500 hover:bg-slate-50"
-              onClick={() => setSwitcherOpen(false)}
-            >
-              <LayoutGrid className="h-3.5 w-3.5" aria-hidden="true" /> All apps
-            </Link>
-          </div>
-        )}
-      </div>
-      <nav className="flex-1 overflow-y-auto p-3">
-        {APP_NAV_SECTIONS.map((section) => (
-          <div key={section.label} className="mb-4">
-            <div className="px-2 pb-1 text-[11px] font-semibold uppercase tracking-wide text-slate-400">
-              {section.label}
-            </div>
-            <div className="space-y-0.5">
-              {section.items.map((item) => (
-                <NavLink
-                  key={item.label}
-                  to={item.to ? `${base}/${item.to}` : base}
-                  end={item.end ?? false}
-                  className={({ isActive }) =>
-                    `block rounded-md px-2 py-1.5 text-sm ${
-                      isActive
-                        ? "bg-slate-100 font-medium text-slate-950"
-                        : "text-slate-600 hover:bg-slate-50 hover:text-slate-950"
-                    }`
-                  }
-                >
-                  {item.label}
-                </NavLink>
-              ))}
-            </div>
-          </div>
-        ))}
-      </nav>
-    </aside>
-  );
-}
 
 const LAST_APP_KEY = "quiver:last-app-id";
 
@@ -1018,7 +1161,6 @@ function AppShell() {
   }, [appId]);
   return (
     <div className="flex flex-1 min-h-0 items-stretch">
-      <AppSidebar />
       <div className="min-w-0 flex-1">
         <div className="md:hidden">
           <AppContextNav />
