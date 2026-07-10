@@ -17,6 +17,7 @@ import { getCookie } from "hono/cookie";
 import { loadDeployToken, sha256Hex, type AppDeployToken } from "../lib/deploy_tokens";
 
 export const SESSION_COOKIE = "quiver_session";
+export const ACTIVE_ORG_HEADER = "x-hands-org-id";
 
 export type AdminAccount = {
   id: string;
@@ -124,6 +125,34 @@ export async function loadAccountFromAuthToken(
   return account;
 }
 
+async function withRequestedOrg(
+  env: Env,
+  account: AdminAccount,
+  requestedOrgId: string | undefined,
+): Promise<AdminAccount> {
+  const orgId = requestedOrgId?.trim();
+  if (!orgId || orgId === account.org_id) return account;
+
+  const membership = await env.DB.prepare(
+    `SELECT om.org_id, om.org_role
+     FROM org_members om
+     JOIN organizations o ON o.id = om.org_id
+     WHERE om.account_id = ?1
+       AND om.org_id = ?2
+       AND o.archived = 0
+     LIMIT 1`,
+  )
+    .bind(account.id, orgId)
+    .first<{
+      org_id: string;
+      org_role: NonNullable<AdminAccount["org_role"]>;
+    }>();
+
+  return membership
+    ? { ...account, org_id: membership.org_id, org_role: membership.org_role }
+    : account;
+}
+
 export const authMiddleware: MiddlewareHandler<AdminEnv & { Bindings: Env }> =
   async (c, next) => {
     const cookieToken = getCookie(c, SESSION_COOKIE);
@@ -131,11 +160,16 @@ export const authMiddleware: MiddlewareHandler<AdminEnv & { Bindings: Env }> =
     const bearerToken = authHeader?.startsWith("Bearer ")
       ? authHeader.slice("Bearer ".length).trim()
       : undefined;
-    const account = await loadAccountFromAuthToken(
+    const sessionAccount = await loadAccountFromAuthToken(
       c.env,
       cookieToken || bearerToken,
     );
-    if (account) {
+    if (sessionAccount) {
+      const account = await withRequestedOrg(
+        c.env,
+        sessionAccount,
+        c.req.header(ACTIVE_ORG_HEADER),
+      );
       c.set("admin_account", account);
       c.set("admin_actor", accountActor(account));
       if (account.org_id) c.set("org_id", account.org_id);

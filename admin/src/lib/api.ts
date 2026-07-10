@@ -14,6 +14,31 @@
 // the same origin (via wrangler [assets] binding), so API_BASE is empty
 // and requests go to the same host. In dev, Vite proxies /api → wrangler dev.
 const API_BASE = (import.meta as any).env?.VITE_API_BASE_URL ?? "";
+export const ACTIVE_ORG_STORAGE_KEY = "hands:active-org-id";
+
+export function getActiveOrgId(): string | null {
+  try {
+    return window.localStorage.getItem(ACTIVE_ORG_STORAGE_KEY);
+  } catch {
+    return null;
+  }
+}
+
+export function setActiveOrgId(orgId: string): void {
+  try {
+    window.localStorage.setItem(ACTIVE_ORG_STORAGE_KEY, orgId);
+  } catch {
+    // Storage can be unavailable in private/restricted browser contexts.
+  }
+}
+
+export function clearActiveOrgId(): void {
+  try {
+    window.localStorage.removeItem(ACTIVE_ORG_STORAGE_KEY);
+  } catch {
+    // Storage can be unavailable in private/restricted browser contexts.
+  }
+}
 
 export class ApiError extends Error {
   constructor(public status: number, public body: unknown, message: string) {
@@ -328,6 +353,8 @@ async function request<T>(
 ): Promise<T> {
   const headers = new Headers(init.headers);
   headers.set("content-type", "application/json");
+  const activeOrgId = getActiveOrgId();
+  if (activeOrgId) headers.set("x-hands-org-id", activeOrgId);
   const res = await fetch(`${API_BASE}${path}`, {
     ...init,
     headers,

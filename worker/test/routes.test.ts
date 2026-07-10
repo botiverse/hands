@@ -23,7 +23,7 @@ import { authMiddleware } from "../src/middleware/auth";
 import { requireCurrentOrgRole } from "../src/lib/permissions";
 import { httpsRedirectUrl, isSecureRequest, requestOrigin } from "../src/lib/origin";
 import { openApiDocument } from "../src/openapi";
-import { handleCreateApp } from "../src/routes/apps";
+import { handleCreateApp, handleListApps } from "../src/routes/apps";
 import { handleAuthLogin } from "../src/routes/auth";
 
 // ---------- Test harness ----------
@@ -815,6 +815,122 @@ describe("quiver route handlers — SQL smoke", () => {
       .bind("member-app")
       .all();
     expect(seededChannels.results.map((row: any) => row.slug)).toEqual(["main", "nightly", "preview"]);
+  });
+
+  it("uses a validated selected-org header for org-scoped app requests", async () => {
+    const now = Date.now();
+    const token = "multi-org-token";
+
+    await env.DB
+      .prepare(
+        `INSERT INTO organizations
+         (id, slug, name, external_provider, external_id, created_at, archived)
+         VALUES (?, ?, ?, 'raft', ?, ?, 0), (?, ?, ?, 'raft', ?, ?, 0)`,
+      )
+      .bind(
+        "org-primary", "primary", "Primary", "server-primary", now,
+        "org-secondary", "secondary", "Secondary", "server-secondary", now,
+      )
+      .run();
+    await env.DB
+      .prepare(
+        `INSERT INTO raft_accounts
+         (id, provider, provider_subject, server_id, server_slug, principal_type,
+          server_role, username, display_name, avatar_url, raw_profile,
+          created_at, updated_at, last_login_at)
+         VALUES (?, 'raft', ?, 'server-primary', 'primary', 'human',
+                 NULL, ?, ?, NULL, '{}', ?, ?, ?)`,
+      )
+      .bind("multi-org-user", "multi-org-sub", "multi", "Multi Org", now, now, now)
+      .run();
+    await env.DB
+      .prepare(
+        `INSERT INTO org_members (id, org_id, account_id, org_role, joined_at)
+         VALUES (?, ?, ?, ?, ?), (?, ?, ?, ?, ?)`,
+      )
+      .bind(
+        "member-primary", "org-primary", "multi-org-user", "owner", now,
+        "member-secondary", "org-secondary", "multi-org-user", "member", now,
+      )
+      .run();
+    await env.DB
+      .prepare(
+        "INSERT INTO raft_sessions (id, account_id, token_hash, created_at, expires_at, last_seen_at) VALUES (?, ?, ?, ?, ?, ?)",
+      )
+      .bind(
+        "session-multi-org",
+        "multi-org-user",
+        createHash("sha256").update(token).digest("hex"),
+        now,
+        now + 60_000,
+        now,
+      )
+      .run();
+    await env.DB
+      .prepare(
+        `INSERT INTO apps (id, org_id, slug, name, platform, created_at)
+         VALUES (?, ?, ?, ?, ?, ?), (?, ?, ?, ?, ?, ?)`,
+      )
+      .bind(
+        "app-primary", "org-primary", "primary-app", "Primary App", "android", now,
+        "app-secondary", "org-secondary", "secondary-app", "Secondary App", "ios", now,
+      )
+      .run();
+
+    const testApp = new Hono<{ Bindings: Env }>();
+    testApp.use("*", authMiddleware as any);
+    testApp.get("/api/apps", requireCurrentOrgRole("viewer") as any, handleListApps as any);
+    testApp.post("/api/apps", requireCurrentOrgRole("member") as any, handleCreateApp as any);
+
+    const requestApps = (orgId?: string) =>
+      testApp.request(
+        "https://quiver-worker.test/api/apps",
+        {
+          headers: {
+            authorization: `Bearer ${token}`,
+            ...(orgId ? { "x-hands-org-id": orgId } : {}),
+          },
+        },
+        env as any,
+      );
+
+    const defaultResponse = await requestApps();
+    await expect(defaultResponse.json()).resolves.toMatchObject({
+      apps: [{ id: "app-primary", org_id: "org-primary" }],
+    });
+
+    const selectedResponse = await requestApps("org-secondary");
+    await expect(selectedResponse.json()).resolves.toMatchObject({
+      apps: [{ id: "app-secondary", org_id: "org-secondary" }],
+    });
+
+    const createResponse = await testApp.request(
+      "https://quiver-worker.test/api/apps",
+      {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${token}`,
+          "content-type": "application/json",
+          "x-hands-org-id": "org-secondary",
+        },
+        body: JSON.stringify({
+          slug: "secondary-created",
+          name: "Secondary Created",
+          platform: "android",
+        }),
+      },
+      env as any,
+    );
+    expect(createResponse.status).toBe(201);
+    await expect(createResponse.json()).resolves.toMatchObject({
+      org_id: "org-secondary",
+      slug: "secondary-created",
+    });
+
+    const invalidResponse = await requestApps("org-not-a-member");
+    await expect(invalidResponse.json()).resolves.toMatchObject({
+      apps: [{ id: "app-primary", org_id: "org-primary" }],
+    });
   });
 
   it("apps are scoped by org_id", async () => {
