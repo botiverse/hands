@@ -24,7 +24,8 @@ import { requireCurrentOrgRole } from "../src/lib/permissions";
 import { httpsRedirectUrl, isSecureRequest, requestOrigin } from "../src/lib/origin";
 import { openApiDocument } from "../src/openapi";
 import { handleCreateApp, handleListApps } from "../src/routes/apps";
-import { handleAuthLogin } from "../src/routes/auth";
+import { handleAuthLogin, handleAuthMe } from "../src/routes/auth";
+import { handleListOrgs } from "../src/routes/orgs";
 
 // ---------- Test harness ----------
 
@@ -839,9 +840,14 @@ describe("quiver route handlers — SQL smoke", () => {
           server_role, username, display_name, avatar_url, raw_profile,
           created_at, updated_at, last_login_at)
          VALUES (?, 'raft', ?, 'server-primary', 'primary', 'human',
+                 NULL, ?, ?, NULL, '{}', ?, ?, ?),
+                (?, 'raft', ?, 'server-secondary', 'secondary', 'human',
                  NULL, ?, ?, NULL, '{}', ?, ?, ?)`,
       )
-      .bind("multi-org-user", "multi-org-sub", "multi", "Multi Org", now, now, now)
+      .bind(
+        "multi-org-primary", "multi-org-sub", "multi", "Multi Org", now, now, now,
+        "multi-org-secondary", "multi-org-sub", "multi", "Multi Org", now, now, now,
+      )
       .run();
     await env.DB
       .prepare(
@@ -849,8 +855,8 @@ describe("quiver route handlers — SQL smoke", () => {
          VALUES (?, ?, ?, ?, ?), (?, ?, ?, ?, ?)`,
       )
       .bind(
-        "member-primary", "org-primary", "multi-org-user", "owner", now,
-        "member-secondary", "org-secondary", "multi-org-user", "member", now,
+        "member-primary", "org-primary", "multi-org-primary", "owner", now,
+        "member-secondary", "org-secondary", "multi-org-secondary", "member", now,
       )
       .run();
     await env.DB
@@ -859,7 +865,7 @@ describe("quiver route handlers — SQL smoke", () => {
       )
       .bind(
         "session-multi-org",
-        "multi-org-user",
+        "multi-org-primary",
         createHash("sha256").update(token).digest("hex"),
         now,
         now + 60_000,
@@ -881,6 +887,8 @@ describe("quiver route handlers — SQL smoke", () => {
     testApp.use("*", authMiddleware as any);
     testApp.get("/api/apps", requireCurrentOrgRole("viewer") as any, handleListApps as any);
     testApp.post("/api/apps", requireCurrentOrgRole("member") as any, handleCreateApp as any);
+    testApp.get("/api/orgs", handleListOrgs as any);
+    testApp.get("/api/auth/me", handleAuthMe as any);
 
     const requestApps = (orgId?: string) =>
       testApp.request(
@@ -899,9 +907,45 @@ describe("quiver route handlers — SQL smoke", () => {
       apps: [{ id: "app-primary", org_id: "org-primary" }],
     });
 
+    const orgsResponse = await testApp.request(
+      "https://quiver-worker.test/api/orgs",
+      { headers: { authorization: `Bearer ${token}` } },
+      env as any,
+    );
+    const orgsBody = (await orgsResponse.json()) as {
+      orgs: Array<{ id: string; org_role: string }>;
+    };
+    expect(
+      orgsBody.orgs
+        .map(({ id, org_role }) => ({ id, org_role }))
+        .sort((a, b) => a.id.localeCompare(b.id)),
+    ).toEqual([
+      { id: "org-primary", org_role: "owner" },
+      { id: "org-secondary", org_role: "member" },
+    ]);
+
     const selectedResponse = await requestApps("org-secondary");
     await expect(selectedResponse.json()).resolves.toMatchObject({
       apps: [{ id: "app-secondary", org_id: "org-secondary" }],
+    });
+
+    const selectedMeResponse = await testApp.request(
+      "https://quiver-worker.test/api/auth/me",
+      {
+        headers: {
+          authorization: `Bearer ${token}`,
+          "x-hands-org-id": "org-secondary",
+        },
+      },
+      env as any,
+    );
+    await expect(selectedMeResponse.json()).resolves.toMatchObject({
+      account: {
+        id: "multi-org-secondary",
+        server_id: "server-secondary",
+        org_id: "org-secondary",
+        org_role: "member",
+      },
     });
 
     const createResponse = await testApp.request(

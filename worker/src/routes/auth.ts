@@ -9,6 +9,8 @@ import type { Context } from "hono";
 import { deleteCookie, getCookie, setCookie } from "hono/cookie";
 import {
   accountActor,
+  accountForRequestedOrg,
+  ACTIVE_ORG_HEADER,
   loadAccountFromAuthToken,
   SESSION_COOKIE,
   type AdminAccount,
@@ -451,11 +453,11 @@ export async function handleAuthMe(c: Context<{ Bindings: Env }>) {
   const bearerToken = authHeader?.startsWith("Bearer ")
     ? authHeader.slice("Bearer ".length).trim()
     : undefined;
-  const account = await loadAccountFromAuthToken(
+  const sessionAccount = await loadAccountFromAuthToken(
     c.env,
     getCookie(c, SESSION_COOKIE) || bearerToken,
   );
-  if (!account) {
+  if (!sessionAccount) {
     return c.json(
       {
         authenticated: false,
@@ -464,6 +466,11 @@ export async function handleAuthMe(c: Context<{ Bindings: Env }>) {
       401,
     );
   }
+  const account = await accountForRequestedOrg(
+    c.env,
+    sessionAccount,
+    c.req.header(ACTIVE_ORG_HEADER),
+  );
   return c.json({
     authenticated: true,
     account: {
