@@ -323,3 +323,49 @@ export async function handleGenerateDeltaPatches(c: AdminContext) {
   const outcome = await runDeltaGeneration(c.env, op, params);
   return c.json(outcome, outcome.error && outcome.results.length === 0 ? 500 : 200);
 }
+
+/**
+ * GET /api/apps/:appId/delta-sources?arch=<abi>&before=<version_code>&limit=<N>
+ * Returns short-lived signed download URLs for the last N published installable
+ * APKs (same arch, version_code < before). Used by the CLI/CI to fetch the
+ * source APKs, generate archive-patcher patches, and upload them via
+ * publish-android --delta-patch. Keeps patch generation out of the Worker.
+ */
+export async function handleDeltaSources(c: AdminContext) {
+  const appId = c.req.param("appId") ?? "";
+  const arch = c.req.query("arch") ?? null;
+  const before = Number(c.req.query("before"));
+  if (!Number.isFinite(before)) {
+    return c.json({ error: "before (version_code) must be a number" }, 400);
+  }
+  const limitRaw = Number(c.req.query("limit"));
+  const limit = Number.isFinite(limitRaw) && limitRaw > 0 ? Math.min(limitRaw, 10) : DEFAULT_KEEP_VERSIONS;
+
+  const priors = await c.env.DB.prepare(
+    `SELECT ba.build_id, b.version_code, ba.arch, ba.r2_key, ba.file_hash, ba.size_bytes
+     FROM build_assets ba
+     JOIN builds b ON b.id = ba.build_id
+     JOIN releases r ON r.build_id = b.id
+     WHERE b.app_id = ?1 AND ba.artifact_kind = 'installable' AND ba.filetype = 'apk'
+       AND (ba.arch IS ?2 OR ba.arch = ?2)
+       AND b.version_code < ?3
+       AND r.status IN ('active', 'superseded')
+     GROUP BY b.version_code
+     ORDER BY b.version_code DESC
+     LIMIT ?4`,
+  )
+    .bind(appId, arch, before, limit)
+    .all<ApkAssetRow>();
+
+  const origin = requestOrigin(c);
+  const sources = await Promise.all(
+    (priors.results ?? []).map(async (p) => ({
+      from_version_code: p.version_code,
+      arch: p.arch,
+      size_bytes: p.size_bytes,
+      sha256: p.file_hash,
+      url: await generateInternalR2Url(c.env, p.r2_key, 1800, origin),
+    })),
+  );
+  return c.json({ arch, before, sources });
+}

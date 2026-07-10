@@ -15,6 +15,7 @@
   },
   "files": [
     "dist",
+    "patchgen",
     "README.md"
   ],
   "scripts": {

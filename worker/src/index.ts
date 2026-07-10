@@ -93,7 +93,7 @@ import {
   handleTestflightUpload,
   handleTestflightUploadStatus,
 } from "./routes/testflight";
-import { handleGenerateDeltaPatches } from "./routes/delta";
+import { handleGenerateDeltaPatches, handleDeltaSources } from "./routes/delta";
 import { handleUploadApk } from "./routes/upload";
 import {
   handleListOperations,
@@ -794,6 +794,7 @@ admin.post(
   requireAppRole("publisher"),
   handleGenerateDeltaPatches,
 );
+admin.get("/api/apps/:appId/delta-sources", requireAppRole("publisher"), handleDeltaSources);
 
 app.route("/", admin);
 

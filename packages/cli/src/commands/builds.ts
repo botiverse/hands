@@ -6,8 +6,15 @@
 
 import type { Command } from "commander";
 import { existsSync, readFileSync } from "node:fs";
-import { basename, extname } from "node:path";
+import { mkdtemp, writeFile, rm } from "node:fs/promises";
+import { basename, extname, join } from "node:path";
+import { tmpdir } from "node:os";
+import { fileURLToPath } from "node:url";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import { apiRequest, apiUploadFile } from "../lib/api.js";
+
+const execFileAsync = promisify(execFile);
 
 interface BuildRow {
   id: string;
@@ -168,6 +175,10 @@ export function registerBuildCommands(program: Command): void {
       [],
     )
     .option(
+      "--generate-deltas <N>",
+      "After uploading, generate + upload archive-patcher delta patches from the last N published versions (needs a JDK on PATH — CI has one). Clients on those versions download the small patch instead of the full APK.",
+    )
+    .option(
       "--changelog <text>",
       "Inline changelog. Repeatable with lang=text for multiple languages.",
       collect,
@@ -204,6 +215,7 @@ export function registerBuildCommands(program: Command): void {
           dsym?: string;
           metadata?: string;
           deltaPatch?: string[];
+          generateDeltas?: string;
           changelog?: string[];
           changelogFile?: string[];
           sourceCommit?: string;
@@ -288,6 +300,24 @@ export function registerBuildCommands(program: Command): void {
               },
             }),
           );
+        }
+        // Auto-generate deltas from the last N published versions (CI does the
+        // heavy archive-patcher work; the Worker just serves the source APKs +
+        // stores the patches). Needs a JDK on PATH.
+        if (opts.generateDeltas) {
+          const n = Number(opts.generateDeltas);
+          if (!Number.isFinite(n) || n <= 0) throw new Error(`--generate-deltas must be a positive number, got: ${opts.generateDeltas}`);
+          const generated = await generateAndUploadAndroidDeltas({
+            appId,
+            buildId: build.id,
+            newApkPath: opts.apk,
+            arch: opts.arch,
+            toVersionCode: versionCode,
+            targetSha256: installable.file_hash,
+            newApkSize: installable.size_bytes,
+            versions: n,
+          });
+          assets.push(...generated);
         }
         if (opts.mapping) {
           assets.push(
@@ -849,6 +879,105 @@ async function uploadAndRegisterAsset(
     file_hash: uploaded.file_hash,
     size_bytes: uploaded.size_bytes,
   };
+}
+
+const ARCHIVE_PATCHER_VERSION = "3.0.0";
+const ARCHIVE_PATCHER_URL = `https://repo1.maven.org/maven2/com/eidu/archive-patcher/${ARCHIVE_PATCHER_VERSION}/archive-patcher-${ARCHIVE_PATCHER_VERSION}.jar`;
+
+/**
+ * Prepare the archive-patcher toolchain in a temp dir: download the jar and
+ * compile the bundled PatchGen wrapper (needs javac/java on PATH — CI has a
+ * JDK for the Android build). Returns the classpath (jar:dir) to run PatchGen.
+ */
+async function ensureArchivePatcher(dir: string): Promise<string> {
+  const jarPath = join(dir, "archive-patcher.jar");
+  const res = await fetch(ARCHIVE_PATCHER_URL);
+  if (!res.ok) throw new Error(`failed to download archive-patcher jar: HTTP ${res.status}`);
+  await writeFile(jarPath, Buffer.from(await res.arrayBuffer()));
+  // PatchGen.java ships alongside the built CLI (package "patchgen" dir).
+  const patchGenSrc = fileURLToPath(new URL("../../patchgen/PatchGen.java", import.meta.url));
+  if (!existsSync(patchGenSrc)) {
+    throw new Error(`bundled PatchGen.java not found at ${patchGenSrc}`);
+  }
+  await execFileAsync("javac", ["-encoding", "UTF-8", "-cp", jarPath, "-d", dir, patchGenSrc]);
+  return `${jarPath}:${dir}`;
+}
+
+interface DeltaSource {
+  from_version_code: number;
+  arch: string | null;
+  size_bytes: number;
+  sha256: string;
+  url: string;
+}
+
+/**
+ * Generate archive-patcher delta patches from the last N published versions to
+ * the just-uploaded build, and upload each as a delta-patch asset. The Worker
+ * serves the source APKs (GET /api/apps/:id/delta-sources) and stores the
+ * patches; the CPU-heavy bsdiff runs here in CI. Skips patches that don't beat
+ * the full APK size.
+ */
+async function generateAndUploadAndroidDeltas(args: {
+  appId: string;
+  buildId: string;
+  newApkPath: string;
+  arch: string;
+  toVersionCode: number;
+  targetSha256: string;
+  newApkSize: number;
+  versions: number;
+}): Promise<Array<{ id: string; artifact_kind: string; filetype: string; file_hash: string; size_bytes: number }>> {
+  const { sources } = await apiRequest<{ sources: DeltaSource[] }>(
+    `/api/apps/${args.appId}/delta-sources`,
+    { query: { arch: args.arch, before: args.toVersionCode, limit: args.versions } },
+  );
+  if (!sources || sources.length === 0) {
+    console.error(`[delta] no prior published versions to diff against; skipping.`);
+    return [];
+  }
+
+  const work = await mkdtemp(join(tmpdir(), "hands-delta-"));
+  const uploaded: Array<{ id: string; artifact_kind: string; filetype: string; file_hash: string; size_bytes: number }> = [];
+  try {
+    const cp = await ensureArchivePatcher(work);
+    for (const src of sources) {
+      const oldPath = join(work, `old-${src.from_version_code}.apk`);
+      const patchPath = join(work, `from-${src.from_version_code}.patch.gz`);
+      const dl = await fetch(src.url);
+      if (!dl.ok) {
+        console.error(`[delta] v${src.from_version_code}: download failed HTTP ${dl.status}; skipping.`);
+        continue;
+      }
+      await writeFile(oldPath, Buffer.from(await dl.arrayBuffer()));
+      await execFileAsync("java", ["-cp", cp, "PatchGen", oldPath, args.newApkPath, patchPath], {
+        maxBuffer: 16 * 1024 * 1024,
+      });
+      const patchSize = readFileSync(patchPath).length;
+      if (patchSize >= args.newApkSize) {
+        console.error(`[delta] v${src.from_version_code}: patch ${patchSize}B not smaller than full APK ${args.newApkSize}B; skipping.`);
+        continue;
+      }
+      console.error(`[delta] v${src.from_version_code} -> v${args.toVersionCode}: patch ${patchSize}B (${(patchSize / args.newApkSize * 100).toFixed(1)}% of full)`);
+      uploaded.push(
+        await uploadAndRegisterAsset(args.appId, args.buildId, patchPath, {
+          artifact_kind: "delta-patch",
+          platform: "android",
+          arch: args.arch,
+          filetype: "patch",
+          metadata_json: {
+            from_version_code: src.from_version_code,
+            to_version_code: args.toVersionCode,
+            algorithm: "archive-patcher-v1+gzip",
+            target_sha256: args.targetSha256,
+          },
+        }),
+      );
+    }
+  } finally {
+    await rm(work, { recursive: true, force: true }).catch(() => {});
+  }
+  return uploaded;
 }
 
 export function inferElectronPlatform(filePath: string | undefined): string {
