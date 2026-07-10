@@ -122,7 +122,6 @@ export async function handleTestflightUpload(c: AdminContext) {
       r2Key: asset.r2_key,
       fileSize: asset.size_bytes,
       fileName,
-      sha256: asset.file_hash ?? undefined,
       onProgress: async (progress, note) => {
         await updateOperation(c.env.DB, op.id, {
           status: "in_progress",
@@ -162,7 +161,6 @@ async function runUpload(
     r2Key: string;
     fileSize: number;
     fileName: string;
-    sha256: string | undefined;
     onProgress: (progress: number, note: string) => Promise<void>;
   },
 ): Promise<{
@@ -218,7 +216,9 @@ async function runUpload(
     );
   }
 
-  await commitBuildUploadFile(creds, { fileId: file.id, sha256: args.sha256 });
+  // Checksum omitted: Apple's validator rejected our SHA_256 shape (409
+  // 'not a valid value for sourceFileChecksums') and the field is optional.
+  await commitBuildUploadFile(creds, { fileId: file.id });
   await args.onProgress(90, "committed — Apple is processing");
 
   // One immediate state read; the status endpoint keeps polling afterwards.
