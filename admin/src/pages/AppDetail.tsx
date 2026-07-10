@@ -1,3 +1,4 @@
+import { Button } from "raft-ui";
 import { DeviceAnalytics } from "../components/DeviceAnalytics";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
@@ -215,13 +216,14 @@ function AppNamePanel({ appId, app }: { appId: string; app: App }) {
           if (e.key === "Enter" && dirty && !rename.isPending) rename.mutate();
         }}
       />
-      <button
-        className="btn-secondary py-1! px-2! text-xs!"
+      <Button
+        variant="primary"
+        loading={rename.isPending}
         disabled={!dirty || rename.isPending}
         onClick={() => rename.mutate()}
       >
-        {rename.isPending ? "…" : "Save"}
-      </button>
+        Save
+      </Button>
     </div>
   );
 }
@@ -255,13 +257,14 @@ function AppDescriptionPanel({ appId, app }: { appId: string; app: App }) {
         placeholder="What is this app?"
         onChange={(e) => setDescription(e.target.value)}
       />
-      <button
-        className="btn-secondary py-1! px-2! text-xs!"
+      <Button
+        variant="primary"
+        loading={save.isPending}
         disabled={!dirty || save.isPending}
         onClick={() => save.mutate()}
       >
-        {save.isPending ? "…" : "Save"}
-      </button>
+        Save
+      </Button>
     </div>
   );
 }
