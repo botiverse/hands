@@ -76,7 +76,7 @@ export function AppFeedback({ appId }: { appId: string }) {
         />
       )}
       {versionFilter && (
-        <div className="card !py-2 !px-3 flex items-center justify-between text-sm">
+        <div className="card py-2! px-3! flex items-center justify-between text-sm">
           <span>
             Filtered to version code <span className="font-mono">{versionFilter}</span>
           </span>
@@ -86,7 +86,7 @@ export function AppFeedback({ appId }: { appId: string }) {
         </div>
       )}
       {signatureFilter && (
-        <div className="card !p-3">
+        <div className="card p-3!">
           <div className="flex items-start justify-between gap-3">
             <div className="min-w-0">
               <div className="text-xs text-slate-500">Crash signature</div>
@@ -115,7 +115,7 @@ export function AppFeedback({ appId }: { appId: string }) {
         </div>
         <div className="flex items-center gap-2 text-sm">
           <select
-            className="input !w-auto !py-1.5"
+            className="input w-auto! py-1.5!"
             value={statusFilter}
             onChange={(e) => setStatusFilter(e.target.value)}
           >
@@ -125,7 +125,7 @@ export function AppFeedback({ appId }: { appId: string }) {
             ))}
           </select>
           <select
-            className="input !w-auto !py-1.5"
+            className="input w-auto! py-1.5!"
             value={kindFilter}
             onChange={(e) => setKindFilter(e.target.value)}
           >
@@ -170,13 +170,13 @@ export function AppFeedback({ appId }: { appId: string }) {
                   onClick={() => navigate(`/apps/${appId}/feedback/${t.id}`)}
                 >
                   <td className="py-2 pr-3 max-w-md">
-                    <span className={`rounded px-1.5 py-0.5 text-xs font-medium mr-2 ${KIND_STYLES[t.kind]}`}>
+                    <span className={`rounded-sm px-1.5 py-0.5 text-xs font-medium mr-2 ${KIND_STYLES[t.kind]}`}>
                       {t.kind}
                     </span>
                     <span className="align-middle">{t.message.slice(0, 80)}{t.message.length > 80 ? "…" : ""}</span>
                   </td>
                   <td className="py-2 pr-3">
-                    <span className={`rounded px-1.5 py-0.5 text-xs font-medium ${STATUS_STYLES[t.status]}`}>
+                    <span className={`rounded-sm px-1.5 py-0.5 text-xs font-medium ${STATUS_STYLES[t.status]}`}>
                       {t.status}
                     </span>
                   </td>
@@ -299,7 +299,7 @@ function CrashLogView({
               </button>
             ))}
           </div>
-          <pre className="max-h-[28rem] overflow-auto rounded-md bg-slate-950 p-3 text-xs leading-relaxed text-slate-100">
+          <pre className="max-h-112 overflow-auto rounded-md bg-slate-950 p-3 text-xs leading-relaxed text-slate-100">
             {activeSection?.key === "stack" && deobfuscated && showDeobf
               ? deobfuscated
               : activeSection?.body}
@@ -325,7 +325,7 @@ function DeviceScopeBanner({
   });
   const d = detail.data?.device;
   return (
-    <div className="card !p-3">
+    <div className="card p-3!">
       <div className="flex items-center justify-between">
         <h4 className="text-sm font-semibold">
           Device <span className="font-mono text-xs">{deviceId}</span>
@@ -555,10 +555,10 @@ export function FeedbackTicketPage({
           <div className="flex items-start justify-between gap-3 flex-wrap">
             <div>
               <div className="flex items-center gap-2">
-                <span className={`rounded px-1.5 py-0.5 text-xs font-medium ${KIND_STYLES[t.kind]}`}>{t.kind}</span>
-                <span className={`rounded px-1.5 py-0.5 text-xs font-medium ${STATUS_STYLES[t.status]}`}>{t.status}</span>
+                <span className={`rounded-sm px-1.5 py-0.5 text-xs font-medium ${KIND_STYLES[t.kind]}`}>{t.kind}</span>
+                <span className={`rounded-sm px-1.5 py-0.5 text-xs font-medium ${STATUS_STYLES[t.status]}`}>{t.status}</span>
                 {t.assignee && (
-                  <span className="rounded bg-violet-100 px-1.5 py-0.5 text-xs font-medium text-violet-800">
+                  <span className="rounded-sm bg-violet-100 px-1.5 py-0.5 text-xs font-medium text-violet-800">
                     {t.assignee}
                   </span>
                 )}
@@ -575,8 +575,8 @@ export function FeedbackTicketPage({
                   key={s}
                   className={
                     s === t.status
-                      ? "rounded border border-slate-900 bg-slate-900 px-2 py-1 text-xs text-white"
-                      : "rounded border border-slate-300 px-2 py-1 text-xs text-slate-600 hover:bg-slate-100"
+                      ? "rounded-sm border border-slate-900 bg-slate-900 px-2 py-1 text-xs text-white"
+                      : "rounded-sm border border-slate-300 px-2 py-1 text-xs text-slate-600 hover:bg-slate-100"
                   }
                   disabled={update.isPending || s === t.status}
                   onClick={() => update.mutate({ status: s })}
@@ -597,7 +597,7 @@ export function FeedbackTicketPage({
                   <span>{t.assignee ?? "Unassigned"}</span>
                   {myName && t.assignee !== myName && (
                     <button
-                      className="rounded border border-slate-300 px-2 py-1 text-xs hover:bg-slate-100"
+                      className="rounded-sm border border-slate-300 px-2 py-1 text-xs hover:bg-slate-100"
                       disabled={update.isPending}
                       onClick={() => update.mutate({ assignee: myName })}
                     >
@@ -605,14 +605,14 @@ export function FeedbackTicketPage({
                     </button>
                   )}
                   <button
-                    className="rounded border border-slate-300 px-2 py-1 text-xs hover:bg-slate-100"
+                    className="rounded-sm border border-slate-300 px-2 py-1 text-xs hover:bg-slate-100"
                     onClick={() => setAssigneeDraft(t.assignee ?? "")}
                   >
                     Edit
                   </button>
                   {t.assignee && (
                     <button
-                      className="rounded border border-slate-300 px-2 py-1 text-xs text-red-600 hover:bg-red-50"
+                      className="rounded-sm border border-slate-300 px-2 py-1 text-xs text-red-600 hover:bg-red-50"
                       disabled={update.isPending}
                       onClick={() => update.mutate({ assignee: null })}
                     >
@@ -623,7 +623,7 @@ export function FeedbackTicketPage({
               ) : (
                 <>
                   <input
-                    className="rounded border border-slate-300 px-2 py-1 text-sm"
+                    className="rounded-sm border border-slate-300 px-2 py-1 text-sm"
                     value={assigneeDraft}
                     autoFocus
                     onChange={(e) => setAssigneeDraft(e.target.value)}
@@ -757,7 +757,7 @@ export function FeedbackTicketPage({
             </h4>
             <ul className="space-y-2 text-sm">
               {detail.data!.comments.map((cm) => (
-                <li key={cm.id} className="rounded border border-slate-200 p-2">
+                <li key={cm.id} className="rounded-sm border border-slate-200 p-2">
                   <div className="text-xs text-slate-500">
                     {cm.author_actor} · {new Date(cm.created_at).toLocaleString()}
                   </div>
@@ -767,7 +767,7 @@ export function FeedbackTicketPage({
             </ul>
             <div className="mt-2 flex gap-2">
               <input
-                className="flex-1 rounded border border-slate-300 px-2 py-1.5 text-sm"
+                className="flex-1 rounded-sm border border-slate-300 px-2 py-1.5 text-sm"
                 placeholder="Add a comment…"
                 value={comment}
                 onChange={(e) => setComment(e.target.value)}

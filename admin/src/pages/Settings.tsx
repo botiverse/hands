@@ -12,7 +12,7 @@ export function Settings() {
 
       {/* Current account + org context */}
       {account && (
-        <div className="card !p-4 space-y-2 text-sm mb-4">
+        <div className="card p-4! space-y-2 text-sm mb-4">
           <h2 className="text-base font-semibold text-slate-700">
             Current account
           </h2>

@@ -82,7 +82,7 @@ export function OrgSettings({
       {me.isLoading && <p className="text-slate-500">Loading…</p>}
 
       {!isCurrentOrg && currentOrgId && (
-        <div className="card !p-4 bg-yellow-50 border-yellow-200 text-yellow-800 text-sm mb-4">
+        <div className="card p-4! bg-yellow-50 border-yellow-200 text-yellow-800 text-sm mb-4">
           ⚠ The org in the URL ({orgId}) doesn't match your current org (
           {currentOrgId}). Multi-org support deferred to v2.
         </div>
@@ -114,7 +114,7 @@ export function OrgSettings({
       </div>
 
       {tab === "general" && (
-        <div className="card !p-4 text-sm space-y-2">
+        <div className="card p-4! text-sm space-y-2">
           <Row k="External provider" v={account?.provider ?? "?"} />
           <Row k="External ID (Raft server_id)" v={account?.server_id ?? "?"} />
           <Row k="Server slug" v={account?.server_slug ?? "—"} />
@@ -227,7 +227,7 @@ function MembersTab({
   });
 
   return (
-    <div className="card !p-4 text-sm">
+    <div className="card p-4! text-sm">
       <div className="flex items-center justify-between mb-3">
         <h3 className="text-base font-semibold">Members</h3>
         <div className="flex items-center gap-2">
@@ -437,7 +437,7 @@ function InvitesTab({
   });
 
   return (
-    <div className="card !p-4 text-sm">
+    <div className="card p-4! text-sm">
       <div className="flex items-center justify-between mb-3">
         <h3 className="text-base font-semibold">Invites</h3>
         <div className="flex items-center gap-2">
@@ -676,7 +676,7 @@ function AuditTab({
     enabled: canView,
   });
   return (
-    <div className="card !p-4 text-sm">
+    <div className="card p-4! text-sm">
       <h3 className="text-base font-semibold mb-3">Audit log</h3>
       {!canView && (
         <p className="text-xs text-yellow-700 mb-2">
@@ -832,7 +832,7 @@ function WebhooksTab({
 
   return (
     <div className="space-y-3">
-      <div className="card !p-4 text-sm">
+      <div className="card p-4! text-sm">
         <div className="flex items-center justify-between mb-3">
           <div>
             <h3 className="text-base font-semibold">Webhooks</h3>
@@ -892,7 +892,7 @@ function WebhooksTab({
         )}
       </div>
 
-      <div className="card !p-4 text-xs text-slate-600">
+      <div className="card p-4! text-xs text-slate-600">
         <h4 className="font-semibold mb-1">Delivery semantics</h4>
         <ul className="list-disc pl-5 space-y-1">
           <li>
@@ -955,7 +955,7 @@ function WebhookRow({
     enabled: expanded,
   });
   return (
-    <div className="border border-slate-200 rounded p-3">
+    <div className="border border-slate-200 rounded-sm p-3">
       <div className="flex items-center justify-between gap-3">
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2">

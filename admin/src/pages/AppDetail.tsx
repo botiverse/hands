@@ -208,7 +208,7 @@ function AppNamePanel({ appId, app }: { appId: string; app: App }) {
         </div>
       </div>
       <input
-        className="input !h-8 w-56 !text-sm"
+        className="input h-8! w-56 text-sm!"
         value={name}
         onChange={(e) => setName(e.target.value)}
         onKeyDown={(e) => {
@@ -216,7 +216,7 @@ function AppNamePanel({ appId, app }: { appId: string; app: App }) {
         }}
       />
       <button
-        className="btn-secondary !py-1 !px-2 !text-xs"
+        className="btn-secondary py-1! px-2! text-xs!"
         disabled={!dirty || rename.isPending}
         onClick={() => rename.mutate()}
       >
@@ -250,13 +250,13 @@ function AppDescriptionPanel({ appId, app }: { appId: string; app: App }) {
         </div>
       </div>
       <textarea
-        className="input w-72 !text-sm !h-16 resize-y"
+        className="input w-72 text-sm! h-16! resize-y"
         value={description}
         placeholder="What is this app?"
         onChange={(e) => setDescription(e.target.value)}
       />
       <button
-        className="btn-secondary !py-1 !px-2 !text-xs"
+        className="btn-secondary py-1! px-2! text-xs!"
         disabled={!dirty || save.isPending}
         onClick={() => save.mutate()}
       >
@@ -304,13 +304,13 @@ function ClientKeyPanel({ appId }: { appId: string }) {
       {key && (
         <>
           <button
-            className="btn-secondary !py-1 !px-2 !text-xs"
+            className="btn-secondary py-1! px-2! text-xs!"
             onClick={() => setRevealed((v) => !v)}
           >
             {revealed ? "Hide" : "Reveal"}
           </button>
           <button
-            className="btn-secondary !py-1 !px-2 !text-xs"
+            className="btn-secondary py-1! px-2! text-xs!"
             onClick={() => {
               navigator.clipboard?.writeText(key);
               toast.show({ kind: "success", title: "Client key copied" });
@@ -321,7 +321,7 @@ function ClientKeyPanel({ appId }: { appId: string }) {
         </>
       )}
       <button
-        className="btn-secondary !py-1 !px-2 !text-xs"
+        className="btn-secondary py-1! px-2! text-xs!"
         disabled={rotate.isPending}
         onClick={() => {
           if (window.confirm("Rotate the client key? Older client builds stop reporting until they carry the new key.")) {
@@ -445,7 +445,7 @@ function TestFlightPanel({ appId }: { appId: string }) {
         {meta && !editing && (
           <>
             <button
-              className="btn-secondary !py-1 !px-2 !text-xs"
+              className="btn-secondary py-1! px-2! text-xs!"
               disabled={test.isPending}
               onClick={() => test.mutate()}
               title="Verify the stored key against App Store Connect for this app's bundle id"
@@ -453,13 +453,13 @@ function TestFlightPanel({ appId }: { appId: string }) {
               {test.isPending ? "Testing…" : "Test connection"}
             </button>
             <button
-              className="btn-secondary !py-1 !px-2 !text-xs"
+              className="btn-secondary py-1! px-2! text-xs!"
               onClick={() => setEditing(true)}
             >
               Replace key
             </button>
             <button
-              className="btn-secondary !border-red-300 !text-red-700 !py-1 !px-2 !text-xs"
+              className="btn-secondary border-red-300! text-red-700! py-1! px-2! text-xs!"
               disabled={remove.isPending}
               onClick={() => {
                 if (
@@ -521,7 +521,7 @@ function TestFlightPanel({ appId }: { appId: string }) {
             <label className="flex-1 text-xs text-slate-600">
               Key ID
               <input
-                className="input !h-8 w-full !text-sm font-mono mt-1"
+                className="input h-8! w-full text-sm! font-mono mt-1"
                 placeholder="ABC123DEFG"
                 value={keyId}
                 onChange={(e) => setKeyId(e.target.value)}
@@ -530,7 +530,7 @@ function TestFlightPanel({ appId }: { appId: string }) {
             <label className="flex-1 text-xs text-slate-600">
               Issuer ID
               <input
-                className="input !h-8 w-full !text-sm font-mono mt-1"
+                className="input h-8! w-full text-sm! font-mono mt-1"
                 placeholder="12345678-90ab-cdef-1234-567890abcdef"
                 value={issuerId}
                 onChange={(e) => setIssuerId(e.target.value)}
@@ -540,14 +540,14 @@ function TestFlightPanel({ appId }: { appId: string }) {
           <label className="block text-xs text-slate-600">
             Private key (.p8 contents)
             <textarea
-              className="input w-full !text-xs font-mono !h-24 resize-y mt-1"
+              className="input w-full text-xs! font-mono h-24! resize-y mt-1"
               placeholder={"-----BEGIN PRIVATE KEY-----\n…\n-----END PRIVATE KEY-----"}
               value={p8}
               onChange={(e) => setP8(e.target.value)}
             />
           </label>
           <div className="flex items-center gap-2">
-            <label className="btn-secondary !py-1 !px-2 !text-xs cursor-pointer">
+            <label className="btn-secondary py-1! px-2! text-xs! cursor-pointer">
               Load from .p8 file
               <input
                 type="file"
@@ -559,7 +559,7 @@ function TestFlightPanel({ appId }: { appId: string }) {
             <div className="flex-1" />
             {editing && (
               <button
-                className="btn-secondary !py-1 !px-2 !text-xs"
+                className="btn-secondary py-1! px-2! text-xs!"
                 onClick={() => {
                   setEditing(false);
                   setKeyId("");
@@ -571,7 +571,7 @@ function TestFlightPanel({ appId }: { appId: string }) {
               </button>
             )}
             <button
-              className="btn-secondary !py-1 !px-2 !text-xs"
+              className="btn-secondary py-1! px-2! text-xs!"
               disabled={!formValid || save.isPending}
               onClick={() => save.mutate()}
             >
@@ -639,7 +639,7 @@ function PublicHistoryToggle({ appId, app }: { appId: string; app: App }) {
         </div>
       </div>
       <button
-        className="btn-secondary !py-1 !px-2 !text-xs"
+        className="btn-secondary py-1! px-2! text-xs!"
         disabled={toggle.isPending}
         onClick={() => toggle.mutate()}
       >
@@ -680,7 +680,7 @@ function DeltaUpdatesToggle({ appId, app }: { appId: string; app: App }) {
         </div>
       </div>
       <button
-        className="btn-secondary !py-1 !px-2 !text-xs"
+        className="btn-secondary py-1! px-2! text-xs!"
         disabled={toggle.isPending}
         onClick={() => toggle.mutate()}
       >
@@ -727,7 +727,7 @@ function AppIconUploader({ appId, slug }: { appId: string; slug: string }) {
           Shown on share/download pages. PNG/WebP/JPEG, max 1MB.
         </div>
       </div>
-      <label className="btn-secondary !py-1 !px-2 !text-xs ml-auto cursor-pointer">
+      <label className="btn-secondary py-1! px-2! text-xs! ml-auto cursor-pointer">
         {upload.isPending ? "Uploading…" : "Upload"}
         <input
           type="file"
@@ -797,7 +797,7 @@ export function AppSettings({ appId }: { appId: string }) {
   return (
     <div>
 
-      <div className="card !p-4 text-sm space-y-3">
+      <div className="card p-4! text-sm space-y-3">
         <h2 className="text-base font-semibold">Settings</h2>
 
         {/* App name (slug is immutable) */}
@@ -863,7 +863,7 @@ export function AppSettings({ appId }: { appId: string }) {
                 </button>
                 {Boolean(app.archived) && (
                   <button
-                    className="btn-secondary !border-red-300 !text-red-700 text-xs"
+                    className="btn-secondary border-red-300! text-red-700! text-xs"
                     disabled={purge.isPending}
                     onClick={() => setConfirmPurge(true)}
                   >
@@ -1162,7 +1162,7 @@ function ChannelRow({
   busy: boolean;
 }) {
   return (
-    <div className="card !p-3 flex items-center gap-3">
+    <div className="card p-3! flex items-center gap-3">
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-2 flex-wrap">
           <span className="font-medium">{c.name}</span>
@@ -1398,7 +1398,7 @@ function EditChannelDialog({
             </strong>{" "}
             — otherwise the public API will start 404'ing your clients.
             {app?.default_channel_id === channel.id && (
-              <div className="mt-2 p-2 bg-yellow-50 border border-yellow-200 rounded text-xs text-yellow-900">
+              <div className="mt-2 p-2 bg-yellow-50 border border-yellow-200 rounded-sm text-xs text-yellow-900">
                 ⚠ This is the app's <strong>default release channel</strong>.
                 After deletion, the New Release wizard will fall back to the
                 first channel by created_at.

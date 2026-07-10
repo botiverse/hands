@@ -71,7 +71,7 @@ export function AppAccess({ appId }: { appId: string }) {
 
   return (
     <div className="space-y-4">
-      <div className="card !p-4 text-sm">
+      <div className="card p-4! text-sm">
         <div className="text-slate-600 mb-2">
           <strong>Access.</strong> Review inherited owner-server access,
           external Raft server visibility, and direct per-app member grants.
@@ -178,7 +178,7 @@ function AppServerGrantList({
   const visibleRowCount = rows.length + (isOwningOrg ? 1 : 0);
 
   return (
-    <div className="card !p-4 text-sm">
+    <div className="card p-4! text-sm">
       {grants.isLoading && <p className="text-slate-500">Loading…</p>}
       {grants.error && (
         <p className="text-red-600">Failed: {(grants.error as Error).message}</p>
@@ -190,7 +190,7 @@ function AppServerGrantList({
             {visibleRowCount} server{visibleRowCount === 1 ? "" : "s"}
           </span>
           {canManage && (
-            <button className="btn-secondary !py-1 !px-2 !text-xs whitespace-nowrap" onClick={onAdd}>
+            <button className="btn-secondary py-1! px-2! text-xs! whitespace-nowrap" onClick={onAdd}>
               + Add
             </button>
           )}
@@ -447,7 +447,7 @@ function AppMemberList({
   });
 
   return (
-    <div className="card !p-4 text-sm">
+    <div className="card p-4! text-sm">
       {members.isLoading && <p className="text-slate-500">Loading…</p>}
       {members.error && (
         <p className="text-red-600">Failed: {(members.error as Error).message}</p>
@@ -456,7 +456,7 @@ function AppMemberList({
         <h3 className="text-base font-semibold">Direct app members</h3>
         <div className="flex items-center gap-2">
           <select
-            className="input !w-auto text-xs py-0.5 pr-7"
+            className="input w-auto! text-xs py-0.5 pr-7"
             value={principalFilter}
             onChange={(e) =>
               setPrincipalFilter(e.target.value as "all" | "human" | "agent")
@@ -474,7 +474,7 @@ function AppMemberList({
             )}
           </span>
           {canManage && (
-            <button className="btn-secondary !py-1 !px-2 !text-xs whitespace-nowrap" onClick={onAdd}>
+            <button className="btn-secondary py-1! px-2! text-xs! whitespace-nowrap" onClick={onAdd}>
               + Add
             </button>
           )}
@@ -619,7 +619,7 @@ function AppDeployTokenList({
   const rows = tokens.data?.deploy_tokens ?? [];
 
   return (
-    <div className="card !p-4 text-sm">
+    <div className="card p-4! text-sm">
       {tokens.isLoading && <p className="text-slate-500">Loading…</p>}
       {tokens.error && (
         <p className="text-red-600">Failed: {(tokens.error as Error).message}</p>
@@ -630,7 +630,7 @@ function AppDeployTokenList({
           <span className="text-xs text-slate-500 whitespace-nowrap">
             {rows.length} token{rows.length === 1 ? "" : "s"}
           </span>
-          <button className="btn-secondary !py-1 !px-2 !text-xs whitespace-nowrap" onClick={onAdd}>
+          <button className="btn-secondary py-1! px-2! text-xs! whitespace-nowrap" onClick={onAdd}>
             + Add
           </button>
         </div>
@@ -1088,7 +1088,7 @@ function InviteToAppForm({ appId }: { appId: string }) {
   if (!orgId) return null;
 
   return (
-    <div className="card !p-4 text-sm">
+    <div className="card p-4! text-sm">
       <div className="flex items-center justify-between mb-3">
         <h3 className="text-base font-semibold">Create app invite link</h3>
         {!showForm && (

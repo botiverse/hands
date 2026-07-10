@@ -53,7 +53,7 @@ function AuditEntry({ entry }: { entry: AuditLogEntry }) {
           {new Date(entry.created_at).toLocaleString()}
         </span>
       </div>
-      <pre className="text-xs bg-slate-50 p-2 rounded overflow-x-auto">
+      <pre className="text-xs bg-slate-50 p-2 rounded-sm overflow-x-auto">
         {JSON.stringify(payload, null, 2)}
       </pre>
     </div>

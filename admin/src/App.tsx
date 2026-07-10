@@ -402,7 +402,7 @@ function Header({ account }: { account: AuthAccount }) {
         )}
         <button
           type="button"
-          className={`flex w-full items-center rounded-md outline-none hover:bg-slate-100 ${
+          className={`flex w-full items-center rounded-md outline-hidden hover:bg-slate-100 ${
             collapsed ? "justify-center p-1" : "gap-2 px-2 py-2 text-left"
           }`}
           onClick={() => setShowAccountMenu((open) => !open)}
@@ -746,7 +746,7 @@ function CliCallback({ token }: { token: string }) {
   const [copied, setCopied] = useState(false);
   return (
     <main className="flex min-h-screen items-center justify-center bg-slate-50 px-4">
-      <section className="w-full max-w-xl rounded-md border border-slate-200 bg-white p-6 shadow-sm">
+      <section className="w-full max-w-xl rounded-md border border-slate-200 bg-white p-6 shadow-xs">
         <div className="mb-5 flex items-center gap-3">
           <QuiverMark className="h-9 w-9" />
           <div>
@@ -1032,7 +1032,7 @@ function LandingTerminal() {
           ? "text-slate-500"
           : "text-slate-200";
   return (
-    <div className="rounded-lg border border-slate-200 bg-slate-950 p-5 text-sm text-slate-100 shadow-sm">
+    <div className="rounded-lg border border-slate-200 bg-slate-950 p-5 text-sm text-slate-100 shadow-xs">
       <div className="mb-4 flex items-center justify-between border-b border-slate-700 pb-3">
         <div className="flex flex-wrap gap-1">
           {TERMINAL_DEMOS.map((d) => (
@@ -1050,7 +1050,7 @@ function LandingTerminal() {
             </button>
           ))}
         </div>
-        <span className="rounded bg-sky-400/15 px-2 py-0.5 text-xs text-sky-200">
+        <span className="rounded-sm bg-sky-400/15 px-2 py-0.5 text-xs text-sky-200">
           {demo.badge}
         </span>
       </div>
@@ -1067,7 +1067,7 @@ function LandingTerminal() {
 
 function LandingFeature({ title, body }: { title: string; body: string }) {
   return (
-    <div className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
+    <div className="rounded-lg border border-slate-200 bg-white p-4 shadow-xs">
       <h2 className="text-sm font-semibold">{title}</h2>
       <p className="mt-2 text-sm leading-6 text-slate-600">{body}</p>
     </div>
@@ -1116,7 +1116,7 @@ function AuthenticatedApp({ account }: { account: AuthAccount }) {
             href="https://github.com/oranix-io/hands"
             target="_blank"
             rel="noopener noreferrer"
-            className="btn-secondary !py-1 !px-2 !text-xs inline-flex items-center gap-1.5"
+            className="btn-secondary py-1! px-2! text-xs! inline-flex items-center gap-1.5"
             title="View Hands source on GitHub"
           >
             <svg

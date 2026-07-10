@@ -27,7 +27,7 @@ export function DeviceAnalytics({ appId }: { appId: string }) {
   const maxVersion = Math.max(1, ...data.by_version.map((v) => v.devices));
 
   return (
-    <div className="card !p-4">
+    <div className="card p-4!">
       <div className="flex items-baseline justify-between mb-3">
         <h3 className="text-sm font-semibold">Active devices</h3>
         <span className="text-xs text-slate-500">reported in last 30 days</span>

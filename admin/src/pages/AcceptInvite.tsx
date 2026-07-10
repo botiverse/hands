@@ -75,7 +75,7 @@ export function AcceptInvite({ token }: { token: string }) {
   if (error) {
     return (
       <div className="max-w-md mx-auto mt-20 p-4">
-        <div className="card !p-4 text-red-600 text-sm">
+        <div className="card p-4! text-red-600 text-sm">
           <strong>Invite error:</strong> {error}
         </div>
       </div>
@@ -90,7 +90,7 @@ export function AcceptInvite({ token }: { token: string }) {
 
   return (
     <div className="max-w-md mx-auto mt-20 p-4">
-      <div className="card !p-6">
+      <div className="card p-6!">
         <h1 className="text-xl font-bold mb-2">You've been invited</h1>
         <p className="text-sm text-slate-600 mb-4">
           <strong>{invite.invited_by_display_name ?? "Someone"}</strong> invited

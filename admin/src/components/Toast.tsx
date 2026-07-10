@@ -170,7 +170,7 @@ function ToastCard({
     <div
       role="status"
       aria-live={isError ? "assertive" : "polite"}
-      className={`card !p-3 flex items-start gap-3 border ${borderClass} animate-in slide-in-from-right-5`}
+      className={`card p-3! flex items-start gap-3 border ${borderClass} animate-in slide-in-from-right-5`}
     >
       <div
         className={`w-8 h-8 shrink-0 rounded-full flex items-center justify-center ${iconBg}`}
@@ -221,12 +221,12 @@ function ToastCard({
       <div className="flex-1 min-w-0">
         <div className="font-medium text-sm">{toast.title}</div>
         {toast.description && (
-          <div className="text-xs text-slate-500 mt-0.5 break-words">
+          <div className="text-xs text-slate-500 mt-0.5 wrap-break-word">
             {toast.description}
           </div>
         )}
         {typeof toast.progress === "number" && (
-          <div className="mt-2 h-1.5 bg-slate-100 rounded overflow-hidden">
+          <div className="mt-2 h-1.5 bg-slate-100 rounded-sm overflow-hidden">
             <div
               className="h-full bg-blue-500 transition-all"
               style={{ width: `${Math.round(toast.progress * 100)}%` }}
@@ -238,7 +238,7 @@ function ToastCard({
         <button
           onClick={onDismiss}
           aria-label="Dismiss"
-          className="text-slate-400 hover:text-slate-700 -mr-1 -mt-1 w-6 h-6 flex items-center justify-center rounded"
+          className="text-slate-400 hover:text-slate-700 -mr-1 -mt-1 w-6 h-6 flex items-center justify-center rounded-sm"
         >
           <svg viewBox="0 0 20 20" fill="currentColor" className="w-4 h-4">
             <path

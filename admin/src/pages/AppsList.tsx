@@ -32,7 +32,7 @@ export function AppsList({ onSelectApp, initialShowCreate }: { onSelectApp: (id:
               type="checkbox"
               checked={showArchived}
               onChange={(e) => setShowArchived(e.target.checked)}
-              className="rounded"
+              className="rounded-sm"
             />
             Show archived ({data?.apps.filter((a) => a.archived).length ?? 0})
           </label>

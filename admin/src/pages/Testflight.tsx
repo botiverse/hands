@@ -105,7 +105,7 @@ function UploadRow({ appId, op }: { appId: string; op: Operation }) {
   const uploadFailed = op.status === "failed";
 
   return (
-    <div className="card !p-3">
+    <div className="card p-3!">
       <div className="flex items-center gap-3 flex-wrap text-sm">
         <span className="font-mono font-medium">
           {input.version_name ? `v${input.version_name}` : "—"}

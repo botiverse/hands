@@ -221,11 +221,11 @@ function ShareRow({
         <div className="text-xs text-slate-400">by {share.created_by}</div>
       </td>
       <td className="py-2 pr-3">
-        <span className={`rounded px-1.5 py-0.5 text-xs font-medium ${state.className}`}>
+        <span className={`rounded-sm px-1.5 py-0.5 text-xs font-medium ${state.className}`}>
           {state.label}
         </span>
         {Boolean(share.has_password) && (
-          <span className="ml-1 rounded bg-sky-100 px-1.5 py-0.5 text-xs font-medium text-sky-800">
+          <span className="ml-1 rounded-sm bg-sky-100 px-1.5 py-0.5 text-xs font-medium text-sky-800">
             password
           </span>
         )}
@@ -317,7 +317,7 @@ function CreateShareModal({
         <label className="block text-xs text-slate-600">
           Release
           <select
-            className="input mt-1 !py-1.5"
+            className="input mt-1 py-1.5!"
             value={releaseId}
             onChange={(e) => setReleaseId(e.target.value)}
           >
@@ -337,7 +337,7 @@ function CreateShareModal({
             max={30}
             value={ttlDays}
             onChange={(e) => setTtlDays(Math.min(30, Math.max(1, Number(e.target.value) || 7)))}
-            className="input mt-1 !py-1.5"
+            className="input mt-1 py-1.5!"
           />
         </label>
         <label className="block text-xs text-slate-600">
@@ -347,7 +347,7 @@ function CreateShareModal({
             value={password}
             onChange={(e) => setPassword(e.target.value)}
             placeholder="Leave empty for a public link"
-            className="input mt-1 !py-1.5"
+            className="input mt-1 py-1.5!"
           />
         </label>
         <div className="flex justify-end gap-2 pt-2">

@@ -33,7 +33,7 @@ export function AppCrashes({ appId }: { appId: string }) {
       </div>
 
       {(stats.data?.crashes_by_version.length ?? 0) > 0 && (
-        <div className="card !p-4 max-w-md">
+        <div className="card p-4! max-w-md">
           <CrashByVersion rows={stats.data!.crashes_by_version} />
         </div>
       )}
@@ -78,7 +78,7 @@ export function AppCrashes({ appId }: { appId: string }) {
                   <td className="py-2 pr-3 tabular-nums">{g.count}</td>
                   <td className="py-2 pr-3 tabular-nums">{g.device_count}</td>
                   <td className="py-2 pr-3 tabular-nums">{g.open_count}</td>
-                  <td className="py-2 pr-3 text-xs text-slate-600 max-w-[10rem] truncate">
+                  <td className="py-2 pr-3 text-xs text-slate-600 max-w-40 truncate">
                     {g.versions ?? "—"}
                   </td>
                   <td className="py-2 pr-3 text-xs text-slate-600">

@@ -80,7 +80,7 @@ export function Builds({ appId }: { appId: string }) {
           const pt = productTypes.data?.product_types.find((p) => p.name === b.product_type);
           const isExpanded = expandedBuildId === b.id;
           return (
-            <div key={b.id} className="card !p-3">
+            <div key={b.id} className="card p-3!">
               <div className="flex items-center gap-3 flex-wrap">
                 <span className="font-mono font-medium">
                   v{b.version_name} ({b.version_code})
@@ -199,7 +199,7 @@ function TestflightUploadPanel({ appId, build }: { appId: string; build: Build }
       <div className="flex items-center gap-2 flex-wrap text-xs">
         <span className="badge-gray"> TestFlight</span>
         <button
-          className="btn-secondary !py-1 !px-2 !text-xs"
+          className="btn-secondary py-1! px-2! text-xs!"
           disabled={upload.isPending || build.status !== "succeeded"}
           onClick={() => upload.mutate()}
           title={
@@ -211,7 +211,7 @@ function TestflightUploadPanel({ appId, build }: { appId: string; build: Build }
           {upload.isPending ? "Uploading…" : "Upload to TestFlight"}
         </button>
         <a
-          className="btn-secondary !py-1 !px-2 !text-xs no-underline"
+          className="btn-secondary py-1! px-2! text-xs! no-underline"
           href={
             ascAppId
               ? `https://appstoreconnect.apple.com/apps/${ascAppId}/testflight/ios`
@@ -261,7 +261,7 @@ function BuildStatusBadge({ status }: { status: string }) {
   };
   return (
     <span
-      className={`text-xs px-2 py-0.5 rounded ${colorMap[status] ?? "bg-gray-200 text-gray-700"}`}
+      className={`text-xs px-2 py-0.5 rounded-sm ${colorMap[status] ?? "bg-gray-200 text-gray-700"}`}
     >
       {status}
     </span>

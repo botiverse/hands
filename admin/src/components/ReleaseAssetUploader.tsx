@@ -328,7 +328,7 @@ export function PendingFileRow({
   ].filter(Boolean).join(" / ");
 
   return (
-    <div className="text-xs bg-slate-50 rounded p-2">
+    <div className="text-xs bg-slate-50 rounded-sm p-2">
       <div className="flex items-center gap-2">
         <span
           className={`w-2 h-2 rounded-full shrink-0 ${
@@ -371,7 +371,7 @@ export function PendingFileRow({
       {editing && canEdit && (
         <div className="grid grid-cols-3 gap-2 mt-2">
           <select
-            className="input !py-0.5 !text-xs"
+            className="input py-0.5! text-xs!"
             value={pending.platform}
             onChange={(e) => onChange({ platform: e.target.value })}
           >
@@ -382,13 +382,13 @@ export function PendingFileRow({
             ))}
           </select>
           <input
-            className="input !py-0.5 !text-xs"
+            className="input py-0.5! text-xs!"
             placeholder="arch (optional)"
             value={pending.arch ?? ""}
             onChange={(e) => onChange({ arch: e.target.value || null })}
           />
           <select
-            className="input !py-0.5 !text-xs"
+            className="input py-0.5! text-xs!"
             value={pending.filetype}
             onChange={(e) => onChange({ filetype: e.target.value })}
           >

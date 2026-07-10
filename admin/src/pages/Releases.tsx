@@ -54,7 +54,7 @@ function RolloutPercentInput({
           const next = Number(e.target.value);
           if (Number.isFinite(next)) onChange(Math.min(100, Math.max(0, Math.trunc(next))));
         }}
-        className="w-16 rounded border border-slate-300 px-2 py-1 text-right font-mono text-xs"
+        className="w-16 rounded-sm border border-slate-300 px-2 py-1 text-right font-mono text-xs"
       />
       <span className="text-slate-500">%</span>
       {ROLLOUT_PRESETS.map((preset) => (
@@ -63,7 +63,7 @@ function RolloutPercentInput({
           type="button"
           onClick={() => onChange(preset)}
           className={
-            "rounded border px-1.5 py-0.5 text-[11px] " +
+            "rounded-sm border px-1.5 py-0.5 text-[11px] " +
             (value === preset
               ? "border-slate-900 bg-slate-900 text-white"
               : "border-slate-300 text-slate-600 hover:bg-slate-100")
@@ -174,7 +174,7 @@ export function Releases({ appId }: { appId: string }) {
       </div>
 
       {/* Filters */}
-      <div className="card !p-3 mb-4 flex flex-wrap gap-3 items-center">
+      <div className="card p-3! mb-4 flex flex-wrap gap-3 items-center">
         <select
           className="input w-40"
           value={channelFilter}
@@ -247,7 +247,7 @@ export function Releases({ appId }: { appId: string }) {
 
 function Stat({ label, value }: { label: string; value: React.ReactNode }) {
   return (
-    <div className="card !p-3">
+    <div className="card p-3!">
       <div className="text-xs text-slate-500">{label}</div>
       <div className="text-2xl font-semibold mt-1">{value}</div>
     </div>
@@ -559,7 +559,7 @@ function ReleaseStatusBadge({ status }: { status: string }) {
   };
   return (
     <span
-      className={`text-xs px-2 py-0.5 rounded ${colorMap[status] ?? "bg-gray-200 text-gray-700"}`}
+      className={`text-xs px-2 py-0.5 rounded-sm ${colorMap[status] ?? "bg-gray-200 text-gray-700"}`}
     >
       {status}
     </span>
@@ -1061,7 +1061,7 @@ function NewReleaseDialog({
           {/* ---------------- Step 4: Review ---------------- */}
           {step === 4 && (
             <div className="space-y-3 text-sm">
-              <div className="border border-slate-200 rounded p-3 space-y-1">
+              <div className="border border-slate-200 rounded-sm p-3 space-y-1">
                 <Row k="Channel" v={channelSlug || "—"} />
                 <Row k="Product type" v={productType || "—"} />
                 <Row k="Version" v={`${versionName || "—"} (${versionCode || "?"})`} />
@@ -1079,7 +1079,7 @@ function NewReleaseDialog({
                     <summary className="cursor-pointer text-xs text-slate-500">
                       Release notes
                     </summary>
-                    <pre className="mt-1 p-2 bg-slate-50 rounded text-xs whitespace-pre-wrap">
+                    <pre className="mt-1 p-2 bg-slate-50 rounded-sm text-xs whitespace-pre-wrap">
                       {changelog}
                     </pre>
                   </details>
@@ -1097,7 +1097,7 @@ function NewReleaseDialog({
                   {showAdvanced ? "▾" : "▸"} Advanced options (force update, rollout %)
                 </summary>
                 {showAdvanced && (
-                  <div className="mt-2 p-3 border border-slate-200 rounded space-y-2">
+                  <div className="mt-2 p-3 border border-slate-200 rounded-sm space-y-2">
                     <label className="flex items-center gap-2 text-xs">
                       <input
                         type="checkbox"

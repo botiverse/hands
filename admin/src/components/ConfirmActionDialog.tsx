@@ -123,7 +123,7 @@ function ConfirmActionDialogInner({
         </div>
 
         {objectSummary && (
-          <div className="mb-3 p-3 border border-slate-200 rounded bg-slate-50 text-xs">
+          <div className="mb-3 p-3 border border-slate-200 rounded-sm bg-slate-50 text-xs">
             {objectSummary}
           </div>
         )}
@@ -185,7 +185,7 @@ export function TypedConfirmField({
     <div className="mb-3">
       <label className="label">
         Type{" "}
-        <code className="font-mono text-xs bg-slate-100 px-1 py-0.5 rounded">
+        <code className="font-mono text-xs bg-slate-100 px-1 py-0.5 rounded-sm">
           {required}
         </code>{" "}
         to confirm

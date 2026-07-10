@@ -63,7 +63,7 @@ export function FeedbackTrends({ appId }: { appId: string }) {
   if (total === 0) return null;
 
   return (
-    <div className="card !p-4 mb-4">
+    <div className="card p-4! mb-4">
       <div className="flex items-center justify-between mb-1">
         <div>
           <h3 className="text-sm font-semibold">Last 30 days</h3>
@@ -77,7 +77,7 @@ export function FeedbackTrends({ appId }: { appId: string }) {
             {KINDS.map((k) => (
               <span key={k} className="inline-flex items-center gap-1.5">
                 <span
-                  className="inline-block h-2.5 w-2.5 rounded-sm"
+                  className="inline-block h-2.5 w-2.5 rounded-xs"
                   style={{ background: KIND_COLOR[k] }}
                 />
                 {k}
@@ -85,7 +85,7 @@ export function FeedbackTrends({ appId }: { appId: string }) {
             ))}
           </div>
           <button
-            className="btn-secondary !py-0.5 !px-2 !text-xs"
+            className="btn-secondary py-0.5! px-2! text-xs!"
             onClick={() => setShowTable((v) => !v)}
           >
             {showTable ? "Chart" : "Table"}
@@ -172,13 +172,13 @@ function StackedDaily({
       </svg>
       {hover !== null && (
         <div
-          className="pointer-events-none absolute -top-2 z-10 rounded-md border border-slate-200 bg-white px-2.5 py-1.5 text-xs shadow-sm"
+          className="pointer-events-none absolute -top-2 z-10 rounded-md border border-slate-200 bg-white px-2.5 py-1.5 text-xs shadow-xs"
           style={{ left: `${Math.min(85, (hover / days.length) * 100)}%` }}
         >
           <div className="font-medium text-slate-800">{days[hover]!.day}</div>
           {KINDS.map((k) => (
             <div key={k} className="flex items-center gap-1.5 text-slate-600">
-              <span className="inline-block h-2 w-2 rounded-sm" style={{ background: KIND_COLOR[k] }} />
+              <span className="inline-block h-2 w-2 rounded-xs" style={{ background: KIND_COLOR[k] }} />
               {k}: {days[hover]![k] as number}
             </div>
           ))}

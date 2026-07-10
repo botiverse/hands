@@ -69,7 +69,7 @@ export function OrgSwitcher({
               }`}
             >
               <span
-                className="w-2 h-2 rounded-full flex-shrink-0"
+                className="w-2 h-2 rounded-full shrink-0"
                 style={{
                   backgroundColor:
                     o.external_provider === "raft" ? "#3b82f6" : "#6b7280",
@@ -91,7 +91,7 @@ export function OrgSwitcher({
           <Link
             to={`/orgs/${currentOrgId}`}
             onClick={onClose}
-            className="flex items-center gap-2 rounded px-2 py-2 text-sm text-slate-600 hover:bg-slate-50 hover:text-slate-900"
+            className="flex items-center gap-2 rounded-sm px-2 py-2 text-sm text-slate-600 hover:bg-slate-50 hover:text-slate-900"
           >
             <Settings className="h-4 w-4" aria-hidden="true" />
             Organization settings

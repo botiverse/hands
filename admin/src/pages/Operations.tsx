@@ -150,7 +150,7 @@ function OperationRow({
 
   return (
     <div
-      className={`card !p-3 ${isLive ? "ring-2 ring-blue-200" : ""}`}
+      className={`card p-3! ${isLive ? "ring-2 ring-blue-200" : ""}`}
     >
       <div className="flex items-center gap-3">
         <span className={`${STATUS_COLORS[op.status]} font-medium text-xs`}>
@@ -175,7 +175,7 @@ function OperationRow({
         )}
         <button
           onClick={() => setExpanded(!expanded)}
-          className="text-slate-400 hover:text-slate-700 w-7 h-7 flex items-center justify-center rounded"
+          className="text-slate-400 hover:text-slate-700 w-7 h-7 flex items-center justify-center rounded-sm"
           aria-label={expanded ? "Collapse" : "Expand"}
         >
           {expanded ? "▲" : "▼"}
@@ -183,7 +183,7 @@ function OperationRow({
         <button
           onClick={onDelete}
           disabled={busy}
-          className="text-slate-400 hover:text-red-600 w-7 h-7 flex items-center justify-center rounded"
+          className="text-slate-400 hover:text-red-600 w-7 h-7 flex items-center justify-center rounded-sm"
           aria-label="Delete"
         >
           ×
@@ -191,7 +191,7 @@ function OperationRow({
       </div>
 
       {op.status === "in_progress" && (
-        <div className="mt-2 h-1 bg-slate-100 rounded overflow-hidden">
+        <div className="mt-2 h-1 bg-slate-100 rounded-sm overflow-hidden">
           <div
             className="h-full bg-blue-500 transition-all"
             style={{ width: `${Math.round(op.progress * 100)}%` }}
@@ -200,7 +200,7 @@ function OperationRow({
       )}
 
       {op.error && (
-        <div className="mt-2 text-xs text-red-700 bg-red-50 p-2 rounded">
+        <div className="mt-2 text-xs text-red-700 bg-red-50 p-2 rounded-sm">
           {op.error}
         </div>
       )}
@@ -211,7 +211,7 @@ function OperationRow({
             <summary className="cursor-pointer text-slate-600 font-medium">
               Input
             </summary>
-            <pre className="mt-1 bg-slate-50 p-2 rounded overflow-x-auto">
+            <pre className="mt-1 bg-slate-50 p-2 rounded-sm overflow-x-auto">
               {JSON.stringify(inputPayload, null, 2)}
             </pre>
           </details>
@@ -220,7 +220,7 @@ function OperationRow({
               <summary className="cursor-pointer text-slate-600 font-medium">
                 Output
               </summary>
-              <pre className="mt-1 bg-slate-50 p-2 rounded overflow-x-auto">
+              <pre className="mt-1 bg-slate-50 p-2 rounded-sm overflow-x-auto">
                 {JSON.stringify(outputPayload, null, 2)}
               </pre>
             </details>
