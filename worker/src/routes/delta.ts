@@ -313,13 +313,13 @@ export async function handleGenerateDeltaPatches(c: AdminContext) {
     action: "delta.generate",
     payload: { build_id: buildId, keep },
   });
+  // Run synchronously within the request: a waitUntil background task is
+  // cancelled ~seconds after the response ("waitUntil() tasks did not complete
+  // within the allowed time"), which killed the wait on the container before it
+  // finished. Container-backed subrequests keep this invocation alive while the
+  // patch is generated. (The auto-on-publish path in releases.ts still uses
+  // waitUntil and will need a Queue for production — see note there.)
   const op = await createDeltaGenerationOp(c.env, params);
-  const run = runDeltaGeneration(c.env, op, params);
-  if (c.executionCtx?.waitUntil) {
-    c.executionCtx.waitUntil(run);
-  } else {
-    // No execution context (e.g. tests) — run inline so behaviour is defined.
-    await run;
-  }
-  return c.json({ operation_id: op.id, status: "started" }, 202);
+  const outcome = await runDeltaGeneration(c.env, op, params);
+  return c.json(outcome, outcome.error && outcome.results.length === 0 ? 500 : 200);
 }

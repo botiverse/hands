@@ -32,7 +32,10 @@
     {
       "class_name": "ApkParserContainer",
       "image": "../container/Dockerfile",
-      "max_instances": 3
+      "max_instances": 3,
+      // Default (dev) is 256 MiB / (1/16) vCPU — too small for the JVM
+      // file-by-file bsdiff over ~28MB APKs (delta generation, task #246).
+      "instance_type": "standard-1"
     }
   ],
 

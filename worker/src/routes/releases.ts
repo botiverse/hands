@@ -537,6 +537,10 @@ export async function handlePublishRelease(c: AdminContext) {
   // Auto-generate Android delta/differential update patches for this new build
   // (task #246), gated by the per-app toggle. Runs in the background so it never
   // slows or fails the publish; the toggle is also the future paid-feature gate.
+  // NOTE: waitUntil is cancelled ~seconds after the response, so for real (large)
+  // APKs this won't finish — before enabling the toggle in production, move this
+  // to a Cloudflare Queue (enqueue here, generate in the consumer). The manual
+  // endpoint runs synchronously and is unaffected.
   const app = await c.env.DB.prepare(
     "SELECT platform, delta_updates_enabled FROM apps WHERE id = ?1",
   )
