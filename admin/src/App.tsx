@@ -17,6 +17,7 @@ import { AppChannels, AppDetail, AppSettings } from "./pages/AppDetail";
 import { AuditLog } from "./pages/AuditLog";
 import { Settings } from "./pages/Settings";
 import { Builds } from "./pages/Builds";
+import { Testflight } from "./pages/Testflight";
 import { Releases } from "./pages/Releases";
 import { AppShares } from "./pages/Shares";
 import { AppFeedback, FeedbackTicketPage } from "./pages/Feedback";
@@ -362,6 +363,12 @@ function AuditRoute() {
   return <AuditLog key={appId} appId={appId} />;
 }
 
+function TestflightRoute() {
+  const { appId } = useParams();
+  if (!appId) return null;
+  return <Testflight key={appId} appId={appId} />;
+}
+
 function BuildsRoute() {
   const { appId } = useParams();
   if (!appId) return null;
@@ -433,6 +440,7 @@ function PageTitle() {
     if (pathname.startsWith("/invites/")) return "Invite";
     if (pathname.includes("/channels")) return "Channels";
     if (pathname.includes("/releases")) return "Releases";
+    if (pathname.includes("/testflight")) return "TestFlight";
     if (pathname.includes("/builds")) return "Builds";
     if (pathname.includes("/access")) return "Access";
     if (pathname.includes("/audit")) return "Audit";
@@ -785,6 +793,7 @@ function AuthenticatedApp({ account }: { account: AuthAccount }) {
           <Route path="publish" element={<LegacyPublishRedirect />} />
           <Route path="channels" element={<AppChannelsRoute />} />
           <Route path="builds" element={<BuildsRoute />} />
+          <Route path="testflight" element={<TestflightRoute />} />
           <Route path="releases" element={<ReleasesRoute />} />
           <Route path="shares" element={<AppSharesRoute />} />
           <Route path="feedback" element={<AppFeedbackRoute />} />
@@ -879,6 +888,7 @@ const APP_NAV_SECTIONS: Array<{ label: string; items: Array<{ to: string; label:
       { to: "channels", label: "Channels" },
       { to: "releases", label: "Releases" },
       { to: "builds", label: "Builds" },
+      { to: "testflight", label: "TestFlight" },
       { to: "shares", label: "Shares" },
     ],
   },
@@ -1020,6 +1030,7 @@ function AppShell() {
           <Route path="publish" element={<LegacyPublishRedirect />} />
           <Route path="channels" element={<AppChannelsRoute />} />
           <Route path="builds" element={<BuildsRoute />} />
+          <Route path="testflight" element={<TestflightRoute />} />
           <Route path="releases" element={<ReleasesRoute />} />
           <Route path="shares" element={<AppSharesRoute />} />
           <Route path="feedback" element={<AppFeedbackRoute />} />

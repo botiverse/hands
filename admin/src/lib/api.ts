@@ -196,7 +196,7 @@ export interface AuditLogEntry {
 export interface Operation {
   id: string;
   app_id: string;
-  kind: "parse" | "upload" | "publish" | "signed_url";
+  kind: "parse" | "upload" | "publish" | "signed_url" | "testflight-upload";
   status: "pending" | "in_progress" | "success" | "failed" | "cancelled";
   parent_op_id: string | null;
   step_number: number | null;
