@@ -16,6 +16,7 @@ import {
   uploadAppIcon,
   publicAppIconUrl,
   updateAppPublicHistory,
+  updateAppDeltaUpdates,
   getAppClientKey,
   rotateAppClientKey,
   purgeApp,
@@ -648,6 +649,47 @@ function PublicHistoryToggle({ appId, app }: { appId: string; app: App }) {
   );
 }
 
+function DeltaUpdatesToggle({ appId, app }: { appId: string; app: App }) {
+  const toast = useToast();
+  const qc = useQueryClient();
+  const enabled = Boolean(app.delta_updates_enabled);
+  const toggle = useMutation({
+    mutationFn: () => updateAppDeltaUpdates(appId, !enabled),
+    onSuccess: () => {
+      toast.show({
+        kind: "success",
+        title: !enabled ? "Delta updates enabled" : "Delta updates disabled",
+      });
+      qc.invalidateQueries({ queryKey: ["apps"] });
+    },
+    onError: (e) =>
+      toast.show({
+        kind: "error",
+        title: "Update failed",
+        description: (e as Error).message,
+      }),
+  });
+  return (
+    <div className="flex items-center gap-3">
+      <div className="flex-1">
+        <div className="text-sm font-medium">Delta updates</div>
+        <div className="text-xs text-slate-500">
+          {enabled
+            ? "On publish, small differential patches are generated from recent versions so users download less to update."
+            : "Auto-generate differential update patches when a release is published, shrinking update downloads for users on recent versions."}
+        </div>
+      </div>
+      <button
+        className="btn-secondary !py-1 !px-2 !text-xs"
+        disabled={toggle.isPending}
+        onClick={() => toggle.mutate()}
+      >
+        {toggle.isPending ? "…" : enabled ? "Disable" : "Enable"}
+      </button>
+    </div>
+  );
+}
+
 function AppIconUploader({ appId, slug }: { appId: string; slug: string }) {
   const toast = useToast();
   const [bust, setBust] = useState(0);
@@ -769,6 +811,9 @@ export function AppSettings({ appId }: { appId: string }) {
 
         {/* Public version history */}
         <PublicHistoryToggle appId={appId} app={app} />
+
+        {/* Delta/differential updates — Android apps only */}
+        {app.platform === "android" && <DeltaUpdatesToggle appId={appId} app={app} />}
 
         {/* Client key (feedback/crash reporting auth) */}
         <ClientKeyPanel appId={appId} />

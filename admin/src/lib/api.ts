@@ -103,6 +103,7 @@ export interface App {
   description: string | null;
   archived: number;       // 0 = active, 1 = archived (soft-delete)
   public_history?: number; // 1 = public /apps/:slug/history page enabled
+  delta_updates_enabled?: number; // 1 = auto-generate Android delta patches on publish
   archived_at: number | null;
   created_at: number;
   // Default release channel (P2.5.9 / migration 0018). pre-fills the
@@ -1407,6 +1408,13 @@ export const updateAppPublicHistory = (appId: string, enabled: boolean) =>
   request<{ ok: boolean }>(`/api/apps/${appId}`, {
     method: "PATCH",
     body: JSON.stringify({ public_history: enabled }),
+    admin: true,
+  });
+
+export const updateAppDeltaUpdates = (appId: string, enabled: boolean) =>
+  request<{ ok: boolean }>(`/api/apps/${appId}`, {
+    method: "PATCH",
+    body: JSON.stringify({ delta_updates_enabled: enabled }),
     admin: true,
   });
 

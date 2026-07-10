@@ -243,7 +243,8 @@ export async function handleGetApp(c: Context<{ Bindings: Env }>) {
   const appId = c.req.param("appId") ?? "";
   const row = await c.env.DB.prepare(
     `SELECT a.id, a.org_id, a.slug, a.name, a.platform, a.description,
-            a.archived, a.archived_at, a.created_at,
+            a.archived, a.archived_at, a.created_at, a.public_history,
+            a.delta_updates_enabled,
             a.default_channel_id,
             ch.slug AS default_channel_slug,
             ch.name AS default_channel_name
@@ -260,6 +261,8 @@ export async function handleGetApp(c: Context<{ Bindings: Env }>) {
     archived: number;
     archived_at: number | null;
     created_at: number;
+    public_history: number;
+    delta_updates_enabled: number;
     default_channel_id: string | null;
     default_channel_slug: string | null;
     default_channel_name: string | null;
@@ -275,6 +278,7 @@ export async function handleUpdateApp(c: AdminContext) {
     description?: string | null;
     default_channel_id?: string | null;
     public_history?: boolean;
+    delta_updates_enabled?: boolean;
   };
   // Confirm app exists.
   const existing = await c.env.DB.prepare(
@@ -298,6 +302,10 @@ export async function handleUpdateApp(c: AdminContext) {
   if (body.public_history !== undefined) {
     updates.push("public_history = ?");
     binds.push(body.public_history ? 1 : 0);
+  }
+  if (body.delta_updates_enabled !== undefined) {
+    updates.push("delta_updates_enabled = ?");
+    binds.push(body.delta_updates_enabled ? 1 : 0);
   }
   if (body.default_channel_id !== undefined) {
     if (body.default_channel_id === null) {

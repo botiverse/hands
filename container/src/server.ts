@@ -56,6 +56,49 @@ interface MinidumpReport {
 
 app.get("/health", (c) => c.json({ ok: true, service: "multi-parser" }));
 
+// Delta/differential update patch generation (task #246). Multipart body with
+// two file fields `old` and `new` (both APKs); returns the archive-patcher
+// file-by-file patch bytes that upgrade old → new. The worker orchestrates
+// (fetches the APKs from R2, uploads the patch as a delta-patch asset).
+app.post("/generate-patch", async (c) => {
+  let form: FormData;
+  try {
+    form = await c.req.formData();
+  } catch {
+    return c.json({ error: "expected multipart/form-data with old + new files" }, 400);
+  }
+  const oldFile = form.get("old");
+  const newFile = form.get("new");
+  if (!(oldFile instanceof File) || !(newFile instanceof File)) {
+    return c.json({ error: "old and new file fields are required" }, 400);
+  }
+  const dir = join(tmpdir(), `patchgen-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+  await mkdir(dir, { recursive: true });
+  const oldPath = join(dir, "old.apk");
+  const newPath = join(dir, "new.apk");
+  const outPath = join(dir, "out.patch");
+  try {
+    await writeFile(oldPath, Buffer.from(await oldFile.arrayBuffer()));
+    await writeFile(newPath, Buffer.from(await newFile.arrayBuffer()));
+    await execFileAsync(
+      "java",
+      ["-cp", "/opt/patchgen/archive-patcher.jar:/opt/patchgen", "PatchGen", oldPath, newPath, outPath],
+      { maxBuffer: 16 * 1024 * 1024, timeout: 120_000 },
+    );
+    const patch = await readFile(outPath);
+    return new Response(patch, {
+      headers: {
+        "content-type": "application/octet-stream",
+        "content-length": String(patch.length),
+      },
+    });
+  } catch (err) {
+    return c.json({ error: `patch generation failed: ${String(err)}` }, 500);
+  } finally {
+    await rm(dir, { recursive: true, force: true }).catch(() => {});
+  }
+});
+
 /**
  * POST /retrace — body = { mapping, trace }. Deobfuscates an R8/ProGuard
  * stack trace against the given mapping using the Android SDK retrace tool.

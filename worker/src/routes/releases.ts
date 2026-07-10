@@ -1,6 +1,7 @@
 import type { Context } from "hono";
 import { currentActor, type AdminEnv } from "../middleware/auth";
 import { emitWebhookEvent } from "./webhooks";
+import { generateDeltaPatchesForBuild } from "./delta";
 import { parseReleaseNotes, stringifyReleaseNotes, type ReleaseNotes } from "../lib/release_notes";
 
 type AdminContext = Context<AdminEnv & { Bindings: Env }>;
@@ -531,6 +532,30 @@ export async function handlePublishRelease(c: AdminContext) {
       }),
     );
   }
+
+  // Auto-generate Android delta/differential update patches for this new build
+  // (task #246), gated by the per-app toggle. Runs in the background so it never
+  // slows or fails the publish; the toggle is also the future paid-feature gate.
+  const app = await c.env.DB.prepare(
+    "SELECT platform, delta_updates_enabled FROM apps WHERE id = ?1",
+  )
+    .bind(appId)
+    .first<{ platform: string; delta_updates_enabled: number }>();
+  if (app?.delta_updates_enabled && app.platform === "android") {
+    const actor = currentActor(c);
+    const buildId = existing.build_id;
+    c.executionCtx?.waitUntil(
+      generateDeltaPatchesForBuild(c.env, { appId, buildId, actor }).then(
+        (outcome) => {
+          if (outcome.error) {
+            console.error(`[delta] auto-generate failed for build ${buildId}: ${outcome.error}`);
+          }
+        },
+        (e) => console.error(`[delta] auto-generate threw for build ${buildId}: ${String(e)}`),
+      ),
+    );
+  }
+
   const published = await getReleaseForApp(c.env.DB, appId, releaseId);
   return c.json(published ? withReleaseNotes(published) : published);
 }
