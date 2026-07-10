@@ -64,12 +64,8 @@ export function Settings() {
           <div className="font-mono">{raftCallbackUrl}</div>
         </div>
         <div>
-          <div className="text-slate-500">Cloudflare Account</div>
-          <div className="font-mono">a084c4564dfdce5a7775b08ece638a79</div>
-        </div>
-        <div>
           <div className="text-slate-500">D1 Database</div>
-          <div className="font-mono">hands-db (13d02825-af01-40f8-8f3d-a4356649628f)</div>
+          <div className="font-mono">hands-db</div>
         </div>
         <div>
           <div className="text-slate-500">R2 Bucket</div>

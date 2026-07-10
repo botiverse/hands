@@ -63,7 +63,8 @@
     "ENVIRONMENT": "production",
     "MAX_APK_SIZE_MB": "200",
     "SIGNED_URL_TTL_SECONDS": "3600",
-    "R2_ACCOUNT_ID": "a084c4564dfdce5a7775b08ece638a79",
+    // R2_ACCOUNT_ID is set as a Worker secret by the deploy workflow (from the
+    // CLOUDFLARE_ACCOUNT_ID repository secret) rather than hard-coded here.
     "R2_BUCKET_NAME": "hands-artifacts",
     "R2_PRESIGNED_DOWNLOAD_TTL_SECONDS": "3600",
     // quiver.oranix.io is included as a cutover/cache safety net: a browser

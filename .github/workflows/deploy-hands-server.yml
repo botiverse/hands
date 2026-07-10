@@ -26,7 +26,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  CLOUDFLARE_ACCOUNT_ID: a084c4564dfdce5a7775b08ece638a79
+  CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_BOTIVERSE_ACCOUNT_ID }}
   HANDS_D1_DATABASE_NAME: hands-db
   HANDS_R2_BUCKET_NAME: hands-artifacts
   HANDS_BUSINESS_DOMAIN: hands.build
@@ -105,6 +105,7 @@ jobs:
           SIGNED_URL_SECRET: ${{ secrets.HANDS_SIGNED_URL_SECRET }}
           RAFT_CLIENT_SECRET: ${{ secrets.HANDS_RAFT_CLIENT_SECRET }}
           ASC_CRED_ENC_KEY: ${{ secrets.HANDS_ASC_CRED_ENC_KEY }}
+          R2_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_BOTIVERSE_ACCOUNT_ID }}
         shell: bash
         run: |
           set -euo pipefail
@@ -120,9 +121,14 @@ jobs:
             echo "Missing GitHub secret HANDS_ASC_CRED_ENC_KEY." >&2
             exit 1
           fi
+          if [[ -z "${R2_ACCOUNT_ID:-}" ]]; then
+            echo "Missing GitHub secret CLOUDFLARE_BOTIVERSE_ACCOUNT_ID." >&2
+            exit 1
+          fi
           printf '%s' "${SIGNED_URL_SECRET}" | pnpm exec wrangler secret put SIGNED_URL_SECRET --config wrangler.hands.jsonc
           printf '%s' "${RAFT_CLIENT_SECRET}" | pnpm exec wrangler secret put RAFT_CLIENT_SECRET --config wrangler.hands.jsonc
           printf '%s' "${ASC_CRED_ENC_KEY}" | pnpm exec wrangler secret put ASC_CRED_ENC_KEY --config wrangler.hands.jsonc
+          printf '%s' "${R2_ACCOUNT_ID}" | pnpm exec wrangler secret put R2_ACCOUNT_ID --config wrangler.hands.jsonc
 
       - name: Deploy Hands Worker and admin assets
         working-directory: worker

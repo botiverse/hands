@@ -313,7 +313,7 @@ jobs:
         if: ${{ inputs.sync_d1 && inputs.reset_hands_d1 }}
         working-directory: worker
         env:
-          CLOUDFLARE_ACCOUNT_ID: a084c4564dfdce5a7775b08ece638a79
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_BOTIVERSE_ACCOUNT_ID }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_BOTIVERSE_API_TOKEN }}
         shell: bash
         run: |
@@ -328,7 +328,7 @@ jobs:
         if: ${{ inputs.sync_d1 }}
         working-directory: worker
         env:
-          CLOUDFLARE_ACCOUNT_ID: a084c4564dfdce5a7775b08ece638a79
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_BOTIVERSE_ACCOUNT_ID }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_BOTIVERSE_API_TOKEN }}
         shell: bash
         run: |
@@ -390,7 +390,7 @@ jobs:
               continue
             fi
 
-            CLOUDFLARE_ACCOUNT_ID="a084c4564dfdce5a7775b08ece638a79" \
+            CLOUDFLARE_ACCOUNT_ID="${{ secrets.CLOUDFLARE_BOTIVERSE_ACCOUNT_ID }}" \
               CLOUDFLARE_API_TOKEN="${{ secrets.CLOUDFLARE_BOTIVERSE_API_TOKEN }}" \
               pnpm exec wrangler r2 object put "${TARGET_R2_BUCKET_NAME}/${key}" --file "${file}" --remote --force >/dev/null
             copied=$((copied + 1))
@@ -405,7 +405,7 @@ jobs:
         if: ${{ always() && (inputs.sync_d1 || inputs.sync_r2) }}
         working-directory: worker
         env:
-          CLOUDFLARE_ACCOUNT_ID: a084c4564dfdce5a7775b08ece638a79
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_BOTIVERSE_ACCOUNT_ID }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_BOTIVERSE_API_TOKEN }}
         shell: bash
         run: |
