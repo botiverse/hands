@@ -1,7 +1,7 @@
 /**
  * AppAccess — per-app member management.
  *
- * Tab on AppDetail ("Access"). Shows app_members (humans + agents granted
+ * Access section in App Settings. Shows app_members (humans + agents granted
  * per-app roles). Admin / publisher only.
  *
  * Wires the new P5.3 endpoints:

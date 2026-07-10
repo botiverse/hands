@@ -281,12 +281,6 @@ function AppContextNav() {
           Builds
         </NavLink>
         <NavLink
-          to={`${base}/access`}
-          className={tabClass}
-        >
-          Access
-        </NavLink>
-        <NavLink
           to={`${base}/audit`}
           className={tabClass}
         >
@@ -318,7 +312,12 @@ function AppChannelsRoute() {
 function AppSettingsRoute() {
   const { appId } = useParams();
   if (!appId) return null;
-  return <AppSettings key={appId} appId={appId} />;
+  return (
+    <div key={appId} className="space-y-6">
+      <AppSettings appId={appId} />
+      <AppAccess appId={appId} />
+    </div>
+  );
 }
 
 function AppFeedbackRoute() {
@@ -351,12 +350,6 @@ function AppSharesRoute() {
   return <AppShares key={appId} appId={appId} />;
 }
 
-function AppAccessRoute() {
-  const { appId } = useParams();
-  if (!appId) return null;
-  return <AppAccess key={appId} appId={appId} />;
-}
-
 function AuditRoute() {
   const { appId } = useParams();
   if (!appId) return null;
@@ -383,6 +376,10 @@ function ReleasesRoute() {
 
 function LegacyPublishRedirect() {
   return <Navigate to="../releases" replace />;
+}
+
+function LegacyAccessRedirect() {
+  return <Navigate to="../settings" replace />;
 }
 
 function OrgSettingsRoute() {
@@ -445,7 +442,7 @@ function PageTitle() {
     if (pathname.includes("/releases")) return "Releases";
     if (pathname.includes("/testflight")) return "TestFlight";
     if (pathname.includes("/builds")) return "Builds";
-    if (pathname.includes("/access")) return "Access";
+    if (pathname.includes("/access")) return "Settings";
     if (pathname.includes("/audit")) return "Audit";
     if (pathname.includes("/settings")) return "Settings";
     if (pathname.startsWith("/apps/")) return "Overview";
@@ -802,7 +799,7 @@ function AuthenticatedApp({ account }: { account: AuthAccount }) {
           <Route path="feedback" element={<AppFeedbackRoute />} />
           <Route path="crashes" element={<AppCrashesRoute />} />
           <Route path="feedback/:ticketId" element={<FeedbackTicketRoute />} />
-          <Route path="access" element={<AppAccessRoute />} />
+          <Route path="access" element={<LegacyAccessRedirect />} />
           <Route path="audit" element={<AuditRoute />} />
           <Route path="settings" element={<AppSettingsRoute />} />
         </Route>
@@ -900,7 +897,6 @@ const APP_NAV_SECTIONS: Array<{ label: string; items: Array<{ to: string; label:
     items: [
       { to: "feedback", label: "Feedback" },
       { to: "crashes", label: "Crashes" },
-      { to: "access", label: "Access" },
       { to: "audit", label: "Audit" },
       { to: "settings", label: "Settings" },
     ],
@@ -1039,7 +1035,7 @@ function AppShell() {
           <Route path="feedback" element={<AppFeedbackRoute />} />
           <Route path="crashes" element={<AppCrashesRoute />} />
           <Route path="feedback/:ticketId" element={<FeedbackTicketRoute />} />
-          <Route path="access" element={<AppAccessRoute />} />
+          <Route path="access" element={<LegacyAccessRedirect />} />
           <Route path="audit" element={<AuditRoute />} />
           <Route path="settings" element={<AppSettingsRoute />} />
         </Routes>
