@@ -1,6 +1,6 @@
 {
   "name": "@botiverse/hands-cli",
-  "version": "0.5.2",
+  "version": "0.5.3",
   "description": "Hands CLI \u2014 manage apps, builds, releases from the terminal.",
   "license": "MIT",
   "repository": {
