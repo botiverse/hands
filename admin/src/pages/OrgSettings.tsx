@@ -387,8 +387,10 @@ function MembersTab({
                 {isAdmin && (
                   <td className="py-2 text-xs">
                     {m.account_id !== currentAccountId && (
-                      <button
-                        className="text-red-600 hover:underline"
+                      <Button
+                        variant="link"
+                        size="sm"
+                        className="text-red-600"
                         onClick={() => {
                           if (
                             confirm(
@@ -401,7 +403,7 @@ function MembersTab({
                         disabled={remove.isPending}
                       >
                         Remove
-                      </button>
+                      </Button>
                     )}
                   </td>
                 )}
@@ -547,15 +549,18 @@ function InvitesTab({
                 </td>
                 {canManage && inv.status === "pending" && (
                   <td className="py-2 text-xs space-x-2">
-                    <button
-                      className="text-blue-600 hover:underline"
+                    <Button
+                      variant="link"
+                      size="sm"
                       onClick={() => resend.mutate(inv.id)}
                       disabled={resend.isPending}
                     >
                       Refresh link
-                    </button>
-                    <button
-                      className="text-red-600 hover:underline"
+                    </Button>
+                    <Button
+                      variant="link"
+                      size="sm"
+                      className="text-red-600"
                       onClick={() => {
                         if (confirm(`Revoke invite to ${inv.email}?`)) {
                           revoke.mutate(inv.id);
@@ -564,7 +569,7 @@ function InvitesTab({
                       disabled={revoke.isPending}
                     >
                       Revoke
-                    </button>
+                    </Button>
                   </td>
                 )}
               </tr>

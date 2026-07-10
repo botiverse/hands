@@ -12,6 +12,7 @@
  */
 
 import { useEffect, useRef } from "react";
+import { Button } from "raft-ui";
 
 export function Modal({
   title,
@@ -54,11 +55,13 @@ export function Modal({
       >
         <div className="flex items-center justify-between mb-4">
           <h2 className="text-lg font-bold">{title}</h2>
-          <button
+          <Button
+            variant="ghost"
+            size="icon-sm"
             type="button"
             onClick={onClose}
             aria-label="Close"
-            className="text-slate-400 hover:text-slate-700 w-8 h-8 flex items-center justify-center rounded-md hover:bg-slate-100 -mr-2 -mt-1"
+            className="text-slate-400 hover:text-slate-700 -mr-2 -mt-1"
           >
             <svg
               xmlns="http://www.w3.org/2000/svg"
@@ -72,7 +75,7 @@ export function Modal({
                 clipRule="evenodd"
               />
             </svg>
-          </button>
+          </Button>
         </div>
         {children}
       </div>

@@ -17,6 +17,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { Button } from "raft-ui";
 
 export type ToastKind = "loading" | "success" | "error" | "info";
 
@@ -235,10 +236,12 @@ function ToastCard({
         )}
       </div>
       {!isLoading && (
-        <button
+        <Button
+          variant="ghost"
+          size="icon-sm"
           onClick={onDismiss}
           aria-label="Dismiss"
-          className="text-slate-400 hover:text-slate-700 -mr-1 -mt-1 w-6 h-6 flex items-center justify-center rounded-sm"
+          className="text-slate-400 hover:text-slate-700 -mr-1 -mt-1"
         >
           <svg viewBox="0 0 20 20" fill="currentColor" className="w-4 h-4">
             <path
@@ -247,7 +250,7 @@ function ToastCard({
               clipRule="evenodd"
             />
           </svg>
-        </button>
+        </Button>
       )}
     </div>
   );

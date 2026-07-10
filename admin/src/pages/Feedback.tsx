@@ -81,9 +81,9 @@ export function AppFeedback({ appId }: { appId: string }) {
           <span>
             Filtered to version code <span className="font-mono">{versionFilter}</span>
           </span>
-          <button className="text-blue-600 hover:underline text-xs" onClick={() => clearScopeFilter("version_code")}>
+          <Button variant="link" size="sm" className="text-xs" onClick={() => clearScopeFilter("version_code")}>
             clear
-          </button>
+          </Button>
         </div>
       )}
       {signatureFilter && (
@@ -100,9 +100,9 @@ export function AppFeedback({ appId }: { appId: string }) {
                 </div>
               )}
             </div>
-            <button className="text-blue-600 hover:underline text-xs flex-none" onClick={() => clearScopeFilter("signature")}>
+            <Button variant="link" size="sm" className="text-xs flex-none" onClick={() => clearScopeFilter("signature")}>
               clear
-            </button>
+            </Button>
           </div>
         </div>
       )}
@@ -276,18 +276,20 @@ function CrashLogView({
         <h4 className="text-sm font-semibold">Crash detail</h4>
         {deobfuscated && (active === "stack" || (activeSection?.key === "stack")) && (
           <div className="flex overflow-hidden rounded-md border border-slate-200 text-xs">
-            <button
-              className={`px-2 py-0.5 ${showDeobf ? "bg-slate-100 font-medium" : "text-slate-500"}`}
+            <Button
+              size="sm"
+              variant={showDeobf ? "default" : "ghost"}
               onClick={() => setShowDeobf(true)}
             >
               Deobfuscated
-            </button>
-            <button
-              className={`px-2 py-0.5 ${!showDeobf ? "bg-slate-100 font-medium" : "text-slate-500"}`}
+            </Button>
+            <Button
+              size="sm"
+              variant={!showDeobf ? "default" : "ghost"}
               onClick={() => setShowDeobf(false)}
             >
               Raw
-            </button>
+            </Button>
           </div>
         )}
       </div>
@@ -299,17 +301,14 @@ function CrashLogView({
         <>
           <div className="mb-2 flex flex-wrap gap-1 border-b border-slate-100 pb-2 text-xs">
             {sections.map((sec) => (
-              <button
+              <Button
                 key={sec.key}
-                className={`rounded-md px-2 py-1 ${
-                  (activeSection?.key ?? "") === sec.key
-                    ? "bg-slate-100 font-medium text-slate-950"
-                    : "text-slate-600 hover:bg-slate-50"
-                }`}
+                size="sm"
+                variant={(activeSection?.key ?? "") === sec.key ? "default" : "ghost"}
                 onClick={() => setActive(sec.key)}
               >
                 {sec.label}
-              </button>
+              </Button>
             ))}
           </div>
           <pre className="max-h-112 overflow-auto rounded-md bg-slate-950 p-3 text-xs leading-relaxed text-slate-100">
@@ -343,9 +342,9 @@ function DeviceScopeBanner({
         <h4 className="text-sm font-semibold">
           Device <span className="font-mono text-xs">{deviceId}</span>
         </h4>
-        <button className="text-blue-600 hover:underline text-xs" onClick={onClear}>
+        <Button variant="link" size="sm" className="text-xs" onClick={onClear}>
           clear
-        </button>
+        </Button>
       </div>
       {d ? (
         <dl className="mt-2 grid grid-cols-2 gap-x-4 gap-y-1 text-xs sm:grid-cols-4">
@@ -418,13 +417,14 @@ function AttachmentList({
         <ul className="space-y-1 text-sm">
           {others.map((a) => (
             <li key={a.id}>
-              <button
+              <Button
                 type="button"
-                className="text-blue-600 hover:underline"
+                variant="link"
+                size="sm"
                 onClick={() => void downloadFeedbackAttachment(appId, ticketId, a.id, a.filename)}
               >
                 {a.filename}
-              </button>
+              </Button>
               <span className="ml-2 text-xs text-slate-400">
                 {(a.size_bytes / 1024).toFixed(1)} KB
               </span>
@@ -444,13 +444,15 @@ function AttachmentList({
             className="max-h-full max-w-full rounded-md shadow-lg"
             onClick={(e) => e.stopPropagation()}
           />
-          <button
+          <Button
+            variant="ghost"
+            size="icon-sm"
             className="absolute right-5 top-5 text-2xl leading-none text-white/90 hover:text-white"
             onClick={() => setLightbox(null)}
             aria-label="Close"
           >
             ×
-          </button>
+          </Button>
         </div>
       )}
     </div>
@@ -584,18 +586,15 @@ export function FeedbackTicketPage({
             </div>
             <div className="flex items-center gap-2">
               {STATUSES.map((s) => (
-                <button
+                <Button
                   key={s}
-                  className={
-                    s === t.status
-                      ? "rounded-sm border border-slate-900 bg-slate-900 px-2 py-1 text-xs text-white"
-                      : "rounded-sm border border-slate-300 px-2 py-1 text-xs text-slate-600 hover:bg-slate-100"
-                  }
+                  size="sm"
+                  variant={s === t.status ? "default" : "ghost"}
                   disabled={update.isPending || s === t.status}
                   onClick={() => update.mutate({ status: s })}
                 >
                   {s}
-                </button>
+                </Button>
               ))}
             </div>
           </div>
@@ -609,28 +608,34 @@ export function FeedbackTicketPage({
                 <>
                   <span>{t.assignee ?? "Unassigned"}</span>
                   {myName && t.assignee !== myName && (
-                    <button
-                      className="rounded-sm border border-slate-300 px-2 py-1 text-xs hover:bg-slate-100"
+                    <Button
+                      variant="link"
+                      size="sm"
+                      className="text-xs"
                       disabled={update.isPending}
                       onClick={() => update.mutate({ assignee: myName })}
                     >
                       Assign to me
-                    </button>
+                    </Button>
                   )}
-                  <button
-                    className="rounded-sm border border-slate-300 px-2 py-1 text-xs hover:bg-slate-100"
+                  <Button
+                    variant="link"
+                    size="sm"
+                    className="text-xs"
                     onClick={() => setAssigneeDraft(t.assignee ?? "")}
                   >
                     Edit
-                  </button>
+                  </Button>
                   {t.assignee && (
-                    <button
-                      className="rounded-sm border border-slate-300 px-2 py-1 text-xs text-red-600 hover:bg-red-50"
+                    <Button
+                      variant="link"
+                      size="sm"
+                      className="text-xs text-red-600"
                       disabled={update.isPending}
                       onClick={() => update.mutate({ assignee: null })}
                     >
                       Unassign
-                    </button>
+                    </Button>
                   )}
                 </>
               ) : (
@@ -705,8 +710,9 @@ export function FeedbackTicketPage({
                       <dt className="text-slate-500">{label(k)}</dt>
                       <dd className={mono(k) ? "font-mono break-all" : "break-all"}>
                         {k === "version_code" ? (
-                          <button
-                            className="text-blue-600 hover:underline"
+                          <Button
+                            variant="link"
+                            size="sm"
                             title="All feedback on this version"
                             onClick={() =>
                               navigate(
@@ -715,10 +721,12 @@ export function FeedbackTicketPage({
                             }
                           >
                             {format(v)}
-                          </button>
+                          </Button>
                         ) : k === "device_id" ? (
-                          <button
-                            className="text-blue-600 hover:underline font-mono break-all"
+                          <Button
+                            variant="link"
+                            size="sm"
+                            className="font-mono break-all"
                             title="This device's history"
                             onClick={() =>
                               navigate(
@@ -727,7 +735,7 @@ export function FeedbackTicketPage({
                             }
                           >
                             {format(v)}
-                          </button>
+                          </Button>
                         ) : (
                           format(v)
                         )}

@@ -357,26 +357,30 @@ export function PendingFileRow({
           {detectedSummary}
         </span>
         {canEdit && (
-          <button
+          <Button
+            variant="link"
+            size="sm"
             type="button"
-            className="text-blue-600 hover:underline text-[11px]"
+            className="text-[11px]"
             onClick={() => setEditing((v) => !v)}
           >
             {editing ? "Done" : "Edit metadata"}
-          </button>
+          </Button>
         )}
         {pending.status === "error" && (
           <span className="text-red-600 text-[10px] truncate max-w-[20ch]">
             {pending.error}
           </span>
         )}
-        <button
+        <Button
+          variant="ghost"
+          size="icon-sm"
           className="text-slate-400 hover:text-red-600 text-xs"
           onClick={onRemove}
           aria-label="Dismiss"
         >
           ✕
-        </button>
+        </Button>
       </div>
 
       {editing && canEdit && (

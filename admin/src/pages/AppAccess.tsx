@@ -272,8 +272,10 @@ function AppServerGrantList({
                 </td>
                 {canManage && (
                   <td className="py-2 text-xs">
-                    <button
-                      className="text-red-600 hover:underline"
+                    <Button
+                      variant="link"
+                      size="sm"
+                      className="text-red-600"
                       onClick={() => {
                         if (
                           confirm(
@@ -286,7 +288,7 @@ function AppServerGrantList({
                       disabled={remove.isPending}
                     >
                       Remove
-                    </button>
+                    </Button>
                   </td>
                 )}
               </tr>
@@ -350,14 +352,16 @@ function AddAppServerGrantDialog({
       }}
     >
       <div className="card max-w-md w-full relative">
-        <button
+        <Button
+          variant="ghost"
+          size="icon-sm"
           type="button"
           onClick={onClose}
           aria-label="Close"
-          className="absolute top-3 right-3 text-slate-400 hover:text-slate-700 w-8 h-8 flex items-center justify-center rounded-md hover:bg-slate-100"
+          className="absolute top-3 right-3 text-slate-400 hover:text-slate-700"
         >
           ×
-        </button>
+        </Button>
         <h2 className="text-lg font-bold mb-4 pr-8">Add Raft server</h2>
         <form
           className="space-y-3"
@@ -582,8 +586,10 @@ function AppMemberList({
                 {canManage && (
                   <td className="py-2 text-xs">
                     {m.account_id !== currentAccountId && (
-                      <button
-                        className="text-red-600 hover:underline"
+                      <Button
+                        variant="link"
+                        size="sm"
+                        className="text-red-600"
                         onClick={() => {
                           if (
                             confirm(
@@ -596,7 +602,7 @@ function AppMemberList({
                         disabled={remove.isPending}
                       >
                         Remove
-                      </button>
+                      </Button>
                     )}
                   </td>
                 )}
@@ -702,8 +708,10 @@ function AppDeployTokenList({
                     : "—"}
                 </td>
                 <td className="py-2 text-xs">
-                  <button
-                    className="text-red-600 hover:underline"
+                  <Button
+                    variant="link"
+                    size="sm"
+                    className="text-red-600"
                     onClick={() => {
                       if (confirm(`Revoke deploy token ${token.name}?`)) {
                         revoke.mutate(token.id);
@@ -712,7 +720,7 @@ function AppDeployTokenList({
                     disabled={revoke.isPending}
                   >
                     Revoke
-                  </button>
+                  </Button>
                 </td>
               </tr>
             ))}
@@ -787,14 +795,16 @@ function AddAppDeployTokenDialog({
       }}
     >
       <div className="card max-w-lg w-full relative text-sm">
-        <button
+        <Button
+          variant="ghost"
+          size="icon-sm"
           type="button"
           onClick={createdToken ? closeAfterCreate : onClose}
           aria-label="Close"
-          className="absolute top-3 right-3 text-slate-400 hover:text-slate-700 w-8 h-8 flex items-center justify-center rounded-md hover:bg-slate-100"
+          className="absolute top-3 right-3 text-slate-400 hover:text-slate-700"
         >
           ×
-        </button>
+        </Button>
         <h2 className="text-lg font-bold mb-4 pr-8">Add deploy token</h2>
         {createdToken ? (
           <div className="space-y-3">
@@ -977,14 +987,16 @@ function AddAppMemberDialog({
         }}
       >
         <div className="card max-w-md w-full relative text-sm">
-          <button
+          <Button
+            variant="ghost"
+            size="icon-sm"
             type="button"
             onClick={onClose}
             aria-label="Close"
-            className="absolute top-3 right-3 text-slate-400 hover:text-slate-700 w-8 h-8 flex items-center justify-center rounded-md hover:bg-slate-100"
+            className="absolute top-3 right-3 text-slate-400 hover:text-slate-700"
           >
             ×
-          </button>
+          </Button>
           <h2 className="text-lg font-bold mb-3 pr-8">Add direct app member</h2>
           <p className="text-slate-500">
             No eligible org members need a direct app grant.
@@ -1010,14 +1022,16 @@ function AddAppMemberDialog({
       }}
     >
       <div className="card max-w-md w-full relative text-sm">
-        <button
+        <Button
+          variant="ghost"
+          size="icon-sm"
           type="button"
           onClick={onClose}
           aria-label="Close"
-          className="absolute top-3 right-3 text-slate-400 hover:text-slate-700 w-8 h-8 flex items-center justify-center rounded-md hover:bg-slate-100"
+          className="absolute top-3 right-3 text-slate-400 hover:text-slate-700"
         >
           ×
-        </button>
+        </Button>
         <h2 className="text-lg font-bold mb-4 pr-8">Add direct app member</h2>
         <form
           className="space-y-3"

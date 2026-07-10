@@ -1025,18 +1025,14 @@ function LandingTerminal() {
       <div className="mb-4 flex items-center justify-between border-b border-slate-700 pb-3">
         <div className="flex flex-wrap gap-1">
           {TERMINAL_DEMOS.map((d) => (
-            <button
+            <Button
               key={d.key}
-              type="button"
+              size="sm"
+              variant={d.key === active ? "default" : "ghost"}
               onClick={() => setActive(d.key)}
-              className={`rounded px-2.5 py-1 text-xs font-medium transition ${
-                d.key === active
-                  ? "bg-slate-100 text-slate-900"
-                  : "text-slate-400 hover:text-slate-200"
-              }`}
             >
               {d.label}
-            </button>
+            </Button>
           ))}
         </div>
         <span className="rounded-sm bg-sky-400/15 px-2 py-0.5 text-xs text-sky-200">

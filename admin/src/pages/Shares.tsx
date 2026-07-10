@@ -249,15 +249,15 @@ function ShareRow({
       <td className="py-2 text-right text-xs whitespace-nowrap">
         {actionable && (
           <>
-            <button className="text-blue-600 hover:underline mr-2" onClick={onRenew} disabled={busy}>
+            <Button variant="link" size="sm" className="mr-2" onClick={onRenew} disabled={busy}>
               +7 days
-            </button>
-            <button className="text-blue-600 hover:underline mr-2" onClick={onSetPassword} disabled={busy}>
+            </Button>
+            <Button variant="link" size="sm" className="mr-2" onClick={onSetPassword} disabled={busy}>
               {share.has_password ? "Password…" : "Set password"}
-            </button>
-            <button className="text-red-600 hover:underline" onClick={onRevoke} disabled={busy}>
+            </Button>
+            <Button variant="link" size="sm" className="text-red-600" onClick={onRevoke} disabled={busy}>
               Revoke
-            </button>
+            </Button>
           </>
         )}
       </td>
