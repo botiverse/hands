@@ -42,6 +42,7 @@ import {
 } from "./routes/public";
 import {
   handlePublicR2Download,
+  handleInternalR2Download,
   handlePublicV2Latest,
   handlePublicV2UpdateCheck,
 } from "./routes/public_v2";
@@ -490,6 +491,8 @@ app.get("/public/v2/apps/:slug/latest", handlePublicV2Latest);
 app.get("/public/v2/apps/:slug/updates/check", handlePublicV2UpdateCheck);
 app.get("/public/v2/apps/:slug/release-notes", handlePublicReleaseNotesJson);
 app.get("/public/r2/:key", handlePublicR2Download);
+// Internal signed R2 fetch (delta-patch container pulls source APKs by key).
+app.get("/internal/r2/:key", handleInternalR2Download);
 app.get("/electron/:slug/:channel/:file", handleElectronGenericAsset);
 app.get("/share/:token/download", handlePublicReleaseShareDownload);
 app.get("/share/:token", handlePublicReleaseShare);

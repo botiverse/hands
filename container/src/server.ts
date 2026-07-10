@@ -56,40 +56,54 @@ interface MinidumpReport {
 
 app.get("/health", (c) => c.json({ ok: true, service: "multi-parser" }));
 
-// Delta/differential update patch generation (task #246). Multipart body with
-// two file fields `old` and `new` (both APKs); returns the archive-patcher
-// file-by-file patch bytes that upgrade old → new. The worker orchestrates
-// (fetches the APKs from R2, uploads the patch as a delta-patch asset).
+// Delta/differential update patch generation (task #246). JSON body with two
+// signed URLs `old_url` and `new_url` (both APKs in R2); the container fetches
+// them itself and returns the archive-patcher file-by-file patch that upgrades
+// old → new. URLs (not a multipart body) keep the worker→container request tiny
+// — pushing tens of MB of APK bytes through container.fetch hangs.
 app.post("/generate-patch", async (c) => {
-  let form: FormData;
+  let body: { old_url?: string; new_url?: string };
   try {
-    form = await c.req.formData();
+    body = await c.req.json();
   } catch {
-    return c.json({ error: "expected multipart/form-data with old + new files" }, 400);
+    return c.json({ error: "expected JSON body with old_url + new_url" }, 400);
   }
-  const oldFile = form.get("old");
-  const newFile = form.get("new");
-  if (!(oldFile instanceof File) || !(newFile instanceof File)) {
-    return c.json({ error: "old and new file fields are required" }, 400);
+  const oldUrl = body.old_url;
+  const newUrl = body.new_url;
+  if (typeof oldUrl !== "string" || typeof newUrl !== "string") {
+    return c.json({ error: "old_url and new_url are required" }, 400);
   }
   const dir = join(tmpdir(), `patchgen-${Date.now()}-${Math.random().toString(36).slice(2)}`);
   await mkdir(dir, { recursive: true });
   const oldPath = join(dir, "old.apk");
   const newPath = join(dir, "new.apk");
   const outPath = join(dir, "out.patch");
+  const fetchApk = async (url: string, dest: string): Promise<number> => {
+    const res = await fetch(url);
+    if (!res.ok) {
+      throw new Error(`fetch ${dest} failed: HTTP ${res.status}`);
+    }
+    const buf = Buffer.from(await res.arrayBuffer());
+    await writeFile(dest, buf);
+    return buf.length;
+  };
   try {
-    await writeFile(oldPath, Buffer.from(await oldFile.arrayBuffer()));
-    await writeFile(newPath, Buffer.from(await newFile.arrayBuffer()));
+    const [oldLen, newLen] = await Promise.all([
+      fetchApk(oldUrl, oldPath),
+      fetchApk(newUrl, newPath),
+    ]);
     await execFileAsync(
       "java",
       ["-cp", "/opt/patchgen/archive-patcher.jar:/opt/patchgen", "PatchGen", oldPath, newPath, outPath],
-      { maxBuffer: 16 * 1024 * 1024, timeout: 120_000 },
+      { maxBuffer: 16 * 1024 * 1024, timeout: 180_000 },
     );
     const patch = await readFile(outPath);
     return new Response(patch, {
       headers: {
         "content-type": "application/octet-stream",
         "content-length": String(patch.length),
+        "x-old-bytes": String(oldLen),
+        "x-new-bytes": String(newLen),
       },
     });
   } catch (err) {

@@ -2,6 +2,7 @@ import type { Context } from "hono";
 import { currentActor, type AdminEnv } from "../middleware/auth";
 import { emitWebhookEvent } from "./webhooks";
 import { generateDeltaPatchesForBuild } from "./delta";
+import { requestOrigin } from "../lib/origin";
 import { parseReleaseNotes, stringifyReleaseNotes, type ReleaseNotes } from "../lib/release_notes";
 
 type AdminContext = Context<AdminEnv & { Bindings: Env }>;
@@ -544,8 +545,9 @@ export async function handlePublishRelease(c: AdminContext) {
   if (app?.delta_updates_enabled && app.platform === "android") {
     const actor = currentActor(c);
     const buildId = existing.build_id;
+    const origin = requestOrigin(c);
     c.executionCtx?.waitUntil(
-      generateDeltaPatchesForBuild(c.env, { appId, buildId, actor }).then(
+      generateDeltaPatchesForBuild(c.env, { appId, buildId, actor, origin }).then(
         (outcome) => {
           if (outcome.error) {
             console.error(`[delta] auto-generate failed for build ${buildId}: ${outcome.error}`);

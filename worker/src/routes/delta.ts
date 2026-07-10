@@ -21,6 +21,8 @@ import type { AdminEnv } from "../middleware/auth";
 import { currentActor } from "../middleware/auth";
 import { createOperation, updateOperation, type OperationLog } from "./operations";
 import { insertAuditLog } from "../lib/permissions";
+import { generateInternalR2Url } from "./public_v2";
+import { requestOrigin } from "../lib/origin";
 
 type AdminContext = Context<AdminEnv & { Bindings: Env }>;
 
@@ -66,6 +68,8 @@ export interface DeltaParams {
   buildId: string;
   actor: string;
   keep?: number | undefined;
+  // Public origin the container uses to fetch source APKs (e.g. https://hands.build).
+  origin: string;
 }
 
 /** Create the delta-generate operation row (pending). Returns it so callers can
@@ -159,27 +163,19 @@ export async function runDeltaGeneration(
 
     const { getRandom } = await import("@cloudflare/containers");
 
-    const newObj = await env.APK_BUCKET.get(newApk.r2_key);
-    if (!newObj) throw new Error(`new APK missing from storage (${newApk.r2_key})`);
-    const newBytes = await newObj.arrayBuffer();
-    await mark(`fetched new APK ${newBytes.byteLength}b from R2`);
+    // The container fetches the APKs itself from these signed URLs — we never
+    // load APK bytes into Worker memory, and the request to the container stays
+    // tiny (two URLs) instead of pushing ~56MB of multipart (which hangs).
+    const URL_TTL_SECONDS = 1800;
+    const newUrl = await generateInternalR2Url(env, newApk.r2_key, URL_TTL_SECONDS, params.origin);
+    await mark(`minted signed URL for new APK`);
 
     let done = 0;
     for (const prior of priorRows) {
-      const oldObj = await env.APK_BUCKET.get(prior.r2_key);
-      if (!oldObj) {
-        results.push({ from_version_code: prior.version_code, status: "skip:old-apk-missing" });
-        await mark(`v${prior.version_code}: old APK missing`);
-        continue;
-      }
-      const oldBytes = await oldObj.arrayBuffer();
-      await mark(`v${prior.version_code}: fetched old APK ${oldBytes.byteLength}b; calling container`);
+      const oldUrl = await generateInternalR2Url(env, prior.r2_key, URL_TTL_SECONDS, params.origin);
+      await mark(`v${prior.version_code}: calling container (url mode)`);
 
-      const form = new FormData();
-      form.append("old", new Blob([oldBytes]), "old.apk");
-      form.append("new", new Blob([newBytes]), "new.apk");
       const container = await getRandom(env.APK_PARSER, 1);
-
       const callStart = Date.now();
       const ac = new AbortController();
       const timer = setTimeout(() => ac.abort(), CONTAINER_TIMEOUT_MS);
@@ -188,7 +184,8 @@ export async function runDeltaGeneration(
         res = await container.fetch(
           new Request("http://container/generate-patch", {
             method: "POST",
-            body: form,
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ old_url: oldUrl, new_url: newUrl }),
             signal: ac.signal,
           }),
         );
@@ -303,7 +300,13 @@ export async function handleGenerateDeltaPatches(c: AdminContext) {
   const buildId = c.req.param("buildId") ?? "";
   const keepRaw = Number(c.req.query("versions"));
   const keep = Number.isFinite(keepRaw) && keepRaw > 0 ? keepRaw : undefined;
-  const params: DeltaParams = { appId, buildId, actor: currentActor(c), keep };
+  const params: DeltaParams = {
+    appId,
+    buildId,
+    actor: currentActor(c),
+    keep,
+    origin: requestOrigin(c),
+  };
 
   await insertAuditLog(c.env.DB, c, {
     app_id: appId,

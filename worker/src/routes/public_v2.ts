@@ -807,6 +807,56 @@ export async function generateSignedR2Url(
   return origin ? new URL(path, origin).toString() : path;
 }
 
+const INTERNAL_DOWNLOAD_PREFIX = "/internal/r2";
+
+/**
+ * Sign an internal R2 fetch URL (same HMAC scheme as the public one, different
+ * path + no release-status gate). Used by the delta-patch container to fetch
+ * source APKs from R2 by key — the request body to the container stays tiny
+ * (two URLs) instead of pushing tens of MB of APK bytes through container.fetch.
+ */
+export async function generateInternalR2Url(
+  env: Env,
+  key: string,
+  ttlSeconds: number,
+  origin?: string,
+): Promise<string> {
+  const expires = Math.floor(Date.now() / 1000) + ttlSeconds;
+  const sig = await signDownloadUrl(env, key, expires);
+  const path = `${INTERNAL_DOWNLOAD_PREFIX}/${encodeURIComponent(key)}?expires=${expires}&sig=${sig}`;
+  return origin ? new URL(path, origin).toString() : path;
+}
+
+/**
+ * Serve an R2 object by key given a valid HMAC signature. The signature (over
+ * key+expiry with SIGNED_URL_SECRET) is the authorization — only the Worker can
+ * mint one — so this serves any object regardless of release status, unlike the
+ * public download. Internal use: the delta-patch container fetches source APKs.
+ */
+export async function handleInternalR2Download(c: Context<{ Bindings: Env }>) {
+  const key = c.req.param("key");
+  const expires = Number(c.req.query("expires"));
+  const sig = c.req.query("sig") ?? "";
+  if (!key) return c.json({ error: "key required" }, 400);
+  if (!Number.isFinite(expires)) {
+    return c.json({ error: "expires must be a unix timestamp" }, 400);
+  }
+  if (expires < Math.floor(Date.now() / 1000)) {
+    return c.json({ error: "download URL expired" }, 403);
+  }
+  const expectedSig = await signDownloadUrl(c.env, key, expires);
+  if (!sig || !constantTimeEqual(sig, expectedSig)) {
+    return c.json({ error: "invalid download signature" }, 403);
+  }
+  const object = await c.env.APK_BUCKET.get(key);
+  if (!object) return c.json({ error: "object not found" }, 404);
+  const headers = new Headers();
+  headers.set("content-type", "application/octet-stream");
+  headers.set("content-length", String(object.size));
+  headers.set("cache-control", "private, max-age=0, no-store");
+  return new Response(object.body, { headers });
+}
+
 function publicRequestOrigin(c: Context<{ Bindings: Env }>): string {
   return requestOrigin(c);
 }
