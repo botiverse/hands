@@ -154,12 +154,14 @@ export function Builds({ appId }: { appId: string }) {
 function TestflightUploadPanel({ appId, build }: { appId: string; build: Build }) {
   const toast = useToast();
   const [buildUploadId, setBuildUploadId] = useState<string | null>(null);
+  const [ascAppId, setAscAppId] = useState<string | null>(null);
 
   const upload = useMutation({
     mutationFn: () => uploadBuildToTestflight(appId, build.id),
     onSuccess: (res) => {
       if (res.ok && res.build_upload_id) {
         setBuildUploadId(res.build_upload_id);
+        if (res.asc_app_id) setAscAppId(res.asc_app_id);
         toast.show({ kind: "success", title: "Uploaded to Apple — processing" });
       } else {
         toast.show({
@@ -210,11 +212,15 @@ function TestflightUploadPanel({ appId, build }: { appId: string; build: Build }
         </button>
         <a
           className="btn-secondary !py-1 !px-2 !text-xs no-underline"
-          href="https://appstoreconnect.apple.com/apps"
+          href={
+            ascAppId
+              ? `https://appstoreconnect.apple.com/apps/${ascAppId}/testflight/ios`
+              : "https://appstoreconnect.apple.com/apps"
+          }
           target="_blank"
           rel="noopener noreferrer"
         >
-          Open App Store Connect ↗
+          Open in App Store Connect ↗
         </a>
         {stateName && (
           <span className={`font-medium ${stateColor}`}>
