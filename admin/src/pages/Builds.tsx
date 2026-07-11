@@ -9,7 +9,7 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
-  buildAssetDownloadUrl,
+  downloadBuildAsset,
   getBuild,
   listBuildAssets,
   listBuilds,
@@ -318,10 +318,26 @@ function BuildStatusBadge({ status }: { status: string }) {
 }
 
 function BuildAssetList({ appId, buildId }: { appId: string; buildId: string }) {
+  const toast = useToast();
   const assets = useQuery({
     queryKey: ["build-assets", appId, buildId],
     queryFn: () => listBuildAssets(appId, buildId),
     enabled: !!appId && !!buildId,
+  });
+  const download = useMutation({
+    mutationFn: (asset: BuildAsset) =>
+      downloadBuildAsset(
+        appId,
+        buildId,
+        asset.id,
+        `hands-${asset.platform}-${asset.artifact_kind}.${asset.filetype}`,
+      ),
+    onError: (error) =>
+      toast.show({
+        kind: "error",
+        title: "Download failed",
+        description: (error as Error).message,
+      }),
   });
   return (
     <div className="mt-2 pt-2 border-t border-slate-100 text-xs">
@@ -357,9 +373,12 @@ function BuildAssetList({ appId, buildId }: { appId: string; buildId: string }) 
                   <Button
                     variant="outline"
                     className="text-xs inline-flex"
-                    render={<a href={buildAssetDownloadUrl(appId, buildId, a.id)} />}
+                    disabled={download.isPending}
+                    onClick={() => download.mutate(a)}
                   >
-                    Download
+                    {download.isPending && download.variables?.id === a.id
+                      ? "Downloading…"
+                      : "Download"}
                   </Button>
                 </td>
               </tr>

@@ -1057,6 +1057,47 @@ export const buildAssetDownloadUrl = (
 ) =>
   `${API_BASE}/api/apps/${encodeURIComponent(appId)}/builds/${encodeURIComponent(buildId)}/assets/${encodeURIComponent(assetId)}/download`;
 
+function filenameFromContentDisposition(value: string | null): string | null {
+  if (!value) return null;
+  const encoded = /filename\*=UTF-8''([^;]+)/i.exec(value)?.[1];
+  if (encoded) {
+    try {
+      return decodeURIComponent(encoded);
+    } catch {
+      // Fall through to the plain filename when the server value is malformed.
+    }
+  }
+  return /filename="([^"]+)"/i.exec(value)?.[1] ?? null;
+}
+
+export const downloadBuildAsset = async (
+  appId: string,
+  buildId: string,
+  assetId: string,
+  fallbackFilename: string,
+): Promise<void> => {
+  const headers = new Headers();
+  addAuthHeader(headers);
+  const activeOrgId = getActiveOrgId();
+  if (activeOrgId) headers.set("x-hands-org-id", activeOrgId);
+
+  const res = await fetch(buildAssetDownloadUrl(appId, buildId, assetId), { headers });
+  if (!res.ok) {
+    throw new ApiError(res.status, await readErrorBody(res), `asset download failed ${res.status}`);
+  }
+
+  const blobUrl = URL.createObjectURL(await res.blob());
+  try {
+    const anchor = document.createElement("a");
+    anchor.href = blobUrl;
+    anchor.download = filenameFromContentDisposition(res.headers.get("content-disposition"))
+      ?? fallbackFilename;
+    anchor.click();
+  } finally {
+    URL.revokeObjectURL(blobUrl);
+  }
+};
+
 export const listReleases = (appId: string) =>
   request<{ releases: Release[] }>(`/api/apps/${appId}/releases`, { admin: true });
 
