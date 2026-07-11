@@ -44,6 +44,8 @@ import {
   handlePublicAppIcon,
   handleGetClientKey,
   handleRotateClientKey,
+  handleGetFeatureFlag,
+  handleUpdateFeatureFlag,
 } from "./routes/apps";
 import {
   handlePublicListChannels,
@@ -599,6 +601,8 @@ admin.get("/api/apps/:appId", requireAppRole("viewer"), handleGetApp);
 admin.patch("/api/apps/:appId", requireAppRole("admin"), handleUpdateApp);
 admin.post("/api/apps/:appId/archive", requireAppRole("admin"), handleArchiveApp);
 admin.post("/api/apps/:appId/purge", requireAppRole("admin"), handlePurgeApp);
+admin.get("/api/apps/:appId/feature-flags/:key", requireAppRole("viewer"), handleGetFeatureFlag);
+admin.put("/api/apps/:appId/feature-flags/:key", requireAppRole("admin"), handleUpdateFeatureFlag);
 
 admin.get("/api/apps/:appId/builds", requireAppRole("viewer"), handleListBuilds);
 admin.post("/api/apps/:appId/builds", requireAppRole("publisher"), handleCreateBuild);

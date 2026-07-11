@@ -100,6 +100,21 @@ function makeMockDb() {
       archived_at INTEGER, created_at INTEGER NOT NULL, icon_r2_key TEXT, public_history INTEGER NOT NULL DEFAULT 0, client_key TEXT,
       delta_updates_enabled INTEGER NOT NULL DEFAULT 0
     );
+    CREATE TABLE feature_flags (
+      id TEXT PRIMARY KEY,
+      app_id TEXT,
+      key TEXT NOT NULL,
+      default_enabled INTEGER NOT NULL DEFAULT 0,
+      rollout_percent INTEGER NOT NULL DEFAULT 0,
+      allow_device_ids TEXT NOT NULL DEFAULT '[]',
+      deny_device_ids TEXT NOT NULL DEFAULT '[]',
+      allow_cohorts TEXT NOT NULL DEFAULT '[]',
+      platforms TEXT NOT NULL DEFAULT '[]',
+      updated_at INTEGER NOT NULL,
+      updated_by TEXT,
+      FOREIGN KEY (app_id) REFERENCES apps(id) ON DELETE CASCADE
+    );
+    CREATE UNIQUE INDEX idx_feature_flags_app_key ON feature_flags(app_id, key);
     CREATE TABLE channels (
       id TEXT PRIMARY KEY, app_id TEXT NOT NULL, slug TEXT NOT NULL,
       name TEXT NOT NULL, bundle_id TEXT, password TEXT, git_url TEXT,
@@ -3303,9 +3318,12 @@ describe("quiver public API v2 — scope resolution", () => {
     expect(gatedOff.update_available).toBe(true);
     expect(gatedOff.patch).toBeUndefined();
 
-    // Opt the app into delta updates.
-    await env.DB.prepare("UPDATE apps SET delta_updates_enabled = 1 WHERE id = ?1")
-      .bind("app-scope").run();
+    // Opt the app into delta updates via the feature flag (the delta *offer*
+    // is now gated by the `delta_updates` feature flag, not apps.delta_updates_enabled).
+    await env.DB.prepare(
+      `INSERT INTO feature_flags (id, app_id, key, default_enabled, updated_at)
+       VALUES ('ff-delta-existing', 'app-scope', 'delta_updates', 1, ?1)`,
+    ).bind(Date.now()).run();
 
     // Client on 10 → patch offered with target hash + signed URL.
     const offered = await responseJson<any>(await call("10"));
@@ -3334,6 +3352,90 @@ describe("quiver public API v2 — scope resolution", () => {
     });
     const bigPatch = await responseJson<any>(await call("5"));
     expect(bigPatch.patch).toBeUndefined();
+  });
+
+  it("delta offer respects the delta_updates feature flag (default off/on, per-device allow/deny)", async () => {
+    const env = makeEnv();
+    const { handlePublicV2UpdateCheck } = await import("../src/routes/public_v2");
+    await seedRelease(env, "rel-ff", "build-ff", [["full", "all"]], {
+      versionCode: 20,
+      versionName: "1.0.20",
+    });
+    await seedAsset(env, "build-ff", "asset-ff-full", { arch: "arm64-v8a", sizeBytes: 1000 });
+    await seedAsset(env, "build-ff", "asset-ff-patch", {
+      artifactKind: "delta-patch",
+      arch: "arm64-v8a",
+      filetype: "patch",
+      sizeBytes: 200,
+      r2Key: "apps/app-scope/patch-ff-10-20.patch",
+      metadata: {
+        from_version_code: 10,
+        to_version_code: 20,
+        algorithm: "archive-patcher-v1",
+        target_sha256: "cafef00d",
+      },
+    });
+
+    const call = (deviceId: string) =>
+      handlePublicV2UpdateCheck(
+        makePublicContext(env, {
+          channel: "production",
+          product_type: "android-apk",
+          current_version_code: "10",
+          platform: "android",
+          arch: "arm64-v8a",
+          device_id: deviceId,
+        }),
+      );
+
+    // Replace the (single) delta_updates flag row with a fresh config.
+    const setFlag = async (opts: {
+      default_enabled?: number;
+      allow?: string[];
+      deny?: string[];
+    }) => {
+      await env.DB.prepare(
+        "DELETE FROM feature_flags WHERE app_id = ?1 AND key = 'delta_updates'",
+      )
+        .bind("app-scope")
+        .run();
+      await env.DB.prepare(
+        `INSERT INTO feature_flags
+           (id, app_id, key, default_enabled, allow_device_ids, deny_device_ids, updated_at)
+         VALUES ('ff-delta', 'app-scope', 'delta_updates', ?1, ?2, ?3, ?4)`,
+      )
+        .bind(
+          opts.default_enabled ?? 0,
+          JSON.stringify(opts.allow ?? []),
+          JSON.stringify(opts.deny ?? []),
+          Date.now(),
+        )
+        .run();
+    };
+
+    // (a) No flag row → fail-safe OFF → delta not offered.
+    const none = await responseJson<any>(await call("dev-a"));
+    expect(none.update_available).toBe(true);
+    expect(none.patch).toBeUndefined();
+
+    // (b) default_enabled = 1 → offered.
+    await setFlag({ default_enabled: 1 });
+    const on = await responseJson<any>(await call("dev-a"));
+    expect(on.patch).toMatchObject({ from_version_code: 10, size_bytes: 200 });
+
+    // (c) default off but allow_device_ids contains dev-a → offered ONLY for dev-a.
+    await setFlag({ default_enabled: 0, allow: ["dev-a"] });
+    const allowed = await responseJson<any>(await call("dev-a"));
+    expect(allowed.patch).toMatchObject({ from_version_code: 10 });
+    const otherDevice = await responseJson<any>(await call("dev-b"));
+    expect(otherDevice.patch).toBeUndefined();
+
+    // (d) deny overrides default-on: dev-a denied, dev-b still offered.
+    await setFlag({ default_enabled: 1, deny: ["dev-a"] });
+    const denied = await responseJson<any>(await call("dev-a"));
+    expect(denied.patch).toBeUndefined();
+    const notDenied = await responseJson<any>(await call("dev-b"));
+    expect(notDenied.patch).toMatchObject({ from_version_code: 10 });
   });
 
   it("public R2 download serves active release assets with a valid signature", async () => {
