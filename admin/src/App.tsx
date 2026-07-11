@@ -27,6 +27,7 @@ import {
   ScrollText,
   Settings as SettingsIcon,
   Share2,
+  Store,
   type LucideIcon,
 } from "lucide-react";
 import { useEffect, useState } from "react";
@@ -48,7 +49,7 @@ import {
   TooltipContent,
 } from "raft-ui";
 import { AppsList } from "./pages/AppsList";
-import { AppChannels, AppDetail, AppSettings } from "./pages/AppDetail";
+import { AppChannels, AppDetail, AppSettings, AppStoreReviewPanel } from "./pages/AppDetail";
 import { AuditLog } from "./pages/AuditLog";
 import { Settings } from "./pages/Settings";
 import { Builds } from "./pages/Builds";
@@ -334,7 +335,12 @@ function Header({ account }: { account: AuthAccount }) {
                     </div>
                   )}
                   <div className="space-y-0.5">
-                    {section.items.map((item) => {
+                    {section.items
+                      .filter(
+                        (item) =>
+                          !item.platform || item.platform === currentApp?.platform,
+                      )
+                      .map((item) => {
                       const Icon = item.icon;
                       const link = (
                         <NavLink
@@ -620,7 +626,11 @@ function MobileTopNav({ account }: { account: AuthAccount }) {
       </div>
       <nav className="flex gap-1 overflow-x-auto">
         {appId && appBase ? (
-          APP_NAV_SECTIONS.flatMap((section) => section.items).map((item) => {
+          APP_NAV_SECTIONS.flatMap((section) => section.items)
+            .filter(
+              (item) => !item.platform || item.platform === currentApp?.platform,
+            )
+            .map((item) => {
             const Icon = item.icon;
             return (
               <NavLink
@@ -708,6 +718,27 @@ function TestflightRoute() {
   const { appId } = useParams();
   if (!appId) return null;
   return <Testflight key={appId} appId={appId} />;
+}
+
+function AppStoreReviewRoute() {
+  const { appId } = useParams();
+  const apps = useQuery({ queryKey: ["apps"], queryFn: listApps });
+  const app = apps.data?.apps.find((a) => a.id === appId);
+  if (!appId) return null;
+  return (
+    <div key={appId} className="space-y-6">
+      <div>
+        <h1 className="text-lg font-semibold">App Store review status</h1>
+      </div>
+      {app && app.platform === "ios" ? (
+        <AppStoreReviewPanel appId={appId} app={app} />
+      ) : app ? (
+        <p className="text-sm text-slate-500">
+          This is only available for iOS apps.
+        </p>
+      ) : null}
+    </div>
+  );
 }
 
 function BuildsRoute() {
@@ -1171,6 +1202,7 @@ function AuthenticatedApp({ account }: { account: AuthAccount }) {
           <Route path="channels" element={<AppChannelsRoute />} />
           <Route path="builds" element={<BuildsRoute />} />
           <Route path="testflight" element={<TestflightRoute />} />
+          <Route path="appstore" element={<AppStoreReviewRoute />} />
           <Route path="releases" element={<ReleasesRoute />} />
           <Route path="shares" element={<AppSharesRoute />} />
           <Route path="feedback" element={<AppFeedbackRoute />} />
@@ -1270,7 +1302,13 @@ function AppsListWithNav() {
 
 const APP_NAV_SECTIONS: Array<{
   label: string;
-  items: Array<{ to: string; label: string; icon: LucideIcon; end?: boolean }>;
+  items: Array<{
+    to: string;
+    label: string;
+    icon: LucideIcon;
+    end?: boolean;
+    platform?: "ios" | "android" | "ohos" | "electron";
+  }>;
 }> = [
   {
     label: "Distribute",
@@ -1280,6 +1318,7 @@ const APP_NAV_SECTIONS: Array<{
       { to: "releases", label: "Releases", icon: Rocket },
       { to: "builds", label: "Builds", icon: Package },
       { to: "testflight", label: "TestFlight", icon: Plane },
+      { to: "appstore", label: "App Store", icon: Store, platform: "ios" },
       { to: "shares", label: "Shares", icon: Share2 },
     ],
   },
@@ -1317,6 +1356,7 @@ function AppShell() {
           <Route path="channels" element={<AppChannelsRoute />} />
           <Route path="builds" element={<BuildsRoute />} />
           <Route path="testflight" element={<TestflightRoute />} />
+          <Route path="appstore" element={<AppStoreReviewRoute />} />
           <Route path="releases" element={<ReleasesRoute />} />
           <Route path="shares" element={<AppSharesRoute />} />
           <Route path="feedback" element={<AppFeedbackRoute />} />

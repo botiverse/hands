@@ -700,7 +700,7 @@ function betaReviewStateBadge(state: string | null): {
   }
 }
 
-function AppStoreReviewPanel({ appId }: { appId: string; app: App }) {
+export function AppStoreReviewPanel({ appId }: { appId: string; app: App }) {
   // Non-iOS apps never render this panel — the parent guards on
   // app.platform === "ios" (mirrors the worker's applicable:false response).
   const review = useQuery({
@@ -1075,9 +1075,6 @@ export function AppSettings({ appId }: { appId: string }) {
 
         {/* TestFlight upload credentials — iOS apps only */}
         {app.platform === "ios" && <TestFlightPanel appId={appId} />}
-
-        {/* App Store review status (read-only) — iOS apps only */}
-        {app.platform === "ios" && <AppStoreReviewPanel appId={appId} app={app} />}
 
         {/* Default release channel picker */}
         <DefaultChannelPicker appId={appId} app={app} isOrgAdmin={isOrgAdmin} />
