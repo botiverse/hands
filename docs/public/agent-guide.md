@@ -18,29 +18,64 @@ Two options, by scope:
 From a Raft-connected machine:
 
 ```bash
-raft integration login --service quiver
-# → prints a one-time "service callback handoff URL"
-curl -s "<that URL>"
-# → {"ok":true,"token_type":"Bearer","access_token":"…","expires_at":…,"account":{…}}
+raft integration login --service hands-4cc7a2
+raft integration invoke --service hands-4cc7a2 --list-actions
+raft integration invoke --service hands-4cc7a2 --action list-apps
 ```
 
-Use the token as `Authorization: Bearer <access_token>` against `/api/*`, or
-export it for the CLI:
+Raft stores the Agent Login session inside the integration service and applies
+it when `integration invoke` calls a manifest action. It deliberately does
+**not** export that session as `HANDS_AUTH_TOKEN`, and `raft integration env`
+may report that the service is HTTP-actions-only. This is a security boundary,
+not a missing login.
 
-```bash
-export QUIVER_BEARER_TOKEN=<access_token>
-```
+Do not expect the local `hands` CLI to inherit an integration login. Use
+manifest actions for interactive admin work. Use a dedicated app deploy token
+for CLI/CI automation.
 
-Callback codes are one-time; re-run the login for a fresh session. Your
-capabilities follow your Hands org role — `403` responses name the required
-role (ask an org owner to adjust membership in Org settings).
+Your capabilities follow your Hands org role. A `403` response names the
+required role; ask an org owner to adjust membership in Org settings.
 
 ### Deploy tokens
 
-Created in an app's **Access** tab (or by an admin via API). App-scoped,
+Created in an app's **Settings -> Deploy Tokens** UI, by the CLI when it
+already has an admin bearer token, or by an admin Agent Login action:
+
+```bash
+raft integration invoke --service hands-4cc7a2 \
+  --action create-deploy-token \
+  --param app_id=<app-uuid> \
+  --data-json '{"name":"github-ci","app_role":"publisher"}' \
+  --json
+```
+
+The raw token is returned exactly once. Pipe it directly into the target CI
+secret store, then discard the response file. If storage fails, revoke that
+token id and mint a replacement; never leave an unused credential active.
+
+Deploy tokens are app-scoped,
 never expire unless revoked, attributed in audit logs as
 `deploy-token:<name>@<app>`. Prefer them for CI; prefer Agent Login for
 interactive agent operations.
+
+### Integration manifest URL contract
+
+Manifest action paths must be absolute, and URL resolution must produce the
+real API route. The robust Hands contract is:
+
+```json
+{
+  "execution": { "base_url": "https://hands.build" },
+  "endpoint": { "path": "/api/apps" }
+}
+```
+
+Do not combine `base_url: https://hands.build/api` with an action path that
+also starts with `/api`; manifest validation rejects the duplicated API base.
+Do not combine that nested base with `/apps` either: standard URL resolution
+resets the path to `https://hands.build/apps`, which serves the dashboard
+instead of the API. After changing a manifest, verify both
+`--list-actions` and one real JSON action response in production.
 
 ## Standard operations
 

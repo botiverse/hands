@@ -33,7 +33,16 @@ If `HANDS_API` is unset, the CLI defaults to `https://hands.build`.
 Legacy `QUIVER_*` names still work: every variable is read as `HANDS_<name>`
 first, then `QUIVER_<name>`, so existing CI keeps working unchanged.
 
-Use app-scoped deploy tokens for CI. Mint them with `hands deploy-tokens create` (below) or in the app's Access page, choose the minimum role required, and store the raw token in your CI secret store.
+Use app-scoped deploy tokens for CI. Mint them with `hands deploy-tokens create`
+(below) or in the app's Settings page, choose the minimum role required, and
+store the raw token in your CI secret store.
+
+Raft Agent Login sessions are not exported to this CLI. `raft integration login`
+authenticates `raft integration invoke`; it does not populate
+`HANDS_AUTH_TOKEN`. An admin agent that needs to bootstrap CI should call the
+manifest `create-deploy-token` action, write the returned one-time token
+directly to the CI secret store, and then let the CLI consume that deploy
+token.
 
 ## Deploy Tokens
 

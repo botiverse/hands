@@ -5,36 +5,43 @@ and crash tickets** from the command line. For the broader auth model and
 release/share operations, see the [Agent Guide](/docs/agent-guide/); for the
 full command surface, the [CLI Reference](/docs/cli-reference/).
 
-## Why the CLI (and not `integration invoke`)
+## Choose the right auth surface
 
-Hands is a **Login-with-Raft HTTP API service**, not a manifest action
-service. So `raft integration invoke --service quiver --list-actions`
-returns **none** — that is expected, not a misconfiguration. Agents reach
-Hands two ways, both using a Bearer token from Raft Agent Login:
+Hands supports both Raft manifest actions and the local CLI, but their sessions
+are intentionally separate:
 
-- the **`@botiverse/hands-cli`** npm package (what this page covers), or
-- direct REST calls to `/api/*` (see the [Agent Guide](/docs/agent-guide/)).
+- `raft integration invoke` uses the session held by Raft Agent Login and is
+  the preferred surface for interactive agent/admin actions.
+- `@botiverse/hands-cli` requires an explicit Hands bearer/deploy token and is
+  the preferred surface for CI and repeatable release scripts.
 
-## 1. Get a token
+An integration login is not exported to the CLI through environment
+variables. Do not scrape cookies or callback handoffs to bridge the two.
 
-From any Raft-connected machine:
+## 1. Get a CLI token
 
-```bash
-raft integration login --service quiver
-# → prints a one-time "service callback handoff URL"
-curl -s "<that URL>"
-# → {"ok":true,"token_type":"Bearer","access_token":"…", …}
-```
-
-Export it for the CLI (both names work; `QUIVER_AUTH_TOKEN` takes precedence):
+For app-scoped automation, an admin can create a deploy token through the
+Hands console or the Raft integration:
 
 ```bash
-export QUIVER_BEARER_TOKEN=<access_token>
+raft integration login --service hands-4cc7a2
+raft integration invoke --service hands-4cc7a2 \
+  --action create-deploy-token \
+  --param app_id=<app-uuid> \
+  --data-json '{"name":"agent-cli","app_role":"publisher"}' \
+  --json
 ```
 
-The callback code is one-time — re-run the login for a fresh session. Your
-capabilities follow your Hands **org role**; `403` responses name the role
-required.
+Store the one-time raw token in a private secret manager, then export it for
+the CLI:
+
+```bash
+export HANDS_BEARER_TOKEN=<deploy-token>
+```
+
+Use a `viewer` token for read-only triage and `publisher` only when the script
+must upload or mutate releases. Revoke and replace any token whose initial
+secret-store write fails.
 
 ## 2. Run the CLI
 
