@@ -4,7 +4,7 @@ Source: `clients/ios/Sources/Hands` (Objective-C — no Swift files, which is
 why naive `*.swift` searches miss it). Podspec v0.1.4, iOS 14.1+, zero deps.
 
 **Version drift (P1.6):** podspec `0.1.4` vs `kHandsSDKVersion = 0.1.5`.
-**Rename in flight (P1.6):** the Slock mobile app still consumes the old
+**Rename in flight (P1.6):** the Raft mobile app still consumes the old
 `Quiver` pod name pinned to an old git commit (Podfile.lock `Quiver (0.1.4)`)
 and calls `Quiver`-prefixed symbols via reflection.
 
@@ -26,7 +26,7 @@ and calls `Quiver`-prefixed symbols via reflection.
 - **Device analytics** — 24h-throttled `reportDevice` ping.
 - **Diagnostics provider** — `setDiagnosticsProvider:` lets the host attach
   log files at crash-upload time. The mobile app feeds its own
-  `slock-diagnostics.jsonl` (512 KB × 4 rotation) — a self-built substitute
+  `raft-diagnostics.jsonl` (512 KB × 4 rotation) — a self-built substitute
   for the missing breadcrumb layer.
 
 ## Absent (→ roadmap)

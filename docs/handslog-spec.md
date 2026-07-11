@@ -9,8 +9,8 @@ Hands already owns the **transport** side of client observability: crash and
 feedback ingest, attachments, `/metrics`, and (iOS) automatic bundling of a
 diagnostics zip onto crash tickets. What's missing is the **capture** side.
 
-Today every consumer rolls its own log writer — the Slock app ships a bespoke
-`slock-diagnostics.jsonl` writer (rotation, JSONL format, ring buffer) that only
+Today every consumer rolls its own log writer — the Raft app ships a bespoke
+`raft-diagnostics.jsonl` writer (rotation, JSONL format, ring buffer) that only
 it can use. Anyone else adopting Hands needs the same thing. HandsLog makes log
 capture a **first-class, generic capability built into the existing Hands
 SDKs**, so it flows straight into Hands's transport and closes the loop:
@@ -34,7 +34,7 @@ Two delivery surfaces for the **same** generic capability:
   desktop app. This is the track artin greenlit first (see Architecture below).
 - **Generic only** (see the "Hands stays generic" principle): HandsLog is a
   logging *primitive* — levels, structured fields, tags, rotation, ring buffer,
-  redaction. It does **not** encode any consumer's log semantics; Slock and
+  redaction. It does **not** encode any consumer's log semantics; Raft and
   others layer meaning on top.
 - **Out (P1)**: server-assisted distribution/collection and tag "染色" selective
   capture are later phases. This spec designs the P1 surface + the collection
@@ -76,11 +76,11 @@ contract everywhere.
 ## Concepts
 
 - **Entry** — one JSONL object per line. The shape is an explicit **superset of
-  the existing Slock diagnostics fields**, not a new schema, so current
+  the existing Raft diagnostics fields**, not a new schema, so current
   server/UI/human `grep` keeps working after migration:
   ```json
   {"ts":"2026-07-09T14:01:02.345+08:00","level":"info","event":"login_ok",
-   "tag":"auth","message":"login ok","fields":{"server":"slock-android"},
+   "tag":"auth","message":"login ok","fields":{"server":"raft-android"},
    "thread":"main","seq":123,"dropped":0,"truncated":false}
   ```
   `ts` (ISO-8601 with offset), `level`, **`event`** (distinct machine key — kept
@@ -103,7 +103,7 @@ contract everywhere.
 Support **both** schemes, configurable, because the tradeoff is real:
 
 - `rotate: "size"` — `hands-<name>.jsonl`, `.1`, `.2`, … (fixed file count,
-  simple). This is what `slock-diagnostics` does today.
+  simple). This is what `raft-diagnostics` does today.
 - `rotate: "daily"` — `hands-<name>-YYYY-MM-DD.jsonl` (one file per calendar
   day). Trivially correlates to a crash timestamp and to age-based retention;
   costs more files if the app launches many times a day.
@@ -145,25 +145,25 @@ Hands.log.snapshot() -> [entries]     // ring buffer, for crash-time capture
 - **Format** — JSONL stays the shape the server already parses from the
   diagnostics zip, so no server change is needed for P1.
 
-## Migration (slock-diagnostics → HandsLog)
+## Migration (raft-diagnostics → HandsLog)
 
-The Slock app's `slock-diagnostics` writer (KMP, task #101) is replaced by
+The Raft app's `raft-diagnostics` writer (KMP, task #101) is replaced by
 `Hands.log`. Three hard constraints (from KMP review) protect the existing
 crash/feedback evidence chain during migration:
 
 1. **Superset entry shape, `event` preserved.** The JSONL fields above are a
-   strict superset of today's `slock-diagnostics` (`ts/level/event/tag/message/
+   strict superset of today's `raft-diagnostics` (`ts/level/event/tag/message/
    thread/seq/dropped/truncated`). `event` stays a distinct field — do not fold
    it into `tag` — or `event=…` grep/filters regress.
 2. **Filename-agnostic attach.** Do not assume the server keys off filenames.
    P1 defaults to `hands-<name>-YYYY-MM-DD.jsonl`, but the crash/feedback
    attach must keep a compatibility entry: **either** `currentFiles()` also
-   returns a legacy `slock-diagnostics*.jsonl` alias/manifest, **or** the server
+   returns a legacy `raft-diagnostics*.jsonl` alias/manifest, **or** the server
    is confirmed to parse by JSONL *content*, not filename. Pin this in the spec —
    it's the most likely "zip has files but nobody can see them" break.
-3. **Slock-side adapter, not a rewrite.** Slock keeps its call sites and red
+3. **Raft-side adapter, not a rewrite.** Raft keeps its call sites and red
    lines (app-owned logs only; never read system logcat/hilog; redact sensitive
-   fields first) behind a thin `SlockDiagnosticsSink → Hands.log` adapter.
+   fields first) behind a thin `RaftDiagnosticsSink → Hands.log` adapter.
    HandsLog owns only disk/rotation/ring/`currentFiles`/`snapshot`. This keeps
    P1 a minimal swap instead of touching business call sites on all three
    platforms at once.
@@ -216,7 +216,7 @@ Node / desktop track (artin greenlit, thread #Hands:c526b5e1):
 Mobile track (original P1/P2, unchanged):
 
 - **Mobile P1** — core capture inside the mobile SDKs + wire into the existing
-  crash-diagnostics attach; migrate `slock-diagnostics` via the adapter above.
+  crash-diagnostics attach; migrate `raft-diagnostics` via the adapter above.
   **iOS + Android must-do**; OHOS same batch if its SDK writes to disk reliably,
   else interface-placeholder + wire attach right after.
 - **Mobile P2** — the same server-assisted distribution/collection + 染色, built

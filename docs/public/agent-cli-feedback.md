@@ -140,7 +140,7 @@ with the CLI (accepts a slug and a short/prefix ticket id):
 
 ```bash
 hands feedback download-attachment raft-android 389d855b <attachmentId>
-# → Saved 445539 bytes to slock-feedback-....zip   (use -o to choose the path)
+# → Saved 445539 bytes to raft-feedback-....zip   (use -o to choose the path)
 ```
 
 Hands saves the **raw bytes as-is** — it does not unzip or interpret the

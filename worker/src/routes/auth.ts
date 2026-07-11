@@ -747,7 +747,7 @@ export async function handleAgentManifest(c: Context<{ Bindings: Env }>) {
   // current action list (a stale cached copy makes schema changes invisible).
   c.header("Cache-Control", "no-store");
   return c.json({
-    schema: "slock-agent-manifest.v0",
+    schema: "raft-agent-manifest.v0",
     service: c.env.RAFT_CLIENT_ID || "quiver",
     docs_url: `${origin}/`,
     execution: {

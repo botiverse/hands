@@ -10,7 +10,7 @@ AI 能力。
 
 **总立场**:Sentry 的告警/集成体系本质是"把信号推给人,再让人去各个工具里
 操作"。Hands 的差异化是 **agent-native**:信号直接进到 AI agent 的工作环境
-(CLI/API,Raft/Slock 聊天即席),由 agent 完成分诊甚至修复。所以很多领域
+(CLI/API,Raft 聊天即席),由 agent 完成分诊甚至修复。所以很多领域
 我们不该抄 Sentry 的"人肉 UI",而是补齐**信号生成层**(规则、阈值、聚合),
 把"消费层"留给 agent。
 
@@ -72,7 +72,7 @@ Sentry 2025 年底把告警重构为 **Alerts + Monitors** 双层模型
 - **可后置**:Prophet 级异常检测。自托管、单租户、数据量小,先做
   "7 天同时段均值 × 系数"的轻量基线即可覆盖 80% 场景;Sentry 也是先有
   固定阈值多年后才补异常检测。
-- **不追**:Uptime/Cron monitors——不是崩溃平台的本职,Slock 生态另有位置。
+- **不追**:Uptime/Cron monitors——不是崩溃平台的本职,Raft 生态另有位置。
 
 ---
 
@@ -106,7 +106,7 @@ Sentry 2025 年底把告警重构为 **Alerts + Monitors** 双层模型
 
 - 无任何 chat-ops 集成;无 issue tracker 同步;无 VCS 集成(无 commit
   追踪、无 suspect commit、无栈帧链接)。
-- 但:**Raft/Slock 聊天平台是我们的原生栖息地**。Sentry 花大力气把自己
+- 但:**Raft 聊天平台是我们的原生栖息地**。Sentry 花大力气把自己
   "嵌进" Slack;我们的 agent 本来就活在 Raft 对话里,通过 CLI/API 直接
   读写 crash 组和 feedback 工单——"在聊天里 resolve" 对我们不是集成,
   是本体。
@@ -118,7 +118,7 @@ Sentry 2025 年底把告警重构为 **Alerts + Monitors** 双层模型
   **更进一步**:Sentry 在 Slack 里只有固定按钮 + 刚起步的 Seer Agent,
   我们频道里坐着的是全功能 agent,能查符号化栈、翻设备分布、改状态、
   开工单、甚至提修复 PR——这是我们**领先而非追赶**的一域,应最优先做实。
-  (参照 slock-agent-manifest 的 actions[] 模式暴露可调用动作。)
+  (参照 raft-agent-manifest 的 actions[] 模式暴露可调用动作。)
 - **关键:suspect commit(轻量版)**。这是 Sentry VCS 集成里对分诊增益
   最大的一项,而且对 agent 消费尤其有价值:agent 拿到"疑似引入提交 +
   作者"后可以直接去读 diff。最小实现:上传 release 时带 commit SHA
@@ -274,7 +274,7 @@ Sentry 2025 年底把告警重构为 **Alerts + Monitors** 双层模型
 ### Hands 现状
 
 - 平台自身无内置 AI,但**架构即 AI**:agent 经 CLI/API 对 crash 组、
-  符号化栈、设备/版本分布、feedback 工单有全量读写权,在 Slock/Raft
+  符号化栈、设备/版本分布、feedback 工单有全量读写权,在 Raft
   里即席完成 Seer 的全部用例(总结、根因、修复 PR、问答)——且用户
   自带模型和 agent,无 add-on 计费、无数据出域。
 
@@ -289,7 +289,7 @@ Sentry 2025 年底把告警重构为 **Alerts + Monitors** 双层模型
   栈-仓库链接(根因分析的原料)。Seer 强是因为 Sentry 给它喂了这些
   结构化输入;我们要喂给用户自己的 agent。
 - **可后置**:文档层面的 agent 引导(MCP 清单 / actions[] 声明已有
-  方向,见 slock-agent-manifest 备忘)。
+  方向,见 raft-agent-manifest 备忘)。
 
 ---
 

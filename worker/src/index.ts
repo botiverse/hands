@@ -378,7 +378,6 @@ app.use(
 
 // Public — health check (no auth)
 app.get("/health", handleHealth);
-app.get("/.well-known/slock-agent-manifest.json", handleAgentManifest);
 app.get("/.well-known/raft-agent-manifest.json", handleAgentManifest);
 app.get("/openapi.json", (c) => c.json({
   ...openApiDocument,
