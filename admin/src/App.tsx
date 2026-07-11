@@ -1117,8 +1117,13 @@ function LandingTerminal() {
             <Button
               key={d.key}
               size="sm"
-              variant={d.key === active ? "default" : "ghost"}
+              variant="ghost"
               onClick={() => setActive(d.key)}
+              className={
+                d.key === active
+                  ? "bg-white text-slate-900 hover:bg-white hover:text-slate-900"
+                  : "text-slate-400 hover:bg-white/10 hover:text-slate-100"
+              }
             >
               {d.label}
             </Button>
