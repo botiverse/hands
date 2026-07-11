@@ -21,8 +21,8 @@ and local package validation. Hands receives the signed `.app`, standalone
 
 AppGallery Connect currently exposes APIs for:
 
-- AGC API client authentication using OAuth client credentials, with
-  developer-level Service Account/PS256 support reserved as a future credential kind;
+- developer-level Service Account authentication using one-hour PS256 JWTs,
+  with legacy API client OAuth authentication retained for migration;
 - HarmonyOS `.app` upload, including large/multipart uploads and SHA-256;
 - package binding and asynchronous compile/parse status;
 - invitation testing and public testing, including groups, members, invite
@@ -51,7 +51,7 @@ in a separate table and encryption domain.
 | Column | Purpose |
 |---|---|
 | `id`, `app_id` | One active credential set per Hands app. |
-| `service_account_id`, `key_id` | Non-secret identifiers shown in Settings. |
+| `credential_kind`, `developer_id`, `project_id`, `client_id`, `key_id`, `sub_account` | Non-secret identifiers shown in Settings for Service Accounts or legacy API clients. |
 | `credential_ciphertext_b64`, `credential_iv_b64` | Entire AGC credential JSON encrypted with AES-GCM. |
 | `credential_fingerprint` | SHA-256 fingerprint for rotation/audit, never the private key. |
 | `created_by_actor`, `created_at`, `updated_at` | Audit ownership. |
@@ -69,8 +69,10 @@ Settings actions:
 - `DELETE /api/apps/:appId/agc-credentials`
 - `POST /api/apps/:appId/agc-credentials/verify`
 
-The connection test mints a short-lived JWT and performs a read-only app
-lookup for the configured `main` channel bundle name.
+The connection test validates Service Account PKCS#8 key import and PS256 JWT
+signing, or exchanges the legacy API client secret for an OAuth access token.
+The first app lookup/upload then verifies provider-side Publishing/Testing
+permissions without exposing the JWT or access token.
 
 ## Persistent market model
 
@@ -128,7 +130,8 @@ workflow instance id on `market_submissions`.
 
 Steps must be individually retryable:
 
-1. load encrypted credentials and exchange the API client secret for an OAuth access token;
+1. load encrypted credentials and mint a one-hour Service Account PS256 JWT,
+   or exchange a legacy API client secret for an OAuth access token;
 2. resolve the manually created AGC app by bundle name;
 3. request the short-lived upload URL;
 4. stream the `.app` from R2, using multipart upload when required;
@@ -219,7 +222,8 @@ Hands draft. Market submit remains a separate reviewed action.
 ### P0A: foundation
 
 - migration for encrypted AGC credentials, market submissions, and events;
-- API client OAuth exchange and read-only connection test;
+- Service Account PS256 JWT auth, legacy API client OAuth compatibility, and
+  credential validation;
 - AppGallery page with credential configuration and app/bundle resolution;
 - provider-neutral operation kinds and status polling.
 

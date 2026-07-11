@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
-import { decryptAgcCredential, encryptAgcCredential, fingerprintAgcCredential, parseAgcCredential } from "../src/lib/agc_credentials";
-import { AgcApiError, addAgcTestPackage, bindAgcTestPackage, createAgcInvitationVersion, exchangeAgcApiClientToken, getAgcCompileStatus, requestAgcUpload, resolveAgcAppId, submitAgcTestVersion } from "../src/lib/agc_api";
+import { decodeProtectedHeader, exportPKCS8, generateKeyPair, jwtVerify } from "jose";
+import { decryptAgcCredential, encryptAgcCredential, fingerprintAgcCredential, parseAgcCredential, type AgcApiClientCredential } from "../src/lib/agc_credentials";
+import { AgcApiError, addAgcTestPackage, bindAgcTestPackage, createAgcInvitationVersion, createAgcServiceAccountJwt, exchangeAgcApiClientToken, getAgcCompileStatus, requestAgcUpload, resolveAgcAppId, submitAgcTestVersion } from "../src/lib/agc_api";
 
 const raw = JSON.stringify({ type: "api_client", developer_id: "dev", project_id: "project", client_id: "client", client_secret: "secret", configuration_version: "1.0", region: "CN" });
 
@@ -14,10 +15,28 @@ describe("AGC credentials", () => {
       client_id: "client",
     });
   });
+  it("parses Huawei service account private JSON", async () => {
+    const { privateKey } = await generateKeyPair("PS256", { extractable: true });
+    const credential = parseAgcCredential({
+      project_id: "project",
+      key_id: "key-1",
+      private_key: await exportPKCS8(privateKey),
+      sub_account: "service@example.com",
+      token_uri: "https://oauth-login.cloud.huawei.com/oauth2/v3/token",
+    });
+    expect(credential).toMatchObject({
+      credential_kind: "service_account",
+      project_id: "project",
+      key_id: "key-1",
+      sub_account: "service@example.com",
+    });
+  });
   it("rejects malformed and unsupported credentials", () => {
     expect(() => parseAgcCredential("not json")).toThrow(/valid JSON/);
     expect(() => parseAgcCredential({ type: "service_account" })).toThrow(/unsupported/);
     expect(() => parseAgcCredential({ type: "api_client" })).toThrow(/developer_id/);
+    expect(() => parseAgcCredential({ key_id: "key-1", sub_account: "service@example.com" })).toThrow(/private_key/);
+    expect(() => parseAgcCredential({ key_id: "key-1", sub_account: "service@example.com", private_key: "not a key" })).toThrow(/PKCS#8/);
   });
   it("encrypts, decrypts, fingerprints, and uses fresh IVs", async () => {
     const a = await encryptAgcCredential(raw, "root-secret");
@@ -71,10 +90,44 @@ describe("AGC invitation testing API", () => {
     const mockFetch = vi.fn(async () => new Response(JSON.stringify({ ret: { code: 204144688, msg: "invalid package" } }), { status: 200 }));
     await expect(resolveAgcAppId(auth, "build.raft.mobile", mockFetch as typeof fetch)).rejects.toThrow("invalid package (HTTP 200, code 204144688)");
   });
+  it("omits the legacy client_id header for service account auth", async () => {
+    let headers = new Headers();
+    const mockFetch = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      headers = new Headers(init?.headers);
+      return new Response(JSON.stringify({ ret: { code: 0 }, appids: [{ key: "build.raft.mobile", value: "agc-app" }] }), { status: 200 });
+    });
+    await resolveAgcAppId({ accessToken: "service-jwt" }, "build.raft.mobile", mockFetch as typeof fetch);
+    expect(headers.get("authorization")).toBe("Bearer service-jwt");
+    expect(headers.has("client_id")).toBe(false);
+  });
+});
+
+describe("AGC service account JWT", () => {
+  it("creates the official one-hour PS256 assertion", async () => {
+    const { privateKey, publicKey } = await generateKeyPair("PS256", { extractable: true });
+    const now = 1_750_000_000;
+    const jwt = await createAgcServiceAccountJwt({
+      credential_kind: "service_account",
+      key_id: "key-1",
+      private_key: await exportPKCS8(privateKey),
+      sub_account: "service@example.com",
+      token_uri: "https://oauth-login.cloud.huawei.com/oauth2/v3/token",
+    }, now);
+
+    expect(decodeProtectedHeader(jwt)).toMatchObject({ alg: "PS256", typ: "JWT", kid: "key-1" });
+    const { payload } = await jwtVerify(jwt, publicKey, {
+      algorithms: ["PS256"],
+      issuer: "service@example.com",
+      audience: "https://oauth-login.cloud.huawei.com/oauth2/v3/token",
+      currentDate: new Date(now * 1000),
+    });
+    expect(payload.iat).toBe(now);
+    expect(payload.exp).toBe(now + 3600);
+  });
 });
 
 describe("AGC token exchange", () => {
-  const credential = parseAgcCredential(raw);
+  const credential = parseAgcCredential(raw) as AgcApiClientCredential;
   it("returns the token internally and expiry on success", async () => {
     let requestBody = "";
     const mockFetch = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {

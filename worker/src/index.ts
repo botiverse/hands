@@ -800,7 +800,7 @@ admin.get("/api/apps/:appId/testflight-uploads/:buildUploadId", requireAppRole("
 admin.get("/api/apps/:appId/appstore-review", requireAppRole("viewer"), handleAppStoreReview);
 admin.put("/api/apps/:appId/asc-credentials", requireAppRole("admin"), handleSetAscCredentials);
 admin.delete("/api/apps/:appId/asc-credentials", requireAppRole("admin"), handleDeleteAscCredentials);
-// AppGallery Connect API client credentials for OHOS publishing.
+// AppGallery Connect Service Account and legacy API client credentials for OHOS publishing.
 admin.get("/api/apps/:appId/agc-credentials", requireAppRole("admin"), handleGetAgcCredentials);
 admin.put("/api/apps/:appId/agc-credentials", requireAppRole("admin"), handleSetAgcCredentials);
 admin.delete("/api/apps/:appId/agc-credentials", requireAppRole("admin"), handleDeleteAgcCredentials);

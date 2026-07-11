@@ -7,14 +7,28 @@ export type AgcApiClientCredential = {
   configuration_version?: string;
   region?: string;
 };
+export type AgcServiceAccountCredential = {
+  credential_kind: "service_account";
+  project_id?: string;
+  key_id: string;
+  private_key: string;
+  sub_account: string;
+  token_uri: string;
+  auth_uri?: string;
+  auth_provider_cert_uri?: string;
+  client_cert_uri?: string;
+};
+export type AgcCredential = AgcApiClientCredential | AgcServiceAccountCredential;
 
 export type AgcCredentialsMeta = {
   id: string;
   app_id: string;
-  credential_kind: "api_client";
-  developer_id: string;
-  project_id: string;
-  client_id: string;
+  credential_kind: "api_client" | "service_account";
+  developer_id: string | null;
+  project_id: string | null;
+  client_id: string | null;
+  key_id: string | null;
+  sub_account: string | null;
   configuration_version: string | null;
   region: string | null;
   credential_fingerprint: string;
@@ -28,7 +42,7 @@ function requiredString(value: unknown, name: string): string {
   return value.trim();
 }
 
-export function parseAgcCredential(input: string | unknown): AgcApiClientCredential {
+export function parseAgcCredential(input: string | unknown): AgcCredential {
   let value: unknown = input;
   if (typeof input === "string") {
     try { value = JSON.parse(input); } catch { throw new Error("credential_json must contain valid JSON"); }
@@ -37,6 +51,22 @@ export function parseAgcCredential(input: string | unknown): AgcApiClientCredent
     throw new Error("credential_json must be a JSON object");
   }
   const obj = value as Record<string, unknown>;
+  if (typeof obj.key_id === "string" || typeof obj.private_key === "string" || typeof obj.sub_account === "string") {
+    const privateKey = requiredString(obj.private_key, "private_key");
+    if (!privateKey.includes("BEGIN PRIVATE KEY")) throw new Error("private_key must be a PKCS#8 PEM private key");
+    const credential: AgcServiceAccountCredential = {
+      credential_kind: "service_account",
+      key_id: requiredString(obj.key_id, "key_id"),
+      private_key: privateKey,
+      sub_account: requiredString(obj.sub_account, "sub_account"),
+      token_uri: typeof obj.token_uri === "string" && obj.token_uri.trim() ? obj.token_uri.trim() : "https://oauth-login.cloud.huawei.com/oauth2/v3/token",
+    };
+    if (typeof obj.project_id === "string") credential.project_id = obj.project_id.trim();
+    if (typeof obj.auth_uri === "string") credential.auth_uri = obj.auth_uri.trim();
+    if (typeof obj.auth_provider_cert_uri === "string") credential.auth_provider_cert_uri = obj.auth_provider_cert_uri.trim();
+    if (typeof obj.client_cert_uri === "string") credential.client_cert_uri = obj.client_cert_uri.trim();
+    return credential;
+  }
   const type = requiredString(obj.type, "type");
   if (type !== "api_client" && type !== "project_client_id") {
     throw new Error(`unsupported AGC credential type: ${type}`);
@@ -82,27 +112,33 @@ export async function fingerprintAgcCredential(value: string): Promise<string> {
   return Array.from(digest, (b) => b.toString(16).padStart(2, "0")).join("");
 }
 
-export async function storeAgcCredentials(db: D1Database, encKey: string, args: { app_id: string; credential: AgcApiClientCredential; actor: string }) {
+export function agcCredentialKind(value: AgcCredential): "api_client" | "service_account" {
+  return "credential_kind" in value ? value.credential_kind : "api_client";
+}
+export async function storeAgcCredentials(db: D1Database, encKey: string, args: { app_id: string; credential: AgcCredential; actor: string }) {
   const canonical = JSON.stringify(args.credential);
   const encrypted = await encryptAgcCredential(canonical, encKey);
   const fingerprint = await fingerprintAgcCredential(canonical);
   const now = Date.now();
+  const kind = agcCredentialKind(args.credential);
+  const api = kind === "api_client" ? args.credential as AgcApiClientCredential : null;
+  const service = kind === "service_account" ? args.credential as AgcServiceAccountCredential : null;
   await db.prepare(`INSERT INTO app_agc_credentials
-    (id, app_id, credential_kind, developer_id, project_id, client_id, configuration_version, region,
+    (id, app_id, credential_kind, developer_id, project_id, client_id, key_id, sub_account, configuration_version, region,
      credential_fingerprint, credential_ciphertext_b64, credential_iv_b64, created_by_actor, created_at, updated_at)
-    VALUES (?1, ?2, 'api_client', ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?12)
-    ON CONFLICT(app_id) DO UPDATE SET credential_kind='api_client', developer_id=excluded.developer_id,
-      project_id=excluded.project_id, client_id=excluded.client_id, configuration_version=excluded.configuration_version,
+    VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?15)
+    ON CONFLICT(app_id) DO UPDATE SET credential_kind=excluded.credential_kind, developer_id=excluded.developer_id,
+      project_id=excluded.project_id, client_id=excluded.client_id, key_id=excluded.key_id, sub_account=excluded.sub_account, configuration_version=excluded.configuration_version,
       region=excluded.region, credential_fingerprint=excluded.credential_fingerprint,
       credential_ciphertext_b64=excluded.credential_ciphertext_b64, credential_iv_b64=excluded.credential_iv_b64,
       updated_at=excluded.updated_at`)
-    .bind(crypto.randomUUID(), args.app_id, args.credential.developer_id, args.credential.project_id,
-      args.credential.client_id, args.credential.configuration_version ?? null, args.credential.region ?? null,
+    .bind(crypto.randomUUID(), args.app_id, kind, api?.developer_id ?? null, api?.project_id ?? service?.project_id ?? null,
+      api?.client_id ?? null, service?.key_id ?? null, service?.sub_account ?? null, api?.configuration_version ?? null, api?.region ?? null,
       fingerprint, encrypted.ciphertext_b64, encrypted.iv_b64, args.actor, now).run();
   return (await getAgcCredentialsMeta(db, args.app_id))!;
 }
 export async function getAgcCredentialsMeta(db: D1Database, appId: string) {
-  return (await db.prepare(`SELECT id, app_id, credential_kind, developer_id, project_id, client_id,
+  return (await db.prepare(`SELECT id, app_id, credential_kind, developer_id, project_id, client_id, key_id, sub_account,
     configuration_version, region, credential_fingerprint, created_by_actor, created_at, updated_at
     FROM app_agc_credentials WHERE app_id=?1`).bind(appId).first<AgcCredentialsMeta>()) ?? null;
 }

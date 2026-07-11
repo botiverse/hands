@@ -1,8 +1,8 @@
 import type { Context } from "hono";
 import { currentActor, type AdminEnv } from "../middleware/auth";
 import { insertAuditLog } from "../lib/permissions";
-import { deleteAgcCredentials, getAgcCredentials, getAgcCredentialsMeta, parseAgcCredential, storeAgcCredentials } from "../lib/agc_credentials";
-import { AgcApiError, exchangeAgcApiClientToken } from "../lib/agc_api";
+import { agcCredentialKind, deleteAgcCredentials, getAgcCredentials, getAgcCredentialsMeta, parseAgcCredential, storeAgcCredentials, type AgcApiClientCredential, type AgcServiceAccountCredential } from "../lib/agc_credentials";
+import { AgcApiError, createAgcServiceAccountJwt, exchangeAgcApiClientToken } from "../lib/agc_api";
 
 type AdminContext = Context<AdminEnv & { Bindings: Env }>;
 async function requireOhosApp(c: AdminContext) {
@@ -24,7 +24,7 @@ export async function handleSetAgcCredentials(c: AdminContext) {
   try { credential = parseAgcCredential(body.credential_json); } catch (e) { return c.json({ error: (e as Error).message }, 400); }
   const appId = c.req.param("appId") ?? "";
   const meta = await storeAgcCredentials(c.env.DB, c.env.AGC_CRED_ENC_KEY, { app_id: appId, credential, actor: currentActor(c) });
-  await insertAuditLog(c.env.DB, c, { app_id: appId, action: "agc_credentials.set", payload: { credential_kind: meta.credential_kind, client_id: meta.client_id, project_id: meta.project_id }, created_at: meta.updated_at });
+  await insertAuditLog(c.env.DB, c, { app_id: appId, action: "agc_credentials.set", payload: { credential_kind: meta.credential_kind, client_id: meta.client_id, key_id: meta.key_id, project_id: meta.project_id }, created_at: meta.updated_at });
   return c.json({ agc_credentials: meta });
 }
 export async function handleDeleteAgcCredentials(c: AdminContext) {
@@ -41,11 +41,19 @@ export async function handleVerifyAgcCredentials(c: AdminContext) {
   const credential = await getAgcCredentials(c.env.DB, c.env.AGC_CRED_ENC_KEY, appId);
   if (!credential) return c.json({ error: "no AGC credentials configured for this app" }, 404);
   try {
-    const token = await exchangeAgcApiClientToken(credential);
-    await insertAuditLog(c.env.DB, c, { app_id: appId, action: "agc_credentials.verify", payload: { credential_kind: "api_client", ok: true } });
-    return c.json({ ok: true, credential_kind: "api_client", developer_id: credential.developer_id, project_id: credential.project_id, client_id: credential.client_id, region: credential.region ?? null, expires_in: token.expires_in });
+    const kind = agcCredentialKind(credential);
+    if (kind === "service_account") {
+      const service = credential as AgcServiceAccountCredential;
+      await createAgcServiceAccountJwt(service);
+      await insertAuditLog(c.env.DB, c, { app_id: appId, action: "agc_credentials.verify", payload: { credential_kind: kind, ok: true } });
+      return c.json({ ok: true, credential_kind: kind, project_id: service.project_id ?? null, key_id: service.key_id, sub_account: service.sub_account, expires_in: 3600 });
+    }
+    const api = credential as AgcApiClientCredential;
+    const token = await exchangeAgcApiClientToken(api);
+    await insertAuditLog(c.env.DB, c, { app_id: appId, action: "agc_credentials.verify", payload: { credential_kind: kind, ok: true } });
+    return c.json({ ok: true, credential_kind: kind, developer_id: api.developer_id, project_id: api.project_id, client_id: api.client_id, region: api.region ?? null, expires_in: token.expires_in });
   } catch (e) {
-    await insertAuditLog(c.env.DB, c, { app_id: appId, action: "agc_credentials.verify", payload: { credential_kind: "api_client", ok: false } });
+    await insertAuditLog(c.env.DB, c, { app_id: appId, action: "agc_credentials.verify", payload: { credential_kind: agcCredentialKind(credential), ok: false } });
     if (e instanceof AgcApiError) return c.json({ ok: false, error: e.message, status: e.status }, 502);
     throw e;
   }

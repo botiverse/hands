@@ -1,8 +1,8 @@
 import type { Context } from "hono";
 import { currentActor, type AdminEnv } from "../middleware/auth";
 import { insertAuditLog } from "../lib/permissions";
-import { getAgcCredentials } from "../lib/agc_credentials";
-import { addAgcTestPackage, bindAgcTestPackage, createAgcInvitationVersion, exchangeAgcApiClientToken, getAgcCompileStatus, requestAgcUpload, resolveAgcAppId, submitAgcTestVersion, uploadAgcObject } from "../lib/agc_api";
+import { agcCredentialKind, getAgcCredentials, type AgcApiClientCredential, type AgcServiceAccountCredential } from "../lib/agc_credentials";
+import { addAgcTestPackage, bindAgcTestPackage, createAgcInvitationVersion, createAgcServiceAccountJwt, exchangeAgcApiClientToken, getAgcCompileStatus, requestAgcUpload, resolveAgcAppId, submitAgcTestVersion, uploadAgcObject } from "../lib/agc_api";
 
 type AdminContext = Context<AdminEnv & { Bindings: Env }>;
 type Submission = { id: string; app_id: string; build_id: string; state: string; external_app_id: string; external_version_id: string; external_package_id: string; provider_state_json: string; error_message: string | null; created_at: number; updated_at: number };
@@ -10,8 +10,12 @@ async function auth(c: AdminContext) {
   if (!c.env.AGC_CRED_ENC_KEY) throw new Error("server is missing AGC_CRED_ENC_KEY");
   const credential = await getAgcCredentials(c.env.DB, c.env.AGC_CRED_ENC_KEY, c.req.param("appId") ?? "");
   if (!credential) throw new Error("no AGC credentials configured for this app");
-  const token = await exchangeAgcApiClientToken(credential);
-  return { clientId: credential.client_id, accessToken: token.access_token };
+  if (agcCredentialKind(credential) === "service_account") {
+    return { accessToken: await createAgcServiceAccountJwt(credential as AgcServiceAccountCredential) };
+  }
+  const api = credential as AgcApiClientCredential;
+  const token = await exchangeAgcApiClientToken(api);
+  return { clientId: api.client_id, accessToken: token.access_token };
 }
 async function event(db: D1Database, submissionId: string, state: string, detail: object = {}) {
   const now = Date.now();

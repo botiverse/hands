@@ -811,7 +811,7 @@ export async function handleAgentManifest(c: Context<{ Bindings: Env }>) {
       {
         name: "get-agc-credentials",
         description:
-          "Get metadata for an OHOS app's encrypted AppGallery Connect credential. Never returns the client secret.",
+          "Get metadata for an OHOS app's encrypted AppGallery Connect Service Account or legacy API client credential. Never returns private credential material.",
         endpoint: { method: "GET", path: "/api/apps/{app_id}/agc-credentials" },
         parameters: {
           app_id: { type: "string", in: "path", required: true, description: "OHOS app UUID." },
@@ -820,17 +820,17 @@ export async function handleAgentManifest(c: Context<{ Bindings: Env }>) {
       {
         name: "set-agc-credentials",
         description:
-          "Upload or rotate an OHOS app's AGC API client JSON. Requires app admin; the entire document is encrypted and secret fields are never returned.",
+          "Upload or rotate an OHOS app's AGC Service Account private JSON or legacy API client JSON. Requires app admin; the entire document is encrypted and secret fields are never returned.",
         endpoint: { method: "PUT", path: "/api/apps/{app_id}/agc-credentials" },
         parameters: {
           app_id: { type: "string", in: "path", required: true, description: "OHOS app UUID." },
-          credential_json: { type: "string", in: "body", required: true, description: "Contents of the AGC api_client JSON file." },
+          credential_json: { type: "string", in: "body", required: true, description: "Contents of the AGC Service Account private JSON or legacy api_client JSON file." },
         },
       },
       {
         name: "verify-agc-credentials",
         description:
-          "Test the stored AGC API client with an OAuth token exchange. Returns metadata and expiry only, never the access token.",
+          "Validate the stored AGC credential by signing a Service Account PS256 JWT or exchanging a legacy API client token. Returns metadata and expiry only, never the token.",
         endpoint: { method: "POST", path: "/api/apps/{app_id}/agc-credentials/verify" },
         parameters: {
           app_id: { type: "string", in: "path", required: true, description: "OHOS app UUID." },

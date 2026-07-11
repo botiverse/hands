@@ -668,7 +668,7 @@ function AppGalleryConnectPanel({ appId }: { appId: string }) {
   const test = useMutation({
     mutationFn: () => verifyAgcCredentials(appId),
     onSuccess: (r) => toast.show(r.ok
-      ? { kind: "success", title: "Connection OK", description: `AGC token exchange succeeded; expires in ${Math.round((r.expires_in ?? 0) / 3600)} hours.` }
+      ? { kind: "success", title: "Connection OK", description: `${r.credential_kind === "service_account" ? "Service Account JWT signing" : "AGC token exchange"} succeeded; credential expires in ${Math.round((r.expires_in ?? 0) / 3600)} hours.` }
       : { kind: "error", title: "Verification failed", description: r.error ?? "Unknown AGC error" }),
     onError: (e) => toast.show({ kind: "error", title: "Test failed", description: (e as Error).message }),
   });
@@ -678,10 +678,14 @@ function AppGalleryConnectPanel({ appId }: { appId: string }) {
       <div className="flex flex-col gap-2 md:flex-row md:items-center md:gap-3">
         <div className="flex-1 min-w-0">
           <div className="text-sm font-medium">AppGallery Connect</div>
-          <div className="text-xs text-slate-500">API client credential used for HarmonyOS testing and publishing. The uploaded JSON is encrypted and its client secret is never shown again.</div>
+          <div className="text-xs text-slate-500">Service Account or legacy API client credential used for HarmonyOS testing and publishing. The uploaded JSON is encrypted and private material is never shown again.</div>
           {meta && <div className="mt-1 text-xs space-y-0.5">
             <div><span className="text-green-700 font-medium">Configured</span>{" · "}{meta.credential_kind}{" · updated "}{new Date(meta.updated_at).toISOString().slice(0, 10)}</div>
-            <div className="font-mono break-all">Developer {meta.developer_id} · Project {meta.project_id} · Client {meta.client_id}</div>
+            {meta.credential_kind === "service_account" ? (
+              <div className="font-mono break-all">Sub-account {meta.sub_account} · Key {meta.key_id} · Project {meta.project_id || "default"}</div>
+            ) : (
+              <div className="font-mono break-all">Developer {meta.developer_id} · Project {meta.project_id} · Client {meta.client_id}</div>
+            )}
             <div className="font-mono">Region {meta.region || "default"} · Fingerprint {meta.credential_fingerprint.slice(0, 12)}…</div>
           </div>}
         </div>
@@ -692,9 +696,9 @@ function AppGalleryConnectPanel({ appId }: { appId: string }) {
         </div>}
       </div>
       {showForm && <div className="mt-3 p-3 border border-slate-200 rounded-md space-y-3">
-        <label className="block text-xs font-medium">AGC API client JSON</label>
+        <label className="block text-xs font-medium">AGC Service Account private JSON</label>
         <input type="file" accept=".json,application/json" onChange={(e) => { const file = e.target.files?.[0]; if (file) file.text().then(setCredentialJson, () => toast.show({ kind: "error", title: "Could not read the credential file" })); }} />
-        <div className="text-xs text-slate-500">Select the JSON downloaded from AppGallery Connect. The client secret is not displayed or returned by the API.</div>
+        <div className="text-xs text-slate-500">Select the private JSON downloaded from AppGallery Connect. Service Account is recommended; legacy API client JSON remains supported during migration.</div>
         <div className="flex gap-2">
           <Button variant="primary" disabled={!credentialJson || save.isPending} onClick={() => save.mutate()}>{save.isPending ? "Saving…" : "Save credential"}</Button>
           {meta && <Button variant="outline" onClick={() => { setCredentialJson(""); setEditing(false); }}>Cancel</Button>}

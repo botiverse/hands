@@ -1,4 +1,5 @@
-import type { AgcApiClientCredential } from "./agc_credentials";
+import { importPKCS8, SignJWT } from "jose";
+import type { AgcApiClientCredential, AgcServiceAccountCredential } from "./agc_credentials";
 
 export class AgcApiError extends Error {
   constructor(public status: number, message: string) { super(message); }
@@ -20,11 +21,22 @@ export async function exchangeAgcApiClientToken(credential: AgcApiClientCredenti
   return { access_token: obj.access_token, expires_in: obj.expires_in };
 }
 
-type AgcAuth = { clientId: string; accessToken: string };
+export async function createAgcServiceAccountJwt(credential: AgcServiceAccountCredential, nowSeconds = Math.floor(Date.now() / 1000)) {
+  const key = await importPKCS8(credential.private_key, "PS256");
+  return new SignJWT({})
+    .setProtectedHeader({ alg: "PS256", typ: "JWT", kid: credential.key_id })
+    .setIssuer(credential.sub_account)
+    .setAudience("https://oauth-login.cloud.huawei.com/oauth2/v3/token")
+    .setIssuedAt(nowSeconds)
+    .setExpirationTime(nowSeconds + 3600)
+    .sign(key);
+}
+
+export type AgcAuth = { clientId?: string; accessToken: string };
 async function agcJson(auth: AgcAuth, path: string, init: RequestInit = {}, fetchImpl: typeof fetch = fetch) {
   const response = await fetchImpl(`https://connect-api.cloud.huawei.com${path}`, {
     ...init,
-    headers: { "content-type": "application/json", client_id: auth.clientId, authorization: `Bearer ${auth.accessToken}`, ...(init.headers ?? {}) },
+    headers: { "content-type": "application/json", ...(auth.clientId ? { client_id: auth.clientId } : {}), authorization: `Bearer ${auth.accessToken}`, ...(init.headers ?? {}) },
   });
   const body = await response.json().catch(() => null) as any;
   const providerCode = body?.ret?.code ?? body?.rtnCode;

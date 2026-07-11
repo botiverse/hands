@@ -750,10 +750,12 @@ export const verifyAscCredentials = (appId: string, bundleId: string) =>
 export interface AgcCredentialsMeta {
   id: string;
   app_id: string;
-  credential_kind: "api_client";
-  developer_id: string;
-  project_id: string;
-  client_id: string;
+  credential_kind: "api_client" | "service_account";
+  developer_id: string | null;
+  project_id: string | null;
+  client_id: string | null;
+  key_id: string | null;
+  sub_account: string | null;
   configuration_version: string | null;
   region: string | null;
   credential_fingerprint: string;
@@ -770,7 +772,7 @@ export const setAgcCredentials = (appId: string, credential_json: string) =>
 export const deleteAgcCredentials = (appId: string) =>
   request<{ ok: boolean }>(`/api/apps/${appId}/agc-credentials`, { method: "DELETE", admin: true });
 export const verifyAgcCredentials = (appId: string) =>
-  request<{ ok: boolean; credential_kind?: string; developer_id?: string; project_id?: string; client_id?: string; region?: string | null; expires_in?: number; error?: string; status?: number }>(
+  request<{ ok: boolean; credential_kind?: string; developer_id?: string; project_id?: string; client_id?: string; key_id?: string; sub_account?: string; region?: string | null; expires_in?: number; error?: string; status?: number }>(
     `/api/apps/${appId}/agc-credentials/verify`, { method: "POST", admin: true },
   );
 
