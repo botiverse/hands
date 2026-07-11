@@ -48,6 +48,10 @@ function collect(value: string, previous: string[]): string[] {
   return previous.concat(value);
 }
 
+export function shouldOutputJson(program: Command, localJson?: boolean): boolean {
+  return Boolean(localJson || program.opts<{ json?: boolean }>().json);
+}
+
 export function parseChangelogOptions(opts: {
   changelog?: string | string[];
   changelogFile?: string | string[];
@@ -104,7 +108,7 @@ export function registerBuildCommands(program: Command): void {
           `/api/apps/${id}/builds`,
           { query: { limit: opts.limit } },
         );
-        if (opts.json) {
+        if (shouldOutputJson(program, opts.json)) {
           console.log(JSON.stringify(res, null, 2));
           return;
         }
@@ -133,7 +137,7 @@ export function registerBuildCommands(program: Command): void {
       ) => {
         const id = await resolveAppId(appIdOrSlug);
         const build = await apiRequest<BuildRow>(`/api/apps/${id}/builds/${buildId}`);
-        if (opts.json) {
+        if (shouldOutputJson(program, opts.json)) {
           console.log(JSON.stringify(build, null, 2));
           return;
         }
@@ -386,7 +390,7 @@ export function registerBuildCommands(program: Command): void {
           version_code: versionCode,
           assets,
         };
-        if (opts.json) {
+        if (shouldOutputJson(program, opts.json)) {
           console.log(JSON.stringify(result, null, 2));
           return;
         }
@@ -579,7 +583,7 @@ export function registerBuildCommands(program: Command): void {
           version_code: versionCode,
           assets,
         };
-        if (opts.json) {
+        if (shouldOutputJson(program, opts.json)) {
           console.log(JSON.stringify(result, null, 2));
           return;
         }
@@ -788,7 +792,7 @@ export function registerBuildCommands(program: Command): void {
           version_code: versionCode,
           assets,
         };
-        if (opts.json) {
+        if (shouldOutputJson(program, opts.json)) {
           console.log(JSON.stringify(result, null, 2));
           return;
         }
@@ -1001,7 +1005,7 @@ export function registerBuildCommands(program: Command): void {
           version_code: versionCode,
           assets,
         };
-        if (opts.json) {
+        if (shouldOutputJson(program, opts.json)) {
           console.log(JSON.stringify(result, null, 2));
           return;
         }

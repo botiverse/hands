@@ -12,6 +12,7 @@ import { mkdtempSync, readFileSync, rmSync, existsSync, writeFileSync } from "no
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer } from "node:http";
+import { Command } from "commander";
 import fixturePolicy from "./fixtures/collect-policy.json";
 
 describe("config round-trip", () => {
@@ -173,6 +174,14 @@ describe("OHOS build helper contract", () => {
     expect(inferOhosFiletype("build/entry-default-signed.hap")).toBe("hap");
     expect(inferOhosFiletype("build/ohos-symbols.tar.gz")).toBe("symbols.tar.gz");
     expect(inferOhosFiletype("build/ohos-release-metadata.json")).toBe("metadata.json");
+  });
+
+  it("honors the root --json flag for nested build commands", async () => {
+    const { shouldOutputJson } = await import("../src/commands/builds.js");
+    const program = new Command().option("--json", "JSON output", false);
+    program.parse(["node", "hands", "--json"]);
+    expect(shouldOutputJson(program, false)).toBe(true);
+    expect(shouldOutputJson(new Command(), true)).toBe(true);
   });
 });
 

@@ -2460,6 +2460,7 @@ describe("quiver public API v2 — scope resolution", () => {
     env: MockEnv,
     buildId: string,
     assetId: string,
+    query: Record<string, string | undefined> = {},
   ) {
     return {
       env,
@@ -2472,6 +2473,7 @@ describe("quiver public API v2 — scope resolution", () => {
               : name === "assetId"
                 ? assetId
                 : "",
+        query: (name: string) => query[name],
       },
       json: (data: unknown, status = 200) =>
         new Response(JSON.stringify(data), {
@@ -3594,6 +3596,44 @@ describe("quiver public API v2 — scope resolution", () => {
       .bind("asset-direct-metadata")
       .first() as { download_count: number } | null;
     expect(row?.download_count).toBe(1);
+  });
+
+  it("authenticated build asset presign returns JSON without counting a download", async () => {
+    const env = makeEnv();
+    configureR2Presign(env);
+    const { handleDownloadBuildAsset } = await import("../src/routes/builds");
+    await seedRelease(env, "rel-presign-metadata", "build-presign-metadata", [["full", "all"]], {
+      versionCode: 13,
+      versionName: "1.0.13",
+    });
+    await seedAsset(env, "build-presign-metadata", "asset-presign-metadata", {
+      artifactKind: "metadata-file",
+      filetype: "json",
+      sizeBytes: 14,
+    });
+    const key = "apps/app-scope/asset-presign-metadata.apk";
+    env.APK_BUCKET = {
+      head: async (requestedKey: string) =>
+        requestedKey === key ? { httpEtag: '"asset-presign-metadata"' } : null,
+    };
+
+    const response = await handleDownloadBuildAsset(
+      makeBuildAssetDownloadContext(
+        env,
+        "build-presign-metadata",
+        "asset-presign-metadata",
+        { presign: "1" },
+      ),
+    );
+
+    expect(response.status).toBe(200);
+    const body = await responseJson<any>(response);
+    expect(body.asset_id).toBe("asset-presign-metadata");
+    expect(body.download_url).toContain("cloudflarestorage.com");
+    const row = await env.DB.prepare("SELECT download_count FROM build_assets WHERE id = ?")
+      .bind("asset-presign-metadata")
+      .first() as { download_count: number } | null;
+    expect(row?.download_count).toBe(0);
   });
 
   it("creates public release shares with hashed tokens only", async () => {

@@ -520,6 +520,20 @@ export async function handleDownloadBuildAsset(c: Context<{ Bindings: Env }>) {
     filetype: asset.filetype,
     contentDisposition,
   }, Number(c.env.R2_PRESIGNED_DOWNLOAD_TTL_SECONDS ?? c.env.SIGNED_URL_TTL_SECONDS ?? "3600"));
+  if (c.req.query("presign") === "1") {
+    if (!directUrl) {
+      return c.json({ error: "presigned downloads are unavailable" }, 503);
+    }
+    const objectHead = await c.env.APK_BUCKET.head(asset.r2_key);
+    if (!objectHead) return c.json({ error: "object not found" }, 404);
+    return c.json({
+      asset_id: asset.id,
+      artifact_kind: asset.artifact_kind,
+      filetype: asset.filetype,
+      size_bytes: asset.size_bytes,
+      download_url: directUrl,
+    });
+  }
   if (directUrl) {
     const objectHead = await c.env.APK_BUCKET.head(asset.r2_key);
     if (!objectHead) return c.json({ error: "object not found" }, 404);

@@ -35,7 +35,7 @@ const program = new Command();
 program
   .name("hands")
   .description("Hands CLI — manage apps, builds, releases from the terminal.")
-  .version("0.5.3")
+  .version("0.5.6")
   .option(
     "--api <url>",
     "Hands business API URL (default: https://hands.build or $HANDS_API)",
