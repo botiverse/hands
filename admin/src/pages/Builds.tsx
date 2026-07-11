@@ -319,6 +319,10 @@ function BuildStatusBadge({ status }: { status: string }) {
 
 function BuildAssetList({ appId, buildId }: { appId: string; buildId: string }) {
   const toast = useToast();
+  // Per-asset in-flight guard: a Download stays disabled ("Preparing…") from the
+  // presign request until the browser navigation fires, so double-clicks don't
+  // send a second presign / open a second download. Other assets are unaffected.
+  const [downloading, setDownloading] = useState<ReadonlySet<string>>(new Set());
   const assets = useQuery({
     queryKey: ["build-assets", appId, buildId],
     queryFn: () => listBuildAssets(appId, buildId),
@@ -358,7 +362,11 @@ function BuildAssetList({ appId, buildId }: { appId: string; buildId: string }) 
                   <Button
                     variant="outline"
                     className="text-xs inline-flex"
+                    loading={downloading.has(a.id)}
+                    disabled={downloading.has(a.id)}
                     onClick={async () => {
+                      if (downloading.has(a.id)) return;
+                      setDownloading((s) => new Set(s).add(a.id));
                       try {
                         const { download_url } = await getBuildAssetDownloadUrl(
                           appId,
@@ -371,6 +379,12 @@ function BuildAssetList({ appId, buildId }: { appId: string; buildId: string }) 
                           kind: "error",
                           title: "Download failed",
                           description: (e as Error).message,
+                        });
+                      } finally {
+                        setDownloading((s) => {
+                          const next = new Set(s);
+                          next.delete(a.id);
+                          return next;
                         });
                       }
                     }}
