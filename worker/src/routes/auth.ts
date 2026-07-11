@@ -802,6 +802,30 @@ export async function handleAgentManifest(c: Context<{ Bindings: Env }>) {
         },
       },
       {
+        name: "list-build-assets",
+        description:
+          "List every asset attached to a build, including installables, metadata, and symbols.",
+        endpoint: { method: "GET", path: "/api/apps/{app_id}/builds/{build_id}/assets" },
+        parameters: {
+          app_id: { type: "string", in: "path", required: true, description: "App UUID." },
+          build_id: { type: "string", in: "path", required: true, description: "Build UUID." },
+        },
+      },
+      {
+        name: "presign-build-asset",
+        description:
+          "Return a short-lived direct download URL for an authenticated build asset. Fetch the returned URL outside the integration transport for binary verification.",
+        endpoint: {
+          method: "GET",
+          path: "/api/apps/{app_id}/builds/{build_id}/assets/{asset_id}/download?presign=1",
+        },
+        parameters: {
+          app_id: { type: "string", in: "path", required: true, description: "App UUID." },
+          build_id: { type: "string", in: "path", required: true, description: "Build UUID." },
+          asset_id: { type: "string", in: "path", required: true, description: "Build asset UUID." },
+        },
+      },
+      {
         name: "list-feedback",
         description:
           "List feedback/crash tickets for an app, newest first. Optional status/kind filters.",
