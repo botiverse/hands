@@ -1069,6 +1069,33 @@ function PublicLanding({ account }: { account?: AuthAccount }) {
           </div>
         </section>
       </main>
+      <footer className="border-t border-slate-200 bg-white">
+        <div className="mx-auto flex max-w-6xl flex-col items-center justify-between gap-2 px-4 py-6 text-xs text-slate-500 sm:flex-row">
+          <span>
+            Hands — a{" "}
+            <a
+              href="https://botiverse.dev/"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="font-medium text-slate-600 hover:text-slate-900"
+            >
+              Botiverse
+            </a>{" "}
+            product
+          </span>
+          <div className="flex items-center gap-4">
+            <a href="/docs" className="hover:text-slate-700">Docs</a>
+            <a
+              href="https://github.com/oranix-io/hands"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="hover:text-slate-700"
+            >
+              GitHub
+            </a>
+          </div>
+        </div>
+      </footer>
     </div>
   );
 }
@@ -1227,7 +1254,16 @@ function AuthenticatedApp({ account }: { account: AuthAccount }) {
       <footer className="bg-white border-t border-slate-200 py-4 mt-8">
         <div className="max-w-5xl mx-auto px-4 text-xs text-slate-500 flex items-center justify-between">
           <span>
-            Hands — <span className="font-medium text-slate-600">a Botiverse product</span>
+            Hands — a{" "}
+            <a
+              href="https://botiverse.dev/"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="font-medium text-slate-600 hover:text-slate-900"
+            >
+              Botiverse
+            </a>{" "}
+            product
           </span>
           <Tooltip>
             <TooltipTrigger
