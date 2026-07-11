@@ -109,6 +109,10 @@ hands builds publish-ohos raft-ohos \
 
 Hands records `.app` as the AppGallery installable and `.hap` as the sideload
 installable. Signing material stays in the mobile CI secret boundary.
+Server-side App Testing and AppGallery review/rollout automation are designed
+separately in [HarmonyOS AppGallery Connect integration](./ohos-appgallery-connect-design.md).
+CI creates the Hands draft; an app admin explicitly starts testing or store
+submission after review.
 
 If CI already has reviewed localized release notes, use repeatable
 `lang=file` entries instead of the raw plain changelog:
