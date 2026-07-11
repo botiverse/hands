@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Exposes the host app's internal cacheDir (Context.getCacheDir()) to the
+  FileProvider declared in AndroidManifest.xml. The delta updater writes the
+  reconstructed APK here and shares it with the system installer via a
+  content:// URI + FLAG_GRANT_READ_URI_PERMISSION.
+-->
+<paths>
+    <cache-path
+        name="hands_delta_cache"
+        path="." />
+</paths>

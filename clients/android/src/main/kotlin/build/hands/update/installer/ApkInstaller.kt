@@ -10,6 +10,7 @@ import android.net.Uri
 import android.os.Build
 import android.os.Environment
 import androidx.core.content.ContextCompat
+import androidx.core.content.FileProvider
 import java.io.File
 
 /**
@@ -79,6 +80,28 @@ class ApkInstaller(private val context: Context) {
                 triggerInstall(ctx ?: context, dm, id)
             }
         }
+    }
+
+    /**
+     * Trigger the system install prompt for an APK that already lives on disk
+     * (e.g. one reconstructed locally by the delta updater), rather than one
+     * fetched via DownloadManager.
+     *
+     * The file is expected to sit in the host app's private cacheDir; it is
+     * shared with the installer through the SDK's FileProvider (authority
+     * `${'$'}{applicationId}.hands.fileprovider`, declared in the SDK manifest)
+     * so no world-readable storage is needed.
+     */
+    fun installLocalApk(file: File) {
+        val authority = "${context.packageName}.hands.fileprovider"
+        val apkUri = FileProvider.getUriForFile(context, authority, file)
+
+        val install = Intent(Intent.ACTION_VIEW).apply {
+            setDataAndType(apkUri, "application/vnd.android.package-archive")
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or
+                Intent.FLAG_GRANT_READ_URI_PERMISSION
+        }
+        context.startActivity(install)
     }
 
     private fun triggerInstall(ctx: Context, dm: DownloadManager, downloadId: Long) {

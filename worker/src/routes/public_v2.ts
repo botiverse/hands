@@ -495,6 +495,19 @@ async function findDeltaPatch(
   size_bytes: number;
   target_sha256: string | null;
 } | null> {
+  // Server-side kill switch: only offer deltas when the app has opted in
+  // (delta_updates_enabled — the same per-app flag that gates delta generation).
+  // When off, no `patch` field is returned at all, so the client never sees or
+  // downloads an incremental — it just gets the full APK.
+  const app = await c.env.DB.prepare(
+    `SELECT a.delta_updates_enabled AS delta_updates_enabled
+     FROM builds b JOIN apps a ON a.id = b.app_id
+     WHERE b.id = ?1`,
+  )
+    .bind(args.buildId)
+    .first<{ delta_updates_enabled: number }>();
+  if (!app || app.delta_updates_enabled !== 1) return null;
+
   const row = await c.env.DB.prepare(
     `SELECT r2_key, size_bytes, arch,
             json_extract(metadata_json, '$.algorithm') AS algorithm,

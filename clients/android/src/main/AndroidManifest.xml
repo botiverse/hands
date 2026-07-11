@@ -1,4 +1,22 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+
+    <application>
+        <!--
+          Grants the system package installer read access to a locally
+          reconstructed (delta-applied) APK sitting in the host app's cacheDir.
+          Authority is namespaced with `.hands.` so it never collides with a
+          host app that already declares its own FileProvider.
+        -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.hands.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/hands_file_paths" />
+        </provider>
+    </application>
 </manifest>

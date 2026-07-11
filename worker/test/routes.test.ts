@@ -3297,6 +3297,16 @@ describe("quiver public API v2 — scope resolution", () => {
         }),
       );
 
+    // Kill switch: delta is off by default → no patch offered even though one
+    // exists and applies. Client just gets the full APK.
+    const gatedOff = await responseJson<any>(await call("10"));
+    expect(gatedOff.update_available).toBe(true);
+    expect(gatedOff.patch).toBeUndefined();
+
+    // Opt the app into delta updates.
+    await env.DB.prepare("UPDATE apps SET delta_updates_enabled = 1 WHERE id = ?1")
+      .bind("app-scope").run();
+
     // Client on 10 → patch offered with target hash + signed URL.
     const offered = await responseJson<any>(await call("10"));
     expect(offered.patch).toMatchObject({

@@ -4,12 +4,14 @@ import android.app.DownloadManager
 import android.content.Context
 import android.content.IntentFilter
 import build.hands.update.installer.ApkInstaller
+import build.hands.update.internal.DeltaUpdater
 import build.hands.update.internal.HandsClient
 import build.hands.update.models.UpdateCheckResponse
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /**
  * High-level entry point for "check if there's a new version on the quiver
@@ -56,6 +58,15 @@ class UpdateChecker(
     private val client: HandsClient = HandsClient(baseUrl),
     private val installer: ApkInstaller = ApkInstaller(context),
     private val deviceId: String? = null,
+    /** Master switch for client-side delta (incremental) update apply. */
+    private val deltaApplyEnabled: Boolean = true,
+    private val deltaUpdater: DeltaUpdater = DeltaUpdater(
+        context = context,
+        installedVersionCode = installedVersionCode,
+        httpClient = HandsClient.defaultClient(),
+        installer = installer,
+        deltaApplyEnabled = deltaApplyEnabled,
+    ),
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
 
@@ -103,8 +114,21 @@ class UpdateChecker(
         }
     }
 
-    private fun installUpdate(response: UpdateCheckResponse) {
+    private suspend fun installUpdate(response: UpdateCheckResponse) {
         val (latest, asset) = response.requireUpdate() ?: return
+
+        // Prefer the incremental (delta) path when the server offered a patch.
+        // DeltaUpdater does blocking IO + a CPU-heavy patch apply and never
+        // throws: it returns false for any failure/verification miss, and we
+        // fall through to the unchanged full-APK download below.
+        val patch = response.patch
+        if (patch != null) {
+            val applied = withContext(Dispatchers.IO) {
+                deltaUpdater.tryApplyAndInstall(patch, asset, latest, appSlug)
+            }
+            if (applied) return
+        }
+
         val downloadId = installer.downloadAndInstall(
             downloadUrl = asset.download_url,
             fileName = "quiver-${appSlug}-${latest.version_code}.apk",
