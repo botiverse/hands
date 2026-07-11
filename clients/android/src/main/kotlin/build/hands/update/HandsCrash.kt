@@ -31,8 +31,8 @@ import org.json.JSONObject
  * local files are removed on success. At most [MAX_STORED_CRASHES] recent
  * crashes are kept.
  *
- * This replaces the app-side SlockCrashReporter; app-specific context (e.g.
- * recent diagnostics) is injected via [extraContext].
+ * This replaces the app's previous in-process crash reporter; app-specific
+ * context (e.g. recent diagnostics) is injected via [extraContext].
  */
 object HandsCrash {
     private const val TAG = "HandsCrash"

@@ -16,7 +16,7 @@ export interface CrashMeta {
 
 /**
  * Store-then-send crash reporting for OHOS (mirrors the Android SDK's
- * QuiverCrash): SlockOhosCrashReporter writes crash-<ts>.txt plus a
+ * HandsCrash): the crash reporter writes crash-<ts>.txt plus a
  * .meta.json sidecar at crash time; this uploader runs on the next launch,
  * submits each pending crash as a kind=crash Hands ticket (full log
  * attached, signature fields in metadata), and deletes local files on

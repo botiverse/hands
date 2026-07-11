@@ -1,6 +1,6 @@
 # Hands Android Client Integration
 
-A reference implementation showing Slock Android (or any Android app) how to
+A reference implementation showing an Android app how to
 check for the latest APK version hosted on a Hands server and trigger a
 download + install.
 
@@ -13,7 +13,7 @@ download + install.
 ```
 GET /public/v2/apps/{slug}/updates/check?channel=main&product_type=android-apk&current_version_code=42&platform=android&arch=arm64-v8a
 → 200 {
-    "app":         { "slug": "slock-android", "platform": "android" },
+    "app":         { "slug": "myapp-android", "platform": "android" },
     "channel":     "main",
     "current_version_code": 42,
     "update_available": true,
