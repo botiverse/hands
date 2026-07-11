@@ -6,11 +6,7 @@ feedback submission, and crash reporting.
 
 ## Install
 
-Consume the SDK from **JitPack (no token)** or from **GitHub Packages (needs a
-`read:packages` token)** — the GitHub Packages Maven registry requires a token on
-every request even for public packages, so JitPack is the simpler choice.
-
-### JitPack — no token
+Pulled from JitPack — no token, no registry credentials.
 
 ```kotlin
 // settings.gradle.kts or the module repositories block
@@ -20,24 +16,6 @@ repositories {
 
 dependencies {
     implementation("com.github.botiverse:hands:android-sdk-v0.10.2")
-}
-```
-
-### GitHub Packages — needs a `read:packages` token
-
-```kotlin
-repositories {
-    maven {
-        url = uri("https://maven.pkg.github.com/botiverse/hands")
-        credentials {
-            username = providers.gradleProperty("gpr.user").orNull ?: System.getenv("GITHUB_ACTOR")
-            password = providers.gradleProperty("gpr.key").orNull ?: System.getenv("GITHUB_TOKEN")
-        }
-    }
-}
-
-dependencies {
-    implementation("build.hands:hands-android-sdk:0.10.2")
 }
 ```
 
