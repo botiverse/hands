@@ -133,6 +133,11 @@ jobs:
           ASC_CRED_ENC_KEY: ${{ secrets.HANDS_ASC_CRED_ENC_KEY }}
           AGC_CRED_ENC_KEY: ${{ secrets.HANDS_AGC_CRED_ENC_KEY }}
           R2_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_BOTIVERSE_ACCOUNT_ID }}
+          # Optional: R2 S3-API credentials enable direct-to-R2 presigned downloads
+          # (bandwidth bypasses the Worker). When unset, downloads fall back to the
+          # Worker-signed /public/r2 URL, so these are not required.
+          R2_S3_ACCESS_KEY_ID: ${{ secrets.R2_S3_ACCESS_KEY_ID }}
+          R2_S3_SECRET_ACCESS_KEY: ${{ secrets.R2_S3_SECRET_ACCESS_KEY }}
         shell: bash
         run: |
           set -euo pipefail
@@ -162,6 +167,13 @@ jobs:
           printf '%s' "${ASC_CRED_ENC_KEY}" | pnpm exec wrangler secret put ASC_CRED_ENC_KEY --config "${config}"
           printf '%s' "${AGC_CRED_ENC_KEY}" | pnpm exec wrangler secret put AGC_CRED_ENC_KEY --config "${config}"
           printf '%s' "${R2_ACCOUNT_ID}" | pnpm exec wrangler secret put R2_ACCOUNT_ID --config "${config}"
+          # Optional R2 S3-API credentials (only put when configured).
+          if [[ -n "${R2_S3_ACCESS_KEY_ID:-}" ]]; then
+            printf '%s' "${R2_S3_ACCESS_KEY_ID}" | pnpm exec wrangler secret put R2_S3_ACCESS_KEY_ID --config "${config}"
+          fi
+          if [[ -n "${R2_S3_SECRET_ACCESS_KEY:-}" ]]; then
+            printf '%s' "${R2_S3_SECRET_ACCESS_KEY}" | pnpm exec wrangler secret put R2_S3_SECRET_ACCESS_KEY --config "${config}"
+          fi
 
       - name: Summary
         shell: bash
