@@ -17,6 +17,7 @@ import type { Context } from "hono";
 import type { AdminEnv } from "../middleware/auth";
 import { getAscCredentials } from "../lib/asc_credentials";
 import {
+  AscApiError,
   getAppStoreVersions,
   getBetaReviewStates,
   resolveAscAppId,
@@ -74,7 +75,10 @@ export async function handleAppStoreReview(c: AdminContext) {
         error: `no App Store Connect app record for bundle id ${bundleId}`,
       });
     }
-    const [appStoreVersions, testflightBuilds] = await Promise.all([
+    // Fetch the two review surfaces independently: a failure on one (e.g. an ASC
+    // parameter rejection on builds) still shows the other. Surface the ASC error
+    // detail, which names the offending parameter, not just the generic title.
+    const [versionsR, buildsR] = await Promise.allSettled([
       getAppStoreVersions(creds, ascAppId),
       getBetaReviewStates(creds, ascAppId),
     ]);
@@ -83,13 +87,25 @@ export async function handleAppStoreReview(c: AdminContext) {
       applicable: true,
       bundle_id: bundleId,
       asc_app_id: ascAppId,
-      app_store_versions: appStoreVersions,
-      testflight_builds: testflightBuilds,
+      app_store_versions: versionsR.status === "fulfilled" ? versionsR.value : [],
+      testflight_builds: buildsR.status === "fulfilled" ? buildsR.value : [],
+      app_store_versions_error:
+        versionsR.status === "rejected" ? ascErrorText(versionsR.reason) : null,
+      testflight_builds_error:
+        buildsR.status === "rejected" ? ascErrorText(buildsR.reason) : null,
     });
   } catch (e) {
     return c.json({
       configured: true,
-      error: e instanceof Error ? e.message : String(e),
+      bundle_id: bundleId,
+      error: ascErrorText(e),
     });
   }
+}
+
+function ascErrorText(e: unknown): string {
+  if (e instanceof AscApiError) {
+    return e.detail ? `${e.message} — ${e.detail}` : e.message;
+  }
+  return e instanceof Error ? e.message : String(e);
 }
