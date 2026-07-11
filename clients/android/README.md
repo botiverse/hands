@@ -4,6 +4,24 @@ Android SDK for Hands server-side update checks and APK installation.
 
 ## Coordinates
 
+Two ways to consume the SDK. **JitPack needs no token** — prefer it unless you
+already have GitHub Packages set up. (GitHub Packages' Maven registry requires a
+`read:packages` token for every request, even though the package is public.)
+
+### JitPack (no token)
+
+```kotlin
+repositories {
+    maven { url = uri("https://jitpack.io") }
+}
+
+dependencies {
+    implementation("com.github.botiverse:hands:android-sdk-v0.10.2")
+}
+```
+
+### GitHub Packages (needs a `read:packages` token)
+
 ```kotlin
 repositories {
     maven {
@@ -16,7 +34,7 @@ repositories {
 }
 
 dependencies {
-    implementation("build.hands:hands-android-sdk:0.10.1")
+    implementation("build.hands:hands-android-sdk:0.10.2")
 }
 ```
 
@@ -53,7 +71,10 @@ Publish to GitHub Packages:
 ```bash
 cd clients/android
 GITHUB_ACTOR=<github-user> GITHUB_TOKEN=<token-with-packages-write> \
-  gradle publish -PVERSION_NAME=0.10.1
+  gradle publish -PVERSION_NAME=0.10.2
 ```
 
-In CI, use the `Publish Android SDK` workflow and a version such as `0.10.1`.
+In CI, push a tag `android-sdk-v<version>` (e.g. `android-sdk-v0.10.2`) — that
+publishes to GitHub Packages and, on first request, builds the same version on
+JitPack (`com.github.botiverse:hands:android-sdk-v<version>`). Or run the
+`Publish Android SDK` workflow manually with a version input.
