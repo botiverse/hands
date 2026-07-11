@@ -348,6 +348,177 @@ export async function handleUpdateApp(c: AdminContext) {
   return c.json({ ok: true });
 }
 
+/** Defaults returned when an app has no explicit feature_flags row for a key. */
+const FEATURE_FLAG_DEFAULTS = {
+  default_enabled: 0,
+  rollout_percent: 0,
+  allow_device_ids: "[]",
+  deny_device_ids: "[]",
+  allow_cohorts: "[]",
+  platforms: "[]",
+};
+
+/** GET /api/apps/:appId/feature-flags/:key — read a feature flag (viewer). */
+export async function handleGetFeatureFlag(c: AdminContext) {
+  const appId = c.req.param("appId") ?? "";
+  const key = c.req.param("key") ?? "";
+  const app = await c.env.DB.prepare("SELECT id FROM apps WHERE id = ?1")
+    .bind(appId)
+    .first<{ id: string }>();
+  if (!app) return c.json({ error: "not found" }, 404);
+  const row = await c.env.DB.prepare(
+    `SELECT id, app_id, key, default_enabled, rollout_percent, allow_device_ids,
+            deny_device_ids, allow_cohorts, platforms, updated_at, updated_by
+     FROM feature_flags WHERE app_id = ?1 AND key = ?2`,
+  )
+    .bind(appId, key)
+    .first();
+  if (!row) {
+    return c.json({
+      app_id: appId,
+      key,
+      ...FEATURE_FLAG_DEFAULTS,
+      updated_at: null,
+      updated_by: null,
+    });
+  }
+  return c.json(row);
+}
+
+/** PUT /api/apps/:appId/feature-flags/:key — upsert a feature flag (admin). */
+export async function handleUpdateFeatureFlag(c: AdminContext) {
+  const appId = c.req.param("appId") ?? "";
+  const key = c.req.param("key") ?? "";
+  const body = (await c.req.json().catch(() => ({}))) as {
+    default_enabled?: boolean;
+    rollout_percent?: number;
+    allow_device_ids?: string[];
+    deny_device_ids?: string[];
+    allow_cohorts?: string[];
+    platforms?: string[];
+  };
+  // Confirm app exists.
+  const existing = await c.env.DB.prepare("SELECT id FROM apps WHERE id = ?1")
+    .bind(appId)
+    .first<{ id: string }>();
+  if (!existing) return c.json({ error: "not found" }, 404);
+
+  const isStringArray = (v: unknown): v is string[] =>
+    Array.isArray(v) && v.every((x) => typeof x === "string");
+
+  if (body.rollout_percent !== undefined) {
+    if (
+      typeof body.rollout_percent !== "number" ||
+      !Number.isInteger(body.rollout_percent) ||
+      body.rollout_percent < 0 ||
+      body.rollout_percent > 100
+    ) {
+      return c.json({ error: "rollout_percent must be an integer 0..100" }, 400);
+    }
+  }
+  const arrayFields = [
+    "allow_device_ids",
+    "deny_device_ids",
+    "allow_cohorts",
+    "platforms",
+  ] as const;
+  for (const field of arrayFields) {
+    if (body[field] !== undefined && !isStringArray(body[field])) {
+      return c.json({ error: `${field} must be an array of strings` }, 400);
+    }
+  }
+
+  // Load the current row (if any) so a partial PUT preserves the other fields.
+  const current = await c.env.DB.prepare(
+    `SELECT default_enabled, rollout_percent, allow_device_ids, deny_device_ids,
+            allow_cohorts, platforms
+     FROM feature_flags WHERE app_id = ?1 AND key = ?2`,
+  )
+    .bind(appId, key)
+    .first<{
+      default_enabled: number;
+      rollout_percent: number;
+      allow_device_ids: string;
+      deny_device_ids: string;
+      allow_cohorts: string;
+      platforms: string;
+    }>();
+
+  const defaultEnabled =
+    body.default_enabled !== undefined
+      ? body.default_enabled
+        ? 1
+        : 0
+      : current?.default_enabled ?? 0;
+  const rolloutPercent =
+    body.rollout_percent !== undefined
+      ? body.rollout_percent
+      : current?.rollout_percent ?? 0;
+  const allowDeviceIds =
+    body.allow_device_ids !== undefined
+      ? JSON.stringify(body.allow_device_ids)
+      : current?.allow_device_ids ?? "[]";
+  const denyDeviceIds =
+    body.deny_device_ids !== undefined
+      ? JSON.stringify(body.deny_device_ids)
+      : current?.deny_device_ids ?? "[]";
+  const allowCohorts =
+    body.allow_cohorts !== undefined
+      ? JSON.stringify(body.allow_cohorts)
+      : current?.allow_cohorts ?? "[]";
+  const platforms =
+    body.platforms !== undefined
+      ? JSON.stringify(body.platforms)
+      : current?.platforms ?? "[]";
+  const now = Date.now();
+  const actor = currentActor(c);
+
+  await c.env.DB.prepare(
+    `INSERT INTO feature_flags
+       (id, app_id, key, default_enabled, rollout_percent, allow_device_ids,
+        deny_device_ids, allow_cohorts, platforms, updated_at, updated_by)
+     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+     ON CONFLICT(app_id, key) DO UPDATE SET
+       default_enabled = excluded.default_enabled,
+       rollout_percent = excluded.rollout_percent,
+       allow_device_ids = excluded.allow_device_ids,
+       deny_device_ids = excluded.deny_device_ids,
+       allow_cohorts = excluded.allow_cohorts,
+       platforms = excluded.platforms,
+       updated_at = excluded.updated_at,
+       updated_by = excluded.updated_by`,
+  )
+    .bind(
+      crypto.randomUUID(),
+      appId,
+      key,
+      defaultEnabled,
+      rolloutPercent,
+      allowDeviceIds,
+      denyDeviceIds,
+      allowCohorts,
+      platforms,
+      now,
+      actor,
+    )
+    .run();
+
+  await c.env.DB.prepare(
+    "INSERT INTO audit_logs (id, app_id, action, actor, payload, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+  )
+    .bind(
+      crypto.randomUUID(),
+      appId,
+      "app.feature_flag.update",
+      actor,
+      JSON.stringify({ key, ...body }),
+      now,
+    )
+    .run();
+
+  return c.json({ ok: true });
+}
+
 const APP_ICON_MAX_BYTES = 1024 * 1024;
 
 /** PUT /api/apps/:appId/icon — upload a PNG/WebP app icon (<=1MB). */

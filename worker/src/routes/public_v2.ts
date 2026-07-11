@@ -21,6 +21,7 @@ import type { Context } from "hono";
 import { requestOrigin } from "../lib/origin";
 import { presignR2DownloadUrl } from "../lib/r2_presign";
 import { parseReleaseNotes, resolveReleaseNote, type ReleaseNotes } from "../lib/release_notes";
+import { isFeatureEnabled } from "../lib/feature_flags";
 
 interface ScopedResolution {
   release_id: string;
@@ -436,6 +437,8 @@ export async function handlePublicV2UpdateCheck(c: Context<{ Bindings: Env }>) {
   // a patch to the latest build for its arch, and that patch is meaningfully
   // smaller than the full APK, offer it. The full `asset` stays the fallback;
   // old SDKs ignore the extra `patch` field. See docs/delta-download-design.md.
+  const deviceId =
+    c.req.header("X-Hands-Device-Id") ?? c.req.header("X-Quiver-Device-Id") ?? c.req.query("device_id") ?? null;
   const patch =
     currentVersionCode > 0
       ? await findDeltaPatch(c, {
@@ -445,6 +448,8 @@ export async function handlePublicV2UpdateCheck(c: Context<{ Bindings: Env }>) {
           fullSizeBytes: asset.size_bytes,
           origin: publicRequestOrigin(c),
           ttl: latest.expires_in,
+          deviceId,
+          platform: requestedPlatform,
         })
       : null;
 
@@ -487,6 +492,8 @@ async function findDeltaPatch(
     fullSizeBytes: number;
     origin: string;
     ttl: number;
+    deviceId: string | null;
+    platform: string | null;
   },
 ): Promise<{
   from_version_code: number;
@@ -495,18 +502,26 @@ async function findDeltaPatch(
   size_bytes: number;
   target_sha256: string | null;
 } | null> {
-  // Server-side kill switch: only offer deltas when the app has opted in
-  // (delta_updates_enabled — the same per-app flag that gates delta generation).
-  // When off, no `patch` field is returned at all, so the client never sees or
-  // downloads an incremental — it just gets the full APK.
+  // Server-side feature gate for the delta *offer*: only offer deltas when the
+  // `delta_updates` feature flag is enabled for this app + device. This allows
+  // per-device targeting (enable delta for one test device before an app-wide
+  // rollout). Delta *generation* stays gated by apps.delta_updates_enabled
+  // (routes/delta.ts) — generation has no device context. When the gate is off,
+  // no `patch` field is returned at all, so the client just gets the full APK.
   const app = await c.env.DB.prepare(
-    `SELECT a.delta_updates_enabled AS delta_updates_enabled
+    `SELECT a.id AS app_id
      FROM builds b JOIN apps a ON a.id = b.app_id
      WHERE b.id = ?1`,
   )
     .bind(args.buildId)
-    .first<{ delta_updates_enabled: number }>();
-  if (!app || app.delta_updates_enabled !== 1) return null;
+    .first<{ app_id: string }>();
+  if (!app) return null;
+  const enabled = await isFeatureEnabled(c.env.DB, "delta_updates", {
+    appId: app.app_id,
+    deviceId: args.deviceId,
+    platform: args.platform,
+  });
+  if (!enabled) return null;
 
   const row = await c.env.DB.prepare(
     `SELECT r2_key, size_bytes, arch,
