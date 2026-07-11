@@ -38,6 +38,44 @@ import {
   type WebhookEventType,
 } from "../lib/api";
 import { useToast } from "../components/Toast";
+import {
+  Button,
+  Input,
+  Select,
+  SelectTrigger,
+  SelectValue,
+  SelectIcon,
+  SelectContent,
+  SelectItem,
+  Avatar,
+  AvatarImage,
+  AvatarFallback,
+  Tooltip,
+  TooltipTrigger,
+  TooltipContent,
+  Checkbox,
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogBody,
+  DialogFooter,
+  EmptyState,
+  EmptyStateTitle,
+  Skeleton,
+  Tabs,
+  TabsList,
+  TabsTab,
+  TabsIndicator,
+} from "raft-ui";
+
+const ORG_SETTINGS_TAB_LABELS: Record<OrgSettingsTab, string> = {
+  general: "General",
+  members: "Members",
+  invites: "Invites",
+  audit: "Audit",
+  webhooks: "Webhooks",
+};
 
 export const ORG_SETTINGS_TABS = [
   "general",
@@ -88,30 +126,23 @@ export function OrgSettings({
         </div>
       )}
 
-      <div className="flex gap-2 mb-4 border-b border-slate-200">
-        {ORG_SETTINGS_TABS.map((t) => (
-          <NavLink
-            key={t}
-            to={`/orgs/${orgId}/${t}`}
-            end
-            className={({ isActive }) => `px-3 py-2 text-sm ${
-              isActive
-                ? "border-b-2 border-blue-600 font-medium text-slate-900"
-                : "text-slate-500 hover:text-slate-700"
-            }`}
-          >
-            {t === "general"
-              ? "General"
-              : t === "members"
-                ? "Members"
-                : t === "invites"
-                  ? "Invites"
-                  : t === "audit"
-                    ? "Audit"
-                    : "Webhooks"}
-          </NavLink>
-        ))}
-      </div>
+      {/* Visual-only Tabs: navigation stays with NavLink; the controlled
+          `value` is the active tab (already resolved from the route by the
+          parent route component) so the sliding indicator tracks it. */}
+      <Tabs value={tab} className="mb-4">
+        <TabsList>
+          {ORG_SETTINGS_TABS.map((t) => (
+            <TabsTab
+              key={t}
+              value={t}
+              render={<NavLink to={`/orgs/${orgId}/${t}`} end />}
+            >
+              {ORG_SETTINGS_TAB_LABELS[t]}
+            </TabsTab>
+          ))}
+          <TabsIndicator />
+        </TabsList>
+      </Tabs>
 
       {tab === "general" && (
         <div className="card p-4! text-sm space-y-2">
@@ -231,18 +262,34 @@ function MembersTab({
       <div className="flex items-center justify-between mb-3">
         <h3 className="text-base font-semibold">Members</h3>
         <div className="flex items-center gap-2">
-          <select
-            className="input text-xs py-0.5"
+          <Select
+            items={{
+              all: "All types",
+              human: "Humans only",
+              agent: "Agents only",
+            }}
             value={principalFilter}
-            onChange={(e) =>
-              setPrincipalFilter(e.target.value as "all" | "human" | "agent")
+            onValueChange={(v) =>
+              setPrincipalFilter(v as "all" | "human" | "agent")
             }
-            title="Filter by principal type"
           >
-            <option value="all">All types</option>
-            <option value="human">Humans only</option>
-            <option value="agent">Agents only</option>
-          </select>
+            <Tooltip>
+              <TooltipTrigger
+                render={
+                  <SelectTrigger className="text-xs py-0.5">
+                    <SelectValue />
+                    <SelectIcon />
+                  </SelectTrigger>
+                }
+              />
+              <TooltipContent>Filter by principal type</TooltipContent>
+            </Tooltip>
+            <SelectContent>
+              <SelectItem value="all">All types</SelectItem>
+              <SelectItem value="human">Humans only</SelectItem>
+              <SelectItem value="agent">Agents only</SelectItem>
+            </SelectContent>
+          </Select>
           <span className="text-xs text-slate-500">
             {filteredMembers.length} member{filteredMembers.length === 1 ? "" : "s"}
             {principalFilter !== "all" && (
@@ -257,16 +304,24 @@ function MembersTab({
           members but not edit them.
         </p>
       )}
-      {members.isLoading && <p className="text-slate-500">Loading…</p>}
+      {members.isLoading && (
+        <div className="space-y-2">
+          <Skeleton className="h-8 w-full" />
+          <Skeleton className="h-8 w-full" />
+          <Skeleton className="h-8 w-full" />
+        </div>
+      )}
       {members.error && (
         <p className="text-red-600">Failed: {(members.error as Error).message}</p>
       )}
       {members.data && filteredMembers.length === 0 && (
-        <p className="text-slate-500">
-          {principalFilter === "all"
-            ? "No members yet."
-            : `No ${principalFilter} members.`}
-        </p>
+        <EmptyState>
+          <EmptyStateTitle>
+            {principalFilter === "all"
+              ? "No members yet."
+              : `No ${principalFilter} members.`}
+          </EmptyStateTitle>
+        </EmptyState>
       )}
       {members.data && filteredMembers.length > 0 && (
         <table className="w-full text-sm">
@@ -312,25 +367,35 @@ function MembersTab({
                 </td>
                 <td className="py-2 pr-2">
                   {isAdmin && m.account_id !== currentAccountId ? (
-                    <select
-                      className="input text-xs py-0.5"
+                    <Select
+                      items={Object.fromEntries(
+                        (["owner", "admin", "member", "viewer"] as const).map(
+                          (r) => [r, r],
+                        ),
+                      )}
                       value={m.org_role}
-                      onChange={(e) =>
+                      onValueChange={(v) =>
                         update.mutate({
                           accountId: m.account_id,
-                          role: e.target.value as OrgMember["org_role"],
+                          role: v as OrgMember["org_role"],
                         })
                       }
                       disabled={update.isPending}
                     >
-                      {(["owner", "admin", "member", "viewer"] as const).map(
-                        (r) => (
-                          <option key={r} value={r}>
-                            {r}
-                          </option>
-                        ),
-                      )}
-                    </select>
+                      <SelectTrigger className="text-xs py-0.5">
+                        <SelectValue />
+                        <SelectIcon />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {(["owner", "admin", "member", "viewer"] as const).map(
+                          (r) => (
+                            <SelectItem key={r} value={r}>
+                              {r}
+                            </SelectItem>
+                          ),
+                        )}
+                      </SelectContent>
+                    </Select>
                   ) : (
                     <span
                       className="text-xs font-medium"
@@ -358,8 +423,10 @@ function MembersTab({
                 {isAdmin && (
                   <td className="py-2 text-xs">
                     {m.account_id !== currentAccountId && (
-                      <button
-                        className="text-red-600 hover:underline"
+                      <Button
+                        variant="link"
+                        size="sm"
+                        className="text-red-600"
                         onClick={() => {
                           if (
                             confirm(
@@ -372,7 +439,7 @@ function MembersTab({
                         disabled={remove.isPending}
                       >
                         Remove
-                      </button>
+                      </Button>
                     )}
                   </td>
                 )}
@@ -441,25 +508,44 @@ function InvitesTab({
       <div className="flex items-center justify-between mb-3">
         <h3 className="text-base font-semibold">Invites</h3>
         <div className="flex items-center gap-2">
-          <select
-            className="input text-xs py-0.5"
+          <Select
+            items={{
+              all: "All statuses",
+              pending: "Pending",
+              accepted: "Accepted",
+              revoked: "Revoked",
+              expired: "Expired",
+            }}
             value={statusFilter}
-            onChange={(e) => setStatusFilter(e.target.value)}
-            title="Filter by invite status"
+            onValueChange={(v) => setStatusFilter(v as string)}
           >
-            <option value="all">All statuses</option>
-            <option value="pending">Pending</option>
-            <option value="accepted">Accepted</option>
-            <option value="revoked">Revoked</option>
-            <option value="expired">Expired</option>
-          </select>
+            <Tooltip>
+              <TooltipTrigger
+                render={
+                  <SelectTrigger className="text-xs py-0.5">
+                    <SelectValue />
+                    <SelectIcon />
+                  </SelectTrigger>
+                }
+              />
+              <TooltipContent>Filter by invite status</TooltipContent>
+            </Tooltip>
+            <SelectContent>
+              <SelectItem value="all">All statuses</SelectItem>
+              <SelectItem value="pending">Pending</SelectItem>
+              <SelectItem value="accepted">Accepted</SelectItem>
+              <SelectItem value="revoked">Revoked</SelectItem>
+              <SelectItem value="expired">Expired</SelectItem>
+            </SelectContent>
+          </Select>
           {canManage && (
-            <button
-              className="btn-primary text-xs"
+            <Button
+              variant="primary"
+              className="text-xs"
               onClick={() => setShowCreate(true)}
             >
               + Invite link
-            </button>
+            </Button>
           )}
         </div>
       </div>
@@ -468,16 +554,23 @@ function InvitesTab({
           ⚠ Owner / admin required to manage invites.
         </p>
       )}
-      {invites.isLoading && <p className="text-slate-500">Loading…</p>}
+      {invites.isLoading && (
+        <div className="space-y-2">
+          <Skeleton className="h-8 w-full" />
+          <Skeleton className="h-8 w-full" />
+        </div>
+      )}
       {invites.error && (
         <p className="text-red-600">Failed: {(invites.error as Error).message}</p>
       )}
       {invites.data && filteredInvites.length === 0 && (
-        <p className="text-slate-500 text-sm">
-          {statusFilter === "all"
-            ? "No pending invites."
-            : `No ${statusFilter} invites.`}
-        </p>
+        <EmptyState>
+          <EmptyStateTitle>
+            {statusFilter === "all"
+              ? "No pending invites."
+              : `No ${statusFilter} invites.`}
+          </EmptyStateTitle>
+        </EmptyState>
       )}
       {invites.data && filteredInvites.length > 0 && (
         <table className="w-full text-sm">
@@ -506,15 +599,18 @@ function InvitesTab({
                 </td>
                 {canManage && inv.status === "pending" && (
                   <td className="py-2 text-xs space-x-2">
-                    <button
-                      className="text-blue-600 hover:underline"
+                    <Button
+                      variant="link"
+                      size="sm"
                       onClick={() => resend.mutate(inv.id)}
                       disabled={resend.isPending}
                     >
                       Refresh link
-                    </button>
-                    <button
-                      className="text-red-600 hover:underline"
+                    </Button>
+                    <Button
+                      variant="link"
+                      size="sm"
+                      className="text-red-600"
                       onClick={() => {
                         if (confirm(`Revoke invite to ${inv.email}?`)) {
                           revoke.mutate(inv.id);
@@ -523,7 +619,7 @@ function InvitesTab({
                       disabled={revoke.isPending}
                     >
                       Revoke
-                    </button>
+                    </Button>
                   </td>
                 )}
               </tr>
@@ -584,72 +680,79 @@ function CreateInviteDialog({
       }),
   });
   return (
-    <div
-      className="fixed inset-0 bg-black/30 flex items-center justify-center p-4 z-10"
-      onClick={(e) => {
-        if (e.target === e.currentTarget) onClose();
-      }}
-    >
-      <div className="card max-w-md w-full relative">
-        <h2 className="text-lg font-bold mb-4">Create member invite link</h2>
-        <form
-          onSubmit={(e) => {
-            e.preventDefault();
-            create.mutate();
-          }}
-          className="space-y-3"
-        >
-          <div>
-            <label className="label">Email</label>
-            <input
-              type="email"
-              className="input"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              required
-              autoFocus
-            />
-          </div>
-          <div>
-            <label className="label">Role</label>
-            <select
-              className="input"
-              value={role}
-              onChange={(e) =>
-                setRole(e.target.value as "member" | "viewer")
-              }
-            >
-              <option value="member">member (default)</option>
-              <option value="viewer">viewer (read-only)</option>
-            </select>
-          </div>
-          <div>
-            <label className="label">Message (optional)</label>
-            <textarea
-              className="input text-xs min-h-[60px]"
-              value={message}
-              onChange={(e) => setMessage(e.target.value)}
-            />
-          </div>
-          <div className="flex gap-2 justify-end pt-2">
-            <button
-              type="button"
-              className="btn-secondary"
-              onClick={onClose}
-            >
-              Cancel
-            </button>
-            <button
-              type="submit"
-              className="btn-primary"
-              disabled={create.isPending || !email.trim()}
-            >
-              {create.isPending ? "Creating…" : "Create invite link"}
-            </button>
-          </div>
-        </form>
-      </div>
-    </div>
+    <Dialog open onOpenChange={(open) => { if (!open) onClose(); }}>
+      <DialogContent className="max-w-md">
+        <DialogHeader>
+          <DialogTitle>Create member invite link</DialogTitle>
+        </DialogHeader>
+        <DialogBody>
+          <form
+            id="create-invite-form"
+            onSubmit={(e) => {
+              e.preventDefault();
+              create.mutate();
+            }}
+            className="space-y-3"
+          >
+            <div>
+              <label className="label">Email</label>
+              <Input
+                type="email"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                required
+                autoFocus
+              />
+            </div>
+            <div>
+              <label className="label">Role</label>
+              <Select
+                items={{
+                  member: "member (default)",
+                  viewer: "viewer (read-only)",
+                }}
+                value={role}
+                onValueChange={(v) => setRole(v as "member" | "viewer")}
+              >
+                <SelectTrigger>
+                  <SelectValue />
+                  <SelectIcon />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="member">member (default)</SelectItem>
+                  <SelectItem value="viewer">viewer (read-only)</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div>
+              <label className="label">Message (optional)</label>
+              <textarea
+                className="input text-xs min-h-[60px]"
+                value={message}
+                onChange={(e) => setMessage(e.target.value)}
+              />
+            </div>
+          </form>
+        </DialogBody>
+        <DialogFooter>
+          <Button
+            type="button"
+            variant="outline"
+            onClick={onClose}
+          >
+            Cancel
+          </Button>
+          <Button
+            type="submit"
+            form="create-invite-form"
+            variant="primary"
+            disabled={create.isPending || !email.trim()}
+          >
+            {create.isPending ? "Creating…" : "Create invite link"}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
 
@@ -683,14 +786,23 @@ function AuditTab({
           ⚠ Org member required to view audit log.
         </p>
       )}
-      {audit.isLoading && <p className="text-slate-500">Loading…</p>}
+      {audit.isLoading && (
+        <div className="space-y-2">
+          <Skeleton className="h-6 w-full" />
+          <Skeleton className="h-6 w-full" />
+          <Skeleton className="h-6 w-full" />
+        </div>
+      )}
       {audit.error && (
         <p className="text-red-600">Failed: {(audit.error as Error).message}</p>
       )}
       {audit.data && audit.data.logs.length === 0 && (
-        <p className="text-slate-500 text-sm">No audit log entries yet.</p>
+        <EmptyState>
+          <EmptyStateTitle>No audit log entries yet.</EmptyStateTitle>
+        </EmptyState>
       )}
       {audit.data && audit.data.logs.length > 0 && (
+        <div className="overflow-x-auto max-w-full">
         <table className="w-full text-xs">
           <thead>
             <tr className="text-slate-500 text-left border-b border-slate-100">
@@ -718,25 +830,17 @@ function AuditTab({
                   </td>
                   <td className="py-1 pr-2">
                     <span className="inline-flex items-center gap-1">
-                      {log.actor_avatar_url ? (
-                        <img
-                          src={log.actor_avatar_url}
-                          alt=""
-                          className="w-4 h-4 rounded-full object-cover"
-                        />
-                      ) : (
-                        <span
-                          className={`w-4 h-4 rounded-full flex items-center justify-center text-[9px] font-bold ${
-                            log.actor_type === "agent"
-                              ? "bg-purple-200 text-purple-800"
-                              : log.actor_type === "system"
-                                ? "bg-slate-200 text-slate-600"
-                                : "bg-blue-200 text-blue-800"
-                          }`}
-                        >
+                      <Avatar
+                        size="xs"
+                        type={log.actor_type === "agent" ? "agent" : "human"}
+                      >
+                        {log.actor_avatar_url ? (
+                          <AvatarImage src={log.actor_avatar_url} alt="" />
+                        ) : null}
+                        <AvatarFallback>
                           {actorName.slice(0, 1).toUpperCase()}
-                        </span>
-                      )}
+                        </AvatarFallback>
+                      </Avatar>
                       <span>{actorName}</span>
                       {log.actor_type === "agent" && (
                         <span className="badge-purple text-[10px]">agent</span>
@@ -758,6 +862,7 @@ function AuditTab({
             })}
           </tbody>
         </table>
+        </div>
       )}
     </div>
   );
@@ -843,12 +948,13 @@ function WebhooksTab({
             </p>
           </div>
           {canManage && (
-            <button
-              className="btn-primary text-xs"
+            <Button
+              variant="primary"
+              className="text-xs"
               onClick={() => setShowCreate(true)}
             >
               + Add webhook
-            </button>
+            </Button>
           )}
         </div>
 
@@ -858,14 +964,21 @@ function WebhooksTab({
           </p>
         )}
 
-        {webhooks.isLoading && <p className="text-slate-500">Loading…</p>}
+        {webhooks.isLoading && (
+          <div className="space-y-2">
+            <Skeleton className="h-10 w-full" />
+            <Skeleton className="h-10 w-full" />
+          </div>
+        )}
         {webhooks.error && (
           <p className="text-red-600 text-xs">
             Failed: {(webhooks.error as Error).message}
           </p>
         )}
         {webhooks.data && webhooks.data.webhooks.length === 0 && (
-          <p className="text-slate-500 text-sm">No webhooks configured yet.</p>
+          <EmptyState>
+            <EmptyStateTitle>No webhooks configured yet.</EmptyStateTitle>
+          </EmptyState>
         )}
 
         {webhooks.data && webhooks.data.webhooks.length > 0 && (
@@ -985,24 +1098,26 @@ function WebhookRow({
         </div>
         <div className="flex items-center gap-2">
           {canManage && (
-            <button
-              className="btn-secondary text-xs"
+            <Button
+              variant="outline"
+              className="text-xs"
               onClick={() => onToggleEnabled(webhook.enabled !== 1)}
               disabled={!onToggleEnabled}
             >
               {webhook.enabled === 1 ? "Disable" : "Enable"}
-            </button>
+            </Button>
           )}
-          <button
-            className="btn-secondary text-xs"
+          <Button
+            variant="outline"
+            className="text-xs"
             onClick={onToggleExpand}
           >
             {expanded ? "Hide" : "Deliveries"}
-          </button>
+          </Button>
           {canManage && (
-            <button className="btn-secondary text-xs" onClick={onDelete}>
+            <Button variant="outline" className="text-xs" onClick={onDelete}>
               Archive
-            </button>
+            </Button>
           )}
         </div>
       </div>
@@ -1121,87 +1236,86 @@ function CreateWebhookDialog({
   };
 
   return (
-    <div
-      className="fixed inset-0 bg-black/30 flex items-center justify-center p-4 z-10"
-      onClick={(e) => {
-        if (e.target === e.currentTarget) onClose();
-      }}
-    >
-      <div className="card max-w-lg w-full relative">
-        <h2 className="text-lg font-bold mb-4">Add webhook</h2>
-        <form
-          onSubmit={(e) => {
-            e.preventDefault();
-            create.mutate();
-          }}
-          className="space-y-3"
-        >
-          <div>
-            <label className="label">URL</label>
-            <input
-              type="url"
-              className="input"
-              value={url}
-              onChange={(e) => setUrl(e.target.value)}
-              placeholder="https://example.com/hooks/quiver"
-              required
-              autoFocus
-            />
-          </div>
-          <div>
-            <label className="label">Secret (HMAC)</label>
-            <input
-              type="text"
-              className="input font-mono text-xs"
-              value={secret}
-              onChange={(e) => setSecret(e.target.value)}
-              placeholder="at-least-16-random-bytes"
-              required
-            />
-            <p className="text-xs text-slate-500 mt-1">
-              Used to sign deliveries via{" "}
-              <code className="font-mono">X-Hands-Signature</code>. Choose a
-              strong secret; receivers must verify the signature.
-            </p>
-          </div>
-          <div>
-            <label className="label">Events (empty = all)</label>
-            <div className="grid grid-cols-2 gap-1">
-              {WEBHOOK_EVENT_TYPES.map((ev) => (
-                <label
-                  key={ev}
-                  className="flex items-center gap-2 text-xs cursor-pointer"
-                >
-                  <input
-                    type="checkbox"
-                    checked={events.includes(ev)}
-                    onChange={() => toggleEvent(ev)}
-                  />
-                  <span className="font-mono">{ev}</span>
-                </label>
-              ))}
+    <Dialog open onOpenChange={(open) => { if (!open) onClose(); }}>
+      <DialogContent className="max-w-lg">
+        <DialogHeader>
+          <DialogTitle>Add webhook</DialogTitle>
+        </DialogHeader>
+        <DialogBody>
+          <form
+            id="create-webhook-form"
+            onSubmit={(e) => {
+              e.preventDefault();
+              create.mutate();
+            }}
+            className="space-y-3"
+          >
+            <div>
+              <label className="label">URL</label>
+              <Input
+                type="url"
+                value={url}
+                onChange={(e) => setUrl(e.target.value)}
+                placeholder="https://example.com/hooks/quiver"
+                required
+                autoFocus
+              />
             </div>
-          </div>
-          <div className="flex gap-2 justify-end pt-2">
-            <button
-              type="button"
-              className="btn-secondary"
-              onClick={onClose}
-            >
-              Cancel
-            </button>
-            <button
-              type="submit"
-              className="btn-primary"
-              disabled={
-                create.isPending || !url.trim() || secret.trim().length < 8
-              }
-            >
-              {create.isPending ? "Creating…" : "Create webhook"}
-            </button>
-          </div>
-        </form>
-      </div>
-    </div>
+            <div>
+              <label className="label">Secret (HMAC)</label>
+              <Input
+                type="text"
+                className="font-mono text-xs"
+                value={secret}
+                onChange={(e) => setSecret(e.target.value)}
+                placeholder="at-least-16-random-bytes"
+                required
+              />
+              <p className="text-xs text-slate-500 mt-1">
+                Used to sign deliveries via{" "}
+                <code className="font-mono">X-Hands-Signature</code>. Choose a
+                strong secret; receivers must verify the signature.
+              </p>
+            </div>
+            <div>
+              <label className="label">Events (empty = all)</label>
+              <div className="grid grid-cols-2 gap-1">
+                {WEBHOOK_EVENT_TYPES.map((ev) => (
+                  <label
+                    key={ev}
+                    className="flex items-center gap-2 text-xs cursor-pointer"
+                  >
+                    <Checkbox
+                      checked={events.includes(ev)}
+                      onCheckedChange={() => toggleEvent(ev)}
+                    />
+                    <span className="font-mono">{ev}</span>
+                  </label>
+                ))}
+              </div>
+            </div>
+          </form>
+        </DialogBody>
+        <DialogFooter>
+          <Button
+            type="button"
+            variant="outline"
+            onClick={onClose}
+          >
+            Cancel
+          </Button>
+          <Button
+            type="submit"
+            form="create-webhook-form"
+            variant="primary"
+            disabled={
+              create.isPending || !url.trim() || secret.trim().length < 8
+            }
+          >
+            {create.isPending ? "Creating…" : "Create webhook"}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }

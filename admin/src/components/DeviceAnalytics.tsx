@@ -5,6 +5,7 @@
  */
 import { useQuery } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
+import { Tooltip, TooltipTrigger, TooltipContent, Progress, ProgressTrack, ProgressIndicator } from "raft-ui";
 import { getDeviceAnalytics, getVersionMetrics } from "../lib/api";
 
 const BAR_COLOR = "#2a78d6";
@@ -47,33 +48,41 @@ export function DeviceAnalytics({ appId }: { appId: string }) {
             {data.by_version.map((v) => {
               const pct = Math.round((v.devices / data.active_devices) * 100);
               return (
-                <button
-                  key={`${v.version_name}-${v.version_code}`}
-                  type="button"
-                  className="flex w-full items-center gap-2 text-xs hover:opacity-80"
-                  title={v.version_code ? `Feedback on version ${v.version_code}` : v.version_name}
-                  onClick={() =>
-                    v.version_code != null &&
-                    navigate(`/apps/${appId}/feedback?version_code=${v.version_code}`)
-                  }
-                >
-                  <span className="w-24 truncate text-left text-slate-600">
-                    {v.version_name}
-                  </span>
-                  <div className="flex-1 h-3.5">
-                    <div
-                      className="h-full rounded-r-[4px]"
-                      style={{
-                        width: `${(v.devices / maxVersion) * 100}%`,
-                        background: BAR_COLOR,
-                        minWidth: 2,
-                      }}
-                    />
-                  </div>
-                  <span className="w-14 text-right tabular-nums text-slate-700">
-                    {v.devices} · {pct}%
-                  </span>
-                </button>
+                <Tooltip key={`${v.version_name}-${v.version_code}`}>
+                  <TooltipTrigger
+                    render={
+                      <button
+                        type="button"
+                        className="flex w-full items-center gap-2 text-xs hover:opacity-80"
+                        onClick={() =>
+                          v.version_code != null &&
+                          navigate(`/apps/${appId}/feedback?version_code=${v.version_code}`)
+                        }
+                      >
+                        <span className="w-24 truncate text-left text-slate-600">
+                          {v.version_name}
+                        </span>
+                        <Progress
+                          value={(v.devices / maxVersion) * 100}
+                          className="flex-1 gap-0"
+                        >
+                          <ProgressTrack className="h-3.5 bg-transparent rounded-none">
+                            <ProgressIndicator
+                              className="rounded-r-[4px]"
+                              style={{ background: BAR_COLOR, minWidth: 2 }}
+                            />
+                          </ProgressTrack>
+                        </Progress>
+                        <span className="w-14 text-right tabular-nums text-slate-700">
+                          {v.devices} · {pct}%
+                        </span>
+                      </button>
+                    }
+                  />
+                  <TooltipContent>
+                    {v.version_code ? `Feedback on version ${v.version_code}` : v.version_name}
+                  </TooltipContent>
+                </Tooltip>
               );
             })}
           </div>

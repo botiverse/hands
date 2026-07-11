@@ -33,6 +33,29 @@ import {
   type App,
 } from "../lib/api";
 import { useToast } from "../components/Toast";
+import {
+  Button,
+  Input,
+  Select,
+  SelectTrigger,
+  SelectValue,
+  SelectIcon,
+  SelectContent,
+  SelectItem,
+  Tooltip,
+  TooltipTrigger,
+  TooltipContent,
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogBody,
+  DialogFooter,
+  DialogClose,
+  EmptyState,
+  EmptyStateTitle,
+  Skeleton,
+} from "raft-ui";
 
 export function AppAccess({ appId }: { appId: string }) {
   const [showAddServer, setShowAddServer] = useState(false);
@@ -179,7 +202,12 @@ function AppServerGrantList({
 
   return (
     <div className="card p-4! text-sm">
-      {grants.isLoading && <p className="text-slate-500">Loading…</p>}
+      {grants.isLoading && (
+        <div className="space-y-2">
+          <Skeleton className="h-8 w-full" />
+          <Skeleton className="h-8 w-full" />
+        </div>
+      )}
       {grants.error && (
         <p className="text-red-600">Failed: {(grants.error as Error).message}</p>
       )}
@@ -190,14 +218,16 @@ function AppServerGrantList({
             {visibleRowCount} server{visibleRowCount === 1 ? "" : "s"}
           </span>
           {canManage && (
-            <button className="btn-secondary py-1! px-2! text-xs! whitespace-nowrap" onClick={onAdd}>
+            <Button variant="outline" className="py-1! px-2! text-xs! whitespace-nowrap" onClick={onAdd}>
               + Add
-            </button>
+            </Button>
           )}
         </div>
       </div>
       {grants.data && visibleRowCount === 0 && (
-        <p className="text-slate-500 text-sm">No server-level access rows visible.</p>
+        <EmptyState>
+          <EmptyStateTitle>No server-level access rows visible.</EmptyStateTitle>
+        </EmptyState>
       )}
       {grants.data && visibleRowCount > 0 && (
         <table className="w-full text-sm">
@@ -262,8 +292,10 @@ function AppServerGrantList({
                 </td>
                 {canManage && (
                   <td className="py-2 text-xs">
-                    <button
-                      className="text-red-600 hover:underline"
+                    <Button
+                      variant="link"
+                      size="sm"
+                      className="text-red-600"
                       onClick={() => {
                         if (
                           confirm(
@@ -276,7 +308,7 @@ function AppServerGrantList({
                       disabled={remove.isPending}
                     >
                       Remove
-                    </button>
+                    </Button>
                   </td>
                 )}
               </tr>
@@ -330,66 +362,71 @@ function AddAppServerGrantDialog({
   });
 
   return (
-    <div
-      className="fixed inset-0 bg-black/30 flex items-center justify-center p-4 z-10"
-      onClick={(e) => {
-        if (e.target === e.currentTarget) onClose();
-      }}
-      onKeyDown={(e) => {
-        if (e.key === "Escape") onClose();
+    <Dialog
+      open
+      onOpenChange={(open) => {
+        if (!open) onClose();
       }}
     >
-      <div className="card max-w-md w-full relative">
-        <button
-          type="button"
-          onClick={onClose}
-          aria-label="Close"
-          className="absolute top-3 right-3 text-slate-400 hover:text-slate-700 w-8 h-8 flex items-center justify-center rounded-md hover:bg-slate-100"
+      <DialogContent className="max-w-md">
+        <DialogClose
+          render={
+            <Button
+              variant="ghost"
+              size="icon-sm"
+              aria-label="Close"
+              className="absolute top-3 right-3 text-slate-400 hover:text-slate-700"
+            />
+          }
         >
           ×
-        </button>
-        <h2 className="text-lg font-bold mb-4 pr-8">Add Raft server</h2>
-        <form
-          className="space-y-3"
-          onSubmit={(e) => {
-            e.preventDefault();
-            add.mutate();
-          }}
-        >
-          <div>
-            <label className="label">Server slug</label>
-            <input
-              className="input"
-              value={serverSlug}
-              onChange={(e) => setServerSlug(e.target.value)}
-              placeholder="server slug"
-              autoFocus
-            />
-          </div>
-          <div>
-            <label className="label">Server ID</label>
-            <input
-              className="input"
-              value={serverId}
-              onChange={(e) => setServerId(e.target.value)}
-              placeholder="optional"
-            />
-          </div>
-          <div className="flex justify-end gap-2 pt-2">
-            <button type="button" className="btn-secondary" onClick={onClose}>
-              Cancel
-            </button>
-            <button
-              type="submit"
-              className="btn-primary"
-              disabled={(!serverId.trim() && !serverSlug.trim()) || add.isPending}
-            >
-              {add.isPending ? "Adding…" : "Add"}
-            </button>
-          </div>
-        </form>
-      </div>
-    </div>
+        </DialogClose>
+        <DialogHeader>
+          <DialogTitle>Add Raft server</DialogTitle>
+        </DialogHeader>
+        <DialogBody>
+          <form
+            id="add-app-server-grant-form"
+            className="space-y-3"
+            onSubmit={(e) => {
+              e.preventDefault();
+              add.mutate();
+            }}
+          >
+            <div>
+              <label className="label">Server slug</label>
+              <Input
+                value={serverSlug}
+                onChange={(e) => setServerSlug(e.target.value)}
+                placeholder="server slug"
+                autoFocus
+              />
+            </div>
+            <div>
+              <label className="label">Server ID</label>
+              <Input
+                value={serverId}
+                onChange={(e) => setServerId(e.target.value)}
+                placeholder="optional"
+              />
+            </div>
+          </form>
+        </DialogBody>
+        <DialogFooter>
+          <Button variant="outline" type="button" onClick={onClose}>
+            Cancel
+          </Button>
+          <Button
+            type="submit"
+            form="add-app-server-grant-form"
+            variant="primary"
+            disabled={(!serverId.trim() && !serverSlug.trim()) || add.isPending}
+          >
+            {add.isPending ? "Adding…" : "Add"}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
 
@@ -448,25 +485,42 @@ function AppMemberList({
 
   return (
     <div className="card p-4! text-sm">
-      {members.isLoading && <p className="text-slate-500">Loading…</p>}
+      {members.isLoading && (
+        <div className="space-y-2">
+          <Skeleton className="h-8 w-full" />
+          <Skeleton className="h-8 w-full" />
+        </div>
+      )}
       {members.error && (
         <p className="text-red-600">Failed: {(members.error as Error).message}</p>
       )}
       <div className="flex items-center justify-between mb-3">
         <h3 className="text-base font-semibold">Direct app members</h3>
         <div className="flex items-center gap-2">
-          <select
-            className="input w-auto! text-xs py-0.5 pr-7"
+          <Select
+            items={{ all: "All types", human: "Humans only", agent: "Agents only" }}
             value={principalFilter}
-            onChange={(e) =>
-              setPrincipalFilter(e.target.value as "all" | "human" | "agent")
+            onValueChange={(v) =>
+              setPrincipalFilter(v as "all" | "human" | "agent")
             }
-            title="Filter by principal type"
           >
-            <option value="all">All types</option>
-            <option value="human">Humans only</option>
-            <option value="agent">Agents only</option>
-          </select>
+            <Tooltip>
+              <TooltipTrigger
+                render={
+                  <SelectTrigger className="w-auto! text-xs py-0.5 pr-7">
+                    <SelectValue />
+                    <SelectIcon />
+                  </SelectTrigger>
+                }
+              />
+              <TooltipContent>Filter by principal type</TooltipContent>
+            </Tooltip>
+            <SelectContent>
+              <SelectItem value="all">All types</SelectItem>
+              <SelectItem value="human">Humans only</SelectItem>
+              <SelectItem value="agent">Agents only</SelectItem>
+            </SelectContent>
+          </Select>
           <span className="text-xs text-slate-500 whitespace-nowrap">
             {filteredMembers.length} member{filteredMembers.length === 1 ? "" : "s"}
             {principalFilter !== "all" && (
@@ -474,18 +528,20 @@ function AppMemberList({
             )}
           </span>
           {canManage && (
-            <button className="btn-secondary py-1! px-2! text-xs! whitespace-nowrap" onClick={onAdd}>
+            <Button variant="outline" className="py-1! px-2! text-xs! whitespace-nowrap" onClick={onAdd}>
               + Add
-            </button>
+            </Button>
           )}
         </div>
       </div>
       {members.data && filteredMembers.length === 0 && (
-        <p className="text-slate-500 text-sm">
-          {principalFilter === "all"
-            ? "No direct app members yet. Org members may still have inherited access."
-            : `No ${principalFilter} app members.`}
-        </p>
+        <EmptyState>
+          <EmptyStateTitle>
+            {principalFilter === "all"
+              ? "No direct app members yet. Org members may still have inherited access."
+              : `No ${principalFilter} app members.`}
+          </EmptyStateTitle>
+        </EmptyState>
       )}
       {members.data && filteredMembers.length > 0 && (
         <table className="w-full text-sm">
@@ -531,23 +587,29 @@ function AppMemberList({
                 </td>
                 <td className="py-2 pr-2">
                   {canManage && m.account_id !== currentAccountId ? (
-                    <select
-                      className="input text-xs py-0.5"
+                    <Select
+                      items={{ admin: "admin", publisher: "publisher", viewer: "viewer" }}
                       value={m.app_role}
-                      onChange={(e) =>
+                      onValueChange={(v) =>
                         update.mutate({
                           accountId: m.account_id,
-                          role: e.target.value as AppMember["app_role"],
+                          role: v as AppMember["app_role"],
                         })
                       }
                       disabled={update.isPending}
                     >
-                      {(["admin", "publisher", "viewer"] as const).map((r) => (
-                        <option key={r} value={r}>
-                          {r}
-                        </option>
-                      ))}
-                    </select>
+                      <SelectTrigger className="text-xs py-0.5">
+                        <SelectValue />
+                        <SelectIcon />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {(["admin", "publisher", "viewer"] as const).map((r) => (
+                          <SelectItem key={r} value={r}>
+                            {r}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
                   ) : (
                     <span className="text-xs font-medium">{m.app_role}</span>
                   )}
@@ -563,8 +625,10 @@ function AppMemberList({
                 {canManage && (
                   <td className="py-2 text-xs">
                     {m.account_id !== currentAccountId && (
-                      <button
-                        className="text-red-600 hover:underline"
+                      <Button
+                        variant="link"
+                        size="sm"
+                        className="text-red-600"
                         onClick={() => {
                           if (
                             confirm(
@@ -577,7 +641,7 @@ function AppMemberList({
                         disabled={remove.isPending}
                       >
                         Remove
-                      </button>
+                      </Button>
                     )}
                   </td>
                 )}
@@ -620,7 +684,12 @@ function AppDeployTokenList({
 
   return (
     <div className="card p-4! text-sm">
-      {tokens.isLoading && <p className="text-slate-500">Loading…</p>}
+      {tokens.isLoading && (
+        <div className="space-y-2">
+          <Skeleton className="h-8 w-full" />
+          <Skeleton className="h-8 w-full" />
+        </div>
+      )}
       {tokens.error && (
         <p className="text-red-600">Failed: {(tokens.error as Error).message}</p>
       )}
@@ -630,15 +699,15 @@ function AppDeployTokenList({
           <span className="text-xs text-slate-500 whitespace-nowrap">
             {rows.length} token{rows.length === 1 ? "" : "s"}
           </span>
-          <button className="btn-secondary py-1! px-2! text-xs! whitespace-nowrap" onClick={onAdd}>
+          <Button variant="outline" className="py-1! px-2! text-xs! whitespace-nowrap" onClick={onAdd}>
             + Add
-          </button>
+          </Button>
         </div>
       </div>
       {tokens.data && rows.length === 0 && (
-        <p className="text-slate-500 text-sm">
-          No deploy tokens yet.
-        </p>
+        <EmptyState>
+          <EmptyStateTitle>No deploy tokens yet.</EmptyStateTitle>
+        </EmptyState>
       )}
       {tokens.data && rows.length > 0 && (
         <table className="w-full text-sm">
@@ -683,8 +752,10 @@ function AppDeployTokenList({
                     : "—"}
                 </td>
                 <td className="py-2 text-xs">
-                  <button
-                    className="text-red-600 hover:underline"
+                  <Button
+                    variant="link"
+                    size="sm"
+                    className="text-red-600"
                     onClick={() => {
                       if (confirm(`Revoke deploy token ${token.name}?`)) {
                         revoke.mutate(token.id);
@@ -693,7 +764,7 @@ function AppDeployTokenList({
                     disabled={revoke.isPending}
                   >
                     Revoke
-                  </button>
+                  </Button>
                 </td>
               </tr>
             ))}
@@ -756,122 +827,145 @@ function AddAppDeployTokenDialog({
   };
 
   return (
-    <div
-      className="fixed inset-0 bg-black/30 flex items-center justify-center p-4 z-10"
-      onClick={(e) => {
-        if (e.target === e.currentTarget) {
-          createdToken ? closeAfterCreate() : onClose();
+    <Dialog
+      open
+      onOpenChange={(open) => {
+        if (!open) {
+          if (createdToken) closeAfterCreate();
+          else onClose();
         }
       }}
-      onKeyDown={(e) => {
-        if (e.key === "Escape") createdToken ? closeAfterCreate() : onClose();
-      }}
     >
-      <div className="card max-w-lg w-full relative text-sm">
-        <button
-          type="button"
-          onClick={createdToken ? closeAfterCreate : onClose}
-          aria-label="Close"
-          className="absolute top-3 right-3 text-slate-400 hover:text-slate-700 w-8 h-8 flex items-center justify-center rounded-md hover:bg-slate-100"
+      <DialogContent className="max-w-lg text-sm">
+        <DialogClose
+          render={
+            <Button
+              variant="ghost"
+              size="icon-sm"
+              aria-label="Close"
+              className="absolute top-3 right-3 text-slate-400 hover:text-slate-700"
+            />
+          }
         >
           ×
-        </button>
-        <h2 className="text-lg font-bold mb-4 pr-8">Add deploy token</h2>
+        </DialogClose>
+        <DialogHeader>
+          <DialogTitle>Add deploy token</DialogTitle>
+        </DialogHeader>
         {createdToken ? (
-          <div className="space-y-3">
-            <p className="text-sm text-slate-600">
-              Copy this token now. It will not be shown again.
-            </p>
-            <textarea
-              className="input font-mono text-xs min-h-[96px]"
-              value={createdToken}
-              readOnly
-              onFocus={(e) => e.currentTarget.select()}
-            />
-            <div className="flex justify-end gap-2 pt-2">
-              <button
+          <>
+            <DialogBody className="space-y-3">
+              <p className="text-sm text-slate-600">
+                Copy this token now. It will not be shown again.
+              </p>
+              <textarea
+                className="input font-mono text-xs min-h-[96px]"
+                value={createdToken}
+                readOnly
+                onFocus={(e) => e.currentTarget.select()}
+              />
+            </DialogBody>
+            <DialogFooter>
+              <Button
                 type="button"
-                className="btn-secondary"
+                variant="outline"
                 onClick={() => {
                   navigator.clipboard?.writeText(createdToken).catch(() => {});
                   toast.show({ kind: "success", title: "Token copied" });
                 }}
               >
                 Copy
-              </button>
-              <button type="button" className="btn-primary" onClick={closeAfterCreate}>
+              </Button>
+              <Button type="button" variant="primary" onClick={closeAfterCreate}>
                 Done
-              </button>
-            </div>
-          </div>
+              </Button>
+            </DialogFooter>
+          </>
         ) : (
-          <form
-            className="space-y-3"
-            onSubmit={(e) => {
-              e.preventDefault();
-              create.mutate();
-            }}
-          >
-            <div>
-              <label className="label">Name</label>
-              <input
-                className="input"
-                value={name}
-                onChange={(e) => setName(e.target.value)}
-                placeholder="github-actions-main"
-                autoFocus
-              />
-            </div>
-            <div className="grid grid-cols-2 gap-3">
-              <div>
-                <label className="label">Role</label>
-                <select
-                  className="input"
-                  value={role}
-                  onChange={(e) =>
-                    setRole(e.target.value as AppDeployToken["app_role"])
-                  }
-                >
-                  <option value="publisher">publisher</option>
-                  <option value="viewer">viewer</option>
-                </select>
-              </div>
-              <div>
-                <label className="label">Expires</label>
-                <select
-                  className="input"
-                  value={expiry}
-                  onChange={(e) =>
-                    setExpiry(e.target.value as "30d" | "90d" | "365d" | "never")
-                  }
-                >
-                  <option value="30d">30 days</option>
-                  <option value="90d">90 days</option>
-                  <option value="365d">1 year</option>
-                  <option value="never">Never</option>
-                </select>
-              </div>
-            </div>
-            <p className="text-xs text-slate-500">
-              Publisher tokens can upload builds, create releases, and create
-              share pages for this app only.
-            </p>
-            <div className="flex justify-end gap-2 pt-2">
-              <button type="button" className="btn-secondary" onClick={onClose}>
+          <>
+            <DialogBody>
+              <form
+                id="add-app-deploy-token-form"
+                className="space-y-3"
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  create.mutate();
+                }}
+              >
+                <div>
+                  <label className="label">Name</label>
+                  <Input
+                    value={name}
+                    onChange={(e) => setName(e.target.value)}
+                    placeholder="github-actions-main"
+                    autoFocus
+                  />
+                </div>
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="label">Role</label>
+                    <Select
+                      items={{ publisher: "publisher", viewer: "viewer" }}
+                      value={role}
+                      onValueChange={(v) =>
+                        setRole(v as AppDeployToken["app_role"])
+                      }
+                    >
+                      <SelectTrigger>
+                        <SelectValue />
+                        <SelectIcon />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="publisher">publisher</SelectItem>
+                        <SelectItem value="viewer">viewer</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div>
+                    <label className="label">Expires</label>
+                    <Select
+                      items={{ "30d": "30 days", "90d": "90 days", "365d": "1 year", never: "Never" }}
+                      value={expiry}
+                      onValueChange={(v) =>
+                        setExpiry(v as "30d" | "90d" | "365d" | "never")
+                      }
+                    >
+                      <SelectTrigger>
+                        <SelectValue />
+                        <SelectIcon />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="30d">30 days</SelectItem>
+                        <SelectItem value="90d">90 days</SelectItem>
+                        <SelectItem value="365d">1 year</SelectItem>
+                        <SelectItem value="never">Never</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                </div>
+                <p className="text-xs text-slate-500">
+                  Publisher tokens can upload builds, create releases, and create
+                  share pages for this app only.
+                </p>
+              </form>
+            </DialogBody>
+            <DialogFooter>
+              <Button variant="outline" type="button" onClick={onClose}>
                 Cancel
-              </button>
-              <button
+              </Button>
+              <Button
                 type="submit"
-                className="btn-primary"
+                form="add-app-deploy-token-form"
+                variant="primary"
                 disabled={!name.trim() || create.isPending}
               >
                 {create.isPending ? "Creating…" : "Create"}
-              </button>
-            </div>
-          </form>
+              </Button>
+            </DialogFooter>
+          </>
         )}
-      </div>
-    </div>
+      </DialogContent>
+    </Dialog>
   );
 }
 
@@ -940,109 +1034,143 @@ function AddAppMemberDialog({
 
   if (candidates.length === 0) {
     return (
-      <div
-        className="fixed inset-0 bg-black/30 flex items-center justify-center p-4 z-10"
-        onClick={(e) => {
-          if (e.target === e.currentTarget) onClose();
+      <Dialog
+        open
+        onOpenChange={(open) => {
+          if (!open) onClose();
         }}
       >
-        <div className="card max-w-md w-full relative text-sm">
-          <button
-            type="button"
-            onClick={onClose}
-            aria-label="Close"
-            className="absolute top-3 right-3 text-slate-400 hover:text-slate-700 w-8 h-8 flex items-center justify-center rounded-md hover:bg-slate-100"
+        <DialogContent className="max-w-md text-sm">
+          <DialogClose
+            render={
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                aria-label="Close"
+                className="absolute top-3 right-3 text-slate-400 hover:text-slate-700"
+              />
+            }
           >
             ×
-          </button>
-          <h2 className="text-lg font-bold mb-3 pr-8">Add direct app member</h2>
-          <p className="text-slate-500">
-            No eligible org members need a direct app grant.
-          </p>
-          <div className="flex justify-end pt-4">
-            <button type="button" className="btn-secondary" onClick={onClose}>
+          </DialogClose>
+          <DialogHeader>
+            <DialogTitle>Add direct app member</DialogTitle>
+          </DialogHeader>
+          <DialogBody>
+            <p className="text-slate-500">
+              No eligible org members need a direct app grant.
+            </p>
+          </DialogBody>
+          <DialogFooter>
+            <Button variant="outline" type="button" onClick={onClose}>
               Close
-            </button>
-          </div>
-        </div>
-      </div>
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     );
   }
 
   return (
-    <div
-      className="fixed inset-0 bg-black/30 flex items-center justify-center p-4 z-10"
-      onClick={(e) => {
-        if (e.target === e.currentTarget) onClose();
-      }}
-      onKeyDown={(e) => {
-        if (e.key === "Escape") onClose();
+    <Dialog
+      open
+      onOpenChange={(open) => {
+        if (!open) onClose();
       }}
     >
-      <div className="card max-w-md w-full relative text-sm">
-        <button
-          type="button"
-          onClick={onClose}
-          aria-label="Close"
-          className="absolute top-3 right-3 text-slate-400 hover:text-slate-700 w-8 h-8 flex items-center justify-center rounded-md hover:bg-slate-100"
+      <DialogContent className="max-w-md text-sm">
+        <DialogClose
+          render={
+            <Button
+              variant="ghost"
+              size="icon-sm"
+              aria-label="Close"
+              className="absolute top-3 right-3 text-slate-400 hover:text-slate-700"
+            />
+          }
         >
           ×
-        </button>
-        <h2 className="text-lg font-bold mb-4 pr-8">Add direct app member</h2>
-        <form
-          className="space-y-3"
-          onSubmit={(e) => {
-            e.preventDefault();
-            add.mutate();
-          }}
-        >
-          <div>
-            <label className="label">Principal</label>
-            <select
-              className="input"
-              value={selectedAccount}
-              onChange={(e) => setSelectedAccount(e.target.value)}
-              autoFocus
-            >
-              <option value="">— select —</option>
-              {candidates.map((m) => (
-                <option key={m.account_id} value={m.account_id}>
-                  {m.display_name} ({m.username ?? m.provider_subject.slice(0, 8)})
-                </option>
-              ))}
-            </select>
-          </div>
-          <div>
-            <label className="label">Role</label>
-            <select
-              className="input"
-              value={role}
-              onChange={(e) => setRole(e.target.value as AppMember["app_role"])}
-            >
-              <option value="admin">admin</option>
-              <option value="publisher">publisher</option>
-              <option value="viewer">viewer</option>
-            </select>
-          </div>
-          <p className="text-xs text-slate-500">
-            Direct app members are for org members who need app-scoped access.
-            Owners and org admins already inherit app administration.
-          </p>
-          <div className="flex justify-end gap-2 pt-2">
-            <button type="button" className="btn-secondary" onClick={onClose}>
-              Cancel
-            </button>
-            <button
-              type="submit"
-              className="btn-primary"
-              disabled={!selectedAccount || add.isPending}
-            >
-              {add.isPending ? "Adding…" : "Add"}
-            </button>
-          </div>
-        </form>
-      </div>
-    </div>
+        </DialogClose>
+        <DialogHeader>
+          <DialogTitle>Add direct app member</DialogTitle>
+        </DialogHeader>
+        <DialogBody>
+          <form
+            id="add-app-member-form"
+            className="space-y-3"
+            onSubmit={(e) => {
+              e.preventDefault();
+              add.mutate();
+            }}
+          >
+            <div>
+              <label className="label">Principal</label>
+              <Select
+                items={{
+                  "": "— select —",
+                  ...Object.fromEntries(
+                    candidates.map((m) => [
+                      m.account_id,
+                      `${m.display_name} (${m.username ?? m.provider_subject.slice(0, 8)})`,
+                    ]),
+                  ),
+                }}
+                value={selectedAccount}
+                onValueChange={(v) => setSelectedAccount(v as string)}
+              >
+                <SelectTrigger autoFocus>
+                  <SelectValue />
+                  <SelectIcon />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="">— select —</SelectItem>
+                  {candidates.map((m) => (
+                    <SelectItem key={m.account_id} value={m.account_id}>
+                      {m.display_name} ({m.username ?? m.provider_subject.slice(0, 8)})
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div>
+              <label className="label">Role</label>
+              <Select
+                items={{ admin: "admin", publisher: "publisher", viewer: "viewer" }}
+                value={role}
+                onValueChange={(v) => setRole(v as AppMember["app_role"])}
+              >
+                <SelectTrigger>
+                  <SelectValue />
+                  <SelectIcon />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="admin">admin</SelectItem>
+                  <SelectItem value="publisher">publisher</SelectItem>
+                  <SelectItem value="viewer">viewer</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <p className="text-xs text-slate-500">
+              Direct app members are for org members who need app-scoped access.
+              Owners and org admins already inherit app administration.
+            </p>
+          </form>
+        </DialogBody>
+        <DialogFooter>
+          <Button variant="outline" type="button" onClick={onClose}>
+            Cancel
+          </Button>
+          <Button
+            type="submit"
+            form="add-app-member-form"
+            variant="primary"
+            disabled={!selectedAccount || add.isPending}
+          >
+            {add.isPending ? "Adding…" : "Add"}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
 
@@ -1092,12 +1220,13 @@ function InviteToAppForm({ appId }: { appId: string }) {
       <div className="flex items-center justify-between mb-3">
         <h3 className="text-base font-semibold">Create app invite link</h3>
         {!showForm && (
-          <button
-            className="btn-secondary text-xs"
+          <Button
+            variant="outline"
+            className="text-xs"
             onClick={() => setShowForm(true)}
           >
             + Link
-          </button>
+          </Button>
         )}
       </div>
       {showForm ? (
@@ -1109,25 +1238,31 @@ function InviteToAppForm({ appId }: { appId: string }) {
           className="space-y-2"
         >
           <div className="grid grid-cols-2 gap-2">
-            <input
+            <Input
               type="email"
-              className="input text-sm"
+              className="text-sm"
               value={email}
               onChange={(e) => setEmail(e.target.value)}
               placeholder="email@example.com"
               required
               autoFocus
             />
-            <select
-              className="input text-sm"
+            <Select
+              items={{ publisher: "publisher", viewer: "viewer" }}
               value={role}
-              onChange={(e) =>
-                setRole(e.target.value as "publisher" | "viewer")
+              onValueChange={(v) =>
+                setRole(v as "publisher" | "viewer")
               }
             >
-              <option value="publisher">publisher</option>
-              <option value="viewer">viewer</option>
-            </select>
+              <SelectTrigger className="text-sm">
+                <SelectValue />
+                <SelectIcon />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="publisher">publisher</SelectItem>
+                <SelectItem value="viewer">viewer</SelectItem>
+              </SelectContent>
+            </Select>
           </div>
           <textarea
             className="input text-xs min-h-[40px]"
@@ -1141,20 +1276,22 @@ function InviteToAppForm({ appId }: { appId: string }) {
             with the role you pick. The URL is copied to clipboard after creation.
           </p>
           <div className="flex gap-2">
-            <button
+            <Button
               type="submit"
-              className="btn-primary text-xs"
+              variant="primary"
+              className="text-xs"
               disabled={invite.isPending || !email.trim()}
             >
               {invite.isPending ? "Creating…" : "Create invite link"}
-            </button>
-            <button
+            </Button>
+            <Button
               type="button"
-              className="btn-secondary text-xs"
+              variant="outline"
+              className="text-xs"
               onClick={() => setShowForm(false)}
             >
               Cancel
-            </button>
+            </Button>
           </div>
         </form>
       ) : (

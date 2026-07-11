@@ -6,6 +6,10 @@
   "compatibility_flags": ["nodejs_compat"],
   "observability": { "enabled": true },
   "upload_source_maps": true,
+  // Enable Cloudflare version preview URLs so `wrangler versions upload` yields a
+  // browsable <version>-<worker>.<subdomain>.workers.dev URL (Preview workflow).
+  // Harmless in production — preview versions carry no traffic.
+  "preview_urls": true,
 
   // Custom-domain routes must remain literal Wrangler bindings. Other
   // production identifiers are rendered from repository Variables.

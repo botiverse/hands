@@ -19,6 +19,16 @@
 import { useCallback, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
+  Button,
+  Input,
+  Select,
+  SelectTrigger,
+  SelectValue,
+  SelectIcon,
+  SelectContent,
+  SelectItem,
+} from "raft-ui";
+import {
   createBuildAsset,
   deleteBuildAsset,
   listBuildAssets,
@@ -199,13 +209,14 @@ export function ReleaseAssetUploader(props: Props) {
                   {(a.size_bytes / 1024 / 1024).toFixed(2)} MB
                 </td>
                 <td className="pr-2 py-1">
-                  <button
-                    className="btn-secondary text-[10px]"
+                  <Button
+                    variant="outline"
+                    className="text-[10px]"
                     onClick={() => setRemoveTarget(a)}
                     disabled={remove.isPending}
                   >
                     Remove
-                  </button>
+                  </Button>
                 </td>
               </tr>
             ))}
@@ -346,58 +357,74 @@ export function PendingFileRow({
           {detectedSummary}
         </span>
         {canEdit && (
-          <button
+          <Button
+            variant="link"
+            size="sm"
             type="button"
-            className="text-blue-600 hover:underline text-[11px]"
+            className="text-[11px]"
             onClick={() => setEditing((v) => !v)}
           >
             {editing ? "Done" : "Edit metadata"}
-          </button>
+          </Button>
         )}
         {pending.status === "error" && (
           <span className="text-red-600 text-[10px] truncate max-w-[20ch]">
             {pending.error}
           </span>
         )}
-        <button
+        <Button
+          variant="ghost"
+          size="icon-sm"
           className="text-slate-400 hover:text-red-600 text-xs"
           onClick={onRemove}
           aria-label="Dismiss"
         >
           ✕
-        </button>
+        </Button>
       </div>
 
       {editing && canEdit && (
         <div className="grid grid-cols-3 gap-2 mt-2">
-          <select
-            className="input py-0.5! text-xs!"
+          <Select
+            items={Object.fromEntries(KNOWN_PLATFORMS.map((p) => [p, p]))}
             value={pending.platform}
-            onChange={(e) => onChange({ platform: e.target.value })}
+            onValueChange={(v) => onChange({ platform: v as string })}
           >
-            {KNOWN_PLATFORMS.map((p) => (
-              <option key={p} value={p}>
-                {p}
-              </option>
-            ))}
-          </select>
-          <input
-            className="input py-0.5! text-xs!"
+            <SelectTrigger className="py-0.5! text-xs!">
+              <SelectValue />
+              <SelectIcon />
+            </SelectTrigger>
+            <SelectContent>
+              {KNOWN_PLATFORMS.map((p) => (
+                <SelectItem key={p} value={p}>
+                  {p}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <Input
+            className="py-0.5! text-xs!"
             placeholder="arch (optional)"
             value={pending.arch ?? ""}
             onChange={(e) => onChange({ arch: e.target.value || null })}
           />
-          <select
-            className="input py-0.5! text-xs!"
+          <Select
+            items={Object.fromEntries(KNOWN_FILETYPES.map((f) => [f, f]))}
             value={pending.filetype}
-            onChange={(e) => onChange({ filetype: e.target.value })}
+            onValueChange={(v) => onChange({ filetype: v as string })}
           >
-            {KNOWN_FILETYPES.map((f) => (
-              <option key={f} value={f}>
-                {f}
-              </option>
-            ))}
-          </select>
+            <SelectTrigger className="py-0.5! text-xs!">
+              <SelectValue />
+              <SelectIcon />
+            </SelectTrigger>
+            <SelectContent>
+              {KNOWN_FILETYPES.map((f) => (
+                <SelectItem key={f} value={f}>
+                  {f}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
         </div>
       )}
     </div>

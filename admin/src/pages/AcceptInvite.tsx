@@ -15,6 +15,7 @@ import { useMutation, useQuery } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
 import { acceptInvite, getAuthMe, loginUrl, type Invite } from "../lib/api";
 import { useToast } from "../components/Toast";
+import { Button } from "raft-ui";
 
 export function AcceptInvite({ token }: { token: string }) {
   const navigate = useNavigate();
@@ -133,25 +134,27 @@ export function AcceptInvite({ token }: { token: string }) {
         )}
 
         {!me.data?.authenticated && !isExpired && !isAccepted && !isRevoked && (
-          <a
-            href={loginUrl(`/invites/${token}`)}
-            className="btn-primary block text-center mt-4"
+          <Button
+            variant="primary"
+            className="block text-center mt-4"
+            render={<a href={loginUrl(`/invites/${token}`)} />}
           >
             Sign in with Raft to accept
-          </a>
+          </Button>
         )}
 
         {me.data?.authenticated &&
           !isExpired &&
           !isAccepted &&
           !isRevoked && (
-            <button
-              className="btn-primary w-full mt-4"
+            <Button
+              variant="primary"
+              className="w-full mt-4"
               onClick={() => accept.mutate()}
               disabled={accept.isPending}
             >
               {accept.isPending ? "Accepting…" : "Accept invite"}
-            </button>
+            </Button>
           )}
 
         <p className="text-xs text-slate-400 mt-4">

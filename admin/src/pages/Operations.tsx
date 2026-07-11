@@ -8,6 +8,7 @@ import {
   type Operation,
 } from "../lib/api";
 import { useToast } from "../components/Toast";
+import { Button, Progress, ProgressTrack, ProgressIndicator } from "raft-ui";
 
 const STATUS_COLORS: Record<Operation["status"], string> = {
   pending: "badge-gray",
@@ -20,7 +21,7 @@ const STATUS_COLORS: Record<Operation["status"], string> = {
 export function Operations({ appId }: { appId: string }) {
   const qc = useQueryClient();
   const toast = useToast();
-  const retryToastRef = useRef<number | null>(null);
+  const retryToastRef = useRef<string | null>(null);
   const { data, isLoading, error } = useQuery({
     queryKey: ["operations", appId],
     queryFn: () => listOperations(appId, 50),
@@ -165,13 +166,14 @@ function OperationRow({
         )}
         <div className="flex-1" />
         {op.status === "failed" && (
-          <button
+          <Button
             onClick={onRetry}
             disabled={busy}
-            className="btn-secondary text-xs"
+            variant="outline"
+            className="text-xs"
           >
             Retry
-          </button>
+          </Button>
         )}
         <button
           onClick={() => setExpanded(!expanded)}
@@ -191,12 +193,11 @@ function OperationRow({
       </div>
 
       {op.status === "in_progress" && (
-        <div className="mt-2 h-1 bg-slate-100 rounded-sm overflow-hidden">
-          <div
-            className="h-full bg-blue-500 transition-all"
-            style={{ width: `${Math.round(op.progress * 100)}%` }}
-          />
-        </div>
+        <Progress value={Math.round(op.progress * 100)} className="mt-2 gap-0">
+          <ProgressTrack className="h-1 bg-slate-100 rounded-sm overflow-hidden">
+            <ProgressIndicator className="bg-blue-500 transition-all" />
+          </ProgressTrack>
+        </Progress>
       )}
 
       {op.error && (

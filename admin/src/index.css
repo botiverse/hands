@@ -1,4 +1,9 @@
 @import 'tailwindcss';
+/* raft-ui elegant component library: its @theme token contract + component
+   styles. Tailwind v4 skips node_modules, so @source makes it generate the
+   utility classes raft-ui's compiled components reference. */
+@import 'raft-ui/styles.css';
+@source '../node_modules/raft-ui/dist';
 
 @theme {
   --font-sans:

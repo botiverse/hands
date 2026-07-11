@@ -19,6 +19,7 @@ import {
 } from "../lib/api";
 import { useToast } from "../components/Toast";
 import { FeedbackTrends } from "../components/FeedbackTrends";
+import { Button, Input, Select, SelectTrigger, SelectValue, SelectIcon, SelectContent, SelectItem, Tooltip, TooltipTrigger, TooltipContent, EmptyState, EmptyStateTitle, Skeleton } from "raft-ui";
 
 const STATUSES = ["open", "in_progress", "resolved", "closed"] as const;
 
@@ -80,9 +81,9 @@ export function AppFeedback({ appId }: { appId: string }) {
           <span>
             Filtered to version code <span className="font-mono">{versionFilter}</span>
           </span>
-          <button className="text-blue-600 hover:underline text-xs" onClick={() => clearScopeFilter("version_code")}>
+          <Button variant="link" size="sm" className="text-xs" onClick={() => clearScopeFilter("version_code")}>
             clear
-          </button>
+          </Button>
         </div>
       )}
       {signatureFilter && (
@@ -99,9 +100,9 @@ export function AppFeedback({ appId }: { appId: string }) {
                 </div>
               )}
             </div>
-            <button className="text-blue-600 hover:underline text-xs flex-none" onClick={() => clearScopeFilter("signature")}>
+            <Button variant="link" size="sm" className="text-xs flex-none" onClick={() => clearScopeFilter("signature")}>
               clear
-            </button>
+            </Button>
           </div>
         </div>
       )}
@@ -114,39 +115,59 @@ export function AppFeedback({ appId }: { appId: string }) {
           </p>
         </div>
         <div className="flex items-center gap-2 text-sm">
-          <select
-            className="input w-auto! py-1.5!"
+          <Select
+            items={{ "": "All statuses", ...Object.fromEntries(STATUSES.map((s) => [s, s])) }}
             value={statusFilter}
-            onChange={(e) => setStatusFilter(e.target.value)}
+            onValueChange={(v) => setStatusFilter(v as string)}
           >
-            <option value="">All statuses</option>
-            {STATUSES.map((s) => (
-              <option key={s} value={s}>{s}</option>
-            ))}
-          </select>
-          <select
-            className="input w-auto! py-1.5!"
+            <SelectTrigger className="w-auto! py-1.5!">
+              <SelectValue />
+              <SelectIcon />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="">All statuses</SelectItem>
+              {STATUSES.map((s) => (
+                <SelectItem key={s} value={s}>{s}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <Select
+            items={{ "": "All kinds", feedback: "feedback", bug: "bug", crash: "crash" }}
             value={kindFilter}
-            onChange={(e) => setKindFilter(e.target.value)}
+            onValueChange={(v) => setKindFilter(v as string)}
           >
-            <option value="">All kinds</option>
-            <option value="feedback">feedback</option>
-            <option value="bug">bug</option>
-            <option value="crash">crash</option>
-          </select>
+            <SelectTrigger className="w-auto! py-1.5!">
+              <SelectValue />
+              <SelectIcon />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="">All kinds</SelectItem>
+              <SelectItem value="feedback">feedback</SelectItem>
+              <SelectItem value="bug">bug</SelectItem>
+              <SelectItem value="crash">crash</SelectItem>
+            </SelectContent>
+          </Select>
         </div>
       </div>
 
 
       <div className="card overflow-x-auto">
-        {tickets.isLoading && <p className="text-sm text-slate-500">Loading…</p>}
+        {tickets.isLoading && (
+          <div className="space-y-2">
+            <Skeleton className="h-10 w-full" />
+            <Skeleton className="h-10 w-full" />
+            <Skeleton className="h-10 w-full" />
+          </div>
+        )}
         {tickets.error && (
           <p className="text-sm text-red-600">
             Failed to load feedback: {(tickets.error as Error).message}
           </p>
         )}
         {!tickets.isLoading && rows.length === 0 && (
-          <p className="text-sm text-slate-500">No feedback tickets yet.</p>
+          <EmptyState>
+            <EmptyStateTitle>No feedback tickets yet.</EmptyStateTitle>
+          </EmptyState>
         )}
         {rows.length > 0 && (
           <table className="w-full text-sm">
@@ -263,18 +284,20 @@ function CrashLogView({
         <h4 className="text-sm font-semibold">Crash detail</h4>
         {deobfuscated && (active === "stack" || (activeSection?.key === "stack")) && (
           <div className="flex overflow-hidden rounded-md border border-slate-200 text-xs">
-            <button
-              className={`px-2 py-0.5 ${showDeobf ? "bg-slate-100 font-medium" : "text-slate-500"}`}
+            <Button
+              size="sm"
+              variant={showDeobf ? "default" : "ghost"}
               onClick={() => setShowDeobf(true)}
             >
               Deobfuscated
-            </button>
-            <button
-              className={`px-2 py-0.5 ${!showDeobf ? "bg-slate-100 font-medium" : "text-slate-500"}`}
+            </Button>
+            <Button
+              size="sm"
+              variant={!showDeobf ? "default" : "ghost"}
               onClick={() => setShowDeobf(false)}
             >
               Raw
-            </button>
+            </Button>
           </div>
         )}
       </div>
@@ -286,17 +309,14 @@ function CrashLogView({
         <>
           <div className="mb-2 flex flex-wrap gap-1 border-b border-slate-100 pb-2 text-xs">
             {sections.map((sec) => (
-              <button
+              <Button
                 key={sec.key}
-                className={`rounded-md px-2 py-1 ${
-                  (activeSection?.key ?? "") === sec.key
-                    ? "bg-slate-100 font-medium text-slate-950"
-                    : "text-slate-600 hover:bg-slate-50"
-                }`}
+                size="sm"
+                variant={(activeSection?.key ?? "") === sec.key ? "default" : "ghost"}
                 onClick={() => setActive(sec.key)}
               >
                 {sec.label}
-              </button>
+              </Button>
             ))}
           </div>
           <pre className="max-h-112 overflow-auto rounded-md bg-slate-950 p-3 text-xs leading-relaxed text-slate-100">
@@ -330,9 +350,9 @@ function DeviceScopeBanner({
         <h4 className="text-sm font-semibold">
           Device <span className="font-mono text-xs">{deviceId}</span>
         </h4>
-        <button className="text-blue-600 hover:underline text-xs" onClick={onClear}>
+        <Button variant="link" size="sm" className="text-xs" onClick={onClear}>
           clear
-        </button>
+        </Button>
       </div>
       {d ? (
         <dl className="mt-2 grid grid-cols-2 gap-x-4 gap-y-1 text-xs sm:grid-cols-4">
@@ -405,13 +425,14 @@ function AttachmentList({
         <ul className="space-y-1 text-sm">
           {others.map((a) => (
             <li key={a.id}>
-              <button
+              <Button
                 type="button"
-                className="text-blue-600 hover:underline"
+                variant="link"
+                size="sm"
                 onClick={() => void downloadFeedbackAttachment(appId, ticketId, a.id, a.filename)}
               >
                 {a.filename}
-              </button>
+              </Button>
               <span className="ml-2 text-xs text-slate-400">
                 {(a.size_bytes / 1024).toFixed(1)} KB
               </span>
@@ -431,13 +452,15 @@ function AttachmentList({
             className="max-h-full max-w-full rounded-md shadow-lg"
             onClick={(e) => e.stopPropagation()}
           />
-          <button
+          <Button
+            variant="ghost"
+            size="icon-sm"
             className="absolute right-5 top-5 text-2xl leading-none text-white/90 hover:text-white"
             onClick={() => setLightbox(null)}
             aria-label="Close"
           >
             ×
-          </button>
+          </Button>
         </div>
       )}
     </div>
@@ -471,22 +494,28 @@ function AttachmentImage({
   }, [image.data]);
 
   return (
-    <button
-      type="button"
-      className="group relative h-24 w-24 overflow-hidden rounded-md border border-slate-200 bg-slate-50"
-      onClick={() => image.data && onOpen(image.data)}
-      title={attachment.filename}
-      disabled={!image.data}
-    >
-      {image.data && (
-        <img
-          src={image.data}
-          alt={attachment.filename}
-          loading="lazy"
-          className="h-full w-full object-cover transition group-hover:opacity-90"
-        />
-      )}
-    </button>
+    <Tooltip>
+      <TooltipTrigger
+        render={
+          <button
+            type="button"
+            className="group relative h-24 w-24 overflow-hidden rounded-md border border-slate-200 bg-slate-50"
+            onClick={() => image.data && onOpen(image.data)}
+            disabled={!image.data}
+          >
+            {image.data && (
+              <img
+                src={image.data}
+                alt={attachment.filename}
+                loading="lazy"
+                className="h-full w-full object-cover transition group-hover:opacity-90"
+              />
+            )}
+          </button>
+        }
+      />
+      <TooltipContent>{attachment.filename}</TooltipContent>
+    </Tooltip>
   );
 }
 
@@ -571,18 +600,15 @@ export function FeedbackTicketPage({
             </div>
             <div className="flex items-center gap-2">
               {STATUSES.map((s) => (
-                <button
+                <Button
                   key={s}
-                  className={
-                    s === t.status
-                      ? "rounded-sm border border-slate-900 bg-slate-900 px-2 py-1 text-xs text-white"
-                      : "rounded-sm border border-slate-300 px-2 py-1 text-xs text-slate-600 hover:bg-slate-100"
-                  }
+                  size="sm"
+                  variant={s === t.status ? "default" : "ghost"}
                   disabled={update.isPending || s === t.status}
                   onClick={() => update.mutate({ status: s })}
                 >
                   {s}
-                </button>
+                </Button>
               ))}
             </div>
           </div>
@@ -596,49 +622,56 @@ export function FeedbackTicketPage({
                 <>
                   <span>{t.assignee ?? "Unassigned"}</span>
                   {myName && t.assignee !== myName && (
-                    <button
-                      className="rounded-sm border border-slate-300 px-2 py-1 text-xs hover:bg-slate-100"
+                    <Button
+                      variant="link"
+                      size="sm"
+                      className="text-xs"
                       disabled={update.isPending}
                       onClick={() => update.mutate({ assignee: myName })}
                     >
                       Assign to me
-                    </button>
+                    </Button>
                   )}
-                  <button
-                    className="rounded-sm border border-slate-300 px-2 py-1 text-xs hover:bg-slate-100"
+                  <Button
+                    variant="link"
+                    size="sm"
+                    className="text-xs"
                     onClick={() => setAssigneeDraft(t.assignee ?? "")}
                   >
                     Edit
-                  </button>
+                  </Button>
                   {t.assignee && (
-                    <button
-                      className="rounded-sm border border-slate-300 px-2 py-1 text-xs text-red-600 hover:bg-red-50"
+                    <Button
+                      variant="link"
+                      size="sm"
+                      className="text-xs text-red-600"
                       disabled={update.isPending}
                       onClick={() => update.mutate({ assignee: null })}
                     >
                       Unassign
-                    </button>
+                    </Button>
                   )}
                 </>
               ) : (
                 <>
-                  <input
+                  <Input
                     className="rounded-sm border border-slate-300 px-2 py-1 text-sm"
                     value={assigneeDraft}
                     autoFocus
                     onChange={(e) => setAssigneeDraft(e.target.value)}
                     placeholder="Name of the person handling this"
                   />
-                  <button
-                    className="btn-primary text-xs"
+                  <Button
+                    variant="primary"
+                    className="text-xs"
                     disabled={update.isPending}
                     onClick={() => update.mutate({ assignee: assigneeDraft.trim() || null })}
                   >
                     Save
-                  </button>
-                  <button className="btn-secondary text-xs" onClick={() => setAssigneeDraft(null)}>
+                  </Button>
+                  <Button variant="outline" className="text-xs" onClick={() => setAssigneeDraft(null)}>
                     Cancel
-                  </button>
+                  </Button>
                 </>
               )}
             </div>
@@ -691,29 +724,44 @@ export function FeedbackTicketPage({
                       <dt className="text-slate-500">{label(k)}</dt>
                       <dd className={mono(k) ? "font-mono break-all" : "break-all"}>
                         {k === "version_code" ? (
-                          <button
-                            className="text-blue-600 hover:underline"
-                            title="All feedback on this version"
-                            onClick={() =>
-                              navigate(
-                                `/apps/${appId}/feedback?version_code=${encodeURIComponent(format(v))}`,
-                              )
-                            }
-                          >
-                            {format(v)}
-                          </button>
+                          <Tooltip>
+                            <TooltipTrigger
+                              render={
+                                <Button
+                                  variant="link"
+                                  size="sm"
+                                  onClick={() =>
+                                    navigate(
+                                      `/apps/${appId}/feedback?version_code=${encodeURIComponent(format(v))}`,
+                                    )
+                                  }
+                                >
+                                  {format(v)}
+                                </Button>
+                              }
+                            />
+                            <TooltipContent>All feedback on this version</TooltipContent>
+                          </Tooltip>
                         ) : k === "device_id" ? (
-                          <button
-                            className="text-blue-600 hover:underline font-mono break-all"
-                            title="This device's history"
-                            onClick={() =>
-                              navigate(
-                                `/apps/${appId}/feedback?device_id=${encodeURIComponent(format(v))}`,
-                              )
-                            }
-                          >
-                            {format(v)}
-                          </button>
+                          <Tooltip>
+                            <TooltipTrigger
+                              render={
+                                <Button
+                                  variant="link"
+                                  size="sm"
+                                  className="font-mono break-all"
+                                  onClick={() =>
+                                    navigate(
+                                      `/apps/${appId}/feedback?device_id=${encodeURIComponent(format(v))}`,
+                                    )
+                                  }
+                                >
+                                  {format(v)}
+                                </Button>
+                              }
+                            />
+                            <TooltipContent>This device's history</TooltipContent>
+                          </Tooltip>
                         ) : (
                           format(v)
                         )}
@@ -766,7 +814,7 @@ export function FeedbackTicketPage({
               ))}
             </ul>
             <div className="mt-2 flex gap-2">
-              <input
+              <Input
                 className="flex-1 rounded-sm border border-slate-300 px-2 py-1.5 text-sm"
                 placeholder="Add a comment…"
                 value={comment}
@@ -775,13 +823,14 @@ export function FeedbackTicketPage({
                   if (e.key === "Enter" && comment.trim()) addComment.mutate();
                 }}
               />
-              <button
-                className="btn-primary text-sm"
+              <Button
+                variant="primary"
+                className="text-sm"
                 disabled={addComment.isPending || !comment.trim()}
                 onClick={() => addComment.mutate()}
               >
                 Send
-              </button>
+              </Button>
             </div>
           </div>
         </>

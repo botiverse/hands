@@ -25,6 +25,32 @@ import {
   type ReleaseScope,
   type ProductType,
 } from "../lib/api";
+import {
+  Button,
+  Input,
+  Select,
+  SelectTrigger,
+  SelectValue,
+  SelectIcon,
+  SelectContent,
+  SelectItem,
+  Tooltip,
+  TooltipTrigger,
+  TooltipContent,
+  Checkbox,
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogDescription,
+  DialogBody,
+  DialogFooter,
+  DialogClose,
+  EmptyState,
+  EmptyStateTitle,
+  EmptyStateDescription,
+  Skeleton,
+} from "raft-ui";
 import { useToast } from "../components/Toast";
 import { ConfirmActionDialog } from "../components/ConfirmActionDialog";
 import { ReleaseAssetsPanel } from "../components/ReleaseAssetsPanel";
@@ -44,7 +70,7 @@ function RolloutPercentInput({
 }) {
   return (
     <span className="flex items-center gap-1">
-      <input
+      <Input
         type="number"
         min={0}
         max={100}
@@ -148,12 +174,13 @@ export function Releases({ appId }: { appId: string }) {
     <div>
       <div className="mb-4 flex items-center justify-between gap-4 flex-wrap">
         <h2 className="text-lg font-semibold">Releases</h2>
-        <button
-          className="btn-primary text-sm"
+        <Button
+          variant="primary"
+          className="text-sm"
           onClick={() => setShowNewRelease(true)}
         >
           + New release
-        </button>
+        </Button>
       </div>
 
       {/* Stats summary */}
@@ -175,41 +202,72 @@ export function Releases({ appId }: { appId: string }) {
 
       {/* Filters */}
       <div className="card p-3! mb-4 flex flex-wrap gap-3 items-center">
-        <select
-          className="input w-40"
+        <Select
+          items={{
+            all: "All channels",
+            ...Object.fromEntries(
+              (channels.data?.channels ?? []).map((c) => [c.slug, c.slug]),
+            ),
+          }}
           value={channelFilter}
-          onChange={(e) => setChannelFilter(e.target.value)}
+          onValueChange={(v) => setChannelFilter(v as string)}
         >
-          <option value="all">All channels</option>
-          {channels.data?.channels.map((c) => (
-            <option key={c.id} value={c.slug}>
-              {c.slug}
-            </option>
-          ))}
-        </select>
-        <select
-          className="input w-40"
+          <SelectTrigger className="w-40">
+            <SelectValue />
+            <SelectIcon />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">All channels</SelectItem>
+            {channels.data?.channels.map((c) => (
+              <SelectItem key={c.id} value={c.slug}>
+                {c.slug}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        <Select
+          items={{
+            all: "All statuses",
+            draft: "Draft",
+            active: "Active",
+            superseded: "Superseded",
+            cancelled: "Cancelled",
+          }}
           value={statusFilter}
-          onChange={(e) => setStatusFilter(e.target.value)}
+          onValueChange={(v) => setStatusFilter(v as string)}
         >
-          <option value="all">All statuses</option>
-          <option value="draft">Draft</option>
-          <option value="active">Active</option>
-          <option value="superseded">Superseded</option>
-          <option value="cancelled">Cancelled</option>
-        </select>
+          <SelectTrigger className="w-40">
+            <SelectValue />
+            <SelectIcon />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">All statuses</SelectItem>
+            <SelectItem value="draft">Draft</SelectItem>
+            <SelectItem value="active">Active</SelectItem>
+            <SelectItem value="superseded">Superseded</SelectItem>
+            <SelectItem value="cancelled">Cancelled</SelectItem>
+          </SelectContent>
+        </Select>
       </div>
 
-      {releases.isLoading && <p className="text-slate-500">Loading…</p>}
+      {releases.isLoading && (
+        <div className="space-y-2">
+          <Skeleton className="h-20 w-full" />
+          <Skeleton className="h-20 w-full" />
+          <Skeleton className="h-20 w-full" />
+        </div>
+      )}
       {releases.error && (
         <p className="text-red-600">Failed: {(releases.error as Error).message}</p>
       )}
 
       {filtered.length === 0 && !releases.isLoading && (
-        <p className="text-slate-500 text-sm">
-          No releases match your filter. Create a new release and upload the
-          required assets from this tab.
-        </p>
+        <EmptyState>
+          <EmptyStateTitle>No releases match your filter.</EmptyStateTitle>
+          <EmptyStateDescription>
+            Create a new release and upload the required assets from this tab.
+          </EmptyStateDescription>
+        </EmptyState>
       )}
 
       <div className="space-y-2">
@@ -389,12 +447,26 @@ function ReleaseRow({
       </div>
       {(r.offered_count || r.current_count) ? (
         <div className="mt-1 flex items-center gap-3 text-xs text-slate-500">
-          <span title="Devices already on this version at update check">
-            <strong className="text-slate-700">{r.current_count ?? 0}</strong> on this version
-          </span>
-          <span title="Update-check responses offering this version to older clients">
-            <strong className="text-slate-700">{r.offered_count ?? 0}</strong> offered
-          </span>
+          <Tooltip>
+            <TooltipTrigger
+              render={
+                <span>
+                  <strong className="text-slate-700">{r.current_count ?? 0}</strong> on this version
+                </span>
+              }
+            />
+            <TooltipContent>Devices already on this version at update check</TooltipContent>
+          </Tooltip>
+          <Tooltip>
+            <TooltipTrigger
+              render={
+                <span>
+                  <strong className="text-slate-700">{r.offered_count ?? 0}</strong> offered
+                </span>
+              }
+            />
+            <TooltipContent>Update-check responses offering this version to older clients</TooltipContent>
+          </Tooltip>
           {r.last_checked_at ? (
             <span className="text-slate-400">
               last check {new Date(r.last_checked_at).toLocaleString()}
@@ -409,70 +481,77 @@ function ReleaseRow({
       )}
       <div className="flex flex-wrap gap-2 mt-2">
         {r.status === "draft" && (
-          <button
-            className="btn-primary text-xs"
+          <Button
+            variant="primary"
+            className="text-xs"
             onClick={() => publish.mutate()}
             disabled={publish.isPending}
           >
             {publish.isPending ? "Publishing..." : "Publish"}
-          </button>
+          </Button>
         )}
         {(r.status === "draft" || r.status === "active") && (
-          <button
-            className="btn-secondary text-xs"
+          <Button
+            variant="outline"
+            className="text-xs"
             onClick={() => setShowEdit(true)}
           >
             Edit
-          </button>
+          </Button>
         )}
         {(r.status === "active" || r.status === "superseded" || r.status === "cancelled") && (
           <>
             {r.status === "active" && (
               <>
-                <button
-                  className="btn-secondary text-xs"
+                <Button
+                  variant="outline"
+                  className="text-xs"
                   onClick={() => setShowRollout(!showRollout)}
                 >
                   Bump rollout
-                </button>
-                <button
-                  className="btn-secondary text-xs"
+                </Button>
+                <Button
+                  variant="outline"
+                  className="text-xs"
                   onClick={() => toggleForce.mutate()}
                   disabled={toggleForce.isPending}
                 >
                   {r.should_force_update ? "Unforce" : "Force"}
-                </button>
+                </Button>
               </>
             )}
-            <button
-              className="btn-secondary text-xs"
+            <Button
+              variant="outline"
+              className="text-xs"
               onClick={() => rollback.mutate()}
               disabled={rollback.isPending}
             >
               {r.status === "active" ? "Roll back" : "Restore as active"}
-            </button>
+            </Button>
           </>
         )}
         {(r.status === "draft" || r.status === "active") && (
-          <button
-            className="btn-danger text-xs"
+          <Button
+            variant="danger"
+            className="text-xs"
             onClick={() => setConfirmCancel(true)}
           >
             {r.status === "draft" ? "Delete draft" : "Cancel release"}
-          </button>
+          </Button>
         )}
       </div>
       {showRollout && (
         <div className="mt-2 pt-2 border-t border-slate-100 flex items-center gap-2 text-xs">
           <label>Rollout %:</label>
           <RolloutPercentInput value={newPercent} onChange={setNewPercent} />
-          <button
-            className="btn-primary text-xs"
+          <Button
+            variant="primary"
+            className="text-xs"
             onClick={() => bump.mutate(newPercent)}
             disabled={bump.isPending}
           >
             {bump.isPending ? "…" : "Set"}
-          </button>
+          </Button>
         </div>
       )}
       {detail.isLoading && (
@@ -632,17 +711,18 @@ function EditReleaseDialog({
   const scopeValid = scopeType === "full" || scopeValue.trim().length > 0;
 
   return (
-    <div
-      className="fixed inset-0 bg-black/30 flex items-center justify-center p-4 z-10"
-      onClick={(e) => {
-        if (e.target === e.currentTarget) onClose();
-      }}
-    >
-      <div className="card max-w-lg w-full relative">
-        <h2 className="text-lg font-bold mb-1">Edit release</h2>
-        <p className="text-xs text-slate-500 mb-3 font-mono">{release.id}</p>
-        {loading && <p className="text-sm text-slate-500">Loading release details...</p>}
-        <div className="space-y-3">
+    <Dialog open onOpenChange={(open) => { if (!open) onClose(); }}>
+      <DialogContent className="max-w-lg">
+        <DialogHeader>
+          <div>
+            <DialogTitle>Edit release</DialogTitle>
+            <DialogDescription className="font-mono">{release.id}</DialogDescription>
+          </div>
+          <DialogClose />
+        </DialogHeader>
+        <DialogBody>
+          {loading && <p className="text-sm text-slate-500">Loading release details...</p>}
+          <div className="space-y-3">
           <div>
             <label className="label">Release notes</label>
             <textarea
@@ -654,25 +734,35 @@ function EditReleaseDialog({
           <div className="grid grid-cols-2 gap-3">
             <div>
               <label className="label">Scope type</label>
-              <select
-                className="input"
+              <Select
+                items={{
+                  full: "Full",
+                  platform: "Platform",
+                  user_cohort: "User cohort",
+                  ip_range: "IP range",
+                }}
                 value={scopeType}
-                onChange={(e) => {
-                  const next = e.target.value as typeof scopeType;
+                onValueChange={(v) => {
+                  const next = v as typeof scopeType;
                   setScopeType(next);
                   setScopeValue(next === "full" ? "all" : "");
                 }}
               >
-                <option value="full">Full</option>
-                <option value="platform">Platform</option>
-                <option value="user_cohort">User cohort</option>
-                <option value="ip_range">IP range</option>
-              </select>
+                <SelectTrigger>
+                  <SelectValue />
+                  <SelectIcon />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="full">Full</SelectItem>
+                  <SelectItem value="platform">Platform</SelectItem>
+                  <SelectItem value="user_cohort">User cohort</SelectItem>
+                  <SelectItem value="ip_range">IP range</SelectItem>
+                </SelectContent>
+              </Select>
             </div>
             <div>
               <label className="label">Scope value</label>
-              <input
-                className="input"
+              <Input
                 value={scopeValue}
                 disabled={scopeType === "full"}
                 onChange={(e) => setScopeValue(e.target.value)}
@@ -681,10 +771,9 @@ function EditReleaseDialog({
             </div>
           </div>
           <label className="flex items-center gap-2 text-xs">
-            <input
-              type="checkbox"
+            <Checkbox
               checked={shouldForceUpdate}
-              onChange={(e) => setShouldForceUpdate(e.target.checked)}
+              onCheckedChange={(v) => setShouldForceUpdate(Boolean(v))}
             />
             Force update
           </label>
@@ -692,21 +781,22 @@ function EditReleaseDialog({
             <label className="flex-1">Rollout cohort %</label>
             <RolloutPercentInput value={rolloutPercent} onChange={setRolloutPercent} />
           </div>
-        </div>
-        <div className="flex gap-2 justify-end pt-4 mt-3 border-t border-slate-100">
-          <button className="btn-secondary" onClick={onClose} disabled={save.isPending}>
+          </div>
+        </DialogBody>
+        <DialogFooter>
+          <Button variant="outline" onClick={onClose} disabled={save.isPending}>
             Cancel
-          </button>
-          <button
-            className="btn-primary"
+          </Button>
+          <Button
+            variant="primary"
             onClick={() => save.mutate()}
             disabled={save.isPending || loading || !scopeValid}
           >
             {save.isPending ? "Saving..." : "Save changes"}
-          </button>
-        </div>
-      </div>
-    </div>
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
 
@@ -892,18 +982,18 @@ function NewReleaseDialog({
   });
 
   return (
-    <div
-      className="fixed inset-0 bg-black/30 flex items-center justify-center p-4 z-10"
-      onClick={(e) => {
-        if (e.target === e.currentTarget) onClose();
-      }}
-    >
-      <div className="card max-w-xl w-full relative max-h-[90vh] overflow-y-auto">
-        <h2 className="text-lg font-bold mb-1">Draft a new release</h2>
-        <p className="text-xs text-slate-500 mb-3">
-          Draft the release, attach binaries, then publish — all in one flow.
-        </p>
-
+    <Dialog open onOpenChange={(open) => { if (!open) onClose(); }}>
+      <DialogContent className="max-w-xl max-h-[90vh] overflow-y-auto">
+        <DialogHeader>
+          <div>
+            <DialogTitle>Draft a new release</DialogTitle>
+            <DialogDescription>
+              Draft the release, attach binaries, then publish — all in one flow.
+            </DialogDescription>
+          </div>
+          <DialogClose />
+        </DialogHeader>
+        <DialogBody>
         {/* Stepper header */}
         <div className="flex items-center gap-1 mb-4 text-xs">
           {STEP_LABELS.map((label, i) => {
@@ -949,35 +1039,62 @@ function NewReleaseDialog({
               <div className={showProductTypePicker ? "grid grid-cols-2 gap-3" : "grid grid-cols-1 gap-3"}>
                 <div>
                   <label className="label">Channel</label>
-                  <select
-                    className="input"
+                  <Select
+                    items={{
+                      "": "— pick —",
+                      ...Object.fromEntries(
+                        (channels.data?.channels ?? []).map((c) => [
+                          c.slug,
+                          c.slug,
+                        ]),
+                      ),
+                    }}
                     value={channelSlug}
-                    onChange={(e) => setChannelSlug(e.target.value)}
-                    autoFocus
+                    onValueChange={(v) => setChannelSlug(v as string)}
                   >
-                    <option value="">— pick —</option>
-                    {channels.data?.channels.map((c) => (
-                      <option key={c.id} value={c.slug}>
-                        {c.slug}
-                      </option>
-                    ))}
-                  </select>
+                    <SelectTrigger autoFocus>
+                      <SelectValue />
+                      <SelectIcon />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="">— pick —</SelectItem>
+                      {channels.data?.channels.map((c) => (
+                        <SelectItem key={c.id} value={c.slug}>
+                          {c.slug}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
                 </div>
                 {showProductTypePicker && (
                   <div>
                     <label className="label">Package type</label>
-                    <select
-                      className="input"
+                    <Select
+                      items={{
+                        "": "— pick —",
+                        ...Object.fromEntries(
+                          targetProductTypes.map((p) => [
+                            p.name,
+                            p.display_name,
+                          ]),
+                        ),
+                      }}
                       value={productType}
-                      onChange={(e) => setProductType(e.target.value)}
+                      onValueChange={(v) => setProductType(v as string)}
                     >
-                      <option value="">— pick —</option>
-                      {targetProductTypes.map((p) => (
-                        <option key={p.name} value={p.name}>
-                          {p.display_name}
-                        </option>
-                      ))}
-                    </select>
+                      <SelectTrigger>
+                        <SelectValue />
+                        <SelectIcon />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="">— pick —</SelectItem>
+                        {targetProductTypes.map((p) => (
+                          <SelectItem key={p.name} value={p.name}>
+                            {p.display_name}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
                   </div>
                 )}
               </div>
@@ -1001,8 +1118,7 @@ function NewReleaseDialog({
               <div className="grid grid-cols-2 gap-3">
                 <div>
                   <label className="label">Version name (e.g. 1.2.3)</label>
-                  <input
-                    className="input"
+                  <Input
                     value={versionName}
                     onChange={(e) => setVersionName(e.target.value)}
                     placeholder="1.2.3"
@@ -1011,8 +1127,7 @@ function NewReleaseDialog({
                 </div>
                 <div>
                   <label className="label">Version code (integer)</label>
-                  <input
-                    className="input"
+                  <Input
                     type="number"
                     value={versionCode}
                     onChange={(e) => setVersionCode(e.target.value)}
@@ -1099,10 +1214,9 @@ function NewReleaseDialog({
                 {showAdvanced && (
                   <div className="mt-2 p-3 border border-slate-200 rounded-sm space-y-2">
                     <label className="flex items-center gap-2 text-xs">
-                      <input
-                        type="checkbox"
+                      <Checkbox
                         checked={shouldForceUpdate}
-                        onChange={(e) => setShouldForceUpdate(e.target.checked)}
+                        onCheckedChange={(v) => setShouldForceUpdate(Boolean(v))}
                       />
                       Force update — clients must upgrade on next launch
                     </label>
@@ -1127,26 +1241,27 @@ function NewReleaseDialog({
           )}
         </div>
 
+        </DialogBody>
         {/* Wizard nav buttons */}
-        <div className="flex gap-2 justify-between items-center pt-4 mt-3 border-t border-slate-100">
-          <button type="button" className="btn-secondary" onClick={onClose}>
+        <DialogFooter className="justify-between">
+          <Button type="button" variant="outline" onClick={onClose}>
             Cancel
-          </button>
+          </Button>
           <div className="flex gap-2">
             {step > 1 && (
-              <button
+              <Button
                 type="button"
-                className="btn-secondary"
+                variant="outline"
                 onClick={() => setStep((step - 1) as Step)}
                 disabled={submitRelease.isPending}
               >
                 Back
-              </button>
+              </Button>
             )}
             {step < 4 && (
-              <button
+              <Button
                 type="button"
-                className="btn-primary"
+                variant="primary"
                 disabled={
                   (step === 1 && !step1Valid) ||
                   (step === 2 && !step2Valid)
@@ -1154,32 +1269,32 @@ function NewReleaseDialog({
                 onClick={() => setStep((step + 1) as Step)}
               >
                 Next
-              </button>
+              </Button>
             )}
             {step === 4 && (
               <>
-                <button
+                <Button
                   type="button"
-                  className="btn-secondary"
+                  variant="outline"
                   disabled={submitRelease.isPending || !step1Valid || !step2Valid}
                   onClick={() => submitRelease.mutate("draft")}
                 >
                   {submitRelease.isPending ? "Saving..." : "Save draft"}
-                </button>
-                <button
+                </Button>
+                <Button
                   type="button"
-                  className="btn-primary"
+                  variant="primary"
                   disabled={submitRelease.isPending || !step1Valid || !step2Valid}
                   onClick={() => submitRelease.mutate("publish")}
                 >
                   {submitRelease.isPending ? "Publishing..." : "Publish now"}
-                </button>
+                </Button>
               </>
             )}
           </div>
-        </div>
-      </div>
-    </div>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
 

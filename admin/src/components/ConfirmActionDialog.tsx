@@ -26,6 +26,19 @@
  */
 
 import type { ReactNode } from "react";
+import {
+  AlertDialog,
+  AlertDialogContent,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogDescription,
+  AlertDialogBody,
+  AlertDialogFooter,
+  AlertDialogCancel,
+  AlertDialogAction,
+  Button,
+  Input,
+} from "raft-ui";
 
 export interface ConfirmActionDialogProps {
   open: boolean;
@@ -70,96 +83,64 @@ export function ConfirmActionDialog({
   onConfirm,
   onCancel,
 }: ConfirmActionDialogProps) {
-  if (!open) return null;
+  const confirmVariant = confirmKind === "danger" ? "danger" : "primary";
   return (
-    <ConfirmActionDialogInner
-      title={title}
-      objectLabel={objectLabel}
-      objectHint={objectHint}
-      objectSummary={objectSummary}
-      body={body}
-      confirmLabel={confirmLabel}
-      cancelLabel={cancelLabel}
-      confirmKind={confirmKind}
-      typeToConfirm={typeToConfirm}
-      pending={pending}
-      confirmDisabled={confirmDisabled}
-      onConfirm={onConfirm}
-      onCancel={onCancel}
-    />
-  );
-}
-
-function ConfirmActionDialogInner({
-  title,
-  objectLabel,
-  objectHint,
-  objectSummary,
-  body,
-  confirmLabel,
-  cancelLabel,
-  confirmKind,
-  typeToConfirm,
-  pending,
-  confirmDisabled,
-  onConfirm,
-  onCancel,
-}: Omit<ConfirmActionDialogProps, "open">) {
-  const confirmBtnClass = confirmKind === "danger" ? "btn-danger" : "btn-primary";
-  return (
-    <div
-      className="fixed inset-0 bg-black/40 flex items-center justify-center p-4 z-20"
-      onClick={(e) => {
-        if (e.target === e.currentTarget) onCancel();
+    <AlertDialog
+      open={open}
+      onOpenChange={(next) => {
+        if (!next) onCancel();
       }}
     >
-      <div className="card max-w-md w-full relative" role="alertdialog">
-        <h2 className="text-lg font-bold mb-1">{title}</h2>
-        <div className="text-sm text-slate-700 mb-3 flex items-center gap-2 flex-wrap">
-          <span className="font-medium">{objectLabel}</span>
-          {objectHint && (
-            <span className="font-mono text-xs text-slate-500">{objectHint}</span>
+      <AlertDialogContent className="max-w-md w-full">
+        <AlertDialogHeader>
+          <AlertDialogTitle>{title}</AlertDialogTitle>
+          <AlertDialogDescription className="flex items-center gap-2 flex-wrap">
+            <span className="font-medium">{objectLabel}</span>
+            {objectHint && (
+              <span className="font-mono text-xs text-slate-500">
+                {objectHint}
+              </span>
+            )}
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+
+        <AlertDialogBody>
+          {objectSummary && (
+            <div className="mb-3 p-3 border border-slate-200 rounded-sm bg-slate-50 text-xs">
+              {objectSummary}
+            </div>
           )}
-        </div>
 
-        {objectSummary && (
-          <div className="mb-3 p-3 border border-slate-200 rounded-sm bg-slate-50 text-xs">
-            {objectSummary}
+          <div className="text-sm text-slate-600 mb-4 leading-relaxed">
+            {body}
           </div>
-        )}
 
-        <div className="text-sm text-slate-600 mb-4 leading-relaxed">{body}</div>
+          {typeToConfirm !== undefined && (
+            <TypedConfirmField
+              required={typeToConfirm}
+              value={pending ? "•••" : ""}
+              onChange={() => {
+                /* gated via external state; see TypedConfirmField doc */
+              }}
+            />
+          )}
+        </AlertDialogBody>
 
-        {typeToConfirm !== undefined && (
-          <TypedConfirmField
-            required={typeToConfirm}
-            value={pending ? "•••" : ""}
-            onChange={() => {
-              /* gated via external state; see TypedConfirmField doc */
-            }}
-          />
-        )}
-
-        <div className="flex gap-2 justify-end pt-2">
-          <button
-            type="button"
-            className="btn-secondary"
-            onClick={onCancel}
-            disabled={pending}
-          >
+        <AlertDialogFooter>
+          <AlertDialogCancel variant="outline" disabled={pending}>
             {cancelLabel}
-          </button>
-          <button
-            type="button"
-            className={confirmBtnClass}
-            onClick={onConfirm}
+          </AlertDialogCancel>
+          <AlertDialogAction
+            variant={confirmVariant}
+            loading={pending}
             disabled={pending || confirmDisabled}
+            onClick={onConfirm}
           >
             {pending ? `${confirmLabel}…` : confirmLabel}
-          </button>
-        </div>
-      </div>
-    </div>
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
   );
 }
 
@@ -190,8 +171,7 @@ export function TypedConfirmField({
         </code>{" "}
         to confirm
       </label>
-      <input
-        className="input"
+      <Input
         value={value}
         onChange={(e) => onChange(e.target.value)}
         placeholder={placeholder ?? required}

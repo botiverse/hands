@@ -21,6 +21,26 @@ import {
   type BuildAsset,
 } from "../lib/api";
 import { useToast } from "../components/Toast";
+import {
+  Button,
+  Input,
+  Tooltip,
+  TooltipTrigger,
+  TooltipContent,
+  RadioGroup,
+  RadioGroupItem,
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogDescription,
+  DialogBody,
+  DialogFooter,
+  DialogClose,
+  EmptyState,
+  EmptyStateTitle,
+  Skeleton,
+} from "raft-ui";
 
 export function Builds({ appId }: { appId: string }) {
   const qc = useQueryClient();
@@ -49,29 +69,44 @@ export function Builds({ appId }: { appId: string }) {
       <div className="mb-4">
         <div className="flex items-center justify-between">
           <h2 className="text-lg font-semibold">Builds</h2>
-          <a
-            href={`/apps/${appId}/releases`}
-            className="btn-primary text-sm no-underline"
-            title={
-              !channels.data?.channels.length
+          <Tooltip>
+            <TooltipTrigger
+              render={
+                <Button
+                  variant="primary"
+                  className="text-sm"
+                  render={<a href={`/apps/${appId}/releases`} />}
+                >
+                  + New release
+                </Button>
+              }
+            />
+            <TooltipContent>
+              {!channels.data?.channels.length
                 ? "Create a channel first"
-                : "Create a release + attach APK assets"
-            }
-          >
-            + New release
-          </a>
+                : "Create a release + attach APK assets"}
+            </TooltipContent>
+          </Tooltip>
         </div>
       </div>
 
-      {builds.isLoading && <p className="text-slate-500">Loading...</p>}
+      {builds.isLoading && (
+        <div className="space-y-2">
+          <Skeleton className="h-16 w-full" />
+          <Skeleton className="h-16 w-full" />
+          <Skeleton className="h-16 w-full" />
+        </div>
+      )}
       {builds.error && (
         <p className="text-red-600">Failed: {(builds.error as Error).message}</p>
       )}
 
       {builds.data && builds.data.builds.length === 0 && !builds.isLoading && (
-        <p className="text-slate-500 text-sm">
-          No builds yet. Create a release from the Releases tab to upload assets.
-        </p>
+        <EmptyState>
+          <EmptyStateTitle>
+            No builds yet. Create a release from the Releases tab to upload assets.
+          </EmptyStateTitle>
+        </EmptyState>
       )}
 
       <div className="space-y-2">
@@ -112,19 +147,21 @@ export function Builds({ appId }: { appId: string }) {
                 </details>
               )}
               <div className="flex gap-2 mt-2">
-                <button
-                  className="btn-secondary text-xs"
+                <Button
+                  variant="outline"
+                  className="text-xs"
                   onClick={() => setExpandedBuildId(isExpanded ? null : b.id)}
                 >
                   {isExpanded ? "Hide assets" : "Show assets"}
-                </button>
+                </Button>
                 {b.status === "succeeded" && (
-                  <button
-                    className="btn-primary text-xs"
+                  <Button
+                    variant="primary"
+                    className="text-xs"
                     onClick={() => setPrepareBuild(b)}
                   >
                     Prepare release
-                  </button>
+                  </Button>
                 )}
               </div>
               {b.product_type === "ios-ipa" && (
@@ -198,30 +235,42 @@ function TestflightUploadPanel({ appId, build }: { appId: string; build: Build }
     <div className="mt-2 pt-2 border-t border-slate-100">
       <div className="flex items-center gap-2 flex-wrap text-xs">
         <span className="badge-gray"> TestFlight</span>
-        <button
-          className="btn-secondary py-1! px-2! text-xs!"
-          disabled={upload.isPending || build.status !== "succeeded"}
-          onClick={() => upload.mutate()}
-          title={
-            build.status !== "succeeded"
+        <Tooltip>
+          <TooltipTrigger
+            render={
+              <Button
+                variant="outline"
+                className="py-1! px-2! text-xs!"
+                disabled={upload.isPending || build.status !== "succeeded"}
+                onClick={() => upload.mutate()}
+              >
+                {upload.isPending ? "Uploading…" : "Upload to TestFlight"}
+              </Button>
+            }
+          />
+          <TooltipContent>
+            {build.status !== "succeeded"
               ? "Build must be succeeded"
-              : "Upload this IPA to App Store Connect / TestFlight"
+              : "Upload this IPA to App Store Connect / TestFlight"}
+          </TooltipContent>
+        </Tooltip>
+        <Button
+          variant="outline"
+          className="py-1! px-2! text-xs!"
+          render={
+            <a
+              href={
+                ascAppId
+                  ? `https://appstoreconnect.apple.com/apps/${ascAppId}/testflight/ios`
+                  : "https://appstoreconnect.apple.com/apps"
+              }
+              target="_blank"
+              rel="noopener noreferrer"
+            />
           }
-        >
-          {upload.isPending ? "Uploading…" : "Upload to TestFlight"}
-        </button>
-        <a
-          className="btn-secondary py-1! px-2! text-xs! no-underline"
-          href={
-            ascAppId
-              ? `https://appstoreconnect.apple.com/apps/${ascAppId}/testflight/ios`
-              : "https://appstoreconnect.apple.com/apps"
-          }
-          target="_blank"
-          rel="noopener noreferrer"
         >
           Open in App Store Connect ↗
-        </a>
+        </Button>
         {stateName && (
           <span className={`font-medium ${stateColor}`}>
             {stateName === "PROCESSING" || stateName === "AWAITING_UPLOAD"
@@ -305,12 +354,13 @@ function BuildAssetList({ appId, buildId }: { appId: string; buildId: string }) 
                   {a.file_hash.slice(0, 16)}…
                 </td>
                 <td className="pr-2 text-right">
-                  <a
-                    className="btn-secondary text-xs no-underline inline-flex"
-                    href={buildAssetDownloadUrl(appId, buildId, a.id)}
+                  <Button
+                    variant="outline"
+                    className="text-xs inline-flex"
+                    render={<a href={buildAssetDownloadUrl(appId, buildId, a.id)} />}
                   >
                     Download
-                  </a>
+                  </Button>
                 </td>
               </tr>
             ))}
@@ -383,42 +433,42 @@ function PrepareReleaseDialog({
   });
 
   return (
-    <div
-      className="fixed inset-0 bg-black/30 flex items-center justify-center p-4 z-10"
-      onClick={(e) => {
-        if (e.target === e.currentTarget) onClose();
-      }}
-    >
-      <div className="card max-w-lg w-full relative">
-        <h2 className="text-lg font-bold mb-4 pr-8">Prepare release</h2>
-        <p className="text-sm text-slate-500 mb-4">
-          Release build <code className="text-xs">{build.id.slice(0, 8)}…</code> (v
-          {build.version_name})
-        </p>
-
+    <Dialog open onOpenChange={(open) => { if (!open) onClose(); }}>
+      <DialogContent className="max-w-lg">
+        <DialogHeader>
+          <div>
+            <DialogTitle>Prepare release</DialogTitle>
+            <DialogDescription>
+              Release build <code className="text-xs">{build.id.slice(0, 8)}…</code> (v
+              {build.version_name})
+            </DialogDescription>
+          </div>
+          <DialogClose />
+        </DialogHeader>
+        <DialogBody>
         <div className="space-y-3">
           <div>
             <label className="label">Release scope</label>
-            <div className="space-y-1">
+            <RadioGroup
+              className="space-y-1"
+              value={scopeType}
+              onValueChange={(v) => setScopeType(v as "full" | "platform" | "ip_range")}
+            >
               {(["full", "platform", "ip_range"] as const).map((t) => (
                 <label key={t} className="flex items-center gap-2 text-sm">
-                  <input
-                    type="radio"
-                    checked={scopeType === t}
-                    onChange={() => setScopeType(t)}
-                  />
+                  <RadioGroupItem value={t} />
                   {t === "full" && "Full release — all users"}
                   {t === "platform" && "Platform release — only specified platforms"}
                   {t === "ip_range" && "IP range — only specified CIDR list"}
                 </label>
               ))}
-            </div>
+            </RadioGroup>
           </div>
           {scopeType === "platform" && (
             <div>
               <label className="label">Platforms (comma-separated)</label>
-              <input
-                className="input text-xs font-mono"
+              <Input
+                className="text-xs font-mono"
                 value={platforms}
                 onChange={(e) => setPlatforms(e.target.value)}
                 placeholder="darwin-arm64,darwin-x64,linux-x64"
@@ -428,8 +478,8 @@ function PrepareReleaseDialog({
           {scopeType === "ip_range" && (
             <div>
               <label className="label">IP ranges (comma-separated CIDR)</label>
-              <input
-                className="input text-xs font-mono"
+              <Input
+                className="text-xs font-mono"
                 value={ipRanges}
                 onChange={(e) => setIpRanges(e.target.value)}
                 placeholder="10.0.0.0/8,192.168.0.0/16"
@@ -437,14 +487,14 @@ function PrepareReleaseDialog({
             </div>
           )}
         </div>
-
-        <div className="flex gap-2 justify-end pt-4 mt-4 border-t border-slate-100">
-          <button type="button" className="btn-secondary" onClick={onClose}>
+        </DialogBody>
+        <DialogFooter>
+          <Button type="button" variant="outline" onClick={onClose}>
             Cancel
-          </button>
-          <button
+          </Button>
+          <Button
             type="button"
-            className="btn-primary"
+            variant="primary"
             onClick={() => create.mutate()}
             disabled={
               create.isPending ||
@@ -453,9 +503,9 @@ function PrepareReleaseDialog({
             }
           >
             {create.isPending ? "Releasing…" : "Release"}
-          </button>
-        </div>
-      </div>
-    </div>
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }

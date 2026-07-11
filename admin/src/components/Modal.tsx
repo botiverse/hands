@@ -11,7 +11,16 @@
  *   </Modal>
  */
 
-import { useEffect, useRef } from "react";
+import type { ReactNode } from "react";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogBody,
+  DialogClose,
+  Button,
+} from "raft-ui";
 
 export function Modal({
   title,
@@ -21,44 +30,31 @@ export function Modal({
 }: {
   title: string;
   onClose: () => void;
-  children: React.ReactNode;
+  children: ReactNode;
   size?: "sm" | "md" | "lg";
 }) {
-  const dialogRef = useRef<HTMLDivElement>(null);
-
-  // Escape to close
-  useEffect(() => {
-    function onKey(e: KeyboardEvent) {
-      if (e.key === "Escape") onClose();
-    }
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [onClose]);
-
   const maxW =
     size === "sm" ? "max-w-sm" : size === "lg" ? "max-w-2xl" : "max-w-md";
 
   return (
-    <div
-      className="fixed inset-0 bg-black/30 flex items-center justify-center p-4 z-10"
-      onClick={(e) => {
-        if (e.target === e.currentTarget) onClose();
+    <Dialog
+      open
+      onOpenChange={(next) => {
+        if (!next) onClose();
       }}
     >
-      <div
-        ref={dialogRef}
-        role="dialog"
-        aria-modal="true"
-        aria-label={title}
-        className={`card ${maxW} w-full relative`}
-      >
-        <div className="flex items-center justify-between mb-4">
-          <h2 className="text-lg font-bold">{title}</h2>
-          <button
-            type="button"
-            onClick={onClose}
-            aria-label="Close"
-            className="text-slate-400 hover:text-slate-700 w-8 h-8 flex items-center justify-center rounded-md hover:bg-slate-100 -mr-2 -mt-1"
+      <DialogContent className={`${maxW} w-full`} aria-label={title}>
+        <DialogHeader className="flex items-center justify-between">
+          <DialogTitle>{title}</DialogTitle>
+          <DialogClose
+            render={
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                aria-label="Close"
+                className="text-slate-400 hover:text-slate-700 -mr-2 -mt-1"
+              />
+            }
           >
             <svg
               xmlns="http://www.w3.org/2000/svg"
@@ -72,10 +68,10 @@ export function Modal({
                 clipRule="evenodd"
               />
             </svg>
-          </button>
-        </div>
-        {children}
-      </div>
-    </div>
+          </DialogClose>
+        </DialogHeader>
+        <DialogBody>{children}</DialogBody>
+      </DialogContent>
+    </Dialog>
   );
 }

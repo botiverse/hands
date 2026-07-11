@@ -1,3 +1,26 @@
+import {
+  Button,
+  Input,
+  Switch,
+  Select,
+  SelectTrigger,
+  SelectValue,
+  SelectIcon,
+  SelectContent,
+  SelectItem,
+  Tooltip,
+  TooltipTrigger,
+  TooltipContent,
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogBody,
+  DialogFooter,
+  EmptyState,
+  EmptyStateTitle,
+  Skeleton,
+} from "raft-ui";
 import { DeviceAnalytics } from "../components/DeviceAnalytics";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
@@ -71,19 +94,21 @@ export function AppDetail({ appId }: { appId: string }) {
             </p>
           </div>
           {channels.data?.channels.length ? (
-            <a
-              href={`/apps/${appId}/releases`}
-              className="btn-primary text-sm no-underline"
+            <Button
+              variant="primary"
+              className="text-sm"
+              render={<a href={`/apps/${appId}/releases`} />}
             >
               Publish release →
-            </a>
+            </Button>
           ) : (
-            <a
-              href={`/apps/${appId}/channels`}
-              className="btn-primary text-sm no-underline"
+            <Button
+              variant="primary"
+              className="text-sm"
+              render={<a href={`/apps/${appId}/channels`} />}
             >
               Create channel first
-            </a>
+            </Button>
           )}
         </div>
       </section>
@@ -135,17 +160,24 @@ export function AppChannels({ appId }: { appId: string }) {
       <section>
         <div className="flex items-center justify-between mb-3">
           <h2 className="text-lg font-semibold">Channels</h2>
-          <button
-            className="btn-secondary text-sm"
+          <Button
+            variant="outline"
             onClick={() => setShowCreateChannel(true)}
           >
             + New channel
-          </button>
+          </Button>
         </div>
-        {channels.isLoading && <p className="text-slate-500">Loading…</p>}
+        {channels.isLoading && (
+          <div className="space-y-2">
+            <Skeleton className="h-12 w-full" />
+            <Skeleton className="h-12 w-full" />
+          </div>
+        )}
         <div className="space-y-2">
           {channels.data?.channels.length === 0 && (
-            <p className="text-slate-500 text-sm">No channels yet.</p>
+            <EmptyState>
+              <EmptyStateTitle>No channels yet.</EmptyStateTitle>
+            </EmptyState>
           )}
           {channels.data?.channels.map((c) => (
             <ChannelRow
@@ -198,7 +230,7 @@ function AppNamePanel({ appId, app }: { appId: string; app: App }) {
   });
   const dirty = name.trim().length > 0 && name.trim() !== app.name;
   return (
-    <div className="flex items-center gap-3">
+    <div className="flex flex-col gap-2 md:flex-row md:items-center md:gap-3">
       <div className="flex-1 min-w-0">
         <div className="text-sm font-medium">App name</div>
         <div className="text-xs text-slate-500">
@@ -207,21 +239,22 @@ function AppNamePanel({ appId, app }: { appId: string; app: App }) {
           and CI reference it.
         </div>
       </div>
-      <input
-        className="input h-8! w-56 text-sm!"
+      <Input
+        className="h-8! w-full md:w-56 text-sm!"
         value={name}
         onChange={(e) => setName(e.target.value)}
         onKeyDown={(e) => {
           if (e.key === "Enter" && dirty && !rename.isPending) rename.mutate();
         }}
       />
-      <button
-        className="btn-secondary py-1! px-2! text-xs!"
+      <Button
+        variant="primary"
+        loading={rename.isPending}
         disabled={!dirty || rename.isPending}
         onClick={() => rename.mutate()}
       >
-        {rename.isPending ? "…" : "Save"}
-      </button>
+        Save
+      </Button>
     </div>
   );
 }
@@ -241,7 +274,7 @@ function AppDescriptionPanel({ appId, app }: { appId: string; app: App }) {
   });
   const dirty = description.trim() !== (app.description ?? "");
   return (
-    <div className="flex items-start gap-3">
+    <div className="flex flex-col gap-2 md:flex-row md:items-start md:gap-3">
       <div className="flex-1 min-w-0">
         <div className="text-sm font-medium">Description</div>
         <div className="text-xs text-slate-500">
@@ -250,18 +283,19 @@ function AppDescriptionPanel({ appId, app }: { appId: string; app: App }) {
         </div>
       </div>
       <textarea
-        className="input w-72 text-sm! h-16! resize-y"
+        className="input w-full md:w-72 text-sm! h-16! resize-y"
         value={description}
         placeholder="What is this app?"
         onChange={(e) => setDescription(e.target.value)}
       />
-      <button
-        className="btn-secondary py-1! px-2! text-xs!"
+      <Button
+        variant="primary"
+        loading={save.isPending}
         disabled={!dirty || save.isPending}
         onClick={() => save.mutate()}
       >
-        {save.isPending ? "…" : "Save"}
-      </button>
+        Save
+      </Button>
     </div>
   );
 }
@@ -285,7 +319,7 @@ function ClientKeyPanel({ appId }: { appId: string }) {
   });
   const key = keyQuery.data?.client_key ?? null;
   return (
-    <div className="flex items-center gap-3">
+    <div className="flex flex-col gap-2 md:flex-row md:items-center md:gap-3">
       <div className="flex-1 min-w-0">
         <div className="text-sm font-medium">Client key</div>
         <div className="text-xs text-slate-500">
@@ -301,36 +335,38 @@ function ClientKeyPanel({ appId }: { appId: string }) {
           </div>
         )}
       </div>
-      {key && (
-        <>
-          <button
-            className="btn-secondary py-1! px-2! text-xs!"
-            onClick={() => setRevealed((v) => !v)}
-          >
-            {revealed ? "Hide" : "Reveal"}
-          </button>
-          <button
-            className="btn-secondary py-1! px-2! text-xs!"
-            onClick={() => {
-              navigator.clipboard?.writeText(key);
-              toast.show({ kind: "success", title: "Client key copied" });
-            }}
-          >
-            Copy
-          </button>
-        </>
-      )}
-      <button
-        className="btn-secondary py-1! px-2! text-xs!"
-        disabled={rotate.isPending}
-        onClick={() => {
-          if (window.confirm("Rotate the client key? Older client builds stop reporting until they carry the new key.")) {
-            rotate.mutate();
-          }
-        }}
-      >
-        {rotate.isPending ? "…" : key ? "Rotate" : "Generate"}
-      </button>
+      <div className="flex flex-wrap gap-2 md:contents">
+        {key && (
+          <>
+            <Button
+              variant="outline"
+              onClick={() => setRevealed((v) => !v)}
+            >
+              {revealed ? "Hide" : "Reveal"}
+            </Button>
+            <Button
+              variant="outline"
+              onClick={() => {
+                navigator.clipboard?.writeText(key);
+                toast.show({ kind: "success", title: "Client key copied" });
+              }}
+            >
+              Copy
+            </Button>
+          </>
+        )}
+        <Button
+          variant="outline"
+          disabled={rotate.isPending}
+          onClick={() => {
+            if (window.confirm("Rotate the client key? Older client builds stop reporting until they carry the new key.")) {
+              rotate.mutate();
+            }
+          }}
+        >
+          {rotate.isPending ? "…" : key ? "Rotate" : "Generate"}
+        </Button>
+      </div>
     </div>
   );
 }
@@ -422,7 +458,7 @@ function TestFlightPanel({ appId }: { appId: string }) {
 
   return (
     <div className="border-t border-slate-100 pt-3">
-      <div className="flex items-center gap-3">
+      <div className="flex flex-col gap-2 md:flex-row md:items-center md:gap-3">
         <div className="flex-1 min-w-0">
           <div className="text-sm font-medium">TestFlight</div>
           <div className="text-xs text-slate-500">
@@ -443,23 +479,32 @@ function TestFlightPanel({ appId }: { appId: string }) {
           )}
         </div>
         {meta && !editing && (
-          <>
-            <button
-              className="btn-secondary py-1! px-2! text-xs!"
-              disabled={test.isPending}
-              onClick={() => test.mutate()}
-              title="Verify the stored key against App Store Connect for this app's bundle id"
-            >
-              {test.isPending ? "Testing…" : "Test connection"}
-            </button>
-            <button
-              className="btn-secondary py-1! px-2! text-xs!"
+          <div className="flex flex-wrap gap-2 md:contents">
+            <Tooltip>
+              <TooltipTrigger
+                render={
+                  <Button
+                    variant="outline"
+                    disabled={test.isPending}
+                    onClick={() => test.mutate()}
+                  >
+                    {test.isPending ? "Testing…" : "Test connection"}
+                  </Button>
+                }
+              />
+              <TooltipContent>
+                Verify the stored key against App Store Connect for this app's
+                bundle id
+              </TooltipContent>
+            </Tooltip>
+            <Button
+              variant="outline"
               onClick={() => setEditing(true)}
             >
               Replace key
-            </button>
-            <button
-              className="btn-secondary border-red-300! text-red-700! py-1! px-2! text-xs!"
+            </Button>
+            <Button
+              variant="danger"
               disabled={remove.isPending}
               onClick={() => {
                 if (
@@ -472,8 +517,8 @@ function TestFlightPanel({ appId }: { appId: string }) {
               }}
             >
               {remove.isPending ? "…" : "Remove"}
-            </button>
-          </>
+            </Button>
+          </div>
         )}
       </div>
 
@@ -517,11 +562,11 @@ function TestFlightPanel({ appId }: { appId: string }) {
               <li>Paste all three below and save.</li>
             </ol>
           )}
-          <div className="flex gap-3">
+          <div className="flex flex-col gap-3 md:flex-row">
             <label className="flex-1 text-xs text-slate-600">
               Key ID
-              <input
-                className="input h-8! w-full text-sm! font-mono mt-1"
+              <Input
+                className="h-8! w-full text-sm! font-mono mt-1"
                 placeholder="ABC123DEFG"
                 value={keyId}
                 onChange={(e) => setKeyId(e.target.value)}
@@ -529,8 +574,8 @@ function TestFlightPanel({ appId }: { appId: string }) {
             </label>
             <label className="flex-1 text-xs text-slate-600">
               Issuer ID
-              <input
-                className="input h-8! w-full text-sm! font-mono mt-1"
+              <Input
+                className="h-8! w-full text-sm! font-mono mt-1"
                 placeholder="12345678-90ab-cdef-1234-567890abcdef"
                 value={issuerId}
                 onChange={(e) => setIssuerId(e.target.value)}
@@ -558,8 +603,8 @@ function TestFlightPanel({ appId }: { appId: string }) {
             </label>
             <div className="flex-1" />
             {editing && (
-              <button
-                className="btn-secondary py-1! px-2! text-xs!"
+              <Button
+                variant="outline"
                 onClick={() => {
                   setEditing(false);
                   setKeyId("");
@@ -568,15 +613,15 @@ function TestFlightPanel({ appId }: { appId: string }) {
                 }}
               >
                 Cancel
-              </button>
+              </Button>
             )}
-            <button
-              className="btn-secondary py-1! px-2! text-xs!"
+            <Button
+              variant="outline"
               disabled={!formValid || save.isPending}
               onClick={() => save.mutate()}
             >
               {save.isPending ? "…" : meta ? "Replace credentials" : "Save & enable"}
-            </button>
+            </Button>
           </div>
           {p8.trim().length > 0 && !p8.includes("BEGIN PRIVATE KEY") && (
             <p className="text-xs text-amber-700">
@@ -638,13 +683,11 @@ function PublicHistoryToggle({ appId, app }: { appId: string; app: App }) {
           )}
         </div>
       </div>
-      <button
-        className="btn-secondary py-1! px-2! text-xs!"
+      <Switch
+        checked={enabled}
         disabled={toggle.isPending}
-        onClick={() => toggle.mutate()}
-      >
-        {toggle.isPending ? "…" : enabled ? "Disable" : "Enable"}
-      </button>
+        onCheckedChange={() => toggle.mutate()}
+      />
     </div>
   );
 }
@@ -679,13 +722,11 @@ function DeltaUpdatesToggle({ appId, app }: { appId: string; app: App }) {
             : "Auto-generate differential update patches when a release is published, shrinking update downloads for users on recent versions."}
         </div>
       </div>
-      <button
-        className="btn-secondary py-1! px-2! text-xs!"
+      <Switch
+        checked={enabled}
         disabled={toggle.isPending}
-        onClick={() => toggle.mutate()}
-      >
-        {toggle.isPending ? "…" : enabled ? "Disable" : "Enable"}
-      </button>
+        onCheckedChange={() => toggle.mutate()}
+      />
     </div>
   );
 }
@@ -707,7 +748,7 @@ function AppIconUploader({ appId, slug }: { appId: string; slug: string }) {
       }),
   });
   return (
-    <div className="flex items-center gap-3">
+    <div className="flex flex-wrap items-center gap-3">
       <img
         src={`${publicAppIconUrl(slug)}${bust ? `?v=${bust}` : ""}`}
         alt=""
@@ -721,7 +762,7 @@ function AppIconUploader({ appId, slug }: { appId: string; slug: string }) {
           (e.target as HTMLImageElement).style.visibility = "visible";
         }}
       />
-      <div>
+      <div className="min-w-0">
         <div className="text-sm font-medium">App icon</div>
         <div className="text-xs text-slate-500">
           Shown on share/download pages. PNG/WebP/JPEG, max 1MB.
@@ -854,21 +895,21 @@ export function AppSettings({ appId }: { appId: string }) {
             </div>
             {isOrgAdmin && (
               <div className="flex flex-col items-end gap-2">
-                <button
-                  className="btn-secondary text-xs"
+                <Button
+                  variant="outline"
                   onClick={() => setConfirmArchive(true)}
                   disabled={archive.isPending}
                 >
                   {app.archived ? "Restore app" : "Archive app"}
-                </button>
+                </Button>
                 {Boolean(app.archived) && (
-                  <button
-                    className="btn-secondary border-red-300! text-red-700! text-xs"
+                  <Button
+                    variant="danger"
                     disabled={purge.isPending}
                     onClick={() => setConfirmPurge(true)}
                   >
                     Purge permanently
-                  </button>
+                  </Button>
                 )}
               </div>
             )}
@@ -1012,28 +1053,42 @@ function DefaultChannelPicker({
         Pre-fills the channel dropdown in the New Release dialog. Falls
         back to the first channel (by created_at) if unset.
       </p>
-      <div className="flex items-center gap-2">
-        <select
-          className="input text-sm flex-1"
+      <div className="flex flex-col gap-2 md:flex-row md:items-center">
+        <Select
+          items={{
+            "": "— none (use first channel) —",
+            ...Object.fromEntries(
+              (channels.data?.channels ?? []).map((c: Channel) => [
+                c.id,
+                `${c.slug} (${c.name})`,
+              ]),
+            ),
+          }}
           value={selected ?? ""}
-          onChange={(e) => setSelected(e.target.value || null)}
+          onValueChange={(v) => setSelected((v as string) || null)}
           disabled={!isOrgAdmin || save.isPending}
         >
-          <option value="">— none (use first channel) —</option>
-          {channels.data?.channels.map((c: Channel) => (
-            <option key={c.id} value={c.id}>
-              {c.slug} ({c.name})
-            </option>
-          ))}
-        </select>
+          <SelectTrigger className="text-sm flex-1">
+            <SelectValue />
+            <SelectIcon />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="">— none (use first channel) —</SelectItem>
+            {channels.data?.channels.map((c: Channel) => (
+              <SelectItem key={c.id} value={c.id}>
+                {c.slug} ({c.name})
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
         {isOrgAdmin && (
-          <button
+          <Button
             className="btn-primary text-xs"
             onClick={() => save.mutate()}
             disabled={!dirty || save.isPending}
           >
             {save.isPending ? "Saving…" : "Save"}
-          </button>
+          </Button>
         )}
       </div>
       {!isOrgAdmin && (
@@ -1079,76 +1134,62 @@ function CreateChannelDialog({
   });
 
   return (
-    <div
-      className="fixed inset-0 bg-black/30 flex items-center justify-center p-4 z-10"
-      onClick={(e) => {
-        if (e.target === e.currentTarget) onClose();
-      }}
-      onKeyDown={(e) => {
-        if (e.key === "Escape") onClose();
-      }}
-    >
-      <div className="card max-w-md w-full relative">
-        <button
-          type="button"
-          onClick={onClose}
-          aria-label="Close"
-          className="absolute top-3 right-3 text-slate-400 hover:text-slate-700 w-8 h-8 flex items-center justify-center rounded-md hover:bg-slate-100"
-        >
-          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="w-5 h-5">
-            <path fillRule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clipRule="evenodd" />
-          </svg>
-        </button>
-        <h2 className="text-lg font-bold mb-4 pr-8">New channel</h2>
-        <form
-          onSubmit={(e) => {
-            e.preventDefault();
-            create.mutate();
-          }}
-          className="space-y-3"
-        >
-          <div>
-            <label className="label">Slug</label>
-            <input
-              className="input"
-              value={slug}
-              onChange={(e) => setSlug(e.target.value)}
-              required
-            />
-          </div>
-          <div>
-            <label className="label">Name</label>
-            <input
-              className="input"
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              required
-            />
-          </div>
-          <div>
-            <label className="label">Bundle ID override (optional)</label>
-            <input
-              className="input font-mono text-xs"
-              value={bundleId}
-              onChange={(e) => setBundleId(e.target.value)}
-              placeholder="com.example.myapp.beta"
-            />
-          </div>
-          <div className="flex gap-2 justify-end pt-2">
-            <button type="button" className="btn-secondary" onClick={onClose}>
-              Cancel
-            </button>
-            <button
-              type="submit"
-              className="btn-primary"
-              disabled={create.isPending}
-            >
-              {create.isPending ? "Creating..." : "Create"}
-            </button>
-          </div>
-        </form>
-      </div>
-    </div>
+    <Dialog open onOpenChange={(open) => { if (!open) onClose(); }}>
+      <DialogContent className="max-w-md">
+        <DialogHeader>
+          <DialogTitle>New channel</DialogTitle>
+        </DialogHeader>
+        <DialogBody>
+          <form
+            id="create-channel-form"
+            onSubmit={(e) => {
+              e.preventDefault();
+              create.mutate();
+            }}
+            className="space-y-3"
+          >
+            <div>
+              <label className="label">Slug</label>
+              <Input
+                value={slug}
+                onChange={(e) => setSlug(e.target.value)}
+                required
+              />
+            </div>
+            <div>
+              <label className="label">Name</label>
+              <Input
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                required
+              />
+            </div>
+            <div>
+              <label className="label">Bundle ID override (optional)</label>
+              <Input
+                className="font-mono text-xs"
+                value={bundleId}
+                onChange={(e) => setBundleId(e.target.value)}
+                placeholder="com.example.myapp.beta"
+              />
+            </div>
+          </form>
+        </DialogBody>
+        <DialogFooter>
+          <Button type="button" variant="outline" onClick={onClose}>
+            Cancel
+          </Button>
+          <Button
+            type="submit"
+            form="create-channel-form"
+            className="btn-primary"
+            disabled={create.isPending}
+          >
+            {create.isPending ? "Creating..." : "Create"}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
 
@@ -1168,41 +1209,53 @@ function ChannelRow({
           <span className="font-medium">{c.name}</span>
           <span className="text-xs font-mono text-slate-500">{c.slug}</span>
           {c.bundle_id && (
-            <span
-              className="badge-blue text-xs font-mono"
-              title="Bundle ID override"
-            >
-              {c.bundle_id}
-            </span>
+            <Tooltip>
+              <TooltipTrigger
+                render={
+                  <span className="badge-blue text-xs font-mono">
+                    {c.bundle_id}
+                  </span>
+                }
+              />
+              <TooltipContent>Bundle ID override</TooltipContent>
+            </Tooltip>
           )}
           {c.password && (
-            <span
-              className="badge-orange text-xs"
-              title="Downloads require password"
-            >
-              🔒 gated
-            </span>
+            <Tooltip>
+              <TooltipTrigger
+                render={
+                  <span className="badge-orange text-xs">🔒 gated</span>
+                }
+              />
+              <TooltipContent>Downloads require password</TooltipContent>
+            </Tooltip>
           )}
           {c.git_url && (
-            <a
-              className="text-xs text-blue-600 hover:underline font-mono truncate max-w-xs"
-              href={c.git_url}
-              target="_blank"
-              rel="noreferrer"
-              title={c.git_url}
-            >
-              {c.git_url}
-            </a>
+            <Tooltip>
+              <TooltipTrigger
+                render={
+                  <a
+                    className="text-xs text-blue-600 hover:underline font-mono truncate max-w-xs"
+                    href={c.git_url}
+                    target="_blank"
+                    rel="noreferrer"
+                  >
+                    {c.git_url}
+                  </a>
+                }
+              />
+              <TooltipContent>{c.git_url}</TooltipContent>
+            </Tooltip>
           )}
         </div>
       </div>
-      <button
-        className="btn-secondary text-sm"
+      <Button
+        variant="outline"
         onClick={onEdit}
         disabled={busy}
       >
         Edit
-      </button>
+      </Button>
     </div>
   );
 }
@@ -1271,107 +1324,100 @@ function EditChannelDialog({
   });
 
   return (
-    <div
-      className="fixed inset-0 bg-black/30 flex items-center justify-center p-4 z-10"
-      onClick={(e) => {
-        if (e.target === e.currentTarget) onClose();
-      }}
-      onKeyDown={(e) => {
-        if (e.key === "Escape") onClose();
-      }}
-    >
-      <div className="card max-w-md w-full relative">
-        <button
-          type="button"
-          onClick={onClose}
-          aria-label="Close"
-          className="absolute top-3 right-3 text-slate-400 hover:text-slate-700 w-8 h-8 flex items-center justify-center rounded-md hover:bg-slate-100"
-        >
-          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="w-5 h-5">
-            <path fillRule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clipRule="evenodd" />
-          </svg>
-        </button>
-        <h2 className="text-lg font-bold mb-4 pr-8">Edit channel '{channel.slug}'</h2>
-        <form
-          onSubmit={(e) => {
-            e.preventDefault();
-            save.mutate();
-          }}
-          className="space-y-3"
-        >
-          <div>
-            <label className="label">Slug (immutable)</label>
-            <input
-              className="input font-mono text-xs bg-slate-50"
-              value={channel.slug}
-              readOnly
-            />
-          </div>
-          <div>
-            <label className="label">Name</label>
-            <input
-              className="input"
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              required
-            />
-          </div>
-          <div>
-            <label className="label">Bundle ID override</label>
-            <input
-              className="input font-mono text-xs"
-              value={bundleId}
-              onChange={(e) => setBundleId(e.target.value)}
-              placeholder="com.example.myapp.beta"
-            />
-          </div>
-          <div>
-            <label className="label">Download password</label>
-            <input
-              type="password"
-              className="input"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              placeholder="leave blank for no gate"
-            />
-          </div>
-          <div>
-            <label className="label">Git URL</label>
-            <input
-              className="input font-mono text-xs"
-              value={gitUrl}
-              onChange={(e) => setGitUrl(e.target.value)}
-              placeholder="https://github.com/foo/bar/tree/beta"
-            />
-          </div>
-          <div className="flex gap-2 justify-between pt-2 border-t border-slate-100">
-            <button
+    <>
+      <Dialog
+        open
+        onOpenChange={(open) => { if (!open) onClose(); }}
+      >
+        {/* z-10 keeps this dialog below the nested delete-confirm (z-20),
+            matching the original hand-rolled stacking. */}
+        <DialogContent className="max-w-md z-10" overlay={{ className: "z-10" }}>
+          <DialogHeader>
+            <DialogTitle>Edit channel '{channel.slug}'</DialogTitle>
+          </DialogHeader>
+          <DialogBody>
+            <form
+              id="edit-channel-form"
+              onSubmit={(e) => {
+                e.preventDefault();
+                save.mutate();
+              }}
+              className="space-y-3"
+            >
+              <div>
+                <label className="label">Slug (immutable)</label>
+                <Input
+                  className="font-mono text-xs bg-slate-50"
+                  value={channel.slug}
+                  readOnly
+                />
+              </div>
+              <div>
+                <label className="label">Name</label>
+                <Input
+                  value={name}
+                  onChange={(e) => setName(e.target.value)}
+                  required
+                />
+              </div>
+              <div>
+                <label className="label">Bundle ID override</label>
+                <Input
+                  className="font-mono text-xs"
+                  value={bundleId}
+                  onChange={(e) => setBundleId(e.target.value)}
+                  placeholder="com.example.myapp.beta"
+                />
+              </div>
+              <div>
+                <label className="label">Download password</label>
+                <Input
+                  type="password"
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  placeholder="leave blank for no gate"
+                />
+              </div>
+              <div>
+                <label className="label">Git URL</label>
+                <Input
+                  className="font-mono text-xs"
+                  value={gitUrl}
+                  onChange={(e) => setGitUrl(e.target.value)}
+                  placeholder="https://github.com/foo/bar/tree/beta"
+                />
+              </div>
+            </form>
+          </DialogBody>
+          <DialogFooter className="justify-between">
+            <Button
               type="button"
               className="text-red-600 text-sm hover:underline"
               onClick={() => setConfirmDelete(true)}
               disabled={save.isPending || remove.isPending}
             >
               Delete channel
-            </button>
+            </Button>
             <div className="flex gap-2">
-              <button
+              <Button
                 type="button"
                 className="btn-secondary"
                 onClick={onClose}
               >
                 Cancel
-              </button>
-              <button
+              </Button>
+              <Button
                 type="submit"
+                form="edit-channel-form"
                 className="btn-primary"
                 disabled={save.isPending}
               >
                 {save.isPending ? "Saving…" : "Save"}
-              </button>
+              </Button>
             </div>
-          </div>
-        </form>
-      </div>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {/* Channel delete confirmation (typed-confirm + default-channel warning) */}
       <ConfirmActionDialog
@@ -1426,6 +1472,6 @@ function EditChannelDialog({
           setTypedConfirm("");
         }}
       />
-    </div>
+    </>
   );
 }

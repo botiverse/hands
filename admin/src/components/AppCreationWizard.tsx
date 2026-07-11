@@ -1,5 +1,14 @@
 import { useRef, useState } from "react";
 import { useMutation } from "@tanstack/react-query";
+import {
+  Button,
+  Input,
+  Dialog,
+  DialogContent,
+  DialogBody,
+  DialogFooter,
+  DialogClose,
+} from "raft-ui";
 import { createApp } from "../lib/api";
 import { useToast } from "./Toast";
 
@@ -88,7 +97,7 @@ export function AppCreationWizard({
   const [slug, setSlug] = useState("");
   const [slugAuto, setSlugAuto] = useState(true);
   const [description, setDescription] = useState("");
-  const createToastId = useRef<number | null>(null);
+  const createToastId = useRef<string | null>(null);
 
   const toast = useToast();
 
@@ -136,26 +145,10 @@ export function AppCreationWizard({
     step === 3;
 
   return (
-    <div
-      className="fixed inset-0 bg-black/30 flex items-center justify-center p-4 z-10"
-      onClick={(e) => {
-        if (e.target === e.currentTarget) onClose();
-      }}
-      onKeyDown={(e) => {
-        if (e.key === "Escape") onClose();
-      }}
-    >
-      <div className="card max-w-2xl w-full relative">
-        <button
-          type="button"
-          onClick={onClose}
-          aria-label="Close"
-          className="absolute top-3 right-3 text-slate-400 hover:text-slate-700 w-8 h-8 flex items-center justify-center rounded-md hover:bg-slate-100"
-        >
-          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="w-5 h-5">
-            <path fillRule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clipRule="evenodd" />
-          </svg>
-        </button>
+    <Dialog open onOpenChange={(open) => { if (!open) onClose(); }}>
+      <DialogContent className="max-w-2xl">
+        <DialogClose className="absolute top-3 right-3 z-10" />
+        <DialogBody>
 
         {/* Step indicator */}
         <div className="flex items-center gap-2 mb-6 text-xs text-slate-500">
@@ -186,8 +179,7 @@ export function AppCreationWizard({
             <div className="space-y-3">
               <div>
                 <label className="label">Name *</label>
-                <input
-                  className="input"
+                <Input
                   value={name}
                   onChange={(e) => {
                     setName(e.target.value);
@@ -199,8 +191,8 @@ export function AppCreationWizard({
               </div>
               <div>
                 <label className="label">Slug (kebab-case, auto-generated from name)</label>
-                <input
-                  className="input font-mono text-xs"
+                <Input
+                  className="font-mono text-xs"
                   value={slug}
                   onChange={(e) => {
                     setSlug(e.target.value);
@@ -286,27 +278,28 @@ export function AppCreationWizard({
           </div>
         )}
 
-        <div className="flex gap-2 justify-between pt-4 mt-4 border-t border-slate-100">
-          <button
+        </DialogBody>
+        <DialogFooter className="justify-between">
+          <Button
             type="button"
-            className="btn-secondary"
+            variant="outline"
             onClick={() => (step === 1 ? onClose() : setStep((step - 1) as 1 | 2 | 3))}
           >
             {step === 1 ? "Cancel" : "← Back"}
-          </button>
+          </Button>
           {step < 3 ? (
-            <button
+            <Button
               type="button"
-              className="btn-primary"
+              variant="primary"
               onClick={() => setStep((step + 1) as 1 | 2 | 3)}
               disabled={!canAdvance}
             >
               Next →
-            </button>
+            </Button>
           ) : (
-            <button
+            <Button
               type="button"
-              className="btn-primary"
+              variant="primary"
               onClick={() => create.mutate()}
               disabled={
                 create.isPending ||
@@ -314,10 +307,10 @@ export function AppCreationWizard({
               }
             >
               {create.isPending ? "Creating…" : "Create app + seed defaults"}
-            </button>
+            </Button>
           )}
-        </div>
-      </div>
-    </div>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
