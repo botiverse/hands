@@ -783,6 +783,25 @@ export async function handleAgentManifest(c: Context<{ Bindings: Env }>) {
         },
       },
       {
+        name: "list-deploy-tokens",
+        description:
+          "List app deploy-token metadata, including ids and revocation state. Requires app admin; raw token values are never returned.",
+        endpoint: { method: "GET", path: "/api/apps/{app_id}/deploy-tokens" },
+        parameters: {
+          app_id: { type: "string", in: "path", required: true, description: "App UUID." },
+          include_revoked: { type: "string", in: "query", required: false, description: "Set to 1 to include revoked tokens." },
+        },
+      },
+      {
+        name: "revoke-deploy-token",
+        description: "Revoke an app-scoped deploy token by id. Requires app admin.",
+        endpoint: { method: "DELETE", path: "/api/apps/{app_id}/deploy-tokens/{token_id}" },
+        parameters: {
+          app_id: { type: "string", in: "path", required: true, description: "App UUID." },
+          token_id: { type: "string", in: "path", required: true, description: "Deploy-token UUID." },
+        },
+      },
+      {
         name: "list-feedback",
         description:
           "List feedback/crash tickets for an app, newest first. Optional status/kind filters.",
