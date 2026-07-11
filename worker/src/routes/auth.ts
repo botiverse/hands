@@ -521,6 +521,13 @@ export async function handleAuthConfig(c: Context<{ Bindings: Env }>) {
   });
 }
 
+export async function handleDashboardRedirect(c: Context<{ Bindings: Env }>) {
+  const rawReturn = c.req.query("return");
+  const returnPath = normalizeReturnPath(rawReturn);
+  const origin = dashboardOrigin(c.env, () => appOrigin(c));
+  return c.redirect(`${origin}${returnPath}`, 302);
+}
+
 export async function handleAuthMe(c: Context<{ Bindings: Env }>) {
   const authHeader = c.req.header("authorization");
   const bearerToken = authHeader?.startsWith("Bearer ")

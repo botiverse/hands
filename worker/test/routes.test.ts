@@ -28,7 +28,7 @@ import {
 } from "../src/lib/origin";
 import { openApiDocument } from "../src/openapi";
 import { handleCreateApp, handleListApps } from "../src/routes/apps";
-import { createSignedJwt, handleAuthLogin, handleAuthMe } from "../src/routes/auth";
+import { createSignedJwt, handleAuthLogin, handleAuthMe, handleDashboardRedirect } from "../src/routes/auth";
 import { handleListOrgs } from "../src/routes/orgs";
 
 // ---------- Test harness ----------
@@ -1386,6 +1386,33 @@ describe("quiver route handlers — SQL smoke", () => {
 });
 
 describe("auth origin handling", () => {
+  it("opens the configured dashboard origin without restarting OAuth", async () => {
+    const env = makeMockEnv();
+    const app = new Hono<{ Bindings: MockEnv }>();
+    app.get("/api/auth/dashboard", handleDashboardRedirect);
+
+    const res = await app.request(
+      "https://business.example/api/auth/dashboard?return=%2Fapps",
+      {},
+      env as any,
+    );
+
+    expect(res.status).toBe(302);
+    expect(res.headers.get("location")).toBe("https://dashboard.example/apps");
+  });
+
+  it("sanitizes unsafe dashboard return paths", async () => {
+    const env = makeMockEnv();
+    const app = new Hono<{ Bindings: MockEnv }>();
+    app.get("/api/auth/dashboard", handleDashboardRedirect);
+    const res = await app.request(
+      "https://business.example/api/auth/dashboard?return=https%3A%2F%2Fevil.example",
+      {},
+      env as any,
+    );
+    expect(res.headers.get("location")).toBe("https://dashboard.example/");
+  });
+
   it("issues signed JWT-shaped Hands access tokens with scoped claims", async () => {
     const env = makeMockEnv();
     (env as any).SIGNED_URL_SECRET = "jwt-test-secret";

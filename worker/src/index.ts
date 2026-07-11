@@ -20,6 +20,7 @@ import {
   handleAgentManifest,
   handleAgentHelp,
   handleAuthConfig,
+  handleDashboardRedirect,
   handleAuthLogin,
   handleAuthLogout,
   handleAuthMe,
@@ -484,6 +485,7 @@ app.get("/docs.md", handlePublicDocs);
 app.get("/docs/*", handlePublicDocs);
 
 app.get("/api/auth/config", handleAuthConfig);
+app.get("/api/auth/dashboard", handleDashboardRedirect);
 app.get("/api/auth/login", handleAuthLogin);
 app.get("/login/raft/callback", handleRaftCallback);
 app.get("/api/auth/me", handleAuthMe);

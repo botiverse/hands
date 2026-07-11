@@ -68,7 +68,6 @@ import {
   getAuthMe,
   listApps,
   listOrgs,
-  loginUrl,
   logout,
   type AuthAccount,
 } from "./lib/api";
@@ -901,9 +900,8 @@ function CliCallback({ token }: { token: string }) {
   );
 }
 
-function dashboardHref(account?: AuthAccount): string {
-  if (account) return "/apps";
-  return loginUrl("/apps");
+function dashboardHref(): string {
+  return "/api/auth/dashboard?return=%2Fapps";
 }
 
 function PublicLanding({ account }: { account?: AuthAccount }) {
@@ -932,7 +930,7 @@ function PublicLanding({ account }: { account?: AuthAccount }) {
             >
               API explorer
             </a>
-            <Button variant="primary" render={<a href={dashboardHref(account)} />}>
+            <Button variant="primary" render={<a href={dashboardHref()} />}>
               <RaftIcon className="h-5 w-5" />
               {account ? "Open dashboard" : "Login"}
             </Button>
@@ -971,7 +969,7 @@ function PublicLanding({ account }: { account?: AuthAccount }) {
                 ))}
               </div>
               <div className="mt-8 flex flex-col gap-3 sm:flex-row">
-                <Button variant="primary" size="lg" render={<a href={dashboardHref(account)} />}>
+                <Button variant="primary" size="lg" render={<a href={dashboardHref()} />}>
                   <RaftIcon className="h-5 w-5" />
                   {account ? "Open dashboard" : "Login with Raft"}
                 </Button>
