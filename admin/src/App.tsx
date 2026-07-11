@@ -1110,7 +1110,7 @@ function LandingTerminal() {
           ? "text-slate-500"
           : "text-slate-200";
   return (
-    <div className="rounded-lg border border-slate-200 bg-slate-950 p-5 text-sm text-slate-100 shadow-xs">
+    <div className="min-w-0 max-w-full overflow-hidden rounded-lg border border-slate-200 bg-slate-950 p-5 text-sm text-slate-100 shadow-xs">
       <div className="mb-4 flex items-center justify-between border-b border-slate-700 pb-3">
         <div className="flex flex-wrap gap-1">
           {TERMINAL_DEMOS.map((d) => (
@@ -1135,7 +1135,7 @@ function LandingTerminal() {
       </div>
       <div className="space-y-3 font-mono text-xs leading-6">
         {demo.lines.map((line, i) => (
-          <div key={i} className={toneClass(line.tone)}>
+          <div key={i} className={`${toneClass(line.tone)} break-words`}>
             {line.text}
           </div>
         ))}
