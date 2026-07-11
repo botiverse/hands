@@ -962,9 +962,12 @@ function PublicLanding({ account }: { account?: AuthAccount }) {
                   Client platforms:
                 </span>
                 {["Android", "iOS", "HarmonyOS", "Electron"].map((p) => (
-                  <Badge key={p} variant="muted">
+                  <span
+                    key={p}
+                    className="inline-flex items-center rounded-full border border-slate-200 bg-white px-3 py-1 text-sm font-medium text-slate-600"
+                  >
                     {p}
-                  </Badge>
+                  </span>
                 ))}
               </div>
               <div className="mt-8 flex flex-col gap-3 sm:flex-row">
@@ -1223,7 +1226,9 @@ function AuthenticatedApp({ account }: { account: AuthAccount }) {
       </Routes>
       <footer className="bg-white border-t border-slate-200 py-4 mt-8">
         <div className="max-w-5xl mx-auto px-4 text-xs text-slate-500 flex items-center justify-between">
-          <span>Hands - Login with Raft</span>
+          <span>
+            Hands — <span className="font-medium text-slate-600">a Botiverse product</span>
+          </span>
           <Tooltip>
             <TooltipTrigger
               render={
