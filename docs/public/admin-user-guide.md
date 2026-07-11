@@ -90,7 +90,7 @@ Use share pages for human review and manual testing. Use the public update API f
 
 ## Feedback
 
-The Feedback tab is a lightweight ticket system for reports submitted from the app (via the SDK's `HandsFeedback` or the public feedback endpoint). Each ticket carries the message, contact, app version, device context (including the rollout device id), and up to three attachments.
+The Feedback tab is a lightweight ticket system for reports submitted from the app (via the SDK's `HandsFeedback` or the public feedback endpoint). Each ticket carries the message, contact, app version, device context (including the rollout device id), and up to nine attachments.
 
 - Tickets are shareable pages (`/apps/<id>/feedback/<ticket>`).
 - Triage with statuses (`open → in_progress → resolved/closed`), an assignee (Assign to me / edit / unassign), and a comment trail.

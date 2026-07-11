@@ -174,7 +174,7 @@ GET /electron/:appSlug/:channel/:installerFile.blockmap
 ```
 
 Hands serves these from the active `electron-installer` release on that
-channel. Phase 1 intentionally hosts electron-builder's generated files
+channel. Hands intentionally hosts electron-builder's generated files
 as-is: upload `latest*.yml`, installers, and `.blockmap` files as build
 assets. Use `artifact_kind = electron-metadata` for `latest*.yml`; use the
 original filename in `variant` or `metadata_json.filename` so relative URLs

@@ -291,7 +291,7 @@ role for read, publisher for changes):
 ```bash
 hands feedback list raft-android --status open --kind crash
 hands feedback show raft-android <ticket-id>
-hands feedback update raft-android <ticket-id> --status in_progress --assignee cc-quiver-owner
+hands feedback update raft-android <ticket-id> --status in_progress --assignee me
 hands feedback comment raft-android <ticket-id> "已复现，修复中"
 hands feedback update raft-android <ticket-id> --status resolved
 ```

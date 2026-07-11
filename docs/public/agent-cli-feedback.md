@@ -129,7 +129,7 @@ stack is appended as an internal comment — visible in `feedback show`. To
 aggregate by signature across a fleet, call the API directly:
 
 ```bash
-curl -s -H "Authorization: Bearer $QUIVER_BEARER_TOKEN" \
+curl -s -H "Authorization: Bearer $HANDS_BEARER_TOKEN" \
   https://hands.build/api/apps/<appId>/feedback/crash-groups
 ```
 
@@ -156,16 +156,16 @@ The same downloads and ticket detail can also be fetched directly via REST
 APP_ID="$(hands apps get "$APP" --json \
   | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])')"
 
-curl -s -H "Authorization: Bearer $QUIVER_BEARER_TOKEN" \
+curl -s -H "Authorization: Bearer $HANDS_BEARER_TOKEN" \
   "https://hands.build/api/apps/$APP_ID/feedback/$TICKET_ID"                       # ticket detail
-curl -s -H "Authorization: Bearer $QUIVER_BEARER_TOKEN" \
+curl -s -H "Authorization: Bearer $HANDS_BEARER_TOKEN" \
   "https://hands.build/api/apps/$APP_ID/feedback/$TICKET_ID/attachments/<attachmentId>" \
   -o diagnostics.zip                                                                     # raw attachment
 ```
 
 ## Other environment knobs
 
-- `QUIVER_API` — point the CLI at a non-production Worker (defaults to the
+- `HANDS_API` — point the CLI at a non-production Worker (defaults to the
   production origin).
 - `--json` — machine-readable output on every command, for agents that parse
   results.

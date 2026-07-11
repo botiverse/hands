@@ -53,15 +53,15 @@ The raw token is returned exactly once. Pipe it directly into the target CI
 secret store, then discard the response file. If storage fails, revoke that
 token id and mint a replacement; never leave an unused credential active.
 
-Deploy tokens are app-scoped,
-never expire unless revoked, attributed in audit logs as
+Deploy tokens are app-scoped, never expire unless revoked, and are
+attributed in audit logs as
 `deploy-token:<name>@<app>`. Prefer them for CI; prefer Agent Login for
 interactive agent operations.
 
 ### Integration manifest URL contract
 
 Manifest action paths must be absolute, and URL resolution must produce the
-real API route. The robust Hands contract is:
+real API route. The correct Hands contract is:
 
 ```json
 {
@@ -137,7 +137,7 @@ The share URL is printed once; tokens are stored hashed.
 ```bash
 # create (API; CLI covers list/get)
 curl -X POST https://hands.build/api/apps \
-  -H "Authorization: Bearer $QUIVER_BEARER_TOKEN" \
+  -H "Authorization: Bearer $HANDS_BEARER_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"slug":"my-app","name":"My App","platform":"android"}'
 ```
@@ -148,9 +148,9 @@ product types, and get a **client key** (`qk_…`) that clients must send as
 `X-Quiver-Client-Key` header is still accepted):
 
 ```bash
-curl -H "Authorization: Bearer $QUIVER_BEARER_TOKEN" \
+curl -H "Authorization: Bearer $HANDS_BEARER_TOKEN" \
   https://hands.build/api/apps/<appId>/client-key          # read
-curl -X POST -H "Authorization: Bearer $QUIVER_BEARER_TOKEN" \
+curl -X POST -H "Authorization: Bearer $HANDS_BEARER_TOKEN" \
   https://hands.build/api/apps/<appId>/rotate-client-key   # (re)generate
 ```
 

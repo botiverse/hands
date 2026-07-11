@@ -131,4 +131,6 @@ Workflows:
 
 ## Credits
 
-Reference feature set inspired by [Zealot (tryzealot/zealot)](https://github.com/tryzealot/zealot).
+Reference feature set inspired by [Zealot (tryzealot/zealot)](https://github.com/tryzealot/zealot)
+and [Sentry](https://sentry.io/) — whose DSN model informs the client-key (app-identifier)
+and crash-reporting design.
