@@ -50,6 +50,10 @@ import {
   setAscCredentials,
   deleteAscCredentials,
   verifyAscCredentials,
+  getAgcCredentials,
+  setAgcCredentials,
+  deleteAgcCredentials,
+  verifyAgcCredentials,
   getAppStoreReview,
 } from "../lib/api";
 import { useToast } from "../components/Toast";
@@ -644,6 +648,62 @@ function TestFlightPanel({ appId }: { appId: string }) {
   );
 }
 
+function AppGalleryConnectPanel({ appId }: { appId: string }) {
+  const toast = useToast();
+  const qc = useQueryClient();
+  const query = useQuery({ queryKey: ["agc-credentials", appId], queryFn: () => getAgcCredentials(appId) });
+  const meta = query.data?.agc_credentials ?? null;
+  const [editing, setEditing] = useState(false);
+  const [credentialJson, setCredentialJson] = useState("");
+  const save = useMutation({
+    mutationFn: () => setAgcCredentials(appId, credentialJson),
+    onSuccess: () => { setCredentialJson(""); setEditing(false); qc.invalidateQueries({ queryKey: ["agc-credentials", appId] }); toast.show({ kind: "success", title: "AppGallery Connect credential saved" }); },
+    onError: (e) => toast.show({ kind: "error", title: "Save failed", description: (e as Error).message }),
+  });
+  const remove = useMutation({
+    mutationFn: () => deleteAgcCredentials(appId),
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ["agc-credentials", appId] }); toast.show({ kind: "success", title: "AppGallery Connect credential removed" }); },
+    onError: (e) => toast.show({ kind: "error", title: "Remove failed", description: (e as Error).message }),
+  });
+  const test = useMutation({
+    mutationFn: () => verifyAgcCredentials(appId),
+    onSuccess: (r) => toast.show(r.ok
+      ? { kind: "success", title: "Connection OK", description: `AGC token exchange succeeded; expires in ${Math.round((r.expires_in ?? 0) / 3600)} hours.` }
+      : { kind: "error", title: "Verification failed", description: r.error ?? "Unknown AGC error" }),
+    onError: (e) => toast.show({ kind: "error", title: "Test failed", description: (e as Error).message }),
+  });
+  const showForm = editing || (!meta && !query.isLoading);
+  return (
+    <div className="border-t border-slate-100 pt-3">
+      <div className="flex flex-col gap-2 md:flex-row md:items-center md:gap-3">
+        <div className="flex-1 min-w-0">
+          <div className="text-sm font-medium">AppGallery Connect</div>
+          <div className="text-xs text-slate-500">API client credential used for HarmonyOS testing and publishing. The uploaded JSON is encrypted and its client secret is never shown again.</div>
+          {meta && <div className="mt-1 text-xs space-y-0.5">
+            <div><span className="text-green-700 font-medium">Configured</span>{" · "}{meta.credential_kind}{" · updated "}{new Date(meta.updated_at).toISOString().slice(0, 10)}</div>
+            <div className="font-mono break-all">Developer {meta.developer_id} · Project {meta.project_id} · Client {meta.client_id}</div>
+            <div className="font-mono">Region {meta.region || "default"} · Fingerprint {meta.credential_fingerprint.slice(0, 12)}…</div>
+          </div>}
+        </div>
+        {meta && !editing && <div className="flex flex-wrap gap-2">
+          <Button variant="outline" disabled={test.isPending} onClick={() => test.mutate()}>{test.isPending ? "Testing…" : "Test connection"}</Button>
+          <Button variant="outline" onClick={() => setEditing(true)}>Replace credential</Button>
+          <Button variant="danger" disabled={remove.isPending} onClick={() => { if (window.confirm("Remove the AppGallery Connect credential? Publishing stops until a new credential is saved.")) remove.mutate(); }}>{remove.isPending ? "…" : "Remove"}</Button>
+        </div>}
+      </div>
+      {showForm && <div className="mt-3 p-3 border border-slate-200 rounded-md space-y-3">
+        <label className="block text-xs font-medium">AGC API client JSON</label>
+        <input type="file" accept=".json,application/json" onChange={(e) => { const file = e.target.files?.[0]; if (file) file.text().then(setCredentialJson, () => toast.show({ kind: "error", title: "Could not read the credential file" })); }} />
+        <div className="text-xs text-slate-500">Select the JSON downloaded from AppGallery Connect. The client secret is not displayed or returned by the API.</div>
+        <div className="flex gap-2">
+          <Button variant="primary" disabled={!credentialJson || save.isPending} onClick={() => save.mutate()}>{save.isPending ? "Saving…" : "Save credential"}</Button>
+          {meta && <Button variant="outline" onClick={() => { setCredentialJson(""); setEditing(false); }}>Cancel</Button>}
+        </div>
+      </div>}
+    </div>
+  );
+}
+
 // --- App Store review status (read-only) ---------------------------------
 
 type BadgeVariant = NonNullable<BadgeProps["variant"]>;
@@ -1075,6 +1135,7 @@ export function AppSettings({ appId }: { appId: string }) {
 
         {/* TestFlight upload credentials — iOS apps only */}
         {app.platform === "ios" && <TestFlightPanel appId={appId} />}
+        {app.platform === "ohos" && <AppGalleryConnectPanel appId={appId} />}
 
         {/* Default release channel picker */}
         <DefaultChannelPicker appId={appId} app={app} isOrgAdmin={isOrgAdmin} />

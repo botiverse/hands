@@ -63,6 +63,7 @@ jobs:
           SIGNED_URL_SECRET: ${{ secrets.HANDS_SIGNED_URL_SECRET }}
           RAFT_CLIENT_SECRET: ${{ secrets.HANDS_PREVIEW_RAFT_CLIENT_SECRET }}
           ASC_CRED_ENC_KEY: ${{ secrets.HANDS_ASC_CRED_ENC_KEY }}
+          AGC_CRED_ENC_KEY: ${{ secrets.HANDS_AGC_CRED_ENC_KEY }}
           R2_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_BOTIVERSE_ACCOUNT_ID }}
         shell: bash
         run: |
@@ -71,6 +72,7 @@ jobs:
           printf '%s' "${SIGNED_URL_SECRET}" | pnpm exec wrangler secret put SIGNED_URL_SECRET --config "${config}"
           printf '%s' "${RAFT_CLIENT_SECRET}" | pnpm exec wrangler secret put RAFT_CLIENT_SECRET --config "${config}"
           printf '%s' "${ASC_CRED_ENC_KEY}" | pnpm exec wrangler secret put ASC_CRED_ENC_KEY --config "${config}"
+          printf '%s' "${AGC_CRED_ENC_KEY}" | pnpm exec wrangler secret put AGC_CRED_ENC_KEY --config "${config}"
           printf '%s' "${R2_ACCOUNT_ID}" | pnpm exec wrangler secret put R2_ACCOUNT_ID --config "${config}"
 
       - name: Deploy preview Worker + admin assets

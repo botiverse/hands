@@ -745,6 +745,35 @@ export const verifyAscCredentials = (appId: string, bundleId: string) =>
     body: JSON.stringify({ bundle_id: bundleId }),
   });
 
+// ---------- AppGallery Connect credentials (HarmonyOS) ----------
+
+export interface AgcCredentialsMeta {
+  id: string;
+  app_id: string;
+  credential_kind: "api_client";
+  developer_id: string;
+  project_id: string;
+  client_id: string;
+  configuration_version: string | null;
+  region: string | null;
+  credential_fingerprint: string;
+  created_by_actor: string | null;
+  created_at: number;
+  updated_at: number;
+}
+export const getAgcCredentials = (appId: string) =>
+  request<{ agc_credentials: AgcCredentialsMeta | null }>(`/api/apps/${appId}/agc-credentials`, { admin: true });
+export const setAgcCredentials = (appId: string, credential_json: string) =>
+  request<{ agc_credentials: AgcCredentialsMeta }>(`/api/apps/${appId}/agc-credentials`, {
+    method: "PUT", admin: true, body: JSON.stringify({ credential_json }),
+  });
+export const deleteAgcCredentials = (appId: string) =>
+  request<{ ok: boolean }>(`/api/apps/${appId}/agc-credentials`, { method: "DELETE", admin: true });
+export const verifyAgcCredentials = (appId: string) =>
+  request<{ ok: boolean; credential_kind?: string; developer_id?: string; project_id?: string; client_id?: string; region?: string | null; expires_in?: number; error?: string; status?: number }>(
+    `/api/apps/${appId}/agc-credentials/verify`, { method: "POST", admin: true },
+  );
+
 // ---------- TestFlight upload (Hands → Apple) ----------
 
 /** Apple's build-upload state is an object, not a bare string. */

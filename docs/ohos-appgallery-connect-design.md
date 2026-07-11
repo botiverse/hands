@@ -21,7 +21,8 @@ and local package validation. Hands receives the signed `.app`, standalone
 
 AppGallery Connect currently exposes APIs for:
 
-- developer-level Service Account authentication using PS256 JWTs;
+- AGC API client authentication using OAuth client credentials, with
+  developer-level Service Account/PS256 support reserved as a future credential kind;
 - HarmonyOS `.app` upload, including large/multipart uploads and SHA-256;
 - package binding and asynchronous compile/parse status;
 - invitation testing and public testing, including groups, members, invite
@@ -51,7 +52,7 @@ in a separate table and encryption domain.
 |---|---|
 | `id`, `app_id` | One active credential set per Hands app. |
 | `service_account_id`, `key_id` | Non-secret identifiers shown in Settings. |
-| `credential_ciphertext_b64`, `credential_iv_b64` | Entire Service Account credential JSON encrypted with AES-GCM. |
+| `credential_ciphertext_b64`, `credential_iv_b64` | Entire AGC credential JSON encrypted with AES-GCM. |
 | `credential_fingerprint` | SHA-256 fingerprint for rotation/audit, never the private key. |
 | `created_by_actor`, `created_at`, `updated_at` | Audit ownership. |
 
@@ -66,7 +67,7 @@ Settings actions:
 - `PUT /api/apps/:appId/agc-credentials`
 - `GET /api/apps/:appId/agc-credentials`
 - `DELETE /api/apps/:appId/agc-credentials`
-- `POST /api/apps/:appId/agc-credentials/test`
+- `POST /api/apps/:appId/agc-credentials/verify`
 
 The connection test mints a short-lived JWT and performs a read-only app
 lookup for the configured `main` channel bundle name.
@@ -127,7 +128,7 @@ workflow instance id on `market_submissions`.
 
 Steps must be individually retryable:
 
-1. load encrypted credentials and mint a PS256 JWT;
+1. load encrypted credentials and exchange the API client secret for an OAuth access token;
 2. resolve the manually created AGC app by bundle name;
 3. request the short-lived upload URL;
 4. stream the `.app` from R2, using multipart upload when required;
@@ -139,7 +140,7 @@ Steps must be individually retryable:
 10. submit and poll review/release state until terminal or long-term waiting;
 11. update Hands status, operation progress, and audit events.
 
-Refresh the Service Account JWT before expiry. A five-minute upload URL must
+Refresh the OAuth access token before expiry. A five-minute upload URL must
 be reacquired if upload has not started or a retry crosses its validity
 window. Provider `429` and `5xx` responses are retryable; validation, policy,
 and permission errors require user action.
@@ -218,7 +219,7 @@ Hands draft. Market submit remains a separate reviewed action.
 ### P0A: foundation
 
 - migration for encrypted AGC credentials, market submissions, and events;
-- Service Account JWT client and read-only connection test;
+- API client OAuth exchange and read-only connection test;
 - AppGallery page with credential configuration and app/bundle resolution;
 - provider-neutral operation kinds and status polling.
 
@@ -245,7 +246,7 @@ Hands draft. Market submit remains a separate reviewed action.
 
 - repeated trigger with the same idempotency key creates one AGC submission;
 - Worker restart/redeploy does not lose upload/parse/review progress;
-- raw Service Account credentials never appear in API responses or logs;
+- raw AGC credentials and access tokens never appear in API responses or logs;
 - a signed Hands `.app` is uploaded without buffering the whole file in D1;
 - parse polling handles success, Huawei validation failure, timeout, and retry;
 - testing and production submission require separate explicit approval;
