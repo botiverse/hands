@@ -69,7 +69,7 @@ describe("AGC invitation testing API", () => {
   });
   it("rejects provider business errors even on HTTP 200", async () => {
     const mockFetch = vi.fn(async () => new Response(JSON.stringify({ ret: { code: 204144688, msg: "invalid package" } }), { status: 200 }));
-    await expect(resolveAgcAppId(auth, "build.raft.mobile", mockFetch as typeof fetch)).rejects.toThrow("invalid package");
+    await expect(resolveAgcAppId(auth, "build.raft.mobile", mockFetch as typeof fetch)).rejects.toThrow("invalid package (HTTP 200, code 204144688)");
   });
 });
 

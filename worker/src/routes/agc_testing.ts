@@ -31,7 +31,8 @@ export async function handleStartAgcInvitationTest(c: AdminContext) {
     WHERE b.id=?1 AND b.app_id=?2 AND ba.platform='ohos' AND ba.filetype='app'`).bind(buildId, appId).first<{ r2_key: string; file_hash: string; size_bytes: number; filetype: string }>();
   if (!row) return c.json({ error: "signed OHOS .app asset not found for build" }, 404);
   const existing = await c.env.DB.prepare("SELECT * FROM market_submissions WHERE idempotency_key=?1").bind(`agc-invitation:${buildId}`).first<Submission>();
-  if (existing) return c.json({ submission: existing });
+  if (existing && existing.state !== "failed") return c.json({ submission: existing });
+  if (existing) await c.env.DB.prepare("DELETE FROM market_submissions WHERE id=?1").bind(existing.id).run();
   const id = crypto.randomUUID(); const now = Date.now();
   await c.env.DB.prepare(`INSERT INTO market_submissions (id,app_id,build_id,provider,lane,state,idempotency_key,created_by_actor,created_at,updated_at)
     VALUES (?1,?2,?3,'appgallery','invitation_test','uploading',?4,?5,?6,?6)`).bind(id, appId, buildId, `agc-invitation:${buildId}`, currentActor(c), now).run();

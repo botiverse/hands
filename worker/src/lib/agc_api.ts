@@ -29,7 +29,9 @@ async function agcJson(auth: AgcAuth, path: string, init: RequestInit = {}, fetc
   const body = await response.json().catch(() => null) as any;
   const providerCode = body?.ret?.code ?? body?.rtnCode;
   if (!response.ok || (providerCode !== undefined && String(providerCode) !== "0")) {
-    throw new AgcApiError(response.status, body?.ret?.msg || body?.rtnDesc || "AGC API request failed");
+    const providerMessage = body?.ret?.msg || body?.rtnDesc || body?.error_description || body?.error;
+    const suffix = providerCode !== undefined ? `, code ${String(providerCode)}` : "";
+    throw new AgcApiError(response.status, `${providerMessage || "AGC API request failed"} (HTTP ${response.status}${suffix})`);
   }
   return body;
 }
