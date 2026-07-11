@@ -340,47 +340,37 @@ export async function getBetaReviewStates(
   creds: AscApiCredentials,
   ascAppId: string,
 ): Promise<BetaReviewSummary[]> {
+  // ASC rejects `include` on /apps/{id}/builds ("The parameter 'include' can not
+  // be used with this request"), so fetch the builds first, then each build's
+  // beta review submission separately via its relationship endpoint.
   const res = await ascRequest<{
     data: Array<{
+      id: string;
       attributes?: {
         version?: string | null;
         processingState?: string | null;
         uploadedDate?: string | null;
       };
-      relationships?: {
-        betaAppReviewSubmission?: {
-          data?: { type: string; id: string } | null;
-        };
+    }>;
+  }>(creds, "GET", `/v1/apps/${ascAppId}/builds?limit=5`);
+
+  return Promise.all(
+    (res.data ?? []).map(async (b) => {
+      let betaReviewState: string | null = null;
+      try {
+        const sub = await ascRequest<{
+          data?: { attributes?: { betaReviewState?: string | null } } | null;
+        }>(creds, "GET", `/v1/builds/${b.id}/betaAppReviewSubmission`);
+        betaReviewState = sub.data?.attributes?.betaReviewState ?? null;
+      } catch {
+        // No beta review submission (internal-only builds) or inaccessible → null.
+      }
+      return {
+        version: b.attributes?.version ?? null,
+        processingState: b.attributes?.processingState ?? null,
+        uploadedDate: b.attributes?.uploadedDate ?? null,
+        betaReviewState,
       };
-    }>;
-    included?: Array<{
-      type: string;
-      id: string;
-      attributes?: { betaReviewState?: string | null };
-    }>;
-  }>(
-    creds,
-    "GET",
-    `/v1/apps/${ascAppId}/builds?limit=5&include=betaAppReviewSubmission`,
+    }),
   );
-
-  // Index the included betaAppReviewSubmissions by id so each build can look
-  // up its submission via the relationship pointer (JSON:API compound doc).
-  const submissions = new Map<string, string | null>();
-  for (const inc of res.included ?? []) {
-    if (inc.type === "betaAppReviewSubmissions") {
-      submissions.set(inc.id, inc.attributes?.betaReviewState ?? null);
-    }
-  }
-
-  return (res.data ?? []).map((b) => {
-    const rel = b.relationships?.betaAppReviewSubmission?.data;
-    const betaReviewState = rel ? submissions.get(rel.id) ?? null : null;
-    return {
-      version: b.attributes?.version ?? null,
-      processingState: b.attributes?.processingState ?? null,
-      uploadedDate: b.attributes?.uploadedDate ?? null,
-      betaReviewState,
-    };
-  });
 }

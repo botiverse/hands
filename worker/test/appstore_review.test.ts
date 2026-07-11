@@ -96,38 +96,35 @@ describe("getAppStoreVersions", () => {
 });
 
 describe("getBetaReviewStates", () => {
-  it("joins each build to its included betaAppReviewSubmission state", async () => {
+  it("fetches builds then joins each build's beta review submission state", async () => {
     const creds = await generateTestCreds();
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async () =>
-        jsonResponse({
-          data: [
-            {
-              type: "builds",
-              id: "b1",
-              attributes: {
-                version: "100",
-                processingState: "VALID",
-                uploadedDate: "2026-03-01T00:00:00Z",
-              },
-              relationships: {
-                betaAppReviewSubmission: {
-                  data: { type: "betaAppReviewSubmissions", id: "sub-1" },
-                },
-              },
+    // `include` is not allowed on /apps/{id}/builds; the submission is fetched
+    // per-build via /v1/builds/{id}/betaAppReviewSubmission.
+    const fetchMock = vi.fn(async (url: unknown) => {
+      if (String(url).includes("/betaAppReviewSubmission")) {
+        return jsonResponse({
+          data: {
+            type: "betaAppReviewSubmissions",
+            id: "sub-1",
+            attributes: { betaReviewState: "APPROVED" },
+          },
+        });
+      }
+      return jsonResponse({
+        data: [
+          {
+            type: "builds",
+            id: "b1",
+            attributes: {
+              version: "100",
+              processingState: "VALID",
+              uploadedDate: "2026-03-01T00:00:00Z",
             },
-          ],
-          included: [
-            {
-              type: "betaAppReviewSubmissions",
-              id: "sub-1",
-              attributes: { betaReviewState: "APPROVED" },
-            },
-          ],
-        }),
-      ),
-    );
+          },
+        ],
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
 
     const builds = await getBetaReviewStates(creds, "asc-app-1");
     expect(builds).toEqual([
@@ -138,12 +135,22 @@ describe("getBetaReviewStates", () => {
         betaReviewState: "APPROVED",
       },
     ]);
+    const buildsUrl = String(fetchMock.mock.calls[0]![0]);
+    expect(buildsUrl).toContain("/v1/apps/asc-app-1/builds");
+    expect(buildsUrl).not.toContain("include");
+    expect(String(fetchMock.mock.calls[1]![0])).toContain(
+      "/v1/builds/b1/betaAppReviewSubmission",
+    );
   });
 
   it("yields betaReviewState null when a build has no beta review submission", async () => {
     const creds = await generateTestCreds();
-    const fetchMock = vi.fn(async (_url: unknown) =>
-      jsonResponse({
+    const fetchMock = vi.fn(async (url: unknown) => {
+      if (String(url).includes("/betaAppReviewSubmission")) {
+        // Internal-only build: relationship resolves to no data.
+        return jsonResponse({ data: null });
+      }
+      return jsonResponse({
         data: [
           {
             type: "builds",
@@ -153,13 +160,10 @@ describe("getBetaReviewStates", () => {
               processingState: "PROCESSING",
               uploadedDate: "2026-03-02T00:00:00Z",
             },
-            // No betaAppReviewSubmission relationship data (internal-only build).
-            relationships: { betaAppReviewSubmission: { data: null } },
           },
         ],
-        // No included array at all.
-      }),
-    );
+      });
+    });
     vi.stubGlobal("fetch", fetchMock);
 
     const builds = await getBetaReviewStates(creds, "asc-app-1");
@@ -171,8 +175,8 @@ describe("getBetaReviewStates", () => {
         betaReviewState: null,
       },
     ]);
-    const url = String(fetchMock.mock.calls[0]![0]);
-    expect(url).toContain("/v1/apps/asc-app-1/builds");
-    expect(url).toContain("include=betaAppReviewSubmission");
+    const buildsUrl = String(fetchMock.mock.calls[0]![0]);
+    expect(buildsUrl).toContain("/v1/apps/asc-app-1/builds");
+    expect(buildsUrl).not.toContain("include");
   });
 });
