@@ -6,6 +6,11 @@ import { HandsCrashUploader } from './HandsCrashUploader';
 
 const TAG: string = 'HandsFaultWatcher';
 const FAULT_LOG_MAX_CHARS: number = 180000;
+// Per-file / count caps for reading on-device fault-log files (the native
+// backtrace source). Kept well under FAULT_LOG_MAX_CHARS so the combined log
+// stays bounded after the final slice.
+const FAULT_FILE_MAX_CHARS: number = 120000;
+const FAULT_FILE_MAX_COUNT: number = 3;
 
 /**
  * System-level fault capture via hiAppEvent (the same channel Bugly-class
@@ -89,6 +94,11 @@ export class HandsFaultWatcher {
     const threads = params['threads'];
     const threadsText = threads === undefined ? '' : JSON.stringify(threads, null, 2);
     const externalLogs = HandsFaultWatcher.joinLines(params['external_log']);
+    // The full native backtrace (`#NN pc <off> <lib>.so(<buildId>)`) that the
+    // server needs to symbolicate lives in the on-device fault-log file(s),
+    // not in the hiAppEvent params — external_log only carries their paths.
+    // Read those file contents so the crash ticket actually ships the stack.
+    const externalFileContents = HandsFaultWatcher.readFaultFiles(params['external_log']);
 
     const lines: string[] = [
       'Hands OHOS fault log (hiAppEvent)',
@@ -110,6 +120,9 @@ export class HandsFaultWatcher {
     }
     if (externalLogs.length > 0) {
       lines.push('', '--- system fault log files (on device) ---', externalLogs);
+    }
+    if (externalFileContents.length > 0) {
+      lines.push('', '--- native backtrace (fault log file) ---', externalFileContents);
     }
     const crashLog = lines.join('\n').slice(0, FAULT_LOG_MAX_CHARS);
 
@@ -197,6 +210,36 @@ export class HandsFaultWatcher {
       return (value as Array<Object>).map((entry: Object): string => String(entry)).join('\n');
     }
     return String(value);
+  }
+
+  /**
+   * external_log carries paths to the system fault-log file(s), whose contents
+   * hold the full native backtrace. Read each (bounded, best-effort) so the
+   * symbolicatable stack ships with the ticket. Failures (missing file,
+   * permission) are swallowed — we still have the exception summary.
+   */
+  private static readFaultFiles(value: Object | undefined): string {
+    if (value === undefined || value === null) {
+      return '';
+    }
+    const paths: string[] = Array.isArray(value)
+      ? (value as Array<Object>).map((entry: Object): string => String(entry))
+      : [String(value)];
+    const blocks: string[] = [];
+    for (const path of paths) {
+      if (path.length === 0 || blocks.length >= FAULT_FILE_MAX_COUNT) {
+        continue;
+      }
+      try {
+        const content = fs.readTextSync(path, { offset: 0, length: FAULT_FILE_MAX_CHARS });
+        if (content.length > 0) {
+          blocks.push(`=== ${path} ===\n${content}`);
+        }
+      } catch (error) {
+        hilog.warn(0x0000, TAG, 'could not read fault file %{public}s: %{public}s', path, String(error));
+      }
+    }
+    return blocks.join('\n\n');
   }
 
   private static writeFaultLog(context: common.UIAbilityContext, crashLog: string): string {

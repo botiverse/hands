@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.3.2
+
+- Native crashes now ship the full backtrace, not just a top-frame summary.
+  hiAppEvent delivers the symbolicatable stack (`#NN pc <off> <lib>.so(<buildId>)`)
+  only as on-device fault-log file paths; read those file contents (bounded,
+  best-effort) into the crash ticket so the server can symbolicate against the
+  build's uploaded `.so` symbols.
+
 ## 0.3.1
 
 - Fix native-crash signal formatting: hiAppEvent can deliver `signal` as a
