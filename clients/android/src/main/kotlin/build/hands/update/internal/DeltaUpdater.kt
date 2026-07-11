@@ -158,10 +158,10 @@ class DeltaUpdater(
 
     /**
      * Feature flag. Defaults to the constructor value, but a JVM system property
-     * `SLOCK_DELTA_APPLY=false` force-disables it (kill switch for field ops).
+     * `HANDS_DELTA_APPLY=false` force-disables it (kill switch for field ops).
      */
     private fun deltaEnabled(): Boolean {
-        val override = System.getProperty("SLOCK_DELTA_APPLY")
+        val override = System.getProperty("HANDS_DELTA_APPLY")
         if (override != null) return !override.equals("false", ignoreCase = true)
         return deltaApplyEnabled
     }
