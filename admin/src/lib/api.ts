@@ -776,6 +776,50 @@ export const verifyAgcCredentials = (appId: string) =>
     `/api/apps/${appId}/agc-credentials/verify`, { method: "POST", admin: true },
   );
 
+export interface AgcSubmission {
+  id: string;
+  app_id: string;
+  build_id: string;
+  provider: "appgallery";
+  lane: "invitation_test";
+  state: "uploading" | "processing" | "ready" | "testing_review" | "failed";
+  external_app_id: string | null;
+  external_version_id: string | null;
+  external_package_id: string | null;
+  error_message: string | null;
+  provider_state: Record<string, unknown>;
+  created_at: number;
+  updated_at: number;
+}
+
+export const getAgcBuildSubmission = (appId: string, buildId: string) =>
+  request<{ submission: AgcSubmission | null }>(
+    `/api/apps/${appId}/builds/${buildId}/agc-invitation-test`,
+    { admin: true },
+  );
+
+export const startAgcInvitationTest = (appId: string, buildId: string, packageName: string) =>
+  request<{ submission_id?: string; state?: string; submission?: AgcSubmission }>(
+    `/api/apps/${appId}/builds/${buildId}/agc-invitation-test`,
+    {
+      method: "POST",
+      admin: true,
+      body: JSON.stringify({ package_name: packageName }),
+    },
+  );
+
+export const getAgcSubmission = (appId: string, submissionId: string) =>
+  request<{ submission: AgcSubmission; events: Array<{ state: string; detail_json: string; created_at: number }> }>(
+    `/api/apps/${appId}/agc-submissions/${submissionId}`,
+    { admin: true },
+  );
+
+export const submitAgcInvitationTest = (appId: string, submissionId: string) =>
+  request<{ ok: boolean; submission_id: string; state: string }>(
+    `/api/apps/${appId}/agc-submissions/${submissionId}/submit`,
+    { method: "POST", admin: true },
+  );
+
 // ---------- TestFlight upload (Hands → Apple) ----------
 
 /** Apple's build-upload state is an object, not a bare string. */

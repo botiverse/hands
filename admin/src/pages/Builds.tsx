@@ -9,12 +9,16 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
+  getAgcBuildSubmission,
+  getAgcSubmission,
   getBuildAssetDownloadUrl,
   getBuild,
   listBuildAssets,
   listBuilds,
   listChannels,
   listProductTypes,
+  startAgcInvitationTest,
+  submitAgcInvitationTest,
   uploadBuildToTestflight,
   getTestflightUploadStatus,
   type Build,
@@ -167,6 +171,9 @@ export function Builds({ appId }: { appId: string }) {
               {b.product_type === "ios-ipa" && (
                 <TestflightUploadPanel appId={appId} build={b} />
               )}
+              {b.product_type === "ohos-app" && (
+                <AgcTestingPanel appId={appId} build={b} packageName={channel?.bundle_id ?? null} />
+              )}
               {isExpanded && <BuildAssetList appId={appId} buildId={b.id} />}
             </div>
           );
@@ -184,6 +191,88 @@ export function Builds({ appId }: { appId: string }) {
           }}
         />
       )}
+    </div>
+  );
+}
+
+function AgcTestingPanel({ appId, build, packageName }: { appId: string; build: Build; packageName: string | null }) {
+  const toast = useToast();
+  const qc = useQueryClient();
+  const existing = useQuery({
+    queryKey: ["agc-build-submission", appId, build.id],
+    queryFn: () => getAgcBuildSubmission(appId, build.id),
+  });
+  const upload = useMutation({
+    mutationFn: () => startAgcInvitationTest(appId, build.id, packageName!),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["agc-build-submission", appId, build.id] });
+      toast.show({ kind: "success", title: "Uploaded to AppGallery testing", description: "Huawei is compiling the App Pack." });
+    },
+    onError: (e) => toast.show({ kind: "error", title: "AppGallery upload failed", description: (e as Error).message }),
+  });
+  const submissionId = upload.data?.submission_id ?? upload.data?.submission?.id ?? existing.data?.submission?.id ?? null;
+  const status = useQuery({
+    queryKey: ["agc-submission", appId, submissionId],
+    queryFn: () => getAgcSubmission(appId, submissionId!),
+    enabled: submissionId != null,
+    refetchInterval: (q) => {
+      const state = q.state.data?.submission.state;
+      return state === "uploading" || state === "processing" ? 5000 : false;
+    },
+  });
+  const submission = status.data?.submission ?? upload.data?.submission ?? existing.data?.submission ?? null;
+  const submit = useMutation({
+    mutationFn: () => submitAgcInvitationTest(appId, submission!.id),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["agc-submission", appId, submission?.id] });
+      qc.invalidateQueries({ queryKey: ["agc-build-submission", appId, build.id] });
+      toast.show({ kind: "success", title: "Submitted for invitation testing review" });
+    },
+    onError: (e) => toast.show({ kind: "error", title: "Review submission failed", description: (e as Error).message }),
+  });
+  const state = submission?.state;
+  const stateClass = state === "failed" ? "text-red-700" : state === "ready" || state === "testing_review" ? "text-green-700" : "text-blue-700";
+
+  return (
+    <div className="mt-2 pt-2 border-t border-slate-100">
+      <div className="flex items-center gap-2 flex-wrap text-xs">
+        <span className="badge-gray">AppGallery testing</span>
+        {!submission || state === "failed" ? (
+          <Tooltip>
+            <TooltipTrigger
+              render={
+                <Button
+                  variant="outline"
+                  className="py-1! px-2! text-xs!"
+                  disabled={upload.isPending || build.status !== "succeeded" || !packageName}
+                  onClick={() => upload.mutate()}
+                >
+                  {upload.isPending ? "Uploading…" : state === "failed" ? "Retry upload" : "Upload to AppGallery testing"}
+                </Button>
+              }
+            />
+            <TooltipContent>
+              {!packageName ? "Set the channel bundle ID first" : build.status !== "succeeded" ? "Build must be succeeded" : "Upload the signed .app and create an invitation-test version"}
+            </TooltipContent>
+          </Tooltip>
+        ) : null}
+        {state === "ready" && (
+          <Button
+            variant="primary"
+            className="py-1! px-2! text-xs!"
+            disabled={submit.isPending}
+            onClick={() => {
+              if (window.confirm("Submit this AppGallery invitation-test version for review?")) submit.mutate();
+            }}
+          >
+            {submit.isPending ? "Submitting…" : "Submit testing review"}
+          </Button>
+        )}
+        {state && <span className={`font-medium ${stateClass}`}>{state === "processing" ? "Huawei processing…" : state.replaceAll("_", " ")}</span>}
+      </div>
+      {submission?.error_message && <p className="mt-1 text-xs text-red-700">{submission.error_message}</p>}
+      {state === "ready" && <p className="mt-1 text-xs text-slate-500">Package compiled and bound. Review submission remains a separate confirmation.</p>}
+      {state === "testing_review" && <p className="mt-1 text-xs text-green-700">Submitted to AppGallery invitation testing review.</p>}
     </div>
   );
 }

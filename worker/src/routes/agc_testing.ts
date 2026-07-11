@@ -6,6 +6,9 @@ import { addAgcTestPackage, bindAgcTestPackage, createAgcInvitationVersion, crea
 
 type AdminContext = Context<AdminEnv & { Bindings: Env }>;
 type Submission = { id: string; app_id: string; build_id: string; state: string; external_app_id: string; external_version_id: string; external_package_id: string; provider_state_json: string; error_message: string | null; created_at: number; updated_at: number };
+function publicSubmission(sub: Submission) {
+  return { ...sub, provider_state: JSON.parse(sub.provider_state_json || "{}"), provider_state_json: undefined };
+}
 async function auth(c: AdminContext) {
   if (!c.env.AGC_CRED_ENC_KEY) throw new Error("server is missing AGC_CRED_ENC_KEY");
   const credential = await getAgcCredentials(c.env.DB, c.env.AGC_CRED_ENC_KEY, c.req.param("appId") ?? "");
@@ -35,7 +38,7 @@ export async function handleStartAgcInvitationTest(c: AdminContext) {
     WHERE b.id=?1 AND b.app_id=?2 AND ba.platform='ohos' AND ba.filetype='app'`).bind(buildId, appId).first<{ r2_key: string; file_hash: string; size_bytes: number; filetype: string }>();
   if (!row) return c.json({ error: "signed OHOS .app asset not found for build" }, 404);
   const existing = await c.env.DB.prepare("SELECT * FROM market_submissions WHERE idempotency_key=?1").bind(`agc-invitation:${buildId}`).first<Submission>();
-  if (existing && existing.state !== "failed") return c.json({ submission: existing });
+  if (existing && existing.state !== "failed") return c.json({ submission: publicSubmission(existing) });
   if (existing) await c.env.DB.prepare("DELETE FROM market_submissions WHERE id=?1").bind(existing.id).run();
   const id = crypto.randomUUID(); const now = Date.now();
   await c.env.DB.prepare(`INSERT INTO market_submissions (id,app_id,build_id,provider,lane,state,idempotency_key,created_by_actor,created_at,updated_at)
@@ -60,6 +63,14 @@ export async function handleStartAgcInvitationTest(c: AdminContext) {
     return c.json({ error: (e as Error).message, submission_id: id }, 502);
   }
 }
+export async function handleGetAgcBuildSubmission(c: AdminContext) {
+  const sub = await c.env.DB.prepare(`SELECT * FROM market_submissions
+    WHERE app_id=?1 AND build_id=?2 AND provider='appgallery' AND lane='invitation_test'
+    ORDER BY created_at DESC LIMIT 1`)
+    .bind(c.req.param("appId") ?? "", c.req.param("buildId") ?? "")
+    .first<Submission>();
+  return c.json({ submission: sub ? publicSubmission(sub) : null });
+}
 export async function handleGetAgcSubmission(c: AdminContext) {
   const id = c.req.param("submissionId") ?? "";
   const sub = await c.env.DB.prepare("SELECT * FROM market_submissions WHERE id=?1 AND app_id=?2").bind(id, c.req.param("appId") ?? "").first<Submission>();
@@ -72,7 +83,7 @@ export async function handleGetAgcSubmission(c: AdminContext) {
     }
   }
   const events = await c.env.DB.prepare("SELECT state, detail_json, created_at FROM market_submission_events WHERE submission_id=?1 ORDER BY created_at").bind(id).all();
-  return c.json({ submission: { ...sub, provider_state: JSON.parse(sub.provider_state_json || "{}"), provider_state_json: undefined }, events: events.results });
+  return c.json({ submission: publicSubmission(sub), events: events.results });
 }
 export async function handleSubmitAgcInvitationTest(c: AdminContext) {
   const id = c.req.param("submissionId") ?? ""; const appId = c.req.param("appId") ?? "";
