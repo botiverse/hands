@@ -745,7 +745,7 @@ export async function handleAgentManifest(c: Context<{ Bindings: Env }>) {
     docs_url: `${origin}/`,
     execution: {
       mode: "http_api",
-      base_url: `${origin}/api`,
+      base_url: `${origin}/api/`,
     },
     context_check: {
       url: `${origin}/api/auth/me`,
@@ -760,24 +760,24 @@ export async function handleAgentManifest(c: Context<{ Bindings: Env }>) {
         name: "help",
         description:
           "Start here — how to authenticate, what each action does, common crash/feedback flows, and docs links.",
-        endpoint: { method: "GET", path: "/agent/help" },
+        endpoint: { method: "GET", path: "agent/help" },
       },
       {
         name: "list-orgs",
         description:
           "List every organization the current Raft identity can access across linked servers, including role and server identity.",
-        endpoint: { method: "GET", path: "/orgs" },
+        endpoint: { method: "GET", path: "orgs" },
       },
       {
         name: "list-apps",
         description: "List apps the caller can access.",
-        endpoint: { method: "GET", path: "/apps" },
+        endpoint: { method: "GET", path: "apps" },
       },
       {
         name: "create-deploy-token",
         description:
           "Create an app-scoped deploy token. Requires app admin. The raw token is returned exactly once; store it immediately in a secret manager and never post it to a public channel.",
-        endpoint: { method: "POST", path: "/apps/{app_id}/deploy-tokens" },
+        endpoint: { method: "POST", path: "apps/{app_id}/deploy-tokens" },
         parameters: {
           app_id: { type: "string", in: "path", required: true, description: "App UUID." },
         },
@@ -786,7 +786,7 @@ export async function handleAgentManifest(c: Context<{ Bindings: Env }>) {
         name: "list-feedback",
         description:
           "List feedback/crash tickets for an app, newest first. Optional status/kind filters.",
-        endpoint: { method: "GET", path: "/apps/{app_id}/feedback" },
+        endpoint: { method: "GET", path: "apps/{app_id}/feedback" },
         parameters: {
           app_id: { type: "string", in: "path", required: true, description: "App UUID." },
           status: { type: "string", in: "query", required: false, description: "open|in_progress|resolved|closed" },
@@ -797,7 +797,7 @@ export async function handleAgentManifest(c: Context<{ Bindings: Env }>) {
         name: "get-feedback",
         description:
           "Get a feedback/crash ticket with device context, attachments, and comments. ticket_id may be a full UUID or a unique short-id prefix.",
-        endpoint: { method: "GET", path: "/apps/{app_id}/feedback/{ticket_id}" },
+        endpoint: { method: "GET", path: "apps/{app_id}/feedback/{ticket_id}" },
         parameters: {
           app_id: { type: "string", in: "path", required: true, description: "App UUID." },
           ticket_id: { type: "string", in: "path", required: true, description: "Ticket UUID or unique short-id prefix." },
@@ -809,7 +809,7 @@ export async function handleAgentManifest(c: Context<{ Bindings: Env }>) {
           "Get a short-lived signed download URL for a feedback attachment. USE THIS for binaries (zips, images): fetch the returned download_url yourself with curl/wget — invoking a raw-bytes endpoint through an agent transport corrupts binary data.",
         endpoint: {
           method: "GET",
-          path: "/apps/{app_id}/feedback/{ticket_id}/attachments/{attachment_id}?presign=1",
+          path: "apps/{app_id}/feedback/{ticket_id}/attachments/{attachment_id}?presign=1",
         },
         parameters: {
           app_id: { type: "string", in: "path", required: true, description: "App UUID." },
