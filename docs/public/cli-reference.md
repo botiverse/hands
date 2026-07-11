@@ -152,6 +152,34 @@ For raw CI drafts, a single `--changelog-file ./changelog.txt` is still valid.
 For reviewed notes, prefer repeatable `lang=file` entries such as
 `--changelog-file zh=zh.md --changelog-file en=en.md`.
 
+## Publish HarmonyOS / OHOS
+
+Use `builds publish-ohos` after CI has assembled and signed the App Pack. The
+command stores both distribution paths on one build: `.app` for AppGallery and
+the standalone signed `.hap` for user sideloading.
+
+```bash
+hands builds publish-ohos raft-ohos \
+  --app ./raft-ohos-1.0.0-1000000.app \
+  --hap ./raft-ohos-entry-1.0.0-1000000.hap \
+  --symbols ./ohos-symbols-1.0.0-1000000.tar.gz \
+  --metadata ./ohos-release-metadata.json \
+  --channel main \
+  --version-name 1.0.0 \
+  --version-code 1000000 \
+  --source-commit "$GITHUB_SHA" \
+  --ci-provider github-actions \
+  --ci-run-id "$GITHUB_RUN_ID" \
+  --ci-url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
+  --draft
+```
+
+Both `.app` and `.hap` are installable assets with distinct file types and
+distribution metadata. Public update consumers can request `filetype=app` or
+`filetype=hap`; authenticated build views expose both files individually.
+Signing certificates, profiles, P12 files, and passwords remain in CI and are
+never uploaded to Hands.
+
 ## Publish Electron (generic provider)
 
 Hands can host Electron apps that use `electron-updater` with the generic

@@ -166,6 +166,16 @@ describe("iOS build helper contract", () => {
   });
 });
 
+describe("OHOS build helper contract", () => {
+  it("preserves the App Pack, HAP, symbols, and metadata asset types", async () => {
+    const { inferOhosFiletype } = await import("../src/commands/builds.js");
+    expect(inferOhosFiletype("build/Raft.app")).toBe("app");
+    expect(inferOhosFiletype("build/entry-default-signed.hap")).toBe("hap");
+    expect(inferOhosFiletype("build/ohos-symbols.tar.gz")).toBe("symbols.tar.gz");
+    expect(inferOhosFiletype("build/ohos-release-metadata.json")).toBe("metadata.json");
+  });
+});
+
 describe("build publish changelog options", () => {
   it("supports repeatable lang=file changelogs", async () => {
     const dir = mkdtempSync(join(tmpdir(), "quiver-changelog-"));

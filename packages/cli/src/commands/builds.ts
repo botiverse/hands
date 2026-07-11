@@ -598,6 +598,209 @@ export function registerBuildCommands(program: Command): void {
     );
 
   builds
+    .command("publish-ohos <appIdOrSlug>")
+    .description(
+      "Create an OHOS build/release and upload the signed AppGallery .app plus a standalone signed .hap for sideloading.",
+    )
+    .requiredOption("--app <path>", "Signed App Pack (.app) for AppGallery submission.")
+    .requiredOption("--hap <path>", "Standalone signed HAP (.hap) for user sideloading.")
+    .requiredOption("--version-name <name>", "OHOS versionName.")
+    .requiredOption("--version-code <code>", "OHOS versionCode.")
+    .option("--channel <slug>", "Hands channel slug.", "main")
+    .option("--release-type <type>", "Release type metadata.", "stable")
+    .option("--product-type <type>", "Product type metadata.", "ohos-app")
+    .option("--symbols <path>", "Native symbols/source maps archive.")
+    .option("--metadata <path>", "OHOS release metadata JSON support artifact.")
+    .option(
+      "--changelog <text>",
+      "Inline changelog. Repeatable with lang=text for multiple languages.",
+      collect,
+      [],
+    )
+    .option(
+      "--changelog-file <path>",
+      "Read changelog from file. Repeatable with lang=path, e.g. --changelog-file zh=zh.md --changelog-file en=en.md.",
+      collect,
+      [],
+    )
+    .option("--source-commit <sha>", "Source commit SHA.")
+    .option("--source-branch <branch>", "Source branch.")
+    .option("--build-time <iso>", "Build time. Defaults to now.")
+    .option("--ci-provider <name>", "CI provider name.")
+    .option("--ci-run-id <id>", "CI run id.")
+    .option("--ci-url <url>", "CI run URL.")
+    .option("--force-update", "Mark release as force update.", false)
+    .option("--draft", "Create draft release instead of active.", false)
+    .option("--json", "Output JSON.", false)
+    .action(
+      async (
+        appIdOrSlug: string,
+        opts: {
+          app: string;
+          hap: string;
+          versionName: string;
+          versionCode: string;
+          channel: string;
+          releaseType: string;
+          productType: string;
+          symbols?: string;
+          metadata?: string;
+          changelog?: string[];
+          changelogFile?: string[];
+          sourceCommit?: string;
+          sourceBranch?: string;
+          buildTime?: string;
+          ciProvider?: string;
+          ciRunId?: string;
+          ciUrl?: string;
+          forceUpdate?: boolean;
+          draft?: boolean;
+          json?: boolean;
+        },
+      ) => {
+        const appId = await resolveAppId(appIdOrSlug);
+        const channelId = await resolveChannelId(appId, opts.channel);
+        const versionCode = Number(opts.versionCode);
+        if (!Number.isFinite(versionCode) || versionCode < 0) {
+          throw new Error("--version-code must be a non-negative number");
+        }
+        for (const file of [opts.app, opts.hap, opts.symbols, opts.metadata].filter(Boolean) as string[]) {
+          if (!existsSync(file)) throw new Error(`missing file: ${file}`);
+        }
+        if (inferOhosFiletype(opts.app) !== "app") {
+          throw new Error("--app must point to an .app file");
+        }
+        if (inferOhosFiletype(opts.hap) !== "hap") {
+          throw new Error("--hap must point to a .hap file");
+        }
+
+        const changelog = parseChangelogOptions(opts);
+        const metadataJson = opts.metadata
+          ? JSON.parse(readFileSync(opts.metadata, "utf8"))
+          : {};
+        const provenance = {
+          source_commit: opts.sourceCommit ?? null,
+          source_branch: opts.sourceBranch ?? null,
+          build_time: opts.buildTime ?? new Date().toISOString(),
+          ci_provider: opts.ciProvider ?? null,
+          ci_run_id: opts.ciRunId ?? null,
+          ci_url: opts.ciUrl ?? null,
+        };
+
+        const build = await apiRequest<{ id: string }>(`/api/apps/${appId}/builds`, {
+          method: "POST",
+          body: {
+            channel_id: channelId,
+            product_type: opts.productType,
+            release_type: opts.releaseType,
+            version_name: opts.versionName,
+            version_code: versionCode,
+            changelog,
+            source: "cli",
+            status: "succeeded",
+            build_metadata_json: {
+              ...metadataJson,
+              ohos: {
+                app: basename(opts.app),
+                hap: basename(opts.hap),
+                signed: true,
+                signing_owner: "ci",
+              },
+            },
+            provenance_json: provenance,
+            should_force_update: Boolean(opts.forceUpdate),
+          },
+        });
+
+        const assets = [];
+        assets.push(
+          await uploadAndRegisterAsset(appId, build.id, opts.app, {
+            artifact_kind: "installable",
+            platform: "ohos",
+            arch: null,
+            variant: "appgallery",
+            filetype: "app",
+            metadata_json: {
+              filename: basename(opts.app),
+              signed: true,
+              distribution: "appgallery",
+            },
+          }),
+        );
+        assets.push(
+          await uploadAndRegisterAsset(appId, build.id, opts.hap, {
+            artifact_kind: "installable",
+            platform: "ohos",
+            arch: null,
+            variant: "sideload",
+            filetype: "hap",
+            metadata_json: {
+              filename: basename(opts.hap),
+              signed: true,
+              distribution: "sideload",
+            },
+          }),
+        );
+        if (opts.symbols) {
+          assets.push(
+            await uploadAndRegisterAsset(appId, build.id, opts.symbols, {
+              artifact_kind: "native-symbols",
+              platform: "ohos",
+              arch: null,
+              filetype: inferOhosFiletype(opts.symbols),
+              metadata_json: { filename: basename(opts.symbols) },
+            }),
+          );
+        }
+        if (opts.metadata) {
+          assets.push(
+            await uploadAndRegisterAsset(appId, build.id, opts.metadata, {
+              artifact_kind: "metadata-file",
+              platform: "ohos",
+              arch: null,
+              filetype: inferOhosFiletype(opts.metadata),
+              metadata_json: { filename: basename(opts.metadata) },
+            }),
+          );
+        }
+
+        const release = await apiRequest<{ id: string }>(`/api/apps/${appId}/releases`, {
+          method: "POST",
+          body: {
+            build_id: build.id,
+            channel_id: channelId,
+            product_type: opts.productType,
+            release_type: opts.releaseType,
+            status: opts.draft ? "draft" : "active",
+            changelog,
+            should_force_update: Boolean(opts.forceUpdate),
+            provenance_json: provenance,
+            scopes: [{ scope_type: "full", scope_value: "all" }],
+          },
+        });
+
+        const result = {
+          app_id: appId,
+          build_id: build.id,
+          release_id: release.id,
+          channel: opts.channel,
+          version_name: opts.versionName,
+          version_code: versionCode,
+          assets,
+        };
+        if (opts.json) {
+          console.log(JSON.stringify(result, null, 2));
+          return;
+        }
+        console.log(`Published OHOS release ${opts.versionName} (${versionCode})`);
+        console.log(`  build:   ${build.id}`);
+        console.log(`  release: ${release.id}`);
+        console.log(`  channel: ${opts.channel}`);
+        console.log(`  assets:  ${assets.map((a) => `${a.artifact_kind}:${a.filetype}`).join(", ")}`);
+      },
+    );
+
+  builds
     .command("publish-electron <appIdOrSlug>")
     .description("Create an Electron generic-provider build/release and upload electron-builder output.")
     .requiredOption("--version-name <name>", "Electron app version.")
@@ -879,6 +1082,13 @@ async function uploadAndRegisterAsset(
     file_hash: uploaded.file_hash,
     size_bytes: uploaded.size_bytes,
   };
+}
+
+export function inferOhosFiletype(path: string): string {
+  const name = basename(path).toLowerCase();
+  if (name.endsWith(".tar.gz")) return "symbols.tar.gz";
+  if (name.endsWith(".json")) return "metadata.json";
+  return extname(name).replace(/^\./, "") || "bin";
 }
 
 const ARCHIVE_PATCHER_VERSION = "3.0.0";

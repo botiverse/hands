@@ -85,6 +85,31 @@ support artifact for symbolication. TestFlight processing status can be written
 back through metadata/status follow-ups, but the release should still remain
 `draft` until changelog review is complete.
 
+For HarmonyOS/OHOS, CI signs the HAPs inside the App Pack, verifies each HAP,
+and exports both the signed `.app` and a standalone signed `.hap`. Publish both
+files to one draft build so AppGallery submission and user sideloading consume
+the exact same verified release:
+
+```sh
+hands builds publish-ohos raft-ohos \
+  --channel main \
+  --version-name 1.0.0 \
+  --version-code 1000000 \
+  --app build/raft-ohos-1.0.0-1000000.app \
+  --hap build/raft-ohos-entry-1.0.0-1000000.hap \
+  --symbols build/ohos-symbols-1.0.0-1000000.tar.gz \
+  --metadata build/ohos-release-metadata.json \
+  --changelog-file ./changelog.txt \
+  --source-commit "$GITHUB_SHA" \
+  --ci-provider github-actions \
+  --ci-run-id "$GITHUB_RUN_ID" \
+  --ci-url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
+  --draft
+```
+
+Hands records `.app` as the AppGallery installable and `.hap` as the sideload
+installable. Signing material stays in the mobile CI secret boundary.
+
 If CI already has reviewed localized release notes, use repeatable
 `lang=file` entries instead of the raw plain changelog:
 
