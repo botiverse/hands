@@ -714,7 +714,7 @@ export async function handleAgentHelp(c: Context<{ Bindings: Env }>) {
     start_here: [
       "1. Authenticate (see `auth` below), then GET /api/apps to find your app_id.",
       "2. Crash triage: list-feedback (kind=crash) → get-feedback (device context + attachments) → presign-feedback-attachment, then curl the returned download_url yourself (raw-bytes endpoints get corrupted through agent transports).",
-      "3. Update tickets as you work: PATCH status/assignee, POST comments (see `write_endpoints`).",
+      "3. Triage as you work: update-feedback (change status/assignee, e.g. close a fixed ticket) and comment-feedback (attribution note, internal=true for staff-only). Requires app publisher.",
     ],
     auth: {
       raft_agents:
@@ -923,6 +923,30 @@ export async function handleAgentManifest(c: Context<{ Bindings: Env }>) {
           app_id: { type: "string", in: "path", required: true, description: "App UUID." },
           ticket_id: { type: "string", in: "path", required: true, description: "Ticket UUID or unique short-id prefix." },
           attachment_id: { type: "string", in: "path", required: true, description: "Attachment UUID from the ticket detail." },
+        },
+      },
+      {
+        name: "update-feedback",
+        description:
+          "Update a feedback/crash ticket's status and/or assignee — the triage write path (e.g. close a ticket already fixed elsewhere). Requires app publisher.",
+        endpoint: { method: "PATCH", path: "/api/apps/{app_id}/feedback/{ticket_id}" },
+        parameters: {
+          app_id: { type: "string", in: "path", required: true, description: "App UUID." },
+          ticket_id: { type: "string", in: "path", required: true, description: "Ticket UUID or unique short-id prefix." },
+          status: { type: "string", in: "body", required: false, description: "open|in_progress|resolved|closed" },
+          assignee: { type: "string", in: "body", required: false, description: "Assignee actor id; empty string unassigns." },
+        },
+      },
+      {
+        name: "comment-feedback",
+        description:
+          "Add a comment to a feedback/crash ticket — use for triage attribution (e.g. 'fixed by mobile #555'). Requires app publisher. Set internal=true for a staff-only note not shown to the reporter.",
+        endpoint: { method: "POST", path: "/api/apps/{app_id}/feedback/{ticket_id}/comments" },
+        parameters: {
+          app_id: { type: "string", in: "path", required: true, description: "App UUID." },
+          ticket_id: { type: "string", in: "path", required: true, description: "Ticket UUID or unique short-id prefix." },
+          body: { type: "string", in: "body", required: true, description: "Comment text." },
+          internal: { type: "boolean", in: "body", required: false, description: "true = staff-only internal note; omitted/false = visible to the reporter." },
         },
       },
     ],
