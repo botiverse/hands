@@ -83,7 +83,9 @@ describe("getAppStoreVersions", () => {
     ]);
     const url = String(fetchMock.mock.calls[0]![0]);
     expect(url).toContain("/v1/apps/asc-app-1/appStoreVersions");
-    expect(url).toContain("fields[appStoreVersions]=versionString,appStoreState,platform,createdDate");
+    expect(url).toContain("limit=5");
+    // No sparse fieldset — ASC rejects some fields[...] selectors.
+    expect(url).not.toContain("fields[");
   });
 
   it("returns an empty array when the app has no versions", async () => {

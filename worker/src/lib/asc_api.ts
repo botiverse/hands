@@ -296,11 +296,14 @@ export async function getAppStoreVersions(
   creds: AscApiCredentials,
   ascAppId: string,
 ): Promise<AppStoreVersionSummary[]> {
+  // No sparse fieldset — ASC rejects some fields[...] selectors ("a given
+  // parameter is not allowed"); fetch the full resource and read what we need.
   const res = await ascRequest<{
     data: Array<{
       attributes?: {
         versionString?: string | null;
         appStoreState?: string | null;
+        appVersionState?: string | null;
         platform?: string | null;
         createdDate?: string | null;
       };
@@ -308,11 +311,13 @@ export async function getAppStoreVersions(
   }>(
     creds,
     "GET",
-    `/v1/apps/${ascAppId}/appStoreVersions?limit=5&fields[appStoreVersions]=versionString,appStoreState,platform,createdDate`,
+    `/v1/apps/${ascAppId}/appStoreVersions?limit=5`,
   );
   return (res.data ?? []).map((v) => ({
     versionString: v.attributes?.versionString ?? null,
-    appStoreState: v.attributes?.appStoreState ?? null,
+    // appStoreState is the classic field; newer API versions expose the same
+    // value as appVersionState — fall back so the badge still resolves.
+    appStoreState: v.attributes?.appStoreState ?? v.attributes?.appVersionState ?? null,
     platform: v.attributes?.platform ?? null,
     createdDate: v.attributes?.createdDate ?? null,
   }));
@@ -356,7 +361,7 @@ export async function getBetaReviewStates(
   }>(
     creds,
     "GET",
-    `/v1/apps/${ascAppId}/builds?limit=5&include=betaAppReviewSubmission&fields[builds]=version,processingState,uploadedDate&fields[betaAppReviewSubmissions]=betaReviewState`,
+    `/v1/apps/${ascAppId}/builds?limit=5&include=betaAppReviewSubmission`,
   );
 
   // Index the included betaAppReviewSubmissions by id so each build can look
