@@ -110,7 +110,7 @@ const HISTORY_SQL = `
   FROM releases r
   JOIN builds b ON b.id = r.build_id
   JOIN channels ch ON ch.id = r.channel_id
-  WHERE r.app_id = ?1 AND r.status IN ('active', 'superseded')
+  WHERE r.app_id = ?1 AND r.hidden = 0 AND r.status IN ('active', 'superseded')
   ORDER BY b.version_code DESC, released_at DESC
   LIMIT 50`;
 
@@ -131,7 +131,7 @@ const NOTES_SQL = `
   FROM releases r
   JOIN builds b ON b.id = r.build_id
   JOIN channels ch ON ch.id = r.channel_id
-  WHERE r.app_id = ?1 AND (
+  WHERE r.app_id = ?1 AND r.hidden = 0 AND (
     r.status IN ('active', 'superseded')
     OR (r.status = 'draft' AND b.version_code = ?2)
   )
@@ -261,7 +261,7 @@ export async function handlePublicAppHistoryDownload(
   const asset = await c.env.DB.prepare(
     `SELECT ba.r2_key FROM releases r
      JOIN build_assets ba ON ba.build_id = r.build_id
-     WHERE r.app_id = ?1 AND r.id = ?2 AND r.status IN ('active', 'superseded')
+     WHERE r.app_id = ?1 AND r.id = ?2 AND r.hidden = 0 AND r.status IN ('active', 'superseded')
        AND ba.artifact_kind = 'installable'
      ORDER BY ba.created_at LIMIT 1`,
   )

@@ -38,6 +38,10 @@ interface ReleaseUpdateInput {
   availability_at?: number | null;
   provenance_json?: unknown;
   scopes?: ReleaseScopeInput[];
+  // Hide/show this release on the public history + release-notes surfaces
+  // without deleting it. Editable even on locked (superseded/cancelled)
+  // releases so junk/duplicate old entries can be cleaned from the changelog.
+  hidden?: boolean;
 }
 
 interface ReleaseRow {
@@ -233,21 +237,20 @@ async function updateReleaseFields(
   actor: string,
 ): Promise<ReleaseRow> {
   if (release.status === "cancelled" || release.status === "superseded") {
-    // Locked releases: allow editing only the changelog (display text, e.g.
-    // reformatting an old version's release notes), never the fields with live
-    // rollout/scope/availability semantics.
-    const onlyChangelog =
-      (input.changelog !== undefined ||
-        input.release_notes !== undefined) &&
-      input.should_force_update === undefined &&
-      input.rollout_cohort_count === undefined &&
-      input.rollout_target_cohorts_json === undefined &&
-      input.availability_at === undefined &&
-      input.provenance_json === undefined &&
-      input.scopes === undefined;
-    if (!onlyChangelog) {
+    // Locked releases: allow editing only display/visibility fields — the
+    // changelog (e.g. reformatting an old version's notes) and `hidden` (clean
+    // junk/duplicate entries out of the public history) — never the fields with
+    // live rollout/scope/availability semantics.
+    const editsLiveFields =
+      input.should_force_update !== undefined ||
+      input.rollout_cohort_count !== undefined ||
+      input.rollout_target_cohorts_json !== undefined ||
+      input.availability_at !== undefined ||
+      input.provenance_json !== undefined ||
+      input.scopes !== undefined;
+    if (editsLiveFields) {
       throw new Error(
-        `cannot update ${release.status} release (only the changelog may be edited)`,
+        `cannot update ${release.status} release (only the changelog and visibility may be edited)`,
       );
     }
   }
@@ -284,6 +287,10 @@ async function updateReleaseFields(
   if (input.provenance_json !== undefined) {
     sets.push(`provenance_json = ?${binds.length + 1}`);
     binds.push(jsonString(input.provenance_json));
+  }
+  if (input.hidden !== undefined) {
+    sets.push(`hidden = ?${binds.length + 1}`);
+    binds.push(input.hidden ? 1 : 0);
   }
 
   const statements: D1PreparedStatement[] = [];

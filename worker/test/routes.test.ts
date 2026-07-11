@@ -210,6 +210,7 @@ function makeMockDb() {
       should_force_update INTEGER NOT NULL DEFAULT 0,
       changelog TEXT,
       provenance_json TEXT NOT NULL DEFAULT '{}',
+      hidden INTEGER NOT NULL DEFAULT 0,
       created_by TEXT NOT NULL,
       created_at INTEGER NOT NULL,
       updated_at INTEGER NOT NULL,
