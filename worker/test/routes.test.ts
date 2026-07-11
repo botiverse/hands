@@ -3975,6 +3975,100 @@ describe("quiver public API v2 — scope resolution", () => {
     expect(comment.body).toContain("abcd1234");
   });
 
+  it("parseOhosNativeFrames extracts frames from a debuggerd-style HarmonyOS fault log", async () => {
+    const { parseOhosNativeFrames } = await import("../src/routes/feedback");
+    const log = [
+      "Hands OHOS fault log (hiAppEvent)",
+      "Event: APP_CRASH",
+      "Fault kind: CppCrash",
+      "",
+      "--- exception ---",
+      "Thread 0 crashed:",
+      "#00 pc 000000000004a1b8 /system/lib64/libc.so(abort+164)(BuildId: 1a2b3c4d5e6f7a8b)",
+      "#01 pc 0000000000012345 /data/storage/el1/bundle/entry/libs/arm64/libentry.so",
+      "#02 pc 00000000000067ff /data/app/libnative.so(doWork+31)(BuildId: aabbccddeeff0011)",
+    ].join("\n");
+    expect(parseOhosNativeFrames(log)).toEqual([
+      { index: 0, offset: "0x000000000004a1b8", soname: "libc.so", build_id: "1a2b3c4d5e6f7a8b" },
+      { index: 1, offset: "0x0000000000012345", soname: "libentry.so" },
+      { index: 2, offset: "0x00000000000067ff", soname: "libnative.so", build_id: "aabbccddeeff0011" },
+    ]);
+  });
+
+  it("parseOhosNativeFrames handles JSON-escaped newlines and structured frames", async () => {
+    const { parseOhosNativeFrames } = await import("../src/routes/feedback");
+    // Backtrace embedded as a JSON-stringified string (real newlines escaped).
+    const escaped =
+      "Hands OHOS fault log (hiAppEvent)\\n--- exception ---\\n" +
+      '{"stack":"#00 pc 000000000004a1b8 /system/lib64/libc.so(BuildId: 1a2b3c4d5e6f7a8b)"}';
+    expect(parseOhosNativeFrames(escaped)).toEqual([
+      { index: 0, offset: "0x000000000004a1b8", soname: "libc.so", build_id: "1a2b3c4d5e6f7a8b" },
+    ]);
+    // Structured JSON frames (no text backtrace): pc is the .so-relative address.
+    const structured =
+      "Hands OHOS fault log (hiAppEvent)\n--- exception ---\n" +
+      JSON.stringify({
+        message: "Segmentation fault",
+        frames: [
+          { index: 0, symbol: "abort", file: "/system/lib64/libc.so", pc: "4a1b8", offset: "164", buildId: "1a2b3c4d5e6f7a8b" },
+          { symbol: "", file: "/data/app/libentry.so", pc: "0x12345" },
+        ],
+      });
+    expect(parseOhosNativeFrames(structured)).toEqual([
+      { index: 0, offset: "0x4a1b8", soname: "libc.so", build_id: "1a2b3c4d5e6f7a8b" },
+      { index: 1, offset: "0x12345", soname: "libentry.so" },
+    ]);
+    expect(parseOhosNativeFrames("")).toEqual([]);
+    expect(parseOhosNativeFrames("no frames here")).toEqual([]);
+  });
+
+  it("symbolicateOhosCrashTicket parses the fault log and leaves a publish-ohos hint when symbols are missing", async () => {
+    const env = makeEnv();
+    const log =
+      "Hands OHOS fault log (hiAppEvent)\n--- exception ---\n" +
+      "#00 pc 000000000004a1b8 /data/app/libentry.so(BuildId: aabbccddeeff0011)";
+    env.APK_BUCKET = {
+      get: async (key: string) =>
+        key === "feedback/app-scope/tick-ohos/0-crash.log" ? { text: async () => log } : null,
+    } as any;
+    const { symbolicateOhosCrashTicket } = await import("../src/routes/feedback");
+    await env.DB.prepare(
+      `INSERT INTO feedback_tickets (id, app_id, kind, status, message, metadata_json, created_at, updated_at)
+       VALUES (?1, ?2, 'crash', 'open', 'ohos crash', '{}', ?3, ?4)`,
+    ).bind("tick-ohos", "app-scope", 1, 1).run();
+    await symbolicateOhosCrashTicket(
+      env as any,
+      "app-scope",
+      "tick-ohos",
+      1040000,
+      "feedback/app-scope/tick-ohos/0-crash.log",
+    );
+    const comment = (await env.DB.prepare(
+      "SELECT author_actor, body FROM feedback_comments WHERE ticket_id = ?1",
+    ).bind("tick-ohos").all()).results[0] as { author_actor: string; body: string };
+    expect(comment.author_actor).toBe("quiver-symbolicate");
+    expect(comment.body).toContain("native-symbols");
+    expect(comment.body).toContain("publish-ohos");
+    expect(comment.body).toContain("aabbccddeeff0011");
+  });
+
+  it("symbolicateOhosCrashTicket ignores non-OHOS logs", async () => {
+    const env = makeEnv();
+    env.APK_BUCKET = {
+      get: async () => ({ text: async () => "some android logcat, not an ohos fault log" }),
+    } as any;
+    const { symbolicateOhosCrashTicket } = await import("../src/routes/feedback");
+    await env.DB.prepare(
+      `INSERT INTO feedback_tickets (id, app_id, kind, status, message, metadata_json, created_at, updated_at)
+       VALUES (?1, ?2, 'crash', 'open', 'not ohos', '{}', ?3, ?4)`,
+    ).bind("tick-noop", "app-scope", 1, 1).run();
+    await symbolicateOhosCrashTicket(env as any, "app-scope", "tick-noop", 1040000, "any-key");
+    const rows = (await env.DB.prepare(
+      "SELECT id FROM feedback_comments WHERE ticket_id = ?1",
+    ).bind("tick-noop").all()).results;
+    expect(rows.length).toBe(0);
+  });
+
   it("parseBinaryImages/parseCrashFrames bound and shape-check SDK input", async () => {
     const { parseBinaryImages, parseCrashFrames } = await import("../src/routes/feedback");
     const images = parseBinaryImages(JSON.stringify([

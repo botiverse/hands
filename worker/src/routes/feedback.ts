@@ -98,10 +98,16 @@ export async function handlePublicFeedbackSubmit(c: Context<{ Bindings: Env }>) 
   const slug = c.req.param("slug");
   if (!slug) return c.json({ error: "slug required" }, 400);
   const app = await c.env.DB.prepare(
-    "SELECT id, org_id, slug, client_key FROM apps WHERE slug = ?1 AND archived = 0",
+    "SELECT id, org_id, slug, client_key, platform FROM apps WHERE slug = ?1 AND archived = 0",
   )
     .bind(slug)
-    .first<{ id: string; org_id: string | null; slug: string; client_key: string | null }>();
+    .first<{
+      id: string;
+      org_id: string | null;
+      slug: string;
+      client_key: string | null;
+      platform: string | null;
+    }>();
   if (!app) return c.json({ error: `app '${slug}' not found` }, 404);
 
   // Client-key gate (Sentry-DSN model): always required. Apps predating the
@@ -307,6 +313,21 @@ export async function handlePublicFeedbackSubmit(c: Context<{ Bindings: Env }>) 
   if (kind === "crash" && nativeFrames.length > 0) {
     const run = () =>
       symbolicateNativeCrashTicket(c.env, app.id, ticketId, versionCode, nativeFrames);
+    try {
+      c.executionCtx.waitUntil(run());
+    } catch {
+      run().catch(() => {});
+    }
+  }
+
+  // OHOS crashes: the HarmonyOS SDK captures cppcrash/NativeCrash faults via
+  // hiAppEvent and uploads them as a text fault log (no structured
+  // crash_native_frames). Parse the debuggerd-style backtrace out of that log
+  // server-side into native frames, then reuse the native-symbols lane. Gated
+  // on platform so non-OHOS crashes don't pay for the extra log fetch.
+  if (kind === "crash" && app.platform === "ohos" && attachmentRows.length > 0) {
+    const logKey = attachmentRows[0]!.r2Key;
+    const run = () => symbolicateOhosCrashTicket(c.env, app.id, ticketId, versionCode, logKey);
     try {
       c.executionCtx.waitUntil(run());
     } catch {
@@ -724,6 +745,7 @@ export async function symbolicateNativeCrashTicket(
   ticketId: string,
   versionCode: number | null,
   frames: NativeFrame[],
+  publishHint: string = "quiver builds publish-android --symbols",
 ): Promise<void> {
   try {
     if (versionCode === null || frames.length === 0) return;
@@ -754,7 +776,7 @@ export async function symbolicateNativeCrashTicket(
       await appendComment(
         `Native crash could not be symbolicated: no 'native-symbols' build asset ` +
           `for version_code ${versionCode}${ids ? ` (crash BuildId: ${ids})` : ""}. ` +
-          `Publish the build with its unstripped .so archive (quiver builds publish-android --symbols).`,
+          `Publish the build with its unstripped .so archive (${publishHint}).`,
       );
       return;
     }
@@ -795,6 +817,127 @@ export async function symbolicateNativeCrashTicket(
   } catch (err) {
     console.error(
       `[symbolicate] failed for ticket ${ticketId}: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+}
+
+function ohosBasename(p: string): string {
+  const parts = p.split(/[\\/]/);
+  return parts[parts.length - 1] ?? "";
+}
+
+/**
+ * Parse OHOS/HarmonyOS native crash frames out of the fault log the OHOS SDK
+ * (HandsFaultWatcher) uploads. That log embeds the hiAppEvent `exception`,
+ * whose native backtrace shows up either as a debuggerd-style text stack
+ * (`#00 pc <offset> <path>.so(sym+off)(BuildId: <id>)`) or as structured JSON
+ * frames. Both are reduced to { index, offset, soname, build_id } — the exact
+ * shape the native-symbols lane feeds llvm-symbolizer — so OHOS reuses the
+ * Android native path unchanged (OHOS binaries are ARM64 ELF `.so`). The
+ * `.so`-relative program counter (`pc`) is the address llvm-symbolizer needs;
+ * a symbol-relative offset, when present, is display-only and ignored.
+ */
+export function parseOhosNativeFrames(logText: string): NativeFrame[] {
+  if (!logText) return [];
+  // hiAppEvent stacks often arrive JSON-stringified, so real newlines may be
+  // escaped as a literal backslash-n. Normalise so a line scan sees one frame
+  // per line and object regexes see clean field boundaries.
+  const normalized = logText
+    .replace(/\\r\\n|\\n|\\r/g, "\n")
+    .replace(/\r\n/g, "\n");
+
+  const frames: NativeFrame[] = [];
+  const seen = new Set<number>();
+
+  // Lane A — debuggerd-style text backtrace (the canonical HarmonyOS DFX form).
+  const frameRe = /#0*(\d+)\s+pc\s+([0-9a-fA-F]{1,16})\s+(\S+?\.so)\b/i;
+  const buildIdRe = /\bBuildId:\s*([0-9a-fA-F]{8,64})/i;
+  for (const rawLine of normalized.split("\n")) {
+    if (frames.length >= 256) break;
+    const line = rawLine.trim();
+    const m = frameRe.exec(line);
+    if (!m) continue;
+    const index = Number(m[1]);
+    if (!Number.isFinite(index) || seen.has(index)) continue;
+    const soname = ohosBasename(m[3]!);
+    if (!soname) continue;
+    const frame: NativeFrame = {
+      index,
+      offset: `0x${m[2]!.toLowerCase()}`,
+      soname: soname.slice(0, 200),
+    };
+    const bid = buildIdRe.exec(line);
+    if (bid) frame.build_id = bid[1]!.toLowerCase();
+    frames.push(frame);
+    seen.add(index);
+  }
+  if (frames.length > 0) return frames;
+
+  // Lane B — structured JSON frames: `"frames":[{"file":"…​.so","pc":"…"}]`.
+  // Map file->soname and the .so-relative pc (falling back to offset) into our
+  // shape. Field mapping validated against a real device sample (task #95).
+  const objRe = /\{[^{}]*?"file"\s*:\s*"([^"]*?\.so)"[^{}]*?\}/gi;
+  let om: RegExpExecArray | null;
+  let autoIndex = 0;
+  while ((om = objRe.exec(normalized)) !== null) {
+    if (frames.length >= 256) break;
+    const obj = om[0];
+    const soname = ohosBasename(om[1]!);
+    if (!soname) continue;
+    const pcM = /"pc"\s*:\s*"?(?:0x)?([0-9a-fA-F]{1,16})"?/i.exec(obj);
+    const offM = /"offset"\s*:\s*"?(?:0x)?([0-9a-fA-F]{1,16})"?/i.exec(obj);
+    const hex = pcM ? pcM[1]! : offM ? offM[1]! : "";
+    if (!hex) continue;
+    const idxM = /"index"\s*:\s*(\d+)/i.exec(obj);
+    const index = idxM ? Number(idxM[1]) : autoIndex;
+    const frame: NativeFrame = {
+      index,
+      offset: `0x${hex.toLowerCase()}`,
+      soname: soname.slice(0, 200),
+    };
+    const bidM = /"[bB]uild[_]?[iI]d"\s*:\s*"([0-9a-fA-F]{8,64})"/.exec(obj);
+    if (bidM) frame.build_id = bidM[1]!.toLowerCase();
+    frames.push(frame);
+    autoIndex++;
+  }
+  return frames;
+}
+
+/**
+ * OHOS native crash symbolication (server side, task #95). Reads the uploaded
+ * HarmonyOS fault log, extracts native frames, and hands them to the shared
+ * native-symbols lane — no OHOS-specific container work, since OHOS binaries
+ * are ARM64 ELF `.so` (same tooling as Android native). The `native-symbols`
+ * archive is what `publish-ohos --symbols` uploads.
+ */
+export async function symbolicateOhosCrashTicket(
+  env: Env,
+  appId: string,
+  ticketId: string,
+  versionCode: number | null,
+  logR2Key: string,
+): Promise<void> {
+  try {
+    if (versionCode === null) return;
+    const logObj = await env.APK_BUCKET.get(logR2Key);
+    if (!logObj) return;
+    const logText = await logObj.text();
+    // Only act on OHOS fault logs (HandsFaultWatcher writes this signature on
+    // the first line); ignore anything else routed here.
+    if (!logText.includes("Hands OHOS fault log")) return;
+    const frames = parseOhosNativeFrames(logText);
+    if (frames.length === 0) return;
+    await symbolicateNativeCrashTicket(
+      env,
+      appId,
+      ticketId,
+      versionCode,
+      frames,
+      "quiver builds publish-ohos --symbols",
+    );
+  } catch (err) {
+    console.error(
+      `[symbolicate-ohos] failed for ticket ${ticketId}: ${err instanceof Error ? err.message : String(err)}`,
     );
   }
 }
