@@ -603,7 +603,9 @@ admin.patch("/api/apps/:appId", requireAppRole("admin"), handleUpdateApp);
 admin.post("/api/apps/:appId/archive", requireAppRole("admin"), handleArchiveApp);
 admin.post("/api/apps/:appId/purge", requireAppRole("admin"), handlePurgeApp);
 admin.get("/api/apps/:appId/feature-flags/:key", requireAppRole("viewer"), handleGetFeatureFlag);
-admin.put("/api/apps/:appId/feature-flags/:key", requireAppRole("admin"), handleUpdateFeatureFlag);
+// Feature flags are rollout controls (like bump-rollout / force-update), so they
+// sit at the publisher (ship) tier rather than admin.
+admin.put("/api/apps/:appId/feature-flags/:key", requireAppRole("publisher"), handleUpdateFeatureFlag);
 
 admin.get("/api/apps/:appId/builds", requireAppRole("viewer"), handleListBuilds);
 admin.post("/api/apps/:appId/builds", requireAppRole("publisher"), handleCreateBuild);
@@ -818,7 +820,8 @@ admin.post(
   requireAppRole("publisher"),
   handleGenerateDeltaPatches,
 );
-admin.get("/api/apps/:appId/delta-sources", requireAppRole("publisher"), handleDeltaSources);
+// delta-sources is a read-only listing; align it with every other GET at viewer.
+admin.get("/api/apps/:appId/delta-sources", requireAppRole("viewer"), handleDeltaSources);
 
 app.route("/", admin);
 

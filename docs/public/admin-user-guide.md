@@ -123,6 +123,8 @@ The Access page controls who can see or publish an app.
 
 Deploy tokens are app-scoped bearer tokens. Create them for automation instead of reusing a human browser session. Copy the token when it is created; Hands only shows the raw token once. Each token records who created it, and actions performed with it are attributed as `deploy-token:<name>@<app>` in audit logs and release provenance.
 
+Roles range from `viewer` (read) through `member` (collaborate — e.g. triage feedback), `publisher` (ship builds/releases), to `admin` (configure, manage members, hold secrets). See the [permissions reference](../rbac-permissions.md) for the full role model and the endpoint→role matrix.
+
 ## Common Issues
 
 ### No update is found

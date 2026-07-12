@@ -75,7 +75,7 @@ them to your allow-listed test device (flag `allow_device_ids = [deviceId]`).
 
 - `GET /api/apps/:appId/feature-flags/:key` (viewer) — returns the flag row, or
   a defaults object (`default_enabled: 0`, empty arrays) when none exists.
-- `PUT /api/apps/:appId/feature-flags/:key` (admin) — upserts. Body (all
+- `PUT /api/apps/:appId/feature-flags/:key` (publisher) — upserts. Body (all
   optional; a partial PUT preserves untouched fields):
   ```json
   {
