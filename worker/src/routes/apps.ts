@@ -385,7 +385,7 @@ export async function handleGetFeatureFlag(c: AdminContext) {
   return c.json(row);
 }
 
-/** PUT /api/apps/:appId/feature-flags/:key — upsert a feature flag (admin). */
+/** PUT /api/apps/:appId/feature-flags/:key — upsert a feature flag (publisher). */
 export async function handleUpdateFeatureFlag(c: AdminContext) {
   const appId = c.req.param("appId") ?? "";
   const key = c.req.param("key") ?? "";

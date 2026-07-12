@@ -121,6 +121,11 @@ Crash tickets carry a grouping signature and, when the build's
 `mapping.txt` was uploaded, an auto-retraced stack in the comments.
 `GET /api/apps/:id/feedback/crash-groups` aggregates by signature.
 
+Triage is a **member-level** operation: reading tickets needs `viewer`, and
+updating status/assignee or adding comments needs org **member** (or an app
+`publisher` — e.g. a publisher deploy token). See the
+[permissions reference](../rbac-permissions.md) for the full role matrix.
+
 ### Share links
 
 ```bash

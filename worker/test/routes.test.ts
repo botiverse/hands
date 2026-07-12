@@ -20,7 +20,7 @@ import Database from "better-sqlite3";
 import { createHash } from "node:crypto";
 import { Hono } from "hono";
 import { authMiddleware } from "../src/middleware/auth";
-import { requireCurrentOrgRole, requireFeedbackTriageRole } from "../src/lib/permissions";
+import { requireAppRole, requireCurrentOrgRole, requireFeedbackTriageRole } from "../src/lib/permissions";
 import { handleUpdateFeedback, handleAddFeedbackComment } from "../src/routes/feedback";
 import {
   httpsRedirectUrl,
@@ -28,7 +28,7 @@ import {
   requestOrigin,
 } from "../src/lib/origin";
 import { openApiDocument } from "../src/openapi";
-import { handleCreateApp, handleListApps } from "../src/routes/apps";
+import { handleCreateApp, handleListApps, handleUpdateFeatureFlag } from "../src/routes/apps";
 import { createSignedJwt, handleAuthLogin, handleAuthMe, handleDashboardRedirect } from "../src/routes/auth";
 import { handleListOrgs } from "../src/routes/orgs";
 
@@ -974,6 +974,105 @@ describe("quiver route handlers — SQL smoke", () => {
       .first()) as { body: string; internal: number } | null;
     expect(comment?.body).toBe("fixed by mobile #999");
     expect(comment?.internal).toBe(1);
+  });
+
+  it("lets an app publisher set feature flags (was admin-only) but denies plain members", async () => {
+    const now = Date.now();
+    const publisherToken = "ff-pub-token";
+    const memberToken = "ff-member-token";
+
+    await env.DB
+      .prepare(
+        `INSERT INTO organizations
+         (id, slug, name, external_provider, external_id, created_at, archived)
+         VALUES (?, ?, ?, 'raft', ?, ?, 0)`,
+      )
+      .bind("raft_ff", "ff-org", "FF Org", "ff-server", now)
+      .run();
+    await env.DB
+      .prepare(
+        "INSERT INTO apps (id, org_id, slug, name, platform, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+      )
+      .bind("ff-app", "raft_ff", "ff-app", "FF App", "android", now)
+      .run();
+
+    // publisher = org viewer + explicit app publisher; member = org member, no app role.
+    const accounts = [
+      { id: "ff-pub", subject: "ff-pub-sub", org: "viewer", app: "publisher", token: publisherToken },
+      { id: "ff-mem", subject: "ff-mem-sub", org: "member", app: null as string | null, token: memberToken },
+    ];
+    for (const a of accounts) {
+      await env.DB
+        .prepare(
+          `INSERT INTO raft_accounts
+           (id, provider, provider_subject, server_id, server_slug, principal_type,
+            server_role, username, display_name, avatar_url, raw_profile,
+            created_at, updated_at, last_login_at)
+           VALUES (?, 'raft', ?, 'ff-server', 'ff-org', 'agent',
+                   NULL, ?, ?, NULL, '{}', ?, ?, ?)`,
+        )
+        .bind(a.id, a.subject, a.id, a.id, now, now, now)
+        .run();
+      await env.DB
+        .prepare(
+          "INSERT INTO org_members (id, org_id, account_id, org_role, joined_at) VALUES (?, ?, ?, ?, ?)",
+        )
+        .bind(`om-${a.id}`, "raft_ff", a.id, a.org, now)
+        .run();
+      if (a.app) {
+        await env.DB
+          .prepare(
+            "INSERT INTO app_members (id, app_id, account_id, app_role, joined_at) VALUES (?, ?, ?, ?, ?)",
+          )
+          .bind(`am-${a.id}`, "ff-app", a.id, a.app, now)
+          .run();
+      }
+      await env.DB
+        .prepare(
+          "INSERT INTO raft_sessions (id, account_id, token_hash, created_at, expires_at, last_seen_at) VALUES (?, ?, ?, ?, ?, ?)",
+        )
+        .bind(
+          `s-${a.id}`,
+          a.id,
+          createHash("sha256").update(a.token).digest("hex"),
+          now,
+          now + 60_000,
+          now,
+        )
+        .run();
+    }
+
+    const testApp = new Hono<{ Bindings: Env }>();
+    testApp.use("*", authMiddleware as any);
+    testApp.put(
+      "/api/apps/:appId/feature-flags/:key",
+      requireAppRole("publisher") as any,
+      handleUpdateFeatureFlag as any,
+    );
+
+    // Plain org member (no app role) is below the publisher bar → 403.
+    const memberResponse = await testApp.request(
+      "https://quiver-worker.test/api/apps/ff-app/feature-flags/delta_updates",
+      {
+        method: "PUT",
+        headers: { authorization: `Bearer ${memberToken}`, "content-type": "application/json" },
+        body: JSON.stringify({ rollout_percent: 25 }),
+      },
+      env as any,
+    );
+    expect(memberResponse.status).toBe(403);
+
+    // App publisher can now toggle the flag (previously required admin).
+    const publisherResponse = await testApp.request(
+      "https://quiver-worker.test/api/apps/ff-app/feature-flags/delta_updates",
+      {
+        method: "PUT",
+        headers: { authorization: `Bearer ${publisherToken}`, "content-type": "application/json" },
+        body: JSON.stringify({ rollout_percent: 25 }),
+      },
+      env as any,
+    );
+    expect(publisherResponse.status).toBe(200);
   });
 
   it("uses a validated selected-org header for org-scoped app requests", async () => {
