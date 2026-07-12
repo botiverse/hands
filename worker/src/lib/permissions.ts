@@ -209,7 +209,12 @@ export async function ensureOrgRole(c: AdminContext, orgId: string, minimum: Org
   return { ok: true as const, role };
 }
 
-export async function ensureAppRole(c: AdminContext, appId: string, minimum: AppRole) {
+export async function ensureAppRole(
+  c: AdminContext,
+  appId: string,
+  minimum: AppRole,
+  opts?: { orgMinimum?: OrgRole },
+) {
   if (devTokenBypass(c)) return { ok: true as const, app_role: "admin" as AppRole, org_role: "owner" as OrgRole };
   const deployToken = currentDeployToken(c);
   if (deployToken) {
@@ -257,10 +262,11 @@ export async function ensureAppRole(c: AdminContext, appId: string, minimum: App
     };
   }
   const role = await getEffectiveRole(c.env.DB, account.id, { appId });
-  const orgAllows =
-    minimum === "viewer"
-      ? isOrgAtLeast(role.org_role, "viewer")
-      : isOrgAtLeast(role.org_role, "admin");
+  // Default org bar: a plain app action needs org admin (or the app-role
+  // fallback below); a viewer action only needs org viewer. Callers can lower
+  // the org bar via opts.orgMinimum (e.g. feedback triage → org member).
+  const orgMinimum = opts?.orgMinimum ?? (minimum === "viewer" ? "viewer" : "admin");
+  const orgAllows = isOrgAtLeast(role.org_role, orgMinimum);
   const appAllows = isAppAtLeast(role.app_role, minimum);
   if (!orgAllows && !appAllows) {
     return {
@@ -310,6 +316,22 @@ export function requireAppRole(minimum: AppRole): MiddlewareHandler<RoleContext>
     const appId = c.req.param("appId");
     if (!appId) return c.json({ error: "missing appId" }, 400);
     const allowed = await ensureAppRole(c, appId, minimum);
+    if (!allowed.ok) return allowed.response;
+    await next();
+  };
+}
+
+/**
+ * Feedback triage (update status/assignee, add comments) is a member-level
+ * operation: any org member — not just app publishers/admins — can triage an
+ * app's feedback tickets. Existing app publishers/admins still pass via the
+ * app-role fallback; bare viewers (read-only) still cannot write.
+ */
+export function requireFeedbackTriageRole(): MiddlewareHandler<RoleContext> {
+  return async (c, next) => {
+    const appId = c.req.param("appId");
+    if (!appId) return c.json({ error: "missing appId" }, 400);
+    const allowed = await ensureAppRole(c, appId, "publisher", { orgMinimum: "member" });
     if (!allowed.ok) return allowed.response;
     await next();
   };

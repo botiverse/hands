@@ -174,6 +174,7 @@ import {
 import {
   requireAppRole,
   requireCurrentOrgRole,
+  requireFeedbackTriageRole,
   requireOrgRole,
 } from "./lib/permissions";
 import { openApiDocument } from "./openapi";
@@ -643,8 +644,8 @@ admin.get("/api/apps/:appId/analytics/devices/:deviceId", requireAppRole("viewer
 admin.get("/api/apps/:appId/release-health", requireAppRole("viewer"), handleReleaseHealth);
 admin.get("/api/apps/:appId/feedback", requireAppRole("viewer"), handleListFeedback);
 admin.get("/api/apps/:appId/feedback/:ticketId", requireAppRole("viewer"), handleGetFeedback);
-admin.patch("/api/apps/:appId/feedback/:ticketId", requireAppRole("publisher"), handleUpdateFeedback);
-admin.post("/api/apps/:appId/feedback/:ticketId/comments", requireAppRole("publisher"), handleAddFeedbackComment);
+admin.patch("/api/apps/:appId/feedback/:ticketId", requireFeedbackTriageRole(), handleUpdateFeedback);
+admin.post("/api/apps/:appId/feedback/:ticketId/comments", requireFeedbackTriageRole(), handleAddFeedbackComment);
 admin.get("/api/apps/:appId/feedback/:ticketId/attachments/:attachmentId", requireAppRole("viewer"), handleDownloadFeedbackAttachment);
 admin.get("/api/apps/:appId/releases/:releaseId/shares", requireAppRole("viewer"), handleListReleaseShares);
 admin.post("/api/apps/:appId/releases/:releaseId/shares", requireAppRole("publisher"), handleCreateReleaseShare);

@@ -20,7 +20,8 @@ import Database from "better-sqlite3";
 import { createHash } from "node:crypto";
 import { Hono } from "hono";
 import { authMiddleware } from "../src/middleware/auth";
-import { requireCurrentOrgRole } from "../src/lib/permissions";
+import { requireCurrentOrgRole, requireFeedbackTriageRole } from "../src/lib/permissions";
+import { handleUpdateFeedback, handleAddFeedbackComment } from "../src/routes/feedback";
 import {
   httpsRedirectUrl,
   isSecureRequest,
@@ -844,6 +845,135 @@ describe("quiver route handlers — SQL smoke", () => {
       .bind("member-app")
       .all();
     expect(seededChannels.results.map((row: any) => row.slug)).toEqual(["main", "nightly", "preview"]);
+  });
+
+  it("lets org members triage feedback (update status + comment) while viewers cannot", async () => {
+    const now = Date.now();
+    const memberToken = "fb-member-token";
+    const viewerToken = "fb-viewer-token";
+    const ticketId = "11111111-2222-4333-8444-555555555555";
+
+    await env.DB
+      .prepare(
+        `INSERT INTO organizations
+         (id, slug, name, external_provider, external_id, created_at, archived)
+         VALUES (?, ?, ?, 'raft', ?, ?, 0)`,
+      )
+      .bind("raft_fb", "fb-org", "FB Org", "fb-server", now)
+      .run();
+
+    await env.DB
+      .prepare(
+        "INSERT INTO apps (id, org_id, slug, name, platform, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+      )
+      .bind("fb-app", "raft_fb", "fb-app", "FB App", "android", now)
+      .run();
+
+    await env.DB
+      .prepare(
+        `INSERT INTO feedback_tickets (id, app_id, kind, status, message, metadata_json, created_at, updated_at)
+         VALUES (?, ?, 'crash', 'open', ?, '{}', ?, ?)`,
+      )
+      .bind(ticketId, "fb-app", "boom", now, now)
+      .run();
+
+    for (const account of [
+      { id: "fb-member-agent", subject: "fb-member-sub", role: "member", token: memberToken },
+      { id: "fb-viewer-agent", subject: "fb-viewer-sub", role: "viewer", token: viewerToken },
+    ]) {
+      await env.DB
+        .prepare(
+          `INSERT INTO raft_accounts
+           (id, provider, provider_subject, server_id, server_slug, principal_type,
+            server_role, username, display_name, avatar_url, raw_profile,
+            created_at, updated_at, last_login_at)
+           VALUES (?, 'raft', ?, 'fb-server', 'fb-org', 'agent',
+                   NULL, ?, ?, NULL, '{}', ?, ?, ?)`,
+        )
+        .bind(account.id, account.subject, account.id, account.id, now, now, now)
+        .run();
+      await env.DB
+        .prepare(
+          "INSERT INTO org_members (id, org_id, account_id, org_role, joined_at) VALUES (?, ?, ?, ?, ?)",
+        )
+        .bind(`orgmem-${account.id}`, "raft_fb", account.id, account.role, now)
+        .run();
+      await env.DB
+        .prepare(
+          "INSERT INTO raft_sessions (id, account_id, token_hash, created_at, expires_at, last_seen_at) VALUES (?, ?, ?, ?, ?, ?)",
+        )
+        .bind(
+          `session-${account.id}`,
+          account.id,
+          createHash("sha256").update(account.token).digest("hex"),
+          now,
+          now + 60_000,
+          now,
+        )
+        .run();
+    }
+
+    const testApp = new Hono<{ Bindings: Env }>();
+    testApp.use("*", authMiddleware as any);
+    testApp.patch(
+      "/api/apps/:appId/feedback/:ticketId",
+      requireFeedbackTriageRole() as any,
+      handleUpdateFeedback as any,
+    );
+    testApp.post(
+      "/api/apps/:appId/feedback/:ticketId/comments",
+      requireFeedbackTriageRole() as any,
+      handleAddFeedbackComment as any,
+    );
+
+    // Org viewer (read-only) cannot triage.
+    const viewerResponse = await testApp.request(
+      `https://quiver-worker.test/api/apps/fb-app/feedback/${ticketId}`,
+      {
+        method: "PATCH",
+        headers: { authorization: `Bearer ${viewerToken}`, "content-type": "application/json" },
+        body: JSON.stringify({ status: "resolved" }),
+      },
+      env as any,
+    );
+    expect(viewerResponse.status).toBe(403);
+
+    // Org member (no explicit app role) can change status...
+    const memberStatus = await testApp.request(
+      `https://quiver-worker.test/api/apps/fb-app/feedback/${ticketId}`,
+      {
+        method: "PATCH",
+        headers: { authorization: `Bearer ${memberToken}`, "content-type": "application/json" },
+        body: JSON.stringify({ status: "resolved" }),
+      },
+      env as any,
+    );
+    expect(memberStatus.status).toBe(200);
+    await expect(memberStatus.json()).resolves.toMatchObject({ id: ticketId, status: "resolved" });
+
+    // ...and add an attribution comment.
+    const memberComment = await testApp.request(
+      `https://quiver-worker.test/api/apps/fb-app/feedback/${ticketId}/comments`,
+      {
+        method: "POST",
+        headers: { authorization: `Bearer ${memberToken}`, "content-type": "application/json" },
+        body: JSON.stringify({ body: "fixed by mobile #999", internal: true }),
+      },
+      env as any,
+    );
+    expect(memberComment.status).toBe(201);
+
+    const ticket = (await env.DB
+      .prepare("SELECT status FROM feedback_tickets WHERE id = ?")
+      .bind(ticketId)
+      .first()) as { status: string } | null;
+    expect(ticket?.status).toBe("resolved");
+    const comment = (await env.DB
+      .prepare("SELECT body, internal FROM feedback_comments WHERE ticket_id = ?")
+      .bind(ticketId)
+      .first()) as { body: string; internal: number } | null;
+    expect(comment?.body).toBe("fixed by mobile #999");
+    expect(comment?.internal).toBe(1);
   });
 
   it("uses a validated selected-org header for org-scoped app requests", async () => {

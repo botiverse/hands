@@ -714,7 +714,7 @@ export async function handleAgentHelp(c: Context<{ Bindings: Env }>) {
     start_here: [
       "1. Authenticate (see `auth` below), then GET /api/apps to find your app_id.",
       "2. Crash triage: list-feedback (kind=crash) → get-feedback (device context + attachments) → presign-feedback-attachment, then curl the returned download_url yourself (raw-bytes endpoints get corrupted through agent transports).",
-      "3. Triage as you work: update-feedback (change status/assignee, e.g. close a fixed ticket) and comment-feedback (attribution note, internal=true for staff-only). Requires app publisher.",
+      "3. Triage as you work: update-feedback (change status/assignee, e.g. close a fixed ticket) and comment-feedback (attribution note, internal=true for staff-only). Requires org member (or app publisher).",
     ],
     auth: {
       raft_agents:
@@ -928,7 +928,7 @@ export async function handleAgentManifest(c: Context<{ Bindings: Env }>) {
       {
         name: "update-feedback",
         description:
-          "Update a feedback/crash ticket's status and/or assignee — the triage write path (e.g. close a ticket already fixed elsewhere). Requires app publisher.",
+          "Update a feedback/crash ticket's status and/or assignee — the triage write path (e.g. close a ticket already fixed elsewhere). Requires org member (or app publisher).",
         endpoint: { method: "PATCH", path: "/api/apps/{app_id}/feedback/{ticket_id}" },
         parameters: {
           app_id: { type: "string", in: "path", required: true, description: "App UUID." },
@@ -940,7 +940,7 @@ export async function handleAgentManifest(c: Context<{ Bindings: Env }>) {
       {
         name: "comment-feedback",
         description:
-          "Add a comment to a feedback/crash ticket — use for triage attribution (e.g. 'fixed by mobile #555'). Requires app publisher. Set internal=true for a staff-only note not shown to the reporter.",
+          "Add a comment to a feedback/crash ticket — use for triage attribution (e.g. 'fixed by mobile #555'). Requires org member (or app publisher). Set internal=true for a staff-only note not shown to the reporter.",
         endpoint: { method: "POST", path: "/api/apps/{app_id}/feedback/{ticket_id}/comments" },
         parameters: {
           app_id: { type: "string", in: "path", required: true, description: "App UUID." },
