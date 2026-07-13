@@ -62,6 +62,7 @@ import { isOrgSettingsTab, OrgSettings } from "./pages/OrgSettings";
 import { AcceptInvite } from "./pages/AcceptInvite";
 import { AppAccess } from "./pages/AppAccess";
 import { OrgSwitcher, useClearOrgCache } from "./components/OrgSwitcher";
+import { dashboardHref } from "./lib/authNavigation";
 import {
   clearActiveOrgId,
   getAuthToken,
@@ -893,10 +894,6 @@ function CliCallback({ token }: { token: string }) {
   );
 }
 
-function dashboardHref(): string {
-  return "/api/auth/dashboard?return=%2Fapps";
-}
-
 function PublicLanding({ account }: { account?: AuthAccount }) {
   useEffect(() => {
     document.title = "Hands - Client release operations";
@@ -923,7 +920,7 @@ function PublicLanding({ account }: { account?: AuthAccount }) {
             >
               API explorer
             </a>
-            <Button variant="primary" render={<a href={dashboardHref()} />}>
+            <Button variant="primary" render={<a href={dashboardHref(account)} />}>
               <RaftIcon className="h-5 w-5" />
               {account ? "Open dashboard" : "Login"}
             </Button>
@@ -962,7 +959,7 @@ function PublicLanding({ account }: { account?: AuthAccount }) {
                 ))}
               </div>
               <div className="mt-8 flex flex-col gap-3 sm:flex-row">
-                <Button variant="primary" size="lg" render={<a href={dashboardHref()} />}>
+                <Button variant="primary" size="lg" render={<a href={dashboardHref(account)} />}>
                   <RaftIcon className="h-5 w-5" />
                   {account ? "Open dashboard" : "Login with Raft"}
                 </Button>
