@@ -896,7 +896,7 @@ function CliCallback({ token }: { token: string }) {
 
 function PublicLanding({ account }: { account?: AuthAccount }) {
   useEffect(() => {
-    document.title = "Hands - Client release operations";
+    document.title = "Hands - Agent-native platform for client apps";
   }, []);
 
   return (
