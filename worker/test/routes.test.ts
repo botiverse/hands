@@ -5134,6 +5134,10 @@ describe("quiver public API v2 — scope resolution", () => {
     expect(submittedBody.attachments).toBe(1);
     expect(submittedBody.id).toMatch(/^[0-9a-f-]{36}$/);
     expect(submittedBody.reference).toContain(`ticket ${submittedBody.id}`);
+    // The copyable reference lists attachment filenames, one per line, so a
+    // reading agent knows the ticket carries files and will fetch them.
+    expect(submittedBody.reference).toContain("attachments:\nlogcat.txt");
+    expect(submittedBody.attachment_names).toEqual(["logcat.txt"]);
     expect(submittedBody.ticket_url).toBe(
       `https://dashboard.example/apps/app-scope/feedback/${submittedBody.id}`,
     );
