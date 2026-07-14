@@ -51,6 +51,32 @@ const BuildAssetInput = z
   .catchall(z.unknown())
   .openapi("BuildAssetInput");
 
+const ExternalBuildVersionInput = z
+  .object({
+    channel_id: z.string(),
+    version_name: z.string(),
+    version_code: z.number().int().nonnegative(),
+    target: z.enum([
+      "darwin-arm64",
+      "darwin-x64",
+      "linux-arm64",
+      "linux-x64",
+      "win32-arm64",
+      "win32-x64",
+    ]),
+    source_url: z.string().url(),
+    raw_sha256: z.string().regex(/^[a-f0-9]{64}$/i),
+    raw_size_bytes: z.number().int().nonnegative(),
+    gzip_sha256: z.string().regex(/^[a-f0-9]{64}$/i).nullable().optional(),
+    gzip_size_bytes: z.number().int().nonnegative().nullable().optional(),
+    node_version: z.string().nullable().optional(),
+    product_type: z.string().default("cli-binary").optional(),
+    release_type: z.string().default("stable").optional(),
+    metadata_json: z.record(z.string(), z.unknown()).optional(),
+    provenance_json: z.record(z.string(), z.unknown()).optional(),
+  })
+  .openapi("ExternalBuildVersionInput");
+
 export function registerBuildRoutes(registry: OpenApiRegistry) {
   register(registry, {
     method: "get",
@@ -86,6 +112,28 @@ export function registerBuildRoutes(registry: OpenApiRegistry) {
       201: success("Created build.", GenericObject),
       400: error("Invalid build payload."),
       403: error("Current principal cannot create builds."),
+    },
+  });
+
+  register(registry, {
+    method: "post",
+    path: "/api/apps/{appId}/builds/publish-version",
+    tags: ["Builds"],
+    summary: "Register an immutable externally hosted build target",
+    description:
+      "Creates or reuses a Node build ledger entry. The external HTTPS URL remains the byte authority; Hands records hashes, sizes, and runtime metadata without pretending the artifact is stored in Hands R2.",
+    security: auth,
+    request: {
+      params: AppIdParam,
+      body: { content: json(ExternalBuildVersionInput), required: true },
+    },
+    responses: {
+      200: success("Idempotent replay of an identical declaration.", GenericObject),
+      201: success("Registered external build target.", GenericObject),
+      400: error("Invalid external build declaration."),
+      403: error("Current principal cannot publish builds."),
+      404: error("App was not found."),
+      409: error("App platform or immutable declaration conflicts."),
     },
   });
 
@@ -163,6 +211,23 @@ export function registerBuildRoutes(registry: OpenApiRegistry) {
       201: success("Created build asset.", GenericObject),
       400: error("Invalid build asset payload."),
       403: error("Current principal cannot create build assets."),
+      404: error("Build was not found."),
+    },
+  });
+
+  register(registry, {
+    method: "get",
+    path: "/api/apps/{appId}/builds/{buildId}/external-targets",
+    tags: ["Builds"],
+    summary: "List externally hosted targets for a build",
+    security: auth,
+    request: { params: AppBuildParams },
+    responses: {
+      200: success(
+        "External build target declarations.",
+        z.object({ targets: z.array(GenericObject) }),
+      ),
+      403: error("Current principal cannot view build targets."),
       404: error("Build was not found."),
     },
   });

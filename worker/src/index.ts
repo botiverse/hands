@@ -123,8 +123,10 @@ import {
   handleDeleteBuildAsset,
   handleDownloadBuildAsset,
   handleGetBuild,
+  handleListExternalBuildTargets,
   handleListBuildAssets,
   handleListBuilds,
+  handlePublishExternalBuildVersion,
   handleUpdateBuild,
 } from "./routes/builds";
 import {
@@ -610,10 +612,20 @@ admin.put("/api/apps/:appId/feature-flags/:key", requireAppRole("publisher"), ha
 
 admin.get("/api/apps/:appId/builds", requireAppRole("viewer"), handleListBuilds);
 admin.post("/api/apps/:appId/builds", requireAppRole("publisher"), handleCreateBuild);
+admin.post(
+  "/api/apps/:appId/builds/publish-version",
+  requireAppRole("publisher"),
+  handlePublishExternalBuildVersion,
+);
 admin.get("/api/apps/:appId/builds/:buildId", requireAppRole("viewer"), handleGetBuild);
 admin.patch("/api/apps/:appId/builds/:buildId", requireAppRole("publisher"), handleUpdateBuild);
 admin.delete("/api/apps/:appId/builds/:buildId", requireAppRole("admin"), handleDeleteBuild);
 admin.get("/api/apps/:appId/builds/:buildId/assets", requireAppRole("viewer"), handleListBuildAssets);
+admin.get(
+  "/api/apps/:appId/builds/:buildId/external-targets",
+  requireAppRole("viewer"),
+  handleListExternalBuildTargets,
+);
 admin.post("/api/apps/:appId/builds/:buildId/assets", requireAppRole("publisher"), handleCreateBuildAsset);
 admin.get(
   "/api/apps/:appId/builds/:buildId/assets/:assetId/download",

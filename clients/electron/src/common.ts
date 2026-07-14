@@ -4,6 +4,8 @@
 /** IPC channel renderers use to forward scope updates to the main process. */
 export const CONTEXT_CHANNEL = "hands:context";
 export const DEFAULT_HANDS_ENDPOINT = "https://hands.build";
+// Preserve existing install identity and throttling across the Quiver -> Hands rename.
+export const METRICS_STATE_FILENAME = "quiver-metrics.json";
 
 export interface HandsBreadcrumb {
   message: string;

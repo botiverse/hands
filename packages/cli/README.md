@@ -4,9 +4,9 @@ Hands CLI — manage apps, builds, releases from the terminal.
 
 Status: **alpha**. The npm package is public as `@botiverse/hands-cli`; v1 ships
 `login`, `logout`, `whoami`, `apps list/get`, `builds list/get`, and
-`builds publish-android`, `builds publish-ios`, `builds publish-ohos`, and
-`builds publish-electron`. Other commands listed in `docs/cli-reference.md` land
-incrementally as backend endpoints become available.
+`builds publish-version`, `builds publish-android`, `builds publish-ios`,
+`builds publish-ohos`, and `builds publish-electron`. Other commands listed in
+`docs/cli-reference.md` land incrementally as backend endpoints become available.
 
 ## Install
 
@@ -15,7 +15,7 @@ npm install -g @botiverse/hands-cli
 hands --help
 
 # Or run without installing globally:
-npm exec --package @botiverse/hands-cli@0.5.0 -- hands --help
+npm exec --package @botiverse/hands-cli@0.5.7 -- hands --help
 
 # Local repo development:
 pnpm --filter @botiverse/hands-cli build
@@ -44,6 +44,23 @@ hands builds publish-android raft-android \
   --version-name 1.0.3 \
   --version-code 1000300
 ```
+
+For a Node app whose artifacts remain on an external CDN, register one
+immutable target declaration at a time:
+
+```bash
+hands builds publish-version raft-computer \
+  --version 0.72.13 \
+  --target darwin-arm64 \
+  --source-url https://cdn.raft.build/computer/0.72.13/darwin-arm64 \
+  --raw-sha256 "$RAW_SHA256" --raw-size "$RAW_SIZE" \
+  --gzip-sha256 "$GZIP_SHA256" --gzip-size "$GZIP_SIZE" \
+  --node-version 22.23.1
+```
+
+This records external byte evidence; it does not upload the artifact or
+activate a release. Repeating the same declaration is idempotent. Changing an
+immutable version or target field returns a conflict.
 
 ## CI mode
 

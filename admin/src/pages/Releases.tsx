@@ -130,6 +130,9 @@ function productTypeMatchesPlatform(productType: ProductType, appPlatform?: stri
   if (platform === "electron") {
     return productType.name.includes("electron") || productType.parser_kind === "electron-asar";
   }
+  if (platform === "node") {
+    return productType.name === "cli-binary" || productType.parser_kind === "external";
+  }
   if (platform === "rn" || platform === "react-native") {
     return productType.name.includes("rn") || productType.parser_kind === "rn-bundle";
   }

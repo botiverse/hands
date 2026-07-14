@@ -75,6 +75,8 @@ describe("quiver OpenAPI document", () => {
       "/apps/{slug}/history",
       "/api/apps",
       "/api/apps/{appId}/builds",
+      "/api/apps/{appId}/builds/publish-version",
+      "/api/apps/{appId}/builds/{buildId}/external-targets",
       "/api/apps/{appId}/releases/{releaseId}/publish",
       "/api/apps/{appId}/feedback/{ticketId}/comments",
       "/api/apps/{appId}/client-key",

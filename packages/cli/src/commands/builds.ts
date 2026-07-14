@@ -159,6 +159,116 @@ export function registerBuildCommands(program: Command): void {
     );
 
   builds
+    .command("publish-version <appIdOrSlug>")
+    .description("Register an immutable externally hosted Node/CLI build target.")
+    .requiredOption("--version <version>", "Release version name.")
+    .option(
+      "--version-code <code>",
+      "Hands ordering code. Defaults to a numeric dotted-version encoding.",
+    )
+    .requiredOption(
+      "--target <target>",
+      "Artifact target, for example darwin-arm64 or linux-x64.",
+    )
+    .requiredOption("--source-url <url>", "Authoritative external HTTPS artifact URL.")
+    .requiredOption("--raw-sha256 <sha256>", "SHA-256 of the uncompressed artifact bytes.")
+    .requiredOption("--raw-size <bytes>", "Uncompressed artifact size in bytes.")
+    .option("--gzip-sha256 <sha256>", "SHA-256 of the gzip transport bytes.")
+    .option("--gzip-size <bytes>", "Gzip transport size in bytes.")
+    .option("--node-version <version>", "Node runtime version embedded in the artifact.")
+    .option("--channel <slug>", "Hands channel slug.", "main")
+    .option("--product-type <type>", "Hands product type.", "cli-binary")
+    .option("--release-type <type>", "Hands release type.", "stable")
+    .option("--source-commit <sha>", "Source commit SHA.")
+    .option("--ci-provider <name>", "CI provider name.")
+    .option("--ci-run-id <id>", "CI run id.")
+    .option("--ci-url <url>", "CI run URL.")
+    .option("--json", "Output JSON.", false)
+    .action(
+      async (
+        appIdOrSlug: string,
+        opts: {
+          version: string;
+          versionCode?: string;
+          target: string;
+          sourceUrl: string;
+          rawSha256: string;
+          rawSize: string;
+          gzipSha256?: string;
+          gzipSize?: string;
+          nodeVersion?: string;
+          channel: string;
+          productType: string;
+          releaseType: string;
+          sourceCommit?: string;
+          ciProvider?: string;
+          ciRunId?: string;
+          ciUrl?: string;
+          json?: boolean;
+        },
+      ) => {
+        splitBuildTarget(opts.target);
+        const versionCode = opts.versionCode
+          ? parseNonNegativeInteger(opts.versionCode, "--version-code")
+          : versionCodeFromVersion(opts.version);
+        const rawSize = parseNonNegativeInteger(opts.rawSize, "--raw-size");
+        const hasGzipHash = opts.gzipSha256 !== undefined;
+        const hasGzipSize = opts.gzipSize !== undefined;
+        if (hasGzipHash !== hasGzipSize) {
+          throw new Error("--gzip-sha256 and --gzip-size must be provided together");
+        }
+
+        const appId = await resolveAppId(appIdOrSlug);
+        const channelId = await resolveChannelId(appId, opts.channel);
+        const result = await apiRequest<{
+          app_id: string;
+          build_id: string;
+          target_id: string;
+          version: string;
+          target: string;
+          platform: string;
+          arch: string;
+          replayed: boolean;
+        }>(`/api/apps/${appId}/builds/publish-version`, {
+          method: "POST",
+          body: {
+            channel_id: channelId,
+            version_name: opts.version,
+            version_code: versionCode,
+            target: opts.target,
+            source_url: opts.sourceUrl,
+            raw_sha256: opts.rawSha256,
+            raw_size_bytes: rawSize,
+            gzip_sha256: opts.gzipSha256 ?? null,
+            gzip_size_bytes: hasGzipSize
+              ? parseNonNegativeInteger(opts.gzipSize as string, "--gzip-size")
+              : null,
+            node_version: opts.nodeVersion ?? null,
+            product_type: opts.productType,
+            release_type: opts.releaseType,
+            provenance_json: {
+              source_commit: opts.sourceCommit ?? null,
+              ci_provider: opts.ciProvider ?? null,
+              ci_run_id: opts.ciRunId ?? null,
+              ci_url: opts.ciUrl ?? null,
+            },
+          },
+        });
+
+        if (shouldOutputJson(program, opts.json)) {
+          console.log(JSON.stringify(result, null, 2));
+          return;
+        }
+        console.log(
+          `${result.replayed ? "Verified" : "Registered"} ${result.version} ${result.target}`,
+        );
+        console.log(`  build:  ${result.build_id}`);
+        console.log(`  target: ${result.target_id}`);
+        console.log(`  source: ${opts.sourceUrl}`);
+      },
+    );
+
+  builds
     .command("publish-android <appIdOrSlug>")
     .description("Create an Android build/release and upload APK plus support artifacts.")
     .requiredOption("--apk <path>", "Installable APK path.")
@@ -1203,6 +1313,36 @@ export function inferElectronPlatform(filePath: string | undefined): string {
     return "linux";
   }
   return "win32";
+}
+
+export function splitBuildTarget(target: string): { platform: string; arch: string } {
+  const match = /^(darwin|linux|win32)-(arm64|x64)$/.exec(target);
+  if (!match) {
+    throw new Error(
+      "--target must be darwin-arm64, darwin-x64, linux-arm64, linux-x64, win32-arm64, or win32-x64",
+    );
+  }
+  return { platform: match[1]!, arch: match[2]! };
+}
+
+function parseNonNegativeInteger(value: string, flag: string): number {
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed) || parsed < 0) {
+    throw new Error(`${flag} must be a non-negative integer`);
+  }
+  return parsed;
+}
+
+export function versionCodeFromVersion(version: string): number {
+  const match = /^(\d+)\.(\d+)\.(\d+)(?:[-+].*)?$/.exec(version);
+  if (!match) {
+    throw new Error("--version-code is required when --version is not numeric major.minor.patch");
+  }
+  const parts = match.slice(1).map(Number);
+  if (parts.some((part) => !Number.isSafeInteger(part) || part > 999)) {
+    throw new Error("numeric version components must each be between 0 and 999");
+  }
+  return parts[0]! * 1_000_000 + parts[1]! * 1_000 + parts[2]!;
 }
 
 export function inferElectronFiletype(filePath: string): string {

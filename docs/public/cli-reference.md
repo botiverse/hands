@@ -84,6 +84,28 @@ List builds for an app:
 hands builds list raft-android
 ```
 
+## Register External Node / CLI Bytes
+
+For an app created with platform `node`, `builds publish-version` records one
+externally hosted target without copying it into Hands storage:
+
+```bash
+hands builds publish-version raft-computer \
+  --version 0.72.13 \
+  --target linux-x64 \
+  --source-url https://cdn.raft.build/computer/0.72.13/linux-x64 \
+  --raw-sha256 "$RAW_SHA256" --raw-size "$RAW_SIZE" \
+  --gzip-sha256 "$GZIP_SHA256" --gzip-size "$GZIP_SIZE" \
+  --node-version 22.23.1 \
+  --source-commit "$GIT_COMMIT"
+```
+
+Run the command once per target. Hands stores the URL, raw/gzip hashes and
+sizes, Node version, and provenance under one app/version build. An identical
+declaration replays successfully; changing version-level or target-level
+immutable fields returns a conflict. This command does not upload bytes or
+activate a release/channel pointer.
+
 ## Publish Android
 
 Use `builds publish-android` to upload an APK and create a release. Per the

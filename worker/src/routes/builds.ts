@@ -39,6 +39,38 @@ export interface BuildAssetInput {
   metadata_json?: unknown;
 }
 
+export interface ExternalBuildVersionInput {
+  channel_id: string;
+  version_name: string;
+  version_code: number;
+  target: string;
+  source_url: string;
+  raw_sha256: string;
+  raw_size_bytes: number;
+  gzip_sha256?: string | null;
+  gzip_size_bytes?: number | null;
+  node_version?: string | null;
+  product_type?: string;
+  release_type?: string;
+  metadata_json?: unknown;
+  provenance_json?: unknown;
+}
+
+interface ExternalBuildTargetRow {
+  id: string;
+  app_id: string;
+  build_id: string;
+  version_name: string;
+  target: string;
+  source_url: string;
+  raw_sha256: string;
+  raw_size_bytes: number;
+  gzip_sha256: string | null;
+  gzip_size_bytes: number | null;
+  node_version: string | null;
+  metadata_json: string;
+}
+
 interface BuildRow {
   id: string;
   app_id: string;
@@ -77,6 +109,154 @@ interface BuildAssetDownloadRow {
 function jsonString(value: unknown, fallback: JsonRecord = {}): string {
   if (typeof value === "string") return value;
   return JSON.stringify(value ?? fallback);
+}
+
+function canonicalJson(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(canonicalJson);
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value as JsonRecord)
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([key, entry]) => [key, canonicalJson(entry)]),
+    );
+  }
+  return value;
+}
+
+function externalJsonString(value: unknown): string {
+  if (typeof value === "string") {
+    try {
+      return JSON.stringify(canonicalJson(JSON.parse(value)));
+    } catch {
+      return value;
+    }
+  }
+  return JSON.stringify(canonicalJson(value ?? {}));
+}
+
+const BUILD_TARGET_PATTERN = /^(darwin|linux|win32)-(arm64|x64)$/;
+const SHA256_PATTERN = /^[a-f0-9]{64}$/i;
+
+export function splitBuildTarget(target: string): { platform: string; arch: string } {
+  const match = BUILD_TARGET_PATTERN.exec(target);
+  if (!match) {
+    throw new Error(
+      "target must be darwin-arm64, darwin-x64, linux-arm64, linux-x64, win32-arm64, or win32-x64",
+    );
+  }
+  return { platform: match[1]!, arch: match[2]! };
+}
+
+function normalizeSha256(value: string, field: string): string {
+  if (!SHA256_PATTERN.test(value)) throw new Error(`${field} must be a 64-character SHA-256 hex digest`);
+  return value.toLowerCase();
+}
+
+function normalizeExternalBuildInput(input: ExternalBuildVersionInput): ExternalBuildVersionInput {
+  if (!input.channel_id || !input.version_name || !input.target || !input.source_url) {
+    throw new Error("channel_id, version_name, target, source_url required");
+  }
+  splitBuildTarget(input.target);
+  const source = new URL(input.source_url);
+  if (source.protocol !== "https:") throw new Error("source_url must use https");
+  if (source.username || source.password) {
+    throw new Error("source_url must not contain embedded credentials");
+  }
+  if (!Number.isSafeInteger(Number(input.version_code)) || Number(input.version_code) < 0) {
+    throw new Error("version_code must be a non-negative integer");
+  }
+  if (!Number.isSafeInteger(Number(input.raw_size_bytes)) || Number(input.raw_size_bytes) < 0) {
+    throw new Error("raw_size_bytes must be a non-negative integer");
+  }
+  const hasGzipHash = input.gzip_sha256 !== undefined && input.gzip_sha256 !== null;
+  const hasGzipSize = input.gzip_size_bytes !== undefined && input.gzip_size_bytes !== null;
+  if (hasGzipHash !== hasGzipSize) {
+    throw new Error("gzip_sha256 and gzip_size_bytes must be provided together");
+  }
+  if (hasGzipSize && (!Number.isSafeInteger(Number(input.gzip_size_bytes)) || Number(input.gzip_size_bytes) < 0)) {
+    throw new Error("gzip_size_bytes must be a non-negative integer");
+  }
+  return {
+    ...input,
+    version_code: Number(input.version_code),
+    raw_sha256: normalizeSha256(input.raw_sha256, "raw_sha256"),
+    raw_size_bytes: Number(input.raw_size_bytes),
+    gzip_sha256: hasGzipHash ? normalizeSha256(input.gzip_sha256 as string, "gzip_sha256") : null,
+    gzip_size_bytes: hasGzipSize ? Number(input.gzip_size_bytes) : null,
+    node_version: input.node_version?.trim() || null,
+    product_type: input.product_type ?? "cli-binary",
+    release_type: input.release_type ?? "stable",
+  };
+}
+
+function externalDeclarationMatches(
+  existing: ExternalBuildTargetRow,
+  input: ExternalBuildVersionInput,
+): boolean {
+  return (
+    existing.source_url === input.source_url &&
+    existing.raw_sha256 === input.raw_sha256 &&
+    existing.raw_size_bytes === input.raw_size_bytes &&
+    existing.gzip_sha256 === (input.gzip_sha256 ?? null) &&
+    existing.gzip_size_bytes === (input.gzip_size_bytes ?? null) &&
+    existing.node_version === (input.node_version ?? null) &&
+    existing.metadata_json === externalJsonString(input.metadata_json)
+  );
+}
+
+interface ExternalBuildRow {
+  id: string;
+  channel_id: string;
+  product_type: string;
+  release_type: string;
+  version_code: number;
+  provenance_json: string;
+}
+
+function externalVersionMatches(
+  existing: ExternalBuildRow,
+  input: ExternalBuildVersionInput,
+): boolean {
+  return (
+    existing.channel_id === input.channel_id &&
+    existing.product_type === input.product_type &&
+    existing.release_type === input.release_type &&
+    existing.version_code === input.version_code &&
+    existing.provenance_json === externalJsonString(input.provenance_json)
+  );
+}
+
+async function getExternalBuild(
+  db: D1Database,
+  appId: string,
+  versionName: string,
+): Promise<ExternalBuildRow | null> {
+  return await db
+    .prepare(
+      `SELECT id, channel_id, product_type, release_type, version_code, provenance_json
+       FROM builds
+       WHERE app_id = ?1 AND version_name = ?2 AND source = 'external'`,
+    )
+    .bind(appId, versionName)
+    .first<ExternalBuildRow>();
+}
+
+async function getExternalTarget(
+  db: D1Database,
+  appId: string,
+  versionName: string,
+  target: string,
+): Promise<ExternalBuildTargetRow | null> {
+  return await db
+    .prepare(
+      `SELECT id, app_id, build_id, version_name, target, source_url,
+              raw_sha256, raw_size_bytes, gzip_sha256, gzip_size_bytes,
+              node_version, metadata_json
+       FROM external_build_targets
+       WHERE app_id = ?1 AND version_name = ?2 AND target = ?3`,
+    )
+    .bind(appId, versionName, target)
+    .first<ExternalBuildTargetRow>();
 }
 
 async function insertAuditLog(
@@ -285,6 +465,226 @@ export async function handleGetBuild(c: Context<{ Bindings: Env }>) {
     .first();
   if (!row) return c.json({ error: "not found" }, 404);
   return c.json(row);
+}
+
+export async function handlePublishExternalBuildVersion(c: AdminContext) {
+  const appId = c.req.param("appId") ?? "";
+  let input: ExternalBuildVersionInput;
+  try {
+    input = normalizeExternalBuildInput((await c.req.json()) as ExternalBuildVersionInput);
+  } catch (error) {
+    return c.json({ error: (error as Error).message, code: "INVALID_EXTERNAL_BUILD" }, 400);
+  }
+
+  const app = await c.env.DB.prepare("SELECT id, platform FROM apps WHERE id = ?1")
+    .bind(appId)
+    .first<{ id: string; platform: string }>();
+  if (!app) return c.json({ error: "app not found" }, 404);
+  if (app.platform !== "node") {
+    return c.json(
+      {
+        error: "external Node build publishing requires app platform 'node'",
+        code: "APP_PLATFORM_MISMATCH",
+        app_platform: app.platform,
+      },
+      409,
+    );
+  }
+
+  const channel = await c.env.DB
+    .prepare("SELECT id FROM channels WHERE app_id = ?1 AND id = ?2")
+    .bind(appId, input.channel_id)
+    .first<{ id: string }>();
+  if (!channel) return c.json({ error: "channel_id not found for app" }, 400);
+
+  let build = await getExternalBuild(c.env.DB, appId, input.version_name);
+
+  if (build) {
+    if (!externalVersionMatches(build, input)) {
+      return c.json(
+        {
+          error: "external version metadata conflicts with the existing immutable version",
+          code: "EXTERNAL_VERSION_CONFLICT",
+          build_id: build.id,
+        },
+        409,
+      );
+    }
+  }
+
+  const replay = await getExternalTarget(c.env.DB, appId, input.version_name, input.target);
+  if (replay) {
+    if (!externalDeclarationMatches(replay, input)) {
+      return c.json(
+        {
+          error: "external build declaration conflicts with the existing immutable target",
+          code: "EXTERNAL_BUILD_CONFLICT",
+          build_id: replay.build_id,
+          target_id: replay.id,
+          target: replay.target,
+        },
+        409,
+      );
+    }
+    const { platform, arch } = splitBuildTarget(input.target);
+    return c.json({
+      app_id: appId,
+      build_id: replay.build_id,
+      target_id: replay.id,
+      version: input.version_name,
+      target: input.target,
+      platform,
+      arch,
+      replayed: true,
+    });
+  }
+
+  if (!build) {
+    const buildId = crypto.randomUUID();
+    try {
+      await createBuild(
+        c.env.DB,
+        appId,
+        {
+          channel_id: input.channel_id,
+          product_type: input.product_type!,
+          release_type: input.release_type!,
+          version_name: input.version_name,
+          version_code: input.version_code,
+          source: "external",
+          status: "succeeded",
+          build_metadata_json: { external_source: true },
+          provenance_json: externalJsonString(input.provenance_json),
+        },
+        currentActor(c),
+        buildId,
+      );
+      build = {
+        id: buildId,
+        channel_id: input.channel_id,
+        product_type: input.product_type!,
+        release_type: input.release_type!,
+        version_code: input.version_code,
+        provenance_json: externalJsonString(input.provenance_json),
+      };
+    } catch (error) {
+      build = await getExternalBuild(c.env.DB, appId, input.version_name);
+      if (!build) throw error;
+      if (!externalVersionMatches(build, input)) {
+        return c.json(
+          {
+            error: "external version metadata conflicts with the existing immutable version",
+            code: "EXTERNAL_VERSION_CONFLICT",
+            build_id: build.id,
+          },
+          409,
+        );
+      }
+    }
+  }
+
+  const targetId = crypto.randomUUID();
+  const now = Date.now();
+  try {
+    await c.env.DB
+      .prepare(
+        `INSERT INTO external_build_targets
+         (id, app_id, build_id, version_name, target, source_url,
+          raw_sha256, raw_size_bytes, gzip_sha256, gzip_size_bytes,
+          node_version, metadata_json, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)`,
+      )
+      .bind(
+        targetId,
+        appId,
+        build.id,
+        input.version_name,
+        input.target,
+        input.source_url,
+        input.raw_sha256,
+        input.raw_size_bytes,
+        input.gzip_sha256 ?? null,
+        input.gzip_size_bytes ?? null,
+        input.node_version ?? null,
+        externalJsonString(input.metadata_json),
+        now,
+        now,
+      )
+      .run();
+  } catch (error) {
+    const concurrent = await getExternalTarget(c.env.DB, appId, input.version_name, input.target);
+    if (!concurrent) throw error;
+    if (!externalDeclarationMatches(concurrent, input)) {
+      return c.json(
+        {
+          error: "external build declaration conflicts with the existing immutable target",
+          code: "EXTERNAL_BUILD_CONFLICT",
+          build_id: concurrent.build_id,
+          target_id: concurrent.id,
+          target: concurrent.target,
+        },
+        409,
+      );
+    }
+    const { platform, arch } = splitBuildTarget(input.target);
+    return c.json({
+      app_id: appId,
+      build_id: concurrent.build_id,
+      target_id: concurrent.id,
+      version: input.version_name,
+      target: input.target,
+      platform,
+      arch,
+      replayed: true,
+    });
+  }
+
+  await insertAuditLog(c.env.DB, appId, "external_build.publish", currentActor(c), {
+    buildId: build.id,
+    targetId,
+    version: input.version_name,
+    target: input.target,
+    source_url: input.source_url,
+    raw_sha256: input.raw_sha256,
+    raw_size_bytes: input.raw_size_bytes,
+    gzip_sha256: input.gzip_sha256 ?? null,
+    gzip_size_bytes: input.gzip_size_bytes ?? null,
+    node_version: input.node_version ?? null,
+  });
+
+  const { platform, arch } = splitBuildTarget(input.target);
+  return c.json(
+    {
+      app_id: appId,
+      build_id: build.id,
+      target_id: targetId,
+      version: input.version_name,
+      target: input.target,
+      platform,
+      arch,
+      replayed: false,
+    },
+    201,
+  );
+}
+
+export async function handleListExternalBuildTargets(c: Context<{ Bindings: Env }>) {
+  const appId = c.req.param("appId") ?? "";
+  const buildId = c.req.param("buildId") ?? "";
+  const build = await getBuildForApp(c.env.DB, appId, buildId);
+  if (!build) return c.json({ error: "build not found" }, 404);
+  const { results } = await c.env.DB
+    .prepare(
+      `SELECT id, build_id, version_name, target, source_url,
+              raw_sha256, raw_size_bytes, gzip_sha256, gzip_size_bytes,
+              node_version, metadata_json, created_at, updated_at
+       FROM external_build_targets
+       WHERE app_id = ?1 AND build_id = ?2
+       ORDER BY target ASC`,
+    )
+    .bind(appId, buildId)
+    .all();
+  return c.json({ targets: results });
 }
 
 export async function handleCreateBuild(c: AdminContext) {

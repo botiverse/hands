@@ -8,6 +8,12 @@ import {
   DialogBody,
   DialogFooter,
   DialogClose,
+  Select,
+  SelectContent,
+  SelectIcon,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
 } from "raft-ui";
 import { createApp } from "../lib/api";
 import { useToast } from "./Toast";
@@ -41,6 +47,18 @@ const DEFAULT_PRODUCT_TYPES: Array<{
     artifact_note: "APK assets are selected later when creating builds/releases.",
   },
   {
+    name: "ios-ipa",
+    display_name: "iOS IPA",
+    description: "Signed iOS application and dSYM archive",
+    artifact_note: "Signed IPA and dSYM assets are uploaded from macOS CI.",
+  },
+  {
+    name: "ohos-app",
+    display_name: "OHOS app",
+    description: "Signed App Pack and HAP artifacts",
+    artifact_note: "AppGallery and sideload artifacts are uploaded from OHOS CI.",
+  },
+  {
     name: "electron-installer",
     display_name: "Electron desktop app",
     description: "Cross-platform desktop (darwin / linux / win32)",
@@ -53,14 +71,24 @@ const DEFAULT_PRODUCT_TYPES: Array<{
     description: "JS bundle hot-update (replaces JS layer only)",
     artifact_note: "Bundle assets are selected later when creating builds/releases.",
   },
+  {
+    name: "cli-binary",
+    display_name: "Node / CLI binary",
+    description: "Externally hosted Node SEA or CLI binary",
+    artifact_note:
+      "Hands records immutable target URLs, hashes, sizes, and runtime metadata without copying external bytes into Hands storage.",
+  },
 ];
+
+const APP_PLATFORMS = ["android", "ios", "ohos", "electron", "node"] as const;
+type AppPlatform = (typeof APP_PLATFORMS)[number];
 
 const DEFAULT_CHANNELS = [
   {
     slug: "main",
     name: "Main",
     description: "Primary stable lane for normal users",
-    enabled_product_types: ["android-apk", "electron-installer", "rn-bundle"],
+    enabled_product_types: ["android-apk", "electron-installer", "rn-bundle", "ios-ipa", "ohos-app", "cli-binary"],
   },
   {
     slug: "preview",
@@ -97,6 +125,7 @@ export function AppCreationWizard({
   const [slug, setSlug] = useState("");
   const [slugAuto, setSlugAuto] = useState(true);
   const [description, setDescription] = useState("");
+  const [platform, setPlatform] = useState<AppPlatform>("android");
   const createToastId = useRef<string | null>(null);
 
   const toast = useToast();
@@ -106,7 +135,7 @@ export function AppCreationWizard({
       createApp({
         slug: slug || slugify(name),
         name,
-        platform: "android",
+        platform,
         description: description.trim() || undefined,
       }),
     onMutate: () => {
@@ -200,6 +229,25 @@ export function AppCreationWizard({
                   }}
                   placeholder="my-app"
                 />
+              </div>
+              <div>
+                <label className="label">Platform *</label>
+                <Select
+                  value={platform}
+                  onValueChange={(value) => setPlatform(value as AppPlatform)}
+                >
+                  <SelectTrigger>
+                    <SelectValue />
+                    <SelectIcon />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {APP_PLATFORMS.map((value) => (
+                      <SelectItem key={value} value={value}>
+                        {value}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
               </div>
               <div>
                 <label className="label">Description (optional)</label>

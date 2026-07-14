@@ -144,6 +144,22 @@ describe("electron build helpers", () => {
   });
 });
 
+describe("external build publish helpers", () => {
+  it("splits the public target into the existing platform/arch storage shape", async () => {
+    const { splitBuildTarget } = await import("../src/commands/builds.js");
+    expect(splitBuildTarget("darwin-arm64")).toEqual({ platform: "darwin", arch: "arm64" });
+    expect(splitBuildTarget("linux-x64")).toEqual({ platform: "linux", arch: "x64" });
+    expect(() => splitBuildTarget("node")).toThrow("--target must be");
+  });
+
+  it("derives an ordering code for numeric semantic versions", async () => {
+    const { versionCodeFromVersion } = await import("../src/commands/builds.js");
+    expect(versionCodeFromVersion("0.72.12")).toBe(72_012);
+    expect(versionCodeFromVersion("1.2.3-beta.1")).toBe(1_002_003);
+    expect(() => versionCodeFromVersion("nightly")).toThrow("--version-code is required");
+  });
+});
+
 describe("iOS build helper contract", () => {
   it("documents signed IPA as the installable artifact shape", async () => {
     const { inferIosFiletype } = await import("../src/commands/builds.js");

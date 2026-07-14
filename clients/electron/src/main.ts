@@ -16,6 +16,7 @@ import { join } from "node:path";
 import {
   CONTEXT_CHANNEL,
   DEFAULT_HANDS_ENDPOINT,
+  METRICS_STATE_FILENAME,
   buildGlobalExtra,
   buildSubmitURL,
   toParam,
@@ -152,7 +153,7 @@ async function reportMetrics(options: HandsElectronOptions, force = false): Prom
 }
 
 function statePath(): string {
-  return join(app.getPath("userData"), "quiver-metrics.json");
+  return join(app.getPath("userData"), METRICS_STATE_FILENAME);
 }
 
 function loadMetricsState(): { deviceId: string; lastPingAt: number } {

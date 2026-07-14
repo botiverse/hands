@@ -1,4 +1,4 @@
-# Electron SDK inventory (`@botiverse/hands-electron` v0.2.0)
+# Electron SDK inventory (`@botiverse/hands-electron` v0.2.1)
 
 Source: `clients/electron/src/{main,renderer,preload,common}.ts`. Peer dep
 `electron >= 22`, zero runtime deps. Model: thin wrapper over Electron's
@@ -22,7 +22,10 @@ built-in Crashpad reporter with Hands as the minidump endpoint.
   `window.hands` (preload); ring buffer 100; attached to the next crash
   annotation only (8 KB cap).
 - **Device analytics** — 24h-throttled metrics ping, device id persisted in
-  `userData/quiver-metrics.json`.
+  `userData/quiver-metrics.json` (kept stable across the Quiver → Hands
+  endpoint migration).
+- **Endpoint migration** — the default origin is `https://hands.build`;
+  callers may still pass an explicit endpoint for preview or staged rollout.
 
 ## Absent (→ roadmap)
 
@@ -46,7 +49,7 @@ built-in Crashpad reporter with Hands as the minidump endpoint.
 versionCode, environment, uploadToServer, extra, onCrash. Scope APIs:
 setUser/setTag/setExtra/addBreadcrumb.
 
-## Related: `@botiverse/hands-cli` v0.4.0
+## Related: `@botiverse/hands-cli` v0.5.7
 
 Publish + triage only, no runtime telemetry: `builds publish-electron
 --symbols/--metadata/--installer/--blockmap`, `publish-android --mapping/

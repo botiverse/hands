@@ -6,6 +6,7 @@
  */
 
 import type { Context } from "hono";
+import { APP_PLATFORMS, isAppPlatform } from "../lib/app_platform";
 import { currentActor, type AdminEnv } from "../middleware/auth";
 import { currentAccount, currentDeployToken } from "../lib/permissions";
 
@@ -108,6 +109,16 @@ export async function handleCreateApp(c: AdminContext) {
   if (!body.slug || !body.name || !body.platform) {
     return c.json({ error: "slug, name, platform required" }, 400);
   }
+  if (!isAppPlatform(body.platform)) {
+    return c.json(
+      {
+        error: "unsupported app platform",
+        code: "UNSUPPORTED_APP_PLATFORM",
+        supported_platforms: APP_PLATFORMS,
+      },
+      400,
+    );
+  }
   const id = crypto.randomUUID();
   const now = Date.now();
   const orgId = await currentOrgId(c);
@@ -131,9 +142,15 @@ export async function handleCreateApp(c: AdminContext) {
     c.env.DB.prepare(
       `INSERT INTO product_types (id, app_id, name, display_name, description, supported_platforms_json, default_assets_json, parser_kind, schema_json, created_at, updated_at) VALUES (?, ?, 'ios-ipa', 'iOS app', 'iOS IPA distributed through TestFlight, ad-hoc, or enterprise lanes', '["ios"]', '[{"platform":"ios","filetype":"ipa"},{"platform":"ios","filetype":"dsym.zip","artifact_kind":"dsym"}]', 'ipa-info', '{"distribution_profile_required":true}', ?, ?)`,
     ).bind(crypto.randomUUID(), id, now, now),
+    c.env.DB.prepare(
+      `INSERT INTO product_types (id, app_id, name, display_name, description, supported_platforms_json, default_assets_json, parser_kind, schema_json, created_at, updated_at) VALUES (?, ?, 'ohos-app', 'OHOS app', 'Signed App Pack and HAP artifacts for AppGallery and sideloading', '["ohos"]', '[{"platform":"ohos","filetype":"app"},{"platform":"ohos","filetype":"hap"}]', 'ohos-package', '{}', ?, ?)`,
+    ).bind(crypto.randomUUID(), id, now, now),
+    c.env.DB.prepare(
+      `INSERT INTO product_types (id, app_id, name, display_name, description, supported_platforms_json, default_assets_json, parser_kind, schema_json, created_at, updated_at) VALUES (?, ?, 'cli-binary', 'Node / CLI binary', 'Externally hosted Node SEA or CLI binaries', '["darwin-arm64","darwin-x64","linux-arm64","linux-x64","win32-arm64","win32-x64"]', '[]', 'external', '{"external_source":true}', ?, ?)`,
+    ).bind(crypto.randomUUID(), id, now, now),
     // channels (with default bundle_id overrides for parallel install)
     c.env.DB.prepare(
-      `INSERT INTO channels (id, app_id, slug, name, bundle_id, password, git_url, enabled_product_types_json, metadata_json, created_at) VALUES (?, ?, 'main', 'Main', NULL, NULL, NULL, '["android-apk","electron-installer","rn-bundle","ios-ipa"]', '{}', ?)`,
+      `INSERT INTO channels (id, app_id, slug, name, bundle_id, password, git_url, enabled_product_types_json, metadata_json, created_at) VALUES (?, ?, 'main', 'Main', NULL, NULL, NULL, '["android-apk","electron-installer","rn-bundle","ios-ipa","ohos-app","cli-binary"]', '{}', ?)`,
     ).bind(crypto.randomUUID(), id, now),
     c.env.DB.prepare(
       `INSERT INTO channels (id, app_id, slug, name, bundle_id, password, git_url, enabled_product_types_json, metadata_json, created_at) VALUES (?, ?, 'preview', 'Preview', ?, NULL, NULL, '["android-apk","rn-bundle","ios-ipa"]', '{}', ?)`,

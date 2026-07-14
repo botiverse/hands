@@ -1,6 +1,6 @@
 {
   "name": "@botiverse/hands-electron",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Hands crash reporting for Electron apps — main + renderer, Crashpad minidumps auto-uploaded and symbolicated server-side.",
   "license": "MIT",
   "type": "module",
@@ -24,13 +24,15 @@
   ],
   "scripts": {
     "build": "tsc",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
   },
   "peerDependencies": {
     "electron": ">=22"
   },
   "devDependencies": {
-    "typescript": "^5.9.3"
+    "typescript": "^5.9.3",
+    "vitest": "^2.1.9"
   },
   "publishConfig": {
     "access": "public"
