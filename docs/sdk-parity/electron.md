@@ -22,8 +22,8 @@ built-in Crashpad reporter with Hands as the minidump endpoint.
   `window.hands` (preload); ring buffer 100; attached to the next crash
   annotation only (8 KB cap).
 - **Device analytics** — 24h-throttled metrics ping, device id persisted in
-  `userData/quiver-metrics.json` (kept stable across the Quiver → Hands
-  endpoint migration).
+  `userData/hands-metrics.json` (a legacy `quiver-metrics.json` is still read
+  once as a fallback so existing installs keep their device id + throttling).
 - **Endpoint migration** — the default origin is `https://hands.build`;
   callers may still pass an explicit endpoint for preview or staged rollout.
 

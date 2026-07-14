@@ -4,8 +4,12 @@
 /** IPC channel renderers use to forward scope updates to the main process. */
 export const CONTEXT_CHANNEL = "hands:context";
 export const DEFAULT_HANDS_ENDPOINT = "https://hands.build";
-// Preserve existing install identity and throttling across the Quiver -> Hands rename.
-export const METRICS_STATE_FILENAME = "quiver-metrics.json";
+// Metrics state file (install identity + ping throttling).
+export const METRICS_STATE_FILENAME = "hands-metrics.json";
+// Legacy filename from before the Quiver -> Hands rename. Existing installs have
+// this on disk; it is read as a one-way fallback when the current file is absent
+// so device identity + throttling carry over. The next save writes the new file.
+export const LEGACY_METRICS_STATE_FILENAME = "quiver-metrics.json";
 
 export interface HandsBreadcrumb {
   message: string;

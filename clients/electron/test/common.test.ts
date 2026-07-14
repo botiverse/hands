@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   DEFAULT_HANDS_ENDPOINT,
   METRICS_STATE_FILENAME,
+  LEGACY_METRICS_STATE_FILENAME,
   buildSubmitURL,
 } from "../src/common.js";
 
@@ -25,7 +26,8 @@ describe("Hands Electron migration contracts", () => {
     );
   });
 
-  it("preserves the legacy metrics state filename", () => {
-    expect(METRICS_STATE_FILENAME).toBe("quiver-metrics.json");
+  it("uses the Hands metrics state filename and keeps the legacy fallback", () => {
+    expect(METRICS_STATE_FILENAME).toBe("hands-metrics.json");
+    expect(LEGACY_METRICS_STATE_FILENAME).toBe("quiver-metrics.json");
   });
 });

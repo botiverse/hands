@@ -17,6 +17,7 @@ import {
   CONTEXT_CHANNEL,
   DEFAULT_HANDS_ENDPOINT,
   METRICS_STATE_FILENAME,
+  LEGACY_METRICS_STATE_FILENAME,
   buildGlobalExtra,
   buildSubmitURL,
   toParam,
@@ -157,9 +158,17 @@ function statePath(): string {
 }
 
 function loadMetricsState(): { deviceId: string; lastPingAt: number } {
-  const path = statePath();
+  let path = statePath();
+  // One-way migration: if the current file is absent but the legacy
+  // quiver-metrics.json exists, read the legacy file so an existing install's
+  // device identity + throttling carry over. The next saveMetricsState writes
+  // the current (hands-metrics.json) file.
+  if (!existsSync(path)) {
+    const legacy = join(app.getPath("userData"), LEGACY_METRICS_STATE_FILENAME);
+    if (!existsSync(legacy)) return { deviceId: "", lastPingAt: 0 };
+    path = legacy;
+  }
   try {
-    if (!existsSync(path)) return { deviceId: "", lastPingAt: 0 };
     const parsed = JSON.parse(readFileSync(path, "utf8")) as { deviceId?: unknown; lastPingAt?: unknown };
     return {
       deviceId: typeof parsed.deviceId === "string" ? parsed.deviceId : "",
