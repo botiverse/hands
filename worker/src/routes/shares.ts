@@ -20,8 +20,6 @@ type ShareStrings = {
   statsLabel: string;
   visitors: string;
   views: string;
-  downloaders: string;
-  downloads: string;
   downloadApk: string;
   scanHint: string;
   passwordRequired: string; // password page title + heading
@@ -47,8 +45,6 @@ const SHARE_I18N: { en: ShareStrings; zh: ShareStrings } = {
     statsLabel: "Stats",
     visitors: "visitors",
     views: "views",
-    downloaders: "downloaders",
-    downloads: "downloads",
     downloadApk: "Download APK",
     scanHint: "Scan to open on your phone",
     passwordRequired: "Password required",
@@ -72,8 +68,6 @@ const SHARE_I18N: { en: ShareStrings; zh: ShareStrings } = {
     statsLabel: "统计",
     visitors: "访客数",
     views: "浏览次数",
-    downloaders: "下载人数",
-    downloads: "下载次数",
     downloadApk: "下载 APK",
     scanHint: "扫码在手机上打开",
     passwordRequired: "需要密码",
@@ -801,8 +795,6 @@ function renderSharePage(
       <dd class="stats">
         <span class="stat"><strong>${stats.unique_view_count}</strong><span>${t.visitors}</span></span>
         <span class="stat"><strong>${stats.view_count}</strong><span>${t.views}</span></span>
-        <span class="stat"><strong>${stats.unique_download_count}</strong><span>${t.downloaders}</span></span>
-        <span class="stat"><strong>${stats.download_count}</strong><span>${t.downloads}</span></span>
       </dd>
     </dl>
     <div class="get-it">
