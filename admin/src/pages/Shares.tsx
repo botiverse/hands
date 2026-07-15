@@ -2,8 +2,10 @@
  * App-level share management (task #65 P1).
  *
  * Lists every share link for the app across releases with stats, lets
- * admins create (with optional password), renew, and revoke them. The
- * share URL is only visible at creation time — tokens are stored hashed.
+ * admins create (with optional password/expiry), copy the URL, and revoke
+ * them. Shares have no default expiry — they live until revoked; an expiry
+ * is opt-in and only shown when set. Legacy shares created before tokens
+ * were stored have no recoverable URL.
  */
 import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -17,8 +19,6 @@ import {
   revokeReleaseShare,
 } from "../lib/api";
 import { useToast } from "../components/Toast";
-
-const WEEK_SECONDS = 7 * 24 * 60 * 60;
 
 export function AppShares({ appId }: { appId: string }) {
   const toast = useToast();
@@ -34,19 +34,23 @@ export function AppShares({ appId }: { appId: string }) {
   const invalidate = () =>
     queryClient.invalidateQueries({ queryKey: ["app-shares", appId] });
 
-  const renew = useMutation({
-    mutationFn: (share: AppShare) =>
+  const setExpiry = useMutation({
+    mutationFn: ({ share, ttlDays }: { share: AppShare; ttlDays: number | null }) =>
       renewReleaseShare(appId, share.release_id, share.id, {
-        ttl_seconds: WEEK_SECONDS,
+        // Explicit null clears the expiry (never expires).
+        ...(ttlDays === null ? { expires_at: null } : { ttl_seconds: ttlDays * 24 * 60 * 60 }),
       }),
-    onSuccess: () => {
-      toast.show({ kind: "success", title: "Share extended by 7 days" });
+    onSuccess: (_data, vars) => {
+      toast.show({
+        kind: "success",
+        title: vars.ttlDays === null ? "Expiry removed — link lives until revoked" : `Expires in ${vars.ttlDays} days`,
+      });
       invalidate();
     },
     onError: (e) =>
       toast.show({
         kind: "error",
-        title: "Renew failed",
+        title: "Expiry update failed",
         description: (e as Error).message,
       }),
   });
@@ -54,8 +58,7 @@ export function AppShares({ appId }: { appId: string }) {
   const setPassword = useMutation({
     mutationFn: ({ share, password }: { share: AppShare; password: string | null }) =>
       renewReleaseShare(appId, share.release_id, share.id, {
-        // PATCH requires an expiry; keep the current one.
-        expires_at: share.expires_at,
+        // Omitting expiry keeps the share's current expiry unchanged.
         password,
       }),
     onSuccess: (_data, vars) => {
@@ -96,8 +99,8 @@ export function AppShares({ appId }: { appId: string }) {
         <div>
           <h2 className="text-lg font-bold">Shares</h2>
           <p className="text-sm text-slate-500">
-            Public download pages for this app's releases. URLs are shown only
-            once at creation — tokens are stored hashed.
+            Public download pages for this app's releases. Links live until
+            revoked and their URLs can be re-copied here anytime.
           </p>
         </div>
         <Button variant="primary" className="text-sm" onClick={() => setShowCreate(true)}>
@@ -153,7 +156,7 @@ export function AppShares({ appId }: { appId: string }) {
                 <th className="py-2 pr-3">Release</th>
                 <th className="py-2 pr-3">Status</th>
                 <th className="py-2 pr-3">Created</th>
-                <th className="py-2 pr-3">Expires</th>
+                <th className="py-2 pr-3">URL</th>
                 <th className="py-2 pr-3">Views</th>
                 <th className="py-2 pr-3">Downloads</th>
                 <th className="py-2" />
@@ -164,7 +167,31 @@ export function AppShares({ appId }: { appId: string }) {
                 <ShareRow
                   key={share.id}
                   share={share}
-                  onRenew={() => renew.mutate(share)}
+                  onCopyUrl={() => {
+                    if (!share.share_url) return;
+                    navigator.clipboard?.writeText(share.share_url);
+                    toast.show({ kind: "success", title: "Copied share URL" });
+                  }}
+                  onSetExpiry={() => {
+                    const next = window.prompt(
+                      "Days until this link expires (leave empty for never):",
+                      share.expires_at
+                        ? String(Math.max(1, Math.ceil((share.expires_at - Date.now()) / 86_400_000)))
+                        : "",
+                    );
+                    if (next === null) return;
+                    const trimmed = next.trim();
+                    if (!trimmed) {
+                      setExpiry.mutate({ share, ttlDays: null });
+                      return;
+                    }
+                    const days = Number(trimmed);
+                    if (!Number.isFinite(days) || days <= 0) {
+                      toast.show({ kind: "error", title: "Enter a positive number of days" });
+                      return;
+                    }
+                    setExpiry.mutate({ share, ttlDays: days });
+                  }}
                   onRevoke={() => revoke.mutate(share)}
                   onSetPassword={() => {
                     const next = window.prompt(
@@ -178,7 +205,7 @@ export function AppShares({ appId }: { appId: string }) {
                       password: next.trim() ? next.trim() : null,
                     });
                   }}
-                  busy={renew.isPending || revoke.isPending || setPassword.isPending}
+                  busy={revoke.isPending || setPassword.isPending || setExpiry.isPending}
                 />
               ))}
             </tbody>
@@ -203,19 +230,24 @@ export function AppShares({ appId }: { appId: string }) {
 
 function shareState(share: AppShare): { label: string; className: string } {
   if (share.revoked_at) return { label: "revoked", className: "bg-slate-200 text-slate-600" };
-  if (share.expires_at <= Date.now()) return { label: "expired", className: "bg-amber-100 text-amber-800" };
+  // Legacy shares may still carry an expiry; new ones live until revoked.
+  if (share.expires_at != null && share.expires_at <= Date.now()) {
+    return { label: "expired", className: "bg-amber-100 text-amber-800" };
+  }
   return { label: "active", className: "bg-emerald-100 text-emerald-800" };
 }
 
 function ShareRow({
   share,
-  onRenew,
+  onCopyUrl,
+  onSetExpiry,
   onRevoke,
   onSetPassword,
   busy,
 }: {
   share: AppShare;
-  onRenew: () => void;
+  onCopyUrl: () => void;
+  onSetExpiry: () => void;
   onRevoke: () => void;
   onSetPassword: () => void;
   busy: boolean;
@@ -240,12 +272,25 @@ function ShareRow({
             password
           </span>
         )}
+        {share.expires_at != null && !share.revoked_at && share.expires_at > Date.now() && (
+          <div className="mt-0.5 text-xs text-slate-400">
+            expires {new Date(share.expires_at).toLocaleString()}
+          </div>
+        )}
       </td>
       <td className="py-2 pr-3 text-xs text-slate-600">
         {new Date(share.created_at).toLocaleString()}
       </td>
-      <td className="py-2 pr-3 text-xs text-slate-600">
-        {new Date(share.expires_at).toLocaleString()}
+      <td className="py-2 pr-3 text-xs">
+        {share.share_url ? (
+          <Button variant="link" size="sm" onClick={onCopyUrl}>
+            Copy URL
+          </Button>
+        ) : (
+          <span className="text-slate-400" title="Created before URLs were stored; the link itself still works.">
+            unavailable (legacy)
+          </span>
+        )}
       </td>
       <td className="py-2 pr-3">
         {share.view_count}
@@ -258,8 +303,8 @@ function ShareRow({
       <td className="py-2 text-right text-xs whitespace-nowrap">
         {actionable && (
           <>
-            <Button variant="link" size="sm" className="mr-2" onClick={onRenew} disabled={busy}>
-              +7 days
+            <Button variant="link" size="sm" className="mr-2" onClick={onSetExpiry} disabled={busy}>
+              Expiry…
             </Button>
             <Button variant="link" size="sm" className="mr-2" onClick={onSetPassword} disabled={busy}>
               {share.has_password ? "Password…" : "Set password"}
@@ -286,7 +331,7 @@ function CreateShareModal({
   const toast = useToast();
   const [releaseId, setReleaseId] = useState("");
   const [password, setPassword] = useState("");
-  const [ttlDays, setTtlDays] = useState(7);
+  const [ttlDays, setTtlDays] = useState("");
 
   const releases = useQuery({
     queryKey: ["releases", appId],
@@ -302,8 +347,9 @@ function CreateShareModal({
 
   const create = useMutation({
     mutationFn: () =>
+      // No ttl (the default): the share lives until revoked.
       createReleaseShare(appId, releaseId, {
-        ttl_seconds: ttlDays * 24 * 60 * 60,
+        ...(ttlDays.trim() ? { ttl_seconds: Number(ttlDays) * 24 * 60 * 60 } : {}),
         ...(password.trim() ? { password: password.trim() } : {}),
       }),
     onSuccess: (data) => {
@@ -355,13 +401,13 @@ function CreateShareModal({
             </Select>
           </label>
           <label className="block text-xs text-slate-600">
-            Lifetime (days)
+            Expires in days (optional)
             <Input
               type="number"
               min={1}
-              max={30}
               value={ttlDays}
-              onChange={(e) => setTtlDays(Math.min(30, Math.max(1, Number(e.target.value) || 7)))}
+              onChange={(e) => setTtlDays(e.target.value)}
+              placeholder="Leave empty — link lives until revoked"
               className="mt-1 py-1.5!"
             />
           </label>
