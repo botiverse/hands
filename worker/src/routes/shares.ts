@@ -607,9 +607,9 @@ async function findActiveShare(db: D1Database, token: string): Promise<SharePage
      WHERE rs.token_hash = ?1
        AND rs.revoked_at IS NULL
        AND (rs.expires_at IS NULL OR rs.expires_at > ?2)
-       -- Serve active AND draft releases: draft-first testing needs a
-       -- shareable download before publish. Cancelled/superseded stay blocked.
-       AND r.status IN ('active', 'draft')
+       -- Release status does not gate a share: a link the user actively
+       -- created serves until the user revokes it (or its optional expiry
+       -- passes), even after the release is superseded or cancelled.
        AND ba.artifact_kind = 'installable'
      ORDER BY ba.filetype = 'apk' DESC, ba.created_at ASC
      LIMIT 1`,

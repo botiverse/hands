@@ -3194,6 +3194,20 @@ describe("quiver public API v2 — scope resolution", () => {
     );
     expect(cleared.expires_at).toBeNull();
 
+    // Release status does not gate an existing share: the link keeps serving
+    // after the release is superseded or cancelled — only revoke/expiry kill it.
+    await env.DB.prepare("UPDATE releases SET status = 'superseded' WHERE id = ?")
+      .bind("rel-share")
+      .run();
+    expect((await handlePublicReleaseShare(makeSharePublicContext(env, token))).status).toBe(200);
+    await env.DB.prepare("UPDATE releases SET status = 'cancelled' WHERE id = ?")
+      .bind("rel-share")
+      .run();
+    expect((await handlePublicReleaseShare(makeSharePublicContext(env, token))).status).toBe(200);
+    await env.DB.prepare("UPDATE releases SET status = 'active' WHERE id = ?")
+      .bind("rel-share")
+      .run();
+
     // An expired legacy-style share still 4xxes publicly.
     const expiredCreate = await responseJson<any>(
       await handleCreateReleaseShare(
