@@ -256,10 +256,11 @@ function makeMockDb() {
     CREATE TABLE release_shares (
       id TEXT PRIMARY KEY,
       release_id TEXT NOT NULL REFERENCES releases(id) ON DELETE CASCADE,
+      token TEXT,
       token_hash TEXT NOT NULL UNIQUE,
       created_by TEXT NOT NULL,
       created_at INTEGER NOT NULL,
-      expires_at INTEGER NOT NULL,
+      expires_at INTEGER,
       revoked_at INTEGER,
       password_hash TEXT
     );
@@ -3109,6 +3110,106 @@ describe("quiver public API v2 — scope resolution", () => {
     expect(eventTypes).toContain("crash:new_group");
   });
 
+  it("shares: no ttl never expires, url is re-copyable, expiry semantics on update", async () => {
+    const env = makeEnv();
+    await seedRelease(env, "rel-share", "build-share", [["full", "all"]]);
+    await seedAsset(env, "build-share", "asset-share");
+    const {
+      handleCreateReleaseShare,
+      handleListAppShares,
+      handleUpdateReleaseShare,
+      handlePublicReleaseShare,
+    } = await import("../src/routes/shares");
+
+    // Create without ttl → never expires.
+    const created = await responseJson<any>(
+      await handleCreateReleaseShare(
+        makeShareAdminContext(env, { appId: "app-scope", releaseId: "rel-share" }),
+      ),
+    );
+    expect(created.expires_at).toBeNull();
+    const token = new URL(created.share_url).pathname.replace("/share/", "");
+
+    // The never-expiring share serves publicly.
+    const page = await handlePublicReleaseShare(makeSharePublicContext(env, token));
+    expect(page.status).toBe(200);
+    const pageHtml = await page.text();
+    expect(pageHtml).toContain("Download APK");
+    // Expiry is no longer shown on the public page.
+    expect(pageHtml).not.toContain("expires-at");
+
+    // The URL is recoverable from the list.
+    const listed = await responseJson<any>(
+      await handleListAppShares(makeShareAdminContext(env, { appId: "app-scope" })),
+    );
+    const row = listed.shares.find((s: any) => s.id === created.id);
+    expect(row.share_url).toBe(created.share_url);
+    expect(row.token).toBeUndefined();
+
+    // Legacy rows without a stored token have no recoverable URL.
+    await env.DB.prepare(
+      `INSERT INTO release_shares (id, release_id, token, token_hash, created_by, created_at, expires_at)
+       VALUES (?, ?, NULL, ?, ?, ?, NULL)`,
+    )
+      .bind("share-legacy", "rel-share", "legacy-hash", "tester", 1)
+      .run();
+    const listed2 = await responseJson<any>(
+      await handleListAppShares(makeShareAdminContext(env, { appId: "app-scope" })),
+    );
+    expect(listed2.shares.find((s: any) => s.id === "share-legacy").share_url).toBeNull();
+
+    // Update: absent expiry keys leave the expiry unchanged (password-only PATCH).
+    const patchedPw = await responseJson<any>(
+      await handleUpdateReleaseShare(
+        makeShareAdminContext(
+          env,
+          { appId: "app-scope", releaseId: "rel-share", shareId: created.id },
+          { password: "s3cret" },
+        ),
+      ),
+    );
+    expect(patchedPw.expires_at).toBeNull();
+
+    // Update: an explicit ttl sets an expiry; explicit null clears it again.
+    const withTtl = await responseJson<any>(
+      await handleUpdateReleaseShare(
+        makeShareAdminContext(
+          env,
+          { appId: "app-scope", releaseId: "rel-share", shareId: created.id },
+          { ttl_seconds: 3600 },
+        ),
+      ),
+    );
+    expect(withTtl.expires_at).toBeGreaterThan(Date.now());
+    const cleared = await responseJson<any>(
+      await handleUpdateReleaseShare(
+        makeShareAdminContext(
+          env,
+          { appId: "app-scope", releaseId: "rel-share", shareId: created.id },
+          { expires_at: null },
+        ),
+      ),
+    );
+    expect(cleared.expires_at).toBeNull();
+
+    // An expired legacy-style share still 4xxes publicly.
+    const expiredCreate = await responseJson<any>(
+      await handleCreateReleaseShare(
+        makeShareAdminContext(
+          env,
+          { appId: "app-scope", releaseId: "rel-share" },
+          { ttl_seconds: 1 },
+        ),
+      ),
+    );
+    const expiredToken = new URL(expiredCreate.share_url).pathname.replace("/share/", "");
+    await env.DB.prepare("UPDATE release_shares SET expires_at = 1 WHERE id = ?1")
+      .bind(expiredCreate.id)
+      .run();
+    const expiredPage = await handlePublicReleaseShare(makeSharePublicContext(env, expiredToken));
+    expect(expiredPage.status).toBeGreaterThanOrEqual(400);
+  });
+
   // ------------------------------------------------------------------
   // helpers — re-implement matchesScope here so we can unit-test it
   // without spinning up the Hono context. Mirrors public_v2.ts.
@@ -4079,7 +4180,7 @@ describe("quiver public API v2 — scope resolution", () => {
     expect(rows.results[0].revoked_at).toBeNull();
   });
 
-  it("defaults release shares to seven days and updates share expiry", async () => {
+  it("creates release shares without a default expiry and updates share expiry", async () => {
     const env = makeEnv();
     const { handleCreateReleaseShare, handleUpdateReleaseShare } = await import("../src/routes/shares");
     await seedRelease(env, "rel-share", "build-share", [["full", "all"]], {
@@ -4087,17 +4188,13 @@ describe("quiver public API v2 — scope resolution", () => {
       versionName: "1.0.11",
     });
 
-    const createStart = Date.now();
     const created = await handleCreateReleaseShare(
       makeShareAdminContext(env, { appId: "app-scope", releaseId: "rel-share" }, {}),
     );
-    const createEnd = Date.now();
 
     expect(created.status).toBe(201);
     const createdBody = await responseJson<any>(created);
-    const sevenDaysMs = 7 * 24 * 60 * 60 * 1000;
-    expect(createdBody.expires_at).toBeGreaterThanOrEqual(createStart + sevenDaysMs);
-    expect(createdBody.expires_at).toBeLessThanOrEqual(createEnd + sevenDaysMs);
+    expect(createdBody.expires_at).toBeNull();
 
     const expiresAt = Date.now() + 14 * 24 * 60 * 60 * 1000;
     const updated = await handleUpdateReleaseShare(
@@ -4150,9 +4247,8 @@ describe("quiver public API v2 — scope resolution", () => {
     expect(html).toContain("build 11");
     expect(html).toContain("arm64-v8a");
     expect(html).toContain(`/share/${token}/download`);
-    expect(html).toContain('id="expires-at"');
-    expect(html).toContain("data-expires-at=");
-    expect(html).toContain("Intl.DateTimeFormat");
+    // Expiry is intentionally not shown on the public page.
+    expect(html).not.toContain('id="expires-at"');
     expect(html).toContain("<dt>Stats</dt>");
     expect(html).toContain("<span>visitors</span>");
 

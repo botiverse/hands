@@ -1343,9 +1343,11 @@ export const listWebhookDeliveries = (orgId: string, webhookId: string) =>
 export interface AppShare {
   id: string;
   release_id: string;
+  // Copyable URL; null for legacy shares created before tokens were stored.
+  share_url: string | null;
   created_by: string;
   created_at: number;
-  expires_at: number;
+  expires_at: number | null;
   revoked_at: number | null;
   has_password: number; // 0 | 1 from SQLite
   release_status: string;
@@ -1366,7 +1368,7 @@ export const createReleaseShare = (
   releaseId: string,
   body: { ttl_seconds?: number; expires_at?: number; password?: string },
 ) =>
-  request<{ id: string; share_url: string; expires_at: number; has_password: boolean }>(
+  request<{ id: string; share_url: string; expires_at: number | null; has_password: boolean }>(
     `/api/apps/${appId}/releases/${releaseId}/shares`,
     { method: "POST", body: JSON.stringify(body), admin: true },
   );
@@ -1375,9 +1377,9 @@ export const renewReleaseShare = (
   appId: string,
   releaseId: string,
   shareId: string,
-  body: { ttl_seconds?: number; expires_at?: number; password?: string | null },
+  body: { ttl_seconds?: number; expires_at?: number | null; password?: string | null },
 ) =>
-  request<{ id: string; expires_at: number }>(
+  request<{ id: string; expires_at: number | null }>(
     `/api/apps/${appId}/releases/${releaseId}/shares/${shareId}`,
     { method: "PATCH", body: JSON.stringify(body), admin: true },
   );

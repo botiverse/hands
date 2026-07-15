@@ -17,7 +17,6 @@ type ShareStrings = {
   artifactLabel: string;
   platformLabel: string;
   checksumLabel: string;
-  expiresLabel: string;
   statsLabel: string;
   visitors: string;
   views: string;
@@ -45,7 +44,6 @@ const SHARE_I18N: { en: ShareStrings; zh: ShareStrings } = {
     artifactLabel: "Artifact",
     platformLabel: "Platform",
     checksumLabel: "Checksum",
-    expiresLabel: "Expires",
     statsLabel: "Stats",
     visitors: "visitors",
     views: "views",
@@ -71,7 +69,6 @@ const SHARE_I18N: { en: ShareStrings; zh: ShareStrings } = {
     artifactLabel: "安装包",
     platformLabel: "平台",
     checksumLabel: "校验和",
-    expiresLabel: "过期时间",
     statsLabel: "统计",
     visitors: "访客数",
     views: "浏览次数",
@@ -101,7 +98,7 @@ type ShareRow = {
   id: string;
   token_hash: string;
   created_at: number;
-  expires_at: number;
+  expires_at: number | null;
   revoked_at: number | null;
   view_count: number;
   unique_view_count: number;
@@ -114,7 +111,7 @@ type SharePageRow = {
   icon_r2_key: string | null;
   package_id: string | null;
   share_id: string;
-  expires_at: number;
+  expires_at: number | null;
   app_slug: string;
   app_name: string;
   channel_slug: string;
@@ -140,8 +137,9 @@ type ShareStats = {
   unique_download_count: number;
 };
 
-const DEFAULT_SHARE_TTL_SECONDS = 7 * 24 * 60 * 60;
-const MAX_SHARE_TTL_SECONDS = 30 * 24 * 60 * 60;
+// Shares have no default expiry: a share without an explicit ttl_seconds /
+// expires_at lives until revoked (expires_at NULL). Old-version links handed
+// out in chats must not silently die.
 
 export async function handleCreateReleaseShare(c: AdminContext) {
   const appId = c.req.param("appId");
@@ -167,10 +165,9 @@ export async function handleCreateReleaseShare(c: AdminContext) {
   }
 
   const now = Date.now();
-  let expiresAt: number;
+  let expiresAt: number | null;
   try {
-    const ttlSeconds = normalizeShareTtl(body.ttl_seconds);
-    expiresAt = normalizeExpiresAt(body.expires_at, now, ttlSeconds);
+    expiresAt = resolveExpiry(body.ttl_seconds, body.expires_at, now);
   } catch (err) {
     return c.json({ error: err instanceof Error ? err.message : String(err) }, 400);
   }
@@ -182,9 +179,9 @@ export async function handleCreateReleaseShare(c: AdminContext) {
   await c.env.DB.batch([
     c.env.DB.prepare(
       `INSERT INTO release_shares
-       (id, release_id, token_hash, created_by, created_at, expires_at, revoked_at, password_hash)
-       VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL, ?7)`,
-    ).bind(id, releaseId, tokenHash, currentActor(c), now, expiresAt, passwordHash),
+       (id, release_id, token, token_hash, created_by, created_at, expires_at, revoked_at, password_hash)
+       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, NULL, ?8)`,
+    ).bind(id, releaseId, token, tokenHash, currentActor(c), now, expiresAt, passwordHash),
     c.env.DB.prepare(
       `INSERT INTO audit_logs (id, app_id, action, actor, payload, created_at)
        VALUES (?1, ?2, ?3, ?4, ?5, ?6)`,
@@ -222,7 +219,7 @@ export async function handleListReleaseShares(c: AdminContext) {
   const { results } = await c.env.DB.prepare(
     `SELECT
        rs.id,
-       rs.token_hash,
+       rs.token,
        rs.created_at,
        rs.expires_at,
        rs.revoked_at,
@@ -238,8 +235,21 @@ export async function handleListReleaseShares(c: AdminContext) {
      ORDER BY rs.created_at DESC`,
   )
     .bind(releaseId)
-    .all<ShareRow>();
-  return c.json({ shares: results });
+    .all<ShareRow & { token: string | null }>();
+  return c.json({ shares: (results ?? []).map((row) => withShareUrl(c, row)) });
+}
+
+/** Replace the stored token with a copyable share_url. Legacy rows (created
+ *  before tokens were stored) have no token, so their URL is unrecoverable. */
+function withShareUrl<T extends { token?: string | null }>(
+  c: AdminContext,
+  row: T,
+): Omit<T, "token"> & { share_url: string | null } {
+  const { token, ...rest } = row;
+  return {
+    ...rest,
+    share_url: token ? new URL(`/share/${token}`, publicRequestOrigin(c)).toString() : null,
+  };
 }
 
 export async function handleListAppShares(c: AdminContext) {
@@ -248,6 +258,7 @@ export async function handleListAppShares(c: AdminContext) {
     `SELECT
        rs.id,
        rs.release_id,
+       rs.token,
        rs.created_by,
        rs.created_at,
        rs.expires_at,
@@ -272,8 +283,8 @@ export async function handleListAppShares(c: AdminContext) {
      LIMIT 500`,
   )
     .bind(appId)
-    .all();
-  return c.json({ shares: results });
+    .all<{ token: string | null }>();
+  return c.json({ shares: (results ?? []).map((row) => withShareUrl(c, row)) });
 }
 
 export async function handleRevokeReleaseShare(c: AdminContext) {
@@ -319,8 +330,8 @@ export async function handleUpdateReleaseShare(c: AdminContext) {
   const releaseId = c.req.param("releaseId");
   const shareId = c.req.param("shareId");
   const body = await c.req.json().catch(() => ({})) as {
-    ttl_seconds?: number;
-    expires_at?: number;
+    ttl_seconds?: number | null;
+    expires_at?: number | null;
     password?: string | null;
   };
   const now = Date.now();
@@ -332,16 +343,21 @@ export async function handleUpdateReleaseShare(c: AdminContext) {
      WHERE r.app_id = ?1 AND r.id = ?2 AND rs.id = ?3`,
   )
     .bind(appId, releaseId, shareId)
-    .first<{ id: string; expires_at: number; revoked_at: number | null }>();
+    .first<{ id: string; expires_at: number | null; revoked_at: number | null }>();
   if (!existing) return c.json({ error: "share not found" }, 404);
   if (existing.revoked_at) {
     return c.json({ error: "cannot update revoked share" }, 409);
   }
 
-  let expiresAt: number;
+  // Expiry semantics mirror the password field: both keys absent = leave
+  // unchanged; explicit null (either key) = clear, the share never expires;
+  // a value = set.
+  let expiresAt: number | null;
   try {
-    const ttlSeconds = normalizeShareTtl(body.ttl_seconds);
-    expiresAt = normalizeExpiresAt(body.expires_at, now, ttlSeconds);
+    expiresAt =
+      body.ttl_seconds === undefined && body.expires_at === undefined
+        ? existing.expires_at
+        : resolveExpiry(body.ttl_seconds, body.expires_at, now);
   } catch (err) {
     return c.json({ error: err instanceof Error ? err.message : String(err) }, 400);
   }
@@ -590,7 +606,7 @@ async function findActiveShare(db: D1Database, token: string): Promise<SharePage
      JOIN build_assets ba ON ba.build_id = b.id
      WHERE rs.token_hash = ?1
        AND rs.revoked_at IS NULL
-       AND rs.expires_at > ?2
+       AND (rs.expires_at IS NULL OR rs.expires_at > ?2)
        -- Serve active AND draft releases: draft-first testing needs a
        -- shareable download before publish. Cancelled/superseded stay blocked.
        AND r.status IN ('active', 'draft')
@@ -636,26 +652,26 @@ async function loadShareStats(db: D1Database, shareId: string): Promise<ShareSta
   };
 }
 
-function normalizeShareTtl(ttl: number | undefined): number {
-  if (ttl === undefined || ttl === null) return DEFAULT_SHARE_TTL_SECONDS;
-  if (!Number.isFinite(ttl) || ttl <= 0) {
-    throw new Error("ttl_seconds must be positive");
-  }
-  return Math.min(Math.floor(ttl), MAX_SHARE_TTL_SECONDS);
-}
-
-function normalizeExpiresAt(
-  expiresAt: number | undefined,
+/** Resolve an optional expiry: no ttl_seconds/expires_at (or explicit null)
+ *  means the share never expires. expires_at wins over ttl_seconds. */
+function resolveExpiry(
+  ttlSeconds: number | null | undefined,
+  expiresAt: number | null | undefined,
   now: number,
-  ttlSeconds: number,
-): number {
-  if (expiresAt === undefined || expiresAt === null) {
-    return now + ttlSeconds * 1000;
+): number | null {
+  if (expiresAt !== undefined && expiresAt !== null) {
+    if (!Number.isFinite(expiresAt) || expiresAt <= now) {
+      throw new Error("expires_at must be a future unix millisecond timestamp");
+    }
+    return Math.floor(expiresAt);
   }
-  if (!Number.isFinite(expiresAt) || expiresAt <= now) {
-    throw new Error("expires_at must be a future unix millisecond timestamp");
+  if (ttlSeconds !== undefined && ttlSeconds !== null) {
+    if (!Number.isFinite(ttlSeconds) || ttlSeconds <= 0) {
+      throw new Error("ttl_seconds must be positive");
+    }
+    return now + Math.floor(ttlSeconds) * 1000;
   }
-  return Math.min(Math.floor(expiresAt), now + MAX_SHARE_TTL_SECONDS * 1000);
+  return null;
 }
 
 function randomToken(): string {
@@ -720,7 +736,6 @@ function renderSharePage(
   shareToken: string,
 ): string {
   const title = `${row.app_slug} ${row.version_name} (${row.version_code})`;
-  const expiresIso = new Date(row.expires_at).toISOString();
   const qrSvg = renderShareQrSvg(shareUrl);
   return `<!doctype html>
 <html lang="${t.htmlLang}">
@@ -782,7 +797,6 @@ function renderSharePage(
       <dt>${t.artifactLabel}</dt><dd>${escapeHtml(row.filetype.toUpperCase())} · ${formatBytes(row.size_bytes)}</dd>
       <dt>${t.platformLabel}</dt><dd>${escapeHtml([row.platform, row.arch, row.variant].filter(Boolean).join(" / "))}</dd>
       <dt>${t.checksumLabel}</dt><dd>${escapeHtml(row.file_hash)}</dd>
-      <dt>${t.expiresLabel}</dt><dd><time id="expires-at" datetime="${escapeAttribute(expiresIso)}" data-expires-at="${row.expires_at}">${escapeHtml(expiresIso)}</time></dd>
       <dt>${t.statsLabel}</dt>
       <dd class="stats">
         <span class="stat"><strong>${stats.unique_view_count}</strong><span>${t.visitors}</span></span>
@@ -797,22 +811,6 @@ function renderSharePage(
     </div>
     ${row.changelog ? `<div class="notes">${changelogToHtml(row.changelog)}</div>` : ""}
   </main>
-  <script>
-    (() => {
-      const el = document.getElementById("expires-at");
-      const ms = Number(el?.dataset.expiresAt);
-      if (!el || !Number.isFinite(ms)) return;
-      try {
-        el.textContent = new Intl.DateTimeFormat(undefined, {
-          dateStyle: "medium",
-          timeStyle: "short",
-          timeZoneName: "short",
-        }).format(new Date(ms));
-      } catch {
-        el.textContent = new Date(ms).toLocaleString();
-      }
-    })();
-  </script>
 </body>
 </html>`;
 }
