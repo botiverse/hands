@@ -8,7 +8,15 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { mkdtempSync, readFileSync, rmSync, existsSync, writeFileSync } from "node:fs";
+import {
+  appendFileSync,
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer } from "node:http";
@@ -144,127 +152,158 @@ describe("electron build helpers", () => {
   });
 });
 
-describe("remote notarization contract", () => {
+describe("local notarization contract", () => {
   const sha256 = "a".repeat(64);
   const expected = {
     submissionName: "Raft-1.2.3-arm64.dmg",
     sha256,
-    sizeBytes: 1234,
+    sizeBytes: 3,
   };
-  const base = {
-    notarization_id: "notary-1",
-    operation_id: "op-1",
-    submission_id: "apple-1",
-    status: "In Progress",
+  const exported = {
+    export_id: "export-1",
+    app_id: "app-1",
+    issued_at: 1,
+    credential_updated_at: 1,
     submission_name: expected.submissionName,
     source_sha256: sha256,
     source_size_bytes: expected.sizeBytes,
-    binding_verified: false,
+    credentials: {
+      kind: "app_store_connect_api_key" as const,
+      key_id: "KEY1234567",
+      issuer_id: "12345678-1234-1234-1234-1234567890ab",
+      p8: "-----BEGIN PRIVATE KEY-----\nsecret\n-----END PRIVATE KEY-----",
+    },
   };
-
-  it("derives a stable retry key from the exact app/name/hash/size tuple", async () => {
-    const { deriveNotarizationIdempotencyKey } = await import(
-      "../src/commands/builds.js"
-    );
-    const first = deriveNotarizationIdempotencyKey({
-      appId: "app-1",
-      ...expected,
-    });
-    const replay = deriveNotarizationIdempotencyKey({
-      appId: "app-1",
-      ...expected,
-    });
-    const changed = deriveNotarizationIdempotencyKey({
-      appId: "app-1",
-      ...expected,
-      sizeBytes: expected.sizeBytes + 1,
-    });
-    expect(first).toBe(replay);
-    expect(first).toMatch(/^hands-cli:[a-f0-9]{64}$/);
-    expect(changed).not.toBe(first);
+  const freshExport = () => ({
+    ...exported,
+    credentials: { ...exported.credentials },
   });
 
-  it("waits through processing and gates success on exact-byte Accepted", async () => {
-    const { waitForNotarization } = await import("../src/commands/builds.js");
-    let clock = 0;
-    let reads = 0;
-    const accepted = {
-      ...base,
-      status: "Accepted",
-      ready_for_staple: true,
-      binding_verified: true,
-      apple_sha256: sha256,
+  it("submits locally, binds Apple's log digest, then staples and validates", async () => {
+    const { notarizeAndStapleLocal } = await import(
+      "../src/commands/builds.js"
+    );
+    const dir = mkdtempSync(join(tmpdir(), "hands-notary-test-"));
+    const artifact = join(dir, expected.submissionName);
+    writeFileSync(artifact, "abc");
+    const sourceSha256 = (await import("node:crypto"))
+      .createHash("sha256")
+      .update("abc")
+      .digest("hex");
+    const calls: string[][] = [];
+    let keyPath = "";
+    const credentialExport = {
+      ...freshExport(),
+      source_sha256: sourceSha256,
     };
-    const result = await waitForNotarization({
-      initial: base,
-      expected,
-      timeoutMs: 100,
-      pollMs: 10,
-      now: () => clock,
-      sleep: async (milliseconds) => {
-        clock += milliseconds;
-      },
-      read: async () => {
-        reads += 1;
-        return accepted;
+    const result = await notarizeAndStapleLocal({
+      filePath: artifact,
+      export: credentialExport,
+      expected: { ...expected, sha256: sourceSha256 },
+      platform: "darwin",
+      timeoutMs: 1_000,
+      exec: async (_file, args) => {
+        calls.push(args);
+        if (args[0] === "notarytool" && args[1] === "submit") {
+          keyPath = args[args.indexOf("--key") + 1] ?? "";
+          expect(statSync(keyPath).mode & 0o777).toBe(0o600);
+          expect(readFileSync(keyPath, "utf8")).toContain("BEGIN PRIVATE KEY");
+          return {
+            stdout: JSON.stringify({ id: "apple-1", status: "Accepted" }),
+            stderr: "",
+          };
+        }
+        if (args[0] === "notarytool" && args[1] === "log") {
+          writeFileSync(args.at(-1) ?? "", JSON.stringify({ sha256: sourceSha256 }));
+          return { stdout: "", stderr: "" };
+        }
+        if (args[0] === "stapler" && args[1] === "staple") {
+          appendFileSync(artifact, "ticket");
+        }
+        return { stdout: "", stderr: "" };
       },
     });
-    expect(result).toEqual(accepted);
-    expect(reads).toBe(1);
-  });
-
-  it("fails closed when Hands returns another artifact binding", async () => {
-    const { waitForNotarization, NotarizationCommandError } = await import(
-      "../src/commands/builds.js"
-    );
-    await expect(
-      waitForNotarization({
-        initial: { ...base, source_size_bytes: 9999 },
-        expected,
-        timeoutMs: 100,
-        pollMs: 10,
-        read: async () => base,
-      }),
-    ).rejects.toBeInstanceOf(NotarizationCommandError);
+    expect(result).toMatchObject({
+      notarization_id: "apple-1",
+      status: "Accepted",
+      source_sha256: sourceSha256,
+      source_size_bytes: 3,
+      apple_sha256: sourceSha256,
+      binding_verified: true,
+      stapled: true,
+      staple_validated: true,
+      credential_export_id: "export-1",
+    });
+    expect(result.final_sha256).not.toBe(sourceSha256);
+    expect(calls.map((call) => call.slice(0, 2))).toEqual([
+      ["notarytool", "submit"],
+      ["notarytool", "log"],
+      ["stapler", "staple"],
+      ["stapler", "validate"],
+    ]);
+    expect(JSON.stringify(calls)).not.toContain("PRIVATE KEY");
+    expect(JSON.stringify(calls)).not.toContain("secret");
+    expect(JSON.stringify(result)).not.toContain("PRIVATE KEY");
+    expect(JSON.stringify(result)).not.toContain("secret");
+    expect(existsSync(keyPath)).toBe(false);
+    expect(credentialExport.credentials.p8).toBe("");
+    rmSync(dir, { recursive: true, force: true });
   });
 
   it("does not staple an Accepted result whose Apple log digest mismatches", async () => {
-    const { waitForNotarization } = await import("../src/commands/builds.js");
+    const { notarizeAndStapleLocal } = await import(
+      "../src/commands/builds.js"
+    );
+    const dir = mkdtempSync(join(tmpdir(), "hands-notary-test-"));
+    const artifact = join(dir, expected.submissionName);
+    writeFileSync(artifact, "abc");
+    const sourceSha256 = (await import("node:crypto"))
+      .createHash("sha256")
+      .update("abc")
+      .digest("hex");
+    const calls: string[][] = [];
     await expect(
-      waitForNotarization({
-        initial: {
-          ...base,
-          status: "Accepted",
-          ready_for_staple: false,
-          binding_verified: false,
-          binding_error: "Apple notarized SHA-256 does not match",
-          log: { sha256: "b".repeat(64) },
+      notarizeAndStapleLocal({
+        filePath: artifact,
+        export: { ...freshExport(), source_sha256: sourceSha256 },
+        expected: { ...expected, sha256: sourceSha256 },
+        platform: "darwin",
+        timeoutMs: 1_000,
+        exec: async (_file, args) => {
+          calls.push(args);
+          if (args[1] === "submit") {
+            return {
+              stdout: JSON.stringify({ id: "apple-1", status: "Accepted" }),
+              stderr: "",
+            };
+          }
+          if (args[1] === "log") {
+            writeFileSync(args.at(-1) ?? "", JSON.stringify({ sha256: "b".repeat(64) }));
+          }
+          return { stdout: "", stderr: "" };
         },
-        expected,
-        timeoutMs: 100,
-        pollMs: 10,
-        read: async () => base,
       }),
-    ).rejects.toThrow("different or unverifiable artifact");
+    ).rejects.toThrow("developer log SHA-256 does not match");
+    expect(calls.some((call) => call[0] === "stapler")).toBe(false);
+    rmSync(dir, { recursive: true, force: true });
   });
 
-  it("rejects a ready response without the exact Apple digest", async () => {
-    const { waitForNotarization } = await import("../src/commands/builds.js");
+  it("fails before secret export use on a non-macOS host", async () => {
+    const { notarizeAndStapleLocal } = await import(
+      "../src/commands/builds.js"
+    );
     await expect(
-      waitForNotarization({
-        initial: {
-          ...base,
-          status: "Accepted",
-          ready_for_staple: true,
-          binding_verified: true,
-          apple_sha256: "b".repeat(64),
-        },
+      notarizeAndStapleLocal({
+        filePath: "unused.dmg",
+        export: freshExport(),
         expected,
-        timeoutMs: 100,
-        pollMs: 10,
-        read: async () => base,
+        platform: "linux",
+        timeoutMs: 1_000,
+        exec: async () => {
+          throw new Error("must not run");
+        },
       }),
-    ).rejects.toThrow("exact Apple artifact binding");
+    ).rejects.toThrow("requires macOS");
   });
 });
 

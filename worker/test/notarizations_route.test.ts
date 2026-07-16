@@ -1,53 +1,9 @@
-import Database from "better-sqlite3";
-import { readFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
-  createSubmission: vi.fn(),
-  uploadArtifact: vi.fn(),
-  getSubmission: vi.fn(),
-  getLog: vi.fn(),
   getCredentials: vi.fn(),
   insertAuditLog: vi.fn(),
 }));
-
-vi.mock("../src/lib/notary_api", () => {
-  class NotaryApiError extends Error {
-    status: number;
-    detail: string | null;
-
-    constructor(status: number, message: string, detail: string | null = null) {
-      super(message);
-      this.status = status;
-      this.detail = detail;
-    }
-  }
-  return {
-    NotaryApiError,
-    createNotarySubmission: mocks.createSubmission,
-    uploadNotaryArtifact: mocks.uploadArtifact,
-    getNotarySubmission: mocks.getSubmission,
-    getNotarySubmissionLog: mocks.getLog,
-    isTerminalNotaryStatus: (status: string) =>
-      ["Accepted", "Invalid", "Rejected"].includes(status),
-    verifyNotaryArtifactBinding: (
-      log: Record<string, unknown> | null,
-      expected: string,
-    ) => {
-      const actual = typeof log?.sha256 === "string" ? log.sha256 : null;
-      return actual === expected
-        ? { verified: true, appleSha256: actual, error: null }
-        : {
-            verified: false,
-            appleSha256: actual,
-            error: log
-              ? "Apple notarized SHA-256 does not match the submitted artifact"
-              : "Apple developer log is not available yet",
-          };
-    },
-  };
-});
 
 vi.mock("../src/lib/asc_credentials", () => ({
   getAscCredentials: mocks.getCredentials,
@@ -58,229 +14,133 @@ vi.mock("../src/lib/permissions", () => ({
 }));
 
 import {
-  handleCreateNotarization,
-  handleGetNotarization,
+  handleExportNotarizationCredentials,
+  parseNotarizationCredentialExportInput,
 } from "../src/routes/notarizations";
 
-class D1StatementAdapter {
-  private values: unknown[] = [];
-
-  constructor(
-    private readonly db: Database.Database,
-    private readonly sql: string,
-  ) {}
-
-  bind(...values: unknown[]) {
-    this.values = values;
-    return this;
-  }
-
-  private parameters(): unknown[] | Record<string, unknown> {
-    if (/\?\d+/.test(this.sql)) {
-      return Object.fromEntries(
-        this.values.map((value, index) => [String(index + 1), value]),
-      );
-    }
-    return this.values;
-  }
-
-  async run() {
-    const result = this.db.prepare(this.sql).run(this.parameters() as never);
-    return { success: true, meta: { changes: result.changes } };
-  }
-
-  async first<T>() {
-    return (this.db.prepare(this.sql).get(this.parameters() as never) as T) ?? null;
-  }
-}
-
-function makeDb(): D1Database {
-  const sqlite = new Database(":memory:");
-  sqlite.pragma("foreign_keys = ON");
-  sqlite.exec(`
-    CREATE TABLE apps (id TEXT PRIMARY KEY);
-    CREATE TABLE operation_logs (
-      id TEXT PRIMARY KEY, app_id TEXT, kind TEXT NOT NULL, status TEXT NOT NULL,
-      parent_op_id TEXT, step_number INTEGER, actor TEXT NOT NULL,
-      input TEXT NOT NULL, output TEXT NOT NULL, error TEXT, progress REAL NOT NULL,
-      retry_count INTEGER NOT NULL, created_at INTEGER NOT NULL,
-      updated_at INTEGER NOT NULL, completed_at INTEGER
-    );
-    INSERT INTO apps (id) VALUES ('app-1'), ('app-2');
-  `);
-  sqlite.exec(
-    readFileSync(
-      fileURLToPath(
-        new URL(
-          "../../migrations/sql/0045_app_notarizations.sql",
-          import.meta.url,
-        ),
-      ),
-      "utf8",
-    ),
-  );
-  return {
-    prepare: (sql: string) => new D1StatementAdapter(sqlite, sql),
-  } as unknown as D1Database;
-}
-
 function makeContext(args: {
-  env: { DB: D1Database; APK_BUCKET: R2Bucket; ASC_CRED_ENC_KEY: string };
-  appId: string;
+  appId?: string;
   body?: Record<string, unknown>;
-  notarizationId?: string;
+  encKey?: string;
 }) {
   return {
-    env: args.env,
+    env: {
+      DB: {} as D1Database,
+      ASC_CRED_ENC_KEY: args.encKey ?? "encryption-key",
+    },
     req: {
-      param: (name: string) => {
-        if (name === "appId") return args.appId;
-        if (name === "notarizationId") return args.notarizationId ?? "";
-        return "";
-      },
+      param: (name: string) => (name === "appId" ? args.appId ?? "app-1" : ""),
       json: async () => args.body ?? {},
     },
-    get: (name: string) => (name === "admin_actor" ? "deploy-token:ci" : null),
-    json: (body: unknown, status = 200) =>
+    get: (name: string) =>
+      name === "admin_actor" ? "deploy-token:release-ci" : null,
+    json: (body: unknown, status = 200, headers?: Record<string, string>) =>
       new Response(JSON.stringify(body), {
         status,
-        headers: { "content-type": "application/json" },
+        headers: { "content-type": "application/json", ...headers },
       }),
   } as never;
 }
 
-describe("app-scoped notarization routes", () => {
+describe("app-scoped notarization credential export", () => {
   const sha256 = "a".repeat(64);
-  const source = {
-    r2_key: `apps/app-1/pending/${sha256}.dmg`,
+  const input = {
+    submission_name: "Raft-1.2.3-arm64.dmg",
     sha256,
-    size_bytes: 3,
-    submission_name: "Raft.dmg",
-    idempotency_key: "hands-cli:stable",
+    size_bytes: 1234,
   };
-  let env: {
-    DB: D1Database;
-    APK_BUCKET: R2Bucket;
-    ASC_CRED_ENC_KEY: string;
-  };
-  let pendingExists: boolean;
 
   beforeEach(() => {
-    mocks.createSubmission.mockReset().mockResolvedValue({
-      id: "apple-1",
-      type: "submissions",
-      attributes: {
-        awsAccessKeyId: "temporary-access",
-        awsSecretAccessKey: "temporary-secret",
-        awsSessionToken: "temporary-session",
-        bucket: "bucket",
-        object: "object",
-      },
-    });
-    mocks.uploadArtifact.mockReset().mockResolvedValue(undefined);
-    mocks.getSubmission.mockReset().mockResolvedValue({
-      id: "apple-1",
-      type: "submissions",
-      attributes: {
-        name: "Raft.dmg",
-        status: "Accepted",
-        createdDate: "2026-07-16T00:00:00Z",
-      },
-    });
-    mocks.getLog.mockReset().mockResolvedValue({
-      status: "Accepted",
-      sha256,
-      issues: [],
-    });
     mocks.getCredentials.mockReset().mockResolvedValue({
-      key_id: "key",
-      issuer_id: "issuer",
-      p8: "private-key",
+      id: "credential-1",
+      app_id: "app-1",
+      key_id: "KEY123",
+      issuer_id: "issuer-123",
+      p8: "-----BEGIN PRIVATE KEY-----\nsecret\n-----END PRIVATE KEY-----",
+      created_by_actor: "admin",
+      created_at: 1,
+      updated_at: 2,
     });
     mocks.insertAuditLog.mockReset().mockResolvedValue(undefined);
-    pendingExists = true;
-    env = {
-      DB: makeDb(),
-      ASC_CRED_ENC_KEY: "encryption-key",
-      APK_BUCKET: {
-        get: vi.fn(async (key: string) =>
-          pendingExists && key === source.r2_key
-            ? {
-                size: 3,
-                body: new ReadableStream<Uint8Array>({
-                  start(controller) {
-                    controller.enqueue(new Uint8Array([1, 2, 3]));
-                    controller.close();
-                  },
-                }),
-              }
-            : null,
-        ),
-        delete: vi.fn(async () => {
-          pendingExists = false;
-        }),
-      } as unknown as R2Bucket,
-    };
   });
 
-  it("replays by idempotency key without re-creating Apple credentials or submissions", async () => {
-    const first = await handleCreateNotarization(
-      makeContext({ env, appId: "app-1", body: source }),
-    );
-    expect(first.status).toBe(202);
-    const firstBody = (await first.json()) as Record<string, unknown>;
-    expect(firstBody).toMatchObject({
-      submission_id: "apple-1",
-      source_sha256: sha256,
-      source_size_bytes: 3,
-      replayed: false,
+  it("validates the artifact tuple without accepting paths or malformed digests", () => {
+    expect(parseNotarizationCredentialExportInput(input).input).toEqual({
+      submissionName: input.submission_name,
+      sha256,
+      sizeBytes: input.size_bytes,
     });
-    expect(JSON.stringify(firstBody)).not.toContain("temporary-");
-    expect(JSON.stringify(firstBody)).not.toContain("private-key");
-
-    const replay = await handleCreateNotarization(
-      makeContext({ env, appId: "app-1", body: source }),
-    );
-    expect(replay.status).toBe(200);
-    expect(await replay.json()).toMatchObject({
-      notarization_id: firstBody.notarization_id,
-      submission_id: "apple-1",
-      replayed: true,
-    });
-    expect(mocks.createSubmission).toHaveBeenCalledTimes(1);
-    expect(mocks.uploadArtifact).toHaveBeenCalledTimes(1);
+    expect(
+      parseNotarizationCredentialExportInput({
+        ...input,
+        submission_name: "../Raft.dmg",
+      }).error,
+    ).toMatch(/basename/);
+    expect(
+      parseNotarizationCredentialExportInput({ ...input, sha256: "nope" })
+        .error,
+    ).toMatch(/64 hexadecimal/);
+    expect(
+      parseNotarizationCredentialExportInput({ ...input, size_bytes: 0 }).error,
+    ).toMatch(/positive safe integer/);
   });
 
-  it("checks app ownership before polling Apple and requires log digest binding", async () => {
-    const created = await handleCreateNotarization(
-      makeContext({ env, appId: "app-1", body: source }),
+  it("audits non-secret metadata before returning a non-cacheable key export", async () => {
+    const response = await handleExportNotarizationCredentials(
+      makeContext({ body: input }),
     );
-    const createdBody = (await created.json()) as { notarization_id: string };
+    expect(response.status).toBe(200);
+    expect(response.headers.get("cache-control")).toBe("no-store, max-age=0");
+    expect(response.headers.get("pragma")).toBe("no-cache");
 
-    const crossApp = await handleGetNotarization(
-      makeContext({
-        env,
-        appId: "app-2",
-        notarizationId: createdBody.notarization_id,
-      }),
-    );
-    expect(crossApp.status).toBe(404);
-    expect(mocks.getSubmission).not.toHaveBeenCalled();
-
-    const accepted = await handleGetNotarization(
-      makeContext({
-        env,
-        appId: "app-1",
-        notarizationId: createdBody.notarization_id,
-      }),
-    );
-    expect(await accepted.json()).toMatchObject({
-      status: "Accepted",
+    const body = (await response.json()) as Record<string, unknown>;
+    expect(body).toMatchObject({
+      app_id: "app-1",
+      submission_name: input.submission_name,
       source_sha256: sha256,
-      source_size_bytes: 3,
-      apple_sha256: sha256,
-      binding_verified: true,
-      ready_for_staple: true,
+      source_size_bytes: 1234,
+      credential_updated_at: 2,
+      credentials: {
+        kind: "app_store_connect_api_key",
+        key_id: "KEY123",
+        issuer_id: "issuer-123",
+        p8: expect.stringContaining("BEGIN PRIVATE KEY"),
+      },
     });
+    expect(body.export_id).toEqual(expect.any(String));
+
+    expect(mocks.insertAuditLog).toHaveBeenCalledTimes(1);
+    const audit = mocks.insertAuditLog.mock.calls[0]?.[2] as Record<
+      string,
+      unknown
+    >;
+    expect(audit).toMatchObject({
+      app_id: "app-1",
+      action: "notarization.credentials_export",
+      payload: expect.objectContaining({
+        credential_id: "credential-1",
+        submission_name: input.submission_name,
+        source_sha256: sha256,
+        source_size_bytes: 1234,
+      }),
+    });
+    expect(JSON.stringify(audit)).not.toContain("PRIVATE KEY");
+    expect(JSON.stringify(audit)).not.toContain("secret");
+  });
+
+  it("fails closed before export when audit persistence fails", async () => {
+    mocks.insertAuditLog.mockRejectedValueOnce(new Error("audit unavailable"));
+    await expect(
+      handleExportNotarizationCredentials(makeContext({ body: input })),
+    ).rejects.toThrow("audit unavailable");
+  });
+
+  it("does not export when the app has no configured credential", async () => {
+    mocks.getCredentials.mockResolvedValueOnce(null);
+    const response = await handleExportNotarizationCredentials(
+      makeContext({ body: input }),
+    );
+    expect(response.status).toBe(404);
+    expect(mocks.insertAuditLog).not.toHaveBeenCalled();
   });
 });

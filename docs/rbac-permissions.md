@@ -14,7 +14,9 @@ API is separate and needs no admin role.
 - **member** — a collaborating team member: everything viewer can do, plus
   member-level writes (today: feedback triage).
 - **publisher** (app) — ships: create builds/assets, publish/roll out/roll back
-  releases, manage share links, toggle rollout/feature flags.
+  releases, manage share links, toggle rollout/feature flags. A publisher may
+  also export the app's ASC team key solely for local Apple notarization; this
+  is a sensitive audited exception intended for protected release runners.
 - **admin** — configures and secures: app settings, channels & types, member and
   server-grant management, deploy tokens, client keys, store credentials, and
   destructive actions (archive/purge/delete).
@@ -52,6 +54,7 @@ Reads (`GET`/list/stream/download/analytics) are `viewer` unless noted.
 | **Release shares** | `POST/PATCH/DELETE releases/:id/shares` | publisher |
 | **Rollout / feature flags** | `PUT feature-flags/:key` | publisher |
 | **Operations** | `POST operations/:id/retry` | publisher |
+| **Local notarization** | `POST notarization-credentials/export` | publisher (sensitive, audited, non-cacheable) |
 | **App config** | `PATCH app`, `POST/PATCH/DELETE channels`, `product-types`, `release-types` | admin |
 | **App icon** | `PUT icon` | publisher |
 | **Membership & access** | `POST/PATCH/DELETE members`, `server-grants`, `deploy-tokens` | admin |

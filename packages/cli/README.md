@@ -7,9 +7,9 @@ Status: **alpha**. The npm package is public as `@botiverse/hands-cli`; v1 ships
 `builds publish-version`, `builds publish-android`, `builds publish-ios`,
 `builds publish-ohos`, and `builds publish-electron`. Other commands listed in
 `docs/cli-reference.md` land incrementally as backend endpoints become available.
-`builds notarize` submits an already Developer-ID-signed macOS artifact through
-the app-scoped Hands Apple credentials and fails closed unless Apple's terminal
-log digest matches the uploaded bytes.
+`builds notarize` exports the app-scoped Hands Apple credential to a protected
+macOS runner, invokes Apple's supported `notarytool` against the local signed
+artifact, verifies the terminal log digest, then staples and validates it.
 
 ## Install
 
@@ -40,7 +40,7 @@ hands apps list
 # 4. List builds for an app (by slug or id).
 hands builds list myapp-android
 
-# Remote Apple notarization; staple/validate remains in this macOS runner.
+# Local Apple notarization + staple/validate; artifact bytes never enter Hands.
 hands builds notarize raft-desktop --file dist/Raft-1.2.3-arm64.dmg
 
 # 5. Publish an Android APK release.

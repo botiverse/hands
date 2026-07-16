@@ -10,60 +10,39 @@ import {
   type OpenApiRegistry,
 } from "./common";
 
-const AppNotarizationParams = AppIdParam.extend({
-  notarizationId: z.string().openapi({
-    param: { name: "notarizationId", in: "path" },
-    example: "notary_123",
-  }),
-});
-
-const CreateNotarizationInput = z
+const ExportNotarizationCredentialsInput = z
   .object({
-    r2_key: z.string(),
+    submission_name: z.string().regex(/\.(dmg|pkg)$/i).max(255),
     sha256: z.string().regex(/^[a-f0-9]{64}$/i),
     size_bytes: z.number().int().positive(),
-    submission_name: z.string().max(255),
-    idempotency_key: z.string().min(1).max(128),
   })
-  .openapi("CreateNotarizationInput");
+  .openapi("ExportNotarizationCredentialsInput");
 
 export function registerNotarizationRoutes(registry: OpenApiRegistry) {
   register(registry, {
     method: "post",
-    path: "/api/apps/{appId}/notarizations",
+    path: "/api/apps/{appId}/notarization-credentials/export",
     tags: ["Notarizations"],
-    summary: "Submit a signed macOS artifact for Apple notarization",
+    summary: "Export the app's ASC key for local Apple notarization",
     description:
-      "Uses this app's encrypted App Store Connect credentials inside Hands. Apple credentials and temporary S3 credentials are never returned. The pending R2 object must be the exact SHA-256 and size supplied by the caller.",
+      "Returns a non-cacheable, audited copy of this app's encrypted App Store Connect team API key to an app publisher. The protected macOS runner submits the local signed artifact with Apple's notarytool; artifact bytes never pass through Hands or R2.",
     security: auth,
     request: {
       params: AppIdParam,
-      body: { content: json(CreateNotarizationInput), required: true },
+      body: {
+        content: json(ExportNotarizationCredentialsInput),
+        required: true,
+      },
     },
     responses: {
-      202: success("Submission created and exact bytes uploaded to Apple.", GenericObject),
-      200: success("Idempotent replay of an existing submission.", GenericObject),
-      400: error("Invalid artifact metadata or missing ASC credentials."),
+      200: success(
+        "Credential export receipt and ASC key. This response is sensitive and non-cacheable.",
+        GenericObject,
+      ),
+      400: error("Invalid artifact metadata."),
       403: error("Current app principal is not a publisher."),
-      409: error("Artifact binding or idempotency key mismatch."),
-      502: error("Apple submission or upload failed."),
-    },
-  });
-
-  register(registry, {
-    method: "get",
-    path: "/api/apps/{appId}/notarizations/{notarizationId}",
-    tags: ["Notarizations"],
-    summary: "Read notarization status and terminal developer log",
-    description:
-      "The app-scoped Hands row is resolved before Apple is queried. Accepted is safe to staple only when ready_for_staple is true, which requires Apple's terminal log SHA-256 to match the submitted artifact.",
-    security: auth,
-    request: { params: AppNotarizationParams },
-    responses: {
-      200: success("Current status, binding verdict, and terminal log.", GenericObject),
-      403: error("Current app principal cannot view this submission."),
-      404: error("No submission with this app-scoped id exists."),
-      502: error("Apple status or developer-log retrieval failed."),
+      404: error("No ASC credentials are configured for this app."),
+      500: error("Credential decryption is unavailable."),
     },
   });
 }

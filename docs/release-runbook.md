@@ -18,25 +18,28 @@ publishes explicitly.
 
 For Electron apps, CI should follow the same draft-first rule. Build with
 electron-builder. On macOS, sign with Developer ID in the application runner,
-use Hands' app-scoped Apple key for remote notarization, staple and validate
-locally, and only then publish the generated generic-provider files:
+export the app-scoped Apple key from Hands to that protected runner, notarize
+the local bytes with Apple's supported `notarytool`, and only then publish the
+generated generic-provider files:
 
 ```sh
 hands builds notarize raft-desktop \
   --file "dist/Raft-1.2.3-arm64.dmg" \
   --timeout-seconds 1800
 
-xcrun stapler staple "dist/Raft-1.2.3-arm64.dmg"
-xcrun stapler validate "dist/Raft-1.2.3-arm64.dmg"
 codesign --verify --deep --strict --verbose=2 "dist/Raft-1.2.3-arm64.dmg"
 spctl --assess --type open --context context:primary-signature --verbose=2 \
   "dist/Raft-1.2.3-arm64.dmg"
 ```
 
-`builds notarize` accepts an app-scoped publisher deploy token. The App Store
-Connect private key and Apple's temporary upload credentials remain inside
-Hands. Hands binds `Accepted` to the uploaded SHA-256 and size but intentionally
-does not staple or publish; the macOS runner owns those final-byte gates.
+`builds notarize` accepts an app-scoped publisher deploy token. Hands audits a
+non-cacheable credential export; the CLI writes the ASC team key only to a
+mode-0600 temporary directory, removes it on every exit path, submits the local
+artifact directly to Apple, requires the developer-log SHA-256 to equal the
+pre-staple local SHA-256, and runs `stapler staple` plus `stapler validate`.
+The credential remains usable until it is revoked at Apple, so run this command
+only in a protected, ephemeral release environment. Hands never receives the
+artifact bytes and no notarization object is stored in R2.
 
 Publish after those checks:
 

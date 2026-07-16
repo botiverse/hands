@@ -20,7 +20,7 @@ export type AscCredentialsMeta = {
 };
 
 export type AscCredentials = AscCredentialsMeta & {
-  /** The decrypted .p8 private key (PEM). Only returned to the upload path. */
+  /** The decrypted .p8 private key (PEM). Keep within explicit secret paths. */
   p8: string;
 };
 
@@ -144,7 +144,7 @@ export async function getAscCredentialsMeta(
   return row ?? null;
 }
 
-/** Full credentials incl. the decrypted .p8 — only for the upload path. */
+/** Full credentials incl. the decrypted .p8 — only for explicit secret paths. */
 export async function getAscCredentials(
   db: D1Database,
   encKey: string,

@@ -7,8 +7,8 @@
 import type { Command } from "commander";
 import { createHash } from "node:crypto";
 import { createReadStream, existsSync, readFileSync } from "node:fs";
-import { mkdtemp, writeFile, rm, stat } from "node:fs/promises";
-import { basename, extname, join } from "node:path";
+import { mkdtemp, readFile, writeFile, rm, stat } from "node:fs/promises";
+import { basename, extname, join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { execFile } from "node:child_process";
@@ -41,19 +41,34 @@ interface UploadResponse {
 
 export interface NotarizationResult {
   notarization_id: string;
-  operation_id: string | null;
-  submission_id: string | null;
+  submission_id: string;
   status: string;
   submission_name: string;
   source_sha256: string;
   source_size_bytes: number;
-  ready_for_staple?: boolean;
-  binding_verified: boolean;
-  apple_sha256?: string | null;
-  binding_error?: string | null;
-  log?: Record<string, unknown> | null;
-  log_error?: string | null;
-  replayed?: boolean;
+  apple_sha256: string;
+  binding_verified: true;
+  stapled: true;
+  staple_validated: true;
+  final_sha256: string;
+  final_size_bytes: number;
+  credential_export_id: string;
+}
+
+export interface NotarizationCredentialExport {
+  export_id: string;
+  app_id: string;
+  issued_at: number;
+  credential_updated_at: number;
+  submission_name: string;
+  source_sha256: string;
+  source_size_bytes: number;
+  credentials: {
+    kind: "app_store_connect_api_key";
+    key_id: string;
+    issuer_id: string;
+    p8: string;
+  };
 }
 
 export class NotarizationCommandError extends Error {
@@ -1158,41 +1173,28 @@ export function registerBuildCommands(program: Command): void {
   builds
     .command("notarize <appIdOrSlug>")
     .description(
-      "Submit an already Developer-ID-signed macOS artifact through Hands and wait for an exact-byte Apple verdict.",
+      "Export this app's ASC key, notarize the local macOS artifact with notarytool, and staple it.",
     )
-    .requiredOption("--file <path>", "Signed .dmg, .pkg, or .zip to notarize.")
-    .option(
-      "--idempotency-key <key>",
-      "Stable retry key. Defaults to a digest of app, filename, SHA-256, and size.",
-    )
-    .option("--timeout-seconds <seconds>", "Maximum Apple processing wait.", "1800")
-    .option("--poll-seconds <seconds>", "Apple status polling interval.", "15")
-    .option("--no-wait", "Submit and return without polling.")
+    .requiredOption("--file <path>", "Signed .dmg or .pkg to notarize and staple.")
+    .option("--timeout-seconds <seconds>", "Maximum local notarytool wait.", "1800")
     .option("--json", "Output JSON.", false)
     .action(
       async (
         appIdOrSlug: string,
         opts: {
           file: string;
-          idempotencyKey?: string;
           timeoutSeconds: string;
-          pollSeconds: string;
-          wait: boolean;
           json?: boolean;
         },
       ) => {
         if (!existsSync(opts.file)) throw new Error(`missing file: ${opts.file}`);
         const submissionName = basename(opts.file);
-        if (!/\.(dmg|pkg|zip)$/i.test(submissionName)) {
-          throw new Error("--file must be a .dmg, .pkg, or .zip artifact");
+        if (!/\.(dmg|pkg)$/i.test(submissionName)) {
+          throw new Error("--file must be a .dmg or .pkg artifact that stapler supports");
         }
         const timeoutSeconds = parsePositiveInteger(
           opts.timeoutSeconds,
           "--timeout-seconds",
-        );
-        const pollSeconds = parsePositiveInteger(
-          opts.pollSeconds,
-          "--poll-seconds",
         );
         const appId = await resolveAppId(appIdOrSlug);
         const fileStat = await stat(opts.file);
@@ -1200,82 +1202,43 @@ export function registerBuildCommands(program: Command): void {
           throw new Error("--file must be a non-empty regular file");
         }
         const localSha256 = await sha256File(opts.file);
-        const uploaded = await apiUploadFile<UploadResponse>(
-          `/api/apps/${appId}/upload`,
-          opts.file,
-        );
-        if (
-          uploaded.file_hash.toLowerCase() !== localSha256 ||
-          uploaded.size_bytes !== fileStat.size
-        ) {
-          throw new NotarizationCommandError(
-            "Hands upload digest/size did not match the local artifact; submission was stopped",
-          );
-        }
-        const idempotencyKey =
-          opts.idempotencyKey ??
-          deriveNotarizationIdempotencyKey({
-            appId,
-            submissionName,
-            sha256: localSha256,
-            sizeBytes: fileStat.size,
-          });
-        const created = await apiRequest<NotarizationResult>(
-          `/api/apps/${appId}/notarizations`,
+        const exported = await apiRequest<NotarizationCredentialExport>(
+          `/api/apps/${appId}/notarization-credentials/export`,
           {
             method: "POST",
             body: {
-              r2_key: uploaded.r2_key,
               sha256: localSha256,
               size_bytes: fileStat.size,
               submission_name: submissionName,
-              idempotency_key: idempotencyKey,
             },
           },
         );
-        assertNotarizationSource(created, {
+        assertCredentialExportBinding(exported, {
+          appId,
           submissionName,
           sha256: localSha256,
           sizeBytes: fileStat.size,
         });
-
-        const result = opts.wait
-          ? await waitForNotarization({
-              initial: created,
-              expected: {
-                submissionName,
-                sha256: localSha256,
-                sizeBytes: fileStat.size,
-              },
-              timeoutMs: timeoutSeconds * 1000,
-              pollMs: pollSeconds * 1000,
-              read: () =>
-                apiRequest<NotarizationResult>(
-                  `/api/apps/${appId}/notarizations/${created.notarization_id}`,
-                ),
-            })
-          : created;
+        const result = await notarizeAndStapleLocal({
+          filePath: opts.file,
+          export: exported,
+          expected: {
+            submissionName,
+            sha256: localSha256,
+            sizeBytes: fileStat.size,
+          },
+          timeoutMs: timeoutSeconds * 1000,
+        });
 
         if (shouldOutputJson(program, opts.json)) {
           console.log(JSON.stringify(result, null, 2));
           return;
         }
-        if (!opts.wait) {
-          console.log(`Submitted ${submissionName} for Apple notarization.`);
-          console.log(`  notarization: ${result.notarization_id}`);
-          console.log(`  submission:   ${result.submission_id ?? "pending"}`);
-          console.log(`  sha256:       ${result.source_sha256}`);
-          console.log(`  size:         ${result.source_size_bytes} bytes`);
-          return;
-        }
-        console.log("Apple notarization accepted; exact artifact binding verified.");
+        console.log("Apple notarization accepted, bound, stapled, and validated.");
         console.log(`  notarization: ${result.notarization_id}`);
         console.log(`  submission:   ${result.submission_id}`);
-        console.log(`  sha256:       ${result.source_sha256}`);
-        console.log(`  size:         ${result.source_size_bytes} bytes`);
-        console.log(
-          "Next: staple this unchanged local artifact, then run stapler/codesign/spctl validation before publishing.",
-        );
+        console.log(`  source sha256: ${result.source_sha256}`);
+        console.log(`  final sha256:  ${result.final_sha256}`);
       },
     );
 
@@ -1287,107 +1250,212 @@ async function sha256File(filePath: string): Promise<string> {
   return hash.digest("hex");
 }
 
-export function deriveNotarizationIdempotencyKey(args: {
-  appId: string;
-  submissionName: string;
-  sha256: string;
-  sizeBytes: number;
-}): string {
-  const digest = createHash("sha256")
-    .update(args.appId)
-    .update("\0")
-    .update(args.submissionName)
-    .update("\0")
-    .update(args.sha256.toLowerCase())
-    .update("\0")
-    .update(String(args.sizeBytes))
-    .digest("hex");
-  return `hands-cli:${digest}`;
-}
-
-function assertNotarizationSource(
-  result: NotarizationResult,
+function assertCredentialExportBinding(
+  result: NotarizationCredentialExport,
   expected: {
+    appId: string;
     submissionName: string;
     sha256: string;
     sizeBytes: number;
   },
 ): void {
   if (
+    result.app_id !== expected.appId ||
     result.submission_name !== expected.submissionName ||
     result.source_sha256.toLowerCase() !== expected.sha256.toLowerCase() ||
-    result.source_size_bytes !== expected.sizeBytes
+    result.source_size_bytes !== expected.sizeBytes ||
+    result.credentials.kind !== "app_store_connect_api_key" ||
+    !/^[A-Za-z0-9]{8,64}$/.test(result.credentials.key_id) ||
+    !/^[A-Fa-f0-9]{8}-[A-Fa-f0-9]{4}-[A-Fa-f0-9]{4}-[A-Fa-f0-9]{4}-[A-Fa-f0-9]{12}$/.test(
+      result.credentials.issuer_id,
+    ) ||
+    !result.credentials.p8.includes("BEGIN PRIVATE KEY")
   ) {
     throw new NotarizationCommandError(
-      "Hands returned a notarization bound to different artifact bytes",
-      result,
+      "Hands returned credentials bound to a different app or artifact tuple",
     );
   }
 }
 
-function terminalNotarizationFailure(result: NotarizationResult): string | null {
-  if (["Invalid", "Rejected", "Create Failed", "Upload Failed"].includes(result.status)) {
-    return `Apple notarization ended with status ${result.status}`;
-  }
-  if (result.status === "Create Outcome Unknown") {
-    return "Apple submission creation outcome is unknown; do not submit the same artifact with a new idempotency key";
-  }
-  if (
-    result.status === "Accepted" &&
-    !result.binding_verified &&
-    result.log &&
-    result.binding_error
-  ) {
-    return `Apple accepted a different or unverifiable artifact: ${result.binding_error}`;
-  }
-  return null;
+type LocalExec = (
+  file: string,
+  args: string[],
+  options: { timeout: number; maxBuffer: number },
+) => Promise<{ stdout: string; stderr: string }>;
+
+async function defaultLocalExec(
+  file: string,
+  args: string[],
+  options: { timeout: number; maxBuffer: number },
+) {
+  const result = await execFileAsync(file, args, options);
+  return { stdout: String(result.stdout), stderr: String(result.stderr) };
 }
 
-export async function waitForNotarization(args: {
-  initial: NotarizationResult;
+function parseJsonRecord(raw: string, label: string): Record<string, unknown> {
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      throw new Error("not an object");
+    }
+    return parsed as Record<string, unknown>;
+  } catch {
+    throw new NotarizationCommandError(`${label} did not return valid JSON`);
+  }
+}
+
+export async function notarizeAndStapleLocal(args: {
+  filePath: string;
+  export: NotarizationCredentialExport;
   expected: {
     submissionName: string;
     sha256: string;
     sizeBytes: number;
   };
   timeoutMs: number;
-  pollMs: number;
-  read: () => Promise<NotarizationResult>;
-  now?: () => number;
-  sleep?: (milliseconds: number) => Promise<void>;
+  platform?: NodeJS.Platform;
+  exec?: LocalExec;
 }): Promise<NotarizationResult> {
-  const now = args.now ?? Date.now;
-  const sleep =
-    args.sleep ??
-    ((milliseconds: number) =>
-      new Promise<void>((resolve) => setTimeout(resolve, milliseconds)));
-  const deadline = now() + args.timeoutMs;
-  let current = args.initial;
+  if ((args.platform ?? process.platform) !== "darwin") {
+    throw new NotarizationCommandError(
+      "local Apple notarization requires macOS with Xcode command-line tools",
+    );
+  }
+  assertCredentialExportBinding(args.export, {
+    appId: args.export.app_id,
+    ...args.expected,
+  });
+  const run = args.exec ?? defaultLocalExec;
+  const artifactPath = resolve(args.filePath);
+  const work = await mkdtemp(join(tmpdir(), "hands-notary-"));
+  // Keep the path independent of server-controlled key metadata.
+  const keyPath = join(work, "AuthKey.p8");
+  const logPath = join(work, "notary-log.json");
+  const execOptions = { timeout: args.timeoutMs, maxBuffer: 4 * 1024 * 1024 };
 
-  while (true) {
-    assertNotarizationSource(current, args.expected);
-    if (current.status === "Accepted" && current.ready_for_staple) {
-      if (
-        !current.binding_verified ||
-        current.apple_sha256?.toLowerCase() !== args.expected.sha256.toLowerCase()
-      ) {
-        throw new NotarizationCommandError(
-          "Hands returned ready_for_staple without the exact Apple artifact binding",
-          current,
-        );
-      }
-      return current;
-    }
-    const failure = terminalNotarizationFailure(current);
-    if (failure) throw new NotarizationCommandError(failure, current);
-    if (now() >= deadline) {
+  try {
+    await writeFile(keyPath, args.export.credentials.p8, { mode: 0o600 });
+    // Drop the long-lived JS reference as soon as the mode-0600 file exists.
+    // The temporary directory is still removed in the finally block.
+    args.export.credentials.p8 = "";
+    let submitOutput: { stdout: string; stderr: string };
+    try {
+      submitOutput = await run(
+        "xcrun",
+        [
+          "notarytool",
+          "submit",
+          artifactPath,
+          "--key",
+          keyPath,
+          "--key-id",
+          args.export.credentials.key_id,
+          "--issuer",
+          args.export.credentials.issuer_id,
+          "--wait",
+          "--output-format",
+          "json",
+        ],
+        execOptions,
+      );
+    } catch {
       throw new NotarizationCommandError(
-        `Timed out waiting for Apple notarization after ${Math.ceil(args.timeoutMs / 1000)} seconds`,
-        current,
+        "Apple notarytool submit failed or timed out",
       );
     }
-    await sleep(Math.min(args.pollMs, Math.max(0, deadline - now())));
-    current = await args.read();
+
+    const submit = parseJsonRecord(submitOutput.stdout, "Apple notarytool submit");
+    const submissionId =
+      typeof submit.id === "string"
+        ? submit.id
+        : typeof submit.submissionId === "string"
+          ? submit.submissionId
+          : "";
+    const status = typeof submit.status === "string" ? submit.status : "";
+    if (!submissionId || status !== "Accepted") {
+      throw new NotarizationCommandError(
+        `Apple notarization ended with status ${status || "unknown"}`,
+      );
+    }
+
+    // The source bytes must remain unchanged from the tuple Hands audited.
+    const postSubmitStat = await stat(artifactPath);
+    const postSubmitSha256 = await sha256File(artifactPath);
+    if (
+      postSubmitStat.size !== args.expected.sizeBytes ||
+      postSubmitSha256.toLowerCase() !== args.expected.sha256.toLowerCase()
+    ) {
+      throw new NotarizationCommandError(
+        "local artifact changed while Apple notarization was in progress",
+      );
+    }
+
+    try {
+      await run(
+        "xcrun",
+        [
+          "notarytool",
+          "log",
+          submissionId,
+          "--key",
+          keyPath,
+          "--key-id",
+          args.export.credentials.key_id,
+          "--issuer",
+          args.export.credentials.issuer_id,
+          logPath,
+        ],
+        execOptions,
+      );
+    } catch {
+      throw new NotarizationCommandError(
+        "Apple developer log could not be downloaded for exact-byte binding",
+      );
+    }
+    const log = parseJsonRecord(
+      await readFile(logPath, "utf8"),
+      "Apple developer log",
+    );
+    const appleSha256 =
+      typeof log.sha256 === "string" ? log.sha256.toLowerCase() : "";
+    if (
+      !/^[a-f0-9]{64}$/.test(appleSha256) ||
+      appleSha256 !== args.expected.sha256.toLowerCase()
+    ) {
+      throw new NotarizationCommandError(
+        "Apple developer log SHA-256 does not match the local source artifact",
+      );
+    }
+
+    try {
+      await run("xcrun", ["stapler", "staple", artifactPath], execOptions);
+      await run("xcrun", ["stapler", "validate", artifactPath], execOptions);
+    } catch {
+      throw new NotarizationCommandError(
+        "Apple accepted the artifact but stapling or staple validation failed",
+      );
+    }
+
+    const finalStat = await stat(artifactPath);
+    const finalSha256 = await sha256File(artifactPath);
+    return {
+      notarization_id: submissionId,
+      submission_id: submissionId,
+      status,
+      submission_name: args.expected.submissionName,
+      source_sha256: args.expected.sha256.toLowerCase(),
+      source_size_bytes: args.expected.sizeBytes,
+      apple_sha256: appleSha256,
+      binding_verified: true,
+      stapled: true,
+      staple_validated: true,
+      final_sha256: finalSha256,
+      final_size_bytes: finalStat.size,
+      credential_export_id: args.export.export_id,
+    };
+  } finally {
+    args.export.credentials.p8 = "";
+    await rm(work, { recursive: true, force: true }).catch(() => {});
   }
 }
 

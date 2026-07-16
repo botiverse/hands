@@ -247,44 +247,33 @@ clear `platform`/`arch` pair. The command preserves original filenames through
 `variant` and `metadata_json.filename`, which lets relative URLs inside
 `latest*.yml` resolve unchanged.
 
-### Remote macOS notarization
+### Local macOS notarization with Hands credential brokerage
 
-Hands can proxy Apple notarization without copying the App Store Connect
-private key into every application repository. Configure the team API key in
-the app's Hands settings, give CI an app-scoped `publisher` deploy token, and
-submit the already Developer-ID-signed artifact:
+Hands can keep one encrypted App Store Connect team key per app without copying
+it into repository secrets. Configure the key in the app's Hands settings,
+give a protected macOS release job an app-scoped `publisher` deploy token, and
+notarize the already Developer-ID-signed local artifact:
 
 ```bash
 export HANDS_AUTH_TOKEN="$HANDS_PUBLISHER_TOKEN"
 
 hands builds notarize raft-desktop \
   --file "dist/Raft-1.2.3-arm64.dmg" \
-  --timeout-seconds 1800 \
-  --poll-seconds 15
+  --timeout-seconds 1800
 ```
 
-The command computes the local SHA-256 and size, uploads those bytes to a
-hash-addressed app-scoped pending object, and asks Hands to create and poll the
-Apple submission. Retries use a deterministic idempotency key. Success is
-reported only when Apple's terminal developer log contains the same SHA-256;
-an `Accepted` status without that exact-byte binding is not a staple gate.
+The command computes the pre-staple SHA-256 and size, asks Hands for a
+non-cacheable audited export of that app's key, writes it into a mode-0600
+temporary directory, and invokes `xcrun notarytool submit --wait` directly on
+the local file. It then downloads Apple's developer log, requires its SHA-256
+to equal the pre-staple local digest, and runs `stapler staple` plus `stapler
+validate`. The temporary credential directory is removed on every exit path.
 
-Hands never returns the Apple private key or Apple's temporary S3 credentials.
-It also does not staple, sign, or publish the artifact. After the command
-returns successfully, the same macOS runner must staple and validate the local
-file before publishing its now-final bytes:
-
-```bash
-xcrun stapler staple "dist/Raft-1.2.3-arm64.dmg"
-xcrun stapler validate "dist/Raft-1.2.3-arm64.dmg"
-codesign --verify --deep --strict --verbose=2 "dist/Raft-1.2.3-arm64.dmg"
-spctl --assess --type open --context context:primary-signature --verbose=2 \
-  "dist/Raft-1.2.3-arm64.dmg"
-```
-
-Use `--no-wait` for a submit-only job and poll the returned app-scoped
-notarization id through the API. `--json` returns the structured status,
-source SHA-256/size, Apple submission id, binding verdict, and terminal log.
+Hands never receives or stores the artifact, so there is no R2 intermediary.
+The exported team key remains sensitive and usable until revoked at Apple;
+only use this command in a protected ephemeral runner. `--json` contains only
+the non-secret export receipt, Apple submission id, pre-staple binding, and
+final stapled digest. It never contains the private key or Apple developer log.
 
 Required files depend on target OS:
 
@@ -307,9 +296,9 @@ release APIs directly. Register the original filenames using the same fields:
 
 Keep the same draft-first policy as Android: CI creates a draft Electron
 release, then a human or agent reviews release notes and explicitly publishes.
-macOS update artifacts must be Developer-ID-signed before remote notarization,
-then stapled and validated locally before `publish-electron`; Hands hosts only
-those final bytes and does not sign Electron applications.
+macOS update artifacts must be Developer-ID-signed before local notarization,
+then stapled and validated before `publish-electron`; Hands hosts only those
+final bytes and does not sign Electron applications.
 
 ## Review and Publish (draft flow)
 

@@ -79,7 +79,7 @@ export const openApiDocument = docs.getOpenAPI31Document({
     {
       name: "Notarizations",
       description:
-        "App-scoped remote Apple notarization for already signed macOS artifacts.",
+        "Audited app-scoped credential export for local Apple notarization.",
     },
     {
       name: "Releases",
