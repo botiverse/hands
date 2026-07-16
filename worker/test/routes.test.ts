@@ -76,6 +76,8 @@ describe("quiver OpenAPI document", () => {
       "/api/apps",
       "/api/apps/{appId}/builds",
       "/api/apps/{appId}/builds/publish-version",
+      "/api/apps/{appId}/notarizations",
+      "/api/apps/{appId}/notarizations/{notarizationId}",
       "/api/apps/{appId}/builds/{buildId}/external-targets",
       "/api/apps/{appId}/releases/{releaseId}/publish",
       "/api/apps/{appId}/feedback/{ticketId}/comments",

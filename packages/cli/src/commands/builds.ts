@@ -5,8 +5,9 @@
  */
 
 import type { Command } from "commander";
-import { existsSync, readFileSync } from "node:fs";
-import { mkdtemp, writeFile, rm } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { createReadStream, existsSync, readFileSync } from "node:fs";
+import { mkdtemp, writeFile, rm, stat } from "node:fs/promises";
 import { basename, extname, join } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
@@ -36,6 +37,33 @@ interface UploadResponse {
   r2_key: string;
   size_bytes: number;
   original_filename: string;
+}
+
+export interface NotarizationResult {
+  notarization_id: string;
+  operation_id: string | null;
+  submission_id: string | null;
+  status: string;
+  submission_name: string;
+  source_sha256: string;
+  source_size_bytes: number;
+  ready_for_staple?: boolean;
+  binding_verified: boolean;
+  apple_sha256?: string | null;
+  binding_error?: string | null;
+  log?: Record<string, unknown> | null;
+  log_error?: string | null;
+  replayed?: boolean;
+}
+
+export class NotarizationCommandError extends Error {
+  readonly result: NotarizationResult | null;
+
+  constructor(message: string, result: NotarizationResult | null = null) {
+    super(message);
+    this.name = "NotarizationCommandError";
+    this.result = result;
+  }
 }
 
 interface ChannelRow {
@@ -1127,6 +1155,240 @@ export function registerBuildCommands(program: Command): void {
       },
     );
 
+  builds
+    .command("notarize <appIdOrSlug>")
+    .description(
+      "Submit an already Developer-ID-signed macOS artifact through Hands and wait for an exact-byte Apple verdict.",
+    )
+    .requiredOption("--file <path>", "Signed .dmg, .pkg, or .zip to notarize.")
+    .option(
+      "--idempotency-key <key>",
+      "Stable retry key. Defaults to a digest of app, filename, SHA-256, and size.",
+    )
+    .option("--timeout-seconds <seconds>", "Maximum Apple processing wait.", "1800")
+    .option("--poll-seconds <seconds>", "Apple status polling interval.", "15")
+    .option("--no-wait", "Submit and return without polling.")
+    .option("--json", "Output JSON.", false)
+    .action(
+      async (
+        appIdOrSlug: string,
+        opts: {
+          file: string;
+          idempotencyKey?: string;
+          timeoutSeconds: string;
+          pollSeconds: string;
+          wait: boolean;
+          json?: boolean;
+        },
+      ) => {
+        if (!existsSync(opts.file)) throw new Error(`missing file: ${opts.file}`);
+        const submissionName = basename(opts.file);
+        if (!/\.(dmg|pkg|zip)$/i.test(submissionName)) {
+          throw new Error("--file must be a .dmg, .pkg, or .zip artifact");
+        }
+        const timeoutSeconds = parsePositiveInteger(
+          opts.timeoutSeconds,
+          "--timeout-seconds",
+        );
+        const pollSeconds = parsePositiveInteger(
+          opts.pollSeconds,
+          "--poll-seconds",
+        );
+        const appId = await resolveAppId(appIdOrSlug);
+        const fileStat = await stat(opts.file);
+        if (!fileStat.isFile() || fileStat.size <= 0) {
+          throw new Error("--file must be a non-empty regular file");
+        }
+        const localSha256 = await sha256File(opts.file);
+        const uploaded = await apiUploadFile<UploadResponse>(
+          `/api/apps/${appId}/upload`,
+          opts.file,
+        );
+        if (
+          uploaded.file_hash.toLowerCase() !== localSha256 ||
+          uploaded.size_bytes !== fileStat.size
+        ) {
+          throw new NotarizationCommandError(
+            "Hands upload digest/size did not match the local artifact; submission was stopped",
+          );
+        }
+        const idempotencyKey =
+          opts.idempotencyKey ??
+          deriveNotarizationIdempotencyKey({
+            appId,
+            submissionName,
+            sha256: localSha256,
+            sizeBytes: fileStat.size,
+          });
+        const created = await apiRequest<NotarizationResult>(
+          `/api/apps/${appId}/notarizations`,
+          {
+            method: "POST",
+            body: {
+              r2_key: uploaded.r2_key,
+              sha256: localSha256,
+              size_bytes: fileStat.size,
+              submission_name: submissionName,
+              idempotency_key: idempotencyKey,
+            },
+          },
+        );
+        assertNotarizationSource(created, {
+          submissionName,
+          sha256: localSha256,
+          sizeBytes: fileStat.size,
+        });
+
+        const result = opts.wait
+          ? await waitForNotarization({
+              initial: created,
+              expected: {
+                submissionName,
+                sha256: localSha256,
+                sizeBytes: fileStat.size,
+              },
+              timeoutMs: timeoutSeconds * 1000,
+              pollMs: pollSeconds * 1000,
+              read: () =>
+                apiRequest<NotarizationResult>(
+                  `/api/apps/${appId}/notarizations/${created.notarization_id}`,
+                ),
+            })
+          : created;
+
+        if (shouldOutputJson(program, opts.json)) {
+          console.log(JSON.stringify(result, null, 2));
+          return;
+        }
+        if (!opts.wait) {
+          console.log(`Submitted ${submissionName} for Apple notarization.`);
+          console.log(`  notarization: ${result.notarization_id}`);
+          console.log(`  submission:   ${result.submission_id ?? "pending"}`);
+          console.log(`  sha256:       ${result.source_sha256}`);
+          console.log(`  size:         ${result.source_size_bytes} bytes`);
+          return;
+        }
+        console.log("Apple notarization accepted; exact artifact binding verified.");
+        console.log(`  notarization: ${result.notarization_id}`);
+        console.log(`  submission:   ${result.submission_id}`);
+        console.log(`  sha256:       ${result.source_sha256}`);
+        console.log(`  size:         ${result.source_size_bytes} bytes`);
+        console.log(
+          "Next: staple this unchanged local artifact, then run stapler/codesign/spctl validation before publishing.",
+        );
+      },
+    );
+
+}
+
+async function sha256File(filePath: string): Promise<string> {
+  const hash = createHash("sha256");
+  for await (const chunk of createReadStream(filePath)) hash.update(chunk);
+  return hash.digest("hex");
+}
+
+export function deriveNotarizationIdempotencyKey(args: {
+  appId: string;
+  submissionName: string;
+  sha256: string;
+  sizeBytes: number;
+}): string {
+  const digest = createHash("sha256")
+    .update(args.appId)
+    .update("\0")
+    .update(args.submissionName)
+    .update("\0")
+    .update(args.sha256.toLowerCase())
+    .update("\0")
+    .update(String(args.sizeBytes))
+    .digest("hex");
+  return `hands-cli:${digest}`;
+}
+
+function assertNotarizationSource(
+  result: NotarizationResult,
+  expected: {
+    submissionName: string;
+    sha256: string;
+    sizeBytes: number;
+  },
+): void {
+  if (
+    result.submission_name !== expected.submissionName ||
+    result.source_sha256.toLowerCase() !== expected.sha256.toLowerCase() ||
+    result.source_size_bytes !== expected.sizeBytes
+  ) {
+    throw new NotarizationCommandError(
+      "Hands returned a notarization bound to different artifact bytes",
+      result,
+    );
+  }
+}
+
+function terminalNotarizationFailure(result: NotarizationResult): string | null {
+  if (["Invalid", "Rejected", "Create Failed", "Upload Failed"].includes(result.status)) {
+    return `Apple notarization ended with status ${result.status}`;
+  }
+  if (result.status === "Create Outcome Unknown") {
+    return "Apple submission creation outcome is unknown; do not submit the same artifact with a new idempotency key";
+  }
+  if (
+    result.status === "Accepted" &&
+    !result.binding_verified &&
+    result.log &&
+    result.binding_error
+  ) {
+    return `Apple accepted a different or unverifiable artifact: ${result.binding_error}`;
+  }
+  return null;
+}
+
+export async function waitForNotarization(args: {
+  initial: NotarizationResult;
+  expected: {
+    submissionName: string;
+    sha256: string;
+    sizeBytes: number;
+  };
+  timeoutMs: number;
+  pollMs: number;
+  read: () => Promise<NotarizationResult>;
+  now?: () => number;
+  sleep?: (milliseconds: number) => Promise<void>;
+}): Promise<NotarizationResult> {
+  const now = args.now ?? Date.now;
+  const sleep =
+    args.sleep ??
+    ((milliseconds: number) =>
+      new Promise<void>((resolve) => setTimeout(resolve, milliseconds)));
+  const deadline = now() + args.timeoutMs;
+  let current = args.initial;
+
+  while (true) {
+    assertNotarizationSource(current, args.expected);
+    if (current.status === "Accepted" && current.ready_for_staple) {
+      if (
+        !current.binding_verified ||
+        current.apple_sha256?.toLowerCase() !== args.expected.sha256.toLowerCase()
+      ) {
+        throw new NotarizationCommandError(
+          "Hands returned ready_for_staple without the exact Apple artifact binding",
+          current,
+        );
+      }
+      return current;
+    }
+    const failure = terminalNotarizationFailure(current);
+    if (failure) throw new NotarizationCommandError(failure, current);
+    if (now() >= deadline) {
+      throw new NotarizationCommandError(
+        `Timed out waiting for Apple notarization after ${Math.ceil(args.timeoutMs / 1000)} seconds`,
+        current,
+      );
+    }
+    await sleep(Math.min(args.pollMs, Math.max(0, deadline - now())));
+    current = await args.read();
+  }
 }
 
 async function resolveAppId(slugOrId: string): Promise<string> {
@@ -1329,6 +1591,14 @@ function parseNonNegativeInteger(value: string, flag: string): number {
   const parsed = Number(value);
   if (!Number.isSafeInteger(parsed) || parsed < 0) {
     throw new Error(`${flag} must be a non-negative integer`);
+  }
+  return parsed;
+}
+
+function parsePositiveInteger(value: string, flag: string): number {
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed) || parsed <= 0) {
+    throw new Error(`${flag} must be a positive integer`);
   }
   return parsed;
 }

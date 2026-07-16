@@ -17,8 +17,28 @@ publishes explicitly.
 - job summary shows the draft release id and the raw changelog
 
 For Electron apps, CI should follow the same draft-first rule. Build with
-electron-builder, then publish the generated generic-provider files through
-the CLI:
+electron-builder. On macOS, sign with Developer ID in the application runner,
+use Hands' app-scoped Apple key for remote notarization, staple and validate
+locally, and only then publish the generated generic-provider files:
+
+```sh
+hands builds notarize raft-desktop \
+  --file "dist/Raft-1.2.3-arm64.dmg" \
+  --timeout-seconds 1800
+
+xcrun stapler staple "dist/Raft-1.2.3-arm64.dmg"
+xcrun stapler validate "dist/Raft-1.2.3-arm64.dmg"
+codesign --verify --deep --strict --verbose=2 "dist/Raft-1.2.3-arm64.dmg"
+spctl --assess --type open --context context:primary-signature --verbose=2 \
+  "dist/Raft-1.2.3-arm64.dmg"
+```
+
+`builds notarize` accepts an app-scoped publisher deploy token. The App Store
+Connect private key and Apple's temporary upload credentials remain inside
+Hands. Hands binds `Accepted` to the uploaded SHA-256 and size but intentionally
+does not staple or publish; the macOS runner owns those final-byte gates.
+
+Publish after those checks:
 
 ```sh
 hands builds publish-electron raft-desktop \

@@ -105,6 +105,10 @@ import {
   handleTestflightUploadStatus,
 } from "./routes/testflight";
 import { handleAppStoreReview } from "./routes/appstore_review";
+import {
+  handleCreateNotarization,
+  handleGetNotarization,
+} from "./routes/notarizations";
 import { handleGenerateDeltaPatches, handleDeltaSources } from "./routes/delta";
 import { handleUploadApk } from "./routes/upload";
 import {
@@ -670,6 +674,16 @@ admin.delete("/api/apps/:appId/releases/:releaseId/shares/:shareId", requireAppR
 
 // Multipart APK upload → R2 (admin only, validates + audits)
 admin.post("/api/apps/:appId/upload", requireAppRole("publisher"), handleUploadApk);
+admin.post(
+  "/api/apps/:appId/notarizations",
+  requireAppRole("publisher"),
+  handleCreateNotarization,
+);
+admin.get(
+  "/api/apps/:appId/notarizations/:notarizationId",
+  requireAppRole("viewer"),
+  handleGetNotarization,
+);
 
 // Operation log + SSE stream (admin)
 admin.get("/api/apps/:appId/operations", requireAppRole("viewer"), handleListOperations);

@@ -4,6 +4,7 @@ import { registerAuthRoutes } from "./openapi/auth";
 import { registerBuildRoutes } from "./openapi/builds";
 import { registerFeedbackRoutes } from "./openapi/feedback";
 import { registerOrgRoutes } from "./openapi/orgs";
+import { registerNotarizationRoutes } from "./openapi/notarizations";
 import { registerPublicRoutes } from "./openapi/public";
 import { registerReleaseRoutes } from "./openapi/releases";
 import { registerSettingsRoutes } from "./openapi/settings";
@@ -14,6 +15,7 @@ registerAuthRoutes(docs.openAPIRegistry);
 registerPublicRoutes(docs.openAPIRegistry);
 registerAppRoutes(docs.openAPIRegistry);
 registerBuildRoutes(docs.openAPIRegistry);
+registerNotarizationRoutes(docs.openAPIRegistry);
 registerReleaseRoutes(docs.openAPIRegistry);
 registerFeedbackRoutes(docs.openAPIRegistry);
 registerOrgRoutes(docs.openAPIRegistry);
@@ -73,6 +75,11 @@ export const openApiDocument = docs.getOpenAPI31Document({
     {
       name: "Builds",
       description: "Create, inspect, and download build artifacts.",
+    },
+    {
+      name: "Notarizations",
+      description:
+        "App-scoped remote Apple notarization for already signed macOS artifacts.",
     },
     {
       name: "Releases",

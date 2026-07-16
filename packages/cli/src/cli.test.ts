@@ -144,6 +144,130 @@ describe("electron build helpers", () => {
   });
 });
 
+describe("remote notarization contract", () => {
+  const sha256 = "a".repeat(64);
+  const expected = {
+    submissionName: "Raft-1.2.3-arm64.dmg",
+    sha256,
+    sizeBytes: 1234,
+  };
+  const base = {
+    notarization_id: "notary-1",
+    operation_id: "op-1",
+    submission_id: "apple-1",
+    status: "In Progress",
+    submission_name: expected.submissionName,
+    source_sha256: sha256,
+    source_size_bytes: expected.sizeBytes,
+    binding_verified: false,
+  };
+
+  it("derives a stable retry key from the exact app/name/hash/size tuple", async () => {
+    const { deriveNotarizationIdempotencyKey } = await import(
+      "../src/commands/builds.js"
+    );
+    const first = deriveNotarizationIdempotencyKey({
+      appId: "app-1",
+      ...expected,
+    });
+    const replay = deriveNotarizationIdempotencyKey({
+      appId: "app-1",
+      ...expected,
+    });
+    const changed = deriveNotarizationIdempotencyKey({
+      appId: "app-1",
+      ...expected,
+      sizeBytes: expected.sizeBytes + 1,
+    });
+    expect(first).toBe(replay);
+    expect(first).toMatch(/^hands-cli:[a-f0-9]{64}$/);
+    expect(changed).not.toBe(first);
+  });
+
+  it("waits through processing and gates success on exact-byte Accepted", async () => {
+    const { waitForNotarization } = await import("../src/commands/builds.js");
+    let clock = 0;
+    let reads = 0;
+    const accepted = {
+      ...base,
+      status: "Accepted",
+      ready_for_staple: true,
+      binding_verified: true,
+      apple_sha256: sha256,
+    };
+    const result = await waitForNotarization({
+      initial: base,
+      expected,
+      timeoutMs: 100,
+      pollMs: 10,
+      now: () => clock,
+      sleep: async (milliseconds) => {
+        clock += milliseconds;
+      },
+      read: async () => {
+        reads += 1;
+        return accepted;
+      },
+    });
+    expect(result).toEqual(accepted);
+    expect(reads).toBe(1);
+  });
+
+  it("fails closed when Hands returns another artifact binding", async () => {
+    const { waitForNotarization, NotarizationCommandError } = await import(
+      "../src/commands/builds.js"
+    );
+    await expect(
+      waitForNotarization({
+        initial: { ...base, source_size_bytes: 9999 },
+        expected,
+        timeoutMs: 100,
+        pollMs: 10,
+        read: async () => base,
+      }),
+    ).rejects.toBeInstanceOf(NotarizationCommandError);
+  });
+
+  it("does not staple an Accepted result whose Apple log digest mismatches", async () => {
+    const { waitForNotarization } = await import("../src/commands/builds.js");
+    await expect(
+      waitForNotarization({
+        initial: {
+          ...base,
+          status: "Accepted",
+          ready_for_staple: false,
+          binding_verified: false,
+          binding_error: "Apple notarized SHA-256 does not match",
+          log: { sha256: "b".repeat(64) },
+        },
+        expected,
+        timeoutMs: 100,
+        pollMs: 10,
+        read: async () => base,
+      }),
+    ).rejects.toThrow("different or unverifiable artifact");
+  });
+
+  it("rejects a ready response without the exact Apple digest", async () => {
+    const { waitForNotarization } = await import("../src/commands/builds.js");
+    await expect(
+      waitForNotarization({
+        initial: {
+          ...base,
+          status: "Accepted",
+          ready_for_staple: true,
+          binding_verified: true,
+          apple_sha256: "b".repeat(64),
+        },
+        expected,
+        timeoutMs: 100,
+        pollMs: 10,
+        read: async () => base,
+      }),
+    ).rejects.toThrow("exact Apple artifact binding");
+  });
+});
+
 describe("external build publish helpers", () => {
   it("splits the public target into the existing platform/arch storage shape", async () => {
     const { splitBuildTarget } = await import("../src/commands/builds.js");

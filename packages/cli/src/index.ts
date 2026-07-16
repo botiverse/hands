@@ -18,7 +18,10 @@
 
 import { Command } from "commander";
 import { registerAppCommands } from "./commands/apps.js";
-import { registerBuildCommands } from "./commands/builds.js";
+import {
+  NotarizationCommandError,
+  registerBuildCommands,
+} from "./commands/builds.js";
 import { registerLoginCommands } from "./commands/login.js";
 import { registerReleaseCommands } from "./commands/releases.js";
 import { registerFeedbackCommands } from "./commands/feedback.js";
@@ -35,7 +38,7 @@ const program = new Command();
 program
   .name("hands")
   .description("Hands CLI — manage apps, builds, releases from the terminal.")
-  .version("0.5.7")
+  .version("0.5.8")
   .option(
     "--api <url>",
     "Hands business API URL (default: https://hands.build or $HANDS_API)",
@@ -99,6 +102,28 @@ program.parseAsync(process.argv).catch((err) => {
     command: program.args[0] ?? "unknown",
     error_name: err instanceof Error ? err.name : "unknown",
   });
+  if (err instanceof NotarizationCommandError) {
+    if (process.argv.includes("--json")) {
+      console.error(
+        JSON.stringify(
+          { ok: false, error: err.message, notarization: err.result },
+          null,
+          2,
+        ),
+      );
+    } else {
+      console.error(`Error: ${err.message}`);
+      console.error("Code: NOTARIZATION_FAILED");
+      if (err.result) {
+        console.error(`Status: ${err.result.status}`);
+        console.error(`Notarization: ${err.result.notarization_id}`);
+        if (err.result.submission_id) {
+          console.error(`Apple submission: ${err.result.submission_id}`);
+        }
+      }
+    }
+    process.exit(1);
+  }
   if (err instanceof Error && err.name === "QuiverApiError") {
     // Admin-native, actionable error print (mirrors the Raft CLI discipline):
     // surface the server's stable Code and Next action so an agent knows what
