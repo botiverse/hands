@@ -8,7 +8,8 @@
  * (events only from that app). v1 keeps it simple — only org-wide webhooks.
  *
  * Events emitted (from worker/src/routes/webhook_events.ts):
- *   release:new        - release created
+ *   release:new           - release activated (created active or published)
+ *   release:draft_created - draft release created (QA/integration trigger)
  *   release:superseded - release marked superseded by a new one
  *   release:rolled_back - explicit rollback
  *   release:cancelled   - release cancelled
@@ -28,6 +29,7 @@ type WebhookEventType =
   | "crash:new_group"
   | "crash:spike"
   | "release:new"
+  | "release:draft_created"
   | "release:superseded"
   | "release:rolled_back"
   | "release:cancelled"

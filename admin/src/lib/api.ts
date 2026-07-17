@@ -1151,8 +1151,29 @@ export const getBuildAssetDownloadUrl = (
 export const listReleases = (appId: string) =>
   request<{ releases: Release[] }>(`/api/apps/${appId}/releases`, { admin: true });
 
+export interface ReleaseCheck {
+  id: string;
+  source: string;
+  run_id: string | null;
+  run_url: string | null;
+  verdict: "passed" | "failed" | "warning" | "skipped";
+  cases_total: number | null;
+  cases_passed: number | null;
+  summary: string | null;
+  reviewer: string | null;
+  reviewed_at: number | null;
+  created_at: number;
+  updated_at: number;
+}
+
 export const getRelease = (appId: string, releaseId: string) =>
-  request<{ release: Release; build: Build; assets: BuildAsset[]; scopes: ReleaseScope[] }>(
+  request<{
+    release: Release;
+    build: Build;
+    assets: BuildAsset[];
+    scopes: ReleaseScope[];
+    checks: ReleaseCheck[];
+  }>(
     `/api/apps/${appId}/releases/${releaseId}`,
     { admin: true },
   );
@@ -1255,6 +1276,7 @@ export type WebhookEventType =
   | "crash:new_group"
   | "crash:spike"
   | "release:new"
+  | "release:draft_created"
   | "release:superseded"
   | "release:rolled_back"
   | "release:cancelled"
@@ -1266,6 +1288,7 @@ export const WEBHOOK_EVENT_TYPES: WebhookEventType[] = [
   "crash:new_group",
   "crash:spike",
   "release:new",
+  "release:draft_created",
   "release:superseded",
   "release:rolled_back",
   "release:cancelled",

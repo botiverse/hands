@@ -256,6 +256,23 @@ function makeMockDb() {
       current_count INTEGER NOT NULL DEFAULT 0,
       last_checked_at INTEGER
     );
+    CREATE TABLE release_checks (
+      id TEXT PRIMARY KEY,
+      release_id TEXT NOT NULL REFERENCES releases(id) ON DELETE CASCADE,
+      app_id TEXT NOT NULL,
+      source TEXT NOT NULL,
+      run_id TEXT,
+      run_url TEXT,
+      verdict TEXT NOT NULL CHECK (verdict IN ('passed', 'failed', 'warning', 'skipped')),
+      cases_total INTEGER,
+      cases_passed INTEGER,
+      summary TEXT,
+      reviewer TEXT,
+      reviewed_at INTEGER,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL,
+      UNIQUE (release_id, source)
+    );
     CREATE TABLE release_shares (
       id TEXT PRIMARY KEY,
       release_id TEXT NOT NULL REFERENCES releases(id) ON DELETE CASCADE,
@@ -2995,7 +3012,7 @@ describe("quiver public API v2 — scope resolution", () => {
         "default",
         "https://example.test/quiver",
         "secret",
-        JSON.stringify(["build:succeeded", "release:new", "feedback:new", "crash:new_group"]),
+        JSON.stringify(["build:succeeded", "release:new", "release:draft_created", "feedback:new", "crash:new_group"]),
         Date.now(),
         Date.now(),
       )
@@ -3228,8 +3245,110 @@ describe("quiver public API v2 — scope resolution", () => {
     const eventTypes = deliveryRows.map((row) => row.event_type);
     expect(eventTypes).toContain("build:succeeded");
     expect(eventTypes).toContain("release:new");
+    expect(eventTypes).toContain("release:draft_created");
     expect(eventTypes).toContain("feedback:new");
     expect(eventTypes).toContain("crash:new_group");
+
+    // The draft-created payload carries the QA-consumer contract: stable
+    // slugs, version identity, and an artifact block with a durable API path.
+    const draftDelivery = (await env.DB.prepare(
+      "SELECT payload_json FROM webhook_deliveries WHERE webhook_id = ?1 AND event_type = 'release:draft_created'",
+    )
+      .bind("wh-e2e")
+      .first()) as { payload_json: string };
+    const draftPayload = JSON.parse(draftDelivery.payload_json).payload;
+    expect(draftPayload).toMatchObject({
+      release_id: draft.id,
+      app_slug: "scope-app",
+      build_id: build.id,
+      channel: "production",
+      version_name: "9.9.9",
+      version_code: 9090900,
+    });
+    expect(draftPayload.artifact.download_api).toBe(
+      `/api/apps/app-scope/builds/${build.id}/assets/${draftPayload.artifact.asset_id}/download?presign=1`,
+    );
+  });
+
+  it("release checks: upsert per source, advisory read-back on get-release", async () => {
+    const env = makeEnv();
+    await seedRelease(env, "rel-check", "build-check", [["full", "all"]]);
+    const {
+      handleUpsertReleaseCheck,
+      handleListReleaseChecks,
+      handleGetRelease,
+    } = await import("../src/routes/releases");
+    const ctx = (params: Record<string, string>, body: unknown = {}) =>
+      ({
+        env,
+        req: {
+          url: "https://quiver-worker.test/api/apps/app-scope/releases/rel-check/checks",
+          param: (name: string) => params[name] ?? "",
+          query: () => undefined,
+          json: async () => body,
+        },
+        get: (name: string) => (name === "admin_actor" ? "stamp-bot" : undefined),
+        json: (data: unknown, status = 200) =>
+          new Response(JSON.stringify(data), {
+            status,
+            headers: { "content-type": "application/json" },
+          }),
+      }) as any;
+
+    // Verdict is validated; unknown release 404s.
+    const badVerdict = await handleUpsertReleaseCheck(
+      ctx({ appId: "app-scope", releaseId: "rel-check" }, { source: "stamp", verdict: "meh" }),
+    );
+    expect(badVerdict.status).toBe(400);
+    const missing = await handleUpsertReleaseCheck(
+      ctx({ appId: "app-scope", releaseId: "rel-nope" }, { source: "stamp", verdict: "passed" }),
+    );
+    expect(missing.status).toBe(404);
+
+    const first = await handleUpsertReleaseCheck(
+      ctx(
+        { appId: "app-scope", releaseId: "rel-check" },
+        {
+          source: "stamp",
+          run_id: "run-1",
+          run_url: "https://stamp.test/runs/1",
+          verdict: "failed",
+          cases_total: 5,
+          cases_passed: 3,
+          summary: "2 cases failed",
+          reviewer: "vera",
+          reviewed_at: 1234,
+        },
+      ),
+    );
+    expect(first.status).toBe(201);
+
+    // Same source posts again → replaces its verdict, no second row.
+    const second = await handleUpsertReleaseCheck(
+      ctx(
+        { appId: "app-scope", releaseId: "rel-check" },
+        { source: "stamp", run_id: "run-2", verdict: "passed", cases_total: 5, cases_passed: 5 },
+      ),
+    );
+    expect(second.status).toBe(201);
+
+    const listed = await responseJson<any>(
+      await handleListReleaseChecks(ctx({ appId: "app-scope", releaseId: "rel-check" })),
+    );
+    expect(listed.checks).toHaveLength(1);
+    expect(listed.checks[0]).toMatchObject({
+      source: "stamp",
+      run_id: "run-2",
+      verdict: "passed",
+      cases_total: 5,
+      cases_passed: 5,
+    });
+
+    const detail = await responseJson<any>(
+      await handleGetRelease(ctx({ appId: "app-scope", releaseId: "rel-check" })),
+    );
+    expect(detail.checks).toHaveLength(1);
+    expect(detail.checks[0].verdict).toBe("passed");
   });
 
   it("shares: no ttl never expires, url is re-copyable, expiry semantics on update", async () => {

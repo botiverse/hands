@@ -4,6 +4,8 @@ import { emitWebhookEvent } from "./webhooks";
 import { generateDeltaPatchesForBuild } from "./delta";
 import { requestOrigin } from "../lib/origin";
 import { parseReleaseNotes, stringifyReleaseNotes, type ReleaseNotes } from "../lib/release_notes";
+import { presignR2DownloadUrl } from "../lib/r2_presign";
+import { generateSignedR2Url } from "./public_v2";
 
 type AdminContext = Context<AdminEnv & { Bindings: Env }>;
 import { getBuildForApp } from "./builds";
@@ -421,13 +423,244 @@ export async function handleGetRelease(c: Context<{ Bindings: Env }>) {
   )
     .bind(releaseId)
     .all();
+  const { results: checks } = await c.env.DB.prepare(
+    `SELECT id, source, run_id, run_url, verdict, cases_total, cases_passed,
+            summary, reviewer, reviewed_at, created_at, updated_at
+     FROM release_checks WHERE release_id = ?1 ORDER BY updated_at DESC`,
+  )
+    .bind(releaseId)
+    .all();
 
   return c.json({
     release: withReleaseNotes(release as { changelog?: string | null }),
     build,
     assets,
     scopes,
+    checks,
   });
+}
+
+// ============================================================================
+// Release checks — advisory QA write-back (task #153, Hands↔Stamp)
+// ============================================================================
+
+const CHECK_VERDICTS = ["passed", "failed", "warning", "skipped"] as const;
+
+/**
+ * Upsert an advisory verification result from an external system (one row per
+ * release+source; re-posting replaces that source's verdict). Advisory only —
+ * publish never consults this table.
+ */
+export async function handleUpsertReleaseCheck(c: AdminContext) {
+  const appId = c.req.param("appId") ?? "";
+  const releaseId = c.req.param("releaseId") ?? "";
+  const release = await getReleaseForApp(c.env.DB, appId, releaseId);
+  if (!release) return c.json({ error: "not found" }, 404);
+
+  const body = (await c.req.json().catch(() => ({}))) as {
+    source?: string;
+    run_id?: string;
+    run_url?: string;
+    verdict?: string;
+    cases_total?: number;
+    cases_passed?: number;
+    summary?: string;
+    reviewer?: string;
+    reviewed_at?: number;
+  };
+  const source = (body.source ?? "").trim().slice(0, 100);
+  if (!source) return c.json({ error: "source required" }, 400);
+  if (!body.verdict || !(CHECK_VERDICTS as readonly string[]).includes(body.verdict)) {
+    return c.json({ error: `verdict must be one of: ${CHECK_VERDICTS.join(", ")}` }, 400);
+  }
+  if (body.run_url !== undefined) {
+    try {
+      new URL(body.run_url);
+    } catch {
+      return c.json({ error: "run_url must be a valid URL" }, 400);
+    }
+  }
+  const intOrNull = (v: unknown) =>
+    typeof v === "number" && Number.isFinite(v) ? Math.floor(v) : null;
+
+  const now = Date.now();
+  const id = crypto.randomUUID();
+  await c.env.DB.batch([
+    c.env.DB
+      .prepare(
+        `INSERT INTO release_checks
+         (id, release_id, app_id, source, run_id, run_url, verdict,
+          cases_total, cases_passed, summary, reviewer, reviewed_at,
+          created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
+         ON CONFLICT (release_id, source) DO UPDATE SET
+           run_id = excluded.run_id,
+           run_url = excluded.run_url,
+           verdict = excluded.verdict,
+           cases_total = excluded.cases_total,
+           cases_passed = excluded.cases_passed,
+           summary = excluded.summary,
+           reviewer = excluded.reviewer,
+           reviewed_at = excluded.reviewed_at,
+           updated_at = excluded.updated_at`,
+      )
+      .bind(
+        id,
+        releaseId,
+        appId,
+        source,
+        body.run_id?.slice(0, 200) ?? null,
+        body.run_url ?? null,
+        body.verdict,
+        intOrNull(body.cases_total),
+        intOrNull(body.cases_passed),
+        body.summary?.slice(0, 4000) ?? null,
+        body.reviewer?.slice(0, 200) ?? null,
+        intOrNull(body.reviewed_at),
+        now,
+        now,
+      ),
+    c.env.DB
+      .prepare(
+        "INSERT INTO audit_logs (id, app_id, action, actor, payload, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+      )
+      .bind(
+        crypto.randomUUID(),
+        appId,
+        "release.check",
+        currentActor(c),
+        JSON.stringify({ release_id: releaseId, source, verdict: body.verdict, run_id: body.run_id ?? null }),
+        now,
+      ),
+  ]);
+
+  const saved = await c.env.DB.prepare(
+    `SELECT id, release_id, source, run_id, run_url, verdict, cases_total,
+            cases_passed, summary, reviewer, reviewed_at, created_at, updated_at
+     FROM release_checks WHERE release_id = ?1 AND source = ?2`,
+  )
+    .bind(releaseId, source)
+    .first();
+  return c.json({ check: saved }, 201);
+}
+
+export async function handleListReleaseChecks(c: AdminContext) {
+  const appId = c.req.param("appId") ?? "";
+  const releaseId = c.req.param("releaseId") ?? "";
+  const release = await getReleaseForApp(c.env.DB, appId, releaseId);
+  if (!release) return c.json({ error: "not found" }, 404);
+  const { results: checks } = await c.env.DB.prepare(
+    `SELECT id, release_id, source, run_id, run_url, verdict, cases_total,
+            cases_passed, summary, reviewer, reviewed_at, created_at, updated_at
+     FROM release_checks WHERE release_id = ?1 ORDER BY updated_at DESC`,
+  )
+    .bind(releaseId)
+    .all();
+  return c.json({ checks });
+}
+
+/**
+ * Emit `release:draft_created` for a freshly created draft — the QA/integration
+ * trigger (e.g. Stamp picks it up, downloads the artifact, runs its suite, and
+ * writes a release check back). The payload carries the human-stable
+ * identifiers (app slug, channel slug, version) plus a presigned artifact URL
+ * so a consumer can fetch the installable without a Hands credential; the
+ * `download_api` path is the durable token-authenticated fallback once the
+ * presigned URL expires. Best-effort: a payload-assembly failure never fails
+ * the release creation.
+ */
+async function emitReleaseDraftCreated(
+  c: AdminContext,
+  appId: string,
+  releaseId: string,
+): Promise<void> {
+  try {
+    const orgId = c.get("org_id");
+    if (!orgId) return;
+    const row = await c.env.DB.prepare(
+      `SELECT r.build_id, r.channel_id, r.product_type, r.release_type,
+              a.slug AS app_slug,
+              b.version_name, b.version_code,
+              c.slug AS channel
+       FROM releases r
+       JOIN apps a ON a.id = r.app_id
+       JOIN builds b ON b.id = r.build_id
+       LEFT JOIN channels c ON c.id = r.channel_id
+       WHERE r.app_id = ?1 AND r.id = ?2`,
+    )
+      .bind(appId, releaseId)
+      .first<{
+        build_id: string;
+        channel_id: string | null;
+        product_type: string;
+        release_type: string;
+        app_slug: string;
+        version_name: string;
+        version_code: number;
+        channel: string | null;
+      }>();
+    if (!row) return;
+
+    const asset = await c.env.DB.prepare(
+      `SELECT id, filetype, r2_key, size_bytes FROM build_assets
+       WHERE build_id = ?1 AND artifact_kind = 'installable'
+       ORDER BY created_at DESC LIMIT 1`,
+    )
+      .bind(row.build_id)
+      .first<{ id: string; filetype: string; r2_key: string; size_bytes: number | null }>();
+
+    // Presign long enough to cover the delivery retry window (5m/30m/2h) with
+    // slack for the consumer's own queueing.
+    const ttl = 24 * 60 * 60;
+    let downloadUrl: string | null = null;
+    if (asset) {
+      const filename = `${row.app_slug}-${row.version_name}-${row.version_code}.${asset.filetype}`;
+      downloadUrl = await presignR2DownloadUrl(
+        c.env,
+        {
+          key: asset.r2_key,
+          filetype: asset.filetype,
+          contentDisposition: `attachment; filename="${filename.replace(/"/g, "")}"`,
+        },
+        ttl,
+      );
+      if (!downloadUrl) {
+        downloadUrl = await generateSignedR2Url(c.env, asset.r2_key, ttl, requestOrigin(c));
+      }
+    }
+
+    await emitWebhookEvent(c.env.DB, {
+      orgId,
+      appId,
+      event: "release:draft_created",
+      body: {
+        release_id: releaseId,
+        app_id: appId,
+        app_slug: row.app_slug,
+        build_id: row.build_id,
+        channel_id: row.channel_id,
+        channel: row.channel,
+        product_type: row.product_type,
+        release_type: row.release_type,
+        version_name: row.version_name,
+        version_code: row.version_code,
+        artifact: asset
+          ? {
+              asset_id: asset.id,
+              filetype: asset.filetype,
+              size_bytes: asset.size_bytes,
+              download_url: downloadUrl,
+              download_url_expires_at: downloadUrl ? Date.now() + ttl * 1000 : null,
+              download_api: `/api/apps/${appId}/builds/${row.build_id}/assets/${asset.id}/download?presign=1`,
+            }
+          : null,
+      },
+    });
+  } catch (err) {
+    console.error(
+      `[release:draft_created] emit failed for release ${releaseId}: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
 }
 
 /**
@@ -447,6 +680,7 @@ export async function handleCreateReleaseDraft(c: AdminContext) {
   try {
     const draftBody: ReleaseInput = { ...body, status: "draft" };
     const id = await createRelease(c.env.DB, appId, draftBody, currentActor(c));
+    c.executionCtx?.waitUntil(emitReleaseDraftCreated(c, appId, id));
     const changelog = inputChangelog(draftBody) ?? null;
     return c.json(
       {
@@ -470,7 +704,8 @@ export async function handleCreateRelease(c: AdminContext) {
   try {
     const id = await createRelease(c.env.DB, appId, body, currentActor(c));
     const status = releaseStatus(body.status);
-    // Emit webhook event only when the release is actually live.
+    // release:new fires only when the release is actually live; drafts get
+    // their own QA-trigger event.
     const orgId = c.get("org_id");
     if (status === "active" && orgId) {
       c.executionCtx?.waitUntil(
@@ -481,6 +716,8 @@ export async function handleCreateRelease(c: AdminContext) {
           body: { release_id: id, app_id: appId, build_id: body.build_id, channel_id: body.channel_id },
         }),
       );
+    } else if (status === "draft") {
+      c.executionCtx?.waitUntil(emitReleaseDraftCreated(c, appId, id));
     }
     const changelog = inputChangelog(body) ?? null;
     return c.json({

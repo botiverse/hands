@@ -586,6 +586,47 @@ function ReleaseRow({
               </tbody>
             </table>
           )}
+          {(detail.data.checks ?? []).length > 0 && (
+            <div className="mt-2">
+              <div className="text-slate-500 mb-1">Checks (advisory)</div>
+              {detail.data.checks.map((chk) => (
+                <div key={chk.id} className="flex items-center gap-2 mb-0.5">
+                  <span
+                    className={
+                      chk.verdict === "passed"
+                        ? "text-emerald-600 font-medium"
+                        : chk.verdict === "failed"
+                          ? "text-red-600 font-medium"
+                          : "text-amber-600 font-medium"
+                    }
+                  >
+                    {chk.verdict}
+                  </span>
+                  <span className="font-mono">{chk.source}</span>
+                  {chk.cases_total !== null && (
+                    <span className="text-slate-500">
+                      {chk.cases_passed ?? 0}/{chk.cases_total} cases
+                    </span>
+                  )}
+                  {chk.run_url && (
+                    <a
+                      href={chk.run_url}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="text-blue-600 hover:underline"
+                    >
+                      run
+                    </a>
+                  )}
+                  {chk.summary && (
+                    <span className="text-slate-500 truncate" title={chk.summary}>
+                      {chk.summary}
+                    </span>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       )}
 

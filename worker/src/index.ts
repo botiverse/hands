@@ -140,6 +140,8 @@ import {
   handlePublishRelease,
   handleRollbackRelease,
   handleUpdateRelease,
+  handleUpsertReleaseCheck,
+  handleListReleaseChecks,
 } from "./routes/releases";
 import { handleListChannels, handleCreateChannel, handleUpdateChannel, handleDeleteChannel } from "./routes/channels";
 import { handleListProductTypes, handleCreateProductType, handleUpdateProductType, handleDeleteProductType } from "./routes/product_types";
@@ -651,6 +653,8 @@ admin.delete("/api/apps/:appId/releases/:releaseId", requireAppRole("publisher")
 admin.post("/api/apps/:appId/releases/:releaseId/rollback", requireAppRole("publisher"), handleRollbackRelease);
 admin.post("/api/apps/:appId/releases/:releaseId/bump-rollout", requireAppRole("publisher"), handleBumpRollout);
 admin.post("/api/apps/:appId/releases/:releaseId/force-update", requireAppRole("publisher"), handleForceUpdate);
+admin.get("/api/apps/:appId/releases/:releaseId/checks", requireAppRole("viewer"), handleListReleaseChecks);
+admin.post("/api/apps/:appId/releases/:releaseId/checks", requireAppRole("publisher"), handleUpsertReleaseCheck);
 admin.get("/api/apps/:appId/shares", requireAppRole("viewer"), handleListAppShares);
 admin.put("/api/apps/:appId/icon", requireAppRole("publisher"), handleUploadAppIcon);
 admin.get("/api/apps/:appId/client-key", requireAppRole("admin"), handleGetClientKey);
