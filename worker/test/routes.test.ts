@@ -5421,15 +5421,15 @@ describe("quiver public API v2 — scope resolution", () => {
     // hostile: explicit active must be rejected outright (nothing created)
     const hostile = await handleCreateReleaseDraft(ctx({ build_id: "build-draftonly", status: "active" }));
     expect(hostile.status).toBe(400);
-    const hostileBody = await responseJson<any>(hostile);
+    const hostileBody = (await hostile.json()) as any;
     expect(hostileBody.error).toContain("draft");
 
     // normal: no status -> created as draft (NOT the legacy active default)
     const ok = await handleCreateReleaseDraft(ctx({ build_id: "build-draftonly" }));
     expect(ok.status).toBe(201);
-    const created = await responseJson<any>(ok);
+    const created = (await ok.json()) as any;
     expect(created.status).toBe("draft");
-    const row = await env.DB.prepare("SELECT status FROM releases WHERE id = ?1").bind(created.id).first<any>();
+    const row = (await env.DB.prepare("SELECT status FROM releases WHERE id = ?1").bind(created.id).first()) as any;
     expect(row.status).toBe("draft");
   });
 
