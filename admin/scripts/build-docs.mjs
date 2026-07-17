@@ -16,6 +16,13 @@ const EXTERNAL_ICON = ` <svg class="ext-icon" viewBox="0 0 24 24" fill="none" st
 
 const pages = [
   {
+    slug: "getting-started",
+    source: "getting-started.md",
+    title: "Getting Started",
+    category: "Start here",
+    description: "Connect Hands to your Raft server from the Marketplace — one install enables human and agent sign-in.",
+  },
+  {
     slug: "agent-guide",
     title: "Agent Guide",
     category: "For agents",

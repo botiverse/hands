@@ -450,6 +450,7 @@ app.get("/api-docs", (c) => c.html(`<!doctype html>
 </html>`));
 const publicDocs = new Set([
   "/docs/",
+  "/docs/getting-started/",
   "/docs/agent-guide/",
   "/docs/admin-user-guide/",
   "/docs/android-sdk/",
