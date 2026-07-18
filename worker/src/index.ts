@@ -57,6 +57,7 @@ import {
   handlePublicV2UpdateCheck,
 } from "./routes/public_v2";
 import { handleElectronGenericAsset } from "./routes/electron";
+import { handleTauriArtifact, handleTauriUpdate } from "./routes/tauri";
 import {
   handleCreateReleaseShare,
   handleListReleaseShares,
@@ -514,6 +515,8 @@ app.get("/public/r2/:key", handlePublicR2Download);
 // Internal signed R2 fetch (delta-patch container pulls source APKs by key).
 app.get("/internal/r2/:key", handleInternalR2Download);
 app.get("/electron/:slug/:channel/:file", handleElectronGenericAsset);
+app.get("/tauri/:slug/:channel/artifacts/:target/:arch/:file", handleTauriArtifact);
+app.get("/tauri/:slug/:channel/:target/:arch/:currentVersion", handleTauriUpdate);
 app.get("/share/:token/download", handlePublicReleaseShareDownload);
 app.get("/share/:token", handlePublicReleaseShare);
 app.post("/share/:token/unlock", handlePublicReleaseShareUnlock);

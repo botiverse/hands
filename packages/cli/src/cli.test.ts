@@ -144,6 +144,16 @@ describe("electron build helpers", () => {
   });
 });
 
+describe("Tauri build helpers", () => {
+  it("accepts only updater bundle formats produced by Tauri v2", async () => {
+    const { inferTauriFiletype } = await import("../src/commands/builds.js");
+    expect(inferTauriFiletype("App.app.tar.gz")).toBe("tar.gz");
+    expect(inferTauriFiletype("App_1.2.3_x64-setup.nsis.zip")).toBe("nsis.zip");
+    expect(inferTauriFiletype("App_1.2.3_x64_en-US.msi.zip")).toBe("msi.zip");
+    expect(() => inferTauriFiletype("App.dmg")).toThrow("unsupported Tauri updater bundle");
+  });
+});
+
 describe("external build publish helpers", () => {
   it("splits the public target into the existing platform/arch storage shape", async () => {
     const { splitBuildTarget } = await import("../src/commands/builds.js");

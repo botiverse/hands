@@ -392,6 +392,53 @@ export function registerPublicRoutes(registry: OpenApiRegistry) {
 
   register(registry, {
     method: "get",
+    path: "/tauri/{slug}/{channel}/{target}/{arch}/{currentVersion}",
+    tags: ["Public update"],
+    summary: "Check for a signed Tauri update",
+    description:
+      "Returns the Tauri v2 dynamic updater response for the active tauri-updater release, or 204 when the channel has no newer compatible version.",
+    request: {
+      params: z.object({
+        slug: z.string().openapi({ param: { name: "slug", in: "path" } }),
+        channel: z.string().openapi({ param: { name: "channel", in: "path" } }),
+        target: z.enum(["darwin", "windows", "linux"]).openapi({ param: { name: "target", in: "path" } }),
+        arch: z.enum(["x86_64", "aarch64", "i686", "armv7"]).openapi({ param: { name: "arch", in: "path" } }),
+        currentVersion: z.string().openapi({ param: { name: "currentVersion", in: "path" }, example: "1.2.3" }),
+      }),
+    },
+    responses: {
+      200: success("Signed Tauri update manifest.", z.object({
+        version: z.string(), url: z.string().url(), signature: z.string(),
+        notes: z.string().optional(), pub_date: z.string().optional(),
+      })),
+      204: { description: "No newer update is available." },
+      400: error("Updater parameters are invalid."),
+      404: error("The active release lacks a matching signed artifact."),
+    },
+  });
+
+  register(registry, {
+    method: "get",
+    path: "/tauri/{slug}/{channel}/artifacts/{target}/{arch}/{file}",
+    tags: ["Public update"],
+    summary: "Download an active Tauri updater artifact",
+    request: {
+      params: z.object({
+        slug: z.string().openapi({ param: { name: "slug", in: "path" } }),
+        channel: z.string().openapi({ param: { name: "channel", in: "path" } }),
+        target: z.enum(["darwin", "windows", "linux"]).openapi({ param: { name: "target", in: "path" } }),
+        arch: z.enum(["x86_64", "aarch64", "i686", "armv7"]).openapi({ param: { name: "arch", in: "path" } }),
+        file: z.string().openapi({ param: { name: "file", in: "path" } }),
+      }),
+    },
+    responses: {
+      200: { description: "Immutable signed Tauri updater bundle.", content: binary() },
+      404: error("The active release or matching artifact was not found."),
+    },
+  });
+
+  register(registry, {
+    method: "get",
     path: "/public/r2/{key}",
     tags: ["Public downloads"],
     summary: "Download a signed public release artifact",

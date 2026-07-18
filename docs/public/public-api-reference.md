@@ -190,6 +190,22 @@ Example asset conventions:
 | `Raft Setup 1.2.3.exe` | `win32` | `x64` | `exe` | `installable` |
 | `Raft Setup 1.2.3.exe.blockmap` | `win32` | `x64` | `blockmap` | `electron-blockmap` |
 
+### Tauri updater
+
+Tauri v2 applications can configure this dynamic updater endpoint:
+
+```text
+GET /tauri/:appSlug/:channel/:target/:arch/:currentVersion
+```
+
+`target` is `darwin`, `windows`, or `linux`; `arch` follows Tauri's updater
+values such as `aarch64` and `x86_64`. The endpoint returns `204 No Content`
+when the active `tauri-updater` release is not newer. Otherwise it returns the
+Tauri updater JSON fields `version`, `url`, `signature`, and optional release
+notes/date. The artifact URL is immutable and belongs to the same active Hands
+release. Signature verification is performed by Tauri using the public key
+embedded in the application; Hands never receives the signing private key.
+
 macOS updates still require signed app artifacts. Hands only hosts the
 already-built and signed files; it does not sign Electron applications.
 

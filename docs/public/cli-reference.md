@@ -271,6 +271,43 @@ release, then a human or agent reviews release notes and explicitly publishes.
 macOS update artifacts must be signed before upload; Hands hosts the signed
 files but does not sign Electron applications.
 
+## Publish Tauri updater artifacts
+
+Tauri v2 applications can use a Hands channel as a dynamic updater endpoint:
+
+```json
+{
+  "bundle": { "createUpdaterArtifacts": true },
+  "plugins": {
+    "updater": {
+      "pubkey": "CONTENT FROM PUBLICKEY.PEM",
+      "endpoints": [
+        "https://hands.build/tauri/my-app/main/{{target}}/{{arch}}/{{current_version}}"
+      ]
+    }
+  }
+}
+```
+
+Publish the updater bundles and their Tauri-generated signatures together:
+
+```bash
+hands builds publish-tauri my-app \
+  --version 1.2.3 \
+  --channel main \
+  --bundle target/release/bundle/macos/MyApp.app.tar.gz \
+  --signature target/release/bundle/macos/MyApp.app.tar.gz.sig \
+  --target darwin-arm64 \
+  --draft
+```
+
+Repeat `--bundle`, `--signature`, and `--target` in matching order for a
+multi-platform release. Supported updater bundles are macOS/Linux `.tar.gz`
+and Windows `.nsis.zip` / `.msi.zip`. The Tauri signing private key remains in
+CI; Hands stores only the signed bundle and the detached signature required by
+the updater response. Use separate `main`, `preview`, and `nightly` endpoints
+when applications follow different release channels.
+
 ## Review and Publish (draft flow)
 
 CI creates drafts; publishing is an explicit step after changelog review:

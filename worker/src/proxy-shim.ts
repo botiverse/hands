@@ -48,6 +48,7 @@ function isMachinePath(pathname: string): boolean {
     pathname.startsWith("/public/") || // update-check, feedback/minidump/metrics POST, r2, icon
     pathname.startsWith("/api/") || // auth + admin API
     pathname.startsWith("/electron/") || // electron-updater asset fetches
+    pathname.startsWith("/tauri/") || // Tauri updater manifests + artifacts
     pathname.startsWith("/.well-known/") // agent manifests
   ) {
     return true;

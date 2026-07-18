@@ -915,6 +915,80 @@ export function registerBuildCommands(program: Command): void {
     );
 
   builds
+    .command("publish-tauri <appIdOrSlug>")
+    .description("Create a Tauri updater build/release and upload signed updater bundles.")
+    .requiredOption("--version <version>", "Tauri application semver.")
+    .option("--version-code <code>", "Hands version code. Defaults from numeric semver.")
+    .requiredOption("--bundle <path>", "Tauri updater bundle. Repeat once per target.", collect, [])
+    .requiredOption("--signature <path>", "Tauri .sig file matching --bundle. Repeat in the same order.", collect, [])
+    .requiredOption("--target <target>", "Target: darwin-arm64, darwin-x64, linux-arm64, linux-x64, win32-arm64, or win32-x64. Repeat in the same order.", collect, [])
+    .option("--channel <slug>", "Hands release channel slug.", "main")
+    .option("--release-type <type>", "Release type metadata.", "stable")
+    .option("--changelog <text>", "Inline changelog. Repeatable with lang=text.", collect, [])
+    .option("--changelog-file <path>", "Read changelog from file. Repeatable with lang=path.", collect, [])
+    .option("--draft", "Create draft release instead of active.", false)
+    .option("--json", "Output JSON.", false)
+    .action(async (appIdOrSlug: string, opts: {
+      version: string; versionCode?: string; bundle: string[]; signature: string[];
+      target: string[]; channel: string; releaseType: string;
+      changelog?: string[]; changelogFile?: string[]; draft?: boolean; json?: boolean;
+    }) => {
+      if (!/^\d+\.\d+\.\d+(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/.test(opts.version)) {
+        throw new Error("--version must be a valid semantic version");
+      }
+      if (opts.bundle.length === 0) throw new Error("provide at least one --bundle, --signature, and --target set");
+      if (opts.bundle.length !== opts.signature.length || opts.bundle.length !== opts.target.length) {
+        throw new Error("repeat --bundle, --signature, and --target the same number of times and in matching order");
+      }
+      for (const file of [...opts.bundle, ...opts.signature]) {
+        if (!existsSync(file)) throw new Error(`missing file: ${file}`);
+      }
+      const appId = await resolveAppId(appIdOrSlug);
+      const channelId = await resolveChannelId(appId, opts.channel);
+      const versionCode = opts.versionCode
+        ? parseNonNegativeInteger(opts.versionCode, "--version-code")
+        : versionCodeFromVersion(opts.version);
+      const changelog = parseChangelogOptions(opts);
+      const build = await apiRequest<{ id: string }>(`/api/apps/${appId}/builds`, {
+        method: "POST",
+        body: {
+          channel_id: channelId, product_type: "tauri-updater", release_type: opts.releaseType,
+          version_name: opts.version, version_code: versionCode, changelog,
+          source: "cli", status: "succeeded",
+          build_metadata_json: { tauri: { targets: opts.target } },
+        },
+      });
+      const assets = [];
+      for (let index = 0; index < opts.bundle.length; index++) {
+        const target = splitBuildTarget(opts.target[index]!);
+        const updaterArch = target.arch === "arm64" ? "aarch64" : "x86_64";
+        const signature = readFileSync(opts.signature[index]!, "utf8").trim();
+        if (!signature) throw new Error(`empty signature file: ${opts.signature[index]}`);
+        const bundle = opts.bundle[index]!;
+        assets.push(await uploadAndRegisterAsset(appId, build.id, bundle, {
+          artifact_kind: "tauri-updater",
+          platform: target.platform,
+          arch: updaterArch,
+          filetype: inferTauriFiletype(bundle),
+          variant: basename(bundle),
+          signature,
+          metadata_json: { filename: basename(bundle), tauri_target: opts.target[index] },
+        }));
+      }
+      const release = await apiRequest<{ id: string }>(`/api/apps/${appId}/releases`, {
+        method: "POST",
+        body: {
+          build_id: build.id, channel_id: channelId, product_type: "tauri-updater",
+          release_type: opts.releaseType, status: opts.draft ? "draft" : "active",
+          changelog, scopes: [{ scope_type: "full", scope_value: "all" }],
+        },
+      });
+      const result = { build_id: build.id, release_id: release.id, channel: opts.channel, version: opts.version, assets };
+      if (shouldOutputJson(program, opts.json)) console.log(JSON.stringify(result, null, 2));
+      else console.log(`Published Tauri updater ${opts.version} to ${opts.channel} (${assets.length} target${assets.length === 1 ? "" : "s"})`);
+    });
+
+  builds
     .command("publish-electron <appIdOrSlug>")
     .description("Create an Electron generic-provider build/release and upload electron-builder output.")
     .requiredOption("--version-name <name>", "Electron app version.")
@@ -1163,6 +1237,7 @@ async function uploadAndRegisterAsset(
     platform: string;
     arch: string | null;
     filetype: string;
+    signature?: string | null;
     variant?: string | null;
     metadata_json?: Record<string, unknown>;
   },
@@ -1181,6 +1256,7 @@ async function uploadAndRegisterAsset(
       r2_key: uploaded.r2_key,
       file_hash: uploaded.file_hash,
       size_bytes: uploaded.size_bytes,
+      signature: metadata.signature ?? null,
       variant: metadata.variant ?? null,
       metadata_json: {
         original_filename: uploaded.original_filename,
@@ -1351,6 +1427,14 @@ export function inferElectronFiletype(filePath: string): string {
   if (name.endsWith(".AppImage")) return "AppImage";
   const ext = extname(name).replace(/^\./, "");
   return ext || "bin";
+}
+
+export function inferTauriFiletype(filePath: string): string {
+  const name = basename(filePath).toLowerCase();
+  if (name.endsWith(".tar.gz")) return "tar.gz";
+  if (name.endsWith(".nsis.zip")) return "nsis.zip";
+  if (name.endsWith(".msi.zip")) return "msi.zip";
+  throw new Error(`unsupported Tauri updater bundle: ${basename(filePath)}`);
 }
 
 export function inferIosFiletype(filePath: string): string {
