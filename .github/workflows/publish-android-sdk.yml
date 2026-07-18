@@ -6,7 +6,7 @@ on:
       version:
         description: "SDK version to publish, for example 0.1.0"
         required: true
-        default: "0.10.1"
+        default: "0.11.1"
   push:
     tags:
       - "android-sdk-v*"
@@ -26,6 +26,11 @@ jobs:
           distribution: temurin
           java-version: "17"
 
+      - uses: android-actions/setup-android@v3
+
+      - name: Install pinned Android NDK
+        run: sdkmanager "ndk;26.3.11579264"
+
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: "8.10.2"
@@ -40,8 +45,15 @@ jobs:
             echo "value=${{ github.event.inputs.version }}" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Build SDK
-        run: gradle -p clients/android assembleRelease
+      - name: Build SDK and unstripped native symbols
+        run: gradle -p clients/android assembleRelease packageReleaseNativeSymbols -PVERSION_NAME=${{ steps.version.outputs.value }}
+
+      - name: Upload native symbols as workflow evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: hands-android-sdk-${{ steps.version.outputs.value }}-native-symbols
+          path: clients/android/build/outputs/native-symbols/*-native-symbols.zip
+          if-no-files-found: error
 
       - name: Publish SDK to GitHub Packages
         env:

@@ -8,6 +8,26 @@ plugins {
 group = "build.hands"
 version = providers.gradleProperty("VERSION_NAME").orElse("0.1.0-SNAPSHOT").get()
 
+val nativeSymbolsZip = layout.buildDirectory.file(
+    "outputs/native-symbols/hands-android-sdk-${project.version}-native-symbols.zip"
+)
+
+val packageReleaseNativeSymbols by tasks.registering(Exec::class) {
+    dependsOn("externalNativeBuildRelease")
+    inputs.file(rootProject.file("../../scripts/package_android_native_symbols.sh"))
+    outputs.file(nativeSymbolsZip)
+    commandLine(
+        "bash",
+        rootProject.file("../../scripts/package_android_native_symbols.sh"),
+        "--build-dir",
+        layout.buildDirectory.get().asFile,
+        "--output",
+        nativeSymbolsZip.get().asFile,
+        "--sdk-version",
+        project.version.toString()
+    )
+}
+
 android {
     namespace = "build.hands.update"
     compileSdk = 34
@@ -57,6 +77,11 @@ afterEvaluate {
                 groupId = "build.hands"
                 artifactId = "hands-android-sdk"
                 version = project.version.toString()
+                artifact(nativeSymbolsZip) {
+                    classifier = "native-symbols"
+                    extension = "zip"
+                    builtBy(packageReleaseNativeSymbols)
+                }
 
                 pom {
                     name.set("Hands Android SDK")
