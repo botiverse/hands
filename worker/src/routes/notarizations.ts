@@ -594,9 +594,8 @@ async function handleAcceptedClosure(c: AdminContext, creds: AscApiCredentials, 
     return c.json({ notarization_id: row.notarization_id, state: "error", code: ERR.SHA_BINDING_MISMATCH, ready_for_staple: false, log_sha256: logSha, source_sha256: row.computed_sha256 }, 500);
   }
 
-  // Atomic batch (B7): attempt closure + logical ready_for_staple (CAS active-only, B5).
-  // B2: clear transient error fields when transitioning to accepted (otherwise
-  // schema CHECK rejects: error_class non-NULL with status_state=accepted).
+  // Atomic batch: attempt closure + logical ready_for_staple + operation completion (B6).
+  // B2: clear transient error fields when transitioning to accepted.
   await c.env.DB.batch([
     c.env.DB.prepare(
       `UPDATE app_notarization_attempts
@@ -610,6 +609,12 @@ async function handleAcceptedClosure(c: AdminContext, creds: AscApiCredentials, 
        SET state = 'accepted', ready_for_staple = 1, apple_log_sha256 = ?1, apple_log_job_id = ?2, completed_at = ?3
        WHERE id = ?4 AND active_attempt_id = ?5`,
     ).bind(logSha, logJobId, now, row.notarization_id, row.id),
+    // B6: complete operation as faithful projection of attempt state.
+    c.env.DB.prepare(
+      `UPDATE operation_logs SET status = 'success', progress = 100, completed_at = ?1,
+           output = json_set(COALESCE(output, '{}'), '$.ready_for_staple', true, '$.log_sha256', ?2)
+       WHERE id = (SELECT operation_id FROM app_notarization_attempts WHERE id = ?3)`,
+    ).bind(now, logSha, row.id),
   ]);
 
   return c.json({
