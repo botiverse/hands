@@ -419,13 +419,14 @@ export function registerPublicRoutes(registry: OpenApiRegistry) {
 
   register(registry, {
     method: "get",
-    path: "/tauri/{slug}/{channel}/artifacts/{target}/{arch}/{file}",
+    path: "/tauri/{slug}/{channel}/artifacts/{releaseId}/{target}/{arch}/{file}",
     tags: ["Public update"],
     summary: "Download an active Tauri updater artifact",
     request: {
       params: z.object({
         slug: z.string().openapi({ param: { name: "slug", in: "path" } }),
         channel: z.string().openapi({ param: { name: "channel", in: "path" } }),
+        releaseId: z.string().openapi({ param: { name: "releaseId", in: "path" } }),
         target: z.enum(["darwin", "windows", "linux"]).openapi({ param: { name: "target", in: "path" } }),
         arch: z.enum(["x86_64", "aarch64", "i686", "armv7"]).openapi({ param: { name: "arch", in: "path" } }),
         file: z.string().openapi({ param: { name: "file", in: "path" } }),

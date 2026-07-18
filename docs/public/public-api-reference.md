@@ -202,8 +202,9 @@ GET /tauri/:appSlug/:channel/:target/:arch/:currentVersion
 values such as `aarch64` and `x86_64`. The endpoint returns `204 No Content`
 when the active `tauri-updater` release is not newer. Otherwise it returns the
 Tauri updater JSON fields `version`, `url`, `signature`, and optional release
-notes/date. The artifact URL is immutable and belongs to the same active Hands
-release. Signature verification is performed by Tauri using the public key
+notes/date. The immutable artifact URL includes the concrete release ID plus
+target and architecture, so an activation change cannot switch the bytes after
+an update check. Signature verification is performed by Tauri using the public key
 embedded in the application; Hands never receives the signing private key.
 
 macOS updates still require signed app artifacts. Hands only hosts the

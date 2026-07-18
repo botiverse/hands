@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { compareSemver, handleTauriArtifact, handleTauriUpdate } from "../src/routes/tauri";
 
-const release = { build_id: "build", version_name: "1.2.3", changelog: "Changes", created_at: 1_700_000_000_000 };
+const release = { release_id: "release", build_id: "build", version_name: "1.2.3", changelog: "Changes", created_at: 1_700_000_000_000 };
 type TestAsset = {
   platform: string; arch: string; variant: string; filetype: string;
   r2_key: string; size_bytes: number; signature: string | null; metadata_json: string;
@@ -23,7 +23,7 @@ function env(options: { release?: typeof release | null; asset?: TestAsset | nul
         return {
           bind(...values: unknown[]) { bindings = values; return this; },
           async first() {
-            if (sql.includes("SELECT b.id AS build_id")) return selectedRelease;
+            if (sql.includes("JOIN releases r")) return selectedRelease;
             if (sql.includes("artifact_kind = 'tauri-updater'")) {
               return bindings[1] === selectedAsset?.platform && bindings[2] === selectedAsset?.arch ? selectedAsset : null;
             }
@@ -61,7 +61,7 @@ describe("Tauri updater", () => {
     expect(response.status).toBe(200);
     expect(await response.json()).toMatchObject({
       version: "1.2.3", signature: "signed-value",
-      url: "https://hands.build/tauri/app/main/artifacts/darwin/aarch64/App.app.tar.gz",
+      url: "https://hands.build/tauri/app/main/artifacts/release/darwin/aarch64/App.app.tar.gz",
     });
   });
 
@@ -80,11 +80,19 @@ describe("Tauri updater", () => {
       { slug: "app", channel: "main", target: "darwin", arch: "aarch64", currentVersion: "1.0.0" },
       env({ asset: { ...asset, signature: null } }),
     ));
-    expect(response.status).toBe(404);
+    expect(response.status).toBe(500);
+  });
+
+  it("returns 204 when a newer release has no bundle for this target", async () => {
+    const response = await handleTauriUpdate(context(
+      { slug: "app", channel: "main", target: "linux", arch: "x86_64", currentVersion: "1.0.0" },
+      env({ asset: null }),
+    ));
+    expect(response.status).toBe(204);
   });
 
   it("serves only an artifact attached to the active Tauri release", async () => {
-    const response = await handleTauriArtifact(context({ slug: "app", channel: "main", target: "darwin", arch: "aarch64", file: "App.app.tar.gz" }));
+    const response = await handleTauriArtifact(context({ slug: "app", channel: "main", releaseId: "release", target: "darwin", arch: "aarch64", file: "App.app.tar.gz" }));
     expect(response.status).toBe(200);
     expect(response.headers.get("cache-control")).toContain("immutable");
     expect(await response.text()).toBe("payload");

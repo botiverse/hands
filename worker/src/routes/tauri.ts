@@ -1,6 +1,7 @@
 import type { Context } from "hono";
 
 type TauriRelease = {
+  release_id: string;
   build_id: string;
   version_name: string;
   changelog: string | null;
@@ -40,14 +41,13 @@ export async function handleTauriUpdate(c: Context<{ Bindings: Env }>) {
   }
 
   const asset = await findAsset(c.env.DB, release.build_id, target, arch);
-  if (!asset || !asset.signature) {
-    return c.json({ error: "active Tauri release is missing a matching signed updater artifact" }, 404);
-  }
+  if (!asset) return new Response(null, { status: 204, headers: noStoreHeaders() });
+  if (!asset.signature) return c.json({ error: "active Tauri release has an unsigned updater artifact" }, 500);
   const fileName = assetName(asset);
   if (!fileName) return c.json({ error: "Tauri updater artifact has no public filename" }, 500);
   const origin = new URL(c.req.url).origin;
   const publicTarget = target === "win32" ? "windows" : target;
-  const url = `${origin}/tauri/${encodeURIComponent(slug)}/${encodeURIComponent(channel)}/artifacts/${publicTarget}/${arch}/${encodeURIComponent(fileName)}`;
+  const url = `${origin}/tauri/${encodeURIComponent(slug)}/${encodeURIComponent(channel)}/artifacts/${encodeURIComponent(release.release_id)}/${publicTarget}/${arch}/${encodeURIComponent(fileName)}`;
 
   return c.json({
     version: release.version_name,
@@ -61,13 +61,14 @@ export async function handleTauriUpdate(c: Context<{ Bindings: Env }>) {
 export async function handleTauriArtifact(c: Context<{ Bindings: Env }>) {
   const slug = c.req.param("slug") ?? "";
   const channel = c.req.param("channel") || "main";
+  const releaseId = c.req.param("releaseId") ?? "";
   const target = normalizeTarget(c.req.param("target") ?? "");
   const arch = normalizeArch(c.req.param("arch") ?? "");
   const file = decodeFileName(c.req.param("file") ?? "");
-  if (!slug || !target || !arch || !file) return c.json({ error: "invalid Tauri artifact parameters" }, 400);
+  if (!slug || !releaseId || !target || !arch || !file) return c.json({ error: "invalid Tauri artifact parameters" }, 400);
 
-  const release = await findActiveRelease(c.env.DB, slug, channel);
-  if (!release) return c.json({ error: "no active Tauri release found" }, 404);
+  const release = await findPublishedRelease(c.env.DB, slug, channel, releaseId);
+  if (!release) return c.json({ error: "published Tauri release not found" }, 404);
   const { results } = await c.env.DB.prepare(
     `SELECT platform, arch, variant, filetype, r2_key, size_bytes, signature, metadata_json
      FROM build_assets WHERE build_id = ?1 AND artifact_kind = 'tauri-updater'
@@ -90,7 +91,7 @@ export async function handleTauriArtifact(c: Context<{ Bindings: Env }>) {
 
 async function findActiveRelease(db: D1Database, slug: string, channel: string): Promise<TauriRelease | null> {
   return await db.prepare(
-    `SELECT b.id AS build_id, b.version_name, r.changelog, r.created_at
+    `SELECT r.id AS release_id, b.id AS build_id, b.version_name, r.changelog, r.created_at
      FROM apps a
      JOIN channels ch ON ch.app_id = a.id
      JOIN releases r ON r.app_id = a.id AND r.channel_id = ch.id
@@ -99,6 +100,24 @@ async function findActiveRelease(db: D1Database, slug: string, channel: string):
        AND r.status = 'active' AND (r.availability_at IS NULL OR r.availability_at <= ?4)
      ORDER BY r.created_at DESC, r.id ASC LIMIT 1`,
   ).bind(slug, channel, PRODUCT_TYPE, Date.now()).first<TauriRelease>();
+}
+
+async function findPublishedRelease(
+  db: D1Database,
+  slug: string,
+  channel: string,
+  releaseId: string,
+): Promise<TauriRelease | null> {
+  return await db.prepare(
+    `SELECT r.id AS release_id, b.id AS build_id, b.version_name, r.changelog, r.created_at
+     FROM apps a
+     JOIN channels ch ON ch.app_id = a.id
+     JOIN releases r ON r.app_id = a.id AND r.channel_id = ch.id
+     JOIN builds b ON b.id = r.build_id
+     WHERE a.slug = ?1 AND ch.slug = ?2 AND r.id = ?3 AND r.product_type = ?4
+       AND r.status IN ('active', 'superseded')
+     LIMIT 1`,
+  ).bind(slug, channel, releaseId, PRODUCT_TYPE).first<TauriRelease>();
 }
 
 async function findAsset(db: D1Database, buildId: string, platform: string, arch: string): Promise<TauriAsset | null> {
@@ -136,6 +155,7 @@ function decodeFileName(value: string): string {
 }
 
 function contentType(filetype: string): string {
+  if (filetype === "AppImage") return "application/octet-stream";
   if (filetype === "tar.gz") return "application/gzip";
   return "application/zip";
 }

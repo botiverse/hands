@@ -297,13 +297,17 @@ hands builds publish-tauri my-app \
   --channel main \
   --bundle target/release/bundle/macos/MyApp.app.tar.gz \
   --signature target/release/bundle/macos/MyApp.app.tar.gz.sig \
-  --target darwin-arm64 \
-  --draft
+  --target darwin-aarch64
 ```
 
 Repeat `--bundle`, `--signature`, and `--target` in matching order for a
-multi-platform release. Supported updater bundles are macOS/Linux `.tar.gz`
-and Windows `.nsis.zip` / `.msi.zip`. The Tauri signing private key remains in
+multi-platform release. Supported updater bundles are macOS `.app.tar.gz`,
+Linux `.AppImage` or compatibility `.tar.gz`, and Windows `.nsis.zip` /
+`.msi.zip`. Targets use Tauri's own names, such as `darwin-aarch64`,
+`linux-x86_64`, and `windows-x86_64`.
+
+The command creates a draft by default. Review it and publish explicitly; use
+`--publish` only in an already-authorized automation lane. The Tauri signing private key remains in
 CI; Hands stores only the signed bundle and the detached signature required by
 the updater response. Use separate `main`, `preview`, and `nightly` endpoints
 when applications follow different release channels.

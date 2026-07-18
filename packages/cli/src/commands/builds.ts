@@ -921,17 +921,17 @@ export function registerBuildCommands(program: Command): void {
     .option("--version-code <code>", "Hands version code. Defaults from numeric semver.")
     .requiredOption("--bundle <path>", "Tauri updater bundle. Repeat once per target.", collect, [])
     .requiredOption("--signature <path>", "Tauri .sig file matching --bundle. Repeat in the same order.", collect, [])
-    .requiredOption("--target <target>", "Target: darwin-arm64, darwin-x64, linux-arm64, linux-x64, win32-arm64, or win32-x64. Repeat in the same order.", collect, [])
+    .requiredOption("--target <target>", "Target: darwin|linux|windows plus aarch64|x86_64|i686|armv7. Repeat in the same order.", collect, [])
     .option("--channel <slug>", "Hands release channel slug.", "main")
     .option("--release-type <type>", "Release type metadata.", "stable")
     .option("--changelog <text>", "Inline changelog. Repeatable with lang=text.", collect, [])
     .option("--changelog-file <path>", "Read changelog from file. Repeatable with lang=path.", collect, [])
-    .option("--draft", "Create draft release instead of active.", false)
+    .option("--publish", "Create an active release instead of the default draft.", false)
     .option("--json", "Output JSON.", false)
     .action(async (appIdOrSlug: string, opts: {
       version: string; versionCode?: string; bundle: string[]; signature: string[];
       target: string[]; channel: string; releaseType: string;
-      changelog?: string[]; changelogFile?: string[]; draft?: boolean; json?: boolean;
+      changelog?: string[]; changelogFile?: string[]; publish?: boolean; json?: boolean;
     }) => {
       if (!/^\d+\.\d+\.\d+(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/.test(opts.version)) {
         throw new Error("--version must be a valid semantic version");
@@ -960,15 +960,14 @@ export function registerBuildCommands(program: Command): void {
       });
       const assets = [];
       for (let index = 0; index < opts.bundle.length; index++) {
-        const target = splitBuildTarget(opts.target[index]!);
-        const updaterArch = target.arch === "arm64" ? "aarch64" : "x86_64";
+        const target = splitTauriTarget(opts.target[index]!);
         const signature = readFileSync(opts.signature[index]!, "utf8").trim();
         if (!signature) throw new Error(`empty signature file: ${opts.signature[index]}`);
         const bundle = opts.bundle[index]!;
         assets.push(await uploadAndRegisterAsset(appId, build.id, bundle, {
           artifact_kind: "tauri-updater",
           platform: target.platform,
-          arch: updaterArch,
+          arch: target.arch,
           filetype: inferTauriFiletype(bundle),
           variant: basename(bundle),
           signature,
@@ -979,13 +978,13 @@ export function registerBuildCommands(program: Command): void {
         method: "POST",
         body: {
           build_id: build.id, channel_id: channelId, product_type: "tauri-updater",
-          release_type: opts.releaseType, status: opts.draft ? "draft" : "active",
+          release_type: opts.releaseType, status: opts.publish ? "active" : "draft",
           changelog, scopes: [{ scope_type: "full", scope_value: "all" }],
         },
       });
       const result = { build_id: build.id, release_id: release.id, channel: opts.channel, version: opts.version, assets };
       if (shouldOutputJson(program, opts.json)) console.log(JSON.stringify(result, null, 2));
-      else console.log(`Published Tauri updater ${opts.version} to ${opts.channel} (${assets.length} target${assets.length === 1 ? "" : "s"})`);
+      else console.log(`Published Tauri ${opts.publish ? "release" : "draft"} ${opts.version} to ${opts.channel} (${assets.length} target${assets.length === 1 ? "" : "s"})`);
     });
 
   builds
@@ -1431,10 +1430,22 @@ export function inferElectronFiletype(filePath: string): string {
 
 export function inferTauriFiletype(filePath: string): string {
   const name = basename(filePath).toLowerCase();
+  if (name.endsWith(".appimage")) return "AppImage";
   if (name.endsWith(".tar.gz")) return "tar.gz";
   if (name.endsWith(".nsis.zip")) return "nsis.zip";
   if (name.endsWith(".msi.zip")) return "msi.zip";
   throw new Error(`unsupported Tauri updater bundle: ${basename(filePath)}`);
+}
+
+export function splitTauriTarget(target: string): { platform: string; arch: string } {
+  const match = /^(darwin|linux|windows)-(aarch64|x86_64|i686|armv7)$/.exec(target);
+  if (!match) {
+    throw new Error("Tauri target must be darwin|linux|windows plus aarch64|x86_64|i686|armv7");
+  }
+  return {
+    platform: match[1] === "windows" ? "win32" : match[1]!,
+    arch: match[2]!,
+  };
 }
 
 export function inferIosFiletype(filePath: string): string {

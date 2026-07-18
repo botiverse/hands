@@ -150,7 +150,15 @@ describe("Tauri build helpers", () => {
     expect(inferTauriFiletype("App.app.tar.gz")).toBe("tar.gz");
     expect(inferTauriFiletype("App_1.2.3_x64-setup.nsis.zip")).toBe("nsis.zip");
     expect(inferTauriFiletype("App_1.2.3_x64_en-US.msi.zip")).toBe("msi.zip");
+    expect(inferTauriFiletype("App_1.2.3_amd64.AppImage")).toBe("AppImage");
     expect(() => inferTauriFiletype("App.dmg")).toThrow("unsupported Tauri updater bundle");
+  });
+
+  it("maps official Tauri targets to Hands platform storage", async () => {
+    const { splitTauriTarget } = await import("../src/commands/builds.js");
+    expect(splitTauriTarget("windows-x86_64")).toEqual({ platform: "win32", arch: "x86_64" });
+    expect(splitTauriTarget("darwin-aarch64")).toEqual({ platform: "darwin", arch: "aarch64" });
+    expect(() => splitTauriTarget("win32-arm64")).toThrow("Tauri target must be");
   });
 });
 
