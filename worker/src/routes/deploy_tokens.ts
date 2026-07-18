@@ -78,7 +78,9 @@ export async function handleCreateAppDeployToken(c: AdminContext) {
   // Token minting is strict-validated: an unrecognized field must 400, never
   // silently mint a broader token than the caller asked for (a misspelled
   // expiry field used to yield a NON-EXPIRING token).
-  const allowedKeys = new Set(["name", "app_role", "expires_at", "expires_in_days"]);
+  // app_id appears in the body when invoked through the agent-manifest layer
+  // (path params are mirrored into the body); accept and ignore it.
+  const allowedKeys = new Set(["name", "app_role", "expires_at", "expires_in_days", "app_id"]);
   const unknownKeys = Object.keys(body).filter((k) => !allowedKeys.has(k));
   if (unknownKeys.length > 0) {
     return c.json(
