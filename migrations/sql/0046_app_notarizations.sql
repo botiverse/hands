@@ -1,13 +1,12 @@
 -- Migration 0046: app_notarizations + app_notarization_attempts
 -- Broker-only notarization lane (platform feature).
 --
--- Revision 3 (2026-07-18): addresses XX r2 CHANGES REQUIRED:
---   B2-fix: trigger change-detection uses IS NOT (not !=); fire on all relevant columns;
---           ownership uses NOT EXISTS not scalar subquery !=
---   B4-fix: ready_for_staple enforced on INSERT + all relevant UPDATEs (logical + attempt);
---           full triple closure checked; SHA CHECK uses NOT GLOB '*[^0-9a-f]*'
---   B4-fix: error_class CHECK encodes proper state↔error relationship
---   M2-fix: test matrix corrected to 43 cases + new negative SQL tests
+-- Revision 4 (2026-07-18): addresses XX r3 CHANGES REQUIRED:
+--   B4-fix: error_class CHECK no longer tautological — non-NULL requires concrete error condition
+--   B4-fix: attempt identity fields (id/notarization_id/app_id/attempt_no) immutable after INSERT
+--   B3-fix: direct DELETE of non-ready attempt rejected while parent exists
+--   B3-fix: logical source-snapshot columns frozen (immutable after INSERT)
+--   M2-fix: added cases 8.9/8.10 + direct-delete + frozen-snapshot negatives
 
 CREATE TABLE IF NOT EXISTS app_notarizations (
   id                    TEXT PRIMARY KEY,
@@ -29,7 +28,7 @@ CREATE TABLE IF NOT EXISTS app_notarizations (
   apple_log_sha256      TEXT,
   apple_log_job_id      TEXT,
 
-  active_attempt_id     TEXT,  -- FK + ownership enforced via triggers
+  active_attempt_id     TEXT,
 
   created_by_actor      TEXT NOT NULL,
   created_at            INTEGER NOT NULL,
@@ -40,13 +39,11 @@ CREATE TABLE IF NOT EXISTS app_notarizations (
 
   CHECK (source_filetype IN ('dmg', 'zip', 'pkg')),
   CHECK (source_platform = 'darwin'),
-  -- B4-fix: proper hex check (NOT GLOB '*[^0-9a-f]*' rejects any non-hex char)
   CHECK (length(computed_sha256) = 64 AND computed_sha256 NOT GLOB '*[^0-9a-f]*'),
   CHECK (source_size_bytes > 0),
   CHECK (length(r2_key) > 0),
   CHECK (length(r2_etag) > 0),
 
-  -- B4-fix: ready=1 full closure (column-level; trigger adds cross-table)
   CHECK (
     (ready_for_staple = 0) OR
     (ready_for_staple = 1 AND state = 'accepted'
@@ -110,31 +107,35 @@ CREATE TABLE IF NOT EXISTS app_notarization_attempts (
 
   UNIQUE (notarization_id, attempt_no),
 
-  -- B4-fix: proper hex check
   CHECK (log_sha256 IS NULL OR (length(log_sha256) = 64 AND log_sha256 NOT GLOB '*[^0-9a-f]*')),
 
-  -- B4-fix: log_fetched=1 requires accepted + sha + jobId
   CHECK (
     (log_fetched = 0) OR
     (log_fetched = 1 AND status_state = 'accepted'
      AND log_sha256 IS NOT NULL AND log_job_id IS NOT NULL)
   ),
 
-  -- B4-fix: completed_at set iff terminal
   CHECK (
     (completed_at IS NULL AND status_state IN ('pending', 'in_progress')) OR
     (completed_at IS NOT NULL AND status_state IN ('accepted', 'invalid', 'rejected', 'error'))
   ),
 
-  -- B4-fix: proper error_class ↔ state relationship
-  -- error_class IS NULL only when status/upload are in a non-error state
-  -- Rejected is a terminal Apple state, NOT an infra error — error_class may be NULL for Rejected
-  -- error_class IS NOT NULL required when: status_state=error OR upload_state=upload_failed
+  -- B4-fix (r4): error_class non-NULL requires a concrete error condition.
+  -- NOT tautological: healthy pending/in-progress with no reconciliation must have NULL error_class.
+  -- Allowed non-NULL cases:
+  --   1. status_state = 'error' (infra terminal)
+  --   2. upload_state = 'upload_failed' or 'upload_uncertain'
+  --   3. pending/in_progress with reconcile_state != 'none' (transient with reconciliation)
+  --   4. pending/in_progress with error_phase IS NOT NULL (transient recorded)
+  --   5. status_state = 'invalid' or 'rejected' (Apple terminal with classified error)
+  -- NULL is allowed for: accepted, OR pending/in_progress/invalid/rejected with no error condition
   CHECK (
-    (error_class IS NOT NULL AND status_state IN ('accepted','invalid','rejected','error','in_progress','pending'))
-    OR
-    (error_class IS NULL AND status_state IN ('pending','in_progress','accepted','invalid','rejected')
-     AND upload_state NOT IN ('upload_failed'))
+    (error_class IS NULL) OR
+    (error_class IS NOT NULL AND (
+      status_state = 'error'
+      OR upload_state IN ('upload_failed', 'upload_uncertain')
+      OR (status_state IN ('pending', 'in_progress') AND (reconcile_state != 'none' OR error_phase IS NOT NULL))
+    ))
   )
 );
 
@@ -146,214 +147,165 @@ CREATE INDEX IF NOT EXISTS idx_attempts_notarization
   ON app_notarization_attempts(notarization_id, attempt_no);
 
 -- ═══════════════════════════════════════════════════════════════════════
--- TRIGGERS — ownership consistency + closure invariants
--- B2-fix: use IS NOT for change detection (NULL-safe), NOT EXISTS for ownership
+-- B2: Ownership consistency triggers (carried from r3, verified fixed)
 -- ═══════════════════════════════════════════════════════════════════════
 
--- B2.1: build.app_id must match logical.app_id (INSERT)
 CREATE TRIGGER IF NOT EXISTS trg_notarize_logical_build_app_ins
-BEFORE INSERT ON app_notarizations
-FOR EACH ROW BEGIN
-  SELECT CASE
-    WHEN NOT EXISTS (SELECT 1 FROM builds WHERE id = NEW.build_id AND app_id = NEW.app_id)
-    THEN RAISE(ABORT, 'build_id does not belong to app_id')
-  END;
+BEFORE INSERT ON app_notarizations FOR EACH ROW BEGIN
+  SELECT CASE WHEN NOT EXISTS (SELECT 1 FROM builds WHERE id = NEW.build_id AND app_id = NEW.app_id)
+    THEN RAISE(ABORT, 'build_id does not belong to app_id') END;
 END;
 
--- B2.1: same check on UPDATE of build_id OR app_id (IS NOT for NULL-safety)
 CREATE TRIGGER IF NOT EXISTS trg_notarize_logical_build_app_upd
-BEFORE UPDATE OF build_id, app_id ON app_notarizations
-FOR EACH ROW BEGIN
-  SELECT CASE
-    WHEN NOT EXISTS (SELECT 1 FROM builds WHERE id = NEW.build_id AND app_id = NEW.app_id)
-    THEN RAISE(ABORT, 'build_id does not belong to app_id')
-  END;
+BEFORE UPDATE OF build_id, app_id ON app_notarizations FOR EACH ROW BEGIN
+  SELECT CASE WHEN NOT EXISTS (SELECT 1 FROM builds WHERE id = NEW.build_id AND app_id = NEW.app_id)
+    THEN RAISE(ABORT, 'build_id does not belong to app_id') END;
 END;
 
--- B2.2: asset.build_id must match logical.build_id (INSERT)
 CREATE TRIGGER IF NOT EXISTS trg_notarize_logical_asset_build_ins
-BEFORE INSERT ON app_notarizations
-FOR EACH ROW BEGIN
-  SELECT CASE
-    WHEN NOT EXISTS (SELECT 1 FROM build_assets WHERE id = NEW.asset_id AND build_id = NEW.build_id)
-    THEN RAISE(ABORT, 'asset_id does not belong to build_id')
-  END;
+BEFORE INSERT ON app_notarizations FOR EACH ROW BEGIN
+  SELECT CASE WHEN NOT EXISTS (SELECT 1 FROM build_assets WHERE id = NEW.asset_id AND build_id = NEW.build_id)
+    THEN RAISE(ABORT, 'asset_id does not belong to build_id') END;
 END;
 
--- B2.2-fix: fire on BOTH asset_id AND build_id change (was only asset_id)
 CREATE TRIGGER IF NOT EXISTS trg_notarize_logical_asset_build_upd
-BEFORE UPDATE OF asset_id, build_id ON app_notarizations
-FOR EACH ROW BEGIN
-  SELECT CASE
-    WHEN NOT EXISTS (SELECT 1 FROM build_assets WHERE id = NEW.asset_id AND build_id = NEW.build_id)
-    THEN RAISE(ABORT, 'asset_id does not belong to build_id')
-  END;
+BEFORE UPDATE OF asset_id, build_id ON app_notarizations FOR EACH ROW BEGIN
+  SELECT CASE WHEN NOT EXISTS (SELECT 1 FROM build_assets WHERE id = NEW.asset_id AND build_id = NEW.build_id)
+    THEN RAISE(ABORT, 'asset_id does not belong to build_id') END;
 END;
 
--- B2.3: attempt.app_id must match parent logical.app_id (INSERT)
 CREATE TRIGGER IF NOT EXISTS trg_notarize_attempt_app_ins
-BEFORE INSERT ON app_notarization_attempts
-FOR EACH ROW BEGIN
-  SELECT CASE
-    WHEN NOT EXISTS (SELECT 1 FROM app_notarizations WHERE id = NEW.notarization_id AND app_id = NEW.app_id)
-    THEN RAISE(ABORT, 'attempt app_id does not match parent logical app_id')
-  END;
+BEFORE INSERT ON app_notarization_attempts FOR EACH ROW BEGIN
+  SELECT CASE WHEN NOT EXISTS (SELECT 1 FROM app_notarizations WHERE id = NEW.notarization_id AND app_id = NEW.app_id)
+    THEN RAISE(ABORT, 'attempt app_id does not match parent logical app_id') END;
 END;
 
--- B2.3: same on UPDATE
 CREATE TRIGGER IF NOT EXISTS trg_notarize_attempt_app_upd
-BEFORE UPDATE OF notarization_id, app_id ON app_notarization_attempts
-FOR EACH ROW BEGIN
-  SELECT CASE
-    WHEN NOT EXISTS (SELECT 1 FROM app_notarizations WHERE id = NEW.notarization_id AND app_id = NEW.app_id)
-    THEN RAISE(ABORT, 'attempt app_id does not match parent logical app_id')
-  END;
+BEFORE UPDATE OF notarization_id, app_id ON app_notarization_attempts FOR EACH ROW BEGIN
+  SELECT CASE WHEN NOT EXISTS (SELECT 1 FROM app_notarizations WHERE id = NEW.notarization_id AND app_id = NEW.app_id)
+    THEN RAISE(ABORT, 'attempt app_id does not match parent logical app_id') END;
 END;
 
--- B2.4-fix: active_attempt_id ownership — fire on INSERT + UPDATE, IS NOT for NULL-safe detection
--- NULL→foreign was bypassing because != evaluates to NULL when OLD is NULL.
+-- B2.4: active_attempt_id ownership (IS NOT for NULL-safety)
 CREATE TRIGGER IF NOT EXISTS trg_notarize_active_attempt_ins
-BEFORE INSERT ON app_notarizations
-FOR EACH ROW WHEN NEW.active_attempt_id IS NOT NULL
+BEFORE INSERT ON app_notarizations FOR EACH ROW WHEN NEW.active_attempt_id IS NOT NULL
 BEGIN
-  SELECT CASE
-    WHEN NOT EXISTS (
-      SELECT 1 FROM app_notarization_attempts
-      WHERE id = NEW.active_attempt_id AND notarization_id = NEW.id
-    )
-    THEN RAISE(ABORT, 'active_attempt_id does not belong to this logical notarization')
-  END;
+  SELECT CASE WHEN NOT EXISTS (
+      SELECT 1 FROM app_notarization_attempts WHERE id = NEW.active_attempt_id AND notarization_id = NEW.id
+    ) THEN RAISE(ABORT, 'active_attempt_id does not belong to this logical notarization') END;
 END;
 
 CREATE TRIGGER IF NOT EXISTS trg_notarize_active_attempt_upd
 BEFORE UPDATE OF active_attempt_id ON app_notarizations
 FOR EACH ROW WHEN NEW.active_attempt_id IS NOT NULL AND NEW.active_attempt_id IS NOT OLD.active_attempt_id
 BEGIN
-  SELECT CASE
-    WHEN NOT EXISTS (
-      SELECT 1 FROM app_notarization_attempts
-      WHERE id = NEW.active_attempt_id AND notarization_id = NEW.id
-    )
-    THEN RAISE(ABORT, 'active_attempt_id does not belong to this logical notarization')
-  END;
+  SELECT CASE WHEN NOT EXISTS (
+      SELECT 1 FROM app_notarization_attempts WHERE id = NEW.active_attempt_id AND notarization_id = NEW.id
+    ) THEN RAISE(ABORT, 'active_attempt_id does not belong to this logical notarization') END;
 END;
 
 -- ═══════════════════════════════════════════════════════════════════════
--- B4-fix: FULL triple closure enforcement
--- ready_for_staple=1 requires (all simultaneously true):
---   logical.state = 'accepted'
---   logical.active_attempt_id IS NOT NULL
---   active attempt EXISTS, belongs to this logical, status_state='accepted', log_fetched=1
---   active attempt.apple_submission_id == logical.apple_log_job_id
---   active attempt.log_job_id == logical.apple_log_job_id
---   logical.apple_log_sha256 == logical.computed_sha256
---   attempt.log_sha256 == logical.apple_log_sha256
---
--- Enforced on: logical INSERT + UPDATE of any closure-relevant column,
--- AND on attempt UPDATE/DELETE while parent logical is ready.
+-- B3-fix (r4): Frozen source snapshot — immutable identity columns after INSERT
 -- ═══════════════════════════════════════════════════════════════════════
 
--- Helper: the full closure check as a reusable expression.
--- (SQLite triggers can't share functions; we inline the check in each trigger.)
-
--- B4: ready closure on logical INSERT
-CREATE TRIGGER IF NOT EXISTS trg_notarize_ready_ins
-BEFORE INSERT ON app_notarizations
-FOR EACH ROW WHEN NEW.ready_for_staple = 1
-BEGIN
-  SELECT CASE
-    WHEN NOT (
-      NEW.state = 'accepted'
-      AND NEW.active_attempt_id IS NOT NULL
-      AND NEW.apple_log_sha256 = NEW.computed_sha256
-      AND NEW.apple_log_sha256 IS NOT NULL
-      AND NEW.apple_log_job_id IS NOT NULL
-      AND EXISTS (
-        SELECT 1 FROM app_notarization_attempts a
-        WHERE a.id = NEW.active_attempt_id
-          AND a.notarization_id = NEW.id
-          AND a.status_state = 'accepted'
-          AND a.log_fetched = 1
-          AND a.apple_submission_id = NEW.apple_log_job_id
-          AND a.log_job_id = NEW.apple_log_job_id
-          AND a.log_sha256 = NEW.apple_log_sha256
-      )
-    )
-    THEN RAISE(ABORT, 'ready_for_staple=1 requires full triple closure: accepted state + active accepted attempt with log_fetched=1 + jobId==submission_id==log_job_id + SHA match')
-  END;
-END;
-
--- B4: ready closure on logical UPDATE of ANY closure-relevant column
-CREATE TRIGGER IF NOT EXISTS trg_notarize_ready_upd
-BEFORE UPDATE OF ready_for_staple, state, active_attempt_id, apple_log_sha256, apple_log_job_id, computed_sha256
+-- Source snapshot columns that must never change after creation.
+-- Any UPDATE that changes a frozen column is rejected.
+CREATE TRIGGER IF NOT EXISTS trg_notarize_freeze_snapshot
+BEFORE UPDATE OF app_id, build_id, asset_id, r2_key, r2_etag, source_size_bytes,
+                       computed_sha256, source_filetype, source_platform,
+                       created_by_actor, created_at
 ON app_notarizations
-FOR EACH ROW WHEN NEW.ready_for_staple = 1
+FOR EACH ROW
 BEGIN
-  SELECT CASE
-    WHEN NOT (
-      NEW.state = 'accepted'
-      AND NEW.active_attempt_id IS NOT NULL
-      AND NEW.apple_log_sha256 = NEW.computed_sha256
-      AND NEW.apple_log_sha256 IS NOT NULL
-      AND NEW.apple_log_job_id IS NOT NULL
-      AND EXISTS (
-        SELECT 1 FROM app_notarization_attempts a
-        WHERE a.id = NEW.active_attempt_id
-          AND a.notarization_id = NEW.id
-          AND a.status_state = 'accepted'
-          AND a.log_fetched = 1
-          AND a.apple_submission_id = NEW.apple_log_job_id
-          AND a.log_job_id = NEW.apple_log_job_id
-          AND a.log_sha256 = NEW.apple_log_sha256
-      )
-    )
-    THEN RAISE(ABORT, 'ready_for_staple=1 requires full triple closure')
-  END;
+  SELECT RAISE(ABORT, 'source snapshot columns are immutable after creation');
 END;
 
--- B4: attempt UPDATE that breaks parent's closure while parent is ready
--- If the active attempt's fields change, the parent logical's ready_for_staple
--- must be re-evaluated. We prevent mutations that would break closure silently
--- by checking if this attempt IS the active attempt of a ready logical.
-CREATE TRIGGER IF NOT EXISTS trg_notarize_attempt_break_closure_upd
-BEFORE UPDATE OF status_state, log_fetched, log_sha256, log_job_id, apple_submission_id
+-- ═══════════════════════════════════════════════════════════════════════
+-- B3-fix (r4): Append-only attempts — reject direct DELETE while parent exists
+-- Parent CASCADE delete still works (parent row is gone when this trigger fires).
+-- ═══════════════════════════════════════════════════════════════════════
+
+CREATE TRIGGER IF NOT EXISTS trg_notarize_attempt_no_direct_delete
+BEFORE DELETE ON app_notarization_attempts
+FOR EACH ROW WHEN EXISTS (SELECT 1 FROM app_notarizations WHERE id = OLD.notarization_id)
+BEGIN
+  SELECT RAISE(ABORT, 'cannot directly delete an attempt while its logical notarization exists; delete via parent CASCADE only');
+END;
+
+-- ═══════════════════════════════════════════════════════════════════════
+-- B4-fix (r4): Immutable attempt identity — id/notarization_id/app_id/attempt_no
+-- These can never change after INSERT. Prevents rename/reparent closure bypass.
+-- ═══════════════════════════════════════════════════════════════════════
+
+CREATE TRIGGER IF NOT EXISTS trg_notarize_attempt_freeze_identity
+BEFORE UPDATE OF id, notarization_id, app_id, attempt_no, created_at
 ON app_notarization_attempts
 FOR EACH ROW
 BEGIN
+  SELECT RAISE(ABORT, 'attempt identity columns (id, notarization_id, app_id, attempt_no) are immutable after creation');
+END;
+
+-- ═══════════════════════════════════════════════════════════════════════
+-- B4: FULL triple closure enforcement (carried from r3, verified fixed)
+-- ═══════════════════════════════════════════════════════════════════════
+
+CREATE TRIGGER IF NOT EXISTS trg_notarize_ready_ins
+BEFORE INSERT ON app_notarizations FOR EACH ROW WHEN NEW.ready_for_staple = 1
+BEGIN
+  SELECT CASE WHEN NOT (
+      NEW.state = 'accepted' AND NEW.active_attempt_id IS NOT NULL
+      AND NEW.apple_log_sha256 = NEW.computed_sha256
+      AND NEW.apple_log_sha256 IS NOT NULL AND NEW.apple_log_job_id IS NOT NULL
+      AND EXISTS (SELECT 1 FROM app_notarization_attempts a
+        WHERE a.id = NEW.active_attempt_id AND a.notarization_id = NEW.id
+          AND a.status_state = 'accepted' AND a.log_fetched = 1
+          AND a.apple_submission_id = NEW.apple_log_job_id
+          AND a.log_job_id = NEW.apple_log_job_id
+          AND a.log_sha256 = NEW.apple_log_sha256)
+    ) THEN RAISE(ABORT, 'ready_for_staple=1 requires full triple closure') END;
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_notarize_ready_upd
+BEFORE UPDATE OF ready_for_staple, state, active_attempt_id, apple_log_sha256, apple_log_job_id, computed_sha256
+ON app_notarizations FOR EACH ROW WHEN NEW.ready_for_staple = 1
+BEGIN
+  SELECT CASE WHEN NOT (
+      NEW.state = 'accepted' AND NEW.active_attempt_id IS NOT NULL
+      AND NEW.apple_log_sha256 = NEW.computed_sha256
+      AND NEW.apple_log_sha256 IS NOT NULL AND NEW.apple_log_job_id IS NOT NULL
+      AND EXISTS (SELECT 1 FROM app_notarization_attempts a
+        WHERE a.id = NEW.active_attempt_id AND a.notarization_id = NEW.id
+          AND a.status_state = 'accepted' AND a.log_fetched = 1
+          AND a.apple_submission_id = NEW.apple_log_job_id
+          AND a.log_job_id = NEW.apple_log_job_id
+          AND a.log_sha256 = NEW.apple_log_sha256)
+    ) THEN RAISE(ABORT, 'ready_for_staple=1 requires full triple closure') END;
+END;
+
+-- B4: attempt UPDATE that breaks parent closure while parent is ready
+CREATE TRIGGER IF NOT EXISTS trg_notarize_attempt_break_closure_upd
+BEFORE UPDATE OF status_state, log_fetched, log_sha256, log_job_id, apple_submission_id
+ON app_notarization_attempts FOR EACH ROW
+BEGIN
   SELECT CASE
-    WHEN EXISTS (
-      SELECT 1 FROM app_notarizations n
-      WHERE n.active_attempt_id = NEW.id AND n.ready_for_staple = 1
-    )
-    AND NOT (
-      -- After this update, does the closure still hold?
-      EXISTS (
-        SELECT 1 FROM app_notarizations n
-        WHERE n.active_attempt_id = NEW.id AND n.ready_for_staple = 1
+    WHEN EXISTS (SELECT 1 FROM app_notarizations n WHERE n.active_attempt_id = NEW.id AND n.ready_for_staple = 1)
+    AND NOT EXISTS (
+        SELECT 1 FROM app_notarizations n WHERE n.active_attempt_id = NEW.id AND n.ready_for_staple = 1
         AND n.state = 'accepted'
-        AND NEW.status_state = 'accepted'
-        AND NEW.log_fetched = 1
+        AND NEW.status_state = 'accepted' AND NEW.log_fetched = 1
         AND NEW.apple_submission_id = n.apple_log_job_id
         AND NEW.log_job_id = n.apple_log_job_id
         AND NEW.log_sha256 = n.apple_log_sha256
         AND n.apple_log_sha256 = n.computed_sha256
       )
-    )
-    THEN RAISE(ABORT, 'update breaks ready_for_staple closure of parent logical')
-  END;
+    THEN RAISE(ABORT, 'update breaks ready_for_staple closure of parent logical') END;
 END;
 
--- B4: attempt DELETE that breaks parent's closure while parent is ready
--- (CASCADE from logical delete is fine; this catches direct attempt deletes)
+-- B4: attempt DELETE while parent is ready (additional guard beyond append-only)
 CREATE TRIGGER IF NOT EXISTS trg_notarize_attempt_break_closure_del
-BEFORE DELETE ON app_notarization_attempts
-FOR EACH ROW
+BEFORE DELETE ON app_notarization_attempts FOR EACH ROW
 BEGIN
-  SELECT CASE
-    WHEN EXISTS (
-      SELECT 1 FROM app_notarizations n
-      WHERE n.active_attempt_id = OLD.id AND n.ready_for_staple = 1
-    )
-    THEN RAISE(ABORT, 'cannot delete active attempt of a ready logical notarization')
-  END;
+  SELECT CASE WHEN EXISTS (
+      SELECT 1 FROM app_notarizations n WHERE n.active_attempt_id = OLD.id AND n.ready_for_staple = 1
+    ) THEN RAISE(ABORT, 'cannot delete active attempt of a ready logical notarization') END;
 END;

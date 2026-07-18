@@ -83,20 +83,22 @@ Revision 3 (2026-07-18): 43 cases. Incorporates XX r2/r3 corrections.
 ---
 **Total: 43** (9+9+5+8+6+3+3)
 
-## C8: XX-demonstrated bypass negative tests (NEW — r3)
+## C8: XX-demonstrated bypass negative tests (10 — r3+r4)
 
-These are executable SQL tests for the exact counterexamples XX constructed against r2:
-
-| # | Test | r2 bug | r3 fix |
-|---|------|--------|--------|
-| 8.1 | UPDATE logical.active_attempt_id from NULL→foreign attempt | `!=` was NULL when OLD NULL → trigger skipped | `IS NOT` change detection + INSERT trigger |
-| 8.2 | UPDATE logical.build_id (without changing asset_id) to same-app different build | trigger fired only on asset_id change | trigger fires on OF build_id, asset_id |
-| 8.3 | INSERT logical directly with ready=1, accepted, SHA present, no active_attempt | INSERT trigger didn't exist | `trg_notarize_ready_ins` checks full closure on INSERT |
-| 8.4 | Pending attempt (log_fetched=0, NULL log fields) → logical ready=1 via matching submission_id | trigger only checked submission_id==jobId | closure trigger checks log_fetched=1 + all SHA/ID fields |
-| 8.5 | UPDATE active attempt's status/log fields while parent is ready, breaking closure | no attempt-side trigger | `trg_notarize_attempt_break_closure_upd` prevents breaking mutations |
-| 8.6 | DELETE active attempt while parent is ready | no protection | `trg_notarize_attempt_break_closure_del` blocks |
-| 8.7 | SHA value 64 chars starting with valid hex but containing non-hex (e.g. `a`+63×`z`) | `GLOB '[0-9a-f]*'` only checked first char | `NOT GLOB '*[^0-9a-f]*'` rejects non-hex |
-| 8.8 | error_class set non-NULL on healthy pending/in-progress row | CHECK second branch accepted any non-NULL | proper state↔error relationship encoded |
+| # | Test | r2/3 bug | fix |
+|---|------|--------|-----|
+| 8.1 | UPDATE active_attempt_id NULL→foreign | `!=` NULL when OLD NULL | `IS NOT` + INSERT trigger |
+| 8.2 | UPDATE build_id only (not asset_id) | trigger fired only on asset_id | trigger fires on both columns |
+| 8.3 | INSERT ready=1 with no active attempt | no INSERT trigger | `trg_notarize_ready_ins` |
+| 8.4 | Pending attempt (log_fetched=0) → ready=1 | only checked submission_id | full closure check |
+| 8.5 | UPDATE active attempt fields while parent ready | no attempt-side trigger | `trg_notarize_attempt_break_closure_upd` |
+| 8.6 | DELETE active attempt while parent ready | no protection | `trg_notarize_attempt_break_closure_del` |
+| 8.7 | SHA 64-char with non-hex chars | `GLOB '[0-9a-f]*'` first-char only | `NOT GLOB '*[^0-9a-f]*'` |
+| 8.8 | error_class non-NULL on healthy pending | CHECK was tautological | non-NULL requires concrete error condition |
+| **8.9** | **Rename active attempt id (t→t2)** — parent still points to old id | identity fields mutable | `trg_notarize_attempt_freeze_identity` — id/notarization_id/app_id/attempt_no/created_at immutable |
+| **8.10** | **Reparent active attempt (n1→n2)** in same app — parent n1 remains ready | identity fields mutable | same trigger — notarization_id immutable |
+| **8.11** | **Direct DELETE of non-ready/non-active attempt** while parent exists | delete trigger only guarded ready active | `trg_notarize_attempt_no_direct_delete` — rejects all direct deletes while parent exists |
+| **8.12** | **UPDATE logical source-snapshot columns** (r2_key/r2_etag/source_size_bytes/computed_sha256/etc.) after creation | no freeze trigger | `trg_notarize_freeze_snapshot` — source identity columns immutable |
 
 ---
-**Grand total: 43 + 8 = 51 cases**
+**Grand total: 43 + 12 = 55 cases**
