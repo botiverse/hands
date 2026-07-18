@@ -5,7 +5,7 @@ Hands CLI — manage apps, builds, releases from the terminal.
 Status: **alpha**. The npm package is public as `@botiverse/hands-cli`; v1 ships
 `login`, `logout`, `whoami`, `apps list/get`, `builds list/get`, and
 `builds publish-version`, `builds publish-android`, `builds publish-ios`,
-`builds publish-ohos`, and `builds publish-electron`. Other commands listed in
+`builds publish-ohos`, `builds publish-electron`, and `builds publish-tauri`. Other commands listed in
 `docs/cli-reference.md` land incrementally as backend endpoints become available.
 
 ## Install
@@ -15,7 +15,7 @@ npm install -g @botiverse/hands-cli
 hands --help
 
 # Or run without installing globally:
-npm exec --package @botiverse/hands-cli@0.5.7 -- hands --help
+npm exec --package @botiverse/hands-cli@0.5.8 -- hands --help
 
 # Local repo development:
 pnpm --filter @botiverse/hands-cli build

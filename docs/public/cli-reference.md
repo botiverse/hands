@@ -271,6 +271,52 @@ release, then a human or agent reviews release notes and explicitly publishes.
 macOS update artifacts must be signed before upload; Hands hosts the signed
 files but does not sign Electron applications.
 
+## Publish Tauri updater artifacts
+
+Tauri v2 applications can use a Hands channel as a dynamic updater endpoint:
+
+```json
+{
+  "bundle": { "createUpdaterArtifacts": true },
+  "plugins": {
+    "updater": {
+      "pubkey": "CONTENT FROM PUBLICKEY.PEM",
+      "endpoints": [
+        "https://hands.build/tauri/my-app/main/{{target}}/{{arch}}/{{current_version}}"
+      ]
+    }
+  }
+}
+```
+
+Publish the updater bundles and their Tauri-generated signatures together:
+
+```bash
+hands builds publish-tauri my-app \
+  --version 1.2.3 \
+  --channel main \
+  --bundle target/release/bundle/macos/MyApp.app.tar.gz \
+  --signature target/release/bundle/macos/MyApp.app.tar.gz.sig \
+  --target darwin-aarch64
+```
+
+Repeat `--bundle`, `--signature`, and `--target` in matching order for a
+multi-platform release. Supported updater bundles are macOS `.app.tar.gz`,
+Linux `.AppImage` or compatibility `.tar.gz`, and Windows `.exe` / `.msi`
+(or v1-compatible `.nsis.zip` / `.msi.zip`). Targets use Tauri's own names, such as `darwin-aarch64`,
+`linux-x86_64`, and `windows-x86_64`.
+
+The command creates a draft by default. Review it and publish explicitly; use
+`--publish` only in an already-authorized automation lane. The Tauri signing private key remains in
+CI; Hands stores only the signed bundle and the detached signature required by
+the updater response. Use separate `main`, `preview`, and `nightly` endpoints
+when applications follow different release channels.
+
+The Tauri lane currently serves full-channel releases only. Percentage rollout
+and scoped cohort releases require a stable client identifier that Tauri does
+not send by default, so non-full releases return no update instead of being
+expanded to every client.
+
 ## Review and Publish (draft flow)
 
 CI creates drafts; publishing is an explicit step after changelog review:
