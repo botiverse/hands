@@ -241,33 +241,23 @@ async function startNewAttempt(
 ) {
   const now = Date.now();
   const attemptId = crypto.randomUUID();
-  const op = await createOperation(c.env.DB, {
-    app_id: appId, kind: "notarize" as any, actor: currentActor(c),
-    input: JSON.stringify({ logical_id: logicalId, asset_id: asset.id, sha: snapshot.computedSha }),
-  });
-  await insertAuditLog(c.env.DB, c, {
-    app_id: appId, action: "notarize.start",
-    payload: { logical_id: logicalId, asset_id: asset.id, sha: snapshot.computedSha },
-  });
 
   // ── CAS: transactional batch — conditional INSERT + guarded active-pointer UPDATE ──
-  // XX correction: use batch() (sequential, transactional, rollback-on-failure).
+  // XX correction: attempt_no computed INSIDE the batch (subquery), not outside.
+  // XX correction: operation/audit created AFTER ownership proven (below).
   // Conditional INSERT ... SELECT creates candidate ONLY when slot is empty/terminal.
   // Loser has no candidate row → reread winner. No orphan rows.
-  const attemptNoRow = await c.env.DB.prepare(
-    `SELECT COALESCE(MAX(attempt_no), 0) + 1 as next_no FROM app_notarization_attempts WHERE notarization_id = ?1`,
-  ).bind(logicalId).first<{ next_no: number }>();
-  const attemptNo = attemptNoRow?.next_no ?? 1;
 
-  // Batch: [0] conditional INSERT candidate, [1] guarded active-pointer UPDATE.
-  // INSERT ... SELECT only inserts when the logical's active slot is claimable
-  // (NULL or pointing to a terminal attempt).
+  // Batch: [0] conditional INSERT candidate (attempt_no via subquery), [1] guarded active-pointer UPDATE.
+  // operation_id is NULL initially; set after ownership proven.
   const batchResults = await c.env.DB.batch([
     c.env.DB.prepare(
       `INSERT INTO app_notarization_attempts
          (id, notarization_id, app_id, attempt_no, operation_id,
           upload_state, status_state, reconcile_state, created_at)
-       SELECT ?1, ?2, ?3, ?4, ?5, 'pending', 'pending', 'none', ?6
+       SELECT ?1, ?2, ?3,
+              (SELECT COALESCE(MAX(attempt_no), 0) + 1 FROM app_notarization_attempts WHERE notarization_id = ?2),
+              NULL, 'pending', 'pending', 'none', ?4
        WHERE EXISTS (
          SELECT 1 FROM app_notarizations n
          WHERE n.id = ?2 AND (
@@ -278,7 +268,7 @@ async function startNewAttempt(
            )
          )
        )`,
-    ).bind(attemptId, logicalId, appId, attemptNo, op.id, now),
+    ).bind(attemptId, logicalId, appId, now),
     c.env.DB.prepare(
       `UPDATE app_notarizations
        SET active_attempt_id = ?1, state = 'in_progress', updated_at = ?2
@@ -322,6 +312,21 @@ async function startNewAttempt(
     if (winner) return c.json({ notarization_id: logicalId, attempt_id: winner.id, submission_id: winner.apple_submission_id, state: winner.status_state, idempotent: true, note: "CAS lost after batch" });
     return c.json({ error: "CAS verification failed", code: "CONCURRENT" }, 409);
   }
+
+  // ── Ownership proven — NOW create operation + audit (XX correction) ──
+  const op = await createOperation(c.env.DB, {
+    app_id: appId, kind: "notarize" as any, actor: currentActor(c),
+    input: JSON.stringify({ logical_id: logicalId, asset_id: asset.id, sha: snapshot.computedSha }),
+  });
+  await insertAuditLog(c.env.DB, c, {
+    app_id: appId, action: "notarize.start",
+    payload: { logical_id: logicalId, asset_id: asset.id, sha: snapshot.computedSha },
+  });
+
+  // Link operation to attempt.
+  await c.env.DB.prepare(
+    `UPDATE app_notarization_attempts SET operation_id = ?1 WHERE id = ?2`,
+  ).bind(op.id, attemptId).run();
 
   await updateOperation(c.env.DB, op.id, { status: "in_progress", progress: 10 });
 
