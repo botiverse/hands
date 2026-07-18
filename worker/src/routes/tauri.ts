@@ -97,7 +97,8 @@ async function findActiveRelease(db: D1Database, slug: string, channel: string):
      JOIN releases r ON r.app_id = a.id AND r.channel_id = ch.id
      JOIN builds b ON b.id = r.build_id
      WHERE a.slug = ?1 AND ch.slug = ?2 AND r.product_type = ?3
-       AND r.status = 'active' AND (r.availability_at IS NULL OR r.availability_at <= ?4)
+       AND r.status = 'active' AND r.is_full = 1
+       AND (r.availability_at IS NULL OR r.availability_at <= ?4)
      ORDER BY r.created_at DESC, r.id ASC LIMIT 1`,
   ).bind(slug, channel, PRODUCT_TYPE, Date.now()).first<TauriRelease>();
 }

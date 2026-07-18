@@ -312,6 +312,11 @@ CI; Hands stores only the signed bundle and the detached signature required by
 the updater response. Use separate `main`, `preview`, and `nightly` endpoints
 when applications follow different release channels.
 
+The Tauri lane currently serves full-channel releases only. Percentage rollout
+and scoped cohort releases require a stable client identifier that Tauri does
+not send by default, so non-full releases return no update instead of being
+expanded to every client.
+
 ## Review and Publish (draft flow)
 
 CI creates drafts; publishing is an explicit step after changelog review:

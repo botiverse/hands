@@ -207,6 +207,13 @@ target and architecture, so an activation change cannot switch the bytes after
 an update check. Signature verification is performed by Tauri using the public key
 embedded in the application; Hands never receives the signing private key.
 
+Only full-scope active releases are eligible. Scoped or percentage rollout is
+not applied to Tauri requests because the default updater request has no stable
+installation identifier. Once an active release is superseded, its release-ID
+artifact URL remains downloadable so clients that already received the update
+response can finish. This immutable-cache contract assumes published build
+assets are never overwritten; publish a new build/release for changed bytes.
+
 macOS updates still require signed app artifacts. Hands only hosts the
 already-built and signed files; it does not sign Electron applications.
 
