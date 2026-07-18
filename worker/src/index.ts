@@ -58,6 +58,7 @@ import {
 } from "./routes/public_v2";
 import { handleElectronGenericAsset } from "./routes/electron";
 import { handleTauriArtifact, handleTauriUpdate } from "./routes/tauri";
+import { handleExternalLatestDl, handleExternalReleaseDl } from "./routes/external_dl";
 import {
   handleCreateReleaseShare,
   handleListReleaseShares,
@@ -516,6 +517,8 @@ app.get("/public/r2/:key", handlePublicR2Download);
 app.get("/internal/r2/:key", handleInternalR2Download);
 app.get("/electron/:slug/:channel/:file", handleElectronGenericAsset);
 app.get("/tauri/:slug/:channel/artifacts/:releaseId/:target/:arch/:file", handleTauriArtifact);
+app.get("/dl/:slug/releases/:releaseId/:file", handleExternalReleaseDl);
+app.get("/dl/:slug/:channel/:file", handleExternalLatestDl);
 app.get("/tauri/:slug/:channel/:target/:arch/:currentVersion", handleTauriUpdate);
 app.get("/share/:token/download", handlePublicReleaseShareDownload);
 app.get("/share/:token", handlePublicReleaseShare);

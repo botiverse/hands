@@ -183,8 +183,29 @@ function makeMockDb() {
       created_at INTEGER NOT NULL,
       updated_at INTEGER NOT NULL,
       completed_at INTEGER,
+      targets_frozen_at INTEGER,
+      freeze_token TEXT,
+      required_targets_json TEXT,
       FOREIGN KEY (app_id) REFERENCES apps(id) ON DELETE CASCADE,
       FOREIGN KEY (channel_id) REFERENCES channels(id) ON DELETE SET NULL
+    );
+    CREATE TABLE external_build_targets (
+      id TEXT PRIMARY KEY,
+      app_id TEXT NOT NULL REFERENCES apps(id) ON DELETE CASCADE,
+      build_id TEXT NOT NULL REFERENCES builds(id) ON DELETE CASCADE,
+      version_name TEXT NOT NULL,
+      target TEXT NOT NULL,
+      source_url TEXT NOT NULL,
+      raw_sha256 TEXT NOT NULL,
+      raw_size_bytes INTEGER NOT NULL,
+      gzip_sha256 TEXT,
+      gzip_size_bytes INTEGER,
+      node_version TEXT,
+      metadata_json TEXT NOT NULL DEFAULT '{}',
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL,
+      gzip_source_url TEXT,
+      UNIQUE (app_id, version_name, target)
     );
     CREATE TABLE signing_credentials (
       id TEXT PRIMARY KEY,
@@ -533,8 +554,8 @@ function makeMockDb() {
 
   // Replace `?N` numbered placeholders with anonymous `?` (better-sqlite3 compat).
   // The real D1 migration keeps `?N` — same SQL semantics, just different binding.
-  const normalize = (sql: string) => sql.replace(/\?\d+/g, "?");
-
+  // Numbered placeholders may repeat (`?1, ?1` binds one value on D1), so track
+  // the index sequence and expand the bound params to match the anonymous slots.
   return {
     batch: async (statements: Array<{ run: () => Promise<unknown> }>) => {
       const results = [];
@@ -544,23 +565,32 @@ function makeMockDb() {
       return results;
     },
     prepare(sql: string) {
-      const normSql = normalize(sql);
-      const stmt = sqlite.prepare(normSql);
-      const bind = (...params: any[]) => ({
-        run: async () => {
-          stmt.run(...params);
-          return { success: true, meta: { changes: 0 } };
-        },
-        all: async () => {
-          const rows = stmt.all(...params);
-          return { results: rows, success: true };
-        },
-        first: async () => {
-          const rows = stmt.all(...params);
-          return rows[0] ?? null;
-        },
+      const indexSequence: number[] = [];
+      const normSql = sql.replace(/\?(\d+)/g, (_match, n) => {
+        indexSequence.push(Number(n));
+        return "?";
       });
-      return { bind };
+      const stmt = sqlite.prepare(normSql);
+      const bind = (...params: any[]) => {
+        const expanded =
+          indexSequence.length > 0 ? indexSequence.map((n) => params[n - 1]) : params;
+        return {
+          run: async () => {
+            const info = stmt.run(...expanded);
+            return { success: true, meta: { changes: info.changes } };
+          },
+          all: async () => {
+            const rows = stmt.all(...expanded);
+            return { results: rows, success: true };
+          },
+          first: async () => {
+            const rows = stmt.all(...expanded);
+            return rows[0] ?? null;
+          },
+        };
+      };
+      // D1 also allows run/all/first directly on the unbound statement.
+      return { bind, run: () => bind().run(), all: () => bind().all(), first: () => bind().first() };
     },
   };
 }
@@ -3313,6 +3343,138 @@ describe("quiver public API v2 — scope resolution", () => {
     expect(draftPayload.artifact.download_api).toBe(
       `/api/apps/app-scope/builds/${build.id}/assets/${draftPayload.artifact.asset_id}/download?presign=1`,
     );
+  });
+
+  it("external-target gate: freeze on publish, set assertion, replay re-assert, dl routes", async () => {
+    const env = makeEnv();
+    const now = Date.now();
+    // External build with 2 declared targets + a draft release on it.
+    await env.DB.prepare(
+      `INSERT INTO builds (id, app_id, channel_id, product_type, release_type, version_name, version_code,
+                           source, status, build_metadata_json, parsed_metadata_json, should_force_update,
+                           provenance_json, created_at, updated_at)
+       VALUES ('b-ext', 'app-scope', 'ch-scope-prod', 'cli-binary', 'stable', '2.0.0', 2000000,
+               'external', 'succeeded', '{}', '{}', 0, '{"ci_provider":"gha","source_commit":"abc123"}', ?1, ?1)`,
+    ).bind(now).run();
+    for (const [t, gz] of [["darwin-arm64", "https://cdn.test/2.0.0/darwin-arm64.gz"], ["linux-x64", null]] as const) {
+      await env.DB.prepare(
+        `INSERT INTO external_build_targets
+         (id, app_id, build_id, version_name, target, source_url, raw_sha256, raw_size_bytes,
+          gzip_sha256, gzip_size_bytes, node_version, metadata_json, created_at, updated_at, gzip_source_url)
+         VALUES (?1, 'app-scope', 'b-ext', '2.0.0', ?2, ?3, ?4, 100, ?5, ?6, '24.15.0', '{}', ?7, ?7, ?8)`,
+      ).bind(
+        `t-${t}`, t, `https://cdn.test/2.0.0/${t}`, "a".repeat(64),
+        t === "darwin-arm64" ? "b".repeat(64) : null, t === "darwin-arm64" ? 90 : null, now, gz,
+      ).run();
+    }
+    await env.DB.prepare(
+      `INSERT INTO releases (id, app_id, build_id, channel_id, product_type, release_type, status,
+                             is_full, changelog, created_by, created_at, updated_at)
+       VALUES ('rel-ext', 'app-scope', 'b-ext', 'ch-scope-prod', 'cli-binary', 'stable', 'draft', 1, NULL, 'tester', ?1, ?1)`,
+    ).bind(now).run();
+
+    const { handlePublishRelease, handleGetRelease } = await import("../src/routes/releases");
+    const ctx = (params: Record<string, string>, body: unknown = {}) =>
+      ({
+        env,
+        executionCtx: { waitUntil: () => undefined },
+        req: {
+          url: "https://quiver-worker.test/api/apps/app-scope/releases/rel-ext/publish",
+          param: (name: string) => params[name] ?? "",
+          query: () => undefined,
+          json: async () => body,
+        },
+        get: (name: string) => (name === "admin_actor" ? "tester" : name === "org_id" ? "default" : undefined),
+        json: (data: unknown, status = 200) =>
+          new Response(JSON.stringify(data), { status, headers: { "content-type": "application/json" } }),
+      }) as any;
+
+    // cli-binary publish without a required set → 400 (not yet frozen).
+    const noSet = await handlePublishRelease(ctx({ appId: "app-scope", releaseId: "rel-ext" }));
+    expect(noSet.status).toBe(400);
+
+    // Wrong set → 400 with named missing/unexpected; freeze rolled back.
+    const wrong = await handlePublishRelease(
+      ctx({ appId: "app-scope", releaseId: "rel-ext" }, { required_external_targets: ["darwin-arm64", "win32-x64"] }),
+    );
+    expect(wrong.status).toBe(400);
+    const wrongBody = (await wrong.json()) as any;
+    expect(wrongBody.missing).toEqual(["win32-x64"]);
+    expect(wrongBody.unexpected).toEqual(["linux-x64"]);
+    const afterFail = (await env.DB.prepare("SELECT freeze_token FROM builds WHERE id = 'b-ext'").first()) as any;
+    expect(afterFail.freeze_token).toBeNull();
+
+    // Duplicate target in the set → 400.
+    const dup = await handlePublishRelease(
+      ctx({ appId: "app-scope", releaseId: "rel-ext" }, { required_external_targets: ["linux-x64", "linux-x64"] }),
+    );
+    expect(dup.status).toBe(400);
+
+    // Exact set → publish succeeds and freezes.
+    const ok = await handlePublishRelease(
+      ctx({ appId: "app-scope", releaseId: "rel-ext" }, { required_external_targets: ["linux-x64", "darwin-arm64"] }),
+    );
+    expect(ok.status).toBe(200);
+    const frozen = (await env.DB.prepare("SELECT freeze_token, required_targets_json FROM builds WHERE id = 'b-ext'").first()) as any;
+    expect(frozen.freeze_token).not.toBeNull();
+    expect(JSON.parse(frozen.required_targets_json)).toEqual(["darwin-arm64", "linux-x64"]);
+
+    // Post-freeze: replay publish (already active) re-asserts and no-ops OK;
+    // a different set on replay → contract mismatch.
+    const replayOk = await handlePublishRelease(
+      ctx({ appId: "app-scope", releaseId: "rel-ext" }, { required_external_targets: ["darwin-arm64", "linux-x64"] }),
+    );
+    expect(replayOk.status).toBe(200);
+    const replayBad = await handlePublishRelease(
+      ctx({ appId: "app-scope", releaseId: "rel-ext" }, { required_external_targets: ["darwin-arm64"] }),
+    );
+    expect(replayBad.status).toBe(400);
+
+    // Readback: external_targets with explicit raw/gzip URLs (legacy null gzip
+    // normalized), count, frozen flag, structured provenance.
+    const detail = await responseJson<any>(
+      await handleGetRelease(ctx({ appId: "app-scope", releaseId: "rel-ext" })),
+    );
+    expect(detail.external_targets_count).toBe(2);
+    expect(detail.external_targets_frozen).toBe(true);
+    expect(detail.provenance).toMatchObject({ ci_provider: "gha", source_commit: "abc123" });
+    const dArm = detail.external_targets.find((t: any) => t.target === "darwin-arm64");
+    expect(dArm.raw_source_url).toBe("https://cdn.test/2.0.0/darwin-arm64");
+    expect(dArm.gzip_source_url).toBe("https://cdn.test/2.0.0/darwin-arm64.gz");
+    const lX64 = detail.external_targets.find((t: any) => t.target === "linux-x64");
+    expect(lX64.gzip_source_url).toBeNull(); // no gzip digest declared
+
+    // /dl routes: latest → immutable → source; lifecycle semantics.
+    const { handleExternalLatestDl, handleExternalReleaseDl } = await import("../src/routes/external_dl");
+    const dlCtx = (params: Record<string, string>) =>
+      ({
+        env,
+        req: { param: (name: string) => params[name] ?? "", query: () => undefined },
+        json: (data: unknown, status = 200) => new Response(JSON.stringify(data), { status }),
+      }) as any;
+    const latest = await handleExternalLatestDl(dlCtx({ slug: "scope-app", channel: "production", file: "darwin-arm64" }));
+    expect(latest.status).toBe(302);
+    expect(latest.headers.get("location")).toBe("/dl/scope-app/releases/rel-ext/darwin-arm64");
+    const imm = await handleExternalReleaseDl(dlCtx({ slug: "scope-app", releaseId: "rel-ext", file: "darwin-arm64" }));
+    expect(imm.status).toBe(302);
+    expect(imm.headers.get("location")).toBe("https://cdn.test/2.0.0/darwin-arm64");
+    const immGz = await handleExternalReleaseDl(dlCtx({ slug: "scope-app", releaseId: "rel-ext", file: "darwin-arm64.gz" }));
+    expect(immGz.status).toBe(302);
+    expect(immGz.headers.get("location")).toBe("https://cdn.test/2.0.0/darwin-arm64.gz");
+    // .gz without a declared gzip digest → 404.
+    const noGz = await handleExternalReleaseDl(dlCtx({ slug: "scope-app", releaseId: "rel-ext", file: "linux-x64.gz" }));
+    expect(noGz.status).toBe(404);
+
+    // Supersede the release: immutable URL keeps serving; latest moves off it.
+    await env.DB.prepare("UPDATE releases SET status = 'superseded' WHERE id = 'rel-ext'").run();
+    const immSuper = await handleExternalReleaseDl(dlCtx({ slug: "scope-app", releaseId: "rel-ext", file: "darwin-arm64" }));
+    expect(immSuper.status).toBe(302);
+    const latestGone = await handleExternalLatestDl(dlCtx({ slug: "scope-app", channel: "production", file: "darwin-arm64" }));
+    expect(latestGone.status).toBe(404);
+    // Cancelled → immutable URL 404s (kill switch).
+    await env.DB.prepare("UPDATE releases SET status = 'cancelled' WHERE id = 'rel-ext'").run();
+    const immCancelled = await handleExternalReleaseDl(dlCtx({ slug: "scope-app", releaseId: "rel-ext", file: "darwin-arm64" }));
+    expect(immCancelled.status).toBe(404);
   });
 
   it("release checks: upsert per source, advisory read-back on get-release", async () => {

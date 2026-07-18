@@ -49,6 +49,7 @@ export interface ExternalBuildVersionInput {
   raw_size_bytes: number;
   gzip_sha256?: string | null;
   gzip_size_bytes?: number | null;
+  gzip_source_url?: string | null;
   node_version?: string | null;
   product_type?: string;
   release_type?: string;
@@ -585,14 +586,24 @@ export async function handlePublishExternalBuildVersion(c: AdminContext) {
 
   const targetId = crypto.randomUUID();
   const now = Date.now();
+  // gzip transport must be explicitly addressable (never consumer-guessed):
+  // caller may pass gzip_source_url; when a gzip digest exists without one,
+  // the server normalizes to source_url + ".gz" and stores the explicit URL.
+  const gzipSourceUrl =
+    typeof input.gzip_source_url === "string" && input.gzip_source_url
+      ? input.gzip_source_url
+      : input.gzip_sha256
+        ? `${input.source_url}.gz`
+        : null;
   try {
-    await c.env.DB
+    const inserted = await c.env.DB
       .prepare(
         `INSERT INTO external_build_targets
          (id, app_id, build_id, version_name, target, source_url,
           raw_sha256, raw_size_bytes, gzip_sha256, gzip_size_bytes,
-          node_version, metadata_json, created_at, updated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)`,
+          node_version, metadata_json, created_at, updated_at, gzip_source_url)
+         SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15
+         WHERE (SELECT targets_frozen_at FROM builds WHERE id = ?16) IS NULL`,
       )
       .bind(
         targetId,
@@ -609,8 +620,50 @@ export async function handlePublishExternalBuildVersion(c: AdminContext) {
         externalJsonString(input.metadata_json),
         now,
         now,
+        gzipSourceUrl,
+        build.id,
       )
       .run();
+    if ((inserted.meta?.changes ?? 0) === 0) {
+      // Conditional insert refused: the build's target set is frozen by a
+      // published release. Exact replays of an existing declaration stay
+      // idempotent (CI re-runs must not fail post-publish); a mismatched
+      // redeclaration is a conflict; a genuinely new target is frozen out.
+      const frozenExisting = await getExternalTarget(c.env.DB, appId, input.version_name, input.target);
+      if (frozenExisting) {
+        if (!externalDeclarationMatches(frozenExisting, input)) {
+          return c.json(
+            {
+              error: "external build declaration conflicts with the existing immutable target",
+              code: "EXTERNAL_BUILD_CONFLICT",
+              build_id: frozenExisting.build_id,
+              target_id: frozenExisting.id,
+              target: frozenExisting.target,
+            },
+            409,
+          );
+        }
+        const { platform, arch } = splitBuildTarget(input.target);
+        return c.json({
+          app_id: appId,
+          build_id: frozenExisting.build_id,
+          target_id: frozenExisting.id,
+          version: input.version_name,
+          target: input.target,
+          platform,
+          arch,
+          replayed: true,
+        });
+      }
+      return c.json(
+        {
+          error: "this build's target set is frozen by a published release; no new targets may be declared",
+          code: "EXTERNAL_TARGETS_FROZEN",
+          build_id: build.id,
+        },
+        409,
+      );
+    }
   } catch (error) {
     const concurrent = await getExternalTarget(c.env.DB, appId, input.version_name, input.target);
     if (!concurrent) throw error;

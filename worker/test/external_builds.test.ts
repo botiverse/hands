@@ -38,7 +38,10 @@ function makeDb() {
       provenance_json TEXT NOT NULL,
       created_at INTEGER NOT NULL,
       updated_at INTEGER NOT NULL,
-      completed_at INTEGER
+      completed_at INTEGER,
+      targets_frozen_at INTEGER,
+      freeze_token TEXT,
+      required_targets_json TEXT
     );
     CREATE UNIQUE INDEX idx_builds_external_app_version
       ON builds(app_id, version_name)
@@ -58,6 +61,7 @@ function makeDb() {
       metadata_json TEXT NOT NULL DEFAULT '{}',
       created_at INTEGER NOT NULL,
       updated_at INTEGER NOT NULL,
+      gzip_source_url TEXT,
       UNIQUE (app_id, version_name, target)
     );
     CREATE TABLE audit_logs (
@@ -78,8 +82,8 @@ function makeDb() {
         bind(...params: unknown[]) {
           return {
             async run() {
-              statement.run(...params);
-              return { success: true };
+              const info = statement.run(...params);
+              return { success: true, meta: { changes: Number(info.changes ?? 0) } };
             },
             async first<T>() {
               return (statement.get(...params) as T | undefined) ?? null;
