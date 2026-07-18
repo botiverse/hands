@@ -3,39 +3,30 @@
  *
  * Mirrors the ASC API client (asc_api.ts) but targets the Notary REST API
  * (appstoreconnect.apple.com/notary/v2). Auth is identical: the SAME App
- * Store Connect API key (ES256 JWT) that TestFlight uses authenticates
- * notary submissions — confirmed by Apple's own documentation:
+ * Store Connect API key (ES256 JWT) authenticates notary submissions.
  *
- *   "Use the same key to sign tokens for the notary service that you use
- *    for the App Store Connect API."
- *   — Submitting software for notarization over the web
+ * Apple doc: "Use the same key to sign tokens for the notary service that
+ * you use for the App Store Connect API."
  *
- * Flow: POST /submissions (sha256 + name) → Apple returns temp S3 creds →
- * stream artifact from R2 to S3 → poll GET /submissions/{id} for terminal
- * state → GET /submissions/{id}/logs for binding verification.
+ * Field names verified from Apple official docs (2026-07-18):
+ *   Status response: data.attributes.{status, name, createdDate}
+ *   Status values: "In Progress" (WITH SPACE), "Accepted", "Invalid", "Rejected"
+ *   Log response:  data.attributes.developerLogUrl (NOT logUrl)
+ *   Log JSON:      { sha256, jobId, ... } (NOT archiveHash)
  *
- * The .p8 private key is NEVER returned to the caller. It is decrypted
- * in-worker (getAscCredentials), used to sign the JWT, and discarded.
- * Apple's temporary S3 credentials are used in-worker to stream R2→S3 and
- * then discarded — never persisted, never returned.
+ * S3 upload uses aws4fetch (SigV4) — already a worker dependency, used by r2_presign.ts.
+ *
+ * Secrets: .p8 key, temp AWS creds, developerLogUrl are NEVER persisted or returned.
  */
 
 import type { AscApiCredentials } from "./asc_api";
 import { createAscJwt, AscApiError } from "./asc_api";
+import { AwsClient } from "aws4fetch";
 
-/** Notary API uses a different host than the ASC API (no /v1 prefix). */
 export const NOTARY_API_BASE = "https://appstoreconnect.apple.com/notary/v2";
 
-// ---------- Authenticated request (reuses ASC JWT) ----------
+// ──────────── Authenticated request ────────────
 
-/**
- * Authenticated JSON request against the Notary API. Throws AscApiError
- * (same error class as asc_api.ts for consistent handling).
- *
- * If the ASC key's role does not permit notarization, Apple returns 401/403.
- * Callers MUST classify this as NOTARY_ROLE_INSUFFICIENT for operator
- * remediation (per Phase 0 path 4 decision — Quinn, 2026-07-18).
- */
 export async function notaryRequest<T>(
   creds: AscApiCredentials,
   method: string,
@@ -56,7 +47,7 @@ export async function notaryRequest<T>(
   try {
     parsed = text ? JSON.parse(text) : null;
   } catch {
-    // non-JSON body; keep raw text for error detail
+    // non-JSON body
   }
   if (!res.ok) {
     const errors = (
@@ -65,22 +56,18 @@ export async function notaryRequest<T>(
     const first = errors?.[0];
     throw new AscApiError(
       res.status,
-      first?.title ??
-        `Notary API ${method} ${path} failed (${res.status})`,
+      first?.title ?? `Notary API ${method} ${path} failed (${res.status})`,
       first?.detail ?? (parsed ? null : text.slice(0, 500) || null),
     );
   }
   return parsed as T;
 }
 
-// ---------- Submission resources ----------
+// ──────────── Types (verified field names) ────────────
 
 export interface NotarySubmissionRequest {
-  /** File name for Apple's records (unique per submission recommended). */
   submissionName: string;
-  /** SHA-256 of the artifact bytes being submitted (hex). */
   sha256: string;
-  /** Optional webhook callback when notarization completes. */
   notifications?: Array<{ channel: string; target: string }>;
 }
 
@@ -89,7 +76,6 @@ export interface NotarySubmissionResponse {
     id: string;
     type: "submissionsPostResponse";
     attributes: {
-      /** Temporary AWS credentials for S3 upload (expire in 12 hours). */
       awsAccessKeyId: string;
       awsSecretAccessKey: string;
       awsSessionToken: string;
@@ -100,56 +86,49 @@ export interface NotarySubmissionResponse {
   meta: Record<string, unknown>;
 }
 
-export type NotarySubmissionState =
-  | "InProgress"
-  | "Accepted"
-  | "Invalid"
-  | "Rejected";
+/** Apple status values — note "In Progress" has a SPACE. */
+export type NotaryStatus = "In Progress" | "Accepted" | "Invalid" | "Rejected";
 
-export interface NotarySubmissionStatus {
+export interface NotarySubmissionStatusResponse {
   data: {
     id: string;
     type: "submissions";
     attributes: {
-      submissionName: string | null;
-      status: NotarySubmissionState | null;
+      name: string | null;
+      status: NotaryStatus | null;
       createdDate: string | null;
-      finishedDate: string | null;
     };
   };
 }
 
-export interface NotarySubmissionLogResponse {
+export interface NotaryLogUrlResponse {
   data: {
     id: string;
-    type: "submissions";
+    type: "submissionsLog";
     attributes: {
-      /** URL to download the JSON log file (valid for a few hours). */
-      devId: string;
-      logUrl: string;
+      developerLogUrl: string;  // NOT "logUrl"
     };
   };
 }
 
-/**
- * The fetched log JSON. Contains the SHA-256 of the submitted artifact,
- * which MUST match the source artifact SHA for the binding invariant
- * (ready_for_staple = true only when log SHA == source SHA).
- */
+/** Log JSON fetched from developerLogUrl — binding fields are sha256 + jobId. */
 export interface NotaryLogJson {
-  /** Archive hash in the notarization log — the binding source. */
-  archiveHash?: string;
-  /** Apple may report issues/warnings even on Accepted submissions. */
+  sha256?: string;   // artifact hash for binding verification
+  jobId?: string;    // must match submission id
   issues?: Array<{ severity: string; message: string }>;
   [key: string]: unknown;
 }
 
-// ---------- API operations ----------
+// ──────────── UUID validation ────────────
 
-/**
- * Start a notary submission. Does NOT upload the artifact — returns temp S3
- * credentials that the caller uses to PUT the artifact to Apple's S3.
- */
+function validateSubmissionId(id: string): void {
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)) {
+    throw new AscApiError(400, "invalid submission id", "submission id must be a UUID");
+  }
+}
+
+// ──────────── API operations ────────────
+
 export async function createNotarySubmission(
   creds: AscApiCredentials,
   req: NotarySubmissionRequest,
@@ -157,78 +136,67 @@ export async function createNotarySubmission(
   return notaryRequest<NotarySubmissionResponse>(creds, "POST", "/submissions", req);
 }
 
-/**
- * Poll a notary submission's status. Poll until terminal
- * (Accepted / Invalid / Rejected).
- */
 export async function getNotarySubmissionStatus(
   creds: AscApiCredentials,
   submissionId: string,
-): Promise<NotarySubmissionStatus> {
-  // Validate submissionId is a UUID before placing it in the path
-  // (avoids leading-dash / path-injection issues — #294 seq 27).
-  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(submissionId)) {
-    throw new AscApiError(400, "invalid submission id", "submission id must be a UUID");
-  }
-  return notaryRequest<NotarySubmissionStatus>(
-    creds,
-    "GET",
-    `/submissions/${submissionId}`,
+): Promise<NotarySubmissionStatusResponse> {
+  validateSubmissionId(submissionId);
+  return notaryRequest<NotarySubmissionStatusResponse>(
+    creds, "GET", `/submissions/${submissionId}`,
   );
 }
 
-/**
- * Get the log URL for a terminal submission, then fetch and parse the log JSON.
- * The log contains the artifact's SHA (archiveHash) used for binding verification.
- */
 export async function getNotarySubmissionLog(
   creds: AscApiCredentials,
   submissionId: string,
-): Promise<{ logUrl: string; log: NotaryLogJson }> {
-  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(submissionId)) {
-    throw new AscApiError(400, "invalid submission id", "submission id must be a UUID");
-  }
-  const logResp = await notaryRequest<NotarySubmissionLogResponse>(
-    creds,
-    "GET",
-    `/submissions/${submissionId}/logs`,
+): Promise<{ developerLogUrl: string; log: NotaryLogJson }> {
+  validateSubmissionId(submissionId);
+  const logResp = await notaryRequest<NotaryLogUrlResponse>(
+    creds, "GET", `/submissions/${submissionId}/logs`,
   );
-  const logUrl = logResp.data.attributes.logUrl;
-  const logResp2 = await fetch(logUrl);
-  if (!logResp2.ok) {
+  const developerLogUrl = logResp.data.attributes.developerLogUrl;
+  // Fetch the actual log JSON — URL is short-lived.
+  const logFetch = await fetch(developerLogUrl);
+  if (!logFetch.ok) {
     throw new AscApiError(
-      logResp2.status,
-      `failed to fetch notary log from Apple (${logResp2.status})`,
+      logFetch.status,
+      `failed to fetch notary log JSON (${logFetch.status})`,
     );
   }
-  const log = (await logResp2.json()) as NotaryLogJson;
-  return { logUrl, log };
+  const log = (await logFetch.json()) as NotaryLogJson;
+  return { developerLogUrl, log };
 }
 
 /**
- * Upload an artifact to Apple's S3 using the temporary credentials from
- * createNotarySubmission. The artifact is streamed from an R2 object body
- * (ReadableStream) directly to S3 — never buffered in memory.
+ * Upload artifact to Apple's S3 using temp credentials from createNotarySubmission.
+ * Uses aws4fetch for SigV4 signing (same library as r2_presign.ts).
  *
- * Uses a single PUT (Notary API uses simple S3 PUT, not multipart).
+ * The body is a ReadableStream from R2 — streamed directly, never buffered.
+ * Returns the S3 ETag receipt (NOT a content hash — do not use for integrity).
  */
 export async function uploadArtifactToS3(
   attrs: NotarySubmissionResponse["data"]["attributes"],
-  body: ReadableStream,
+  body: ReadableStream<Uint8Array>,
   contentType = "application/octet-stream",
-): Promise<void> {
-  // Apple's Notary API provides temp AWS creds for a direct S3 PUT.
-  // We use a presigned-style URL approach: the bucket+object+creds from
-  // the submission response, with a standard S3 PUT.
+): Promise<{ etag: string | null }> {
   const url = `https://${attrs.bucket}.s3-accelerate.amazonaws.com/${attrs.object}`;
-  const res = await fetch(url, {
+
+  const aws = new AwsClient({
+    accessKeyId: attrs.awsAccessKeyId,
+    secretAccessKey: attrs.awsSecretAccessKey,
+    sessionToken: attrs.awsSessionToken,
+    service: "s3",
+    region: "us-east-1",  // Apple's Notary S3 uses us-east-1
+    retries: 0,
+  });
+
+  const signedReq = await aws.sign(url, {
     method: "PUT",
-    headers: {
-      "content-type": contentType,
-      "x-amz-security-token": attrs.awsSessionToken,
-    },
+    headers: { "content-type": contentType },
     body,
   });
+
+  const res = await fetch(signedReq);
   if (!res.ok) {
     const text = await res.text().catch(() => "");
     throw new AscApiError(
@@ -237,4 +205,10 @@ export async function uploadArtifactToS3(
       text.slice(0, 500) || null,
     );
   }
+
+  // S3 returns ETag header (content MD5 in classic S3, but NOT reliable as
+  // content hash — we only use it as a receipt, never for integrity verification).
+  const etag = res.headers.get("etag");
+  // Strip quotes if present (S3 ETags are quoted)
+  return { etag: etag ? etag.replace(/^"|"$/g, "") : null };
 }
