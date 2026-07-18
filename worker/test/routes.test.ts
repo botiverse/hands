@@ -2097,6 +2097,51 @@ describe("quiver Hono app — auth + dispatch", () => {
     });
   });
 
+  it("deploy-token create: expires_in_days persists, unknown fields 400, both expiry fields 400", async () => {
+    const env = makeMockEnv();
+    const now = Date.now();
+    await env.DB.prepare(
+      "INSERT INTO apps (id, org_id, slug, name, platform, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+    ).bind("dt-app", "default", "dt-app", "DT App", "android", now).run();
+    const { handleCreateAppDeployToken } = await import("../src/routes/deploy_tokens");
+    const ctx = (body: unknown) =>
+      ({
+        env,
+        req: {
+          url: "https://quiver-worker.test/api/apps/dt-app/deploy-tokens",
+          param: (name: string) => (name === "appId" ? "dt-app" : ""),
+          query: () => undefined,
+          json: async () => body,
+          header: () => undefined,
+        },
+        get: (name: string) => (name === "admin_actor" ? "tester" : undefined),
+        json: (data: unknown, status = 200) =>
+          new Response(JSON.stringify(data), { status, headers: { "content-type": "application/json" } }),
+      }) as any;
+
+    // A misspelled/unknown field must 400 — never silently mint a
+    // non-expiring token (the original bug: expires_in_days was ignored).
+    const unknown = await handleCreateAppDeployToken(ctx({ name: "t1", app_role: "publisher", expire_days: 7 }));
+    expect(unknown.status).toBe(400);
+
+    // expires_in_days is accepted and persisted as a real expiry.
+    const ok = await handleCreateAppDeployToken(ctx({ name: "t2", app_role: "publisher", expires_in_days: 7 }));
+    expect(ok.status).toBe(201);
+    const created = (await ok.json()) as any;
+    expect(created.deploy_token.expires_at).toBeGreaterThan(now + 6.9 * 86_400_000);
+    expect(created.deploy_token.expires_at).toBeLessThan(now + 7.1 * 86_400_000);
+
+    // Both expiry fields together → 400.
+    const both = await handleCreateAppDeployToken(
+      ctx({ name: "t3", app_role: "publisher", expires_at: now + 86_400_000, expires_in_days: 1 }),
+    );
+    expect(both.status).toBe(400);
+
+    // Invalid days → 400.
+    const bad = await handleCreateAppDeployToken(ctx({ name: "t4", app_role: "publisher", expires_in_days: -1 }));
+    expect(bad.status).toBe(400);
+  });
+
   it("loads app-scoped deploy tokens and updates last_used_at", async () => {
     const env = makeMockEnv();
     const now = Date.now();

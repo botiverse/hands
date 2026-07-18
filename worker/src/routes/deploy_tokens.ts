@@ -72,7 +72,20 @@ export async function handleCreateAppDeployToken(c: AdminContext) {
     name?: unknown;
     app_role?: unknown;
     expires_at?: unknown;
-  };
+    expires_in_days?: unknown;
+  } & Record<string, unknown>;
+
+  // Token minting is strict-validated: an unrecognized field must 400, never
+  // silently mint a broader token than the caller asked for (a misspelled
+  // expiry field used to yield a NON-EXPIRING token).
+  const allowedKeys = new Set(["name", "app_role", "expires_at", "expires_in_days"]);
+  const unknownKeys = Object.keys(body).filter((k) => !allowedKeys.has(k));
+  if (unknownKeys.length > 0) {
+    return c.json(
+      { error: `unknown field(s): ${unknownKeys.join(", ")} — accepted: name, app_role, expires_at (unix ms), expires_in_days` },
+      400,
+    );
+  }
 
   const name = typeof body.name === "string" ? body.name.trim() : "";
   if (!name) return c.json({ error: "name is required" }, 400);
@@ -81,9 +94,20 @@ export async function handleCreateAppDeployToken(c: AdminContext) {
     return c.json({ error: "app_role must be publisher or viewer" }, 400);
   }
 
+  if (body.expires_at != null && body.expires_in_days != null) {
+    return c.json({ error: "provide expires_at or expires_in_days, not both" }, 400);
+  }
   let expiresAt: number | null;
   try {
-    expiresAt = parseExpiresAt(body.expires_at);
+    if (body.expires_in_days != null) {
+      const days = Number(body.expires_in_days);
+      if (!Number.isFinite(days) || days <= 0 || days > 3650) {
+        throw new Error("expires_in_days must be a positive number of days (max 3650)");
+      }
+      expiresAt = Date.now() + Math.round(days * 24 * 60 * 60 * 1000);
+    } else {
+      expiresAt = parseExpiresAt(body.expires_at);
+    }
   } catch (err) {
     return c.json({ error: (err as Error).message }, 400);
   }
