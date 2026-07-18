@@ -431,12 +431,68 @@ export async function handleGetRelease(c: Context<{ Bindings: Env }>) {
     .bind(releaseId)
     .all();
 
+  // External target declarations (Computer-CLI-style builds): full readback so
+  // a consumer can enumerate and assert required targets from the release
+  // itself. gzip transport is always explicitly addressable — legacy rows
+  // without a stored gzip_source_url are normalized here, never guessed by
+  // the consumer.
+  const { results: externalTargetRows } = await c.env.DB.prepare(
+    `SELECT target, source_url, gzip_source_url, raw_sha256, raw_size_bytes,
+            gzip_sha256, gzip_size_bytes, node_version, metadata_json, created_at
+     FROM external_build_targets
+     WHERE build_id = (SELECT build_id FROM releases WHERE id = ?1 AND app_id = ?2)
+     ORDER BY target`,
+  )
+    .bind(releaseId, appId)
+    .all<{
+      target: string;
+      source_url: string;
+      gzip_source_url: string | null;
+      raw_sha256: string;
+      raw_size_bytes: number;
+      gzip_sha256: string | null;
+      gzip_size_bytes: number | null;
+      node_version: string | null;
+      metadata_json: string;
+      created_at: number;
+    }>();
+  const externalTargets = (externalTargetRows || []).map((row) => {
+    let metadata: unknown = {};
+    try {
+      metadata = JSON.parse(row.metadata_json || "{}");
+    } catch {
+      metadata = {};
+    }
+    return {
+      target: row.target,
+      raw_source_url: row.source_url,
+      gzip_source_url: row.gzip_source_url ?? (row.gzip_sha256 ? `${row.source_url}.gz` : null),
+      raw_sha256: row.raw_sha256,
+      raw_size_bytes: row.raw_size_bytes,
+      gzip_sha256: row.gzip_sha256,
+      gzip_size_bytes: row.gzip_size_bytes,
+      node_version: row.node_version,
+      metadata,
+      created_at: row.created_at,
+    };
+  });
+  let provenance: unknown = null;
+  try {
+    provenance = build && (build as any).provenance_json ? JSON.parse((build as any).provenance_json) : null;
+  } catch {
+    provenance = null;
+  }
+
   return c.json({
     release: withReleaseNotes(release as { changelog?: string | null }),
     build,
     assets,
     scopes,
     checks,
+    external_targets: externalTargets,
+    external_targets_count: externalTargets.length,
+    external_targets_frozen: Boolean(build && (build as any).freeze_token),
+    provenance,
   });
 }
 
@@ -747,11 +803,159 @@ export async function handleUpdateRelease(c: AdminContext) {
   }
 }
 
+// ---- External-target publish gate (task #160, Computer CLI migration) ------
+
+function canonicalizeRequiredTargets(raw: unknown): { set: string[] } | { error: string } {
+  if (!Array.isArray(raw) || raw.some((t) => typeof t !== "string")) {
+    return { error: "required_external_targets must be an array of target strings" };
+  }
+  const seen = new Set<string>();
+  for (const t of raw as string[]) {
+    const norm = t.trim();
+    if (!/^[a-z0-9]+-[a-z0-9_]+$/.test(norm)) {
+      return { error: `unknown target format: ${t} (expected e.g. darwin-arm64)` };
+    }
+    if (seen.has(norm)) return { error: `duplicate target: ${norm}` };
+    seen.add(norm);
+  }
+  return { set: [...seen].sort() };
+}
+
+function targetSetDiff(required: string[], declared: string[]): { missing: string[]; unexpected: string[] } {
+  const dec = new Set(declared);
+  const req = new Set(required);
+  return {
+    missing: required.filter((t) => !dec.has(t)),
+    unexpected: declared.filter((t) => !req.has(t)),
+  };
+}
+
+/**
+ * Freeze + assert the external-target contract inside the publish path.
+ * Every external build's target set is frozen on its first publish attempt
+ * (freeze_token = random ownership; declarations are conditionally rejected
+ * once frozen). cli-binary requires a caller-supplied exact expected set; a
+ * failed assertion clears ONLY a freeze this attempt created. Runs on every
+ * publish attempt including already-active replays — no early no-op path.
+ * Returns a Response on failure, null to proceed.
+ */
+async function assertExternalTargetGate(
+  c: AdminContext,
+  release: { build_id: string },
+  requiredRaw: unknown,
+): Promise<Response | null> {
+  const build = await c.env.DB.prepare(
+    `SELECT id, source, product_type, freeze_token, required_targets_json FROM builds WHERE id = ?1`,
+  )
+    .bind(release.build_id)
+    .first<{ id: string; source: string; product_type: string; freeze_token: string | null; required_targets_json: string | null }>();
+  if (!build) return c.json({ error: "release build not found" }, 409);
+
+  if (build.source !== "external") {
+    if (requiredRaw !== undefined) {
+      return c.json({ error: "required_external_targets only applies to external builds" }, 400);
+    }
+    return null;
+  }
+
+  let callerSet: string[] | undefined;
+  if (requiredRaw !== undefined) {
+    const canon = canonicalizeRequiredTargets(requiredRaw);
+    if ("error" in canon) return c.json({ error: canon.error }, 400);
+    callerSet = canon.set;
+  }
+  if (build.product_type === "cli-binary" && !callerSet && !build.freeze_token) {
+    return c.json(
+      { error: "required_external_targets is required when publishing a cli-binary external build" },
+      400,
+    );
+  }
+
+  const readDeclared = async (): Promise<string[]> => {
+    const { results } = await c.env.DB.prepare(
+      `SELECT target FROM external_build_targets WHERE build_id = ?1 ORDER BY target`,
+    )
+      .bind(build.id)
+      .all<{ target: string }>();
+    return (results || []).map((r) => r.target);
+  };
+
+  if (!build.freeze_token) {
+    const token = crypto.randomUUID();
+    const cas = await c.env.DB.prepare(
+      `UPDATE builds SET freeze_token = ?1, targets_frozen_at = ?2, required_targets_json = ?3
+       WHERE id = ?4 AND freeze_token IS NULL`,
+    )
+      .bind(token, Date.now(), JSON.stringify(callerSet ?? []), build.id)
+      .run();
+    if ((cas.meta?.changes ?? 0) === 1) {
+      // We own the freeze; declarations are now blocked, so this read is final.
+      const declared = await readDeclared();
+      const required = callerSet ?? declared;
+      await c.env.DB.prepare(
+        `UPDATE builds SET required_targets_json = ?1 WHERE id = ?2 AND freeze_token = ?3`,
+      )
+        .bind(JSON.stringify(required), build.id, token)
+        .run();
+      const diff = targetSetDiff(required, declared);
+      if (diff.missing.length > 0 || diff.unexpected.length > 0) {
+        // Roll back OUR freeze only, so the build isn't locked by a failed attempt.
+        await c.env.DB.prepare(
+          `UPDATE builds SET freeze_token = NULL, targets_frozen_at = NULL, required_targets_json = NULL
+           WHERE id = ?1 AND freeze_token = ?2`,
+        )
+          .bind(build.id, token)
+          .run();
+        return c.json(
+          { error: "external target set does not match the required set", code: "EXTERNAL_TARGETS_MISMATCH", missing: diff.missing, unexpected: diff.unexpected },
+          400,
+        );
+      }
+      return null;
+    }
+    // Lost the freeze race — fall through to the stored-contract path.
+  }
+
+  const frozen = await c.env.DB.prepare(
+    `SELECT required_targets_json FROM builds WHERE id = ?1`,
+  )
+    .bind(build.id)
+    .first<{ required_targets_json: string | null }>();
+  let stored: string[] = [];
+  try {
+    stored = JSON.parse(frozen?.required_targets_json ?? "[]") as string[];
+  } catch {
+    stored = [];
+  }
+  if (callerSet && (callerSet.length !== stored.length || callerSet.some((t, i) => t !== stored[i]))) {
+    return c.json(
+      { error: "required_external_targets differs from the frozen contract", code: "EXTERNAL_TARGETS_CONTRACT_MISMATCH", frozen: stored },
+      400,
+    );
+  }
+  const declared = await readDeclared();
+  const diff = targetSetDiff(stored, declared);
+  if (diff.missing.length > 0 || diff.unexpected.length > 0) {
+    // Frozen contract violated after freeze — declarations are blocked, so
+    // this indicates out-of-band mutation; fail closed.
+    return c.json(
+      { error: "declared targets no longer match the frozen contract", code: "EXTERNAL_TARGETS_MISMATCH", missing: diff.missing, unexpected: diff.unexpected },
+      409,
+    );
+  }
+  return null;
+}
+
 export async function handlePublishRelease(c: AdminContext) {
   const appId = c.req.param("appId") ?? "";
   const releaseId = c.req.param("releaseId") ?? "";
   const existing = await getReleaseForApp(c.env.DB, appId, releaseId);
   if (!existing) return c.json({ error: "not found" }, 404);
+  // The external-target gate runs on EVERY publish attempt — including
+  // already-active replays — before any no-op shortcut.
+  const publishBody = (await c.req.json().catch(() => ({}))) as { required_external_targets?: unknown };
+  const gateFail = await assertExternalTargetGate(c, existing, publishBody.required_external_targets);
+  if (gateFail) return gateFail;
   if (existing.status === "active") return c.json(existing);
   if (existing.status !== "draft") {
     return c.json({ error: `cannot publish ${existing.status} release` }, 409);
