@@ -250,7 +250,7 @@ class HandsFeedback(
     companion object {
         /** Quiver Android SDK version — reported in feedback/crash environment
          *  metadata. Keep in sync with the SDK's published version. */
-        const val SDK_VERSION = "0.11.1"
+        const val SDK_VERSION = "0.11.2"
 
         /** Server-enforced: at most 9 attachments per ticket. */
         const val MAX_ATTACHMENTS = 9

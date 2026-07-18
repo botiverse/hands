@@ -10,7 +10,7 @@
           host app that already declares its own FileProvider.
         -->
         <provider
-            android:name="androidx.core.content.FileProvider"
+            android:name="build.hands.update.HandsFileProvider"
             android:authorities="${applicationId}.hands.fileprovider"
             android:exported="false"
             android:grantUriPermissions="true">
