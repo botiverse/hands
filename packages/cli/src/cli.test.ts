@@ -162,6 +162,79 @@ describe("Tauri build helpers", () => {
     expect(splitTauriTarget("darwin-aarch64")).toEqual({ platform: "darwin", arch: "aarch64" });
     expect(() => splitTauriTarget("win32-arm64")).toThrow("Tauri target must be");
   });
+
+  it("publishes a signed target through the full draft-first API flow", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "hands-tauri-publish-"));
+    const bundle = join(dir, "App.AppImage");
+    const signature = `${bundle}.sig`;
+    writeFileSync(bundle, "bundle-bytes");
+    writeFileSync(signature, "detached-signature\n");
+
+    const requests: Array<{ method: string; url: string; body?: any }> = [];
+    const server = createServer(async (req, res) => {
+      let body: any = undefined;
+      if (req.headers["content-type"]?.includes("application/json")) {
+        const chunks: Buffer[] = [];
+        for await (const chunk of req) chunks.push(Buffer.from(chunk));
+        body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+      }
+      requests.push({ method: req.method ?? "GET", url: req.url ?? "", body });
+      res.setHeader("content-type", "application/json");
+      if (req.url === "/api/apps") return res.end(JSON.stringify({ apps: [{ id: "app-1", slug: "desktop" }] }));
+      if (req.url === "/api/apps/app-1/channels") return res.end(JSON.stringify({ channels: [{ id: "channel-1", slug: "main", name: "Main" }] }));
+      if (req.url === "/api/apps/app-1/builds") return res.end(JSON.stringify({ id: "build-1" }));
+      if (req.url === "/api/apps/app-1/upload") return res.end(JSON.stringify({
+        file_hash: "hash-1", r2_key: "apps/app-1/App.AppImage", size_bytes: 12, original_filename: "App.AppImage",
+      }));
+      if (req.url === "/api/apps/app-1/builds/build-1/assets") return res.end(JSON.stringify({ id: "asset-1" }));
+      if (req.url === "/api/apps/app-1/releases") return res.end(JSON.stringify({ id: "release-1" }));
+      res.statusCode = 404;
+      return res.end(JSON.stringify({ error: "not found" }));
+    });
+
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("bad address");
+    const originalApi = process.env.HANDS_API;
+    const originalToken = process.env.HANDS_BEARER_TOKEN;
+    process.env.HANDS_API = `http://127.0.0.1:${address.port}`;
+    process.env.HANDS_BEARER_TOKEN = "test-token";
+
+    try {
+      const { registerBuildCommands } = await import("../src/commands/builds.js");
+      const program = new Command().option("--json", "JSON output", false);
+      registerBuildCommands(program);
+      await program.parseAsync([
+        "node", "hands", "builds", "publish-tauri", "desktop",
+        "--version", "1.2.3",
+        "--bundle", bundle,
+        "--signature", signature,
+        "--target", "linux-x86_64",
+      ]);
+
+      const assetRequest = requests.find((request) => request.url.endsWith("/assets"));
+      expect(assetRequest?.body).toMatchObject({
+        artifact_kind: "tauri-updater",
+        platform: "linux",
+        arch: "x86_64",
+        filetype: "AppImage",
+        signature: "detached-signature",
+      });
+      const releaseRequest = requests.find((request) => request.url.endsWith("/releases"));
+      expect(releaseRequest?.body).toMatchObject({
+        status: "draft",
+        product_type: "tauri-updater",
+        scopes: [{ scope_type: "full", scope_value: "all" }],
+      });
+    } finally {
+      if (originalApi === undefined) delete process.env.HANDS_API;
+      else process.env.HANDS_API = originalApi;
+      if (originalToken === undefined) delete process.env.HANDS_BEARER_TOKEN;
+      else process.env.HANDS_BEARER_TOKEN = originalToken;
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("external build publish helpers", () => {
