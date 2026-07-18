@@ -91,7 +91,7 @@ externally hosted target without copying it into Hands storage:
 
 ```bash
 hands builds publish-version raft-computer \
-  --version 0.72.13 \
+  --version-name 0.72.13 \
   --target linux-x64 \
   --source-url https://cdn.raft.build/computer/0.72.13/linux-x64 \
   --raw-sha256 "$RAW_SHA256" --raw-size "$RAW_SIZE" \

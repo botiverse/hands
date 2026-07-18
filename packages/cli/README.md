@@ -15,7 +15,7 @@ npm install -g @botiverse/hands-cli
 hands --help
 
 # Or run without installing globally:
-npm exec --package @botiverse/hands-cli@0.5.9 -- hands --help
+npm exec --package @botiverse/hands-cli@0.5.10 -- hands --help
 
 # Local repo development:
 pnpm --filter @botiverse/hands-cli build
@@ -50,7 +50,7 @@ immutable target declaration at a time:
 
 ```bash
 hands builds publish-version raft-computer \
-  --version 0.72.13 \
+  --version-name 0.72.13 \
   --target darwin-arm64 \
   --source-url https://cdn.raft.build/computer/0.72.13/darwin-arm64 \
   --raw-sha256 "$RAW_SHA256" --raw-size "$RAW_SIZE" \

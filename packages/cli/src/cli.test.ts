@@ -251,6 +251,65 @@ describe("external build publish helpers", () => {
     expect(versionCodeFromVersion("1.2.3-beta.1")).toBe(1_002_003);
     expect(() => versionCodeFromVersion("nightly")).toThrow("--version-code is required");
   });
+
+  it("publishes through the true root command without colliding with --version", async () => {
+    const requests: Array<{ url: string; body?: any }> = [];
+    const server = createServer(async (req, res) => {
+      let body: any = undefined;
+      if (req.headers["content-type"]?.includes("application/json")) {
+        const chunks: Buffer[] = [];
+        for await (const chunk of req) chunks.push(Buffer.from(chunk));
+        body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+      }
+      requests.push({ url: req.url ?? "", body });
+      res.setHeader("content-type", "application/json");
+      if (req.url === "/api/apps") return res.end(JSON.stringify({ apps: [{ id: "app-1", slug: "computer" }] }));
+      if (req.url === "/api/apps/app-1/channels") return res.end(JSON.stringify({ channels: [{ id: "channel-1", slug: "shadow", name: "Shadow" }] }));
+      if (req.url === "/api/apps/app-1/builds/publish-version") return res.end(JSON.stringify({
+        app_id: "app-1", build_id: "build-1", target_id: "target-1", version: "1.0.5",
+        target: "darwin-arm64", platform: "darwin", arch: "arm64", replayed: false,
+      }));
+      res.statusCode = 404;
+      return res.end(JSON.stringify({ error: "not found" }));
+    });
+
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("bad address");
+    const originalApi = process.env.HANDS_API;
+    const originalToken = process.env.HANDS_BEARER_TOKEN;
+    process.env.HANDS_API = `http://127.0.0.1:${address.port}`;
+    process.env.HANDS_BEARER_TOKEN = "test-token";
+
+    try {
+      const { registerBuildCommands } = await import("../src/commands/builds.js");
+      const program = new Command().version("0.5.10").option("--json", "JSON output", false);
+      registerBuildCommands(program);
+      await program.parseAsync([
+        "node", "hands", "builds", "publish-version", "computer",
+        "--version-name", "1.0.5",
+        "--target", "darwin-arm64",
+        "--source-url", "https://cdn.example.test/computer/1.0.5/darwin-arm64",
+        "--raw-sha256", "a".repeat(64),
+        "--raw-size", "123",
+        "--channel", "shadow",
+      ]);
+
+      expect(requests.find((request) => request.url.endsWith("/publish-version"))?.body).toMatchObject({
+        channel_id: "channel-1",
+        version_name: "1.0.5",
+        version_code: 1_000_005,
+        target: "darwin-arm64",
+        raw_size_bytes: 123,
+      });
+    } finally {
+      if (originalApi === undefined) delete process.env.HANDS_API;
+      else process.env.HANDS_API = originalApi;
+      if (originalToken === undefined) delete process.env.HANDS_BEARER_TOKEN;
+      else process.env.HANDS_BEARER_TOKEN = originalToken;
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
 });
 
 describe("iOS build helper contract", () => {

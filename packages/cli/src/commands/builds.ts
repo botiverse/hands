@@ -161,7 +161,7 @@ export function registerBuildCommands(program: Command): void {
   builds
     .command("publish-version <appIdOrSlug>")
     .description("Register an immutable externally hosted Node/CLI build target.")
-    .requiredOption("--version <version>", "Release version name.")
+    .requiredOption("--version-name <version>", "Release version name.")
     .option(
       "--version-code <code>",
       "Hands ordering code. Defaults to a numeric dotted-version encoding.",
@@ -188,7 +188,7 @@ export function registerBuildCommands(program: Command): void {
       async (
         appIdOrSlug: string,
         opts: {
-          version: string;
+          versionName: string;
           versionCode?: string;
           target: string;
           sourceUrl: string;
@@ -210,7 +210,7 @@ export function registerBuildCommands(program: Command): void {
         splitBuildTarget(opts.target);
         const versionCode = opts.versionCode
           ? parseNonNegativeInteger(opts.versionCode, "--version-code")
-          : versionCodeFromVersion(opts.version);
+          : versionCodeFromVersion(opts.versionName);
         const rawSize = parseNonNegativeInteger(opts.rawSize, "--raw-size");
         const hasGzipHash = opts.gzipSha256 !== undefined;
         const hasGzipSize = opts.gzipSize !== undefined;
@@ -233,7 +233,7 @@ export function registerBuildCommands(program: Command): void {
           method: "POST",
           body: {
             channel_id: channelId,
-            version_name: opts.version,
+            version_name: opts.versionName,
             version_code: versionCode,
             target: opts.target,
             source_url: opts.sourceUrl,
