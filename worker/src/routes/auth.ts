@@ -533,9 +533,12 @@ export async function handleAuthMe(c: Context<{ Bindings: Env }>) {
   const bearerToken = authHeader?.startsWith("Bearer ")
     ? authHeader.slice("Bearer ".length).trim()
     : undefined;
+  // Accept the session cookie like every other authenticated route — agent
+  // integration sessions are cookie-based, and this route (the manifest's
+  // whoami/context_check) otherwise 401s for them.
   const sessionAccount = await loadAccountFromAuthToken(
     c.env,
-    bearerToken,
+    bearerToken ?? getCookie(c, SESSION_COOKIE),
   );
   if (!sessionAccount) {
     return c.json(
