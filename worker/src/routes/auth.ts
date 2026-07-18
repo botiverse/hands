@@ -780,6 +780,12 @@ export async function handleAgentManifest(c: Context<{ Bindings: Env }>) {
         endpoint: { method: "GET", path: "/api/agent/help" },
       },
       {
+        name: "whoami",
+        description:
+          "Return the caller's Hands account: account id, server identity, org and roles. Use the account id when asking an app admin for a membership grant.",
+        endpoint: { method: "GET", path: "/api/auth/me" },
+      },
+      {
         name: "list-orgs",
         description:
           "List every organization the current Raft identity can access across linked servers, including role and server identity.",
