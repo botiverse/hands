@@ -4,7 +4,7 @@
  * POST /api/apps/:appId/builds/:buildId/notarize      [publisher]
  * GET  /api/apps/:appId/notarizations/:submissionId    [viewer]
  *
- * Rewrite r4 (XX B0-B7):
+ * State-machine and ownership guarantees:
  *   B0: etagMatches (not etag); no build_id on asset; no undefined completed_at
  *   B1: DigestStream streaming SHA; second etagMatches GET → direct S3 PUT stream
  *   B2: Schema-valid SQL transitions only
@@ -22,11 +22,12 @@ import { AscApiError } from "../lib/asc_api";
 import type { AscApiCredentials } from "../lib/asc_api";
 import {
   createNotarySubmission,
+  listNotarySubmissions,
   getNotarySubmissionStatus,
   getNotarySubmissionLog,
   uploadArtifactToS3,
 } from "../lib/notary_api";
-import { createOperation, updateOperation } from "./operations";
+import { updateOperation } from "./operations";
 import { insertAuditLog } from "../lib/permissions";
 
 type AdminContext = Context<AdminEnv & { Bindings: Env }>;
@@ -55,6 +56,7 @@ const FILETYPE_CONTENT_TYPE: Record<string, string> = {
   zip: "application/zip",
   pkg: "application/octet-stream",
 };
+const MAX_NOTARY_LOG_BYTES = 1024 * 1024;
 
 // ──────────── Asset resolution (B6: discriminated) ────────────
 
@@ -64,6 +66,7 @@ interface NotaryAsset {
   file_hash: string;
   size_bytes: number;
   filetype: string;
+  platform: string;
 }
 
 type AssetResult =
@@ -73,17 +76,18 @@ type AssetResult =
 async function resolveNotaryAsset(db: D1Database, buildId: string, hintAssetId: string): Promise<AssetResult> {
   if (hintAssetId) {
     const asset = await db.prepare(
-      `SELECT id, r2_key, file_hash, size_bytes, filetype FROM build_assets
-       WHERE id = ?1 AND build_id = ?2 AND artifact_kind = 'installable'
-         AND platform = 'darwin'`,
+      `SELECT id, r2_key, file_hash, size_bytes, filetype, platform FROM build_assets
+       WHERE id = ?1 AND build_id = ?2 AND artifact_kind = 'installable'`,
     ).bind(hintAssetId, buildId).first<NotaryAsset>();
     if (!asset) return { ok: false, code: "ASSET_NOT_FOUND", status: 404, message: "asset not found for this build" };
+    if (asset.platform !== "darwin")
+      return { ok: false, code: "UNSUPPORTED_PLATFORM", status: 400, message: `platform '${asset.platform}' not supported (accepted: darwin)` };
     if (!["dmg", "zip", "pkg"].includes(asset.filetype))
       return { ok: false, code: ERR.UNSUPPORTED_FILETYPE, status: 400, message: `filetype '${asset.filetype}' not supported (accepted: dmg, zip, pkg)` };
     return { ok: true, asset };
   }
   const { results } = await db.prepare(
-    `SELECT id, r2_key, file_hash, size_bytes, filetype FROM build_assets
+    `SELECT id, r2_key, file_hash, size_bytes, filetype, platform FROM build_assets
      WHERE build_id = ?1 AND artifact_kind = 'installable'
        AND platform = 'darwin' AND filetype IN ('dmg','zip','pkg')`,
   ).bind(buildId).all<NotaryAsset>();
@@ -145,6 +149,10 @@ function classifyError(e: unknown, phase: string): { code: string; detail: strin
     if (e.status >= 500) return { code: ERR.APPLE_REQUEST_FAILED, detail: `${e.message} (${e.status})`, recoverable: true };
     return { code: ERR.APPLE_REQUEST_FAILED, detail: e.message, recoverable: false };
   }
+  if (e instanceof DOMException && e.name === "AbortError")
+    return { code: ERR.APPLE_REQUEST_FAILED, detail: `${phase}: request aborted`, recoverable: true };
+  if (e instanceof TypeError)
+    return { code: ERR.APPLE_REQUEST_FAILED, detail: `${phase}: ${e.message}`, recoverable: true };
   return { code: ERR.UNKNOWN, detail: e instanceof Error ? e.message : String(e), recoverable: false };
 }
 
@@ -185,13 +193,15 @@ export async function handleNotarize(c: AdminContext) {
   // Idempotency: find existing logical by (app_id, asset_id, computed_sha256).
   const existing = await c.env.DB.prepare(
     `SELECT n.id, n.state, n.ready_for_staple, n.active_attempt_id,
-            a.apple_submission_id, a.status_state as attempt_status
+            a.apple_submission_id, a.status_state as attempt_status,
+            a.reconcile_state, a.submission_name
      FROM app_notarizations n
      LEFT JOIN app_notarization_attempts a ON a.id = n.active_attempt_id
      WHERE n.app_id = ?1 AND n.asset_id = ?2 AND n.computed_sha256 = ?3`,
   ).bind(appId, asset.id, snapshot.computedSha).first<{
     id: string; state: string; ready_for_staple: number;
     active_attempt_id: string | null; apple_submission_id: string | null; attempt_status: string | null;
+    reconcile_state: string | null; submission_name: string | null;
   }>();
 
   if (existing) {
@@ -200,7 +210,13 @@ export async function handleNotarize(c: AdminContext) {
     }
     if (existing.active_attempt_id && existing.attempt_status &&
         ["pending", "in_progress"].includes(existing.attempt_status)) {
+      if (existing.reconcile_state === "needed" && existing.submission_name && !existing.apple_submission_id) {
+        return await reconcileSubmissionIntent(c, creds, existing.id, existing.active_attempt_id, existing.submission_name);
+      }
       return c.json({ notarization_id: existing.id, attempt_id: existing.active_attempt_id, submission_id: existing.apple_submission_id, state: "in_progress", ready_for_staple: false, idempotent: true });
+    }
+    if (existing.reconcile_state === "abandoned") {
+      return c.json({ notarization_id: existing.id, attempt_id: existing.active_attempt_id, state: "error", ready_for_staple: false, idempotent: true, code: ERR.UNKNOWN, note: "automatic retry blocked; operator action required" }, 409);
     }
     // Terminal non-accepted → new attempt on same logical.
     return await startNewAttempt(c, creds, appId, existing.id, asset, b.version_name, snapshot);
@@ -222,13 +238,15 @@ export async function handleNotarize(c: AdminContext) {
     // UNIQUE race — reread winner and route through same start-or-return-active flow.
     const winner = await c.env.DB.prepare(
       `SELECT n.id, n.state, n.ready_for_staple, n.active_attempt_id,
-              a.apple_submission_id, a.status_state as attempt_status
+              a.apple_submission_id, a.status_state as attempt_status,
+              a.reconcile_state, a.submission_name
        FROM app_notarizations n
        LEFT JOIN app_notarization_attempts a ON a.id = n.active_attempt_id
        WHERE n.app_id = ?1 AND n.asset_id = ?2 AND n.computed_sha256 = ?3`,
     ).bind(appId, asset.id, snapshot.computedSha).first<{
       id: string; state: string; ready_for_staple: number;
       active_attempt_id: string | null; apple_submission_id: string | null; attempt_status: string | null;
+      reconcile_state: string | null; submission_name: string | null;
     }>();
     if (winner) {
       // Return same shape as idempotency check above.
@@ -236,7 +254,13 @@ export async function handleNotarize(c: AdminContext) {
         return c.json({ notarization_id: winner.id, submission_id: winner.apple_submission_id, state: "accepted", ready_for_staple: winner.ready_for_staple === 1, idempotent: true, note: "concurrent create resolved" });
       }
       if (winner.active_attempt_id && winner.attempt_status && ["pending", "in_progress"].includes(winner.attempt_status)) {
+        if (winner.reconcile_state === "needed" && winner.submission_name && !winner.apple_submission_id) {
+          return await reconcileSubmissionIntent(c, creds, winner.id, winner.active_attempt_id, winner.submission_name);
+        }
         return c.json({ notarization_id: winner.id, attempt_id: winner.active_attempt_id, submission_id: winner.apple_submission_id, state: "in_progress", ready_for_staple: false, idempotent: true, note: "concurrent create resolved" });
+      }
+      if (winner.reconcile_state === "abandoned") {
+        return c.json({ notarization_id: winner.id, attempt_id: winner.active_attempt_id, state: "error", ready_for_staple: false, idempotent: true, code: ERR.UNKNOWN, note: "automatic retry blocked; operator action required" }, 409);
       }
       // Terminal non-accepted — start new attempt on the winner logical.
       return await startNewAttempt(c, creds, appId, winner.id, asset, b.version_name, snapshot);
@@ -260,23 +284,31 @@ async function startNewAttempt(
 ) {
   const now = Date.now();
   const attemptId = crypto.randomUUID();
+  const submissionName = `${versionName}-${asset.filetype}-${snapshot.computedSha.slice(0, 12)}-${attemptId}.${asset.filetype}`;
 
   // ── CAS: transactional batch — conditional INSERT + guarded active-pointer UPDATE ──
-  // XX correction: attempt_no computed INSIDE the batch (subquery), not outside.
-  // XX correction: operation/audit created AFTER ownership proven (below).
+  // attempt_no is computed INSIDE the transaction, not from a stale pre-read.
+  // Operation/audit/link are part of the same ownership transaction.
   // Conditional INSERT ... SELECT creates candidate ONLY when slot is empty/terminal.
   // Loser has no candidate row → reread winner. No orphan rows.
 
-  // Batch: [0] conditional INSERT candidate (attempt_no via subquery), [1] guarded active-pointer UPDATE.
-  // operation_id is NULL initially; set after ownership proven.
+  const operationId = crypto.randomUUID();
+  const auditId = crypto.randomUUID();
+  const actor = currentActor(c);
+  const operationInput = JSON.stringify({ logical_id: logicalId, asset_id: asset.id, sha: snapshot.computedSha });
+  const auditPayload = JSON.stringify({ logical_id: logicalId, asset_id: asset.id, sha: snapshot.computedSha });
+
+  // Batch: candidate attempt + operation + audit + operation link + active pointer.
+  // Every dependent INSERT/UPDATE is conditional on this candidate attempt existing,
+  // so a CAS loser creates no attempt, operation, audit, or link.
   const batchResults = await c.env.DB.batch([
     c.env.DB.prepare(
       `INSERT INTO app_notarization_attempts
-         (id, notarization_id, app_id, attempt_no, operation_id,
+         (id, notarization_id, app_id, attempt_no, operation_id, submission_name,
           upload_state, status_state, reconcile_state, created_at)
        SELECT ?1, ?2, ?3,
               (SELECT COALESCE(MAX(attempt_no), 0) + 1 FROM app_notarization_attempts WHERE notarization_id = ?2),
-              NULL, 'pending', 'pending', 'none', ?4
+              NULL, ?4, 'pending', 'pending', 'none', ?5
        WHERE EXISTS (
          SELECT 1 FROM app_notarizations n
          WHERE n.id = ?2 AND (
@@ -287,7 +319,24 @@ async function startNewAttempt(
            )
          )
        )`,
-    ).bind(attemptId, logicalId, appId, now),
+    ).bind(attemptId, logicalId, appId, submissionName, now),
+    c.env.DB.prepare(
+      `INSERT INTO operation_logs
+         (id, app_id, kind, status, parent_op_id, step_number, actor,
+          input, output, error, progress, retry_count, created_at, updated_at, completed_at)
+       SELECT ?1, ?2, 'notarize', 'in_progress', NULL, NULL, ?3,
+              ?4, '{}', NULL, 10, 0, ?5, ?5, NULL
+       WHERE EXISTS (SELECT 1 FROM app_notarization_attempts WHERE id = ?6)`,
+    ).bind(operationId, appId, actor, operationInput, now, attemptId),
+    c.env.DB.prepare(
+      `INSERT INTO audit_logs (id, app_id, action, actor, payload, created_at)
+       SELECT ?1, ?2, 'notarize.start', ?3, ?4, ?5
+       WHERE EXISTS (SELECT 1 FROM app_notarization_attempts WHERE id = ?6)`,
+    ).bind(auditId, appId, actor, auditPayload, now, attemptId),
+    c.env.DB.prepare(
+      `UPDATE app_notarization_attempts SET operation_id = ?1
+       WHERE id = ?2`,
+    ).bind(operationId, attemptId),
     c.env.DB.prepare(
       `UPDATE app_notarizations
        SET active_attempt_id = ?1, state = 'in_progress', updated_at = ?2
@@ -332,23 +381,6 @@ async function startNewAttempt(
     return c.json({ error: "CAS verification failed", code: "CONCURRENT" }, 409);
   }
 
-  // ── Ownership proven — NOW create operation + audit (XX correction) ──
-  const op = await createOperation(c.env.DB, {
-    app_id: appId, kind: "notarize", actor: currentActor(c),
-    input: JSON.stringify({ logical_id: logicalId, asset_id: asset.id, sha: snapshot.computedSha }),
-  });
-  await insertAuditLog(c.env.DB, c, {
-    app_id: appId, action: "notarize.start",
-    payload: { logical_id: logicalId, asset_id: asset.id, sha: snapshot.computedSha },
-  });
-
-  // Link operation to attempt.
-  await c.env.DB.prepare(
-    `UPDATE app_notarization_attempts SET operation_id = ?1 WHERE id = ?2`,
-  ).bind(op.id, attemptId).run();
-
-  await updateOperation(c.env.DB, op.id, { status: "in_progress", progress: 10 });
-
   // ── Phase: create_submission (B1: external mutation boundary) ──
   // B1 fix: if createNotarySubmission fails with recoverable error (5xx/timeout),
   // Apple may have accepted the submission but we lost the response.
@@ -358,40 +390,47 @@ async function startNewAttempt(
   // We never create a second submission while outcome is uncertain.
   let submissionAttrs: { awsAccessKeyId: string; awsSecretAccessKey: string; awsSessionToken: string; bucket: string; object: string };
   let appleSubmissionId: string;
+  let createResponse: Awaited<ReturnType<typeof createNotarySubmission>>;
   try {
-    const submissionName = `${versionName}-${asset.filetype}-${snapshot.computedSha.slice(0, 12)}.${asset.filetype}`;
-    const resp = await createNotarySubmission(creds, { submissionName, sha256: snapshot.computedSha });
-    // Validate response shape before persisting.
-    if (!resp?.data?.id || !resp?.data?.attributes?.bucket) {
-      throw new Error("invalid Apple submission response: missing id or attributes");
-    }
-    appleSubmissionId = resp.data.id;
-    submissionAttrs = resp.data.attributes;
-
-    // Persist submission_id IMMEDIATELY after validated response (B1).
-    await c.env.DB.prepare(
-      `UPDATE app_notarization_attempts
-       SET apple_submission_id = ?1, upload_state = 'uploading', submitted_at = ?2
-       WHERE id = ?3`,
-    ).bind(appleSubmissionId, Date.now(), attemptId).run();
-    await updateOperation(c.env.DB, op.id, { progress: 30 });
+    createResponse = await createNotarySubmission(creds, { submissionName, sha256: snapshot.computedSha });
   } catch (e) {
     const { code, detail, recoverable } = classifyError(e, "create_submission");
     if (recoverable) {
-      // B1: uncertain outcome — Apple may have created the submission.
-      // Mark upload_uncertain + reconcile. Never create a second submission.
       await c.env.DB.prepare(
         `UPDATE app_notarization_attempts
          SET upload_state = 'upload_uncertain', error_class = ?1, error_detail = ?2,
              error_phase = 'create_submission', reconcile_state = 'needed'
          WHERE id = ?3`,
       ).bind(code, detail, attemptId).run();
-      await updateOperation(c.env.DB, op.id, { status: "failed", error: JSON.stringify({ code, detail, note: "uncertain create outcome — needs reconcile" }), completed_at: Date.now() });
+      await updateOperation(c.env.DB, operationId, { status: "failed", error: JSON.stringify({ code, detail, note: "uncertain create outcome — needs reconcile" }), completed_at: Date.now() });
       return c.json({ notarization_id: logicalId, attempt_id: attemptId, ok: false, code: ERR.UPLOAD_UNCERTAIN, detail, note: "submission create uncertain — needs reconcile" }, 502);
     }
     await markError(c.env.DB, attemptId, code, detail, "create_submission", false);
-    await updateOperation(c.env.DB, op.id, { status: "failed", error: JSON.stringify({ code, detail }), completed_at: Date.now() });
     return c.json({ notarization_id: logicalId, attempt_id: attemptId, ok: false, code, detail }, 502);
+  }
+
+  const attrs = createResponse?.data?.attributes;
+  const responseId = createResponse?.data?.id;
+  if (!responseId || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(responseId) ||
+      !attrs || !attrs.awsAccessKeyId || !attrs.awsSecretAccessKey || !attrs.awsSessionToken || !attrs.bucket || !attrs.object) {
+    await markError(c.env.DB, attemptId, ERR.UNKNOWN, "invalid Apple submission response shape", "create_submission", false);
+    return c.json({ notarization_id: logicalId, attempt_id: attemptId, ok: false, code: ERR.UNKNOWN, detail: "invalid Apple submission response shape" }, 502);
+  }
+  appleSubmissionId = responseId;
+  submissionAttrs = attrs;
+
+  try {
+    await c.env.DB.prepare(
+      `UPDATE app_notarization_attempts
+       SET apple_submission_id = ?1, upload_state = 'uploading', submitted_at = ?2
+       WHERE id = ?3`,
+    ).bind(appleSubmissionId, Date.now(), attemptId).run();
+    await updateOperation(c.env.DB, operationId, { progress: 30 });
+  } catch (e) {
+    // The external ID is known even if D1 failed. The durable submission_name
+    // lets the next POST reconcile the same Apple mutation before any retry.
+    const detail = e instanceof Error ? e.message : String(e);
+    return c.json({ notarization_id: logicalId, attempt_id: attemptId, submission_id: appleSubmissionId, ok: false, code: ERR.UPLOAD_UNCERTAIN, detail, note: "Apple submission created; ledger persistence needs reconcile" }, 503);
   }
 
   // ── Phase: s3_upload (second etagMatches GET → direct PUT stream, matrix 1.8) ──
@@ -415,7 +454,7 @@ async function startNewAttempt(
        SET upload_state = 'uploaded', s3_receipt_etag = ?1, uploaded_at = ?2
        WHERE id = ?3`,
     ).bind(uploadResult.etag, Date.now(), attemptId).run();
-    await updateOperation(c.env.DB, op.id, { progress: 50 });
+    await updateOperation(c.env.DB, operationId, { progress: 50 });
   } catch (e) {
     const isSnapshot = e instanceof SnapshotError;
     // B7: distinguish deterministic failure from uncertainty.
@@ -433,7 +472,7 @@ async function startNewAttempt(
            reconcile_state = 'needed'
        WHERE id = ?4`,
     ).bind(uploadState, code, detail, attemptId).run();
-    await updateOperation(c.env.DB, op.id, { status: "failed", error: JSON.stringify({ code, detail }), completed_at: Date.now() });
+    await updateOperation(c.env.DB, operationId, { status: "failed", error: JSON.stringify({ code, detail }), completed_at: Date.now() });
     return c.json({ notarization_id: logicalId, attempt_id: attemptId, submission_id: appleSubmissionId, ok: false, code, detail, note: "submission created; upload needs reconcile" }, 502);
   }
 
@@ -465,7 +504,7 @@ async function startNewAttempt(
 
     const terminalState = rawStatus === "Invalid" ? "invalid" : "rejected";
     await setAttemptStatus(c.env.DB, attemptId, logicalId, terminalState);
-    await updateOperation(c.env.DB, op.id, { status: "success", completed_at: Date.now() });
+    await completeTerminalOperation(c.env.DB, attemptId, terminalState, now);
     return c.json({ notarization_id: logicalId, attempt_id: attemptId, submission_id: appleSubmissionId, state: terminalState, ready_for_staple: false });
   } catch (e) {
     const { code, detail, recoverable } = classifyError(e, "status_poll");
@@ -477,6 +516,62 @@ async function startNewAttempt(
     }
     await markError(c.env.DB, attemptId, code, detail, "status_poll", false);
     return c.json({ notarization_id: logicalId, attempt_id: attemptId, ok: false, code, detail }, 502);
+  }
+}
+
+async function reconcileSubmissionIntent(
+  c: AdminContext,
+  creds: AscApiCredentials,
+  logicalId: string,
+  attemptId: string,
+  submissionName: string,
+) {
+  try {
+    const previous = await listNotarySubmissions(creds);
+    const matches = Array.isArray(previous?.data)
+      ? previous.data.filter((item) =>
+          item && typeof item.id === "string" &&
+          item.attributes && item.attributes.name === submissionName)
+      : [];
+
+    if (matches.length > 1) {
+      await markError(c.env.DB, attemptId, ERR.UNKNOWN,
+        `multiple Apple submissions matched durable intent '${submissionName}'`,
+        "create_submission", false);
+      return c.json({ notarization_id: logicalId, attempt_id: attemptId, state: "error", code: ERR.UNKNOWN, note: "ambiguous external reconciliation; operator action required" }, 409);
+    }
+
+    const match = matches[0];
+    if (!match) {
+      return c.json({ notarization_id: logicalId, attempt_id: attemptId, state: "in_progress", code: ERR.UPLOAD_UNCERTAIN, ready_for_staple: false, idempotent: true, note: "external create outcome still uncertain; retry remains blocked" }, 202);
+    }
+
+    const now = Date.now();
+    await c.env.DB.batch([
+      c.env.DB.prepare(
+        `UPDATE app_notarization_attempts
+         SET apple_submission_id = ?1, raw_apple_status = ?2,
+             status_state = 'error', upload_state = 'upload_uncertain',
+             error_class = ?3, error_phase = 'create_submission',
+             error_detail = 'Apple submission recovered by durable intent; temporary upload credentials are no longer available',
+             reconcile_state = 'abandoned', completed_at = ?4
+         WHERE id = ?5 AND apple_submission_id IS NULL`,
+      ).bind(match.id, match.attributes.status ?? null, ERR.UPLOAD_UNCERTAIN, now, attemptId),
+      c.env.DB.prepare(
+        `UPDATE app_notarizations
+         SET state = 'error', completed_at = ?1, updated_at = ?1
+         WHERE id = ?2 AND active_attempt_id = ?3`,
+      ).bind(now, logicalId, attemptId),
+      terminalOperationStatement(c.env.DB, attemptId, "error", now, ERR.UPLOAD_UNCERTAIN),
+    ]);
+    return c.json({ notarization_id: logicalId, attempt_id: attemptId, submission_id: match.id, state: "error", code: ERR.UPLOAD_UNCERTAIN, ready_for_staple: false, idempotent: true, note: "external submission recovered; automatic retry blocked pending operator action" }, 409);
+  } catch (e) {
+    const { code, detail, recoverable } = classifyError(e, "create_submission");
+    if (recoverable) {
+      return c.json({ notarization_id: logicalId, attempt_id: attemptId, state: "in_progress", code, ready_for_staple: false, idempotent: true, note: "reconciliation lookup transient; retry remains blocked" }, 502);
+    }
+    await markError(c.env.DB, attemptId, code, detail, "create_submission", false);
+    return c.json({ notarization_id: logicalId, attempt_id: attemptId, state: "error", code, ready_for_staple: false }, 502);
   }
 }
 
@@ -557,32 +652,51 @@ export async function handleNotarizationStatus(c: AdminContext) {
     // Invalid/Rejected — parse 7000 for classification (B4: 5.3/5.4 distinct).
     const terminalState = rawStatus === "Invalid" ? "invalid" : "rejected";
     let errorClass: string | null = null;
+    let retainedLog: { key: string; size: number } | null = null;
     if (rawStatus === "Rejected") {
       try {
-        const { log } = await getNotarySubmissionLog(creds, row.apple_submission_id);
+        const { log, rawText } = await getNotarySubmissionLog(creds, row.apple_submission_id);
+        retainedLog = await retainNotaryLog(c.env, row.id, row.apple_submission_id, rawText);
         // B5: structured parse of Apple log issues — not string includes.
         // Error code 7000 = team not configured for notarization.
         const issues = Array.isArray(log.issues) ? log.issues : [];
-        const has7000 = issues.some(
-          (i: { severity?: string; message?: string; code?: number }) =>
-            i.code === 7000 ||
-            (typeof i.message === "string" && (
-              i.message.includes("notarization is not enabled") ||
-              i.message.includes("team has not been configured")
-            ))
-        );
+        const has7000 = issues.some((i: unknown) => {
+          if (!i || typeof i !== "object") return false;
+          const code = (i as Record<string, unknown>).code;
+          return code === 7000 || code === "7000";
+        });
         errorClass = has7000 ? ERR.TEAM_NOT_CONFIGURED : null;
-      } catch { /* log fetch failed — classification deferred */ }
+      } catch (logErr) {
+        const classified = classifyError(logErr, "log_fetch");
+        if (classified.recoverable) {
+          await c.env.DB.prepare(
+            `UPDATE app_notarization_attempts
+             SET status_state = 'in_progress', raw_apple_status = 'Rejected',
+                 error_class = ?1, error_phase = 'log_fetch', error_detail = ?2,
+                 reconcile_state = 'needed', completed_at = NULL
+             WHERE id = ?3`,
+          ).bind(classified.code, classified.detail, row.id).run();
+          return c.json({ notarization_id: row.notarization_id, state: "in_progress", ready_for_staple: false, code: classified.code, note: "rejected log fetch transient, will reconcile" }, 502);
+        }
+        await markError(c.env.DB, row.id, classified.code, classified.detail, "log_fetch", false);
+        return c.json({ notarization_id: row.notarization_id, state: "error", ready_for_staple: false, code: classified.code }, 502);
+      }
     }
 
     // Atomic D1 batch (B7): attempt + logical (CAS: only active attempt).
     await c.env.DB.batch([
       c.env.DB.prepare(
-        `UPDATE app_notarization_attempts SET status_state = ?1, completed_at = ?2, error_class = ?3, error_phase = CASE WHEN ?3 IS NOT NULL THEN 'status_poll' ELSE error_phase END WHERE id = ?4`,
-      ).bind(terminalState, now, errorClass, row.id),
+        `UPDATE app_notarization_attempts
+         SET status_state = ?1, completed_at = ?2, error_class = ?3,
+             error_phase = CASE WHEN ?3 IS NOT NULL THEN 'status_poll' ELSE error_phase END,
+             log_r2_key = ?4, log_size_bytes = ?5,
+             log_retained_at = CASE WHEN ?4 IS NOT NULL THEN ?2 ELSE NULL END
+         WHERE id = ?6`,
+      ).bind(terminalState, now, errorClass, retainedLog?.key ?? null, retainedLog?.size ?? null, row.id),
       c.env.DB.prepare(
         `UPDATE app_notarizations SET state = ?1, completed_at = ?2 WHERE id = ?3 AND active_attempt_id = ?4`,
       ).bind(terminalState, now, row.notarization_id, row.id),
+      terminalOperationStatement(c.env.DB, row.id, terminalState, now, errorClass),
     ]);
 
     return c.json({ notarization_id: row.notarization_id, state: terminalState, ready_for_staple: false, code: errorClass });
@@ -604,19 +718,26 @@ export async function handleNotarizationStatus(c: AdminContext) {
 async function handleAcceptedClosure(c: AdminContext, creds: AscApiCredentials, row: AttemptRow, now: number) {
   let logSha: string | null = null;
   let logJobId: string | null = null;
+  let retainedLog: { key: string; size: number } | null = null;
   try {
-    const { log } = await getNotarySubmissionLog(creds, row.apple_submission_id!);
+    const { log, rawText } = await getNotarySubmissionLog(creds, row.apple_submission_id!);
+    retainedLog = await retainNotaryLog(c.env, row.id, row.apple_submission_id!, rawText);
     logSha = log.sha256 ?? null;
     logJobId = log.jobId ?? null;
   } catch (logErr) {
     // B5: preserve typed error semantics instead of generic "log pending".
     const { code, detail, recoverable } = classifyError(logErr, "log_fetch");
     if (recoverable) {
-      // Transient log fetch failure — stay accepted, not ready, reconcile.
+      // Apple is Accepted, but normalized state remains in_progress until the
+      // developer log completes the binding closure (migration C9.4).
       await c.env.DB.prepare(
-        `UPDATE app_notarization_attempts SET status_state = 'accepted', error_class = ?1, error_phase = 'log_fetch', error_detail = ?2, reconcile_state = 'needed' WHERE id = ?3`,
+        `UPDATE app_notarization_attempts
+         SET status_state = 'in_progress', raw_apple_status = 'Accepted',
+             error_class = ?1, error_phase = 'log_fetch', error_detail = ?2,
+             reconcile_state = 'needed', completed_at = NULL
+         WHERE id = ?3`,
       ).bind(code, detail, row.id).run();
-      return c.json({ notarization_id: row.notarization_id, state: "accepted", ready_for_staple: false, note: "log fetch transient, will reconcile" });
+      return c.json({ notarization_id: row.notarization_id, state: "in_progress", apple_status: "Accepted", ready_for_staple: false, note: "log fetch transient, will reconcile" }, 502);
     }
     // Non-recoverable (401/403) — typed error.
     await markError(c.env.DB, row.id, code, detail, "log_fetch", false);
@@ -639,10 +760,11 @@ async function handleAcceptedClosure(c: AdminContext, creds: AscApiCredentials, 
     c.env.DB.prepare(
       `UPDATE app_notarization_attempts
        SET status_state = 'accepted', log_fetched = 1, log_sha256 = ?1, log_job_id = ?2,
-           completed_at = ?3, error_class = NULL, error_detail = NULL, error_phase = NULL,
+           log_r2_key = ?3, log_size_bytes = ?4, log_retained_at = ?5,
+           completed_at = ?5, error_class = NULL, error_detail = NULL, error_phase = NULL,
            reconcile_state = 'reconciled'
-       WHERE id = ?4`,
-    ).bind(logSha, logJobId, now, row.id),
+       WHERE id = ?6`,
+    ).bind(logSha, logJobId, retainedLog!.key, retainedLog!.size, now, row.id),
     c.env.DB.prepare(
       `UPDATE app_notarizations
        SET state = 'accepted', ready_for_staple = 1, apple_log_sha256 = ?1, apple_log_job_id = ?2, completed_at = ?3
@@ -650,8 +772,9 @@ async function handleAcceptedClosure(c: AdminContext, creds: AscApiCredentials, 
     ).bind(logSha, logJobId, now, row.notarization_id, row.id),
     // B6: complete operation as faithful projection of attempt state.
     c.env.DB.prepare(
-      `UPDATE operation_logs SET status = 'success', progress = 100, completed_at = ?1,
-           output = json_set(COALESCE(output, '{}'), '$.ready_for_staple', true, '$.log_sha256', ?2)
+      `UPDATE operation_logs SET status = 'success', progress = 100, completed_at = ?1, updated_at = ?1,
+           output = json_set(COALESCE(output, '{}'), '$.ready_for_staple', json('true'), '$.log_sha256', ?2),
+           error = NULL
        WHERE id = (SELECT operation_id FROM app_notarization_attempts WHERE id = ?3)`,
     ).bind(now, logSha, row.id),
   ]);
@@ -660,6 +783,52 @@ async function handleAcceptedClosure(c: AdminContext, creds: AscApiCredentials, 
     notarization_id: row.notarization_id, attempt_id: row.id,
     submission_id: row.apple_submission_id, state: "accepted",
     ready_for_staple: true, log_sha256: logSha, source_sha256: row.computed_sha256,
+  });
+}
+
+async function retainNotaryLog(
+  env: Env,
+  attemptId: string,
+  submissionId: string,
+  rawText: string,
+): Promise<{ key: string; size: number }> {
+  const bytes = new TextEncoder().encode(rawText);
+  if (bytes.byteLength === 0 || bytes.byteLength > MAX_NOTARY_LOG_BYTES) {
+    throw new AscApiError(502, `notary developer log size ${bytes.byteLength} exceeds retention limit`);
+  }
+  const key = `private/notary-logs/${attemptId}/${submissionId}.json`;
+  await env.APK_BUCKET.put(key, bytes, {
+    httpMetadata: { contentType: "application/json" },
+    customMetadata: { attempt_id: attemptId, submission_id: submissionId },
+  });
+  return { key, size: bytes.byteLength };
+}
+
+export async function handleNotarizationLog(c: AdminContext) {
+  const appId = c.req.param("appId") ?? "";
+  const submissionIdParam = c.req.param("submissionId") ?? "";
+  const row = await c.env.DB.prepare(
+    `SELECT a.id, a.apple_submission_id, a.log_r2_key, a.log_size_bytes
+     FROM app_notarization_attempts a
+     WHERE a.app_id = ?1 AND (a.id = ?2 OR a.apple_submission_id = ?2)
+     LIMIT 1`,
+  ).bind(appId, submissionIdParam).first<{
+    id: string; apple_submission_id: string | null; log_r2_key: string | null; log_size_bytes: number | null;
+  }>();
+  if (!row) return c.json({ error: "notarization not found" }, 404);
+  if (!row.log_r2_key) return c.json({ error: "developer log not retained yet" }, 404);
+
+  const object = await c.env.APK_BUCKET.get(row.log_r2_key);
+  if (!object || !("body" in object) || !object.body) return c.json({ error: "retained developer log missing" }, 500);
+  const rawText = await object.text();
+  await insertAuditLog(c.env.DB, c, {
+    app_id: appId,
+    action: "notarize.log.view",
+    payload: { attempt_id: row.id, submission_id: row.apple_submission_id, size_bytes: row.log_size_bytes },
+  });
+  return new Response(rawText, {
+    status: 200,
+    headers: { "content-type": "application/json; charset=utf-8", "cache-control": "private, no-store" },
   });
 }
 
@@ -704,8 +873,51 @@ async function markError(
       `UPDATE app_notarization_attempts SET error_class = ?1, error_detail = ?2, error_phase = ?3, reconcile_state = 'needed' WHERE id = ?4`,
     ).bind(code, detail, phase, attemptId).run();
   } else {
-    await db.prepare(
-      `UPDATE app_notarization_attempts SET status_state = 'error', error_class = ?1, error_detail = ?2, error_phase = ?3, log_sha256 = ?4, log_job_id = ?5, completed_at = ?6 WHERE id = ?7`,
-    ).bind(code, detail, phase, logSha, logJobId, now, attemptId).run();
+    await db.batch([
+      db.prepare(
+        `UPDATE app_notarization_attempts
+         SET status_state = 'error', error_class = ?1, error_detail = ?2,
+             error_phase = ?3, log_sha256 = ?4, log_job_id = ?5,
+             reconcile_state = 'abandoned', completed_at = ?6
+         WHERE id = ?7`,
+      ).bind(code, detail, phase, logSha, logJobId, now, attemptId),
+      db.prepare(
+        `UPDATE app_notarizations
+         SET state = 'error', ready_for_staple = 0, completed_at = ?1, updated_at = ?1
+         WHERE active_attempt_id = ?2`,
+      ).bind(now, attemptId),
+      db.prepare(
+        `UPDATE operation_logs
+         SET status = 'failed', progress = 100, error = ?1,
+             completed_at = ?2, updated_at = ?2
+         WHERE id = (SELECT operation_id FROM app_notarization_attempts WHERE id = ?3)`,
+      ).bind(JSON.stringify({ code, detail, phase }), now, attemptId),
+    ]);
   }
+}
+
+function terminalOperationStatement(
+  db: D1Database,
+  attemptId: string,
+  state: string,
+  now: number,
+  errorClass: string | null = null,
+): D1PreparedStatement {
+  const failed = state === "error";
+  return db.prepare(
+    `UPDATE operation_logs
+     SET status = ?1, progress = 100, output = ?2, error = ?3,
+         completed_at = ?4, updated_at = ?4
+     WHERE id = (SELECT operation_id FROM app_notarization_attempts WHERE id = ?5)`,
+  ).bind(
+    failed ? "failed" : "success",
+    JSON.stringify({ state, ready_for_staple: false, code: errorClass }),
+    failed ? JSON.stringify({ code: errorClass ?? ERR.UNKNOWN }) : null,
+    now,
+    attemptId,
+  );
+}
+
+async function completeTerminalOperation(db: D1Database, attemptId: string, state: string, now: number): Promise<void> {
+  await terminalOperationStatement(db, attemptId, state, now).run();
 }

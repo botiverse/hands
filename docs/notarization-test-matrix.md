@@ -1,6 +1,6 @@
-# Notarization Lane — Test Matrix (merge minimum, per XX control-plane review)
+# Notarization Lane — Test Matrix (merge minimum)
 
-Revision 4 (2026-07-18): 59 cases. Incorporates XX r3+r4 corrections.
+Revision 4 (2026-07-18): 59 cases covering state, ownership, retry, and closure constraints.
 
 ## C1: source = asset snapshot + ETag conditional read (9)
 
@@ -83,7 +83,7 @@ Revision 4 (2026-07-18): 59 cases. Incorporates XX r3+r4 corrections.
 ---
 **Total: 43** (9+9+5+8+6+3+3)
 
-## C8: XX-demonstrated bypass negative tests (12 — r3+r4)
+## C8: Constraint-bypass negative tests (12)
 
 | # | Test | r2/3 bug | fix |
 |---|------|--------|-----|

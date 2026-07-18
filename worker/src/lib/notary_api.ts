@@ -101,6 +101,11 @@ export interface NotarySubmissionStatusResponse {
   };
 }
 
+export interface NotarySubmissionListResponse {
+  data: Array<NotarySubmissionStatusResponse["data"]>;
+  meta?: Record<string, unknown>;
+}
+
 export interface NotaryLogUrlResponse {
   data: {
     id: string;
@@ -115,7 +120,7 @@ export interface NotaryLogUrlResponse {
 export interface NotaryLogJson {
   sha256?: string;   // artifact hash for binding verification
   jobId?: string;    // must match submission id
-  issues?: Array<{ severity: string; message: string }>;
+  issues?: Array<{ severity?: string; message?: string; code?: number | string }>;
   [key: string]: unknown;
 }
 
@@ -146,10 +151,16 @@ export async function getNotarySubmissionStatus(
   );
 }
 
+export async function listNotarySubmissions(
+  creds: AscApiCredentials,
+): Promise<NotarySubmissionListResponse> {
+  return notaryRequest<NotarySubmissionListResponse>(creds, "GET", "/submissions");
+}
+
 export async function getNotarySubmissionLog(
   creds: AscApiCredentials,
   submissionId: string,
-): Promise<{ log: NotaryLogJson }> {
+): Promise<{ log: NotaryLogJson; rawText: string }> {
   validateSubmissionId(submissionId);
   const logResp = await notaryRequest<NotaryLogUrlResponse>(
     creds, "GET", `/submissions/${submissionId}/logs`,
@@ -162,10 +173,16 @@ export async function getNotarySubmissionLog(
       `failed to fetch notary log JSON (${logFetch.status})`,
     );
   }
-  const log = (await logFetch.json()) as NotaryLogJson;
+  const rawText = await logFetch.text();
+  let log: NotaryLogJson;
+  try {
+    log = JSON.parse(rawText) as NotaryLogJson;
+  } catch {
+    throw new AscApiError(502, "notary developer log is not valid JSON");
+  }
   // Return only the parsed log — developerLogUrl is short-lived and must not
   // leak into D1/operation output/audit/API response (B7).
-  return { log };
+  return { log, rawText };
 }
 
 /**

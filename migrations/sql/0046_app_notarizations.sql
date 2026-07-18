@@ -1,7 +1,7 @@
 -- Migration 0046: app_notarizations + app_notarization_attempts
 -- Broker-only notarization lane (platform feature).
 --
--- Revision 4 (2026-07-18): addresses XX r3 CHANGES REQUIRED:
+-- Revision 4 (2026-07-18): tightens state and ownership constraints:
 --   B4-fix: error_class CHECK no longer tautological — non-NULL requires concrete error condition
 --   B4-fix: attempt identity fields (id/notarization_id/app_id/attempt_no) immutable after INSERT
 --   B3-fix: direct DELETE of non-ready attempt rejected while parent exists
@@ -69,6 +69,7 @@ CREATE TABLE IF NOT EXISTS app_notarization_attempts (
   attempt_no            INTEGER NOT NULL,
   operation_id          TEXT REFERENCES operation_logs(id) ON DELETE SET NULL,
 
+  submission_name       TEXT NOT NULL,
   apple_submission_id   TEXT UNIQUE,
 
   upload_state          TEXT NOT NULL DEFAULT 'pending'
@@ -99,6 +100,9 @@ CREATE TABLE IF NOT EXISTS app_notarization_attempts (
   log_fetched           INTEGER NOT NULL DEFAULT 0 CHECK (log_fetched in (0,1)),
   log_sha256            TEXT,
   log_job_id            TEXT,
+  log_r2_key            TEXT,
+  log_size_bytes        INTEGER,
+  log_retained_at       INTEGER,
 
   created_at            INTEGER NOT NULL,
   submitted_at          INTEGER,
@@ -108,6 +112,9 @@ CREATE TABLE IF NOT EXISTS app_notarization_attempts (
   UNIQUE (notarization_id, attempt_no),
 
   CHECK (log_sha256 IS NULL OR (length(log_sha256) = 64 AND log_sha256 NOT GLOB '*[^0-9a-f]*')),
+  CHECK (length(submission_name) > 0),
+  CHECK ((log_r2_key IS NULL AND log_size_bytes IS NULL AND log_retained_at IS NULL) OR
+         (log_r2_key IS NOT NULL AND length(log_r2_key) > 0 AND log_size_bytes > 0 AND log_retained_at IS NOT NULL)),
 
   CHECK (
     (log_fetched = 0) OR
