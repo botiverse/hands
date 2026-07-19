@@ -88,6 +88,8 @@ import { handleSessionEvent, handleReleaseHealth } from "./routes/sessions";
 import {
   handlePublicAppHistory,
   handlePublicAppHistoryDownload,
+  handlePublicLatestReleaseDownload,
+  handlePublicLatestReleaseLanding,
   handlePublicReleaseNotes,
   handlePublicReleaseNotesJson,
 } from "./routes/history";
@@ -533,6 +535,8 @@ app.post("/public/v2/apps/:slug/feedback/presign", handlePresignFeedbackAttachme
 app.get("/public/apps/:slug/icon", handlePublicAppIcon);
 app.get("/apps/:slug/history", handlePublicAppHistory);
 app.get("/apps/:slug/history/:releaseId/download", handlePublicAppHistoryDownload);
+app.get("/apps/:slug/latest", handlePublicLatestReleaseLanding);
+app.get("/apps/:slug/latest/download", handlePublicLatestReleaseDownload);
 app.get("/notes/:slug", handlePublicReleaseNotes);
 app.get("/api/invites/:token", handleGetInvite);
 

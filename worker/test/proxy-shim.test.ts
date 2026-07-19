@@ -54,6 +54,8 @@ describe("proxy-shim isMachinePath", () => {
   it("proxies /apps history JSON + download, redirects bare SPA route", () => {
     expect(isMachinePath("/apps/raft-android/history")).toBe(true);
     expect(isMachinePath("/apps/raft-android/history/rel-id/download")).toBe(true);
+    expect(isMachinePath("/apps/raft-android/latest")).toBe(true);
+    expect(isMachinePath("/apps/raft-android/latest/download")).toBe(true);
     // bare admin SPA route -> human -> redirect
     expect(isMachinePath("/apps/raft-android")).toBe(false);
   });

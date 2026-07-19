@@ -521,6 +521,36 @@ export function registerPublicRoutes(registry: OpenApiRegistry) {
 
   register(registry, {
     method: "get",
+    path: "/apps/{slug}/latest",
+    tags: ["Public pages"],
+    summary: "Render the latest active release landing page",
+    request: {
+      params: SlugParam,
+      query: z.object({ channel: z.string().optional(), lang: z.string().optional() }),
+    },
+    responses: {
+      200: { description: "Latest release landing page HTML.", content: html() },
+      404: error("App history is private or no active release exists."),
+    },
+  });
+
+  register(registry, {
+    method: "get",
+    path: "/apps/{slug}/latest/download",
+    tags: ["Public downloads"],
+    summary: "Download the latest active release artifact",
+    request: {
+      params: SlugParam,
+      query: z.object({ channel: z.string().optional() }),
+    },
+    responses: {
+      302: { description: "Redirects to a signed latest-release artifact URL." },
+      404: error("App history is private or no active release exists."),
+    },
+  });
+
+  register(registry, {
+    method: "get",
     path: "/apps/{slug}/history",
     tags: ["Public pages"],
     summary: "Render public version history",

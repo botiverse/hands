@@ -954,6 +954,15 @@ function PublicHistoryToggle({ appId, app }: { appId: string; app: App }) {
               >
                 /apps/{app.slug}/history
               </a>
+              {" · latest landing: "}
+              <a
+                className="underline"
+                href={`/apps/${app.slug}/latest`}
+                target="_blank"
+                rel="noopener noreferrer"
+              >
+                /apps/{app.slug}/latest
+              </a>
               .
             </>
           ) : (
