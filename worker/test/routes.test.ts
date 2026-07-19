@@ -3670,8 +3670,17 @@ describe("quiver public API v2 — scope resolution", () => {
     await env.DB.prepare("UPDATE release_shares SET expires_at = 1 WHERE id = ?1")
       .bind(expiredCreate.id)
       .run();
+    await env.DB.prepare("UPDATE apps SET public_history = 1 WHERE id = ?1")
+      .bind("app-scope")
+      .run();
     const expiredPage = await handlePublicReleaseShare(makeSharePublicContext(env, expiredToken));
     expect(expiredPage.status).toBeGreaterThanOrEqual(400);
+    expect(await expiredPage.text()).toContain("/apps/scope-app/latest");
+
+    const unknownPage = await handlePublicReleaseShare(
+      makeSharePublicContext(env, "not-a-real-share-token"),
+    );
+    expect(await unknownPage.text()).not.toContain("/apps/scope-app/latest");
   });
 
   it("latest landing: stable app URL renders the highest active published release", async () => {

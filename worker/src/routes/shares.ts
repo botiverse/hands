@@ -27,6 +27,7 @@ type ShareStrings = {
   shareUnavailable: string; // error page title + heading
   errMissingToken: string;
   errUnavailable: string;
+  goToLatest: string;
 };
 
 const SHARE_I18N: { en: ShareStrings; zh: ShareStrings } = {
@@ -49,6 +50,7 @@ const SHARE_I18N: { en: ShareStrings; zh: ShareStrings } = {
     shareUnavailable: "Share unavailable",
     errMissingToken: "Missing share token",
     errUnavailable: "This share link is expired, revoked, or unavailable.",
+    goToLatest: "Open the latest release",
   },
   zh: {
     htmlLang: "zh",
@@ -69,6 +71,7 @@ const SHARE_I18N: { en: ShareStrings; zh: ShareStrings } = {
     shareUnavailable: "分享不可用",
     errMissingToken: "缺少分享令牌",
     errUnavailable: "此分享链接已过期、被撤销或不可用。",
+    goToLatest: "打开最新版本",
   },
 };
 
@@ -401,7 +404,8 @@ export async function handlePublicReleaseShare(c: Context<{ Bindings: Env }>) {
   const row = await findActiveShare(c.env.DB, token);
 
   if (!row) {
-    return htmlResponse(renderErrorPage(t, t.errUnavailable), 404);
+    const latestSlug = await findLatestLandingSlugForInactiveShare(c.env.DB, token);
+    return htmlResponse(renderErrorPage(t, t.errUnavailable, latestSlug), 404);
   }
 
   if (row.password_hash && !(await hasValidUnlockCookie(c, row))) {
@@ -425,7 +429,8 @@ export async function handlePublicReleaseShareDownload(c: Context<{ Bindings: En
 
   const row = await findActiveShare(c.env.DB, token);
   if (!row) {
-    return htmlResponse(renderErrorPage(t, t.errUnavailable), 404);
+    const latestSlug = await findLatestLandingSlugForInactiveShare(c.env.DB, token);
+    return htmlResponse(renderErrorPage(t, t.errUnavailable, latestSlug), 404);
   }
 
   if (row.password_hash && !(await hasValidUnlockCookie(c, row))) {
@@ -461,7 +466,8 @@ export async function handlePublicReleaseShareUnlock(c: Context<{ Bindings: Env 
   if (!token) return htmlResponse(renderErrorPage(t, t.errMissingToken), 400);
   const row = await findActiveShare(c.env.DB, token);
   if (!row) {
-    return htmlResponse(renderErrorPage(t, t.errUnavailable), 404);
+    const latestSlug = await findLatestLandingSlugForInactiveShare(c.env.DB, token);
+    return htmlResponse(renderErrorPage(t, t.errUnavailable, latestSlug), 404);
   }
   if (!row.password_hash) return c.redirect(`/share/${token}`, 302);
 
@@ -593,6 +599,37 @@ async function findActiveShare(db: D1Database, token: string): Promise<SharePage
   )
     .bind(tokenHash, Date.now())
     .first<SharePageRow>();
+}
+
+/** Resolve only known inactive tokens to a public app that currently has an
+ * active installable. Random tokens must not disclose app identity. */
+async function findLatestLandingSlugForInactiveShare(
+  db: D1Database,
+  token: string,
+): Promise<string | null> {
+  const tokenHash = await sha256Hex(token);
+  const row = await db.prepare(
+    `SELECT a.slug
+     FROM release_shares rs
+     JOIN releases seed ON seed.id = rs.release_id
+     JOIN apps a ON a.id = seed.app_id
+     WHERE rs.token_hash = ?1
+       AND (rs.revoked_at IS NOT NULL OR (rs.expires_at IS NOT NULL AND rs.expires_at <= ?2))
+       AND a.archived = 0
+       AND a.public_history = 1
+       AND EXISTS (
+         SELECT 1 FROM releases latest
+         JOIN build_assets ba ON ba.build_id = latest.build_id
+         WHERE latest.app_id = a.id
+           AND latest.status = 'active'
+           AND latest.hidden = 0
+           AND ba.artifact_kind = 'installable'
+       )
+     LIMIT 1`,
+  )
+    .bind(tokenHash, Date.now())
+    .first<{ slug: string }>();
+  return row?.slug ?? null;
 }
 
 async function recordShareEvent(
@@ -803,7 +840,7 @@ function renderPasswordPage(t: ShareStrings, token: string, failed: boolean): st
 </html>`;
 }
 
-function renderErrorPage(t: ShareStrings, message: string): string {
+function renderErrorPage(t: ShareStrings, message: string, latestSlug: string | null = null): string {
   return `<!doctype html>
 <html lang="${t.htmlLang}">
 <head>
@@ -817,6 +854,7 @@ function renderErrorPage(t: ShareStrings, message: string): string {
     .badge { width: 44px; height: 44px; margin: 0 auto 16px; border-radius: 12px; display: grid; place-items: center; background: rgba(125,125,125,0.12); font-size: 22px; }
     h1 { margin: 0 0 8px; font-size: 22px; line-height: 1.2; }
     p { margin: 0; color: #5b616e; line-height: 1.5; }
+    a { display: inline-block; margin-top: 16px; color: #176f5d; font-weight: 700; }
     @media (prefers-color-scheme: dark) {
       body { background: #17191c; color: #f5f5f2; }
       p { color: #aeb5bf; }
@@ -828,6 +866,7 @@ function renderErrorPage(t: ShareStrings, message: string): string {
     <div class="badge" aria-hidden="true">🔗</div>
     <h1>${t.shareUnavailable}</h1>
     <p>${escapeHtml(message)}</p>
+    ${latestSlug ? `<a href="/apps/${escapeAttribute(encodeURIComponent(latestSlug))}/latest">${t.goToLatest}</a>` : ""}
   </main>
 </body>
 </html>`;
