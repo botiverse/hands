@@ -6445,6 +6445,63 @@ describe("Hands iOS simulator QA artifacts", () => {
     );
   });
 
+  it("wraps the verified R2 put in a Workers FixedLengthStream", async () => {
+    const previousFixedLengthStream = (globalThis as any).FixedLengthStream;
+    class StrictFixedLengthStream {
+      readable: ReadableStream<Uint8Array>;
+      writable: WritableStream<Uint8Array>;
+
+      constructor(expectedBytes: number | bigint) {
+        const stream = new TransformStream<Uint8Array, Uint8Array>();
+        this.readable = stream.readable;
+        this.writable = stream.writable;
+        (this.readable as any).__expectedBytes = Number(expectedBytes);
+      }
+    }
+    (globalThis as any).FixedLengthStream = StrictFixedLengthStream;
+
+    try {
+      const { env, objects } = makeEnv();
+      const bytes = new TextEncoder().encode("fixed-length R2 fixture");
+      const createdResponse = await handleCreateIosSimulatorArtifact(
+        context(env, "POST", "/api/apps/app-ios/qa-artifacts/ios-simulator", { appId: "app-ios" }, declaration(bytes)),
+      );
+      const created = await createdResponse.json() as any;
+      const stored = await env.DB.prepare("SELECT r2_key FROM build_assets WHERE id = ?1")
+        .bind(created.asset_id)
+        .first() as { r2_key: string } | null;
+      objects.set(stored!.r2_key, bytes);
+
+      const bucket = env.APK_BUCKET as any;
+      const originalPut = bucket.put.bind(bucket);
+      let sawFixedLengthFinalPut = false;
+      bucket.put = async (key: string, value: ReadableStream, options: unknown) => {
+        if (key.includes("/qa/ios-simulator/verified/")) {
+          expect((value as any).__expectedBytes).toBe(bytes.byteLength);
+          sawFixedLengthFinalPut = true;
+        }
+        return originalPut(key, value, options);
+      };
+
+      const response = await handleCompleteIosSimulatorArtifact(
+        context(
+          env,
+          "POST",
+          `/api/apps/app-ios/qa-artifacts/ios-simulator/${created.asset_id}/complete`,
+          { appId: "app-ios", assetId: created.asset_id },
+        ),
+      );
+      expect(response.status).toBe(200);
+      expect(sawFixedLengthFinalPut).toBe(true);
+    } finally {
+      if (previousFixedLengthStream === undefined) {
+        delete (globalThis as any).FixedLengthStream;
+      } else {
+        (globalThis as any).FixedLengthStream = previousFixedLengthStream;
+      }
+    }
+  });
+
   it("rejects oversized staging objects from metadata without streaming them", async () => {
     const { env, objects } = makeEnv();
     const bytes = new TextEncoder().encode("small declaration");

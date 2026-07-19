@@ -439,6 +439,26 @@ function limitObjectBody(
   );
 }
 
+function fixedLengthSealBody(
+  body: ReadableStream<Uint8Array>,
+  expectedBytes: number,
+): { readable: ReadableStream<Uint8Array>; pump: Promise<void> } {
+  // Cloudflare R2 rejects transformed/tee'd streams whose byte length is no
+  // longer encoded in the stream type. Re-wrap the seal branch so R2 can
+  // validate Content-Length while preserving the single-snapshot tee.
+  if (typeof FixedLengthStream === "undefined") {
+    // Node/vitest does not provide this Workers runtime primitive. Tests still
+    // exercise the byte flow with an ordinary stream, and a dedicated test
+    // installs a strict polyfill that rejects non-fixed final puts.
+    return { readable: body, pump: Promise.resolve() };
+  }
+  const fixed = new FixedLengthStream(expectedBytes);
+  return {
+    readable: fixed.readable,
+    pump: body.pipeTo(fixed.writable),
+  };
+}
+
 async function transitionToVerifying(
   db: D1Database,
   row: IosSimulatorArtifactRow,
@@ -601,9 +621,11 @@ export async function handleCompleteIosSimulatorArtifact(c: AdminContext) {
   // so a still-valid presigned PUT cannot create a hash/copy TOCTOU window.
   const limitedBody = limitObjectBody(object.body, row.size_bytes);
   const [hashStream, sealStream] = limitedBody.tee();
-  const [hashResult, sealResult] = await Promise.allSettled([
+  const fixedSeal = fixedLengthSealBody(sealStream, row.size_bytes);
+  const [hashResult, pumpResult, sealResult] = await Promise.allSettled([
     hashObjectBody(hashStream),
-    c.env.APK_BUCKET.put(finalR2Key, sealStream, {
+    fixedSeal.pump,
+    c.env.APK_BUCKET.put(finalR2Key, fixedSeal.readable, {
       httpMetadata: { contentType: "application/zip" },
       customMetadata: {
         sha256: row.file_hash,
@@ -612,15 +634,22 @@ export async function handleCompleteIosSimulatorArtifact(c: AdminContext) {
       },
     }),
   ]);
-  if (hashResult.status === "rejected" || sealResult.status === "rejected") {
+  if (
+    hashResult.status === "rejected" ||
+    pumpResult.status === "rejected" ||
+    sealResult.status === "rejected"
+  ) {
+    const detail = hashResult.status === "rejected"
+      ? String(hashResult.reason)
+      : pumpResult.status === "rejected"
+        ? String(pumpResult.reason)
+        : String((sealResult as PromiseRejectedResult).reason);
     await failVerification(
       c,
       row,
       {
         verification_error: "stream_or_seal_failed",
-        detail: hashResult.status === "rejected"
-          ? String(hashResult.reason)
-          : String((sealResult as PromiseRejectedResult).reason),
+        detail,
       },
       [row.r2_key, finalR2Key],
     );
