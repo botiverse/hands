@@ -133,6 +133,7 @@ const HISTORY_SQL = `
   JOIN builds b ON b.id = r.build_id
   JOIN channels ch ON ch.id = r.channel_id
   WHERE r.app_id = ?1 AND r.hidden = 0 AND r.status IN ('active', 'superseded')
+    AND b.product_type != 'ios-simulator-qa' AND b.release_type != 'qa'
   ORDER BY b.version_code DESC, released_at DESC
   LIMIT 50`;
 
@@ -156,6 +157,7 @@ const LATEST_LANDING_SQL = `
   JOIN channels ch ON ch.id = r.channel_id
   JOIN build_assets ba ON ba.build_id = b.id AND ba.artifact_kind = 'installable'
   WHERE r.app_id = ?1 AND r.hidden = 0 AND r.status = 'active'
+    AND b.product_type != 'ios-simulator-qa' AND b.release_type != 'qa'
     AND (?2 IS NULL OR ch.slug = ?2)
   ORDER BY CASE WHEN ?2 IS NULL AND ch.slug = 'main' THEN 0 ELSE 1 END,
            b.version_code DESC, released_at DESC,
@@ -230,6 +232,7 @@ const NOTES_SQL = `
     r.status IN ('active', 'superseded')
     OR (r.status = 'draft' AND b.version_code = ?2)
   )
+    AND b.product_type != 'ios-simulator-qa' AND b.release_type != 'qa'
   ORDER BY b.version_code DESC, released_at DESC
   LIMIT 50`;
 
@@ -355,8 +358,10 @@ export async function handlePublicAppHistoryDownload(
   }
   const asset = await c.env.DB.prepare(
     `SELECT ba.r2_key FROM releases r
+     JOIN builds b ON b.id = r.build_id
      JOIN build_assets ba ON ba.build_id = r.build_id
      WHERE r.app_id = ?1 AND r.id = ?2 AND r.hidden = 0 AND r.status IN ('active', 'superseded')
+       AND b.product_type != 'ios-simulator-qa' AND b.release_type != 'qa'
        AND ba.artifact_kind = 'installable'
      ORDER BY ba.created_at LIMIT 1`,
   )

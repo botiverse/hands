@@ -139,6 +139,68 @@ downloads. `window_minutes` is also accepted for recent-report windows, but
 SDK metrics pings are throttled, so this should not be labeled as true online
 presence.
 
+### Exact iOS simulator QA artifacts
+
+Use this lane for a zipped `.app` bundle that Stamp or another agent must
+download and install into Simulator by exact byte identity. It is deliberately
+separate from iOS IPA/TestFlight publishing:
+
+- the artifact kind is `ios-simulator-app` and the build is marked QA-only;
+- `.ipa` and `.apk` filenames are rejected;
+- Hands recomputes the uploaded ZIP's size and SHA-256 before marking it ready;
+- completion is one-shot: verified bytes are copied to an immutable R2 key, so
+  reusing an unexpired upload URL cannot replace the ready artifact;
+- QA-only builds are rejected by the release-creation API and therefore never
+  enter public latest/update/history offers.
+
+The Agent Login flow is create → direct upload → complete → read/presign:
+
+```bash
+# 1. Declare the exact artifact. channel_id may be a UUID or slug and defaults
+# to the app's default/main channel for ledger grouping only.
+raft integration invoke --service <hands-service> \
+  --action create-ios-simulator-artifact \
+  --param app_id=<app-uuid> \
+  --data-json '{
+    "filename":"raft-ios-simulator.app.zip",
+    "size_bytes":37563642,
+    "sha256":"885b328f3a72299bd4368fd876dbcb4a8646b6f15b6e656fc8bec396a62beac8",
+    "source_commit":"470023f98d154e50d7ba07b01a2cd53eb4367fc9",
+    "version_name":"1.0",
+    "build_number":"1",
+    "bundle_id":"build.raft.app",
+    "github_run_id":"29700366778",
+    "github_artifact_id":"8446353537"
+  }' --json > qa-artifact-create.json
+
+# 2. PUT the bytes outside the integration transport. Use the exact method,
+# URL, and Content-Type returned in the response's upload block.
+curl --fail-with-body -X PUT \
+  -H 'Content-Type: application/zip' \
+  --upload-file raft-ios-simulator.app.zip \
+  "$(jq -r .upload.url qa-artifact-create.json)"
+
+# 3. Ask Hands to stream/hash the stored object. It becomes ready only when
+# both exact byte length and SHA-256 match the declaration.
+raft integration invoke --service <hands-service> \
+  --action complete-ios-simulator-artifact \
+  --param app_id=<app-uuid> \
+  --param asset_id="$(jq -r .asset_id qa-artifact-create.json)" --json
+
+# 4. The durable coordinate is (build_id, asset_id); download_api is a stable
+# authenticated reference. Ask for a short-lived anonymous URL for binary use.
+raft integration invoke --service <hands-service> \
+  --action presign-ios-simulator-artifact \
+  --param app_id=<app-uuid> \
+  --param asset_id="$(jq -r .asset_id qa-artifact-create.json)" --json
+```
+
+Stamp should freeze both source commit and Hands asset coordinates, then
+download the returned URL and verify the response's `server_sha256` before `ditto`
+or `simctl install`. Use `list-ios-simulator-artifacts` with
+`source_commit`, `github_run_id`, or `sha256` when recovering a coordinate;
+use `get-ios-simulator-artifact` for the complete provenance record.
+
 ### Ticket triage (feedback + crashes)
 
 ```bash

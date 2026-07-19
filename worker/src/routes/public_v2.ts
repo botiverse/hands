@@ -111,16 +111,20 @@ export async function handlePublicV2Latest(c: Context<{ Bindings: Env }>) {
   // Candidates: active releases on (channel, [product_type]). No time window:
   // an active release must stay resolvable no matter how old it is.
   const candidateSql = productType
-    ? `SELECT id, build_id, created_at, product_type, rollout_cohort_count, changelog
-       FROM releases
-       WHERE app_id = ?1 AND channel_id = ?2 AND product_type = ?3
-         AND status = 'active'
-       ORDER BY created_at DESC`
-    : `SELECT id, build_id, created_at, product_type, rollout_cohort_count, changelog
-       FROM releases
-       WHERE app_id = ?1 AND channel_id = ?2
-         AND status = 'active'
-       ORDER BY created_at DESC`;
+    ? `SELECT r.id, r.build_id, r.created_at, r.product_type, r.rollout_cohort_count, r.changelog
+       FROM releases r
+       JOIN builds b ON b.id = r.build_id
+       WHERE r.app_id = ?1 AND r.channel_id = ?2 AND r.product_type = ?3
+         AND r.status = 'active'
+         AND b.product_type != 'ios-simulator-qa' AND b.release_type != 'qa'
+       ORDER BY r.created_at DESC`
+    : `SELECT r.id, r.build_id, r.created_at, r.product_type, r.rollout_cohort_count, r.changelog
+       FROM releases r
+       JOIN builds b ON b.id = r.build_id
+       WHERE r.app_id = ?1 AND r.channel_id = ?2
+         AND r.status = 'active'
+         AND b.product_type != 'ios-simulator-qa' AND b.release_type != 'qa'
+       ORDER BY r.created_at DESC`;
   const candidateStmt = c.env.DB.prepare(candidateSql);
   const allCandidates = await (productType
     ? candidateStmt.bind(app.id, channelRow.id, productType)
@@ -918,6 +922,7 @@ export async function handlePublicR2Download(c: Context<{ Bindings: Env }>) {
      JOIN releases r ON r.build_id = b.id
      WHERE ba.r2_key = ?1
        AND ba.artifact_kind = 'installable'
+       AND b.product_type != 'ios-simulator-qa' AND b.release_type != 'qa'
        AND r.status IN ('active', 'draft')
      LIMIT 1`,
   )

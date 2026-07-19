@@ -16,6 +16,7 @@ import {
 
 const AppBuildParams = AppIdParam.merge(BuildIdParam);
 const AppBuildAssetParams = AppBuildParams.merge(AssetIdParam);
+const AppQaArtifactParams = AppIdParam.merge(AssetIdParam);
 
 const BuildInput = z
   .object({
@@ -76,6 +77,25 @@ const ExternalBuildVersionInput = z
     provenance_json: z.record(z.string(), z.unknown()).optional(),
   })
   .openapi("ExternalBuildVersionInput");
+
+const IosSimulatorQaArtifactInput = z
+  .object({
+    channel_id: z.string().optional(),
+    filename: z.string().regex(/\.app\.zip$/i),
+    size_bytes: z.number().int().positive().max(500 * 1024 * 1024),
+    sha256: z.string().regex(/^[a-f0-9]{64}$/i),
+    source_commit: z.string().regex(/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/i),
+    version_name: z.string().min(1),
+    build_number: z.union([z.string().min(1), z.number().int().nonnegative()]),
+    bundle_id: z.string().min(3),
+    github_run_id: z.union([z.string().min(1), z.number().int().nonnegative()]),
+    github_artifact_id: z.union([z.string().min(1), z.number().int().nonnegative()]).nullable().optional(),
+    github_repository: z.string().nullable().optional(),
+    github_job_id: z.union([z.string().min(1), z.number().int().nonnegative()]).nullable().optional(),
+    source_ref: z.string().nullable().optional(),
+    metadata_json: z.record(z.string(), z.unknown()).optional(),
+  })
+  .openapi("IosSimulatorQaArtifactInput");
 
 export function registerBuildRoutes(registry: OpenApiRegistry) {
   register(registry, {
@@ -180,6 +200,104 @@ export function registerBuildRoutes(registry: OpenApiRegistry) {
       200: success("Deleted build.", GenericObject),
       403: error("Current principal cannot delete this build."),
       404: error("Build was not found."),
+    },
+  });
+
+  register(registry, {
+    method: "get",
+    path: "/api/apps/{appId}/qa-artifacts/ios-simulator",
+    tags: ["QA artifacts"],
+    summary: "List exact iOS simulator QA artifacts",
+    description:
+      "Lists QA-only .app.zip fixtures. These records are not releases and are never eligible for update offers.",
+    security: auth,
+    request: {
+      params: AppIdParam,
+      query: z.object({
+        source_commit: z.string().optional(),
+        github_run_id: z.string().optional(),
+        sha256: z.string().optional(),
+      }),
+    },
+    responses: {
+      200: success("QA artifact list.", z.object({ artifacts: z.array(GenericObject) })),
+      403: error("Current principal cannot view QA artifacts."),
+    },
+  });
+
+  register(registry, {
+    method: "post",
+    path: "/api/apps/{appId}/qa-artifacts/ios-simulator",
+    tags: ["QA artifacts"],
+    summary: "Create an exact iOS simulator QA artifact upload",
+    description:
+      "Creates a QA-only build/asset ledger entry and returns a one-hour presigned PUT URL. The filename must end in .app.zip; IPA/APK release publishing is intentionally not used.",
+    security: auth,
+    request: {
+      params: AppIdParam,
+      body: { content: json(IosSimulatorQaArtifactInput), required: true },
+    },
+    responses: {
+      201: success("Created pending QA artifact and upload URL.", GenericObject),
+      400: error("Invalid QA artifact declaration."),
+      403: error("Current principal cannot create QA artifacts."),
+      503: error("Direct R2 upload signing is unavailable."),
+    },
+  });
+
+  register(registry, {
+    method: "get",
+    path: "/api/apps/{appId}/qa-artifacts/ios-simulator/{assetId}",
+    tags: ["QA artifacts"],
+    summary: "Read one exact iOS simulator QA artifact",
+    security: auth,
+    request: { params: AppQaArtifactParams },
+    responses: {
+      200: success("QA artifact with build/asset ids and full provenance.", GenericObject),
+      403: error("Current principal cannot view QA artifacts."),
+      404: error("QA artifact was not found."),
+    },
+  });
+
+  register(registry, {
+    method: "post",
+    path: "/api/apps/{appId}/qa-artifacts/ios-simulator/{assetId}/complete",
+    tags: ["QA artifacts"],
+    summary: "Verify and complete an iOS simulator QA artifact upload",
+    description:
+      "One-shot completion: streams the uploaded object through SHA-256, compares exact size and digest, then copies verified bytes to an immutable R2 key before marking ready.",
+    security: auth,
+    request: { params: AppQaArtifactParams },
+    responses: {
+      200: success("Verified exact bytes; QA artifact is ready.", GenericObject),
+      403: error("Current principal cannot complete QA artifacts."),
+      404: error("QA artifact or uploaded object was not found."),
+      409: error("Upload is not present yet."),
+      422: error("Uploaded bytes do not match the declared size/SHA-256."),
+    },
+  });
+
+  register(registry, {
+    method: "get",
+    path: "/api/apps/{appId}/qa-artifacts/ios-simulator/{assetId}/download",
+    tags: ["QA artifacts"],
+    summary: "Download an exact iOS simulator QA artifact",
+    description:
+      "The authenticated API path is the durable reference. Add ?presign=1 to receive a short-lived anonymous object URL for curl, ditto, simctl, or Stamp.",
+    security: auth,
+    request: { params: AppQaArtifactParams },
+    responses: {
+      200: {
+        description: "Binary .app.zip stream, or JSON containing download_url when presign=1.",
+        content: {
+          ...binary(),
+          "application/json": { schema: GenericObject },
+          "application/zip": { schema: z.string().openapi({ format: "binary" }) },
+        },
+      },
+      403: error("Current principal cannot download QA artifacts."),
+      404: error("QA artifact or stored object was not found."),
+      409: error("QA artifact has not completed exact-byte verification."),
     },
   });
 

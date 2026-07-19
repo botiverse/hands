@@ -134,6 +134,13 @@ import {
   handleUpdateBuild,
 } from "./routes/builds";
 import {
+  handleCompleteIosSimulatorArtifact,
+  handleCreateIosSimulatorArtifact,
+  handleDownloadIosSimulatorArtifact,
+  handleGetIosSimulatorArtifact,
+  handleListIosSimulatorArtifacts,
+} from "./routes/qa_artifacts";
+import {
   handleBumpRollout,
   handleCreateRelease,
   handleCreateReleaseDraft,
@@ -651,6 +658,34 @@ admin.delete(
   "/api/apps/:appId/builds/:buildId/assets/:assetId",
   requireAppRole("admin"),
   handleDeleteBuildAsset,
+);
+
+// QA-only iOS simulator artifacts. These are immutable exact-byte fixtures
+// for agent/device validation and are deliberately outside the release model.
+admin.get(
+  "/api/apps/:appId/qa-artifacts/ios-simulator",
+  requireAppRole("viewer"),
+  handleListIosSimulatorArtifacts,
+);
+admin.post(
+  "/api/apps/:appId/qa-artifacts/ios-simulator",
+  requireAppRole("publisher"),
+  handleCreateIosSimulatorArtifact,
+);
+admin.get(
+  "/api/apps/:appId/qa-artifacts/ios-simulator/:assetId",
+  requireAppRole("viewer"),
+  handleGetIosSimulatorArtifact,
+);
+admin.post(
+  "/api/apps/:appId/qa-artifacts/ios-simulator/:assetId/complete",
+  requireAppRole("publisher"),
+  handleCompleteIosSimulatorArtifact,
+);
+admin.get(
+  "/api/apps/:appId/qa-artifacts/ios-simulator/:assetId/download",
+  requireAppRole("viewer"),
+  handleDownloadIosSimulatorArtifact,
 );
 
 admin.get("/api/apps/:appId/releases", requireAppRole("viewer"), handleListReleases);

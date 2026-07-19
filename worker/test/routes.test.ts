@@ -37,6 +37,13 @@ import { openApiDocument } from "../src/openapi";
 import { handleCreateApp, handleListApps, handleUpdateFeatureFlag } from "../src/routes/apps";
 import { createSignedJwt, handleAuthLogin, handleAuthMe, handleDashboardRedirect } from "../src/routes/auth";
 import { handleListOrgs } from "../src/routes/orgs";
+import {
+  handleCompleteIosSimulatorArtifact,
+  handleCreateIosSimulatorArtifact,
+  handleDownloadIosSimulatorArtifact,
+  handleGetIosSimulatorArtifact,
+  handleListIosSimulatorArtifacts,
+} from "../src/routes/qa_artifacts";
 
 // ---------- Test harness ----------
 
@@ -80,6 +87,10 @@ describe("quiver OpenAPI document", () => {
       "/api/apps/{appId}/builds",
       "/api/apps/{appId}/builds/publish-version",
       "/api/apps/{appId}/builds/{buildId}/external-targets",
+      "/api/apps/{appId}/qa-artifacts/ios-simulator",
+      "/api/apps/{appId}/qa-artifacts/ios-simulator/{assetId}",
+      "/api/apps/{appId}/qa-artifacts/ios-simulator/{assetId}/complete",
+      "/api/apps/{appId}/qa-artifacts/ios-simulator/{assetId}/download",
       "/api/apps/{appId}/releases/{releaseId}/publish",
       "/api/apps/{appId}/feedback/{ticketId}/comments",
       "/api/apps/{appId}/client-key",
@@ -6049,5 +6060,578 @@ describe("quiver public API v2 — scope resolution", () => {
     expect(response.status).toBe(404);
     const body = await responseJson<any>(response);
     expect(body.error).toBe("matched release has no compatible asset");
+  });
+});
+
+// =============================================================================
+// QA-only exact iOS simulator artifacts
+// =============================================================================
+
+describe("Hands iOS simulator QA artifacts", () => {
+  function makeEnv() {
+    const env = makeMockEnv();
+    env.R2_ACCOUNT_ID = "test-account";
+    env.R2_BUCKET_NAME = "hands-artifacts";
+    env.R2_S3_ACCESS_KEY_ID = "test-access-key";
+    env.R2_S3_SECRET_ACCESS_KEY = "test-secret-key";
+    env.R2_PRESIGNED_DOWNLOAD_TTL_SECONDS = "600";
+    env.DB.prepare(
+      "INSERT INTO apps (id, org_id, slug, name, platform, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+    ).bind("app-ios", "default", "raft-ios", "Raft iOS", "ios", 1).run();
+    env.DB.prepare(
+      `INSERT INTO channels (id, app_id, slug, name, enabled_product_types_json, metadata_json, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    ).bind("ch-ios-main", "app-ios", "main", "Main", "[]", "{}", 1).run();
+
+    const objects = new Map<string, Uint8Array>();
+    env.APK_BUCKET = {
+      put: async (key: string, value: ArrayBuffer | ArrayBufferView | ReadableStream | string) => {
+        const bytes = typeof value === "string"
+          ? new TextEncoder().encode(value)
+          : value instanceof ReadableStream
+            ? new Uint8Array(await new Response(value).arrayBuffer())
+            : value instanceof ArrayBuffer
+              ? new Uint8Array(value)
+              : new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
+        objects.set(key, new Uint8Array(bytes));
+      },
+      head: async (key: string) => {
+        const bytes = objects.get(key);
+        return bytes
+          ? { size: bytes.byteLength, httpEtag: `"${key}"`, writeHttpMetadata: () => undefined }
+          : null;
+      },
+      get: async (key: string) => {
+        const bytes = objects.get(key);
+        if (!bytes) return null;
+        return {
+          body: new Response(bytes).body!,
+          size: bytes.byteLength,
+          httpEtag: `"${key}"`,
+          writeHttpMetadata(headers: Headers) {
+            headers.set("content-type", "application/zip");
+          },
+        };
+      },
+      delete: async (key: string) => {
+        objects.delete(key);
+      },
+    };
+    return { env, objects };
+  }
+
+  function context(
+    env: MockEnv,
+    method: string,
+    path: string,
+    params: Record<string, string>,
+    body?: unknown,
+  ) {
+    const url = new URL(`https://hands.test${path}`);
+    return {
+      env,
+      req: {
+        url: url.toString(),
+        raw: new Request(url, { method }),
+        param: (name: string) => params[name] ?? "",
+        query: (name: string) => url.searchParams.get(name) ?? undefined,
+        header: (_name: string) => undefined,
+        json: async () => body,
+      },
+      get: (name: string) => (name === "admin_actor" ? "raft:test-agent@test" : undefined),
+      header: (_name: string, _value: string) => undefined,
+      json: (data: unknown, status = 200) => Response.json(data, { status }),
+    } as any;
+  }
+
+  const declaration = (bytes: Uint8Array) => ({
+    filename: "raft-ios-simulator.app.zip",
+    size_bytes: bytes.byteLength,
+    sha256: createHash("sha256").update(bytes).digest("hex"),
+    source_commit: "470023f98d154e50d7ba07b01a2cd53eb4367fc9",
+    version_name: "1.0",
+    build_number: "1",
+    bundle_id: "build.raft.app",
+    github_run_id: "29700366778",
+    github_artifact_id: "8446353537",
+    github_job_id: "88230185690",
+    github_repository: "botiverse/mobile",
+  });
+
+  it("round-trips exact bytes with durable build/asset coordinates and full provenance", async () => {
+    const { env, objects } = makeEnv();
+    const bytes = new TextEncoder().encode("exact iOS simulator .app.zip fixture");
+
+    const createdResponse = await handleCreateIosSimulatorArtifact(
+      context(env, "POST", "/api/apps/app-ios/qa-artifacts/ios-simulator", { appId: "app-ios" }, declaration(bytes)),
+    );
+    expect(createdResponse.status).toBe(201);
+    const created = await createdResponse.json() as any;
+    expect(created).toMatchObject({
+      kind: "ios-simulator-app",
+      artifact_kind: "ios-simulator-app",
+      qa_only: true,
+      release_offer_eligible: false,
+      status: "pending_upload",
+      filename: "raft-ios-simulator.app.zip",
+      source_commit: declaration(bytes).source_commit,
+      version_name: "1.0",
+      version: "1.0",
+      version_code: 1,
+      build_number: "1",
+      build_run_id: "29700366778",
+      bundle_id: "build.raft.app",
+      github: {
+        run_id: "29700366778",
+        artifact_id: "8446353537",
+        job_id: "88230185690",
+      },
+    });
+    expect(created.build_id).toMatch(/[0-9a-f-]{36}/);
+    expect(created.asset_id).toMatch(/[0-9a-f-]{36}/);
+    expect(created.upload).toMatchObject({ method: "PUT", headers: { "content-type": "application/zip" } });
+    expect(created.upload.url).toContain("test-account.r2.cloudflarestorage.com");
+    expect(created.download_api).toBe(
+      `https://hands.test/api/apps/app-ios/qa-artifacts/ios-simulator/${created.asset_id}/download`,
+    );
+
+    const stored = await env.DB.prepare("SELECT r2_key FROM build_assets WHERE id = ?1")
+      .bind(created.asset_id)
+      .first() as { r2_key: string } | null;
+    objects.set(stored!.r2_key, bytes);
+
+    const completeResponse = await handleCompleteIosSimulatorArtifact(
+      context(
+        env,
+        "POST",
+        `/api/apps/app-ios/qa-artifacts/ios-simulator/${created.asset_id}/complete`,
+        { appId: "app-ios", assetId: created.asset_id },
+      ),
+    );
+    expect(completeResponse.status).toBe(200);
+    const completed = await completeResponse.json() as any;
+    expect(completed.status).toBe("ready");
+    expect(completed.verification).toMatchObject({
+      verified_sha256: declaration(bytes).sha256,
+      verified_size_bytes: bytes.byteLength,
+    });
+    expect(completed.server_sha256).toBe(declaration(bytes).sha256);
+    const sealed = await env.DB.prepare("SELECT r2_key FROM build_assets WHERE id = ?1")
+      .bind(created.asset_id)
+      .first() as { r2_key: string } | null;
+    expect(sealed!.r2_key).toContain("/qa/ios-simulator/verified/");
+    expect(objects.has(stored!.r2_key)).toBe(false);
+    expect(objects.has(sealed!.r2_key)).toBe(true);
+
+    // A still-valid stale PUT URL can only recreate the pending key; the
+    // completed asset points at a separate sealed key and cannot be replaced.
+    objects.set(stored!.r2_key, new TextEncoder().encode("late overwrite attempt"));
+    const secondComplete = await handleCompleteIosSimulatorArtifact(
+      context(
+        env,
+        "POST",
+        `/api/apps/app-ios/qa-artifacts/ios-simulator/${created.asset_id}/complete`,
+        { appId: "app-ios", assetId: created.asset_id },
+      ),
+    );
+    expect(secondComplete.status).toBe(409);
+    await expect(secondComplete.json()).resolves.toMatchObject({ code: "QA_ARTIFACT_ALREADY_COMPLETED" });
+
+    const getResponse = await handleGetIosSimulatorArtifact(
+      context(env, "GET", `/api/apps/app-ios/qa-artifacts/ios-simulator/${created.asset_id}`, {
+        appId: "app-ios",
+        assetId: created.asset_id,
+      }),
+    );
+    expect(await getResponse.json()).toMatchObject({
+      build_id: created.build_id,
+      asset_id: created.asset_id,
+      sha256: declaration(bytes).sha256,
+      server_sha256: declaration(bytes).sha256,
+      status: "ready",
+    });
+
+    const listResponse = await handleListIosSimulatorArtifacts(
+      context(
+        env,
+        "GET",
+        `/api/apps/app-ios/qa-artifacts/ios-simulator?source_commit=${declaration(bytes).source_commit}&github_run_id=29700366778`,
+        { appId: "app-ios" },
+      ),
+    );
+    const listed = await listResponse.json() as any;
+    expect(listed.artifacts).toHaveLength(1);
+    expect(listed.artifacts[0].asset_id).toBe(created.asset_id);
+
+    const presignResponse = await handleDownloadIosSimulatorArtifact(
+      context(
+        env,
+        "GET",
+        `/api/apps/app-ios/qa-artifacts/ios-simulator/${created.asset_id}/download?presign=1`,
+        { appId: "app-ios", assetId: created.asset_id },
+      ),
+    );
+    const presigned = await presignResponse.json() as any;
+    expect(presigned).toMatchObject({
+      build_id: created.build_id,
+      asset_id: created.asset_id,
+      filename: "raft-ios-simulator.app.zip",
+      sha256: declaration(bytes).sha256,
+      size_bytes: bytes.byteLength,
+    });
+    expect(presigned.download_url).toContain("X-Amz-Signature=");
+
+    const downloadResponse = await handleDownloadIosSimulatorArtifact(
+      context(env, "GET", `/api/apps/app-ios/qa-artifacts/ios-simulator/${created.asset_id}/download`, {
+        appId: "app-ios",
+        assetId: created.asset_id,
+      }),
+    );
+    expect(downloadResponse.status).toBe(200);
+    const downloaded = new Uint8Array(await downloadResponse.arrayBuffer());
+    expect(createHash("sha256").update(downloaded).digest("hex")).toBe(declaration(bytes).sha256);
+    expect(downloadResponse.headers.get("content-disposition")).toContain("raft-ios-simulator.app.zip");
+
+    const { createRelease } = await import("../src/routes/releases");
+    await expect(
+      createRelease(env.DB as any, "app-ios", { build_id: created.build_id, status: "draft" }, "tester"),
+    ).rejects.toThrow("QA-only builds cannot be attached to releases");
+  });
+
+  it("fails closed and deletes uploaded bytes when exact SHA-256 does not match", async () => {
+    const { env, objects } = makeEnv();
+    const declared = new TextEncoder().encode("declared bytes");
+    const createdResponse = await handleCreateIosSimulatorArtifact(
+      context(env, "POST", "/api/apps/app-ios/qa-artifacts/ios-simulator", { appId: "app-ios" }, declaration(declared)),
+    );
+    const created = await createdResponse.json() as any;
+    const stored = await env.DB.prepare("SELECT r2_key FROM build_assets WHERE id = ?1")
+      .bind(created.asset_id)
+      .first() as { r2_key: string } | null;
+    objects.set(stored!.r2_key, new TextEncoder().encode("tampered bytes"));
+
+    const response = await handleCompleteIosSimulatorArtifact(
+      context(
+        env,
+        "POST",
+        `/api/apps/app-ios/qa-artifacts/ios-simulator/${created.asset_id}/complete`,
+        { appId: "app-ios", assetId: created.asset_id },
+      ),
+    );
+    expect(response.status).toBe(422);
+    await expect(response.json()).resolves.toMatchObject({ code: "QA_ARTIFACT_INTEGRITY_MISMATCH" });
+    expect(objects.has(stored!.r2_key)).toBe(false);
+
+    const getResponse = await handleGetIosSimulatorArtifact(
+      context(env, "GET", `/api/apps/app-ios/qa-artifacts/ios-simulator/${created.asset_id}`, {
+        appId: "app-ios",
+        assetId: created.asset_id,
+      }),
+    );
+    await expect(getResponse.json()).resolves.toMatchObject({ status: "failed" });
+
+    const retry = await handleCompleteIosSimulatorArtifact(
+      context(
+        env,
+        "POST",
+        `/api/apps/app-ios/qa-artifacts/ios-simulator/${created.asset_id}/complete`,
+        { appId: "app-ios", assetId: created.asset_id },
+      ),
+    );
+    expect(retry.status).toBe(409);
+    await expect(retry.json()).resolves.toMatchObject({ code: "QA_ARTIFACT_VERIFICATION_FAILED" });
+  });
+
+  it("allows exactly one concurrent complete request to enter verifying", async () => {
+    const { env, objects } = makeEnv();
+    const bytes = new TextEncoder().encode("concurrent complete fixture");
+    const createdResponse = await handleCreateIosSimulatorArtifact(
+      context(env, "POST", "/api/apps/app-ios/qa-artifacts/ios-simulator", { appId: "app-ios" }, declaration(bytes)),
+    );
+    const created = await createdResponse.json() as any;
+    const stored = await env.DB.prepare("SELECT r2_key FROM build_assets WHERE id = ?1")
+      .bind(created.asset_id)
+      .first() as { r2_key: string } | null;
+    objects.set(stored!.r2_key, bytes);
+
+    const bucket = env.APK_BUCKET as any;
+    const originalHead = bucket.head.bind(bucket);
+    let releaseFirstHead!: () => void;
+    const firstHeadBlocked = new Promise<void>((resolveBlocked) => {
+      bucket.head = async (key: string) => {
+        if (key === stored!.r2_key) {
+          await new Promise<void>((resolveRelease) => {
+            releaseFirstHead = resolveRelease;
+            resolveBlocked();
+          });
+        }
+        return originalHead(key);
+      };
+    });
+
+    const first = handleCompleteIosSimulatorArtifact(
+      context(
+        env,
+        "POST",
+        `/api/apps/app-ios/qa-artifacts/ios-simulator/${created.asset_id}/complete`,
+        { appId: "app-ios", assetId: created.asset_id },
+      ),
+    );
+    await firstHeadBlocked;
+    const loser = await handleCompleteIosSimulatorArtifact(
+      context(
+        env,
+        "POST",
+        `/api/apps/app-ios/qa-artifacts/ios-simulator/${created.asset_id}/complete`,
+        { appId: "app-ios", assetId: created.asset_id },
+      ),
+    );
+    expect(loser.status).toBe(409);
+    await expect(loser.json()).resolves.toMatchObject({ code: "QA_ARTIFACT_VERIFICATION_IN_PROGRESS" });
+    releaseFirstHead();
+    const winner = await first;
+    expect(winner.status).toBe(200);
+    await expect(winner.json()).resolves.toMatchObject({ status: "ready" });
+  });
+
+  it("hashes and seals the same staging byte stream even if the upload key is overwritten during complete", async () => {
+    const { env, objects } = makeEnv();
+    const original = new TextEncoder().encode("original-stream");
+    const overwritten = new TextEncoder().encode("tampered-stream");
+    expect(overwritten.byteLength).toBe(original.byteLength);
+    const createdResponse = await handleCreateIosSimulatorArtifact(
+      context(env, "POST", "/api/apps/app-ios/qa-artifacts/ios-simulator", { appId: "app-ios" }, declaration(original)),
+    );
+    const created = await createdResponse.json() as any;
+    const stored = await env.DB.prepare("SELECT r2_key FROM build_assets WHERE id = ?1")
+      .bind(created.asset_id)
+      .first() as { r2_key: string } | null;
+    objects.set(stored!.r2_key, original);
+
+    const bucket = env.APK_BUCKET as any;
+    const originalGet = bucket.get.bind(bucket);
+    let overwrittenOnce = false;
+    bucket.get = async (key: string) => {
+      const snapshot = await originalGet(key);
+      if (key === stored!.r2_key && !overwrittenOnce) {
+        overwrittenOnce = true;
+        objects.set(key, overwritten);
+      }
+      return snapshot;
+    };
+
+    const complete = await handleCompleteIosSimulatorArtifact(
+      context(
+        env,
+        "POST",
+        `/api/apps/app-ios/qa-artifacts/ios-simulator/${created.asset_id}/complete`,
+        { appId: "app-ios", assetId: created.asset_id },
+      ),
+    );
+    expect(complete.status).toBe(200);
+    const completed = await complete.json() as any;
+    expect(completed.server_sha256).toBe(declaration(original).sha256);
+
+    const download = await handleDownloadIosSimulatorArtifact(
+      context(env, "GET", `/api/apps/app-ios/qa-artifacts/ios-simulator/${created.asset_id}/download`, {
+        appId: "app-ios",
+        assetId: created.asset_id,
+      }),
+    );
+    const downloaded = new Uint8Array(await download.arrayBuffer());
+    expect(createHash("sha256").update(downloaded).digest("hex")).toBe(declaration(original).sha256);
+    expect(createHash("sha256").update(downloaded).digest("hex")).not.toBe(
+      createHash("sha256").update(overwritten).digest("hex"),
+    );
+  });
+
+  it("rejects oversized staging objects from metadata without streaming them", async () => {
+    const { env, objects } = makeEnv();
+    const bytes = new TextEncoder().encode("small declaration");
+    const createdResponse = await handleCreateIosSimulatorArtifact(
+      context(env, "POST", "/api/apps/app-ios/qa-artifacts/ios-simulator", { appId: "app-ios" }, declaration(bytes)),
+    );
+    const created = await createdResponse.json() as any;
+    const stored = await env.DB.prepare("SELECT r2_key FROM build_assets WHERE id = ?1")
+      .bind(created.asset_id)
+      .first() as { r2_key: string } | null;
+    objects.set(stored!.r2_key, bytes);
+
+    const bucket = env.APK_BUCKET as any;
+    const originalHead = bucket.head.bind(bucket);
+    const originalGet = bucket.get.bind(bucket);
+    let getCalls = 0;
+    bucket.head = async (key: string) => key === stored!.r2_key
+      ? { size: 500 * 1024 * 1024 + 1, httpEtag: '"oversized"', writeHttpMetadata: () => undefined }
+      : originalHead(key);
+    bucket.get = async (key: string) => {
+      getCalls += 1;
+      return originalGet(key);
+    };
+
+    const response = await handleCompleteIosSimulatorArtifact(
+      context(
+        env,
+        "POST",
+        `/api/apps/app-ios/qa-artifacts/ios-simulator/${created.asset_id}/complete`,
+        { appId: "app-ios", assetId: created.asset_id },
+      ),
+    );
+    expect(response.status).toBe(422);
+    await expect(response.json()).resolves.toMatchObject({
+      code: "QA_ARTIFACT_INTEGRITY_MISMATCH",
+      actual: { size_bytes: 500 * 1024 * 1024 + 1 },
+    });
+    expect(getCalls).toBe(0);
+    expect(objects.has(stored!.r2_key)).toBe(false);
+
+    const readback = await handleGetIosSimulatorArtifact(
+      context(env, "GET", `/api/apps/app-ios/qa-artifacts/ios-simulator/${created.asset_id}`, {
+        appId: "app-ios",
+        assetId: created.asset_id,
+      }),
+    );
+    await expect(readback.json()).resolves.toMatchObject({ status: "failed" });
+  });
+
+  it("explicitly excludes QA-only builds from public latest, update offers, and latest landing", async () => {
+    const { env } = makeEnv();
+    const now = Date.now();
+    await env.DB.prepare("UPDATE apps SET public_history = 1 WHERE id = ?1").bind("app-ios").run();
+    await env.DB.prepare(
+      `INSERT INTO builds
+       (id, app_id, channel_id, product_type, release_type, version_name, version_code,
+        source, status, build_metadata_json, parsed_metadata_json, provenance_json,
+        created_at, updated_at, completed_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).bind(
+      "qa-public-build",
+      "app-ios",
+      "ch-ios-main",
+      "ios-simulator-qa",
+      "qa",
+      "9.9",
+      99,
+      "qa-artifact",
+      "succeeded",
+      '{"qa_only":true}',
+      "{}",
+      "{}",
+      now,
+      now,
+      now,
+    ).run();
+    // Deliberately attach an installable-shaped asset and inject an active
+    // release directly, bypassing createRelease, to prove public queries keep
+    // their own defense-in-depth exclusion.
+    await env.DB.prepare(
+      `INSERT INTO build_assets
+       (id, build_id, artifact_kind, platform, arch, variant, filetype, r2_key,
+        file_hash, size_bytes, metadata_json, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).bind(
+      "qa-malicious-installable",
+      "qa-public-build",
+      "installable",
+      "ios",
+      "arm64",
+      "simulator",
+      "ipa",
+      "apps/app-ios/qa-malicious.ipa",
+      "deadbeef",
+      42,
+      "{}",
+      now,
+    ).run();
+    await env.DB.prepare(
+      `INSERT INTO releases
+       (id, app_id, build_id, channel_id, product_type, release_type, status,
+        is_full, changelog, created_by, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).bind(
+      "qa-malicious-release",
+      "app-ios",
+      "qa-public-build",
+      "ch-ios-main",
+      "ios-simulator-qa",
+      "qa",
+      "active",
+      1,
+      "must stay private",
+      "tester",
+      now,
+      now,
+    ).run();
+    await env.DB.prepare(
+      "INSERT INTO release_scopes (id, release_id, scope_type, scope_value, created_at) VALUES (?, ?, ?, ?, ?)",
+    ).bind("qa-malicious-scope", "qa-malicious-release", "full", "all", now).run();
+
+    const { handlePublicV2Latest, handlePublicV2UpdateCheck } = await import("../src/routes/public_v2");
+    const latest = await handlePublicV2Latest(
+      context(env, "GET", "/public/v2/apps/raft-ios/latest?channel=main", { slug: "raft-ios" }),
+    );
+    expect(latest.status).toBe(404);
+
+    const update = await handlePublicV2UpdateCheck(
+      context(
+        env,
+        "GET",
+        "/public/v2/apps/raft-ios/updates/check?channel=main&current_version_code=1&platform=ios&filetype=ipa",
+        { slug: "raft-ios" },
+      ),
+    );
+    expect(update.status).toBe(404);
+
+    const { handlePublicLatestReleaseLanding } = await import("../src/routes/history");
+    const landing = await handlePublicLatestReleaseLanding(
+      context(env, "GET", "/apps/raft-ios/latest?channel=main", { slug: "raft-ios" }),
+    );
+    expect(landing.status).toBe(404);
+    await expect(landing.text()).resolves.toBe("No active release");
+  });
+
+  it("rejects IPA-shaped declarations instead of treating them as simulator QA artifacts", async () => {
+    const { env } = makeEnv();
+    const bytes = new TextEncoder().encode("fixture");
+    const response = await handleCreateIosSimulatorArtifact(
+      context(env, "POST", "/api/apps/app-ios/qa-artifacts/ios-simulator", { appId: "app-ios" }, {
+        ...declaration(bytes),
+        filename: "raft-ios.ipa",
+      }),
+    );
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toMatchObject({ code: "INVALID_QA_ARTIFACT" });
+  });
+
+  it("publishes the full create/upload/complete/read/download Agent Login action surface", async () => {
+    const { env } = makeEnv();
+    const { handleAgentManifest } = await import("../src/routes/auth");
+    const response = await handleAgentManifest(
+      context(env, "GET", "/.well-known/raft-agent-manifest.json", {}),
+    );
+    const manifest = await response.json() as any;
+    const actions = Object.fromEntries(manifest.actions.map((action: any) => [action.name, action.endpoint]));
+    expect(actions).toMatchObject({
+      "list-ios-simulator-artifacts": {
+        method: "GET",
+        path: "/api/apps/{app_id}/qa-artifacts/ios-simulator",
+      },
+      "create-ios-simulator-artifact": {
+        method: "POST",
+        path: "/api/apps/{app_id}/qa-artifacts/ios-simulator",
+      },
+      "complete-ios-simulator-artifact": {
+        method: "POST",
+        path: "/api/apps/{app_id}/qa-artifacts/ios-simulator/{asset_id}/complete",
+      },
+      "get-ios-simulator-artifact": {
+        method: "GET",
+        path: "/api/apps/{app_id}/qa-artifacts/ios-simulator/{asset_id}",
+      },
+      "presign-ios-simulator-artifact": {
+        method: "GET",
+        path: "/api/apps/{app_id}/qa-artifacts/ios-simulator/{asset_id}/download?presign=1",
+      },
+    });
   });
 });

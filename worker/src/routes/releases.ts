@@ -148,6 +148,9 @@ export async function createRelease(
   if (!input.build_id) throw new Error("build_id required");
   const build = await getBuildForApp(db, appId, input.build_id);
   if (!build) throw new Error("build not found");
+  if (build.product_type === "ios-simulator-qa" || build.release_type === "qa") {
+    throw new Error("QA-only builds cannot be attached to releases");
+  }
 
   const channelId = input.channel_id ?? build.channel_id;
   if (!channelId) throw new Error("channel_id required");
