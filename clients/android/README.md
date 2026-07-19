@@ -2,6 +2,11 @@
 
 Android SDK for Hands server-side update checks and APK installation.
 
+`Hands.install(...)` also enables crash capture, daily device analytics, and
+release-health session tracking by default. Session start/end/crash events are
+queued on-device and retried after network or process failures; set
+`trackSessions = false` only when the host app intentionally opts out.
+
 ## Coordinates
 
 Two ways to consume the SDK. **JitPack needs no token** — prefer it unless you

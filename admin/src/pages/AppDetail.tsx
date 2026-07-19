@@ -25,6 +25,7 @@ import {
   type BadgeProps,
 } from "raft-ui";
 import { DeviceAnalytics } from "../components/DeviceAnalytics";
+import { ReleaseHealth } from "../components/ReleaseHealth";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 import { ConfirmActionDialog, TypedConfirmField } from "../components/ConfirmActionDialog";
@@ -122,6 +123,7 @@ export function AppDetail({ appId }: { appId: string }) {
       </section>
 
       <section className="mt-6">
+        <ReleaseHealth appId={appId} />
         <DeviceAnalytics appId={appId} />
       </section>
 

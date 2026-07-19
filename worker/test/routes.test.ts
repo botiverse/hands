@@ -5483,7 +5483,12 @@ describe("quiver public API v2 — scope resolution", () => {
     expect((await post({ session_id: "s1", device_id: "d1", event: "start" }, "wrong")).status).toBe(401);
     expect((await post({ session_id: "s1", device_id: "d1", event: "nope" })).status).toBe(400);
 
-    const base = { version_name: "1.2.0", version_code: 1020000, platform: "android" };
+    const base = {
+      version_name: "1.2.0",
+      version_code: 1020000,
+      channel: "main",
+      platform: "android",
+    };
     // devA: one clean session (start+end), one crashed session
     expect((await post({ ...base, session_id: "s1", device_id: "devA", event: "start" })).status).toBe(202);
     expect((await post({ ...base, session_id: "s1", device_id: "devA", event: "end", duration_ms: 60000 })).status).toBe(202);
@@ -5507,8 +5512,12 @@ describe("quiver public API v2 — scope resolution", () => {
     expect(body.totals.sessions).toBe(5);
     expect(body.totals.crashed_sessions).toBe(2);
     expect(body.totals.crash_free_sessions_pct).toBe(60);
+    expect(body.totals.devices).toBe(4);
+    expect(body.totals.crashed_devices).toBe(2);
+    expect(body.totals.crash_free_devices_pct).toBe(50);
 
     const v12 = body.versions.find((v: any) => v.version_code === 1020000);
+    expect(v12.channel).toBe("main");
     expect(v12.sessions).toBe(4); // s1, s2, s3 (deduped start), s4
     expect(v12.crashed_sessions).toBe(1);
     expect(v12.crash_free_sessions_pct).toBe(75);

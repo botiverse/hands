@@ -7,20 +7,25 @@ value-per-effort. Each P0/P1 item lists the concrete change per layer
 ## P0 — small effort, large value
 
 ### P0.1 Session events → crash-free rate (release health)
-The single most persuasive Sentry metric. Today all four SDKs send only a
-24-hour-throttled device ping, so there is no session denominator and
-crash-free rate cannot be computed.
+The single most persuasive Sentry metric.
 
-- **Server**: `POST /public/v2/apps/:slug/sessions` accepting
+**Status (2026-07-19):** server ingest/rollup and the admin Release Health
+panel are complete. Android now tracks process sessions with the same 30-second
+background threshold as Sentry, persists events before delivery, and marks a
+fatal session crashed for next-launch upload. iOS, OHOS, and Electron lifecycle
+hooks remain.
+
+- **Server**: ✅ `POST /public/v2/apps/:slug/sessions` accepting
   `{device_id, session_id, event: "start"|"end", version_code, version_name,
-  channel, os, model, duration_ms?, crashed?}`; D1 table `app_sessions`
-  (rollup-friendly: daily aggregates per version). Crash reports carry
-  `session_id` so a session is marked crashed even when `end` never arrives.
-- **SDKs**: emit `start` on install/foreground, `end` on background (Android
+  channel, platform, os_version, device_model, duration_ms?, crashed?}`; D1
+  table `app_sessions`. Crash markers are sticky, and `end`/`crash` can create
+  a stub when an earlier `start` was lost.
+- **SDKs**: Android ✅; iOS/OHOS/Electron pending. Emit `start` on
+  install/foreground and `end` after backgrounding (Android
   `ProcessLifecycleOwner` / iOS `UIApplication` notifications / OHOS ability
-  lifecycle / Electron `app` events). Store-and-forward like crashes; batch
-  on next launch if offline.
-- **Admin**: Release Health panel — crash-free sessions %, crash-free
+  lifecycle / Electron `app` events). Persist before delivery and retry queued
+  events on the next launch when offline.
+- **Admin**: ✅ Release Health panel — crash-free sessions %, crash-free
   devices %, per release/channel; adoption curve already exists via device
   pings.
 

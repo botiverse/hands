@@ -1621,6 +1621,32 @@ export interface DeviceAnalytics {
   by_channel: Array<{ channel: string; devices: number }>;
 }
 
+export interface ReleaseHealthVersion {
+  version_name: string | null;
+  version_code: number | null;
+  channel: string | null;
+  sessions: number;
+  crashed_sessions: number;
+  crash_free_sessions_pct: number | null;
+  devices: number;
+  crashed_devices: number;
+  crash_free_devices_pct: number | null;
+}
+
+export interface ReleaseHealth {
+  window_days: number;
+  since: number;
+  totals: {
+    sessions: number;
+    crashed_sessions: number;
+    crash_free_sessions_pct: number | null;
+    devices: number;
+    crashed_devices: number;
+    crash_free_devices_pct: number | null;
+  };
+  versions: ReleaseHealthVersion[];
+}
+
 export interface VersionMetric {
   release_id: string | null;
   build_id: string | null;
@@ -1675,6 +1701,12 @@ export const getDeviceDetail = (appId: string, deviceId: string) =>
 export const getDeviceAnalytics = (appId: string, windowDays = 30) =>
   request<DeviceAnalytics>(
     `/api/apps/${appId}/analytics/devices?window_days=${windowDays}`,
+    { admin: true },
+  );
+
+export const getReleaseHealth = (appId: string, windowDays = 30) =>
+  request<ReleaseHealth>(
+    `/api/apps/${appId}/release-health?window_days=${windowDays}`,
     { admin: true },
   );
 

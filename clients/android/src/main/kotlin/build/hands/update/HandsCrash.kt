@@ -62,6 +62,9 @@ object HandsCrash {
         val appContext = context.applicationContext
         val defaultHandler = Thread.getDefaultUncaughtExceptionHandler()
         Thread.setDefaultUncaughtExceptionHandler { thread, throwable ->
+            // Persist the release-health crash marker before doing any heavier
+            // crash-log work. It is flushed on the next launch.
+            runCatching { HandsSessions.markCurrentCrashed() }
             val crashLog =
                 runCatching { buildCrashLog(appContext, thread, throwable, extraContext) }
                     .getOrElse { buildFallbackCrashLog(thread, throwable, it) }

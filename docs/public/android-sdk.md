@@ -132,6 +132,19 @@ with its R8/ProGuard `mapping.txt` (and, for NDK crashes, the unstripped
 `.so` archive) — Hands symbolicates crash reports for that `versionCode`
 automatically.
 
+## Release health
+
+`Hands.install(...)` tracks foreground sessions automatically. A session ends
+after the app has remained in the background for 30 seconds; a quick activity
+or configuration transition stays within the same session. Start/end/crash
+events are committed on-device before delivery and retried after a network or
+process failure.
+
+The app overview uses these events to show crash-free sessions and crash-free
+devices by version and channel. Pass `trackSessions = false` to
+`Hands.install` only when the host app intentionally opts out of release-health
+telemetry.
+
 ## Device analytics
 
 `Hands.install(...)` already sends a lightweight launch/install metrics ping (throttled
