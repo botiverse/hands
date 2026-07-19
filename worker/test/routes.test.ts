@@ -303,11 +303,7 @@ function makeMockDb() {
       created_at INTEGER NOT NULL,
       expires_at INTEGER,
       revoked_at INTEGER,
-      password_hash TEXT,
-      target_mode TEXT NOT NULL DEFAULT 'release',
-      channel_id TEXT,
-      product_type TEXT,
-      release_type TEXT
+      password_hash TEXT
     );
     CREATE TABLE release_share_events (
       id TEXT PRIMARY KEY,
@@ -3674,58 +3670,6 @@ describe("quiver public API v2 — scope resolution", () => {
       .run();
     const expiredPage = await handlePublicReleaseShare(makeSharePublicContext(env, expiredToken));
     expect(expiredPage.status).toBeGreaterThanOrEqual(400);
-  });
-
-  it("shares: latest token follows the active release in its channel/product track", async () => {
-    const env = makeEnv();
-    await seedRelease(env, "rel-latest-1", "build-latest-1", [["full", "all"]], {
-      createdAt: 100,
-      versionCode: 1,
-      versionName: "1.0.0",
-    });
-    await seedAsset(env, "build-latest-1", "asset-latest-1");
-    const {
-      handleCreateReleaseShare,
-      handleListAppShares,
-      handlePublicReleaseShare,
-    } = await import("../src/routes/shares");
-
-    const created = await responseJson<any>(
-      await handleCreateReleaseShare(
-        makeShareAdminContext(
-          env,
-          { appId: "app-scope", releaseId: "rel-latest-1" },
-          { latest: true },
-        ),
-      ),
-    );
-    expect(created.target_mode).toBe("latest");
-    const token = new URL(created.share_url).pathname.replace("/share/", "");
-    const firstPage = await handlePublicReleaseShare(makeSharePublicContext(env, token));
-    expect(await firstPage.text()).toContain("1.0.0");
-
-    await env.DB.prepare(
-      "UPDATE releases SET status='superseded', updated_at=? WHERE id=?",
-    ).bind(200, "rel-latest-1").run();
-    await seedRelease(env, "rel-latest-2", "build-latest-2", [["full", "all"]], {
-      createdAt: 200,
-      versionCode: 2,
-      versionName: "2.0.0",
-    });
-    await seedAsset(env, "build-latest-2", "asset-latest-2");
-
-    const secondPage = await handlePublicReleaseShare(makeSharePublicContext(env, token));
-    const secondHtml = await secondPage.text();
-    expect(secondHtml).toContain("2.0.0");
-    expect(secondHtml).toContain("Latest");
-
-    const listed = await responseJson<any>(
-      await handleListAppShares(makeShareAdminContext(env, { appId: "app-scope" })),
-    );
-    const row = listed.shares.find((share: any) => share.id === created.id);
-    expect(row.target_mode).toBe("latest");
-    expect(row.version_name).toBe("2.0.0");
-    expect(row.version_code).toBe(2);
   });
 
   // ------------------------------------------------------------------

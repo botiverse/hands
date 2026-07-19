@@ -44,8 +44,7 @@ const ReleaseShare = z
       description: "Hash of the public share token. The raw token is not returned.",
     }),
     created_at: z.number().int(),
-    expires_at: z.number().int().nullable(),
-    target_mode: z.enum(["release", "latest"]).optional(),
+    expires_at: z.number().int(),
     revoked_at: z.number().int().nullable(),
     view_count: z.number().int(),
     unique_view_count: z.number().int(),
@@ -57,15 +56,12 @@ const ReleaseShare = z
 const ReleaseShareRequest = z
   .object({
     ttl_seconds: z.number().int().min(60).max(2_592_000).optional().openapi({
-      description: "Optional time-to-live in seconds. Without an expiry, the share lives until revoked.",
+      description: "Time-to-live in seconds. Defaults to 7 days.",
     }),
     expires_at: z.number().int().optional().openapi({
       description: "Absolute expiry as unix timestamp in milliseconds.",
     }),
     password: z.string().nullable().optional(),
-    latest: z.boolean().optional().openapi({
-      description: "Keep the share token pointed at the latest active release in this release's channel/product track.",
-    }),
   })
   .openapi("ReleaseShareRequest");
 
@@ -74,8 +70,7 @@ const CreateReleaseShareResponse = z
     id: z.string(),
     release_id: z.string(),
     share_url: z.string().url(),
-    expires_at: z.number().int().nullable(),
-    target_mode: z.enum(["release", "latest"]).optional(),
+    expires_at: z.number().int(),
     revoked_at: z.number().int().nullable().optional(),
     has_password: z.boolean().optional(),
   })
@@ -85,7 +80,7 @@ const UpdateReleaseShareResponse = z
   .object({
     id: z.string(),
     release_id: z.string().optional(),
-    expires_at: z.number().int().nullable(),
+    expires_at: z.number().int(),
     revoked_at: z.number().int().nullable().optional(),
     has_password: z.boolean().optional(),
   })

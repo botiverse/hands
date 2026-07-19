@@ -1366,7 +1366,6 @@ export const listWebhookDeliveries = (orgId: string, webhookId: string) =>
 export interface AppShare {
   id: string;
   release_id: string;
-  target_mode: "release" | "latest";
   // Copyable URL; null for legacy shares created before tokens were stored.
   share_url: string | null;
   created_by: string;
@@ -1390,9 +1389,9 @@ export const listAppShares = (appId: string) =>
 export const createReleaseShare = (
   appId: string,
   releaseId: string,
-  body: { ttl_seconds?: number; expires_at?: number; password?: string; latest?: boolean },
+  body: { ttl_seconds?: number; expires_at?: number; password?: string },
 ) =>
-  request<{ id: string; share_url: string; expires_at: number | null; has_password: boolean; target_mode: "release" | "latest" }>(
+  request<{ id: string; share_url: string; expires_at: number | null; has_password: boolean }>(
     `/api/apps/${appId}/releases/${releaseId}/shares`,
     { method: "POST", body: JSON.stringify(body), admin: true },
   );

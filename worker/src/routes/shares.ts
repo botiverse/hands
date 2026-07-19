@@ -11,7 +11,6 @@ import { generateSignedR2Url, resolveChangelog , changelogToHtml, requestedLang 
 type ShareStrings = {
   htmlLang: string;
   preRelease: string; // draft tag
-  latestRelease: string;
   build: string; // "build {code}"
   packageLabel: string;
   versionLabel: string;
@@ -34,7 +33,6 @@ const SHARE_I18N: { en: ShareStrings; zh: ShareStrings } = {
   en: {
     htmlLang: "en",
     preRelease: "Pre-release",
-    latestRelease: "Latest",
     build: "build",
     packageLabel: "Package",
     versionLabel: "Version",
@@ -55,7 +53,6 @@ const SHARE_I18N: { en: ShareStrings; zh: ShareStrings } = {
   zh: {
     htmlLang: "zh",
     preRelease: "预发布",
-    latestRelease: "最新版",
     build: "构建",
     packageLabel: "包名",
     versionLabel: "版本",
@@ -95,7 +92,6 @@ type ShareRow = {
 };
 
 type SharePageRow = {
-  target_mode: "release" | "latest";
   password_hash: string | null;
   icon_r2_key: string | null;
   package_id: string | null;
@@ -130,7 +126,6 @@ export async function handleCreateReleaseShare(c: AdminContext) {
     ttl_seconds?: number;
     expires_at?: number;
     password?: string;
-    latest?: boolean;
   };
   const password = typeof body.password === "string" ? body.password.trim() : "";
   if (password.length > 128) {
@@ -138,23 +133,13 @@ export async function handleCreateReleaseShare(c: AdminContext) {
   }
 
   const release = await c.env.DB.prepare(
-    `SELECT id, status, channel_id, product_type, release_type
-     FROM releases WHERE app_id = ?1 AND id = ?2`,
+    "SELECT id, status FROM releases WHERE app_id = ?1 AND id = ?2",
   )
     .bind(appId, releaseId)
-    .first<{
-      id: string;
-      status: string;
-      channel_id: string;
-      product_type: string;
-      release_type: string;
-    }>();
+    .first<{ id: string; status: string }>();
   if (!release) return c.json({ error: "release not found" }, 404);
   if (release.status === "cancelled") {
     return c.json({ error: "cannot share cancelled release" }, 409);
-  }
-  if (body.latest === true && !["active", "superseded"].includes(release.status)) {
-    return c.json({ error: "latest shares require a published release track" }, 409);
   }
 
   const now = Date.now();
@@ -172,23 +157,9 @@ export async function handleCreateReleaseShare(c: AdminContext) {
   await c.env.DB.batch([
     c.env.DB.prepare(
       `INSERT INTO release_shares
-       (id, release_id, token, token_hash, created_by, created_at, expires_at,
-        revoked_at, password_hash, target_mode, channel_id, product_type, release_type)
-       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, NULL, ?8, ?9, ?10, ?11, ?12)`,
-    ).bind(
-      id,
-      releaseId,
-      token,
-      tokenHash,
-      currentActor(c),
-      now,
-      expiresAt,
-      passwordHash,
-      body.latest === true ? "latest" : "release",
-      body.latest === true ? release.channel_id : null,
-      body.latest === true ? release.product_type : null,
-      body.latest === true ? release.release_type : null,
-    ),
+       (id, release_id, token, token_hash, created_by, created_at, expires_at, revoked_at, password_hash)
+       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, NULL, ?8)`,
+    ).bind(id, releaseId, token, tokenHash, currentActor(c), now, expiresAt, passwordHash),
     c.env.DB.prepare(
       `INSERT INTO audit_logs (id, app_id, action, actor, payload, created_at)
        VALUES (?1, ?2, ?3, ?4, ?5, ?6)`,
@@ -197,13 +168,7 @@ export async function handleCreateReleaseShare(c: AdminContext) {
       appId,
       "release_share.create",
       currentActor(c),
-      JSON.stringify({
-        id,
-        release_id: releaseId,
-        target_mode: body.latest === true ? "latest" : "release",
-        expires_at: expiresAt,
-        has_password: Boolean(passwordHash),
-      }),
+      JSON.stringify({ id, release_id: releaseId, expires_at: expiresAt, has_password: Boolean(passwordHash) }),
       now,
     ),
   ]);
@@ -216,7 +181,6 @@ export async function handleCreateReleaseShare(c: AdminContext) {
     expires_at: expiresAt,
     revoked_at: null,
     has_password: Boolean(passwordHash),
-    target_mode: body.latest === true ? "latest" : "release",
   }, 201);
 }
 
@@ -233,7 +197,6 @@ export async function handleListReleaseShares(c: AdminContext) {
   const { results } = await c.env.DB.prepare(
     `SELECT
        rs.id,
-       rs.target_mode,
        rs.token,
        rs.created_at,
        rs.expires_at,
@@ -273,14 +236,13 @@ export async function handleListAppShares(c: AdminContext) {
     `SELECT
        rs.id,
        rs.release_id,
-       rs.target_mode,
        rs.token,
        rs.created_by,
        rs.created_at,
        rs.expires_at,
        rs.revoked_at,
        (rs.password_hash IS NOT NULL) AS has_password,
-       target.status AS release_status,
+       r.status AS release_status,
        ch.slug AS channel_slug,
        b.version_name,
        b.version_code,
@@ -289,24 +251,11 @@ export async function handleListAppShares(c: AdminContext) {
        COALESCE(SUM(CASE WHEN rse.event_type = 'download' THEN 1 ELSE 0 END), 0) AS download_count,
        COALESCE(COUNT(DISTINCT CASE WHEN rse.event_type = 'download' THEN rse.visitor_hash END), 0) AS unique_download_count
      FROM release_shares rs
-     JOIN releases seed ON seed.id = rs.release_id
-     JOIN releases target ON target.id = CASE
-       WHEN rs.target_mode = 'latest' THEN (
-         SELECT lr.id FROM releases lr
-         WHERE lr.app_id = seed.app_id
-           AND lr.channel_id = rs.channel_id
-           AND lr.product_type = rs.product_type
-           AND lr.release_type = rs.release_type
-           AND lr.status = 'active'
-         ORDER BY lr.updated_at DESC, lr.created_at DESC
-         LIMIT 1
-       )
-       ELSE rs.release_id
-     END
-     JOIN channels ch ON ch.id = target.channel_id
-     JOIN builds b ON b.id = target.build_id
+     JOIN releases r ON r.id = rs.release_id
+     JOIN channels ch ON ch.id = r.channel_id
+     JOIN builds b ON b.id = r.build_id
      LEFT JOIN release_share_events rse ON rse.share_id = rs.id
-     WHERE seed.app_id = ?1
+     WHERE r.app_id = ?1
      GROUP BY rs.id
      ORDER BY rs.created_at DESC
      LIMIT 500`,
@@ -595,7 +544,6 @@ async function findActiveShare(db: D1Database, token: string): Promise<SharePage
   return db.prepare(
     `SELECT
        rs.id AS share_id,
-       rs.target_mode AS target_mode,
        rs.expires_at AS expires_at,
        rs.password_hash AS password_hash,
        a.slug AS app_slug,
@@ -628,20 +576,7 @@ async function findActiveShare(db: D1Database, token: string): Promise<SharePage
        ba.r2_key AS r2_key,
        ba.file_hash AS file_hash
      FROM release_shares rs
-     JOIN releases seed ON seed.id = rs.release_id
-     JOIN releases r ON r.id = CASE
-       WHEN rs.target_mode = 'latest' THEN (
-         SELECT lr.id FROM releases lr
-         WHERE lr.app_id = seed.app_id
-           AND lr.channel_id = rs.channel_id
-           AND lr.product_type = rs.product_type
-           AND lr.release_type = rs.release_type
-           AND lr.status = 'active'
-         ORDER BY lr.updated_at DESC, lr.created_at DESC
-         LIMIT 1
-       )
-       ELSE rs.release_id
-     END
+     JOIN releases r ON r.id = rs.release_id
      JOIN apps a ON a.id = r.app_id
      JOIN channels ch ON ch.id = r.channel_id
      JOIN builds b ON b.id = r.build_id
@@ -804,7 +739,7 @@ function renderSharePage(
             ? ` <span class="draft-tag">${t.preRelease}</span>`
             : ""
         }</h1>
-        <p>${escapeHtml(row.version_name)} · ${t.build} ${row.version_code} · ${escapeHtml(row.channel_slug)}${row.target_mode === "latest" ? ` · ${t.latestRelease}` : ""}</p>
+        <p>${escapeHtml(row.version_name)} · ${t.build} ${row.version_code} · ${escapeHtml(row.channel_slug)}</p>
       </div>
     </div>
     <dl>
