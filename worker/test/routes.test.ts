@@ -74,6 +74,8 @@ describe("quiver OpenAPI document", () => {
       "/public/v2/apps/{slug}/feedback",
       "/public/v2/apps/{slug}/metrics",
       "/apps/{slug}/history",
+      "/apps/{slug}/latest",
+      "/apps/{slug}/latest/download",
       "/api/apps",
       "/api/apps/{appId}/builds",
       "/api/apps/{appId}/builds/publish-version",
@@ -3670,6 +3672,55 @@ describe("quiver public API v2 — scope resolution", () => {
       .run();
     const expiredPage = await handlePublicReleaseShare(makeSharePublicContext(env, expiredToken));
     expect(expiredPage.status).toBeGreaterThanOrEqual(400);
+  });
+
+  it("latest landing: stable app URL renders the highest active published release", async () => {
+    const env = makeEnv();
+    await env.DB.prepare("UPDATE apps SET public_history = 1 WHERE id = ?")
+      .bind("app-scope")
+      .run();
+    await seedRelease(env, "rel-landing-1", "build-landing-1", [["full", "all"]], {
+      createdAt: 100,
+      versionCode: 1,
+      versionName: "1.0.0",
+    });
+    await seedAsset(env, "build-landing-1", "asset-landing-1");
+    await seedRelease(env, "rel-landing-2", "build-landing-2", [["full", "all"]], {
+      createdAt: 200,
+      versionCode: 2,
+      versionName: "2.0.0",
+    });
+    await seedAsset(env, "build-landing-2", "asset-landing-2");
+    const { handlePublicLatestReleaseLanding } = await import("../src/routes/history");
+    const makeContext = (channel?: string) => ({
+      env,
+      req: {
+        param: (name: string) => (name === "slug" ? "scope-app" : ""),
+        query: (name: string) => (name === "channel" ? channel : undefined),
+        header: (name: string) => (name.toLowerCase() === "accept-language" ? "en-US" : undefined),
+      },
+      json: (data: unknown, status = 200) =>
+        new Response(JSON.stringify(data), {
+          status,
+          headers: { "content-type": "application/json" },
+        }),
+    } as any);
+
+    const page = await handlePublicLatestReleaseLanding(makeContext());
+    expect(page.status).toBe(200);
+    const html = await page.text();
+    expect(html).toContain("2.0.0");
+    expect(html).toContain("/apps/scope-app/latest/download?channel=production");
+    expect(html).toContain("Latest");
+
+    const missingChannel = await handlePublicLatestReleaseLanding(makeContext("beta"));
+    expect(missingChannel.status).toBe(404);
+
+    await env.DB.prepare("UPDATE apps SET public_history = 0 WHERE id = ?")
+      .bind("app-scope")
+      .run();
+    const privatePage = await handlePublicLatestReleaseLanding(makeContext());
+    expect(privatePage.status).toBe(404);
   });
 
   // ------------------------------------------------------------------

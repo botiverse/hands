@@ -60,10 +60,12 @@ function isMachinePath(pathname: string): boolean {
   ) {
     return true;
   }
-  // `/apps/:slug/history` and `/apps/:slug/history/:releaseId/download` are
-  // JSON / machine downloads. The bare `/apps/:slug` client-side admin route is
-  // a human page (falls through to redirect).
-  if (pathname.startsWith("/apps/") && pathname.includes("/history")) {
+  // Public app pages and their downloads are origin routes. The bare
+  // `/apps/:slug` client-side admin route remains a human dashboard route.
+  if (
+    pathname.startsWith("/apps/") &&
+    (pathname.includes("/history") || pathname.includes("/latest"))
+  ) {
     return true;
   }
   // `/share/:token` is a human page (redirect). Its sub-resources

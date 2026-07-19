@@ -27,6 +27,10 @@ type HistoryStrings = {
   latestBadge: string; // badge
   noNotesForVersion: string; // per-version empty notes
   noNotesYet: string; // page empty state
+  packageLabel: string;
+  artifactLabel: string;
+  platformLabel: string;
+  checksumLabel: string;
 };
 
 const HISTORY_I18N: { en: HistoryStrings; zh: HistoryStrings } = {
@@ -46,6 +50,10 @@ const HISTORY_I18N: { en: HistoryStrings; zh: HistoryStrings } = {
     latestBadge: "Latest",
     noNotesForVersion: "No release notes for this version.",
     noNotesYet: "No release notes yet.",
+    packageLabel: "Package",
+    artifactLabel: "Artifact",
+    platformLabel: "Platform",
+    checksumLabel: "Checksum",
   },
   zh: {
     htmlLang: "zh",
@@ -63,6 +71,10 @@ const HISTORY_I18N: { en: HistoryStrings; zh: HistoryStrings } = {
     latestBadge: "最新",
     noNotesForVersion: "此版本暂无更新说明。",
     noNotesYet: "暂无更新说明。",
+    packageLabel: "包名",
+    artifactLabel: "安装包",
+    platformLabel: "平台",
+    checksumLabel: "校验和",
   },
 };
 
@@ -80,6 +92,16 @@ type HistoryRow = {
   version_code: number;
   changelog: string | null;
   size_bytes: number | null;
+};
+
+type LatestLandingRow = HistoryRow & {
+  package_id: string | null;
+  platform: string;
+  arch: string | null;
+  variant: string | null;
+  filetype: string;
+  r2_key: string;
+  file_hash: string;
 };
 
 async function loadHistoryApp(db: D1Database, slug: string) {
@@ -113,6 +135,79 @@ const HISTORY_SQL = `
   WHERE r.app_id = ?1 AND r.hidden = 0 AND r.status IN ('active', 'superseded')
   ORDER BY b.version_code DESC, released_at DESC
   LIMIT 50`;
+
+const LATEST_LANDING_SQL = `
+  SELECT r.id AS release_id, r.status AS release_status,
+         COALESCE(b.completed_at, r.created_at) AS released_at,
+         ch.slug AS channel_slug,
+         b.version_name, b.version_code,
+         COALESCE(r.changelog, b.changelog) AS changelog,
+         COALESCE(
+           json_extract(b.parsed_metadata_json, '$.package_id'),
+           json_extract(b.parsed_metadata_json, '$.package_name'),
+           json_extract(b.build_metadata_json, '$.package_id'),
+           json_extract(b.build_metadata_json, '$.package_name'),
+           json_extract(b.build_metadata_json, '$.android.package_id')
+         ) AS package_id,
+         ba.platform, ba.arch, ba.variant, ba.filetype,
+         ba.size_bytes, ba.r2_key, ba.file_hash
+  FROM releases r
+  JOIN builds b ON b.id = r.build_id
+  JOIN channels ch ON ch.id = r.channel_id
+  JOIN build_assets ba ON ba.build_id = b.id AND ba.artifact_kind = 'installable'
+  WHERE r.app_id = ?1 AND r.hidden = 0 AND r.status = 'active'
+    AND (?2 IS NULL OR ch.slug = ?2)
+  ORDER BY CASE WHEN ?2 IS NULL AND ch.slug = 'main' THEN 0 ELSE 1 END,
+           b.version_code DESC, released_at DESC,
+           ba.filetype = 'apk' DESC, ba.created_at ASC
+  LIMIT 1`;
+
+async function loadLatestLanding(
+  db: D1Database,
+  appId: string,
+  channel: string | null,
+): Promise<LatestLandingRow | null> {
+  return db.prepare(LATEST_LANDING_SQL).bind(appId, channel).first<LatestLandingRow>();
+}
+
+/** Stable public landing page for the current active release. Unlike a share
+ * token, this URL is app-level and intentionally rolls forward on publish. */
+export async function handlePublicLatestReleaseLanding(c: Context<{ Bindings: Env }>) {
+  const slug = c.req.param("slug");
+  if (!slug) return c.json({ error: "slug required" }, 400);
+  const app = await loadHistoryApp(c.env.DB, slug);
+  if (!app || !app.public_history) return new Response("Not found", { status: 404 });
+  const channel = c.req.query("channel")?.trim() || null;
+  const row = await loadLatestLanding(c.env.DB, app.id, channel);
+  if (!row) return new Response("No active release", { status: 404 });
+  const lang =
+    c.req.query("lang")?.trim() ||
+    (c.req.header("accept-language") ?? "").split(",")[0]?.trim().split(";")[0] ||
+    null;
+  return new Response(renderLatestLandingPage(app, row, lang, historyStrings(c)), {
+    headers: {
+      "content-type": "text/html; charset=utf-8",
+      "cache-control": "public, max-age=60",
+    },
+  });
+}
+
+export async function handlePublicLatestReleaseDownload(c: Context<{ Bindings: Env }>) {
+  const slug = c.req.param("slug");
+  if (!slug) return c.json({ error: "slug required" }, 400);
+  const app = await loadHistoryApp(c.env.DB, slug);
+  if (!app || !app.public_history) return new Response("Not found", { status: 404 });
+  const channel = c.req.query("channel")?.trim() || null;
+  const row = await loadLatestLanding(c.env.DB, app.id, channel);
+  if (!row) return c.json({ error: "no active release" }, 404);
+  const url = await generateSignedR2Url(
+    c.env,
+    row.r2_key,
+    Number(c.env.SIGNED_URL_TTL_SECONDS ?? "3600"),
+    requestOrigin(c),
+  );
+  return c.redirect(url, 302);
+}
 
 // Like HISTORY_SQL but also includes the single draft whose version_code
 // equals ?2 — so the release-notes page can preview a not-yet-published
@@ -289,6 +384,62 @@ function formatSize(bytes: number | null): string {
   if (!bytes) return "";
   const mb = bytes / (1024 * 1024);
   return `${mb.toFixed(1)} MB`;
+}
+
+function renderLatestLandingPage(
+  app: { slug: string; name: string; platform: string; icon_r2_key: string | null },
+  row: LatestLandingRow,
+  lang: string | null,
+  t: HistoryStrings,
+): string {
+  const notes = resolveChangelog(row.changelog, lang);
+  const channelQuery = `?channel=${encodeURIComponent(row.channel_slug)}`;
+  return `<!doctype html>
+<html lang="${t.htmlLang}">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>${esc(app.name)} — ${esc(row.version_name)}</title>
+  <style>
+    :root { color-scheme: light dark; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+    body { margin: 0; min-height: 100vh; display: grid; place-items: center; background: #f5f5f2; color: #1e1f22; }
+    main { width: min(560px, calc(100vw - 32px)); padding: 32px 0; }
+    header { display: flex; align-items: center; gap: 16px; }
+    header img { border-radius: 12px; }
+    h1 { margin: 0 0 6px; font-size: 28px; }
+    p { margin: 0; color: #5b616e; line-height: 1.5; }
+    .badge { display: inline-block; margin-left: 8px; padding: 2px 7px; border-radius: 999px; background: #d8f3e8; color: #176f5d; font-size: 12px; vertical-align: middle; }
+    dl { display: grid; grid-template-columns: 130px 1fr; gap: 10px 16px; margin: 28px 0; }
+    dt { color: #707782; }
+    dd { margin: 0; font-weight: 600; overflow-wrap: anywhere; }
+    .download { display: inline-flex; min-height: 44px; padding: 0 18px; align-items: center; border-radius: 6px; background: #176f5d; color: white; text-decoration: none; font-weight: 700; }
+    .notes { margin-top: 24px; color: #3b3f45; }
+    .notes ul { padding-left: 20px; }
+    .history { display: inline-block; margin-left: 14px; color: #176f5d; }
+    @media (prefers-color-scheme: dark) { body { background: #17191c; color: #f5f5f2; } p, dt { color: #aeb5bf; } .notes { color: #d2d6dc; } }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      ${app.icon_r2_key ? `<img src="/public/apps/${esc(app.slug)}/icon" alt="" width="56" height="56">` : ""}
+      <div>
+        <h1>${esc(app.name)} <span class="badge">${t.latestBadge}</span></h1>
+        <p>${esc(row.version_name)} · ${t.build} ${row.version_code} · ${esc(row.channel_slug)}</p>
+      </div>
+    </header>
+    <dl>
+      <dt>${t.packageLabel}</dt><dd>${esc(row.package_id || app.slug)}</dd>
+      <dt>${t.artifactLabel}</dt><dd>${esc(row.filetype.toUpperCase())} · ${formatSize(row.size_bytes)}</dd>
+      <dt>${t.platformLabel}</dt><dd>${esc([row.platform, row.arch, row.variant].filter(Boolean).join(" / "))}</dd>
+      <dt>${t.checksumLabel}</dt><dd>${esc(row.file_hash)}</dd>
+    </dl>
+    <a class="download" href="/apps/${esc(app.slug)}/latest/download${channelQuery}">${t.download}</a>
+    <a class="history" href="/apps/${esc(app.slug)}/history">${t.versionHistory}</a>
+    ${notes ? `<div class="notes">${changelogToHtml(notes)}</div>` : ""}
+  </main>
+</body>
+</html>`;
 }
 
 function renderHistoryPage(
