@@ -272,6 +272,11 @@ function ShareRow({
             password
           </span>
         )}
+        {share.target_mode === "latest" && (
+          <span className="ml-1 rounded-sm bg-violet-100 px-1.5 py-0.5 text-xs font-medium text-violet-800">
+            latest
+          </span>
+        )}
         {share.expires_at != null && !share.revoked_at && share.expires_at > Date.now() && (
           <div className="mt-0.5 text-xs text-slate-400">
             expires {new Date(share.expires_at).toLocaleString()}
@@ -332,6 +337,7 @@ function CreateShareModal({
   const [releaseId, setReleaseId] = useState("");
   const [password, setPassword] = useState("");
   const [ttlDays, setTtlDays] = useState("");
+  const [latest, setLatest] = useState(false);
 
   const releases = useQuery({
     queryKey: ["releases", appId],
@@ -351,6 +357,7 @@ function CreateShareModal({
       createReleaseShare(appId, releaseId, {
         ...(ttlDays.trim() ? { ttl_seconds: Number(ttlDays) * 24 * 60 * 60 } : {}),
         ...(password.trim() ? { password: password.trim() } : {}),
+        ...(latest ? { latest: true } : {}),
       }),
     onSuccess: (data) => {
       toast.show({
@@ -399,6 +406,18 @@ function CreateShareModal({
                 ))}
               </SelectContent>
             </Select>
+          </label>
+          <label className="flex items-start gap-2 text-xs text-slate-600">
+            <input
+              type="checkbox"
+              checked={latest}
+              onChange={(e) => setLatest(e.target.checked)}
+              className="mt-0.5"
+            />
+            <span>
+              Always point this URL to the latest published release in the selected
+              release's channel and product track.
+            </span>
           </label>
           <label className="block text-xs text-slate-600">
             Expires in days (optional)
