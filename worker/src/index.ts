@@ -105,6 +105,9 @@ import {
   handleVerifyAscCredentials,
 } from "./routes/asc_credentials";
 import {
+  handleListTestflightGroups,
+  handleTestflightPublish,
+  handleTestflightPublishStatus,
   handleTestflightUpload,
   handleTestflightUploadStatus,
 } from "./routes/testflight";
@@ -893,6 +896,9 @@ admin.get("/api/apps/:appId/asc-credentials", requireAppRole("admin"), handleGet
 admin.post("/api/apps/:appId/asc-credentials/verify", requireAppRole("admin"), handleVerifyAscCredentials);
 admin.post("/api/apps/:appId/builds/:buildId/testflight-upload", requireAppRole("admin"), handleTestflightUpload);
 admin.get("/api/apps/:appId/testflight-uploads/:buildUploadId", requireAppRole("viewer"), handleTestflightUploadStatus);
+admin.get("/api/apps/:appId/builds/:buildId/testflight-groups", requireAppRole("viewer"), handleListTestflightGroups);
+admin.post("/api/apps/:appId/builds/:buildId/testflight-publish", requireAppRole("publisher"), handleTestflightPublish);
+admin.get("/api/apps/:appId/builds/:buildId/testflight-publish", requireAppRole("viewer"), handleTestflightPublishStatus);
 admin.get("/api/apps/:appId/appstore-review", requireAppRole("viewer"), handleAppStoreReview);
 admin.put("/api/apps/:appId/asc-credentials", requireAppRole("admin"), handleSetAscCredentials);
 admin.delete("/api/apps/:appId/asc-credentials", requireAppRole("admin"), handleDeleteAscCredentials);

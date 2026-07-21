@@ -40,6 +40,7 @@ export interface ApiRequestOptions {
   body?: unknown;
   query?: Record<string, string | number | boolean | null | undefined>;
   raw?: boolean; // when true, return Response instead of parsed JSON
+  signal?: AbortSignal;
 }
 
 export async function apiRequest<T = unknown>(
@@ -67,6 +68,7 @@ export async function apiRequest<T = unknown>(
     method: opts.method ?? "GET",
     headers,
     ...(body !== undefined ? { body } : {}),
+    ...(opts.signal ? { signal: opts.signal } : {}),
   });
   if (readEnv("VERBOSE") === "1") {
     console.error(`> ${opts.method ?? "GET"} ${url}`);

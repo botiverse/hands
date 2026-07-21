@@ -720,7 +720,7 @@ export async function handleAgentHelp(c: Context<{ Bindings: Env }>) {
       "3. Triage as you work: update-feedback (change status/assignee, e.g. close a fixed ticket) and comment-feedback (attribution note, internal=true for staff-only). Requires org member (or app publisher).",
       "4. Release management (app publisher): create-release from an existing build (DRAFT by default) → update-release with bilingual release_notes → after explicit human authorization, publish-release. See docs.release_guide.",
       "5. iOS simulator QA fixtures: create-ios-simulator-artifact → PUT the .app.zip to upload.url with the returned headers → complete-ios-simulator-artifact → get/presign the durable exact-byte artifact. QA artifacts can never become releases or update offers.",
-      "6. TestFlight upload (app admin): upload-testflight-build streams an existing signed Hands IPA to Apple; poll get-testflight-upload-status to COMPLETE or FAILED. Upload never assigns beta groups, notifies testers, publishes a Hands release, or submits an App Store production release.",
+      "6. TestFlight: an app admin runs upload-testflight-build and polls get-testflight-upload-status to COMPLETE; an app viewer lists stable beta-group ids, then an app publisher runs publish-testflight-build and polls distribution status. These actions never activate a Hands release or submit an App Store production release.",
     ],
     auth: {
       raft_agents:
@@ -751,6 +751,8 @@ export async function handleAgentHelp(c: Context<{ Bindings: Env }>) {
         "POST /api/apps/{app_id}/qa-artifacts/ios-simulator/{asset_id}/complete — publisher; one-shot stream verification of size/SHA-256 followed by immutable storage sealing",
       upload_testflight_build:
         "POST /api/apps/{app_id}/builds/{build_id}/testflight-upload — admin; streams the stored signed IPA to Apple's Build Upload API without distributing it",
+      publish_testflight_build:
+        "POST /api/apps/{app_id}/builds/{build_id}/testflight-publish — publisher; assigns processed builds to beta groups and optionally submits external Beta App Review",
     },
     docs: {
       agent_guide: `${origin}/docs/agent-cli-feedback`,
@@ -780,9 +782,9 @@ export async function handleAgentManifest(c: Context<{ Bindings: Env }>) {
       method: "GET",
     },
     // HTTP API actions an agent can self-serve via `raft integration invoke`.
-    // Paths are relative to execution.base_url (`${origin}/api`). Focused on the
-    // feedback-read/log-retrieval flow; Hands serves raw attachments and does
-    // not interpret their contents.
+    // Paths are relative to execution.base_url. Actions cover release,
+    // TestFlight/AppGallery, exact QA artifacts, and feedback triage without
+    // returning provider credentials or interpreting raw attachments.
     actions: [
       {
         name: "help",
@@ -1061,13 +1063,13 @@ export async function handleAgentManifest(c: Context<{ Bindings: Env }>) {
         parameters: {
           app_id: { type: "string", in: "path", required: true, description: "Hands app UUID." },
           build_id: { type: "string", in: "path", required: true, description: "Hands build UUID containing the signed installable IPA." },
-          bundle_id: { type: "string", in: "body", required: false, description: "Optional reverse-DNS identifier used only when build metadata does not contain it." },
+          bundle_id: { type: "string", in: "body", required: false, description: "Optional bundle-id assertion that must match immutable build metadata; it is also the fallback when metadata is absent." },
         },
       },
       {
         name: "get-testflight-upload-status",
         description:
-          "Poll one Apple Build Upload id returned by upload-testflight-build until state is COMPLETE or FAILED. Read-only; requires app viewer.",
+          "Poll one Apple Build Upload id returned by upload-testflight-build until state.state is COMPLETE or FAILED; Apple's errors, warnings, and infos remain in the state object. Read-only; requires app viewer.",
         endpoint: {
           method: "GET",
           path: "/api/apps/{app_id}/testflight-uploads/{build_upload_id}",
@@ -1075,6 +1077,53 @@ export async function handleAgentManifest(c: Context<{ Bindings: Env }>) {
         parameters: {
           app_id: { type: "string", in: "path", required: true, description: "Hands app UUID." },
           build_upload_id: { type: "string", in: "path", required: true, description: "App Store Connect Build Upload id returned by upload-testflight-build." },
+        },
+      },
+      {
+        name: "list-testflight-groups",
+        description:
+          "List internal and external App Store Connect beta groups for the exact iOS app represented by a Hands build. Returns stable group ids for publish-testflight-build. Read-only; requires app viewer.",
+        endpoint: {
+          method: "GET",
+          path: "/api/apps/{app_id}/builds/{build_id}/testflight-groups",
+        },
+        parameters: {
+          app_id: { type: "string", in: "path", required: true, description: "Hands app UUID." },
+          build_id: { type: "string", in: "path", required: true, description: "Hands build UUID used to resolve the bundle id." },
+          bundle_id: { type: "string", in: "query", required: false, description: "Optional bundle-id assertion; it must match immutable build metadata, and is only a fallback when metadata is absent." },
+        },
+      },
+      {
+        name: "publish-testflight-build",
+        description:
+          "Distribute one already-processed App Store Connect build to selected TestFlight groups. Upserts localized What to Test text; external mode submits Beta App Review and can auto-notify testers after approval. Never publishes to the App Store or activates a Hands release. Requires app publisher.",
+        endpoint: {
+          method: "POST",
+          path: "/api/apps/{app_id}/builds/{build_id}/testflight-publish",
+        },
+        parameters: {
+          app_id: { type: "string", in: "path", required: true, description: "Hands app UUID." },
+          build_id: { type: "string", in: "path", required: true, description: "Hands build UUID whose exact version/build number is already processed by Apple." },
+          distribution: { type: "string", in: "body", required: true, description: "internal or external; every selected group must match." },
+          group_ids: { type: "array", in: "body", required: true, description: "Non-empty stable beta group ids from list-testflight-groups." },
+          what_to_test: { type: "object", in: "body", required: false, description: "Locale-to-text map, for example {\"en-US\":\"Verify login\"}. External distribution requires at least one existing or supplied localization." },
+          notify_testers: { type: "boolean", in: "body", required: false, description: "External only. Enables automatic notification before review; for an already-approved build without auto-notify pending, sends the manual build notification." },
+          bundle_id: { type: "string", in: "body", required: false, description: "Optional bundle-id assertion; it must match immutable build metadata, and is only a fallback when metadata is absent." },
+        },
+      },
+      {
+        name: "get-testflight-publish-status",
+        description:
+          "Refresh live App Store Connect processing, expiration, assigned groups, localizations, internal/external build state, and Beta App Review state for a Hands build. Read-only; requires app viewer.",
+        endpoint: {
+          method: "GET",
+          path: "/api/apps/{app_id}/builds/{build_id}/testflight-publish",
+        },
+        parameters: {
+          app_id: { type: "string", in: "path", required: true, description: "Hands app UUID." },
+          build_id: { type: "string", in: "path", required: true, description: "Hands build UUID." },
+          distribution: { type: "string", in: "query", required: false, description: "Optional internal or external state projection." },
+          bundle_id: { type: "string", in: "query", required: false, description: "Optional bundle-id assertion; it must match immutable build metadata, and is only a fallback when metadata is absent." },
         },
       },
       {

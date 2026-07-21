@@ -17,6 +17,9 @@ import {
 const AppBuildParams = AppIdParam.merge(BuildIdParam);
 const AppBuildAssetParams = AppBuildParams.merge(AssetIdParam);
 const AppQaArtifactParams = AppIdParam.merge(AssetIdParam);
+const AppBuildUploadParams = AppIdParam.merge(
+  z.object({ buildUploadId: z.string().openapi({ param: { name: "buildUploadId", in: "path" } }) }),
+);
 
 const BuildInput = z
   .object({
@@ -96,6 +99,23 @@ const IosSimulatorQaArtifactInput = z
     metadata_json: z.record(z.string(), z.unknown()).optional(),
   })
   .openapi("IosSimulatorQaArtifactInput");
+
+const TestflightBundleAssertion = z.object({
+  bundle_id: z.string().min(3).optional().openapi({
+    description:
+      "Optional assertion that must match immutable build metadata; used as fallback only when metadata is absent.",
+  }),
+});
+
+const TestflightPublishInput = TestflightBundleAssertion.extend({
+  distribution: z.enum(["internal", "external"]),
+  group_ids: z.array(z.string().min(1)).min(1),
+  what_to_test: z.record(z.string(), z.string().min(1)).optional(),
+  notify_testers: z.boolean().default(false).optional().openapi({
+    description:
+      "External only. Enables automatic notification before review; for an already-approved build without auto-notify pending, sends the manual build notification.",
+  }),
+}).openapi("TestflightPublishInput");
 
 export function registerBuildRoutes(registry: OpenApiRegistry) {
   register(registry, {
@@ -200,6 +220,104 @@ export function registerBuildRoutes(registry: OpenApiRegistry) {
       200: success("Deleted build.", GenericObject),
       403: error("Current principal cannot delete this build."),
       404: error("Build was not found."),
+    },
+  });
+
+  register(registry, {
+    method: "post",
+    path: "/api/apps/{appId}/builds/{buildId}/testflight-upload",
+    tags: ["TestFlight"],
+    summary: "Upload an existing signed IPA to App Store Connect",
+    description:
+      "Streams the immutable Hands IPA through Apple's Build Upload API. Upload only: no beta groups, tester notification, Hands activation, or App Store production publish.",
+    security: auth,
+    request: {
+      params: AppBuildParams,
+      body: { content: json(TestflightBundleAssertion), required: false },
+    },
+    responses: {
+      200: success("Apple Build Upload was created and committed.", GenericObject),
+      400: error("ASC credentials, IPA metadata, or bundle assertion is invalid."),
+      403: error("App admin role is required."),
+      404: error("Hands build or IPA was not found."),
+      502: error("Apple rejected the upload request."),
+    },
+  });
+
+  register(registry, {
+    method: "get",
+    path: "/api/apps/{appId}/testflight-uploads/{buildUploadId}",
+    tags: ["TestFlight"],
+    summary: "Get Apple Build Upload processing state",
+    security: auth,
+    request: { params: AppBuildUploadParams },
+    responses: {
+      200: success("Live Apple Build Upload state.", GenericObject),
+      400: error("ASC credentials are not configured."),
+      403: error("App viewer role is required."),
+      502: error("Apple status lookup failed."),
+    },
+  });
+
+  register(registry, {
+    method: "get",
+    path: "/api/apps/{appId}/builds/{buildId}/testflight-groups",
+    tags: ["TestFlight"],
+    summary: "List TestFlight beta groups for a build's app",
+    security: auth,
+    request: {
+      params: AppBuildParams,
+      query: TestflightBundleAssertion,
+    },
+    responses: {
+      200: success("Internal and external beta groups with stable ids.", GenericObject),
+      400: error("ASC credentials or bundle assertion is invalid."),
+      403: error("App viewer role is required."),
+      404: error("Hands build or App Store Connect app was not found."),
+      502: error("Apple group lookup failed."),
+    },
+  });
+
+  register(registry, {
+    method: "post",
+    path: "/api/apps/{appId}/builds/{buildId}/testflight-publish",
+    tags: ["TestFlight"],
+    summary: "Distribute a processed build to TestFlight groups",
+    description:
+      "Assigns stable beta group ids, upserts localized What to Test text, submits external Beta App Review, and optionally notifies external testers. Never publishes an App Store production version or activates a Hands release.",
+    security: auth,
+    request: {
+      params: AppBuildParams,
+      body: { content: json(TestflightPublishInput), required: true },
+    },
+    responses: {
+      200: success("TestFlight distribution request and live Apple state.", GenericObject),
+      400: error("Distribution, group, localization, or bundle input is invalid."),
+      403: error("App publisher role is required."),
+      404: error("Hands build, ASC app, or beta group was not found."),
+      409: error("The Apple build or beta-review state is not ready."),
+      502: error("Apple rejected the distribution request."),
+    },
+  });
+
+  register(registry, {
+    method: "get",
+    path: "/api/apps/{appId}/builds/{buildId}/testflight-publish",
+    tags: ["TestFlight"],
+    summary: "Get live TestFlight distribution state",
+    security: auth,
+    request: {
+      params: AppBuildParams,
+      query: TestflightBundleAssertion.extend({
+        distribution: z.enum(["internal", "external"]).optional(),
+      }),
+    },
+    responses: {
+      200: success("Processing, expiry, groups, localizations, and beta-review state.", GenericObject),
+      400: error("ASC credentials, distribution, or bundle assertion is invalid."),
+      403: error("App viewer role is required."),
+      404: error("Hands build or App Store Connect app was not found."),
+      502: error("Apple status lookup failed."),
     },
   });
 

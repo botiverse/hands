@@ -13,7 +13,7 @@ npm install -g @botiverse/hands-cli
 Or run it without a permanent install:
 
 ```bash
-npm exec --package @botiverse/hands-cli@0.3.2 -- hands --help
+npm exec --package @botiverse/hands-cli@0.5.12 -- hands --help
 ```
 
 In CI, pin a version so release scripts stay reproducible.
@@ -143,8 +143,10 @@ Public update checks only use the installable artifact. Mapping files, native sy
 ## Publish iOS / TestFlight
 
 CI should upload the **signed IPA** exported by macOS/Xcode, not an unsigned
-intermediate IPA. Hands stores and parses the IPA, but Apple signing material
-stays in the CI secret boundary.
+intermediate IPA. Hands stores the IPA and dSYM; Apple signing certificates,
+profiles, and passwords stay in the CI secret boundary. The separate App Store
+Connect API key used for server-side upload/distribution stays encrypted in
+Hands and is never copied to CI or an agent.
 
 Use `builds publish-ios` after `xcodebuild archive` and
 `xcodebuild -exportArchive`:
@@ -172,12 +174,75 @@ hands builds publish-ios raft-ios \
 dSYM. The `--dsym` file is a `.dSYM.zip` of the archive's `*.dSYM` bundles;
 without it, iOS crashes for that version show only raw frames.
 `--export-method`, `--appstore-build-number`, and `--testflight-status` are
-recorded as build metadata.
+recorded as build metadata. `publish-ios` creates the Hands build/release; it
+does not itself upload to Apple or activate TestFlight testing.
 
-The same signed IPA should then be uploaded to App Store Connect/TestFlight
-from the macOS CI job using Apple-supported tooling such as Transporter or
-fastlane `pilot`. Hands does not sign IPA files and should not receive Apple
-`.p8`, `.p12`, provisioning profiles, or passwords.
+An app admin then starts the **server-side upload** through the Hands console,
+API, or Raft integration action `upload-testflight-build`. Poll the returned
+Apple Build Upload id with `get-testflight-upload-status` until `COMPLETE` or
+`FAILED` (`response.state.state`; Apple errors/warnings/infos remain alongside
+it). This stage only uploads and processes the binary: it never assigns a beta
+group, notifies testers, activates the Hands release, or submits an App Store
+production release.
+
+After Apple exposes the exact build as `VALID`, list stable beta group ids:
+
+```bash
+hands builds testflight-groups raft-ios <hands-build-id>
+```
+
+Distribute to internal testers:
+
+```bash
+hands builds testflight-publish raft-ios <hands-build-id> \
+  --distribution internal \
+  --group-id 11111111-2222-3333-4444-555555555555 \
+  --what-to-test en-US="Verify login and Activity." \
+  --what-to-test zh-Hans="验证登录和活动页。" \
+  --wait
+```
+
+External distribution uses the same processed build, but submits TestFlight
+Beta App Review. `--notify-testers` enables Apple's automatic notification
+after approval; for an already-approved build without auto-notify pending,
+Hands sends the official build beta notification immediately.
+
+```bash
+hands builds testflight-publish raft-ios <hands-build-id> \
+  --distribution external \
+  --group-id aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee \
+  --what-to-test-file en-US=./testflight.en.txt \
+  --what-to-test-file zh-Hans=./testflight.zh.txt \
+  --notify-testers
+```
+
+External review can take longer than a normal CLI session. Omit `--wait` to
+submit and return immediately, then inspect the live state later:
+
+```bash
+hands builds testflight-status raft-ios <hands-build-id> \
+  --distribution external
+```
+
+When `--wait` is useful, tune its bounded poll contract with
+`--poll-interval-seconds` and `--timeout-seconds` (defaults: 15 and 3600).
+Terminal failure/rejection/expiry states fail the command. External mode
+requires an existing or supplied What to Test localization; selected group ids
+must all match the requested internal/external mode.
+
+Hands follows Apple's role boundary: uploading the IPA requires Hands app
+admin; TestFlight group distribution requires Hands app publisher. The stored
+App Store Connect key must have an Apple role permitted for the requested
+operation (external testing: Account Holder, Admin, or App Manager; internal
+testing also permits Developer or Marketing). Apple limits beta builds to 90
+days and permits at most one build of a version in Beta App Review at a time.
+
+Official Apple references:
+
+- [Prerelease Versions and Beta Testers](https://developer.apple.com/documentation/appstoreconnectapi/prerelease-versions-and-beta-testers)
+- [Add internal testers](https://developer.apple.com/help/app-store-connect/test-a-beta-version/add-internal-testers/)
+- [Invite external testers](https://developer.apple.com/help/app-store-connect/test-a-beta-version/invite-external-testers/)
+- [TestFlight overview](https://developer.apple.com/help/app-store-connect/test-a-beta-version/testflight-overview/)
 
 For raw CI drafts, a single `--changelog-file ./changelog.txt` is still valid.
 For reviewed notes, prefer repeatable `lang=file` entries such as

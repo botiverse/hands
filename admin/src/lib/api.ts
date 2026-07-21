@@ -287,7 +287,13 @@ export interface AuditLogEntry {
 export interface Operation {
   id: string;
   app_id: string;
-  kind: "parse" | "upload" | "publish" | "signed_url" | "testflight-upload";
+  kind:
+    | "parse"
+    | "upload"
+    | "publish"
+    | "signed_url"
+    | "testflight-upload"
+    | "testflight-publish";
   status: "pending" | "in_progress" | "success" | "failed" | "cancelled";
   parent_op_id: string | null;
   step_number: number | null;
@@ -876,6 +882,66 @@ export const getTestflightUploadStatus = (appId: string, buildUploadId: string) 
     build_number: string | null;
     uploaded_at: string | null;
   }>(`/api/apps/${appId}/testflight-uploads/${buildUploadId}`, { admin: true });
+
+export interface TestflightGroupState {
+  id: string;
+  name: string | null;
+  is_internal: boolean | null;
+  has_access_to_all_builds: boolean | null;
+  public_link_enabled: boolean | null;
+}
+
+export interface TestflightPublishState {
+  hands_build_id: string;
+  bundle_id: string;
+  asc_app_id: string;
+  asc_build_id: string | null;
+  version: string;
+  build_number: string;
+  processing_state?: string | null;
+  build_audience_type?: string | null;
+  expiration_date?: string | null;
+  expired?: boolean | null;
+  state: string;
+  distribution: "internal" | "external" | null;
+  assigned_groups?: TestflightGroupState[];
+  localizations?: Array<{
+    id: string;
+    locale: string | null;
+    whats_new: string | null;
+  }>;
+  beta_review?: {
+    id: string;
+    state: string | null;
+    submitted_at: string | null;
+  } | null;
+  beta_detail?: {
+    id: string;
+    auto_notify_enabled: boolean | null;
+    internal_build_state: string | null;
+    external_build_state: string | null;
+  } | null;
+  notification?: string;
+}
+
+export const getTestflightPublishStatus = (
+  appId: string,
+  buildId: string,
+  options: {
+    distribution?: "internal" | "external";
+    bundleId?: string;
+  } = {},
+) => {
+  const query = new URLSearchParams();
+  if (options.distribution) query.set("distribution", options.distribution);
+  if (options.bundleId) query.set("bundle_id", options.bundleId);
+  const queryString = query.toString();
+  const suffix = queryString ? `?${queryString}` : "";
+  return request<TestflightPublishState>(
+    `/api/apps/${appId}/builds/${buildId}/testflight-publish${suffix}`,
+    { admin: true },
+  );
+};
 
 // ---------- App Store review status (read-only) ----------
 

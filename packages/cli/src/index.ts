@@ -36,7 +36,7 @@ const program = new Command();
 program
   .name("hands")
   .description("Hands CLI — manage apps, builds, releases from the terminal.")
-  .version("0.5.11")
+  .version("0.5.12")
   .option(
     "--api <url>",
     "Hands business API URL (default: https://hands.build or $HANDS_API)",
@@ -53,6 +53,7 @@ Common recipes:
   hands feedback show <app> <ticketId>                One ticket: device context + attachments
   hands feedback download-attachment <app> <t> <a>    Pull a crash log / screenshot
   hands releases list <app>                           Release history
+  hands builds testflight-status <app> <build>        Apple processing / beta review state
   hands logs collect                                  Bundle local CLI logs for a bug report
 
 Every command supports --json for scripts/agents. Full docs:
