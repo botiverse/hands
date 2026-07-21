@@ -1,16 +1,21 @@
-import type { AppRole } from "./permissions";
+import {
+  APP_ROLE_PERMISSIONS,
+  isAppPermission,
+  type AppPermission,
+  type AppRole,
+} from "./app_permissions";
 
 const TOKEN_PREFIX = "qvdt";
 
 export type DeployTokenRole = Extract<AppRole, "publisher" | "viewer">;
-
 export type AppDeployToken = {
   id: string;
   app_id: string;
   app_slug: string;
   name: string;
   token_prefix: string;
-  app_role: DeployTokenRole;
+  app_role: DeployTokenRole | null;
+  scopes: AppPermission[] | null;
   created_by: string | null;
   created_by_actor: string;
   created_at: number;
@@ -21,6 +26,32 @@ export type AppDeployToken = {
 
 export function isDeployTokenRole(value: unknown): value is DeployTokenRole {
   return value === "publisher" || value === "viewer";
+}
+
+export function resolveAppGrantPermissions(
+  appRole: DeployTokenRole | null,
+  scopes: readonly AppPermission[] | null,
+): ReadonlySet<AppPermission> {
+  const permissions = new Set<AppPermission>();
+  if (appRole) {
+    for (const permission of APP_ROLE_PERMISSIONS[appRole]) permissions.add(permission);
+  }
+  if (scopes) {
+    for (const permission of scopes) permissions.add(permission);
+  }
+  return permissions;
+}
+
+export function resolveDeployTokenPermissions(token: AppDeployToken): ReadonlySet<AppPermission> {
+  // A non-null empty array is the fail-closed sentinel for corrupt, empty, or
+  // unknown stored scopes. An invalid explicit grant invalidates the entire
+  // token grant; a role must not remain usable beside corrupt scope data.
+  if (token.scopes !== null && token.scopes.length === 0) return new Set();
+  return resolveAppGrantPermissions(token.app_role, token.scopes);
+}
+
+export function hasDeployTokenPermission(token: AppDeployToken, permission: AppPermission): boolean {
+  return resolveDeployTokenPermissions(token).has(permission);
 }
 
 function base64Url(bytes: Uint8Array): string {
@@ -65,7 +96,7 @@ export async function loadDeployToken(
   const now = Date.now();
   const row = await env.DB.prepare(
     `SELECT dt.id, dt.app_id, a.slug AS app_slug, dt.name, dt.token_prefix,
-            dt.app_role, dt.created_by, dt.created_by_actor, dt.created_at,
+            dt.app_role, dt.scopes_json, dt.created_by, dt.created_by_actor, dt.created_at,
             dt.expires_at, dt.last_used_at, dt.revoked_at
      FROM app_deploy_tokens dt
      JOIN apps a ON a.id = dt.app_id
@@ -75,7 +106,7 @@ export async function loadDeployToken(
      LIMIT 1`,
   )
     .bind(tokenHash, now)
-    .first<AppDeployToken>();
+    .first<Omit<AppDeployToken, "scopes"> & { scopes_json: string | null }>();
 
   if (!row) return null;
 
@@ -84,5 +115,15 @@ export async function loadDeployToken(
   )
     .bind(now, row.id)
     .run();
-  return { ...row, last_used_at: now };
+  let scopes: AppPermission[] | null = null;
+  if (row.scopes_json !== null) {
+    try {
+      const parsed = JSON.parse(row.scopes_json);
+      scopes = Array.isArray(parsed) && parsed.every(isAppPermission) ? parsed : [];
+    } catch {
+      scopes = [];
+    }
+  }
+  const { scopes_json: _scopesJson, ...tokenRow } = row;
+  return { ...tokenRow, scopes, last_used_at: now };
 }

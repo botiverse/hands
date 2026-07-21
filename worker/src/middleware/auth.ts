@@ -14,7 +14,12 @@
 
 import type { Context, MiddlewareHandler } from "hono";
 import { getCookie } from "hono/cookie";
-import { loadDeployToken, sha256Hex, type AppDeployToken } from "../lib/deploy_tokens";
+import {
+  loadDeployToken,
+  resolveDeployTokenPermissions,
+  sha256Hex,
+  type AppDeployToken,
+} from "../lib/deploy_tokens";
 
 // Session cookie carrying the Hands auth token. Set on the stateless agent-login
 // callback (routes/auth) so the raft CLI's Agent Login — which stores/replays a
@@ -186,6 +191,31 @@ export const authMiddleware: MiddlewareHandler<AdminEnv & { Bindings: Env }> =
     if (bearerToken) {
       const deployToken = await loadDeployToken(c.env, bearerToken);
       if (deployToken) {
+        const effectivePermissions = resolveDeployTokenPermissions(deployToken);
+        if (effectivePermissions.size === 0) {
+          return c.json(
+            {
+              error: "invalid_deploy_token_grant",
+              code: "INVALID_DEPLOY_TOKEN_GRANT",
+              current_permissions: [],
+              app_id: deployToken.app_id,
+            },
+            403,
+          );
+        }
+        if (deployToken.scopes !== null) {
+          const pathname = new URL(c.req.url).pathname;
+          const appRoot = `/api/apps/${deployToken.app_id}`;
+          if (pathname !== appRoot && !pathname.startsWith(`${appRoot}/`)) {
+            return c.json(
+              {
+                error: "scoped_token_app_boundary",
+                app_id: deployToken.app_id,
+              },
+              403,
+            );
+          }
+        }
         c.set("admin_deploy_token", deployToken);
         c.set("admin_actor", `deploy-token:${deployToken.name}@${deployToken.app_slug}`);
         await next();

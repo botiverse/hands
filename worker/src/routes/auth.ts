@@ -973,6 +973,10 @@ export async function handleAgentManifest(c: Context<{ Bindings: Env }>) {
         endpoint: { method: "POST", path: "/api/apps/{app_id}/deploy-tokens" },
         parameters: {
           app_id: { type: "string", in: "path", required: true, description: "App UUID." },
+          name: { type: "string", in: "body", required: true, description: "Human-readable token name." },
+          app_role: { type: "string", in: "body", required: false, description: "Optional role bundle: publisher or viewer." },
+          scopes: { type: "array", in: "body", required: false, description: "Optional additional atomic permissions, unioned with the role bundle. At least one grant is required." },
+          expires_in_days: { type: "number", in: "body", required: false, description: "Optional expiry in days, up to 3650." },
         },
       },
       {

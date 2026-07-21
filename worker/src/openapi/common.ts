@@ -162,6 +162,7 @@ export const OkResponse = z.object({ ok: z.literal(true) }).catchall(z.unknown()
 export const AppRole = z.enum(["viewer", "publisher", "admin"]);
 export const OrgRole = z.enum(["owner", "admin", "member", "viewer"]);
 export const DeployTokenRole = z.enum(["viewer", "publisher"]);
+export const AppPermission = z.enum(["app:read", "app:publish", "app:admin", "feedback:write"]);
 
 export const auth = [{ bearerAuth: [] }];
 

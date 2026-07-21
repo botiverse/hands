@@ -95,6 +95,7 @@ import {
 } from "./routes/history";
 import {
   handleCreateAppDeployToken,
+  handleGetAppPermissionModel,
   handleListAppDeployTokens,
   handleRevokeAppDeployToken,
 } from "./routes/deploy_tokens";
@@ -888,6 +889,7 @@ admin.post("/api/apps/:appId/server-grants", requireAppRole("admin"), handleAddA
 admin.patch("/api/apps/:appId/server-grants/:serverId", requireAppRole("admin"), handleUpdateAppServerGrant);
 admin.delete("/api/apps/:appId/server-grants/:serverId", requireAppRole("admin"), handleRemoveAppServerGrant);
 admin.get("/api/apps/:appId/deploy-tokens", requireAppRole("admin"), handleListAppDeployTokens);
+admin.get("/api/app-permissions", handleGetAppPermissionModel);
 admin.post("/api/apps/:appId/deploy-tokens", requireAppRole("admin"), handleCreateAppDeployToken);
 admin.delete("/api/apps/:appId/deploy-tokens/:tokenId", requireAppRole("admin"), handleRevokeAppDeployToken);
 

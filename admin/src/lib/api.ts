@@ -388,13 +388,30 @@ export interface AppDeployToken {
   app_id: string;
   name: string;
   token_prefix: string;
-  app_role: "publisher" | "viewer";
+  app_role: "publisher" | "viewer" | null;
+  scopes: AppPermission[] | null;
+  grant_valid: boolean;
+  effective_permissions: AppPermission[];
   created_by: string | null;
   created_by_actor: string;
   created_at: number;
   expires_at: number | null;
   last_used_at: number | null;
   revoked_at: number | null;
+}
+
+export type AppPermission =
+  | "app:read"
+  | "app:publish"
+  | "app:admin"
+  | "feedback:write";
+
+export interface AppPermissionModel {
+  permissions: Array<{ permission: AppPermission; label: string; description: string }>;
+  roles: Array<{
+    role: "admin" | "publisher" | "viewer";
+    permissions: AppPermission[];
+  }>;
 }
 
 export interface Invite {
@@ -990,11 +1007,15 @@ export const listAppDeployTokens = (appId: string) =>
     { admin: true },
   );
 
+export const getAppPermissionModel = () =>
+  request<AppPermissionModel>("/api/app-permissions", { admin: true });
+
 export const createAppDeployToken = (
   appId: string,
   input: {
     name: string;
-    app_role: AppDeployToken["app_role"];
+    app_role?: Exclude<AppDeployToken["app_role"], null>;
+    scopes?: AppPermission[];
     expires_at?: number | null;
   },
 ) =>

@@ -20,7 +20,12 @@ import Database from "better-sqlite3";
 import { createHash } from "node:crypto";
 import { Hono } from "hono";
 import { authMiddleware } from "../src/middleware/auth";
-import { requireAppRole, requireCurrentOrgRole, requireFeedbackTriageRole } from "../src/lib/permissions";
+import {
+  requireAppPermission,
+  requireAppRole,
+  requireCurrentOrgRole,
+  requireFeedbackTriageRole,
+} from "../src/lib/permissions";
 import {
   handleUpdateFeedback,
   handleAddFeedbackComment,
@@ -97,6 +102,7 @@ describe("quiver OpenAPI document", () => {
       "/api/apps/{appId}/qa-artifacts/ios-simulator/{assetId}/download",
       "/api/apps/{appId}/releases/{releaseId}/publish",
       "/api/apps/{appId}/feedback/{ticketId}/comments",
+      "/api/app-permissions",
       "/api/apps/{appId}/client-key",
       "/api/apps/{appId}/analytics/versions",
       "/api/orgs/{orgId}/invites",
@@ -518,13 +524,15 @@ function makeMockDb() {
       name TEXT NOT NULL,
       token_prefix TEXT NOT NULL,
       token_hash TEXT NOT NULL UNIQUE,
-      app_role TEXT NOT NULL CHECK (app_role IN ('publisher', 'viewer')),
+      app_role TEXT CHECK (app_role IN ('publisher', 'viewer')),
+      scopes_json TEXT,
       created_by TEXT REFERENCES raft_accounts(id) ON DELETE SET NULL,
       created_by_actor TEXT NOT NULL,
       created_at INTEGER NOT NULL,
       expires_at INTEGER,
       last_used_at INTEGER,
-      revoked_at INTEGER
+      revoked_at INTEGER,
+      CHECK (app_role IS NOT NULL OR scopes_json IS NOT NULL)
     );
     CREATE TABLE invites (
       id TEXT PRIMARY KEY,
@@ -2167,7 +2175,10 @@ describe("quiver Hono app — auth + dispatch", () => {
     await env.DB.prepare(
       "INSERT INTO apps (id, org_id, slug, name, platform, created_at) VALUES (?, ?, ?, ?, ?, ?)",
     ).bind("dt-app", "default", "dt-app", "DT App", "android", now).run();
-    const { handleCreateAppDeployToken } = await import("../src/routes/deploy_tokens");
+    const {
+      handleCreateAppDeployToken,
+      handleListAppDeployTokens,
+    } = await import("../src/routes/deploy_tokens");
     const ctx = (body: unknown) =>
       ({
         env,
@@ -2192,6 +2203,12 @@ describe("quiver Hono app — auth + dispatch", () => {
     const ok = await handleCreateAppDeployToken(ctx({ name: "t2", app_role: "publisher", expires_in_days: 7 }));
     expect(ok.status).toBe(201);
     const created = (await ok.json()) as any;
+    expect(created.deploy_token).toMatchObject({
+      app_role: "publisher",
+      scopes: null,
+      grant_valid: true,
+      effective_permissions: ["app:read", "app:publish", "feedback:write"],
+    });
     expect(created.deploy_token.expires_at).toBeGreaterThan(now + 6.9 * 86_400_000);
     expect(created.deploy_token.expires_at).toBeLessThan(now + 7.1 * 86_400_000);
 
@@ -2204,6 +2221,117 @@ describe("quiver Hono app — auth + dispatch", () => {
     // Invalid days → 400.
     const bad = await handleCreateAppDeployToken(ctx({ name: "t4", app_role: "publisher", expires_in_days: -1 }));
     expect(bad.status).toBe(400);
+
+    const neither = await handleCreateAppDeployToken(ctx({ name: "neither" }));
+    expect(neither.status).toBe(400);
+    const bothGrants = await handleCreateAppDeployToken(
+      ctx({ name: "both", app_role: "viewer", scopes: ["feedback:write"] }),
+    );
+    expect(bothGrants.status).toBe(201);
+    expect((await bothGrants.json()) as any).toMatchObject({
+      deploy_token: {
+        app_role: "viewer",
+        scopes: ["feedback:write"],
+        grant_valid: true,
+        effective_permissions: ["app:read", "feedback:write"],
+      },
+    });
+    const auditRows = await env.DB.prepare(
+      "SELECT payload FROM audit_logs WHERE action = 'deploy_token.create'",
+    ).all();
+    const bothAudit = auditRows.results
+      .map((row: any) => JSON.parse(row.payload))
+      .find((payload: any) => payload.name === "both");
+    expect(bothAudit).toMatchObject({
+      app_role: "viewer",
+      scopes: ["feedback:write"],
+      effective_permissions: ["app:read", "feedback:write"],
+    });
+    const unknownScope = await handleCreateAppDeployToken(
+      ctx({ name: "unknown", scopes: ["releases:delete"] }),
+    );
+    expect(unknownScope.status).toBe(400);
+    const scoped = await handleCreateAppDeployToken(
+      ctx({ name: "feedback-only", scopes: ["feedback:write"], expires_in_days: 7 }),
+    );
+    expect(scoped.status).toBe(201);
+    expect((await scoped.json()) as any).toMatchObject({
+      deploy_token: {
+        app_role: null,
+        scopes: ["feedback:write"],
+        grant_valid: true,
+        effective_permissions: ["feedback:write"],
+      },
+    });
+
+    await env.DB.prepare(
+      `INSERT INTO app_deploy_tokens
+       (id, app_id, name, token_prefix, token_hash, app_role, scopes_json,
+        created_by_actor, created_at)
+       VALUES (?, ?, ?, ?, ?, NULL, ?, ?, ?)`,
+    ).bind(
+      "invalid-grant",
+      "dt-app",
+      "invalid stored grant",
+      "qvdt_invalid",
+      "hash-invalid",
+      JSON.stringify(["unknown:permission"]),
+      "tester",
+      now,
+    ).run();
+    await env.DB.prepare(
+      `INSERT INTO app_deploy_tokens
+       (id, app_id, name, token_prefix, token_hash, app_role, scopes_json,
+        created_by_actor, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, '', ?, ?)`,
+    ).bind(
+      "empty-string-grant",
+      "dt-app",
+      "empty string stored grant",
+      "qvdt_empty_string",
+      "hash-empty-string",
+      "viewer",
+      "tester",
+      now,
+    ).run();
+    const listed = await handleListAppDeployTokens(ctx({}));
+    const listedBody = await listed.json() as any;
+    expect(listedBody.deploy_tokens.find((token: any) => token.name === "both"))
+      .toMatchObject({
+        app_role: "viewer",
+        scopes: ["feedback:write"],
+        grant_valid: true,
+        effective_permissions: ["app:read", "feedback:write"],
+      });
+    expect(listedBody.deploy_tokens.find((token: any) => token.id === "invalid-grant"))
+      .toMatchObject({
+        grant_valid: false,
+        effective_permissions: [],
+      });
+    expect(listedBody.deploy_tokens.find((token: any) => token.id === "empty-string-grant"))
+      .toMatchObject({
+        grant_valid: false,
+        effective_permissions: [],
+      });
+  });
+
+  it("exposes one permission registry with role bundles", async () => {
+    const { handleGetAppPermissionModel } = await import("../src/routes/deploy_tokens");
+    const response = handleGetAppPermissionModel({
+      json: (data: unknown, status = 200) => new Response(JSON.stringify(data), { status }),
+    } as any);
+    const body = await response.json() as any;
+    expect(body.permissions.map((entry: any) => entry.permission)).toEqual([
+      "app:read",
+      "app:publish",
+      "app:admin",
+      "feedback:write",
+    ]);
+    expect(body.permissions.find((entry: any) => entry.permission === "app:read").label)
+      .toBe("App read");
+    expect(body.roles.find((entry: any) => entry.role === "viewer").permissions).toEqual(["app:read"]);
+    expect(body.roles.find((entry: any) => entry.role === "publisher").permissions).toContain("feedback:write");
+    expect(body.roles.find((entry: any) => entry.role === "admin").permissions).toContain("app:admin");
   });
 
   it("loads app-scoped deploy tokens and updates last_used_at", async () => {
@@ -2236,6 +2364,7 @@ describe("quiver Hono app — auth + dispatch", () => {
       app_id: "deploy-app",
       app_slug: "deploy-app",
       app_role: "publisher",
+      scopes: null,
     });
     const row = (await env.DB.prepare(
       "SELECT last_used_at FROM app_deploy_tokens WHERE id = ?",
@@ -2243,9 +2372,196 @@ describe("quiver Hono app — auth + dispatch", () => {
     expect(row?.last_used_at).toBeTypeOf("number");
   });
 
+  it("keeps scoped tokens inside their app route boundary", async () => {
+    const env = makeMockEnv();
+    const now = Date.now();
+    const token = "qvdt_scopeprefix_scopesecret";
+    const tokenHash = createHash("sha256").update(token).digest("hex");
+    await env.DB.prepare(
+      "INSERT INTO apps (id, org_id, slug, name, platform, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+    ).bind("scope-app", "default", "scope-app", "Scope App", "web", now).run();
+    await env.DB.prepare(
+      `INSERT INTO app_deploy_tokens
+       (id, app_id, name, token_prefix, token_hash, app_role, scopes_json, created_by_actor, created_at, expires_at)
+       VALUES (?, ?, ?, ?, ?, NULL, ?, ?, ?, ?)`,
+    ).bind(
+      "scope-token",
+      "scope-app",
+      "feedback writer",
+      "qvdt_scopeprefix",
+      tokenHash,
+      JSON.stringify(["feedback:write"]),
+      "raft:owner@server",
+      now,
+      now + 60_000,
+    ).run();
+
+    const { authMiddleware } = await import("../src/middleware/auth");
+    const invoke = async (url: string) => {
+      const variables = new Map<string, unknown>();
+      let nextCalled = false;
+      const response = await authMiddleware({
+        env,
+        req: {
+          url,
+          header: (name: string) => name.toLowerCase() === "authorization" ? `Bearer ${token}` : undefined,
+        },
+        get: (name: string) => variables.get(name),
+        set: (name: string, value: unknown) => { variables.set(name, value); },
+        json: (data: unknown, status = 200) => new Response(JSON.stringify(data), { status }),
+      } as any, async () => { nextCalled = true; });
+      return { response, nextCalled };
+    };
+
+    const global = await invoke("https://quiver-worker.test/api/orgs");
+    expect(global.response?.status).toBe(403);
+    expect(global.nextCalled).toBe(false);
+    const ownApp = await invoke("https://quiver-worker.test/api/apps/scope-app/releases");
+    expect(ownApp.response).toBeUndefined();
+    expect(ownApp.nextCalled).toBe(true);
+    const otherApp = await invoke("https://quiver-worker.test/api/apps/other/releases");
+    expect(otherApp.response?.status).toBe(403);
+  });
+
+  it("separates legacy role guards from exact custom-permission guards", async () => {
+    const env = makeMockEnv();
+    const now = Date.now();
+    await env.DB.prepare(
+      "INSERT INTO apps (id, org_id, slug, name, platform, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+    ).bind("guard-app", "default", "guard-app", "Guard App", "web", now).run();
+
+    const fixtures = [
+      {
+        id: "custom-publish",
+        token: "qvdt_custom_publish",
+        role: null,
+        scopes: JSON.stringify(["app:publish"]),
+      },
+      {
+        id: "viewer-feedback",
+        token: "qvdt_viewer_feedback",
+        role: "viewer",
+        scopes: JSON.stringify(["feedback:write"]),
+      },
+      {
+        id: "corrupt-viewer",
+        token: "qvdt_corrupt_viewer",
+        role: "viewer",
+        scopes: JSON.stringify(["unknown:permission"]),
+      },
+      {
+        id: "empty-viewer",
+        token: "qvdt_empty_viewer",
+        role: "viewer",
+        scopes: "",
+      },
+    ];
+    for (const fixture of fixtures) {
+      await env.DB.prepare(
+        `INSERT INTO app_deploy_tokens
+         (id, app_id, name, token_prefix, token_hash, app_role, scopes_json,
+          created_by_actor, created_at, expires_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ).bind(
+        fixture.id,
+        "guard-app",
+        fixture.id,
+        fixture.token,
+        createHash("sha256").update(fixture.token).digest("hex"),
+        fixture.role,
+        fixture.scopes,
+        "tester",
+        now,
+        now + 60_000,
+      ).run();
+    }
+
+    const app = new Hono<{ Bindings: Env }>();
+    app.use("*", authMiddleware as any);
+    app.patch(
+      "/api/apps/:appId/feedback/:ticketId",
+      requireFeedbackTriageRole() as any,
+      (c) => c.json({ ok: true }),
+    );
+    app.get(
+      "/api/apps/:appId/view",
+      requireAppRole("viewer") as any,
+      (c) => c.json({ ok: true }),
+    );
+    app.post(
+      "/api/apps/:appId/exact-publish",
+      requireAppPermission("app:publish") as any,
+      (c) => c.json({ ok: true }),
+    );
+    app.post(
+      "/api/apps/:appId/exact-feedback",
+      requireAppPermission("feedback:write") as any,
+      (c) => c.json({ ok: true }),
+    );
+
+    const request = (path: string, token: string, method: string) => app.request(
+      `https://quiver-worker.test${path}`,
+      { method, headers: { authorization: `Bearer ${token}` } },
+      env as any,
+    );
+
+    expect((await request(
+      "/api/apps/guard-app/feedback/ticket-1",
+      "qvdt_custom_publish",
+      "PATCH",
+    )).status).toBe(403);
+    expect((await request(
+      "/api/apps/guard-app/view",
+      "qvdt_custom_publish",
+      "GET",
+    )).status).toBe(403);
+    expect((await request(
+      "/api/apps/guard-app/exact-publish",
+      "qvdt_custom_publish",
+      "POST",
+    )).status).toBe(200);
+
+    expect((await request(
+      "/api/apps/guard-app/view",
+      "qvdt_viewer_feedback",
+      "GET",
+    )).status).toBe(200);
+    expect((await request(
+      "/api/apps/guard-app/feedback/ticket-1",
+      "qvdt_viewer_feedback",
+      "PATCH",
+    )).status).toBe(403);
+    expect((await request(
+      "/api/apps/guard-app/exact-feedback",
+      "qvdt_viewer_feedback",
+      "POST",
+    )).status).toBe(200);
+
+    const corrupt = await request(
+      "/api/apps/guard-app/view",
+      "qvdt_corrupt_viewer",
+      "GET",
+    );
+    expect(corrupt.status).toBe(403);
+    await expect(corrupt.json()).resolves.toMatchObject({
+      code: "INVALID_DEPLOY_TOKEN_GRANT",
+      current_permissions: [],
+    });
+    const empty = await request(
+      "/api/apps/guard-app/view",
+      "qvdt_empty_viewer",
+      "GET",
+    );
+    expect(empty.status).toBe(403);
+    await expect(empty.json()).resolves.toMatchObject({
+      code: "INVALID_DEPLOY_TOKEN_GRANT",
+      current_permissions: [],
+    });
+  });
+
   it("allows deploy tokens only for their app and role", async () => {
     const env = makeMockEnv();
-    const { ensureAppRole } = await import("../src/lib/permissions");
+    const { ensureAppPermission, ensureAppRole } = await import("../src/lib/permissions");
     const ctx = {
       env,
       get: (key: string) =>
@@ -2257,6 +2573,7 @@ describe("quiver Hono app — auth + dispatch", () => {
               name: "ci",
               token_prefix: "qvdt_test",
               app_role: "publisher",
+              scopes: null,
               created_by: null,
               created_by_actor: "raft:owner@server",
               created_at: 1,
@@ -2279,6 +2596,119 @@ describe("quiver Hono app — auth + dispatch", () => {
     const tooHigh = await ensureAppRole(ctx as any, "app-1", "admin");
     expect(tooHigh.ok).toBe(false);
     if (!tooHigh.ok) expect(tooHigh.response.status).toBe(403);
+
+    const scopedCtx = {
+      ...ctx,
+      get: (key: string) =>
+        key === "admin_deploy_token"
+          ? {
+              ...(ctx.get("admin_deploy_token") as object),
+              app_role: null,
+              scopes: ["app:read"],
+            }
+          : undefined,
+    };
+    const scopedReadRole = await ensureAppRole(scopedCtx as any, "app-1", "viewer");
+    expect(scopedReadRole.ok).toBe(false);
+    await expect(ensureAppPermission(scopedCtx as any, "app-1", "app:read"))
+      .resolves.toMatchObject({ ok: true, app_permission: "app:read" });
+    const scopedPublish = await ensureAppRole(scopedCtx as any, "app-1", "publisher");
+    expect(scopedPublish.ok).toBe(false);
+
+    const customPublishCtx = {
+      ...ctx,
+      get: (key: string) =>
+        key === "admin_deploy_token"
+          ? {
+              ...(ctx.get("admin_deploy_token") as object),
+              app_role: null,
+              scopes: ["app:publish"],
+            }
+          : undefined,
+    };
+    const customPublishRole = await ensureAppRole(
+      customPublishCtx as any,
+      "app-1",
+      "publisher",
+    );
+    expect(customPublishRole.ok).toBe(false);
+    await expect(ensureAppPermission(customPublishCtx as any, "app-1", "app:publish"))
+      .resolves.toMatchObject({ ok: true, app_permission: "app:publish" });
+    const customPublishRead = await ensureAppPermission(
+      customPublishCtx as any,
+      "app-1",
+      "app:read",
+    );
+    expect(customPublishRead.ok).toBe(false);
+
+    const feedbackCtx = {
+      ...ctx,
+      get: (key: string) =>
+        key === "admin_deploy_token"
+          ? {
+              ...(ctx.get("admin_deploy_token") as object),
+              app_role: null,
+              scopes: ["feedback:write"],
+            }
+          : undefined,
+    };
+    await expect(ensureAppPermission(feedbackCtx as any, "app-1", "feedback:write"))
+      .resolves.toMatchObject({ ok: true, app_permission: "feedback:write" });
+    const feedbackRead = await ensureAppPermission(feedbackCtx as any, "app-1", "app:read");
+    expect(feedbackRead.ok).toBe(false);
+
+    const additiveViewerCtx = {
+      ...ctx,
+      get: (key: string) =>
+        key === "admin_deploy_token"
+          ? {
+              ...(ctx.get("admin_deploy_token") as object),
+              app_role: "viewer",
+              scopes: ["feedback:write"],
+            }
+          : undefined,
+    };
+    await expect(ensureAppRole(additiveViewerCtx as any, "app-1", "viewer"))
+      .resolves.toMatchObject({ ok: true, app_role: "viewer" });
+    const additivePublish = await ensureAppRole(additiveViewerCtx as any, "app-1", "publisher");
+    expect(additivePublish.ok).toBe(false);
+    if (!additivePublish.ok) {
+      await expect(additivePublish.response.json()).resolves.toMatchObject({
+        current_permissions: ["app:read", "feedback:write"],
+      });
+    }
+    await expect(ensureAppPermission(additiveViewerCtx as any, "app-1", "feedback:write"))
+      .resolves.toMatchObject({ ok: true, app_permission: "feedback:write" });
+
+    const corruptRoleCtx = {
+      ...ctx,
+      get: (key: string) =>
+        key === "admin_deploy_token"
+          ? {
+              ...(ctx.get("admin_deploy_token") as object),
+              app_role: "viewer",
+              scopes: [],
+            }
+          : undefined,
+    };
+    const corruptRole = await ensureAppRole(corruptRoleCtx as any, "app-1", "viewer");
+    expect(corruptRole.ok).toBe(false);
+    if (!corruptRole.ok) {
+      await expect(corruptRole.response.json()).resolves.toMatchObject({
+        current_permissions: [],
+      });
+    }
+    const corruptPermission = await ensureAppPermission(
+      corruptRoleCtx as any,
+      "app-1",
+      "app:read",
+    );
+    expect(corruptPermission.ok).toBe(false);
+    if (!corruptPermission.ok) {
+      await expect(corruptPermission.response.json()).resolves.toMatchObject({
+        current_permissions: [],
+      });
+    }
   });
 });
 

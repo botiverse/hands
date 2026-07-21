@@ -1,10 +1,24 @@
 import type { Context, MiddlewareHandler } from "hono";
 import { currentActorInfo, type AdminAccount, type AdminEnv } from "../middleware/auth";
-import type { AppDeployToken } from "./deploy_tokens";
+import {
+  hasDeployTokenPermission,
+  resolveDeployTokenPermissions,
+  type AppDeployToken,
+} from "./deploy_tokens";
+import {
+  APP_PERMISSION_MINIMUM_ROLE,
+  isAppAtLeast,
+  isAppRole,
+  strongestAppRole,
+  type AppRole,
+  type AppPermission,
+} from "./app_permissions";
 import { dashboardOrigin } from "./origin";
 
+export { isAppAtLeast, isAppRole } from "./app_permissions";
+export type { AppRole, AppPermission } from "./app_permissions";
+
 export type OrgRole = "owner" | "admin" | "member" | "viewer";
-export type AppRole = "admin" | "publisher" | "viewer";
 export type EffectiveRole = OrgRole | AppRole;
 
 type RoleContext = AdminEnv & { Bindings: Env };
@@ -17,28 +31,13 @@ const orgRank: Record<OrgRole, number> = {
   owner: 4,
 };
 
-const appRank: Record<AppRole, number> = {
-  viewer: 1,
-  publisher: 2,
-  admin: 3,
-};
-
 export function isOrgRole(value: unknown): value is OrgRole {
   return value === "owner" || value === "admin" || value === "member" || value === "viewer";
-}
-
-export function isAppRole(value: unknown): value is AppRole {
-  return value === "admin" || value === "publisher" || value === "viewer";
 }
 
 export function isOrgAtLeast(role: OrgRole | null | undefined, minimum: OrgRole) {
   if (!role) return false;
   return orgRank[role] >= orgRank[minimum];
-}
-
-export function isAppAtLeast(role: AppRole | null | undefined, minimum: AppRole) {
-  if (!role) return false;
-  return appRank[role] >= appRank[minimum];
 }
 
 function devTokenBypass(c: AdminContext) {
@@ -137,7 +136,7 @@ export async function getEffectiveRole(
       : Promise.resolve(null),
   ]);
   const roles = [appRole, serverAppRole].filter(Boolean) as AppRole[];
-  const effectiveAppRole = roles.sort((a, b) => appRank[b] - appRank[a])[0] ?? null;
+  const effectiveAppRole = strongestAppRole(roles);
   return { org_role: orgRole, app_role: effectiveAppRole, server_app_role: serverAppRole, org_id: orgId };
 }
 
@@ -150,7 +149,11 @@ function forbiddenRole(
   scope: "org" | "app",
   requiredRole: string,
   currentRole: string | null,
-  ids: { org_id?: string | null; app_id?: string | null },
+  ids: {
+    org_id?: string | null;
+    app_id?: string | null;
+    current_permissions?: AppPermission[];
+  },
 ) {
   let resource = "";
   try {
@@ -186,8 +189,29 @@ function forbiddenRole(
       resource,
       org_id: ids.org_id ?? null,
       app_id: ids.app_id ?? null,
+      ...(ids.current_permissions
+        ? { current_permissions: ids.current_permissions }
+        : {}),
       manage_url: manageUrl,
       ...(scope === "org" ? { org_role: currentRole } : { app_role: currentRole }),
+    },
+    403,
+  );
+}
+
+function forbiddenAppPermission(
+  c: AdminContext,
+  appId: string,
+  permission: AppPermission,
+  deployToken: AppDeployToken,
+) {
+  return c.json(
+    {
+      error: "insufficient_app_permission",
+      code: "INSUFFICIENT_APP_PERMISSION",
+      required_permission: permission,
+      current_permissions: [...resolveDeployTokenPermissions(deployToken)],
+      app_id: appId,
     },
     403,
   );
@@ -218,7 +242,11 @@ export async function ensureAppRole(
   if (devTokenBypass(c)) return { ok: true as const, app_role: "admin" as AppRole, org_role: "owner" as OrgRole };
   const deployToken = currentDeployToken(c);
   if (deployToken) {
-    if (deployToken.app_id !== appId || !isAppAtLeast(deployToken.app_role, minimum)) {
+    if (
+      deployToken.app_id !== appId
+      || resolveDeployTokenPermissions(deployToken).size === 0
+      || !isAppAtLeast(deployToken.app_role, minimum)
+    ) {
       return {
         ok: false as const,
         response: forbiddenRole(
@@ -226,7 +254,10 @@ export async function ensureAppRole(
           "app",
           minimum,
           deployToken.app_id === appId ? deployToken.app_role : null,
-          { app_id: appId },
+          {
+            app_id: appId,
+            current_permissions: [...resolveDeployTokenPermissions(deployToken)],
+          },
         ),
       };
     }
@@ -280,6 +311,26 @@ export async function ensureAppRole(
   return { ok: true as const, ...role };
 }
 
+export async function ensureAppPermission(
+  c: AdminContext,
+  appId: string,
+  permission: AppPermission,
+  opts?: { orgMinimum?: OrgRole },
+) {
+  if (devTokenBypass(c)) return { ok: true as const, app_permission: permission };
+  const deployToken = currentDeployToken(c);
+  if (deployToken) {
+    if (deployToken.app_id !== appId || !hasDeployTokenPermission(deployToken, permission)) {
+      return {
+        ok: false as const,
+        response: forbiddenAppPermission(c, appId, permission, deployToken),
+      };
+    }
+    return { ok: true as const, app_permission: permission };
+  }
+  return ensureAppRole(c, appId, APP_PERMISSION_MINIMUM_ROLE[permission], opts);
+}
+
 export function requireOrgRole(paramName: string, minimum: OrgRole): MiddlewareHandler<RoleContext> {
   return async (c, next) => {
     const orgId = c.req.param(paramName);
@@ -299,7 +350,7 @@ export function requireCurrentOrgRole(minimum: OrgRole): MiddlewareHandler<RoleC
         return;
       }
       const deployToken = c.get("admin_deploy_token");
-      if (deployToken && minimum === "viewer") {
+      if (deployToken && deployToken.scopes === null && minimum === "viewer") {
         await next();
         return;
       }
@@ -316,6 +367,16 @@ export function requireAppRole(minimum: AppRole): MiddlewareHandler<RoleContext>
     const appId = c.req.param("appId");
     if (!appId) return c.json({ error: "missing appId" }, 400);
     const allowed = await ensureAppRole(c, appId, minimum);
+    if (!allowed.ok) return allowed.response;
+    await next();
+  };
+}
+
+export function requireAppPermission(permission: AppPermission): MiddlewareHandler<RoleContext> {
+  return async (c, next) => {
+    const appId = c.req.param("appId");
+    if (!appId) return c.json({ error: "missing appId" }, 400);
+    const allowed = await ensureAppPermission(c, appId, permission);
     if (!allowed.ok) return allowed.response;
     await next();
   };

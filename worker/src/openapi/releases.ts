@@ -1,6 +1,7 @@
 import { z } from "@hono/zod-openapi";
 import {
   AppIdParam,
+  AppPermission,
   AppRole,
   DeployTokenRole,
   GenericObject,
@@ -126,7 +127,10 @@ const AppDeployToken = z
     app_id: z.string(),
     name: z.string(),
     token_prefix: z.string(),
-    app_role: DeployTokenRole,
+    app_role: DeployTokenRole.nullable(),
+    scopes: z.array(AppPermission).nullable(),
+    grant_valid: z.boolean(),
+    effective_permissions: z.array(AppPermission),
     created_by: z.string().nullable().optional(),
     created_by_actor: z.string(),
     created_at: z.number().int(),
@@ -139,7 +143,8 @@ const AppDeployToken = z
 const CreateAppDeployTokenRequest = z
   .object({
     name: z.string().min(1).max(80),
-    app_role: DeployTokenRole,
+    app_role: DeployTokenRole.optional(),
+    scopes: z.array(AppPermission).min(1).optional(),
     expires_at: z.number().int().nullable().optional().openapi({
       description:
         "Optional absolute expiry as unix timestamp in milliseconds. Must be at least 60 seconds in the future.",
@@ -157,7 +162,30 @@ const CreateAppDeployTokenResponse = z
   })
   .openapi("CreateAppDeployTokenResponse");
 
+const AppPermissionModel = z.object({
+  permissions: z.array(z.object({
+    permission: AppPermission,
+    label: z.string(),
+    description: z.string(),
+  })),
+  roles: z.array(z.object({
+    role: AppRole,
+    permissions: z.array(AppPermission),
+  })),
+}).openapi("AppPermissionModel");
+
 export function registerReleaseRoutes(registry: OpenApiRegistry) {
+  register(registry, {
+    method: "get",
+    path: "/api/app-permissions",
+    tags: ["App access"],
+    summary: "Read the app permission registry and role bundles",
+    security: auth,
+    responses: {
+      200: success("App permission model.", AppPermissionModel),
+      401: error("Missing or invalid authentication."),
+    },
+  });
   register(registry, {
     method: "get",
     path: "/api/apps/{appId}/releases",
@@ -368,7 +396,7 @@ function registerAccessRoutes(registry: OpenApiRegistry) {
     tags: ["App access"],
     summary: "Create an app deploy token",
     description:
-      "Creates an app-scoped deploy token. The raw token is returned once in this response; store it directly in a secret manager.",
+      "Creates an app-scoped deploy token. Provide app_role, scopes, or both; at least one grant is required and effective permissions are their union. The raw token is returned once in this response; store it directly in a secret manager.",
     security: auth,
     request: {
       params: AppIdParam,
