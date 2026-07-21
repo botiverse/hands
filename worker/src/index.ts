@@ -14,6 +14,7 @@ import { Container, getRandom } from "@cloudflare/containers";
 import { Hono } from "hono";
 import type { Context } from "hono";
 import { cors } from "hono/cors";
+import { publicDocAssetPaths } from "./lib/public_docs";
 
 import { authMiddleware, currentActor } from "./middleware/auth";
 import {
@@ -473,21 +474,6 @@ app.get("/api-docs", (c) => c.html(`<!doctype html>
     </script>
   </body>
 </html>`));
-const publicDocs = new Set([
-  "/docs/",
-  "/docs/getting-started/",
-  "/docs/agent-guide/",
-  "/docs/admin-user-guide/",
-  "/docs/android-sdk/",
-  "/docs/ios-sdk/",
-  "/docs/ohos-sdk/",
-  "/docs/electron-sdk/",
-  "/docs/cli-reference/",
-  "/docs/agent-cli-feedback/",
-  "/docs/ios-testflight/",
-  "/docs/public-api-reference/",
-]);
-
 async function handlePublicDocs(c: Context<{ Bindings: Env }>) {
   const path = new URL(c.req.url).pathname;
   // Raw-markdown twins: /docs.md (machine index) and /docs/<slug>.md. The build
@@ -507,11 +493,23 @@ async function handlePublicDocs(c: Context<{ Bindings: Env }>) {
     headers.set("content-type", "text/markdown; charset=utf-8");
     return new Response(asset.body, { status: asset.status, headers });
   }
-  const normalizedPath = path.endsWith("/") ? path : `${path}/`;
-  if (!publicDocs.has(normalizedPath)) {
-    return c.text("Not found", 404);
+  const assetPaths = publicDocAssetPaths(path);
+  if (!assetPaths) return c.text("Not found", 404);
+
+  // Cloudflare Assets uses SPA fallback for the admin app, so an unknown docs
+  // URL would otherwise return the root index.html with status 200. Generated
+  // articles always have a Markdown twin; use that file as the automatic docs
+  // manifest before serving the article HTML.
+  if (assetPaths.markdownTwinPath) {
+    const twin = await c.env.ASSETS.fetch(
+      new Request(new URL(assetPaths.markdownTwinPath, c.req.url), c.req.raw),
+    );
+    const twinType = twin.headers.get("content-type") ?? "";
+    if (twin.status === 404 || twinType.includes("text/html")) {
+      return c.text("Not found", 404);
+    }
   }
-  return c.env.ASSETS.fetch(new Request(new URL(normalizedPath, c.req.url), c.req.raw));
+  return c.env.ASSETS.fetch(new Request(new URL(assetPaths.htmlPath, c.req.url), c.req.raw));
 }
 
 app.get("/docs", handlePublicDocs);
