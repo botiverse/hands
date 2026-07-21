@@ -16,6 +16,7 @@ import {
   getRelease,
   listApps,
   listChannels,
+  listDeviceGroups,
   listProductTypes,
   listReleases,
   publishRelease,
@@ -706,7 +707,11 @@ function EditReleaseDialog({
 }) {
   const toast = useToast();
   const [changelog, setChangelog] = useState(release.changelog ?? "");
-  const [scopeType, setScopeType] = useState<"full" | "platform" | "user_cohort" | "ip_range">("full");
+  const deviceGroups = useQuery({
+    queryKey: ["device-groups", appId],
+    queryFn: () => listDeviceGroups(appId),
+  });
+  const [scopeType, setScopeType] = useState<"full" | "platform" | "user_cohort" | "ip_range" | "device_group">("full");
   const [scopeValue, setScopeValue] = useState("all");
   const [shouldForceUpdate, setShouldForceUpdate] = useState(Boolean(release.should_force_update));
   const [rolloutPercent, setRolloutPercent] = useState<number>(release.rollout_cohort_count ?? 100);
@@ -722,7 +727,8 @@ function EditReleaseDialog({
       (firstScope.scope_type === "full" ||
         firstScope.scope_type === "platform" ||
         firstScope.scope_type === "user_cohort" ||
-        firstScope.scope_type === "ip_range")
+        firstScope.scope_type === "ip_range" ||
+        firstScope.scope_type === "device_group")
     ) {
       setScopeType(firstScope.scope_type);
       setScopeValue(firstScope.scope_value);
@@ -784,6 +790,7 @@ function EditReleaseDialog({
                   platform: "Platform",
                   user_cohort: "User cohort",
                   ip_range: "IP range",
+                  device_group: "Device group",
                 }}
                 value={scopeType}
                 onValueChange={(v) => {
@@ -801,17 +808,33 @@ function EditReleaseDialog({
                   <SelectItem value="platform">Platform</SelectItem>
                   <SelectItem value="user_cohort">User cohort</SelectItem>
                   <SelectItem value="ip_range">IP range</SelectItem>
+                  <SelectItem value="device_group">Device group</SelectItem>
                 </SelectContent>
               </Select>
             </div>
             <div>
               <label className="label">Scope value</label>
-              <Input
-                value={scopeValue}
-                disabled={scopeType === "full"}
-                onChange={(e) => setScopeValue(e.target.value)}
-                placeholder={scopeType === "full" ? "all" : "android-arm64-v8a"}
-              />
+              {scopeType === "device_group" ? (
+                <Select
+                  items={Object.fromEntries((deviceGroups.data?.groups ?? []).map((group) => [group.id, group.name]))}
+                  value={scopeValue}
+                  onValueChange={(value) => setScopeValue(value as string)}
+                >
+                  <SelectTrigger><SelectValue placeholder="Choose group" /><SelectIcon /></SelectTrigger>
+                  <SelectContent>
+                    {(deviceGroups.data?.groups ?? []).map((group) => (
+                      <SelectItem key={group.id} value={group.id}>{group.name} ({group.member_count})</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              ) : (
+                <Input
+                  value={scopeValue}
+                  disabled={scopeType === "full"}
+                  onChange={(e) => setScopeValue(e.target.value)}
+                  placeholder={scopeType === "full" ? "all" : "android-arm64-v8a"}
+                />
+              )}
             </div>
           </div>
           <label className="flex items-center gap-2 text-xs">
@@ -866,6 +889,10 @@ function NewReleaseDialog({
     queryKey: ["product-types", appId],
     queryFn: () => listProductTypes(appId),
   });
+  const deviceGroups = useQuery({
+    queryKey: ["device-groups", appId],
+    queryFn: () => listDeviceGroups(appId),
+  });
 
   // Pre-fill the channel with the app's default release channel (set in
   // AppDetail Settings). Falls back to first channel if no default.
@@ -888,7 +915,7 @@ function NewReleaseDialog({
   const [versionName, setVersionName] = useState<string>("");
   const [versionCode, setVersionCode] = useState<string>("");
   const [changelog, setChangelog] = useState<string>("");
-  const [scopeType, setScopeType] = useState<"full" | "platform" | "user_cohort" | "ip_range">(
+  const [scopeType, setScopeType] = useState<"full" | "platform" | "user_cohort" | "ip_range" | "device_group">(
     "full",
   );
   const [scopeValue, setScopeValue] = useState<string>("all");
@@ -1253,10 +1280,57 @@ function NewReleaseDialog({
                     setShowAdvanced((v) => !v);
                   }}
                 >
-                  {showAdvanced ? "▾" : "▸"} Advanced options (force update, rollout %)
+                  {showAdvanced ? "▾" : "▸"} Advanced options (scope, force update, rollout %)
                 </summary>
                 {showAdvanced && (
                   <div className="mt-2 p-3 border border-slate-200 rounded-sm space-y-2">
+                    <div className="grid grid-cols-2 gap-2">
+                      <div>
+                        <label className="label">Release scope</label>
+                        <Select
+                          items={{ full: "Full", platform: "Platform", user_cohort: "User cohort", ip_range: "IP range", device_group: "Device group" }}
+                          value={scopeType}
+                          onValueChange={(value) => {
+                            const next = value as typeof scopeType;
+                            setScopeType(next);
+                            setScopeValue(next === "full" ? "all" : "");
+                          }}
+                        >
+                          <SelectTrigger><SelectValue /><SelectIcon /></SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="full">Full</SelectItem>
+                            <SelectItem value="platform">Platform</SelectItem>
+                            <SelectItem value="user_cohort">User cohort</SelectItem>
+                            <SelectItem value="ip_range">IP range</SelectItem>
+                            <SelectItem value="device_group">Device group</SelectItem>
+                          </SelectContent>
+                        </Select>
+                      </div>
+                      <div>
+                        <label className="label">Scope value</label>
+                        {scopeType === "device_group" ? (
+                          <Select
+                            items={Object.fromEntries((deviceGroups.data?.groups ?? []).map((group) => [group.id, group.name]))}
+                            value={scopeValue}
+                            onValueChange={(value) => setScopeValue(value as string)}
+                          >
+                            <SelectTrigger><SelectValue placeholder="Choose group" /><SelectIcon /></SelectTrigger>
+                            <SelectContent>
+                              {(deviceGroups.data?.groups ?? []).map((group) => (
+                                <SelectItem key={group.id} value={group.id}>{group.name} ({group.member_count})</SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                        ) : (
+                          <Input
+                            value={scopeValue}
+                            disabled={scopeType === "full"}
+                            onChange={(event) => setScopeValue(event.target.value)}
+                            placeholder={scopeType === "full" ? "all" : "android-arm64-v8a"}
+                          />
+                        )}
+                      </div>
+                    </div>
                     <label className="flex items-center gap-2 text-xs">
                       <Checkbox
                         checked={shouldForceUpdate}

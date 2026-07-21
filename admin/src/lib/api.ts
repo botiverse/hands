@@ -232,9 +232,27 @@ export interface Release {
 export interface ReleaseScope {
   id: string;
   release_id: string;
-  scope_type: string;         // 'full' | 'platform' | 'ip_range' | 'user_cohort'
+  scope_type: string;         // 'full' | 'platform' | 'ip_range' | 'user_cohort' | 'device_group'
   scope_value: string;
   created_at: number;
+}
+
+export interface DeviceGroupMember {
+  group_id: string;
+  device_id: string;
+  label: string | null;
+  created_at: number;
+}
+
+export interface DeviceGroup {
+  id: string;
+  app_id: string;
+  name: string;
+  description: string | null;
+  member_count: number;
+  members: DeviceGroupMember[];
+  created_at: number;
+  updated_at: number;
 }
 
 export interface Channel {
@@ -1150,6 +1168,48 @@ export const getBuildAssetDownloadUrl = (
 
 export const listReleases = (appId: string) =>
   request<{ releases: Release[] }>(`/api/apps/${appId}/releases`, { admin: true });
+
+export const listDeviceGroups = (appId: string) =>
+  request<{ groups: DeviceGroup[] }>(`/api/apps/${appId}/device-groups`, { admin: true });
+
+export const createDeviceGroup = (appId: string, input: { name: string; description?: string }) =>
+  request<DeviceGroup>(`/api/apps/${appId}/device-groups`, {
+    method: "POST",
+    admin: true,
+    body: JSON.stringify(input),
+  });
+
+export const updateDeviceGroup = (
+  appId: string,
+  groupId: string,
+  input: { name?: string; description?: string | null },
+) => request<DeviceGroup>(`/api/apps/${appId}/device-groups/${groupId}`, {
+  method: "PATCH",
+  admin: true,
+  body: JSON.stringify(input),
+});
+
+export const deleteDeviceGroup = (appId: string, groupId: string) =>
+  request<{ ok: boolean; id: string }>(`/api/apps/${appId}/device-groups/${groupId}`, {
+    method: "DELETE",
+    admin: true,
+  });
+
+export const addDeviceGroupMember = (
+  appId: string,
+  groupId: string,
+  input: { device_id: string; label?: string },
+) => request<DeviceGroupMember>(`/api/apps/${appId}/device-groups/${groupId}/members`, {
+  method: "POST",
+  admin: true,
+  body: JSON.stringify(input),
+});
+
+export const removeDeviceGroupMember = (appId: string, groupId: string, deviceId: string) =>
+  request<{ ok: boolean }>(
+    `/api/apps/${appId}/device-groups/${groupId}/members/${encodeURIComponent(deviceId)}`,
+    { method: "DELETE", admin: true },
+  );
 
 export interface ReleaseCheck {
   id: string;

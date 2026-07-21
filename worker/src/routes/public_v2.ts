@@ -6,10 +6,11 @@
  *   Headers: X-Quiver-Client-Platform, X-Quiver-Cohort, (cf.clientIp for ip_range)
  *
  * Server picks the most specific matching scope:
- *   1. ip_range    (priority 4) — CIDR match on cf.clientIp
- *   2. user_cohort (priority 3) — exact match on X-Quiver-Cohort header
- *   3. platform    (priority 2) — CSV match on X-Quiver-Client-Platform
- *   4. full        (priority 1) — catch-all
+ *   1. device_group (priority 5) — server-owned membership keyed by device id
+ *   2. ip_range     (priority 4) — CIDR match on cf.clientIp
+ *   3. user_cohort  (priority 3) — exact match on X-Quiver-Cohort header
+ *   4. platform     (priority 2) — CSV match on X-Quiver-Client-Platform
+ *   5. full         (priority 1) — catch-all
  *
  * Within a priority level, ties broken by created_at DESC, then release_id.
  *
@@ -25,7 +26,7 @@ import { isFeatureEnabled } from "../lib/feature_flags";
 
 interface ScopedResolution {
   release_id: string;
-  scope_type: "full" | "platform" | "user_cohort" | "ip_range";
+  scope_type: "full" | "platform" | "user_cohort" | "ip_range" | "device_group";
   scope_value: string;
   priority: number;
   release_created_at: number;
@@ -56,7 +57,7 @@ type PublicLatestResponse = {
   };
   assets: PublicAssetResponse[];
   scoped: {
-    scope_type: "full" | "platform" | "user_cohort" | "ip_range";
+    scope_type: "full" | "platform" | "user_cohort" | "ip_range" | "device_group";
     scope_value: string;
     release_id: string;
     rollout_cohort_count?: number | null;
@@ -69,6 +70,7 @@ const PUBLIC_DOWNLOAD_PREFIX = "/public/r2";
 
 const PRIORITY = {
   ip_range: 4,
+  device_group: 5,
   user_cohort: 3,
   platform: 2,
   full: 1,
@@ -172,6 +174,17 @@ export async function handlePublicV2Latest(c: Context<{ Bindings: Env }>) {
     .bind(...candidateIds)
     .all<{ release_id: string; scope_type: string; scope_value: string }>();
 
+  const deviceGroupIds = new Set<string>();
+  if (deviceId) {
+    const { results: memberships } = await c.env.DB.prepare(
+      `SELECT m.group_id
+       FROM device_group_members m
+       JOIN device_groups g ON g.id = m.group_id
+       WHERE g.app_id = ?1 AND m.device_id = ?2`,
+    ).bind(app.id, deviceId).all<{ group_id: string }>();
+    for (const membership of memberships) deviceGroupIds.add(membership.group_id);
+  }
+
   // Build match list (release, scope, priority).
   const matched: ScopedResolution[] = [];
   for (const release of candidates.results) {
@@ -183,6 +196,7 @@ export async function handlePublicV2Latest(c: Context<{ Bindings: Env }>) {
         cohort,
         clientPlatform,
         clientIp,
+        deviceGroupIds,
       );
       if (!ok) continue;
       const prio =
@@ -714,12 +728,15 @@ function matchesScope(
   cohort: string | null,
   clientPlatform: string | null,
   clientIp: string | null,
+  deviceGroupIds: ReadonlySet<string>,
 ): boolean {
   switch (scopeType) {
     case "full":
       return true;
     case "user_cohort":
       return !!cohort && scopeValue === cohort;
+    case "device_group":
+      return deviceGroupIds.has(scopeValue);
     case "platform": {
       if (!clientPlatform) return false;
       const tokens = scopeValue.split(",").map((s) => s.trim());

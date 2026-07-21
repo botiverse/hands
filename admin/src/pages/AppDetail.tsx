@@ -56,9 +56,17 @@ import {
   deleteAgcCredentials,
   verifyAgcCredentials,
   getAppStoreReview,
+  addDeviceGroupMember,
+  createDeviceGroup,
+  deleteDeviceGroup,
+  listDeviceGroups,
+  removeDeviceGroupMember,
+  updateDeviceGroup,
+  type DeviceGroup,
 } from "../lib/api";
 import { useToast } from "../components/Toast";
 import { Operations } from "./Operations";
+import { deviceGroupUpdatePayload } from "../lib/deviceGroupForm";
 
 export function AppDetail({ appId }: { appId: string }) {
   const apps = useQuery({ queryKey: ["apps"], queryFn: listApps });
@@ -375,6 +383,172 @@ function ClientKeyPanel({ appId }: { appId: string }) {
           }}
         >
           {rotate.isPending ? "…" : key ? "Rotate" : "Generate"}
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+function DeviceGroupsPanel({ appId }: { appId: string }) {
+  const queryClient = useQueryClient();
+  const toast = useToast();
+  const groups = useQuery({
+    queryKey: ["device-groups", appId],
+    queryFn: () => listDeviceGroups(appId),
+  });
+  const [name, setName] = useState("");
+  const [description, setDescription] = useState("");
+  const create = useMutation({
+    mutationFn: () => createDeviceGroup(appId, {
+      name: name.trim(),
+      ...(description.trim() ? { description: description.trim() } : {}),
+    }),
+    onSuccess: () => {
+      setName("");
+      setDescription("");
+      void queryClient.invalidateQueries({ queryKey: ["device-groups", appId] });
+      toast.show({ kind: "success", title: "Device group created" });
+    },
+    onError: (error) => toast.show({ kind: "error", title: "Create failed", description: (error as Error).message }),
+  });
+
+  return (
+    <div className="border-t border-slate-100 pt-3 space-y-3">
+      <div>
+        <div className="text-sm font-medium">Device groups</div>
+        <p className="text-xs text-slate-500">
+          Exact rollout groups use the stable installation device id sent by the Hands update SDK.
+        </p>
+      </div>
+      <div className="grid grid-cols-[1fr_1fr_auto] gap-2">
+        <Input value={name} onChange={(event) => setName(event.target.value)} placeholder="Artin test devices" />
+        <Input value={description} onChange={(event) => setDescription(event.target.value)} placeholder="Operator note (optional)" />
+        <Button variant="outline" disabled={!name.trim() || create.isPending} onClick={() => create.mutate()}>
+          Create group
+        </Button>
+      </div>
+      {groups.isLoading && <p className="text-xs text-slate-500">Loading device groups…</p>}
+      {groups.error && <p className="text-xs text-red-700">{(groups.error as Error).message}</p>}
+      {(groups.data?.groups ?? []).map((group) => (
+        <DeviceGroupCard key={group.id} appId={appId} group={group} />
+      ))}
+    </div>
+  );
+}
+
+function DeviceGroupCard({ appId, group }: { appId: string; group: DeviceGroup }) {
+  const queryClient = useQueryClient();
+  const toast = useToast();
+  const [deviceId, setDeviceId] = useState("");
+  const [label, setLabel] = useState("");
+  const [editing, setEditing] = useState(false);
+  const [groupName, setGroupName] = useState(group.name);
+  const [groupDescription, setGroupDescription] = useState(group.description ?? "");
+  useEffect(() => {
+    if (!editing) {
+      setGroupName(group.name);
+      setGroupDescription(group.description ?? "");
+    }
+  }, [editing, group.description, group.name]);
+  const refresh = () => queryClient.invalidateQueries({ queryKey: ["device-groups", appId] });
+  const update = useMutation({
+    mutationFn: () => updateDeviceGroup(appId, group.id, deviceGroupUpdatePayload(groupName, groupDescription)),
+    onSuccess: () => {
+      setEditing(false);
+      void refresh();
+      toast.show({ kind: "success", title: "Device group updated" });
+    },
+    onError: (error) => toast.show({ kind: "error", title: "Update failed", description: (error as Error).message }),
+  });
+  const add = useMutation({
+    mutationFn: () => addDeviceGroupMember(appId, group.id, {
+      device_id: deviceId.trim(),
+      ...(label.trim() ? { label: label.trim() } : {}),
+    }),
+    onSuccess: () => {
+      setDeviceId("");
+      setLabel("");
+      void refresh();
+      toast.show({ kind: "success", title: "Device added" });
+    },
+    onError: (error) => toast.show({ kind: "error", title: "Add failed", description: (error as Error).message }),
+  });
+  const remove = useMutation({
+    mutationFn: (memberDeviceId: string) => removeDeviceGroupMember(appId, group.id, memberDeviceId),
+    onSuccess: () => void refresh(),
+    onError: (error) => toast.show({ kind: "error", title: "Remove failed", description: (error as Error).message }),
+  });
+  const destroy = useMutation({
+    mutationFn: () => deleteDeviceGroup(appId, group.id),
+    onSuccess: () => {
+      void refresh();
+      toast.show({ kind: "success", title: "Device group deleted" });
+    },
+    onError: (error) => toast.show({ kind: "error", title: "Delete failed", description: (error as Error).message }),
+  });
+
+  return (
+    <div className="rounded-md border border-slate-200 p-3 space-y-2">
+      <div className="flex items-start justify-between gap-2">
+        <div>
+          {editing ? (
+            <div className="space-y-2">
+              <Input value={groupName} onChange={(event) => setGroupName(event.target.value)} placeholder="Group name" />
+              <Input
+                value={groupDescription}
+                onChange={(event) => setGroupDescription(event.target.value)}
+                placeholder="Operator note"
+              />
+            </div>
+          ) : (
+            <>
+              <div className="text-sm font-medium">{group.name}</div>
+              {group.description && <div className="text-xs text-slate-500">{group.description}</div>}
+            </>
+          )}
+          <div className="text-[11px] font-mono text-slate-400">{group.id}</div>
+        </div>
+        <div className="flex gap-2">
+          {editing ? (
+            <>
+              <Button variant="outline" disabled={!groupName.trim() || update.isPending} onClick={() => update.mutate()}>
+                Save
+              </Button>
+              <Button variant="outline" disabled={update.isPending} onClick={() => setEditing(false)}>
+                Cancel
+              </Button>
+            </>
+          ) : (
+            <Button variant="outline" onClick={() => setEditing(true)}>Edit</Button>
+          )}
+          <Button
+            variant="outline"
+            disabled={destroy.isPending || editing}
+            onClick={() => { if (window.confirm(`Delete device group '${group.name}'?`)) destroy.mutate(); }}
+          >
+            Delete
+          </Button>
+        </div>
+      </div>
+      <div className="space-y-1">
+        {group.members.length === 0 && <p className="text-xs text-slate-500">No devices yet.</p>}
+        {group.members.map((member) => (
+          <div key={member.device_id} className="flex items-center justify-between gap-2 text-xs">
+            <span className="min-w-0 truncate">
+              <span className="font-medium">{member.label || "Device"}</span>{" "}
+              <span className="font-mono text-slate-500">{member.device_id}</span>
+            </span>
+            <Button variant="outline" onClick={() => remove.mutate(member.device_id)} disabled={remove.isPending}>
+              Remove
+            </Button>
+          </div>
+        ))}
+      </div>
+      <div className="grid grid-cols-[1fr_160px_auto] gap-2">
+        <Input value={deviceId} onChange={(event) => setDeviceId(event.target.value)} placeholder="Installation device id" />
+        <Input value={label} onChange={(event) => setLabel(event.target.value)} placeholder="Label" />
+        <Button variant="outline" disabled={!deviceId.trim() || add.isPending} onClick={() => add.mutate()}>
+          Add
         </Button>
       </div>
     </div>
@@ -1147,6 +1321,9 @@ export function AppSettings({ appId }: { appId: string }) {
 
         {/* Client key (feedback/crash reporting auth) */}
         <ClientKeyPanel appId={appId} />
+
+        {/* Exact per-installation rollout groups */}
+        <DeviceGroupsPanel appId={appId} />
 
         {/* TestFlight upload credentials — iOS apps only */}
         {app.platform === "ios" && <TestFlightPanel appId={appId} />}

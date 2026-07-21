@@ -155,6 +155,14 @@ import {
   handleListReleaseChecks,
 } from "./routes/releases";
 import { handleListChannels, handleCreateChannel, handleUpdateChannel, handleDeleteChannel } from "./routes/channels";
+import {
+  handleAddDeviceGroupMember,
+  handleCreateDeviceGroup,
+  handleDeleteDeviceGroup,
+  handleListDeviceGroups,
+  handleRemoveDeviceGroupMember,
+  handleUpdateDeviceGroup,
+} from "./routes/device_groups";
 import { handleListProductTypes, handleCreateProductType, handleUpdateProductType, handleDeleteProductType } from "./routes/product_types";
 import { handleListReleaseTypes, handleCreateReleaseType, handleUpdateReleaseType, handleDeleteReleaseType } from "./routes/release_types";
 import { handleListAuditLogs, handleListUserAudit } from "./routes/audit";
@@ -838,6 +846,21 @@ admin.get("/api/apps/:appId/channels", requireAppRole("viewer"), handleListChann
 admin.post("/api/apps/:appId/channels", requireAppRole("admin"), handleCreateChannel);
 admin.patch("/api/apps/:appId/channels/:channelId", requireAppRole("admin"), handleUpdateChannel);
 admin.delete("/api/apps/:appId/channels/:channelId", requireAppRole("admin"), handleDeleteChannel);
+
+admin.get("/api/apps/:appId/device-groups", requireAppRole("publisher"), handleListDeviceGroups);
+admin.post("/api/apps/:appId/device-groups", requireAppRole("publisher"), handleCreateDeviceGroup);
+admin.patch("/api/apps/:appId/device-groups/:groupId", requireAppRole("publisher"), handleUpdateDeviceGroup);
+admin.delete("/api/apps/:appId/device-groups/:groupId", requireAppRole("publisher"), handleDeleteDeviceGroup);
+admin.post(
+  "/api/apps/:appId/device-groups/:groupId/members",
+  requireAppRole("publisher"),
+  handleAddDeviceGroupMember,
+);
+admin.delete(
+  "/api/apps/:appId/device-groups/:groupId/members/:deviceId",
+  requireAppRole("publisher"),
+  handleRemoveDeviceGroupMember,
+);
 
 admin.get("/api/apps/:appId/product-types", requireAppRole("viewer"), handleListProductTypes);
 admin.post("/api/apps/:appId/product-types", requireAppRole("admin"), handleCreateProductType);

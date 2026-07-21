@@ -338,6 +338,27 @@ Bilingual changelogs are stored per language; clients receive the language
 matching their locale (`zh` normalizes to `zh-CN`; plain single-value
 changelogs are served as-is).
 
+### Exact device-group rollout
+
+Create a named group, add stable installation ids reported by the Hands update
+SDK, then bind a draft release to that group:
+
+```bash
+hands device-groups create raft-android --name "Artin test devices"
+hands device-groups add-member raft-android <group-id> \
+  --device-id <installation-device-id> --label "Huawei test tablet"
+hands device-groups update raft-android <group-id> \
+  --name "Artin test tablets" --description "Physical acceptance devices"
+hands releases update raft-android <release-id> --device-group <group-id>
+hands releases publish raft-android <release-id>
+```
+
+The final publish remains an explicit authorization step. Only exact group
+members receive the release; other devices fall back to the prior active
+release. List groups with `hands device-groups list <app>` and remove members
+with `device-groups remove-member`. Rename or change the operator note with
+`device-groups update`. Do not use IMEI or hardware serial numbers.
+
 ## Share Links
 
 ```bash

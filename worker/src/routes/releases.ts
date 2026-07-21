@@ -15,6 +15,8 @@ type ReleaseScopeInput = {
   scope_value: string;
 };
 
+const RELEASE_SCOPE_TYPES = new Set(["full", "platform", "user_cohort", "ip_range", "device_group"]);
+
 export interface ReleaseInput {
   build_id: string;
   channel_id?: string;
@@ -73,8 +75,42 @@ function jsonString(value: unknown, fallback: Record<string, unknown> | unknown[
 }
 
 function normalizeScopes(scopes: ReleaseScopeInput[] | undefined): ReleaseScopeInput[] {
-  const filtered = (scopes ?? []).filter((scope) => scope.scope_type && scope.scope_value);
+  const filtered = (scopes ?? [])
+    .map((scope) => ({
+      scope_type: String(scope.scope_type ?? "").trim(),
+      scope_value: String(scope.scope_value ?? "").trim(),
+    }))
+    .filter((scope) => scope.scope_type && scope.scope_value);
   return filtered.length > 0 ? filtered : [{ scope_type: "full", scope_value: "all" }];
+}
+
+async function validateScopes(
+  db: D1Database,
+  appId: string,
+  scopes: ReleaseScopeInput[] | undefined,
+): Promise<ReleaseScopeInput[]> {
+  const normalized = normalizeScopes(scopes);
+  const fullScopes = normalized.filter(
+    (scope) => scope.scope_type === "full" && scope.scope_value === "all",
+  );
+  if (fullScopes.length > 0 && normalized.length > 1) {
+    throw new Error("full release scope cannot be combined with other scopes");
+  }
+  for (const scope of normalized) {
+    if (!RELEASE_SCOPE_TYPES.has(scope.scope_type)) {
+      throw new Error(`unsupported release scope type: ${scope.scope_type}`);
+    }
+    if (scope.scope_type === "full" && scope.scope_value !== "all") {
+      throw new Error("full release scope value must be 'all'");
+    }
+    if (scope.scope_type === "device_group") {
+      const group = await db.prepare(
+        "SELECT id FROM device_groups WHERE id = ?1 AND app_id = ?2",
+      ).bind(scope.scope_value, appId).first<{ id: string }>();
+      if (!group) throw new Error(`device group not found for app: ${scope.scope_value}`);
+    }
+  }
+  return normalized;
 }
 
 function isFullRelease(scopes: ReleaseScopeInput[]): number {
@@ -84,6 +120,14 @@ function isFullRelease(scopes: ReleaseScopeInput[]): number {
     onlyScope.scope_value === "all"
     ? 1
     : 0;
+}
+
+function isFullCoverage(scopes: ReleaseScopeInput[], rolloutCohortCount: number | null | undefined): boolean {
+  // Treat legacy/malformed mixed rows containing full:all as full coverage so
+  // publish never restores or preserves fallbacks for a release that already
+  // matches every client. validateScopes rejects creating new mixed sets.
+  return scopes.some((scope) => scope.scope_type === "full" && scope.scope_value === "all") &&
+    (rolloutCohortCount === null || rolloutCohortCount === undefined || rolloutCohortCount >= 100);
 }
 
 async function insertAuditLog(
@@ -163,7 +207,7 @@ export async function createRelease(
   const productType = input.product_type ?? build.product_type;
   const releaseType = input.release_type ?? build.release_type;
   const status = releaseStatus(input.status);
-  const scopes = normalizeScopes(input.scopes);
+  const scopes = await validateScopes(db, appId, input.scopes);
   const now = Date.now();
   const changelog = inputChangelog(input);
 
@@ -217,7 +261,7 @@ export async function createRelease(
       ),
   ];
 
-  if (status === "active") {
+  if (status === "active" && isFullCoverage(scopes, input.rollout_cohort_count)) {
     statements.push(
       db
         .prepare(
@@ -311,7 +355,7 @@ async function updateReleaseFields(
 
   let scopes: ReleaseScopeInput[] | undefined;
   if (input.scopes !== undefined) {
-    scopes = normalizeScopes(input.scopes);
+    scopes = await validateScopes(db, appId, input.scopes);
     statements.push(
       db.prepare("DELETE FROM release_scopes WHERE release_id = ?1").bind(release.id),
       ...scopes.map((scope) =>
@@ -323,8 +367,47 @@ async function updateReleaseFields(
       ),
       db
         .prepare("UPDATE releases SET is_full = ?1, updated_at = ?2 WHERE id = ?3 AND app_id = ?4")
-        .bind(isFullRelease(scopes), now, release.id, appId),
+      .bind(isFullRelease(scopes), now, release.id, appId),
     );
+  }
+
+  if (release.status === "active" && (input.scopes !== undefined || input.rollout_cohort_count !== undefined)) {
+    const nextScopes = scopes ?? (await db.prepare(
+      "SELECT scope_type, scope_value FROM release_scopes WHERE release_id = ?1 ORDER BY created_at, id",
+    ).bind(release.id).all<ReleaseScopeInput>()).results;
+    const nextRollout = input.rollout_cohort_count !== undefined
+      ? input.rollout_cohort_count
+      : release.rollout_cohort_count;
+    if (isFullCoverage(nextScopes, nextRollout)) {
+      statements.push(
+        db.prepare(
+          `UPDATE releases
+           SET status = 'superseded', superseded_by_release_id = ?1, updated_at = ?2
+           WHERE app_id = ?3 AND channel_id = ?4 AND product_type = ?5
+             AND release_type = ?6 AND status = 'active' AND id <> ?7`,
+        ).bind(
+          release.id,
+          now,
+          appId,
+          release.channel_id,
+          release.product_type,
+          release.release_type,
+          release.id,
+        ),
+      );
+    } else {
+      // A full release may already have superseded the fallback releases when
+      // it was activated. If operators narrow that active release later, put
+      // only its direct victims back into the active candidate set so clients
+      // outside the new scope/percentage still resolve a previous release.
+      statements.push(
+        db.prepare(
+          `UPDATE releases
+           SET status = 'active', superseded_by_release_id = NULL, updated_at = ?1
+           WHERE app_id = ?2 AND superseded_by_release_id = ?3 AND status = 'superseded'`,
+        ).bind(now, appId, release.id),
+      );
+    }
   }
 
   statements.push(
@@ -964,7 +1047,10 @@ export async function handlePublishRelease(c: AdminContext) {
     return c.json({ error: `cannot publish ${existing.status} release` }, 409);
   }
   const now = Date.now();
-  await c.env.DB.batch([
+  const { results: releaseScopes } = await c.env.DB.prepare(
+    "SELECT scope_type, scope_value FROM release_scopes WHERE release_id = ?1 ORDER BY created_at, id",
+  ).bind(releaseId).all<ReleaseScopeInput>();
+  const statements = [
     c.env.DB
       .prepare(
         `UPDATE releases
@@ -972,22 +1058,6 @@ export async function handlePublishRelease(c: AdminContext) {
          WHERE id = ?2 AND app_id = ?3 AND status = 'draft'`,
       )
       .bind(now, releaseId, appId),
-    c.env.DB
-      .prepare(
-        `UPDATE releases
-         SET status = 'superseded', superseded_by_release_id = ?1, updated_at = ?2
-         WHERE app_id = ?3 AND channel_id = ?4 AND product_type = ?5
-           AND release_type = ?6 AND status = 'active' AND id <> ?7`,
-      )
-      .bind(
-        releaseId,
-        now,
-        appId,
-        existing.channel_id,
-        existing.product_type,
-        existing.release_type,
-        releaseId,
-      ),
     c.env.DB
       .prepare(
         "INSERT INTO audit_logs (id, app_id, action, actor, payload, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
@@ -1000,7 +1070,31 @@ export async function handlePublishRelease(c: AdminContext) {
         JSON.stringify({ release_id: releaseId, build_id: existing.build_id }),
         now,
       ),
-  ]);
+  ];
+  // Scoped and partial-rollout releases must coexist with the previous full
+  // active release so non-members can fall back. A full-coverage activation is
+  // the only event that supersedes every older active release in the lane.
+  if (isFullCoverage(releaseScopes, existing.rollout_cohort_count)) {
+    statements.splice(1, 0,
+      c.env.DB
+        .prepare(
+          `UPDATE releases
+           SET status = 'superseded', superseded_by_release_id = ?1, updated_at = ?2
+           WHERE app_id = ?3 AND channel_id = ?4 AND product_type = ?5
+             AND release_type = ?6 AND status = 'active' AND id <> ?7`,
+        )
+        .bind(
+          releaseId,
+          now,
+          appId,
+          existing.channel_id,
+          existing.product_type,
+          existing.release_type,
+          releaseId,
+        ),
+    );
+  }
+  await c.env.DB.batch(statements);
 
   const orgId = c.get("org_id");
   if (orgId) {

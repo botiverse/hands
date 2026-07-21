@@ -125,6 +125,98 @@ describe("apiRequest", () => {
   });
 });
 
+describe("device-group rollout commands", () => {
+  it("creates and updates a device group, then applies it as a release scope", async () => {
+    const requests: Array<{ method: string; url: string; body?: any }> = [];
+    const server = createServer(async (req, res) => {
+      let body: any = undefined;
+      if (req.headers["content-type"]?.includes("application/json")) {
+        const chunks: Buffer[] = [];
+        for await (const chunk of req) chunks.push(Buffer.from(chunk));
+        body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+      }
+      requests.push({ method: req.method ?? "GET", url: req.url ?? "", body });
+      res.setHeader("content-type", "application/json");
+      if (req.url === "/api/apps") {
+        return res.end(JSON.stringify({ apps: [{ id: "app-1", slug: "raft-android" }] }));
+      }
+      if (req.url === "/api/apps/app-1/device-groups" && req.method === "POST") {
+        return res.end(JSON.stringify({ id: "group-1", name: "Artin test devices", member_count: 0, members: [] }));
+      }
+      if (req.url === "/api/apps/app-1/device-groups/group-1" && req.method === "PATCH") {
+        return res.end(JSON.stringify({
+          id: "group-1",
+          name: "Artin test tablets",
+          description: "Physical acceptance devices",
+          member_count: 0,
+          members: [],
+        }));
+      }
+      if (req.url === "/api/apps/app-1/releases/release-1" && req.method === "PATCH") {
+        return res.end(JSON.stringify({ id: "release-1", status: "draft" }));
+      }
+      res.statusCode = 404;
+      return res.end(JSON.stringify({ error: "not found" }));
+    });
+
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("bad address");
+    const originalApi = process.env.HANDS_API;
+    const originalToken = process.env.HANDS_BEARER_TOKEN;
+    process.env.HANDS_API = `http://127.0.0.1:${address.port}`;
+    process.env.HANDS_BEARER_TOKEN = "test-token";
+
+    try {
+      const { registerDeviceGroupCommands } = await import("../src/commands/device_groups.js");
+      const { registerReleaseCommands } = await import("../src/commands/releases.js");
+
+      const groupsProgram = new Command();
+      registerDeviceGroupCommands(groupsProgram);
+      await groupsProgram.parseAsync([
+        "node", "hands", "device-groups", "create", "raft-android",
+        "--name", "Artin test devices",
+      ]);
+      const updateProgram = new Command();
+      registerDeviceGroupCommands(updateProgram);
+      await updateProgram.parseAsync([
+        "node", "hands", "device-groups", "update", "raft-android", "group-1",
+        "--name", "Artin test tablets",
+        "--description", "Physical acceptance devices",
+      ]);
+
+      const releasesProgram = new Command();
+      registerReleaseCommands(releasesProgram);
+      await releasesProgram.parseAsync([
+        "node", "hands", "releases", "update", "raft-android", "release-1",
+        "--device-group", "group-1",
+      ]);
+
+      expect(requests.find((request) => request.url.endsWith("/device-groups"))).toMatchObject({
+        method: "POST",
+        body: { name: "Artin test devices" },
+      });
+      expect(requests.find((request) => request.url.endsWith("/device-groups/group-1"))).toMatchObject({
+        method: "PATCH",
+        body: {
+          name: "Artin test tablets",
+          description: "Physical acceptance devices",
+        },
+      });
+      expect(requests.find((request) => request.url.endsWith("/releases/release-1"))).toMatchObject({
+        method: "PATCH",
+        body: { scopes: [{ scope_type: "device_group", scope_value: "group-1" }] },
+      });
+    } finally {
+      if (originalApi === undefined) delete process.env.HANDS_API;
+      else process.env.HANDS_API = originalApi;
+      if (originalToken === undefined) delete process.env.HANDS_BEARER_TOKEN;
+      else process.env.HANDS_BEARER_TOKEN = originalToken;
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+});
+
 describe("electron build helpers", () => {
   it("infers Electron platforms from metadata and artifact filenames", async () => {
     const { inferElectronPlatform } = await import("../src/commands/builds.js");

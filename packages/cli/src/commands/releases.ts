@@ -67,6 +67,7 @@ export function registerReleaseCommands(program: Command): void {
       "Changelog file. Repeatable with lang=path, e.g. --changelog-file zh=zh.md --changelog-file en=en.md.",
       (value: string, prev: string[] = []) => [...prev, value],
     )
+    .option("--device-group <groupId>", "Replace release scope with one exact-rollout device group UUID.")
     .option("--json", "Output JSON.", false)
     .action(
       async (
@@ -75,6 +76,7 @@ export function registerReleaseCommands(program: Command): void {
         opts: {
           changelog?: string[];
           changelogFile?: string[];
+          deviceGroup?: string;
           json?: boolean;
         },
       ) => {
@@ -108,21 +110,26 @@ export function registerReleaseCommands(program: Command): void {
         } else if (plain !== undefined) {
           changelog = plain;
         }
-        if (changelog === undefined) {
+        if (changelog === undefined && !opts.deviceGroup) {
           throw new Error(
-            "nothing to update: pass --changelog(-file) [lang=]value, e.g. --changelog-file zh=zh.md --changelog-file en=en.md",
+            "nothing to update: pass --changelog(-file) or --device-group",
           );
+        }
+        const body: Record<string, unknown> = {};
+        if (changelog !== undefined) body.changelog = changelog;
+        if (opts.deviceGroup) {
+          body.scopes = [{ scope_type: "device_group", scope_value: opts.deviceGroup }];
         }
         const updated = await apiRequest<Record<string, unknown>>(
           `/api/apps/${appId}/releases/${releaseId}`,
-          { method: "PATCH", body: { changelog } },
+          { method: "PATCH", body },
         );
         if (opts.json) {
           console.log(JSON.stringify(updated, null, 2));
           return;
         }
         console.log(
-          `Updated release ${releaseId} changelog${langs.length ? ` (${langs.join(", ")})` : ""}.`,
+          `Updated release ${releaseId}${changelog !== undefined ? ` changelog${langs.length ? ` (${langs.join(", ")})` : ""}` : ""}${opts.deviceGroup ? ` scope=device_group:${opts.deviceGroup}` : ""}.`,
         );
       },
     );

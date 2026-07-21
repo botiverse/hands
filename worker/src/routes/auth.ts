@@ -820,6 +820,65 @@ export async function handleAgentManifest(c: Context<{ Bindings: Env }>) {
           "Create a release channel on an app (channels are never auto-created by publish). Requires app admin. Creating a channel activates nothing.",
       },
       {
+        name: "list-device-groups",
+        description: "List app-scoped rollout device groups and their installation device ids. Requires app publisher.",
+        endpoint: { method: "GET", path: "/api/apps/{app_id}/device-groups" },
+        parameters: {
+          app_id: { type: "string", in: "path", required: true, description: "App UUID." },
+        },
+      },
+      {
+        name: "create-device-group",
+        description: "Create an app-scoped device group for exact release targeting. Requires app publisher.",
+        endpoint: { method: "POST", path: "/api/apps/{app_id}/device-groups" },
+        parameters: {
+          app_id: { type: "string", in: "path", required: true, description: "App UUID." },
+          name: { type: "string", in: "body", required: true, description: "Display name." },
+          description: { type: "string", in: "body", required: false, description: "Optional operator note." },
+        },
+      },
+      {
+        name: "update-device-group",
+        description: "Rename or update the operator note for an app-scoped device group. Requires app publisher.",
+        endpoint: { method: "PATCH", path: "/api/apps/{app_id}/device-groups/{group_id}" },
+        parameters: {
+          app_id: { type: "string", in: "path", required: true, description: "App UUID." },
+          group_id: { type: "string", in: "path", required: true, description: "Device-group UUID." },
+          name: { type: "string", in: "body", required: false, description: "New display name." },
+          description: { type: "string", in: "body", required: false, description: "New operator note; empty clears it." },
+        },
+      },
+      {
+        name: "add-device-group-member",
+        description: "Add or relabel one stable Hands installation device id in a device group. Requires app publisher.",
+        endpoint: { method: "POST", path: "/api/apps/{app_id}/device-groups/{group_id}/members" },
+        parameters: {
+          app_id: { type: "string", in: "path", required: true, description: "App UUID." },
+          group_id: { type: "string", in: "path", required: true, description: "Device-group UUID." },
+          device_id: { type: "string", in: "body", required: true, description: "Stable per-installation id reported by the Hands update SDK." },
+          label: { type: "string", in: "body", required: false, description: "Human-readable member label." },
+        },
+      },
+      {
+        name: "remove-device-group-member",
+        description: "Remove one installation device id from a device group. Requires app publisher.",
+        endpoint: { method: "DELETE", path: "/api/apps/{app_id}/device-groups/{group_id}/members/{device_id}" },
+        parameters: {
+          app_id: { type: "string", in: "path", required: true, description: "App UUID." },
+          group_id: { type: "string", in: "path", required: true, description: "Device-group UUID." },
+          device_id: { type: "string", in: "path", required: true, description: "URL-encoded installation device id." },
+        },
+      },
+      {
+        name: "delete-device-group",
+        description: "Delete an unused device group. Draft/active release references fail closed. Requires app publisher.",
+        endpoint: { method: "DELETE", path: "/api/apps/{app_id}/device-groups/{group_id}" },
+        parameters: {
+          app_id: { type: "string", in: "path", required: true, description: "App UUID." },
+          group_id: { type: "string", in: "path", required: true, description: "Device-group UUID." },
+        },
+      },
+      {
         name: "list-releases",
         description: "List an app's releases (id, status, channel, version, rollout). Requires app viewer.",
         endpoint: { method: "GET", path: "/api/apps/{app_id}/releases" },
@@ -847,6 +906,7 @@ export async function handleAgentManifest(c: Context<{ Bindings: Env }>) {
           channel_id: { type: "string", in: "body", required: false, description: "Channel UUID (defaults to the build's channel)." },
           changelog: { type: "string", in: "body", required: false, description: "Changelog text (single-language fallback)." },
           release_notes: { type: "object", in: "body", required: false, description: "Bilingual notes, e.g. {\"en\": \"...\", \"zh-CN\": \"...\"}." },
+          scopes: { type: "array", in: "body", required: false, description: "Release scopes. Exact device targeting uses [{\"scope_type\":\"device_group\",\"scope_value\":\"<group UUID>\"}]." },
         },
       },
       {
@@ -860,6 +920,7 @@ export async function handleAgentManifest(c: Context<{ Bindings: Env }>) {
           changelog: { type: "string", in: "body", required: false, description: "Changelog text." },
           release_notes: { type: "object", in: "body", required: false, description: "Bilingual notes object." },
           hidden: { type: "boolean", in: "body", required: false, description: "Hide/show on public history without deleting." },
+          scopes: { type: "array", in: "body", required: false, description: "Replace release scopes. Exact device targeting uses device_group with a same-app group UUID." },
         },
       },
       {

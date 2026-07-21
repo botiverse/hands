@@ -25,7 +25,7 @@ const PublicApp = z
 
 const PublicScope = z
   .object({
-    scope_type: z.enum(["full", "platform", "user_cohort", "ip_range"]),
+    scope_type: z.enum(["full", "platform", "user_cohort", "ip_range", "device_group"]),
     scope_value: z.string(),
     release_id: z.string(),
     rollout_cohort_count: z.number().int().nullable().optional(),

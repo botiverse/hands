@@ -15,7 +15,7 @@ npm install -g @botiverse/hands-cli
 hands --help
 
 # Or run without installing globally:
-npm exec --package @botiverse/hands-cli@0.5.10 -- hands --help
+npm exec --package @botiverse/hands-cli@0.5.11 -- hands --help
 
 # Local repo development:
 pnpm --filter @botiverse/hands-cli build

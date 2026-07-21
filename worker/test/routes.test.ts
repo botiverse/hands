@@ -284,6 +284,23 @@ function makeMockDb() {
       created_at INTEGER NOT NULL,
       FOREIGN KEY (release_id) REFERENCES releases(id) ON DELETE CASCADE
     );
+    CREATE TABLE device_groups (
+      id TEXT PRIMARY KEY,
+      app_id TEXT NOT NULL REFERENCES apps(id) ON DELETE CASCADE,
+      name TEXT NOT NULL,
+      description TEXT,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    );
+    CREATE UNIQUE INDEX idx_device_groups_app_name
+      ON device_groups(app_id, name COLLATE NOCASE);
+    CREATE TABLE device_group_members (
+      group_id TEXT NOT NULL REFERENCES device_groups(id) ON DELETE CASCADE,
+      device_id TEXT NOT NULL,
+      label TEXT,
+      created_at INTEGER NOT NULL,
+      PRIMARY KEY (group_id, device_id)
+    );
     CREATE TABLE release_metrics (
       release_id TEXT PRIMARY KEY,
       offered_count INTEGER NOT NULL DEFAULT 0,
@@ -2657,6 +2674,30 @@ describe("quiver releases — draft lifecycle", () => {
     } as any;
   }
 
+  function makeDeviceGroupContext(
+    params: { groupId?: string; deviceId?: string } = {},
+    body: unknown = {},
+  ) {
+    return {
+      env,
+      req: {
+        param: (name: string) => {
+          if (name === "appId") return "app-release";
+          if (name === "groupId") return params.groupId ?? "";
+          if (name === "deviceId") return params.deviceId ?? "";
+          return "";
+        },
+        json: async () => body,
+      },
+      get: (key: string) => (key === "admin_actor" ? "tester" : undefined),
+      json: (data: unknown, status = 200) =>
+        new Response(JSON.stringify(data), {
+          status,
+          headers: { "content-type": "application/json" },
+        }),
+    } as any;
+  }
+
   async function responseJson<T>(response: Response): Promise<T> {
     return (await response.json()) as T;
   }
@@ -2708,6 +2749,286 @@ describe("quiver releases — draft lifecycle", () => {
       { id: "rel-active", status: "superseded", superseded_by_release_id: "rel-draft" },
       { id: "rel-draft", status: "active", superseded_by_release_id: null },
     ]);
+  });
+
+  it("publishes a device-group draft without superseding the full fallback release", async () => {
+    const { createRelease, handlePublishRelease } = await import("../src/routes/releases");
+    const now = Date.now();
+    await env.DB.prepare(
+      `INSERT INTO device_groups (id, app_id, name, description, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+    ).bind("group-release-test", "app-release", "QA devices", null, now, now).run();
+    await createRelease(env.DB as any, "app-release", {
+      build_id: "build-active",
+      status: "active",
+    }, "tester", "rel-active");
+    await createRelease(env.DB as any, "app-release", {
+      build_id: "build-draft",
+      status: "draft",
+      scopes: [{ scope_type: "device_group", scope_value: "group-release-test" }],
+    }, "tester", "rel-group-draft");
+
+    const response = await handlePublishRelease(makeReleaseContext("rel-group-draft"));
+    expect(response.status).toBe(200);
+    const { results } = await env.DB.prepare(
+      "SELECT id, status, superseded_by_release_id FROM releases ORDER BY id",
+    ).all();
+    expect(results).toEqual([
+      { id: "rel-active", status: "active", superseded_by_release_id: null },
+      { id: "rel-group-draft", status: "active", superseded_by_release_id: null },
+    ]);
+  });
+
+  it("treats a legacy mixed scope containing full:all as full coverage when publishing", async () => {
+    const { createRelease, handlePublishRelease } = await import("../src/routes/releases");
+    const now = Date.now();
+    await env.DB.prepare(
+      `INSERT INTO device_groups (id, app_id, name, description, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+    ).bind("group-legacy-mixed", "app-release", "Legacy mixed", null, now, now).run();
+    await createRelease(env.DB as any, "app-release", {
+      build_id: "build-active",
+      status: "active",
+    }, "tester", "rel-fallback");
+    await createRelease(env.DB as any, "app-release", {
+      build_id: "build-draft",
+      status: "draft",
+      scopes: [{ scope_type: "device_group", scope_value: "group-legacy-mixed" }],
+    }, "tester", "rel-legacy-mixed");
+    await env.DB.prepare(
+      `INSERT INTO release_scopes (id, release_id, scope_type, scope_value, created_at)
+       VALUES (?, ?, 'full', 'all', ?)`,
+    ).bind("scope-legacy-full", "rel-legacy-mixed", now).run();
+
+    const response = await handlePublishRelease(makeReleaseContext("rel-legacy-mixed"));
+    expect(response.status).toBe(200);
+    const { results } = await env.DB.prepare(
+      "SELECT id, status, superseded_by_release_id FROM releases ORDER BY id",
+    ).all();
+    expect(results).toEqual([
+      { id: "rel-fallback", status: "superseded", superseded_by_release_id: "rel-legacy-mixed" },
+      { id: "rel-legacy-mixed", status: "active", superseded_by_release_id: null },
+    ]);
+  });
+
+  it("publishes a partial full-scope rollout without superseding the full fallback release", async () => {
+    const { createRelease, handlePublishRelease } = await import("../src/routes/releases");
+    await createRelease(env.DB as any, "app-release", {
+      build_id: "build-active",
+      status: "active",
+    }, "tester", "rel-active");
+    await createRelease(env.DB as any, "app-release", {
+      build_id: "build-draft",
+      status: "draft",
+      rollout_cohort_count: 25,
+    }, "tester", "rel-partial-draft");
+
+    const response = await handlePublishRelease(makeReleaseContext("rel-partial-draft"));
+    expect(response.status).toBe(200);
+    const { results } = await env.DB.prepare(
+      "SELECT id, status, superseded_by_release_id FROM releases ORDER BY id",
+    ).all();
+    expect(results).toEqual([
+      { id: "rel-active", status: "active", superseded_by_release_id: null },
+      { id: "rel-partial-draft", status: "active", superseded_by_release_id: null },
+    ]);
+  });
+
+  it("restores a directly superseded fallback when an active full release is narrowed", async () => {
+    const { createRelease, handleUpdateRelease } = await import("../src/routes/releases");
+    const now = Date.now();
+    await env.DB.prepare(
+      `INSERT INTO device_groups (id, app_id, name, description, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+    ).bind("group-narrow-active", "app-release", "Narrow active", null, now, now).run();
+    await createRelease(env.DB as any, "app-release", {
+      build_id: "build-active",
+      status: "active",
+    }, "tester", "rel-fallback");
+    await createRelease(env.DB as any, "app-release", {
+      build_id: "build-draft",
+      status: "active",
+    }, "tester", "rel-current");
+
+    const before = await env.DB.prepare(
+      "SELECT status, superseded_by_release_id FROM releases WHERE id = 'rel-fallback'",
+    ).first<any>();
+    expect(before).toEqual({ status: "superseded", superseded_by_release_id: "rel-current" });
+
+    const response = await handleUpdateRelease(makeReleaseContext("rel-current", {
+      scopes: [{ scope_type: "device_group", scope_value: "group-narrow-active" }],
+    }));
+    expect(response.status).toBe(200);
+    const { results } = await env.DB.prepare(
+      "SELECT id, status, superseded_by_release_id FROM releases ORDER BY id",
+    ).all();
+    expect(results).toEqual([
+      { id: "rel-current", status: "active", superseded_by_release_id: null },
+      { id: "rel-fallback", status: "active", superseded_by_release_id: null },
+    ]);
+  });
+
+  it("supersedes coexisting fallbacks when an active scoped release becomes full coverage", async () => {
+    const { createRelease, handleUpdateRelease } = await import("../src/routes/releases");
+    const now = Date.now();
+    await env.DB.prepare(
+      `INSERT INTO device_groups (id, app_id, name, description, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+    ).bind("group-expand-active", "app-release", "Expand active", null, now, now).run();
+    await createRelease(env.DB as any, "app-release", {
+      build_id: "build-active",
+      status: "active",
+    }, "tester", "rel-fallback");
+    await createRelease(env.DB as any, "app-release", {
+      build_id: "build-draft",
+      status: "active",
+      scopes: [{ scope_type: "device_group", scope_value: "group-expand-active" }],
+    }, "tester", "rel-scoped");
+
+    const response = await handleUpdateRelease(makeReleaseContext("rel-scoped", {
+      scopes: [{ scope_type: "full", scope_value: "all" }],
+      rollout_cohort_count: 100,
+    }));
+    expect(response.status).toBe(200);
+    const { results } = await env.DB.prepare(
+      "SELECT id, status, superseded_by_release_id FROM releases ORDER BY id",
+    ).all();
+    expect(results).toEqual([
+      { id: "rel-fallback", status: "superseded", superseded_by_release_id: "rel-scoped" },
+      { id: "rel-scoped", status: "active", superseded_by_release_id: null },
+    ]);
+  });
+
+  it("rejects nonexistent and cross-app device groups as release scopes", async () => {
+    const { createRelease } = await import("../src/routes/releases");
+    await expect(createRelease(env.DB as any, "app-release", {
+      build_id: "build-draft",
+      status: "draft",
+      scopes: [{ scope_type: "device_group", scope_value: "missing-group" }],
+    }, "tester", "rel-missing-group")).rejects.toThrow("device group not found for app");
+
+    const now = Date.now();
+    await env.DB.prepare(
+      "INSERT INTO apps (id, org_id, slug, name, platform, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+    ).bind("app-other", "default", "other-app", "Other App", "android", now).run();
+    await env.DB.prepare(
+      `INSERT INTO device_groups (id, app_id, name, description, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+    ).bind("group-other-app", "app-other", "Other devices", null, now, now).run();
+    await expect(createRelease(env.DB as any, "app-release", {
+      build_id: "build-draft",
+      status: "draft",
+      scopes: [{ scope_type: "device_group", scope_value: "group-other-app" }],
+    }, "tester", "rel-cross-app-group")).rejects.toThrow("device group not found for app");
+  });
+
+  it("rejects mixing full:all with a device-group scope on create and active update", async () => {
+    const { createRelease, handleUpdateRelease } = await import("../src/routes/releases");
+    const now = Date.now();
+    await env.DB.prepare(
+      `INSERT INTO device_groups (id, app_id, name, description, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+    ).bind("group-no-mixed-full", "app-release", "No mixed full", null, now, now).run();
+    const mixedScopes = [
+      { scope_type: "full", scope_value: "all" },
+      { scope_type: "device_group", scope_value: "group-no-mixed-full" },
+    ];
+    await expect(createRelease(env.DB as any, "app-release", {
+      build_id: "build-draft",
+      status: "draft",
+      scopes: mixedScopes,
+    }, "tester", "rel-mixed-create")).rejects.toThrow("full release scope cannot be combined");
+
+    await createRelease(env.DB as any, "app-release", {
+      build_id: "build-active",
+      status: "active",
+    }, "tester", "rel-mixed-fallback");
+    await createRelease(env.DB as any, "app-release", {
+      build_id: "build-draft",
+      status: "active",
+    }, "tester", "rel-mixed-current");
+    const response = await handleUpdateRelease(makeReleaseContext("rel-mixed-current", { scopes: mixedScopes }));
+    expect(response.status).toBe(400);
+    await expect(responseJson<any>(response)).resolves.toMatchObject({
+      error: "full release scope cannot be combined with other scopes",
+    });
+    await expect(env.DB.prepare(
+      "SELECT status, superseded_by_release_id FROM releases WHERE id = 'rel-mixed-fallback'",
+    ).first()).resolves.toEqual({
+      status: "superseded",
+      superseded_by_release_id: "rel-mixed-current",
+    });
+  });
+
+  it("creates and manages device-group members, but blocks deletion while a live release uses the group", async () => {
+    const {
+      handleAddDeviceGroupMember,
+      handleCreateDeviceGroup,
+      handleDeleteDeviceGroup,
+      handleListDeviceGroups,
+      handleRemoveDeviceGroupMember,
+      handleUpdateDeviceGroup,
+    } = await import("../src/routes/device_groups");
+    const { createRelease } = await import("../src/routes/releases");
+
+    const createResponse = await handleCreateDeviceGroup(makeDeviceGroupContext({}, {
+      name: "  QA phones  ",
+      description: " exact rollout ",
+    }));
+    expect(createResponse.status).toBe(201);
+    const created = await responseJson<any>(createResponse);
+    expect(created).toMatchObject({ name: "QA phones", description: "exact rollout", member_count: 0 });
+
+    const updateResponse = await handleUpdateDeviceGroup(makeDeviceGroupContext({ groupId: created.id }, {
+      name: "QA tablets",
+      description: "physical acceptance devices",
+    }));
+    expect(updateResponse.status).toBe(200);
+    await expect(responseJson<any>(updateResponse)).resolves.toMatchObject({
+      id: created.id,
+      name: "QA tablets",
+      description: "physical acceptance devices",
+    });
+
+    const addResponse = await handleAddDeviceGroupMember(makeDeviceGroupContext({ groupId: created.id }, {
+      device_id: " install/device 1 ",
+      label: " Huawei ",
+    }));
+    expect(addResponse.status).toBe(201);
+    await expect(responseJson<any>(addResponse)).resolves.toMatchObject({
+      device_id: "install/device 1",
+      label: "Huawei",
+    });
+
+    const listResponse = await handleListDeviceGroups(makeDeviceGroupContext());
+    await expect(responseJson<any>(listResponse)).resolves.toMatchObject({
+      groups: [{
+        id: created.id,
+        name: "QA tablets",
+        description: "physical acceptance devices",
+        member_count: 1,
+        members: [{ device_id: "install/device 1", label: "Huawei" }],
+      }],
+    });
+
+    const removeResponse = await handleRemoveDeviceGroupMember(makeDeviceGroupContext({
+      groupId: created.id,
+      deviceId: encodeURIComponent("install/device 1"),
+    }));
+    expect(removeResponse.status).toBe(200);
+    const afterRemove = await responseJson<any>(await handleListDeviceGroups(makeDeviceGroupContext()));
+    expect(afterRemove.groups[0].member_count).toBe(0);
+
+    await createRelease(env.DB as any, "app-release", {
+      build_id: "build-draft",
+      status: "draft",
+      scopes: [{ scope_type: "device_group", scope_value: created.id }],
+    }, "tester", "rel-group-reference");
+    const blockedDelete = await handleDeleteDeviceGroup(makeDeviceGroupContext({ groupId: created.id }));
+    expect(blockedDelete.status).toBe(409);
+    await expect(responseJson<any>(blockedDelete)).resolves.toMatchObject({
+      error: "device group is used by a draft or active release",
+    });
   });
 
   it("updates editable release metadata and replaces scopes", async () => {
@@ -3965,6 +4286,57 @@ describe("quiver public API v2 — scope resolution", () => {
       { platform: "android-arm64-v8a", arch: null, filetype: "apk" },
     );
     expect(asset?.download_url).toBe("/arm64.apk");
+  });
+
+  it("serves a device-group release only to exact group members and falls back for other devices", async () => {
+    const env = makeEnv();
+    configureR2Presign(env);
+    const now = Date.now();
+    await seedRelease(env, "rel-device-fallback", "build-device-fallback", [["full", "all"]], {
+      createdAt: now - 1000,
+      versionCode: 10,
+      versionName: "1.0.0",
+    });
+    await seedAsset(env, "build-device-fallback", "asset-device-fallback", { arch: "arm64-v8a" });
+    await env.DB.prepare(
+      `INSERT INTO device_groups (id, app_id, name, description, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+    ).bind("group-artin", "app-scope", "Artin test devices", null, now, now).run();
+    await env.DB.prepare(
+      `INSERT INTO device_group_members (group_id, device_id, label, created_at)
+       VALUES (?, ?, ?, ?)`,
+    ).bind("group-artin", "device-artin", "Huawei", now).run();
+    await seedRelease(env, "rel-device-target", "build-device-target", [["device_group", "group-artin"]], {
+      createdAt: now,
+      versionCode: 11,
+      versionName: "1.1.0",
+    });
+    await seedAsset(env, "build-device-target", "asset-device-target", { arch: "arm64-v8a" });
+    const { handlePublicV2Latest } = await import("../src/routes/public_v2");
+
+    const memberResponse = await handlePublicV2Latest(makePublicContext(env, {
+      channel: "production",
+      product_type: "android-apk",
+      platform: "android",
+      arch: "arm64-v8a",
+    }, { "X-Hands-Device-Id": "device-artin" }));
+    expect(memberResponse.status).toBe(200);
+    await expect(responseJson<any>(memberResponse)).resolves.toMatchObject({
+      build: { version_code: 11 },
+      scoped: { scope_type: "device_group", scope_value: "group-artin" },
+    });
+
+    const otherResponse = await handlePublicV2Latest(makePublicContext(env, {
+      channel: "production",
+      product_type: "android-apk",
+      platform: "android",
+      arch: "arm64-v8a",
+    }, { "X-Hands-Device-Id": "device-someone-else" }));
+    expect(otherResponse.status).toBe(200);
+    await expect(responseJson<any>(otherResponse)).resolves.toMatchObject({
+      build: { version_code: 10 },
+      scoped: { scope_type: "full", scope_value: "all" },
+    });
   });
 
   it("updates/check returns no update without exposing assets when current version is latest", async () => {
@@ -6669,6 +7041,30 @@ describe("Hands iOS simulator QA artifacts", () => {
     const manifest = await response.json() as any;
     const actions = Object.fromEntries(manifest.actions.map((action: any) => [action.name, action.endpoint]));
     expect(actions).toMatchObject({
+      "list-device-groups": {
+        method: "GET",
+        path: "/api/apps/{app_id}/device-groups",
+      },
+      "create-device-group": {
+        method: "POST",
+        path: "/api/apps/{app_id}/device-groups",
+      },
+      "update-device-group": {
+        method: "PATCH",
+        path: "/api/apps/{app_id}/device-groups/{group_id}",
+      },
+      "add-device-group-member": {
+        method: "POST",
+        path: "/api/apps/{app_id}/device-groups/{group_id}/members",
+      },
+      "remove-device-group-member": {
+        method: "DELETE",
+        path: "/api/apps/{app_id}/device-groups/{group_id}/members/{device_id}",
+      },
+      "delete-device-group": {
+        method: "DELETE",
+        path: "/api/apps/{app_id}/device-groups/{group_id}",
+      },
       "list-ios-simulator-artifacts": {
         method: "GET",
         path: "/api/apps/{app_id}/qa-artifacts/ios-simulator",
@@ -6698,5 +7094,8 @@ describe("Hands iOS simulator QA artifacts", () => {
         path: "/api/apps/{app_id}/testflight-uploads/{build_upload_id}",
       },
     });
+    const byName = Object.fromEntries(manifest.actions.map((action: any) => [action.name, action]));
+    expect(byName["create-release"].parameters.scopes).toMatchObject({ type: "array", in: "body" });
+    expect(byName["update-release"].parameters.scopes).toMatchObject({ type: "array", in: "body" });
   });
 });

@@ -43,6 +43,13 @@ while the percentage climbs. Clients that send no device id only ever see
 fully rolled-out releases; gated-out clients fall through to the previous
 active release. The Android SDK sends the header automatically.
 
+For exact QA or customer-device targeting, publishers can create an app-scoped
+device group and use a `device_group` release scope. Membership is evaluated
+server-side against the same stable installation `device_id`; the client never
+receives or chooses the group name. A non-member falls through to the previous
+matching active release. Device groups use installation identifiers, not IMEI,
+hardware serial numbers, or account identities.
+
 ### Update Available
 
 ```json
