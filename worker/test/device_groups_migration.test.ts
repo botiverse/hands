@@ -17,6 +17,8 @@ describe("device-group migration invariants", () => {
     for (const line of triggerLines) {
       expect(line).toContain(" BEGIN ");
       expect(line).toMatch(/ END;$/);
+      expect(line).not.toMatch(/\bCASE\b/);
+      expect(line.match(/\bEND;/g)).toHaveLength(1);
     }
   });
 
