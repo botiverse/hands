@@ -379,10 +379,11 @@ CI; Hands stores only the signed bundle and the detached signature required by
 the updater response. Use separate `main`, `preview`, and `nightly` endpoints
 when applications follow different release channels.
 
-The Tauri lane currently serves full-channel releases only. Percentage rollout
-and scoped cohort releases require a stable client identifier that Tauri does
-not send by default, so non-full releases return no update instead of being
-expanded to every client.
+The Tauri lane currently serves full-scope releases only. Non-full scopes are
+ignored because Tauri does not send a stable client identifier for device-group
+or cohort resolution. Percentage rollout is not evaluated by the Tauri
+endpoint: keep it at 100% (or unset), and use separate channels such as
+`preview` and `main` for staged desktop delivery.
 
 ## Review and Publish (draft flow)
 

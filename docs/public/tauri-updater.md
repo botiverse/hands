@@ -106,9 +106,14 @@ Targets use Tauri names such as `darwin-aarch64`, `linux-x86_64`, and
 
 - Only an active, full-scope `tauri-updater` release is offered.
 - Draft and cancelled releases are never returned by the update endpoint.
-- Scoped and percentage rollouts fail closed. Tauri's default updater request
-  has no stable installation identifier, so Hands does not expand a targeted
-  release to every desktop client.
+- Non-full release scopes are ignored. Tauri's default updater request has no
+  stable installation identifier, so Hands cannot resolve device groups or
+  cohorts for this endpoint.
+- Percentage rollout is not evaluated for Tauri requests. Keep a Tauri release
+  at 100% (or leave percentage rollout unset); a lower percentage does not
+  create a safe staged rollout and may still offer the update to every matching
+  updater request. Use separate channels such as `preview` and `main` when you
+  need staged desktop delivery.
 - The update response is revalidated quickly; a no-update response uses
   `no-store`.
 - The artifact URL contains the concrete release ID, target, architecture, and
