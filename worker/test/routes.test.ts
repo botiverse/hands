@@ -6689,6 +6689,14 @@ describe("Hands iOS simulator QA artifacts", () => {
         method: "GET",
         path: "/api/apps/{app_id}/qa-artifacts/ios-simulator/{asset_id}/download?presign=1",
       },
+      "upload-testflight-build": {
+        method: "POST",
+        path: "/api/apps/{app_id}/builds/{build_id}/testflight-upload",
+      },
+      "get-testflight-upload-status": {
+        method: "GET",
+        path: "/api/apps/{app_id}/testflight-uploads/{build_upload_id}",
+      },
     });
   });
 });

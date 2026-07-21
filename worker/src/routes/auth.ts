@@ -720,6 +720,7 @@ export async function handleAgentHelp(c: Context<{ Bindings: Env }>) {
       "3. Triage as you work: update-feedback (change status/assignee, e.g. close a fixed ticket) and comment-feedback (attribution note, internal=true for staff-only). Requires org member (or app publisher).",
       "4. Release management (app publisher): create-release from an existing build (DRAFT by default) → update-release with bilingual release_notes → after explicit human authorization, publish-release. See docs.release_guide.",
       "5. iOS simulator QA fixtures: create-ios-simulator-artifact → PUT the .app.zip to upload.url with the returned headers → complete-ios-simulator-artifact → get/presign the durable exact-byte artifact. QA artifacts can never become releases or update offers.",
+      "6. TestFlight upload (app admin): upload-testflight-build streams an existing signed Hands IPA to Apple; poll get-testflight-upload-status to COMPLETE or FAILED. Upload never assigns beta groups, notifies testers, publishes a Hands release, or submits an App Store production release.",
     ],
     auth: {
       raft_agents:
@@ -748,6 +749,8 @@ export async function handleAgentHelp(c: Context<{ Bindings: Env }>) {
         "POST /api/apps/{app_id}/qa-artifacts/ios-simulator — publisher; declares filename/size/SHA/source/version/build/bundle/GitHub run and returns a presigned PUT URL",
       complete_ios_simulator_artifact:
         "POST /api/apps/{app_id}/qa-artifacts/ios-simulator/{asset_id}/complete — publisher; one-shot stream verification of size/SHA-256 followed by immutable storage sealing",
+      upload_testflight_build:
+        "POST /api/apps/{app_id}/builds/{build_id}/testflight-upload — admin; streams the stored signed IPA to Apple's Build Upload API without distributing it",
     },
     docs: {
       agent_guide: `${origin}/docs/agent-cli-feedback`,
@@ -984,6 +987,33 @@ export async function handleAgentManifest(c: Context<{ Bindings: Env }>) {
         parameters: {
           app_id: { type: "string", in: "path", required: true, description: "OHOS app UUID." },
           submission_id: { type: "string", in: "path", required: true, description: "Hands market submission UUID." },
+        },
+      },
+      {
+        name: "upload-testflight-build",
+        description:
+          "Upload one existing signed Hands IPA to App Store Connect/TestFlight using the app's encrypted server-side ASC credential. This upload-only action never assigns beta groups, notifies testers, activates a Hands release, or touches App Store production publishing. Requires app admin.",
+        endpoint: {
+          method: "POST",
+          path: "/api/apps/{app_id}/builds/{build_id}/testflight-upload",
+        },
+        parameters: {
+          app_id: { type: "string", in: "path", required: true, description: "Hands app UUID." },
+          build_id: { type: "string", in: "path", required: true, description: "Hands build UUID containing the signed installable IPA." },
+          bundle_id: { type: "string", in: "body", required: false, description: "Optional reverse-DNS identifier used only when build metadata does not contain it." },
+        },
+      },
+      {
+        name: "get-testflight-upload-status",
+        description:
+          "Poll one Apple Build Upload id returned by upload-testflight-build until state is COMPLETE or FAILED. Read-only; requires app viewer.",
+        endpoint: {
+          method: "GET",
+          path: "/api/apps/{app_id}/testflight-uploads/{build_upload_id}",
+        },
+        parameters: {
+          app_id: { type: "string", in: "path", required: true, description: "Hands app UUID." },
+          build_upload_id: { type: "string", in: "path", required: true, description: "App Store Connect Build Upload id returned by upload-testflight-build." },
         },
       },
       {
