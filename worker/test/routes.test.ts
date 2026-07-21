@@ -87,6 +87,10 @@ describe("quiver OpenAPI document", () => {
       "/api/apps/{appId}/builds",
       "/api/apps/{appId}/builds/publish-version",
       "/api/apps/{appId}/builds/{buildId}/external-targets",
+      "/api/apps/{appId}/builds/{buildId}/testflight-upload",
+      "/api/apps/{appId}/testflight-uploads/{buildUploadId}",
+      "/api/apps/{appId}/builds/{buildId}/testflight-groups",
+      "/api/apps/{appId}/builds/{buildId}/testflight-publish",
       "/api/apps/{appId}/qa-artifacts/ios-simulator",
       "/api/apps/{appId}/qa-artifacts/ios-simulator/{assetId}",
       "/api/apps/{appId}/qa-artifacts/ios-simulator/{assetId}/complete",
@@ -7092,6 +7096,18 @@ describe("Hands iOS simulator QA artifacts", () => {
       "get-testflight-upload-status": {
         method: "GET",
         path: "/api/apps/{app_id}/testflight-uploads/{build_upload_id}",
+      },
+      "list-testflight-groups": {
+        method: "GET",
+        path: "/api/apps/{app_id}/builds/{build_id}/testflight-groups",
+      },
+      "publish-testflight-build": {
+        method: "POST",
+        path: "/api/apps/{app_id}/builds/{build_id}/testflight-publish",
+      },
+      "get-testflight-publish-status": {
+        method: "GET",
+        path: "/api/apps/{app_id}/builds/{build_id}/testflight-publish",
       },
     });
     const byName = Object.fromEntries(manifest.actions.map((action: any) => [action.name, action]));

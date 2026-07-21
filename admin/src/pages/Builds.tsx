@@ -380,7 +380,7 @@ function TestflightUploadPanel({ appId, build }: { appId: string; build: Build }
       )}
       {stateName === "COMPLETE" && (
         <p className="mt-1 text-xs text-green-700">
-          Processed — add it to a tester group in App Store Connect → TestFlight.
+          Upload processed. Ready for TestFlight group distribution.
         </p>
       )}
     </div>

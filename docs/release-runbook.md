@@ -58,8 +58,10 @@ should remain `draft` until changelog review is complete.
 
 For iOS/TestFlight, the CI boundary is different: macOS CI signs the app, and
 Hands receives the signed output. Do not upload unsigned IPA intermediates to
-Hands as the release artifact, and do not move Apple signing credentials into
-Hands.
+Hands as the release artifact. Apple distribution certificates, provisioning
+profiles, and their passwords remain in CI; the App Store Connect API key is a
+separate credential encrypted server-side in Hands and never exported to CI or
+agents.
 
 ```sh
 # after xcodebuild archive + xcodebuild -exportArchive
@@ -75,15 +77,44 @@ hands builds publish-ios raft-ios \
   --ci-run-id "$GITHUB_RUN_ID" \
   --ci-url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
   --draft
-
-# then upload that same signed IPA to App Store Connect/TestFlight
-# with Transporter or fastlane pilot in the same macOS CI job.
 ```
 
 Hands stores the signed `.ipa` as the installable artifact and `.dSYM.zip` as a
-support artifact for symbolication. TestFlight processing status can be written
-back through metadata/status follow-ups, but the release should still remain
-`draft` until changelog review is complete.
+support artifact for symbolication. An app admin then invokes the server-side
+`upload-testflight-build` Raft action (or the matching API/console action) with
+the Hands build id. Poll `get-testflight-upload-status` to Apple
+`state.state=COMPLETE|FAILED`, then wait until
+`hands builds testflight-status` reports the exact ASC build `VALID`.
+
+After the binary is valid, keep TestFlight distribution separate from Hands
+release activation:
+
+```sh
+# discover stable ASC group ids
+hands builds testflight-groups raft-ios <hands-build-id>
+
+# internal testing
+hands builds testflight-publish raft-ios <hands-build-id> \
+  --distribution internal \
+  --group-id <asc-internal-group-id> \
+  --what-to-test-file en-US=./testflight.en.txt \
+  --what-to-test-file zh-Hans=./testflight.zh.txt \
+  --wait
+
+# external testing: submits Beta App Review; notification is opt-in
+hands builds testflight-publish raft-ios <hands-build-id> \
+  --distribution external \
+  --group-id <asc-external-group-id> \
+  --what-to-test-file en-US=./testflight.en.txt \
+  --notify-testers
+```
+
+External review can take hours. Without `--wait`, the command returns after
+submission; use `hands builds testflight-status ... --distribution external`
+later. TestFlight assignment/review/notification never activates the Hands
+draft and never submits or releases an App Store production version. The human
+still reviews the bilingual Hands changelog and publishes the Hands release
+through the explicit flow below.
 
 For HarmonyOS/OHOS, CI signs the HAPs inside the App Pack, verifies each HAP,
 and exports both the signed `.app` and a standalone signed `.hap`. Publish both

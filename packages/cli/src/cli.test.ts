@@ -375,7 +375,7 @@ describe("external build publish helpers", () => {
 
     try {
       const { registerBuildCommands } = await import("../src/commands/builds.js");
-      const program = new Command().version("0.5.10").option("--json", "JSON output", false);
+      const program = new Command().version("0.5.12").option("--json", "JSON output", false);
       registerBuildCommands(program);
       await program.parseAsync([
         "node", "hands", "builds", "publish-version", "computer",
@@ -424,6 +424,238 @@ describe("iOS build helper contract", () => {
     expect(() =>
       parseChangelogOptions({ changelog: ["plain update", "en=English update"] }),
     ).toThrow("mix of plain and lang= changelog entries");
+  });
+
+  it("parses repeatable localized What to Test text and files", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "hands-testflight-notes-"));
+    const zh = join(dir, "zh.txt");
+    writeFileSync(zh, "验证登录和活动页。\n");
+    try {
+      const { parseWhatToTestOptions } = await import("../src/commands/builds.js");
+      expect(
+        parseWhatToTestOptions({
+          whatToTest: ["en-US=Verify login and Activity."],
+          whatToTestFile: [`zh-Hans=${zh}`],
+        }),
+      ).toEqual({
+        "en-US": "Verify login and Activity.",
+        "zh-Hans": "验证登录和活动页。",
+      });
+      expect(() =>
+        parseWhatToTestOptions({ whatToTest: ["missing-locale-separator"] }),
+      ).toThrow("must use locale=text");
+      expect(() =>
+        parseWhatToTestOptions({
+          whatToTest: ["en-US=First", "en-US=Second"],
+        }),
+      ).toThrow("duplicate What to Test locale: en-US");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("sends the TestFlight publish action with stable groups and metadata", async () => {
+    const requests: Array<{ method: string; url: string; body?: any }> = [];
+    const server = createServer(async (req, res) => {
+      let body: any = undefined;
+      if (req.headers["content-type"]?.includes("application/json")) {
+        const chunks: Buffer[] = [];
+        for await (const chunk of req) chunks.push(Buffer.from(chunk));
+        body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+      }
+      requests.push({ method: req.method ?? "GET", url: req.url ?? "", body });
+      res.setHeader("content-type", "application/json");
+      if (req.url === "/api/apps") {
+        return res.end(JSON.stringify({ apps: [{ id: "app-1", slug: "raft-ios" }] }));
+      }
+      if (req.url === "/api/apps/app-1/builds/build-1/testflight-publish") {
+        return res.end(
+          JSON.stringify({
+            hands_build_id: "build-1",
+            bundle_id: "build.raft.app",
+            asc_app_id: "asc-app-1",
+            asc_build_id: "asc-build-1",
+            version: "1.0.0",
+            build_number: "1000005",
+            state: "waiting_for_review",
+            distribution: "external",
+            beta_review: { state: "WAITING_FOR_REVIEW" },
+            notification: "scheduled",
+          }),
+        );
+      }
+      res.statusCode = 404;
+      return res.end(JSON.stringify({ error: "not found" }));
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("bad address");
+    const originalApi = process.env.HANDS_API;
+    const originalToken = process.env.HANDS_BEARER_TOKEN;
+    process.env.HANDS_API = `http://127.0.0.1:${address.port}`;
+    process.env.HANDS_BEARER_TOKEN = "test-token";
+
+    try {
+      const { registerBuildCommands } = await import("../src/commands/builds.js");
+      const program = new Command().version("0.5.12").option("--json", "JSON output", false);
+      registerBuildCommands(program);
+      await program.parseAsync([
+        "node",
+        "hands",
+        "builds",
+        "testflight-publish",
+        "raft-ios",
+        "build-1",
+        "--distribution",
+        "external",
+        "--group-id",
+        "group-1",
+        "--group-id",
+        "group-2",
+        "--what-to-test",
+        "en-US=Verify release candidate.",
+        "--notify-testers",
+      ]);
+
+      const publish = requests.find(
+        (request) =>
+          request.method === "POST" && request.url.endsWith("/testflight-publish"),
+      );
+      expect(publish?.body).toEqual({
+        distribution: "external",
+        group_ids: ["group-1", "group-2"],
+        what_to_test: { "en-US": "Verify release candidate." },
+        notify_testers: true,
+      });
+    } finally {
+      if (originalApi === undefined) delete process.env.HANDS_API;
+      else process.env.HANDS_API = originalApi;
+      if (originalToken === undefined) delete process.env.HANDS_BEARER_TOKEN;
+      else process.env.HANDS_BEARER_TOKEN = originalToken;
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
+  it("waits for the exact ASC build before publishing and then polls review state", async () => {
+    const requests: string[] = [];
+    let statusReads = 0;
+    const server = createServer(async (req, res) => {
+      requests.push(`${req.method ?? "GET"} ${req.url ?? ""}`);
+      res.setHeader("content-type", "application/json");
+      if (req.url === "/api/apps") {
+        return res.end(
+          JSON.stringify({ apps: [{ id: "app-1", slug: "raft-ios" }] }),
+        );
+      }
+      if (
+        req.method === "GET" &&
+        req.url?.startsWith(
+          "/api/apps/app-1/builds/build-1/testflight-publish",
+        )
+      ) {
+        statusReads += 1;
+        if (statusReads === 1) {
+          return res.end(
+            JSON.stringify({
+              hands_build_id: "build-1",
+              bundle_id: "build.raft.app",
+              asc_app_id: "asc-app-1",
+              asc_build_id: null,
+              version: "1.0.0",
+              build_number: "1000005",
+              state: "waiting_for_processing",
+              distribution: "external",
+            }),
+          );
+        }
+        const approved = statusReads >= 3;
+        return res.end(
+          JSON.stringify({
+            hands_build_id: "build-1",
+            bundle_id: "build.raft.app",
+            asc_app_id: "asc-app-1",
+            asc_build_id: "asc-build-1",
+            version: "1.0.0",
+            build_number: "1000005",
+            processing_state: "VALID",
+            state: approved ? "approved_not_notified" : "ready_for_beta_submission",
+            distribution: "external",
+            beta_review: approved ? { state: "APPROVED" } : null,
+          }),
+        );
+      }
+      if (
+        req.method === "POST" &&
+        req.url === "/api/apps/app-1/builds/build-1/testflight-publish"
+      ) {
+        for await (const _chunk of req) {
+          // Drain the request body before responding.
+        }
+        return res.end(
+          JSON.stringify({
+            hands_build_id: "build-1",
+            bundle_id: "build.raft.app",
+            asc_app_id: "asc-app-1",
+            asc_build_id: "asc-build-1",
+            version: "1.0.0",
+            build_number: "1000005",
+            state: "waiting_for_review",
+            distribution: "external",
+            beta_review: { state: "WAITING_FOR_REVIEW" },
+          }),
+        );
+      }
+      res.statusCode = 404;
+      return res.end(JSON.stringify({ error: "not found" }));
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("bad address");
+    const originalApi = process.env.HANDS_API;
+    const originalToken = process.env.HANDS_BEARER_TOKEN;
+    process.env.HANDS_API = `http://127.0.0.1:${address.port}`;
+    process.env.HANDS_BEARER_TOKEN = "test-token";
+
+    try {
+      const { registerBuildCommands } = await import("../src/commands/builds.js");
+      const program = new Command()
+        .version("0.5.12")
+        .option("--json", "JSON output", false);
+      registerBuildCommands(program);
+      await program.parseAsync([
+        "node",
+        "hands",
+        "--json",
+        "builds",
+        "testflight-publish",
+        "raft-ios",
+        "build-1",
+        "--distribution",
+        "external",
+        "--group-id",
+        "external-1",
+        "--what-to-test",
+        "en-US=Verify release.",
+        "--wait",
+        "--poll-interval-seconds",
+        "0.001",
+        "--timeout-seconds",
+        "1",
+      ]);
+
+      expect(statusReads).toBe(3);
+      const postIndex = requests.findIndex((request) => request.startsWith("POST "));
+      const statusBeforePost = requests
+        .slice(0, postIndex)
+        .filter((request) => request.includes("testflight-publish"));
+      expect(statusBeforePost).toHaveLength(2);
+    } finally {
+      if (originalApi === undefined) delete process.env.HANDS_API;
+      else process.env.HANDS_API = originalApi;
+      if (originalToken === undefined) delete process.env.HANDS_BEARER_TOKEN;
+      else process.env.HANDS_BEARER_TOKEN = originalToken;
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
   });
 });
 

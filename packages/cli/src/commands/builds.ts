@@ -44,7 +44,41 @@ interface ChannelRow {
   name: string;
 }
 
-function collect(value: string, previous: string[]): string[] {
+interface TestflightGroup {
+  id: string;
+  name: string | null;
+  is_internal: boolean | null;
+  has_access_to_all_builds: boolean | null;
+  public_link_enabled: boolean | null;
+}
+
+interface TestflightPublishStatus {
+  hands_build_id: string;
+  bundle_id: string;
+  asc_app_id: string;
+  asc_build_id: string | null;
+  version: string;
+  build_number: string;
+  state: string;
+  distribution: "internal" | "external" | null;
+  processing_state?: string | null;
+  expired?: boolean | null;
+  assigned_groups?: TestflightGroup[];
+  beta_review?: {
+    id: string;
+    state: string | null;
+    submitted_at: string | null;
+  } | null;
+  beta_detail?: {
+    auto_notify_enabled: boolean | null;
+    internal_build_state: string | null;
+    external_build_state: string | null;
+  } | null;
+  notification?: string;
+  operation_id?: string;
+}
+
+function collect(value: string, previous: string[] = []): string[] {
   return previous.concat(value);
 }
 
@@ -85,6 +119,218 @@ export function parseChangelogOptions(opts: {
     return JSON.stringify(byLang);
   }
   return plain ?? null;
+}
+
+export function parseWhatToTestOptions(opts: {
+  whatToTest?: string | string[];
+  whatToTestFile?: string | string[];
+}): Record<string, string> {
+  const result: Record<string, string> = {};
+  const values = (value?: string | string[]): string[] => {
+    if (value === undefined) return [];
+    return Array.isArray(value) ? value : [value];
+  };
+  const consume = (entry: string, fromFile: boolean) => {
+    const eq = entry.indexOf("=");
+    if (eq <= 0) {
+      throw new Error(
+        `${fromFile ? "--what-to-test-file" : "--what-to-test"} must use locale=${fromFile ? "path" : "text"}`,
+      );
+    }
+    const locale = entry.slice(0, eq).trim();
+    const value = entry.slice(eq + 1);
+    const text = (
+      fromFile ? readFileSync(value.trim(), "utf8") : value
+    ).trim();
+    if (!locale || !text) {
+      throw new Error("What to Test locale and text must be non-empty");
+    }
+    if (Object.prototype.hasOwnProperty.call(result, locale)) {
+      throw new Error(`duplicate What to Test locale: ${locale}`);
+    }
+    result[locale] = text;
+  };
+  for (const entry of values(opts.whatToTest)) consume(entry, false);
+  for (const entry of values(opts.whatToTestFile)) consume(entry, true);
+  return result;
+}
+
+function positiveSeconds(value: string, option: string): number {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    throw new Error(`${option} must be a positive number`);
+  }
+  return parsed;
+}
+
+function sleep(milliseconds: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
+async function withTimeoutMessage<T>(
+  message: string,
+  request: () => Promise<T>,
+): Promise<T> {
+  try {
+    return await request();
+  } catch (error) {
+    if (
+      error instanceof Error &&
+      (error.name === "TimeoutError" || error.name === "AbortError")
+    ) {
+      throw new Error(message);
+    }
+    throw error;
+  }
+}
+
+async function getTestflightPublishStatus(
+  appId: string,
+  buildId: string,
+  options: {
+    distribution?: string;
+    bundleId?: string;
+    signal?: AbortSignal;
+  },
+): Promise<TestflightPublishStatus> {
+  return apiRequest<TestflightPublishStatus>(
+    `/api/apps/${appId}/builds/${buildId}/testflight-publish`,
+    {
+      query: {
+        distribution: options.distribution,
+        bundle_id: options.bundleId,
+      },
+      ...(options.signal ? { signal: options.signal } : {}),
+    },
+  );
+}
+
+function assertTestflightStatusHealthy(status: TestflightPublishStatus): void {
+  if (
+    status.state === "processing_failed" ||
+    status.state === "expired" ||
+    status.state === "rejected" ||
+    status.state === "blocked_export_compliance" ||
+    status.state === "not_applicable"
+  ) {
+    const appleState =
+      status.distribution === "external"
+        ? status.beta_review?.state ??
+          status.beta_detail?.external_build_state ??
+          status.processing_state
+        : status.beta_detail?.internal_build_state ?? status.processing_state;
+    throw new Error(
+      `TestFlight reached terminal state ${status.state}${appleState ? ` (Apple: ${appleState})` : ""}`,
+    );
+  }
+}
+
+async function waitForAscBuild(
+  appId: string,
+  buildId: string,
+  options: {
+    distribution: "internal" | "external";
+    bundleId?: string;
+    intervalSeconds: number;
+    timeoutSeconds: number;
+    quiet: boolean;
+  },
+): Promise<TestflightPublishStatus> {
+  const deadline = Date.now() + options.timeoutSeconds * 1000;
+  const timeoutMessage =
+    `timed out after ${options.timeoutSeconds}s waiting for ` +
+    "App Store Connect processing";
+  while (true) {
+    const remainingMilliseconds = deadline - Date.now();
+    if (remainingMilliseconds <= 0) {
+      throw new Error(timeoutMessage);
+    }
+    const status = await withTimeoutMessage(timeoutMessage, () =>
+      getTestflightPublishStatus(appId, buildId, {
+        ...options,
+        signal: AbortSignal.timeout(
+          Math.max(1, Math.ceil(remainingMilliseconds)),
+        ),
+      }),
+    );
+    assertTestflightStatusHealthy(status);
+    if (status.asc_build_id && status.processing_state === "VALID") return status;
+    if (Date.now() >= deadline) {
+      throw new Error(timeoutMessage);
+    }
+    if (!options.quiet) {
+      console.error(
+        `TestFlight ${status.version} (${status.build_number}): ` +
+          `${status.state}; polling again in ${options.intervalSeconds}s`,
+      );
+    }
+    await sleep(
+      Math.min(
+        options.intervalSeconds * 1000,
+        Math.max(0, deadline - Date.now()),
+      ),
+    );
+  }
+}
+
+async function waitForTestflightDistribution(
+  appId: string,
+  buildId: string,
+  options: {
+    distribution: "internal" | "external";
+    notifyTesters: boolean;
+    bundleId?: string;
+    intervalSeconds: number;
+    timeoutSeconds: number;
+    quiet: boolean;
+  },
+): Promise<TestflightPublishStatus> {
+  const deadline = Date.now() + options.timeoutSeconds * 1000;
+  const timeoutMessage =
+    `timed out after ${options.timeoutSeconds}s waiting for ` +
+    `TestFlight ${options.distribution} distribution`;
+  while (true) {
+    const remainingMilliseconds = deadline - Date.now();
+    if (remainingMilliseconds <= 0) {
+      throw new Error(timeoutMessage);
+    }
+    const status = await withTimeoutMessage(timeoutMessage, () =>
+      getTestflightPublishStatus(appId, buildId, {
+        ...options,
+        signal: AbortSignal.timeout(
+          Math.max(1, Math.ceil(remainingMilliseconds)),
+        ),
+      }),
+    );
+    assertTestflightStatusHealthy(status);
+    const complete =
+      options.distribution === "internal"
+        ? status.state === "testing"
+        : options.notifyTesters
+          ? status.state === "testing"
+          : status.state === "approved_not_notified" ||
+            status.state === "approved" ||
+            status.state === "testing";
+    if (complete) return status;
+    if (Date.now() >= deadline) {
+      throw new Error(timeoutMessage);
+    }
+    if (!options.quiet) {
+      const review = status.beta_review?.state
+        ? ` review=${status.beta_review.state}`
+        : "";
+      console.error(
+        `TestFlight ${status.version} (${status.build_number}): ` +
+          `${status.state}${review}; polling again in ${options.intervalSeconds}s`,
+      );
+    }
+    await sleep(
+      Math.min(
+        options.intervalSeconds * 1000,
+        Math.max(0, deadline - Date.now()),
+      ),
+    );
+  }
 }
 
 export function registerBuildCommands(program: Command): void {
@@ -707,7 +953,261 @@ export function registerBuildCommands(program: Command): void {
             "warning: no --dsym uploaded; iOS crashes for this version_code won't symbolicate.",
           );
         }
-        console.log("  note:    upload the same signed IPA to TestFlight from macOS CI.");
+        console.log(
+          "  note:    upload this Hands build with the server-side upload-testflight-build action.",
+        );
+      },
+    );
+
+  builds
+    .command("testflight-groups <appIdOrSlug> <buildId>")
+    .description(
+      "List App Store Connect internal/external beta groups for an existing Hands iOS build.",
+    )
+    .option(
+      "--bundle-id <id>",
+      "Bundle-id assertion; must match immutable build metadata, or acts as fallback when metadata is absent.",
+    )
+    .option("--json", "Output JSON.", false)
+    .action(
+      async (
+        appIdOrSlug: string,
+        buildId: string,
+        opts: { bundleId?: string; json?: boolean },
+      ) => {
+        const appId = await resolveAppId(appIdOrSlug);
+        const result = await apiRequest<{
+          hands_build_id: string;
+          bundle_id: string;
+          asc_app_id: string;
+          groups: TestflightGroup[];
+        }>(`/api/apps/${appId}/builds/${buildId}/testflight-groups`, {
+          query: { bundle_id: opts.bundleId },
+        });
+        if (shouldOutputJson(program, opts.json)) {
+          console.log(JSON.stringify(result, null, 2));
+          return;
+        }
+        if (result.groups.length === 0) {
+          console.log("No TestFlight beta groups found.");
+          return;
+        }
+        for (const group of result.groups) {
+          const kind = group.is_internal ? "internal" : "external";
+          const automatic = group.has_access_to_all_builds ? " auto-all-builds" : "";
+          console.log(`${group.id}  ${kind.padEnd(8)}  ${group.name ?? "(unnamed)"}${automatic}`);
+        }
+      },
+    );
+
+  builds
+    .command("testflight-status <appIdOrSlug> <buildId>")
+    .description(
+      "Refresh live TestFlight processing, group assignment, beta review, auto-notify, and expiry state.",
+    )
+    .option("--distribution <mode>", "Project state for internal or external distribution.")
+    .option(
+      "--bundle-id <id>",
+      "Bundle-id assertion; must match immutable build metadata, or acts as fallback when metadata is absent.",
+    )
+    .option("--json", "Output JSON.", false)
+    .action(
+      async (
+        appIdOrSlug: string,
+        buildId: string,
+        opts: { distribution?: string; bundleId?: string; json?: boolean },
+      ) => {
+        if (
+          opts.distribution !== undefined &&
+          opts.distribution !== "internal" &&
+          opts.distribution !== "external"
+        ) {
+          throw new Error("--distribution must be internal or external");
+        }
+        const appId = await resolveAppId(appIdOrSlug);
+        const status = await getTestflightPublishStatus(appId, buildId, opts);
+        if (shouldOutputJson(program, opts.json)) {
+          console.log(JSON.stringify(status, null, 2));
+          return;
+        }
+        console.log(
+          `TestFlight ${status.version} (${status.build_number}): ${status.state}`,
+        );
+        console.log(`  ASC app:   ${status.asc_app_id}`);
+        console.log(`  ASC build: ${status.asc_build_id ?? "not available yet"}`);
+        if (status.processing_state) {
+          console.log(`  processing: ${status.processing_state}`);
+        }
+        if (status.beta_review?.state) {
+          console.log(`  beta review: ${status.beta_review.state}`);
+        }
+        if (status.assigned_groups && status.assigned_groups.length > 0) {
+          console.log(
+            `  groups: ${status.assigned_groups.map((group) => `${group.name ?? group.id} (${group.id})`).join(", ")}`,
+          );
+        }
+      },
+    );
+
+  builds
+    .command("testflight-publish <appIdOrSlug> <buildId>")
+    .description(
+      "Distribute an already-processed App Store Connect build to TestFlight beta groups. This never publishes to the App Store or activates a Hands release.",
+    )
+    .requiredOption("--distribution <mode>", "internal or external.")
+    .requiredOption(
+      "--group-id <id>",
+      "Stable beta group id from testflight-groups. Repeat for multiple groups.",
+      collect,
+    )
+    .option(
+      "--what-to-test <locale=text>",
+      "Localized What to Test text. Repeat for multiple locales.",
+      collect,
+      [],
+    )
+    .option(
+      "--what-to-test-file <locale=path>",
+      "Read localized What to Test text from a file. Repeat for multiple locales.",
+      collect,
+      [],
+    )
+    .option(
+      "--notify-testers",
+      "External only: enable auto-notify before review, or notify an already-approved build when no auto-notify is pending.",
+      false,
+    )
+    .option(
+      "--bundle-id <id>",
+      "Bundle-id assertion; must match immutable build metadata, or acts as fallback when metadata is absent.",
+    )
+    .option(
+      "--wait",
+      "Wait for Apple processing and the requested TestFlight terminal state.",
+      false,
+    )
+    .option("--poll-interval-seconds <n>", "Polling interval while --wait is active.", "15")
+    .option("--timeout-seconds <n>", "Maximum --wait duration.", "3600")
+    .option("--json", "Output JSON.", false)
+    .action(
+      async (
+        appIdOrSlug: string,
+        buildId: string,
+        opts: {
+          distribution: string;
+          groupId: string[];
+          whatToTest?: string[];
+          whatToTestFile?: string[];
+          notifyTesters?: boolean;
+          bundleId?: string;
+          wait?: boolean;
+          pollIntervalSeconds: string;
+          timeoutSeconds: string;
+          json?: boolean;
+        },
+      ) => {
+        if (opts.distribution !== "internal" && opts.distribution !== "external") {
+          throw new Error("--distribution must be internal or external");
+        }
+        if (opts.distribution === "internal" && opts.notifyTesters) {
+          throw new Error("--notify-testers applies only to external distribution");
+        }
+        const appId = await resolveAppId(appIdOrSlug);
+        const intervalSeconds = positiveSeconds(
+          opts.pollIntervalSeconds,
+          "--poll-interval-seconds",
+        );
+        const timeoutSeconds = positiveSeconds(
+          opts.timeoutSeconds,
+          "--timeout-seconds",
+        );
+        const quiet = shouldOutputJson(program, opts.json);
+        const distribution = opts.distribution;
+        const waitStartedAt = Date.now();
+        if (opts.wait) {
+          await waitForAscBuild(appId, buildId, {
+            distribution,
+            ...(opts.bundleId ? { bundleId: opts.bundleId } : {}),
+            intervalSeconds,
+            timeoutSeconds,
+            quiet,
+          });
+        }
+
+        const remainingBeforePublishMilliseconds =
+          timeoutSeconds * 1000 - (Date.now() - waitStartedAt);
+        if (opts.wait && remainingBeforePublishMilliseconds <= 0) {
+          throw new Error(
+            `timed out after ${timeoutSeconds}s before TestFlight publish began`,
+          );
+        }
+        const publishRequest = () =>
+          apiRequest<TestflightPublishStatus>(
+            `/api/apps/${appId}/builds/${buildId}/testflight-publish`,
+            {
+              method: "POST",
+              body: {
+                distribution,
+                group_ids: opts.groupId,
+                what_to_test: parseWhatToTestOptions(opts),
+                notify_testers: Boolean(opts.notifyTesters),
+                ...(opts.bundleId ? { bundle_id: opts.bundleId } : {}),
+              },
+              ...(opts.wait
+                ? {
+                    signal: AbortSignal.timeout(
+                      Math.max(
+                        1,
+                        Math.ceil(remainingBeforePublishMilliseconds),
+                      ),
+                    ),
+                  }
+                : {}),
+            },
+          );
+        const result = opts.wait
+          ? await withTimeoutMessage(
+              `timed out after ${timeoutSeconds}s while submitting the TestFlight publish request`,
+              publishRequest,
+            )
+          : await publishRequest();
+        const elapsedSeconds = (Date.now() - waitStartedAt) / 1000;
+        const remainingTimeoutSeconds = Math.max(
+          0,
+          timeoutSeconds - elapsedSeconds,
+        );
+        if (opts.wait && remainingTimeoutSeconds === 0) {
+          throw new Error(
+            `timed out after ${timeoutSeconds}s before TestFlight distribution polling began`,
+          );
+        }
+        const finalStatus = opts.wait
+          ? await waitForTestflightDistribution(appId, buildId, {
+              distribution,
+              notifyTesters: Boolean(opts.notifyTesters),
+              ...(opts.bundleId ? { bundleId: opts.bundleId } : {}),
+              intervalSeconds,
+              timeoutSeconds: remainingTimeoutSeconds,
+              quiet,
+            })
+          : result;
+
+        if (quiet) {
+          console.log(JSON.stringify(finalStatus, null, 2));
+          return;
+        }
+        console.log(
+          `TestFlight ${distribution} publish: ${finalStatus.state}`,
+        );
+        console.log(`  Hands build: ${finalStatus.hands_build_id}`);
+        console.log(`  ASC build:   ${finalStatus.asc_build_id}`);
+        console.log(`  groups:      ${opts.groupId.join(", ")}`);
+        if (finalStatus.beta_review?.state) {
+          console.log(`  beta review: ${finalStatus.beta_review.state}`);
+        }
+        if (finalStatus.notification) {
+          console.log(`  notification: ${finalStatus.notification}`);
+        }
       },
     );
 

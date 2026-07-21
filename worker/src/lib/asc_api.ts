@@ -146,13 +146,20 @@ export type BuildUploadState =
   | "FAILED"
   | "COMPLETE";
 
+export interface BuildUploadStateInfo {
+  state: BuildUploadState | null;
+  errors?: Array<{ code?: string; description?: string }>;
+  warnings?: Array<{ code?: string; description?: string }>;
+  infos?: Array<{ code?: string; description?: string }>;
+}
+
 export interface BuildUploadResource {
   id: string;
   attributes: {
     cfBundleShortVersionString: string | null;
     cfBundleVersion: string | null;
     platform: string | null;
-    state: BuildUploadState | null;
+    state: BuildUploadStateInfo | null;
     createdDate: string | null;
     uploadedDate: string | null;
   };
@@ -272,6 +279,352 @@ export async function getBuildUpload(
     creds,
     "GET",
     `/v1/buildUploads/${buildUploadId}`,
+  );
+  return res.data;
+}
+
+// ---------- TestFlight distribution resources ----------
+
+export type AscBuildProcessingState =
+  | "PROCESSING"
+  | "FAILED"
+  | "INVALID"
+  | "VALID";
+
+export interface AscBuildResource {
+  id: string;
+  attributes: {
+    version: string | null;
+    uploadedDate: string | null;
+    expirationDate: string | null;
+    expired: boolean | null;
+    processingState: AscBuildProcessingState | string | null;
+    buildAudienceType?:
+      | "INTERNAL_ONLY"
+      | "APP_STORE_ELIGIBLE"
+      | string
+      | null;
+  };
+  relationships?: {
+    betaGroups?: {
+      data?: Array<{ type: "betaGroups"; id: string }>;
+    };
+  };
+}
+
+export interface BetaGroupResource {
+  id: string;
+  attributes: {
+    name: string | null;
+    createdDate: string | null;
+    isInternalGroup: boolean | null;
+    hasAccessToAllBuilds: boolean | null;
+    publicLinkEnabled: boolean | null;
+    publicLink: string | null;
+  };
+}
+
+export interface BetaBuildLocalizationResource {
+  id: string;
+  attributes: {
+    locale: string | null;
+    whatsNew: string | null;
+  };
+}
+
+export interface BetaAppReviewSubmissionResource {
+  id: string;
+  attributes: {
+    betaReviewState: string | null;
+    submittedDate: string | null;
+  };
+}
+
+export interface BuildBetaDetailResource {
+  id: string;
+  attributes: {
+    autoNotifyEnabled: boolean | null;
+    internalBuildState: string | null;
+    externalBuildState: string | null;
+  };
+}
+
+/** Resolve the processed ASC build matching one exact Hands version tuple. */
+export async function resolveAscBuild(
+  creds: AscApiCredentials,
+  args: {
+    ascAppId: string;
+    version: string;
+    buildNumber: string;
+    platform?: "IOS" | "MAC_OS" | "TV_OS" | "VISION_OS";
+  },
+): Promise<AscBuildResource | null> {
+  const query = [
+    `filter[app]=${encodeURIComponent(args.ascAppId)}`,
+    `filter[version]=${encodeURIComponent(args.buildNumber)}`,
+    `filter[preReleaseVersion.version]=${encodeURIComponent(args.version)}`,
+    `filter[preReleaseVersion.platform]=${encodeURIComponent(args.platform ?? "IOS")}`,
+    "limit=2",
+  ].join("&");
+  const res = await ascRequest<{ data: AscBuildResource[] }>(
+    creds,
+    "GET",
+    `/v1/builds?${query}`,
+  );
+  if ((res.data ?? []).length > 1) {
+    throw new Error(
+      `multiple App Store Connect builds matched ${args.version} (${args.buildNumber})`,
+    );
+  }
+  return res.data?.[0] ?? null;
+}
+
+export async function listBetaGroups(
+  creds: AscApiCredentials,
+  ascAppId: string,
+): Promise<BetaGroupResource[]> {
+  const res = await ascRequest<{ data: BetaGroupResource[] }>(
+    creds,
+    "GET",
+    `/v1/apps/${encodeURIComponent(ascAppId)}/betaGroups?limit=200`,
+  );
+  return res.data ?? [];
+}
+
+export async function getAssignedBetaGroupIds(
+  creds: AscApiCredentials,
+  ascBuildId: string,
+): Promise<string[]> {
+  const res = await ascRequest<{
+    data: AscBuildResource;
+    included?: Array<{ type?: string; id?: string }>;
+  }>(
+    creds,
+    "GET",
+    `/v1/builds/${encodeURIComponent(ascBuildId)}?include=betaGroups&limit[betaGroups]=50`,
+  );
+  const relationshipIds =
+    res.data.relationships?.betaGroups?.data?.map((item) => item.id) ?? [];
+  const includedIds = (res.included ?? [])
+    .filter((item) => item.type === "betaGroups" && typeof item.id === "string")
+    .map((item) => item.id!);
+  return Array.from(new Set([...relationshipIds, ...includedIds]));
+}
+
+export async function addBuildToBetaGroups(
+  creds: AscApiCredentials,
+  ascBuildId: string,
+  groupIds: string[],
+): Promise<void> {
+  if (groupIds.length === 0) return;
+  await ascRequest(
+    creds,
+    "POST",
+    `/v1/builds/${encodeURIComponent(ascBuildId)}/relationships/betaGroups`,
+    {
+      data: groupIds.map((id) => ({ type: "betaGroups", id })),
+    },
+  );
+}
+
+export async function getBetaBuildLocalizations(
+  creds: AscApiCredentials,
+  ascBuildId: string,
+): Promise<BetaBuildLocalizationResource[]> {
+  const res = await ascRequest<{ data: BetaBuildLocalizationResource[] }>(
+    creds,
+    "GET",
+    `/v1/builds/${encodeURIComponent(ascBuildId)}/betaBuildLocalizations?limit=200`,
+  );
+  return res.data ?? [];
+}
+
+export async function createBetaBuildLocalization(
+  creds: AscApiCredentials,
+  args: { ascBuildId: string; locale: string; whatsNew: string },
+): Promise<BetaBuildLocalizationResource> {
+  const res = await ascRequest<{ data: BetaBuildLocalizationResource }>(
+    creds,
+    "POST",
+    "/v1/betaBuildLocalizations",
+    {
+      data: {
+        type: "betaBuildLocalizations",
+        attributes: {
+          locale: args.locale,
+          whatsNew: args.whatsNew,
+        },
+        relationships: {
+          build: { data: { type: "builds", id: args.ascBuildId } },
+        },
+      },
+    },
+  );
+  return res.data;
+}
+
+export async function updateBetaBuildLocalization(
+  creds: AscApiCredentials,
+  args: { localizationId: string; whatsNew: string },
+): Promise<BetaBuildLocalizationResource> {
+  const res = await ascRequest<{ data: BetaBuildLocalizationResource }>(
+    creds,
+    "PATCH",
+    `/v1/betaBuildLocalizations/${encodeURIComponent(args.localizationId)}`,
+    {
+      data: {
+        type: "betaBuildLocalizations",
+        id: args.localizationId,
+        attributes: { whatsNew: args.whatsNew },
+      },
+    },
+  );
+  return res.data;
+}
+
+/** Create or update every supplied locale without touching other locales. */
+export async function upsertBetaBuildLocalizations(
+  creds: AscApiCredentials,
+  ascBuildId: string,
+  localizations: Record<string, string>,
+): Promise<BetaBuildLocalizationResource[]> {
+  const requested = Object.entries(localizations);
+  if (requested.length === 0) return [];
+  const existing = await getBetaBuildLocalizations(creds, ascBuildId);
+  const byLocale = new Map(
+    existing
+      .filter((item) => item.attributes.locale)
+      .map((item) => [item.attributes.locale!, item]),
+  );
+  const results: BetaBuildLocalizationResource[] = [];
+  for (const [locale, whatsNew] of requested) {
+    const current = byLocale.get(locale);
+    if (!current) {
+      try {
+        results.push(
+          await createBetaBuildLocalization(creds, {
+            ascBuildId,
+            locale,
+            whatsNew,
+          }),
+        );
+      } catch (error) {
+        if (!(error instanceof AscApiError) || error.status !== 409) {
+          throw error;
+        }
+        const raced = (await getBetaBuildLocalizations(creds, ascBuildId)).find(
+          (item) => item.attributes.locale === locale,
+        );
+        if (!raced) throw error;
+        results.push(
+          raced.attributes.whatsNew === whatsNew
+            ? raced
+            : await updateBetaBuildLocalization(creds, {
+                localizationId: raced.id,
+                whatsNew,
+              }),
+        );
+      }
+    } else if (current.attributes.whatsNew !== whatsNew) {
+      results.push(
+        await updateBetaBuildLocalization(creds, {
+          localizationId: current.id,
+          whatsNew,
+        }),
+      );
+    } else {
+      results.push(current);
+    }
+  }
+  return results;
+}
+
+export async function getBetaAppReviewSubmission(
+  creds: AscApiCredentials,
+  ascBuildId: string,
+): Promise<BetaAppReviewSubmissionResource | null> {
+  try {
+    const res = await ascRequest<{
+      data: BetaAppReviewSubmissionResource | null;
+    }>(
+      creds,
+      "GET",
+      `/v1/builds/${encodeURIComponent(ascBuildId)}/betaAppReviewSubmission`,
+    );
+    return res.data ?? null;
+  } catch (error) {
+    if (error instanceof AscApiError && error.status === 404) return null;
+    throw error;
+  }
+}
+
+export async function createBetaAppReviewSubmission(
+  creds: AscApiCredentials,
+  ascBuildId: string,
+): Promise<BetaAppReviewSubmissionResource> {
+  const res = await ascRequest<{ data: BetaAppReviewSubmissionResource }>(
+    creds,
+    "POST",
+    "/v1/betaAppReviewSubmissions",
+    {
+      data: {
+        type: "betaAppReviewSubmissions",
+        relationships: {
+          build: { data: { type: "builds", id: ascBuildId } },
+        },
+      },
+    },
+  );
+  return res.data;
+}
+
+export async function getBuildBetaDetail(
+  creds: AscApiCredentials,
+  ascBuildId: string,
+): Promise<BuildBetaDetailResource> {
+  const res = await ascRequest<{ data: BuildBetaDetailResource }>(
+    creds,
+    "GET",
+    `/v1/builds/${encodeURIComponent(ascBuildId)}/buildBetaDetail`,
+  );
+  return res.data;
+}
+
+export async function updateBuildBetaAutoNotify(
+  creds: AscApiCredentials,
+  args: { buildBetaDetailId: string; enabled: boolean },
+): Promise<BuildBetaDetailResource> {
+  const res = await ascRequest<{ data: BuildBetaDetailResource }>(
+    creds,
+    "PATCH",
+    `/v1/buildBetaDetails/${encodeURIComponent(args.buildBetaDetailId)}`,
+    {
+      data: {
+        type: "buildBetaDetails",
+        id: args.buildBetaDetailId,
+        attributes: { autoNotifyEnabled: args.enabled },
+      },
+    },
+  );
+  return res.data;
+}
+
+export async function sendBuildBetaNotification(
+  creds: AscApiCredentials,
+  ascBuildId: string,
+): Promise<{ id: string }> {
+  const res = await ascRequest<{ data: { id: string } }>(
+    creds,
+    "POST",
+    "/v1/buildBetaNotifications",
+    {
+      data: {
+        type: "buildBetaNotifications",
+        relationships: {
+          build: { data: { type: "builds", id: ascBuildId } },
+        },
+      },
+    },
   );
   return res.data;
 }

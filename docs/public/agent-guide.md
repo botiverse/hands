@@ -139,6 +139,68 @@ downloads. `window_minutes` is also accepted for recent-report windows, but
 SDK metrics pings are throttled, so this should not be labeled as true online
 presence.
 
+### TestFlight upload and distribution
+
+TestFlight is a separate state machine from the Hands draft and from App Store
+production publishing. The integration exposes five actions:
+
+- `upload-testflight-build` (app admin): stream the existing signed Hands IPA
+  to Apple's Build Upload API.
+- `get-testflight-upload-status` (viewer): poll the returned Apple upload id to
+  `state.state=COMPLETE|FAILED`, retaining Apple's errors/warnings/infos.
+- `list-testflight-groups` (viewer): get stable internal/external beta group
+  ids for the exact app.
+- `publish-testflight-build` (publisher): assign a processed build to selected
+  groups, upsert localized What to Test text, and submit external Beta App
+  Review when requested.
+- `get-testflight-publish-status` (viewer): refresh processing, expiry, group,
+  localization, review, and auto-notify state.
+
+The `.p8` stays encrypted in Hands. No action returns it, activates a Hands
+release, or creates/submits/releases an App Store production version.
+
+```bash
+# Upload only. Optional bundle_id is an assertion when metadata exists and a
+# fallback only when build metadata is absent; a mismatch fails closed.
+raft integration invoke --service <hands-service> \
+  --action upload-testflight-build \
+  --param app_id=<app-uuid> \
+  --param build_id=<hands-build-uuid> \
+  --param bundle_id=build.raft.app --json
+
+# Poll until response.state.state is COMPLETE or FAILED.
+raft integration invoke --service <hands-service> \
+  --action get-testflight-upload-status \
+  --param app_id=<app-uuid> \
+  --param build_upload_id=<asc-build-upload-id> --json
+
+# Once the exact ASC build is VALID, discover group ids.
+raft integration invoke --service <hands-service> \
+  --action list-testflight-groups \
+  --param app_id=<app-uuid> \
+  --param build_id=<hands-build-uuid> --json
+
+# Internal distribution. group_ids must all be internal.
+raft integration invoke --service <hands-service> \
+  --action publish-testflight-build \
+  --param app_id=<app-uuid> \
+  --param build_id=<hands-build-uuid> \
+  --data-json '{
+    "distribution":"internal",
+    "group_ids":["<asc-beta-group-id>"],
+    "what_to_test":{"en-US":"Verify login and Activity."},
+    "notify_testers":false
+  }' --json
+```
+
+External mode requires at least one existing or supplied What to Test
+localization. Set `notify_testers=true` to enable Apple's automatic
+notification after approval; for an already-approved build without automatic
+notification pending, Hands creates the official build beta notification.
+External Beta App Review can take hours,
+so agents should return the submission state and recheck with
+`get-testflight-publish-status` rather than holding a Raft turn open.
+
 ### Exact iOS simulator QA artifacts
 
 Use this lane for a zipped `.app` bundle that Stamp or another agent must
