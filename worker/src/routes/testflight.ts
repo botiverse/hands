@@ -34,17 +34,6 @@ type AdminContext = Context<AdminEnv & { Bindings: Env }>;
 export async function handleTestflightUpload(c: AdminContext) {
   const appId = c.req.param("appId") ?? "";
   const buildIdParam = c.req.param("buildId") ?? "";
-  const encKey = c.env.ASC_CRED_ENC_KEY;
-  if (!encKey) return c.json({ error: "server is missing ASC_CRED_ENC_KEY" }, 500);
-
-  const creds = await getAscCredentials(c.env.DB, encKey, appId);
-  if (!creds) {
-    return c.json(
-      { error: "no ASC credentials configured — add them in Settings → TestFlight first" },
-      400,
-    );
-  }
-
   const build = await c.env.DB.prepare(
     `SELECT id, version_name, version_code FROM builds
      WHERE app_id = ?1 AND id LIKE ?2 || '%' LIMIT 2`,
@@ -65,32 +54,58 @@ export async function handleTestflightUpload(c: AdminContext) {
     .first<{ r2_key: string; size_bytes: number; file_hash: string | null }>();
   if (!asset) return c.json({ error: "build has no installable IPA asset" }, 404);
 
-  // Bundle id: request body wins; otherwise read the build's metadata-file
-  // asset (build-metadata.json carries bundle_id since mobile#485).
+  // The immutable build metadata is authoritative. A caller may repeat the
+  // bundle id as an assertion, but cannot redirect an existing IPA to another
+  // ASC app. The body is only a fallback for older builds without metadata.
   const body = (await c.req.json().catch(() => ({}))) as { bundle_id?: unknown };
-  let bundleId = typeof body.bundle_id === "string" ? body.bundle_id.trim() : "";
-  if (!bundleId) {
-    const metaAsset = await c.env.DB.prepare(
-      `SELECT r2_key FROM build_assets
-       WHERE build_id = ?1 AND artifact_kind = 'metadata-file' LIMIT 1`,
-    )
-      .bind(b.id)
-      .first<{ r2_key: string }>();
-    if (metaAsset) {
-      const obj = await c.env.APK_BUCKET.get(metaAsset.r2_key);
-      if (obj) {
-        try {
-          const meta = (await obj.json()) as { bundle_id?: string };
-          bundleId = (meta.bundle_id ?? "").trim();
-        } catch {
-          // fall through to the error below
-        }
+  const requestedBundleId =
+    typeof body.bundle_id === "string" ? body.bundle_id.trim() : "";
+  let metadataBundleId = "";
+  const metaAsset = await c.env.DB.prepare(
+    `SELECT r2_key FROM build_assets
+     WHERE build_id = ?1 AND artifact_kind = 'metadata-file' LIMIT 1`,
+  )
+    .bind(b.id)
+    .first<{ r2_key: string }>();
+  if (metaAsset) {
+    const obj = await c.env.APK_BUCKET.get(metaAsset.r2_key);
+    if (obj) {
+      try {
+        const meta = (await obj.json()) as { bundle_id?: string };
+        metadataBundleId = (meta.bundle_id ?? "").trim();
+      } catch {
+        // fall through to the error below
       }
     }
   }
+  if (
+    metadataBundleId &&
+    requestedBundleId &&
+    metadataBundleId !== requestedBundleId
+  ) {
+    return c.json(
+      {
+        error: "bundle_id does not match the immutable build metadata",
+        code: "BUNDLE_ID_MISMATCH",
+        metadata_bundle_id: metadataBundleId,
+      },
+      400,
+    );
+  }
+  const bundleId = metadataBundleId || requestedBundleId;
   if (!bundleId) {
     return c.json(
       { error: "bundle_id not found in build metadata; pass {\"bundle_id\": …} in the body" },
+      400,
+    );
+  }
+
+  const encKey = c.env.ASC_CRED_ENC_KEY;
+  if (!encKey) return c.json({ error: "server is missing ASC_CRED_ENC_KEY" }, 500);
+  const creds = await getAscCredentials(c.env.DB, encKey, appId);
+  if (!creds) {
+    return c.json(
+      { error: "no ASC credentials configured — add them in Settings → TestFlight first" },
       400,
     );
   }
