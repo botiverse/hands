@@ -2852,7 +2852,7 @@ describe("quiver releases — draft lifecycle", () => {
 
     const before = await env.DB.prepare(
       "SELECT status, superseded_by_release_id FROM releases WHERE id = 'rel-fallback'",
-    ).first<any>();
+    ).first();
     expect(before).toEqual({ status: "superseded", superseded_by_release_id: "rel-current" });
 
     const response = await handleUpdateRelease(makeReleaseContext("rel-current", {
