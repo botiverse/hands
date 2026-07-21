@@ -338,7 +338,9 @@ files but does not sign Electron applications.
 
 ## Publish Tauri updater artifacts
 
-Tauri v2 applications can use a Hands channel as a dynamic updater endpoint:
+For a complete setup, target matrix, release behavior, and signing boundary,
+start with the [Tauri Updater guide](tauri-updater.md). Tauri v2 applications
+can use a Hands channel as a dynamic updater endpoint:
 
 ```json
 {

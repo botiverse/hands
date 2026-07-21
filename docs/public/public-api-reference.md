@@ -199,7 +199,9 @@ Example asset conventions:
 
 ### Tauri updater
 
-Tauri v2 applications can configure this dynamic updater endpoint:
+See the [Tauri Updater guide](tauri-updater.md) for application configuration,
+CLI publishing examples, supported bundles, and the signing boundary. Tauri v2
+applications can configure this dynamic updater endpoint:
 
 ```text
 GET /tauri/:appSlug/:channel/:target/:arch/:currentVersion

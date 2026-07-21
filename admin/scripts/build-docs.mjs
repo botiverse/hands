@@ -86,6 +86,13 @@ const pages = [
     source: "electron-sdk.md",
   },
   {
+    slug: "tauri-updater",
+    title: "Tauri Updater",
+    category: "SDKs & API",
+    description: "Publish signed Tauri v2 updater bundles and serve channel-specific dynamic update endpoints.",
+    source: "tauri-updater.md",
+  },
+  {
     slug: "public-api-reference",
     title: "Public API Reference",
     category: "SDKs & API",

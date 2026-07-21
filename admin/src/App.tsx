@@ -947,9 +947,9 @@ function PublicLanding({ account }: { account?: AuthAccount }) {
               </p>
               <div className="mt-6 flex flex-wrap items-center gap-2">
                 <span className="text-xs font-medium text-slate-500">
-                  Client platforms:
+                  Client stacks:
                 </span>
-                {["Android", "iOS", "HarmonyOS", "Electron"].map((p) => (
+                {["Android", "iOS", "HarmonyOS", "Electron", "Tauri"].map((p) => (
                   <span
                     key={p}
                     className="inline-flex items-center rounded-full border border-slate-200 bg-white px-3 py-1 text-sm font-medium text-slate-600"
@@ -1006,53 +1006,42 @@ function PublicLanding({ account }: { account?: AuthAccount }) {
         </section>
 
         <section className="border-t border-slate-200 bg-white">
-          <div className="mx-auto flex max-w-6xl flex-col gap-4 px-4 py-8 sm:flex-row sm:items-center sm:justify-between">
-            <div>
-              <h2 className="text-lg font-semibold">Integrate an SDK, build from CI.</h2>
-              <p className="mt-1 text-sm text-slate-600">
-                SDKs for Android, iOS, HarmonyOS, and Electron add feedback and
-                crash reporting (plus in-app update checks and staged rollouts
-                on Android); the public npm CLI publishes releases and share
-                links from CI or Raft agents.
+          <div className="mx-auto max-w-6xl px-4 py-10">
+            <div className="max-w-2xl">
+              <h2 className="text-xl font-semibold">Choose an integration path.</h2>
+              <p className="mt-2 text-sm leading-6 text-slate-600">
+                Start with the stack you ship, then use the CLI and Console
+                guides to automate draft-first delivery and operate releases.
               </p>
             </div>
-            <div className="flex flex-none flex-col gap-2 sm:flex-row">
-              <a
-                className="inline-flex h-10 items-center justify-center whitespace-nowrap rounded-md border border-slate-300 bg-white px-4 text-sm font-medium text-slate-800 hover:bg-slate-100"
-                href="/docs/android-sdk/"
-              >
-                Android SDK
-              </a>
-              <a
-                className="inline-flex h-10 items-center justify-center whitespace-nowrap rounded-md border border-slate-300 bg-white px-4 text-sm font-medium text-slate-800 hover:bg-slate-100"
-                href="/docs/ios-sdk/"
-              >
-                iOS SDK
-              </a>
-              <a
-                className="inline-flex h-10 items-center justify-center whitespace-nowrap rounded-md border border-slate-300 bg-white px-4 text-sm font-medium text-slate-800 hover:bg-slate-100"
-                href="/docs/ohos-sdk/"
-              >
-                HarmonyOS SDK
-              </a>
-              <a
-                className="inline-flex h-10 items-center justify-center whitespace-nowrap rounded-md border border-slate-300 bg-white px-4 text-sm font-medium text-slate-800 hover:bg-slate-100"
-                href="/docs/electron-sdk/"
-              >
-                Electron SDK
-              </a>
-              <a
-                className="inline-flex h-10 items-center justify-center whitespace-nowrap rounded-md border border-slate-300 bg-white px-4 text-sm font-medium text-slate-800 hover:bg-slate-100"
-                href="/docs/cli-reference/"
-              >
-                CLI reference
-              </a>
-              <a
-                className="inline-flex h-10 items-center justify-center whitespace-nowrap rounded-md border border-slate-300 bg-white px-4 text-sm font-medium text-slate-800 hover:bg-slate-100"
-                href="/docs/admin-user-guide/"
-              >
-                Admin guide
-              </a>
+            <div className="mt-6 grid gap-4 md:grid-cols-3">
+              <LandingIntegrationCard
+                title="Native mobile SDKs"
+                body="Updates, feedback, crash capture, and device context inside mobile apps."
+                links={[
+                  { label: "Android", detail: "Updates, rollout, feedback, crashes", href: "/docs/android-sdk/" },
+                  { label: "iOS", detail: "Feedback and crash reporting", href: "/docs/ios-sdk/" },
+                  { label: "HarmonyOS", detail: "Feedback and crash reporting", href: "/docs/ohos-sdk/" },
+                ]}
+              />
+              <LandingIntegrationCard
+                title="Desktop integrations"
+                body="Host updater artifacts and add native desktop crash capture."
+                links={[
+                  { label: "Electron SDK", detail: "Crashpad crash reporting", href: "/docs/electron-sdk/" },
+                  { label: "Electron Updater", detail: "Generic-provider release files", href: "/docs/cli-reference/#publish-electron-generic-provider" },
+                  { label: "Tauri Updater", detail: "Signed Tauri v2 updater bundles", href: "/docs/tauri-updater/" },
+                ]}
+              />
+              <LandingIntegrationCard
+                title="Publishing & operations"
+                body="Build release automation and inspect every public contract."
+                links={[
+                  { label: "CLI Reference", detail: "Publish from CI or Raft agents", href: "/docs/cli-reference/" },
+                  { label: "Admin Guide", detail: "Operate apps and releases", href: "/docs/admin-user-guide/" },
+                  { label: "API Explorer", detail: "Try the HTTP API", href: "/api-docs" },
+                ]}
+              />
             </div>
           </div>
         </section>
@@ -1198,6 +1187,47 @@ function LandingFeature({ title, body }: { title: string; body: string }) {
     <div className="rounded-lg border border-slate-200 bg-white p-4 shadow-xs">
       <h2 className="text-sm font-semibold">{title}</h2>
       <p className="mt-2 text-sm leading-6 text-slate-600">{body}</p>
+    </div>
+  );
+}
+
+function LandingIntegrationCard({
+  title,
+  body,
+  links,
+}: {
+  title: string;
+  body: string;
+  links: Array<{ label: string; detail: string; href: string }>;
+}) {
+  return (
+    <div className="rounded-xl border border-slate-200 bg-slate-50 p-5">
+      <h3 className="text-sm font-semibold text-slate-950">{title}</h3>
+      <p className="mt-2 min-h-12 text-sm leading-6 text-slate-600">{body}</p>
+      <div className="mt-4 divide-y divide-slate-200 border-y border-slate-200">
+        {links.map((link) => (
+          <a
+            key={link.href}
+            className="group flex items-center justify-between gap-3 py-3 text-sm hover:text-sky-700"
+            href={link.href}
+          >
+            <span className="min-w-0">
+              <span className="block font-medium text-slate-900 group-hover:text-sky-700">
+                {link.label}
+              </span>
+              <span className="mt-0.5 block text-xs leading-5 text-slate-500">
+                {link.detail}
+              </span>
+            </span>
+            <span
+              aria-hidden="true"
+              className="flex-none text-base text-slate-400 transition-transform group-hover:translate-x-0.5 group-hover:text-sky-600"
+            >
+              →
+            </span>
+          </a>
+        ))}
+      </div>
     </div>
   );
 }
