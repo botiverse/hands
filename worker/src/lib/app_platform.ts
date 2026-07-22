@@ -1,4 +1,4 @@
-export const APP_PLATFORMS = ["android", "ios", "ohos", "electron", "node"] as const;
+export const APP_PLATFORMS = ["android", "ios", "ohos", "electron", "node", "web"] as const;
 
 export type AppPlatform = (typeof APP_PLATFORMS)[number];
 

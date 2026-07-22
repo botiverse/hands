@@ -13,6 +13,7 @@ import { emitWebhookEvent } from "./webhooks";
 import { presignR2UploadUrl } from "../lib/r2_presign";
 import { generateSignedR2Url } from "./public_v2";
 import { dashboardOrigin, requestOrigin } from "../lib/origin";
+import { loadDeployToken, resolveDeployTokenPermissions } from "../lib/deploy_tokens";
 
 type AdminContext = Context<AdminEnv & { Bindings: Env }>;
 
@@ -21,10 +22,21 @@ const MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024; // inline multipart cap (through 
 const MAX_PRESIGNED_BYTES = 200 * 1024 * 1024; // direct-to-R2 cap
 const PRESIGN_TTL_SECONDS = 900;
 const MAX_MESSAGE_CHARS = 10_000;
-const RATE_LIMIT_PER_HOUR = 10;
+const DIRECT_RATE_LIMIT_PER_HOUR = 10;
+const TRUSTED_REPORTER_RATE_LIMIT_PER_HOUR = 100;
 
 const TICKET_STATUSES = ["open", "in_progress", "resolved", "closed"] as const;
 const TICKET_KINDS = ["feedback", "bug", "crash"] as const;
+const SUBMISSION_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const REPORTER_ID_PATTERN = /^[A-Za-z0-9_-]{16,200}$/;
+
+type FeedbackApp = {
+  id: string;
+  org_id: string | null;
+  slug: string;
+  client_key: string | null;
+  platform: string | null;
+};
 
 /**
  * Presigned direct-to-R2 upload for large feedback attachments. Client-key
@@ -101,13 +113,7 @@ export async function handlePublicFeedbackSubmit(c: Context<{ Bindings: Env }>) 
     "SELECT id, org_id, slug, client_key, platform FROM apps WHERE slug = ?1 AND archived = 0",
   )
     .bind(slug)
-    .first<{
-      id: string;
-      org_id: string | null;
-      slug: string;
-      client_key: string | null;
-      platform: string | null;
-    }>();
+    .first<FeedbackApp>();
   if (!app) return c.json({ error: `app '${slug}' not found` }, 404);
 
   // Client-key gate (Sentry-DSN model): always required. Apps predating the
@@ -134,6 +140,11 @@ export async function handlePublicFeedbackSubmit(c: Context<{ Bindings: Env }>) 
   const kindRaw = String(form.get("kind") ?? "feedback");
   const kind = (TICKET_KINDS as readonly string[]).includes(kindRaw) ? kindRaw : "feedback";
   const contact = String(form.get("contact") ?? "").trim() || null;
+  const submissionIdRaw = String(form.get("submission_id") ?? "").trim() || null;
+  if (submissionIdRaw && !SUBMISSION_ID_PATTERN.test(submissionIdRaw)) {
+    return c.json({ error: "submission_id must be a UUID" }, 400);
+  }
+  const submissionId = submissionIdRaw?.toLowerCase() ?? null;
 
   let metadata: Record<string, unknown> = {};
   const metadataRaw = form.get("metadata");
@@ -156,21 +167,70 @@ export async function handlePublicFeedbackSubmit(c: Context<{ Bindings: Env }>) 
       ? Math.trunc(versionCodeRaw)
       : null;
 
-  // Rate limit per app + hashed client ip.
+  // Direct SDK clients are rate-limited by client IP. A trusted server proxy
+  // may instead provide a stable pseudonymous reporter id, but only while
+  // authenticating with an app-scoped token whose sole effective permission is
+  // feedback:write for this app. This
+  // prevents public clients from rotating a spoofed forwarded identity to
+  // bypass the IP bucket.
   const clientIp =
     (c.req.raw?.cf as { clientIp?: string } | undefined)?.clientIp ??
     c.req.header("cf-connecting-ip") ??
     "unknown";
-  const clientIpHash = await sha256Hex(`feedback:${app.id}:${clientIp}`);
+  const reporterId = (c.req.header("X-Hands-Reporter-Id") ?? "").trim();
+  let rateLimitHashInput = `feedback:${app.id}:${clientIp}`;
+  let rateLimitPerHour = DIRECT_RATE_LIMIT_PER_HOUR;
+  if (reporterId) {
+    if (!REPORTER_ID_PATTERN.test(reporterId)) {
+      return c.json({ error: "X-Hands-Reporter-Id must be a 16-200 character opaque base64url value" }, 400);
+    }
+    const authorization = c.req.header("authorization") ?? "";
+    const bearerToken = authorization.startsWith("Bearer ")
+      ? authorization.slice("Bearer ".length).trim()
+      : "";
+    const deployToken = await loadDeployToken(c.env, bearerToken);
+    const effectivePermissions = deployToken
+      ? resolveDeployTokenPermissions(deployToken)
+      : new Set();
+    if (
+      !deployToken
+      || deployToken.app_id !== app.id
+      || deployToken.app_role !== null
+      || effectivePermissions.size !== 1
+      || !effectivePermissions.has("feedback:write")
+    ) {
+      return c.json({ error: "trusted reporter identity requires feedback:write permission for this app" }, 401);
+    }
+    rateLimitHashInput = `feedback:${app.id}:reporter:${reporterId}`;
+    rateLimitPerHour = TRUSTED_REPORTER_RATE_LIMIT_PER_HOUR;
+  }
+  const clientIpHash = await sha256Hex(rateLimitHashInput);
   const oneHourAgo = Date.now() - 3600_000;
-  const recent = await c.env.DB.prepare(
-    `SELECT COUNT(*) AS count FROM feedback_tickets
-     WHERE app_id = ?1 AND client_ip_hash = ?2 AND created_at > ?3`,
-  )
-    .bind(app.id, clientIpHash, oneHourAgo)
-    .first<{ count: number }>();
-  if ((recent?.count ?? 0) >= RATE_LIMIT_PER_HOUR) {
-    return c.json({ error: "too many feedback submissions; try again later" }, 429);
+  // A cheap indexed lookup happens before attachment hashing/R2 HEAD work.
+  // Only a known idempotency key may bypass the rate-limit count so a lost
+  // response remains recoverable; a new key is rejected before expensive
+  // attachment processing once the subject is over quota.
+  const existingSubmission = submissionId
+    ? await findFeedbackSubmission(c.env.DB, app.id, submissionId)
+    : null;
+  if (existingSubmission && existingSubmission.reporter_id !== (reporterId || null)) {
+    return c.json({ error: "submission_id already used by a different reporter" }, 409);
+  }
+  if (!existingSubmission) {
+    const recent = await c.env.DB.prepare(
+      `SELECT COUNT(*) AS count, MIN(created_at) AS oldest_created_at FROM feedback_tickets
+       WHERE app_id = ?1 AND client_ip_hash = ?2 AND created_at > ?3`,
+    )
+      .bind(app.id, clientIpHash, oneHourAgo)
+      .first<{ count: number; oldest_created_at: number | null }>();
+    if ((recent?.count ?? 0) >= rateLimitPerHour) {
+      const retryAfter = Math.max(
+        1,
+        Math.ceil(((recent?.oldest_created_at ?? Date.now()) + 3600_000 - Date.now()) / 1000),
+      );
+      c.header("Retry-After", String(retryAfter));
+      return c.json({ error: "too many feedback submissions; try again later" }, 429);
+    }
   }
 
   // Collect attachments before writing anything.
@@ -191,33 +251,32 @@ export async function handlePublicFeedbackSubmit(c: Context<{ Bindings: Env }>) 
     files.push(file);
   }
 
-  // Crash tickets get a grouping signature from their exception class + top
-  // app frame (populated by the SDK). Non-crash tickets have no signature.
-  const signature =
-    kind === "crash" ? crashSignature(metadata) : null;
-
-  const now = Date.now();
-  const ticketId = crypto.randomUUID();
-
   const attachmentRows: Array<{
     id: string;
     r2Key: string;
     filename: string;
     contentType: string | null;
     sizeBytes: number;
+    inlineFile?: File;
+    fingerprint: Record<string, unknown>;
   }> = [];
   for (const [index, file] of files.entries()) {
     const safeName = file.name.replace(/[^A-Za-z0-9._-]/g, "_").slice(0, 120) || `attachment-${index}`;
-    const r2Key = `feedback/${app.id}/${ticketId}/${index}-${safeName}`;
-    await c.env.APK_BUCKET.put(r2Key, await file.arrayBuffer(), {
-      httpMetadata: { contentType: file.type || "application/octet-stream" },
-    });
     attachmentRows.push({
       id: crypto.randomUUID(),
-      r2Key,
+      r2Key: "",
       filename: safeName,
       contentType: file.type || null,
       sizeBytes: file.size,
+      inlineFile: file,
+      fingerprint: {
+        source: "inline",
+        index,
+        filename: safeName,
+        content_type: file.type || null,
+        size_bytes: file.size,
+        sha256: await sha256BufferHex(await file.arrayBuffer()),
+      },
     });
   }
 
@@ -255,8 +314,51 @@ export async function handlePublicFeedbackSubmit(c: Context<{ Bindings: Env }>) 
         filename,
         contentType: (item.content_type ? String(item.content_type).slice(0, 100) : null),
         sizeBytes: head.size ?? (typeof item.size === "number" ? item.size : 0),
+        fingerprint: {
+          source: "presigned",
+          index: attachmentRows.length,
+          r2_key: r2Key,
+          filename,
+          content_type: item.content_type ? String(item.content_type).slice(0, 100) : null,
+          size_bytes: head.size ?? (typeof item.size === "number" ? item.size : 0),
+          etag: head.etag,
+        },
       });
     }
+  }
+
+  const submissionFingerprint = submissionId
+    ? await sha256Hex(stableJson({
+        message,
+        kind,
+        contact,
+        metadata,
+        reporter_id: reporterId || null,
+        attachments: attachmentRows.map((attachment) => attachment.fingerprint),
+      }))
+    : null;
+
+  if (existingSubmission && submissionFingerprint) {
+    if (existingSubmission.submission_fingerprint !== submissionFingerprint) {
+      return c.json({ error: "submission_id already used with a different payload" }, 409);
+    }
+    return feedbackSubmitResponse(c, app, existingSubmission.id, 200, true);
+  }
+
+  // Crash tickets get a grouping signature from their exception class + top
+  // app frame (populated by the SDK). Non-crash tickets have no signature.
+  const signature =
+    kind === "crash" ? crashSignature(metadata) : null;
+
+  const now = Date.now();
+  const ticketId = crypto.randomUUID();
+
+  for (const [index, attachment] of attachmentRows.entries()) {
+    if (!attachment.inlineFile) continue;
+    attachment.r2Key = `feedback/${app.id}/${ticketId}/${index}-${attachment.filename}`;
+    await c.env.APK_BUCKET.put(attachment.r2Key, await attachment.inlineFile.arrayBuffer(), {
+      httpMetadata: { contentType: attachment.contentType || "application/octet-stream" },
+    });
   }
 
   const statements = [
@@ -264,8 +366,9 @@ export async function handlePublicFeedbackSubmit(c: Context<{ Bindings: Env }>) 
       `INSERT INTO feedback_tickets
        (id, app_id, kind, status, message, contact, version_name, version_code,
         channel, device_id, device_model, os_version, arch, locale,
-        metadata_json, client_ip_hash, signature, created_at, updated_at)
-       VALUES (?1, ?2, ?3, 'open', ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)`,
+        metadata_json, client_ip_hash, signature, submission_id,
+        submission_fingerprint, reporter_id, created_at, updated_at)
+       VALUES (?1, ?2, ?3, 'open', ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21)`,
     ).bind(
       ticketId,
       app.id,
@@ -283,6 +386,9 @@ export async function handlePublicFeedbackSubmit(c: Context<{ Bindings: Env }>) 
       JSON.stringify(metadata),
       clientIpHash,
       signature,
+      submissionId,
+      submissionFingerprint,
+      reporterId || null,
       now,
       now,
     ),
@@ -294,7 +400,30 @@ export async function handlePublicFeedbackSubmit(c: Context<{ Bindings: Env }>) 
       ).bind(a.id, ticketId, a.r2Key, a.filename, a.contentType, a.sizeBytes, now),
     ),
   ];
-  await c.env.DB.batch(statements);
+  const cleanupInlineUploads = () => Promise.allSettled(
+    attachmentRows
+      .filter((attachment) => attachment.inlineFile)
+      .map((attachment) => c.env.APK_BUCKET.delete(attachment.r2Key)),
+  );
+  try {
+    await c.env.DB.batch(statements);
+  } catch (error) {
+    if (submissionId && submissionFingerprint) {
+      const existing = await findFeedbackSubmission(c.env.DB, app.id, submissionId);
+      if (existing) {
+        await cleanupInlineUploads();
+        if (
+          existing.reporter_id !== (reporterId || null)
+          || existing.submission_fingerprint !== submissionFingerprint
+        ) {
+          return c.json({ error: "submission_id already used with a different payload" }, 409);
+        }
+        return feedbackSubmitResponse(c, app, existing.id, 200, true);
+      }
+    }
+    await cleanupInlineUploads();
+    throw error;
+  }
 
   // Crash tickets: symbolicate in the background (retrace / native / OHOS / dSYM
   // lanes) and record the result on the ticket's symbolicated_stack /
@@ -385,28 +514,62 @@ export async function handlePublicFeedbackSubmit(c: Context<{ Bindings: Env }>) 
         version_name: meta("version_name"),
         version_code: versionCode,
         attachments: attachmentRows.length,
+        reporter_id: reporterId || null,
       },
     }).catch(() => {
       // webhook fan-out must never fail the submission
     });
   }
 
-  // A ready-to-copy reference so a pasted ticket can be located by an agent:
-  // slug + version + full id, plus a direct admin link. Keep the full UUID
-  // here because detail/attachment API routes require it.
-  const versionName = meta("version_name");
-  const versionLabel = versionName
-    ? versionCode != null
-      ? `${versionName} (${versionCode})`
-      : versionName
-    : versionCode != null
-      ? String(versionCode)
+  return feedbackSubmitResponse(c, app, ticketId, 201, false);
+}
+
+async function findFeedbackSubmission(db: D1Database, appId: string, submissionId: string) {
+  return db.prepare(
+    `SELECT id, submission_fingerprint, reporter_id
+     FROM feedback_tickets
+     WHERE app_id = ?1 AND submission_id = ?2`,
+  )
+    .bind(appId, submissionId)
+    .first<{
+      id: string;
+      submission_fingerprint: string | null;
+      reporter_id: string | null;
+    }>();
+}
+
+async function feedbackSubmitResponse(
+  c: Context<{ Bindings: Env }>,
+  app: FeedbackApp,
+  ticketId: string,
+  httpStatus: 200 | 201,
+  idempotentReplay: boolean,
+) {
+  const ticket = await c.env.DB.prepare(
+    `SELECT status, version_name, version_code
+     FROM feedback_tickets
+     WHERE app_id = ?1 AND id = ?2`,
+  )
+    .bind(app.id, ticketId)
+    .first<{ status: string; version_name: string | null; version_code: number | null }>();
+  if (!ticket) return c.json({ error: "feedback ticket not found" }, 500);
+
+  const attachments = await c.env.DB.prepare(
+    `SELECT filename
+     FROM feedback_attachments
+     WHERE ticket_id = ?1
+     ORDER BY created_at, id`,
+  )
+    .bind(ticketId)
+    .all<{ filename: string }>();
+  const attachmentNames = attachments.results.map((attachment) => attachment.filename).filter(Boolean);
+  const versionLabel = ticket.version_name
+    ? ticket.version_code != null
+      ? `${ticket.version_name} (${ticket.version_code})`
+      : ticket.version_name
+    : ticket.version_code != null
+      ? String(ticket.version_code)
       : null;
-  const ticketUrl = `${dashboardOrigin(c.env)}/apps/${app.id}/feedback/${ticketId}`;
-  // List attachment filenames in the copyable reference — one per line — so an
-  // agent reading a pasted ticket knows it carries images/files and will fetch
-  // them.
-  const attachmentNames = attachmentRows.map((a) => a.filename).filter(Boolean);
   const referenceLine = [app.slug, versionLabel, `ticket ${ticketId}`]
     .filter(Boolean)
     .join(" · ");
@@ -417,14 +580,28 @@ export async function handlePublicFeedbackSubmit(c: Context<{ Bindings: Env }>) 
   return c.json(
     {
       id: ticketId,
-      status: "open",
-      attachments: attachmentRows.length,
+      status: ticket.status,
+      attachments: attachmentNames.length,
       attachment_names: attachmentNames,
       reference,
-      ticket_url: ticketUrl,
+      ticket_url: `${dashboardOrigin(c.env)}/apps/${app.id}/feedback/${ticketId}`,
+      idempotent_replay: idempotentReplay,
     },
-    201,
+    httpStatus,
   );
+}
+
+function stableJson(value: unknown): string {
+  const sort = (entry: unknown): unknown => {
+    if (Array.isArray(entry)) return entry.map(sort);
+    if (!entry || typeof entry !== "object") return entry;
+    return Object.fromEntries(
+      Object.entries(entry as Record<string, unknown>)
+        .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
+        .map(([key, child]) => [key, sort(child)]),
+    );
+  };
+  return JSON.stringify(sort(value));
 }
 
 const MINIDUMP_MAX_BYTES = 64 * 1024 * 1024; // Crashpad dumps are usually < a few MB
@@ -515,7 +692,7 @@ export async function handlePublicMinidumpSubmit(c: Context<{ Bindings: Env }>) 
   )
     .bind(app.id, clientIpHash, Date.now() - 3600_000)
     .first<{ count: number }>();
-  if ((recent?.count ?? 0) >= RATE_LIMIT_PER_HOUR) {
+  if ((recent?.count ?? 0) >= DIRECT_RATE_LIMIT_PER_HOUR) {
     return c.json({ error: "too many crash reports; try again later" }, 429);
   }
 
@@ -581,6 +758,7 @@ export async function handlePublicMinidumpSubmit(c: Context<{ Bindings: Env }>) 
         version_name: versionName,
         version_code: versionCode,
         attachments: 1,
+        reporter_id: null,
       },
     }).catch(() => {});
   }
@@ -1747,6 +1925,13 @@ export async function handleDownloadFeedbackAttachment(c: AdminContext) {
 
 async function sha256Hex(input: string): Promise<string> {
   const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(input));
+  return Array.from(new Uint8Array(digest))
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
+}
+
+async function sha256BufferHex(input: ArrayBuffer): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", input);
   return Array.from(new Uint8Array(digest))
     .map((b) => b.toString(16).padStart(2, "0"))
     .join("");

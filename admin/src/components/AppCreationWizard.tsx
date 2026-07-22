@@ -80,7 +80,7 @@ const DEFAULT_PRODUCT_TYPES: Array<{
   },
 ];
 
-const APP_PLATFORMS = ["android", "ios", "ohos", "electron", "node"] as const;
+const APP_PLATFORMS = ["android", "ios", "ohos", "electron", "node", "web"] as const;
 type AppPlatform = (typeof APP_PLATFORMS)[number];
 
 const DEFAULT_CHANNELS = [

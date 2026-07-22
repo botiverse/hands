@@ -389,12 +389,21 @@ function makeMockDb() {
       client_ip_hash TEXT,
       assignee TEXT,
       signature TEXT,
+      submission_id TEXT,
+      submission_fingerprint TEXT,
+      reporter_id TEXT,
       symbolication_status TEXT,
       symbolicated_stack TEXT,
       symbolicated_at INTEGER,
       created_at INTEGER NOT NULL,
       updated_at INTEGER NOT NULL
     );
+    CREATE UNIQUE INDEX idx_feedback_tickets_submission
+      ON feedback_tickets(app_id, submission_id)
+      WHERE submission_id IS NOT NULL;
+    CREATE INDEX idx_feedback_tickets_reporter
+      ON feedback_tickets(app_id, reporter_id, created_at)
+      WHERE reporter_id IS NOT NULL;
     CREATE TABLE device_pings (
       app_id TEXT NOT NULL,
       device_id TEXT NOT NULL,
@@ -4111,6 +4120,12 @@ describe("quiver public API v2 — scope resolution", () => {
     expect(draftPayload.artifact.download_api).toBe(
       `/api/apps/app-scope/builds/${build.id}/assets/${draftPayload.artifact.asset_id}/download?presign=1`,
     );
+    const feedbackDelivery = (await env.DB.prepare(
+      "SELECT payload_json FROM webhook_deliveries WHERE webhook_id = ?1 AND event_type = 'feedback:new'",
+    )
+      .bind("wh-e2e")
+      .first()) as { payload_json: string };
+    expect(JSON.parse(feedbackDelivery.payload_json).payload.reporter_id).toBeNull();
   });
 
   it("external-target gate: freeze on publish, set assertion, replay re-assert, dl routes", async () => {
@@ -6477,6 +6492,344 @@ describe("quiver public API v2 — scope resolution", () => {
     expect(ok.status).toBe(201);
     const body = await responseJson<any>(ok);
     expect(body.attachments).toBe(1);
+  });
+
+  it("feedback: submission_id replays the original ticket and rejects payload conflicts", async () => {
+    const env = makeEnv();
+    const putCalls: string[] = [];
+    const deleted: string[] = [];
+    env.APK_BUCKET = {
+      put: async (key: string) => { putCalls.push(key); },
+      delete: async (key: string) => { deleted.push(key); },
+      get: async () => null,
+      head: async () => null,
+    };
+    const { handlePublicFeedbackSubmit } = await import("../src/routes/feedback");
+    const submissionId = "11111111-1111-4111-8111-111111111111";
+
+    const submit = (opts: {
+      message?: string;
+      metadata?: Record<string, unknown>;
+      bytes?: number[];
+      submissionId?: string;
+    } = {}) => {
+      const form = new FormData();
+      form.set("message", opts.message ?? "Please add compact mode");
+      form.set("kind", "feedback");
+      form.set("submission_id", opts.submissionId ?? submissionId);
+      form.set("metadata", JSON.stringify(opts.metadata ?? { feedback_type: "idea", locale: "zh-CN" }));
+      if (opts.bytes) {
+        form.append("attachments", new File([new Uint8Array(opts.bytes)], "screen.png", { type: "image/png" }));
+      }
+      return handlePublicFeedbackSubmit({
+        env,
+        executionCtx: { waitUntil: () => {} },
+        req: {
+          param: (name: string) => (name === "slug" ? "scope-app" : ""),
+          header: (name: string) => (name === "X-Quiver-Client-Key" ? "qk_test" : undefined),
+          query: () => undefined,
+          formData: async () => form,
+          raw: { cf: { clientIp: "203.0.113.71" } },
+        },
+        json: (data: unknown, status = 200) => new Response(JSON.stringify(data), { status }),
+      } as any);
+    };
+
+    const first = await submit({ bytes: [1, 2, 3] });
+    expect(first.status).toBe(201);
+    const firstBody = await responseJson<any>(first);
+    expect(firstBody.idempotent_replay).toBe(false);
+
+    const replay = await submit({
+      metadata: { locale: "zh-CN", feedback_type: "idea" },
+      bytes: [1, 2, 3],
+      submissionId: submissionId.toUpperCase(),
+    });
+    expect(replay.status).toBe(200);
+    const replayBody = await responseJson<any>(replay);
+    expect(replayBody.id).toBe(firstBody.id);
+    expect(replayBody.reference).toBe(firstBody.reference);
+    expect(replayBody.idempotent_replay).toBe(true);
+    expect(putCalls).toHaveLength(1);
+
+    expect((await submit({ message: "Different draft", bytes: [1, 2, 3] })).status).toBe(409);
+    expect((await submit({ bytes: [3, 2, 1] })).status).toBe(409);
+    expect(deleted).toEqual([]);
+
+    const rows = await env.DB.prepare(
+      "SELECT id, submission_id, submission_fingerprint FROM feedback_tickets WHERE app_id = ?1 AND submission_id = ?2",
+    ).bind("app-scope", submissionId).all();
+    expect(rows.results).toHaveLength(1);
+    expect((rows.results[0] as any).submission_fingerprint).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  it("feedback: over-limit new submissions stop before R2 HEAD while known replays remain recoverable", async () => {
+    const env = makeEnv();
+    let headCalls = 0;
+    env.APK_BUCKET = {
+      put: async () => {},
+      get: async () => null,
+      head: async () => {
+        headCalls += 1;
+        return { size: 3, etag: "etag-screen" };
+      },
+    };
+    const { handlePublicFeedbackSubmit } = await import("../src/routes/feedback");
+    const existingId = "33333333-3333-4333-8333-333333333333";
+    const presigned = [{
+      r2_key: "feedback/app-scope/presigned/screen.png",
+      filename: "screen.png",
+      content_type: "image/png",
+      size: 3,
+    }];
+    const submit = (submissionId?: string, includePresigned = false) => {
+      const responseHeaders = new Headers();
+      const form = new FormData();
+      form.set("message", "Rate boundary");
+      if (submissionId) form.set("submission_id", submissionId);
+      if (includePresigned) form.set("presigned", JSON.stringify(presigned));
+      return handlePublicFeedbackSubmit({
+        env,
+        executionCtx: { waitUntil: () => {} },
+        header: (name: string, value: string) => { responseHeaders.set(name, value); },
+        req: {
+          param: (name: string) => (name === "slug" ? "scope-app" : ""),
+          header: (name: string) => (name === "X-Quiver-Client-Key" ? "qk_test" : undefined),
+          query: () => undefined,
+          formData: async () => form,
+          raw: { cf: { clientIp: "203.0.113.74" } },
+        },
+        json: (data: unknown, status = 200) => new Response(JSON.stringify(data), {
+          status,
+          headers: responseHeaders,
+        }),
+      } as any);
+    };
+
+    expect((await submit(existingId, true)).status).toBe(201);
+    for (let index = 0; index < 9; index += 1) expect((await submit()).status).toBe(201);
+    headCalls = 0;
+
+    const overLimit = await submit("44444444-4444-4444-8444-444444444444", true);
+    expect(overLimit.status).toBe(429);
+    expect(Number(overLimit.headers.get("retry-after"))).toBeGreaterThan(0);
+    expect(headCalls).toBe(0);
+
+    const replay = await submit(existingId.toUpperCase(), true);
+    expect(replay.status).toBe(200);
+    expect(headCalls).toBe(1);
+  });
+
+  it("feedback: concurrent identical submission_id requests converge on one ticket", async () => {
+    const env = makeEnv();
+    const deleted: string[] = [];
+    env.APK_BUCKET = {
+      put: async () => {},
+      delete: async (key: string) => { deleted.push(key); },
+      get: async () => null,
+      head: async () => null,
+    };
+    const { handlePublicFeedbackSubmit } = await import("../src/routes/feedback");
+    const submit = () => {
+      const form = new FormData();
+      form.set("message", "Concurrent retry");
+      form.set("submission_id", "22222222-2222-4222-8222-222222222222");
+      form.append("attachments", new File([new Uint8Array([9])], "same.txt", { type: "text/plain" }));
+      return handlePublicFeedbackSubmit({
+        env,
+        executionCtx: { waitUntil: () => {} },
+        req: {
+          param: (name: string) => (name === "slug" ? "scope-app" : ""),
+          header: (name: string) => (name === "X-Quiver-Client-Key" ? "qk_test" : undefined),
+          query: () => undefined,
+          formData: async () => form,
+          raw: { cf: { clientIp: "203.0.113.72" } },
+        },
+        json: (data: unknown, status = 200) => new Response(JSON.stringify(data), { status }),
+      } as any);
+    };
+
+    const responses = await Promise.all([submit(), submit()]);
+    expect(responses.map((response) => response.status).sort()).toEqual([200, 201]);
+    const bodies = await Promise.all(responses.map((response) => responseJson<any>(response)));
+    expect(new Set(bodies.map((body) => body.id)).size).toBe(1);
+    expect(deleted.length).toBeLessThanOrEqual(1);
+
+    const count = await env.DB.prepare(
+      "SELECT COUNT(*) AS count FROM feedback_tickets WHERE app_id = ?1 AND submission_id = ?2",
+    ).bind("app-scope", "22222222-2222-4222-8222-222222222222").first() as { count: number } | null;
+    expect(count?.count).toBe(1);
+  });
+
+  it("feedback: trusted server proxy persists and rate-limits by pseudonymous reporter id", async () => {
+    const env = makeEnv();
+    env.APK_BUCKET = { put: async () => {}, get: async () => null };
+    const { handlePublicFeedbackSubmit } = await import("../src/routes/feedback");
+    const { generateDeployToken, hashDeployToken } = await import("../src/lib/deploy_tokens");
+    const credential = generateDeployToken();
+    const publisherCredential = generateDeployToken();
+    const broadCredential = generateDeployToken();
+    await env.DB.prepare(
+      `INSERT INTO app_deploy_tokens
+       (id, app_id, name, token_prefix, token_hash, app_role, scopes_json, created_by_actor, created_at)
+       VALUES (?1, ?2, ?3, ?4, ?5, NULL, '["feedback:write"]', ?6, ?7)`,
+    ).bind(
+      "proxy-token",
+      "app-scope",
+      "feedback proxy",
+      credential.token_prefix,
+      await hashDeployToken(credential.token),
+      "test",
+      Date.now(),
+    ).run();
+    await env.DB.prepare(
+      `INSERT INTO app_deploy_tokens
+       (id, app_id, name, token_prefix, token_hash, app_role, scopes_json, created_by_actor, created_at)
+       VALUES (?1, ?2, ?3, ?4, ?5, 'publisher', NULL, ?6, ?7)`,
+    ).bind(
+      "publisher-token",
+      "app-scope",
+      "publisher token",
+      publisherCredential.token_prefix,
+      await hashDeployToken(publisherCredential.token),
+      "test",
+      Date.now(),
+    ).run();
+    await env.DB.prepare(
+      `INSERT INTO app_deploy_tokens
+       (id, app_id, name, token_prefix, token_hash, app_role, scopes_json, created_by_actor, created_at)
+       VALUES (?1, ?2, ?3, ?4, ?5, NULL, '["feedback:write","app:read"]', ?6, ?7)`,
+    ).bind(
+      "broad-token",
+      "app-scope",
+      "broad custom token",
+      broadCredential.token_prefix,
+      await hashDeployToken(broadCredential.token),
+      "test",
+      Date.now(),
+    ).run();
+
+    const submit = (
+      reporterId: string,
+      bearer = credential.token,
+      submissionId?: string,
+    ) => {
+      const responseHeaders = new Headers();
+      const form = new FormData();
+      form.set("message", "Proxy feedback");
+      if (submissionId) form.set("submission_id", submissionId);
+      return handlePublicFeedbackSubmit({
+        env,
+        executionCtx: { waitUntil: () => {} },
+        header: (name: string, value: string) => { responseHeaders.set(name, value); },
+        req: {
+          param: (name: string) => (name === "slug" ? "scope-app" : ""),
+          header: (name: string) => {
+            if (name === "X-Quiver-Client-Key") return "qk_test";
+            if (name === "X-Hands-Reporter-Id") return reporterId;
+            if (name === "authorization") return bearer ? `Bearer ${bearer}` : undefined;
+            return undefined;
+          },
+          query: () => undefined,
+          formData: async () => form,
+          raw: { cf: { clientIp: "203.0.113.80" } },
+        },
+        json: (data: unknown, status = 200) => new Response(JSON.stringify(data), {
+          status,
+          headers: responseHeaders,
+        }),
+      } as any);
+    };
+
+    const reporterA = "a".repeat(64);
+    for (let index = 0; index < 100; index += 1) expect((await submit(reporterA)).status).toBe(201);
+    const limited = await submit(reporterA);
+    expect(limited.status).toBe(429);
+    expect(Number(limited.headers.get("retry-after"))).toBeGreaterThan(0);
+    expect((await submit("b".repeat(64))).status).toBe(201);
+    expect((await submit("c".repeat(64), "")).status).toBe(401);
+    expect((await submit("d".repeat(64), publisherCredential.token)).status).toBe(401);
+    expect((await submit("e".repeat(64), broadCredential.token)).status).toBe(401);
+    expect((await submit("raw account id", credential.token)).status).toBe(400);
+
+    await env.DB.prepare(
+      `INSERT INTO webhooks
+       (id, org_id, app_id, url, secret, events_json, enabled, created_at, updated_at)
+       VALUES (?1, ?2, ?3, ?4, ?5, ?6, 1, ?7, ?8)`,
+    ).bind(
+      "trusted-feedback-webhook",
+      "default",
+      "app-scope",
+      "https://example.test/trusted-feedback",
+      "secret",
+      JSON.stringify(["feedback:new"]),
+      Date.now(),
+      Date.now(),
+    ).run();
+    const ownedSubmission = "55555555-5555-4555-8555-555555555555";
+    expect((await submit("g".repeat(64), credential.token, ownedSubmission)).status).toBe(201);
+    expect((await submit("h".repeat(64), credential.token, ownedSubmission)).status).toBe(409);
+
+    const trustedDelivery = (await env.DB.prepare(
+      `SELECT payload_json
+       FROM webhook_deliveries
+       WHERE webhook_id = ?1 AND event_type = 'feedback:new'`,
+    ).bind("trusted-feedback-webhook").first()) as { payload_json: string };
+    expect(JSON.parse(trustedDelivery.payload_json).payload.reporter_id).toBe("g".repeat(64));
+
+    const reporterRows = await env.DB.prepare(
+      `SELECT DISTINCT reporter_id
+       FROM feedback_tickets
+       WHERE app_id = ?1 AND reporter_id IS NOT NULL`,
+    ).bind("app-scope").all();
+    const storedReporterIds = reporterRows.results.map((row: any) => row.reporter_id);
+    expect(storedReporterIds).toContain(reporterA);
+    expect(storedReporterIds).toContain("b".repeat(64));
+    expect(storedReporterIds).toContain("g".repeat(64));
+  });
+
+  it("feedback: legacy submissions without submission_id remain non-idempotent", async () => {
+    const env = makeEnv();
+    env.APK_BUCKET = { put: async () => {}, get: async () => null };
+    const { handlePublicFeedbackSubmit } = await import("../src/routes/feedback");
+    const submit = () => {
+      const form = new FormData();
+      form.set("message", "Legacy client");
+      return handlePublicFeedbackSubmit({
+        env,
+        executionCtx: { waitUntil: () => {} },
+        req: {
+          param: (name: string) => (name === "slug" ? "scope-app" : ""),
+          header: (name: string) => (name === "X-Quiver-Client-Key" ? "qk_test" : undefined),
+          query: () => undefined,
+          formData: async () => form,
+          raw: { cf: { clientIp: "203.0.113.73" } },
+        },
+        json: (data: unknown, status = 200) => new Response(JSON.stringify(data), { status }),
+      } as any);
+    };
+    const first = await responseJson<any>(await submit());
+    const second = await responseJson<any>(await submit());
+    expect(first.id).not.toBe(second.id);
+  });
+
+  it("feedback: rejects malformed submission_id", async () => {
+    const env = makeEnv();
+    const { handlePublicFeedbackSubmit } = await import("../src/routes/feedback");
+    const form = new FormData();
+    form.set("message", "Bad id");
+    form.set("submission_id", "not-a-uuid");
+    const response = await handlePublicFeedbackSubmit({
+      env,
+      req: {
+        param: (name: string) => (name === "slug" ? "scope-app" : ""),
+        header: (name: string) => (name === "X-Quiver-Client-Key" ? "qk_test" : undefined),
+        query: () => undefined,
+        formData: async () => form,
+      },
+      json: (data: unknown, status = 200) => new Response(JSON.stringify(data), { status }),
+    } as any);
+    expect(response.status).toBe(400);
   });
 
   it("feedback: client key is always required", async () => {

@@ -142,7 +142,7 @@ function declaration(target = "darwin-arm64") {
 describe("external Node build declarations", () => {
   it("rejects app platform values outside the shared closed set", async () => {
     const response = await handleCreateApp(
-      jsonContext(makeDb(), {}, { slug: "bad", name: "Bad", platform: "web" }),
+      jsonContext(makeDb(), {}, { slug: "bad", name: "Bad", platform: "desktop" }),
     );
 
     expect(response.status).toBe(400);
@@ -151,6 +151,7 @@ describe("external Node build declarations", () => {
       code: "UNSUPPORTED_APP_PLATFORM",
       supported_platforms: APP_PLATFORMS,
     });
+    expect(APP_PLATFORMS).toContain("web");
   });
 
   it("publishes immutable per-target evidence and replays the same declaration", async () => {

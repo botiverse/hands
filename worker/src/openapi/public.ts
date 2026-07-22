@@ -138,8 +138,10 @@ const FeedbackSubmitResponse = z
     id: z.string(),
     status: z.string(),
     attachments: z.number().int().optional(),
+    attachment_names: z.array(z.string()).optional(),
     reference: z.string().optional(),
     ticket_url: z.string().nullable().optional(),
+    idempotent_replay: z.boolean().optional(),
   })
   .openapi("FeedbackSubmitResponse");
 
@@ -333,20 +335,26 @@ export function registerPublicRoutes(registry: OpenApiRegistry) {
     tags: ["Public feedback"],
     summary: "Submit feedback or crash report",
     description:
-      "Accepts SDK/client feedback, bug reports, and crash reports. Requires the app client key in X-Hands-Client-Key or client_key.",
+      "Accepts SDK/client feedback, bug reports, and crash reports. Requires the app client key in X-Hands-Client-Key or client_key. An optional multipart submission_id UUID makes retries idempotent: an exact replay returns the existing ticket, while reusing the UUID for a different payload returns 409. Trusted server proxies may send an optional opaque, integration-scoped X-Hands-Reporter-Id together with an app-scoped bearer token granted feedback:write; Hands persists the external subject as the pseudonymous ticket owner and rate-limits by reporter instead of the proxy's shared IP.",
     request: {
       params: SlugParam,
       query: z.object({ client_key: z.string().optional() }),
-      headers: z.object({ "X-Hands-Client-Key": z.string().optional() }),
+      headers: z.object({
+        "X-Hands-Client-Key": z.string().optional(),
+        "X-Hands-Reporter-Id": z.string().optional(),
+        Authorization: z.string().optional(),
+      }),
       body: {
         content: multipart(),
         required: true,
       },
     },
     responses: {
+      200: success("Returned an existing ticket for an idempotent replay.", FeedbackSubmitResponse),
       201: success("Created feedback ticket.", FeedbackSubmitResponse),
       400: error("Invalid feedback payload."),
       401: error("Missing or invalid client key."),
+      409: error("Submission id was already used for a different payload."),
       413: error("Attachment is too large."),
       429: error("Rate limit exceeded."),
     },

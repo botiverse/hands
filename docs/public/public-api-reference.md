@@ -246,14 +246,17 @@ find and rotate the key in the app's Settings tab or via
 | Field | Required | Description |
 |---|---|---|
 | `message` | Yes | Feedback text (max 10,000 chars). |
+| `submission_id` | No | Client-generated UUID for idempotent retries. Keep it fixed for one draft. An exact replay returns the original ticket; reusing it with different content returns `409`. |
 | `kind` | No | `feedback` (default), `bug`, or `crash`. |
 | `contact` | No | Reply-to handle (email, Raft name, …). |
 | `metadata` | No | JSON string: `version_name`, `version_code`, `channel`, `device_id`, `device_model`, `os_version`, `arch`, `locale`, plus custom keys. Crash tickets add `crash_exception_class` / `crash_top_frame` (grouping signature) and, for native crashes, `crash_native_frames` — an array of `{ index, offset, soname, build_id }` that the server symbolicates against the build's `native-symbols` asset. |
 | `attachments` | No | Inline files (multipart), up to 10 MB each, ≤9 total. |
 | `presigned` | No | JSON array of `{ r2_key, filename, content_type, size }` for files already uploaded via the presign flow (below). |
 
-Returns `201` with the full ticket UUID in `id`, plus a copyable `reference`
-and `ticket_url`, for example `{ "id": "<ticket UUID>", "status": "open",
+Returns `201` for a new ticket. An exact `submission_id` replay returns `200`
+with the same ticket and `idempotent_replay: true`. Both responses include the
+full ticket UUID in `id`, plus a copyable `reference` and `ticket_url`, for
+example `{ "id": "<ticket UUID>", "status": "open",
 "reference": "raft-android · 1.0.4 (1000400) · ticket <ticket UUID>",
 "ticket_url": "https://app.hands.build/apps/<appId>/feedback/<ticket UUID>" }`.
 Rate limit: 10 submissions per hour per app + client IP. Tickets appear in
@@ -261,6 +264,34 @@ the admin Feedback tab; a `feedback:new` webhook fires for subscribed
 endpoints (crash tickets can additionally trigger `crash:new_group` /
 `crash:spike`). The Android SDK's `HandsFeedback.submit(...)` wraps this
 endpoint and attaches device metadata automatically.
+
+### Trusted server-proxy rate identity
+
+A server that proxies many signed-in users through one egress IP can avoid a
+shared global bucket by sending both:
+
+```http
+Authorization: Bearer qvdt_...  # granted feedback:write
+X-Hands-Reporter-Id: <stable opaque base64url value>
+```
+
+The bearer must be a non-expired, non-revoked app token granted only the
+`feedback:write` permission and scoped to the same app. Scoped tokens do not
+inherit the legacy viewer/publisher role and cannot authenticate to Hands
+admin/read APIs unless a route explicitly requires one of their named
+permissions. The optional reporter id is an external subject identifier chosen
+by the integrator. It should be stable, opaque, and app/integration scoped — for
+example a random id stored in the integrator's account table or a keyed
+pseudonym — never a raw email, username, or internal database id. Hands stores
+it as the pseudonymous ticket owner and returns it through authenticated ticket
+and webhook contracts; the integrator decides whether to keep a reverse mapping
+for two-way support. Omitting the id yields anonymous, non-addressable tickets.
+Hands applies the 100/hour
+safety limit to the app + reporter id; the trusted proxy can enforce its own
+lower product limit. Supplying the reporter header without a matching app
+deploy token returns `401`; ordinary SDK submissions that omit it continue to
+use the 10/hour app + client-IP bucket. Rate-limit responses include a dynamic
+`Retry-After` header.
 
 ## Metrics Ingest
 
