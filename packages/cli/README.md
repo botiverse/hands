@@ -34,11 +34,11 @@ hands login
 hands whoami
 
 # 3. Create or list apps in your current Hands organization.
-hands apps create --slug myapp-web --name "My Web App" --platform web
+hands apps create --slug hands-example-web --name "Hands Example Web" --platform web
 hands apps list
 
 # Read the public SDK client key explicitly (app admin only).
-hands apps client-key myapp-web
+hands apps client-key hands-example-web
 
 # 4. List builds for an app (by slug or id).
 hands builds list myapp-android
