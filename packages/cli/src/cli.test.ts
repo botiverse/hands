@@ -7,7 +7,7 @@
  * + apiRequest routing (against a tiny local http.createServer stub).
  */
 
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { mkdtempSync, readFileSync, rmSync, existsSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -122,6 +122,110 @@ describe("apiRequest", () => {
     const { apiRequest, QuiverApiError } = await import("../src/lib/api.js");
     await expect(apiRequest("/api/missing")).rejects.toBeInstanceOf(QuiverApiError);
     delete process.env.QUIVER_API;
+  });
+});
+
+describe("app provisioning commands", () => {
+  it("creates a web app and explicitly reads its client key without verbose-log leakage", async () => {
+    const requests: Array<{ method: string; url: string; body?: unknown }> = [];
+    const clientKey = "qk_test_client_key_value";
+    const server = createServer(async (req, res) => {
+      let body: unknown;
+      if (req.headers["content-type"]?.includes("application/json")) {
+        const chunks: Buffer[] = [];
+        for await (const chunk of req) chunks.push(Buffer.from(chunk));
+        body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+      }
+      requests.push({ method: req.method ?? "GET", url: req.url ?? "", body });
+      res.setHeader("content-type", "application/json");
+      if (req.url === "/api/apps" && req.method === "POST") {
+        res.statusCode = 201;
+        return res.end(JSON.stringify({
+          id: "11111111-1111-4111-8111-111111111111",
+          org_id: "raft_target",
+          slug: "hands-example-web",
+          name: "Hands Example Web",
+          platform: "web",
+        }));
+      }
+      if (req.url === "/api/apps" && req.method === "GET") {
+        return res.end(JSON.stringify({
+          apps: [{
+            id: "11111111-1111-4111-8111-111111111111",
+            slug: "hands-example-web",
+            name: "Hands Example Web",
+            platform: "web",
+            archived: 0,
+            default_channel_slug: "main",
+            created_at: 1,
+          }],
+        }));
+      }
+      if (req.url === "/api/apps/11111111-1111-4111-8111-111111111111/client-key") {
+        return res.end(JSON.stringify({
+          app_id: "11111111-1111-4111-8111-111111111111",
+          client_key: clientKey,
+        }));
+      }
+      res.statusCode = 404;
+      return res.end(JSON.stringify({ error: "not found" }));
+    });
+
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("bad address");
+    const originalApi = process.env.HANDS_API;
+    const originalToken = process.env.HANDS_BEARER_TOKEN;
+    const originalVerbose = process.env.HANDS_VERBOSE;
+    process.env.HANDS_API = `http://127.0.0.1:${address.port}`;
+    process.env.HANDS_BEARER_TOKEN = "test-token";
+    process.env.HANDS_VERBOSE = "1";
+    const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+    try {
+      const { registerAppCommands } = await import("../src/commands/apps.js");
+      const createProgram = new Command();
+      registerAppCommands(createProgram);
+      await createProgram.parseAsync([
+        "node", "hands", "apps", "create",
+        "--slug", "hands-example-web",
+        "--name", "Hands Example Web",
+        "--platform", "web",
+        "--description", "Hands web app example",
+      ]);
+
+      const keyProgram = new Command();
+      registerAppCommands(keyProgram);
+      await keyProgram.parseAsync([
+        "node", "hands", "apps", "client-key", "hands-example-web",
+      ]);
+
+      expect(requests.find((request) => request.method === "POST")).toMatchObject({
+        url: "/api/apps",
+        body: {
+          slug: "hands-example-web",
+          name: "Hands Example Web",
+          platform: "web",
+          description: "Hands web app example",
+        },
+      });
+      expect(requests.map((request) => request.url)).toContain(
+        "/api/apps/11111111-1111-4111-8111-111111111111/client-key",
+      );
+      expect(log.mock.calls.flat().join("\n")).toContain(clientKey);
+      expect(error.mock.calls.flat().join("\n")).not.toContain(clientKey);
+    } finally {
+      log.mockRestore();
+      error.mockRestore();
+      if (originalApi === undefined) delete process.env.HANDS_API;
+      else process.env.HANDS_API = originalApi;
+      if (originalToken === undefined) delete process.env.HANDS_BEARER_TOKEN;
+      else process.env.HANDS_BEARER_TOKEN = originalToken;
+      if (originalVerbose === undefined) delete process.env.HANDS_VERBOSE;
+      else process.env.HANDS_VERBOSE = originalVerbose;
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
   });
 });
 

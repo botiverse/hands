@@ -36,7 +36,7 @@ const program = new Command();
 program
   .name("hands")
   .description("Hands CLI — manage apps, builds, releases from the terminal.")
-  .version("0.5.12")
+  .version("0.5.13")
   .option(
     "--api <url>",
     "Hands business API URL (default: https://hands.build or $HANDS_API)",
@@ -48,7 +48,10 @@ program
     `
 Common recipes:
   hands whoami                                        Who am I / is my auth valid?
+  hands apps create --slug <s> --name <n> --platform web
+                                                       Create an app in my current org
   hands apps list                                     Apps I can access
+  hands apps client-key <app>                         Read public SDK client key (admin)
   hands feedback list <app> --kind crash              Newest crash tickets
   hands feedback show <app> <ticketId>                One ticket: device context + attachments
   hands feedback download-attachment <app> <t> <a>    Pull a crash log / screenshot

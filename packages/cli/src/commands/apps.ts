@@ -1,7 +1,8 @@
 /**
- * `quiver apps` — list / inspect apps in the caller's org.
+ * `hands apps` — create / list / inspect apps in the caller's org.
  *
- * Wires GET /api/apps + GET /api/apps/:appId.
+ * Wires POST/GET /api/apps, GET /api/apps/:appId, and the explicit
+ * app-admin-only client-key read endpoint.
  */
 
 import type { Command } from "commander";
@@ -17,8 +18,59 @@ interface AppRow {
   created_at: number;
 }
 
+interface CreatedApp {
+  id: string;
+  org_id: string;
+  slug: string;
+  name: string;
+  platform: string;
+}
+
+interface ClientKeyResponse {
+  app_id: string;
+  client_key: string | null;
+}
+
 export function registerAppCommands(program: Command): void {
   const apps = program.command("apps").description("Manage apps in your org.");
+
+  apps
+    .command("create")
+    .description("Create an app in the current Hands organization.")
+    .requiredOption("--slug <slug>", "Stable app slug.")
+    .requiredOption("--name <name>", "Display name.")
+    .requiredOption(
+      "--platform <platform>",
+      "App platform, for example web, android, ios, ohos, node, or electron.",
+    )
+    .option("--description <text>", "Optional app description.")
+    .option("--json", "Output JSON.", false)
+    .action(async (opts: {
+      slug: string;
+      name: string;
+      platform: string;
+      description?: string;
+      json?: boolean;
+    }) => {
+      const app = await apiRequest<CreatedApp>("/api/apps", {
+        method: "POST",
+        body: {
+          slug: opts.slug,
+          name: opts.name,
+          platform: opts.platform,
+          ...(opts.description !== undefined
+            ? { description: opts.description }
+            : {}),
+        },
+      });
+      if (opts.json) {
+        console.log(JSON.stringify(app, null, 2));
+        return;
+      }
+      console.log(`Created app ${app.slug} (${app.platform}).`);
+      console.log(`  id: ${app.id}`);
+      console.log(`  org: ${app.org_id}`);
+    });
 
   apps
     .command("list")
@@ -35,7 +87,9 @@ export function registerAppCommands(program: Command): void {
         return;
       }
       if (res.apps.length === 0) {
-        console.log("No apps. Create one in the admin UI first.");
+        console.log(
+          "No apps. Create one with `hands apps create --slug <slug> --name <name> --platform <platform>`.",
+        );
         return;
       }
       console.log(
@@ -59,20 +113,7 @@ export function registerAppCommands(program: Command): void {
     .description("Show details for a single app.")
     .option("--json", "Output JSON.", false)
     .action(async (appIdOrSlug: string, opts: { json?: boolean }) => {
-      // The Worker endpoint accepts UUID; for slug we list + filter.
-      // Cheap heuristic: 36-char with dashes = UUID.
-      const isUuid =
-        appIdOrSlug.length === 36 && appIdOrUuidDash(appIdOrSlug);
-      let id = appIdOrSlug;
-      if (!isUuid) {
-        const res = await apiRequest<{ apps: AppRow[] }>("/api/apps");
-        const match = res.apps.find((a) => a.slug === appIdOrSlug);
-        if (!match) {
-          console.error(`No app with slug '${appIdOrSlug}'.`);
-          process.exit(1);
-        }
-        id = match.id;
-      }
+      const id = await resolveAppId(appIdOrSlug);
       const app = await apiRequest<AppRow>(`/api/apps/${id}`);
       if (opts.json) {
         console.log(JSON.stringify(app, null, 2));
@@ -86,6 +127,37 @@ export function registerAppCommands(program: Command): void {
         `  default_channel: ${app.default_channel_slug ?? "(none)"}`,
       );
     });
+
+  apps
+    .command("client-key <appIdOrSlug>")
+    .description("Read an app's public SDK client key. Requires app admin.")
+    .option("--json", "Output JSON.", false)
+    .action(async (appIdOrSlug: string, opts: { json?: boolean }) => {
+      const appId = await resolveAppId(appIdOrSlug);
+      const result = await apiRequest<ClientKeyResponse>(
+        `/api/apps/${appId}/client-key`,
+      );
+      if (opts.json) {
+        console.log(JSON.stringify(result, null, 2));
+        return;
+      }
+      if (!result.client_key) {
+        console.log(`App ${appIdOrSlug} has no client key.`);
+        return;
+      }
+      // The key is intentionally printed only for this explicit read command.
+      // apiRequest's verbose diagnostics log only method/URL/status, never
+      // response bodies, so the value does not leak into debug logs.
+      console.log(result.client_key);
+    });
+}
+
+async function resolveAppId(input: string): Promise<string> {
+  if (input.length === 36 && appIdOrUuidDash(input)) return input;
+  const res = await apiRequest<{ apps: AppRow[] }>("/api/apps");
+  const match = res.apps.find((app) => app.slug === input);
+  if (!match) throw new Error(`No app with slug '${input}'.`);
+  return match.id;
 }
 
 function appIdOrUuidDash(s: string): boolean {

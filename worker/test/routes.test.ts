@@ -938,7 +938,7 @@ describe("quiver route handlers — SQL smoke", () => {
           authorization: `Bearer ${memberToken}`,
           "content-type": "application/json",
         },
-        body: JSON.stringify({ slug: "member-app", name: "Member App", platform: "android" }),
+        body: JSON.stringify({ slug: "member-app", name: "Member App", platform: "web" }),
       },
       env as any,
     );
@@ -947,7 +947,26 @@ describe("quiver route handlers — SQL smoke", () => {
       org_id: "raft_create",
       slug: "member-app",
       name: "Member App",
-      platform: "android",
+      platform: "web",
+    });
+
+    const duplicateResponse = await testApp.request(
+      "https://quiver-worker.test/api/apps",
+      {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${memberToken}`,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ slug: "member-app", name: "Duplicate", platform: "web" }),
+      },
+      env as any,
+    );
+    expect(duplicateResponse.status).toBe(409);
+    await expect(duplicateResponse.json()).resolves.toMatchObject({
+      error: "app slug already exists",
+      code: "APP_SLUG_CONFLICT",
+      slug: "member-app",
     });
 
     const seededChannels = await env.DB
@@ -1486,7 +1505,7 @@ describe("quiver route handlers — SQL smoke", () => {
         body: JSON.stringify({
           slug: "secondary-created",
           name: "Secondary Created",
-          platform: "android",
+          platform: "web",
         }),
       },
       env as any,
@@ -1495,6 +1514,7 @@ describe("quiver route handlers — SQL smoke", () => {
     await expect(createResponse.json()).resolves.toMatchObject({
       org_id: "org-secondary",
       slug: "secondary-created",
+      platform: "web",
     });
 
     const invalidResponse = await requestApps("org-not-a-member");
@@ -7828,6 +7848,14 @@ describe("Hands iOS simulator QA artifacts", () => {
     const manifest = await response.json() as any;
     const actions = Object.fromEntries(manifest.actions.map((action: any) => [action.name, action.endpoint]));
     expect(actions).toMatchObject({
+      "create-app": {
+        method: "POST",
+        path: "/api/apps",
+      },
+      "get-client-key": {
+        method: "GET",
+        path: "/api/apps/{app_id}/client-key",
+      },
       "list-device-groups": {
         method: "GET",
         path: "/api/apps/{app_id}/device-groups",
@@ -7894,6 +7922,17 @@ describe("Hands iOS simulator QA artifacts", () => {
       },
     });
     const byName = Object.fromEntries(manifest.actions.map((action: any) => [action.name, action]));
+    expect(byName["create-app"].parameters).toMatchObject({
+      slug: { type: "string", in: "body", required: true },
+      name: { type: "string", in: "body", required: true },
+      platform: { type: "string", in: "body", required: true },
+      description: { type: "string", in: "body", required: false },
+    });
+    expect(byName["get-client-key"].parameters.app_id).toMatchObject({
+      type: "string",
+      in: "path",
+      required: true,
+    });
     expect(byName["create-release"].parameters.scopes).toMatchObject({ type: "array", in: "body" });
     expect(byName["update-release"].parameters.scopes).toMatchObject({ type: "array", in: "body" });
   });

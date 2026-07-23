@@ -122,47 +122,98 @@ export async function handleCreateApp(c: AdminContext) {
   const id = crypto.randomUUID();
   const now = Date.now();
   const orgId = await currentOrgId(c);
+  const duplicate = await c.env.DB.prepare(
+    "SELECT id FROM apps WHERE slug = ?1 LIMIT 1",
+  )
+    .bind(body.slug)
+    .first<{ id: string }>();
+  if (duplicate) {
+    return c.json(
+      {
+        error: "app slug already exists",
+        code: "APP_SLUG_CONFLICT",
+        slug: body.slug,
+      },
+      409,
+    );
+  }
 
   // Seed default product_types and distribution channels for the new app.
   // (Phase 2.3 app-creation wizard path; small enough to inline here.)
-  await c.env.DB.batch([
-    c.env.DB.prepare(
-      "INSERT INTO apps (id, org_id, slug, name, platform, description, created_at, client_key) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-    ).bind(id, orgId, body.slug, body.name, body.platform, body.description ?? null, now, generateClientKey()),
-    // product_types
-    c.env.DB.prepare(
-      `INSERT INTO product_types (id, app_id, name, display_name, description, supported_platforms_json, default_assets_json, parser_kind, schema_json, created_at, updated_at) VALUES (?, ?, 'android-apk', 'Android APK', 'Android application package', '[]', '[{"platform":"android","filetype":"apk"}]', 'apk-aapt', '{"requires_native_codes":true}', ?, ?)`,
-    ).bind(crypto.randomUUID(), id, now, now),
-    c.env.DB.prepare(
-      `INSERT INTO product_types (id, app_id, name, display_name, description, supported_platforms_json, default_assets_json, parser_kind, schema_json, created_at, updated_at) VALUES (?, ?, 'electron-installer', 'Electron desktop app', 'Cross-platform desktop app', '["darwin-arm64","darwin-x64","linux-x64","linux-arm64","win32-x64","win32-arm64"]', '[{"platform":"darwin-arm64","filetype":"dmg"}]', 'electron-asar', '{}', ?, ?)`,
-    ).bind(crypto.randomUUID(), id, now, now),
-    c.env.DB.prepare(
-      `INSERT INTO product_types (id, app_id, name, display_name, description, supported_platforms_json, default_assets_json, parser_kind, schema_json, created_at, updated_at) VALUES (?, ?, 'rn-bundle', 'React Native OTA bundle', 'JS bundle hot-update', '[]', '[{"platform":"rn","filetype":"bundle"}]', 'rn-bundle', '{}', ?, ?)`,
-    ).bind(crypto.randomUUID(), id, now, now),
-    c.env.DB.prepare(
-      `INSERT INTO product_types (id, app_id, name, display_name, description, supported_platforms_json, default_assets_json, parser_kind, schema_json, created_at, updated_at) VALUES (?, ?, 'ios-ipa', 'iOS app', 'iOS IPA distributed through TestFlight, ad-hoc, or enterprise lanes', '["ios"]', '[{"platform":"ios","filetype":"ipa"},{"platform":"ios","filetype":"dsym.zip","artifact_kind":"dsym"}]', 'ipa-info', '{"distribution_profile_required":true}', ?, ?)`,
-    ).bind(crypto.randomUUID(), id, now, now),
-    c.env.DB.prepare(
-      `INSERT INTO product_types (id, app_id, name, display_name, description, supported_platforms_json, default_assets_json, parser_kind, schema_json, created_at, updated_at) VALUES (?, ?, 'ohos-app', 'OHOS app', 'Signed App Pack and HAP artifacts for AppGallery and sideloading', '["ohos"]', '[{"platform":"ohos","filetype":"app"},{"platform":"ohos","filetype":"hap"}]', 'ohos-package', '{}', ?, ?)`,
-    ).bind(crypto.randomUUID(), id, now, now),
-    c.env.DB.prepare(
-      `INSERT INTO product_types (id, app_id, name, display_name, description, supported_platforms_json, default_assets_json, parser_kind, schema_json, created_at, updated_at) VALUES (?, ?, 'cli-binary', 'Node / CLI binary', 'Externally hosted Node SEA or CLI binaries', '["darwin-arm64","darwin-x64","linux-arm64","linux-x64","win32-arm64","win32-x64"]', '[]', 'external', '{"external_source":true}', ?, ?)`,
-    ).bind(crypto.randomUUID(), id, now, now),
-    // channels (with default bundle_id overrides for parallel install)
-    c.env.DB.prepare(
-      `INSERT INTO channels (id, app_id, slug, name, bundle_id, password, git_url, enabled_product_types_json, metadata_json, created_at) VALUES (?, ?, 'main', 'Main', NULL, NULL, NULL, '["android-apk","electron-installer","rn-bundle","ios-ipa","ohos-app","cli-binary"]', '{}', ?)`,
-    ).bind(crypto.randomUUID(), id, now),
-    c.env.DB.prepare(
-      `INSERT INTO channels (id, app_id, slug, name, bundle_id, password, git_url, enabled_product_types_json, metadata_json, created_at) VALUES (?, ?, 'preview', 'Preview', ?, NULL, NULL, '["android-apk","rn-bundle","ios-ipa"]', '{}', ?)`,
-    ).bind(crypto.randomUUID(), id, body.slug + '.preview', now),
-    c.env.DB.prepare(
-      `INSERT INTO channels (id, app_id, slug, name, bundle_id, password, git_url, enabled_product_types_json, metadata_json, created_at) VALUES (?, ?, 'nightly', 'Nightly', ?, NULL, NULL, '["android-apk"]', '{}', ?)`,
-    ).bind(crypto.randomUUID(), id, body.slug + '.nightly', now),
-    // audit log
-    c.env.DB.prepare(
-      "INSERT INTO audit_logs (id, app_id, action, actor, payload, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-    ).bind(crypto.randomUUID(), id, "app.create", currentActor(c), JSON.stringify(body), now),
-  ]);
+  try {
+    await c.env.DB.batch([
+      c.env.DB.prepare(
+        "INSERT INTO apps (id, org_id, slug, name, platform, description, created_at, client_key) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+      ).bind(
+        id,
+        orgId,
+        body.slug,
+        body.name,
+        body.platform,
+        body.description ?? null,
+        now,
+        generateClientKey(),
+      ),
+      // product_types
+      c.env.DB.prepare(
+        `INSERT INTO product_types (id, app_id, name, display_name, description, supported_platforms_json, default_assets_json, parser_kind, schema_json, created_at, updated_at) VALUES (?, ?, 'android-apk', 'Android APK', 'Android application package', '[]', '[{"platform":"android","filetype":"apk"}]', 'apk-aapt', '{"requires_native_codes":true}', ?, ?)`,
+      ).bind(crypto.randomUUID(), id, now, now),
+      c.env.DB.prepare(
+        `INSERT INTO product_types (id, app_id, name, display_name, description, supported_platforms_json, default_assets_json, parser_kind, schema_json, created_at, updated_at) VALUES (?, ?, 'electron-installer', 'Electron desktop app', 'Cross-platform desktop app', '["darwin-arm64","darwin-x64","linux-x64","linux-arm64","win32-x64","win32-arm64"]', '[{"platform":"darwin-arm64","filetype":"dmg"}]', 'electron-asar', '{}', ?, ?)`,
+      ).bind(crypto.randomUUID(), id, now, now),
+      c.env.DB.prepare(
+        `INSERT INTO product_types (id, app_id, name, display_name, description, supported_platforms_json, default_assets_json, parser_kind, schema_json, created_at, updated_at) VALUES (?, ?, 'rn-bundle', 'React Native OTA bundle', 'JS bundle hot-update', '[]', '[{"platform":"rn","filetype":"bundle"}]', 'rn-bundle', '{}', ?, ?)`,
+      ).bind(crypto.randomUUID(), id, now, now),
+      c.env.DB.prepare(
+        `INSERT INTO product_types (id, app_id, name, display_name, description, supported_platforms_json, default_assets_json, parser_kind, schema_json, created_at, updated_at) VALUES (?, ?, 'ios-ipa', 'iOS app', 'iOS IPA distributed through TestFlight, ad-hoc, or enterprise lanes', '["ios"]', '[{"platform":"ios","filetype":"ipa"},{"platform":"ios","filetype":"dsym.zip","artifact_kind":"dsym"}]', 'ipa-info', '{"distribution_profile_required":true}', ?, ?)`,
+      ).bind(crypto.randomUUID(), id, now, now),
+      c.env.DB.prepare(
+        `INSERT INTO product_types (id, app_id, name, display_name, description, supported_platforms_json, default_assets_json, parser_kind, schema_json, created_at, updated_at) VALUES (?, ?, 'ohos-app', 'OHOS app', 'Signed App Pack and HAP artifacts for AppGallery and sideloading', '["ohos"]', '[{"platform":"ohos","filetype":"app"},{"platform":"ohos","filetype":"hap"}]', 'ohos-package', '{}', ?, ?)`,
+      ).bind(crypto.randomUUID(), id, now, now),
+      c.env.DB.prepare(
+        `INSERT INTO product_types (id, app_id, name, display_name, description, supported_platforms_json, default_assets_json, parser_kind, schema_json, created_at, updated_at) VALUES (?, ?, 'cli-binary', 'Node / CLI binary', 'Externally hosted Node SEA or CLI binaries', '["darwin-arm64","darwin-x64","linux-arm64","linux-x64","win32-arm64","win32-x64"]', '[]', 'external', '{"external_source":true}', ?, ?)`,
+      ).bind(crypto.randomUUID(), id, now, now),
+      // channels (with default bundle_id overrides for parallel install)
+      c.env.DB.prepare(
+        `INSERT INTO channels (id, app_id, slug, name, bundle_id, password, git_url, enabled_product_types_json, metadata_json, created_at) VALUES (?, ?, 'main', 'Main', NULL, NULL, NULL, '["android-apk","electron-installer","rn-bundle","ios-ipa","ohos-app","cli-binary"]', '{}', ?)`,
+      ).bind(crypto.randomUUID(), id, now),
+      c.env.DB.prepare(
+        `INSERT INTO channels (id, app_id, slug, name, bundle_id, password, git_url, enabled_product_types_json, metadata_json, created_at) VALUES (?, ?, 'preview', 'Preview', ?, NULL, NULL, '["android-apk","rn-bundle","ios-ipa"]', '{}', ?)`,
+      ).bind(crypto.randomUUID(), id, body.slug + ".preview", now),
+      c.env.DB.prepare(
+        `INSERT INTO channels (id, app_id, slug, name, bundle_id, password, git_url, enabled_product_types_json, metadata_json, created_at) VALUES (?, ?, 'nightly', 'Nightly', ?, NULL, NULL, '["android-apk"]', '{}', ?)`,
+      ).bind(crypto.randomUUID(), id, body.slug + ".nightly", now),
+      // audit log
+      c.env.DB.prepare(
+        "INSERT INTO audit_logs (id, app_id, action, actor, payload, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+      ).bind(
+        crypto.randomUUID(),
+        id,
+        "app.create",
+        currentActor(c),
+        JSON.stringify(body),
+        now,
+      ),
+    ]);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    // Preserve the documented 409 contract under a concurrent create race.
+    // Other batch failures still reach the global error handler unchanged.
+    if (
+      message.includes("apps.slug") &&
+      (message.includes("UNIQUE") || message.includes("SQLITE_CONSTRAINT"))
+    ) {
+      return c.json(
+        {
+          error: "app slug already exists",
+          code: "APP_SLUG_CONFLICT",
+          slug: body.slug,
+        },
+        409,
+      );
+    }
+    throw error;
+  }
 
   return c.json({ id, org_id: orgId, slug: body.slug, name: body.name, platform: body.platform }, 201);
 }

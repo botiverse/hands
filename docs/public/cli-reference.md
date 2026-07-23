@@ -13,7 +13,7 @@ npm install -g @botiverse/hands-cli
 Or run it without a permanent install:
 
 ```bash
-npm exec --package @botiverse/hands-cli@0.5.12 -- hands --help
+npm exec --package @botiverse/hands-cli@0.5.13 -- hands --help
 ```
 
 In CI, pin a version so release scripts stay reproducible.
@@ -72,10 +72,27 @@ Show the installed version:
 hands version
 ```
 
+Create an app in the current Hands organization (requires org member or higher):
+
+```bash
+hands apps create \
+  --slug hands-example-web \
+  --name "Hands Example Web" \
+  --platform web \
+  --description "Hands web app example"
+```
+
 List apps visible to the current token:
 
 ```bash
 hands apps list
+```
+
+Read the app's public SDK client key explicitly (requires app admin; this does
+not rotate the key or return any deploy token):
+
+```bash
+hands apps client-key hands-example-web
 ```
 
 List builds for an app:

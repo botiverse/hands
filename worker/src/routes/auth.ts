@@ -810,6 +810,53 @@ export async function handleAgentManifest(c: Context<{ Bindings: Env }>) {
         endpoint: { method: "GET", path: "/api/apps" },
       },
       {
+        name: "create-app",
+        description:
+          "Create an app in the caller's current Hands organization. Requires org member or higher. This creates no release and activates nothing.",
+        endpoint: { method: "POST", path: "/api/apps" },
+        parameters: {
+          slug: {
+            type: "string",
+            in: "body",
+            required: true,
+            description: "Stable unique app slug.",
+          },
+          name: {
+            type: "string",
+            in: "body",
+            required: true,
+            description: "Display name.",
+          },
+          platform: {
+            type: "string",
+            in: "body",
+            required: true,
+            description:
+              "App platform, for example web, android, ios, ohos, node, or electron.",
+          },
+          description: {
+            type: "string",
+            in: "body",
+            required: false,
+            description: "Optional app description.",
+          },
+        },
+      },
+      {
+        name: "get-client-key",
+        description:
+          "Read an app's public SDK client key. Requires app admin. This never returns deploy tokens or other secrets and does not rotate the key.",
+        endpoint: { method: "GET", path: "/api/apps/{app_id}/client-key" },
+        parameters: {
+          app_id: {
+            type: "string",
+            in: "path",
+            required: true,
+            description: "App UUID.",
+          },
+        },
+      },
+      {
         name: "list-channels",
         endpoint: { method: "GET", path: "/api/apps/{app_id}/channels" },
         description: "List an app's release channels (id, slug, name). Requires app viewer.",
