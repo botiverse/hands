@@ -76,10 +76,10 @@ Create an app in the current Hands organization (requires org member or higher):
 
 ```bash
 hands apps create \
-  --slug raft-web \
-  --name "Raft Web" \
+  --slug hands-example-web \
+  --name "Hands Example Web" \
   --platform web \
-  --description "Raft browser feedback proxy"
+  --description "Hands web app example"
 ```
 
 List apps visible to the current token:
@@ -92,7 +92,7 @@ Read the app's public SDK client key explicitly (requires app admin; this does
 not rotate the key or return any deploy token):
 
 ```bash
-hands apps client-key raft-web
+hands apps client-key hands-example-web
 ```
 
 List builds for an app:

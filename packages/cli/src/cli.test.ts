@@ -143,8 +143,8 @@ describe("app provisioning commands", () => {
         return res.end(JSON.stringify({
           id: "11111111-1111-4111-8111-111111111111",
           org_id: "raft_target",
-          slug: "raft-web",
-          name: "Raft Web",
+          slug: "hands-example-web",
+          name: "Hands Example Web",
           platform: "web",
         }));
       }
@@ -152,8 +152,8 @@ describe("app provisioning commands", () => {
         return res.end(JSON.stringify({
           apps: [{
             id: "11111111-1111-4111-8111-111111111111",
-            slug: "raft-web",
-            name: "Raft Web",
+            slug: "hands-example-web",
+            name: "Hands Example Web",
             platform: "web",
             archived: 0,
             default_channel_slug: "main",
@@ -189,25 +189,25 @@ describe("app provisioning commands", () => {
       registerAppCommands(createProgram);
       await createProgram.parseAsync([
         "node", "hands", "apps", "create",
-        "--slug", "raft-web",
-        "--name", "Raft Web",
+        "--slug", "hands-example-web",
+        "--name", "Hands Example Web",
         "--platform", "web",
-        "--description", "Raft browser feedback proxy",
+        "--description", "Hands web app example",
       ]);
 
       const keyProgram = new Command();
       registerAppCommands(keyProgram);
       await keyProgram.parseAsync([
-        "node", "hands", "apps", "client-key", "raft-web",
+        "node", "hands", "apps", "client-key", "hands-example-web",
       ]);
 
       expect(requests.find((request) => request.method === "POST")).toMatchObject({
         url: "/api/apps",
         body: {
-          slug: "raft-web",
-          name: "Raft Web",
+          slug: "hands-example-web",
+          name: "Hands Example Web",
           platform: "web",
-          description: "Raft browser feedback proxy",
+          description: "Hands web app example",
         },
       });
       expect(requests.map((request) => request.url)).toContain(
