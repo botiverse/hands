@@ -7,9 +7,31 @@ export function dashboardHref(account?: AuthAccount): string {
 export function consoleRootTarget(
   location: { hostname: string; pathname: string },
   account?: AuthAccount,
+  confirmedUnauthorized = false,
 ): string | null {
   if (location.hostname !== "app.hands.build" || location.pathname !== "/") return null;
-  return dashboardHref(account);
+  if (account) return dashboardHref(account);
+  return confirmedUnauthorized ? dashboardHref() : null;
+}
+
+export type ConsoleRootAuthState =
+  | { kind: "not-console-root" }
+  | { kind: "loading" }
+  | { kind: "redirect"; href: string }
+  | { kind: "error" };
+
+export function consoleRootAuthState(input: {
+  location: { hostname: string; pathname: string };
+  account?: AuthAccount | undefined;
+  isPending: boolean;
+  errorStatus?: number | undefined;
+}): ConsoleRootAuthState {
+  const isConsoleRoot = input.location.hostname === "app.hands.build"
+    && input.location.pathname === "/";
+  if (!isConsoleRoot) return { kind: "not-console-root" };
+  if (input.isPending) return { kind: "loading" };
+  const href = consoleRootTarget(input.location, input.account, input.errorStatus === 401);
+  return href ? { kind: "redirect", href } : { kind: "error" };
 }
 
 export function defaultAppHref(
@@ -31,7 +53,7 @@ export type DefaultAppResolverState =
   | { kind: "onboarding" };
 
 export function defaultAppResolverState(input: {
-  apps?: Array<{ id: string; archived?: number | boolean | null }>;
+  apps?: Array<{ id: string; archived?: number | boolean | null }> | undefined;
   lastAppId?: string | null;
   isPending: boolean;
   isError: boolean;

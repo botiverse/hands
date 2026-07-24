@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { consoleRootTarget, dashboardHref, defaultAppHref, defaultAppResolverState } from "./authNavigation";
+import {
+  consoleRootAuthState,
+  consoleRootTarget,
+  dashboardHref,
+  defaultAppHref,
+  defaultAppResolverState,
+} from "./authNavigation";
 import type { AuthAccount } from "./api";
 
 describe("dashboardHref", () => {
@@ -16,7 +22,8 @@ describe("consoleRootTarget", () => {
   it("turns the exact console-domain root into the dashboard or Raft login", () => {
     const root = { hostname: "app.hands.build", pathname: "/" };
     expect(consoleRootTarget(root, {} as AuthAccount)).toBe("/apps");
-    expect(consoleRootTarget(root)).toBe("/api/auth/login?return=%2Fapps");
+    expect(consoleRootTarget(root, undefined, true)).toBe("/api/auth/login?return=%2Fapps");
+    expect(consoleRootTarget(root)).toBeNull();
   });
 
   it("does not redirect the public site, previews, localhost, or deep links", () => {
@@ -28,6 +35,35 @@ describe("consoleRootTarget", () => {
       { hostname: "app.hands.build", pathname: "/docs" },
       { hostname: "app.hands.build", pathname: "/apps/app-1" },
     ]) expect(consoleRootTarget(location, {} as AuthAccount)).toBeNull();
+  });
+});
+
+describe("consoleRootAuthState", () => {
+  const root = { hostname: "app.hands.build", pathname: "/" };
+
+  it("separates authenticated, confirmed 401, and unresolved auth failures", () => {
+    expect(consoleRootAuthState({
+      location: root, account: {} as AuthAccount, isPending: false,
+    })).toEqual({ kind: "redirect", href: "/apps" });
+    expect(consoleRootAuthState({
+      location: root, isPending: false, errorStatus: 401,
+    })).toEqual({ kind: "redirect", href: "/api/auth/login?return=%2Fapps" });
+    expect(consoleRootAuthState({
+      location: root, isPending: false, errorStatus: 503,
+    })).toEqual({ kind: "error" });
+    expect(consoleRootAuthState({
+      location: root, isPending: false,
+    })).toEqual({ kind: "error" });
+  });
+
+  it("keeps loading bounded and never applies the console contract to other hosts or paths", () => {
+    expect(consoleRootAuthState({ location: root, isPending: true })).toEqual({ kind: "loading" });
+    expect(consoleRootAuthState({
+      location: { hostname: "hands.build", pathname: "/" }, isPending: false, errorStatus: 401,
+    })).toEqual({ kind: "not-console-root" });
+    expect(consoleRootAuthState({
+      location: { hostname: "app.hands.build", pathname: "/apps" }, isPending: false, errorStatus: 401,
+    })).toEqual({ kind: "not-console-root" });
   });
 });
 

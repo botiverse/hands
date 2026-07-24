@@ -62,8 +62,9 @@ import { isOrgSettingsTab, OrgSettings } from "./pages/OrgSettings";
 import { AcceptInvite } from "./pages/AcceptInvite";
 import { AppAccess } from "./pages/AppAccess";
 import { OrgSwitcher, useClearOrgCache } from "./components/OrgSwitcher";
-import { consoleRootTarget, dashboardHref, defaultAppResolverState } from "./lib/authNavigation";
+import { consoleRootAuthState, dashboardHref, defaultAppResolverState } from "./lib/authNavigation";
 import {
+  ApiError,
   clearActiveOrgId,
   getAuthToken,
   getAuthMe,
@@ -830,10 +831,18 @@ function AuthGate() {
     );
   }
 
-  const consoleTarget = consoleRootTarget(window.location, me.data?.account);
-  if (consoleTarget) {
-    if (consoleTarget.startsWith("/api/")) return <BrowserReplace to={consoleTarget} />;
-    return <Navigate to={consoleTarget} replace />;
+  const consoleState = consoleRootAuthState({
+    location: window.location,
+    account: me.data?.account,
+    isPending: me.isLoading,
+    errorStatus: me.error instanceof ApiError ? me.error.status : undefined,
+  });
+  if (consoleState.kind === "redirect") {
+    if (consoleState.href.startsWith("/api/")) return <BrowserReplace to={consoleState.href} />;
+    return <Navigate to={consoleState.href} replace />;
+  }
+  if (consoleState.kind === "error") {
+    return <AuthError onRetry={() => void me.refetch()} />;
   }
 
   if (me.isError || !me.data?.authenticated) {
@@ -849,6 +858,20 @@ function AuthGate() {
   }
 
   return <AuthenticatedApp account={me.data.account} />;
+}
+
+function AuthError({ onRetry }: { onRetry: () => void }) {
+  return (
+    <main className="min-h-screen flex items-center justify-center bg-slate-50 px-4">
+      <section role="alert" className="w-full max-w-md rounded-md border border-red-200 bg-white p-6 shadow-xs">
+        <h1 className="text-lg font-semibold text-slate-950">Unable to check your Raft session</h1>
+        <p className="mt-2 text-sm text-slate-600">
+          Hands could not reach the authentication service. Check your connection and try again.
+        </p>
+        <Button className="mt-4" onClick={onRetry}>Retry</Button>
+      </section>
+    </main>
+  );
 }
 
 function BrowserReplace({ to }: { to: string }) {
