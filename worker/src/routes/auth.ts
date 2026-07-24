@@ -942,7 +942,6 @@ export async function handleAgentManifest(c: Context<{ Bindings: Env }>) {
         parameters: {
           app_id: { type: "string", in: "path", required: true, description: "App UUID." },
           release_id: { type: "string", in: "path", required: true, description: "Release UUID." },
-          expected_scope: { type: "object", in: "body", required: false, description: "Required for any non-full scoped activation, e.g. {\"scope_type\":\"device_group\",\"scope_value\":\"<group UUID>\"}. Publish fails with 409 unless the draft has exactly this one scope. Omit only for an exact full:all release." },
         },
       },
       {
@@ -981,6 +980,7 @@ export async function handleAgentManifest(c: Context<{ Bindings: Env }>) {
         parameters: {
           app_id: { type: "string", in: "path", required: true, description: "App UUID." },
           release_id: { type: "string", in: "path", required: true, description: "Release UUID." },
+          expected_scope: { type: "object", in: "body", required: false, description: "Required for any non-full scoped activation, e.g. {\"scope_type\":\"device_group\",\"scope_value\":\"<group UUID>\"}. Publish fails with 409 unless the draft has exactly this one scope. Omit only for an exact full:all release." },
         },
       },
       {

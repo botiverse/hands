@@ -8457,6 +8457,14 @@ describe("Hands iOS simulator QA artifacts", () => {
     });
     expect(byName["create-release"].parameters.scopes).toMatchObject({ type: "array", in: "body" });
     expect(byName["update-release"].parameters.scopes).toMatchObject({ type: "array", in: "body" });
+    expect(byName["get-release"].endpoint.method).toBe("GET");
+    expect(byName["get-release"].parameters).not.toHaveProperty("expected_scope");
+    expect(byName["publish-release"].endpoint.method).toBe("POST");
+    expect(byName["publish-release"].parameters.expected_scope).toMatchObject({
+      type: "object",
+      in: "body",
+      required: false,
+    });
   });
 
   it("reporter feedback bearer routes isolate integrations and converge comment replay", async () => {
