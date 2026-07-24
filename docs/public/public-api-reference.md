@@ -50,16 +50,40 @@ receives or chooses the group name. A non-member falls through to the previous
 matching active release. Device groups use installation identifiers, not IMEI,
 hardware serial numbers, or account identities.
 
+A single release may contain `full:all` plus one or more `device_group` scopes.
+Group members always receive that release, even when their percentage bucket is
+outside `rollout_cohort_count`. Non-members remain percentage-gated, and
+anonymous clients use the prior eligible full release until rollout reaches
+100%. Do not model these two audiences as separate releases of the same version.
+
 Scope writes are fail-closed: omitting `scopes` when creating a generic
 release defaults to `full:all`, but explicitly supplying `scopes` requires a
 non-empty array whose every entry has a non-empty `scope_type` and
-`scope_value`. To activate any non-full scoped draft, publish with
-`{"expected_scope":{"scope_type":"device_group","scope_value":"<group UUID>"}}`
-(or the exact `platform`, `user_cohort`, or `ip_range` scope). Hands rechecks
-that the draft still has exactly that one scope in the guarded activation
-operation and returns `409 RELEASE_SCOPE_PRECONDITION_FAILED` on missing,
-malformed, mixed, empty, or drifted scope state. Omitting the precondition can
-activate only an exact `full:all` release.
+`scope_value`; duplicate entries are rejected. `full:all` may be combined only
+with `device_group` entries. Publish with the complete canonical set, for
+example:
+
+```json
+{
+  "expected_scopes": [
+    { "scope_type": "full", "scope_value": "all" },
+    { "scope_type": "device_group", "scope_value": "<group UUID>" }
+  ]
+}
+```
+
+Hands rechecks the exact set inside the guarded activation operation and
+returns `409 RELEASE_SCOPE_PRECONDITION_FAILED` on missing, malformed,
+duplicate, unexpected, or drifted scope state. `expected_scope` remains a
+legacy single-scope compatibility field; new callers should always send
+`expected_scopes`.
+
+The admin release API permits only one lifecycle for each
+app/channel/product/release-type/version code. Duplicate creation returns
+`409 RELEASE_VERSION_ALREADY_EXISTS` with the existing release/build/status
+coordinates, including after cancellation. The rollback endpoint restores a
+superseded or cancelled release in place and returns the same release ID with a
+new activation time.
 
 ### Update Available
 

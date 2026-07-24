@@ -1408,16 +1408,12 @@ export const updateRelease = (
 export const publishRelease = (
   appId: string,
   releaseId: string,
-  expectedScope?: { scope_type: string; scope_value: string },
+  expectedScopes: { scope_type: string; scope_value: string }[],
 ) =>
   request<Release>(`/api/apps/${appId}/releases/${releaseId}/publish`, {
     method: "POST",
     admin: true,
-    body: JSON.stringify(
-      expectedScope
-        ? { expected_scope: expectedScope }
-        : {},
-    ),
+    body: JSON.stringify({ expected_scopes: expectedScopes }),
   });
 
 export const deleteRelease = (appId: string, releaseId: string) =>

@@ -184,6 +184,38 @@ hands releases publish raft-android <releaseId>
 hands releases share raft-android <releaseId> --password <pw>
 ```
 
-Publishing supersedes the previous active release on the same
-app/channel/product/release-type; staged rollout percentage can be set before
-or after publish (`rollout_cohort_count`, bump via admin or API).
+Hands keeps exactly one release lifecycle for each
+app/channel/product/release-type/version-code identity. Draft, active,
+superseded, and cancelled are states of that same release ID. A cancelled
+version remains reserved; publish corrected bytes under a higher version code
+instead of creating a second release for the old version.
+
+For a staged full rollout with mandatory acceptance devices, configure both
+behaviors on the same draft:
+
+```sh
+hands releases update raft-android <releaseId> \
+  --full \
+  --rollout-percent 25 \
+  --always-include-group <artin-group-id> \
+  --always-include-group <qa-group-id>
+
+# Optional repeated assertions make the operator intent visible. The CLI also
+# sends the complete stored scope set as the atomic publish precondition.
+hands releases publish raft-android <releaseId> \
+  --device-group <artin-group-id> \
+  --device-group <qa-group-id>
+```
+
+Members of the listed groups always receive the target release. Other clients
+with a stable device ID are gated by `rollout_cohort_count`; clients outside
+the percentage and anonymous clients fall back to the prior eligible full
+release. Raising the rollout to 100% supersedes that fallback. `--full` without
+`--always-include-group` resets the scope to only `full:all`. The legacy
+`--device-group <id>` update remains an exact group-only rollout.
+
+Restoring a superseded or cancelled release reactivates that same release ID
+and records a fresh activation time. It never clones the build into another
+release lifecycle. Use **Restore as active** in Admin or
+`POST /api/apps/:appId/releases/:releaseId/rollback`; an already-active or
+draft release cannot be restored.

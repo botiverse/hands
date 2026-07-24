@@ -1045,7 +1045,7 @@ export async function handleAgentManifest(c: Context<{ Bindings: Env }>) {
       {
         name: "create-release",
         description:
-          "Create a DRAFT release from an existing build. The server enforces draft — activation has exactly one path: the publish-release action. Requires app publisher.",
+          "Create the one DRAFT release lifecycle for a build version. A second release in the same app/channel/product/release-type/version lane fails with RELEASE_VERSION_ALREADY_EXISTS and returns the existing release id. Requires app publisher.",
         endpoint: { method: "POST", path: "/api/apps/{app_id}/releases/draft" },
         parameters: {
           app_id: { type: "string", in: "path", required: true, description: "App UUID." },
@@ -1053,7 +1053,8 @@ export async function handleAgentManifest(c: Context<{ Bindings: Env }>) {
           channel_id: { type: "string", in: "body", required: false, description: "Channel UUID (defaults to the build's channel)." },
           changelog: { type: "string", in: "body", required: false, description: "Changelog text (single-language fallback)." },
           release_notes: { type: "object", in: "body", required: false, description: "Bilingual notes, e.g. {\"en\": \"...\", \"zh-CN\": \"...\"}." },
-          scopes: { type: "array", in: "body", required: false, description: "Release scopes. Exact device targeting uses [{\"scope_type\":\"device_group\",\"scope_value\":\"<group UUID>\"}]." },
+          rollout_cohort_count: { type: "number", in: "body", required: false, description: "Stable full-scope rollout percentage, integer 0..100. Null/omitted means 100%." },
+          scopes: { type: "array", in: "body", required: false, description: "Exact scope set. full:all may be combined with device_group entries so listed devices are always included while everyone else is percentage-gated." },
         },
       },
       {
@@ -1067,7 +1068,8 @@ export async function handleAgentManifest(c: Context<{ Bindings: Env }>) {
           changelog: { type: "string", in: "body", required: false, description: "Changelog text." },
           release_notes: { type: "object", in: "body", required: false, description: "Bilingual notes object." },
           hidden: { type: "boolean", in: "body", required: false, description: "Hide/show on public history without deleting." },
-          scopes: { type: "array", in: "body", required: false, description: "Replace release scopes. Exact device targeting uses device_group with a same-app group UUID." },
+          rollout_cohort_count: { type: "number", in: "body", required: false, description: "Stable full-scope rollout percentage, integer 0..100. Null means 100%." },
+          scopes: { type: "array", in: "body", required: false, description: "Replace the exact scope set. full:all plus device_group entries expresses mandatory groups over a percentage rollout." },
         },
       },
       {
@@ -1078,7 +1080,26 @@ export async function handleAgentManifest(c: Context<{ Bindings: Env }>) {
         parameters: {
           app_id: { type: "string", in: "path", required: true, description: "App UUID." },
           release_id: { type: "string", in: "path", required: true, description: "Release UUID." },
-          expected_scope: { type: "object", in: "body", required: false, description: "Required for any non-full scoped activation, e.g. {\"scope_type\":\"device_group\",\"scope_value\":\"<group UUID>\"}. Publish fails with 409 unless the draft has exactly this one scope. Omit only for an exact full:all release." },
+          expected_scope: { type: "object", in: "body", required: false, description: "Legacy single-scope precondition. New callers should send expected_scopes. Do not combine both fields." },
+          expected_scopes: { type: "array", in: "body", required: false, description: "Canonical exact-set precondition. Every stored scope must match atomically, including full:all and mandatory device_group entries." },
+        },
+      },
+      {
+        name: "cancel-release",
+        description: "Cancel one draft or active release without deleting its build, assets, or audit history. Requires app publisher.",
+        endpoint: { method: "DELETE", path: "/api/apps/{app_id}/releases/{release_id}" },
+        parameters: {
+          app_id: { type: "string", in: "path", required: true, description: "App UUID." },
+          release_id: { type: "string", in: "path", required: true, description: "Release UUID." },
+        },
+      },
+      {
+        name: "restore-release",
+        description: "Reactivate the same superseded or cancelled release row. This never creates a duplicate release for the version. Requires app publisher.",
+        endpoint: { method: "POST", path: "/api/apps/{app_id}/releases/{release_id}/rollback" },
+        parameters: {
+          app_id: { type: "string", in: "path", required: true, description: "App UUID." },
+          release_id: { type: "string", in: "path", required: true, description: "Existing release UUID to reactivate." },
         },
       },
       {

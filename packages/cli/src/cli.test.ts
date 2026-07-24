@@ -328,8 +328,98 @@ describe("device-group rollout commands", () => {
       });
       expect(requests.find((request) => request.url.endsWith("/releases/release-1/publish"))).toMatchObject({
         method: "POST",
-        body: { expected_scope: { scope_type: "device_group", scope_value: "group-1" } },
+        body: {
+          expected_scopes: [{ scope_type: "device_group", scope_value: "group-1" }],
+        },
       });
+    } finally {
+      if (originalApi === undefined) delete process.env.HANDS_API;
+      else process.env.HANDS_API = originalApi;
+      if (originalToken === undefined) delete process.env.HANDS_BEARER_TOKEN;
+      else process.env.HANDS_BEARER_TOKEN = originalToken;
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
+  it("updates a full percentage rollout with mandatory groups and preserves full reset semantics", async () => {
+    const requests: Array<{ method: string; url: string; body?: any }> = [];
+    const server = createServer(async (req, res) => {
+      let body: any = undefined;
+      if (req.headers["content-type"]?.includes("application/json")) {
+        const chunks: Buffer[] = [];
+        for await (const chunk of req) chunks.push(Buffer.from(chunk));
+        body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+      }
+      requests.push({ method: req.method ?? "GET", url: req.url ?? "", body });
+      res.setHeader("content-type", "application/json");
+      if (req.url === "/api/apps") {
+        return res.end(JSON.stringify({ apps: [{ id: "app-1", slug: "raft-android" }] }));
+      }
+      if (req.url?.startsWith("/api/apps/app-1/releases/") && req.method === "PATCH") {
+        return res.end(JSON.stringify({ id: req.url.split("/").at(-1), status: "draft" }));
+      }
+      res.statusCode = 404;
+      return res.end(JSON.stringify({ error: "not found" }));
+    });
+
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("bad address");
+    const originalApi = process.env.HANDS_API;
+    const originalToken = process.env.HANDS_BEARER_TOKEN;
+    process.env.HANDS_API = `http://127.0.0.1:${address.port}`;
+    process.env.HANDS_BEARER_TOKEN = "test-token";
+
+    const runUpdate = async (releaseId: string, extra: string[]) => {
+      const program = new Command();
+      const { registerReleaseCommands } = await import("../src/commands/releases.js");
+      registerReleaseCommands(program);
+      return program.parseAsync([
+        "node", "hands", "releases", "update", "raft-android", releaseId, ...extra,
+      ]);
+    };
+
+    try {
+      await runUpdate("release-mixed", [
+        "--full",
+        "--always-include-group", "group-z",
+        "--always-include-group", "group-a",
+        "--rollout-percent", "25",
+      ]);
+      await runUpdate("release-full", ["--full", "--rollout-percent", "100"]);
+
+      const patches = Object.fromEntries(
+        requests
+          .filter((request) => request.method === "PATCH")
+          .map((request) => [request.url.split("/").at(-1), request.body]),
+      );
+      expect(patches).toEqual({
+        "release-mixed": {
+          scopes: [
+            { scope_type: "full", scope_value: "all" },
+            { scope_type: "device_group", scope_value: "group-a" },
+            { scope_type: "device_group", scope_value: "group-z" },
+          ],
+          rollout_cohort_count: 25,
+        },
+        "release-full": {
+          scopes: [{ scope_type: "full", scope_value: "all" }],
+          rollout_cohort_count: null,
+        },
+      });
+
+      const patchesBeforeInvalid = requests.filter((request) => request.method === "PATCH").length;
+      await expect(runUpdate("release-conflict", [
+        "--device-group", "group-a", "--full",
+      ])).rejects.toThrow("cannot be combined");
+      await expect(runUpdate("release-duplicate", [
+        "--always-include-group", "group-a",
+        "--always-include-group", "group-a",
+      ])).rejects.toThrow("may not repeat");
+      await expect(runUpdate("release-percent", [
+        "--rollout-percent", "101",
+      ])).rejects.toThrow("integer from 0 to 100");
+      expect(requests.filter((request) => request.method === "PATCH")).toHaveLength(patchesBeforeInvalid);
     } finally {
       if (originalApi === undefined) delete process.env.HANDS_API;
       else process.env.HANDS_API = originalApi;
@@ -350,6 +440,19 @@ describe("device-group rollout commands", () => {
       "release-mixed": [
         { scope_type: "platform", scope_value: "android" },
         { scope_type: "user_cohort", scope_value: "internal-qa" },
+      ],
+      "release-full-groups": [
+        { scope_type: "device_group", scope_value: "group-z" },
+        { scope_type: "full", scope_value: "all" },
+        { scope_type: "device_group", scope_value: "group-a" },
+      ],
+      "release-full-platform": [
+        { scope_type: "full", scope_value: "all" },
+        { scope_type: "platform", scope_value: "android" },
+      ],
+      "release-duplicate": [
+        { scope_type: "device_group", scope_value: "group-a" },
+        { scope_type: "device_group", scope_value: "group-a" },
       ],
       "release-unknown": [{ scope_type: "future_scope", scope_value: "value" }],
     };
@@ -399,29 +502,51 @@ describe("device-group rollout commands", () => {
     };
 
     try {
-      for (const releaseId of ["release-platform", "release-cohort", "release-ip", "release-full"]) {
+      for (const releaseId of ["release-platform", "release-cohort", "release-ip", "release-full", "release-mixed"]) {
         await runPublish(releaseId);
       }
+      await runPublish("release-full-groups", [
+        "--device-group", "group-z",
+        "--device-group", "group-a",
+      ]);
       const publishBodies = Object.fromEntries(
         requests
           .filter((request) => request.method === "POST" && request.url.endsWith("/publish"))
           .map((request) => [request.url.split("/").at(-2), request.body]),
       );
-      expect(publishBodies).toMatchObject({
-        "release-platform": { expected_scope: { scope_type: "platform", scope_value: "android" } },
-        "release-cohort": { expected_scope: { scope_type: "user_cohort", scope_value: "internal-qa" } },
-        "release-ip": { expected_scope: { scope_type: "ip_range", scope_value: "203.0.113.0/24" } },
-        "release-full": {},
+      expect(publishBodies).toEqual({
+        "release-platform": { expected_scopes: [{ scope_type: "platform", scope_value: "android" }] },
+        "release-cohort": { expected_scopes: [{ scope_type: "user_cohort", scope_value: "internal-qa" }] },
+        "release-ip": { expected_scopes: [{ scope_type: "ip_range", scope_value: "203.0.113.0/24" }] },
+        "release-full": { expected_scopes: [{ scope_type: "full", scope_value: "all" }] },
+        "release-mixed": {
+          expected_scopes: [
+            { scope_type: "platform", scope_value: "android" },
+            { scope_type: "user_cohort", scope_value: "internal-qa" },
+          ],
+        },
+        "release-full-groups": {
+          expected_scopes: [
+            { scope_type: "full", scope_value: "all" },
+            { scope_type: "device_group", scope_value: "group-a" },
+            { scope_type: "device_group", scope_value: "group-z" },
+          ],
+        },
       });
 
       const postsBeforeInvalid = requests.filter(
         (request) => request.method === "POST" && request.url.endsWith("/publish"),
       ).length;
-      for (const releaseId of ["release-zero", "release-mixed", "release-unknown"]) {
-        await expect(runPublish(releaseId)).rejects.toThrow(/refusing|exactly one/);
+      for (const releaseId of ["release-zero", "release-full-platform", "release-duplicate", "release-unknown"]) {
+        await expect(runPublish(releaseId)).rejects.toThrow(/refusing|duplicates/);
       }
       await expect(runPublish("release-platform", ["--device-group", "group-wrong"]))
-        .rejects.toThrow("does not match stored platform:android");
+        .rejects.toThrow("do not match stored []");
+      await expect(runPublish("release-full-groups", ["--device-group", "group-a"]))
+        .rejects.toThrow("do not match stored [group-a, group-z]");
+      await expect(runPublish("release-full-groups", [
+        "--device-group", "group-a", "--device-group", "group-a",
+      ])).rejects.toThrow("may not repeat");
       expect(requests.filter(
         (request) => request.method === "POST" && request.url.endsWith("/publish"),
       )).toHaveLength(postsBeforeInvalid);

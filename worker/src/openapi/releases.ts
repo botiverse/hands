@@ -31,9 +31,13 @@ const ReleaseInput = z
     status: z.enum(["draft", "active"]).optional(),
     changelog: z.string().nullable().optional(),
     release_notes: z.record(z.string(), z.string()).nullable().optional(),
-    rollout_cohort_count: z.number().int().nullable().optional(),
+    rollout_cohort_count: z.number().int().min(0).max(100).nullable().optional().openapi({
+      description: "Stable full-scope rollout percentage. Null or omitted means 100%.",
+    }),
     should_force_update: z.boolean().optional(),
-    scopes: z.array(GenericObject).optional(),
+    scopes: z.array(GenericObject).min(1).optional().openapi({
+      description: "Exact non-empty scope set. full:all may be combined only with device_group entries.",
+    }),
   })
   .catchall(z.unknown())
   .openapi("ReleaseInput");
@@ -210,7 +214,7 @@ export function registerReleaseRoutes(registry: OpenApiRegistry) {
     method: "post",
     path: "/api/apps/{appId}/releases",
     tags: ["Releases"],
-    summary: "Create a draft or active release",
+    summary: "Create the single release lifecycle for a build version",
     security: auth,
     request: {
       params: AppIdParam,
@@ -220,15 +224,16 @@ export function registerReleaseRoutes(registry: OpenApiRegistry) {
       201: success("Created release.", GenericObject),
       400: error("Invalid release payload."),
       403: error("Current principal cannot create releases."),
+      409: error("A release already exists for this app/channel/product/release-type/version."),
     },
   });
 
   for (const [method, path, summary, bodyRequired] of [
     ["get", "/api/apps/{appId}/releases/{releaseId}", "Get a release", false],
     ["patch", "/api/apps/{appId}/releases/{releaseId}", "Update release metadata and scopes", true],
-    ["post", "/api/apps/{appId}/releases/{releaseId}/publish", "Publish a draft release", false],
+    ["post", "/api/apps/{appId}/releases/{releaseId}/publish", "Publish a draft with an exact expected_scopes precondition", true],
     ["delete", "/api/apps/{appId}/releases/{releaseId}", "Cancel or delete a release", false],
-    ["post", "/api/apps/{appId}/releases/{releaseId}/rollback", "Roll back to a release", false],
+    ["post", "/api/apps/{appId}/releases/{releaseId}/rollback", "Restore a superseded or cancelled release", false],
     ["post", "/api/apps/{appId}/releases/{releaseId}/bump-rollout", "Update rollout percentage", true],
     ["post", "/api/apps/{appId}/releases/{releaseId}/force-update", "Toggle force update", true],
   ] as const) {
@@ -249,6 +254,7 @@ export function registerReleaseRoutes(registry: OpenApiRegistry) {
         400: error("Invalid release operation."),
         403: error("Current principal cannot modify this release."),
         404: error("Release was not found."),
+        409: error("Release lifecycle or exact scope precondition conflict."),
       },
     });
   }
