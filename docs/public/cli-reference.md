@@ -435,14 +435,21 @@ hands device-groups add-member raft-android <group-id> \
 hands device-groups update raft-android <group-id> \
   --name "Artin test tablets" --description "Physical acceptance devices"
 hands releases update raft-android <release-id> --device-group <group-id>
-hands releases publish raft-android <release-id>
+hands releases publish raft-android <release-id> --device-group <group-id>
 ```
 
-The final publish remains an explicit authorization step. Only exact group
-members receive the release; other devices fall back to the prior active
-release. List groups with `hands device-groups list <app>` and remove members
-with `device-groups remove-member`. Rename or change the operator note with
-`device-groups update`. Do not use IMEI or hardware serial numbers.
+The final publish remains an explicit authorization step. The CLI first reads
+release detail and sends the exact stored non-full scope as an expected-scope
+precondition; zero, mixed, empty, or unsupported scope state is rejected
+locally without a publish request. `--device-group` adds an explicit assertion
+that the stored scope is that exact group. Activation returns `409` if the
+scope then drifts between detail read and the guarded server transition.
+Publishing an exact `full:all` release sends no precondition.
+Only exact group members receive the release; other devices fall back to the
+prior active release. List groups with `hands device-groups list <app>` and
+remove members with `device-groups remove-member`. Rename or change the
+operator note with `device-groups update`. Do not use IMEI or hardware serial
+numbers.
 
 ## Share Links
 

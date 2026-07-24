@@ -50,6 +50,17 @@ receives or chooses the group name. A non-member falls through to the previous
 matching active release. Device groups use installation identifiers, not IMEI,
 hardware serial numbers, or account identities.
 
+Scope writes are fail-closed: omitting `scopes` when creating a generic
+release defaults to `full:all`, but explicitly supplying `scopes` requires a
+non-empty array whose every entry has a non-empty `scope_type` and
+`scope_value`. To activate any non-full scoped draft, publish with
+`{"expected_scope":{"scope_type":"device_group","scope_value":"<group UUID>"}}`
+(or the exact `platform`, `user_cohort`, or `ip_range` scope). Hands rechecks
+that the draft still has exactly that one scope in the guarded activation
+operation and returns `409 RELEASE_SCOPE_PRECONDITION_FAILED` on missing,
+malformed, mixed, empty, or drifted scope state. Omitting the precondition can
+activate only an exact `full:all` release.
+
 ### Update Available
 
 ```json

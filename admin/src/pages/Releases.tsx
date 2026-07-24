@@ -342,7 +342,13 @@ function ReleaseRow({
   });
 
   const publish = useMutation({
-    mutationFn: () => publishRelease(appId, r.id),
+    mutationFn: () => {
+      const scopes = detail.data?.scopes ?? [];
+      const expectedScope = scopes.length === 1 && scopes[0]?.scope_type !== "full"
+        ? { scope_type: scopes[0].scope_type, scope_value: scopes[0].scope_value }
+        : undefined;
+      return publishRelease(appId, r.id, expectedScope);
+    },
     onSuccess: () => {
       toast.show({ kind: "success", title: `Published ${channelSlug}` });
       onAction();
@@ -490,9 +496,9 @@ function ReleaseRow({
             variant="primary"
             className="text-xs"
             onClick={() => publish.mutate()}
-            disabled={publish.isPending}
+            disabled={publish.isPending || !detail.data}
           >
-            {publish.isPending ? "Publishing..." : "Publish"}
+            {publish.isPending ? "Publishing..." : !detail.data ? "Loading scope..." : "Publish"}
           </Button>
         )}
         {(r.status === "draft" || r.status === "active") && (
@@ -1019,7 +1025,10 @@ function NewReleaseDialog({
         }
       }
       if (mode === "publish") {
-        const published = await publishRelease(appId, release.id);
+        const expectedScope = scopeType === "full"
+          ? undefined
+          : { scope_type: scopeType, scope_value: scopeValue.trim() };
+        const published = await publishRelease(appId, release.id, expectedScope);
         return { release: published, assetFailures, mode };
       }
       return { release, assetFailures, mode };

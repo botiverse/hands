@@ -21,6 +21,13 @@ interface ReleaseShare {
   revoked_at: number | null;
 }
 
+interface ReleaseScope {
+  scope_type: string;
+  scope_value: string;
+}
+
+const RELEASE_SCOPE_TYPES = new Set(["full", "platform", "user_cohort", "ip_range", "device_group"]);
+
 const DEFAULT_SHARE_TTL_SECONDS = "604800";
 
 export function registerReleaseCommands(program: Command): void {
@@ -137,18 +144,52 @@ export function registerReleaseCommands(program: Command): void {
   releases
     .command("publish <appIdOrSlug> <releaseId>")
     .description("Publish a draft release (the explicit human/agent step after changelog review).")
+    .option(
+      "--device-group <groupId>",
+      "Assert that the stored release scope is exactly this device group before activation.",
+    )
     .option("--json", "Output JSON.", false)
-    .action(async (appIdOrSlug: string, releaseId: string, opts: { json?: boolean }) => {
+    .action(async (
+      appIdOrSlug: string,
+      releaseId: string,
+      opts: { deviceGroup?: string; json?: boolean },
+    ) => {
       const appId = await resolveAppId(appIdOrSlug);
+      const detail = await apiRequest<{ scopes?: unknown }>(
+        `/api/apps/${appId}/releases/${releaseId}`,
+      );
+      if (!Array.isArray(detail.scopes) || detail.scopes.length !== 1) {
+        throw new Error("publish requires exactly one stored release scope; refusing zero or mixed scopes");
+      }
+      const rawScope = detail.scopes[0] as Partial<ReleaseScope> | null;
+      const scopeType = typeof rawScope?.scope_type === "string" ? rawScope.scope_type.trim() : "";
+      const scopeValue = typeof rawScope?.scope_value === "string" ? rawScope.scope_value.trim() : "";
+      if (!scopeType || !scopeValue || !RELEASE_SCOPE_TYPES.has(scopeType)) {
+        throw new Error("stored release scope is empty or unsupported; refusing publish");
+      }
+      if (scopeType === "full" && scopeValue !== "all") {
+        throw new Error("stored full release scope must be exactly full:all; refusing publish");
+      }
+      if (opts.deviceGroup && (scopeType !== "device_group" || scopeValue !== opts.deviceGroup)) {
+        throw new Error(`--device-group ${opts.deviceGroup} does not match stored ${scopeType}:${scopeValue}`);
+      }
+
+      const body: Record<string, unknown> = {};
+      if (scopeType !== "full") {
+        body.expected_scope = {
+          scope_type: scopeType,
+          scope_value: scopeValue,
+        };
+      }
       const result = await apiRequest<Record<string, unknown>>(
         `/api/apps/${appId}/releases/${releaseId}/publish`,
-        { method: "POST", body: {} },
+        { method: "POST", body },
       );
       if (opts.json) {
         console.log(JSON.stringify(result, null, 2));
         return;
       }
-      console.log(`Published release ${releaseId}.`);
+      console.log(`Published release ${releaseId}${opts.deviceGroup ? ` to device_group:${opts.deviceGroup}` : ""}.`);
     });
 
   releases
