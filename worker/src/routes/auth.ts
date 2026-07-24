@@ -909,6 +909,36 @@ export async function handleAgentManifest(c: Context<{ Bindings: Env }>) {
         },
       },
       {
+        name: "archive-app",
+        description:
+          "Archive or unarchive an app without deleting it. Requires app admin. Archiving activates nothing and is required before purge-app.",
+        endpoint: { method: "POST", path: "/api/apps/{app_id}/archive" },
+        parameters: {
+          app_id: { type: "string", in: "path", required: true, description: "App UUID." },
+          archived: {
+            type: "boolean",
+            in: "body",
+            required: false,
+            description: "Archive when true or omitted; unarchive when false.",
+          },
+        },
+      },
+      {
+        name: "purge-app",
+        description:
+          "Irreversibly delete an archived app, all child rows, and owned R2 objects. Requires app admin and an exact confirm_slug. This cannot be undone.",
+        endpoint: { method: "POST", path: "/api/apps/{app_id}/purge" },
+        parameters: {
+          app_id: { type: "string", in: "path", required: true, description: "App UUID." },
+          confirm_slug: {
+            type: "string",
+            in: "body",
+            required: true,
+            description: "Exact current app slug; a mismatch fails closed.",
+          },
+        },
+      },
+      {
         name: "get-client-key",
         description:
           "Read an app's public SDK client key. Requires app admin. This never returns deploy tokens or other secrets and does not rotate the key.",

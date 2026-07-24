@@ -8414,6 +8414,14 @@ describe("Hands iOS simulator QA artifacts", () => {
         method: "POST",
         path: "/api/apps",
       },
+      "archive-app": {
+        method: "POST",
+        path: "/api/apps/{app_id}/archive",
+      },
+      "purge-app": {
+        method: "POST",
+        path: "/api/apps/{app_id}/purge",
+      },
       "get-client-key": {
         method: "GET",
         path: "/api/apps/{app_id}/client-key",
@@ -8505,6 +8513,14 @@ describe("Hands iOS simulator QA artifacts", () => {
       name: { type: "string", in: "body", required: true },
       platform: { type: "string", in: "body", required: true },
       description: { type: "string", in: "body", required: false },
+    });
+    expect(byName["archive-app"].parameters).toMatchObject({
+      app_id: { type: "string", in: "path", required: true },
+      archived: { type: "boolean", in: "body", required: false },
+    });
+    expect(byName["purge-app"].parameters).toMatchObject({
+      app_id: { type: "string", in: "path", required: true },
+      confirm_slug: { type: "string", in: "body", required: true },
     });
     expect(byName["get-client-key"].parameters.app_id).toMatchObject({
       type: "string",
