@@ -56,6 +56,7 @@ import { useToast } from "../components/Toast";
 import { ConfirmActionDialog } from "../components/ConfirmActionDialog";
 import { ReleaseAssetsPanel } from "../components/ReleaseAssetsPanel";
 import { ReleaseAssetUploader } from "../components/ReleaseAssetUploader";
+import { ChangelogEditor, ChangelogViewer } from "../components/ChangelogMarkdown";
 import { createBuildAsset, uploadApk } from "../lib/api";
 import type { PendingFile } from "../lib/releaseFileDetect";
 
@@ -479,9 +480,9 @@ function ReleaseRow({
         </div>
       ) : null}
       {r.changelog && (
-        <pre className="mt-2 pl-2 border-l-2 border-slate-100 font-mono whitespace-pre-wrap text-xs text-slate-600 max-h-32 overflow-y-auto">
-          {r.changelog}
-        </pre>
+        <div className="mt-3 border-l-2 border-slate-100 pl-3">
+          <ChangelogViewer value={r.changelog} compact />
+        </div>
       )}
       <div className="flex flex-wrap gap-2 mt-2">
         {r.status === "draft" && (
@@ -762,7 +763,7 @@ function EditReleaseDialog({
 
   return (
     <Dialog open onOpenChange={(open) => { if (!open) onClose(); }}>
-      <DialogContent className="max-w-lg">
+      <DialogContent className="w-[calc(100vw-2rem)] max-w-3xl">
         <DialogHeader>
           <div>
             <DialogTitle>Edit release</DialogTitle>
@@ -775,11 +776,7 @@ function EditReleaseDialog({
           <div className="space-y-3">
           <div>
             <label className="label">Release notes</label>
-            <textarea
-              className="input text-xs min-h-[120px]"
-              value={changelog}
-              onChange={(e) => setChangelog(e.target.value)}
-            />
+            <ChangelogEditor value={changelog} onChange={setChangelog} />
           </div>
           <div className="grid grid-cols-2 gap-3">
             <div>
@@ -1208,11 +1205,10 @@ function NewReleaseDialog({
               </div>
               <div>
                 <label className="label">Release notes</label>
-                <textarea
-                  className="input text-xs min-h-[120px]"
+                <ChangelogEditor
                   value={changelog}
-                  onChange={(e) => setChangelog(e.target.value)}
-                  placeholder={"## What's new\n- Fix X\n- Add Y"}
+                  onChange={setChangelog}
+                  minHeight={220}
                 />
               </div>
             </div>
@@ -1265,9 +1261,9 @@ function NewReleaseDialog({
                     <summary className="cursor-pointer text-xs text-slate-500">
                       Release notes
                     </summary>
-                    <pre className="mt-1 p-2 bg-slate-50 rounded-sm text-xs whitespace-pre-wrap">
-                      {changelog}
-                    </pre>
+                    <div className="mt-2 rounded-md bg-slate-50 p-3">
+                      <ChangelogViewer value={changelog} />
+                    </div>
                   </details>
                 )}
               </div>
