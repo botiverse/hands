@@ -13,6 +13,7 @@
   },
   "dependencies": {
     "@tanstack/react-query": "^5.59.0",
+    "@uiw/react-md-editor": "4.1.1",
     "lucide-react": "^1.23.0",
     "raft-ui": "^0.0.18",
     "react": "^19.2.7",
