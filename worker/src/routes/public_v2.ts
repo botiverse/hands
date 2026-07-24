@@ -84,9 +84,10 @@ export async function handlePublicV2Latest(c: Context<{ Bindings: Env }>) {
   const deviceId =
     c.req.header("X-Hands-Device-Id") ?? c.req.header("X-Quiver-Device-Id") ?? c.req.query("device_id") ?? null;
   const clientPlatform = effectiveClientPlatform(c);
-  // cf.clientIp is server-only (we never trust X-Forwarded-For here).
-  const clientIp =
-    (c.req.raw?.cf as { clientIp?: string } | undefined)?.clientIp ?? null;
+  // Cloudflare overwrites CF-Connecting-IP at the Worker edge. Request.cf does
+  // not expose a clientIp field in production. Never fall back to the
+  // client-controlled X-Forwarded-For header.
+  const clientIp = c.req.header("CF-Connecting-IP") ?? null;
 
   if (!slug) return c.json({ error: "slug required" }, 400);
 

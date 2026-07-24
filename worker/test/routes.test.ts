@@ -4161,6 +4161,7 @@ describe("quiver public API v2 — scope resolution", () => {
     env: MockEnv,
     query: Record<string, string | undefined>,
     headers: Record<string, string | undefined> = {},
+    rawClientIp: string | null = "10.0.0.5",
   ) {
     return {
       env,
@@ -4168,8 +4169,8 @@ describe("quiver public API v2 — scope resolution", () => {
         url: "https://quiver-worker.test/public/v2/apps/scope-app/updates/check",
         param: (name: string) => (name === "slug" ? "scope-app" : ""),
         query: (name: string) => query[name],
-        header: (name: string) => headers[name],
-        raw: { cf: { clientIp: "10.0.0.5" } },
+        header: (name: string) => headers[name] ?? (name === "CF-Connecting-IP" ? rawClientIp ?? undefined : undefined),
+        raw: { cf: {} },
       },
       json: (data: unknown, status = 200) =>
         new Response(JSON.stringify(data), {
@@ -5247,6 +5248,45 @@ describe("quiver public API v2 — scope resolution", () => {
     expect(otherResponse.status).toBe(200);
     await expect(responseJson<any>(otherResponse)).resolves.toMatchObject({
       build: { version_code: 10 },
+      scoped: { scope_type: "full", scope_value: "all" },
+    });
+  });
+
+  it("resolves ip_range from Cloudflare's edge-owned client IP header, never X-Forwarded-For", async () => {
+    const env = makeEnv();
+    configureR2Presign(env);
+    const now = Date.now();
+    await seedRelease(env, "rel-ip-header-fallback", "build-ip-header-fallback", [["full", "all"]], {
+      createdAt: now - 1000,
+      versionCode: 20,
+    });
+    await seedAsset(env, "build-ip-header-fallback", "asset-ip-header-fallback", { arch: "arm64-v8a" });
+    await seedRelease(env, "rel-ip-header-target", "build-ip-header-target", [["ip_range", "203.0.113.0/24"]], {
+      createdAt: now,
+      versionCode: 21,
+    });
+    await seedAsset(env, "build-ip-header-target", "asset-ip-header-target", { arch: "arm64-v8a" });
+    const { handlePublicV2Latest } = await import("../src/routes/public_v2");
+    const query = {
+      channel: "production",
+      product_type: "android-apk",
+      platform: "android",
+      arch: "arm64-v8a",
+    };
+
+    const edgeHeaderResponse = await handlePublicV2Latest(makePublicContext(env, query, {
+      "CF-Connecting-IP": "203.0.113.42",
+    }, null));
+    await expect(responseJson<any>(edgeHeaderResponse)).resolves.toMatchObject({
+      build: { version_code: 21 },
+      scoped: { scope_type: "ip_range", scope_value: "203.0.113.0/24" },
+    });
+
+    const spoofedForwardedResponse = await handlePublicV2Latest(makePublicContext(env, query, {
+      "X-Forwarded-For": "203.0.113.42",
+    }, null));
+    await expect(responseJson<any>(spoofedForwardedResponse)).resolves.toMatchObject({
+      build: { version_code: 20 },
       scoped: { scope_type: "full", scope_value: "all" },
     });
   });
