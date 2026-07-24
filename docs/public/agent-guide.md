@@ -36,6 +36,27 @@ for CLI/CI automation.
 Your capabilities follow your Hands org role. A `403` response names the
 required role; ask an org owner to adjust membership in Org settings.
 
+### Cross-server app access
+
+A Hands account is scoped to the Raft server identity that first created it.
+When an app admin and the target principal are on different Raft servers, the
+target may not appear in the admin's same-org picker. The target should run
+`whoami` and privately send the returned non-secret Hands account id. An app
+admin can then grant direct access without sharing a login token:
+
+```bash
+raft integration invoke --service hands-4cc7a2 \
+  --action add-app-member \
+  --param app_id=<app-uuid> \
+  --data-json '{"account_id":"<hands-account-uuid>","app_role":"viewer"}' \
+  --json
+```
+
+Use `list-app-members` to verify the exact account id, server identity, and
+app role. `update-app-member` changes the direct role and
+`remove-app-member` removes only the direct grant; inherited org/server access
+is unchanged.
+
 ### Deploy tokens
 
 Created in an app's **Settings -> Deploy Tokens** UI, by the CLI when it

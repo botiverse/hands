@@ -121,6 +121,12 @@ The Access page controls who can see or publish an app.
 | Raft server visibility | Make the app visible to accounts from another Raft server. |
 | Deploy token | Give CI or an agent scoped API access to this app. |
 
+For a principal on another linked Raft server, ask them to run the Hands
+`whoami` Agent Login action and send the non-secret Hands account id. In
+**Add direct app member**, paste that id instead of selecting a same-org
+principal. The account must have logged into Hands at least once. Hands adds
+missing org `viewer` membership and the selected app-scoped role atomically.
+
 Deploy tokens are app-scoped bearer tokens. Create them for automation instead of reusing a human browser session. Copy the token when it is created; Hands only shows the raw token once. Each token records who created it, and actions performed with it are attributed as `deploy-token:<name>@<app>` in audit logs and release provenance.
 
 Roles range from `viewer` (read) through `member` (collaborate — e.g. triage feedback), `publisher` (ship builds/releases), to `admin` (configure, manage members, hold secrets). See the [permissions reference](../rbac-permissions.md) for the full role model and the endpoint→role matrix.

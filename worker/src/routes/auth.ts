@@ -810,6 +810,72 @@ export async function handleAgentManifest(c: Context<{ Bindings: Env }>) {
         endpoint: { method: "GET", path: "/api/apps" },
       },
       {
+        name: "list-app-members",
+        description:
+          "List direct members of an app, including Hands account id, Raft server identity, principal type, and app role. Requires app viewer.",
+        endpoint: { method: "GET", path: "/api/apps/{app_id}/members" },
+        parameters: {
+          app_id: {
+            type: "string",
+            in: "path",
+            required: true,
+            description: "Hands app id.",
+          },
+        },
+      },
+      {
+        name: "add-app-member",
+        description:
+          "Grant one existing Hands account direct app access by account id. This supports principals from another linked Raft server and adds missing org viewer membership automatically. Requires app admin.",
+        endpoint: { method: "POST", path: "/api/apps/{app_id}/members" },
+        parameters: {
+          app_id: {
+            type: "string",
+            in: "path",
+            required: true,
+            description: "Hands app id.",
+          },
+          account_id: {
+            type: "string",
+            in: "body",
+            required: true,
+            description: "Existing Hands account id returned by the target principal's whoami action.",
+          },
+          app_role: {
+            type: "string",
+            in: "body",
+            required: true,
+            description: "Direct app role: admin, publisher, or viewer.",
+          },
+        },
+      },
+      {
+        name: "update-app-member",
+        description:
+          "Change one direct app member's role by Hands account id. Requires app admin.",
+        endpoint: { method: "PATCH", path: "/api/apps/{app_id}/members/{account_id}" },
+        parameters: {
+          app_id: { type: "string", in: "path", required: true, description: "Hands app id." },
+          account_id: { type: "string", in: "path", required: true, description: "Hands account id." },
+          app_role: {
+            type: "string",
+            in: "body",
+            required: true,
+            description: "Direct app role: admin, publisher, or viewer.",
+          },
+        },
+      },
+      {
+        name: "remove-app-member",
+        description:
+          "Remove one direct app member by Hands account id. Inherited org or server access is unchanged. Requires app admin.",
+        endpoint: { method: "DELETE", path: "/api/apps/{app_id}/members/{account_id}" },
+        parameters: {
+          app_id: { type: "string", in: "path", required: true, description: "Hands app id." },
+          account_id: { type: "string", in: "path", required: true, description: "Hands account id." },
+        },
+      },
+      {
         name: "create-app",
         description:
           "Create an app in the caller's current Hands organization. Requires org member or higher. This creates no release and activates nothing.",

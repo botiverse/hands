@@ -1116,18 +1116,21 @@ function AddAppMemberDialog({
   });
 
   const [selectedAccount, setSelectedAccount] = useState<string>("");
+  const [accountId, setAccountId] = useState("");
   const [role, setRole] = useState<AppMember["app_role"]>("viewer");
+  const targetAccountId = accountId.trim() || selectedAccount;
 
   const add = useMutation({
     mutationFn: () =>
       addAppMember(appId, {
-        account_id: selectedAccount,
+        account_id: targetAccountId,
         app_role: role,
       }),
     onSuccess: () => {
       toast.show({ kind: "success", title: "App member added" });
       qc.invalidateQueries({ queryKey: ["app-members", appId] });
       setSelectedAccount("");
+      setAccountId("");
       onAdded();
     },
     onError: (e) =>
@@ -1151,45 +1154,6 @@ function AddAppMemberDialog({
       m.org_role !== "admin",
     ) ??
     [];
-
-  if (candidates.length === 0) {
-    return (
-      <Dialog
-        open
-        onOpenChange={(open) => {
-          if (!open) onClose();
-        }}
-      >
-        <DialogContent className="max-w-md text-sm">
-          <DialogClose
-            render={
-              <Button
-                variant="ghost"
-                size="icon-sm"
-                aria-label="Close"
-                className="absolute top-3 right-3 text-slate-400 hover:text-slate-700"
-              />
-            }
-          >
-            ×
-          </DialogClose>
-          <DialogHeader>
-            <DialogTitle>Add direct app member</DialogTitle>
-          </DialogHeader>
-          <DialogBody>
-            <p className="text-slate-500">
-              No eligible org members need a direct app grant.
-            </p>
-          </DialogBody>
-          <DialogFooter>
-            <Button variant="outline" type="button" onClick={onClose}>
-              Close
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-    );
-  }
 
   return (
     <Dialog
@@ -1223,34 +1187,63 @@ function AddAppMemberDialog({
               add.mutate();
             }}
           >
+            {candidates.length > 0 ? (
+              <div>
+                <label className="label">Same-organization principal</label>
+                <Select
+                  items={{
+                    "": "— select —",
+                    ...Object.fromEntries(
+                      candidates.map((m) => [
+                        m.account_id,
+                        `${m.display_name} (${m.username ?? m.provider_subject.slice(0, 8)})`,
+                      ]),
+                    ),
+                  }}
+                  value={selectedAccount}
+                  onValueChange={(v) => {
+                    setSelectedAccount(v as string);
+                    if (v) setAccountId("");
+                  }}
+                >
+                  <SelectTrigger autoFocus>
+                    <SelectValue />
+                    <SelectIcon />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="">— select —</SelectItem>
+                    {candidates.map((m) => (
+                      <SelectItem key={m.account_id} value={m.account_id}>
+                        {m.display_name} ({m.username ?? m.provider_subject.slice(0, 8)})
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            ) : (
+              <p className="text-xs text-slate-500">
+                No same-organization principal needs a direct grant. You can still grant an
+                existing account from another linked Raft server below.
+              </p>
+            )}
             <div>
-              <label className="label">Principal</label>
-              <Select
-                items={{
-                  "": "— select —",
-                  ...Object.fromEntries(
-                    candidates.map((m) => [
-                      m.account_id,
-                      `${m.display_name} (${m.username ?? m.provider_subject.slice(0, 8)})`,
-                    ]),
-                  ),
+              <label className="label">Hands account ID</label>
+              <Input
+                value={accountId}
+                onChange={(e) => {
+                  setAccountId(e.target.value);
+                  if (e.target.value.trim()) setSelectedAccount("");
                 }}
-                value={selectedAccount}
-                onValueChange={(v) => setSelectedAccount(v as string)}
-              >
-                <SelectTrigger autoFocus>
-                  <SelectValue />
-                  <SelectIcon />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="">— select —</SelectItem>
-                  {candidates.map((m) => (
-                    <SelectItem key={m.account_id} value={m.account_id}>
-                      {m.display_name} ({m.username ?? m.provider_subject.slice(0, 8)})
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+                placeholder="Account UUID from the principal's Hands whoami"
+                autoFocus={candidates.length === 0}
+                spellCheck={false}
+                className="font-mono"
+              />
+              <p className="mt-1 text-xs text-slate-500">
+                Use this for a human or agent on another Raft server. The account must have
+                logged into Hands once; the grant adds missing org viewer membership and the
+                selected app role.
+              </p>
             </div>
             <div>
               <label className="label">Role</label>
@@ -1271,8 +1264,8 @@ function AddAppMemberDialog({
               </Select>
             </div>
             <p className="text-xs text-slate-500">
-              Direct app members are for org members who need app-scoped access.
-              Owners and org admins already inherit app administration.
+              Direct app members receive access only to this app. Owners and org admins already
+              inherit app administration.
             </p>
           </form>
         </DialogBody>
@@ -1284,7 +1277,7 @@ function AddAppMemberDialog({
             type="submit"
             form="add-app-member-form"
             variant="primary"
-            disabled={!selectedAccount || add.isPending}
+            disabled={!targetAccountId || add.isPending}
           >
             {add.isPending ? "Adding…" : "Add"}
           </Button>

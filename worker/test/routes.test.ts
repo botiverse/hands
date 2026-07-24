@@ -8378,6 +8378,22 @@ describe("Hands iOS simulator QA artifacts", () => {
         method: "GET",
         path: "/api/apps/{app_id}/client-key",
       },
+      "list-app-members": {
+        method: "GET",
+        path: "/api/apps/{app_id}/members",
+      },
+      "add-app-member": {
+        method: "POST",
+        path: "/api/apps/{app_id}/members",
+      },
+      "update-app-member": {
+        method: "PATCH",
+        path: "/api/apps/{app_id}/members/{account_id}",
+      },
+      "remove-app-member": {
+        method: "DELETE",
+        path: "/api/apps/{app_id}/members/{account_id}",
+      },
       "list-device-groups": {
         method: "GET",
         path: "/api/apps/{app_id}/device-groups",
@@ -8454,6 +8470,11 @@ describe("Hands iOS simulator QA artifacts", () => {
       type: "string",
       in: "path",
       required: true,
+    });
+    expect(byName["add-app-member"].parameters).toMatchObject({
+      app_id: { type: "string", in: "path", required: true },
+      account_id: { type: "string", in: "body", required: true },
+      app_role: { type: "string", in: "body", required: true },
     });
     expect(byName["create-release"].parameters.scopes).toMatchObject({ type: "array", in: "body" });
     expect(byName["update-release"].parameters.scopes).toMatchObject({ type: "array", in: "body" });
