@@ -62,7 +62,7 @@ import { isOrgSettingsTab, OrgSettings } from "./pages/OrgSettings";
 import { AcceptInvite } from "./pages/AcceptInvite";
 import { AppAccess } from "./pages/AppAccess";
 import { OrgSwitcher, useClearOrgCache } from "./components/OrgSwitcher";
-import { dashboardHref } from "./lib/authNavigation";
+import { consoleRootTarget, dashboardHref, defaultAppResolverState } from "./lib/authNavigation";
 import {
   clearActiveOrgId,
   getAuthToken,
@@ -199,25 +199,6 @@ function Header({ account }: { account: AuthAccount }) {
         )}
       </div>
       <nav className="flex min-h-0 w-full flex-1 flex-col items-stretch gap-1 px-2">
-        {!appId &&
-          (collapsed ? (
-            <Tooltip>
-              <TooltipTrigger
-                render={
-                  <NavLink to="/apps" end className={railItem}>
-                    <LayoutGrid className="h-4 w-4" aria-hidden="true" />
-                    {!collapsed && <span className="hidden md:inline">Apps</span>}
-                  </NavLink>
-                }
-              />
-              <TooltipContent side="right">Apps</TooltipContent>
-            </Tooltip>
-          ) : (
-            <NavLink to="/apps" end className={railItem}>
-              <LayoutGrid className="h-4 w-4" aria-hidden="true" />
-              {!collapsed && <span className="hidden md:inline">Apps</span>}
-            </NavLink>
-          ))}
         <div className="relative w-full">
           <DropdownMenu>
             <DropdownMenuTrigger
@@ -632,12 +613,7 @@ function MobileTopNav({ account }: { account: AuthAccount }) {
               </NavLink>
             );
           })
-        ) : (
-          <NavLink to="/apps" end className={chip}>
-            <LayoutGrid className="h-4 w-4 flex-none" aria-hidden="true" />
-            <span className="whitespace-nowrap">Apps</span>
-          </NavLink>
-        )}
+        ) : null}
       </nav>
     </header>
   );
@@ -854,6 +830,12 @@ function AuthGate() {
     );
   }
 
+  const consoleTarget = consoleRootTarget(window.location, me.data?.account);
+  if (consoleTarget) {
+    if (consoleTarget.startsWith("/api/")) return <BrowserReplace to={consoleTarget} />;
+    return <Navigate to={consoleTarget} replace />;
+  }
+
   if (me.isError || !me.data?.authenticated) {
     return <PublicLanding />;
   }
@@ -867,6 +849,17 @@ function AuthGate() {
   }
 
   return <AuthenticatedApp account={me.data.account} />;
+}
+
+function BrowserReplace({ to }: { to: string }) {
+  useEffect(() => {
+    window.location.replace(to);
+  }, [to]);
+  return (
+    <div className="min-h-screen flex items-center justify-center bg-slate-50">
+      <div className="text-sm text-slate-500">Opening Hands console...</div>
+    </div>
+  );
 }
 
 function CliCallback({ token }: { token: string }) {
@@ -1282,22 +1275,36 @@ function AppsListWithNav() {
   const openNew = params.get("new") === "1";
   const apps = useQuery({ queryKey: ["apps"], queryFn: listApps });
 
-  // Default behavior per artin: /apps drops you into the first app; the
-  // full list is reachable via ?all=1 (sidebar "All apps"), and with zero
-  // apps we go straight to the creation wizard.
-  if (!showAll && !openNew && apps.data) {
-    const active = apps.data.apps.filter((a) => !a.archived);
-    if (active.length > 0) {
-      // Remember the last app the operator was in; fall back to the first
-      // active app when there's no stored choice or it no longer exists.
-      let target = active[0]!.id;
-      try {
-        const last = window.localStorage.getItem(LAST_APP_KEY);
-        if (last && active.some((a) => a.id === last)) target = last;
-      } catch {
-        // storage disabled — use the default
-      }
-      return <Navigate to={`/apps/${target}`} replace />;
+  // The default route is a resolver, not an Apps landing page. Keep the
+  // shell empty while the app list loads so the removed nav/page does not
+  // flash before the last (or first) active app is known.
+  if (!showAll && !openNew) {
+    let last: string | null = null;
+    try {
+      last = window.localStorage.getItem(LAST_APP_KEY);
+    } catch {
+      // storage disabled — use the first active app
+    }
+    const resolver = defaultAppResolverState({
+      apps: apps.data?.apps,
+      lastAppId: last,
+      isPending: apps.isPending,
+      isError: apps.isError,
+    });
+    if (resolver.kind === "loading") return null;
+    if (resolver.kind === "redirect") return <Navigate to={resolver.href} replace />;
+    if (resolver.kind === "error") {
+      return (
+        <StandardPageShell>
+          <div role="alert" className="rounded-md border border-red-200 bg-red-50 p-4 text-sm text-red-800">
+            <p className="font-medium">Could not load apps</p>
+            <p className="mt-1 text-red-700">Check your connection and try again.</p>
+            <Button className="mt-3" variant="outline" onClick={() => void apps.refetch()}>
+              Retry
+            </Button>
+          </div>
+        </StandardPageShell>
+      );
     }
   }
   const zeroApps = apps.data ? apps.data.apps.filter((a) => !a.archived).length === 0 : false;
