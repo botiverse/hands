@@ -344,8 +344,9 @@ function ReleaseRow({
   const publish = useMutation({
     mutationFn: () => {
       const scopes = detail.data?.scopes ?? [];
-      const expectedScope = scopes.length === 1 && scopes[0]?.scope_type !== "full"
-        ? { scope_type: scopes[0].scope_type, scope_value: scopes[0].scope_value }
+      const onlyScope = scopes.length === 1 ? scopes[0] : undefined;
+      const expectedScope = onlyScope && onlyScope.scope_type !== "full"
+        ? { scope_type: onlyScope.scope_type, scope_value: onlyScope.scope_value }
         : undefined;
       return publishRelease(appId, r.id, expectedScope);
     },
@@ -456,27 +457,31 @@ function ReleaseRow({
       <div className="text-xs text-slate-500 font-mono mt-1 truncate">
         {r.id} (build {r.build_id.slice(0, 8)}…)
       </div>
-      {(r.offered_count || r.current_count) ? (
+      {(r.offered_count || r.current_count || r.offered_uv || r.current_uv) ? (
         <div className="mt-1 flex items-center gap-3 text-xs text-slate-500">
           <Tooltip>
             <TooltipTrigger
               render={
                 <span>
-                  <strong className="text-slate-700">{r.current_count ?? 0}</strong> on this version
+                  <strong className="text-slate-700">{r.current_uv ?? 0}</strong> on this version
                 </span>
               }
             />
-            <TooltipContent>Devices already on this version at update check</TooltipContent>
+            <TooltipContent>
+              {r.current_count ?? 0} update checks (PV)
+            </TooltipContent>
           </Tooltip>
           <Tooltip>
             <TooltipTrigger
               render={
                 <span>
-                  <strong className="text-slate-700">{r.offered_count ?? 0}</strong> offered
+                  <strong className="text-slate-700">{r.offered_uv ?? 0}</strong> offered
                 </span>
               }
             />
-            <TooltipContent>Update-check responses offering this version to older clients</TooltipContent>
+            <TooltipContent>
+              {r.offered_count ?? 0} update offers (PV)
+            </TooltipContent>
           </Tooltip>
           {r.last_checked_at ? (
             <span className="text-slate-400">

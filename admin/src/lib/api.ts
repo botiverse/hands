@@ -226,6 +226,8 @@ export interface Release {
   // release_metrics (nullable when never checked)
   offered_count?: number | null;
   current_count?: number | null;
+  offered_uv?: number | null;
+  current_uv?: number | null;
   last_checked_at?: number | null;
 }
 
