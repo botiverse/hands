@@ -8,6 +8,7 @@ import {
   serializeChangelog,
   updateChangelogEntry,
 } from "./changelogFormat";
+import { resolveReleaseNote } from "../../../worker/src/lib/release_notes";
 
 describe("changelog editor format", () => {
   it("keeps legacy plain Markdown as plain text", () => {
@@ -86,11 +87,42 @@ describe("changelog editor format", () => {
     });
   });
 
-  it("rejects case and alias collisions after canonical normalization", () => {
+  it("rejects alias and generic BCP-47 case collisions after normalization", () => {
     const localized = parseChangelog('{"en":"English","zh-CN":"中文"}');
     expect(addChangelogLanguage(localized, "EN")).toBe(localized);
     expect(addChangelogLanguage(localized, "en-US")).toBe(localized);
     expect(addChangelogLanguage(localized, "zh-Hans")).toBe(localized);
+
+    const portuguese = parseChangelog('{"pt-BR":"Português"}');
+    expect(addChangelogLanguage(portuguese, "PT-br")).toBe(portuguese);
+  });
+
+  it("preserves the Worker public winner for generic case collisions in both storage orders", () => {
+    const fixtures = [
+      {
+        raw: '{"pt-BR":"primeiro","PT-br":"segundo","en":"English"}',
+        winner: "primeiro",
+        language: "pt-BR",
+      },
+      {
+        raw: '{"PT-br":"segundo","pt-BR":"primeiro","en":"English"}',
+        winner: "segundo",
+        language: "PT-br",
+      },
+    ];
+
+    for (const { raw, winner, language } of fixtures) {
+      const before = resolveReleaseNote(raw, "pt-br");
+      const parsed = parseChangelog(raw);
+      const after = serializeChangelog(parsed);
+
+      expect(before).toBe(winner);
+      expect(parsed.entries).toContainEqual({ language, markdown: winner });
+      expect(
+        parsed.entries.filter((entry) => entry.language.toLowerCase() === "pt-br"),
+      ).toHaveLength(1);
+      expect(resolveReleaseNote(after, "pt-br")).toBe(before);
+    }
   });
 
   it("normalizes the same locale aliases as the Worker and validates canonical tags", () => {

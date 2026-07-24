@@ -28,6 +28,10 @@ export function isValidChangelogLanguage(language: string): boolean {
   return normalized !== "default" && LANGUAGE_CODE.test(normalized);
 }
 
+function changelogLanguageIdentity(language: string): string {
+  return normalizeChangelogLanguage(language).toLowerCase();
+}
+
 function orderLanguages(a: string, b: string): number {
   const ai = LANGUAGE_PRIORITY.indexOf(a);
   const bi = LANGUAGE_PRIORITY.indexOf(b);
@@ -63,9 +67,25 @@ export function parseChangelog(value: string | null | undefined): ChangelogDocum
         if (!markdown.trim() && canonical.has(key)) continue;
         canonical.set(key, markdown);
       }
+
+      // Worker keeps generic BCP-47 keys verbatim, so differently-cased keys
+      // (for example pt-BR and PT-br) remain separate. Its resolver then uses
+      // a case-insensitive first-match in storage order. Collapse that second
+      // identity layer before UI sorting: the first non-blank public value
+      // wins, while an empty-only language remains editable. This prevents a
+      // no-op Admin save from changing the public winner merely by reordering
+      // two case variants.
+      const publicIdentities = new Map<string, [string, string]>();
+      for (const [language, markdown] of canonical) {
+        const identity = changelogLanguageIdentity(language);
+        const existing = publicIdentities.get(identity);
+        if (!existing || (!existing[1].trim() && markdown.trim())) {
+          publicIdentities.set(identity, [language, markdown]);
+        }
+      }
       return {
         localized: true,
-        entries: [...canonical.entries()]
+        entries: [...publicIdentities.values()]
           .sort(([a], [b]) => orderLanguages(a, b))
           .map(([language, markdown]) => ({ language, markdown })),
       };
@@ -110,7 +130,9 @@ export function addChangelogLanguage(
   const canonical = normalizeChangelogLanguage(language);
   if (
     !isValidChangelogLanguage(canonical) ||
-    document.entries.some((entry) => normalizeChangelogLanguage(entry.language) === canonical)
+    document.entries.some(
+      (entry) => changelogLanguageIdentity(entry.language) === changelogLanguageIdentity(canonical),
+    )
   ) {
     return document;
   }
@@ -139,7 +161,9 @@ export function removeChangelogLanguage(
   language: string,
 ): ChangelogDocument {
   if (!document.localized || document.entries.length <= 1) return document;
-  const canonical = normalizeChangelogLanguage(language);
-  const entries = document.entries.filter((entry) => entry.language !== canonical);
+  const identity = changelogLanguageIdentity(language);
+  const entries = document.entries.filter(
+    (entry) => changelogLanguageIdentity(entry.language) !== identity,
+  );
   return { localized: true, entries };
 }
