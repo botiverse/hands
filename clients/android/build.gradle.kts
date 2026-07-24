@@ -28,6 +28,16 @@ val packageReleaseNativeSymbols by tasks.registering(Exec::class) {
     )
 }
 
+val testNativeRecordIdentity by tasks.registering(Exec::class) {
+    inputs.files(
+        file("src/main/cpp/hands_record_file.c"),
+        file("src/main/cpp/hands_record_file.h"),
+        file("src/test/cpp/hands_record_file_test.c"),
+        file("src/test/scripts/test_qnc2_record_identity.sh"),
+    )
+    commandLine("bash", file("src/test/scripts/test_qnc2_record_identity.sh"))
+}
+
 android {
     namespace = "build.hands.update"
     compileSdk = 34
@@ -68,6 +78,11 @@ dependencies {
     // Delta (incremental) APK apply. Maintained fork of Google's Play-Store
     // file-by-file engine; the CLI/CI side generates patches with the SAME jar.
     implementation("com.eidu:archive-patcher:3.0.0")
+    testImplementation("junit:junit:4.13.2")
+}
+
+tasks.matching { it.name == "testReleaseUnitTest" }.configureEach {
+    dependsOn(testNativeRecordIdentity)
 }
 
 afterEvaluate {

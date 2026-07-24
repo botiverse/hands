@@ -1162,7 +1162,11 @@ describe("quiver route handlers — SQL smoke", () => {
       { id: "lane-app", platform: "android" },
       "lane-android-native",
       42,
-      { crash_native_frames: [{ index: 0, offset: "0x1234", soname: "libapp.so" }] },
+      {
+        crash_native_frames: [
+          { index: 0, offset: "0x1234", soname: "libapp.so", build_id: "abcd1234" },
+        ],
+      },
       null,
     );
     row = await readSym("lane-android-native");
@@ -6013,6 +6017,27 @@ describe("quiver public API v2 — scope resolution", () => {
     expect(row.symbolicated_stack).toContain("native-symbols");
     expect(row.symbolicated_stack).toContain("1000200");
     expect(row.symbolicated_stack).toContain("abcd1234");
+  });
+
+  it("symbolicateNativeCrashTicket fails closed when every frame lacks a BuildId", async () => {
+    const env = makeEnv();
+    const { symbolicateNativeCrashTicket } = await import("../src/routes/feedback");
+    await env.DB.prepare(
+      `INSERT INTO feedback_tickets (id, app_id, kind, status, message, metadata_json, created_at, updated_at)
+       VALUES (?1, ?2, 'crash', 'open', 'legacy native crash', '{}', ?3, ?4)`,
+    ).bind("tick-nat-no-build-id", "app-scope", 1, 1).run();
+    await symbolicateNativeCrashTicket(env as any, "app-scope", "tick-nat-no-build-id", 1000200, [
+      { index: 0, offset: "0x1a2b", soname: "libraft.so" },
+    ]);
+    const row = (await env.DB.prepare(
+      "SELECT symbolication_status, symbolicated_stack FROM feedback_tickets WHERE id = ?1",
+    ).bind("tick-nat-no-build-id").first()) as {
+      symbolication_status: string;
+      symbolicated_stack: string;
+    };
+    expect(row.symbolication_status).toBe("unsymbolicated");
+    expect(row.symbolicated_stack).toContain("did not include an ELF BuildId");
+    expect(row.symbolicated_stack).toContain("QNC2-capable Android SDK");
   });
 
   it("parseOhosNativeFrames extracts frames from a debuggerd-style HarmonyOS fault log", async () => {

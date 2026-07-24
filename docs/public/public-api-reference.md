@@ -249,7 +249,7 @@ find and rotate the key in the app's Settings tab or via
 | `submission_id` | No | Client-generated UUID for idempotent retries. Keep it fixed for one draft. An exact replay returns the original ticket; reusing it with different content returns `409`. |
 | `kind` | No | `feedback` (default), `bug`, or `crash`. |
 | `contact` | No | Reply-to handle (email, Raft name, …). |
-| `metadata` | No | JSON string: `version_name`, `version_code`, `channel`, `device_id`, `device_model`, `os_version`, `arch`, `locale`, plus custom keys. Crash tickets add `crash_exception_class` / `crash_top_frame` (grouping signature) and, for native crashes, `crash_native_frames` — an array of `{ index, offset, soname, build_id }` that the server symbolicates against the build's `native-symbols` asset. |
+| `metadata` | No | JSON string: `version_name`, `version_code`, `channel`, `device_id`, `device_model`, `os_version`, `arch`, `locale`, plus custom keys. Crash tickets add `crash_exception_class` / `crash_top_frame` (grouping signature). QNC2 Android native reports add `crash_native_frames` (`{ index, offset, soname, build_id, source }`), `crash_registers`, crash thread fields, and `crash_native_images`; server symbolication requires an exact per-frame BuildId match against the build's `native-symbols` asset. API 30+ reports may also include `crash_exit_*` metadata and a retained system trace attachment. |
 | `attachments` | No | Inline files (multipart), up to 10 MB each, ≤9 total. |
 | `presigned` | No | JSON array of `{ r2_key, filename, content_type, size }` for files already uploaded via the presign flow (below). |
 

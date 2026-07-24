@@ -947,8 +947,11 @@ export interface NativeFrame {
 /**
  * SDK contract (symbolication matrix): metadata.crash_native_frames is a
  * JSON array (or already-parsed array) of
- * { index, offset, soname, build_id? }. Bounded and shape-checked here so a
- * hostile client can't feed junk to the container.
+ * { index, offset, soname, build_id? }. Legacy clients may omit build_id, so
+ * parsing preserves those frames for diagnostics, but native symbolication is
+ * fail-closed per frame and never resolves one without an exact ELF BuildId.
+ * Input is bounded and shape-checked here so a hostile client can't feed junk
+ * to the container.
  */
 export function parseNativeFrames(raw: unknown): NativeFrame[] {
   let value = raw;
@@ -996,6 +999,19 @@ export async function symbolicateNativeCrashTicket(
   try {
     if (versionCode === null || frames.length === 0) return;
 
+    if (!frames.some((frame) => Boolean(frame.build_id))) {
+      await appendSymbolication(
+        env,
+        ticketId,
+        "native",
+        "unsymbolicated",
+        "Native frames did not include an ELF BuildId. Hands refuses basename/version-only " +
+          "symbolication because it can select the wrong binary. Update to a QNC2-capable " +
+          "Android SDK and reproduce the crash on the successor runtime.",
+      );
+      return;
+    }
+
     const symbols = await env.DB.prepare(
       `SELECT ba.r2_key FROM build_assets ba
        JOIN builds b ON b.id = ba.build_id
@@ -1035,7 +1051,16 @@ export async function symbolicateNativeCrashTicket(
         },
       }),
     );
-    if (!res.ok) return;
+    if (!res.ok) {
+      await appendSymbolication(
+        env,
+        ticketId,
+        "native",
+        "unsymbolicated",
+        `Native symbolicator rejected the evidence (HTTP ${res.status}); no unverified fallback was used.`,
+      );
+      return;
+    }
     const parsed = (await res.json()) as {
       frames?: Array<{ index: number; resolved?: string; error?: string }>;
     };
@@ -1052,7 +1077,9 @@ export async function symbolicateNativeCrashTicket(
       env,
       ticketId,
       "native",
-      "symbolicated",
+      resolved.some((frame) => Boolean(frame.resolved && frame.resolved !== "??"))
+        ? "symbolicated"
+        : "unsymbolicated",
       lines.join("\n").slice(0, 20_000),
     );
   } catch (err) {

@@ -12,7 +12,7 @@ lane exists.
 | Lane | Client uploads | Build asset | Server pipeline | Status |
 |---|---|---|---|---|
 | Android Java/R8 | stack text (kind=crash ticket, `crash_*` signature fields) | `proguard-mapping` (mapping.txt) | container `retrace` → internal ticket comment | ✅ |
-| Android native (NDK) | `metadata.crash_native_frames`: `[{ index, offset, soname, build_id }]` (plus the human-readable dump as attachment) | `native-symbols` (zip of unstripped `.so`) | ✅ container `/symbolicate-native`: unzip → BuildId verify (`readelf -n`) → `llvm-symbolizer` per frame → internal ticket comment (missing asset ⇒ actionable comment). `symbolic` upgrade slot reserved. | server ✅ · SDK capture 🔨 |
+| Android native (NDK) | QNC2 crash-thread context + `metadata.crash_native_frames`: `[{ index, offset, soname, build_id, source }]`, registers/thread/image table, raw QNC record, and API 30+ `ApplicationExitInfo` trace when available | `native-symbols` (zip of unstripped `.so`) | ✅ container `/symbolicate-native`: index all ABI candidates → require exact per-frame BuildId (`readelf -n`) → `llvm-symbolizer`; missing/unreadable/mismatched BuildId fails closed with no basename fallback | source ✅ · successor runtime validation 🔨 |
 | iOS | crash record with a **binary images section** (image UUID + load address + slide) and frame addresses — `backtrace_symbols` text alone is NOT symbolicatable | `dsym` (zip of dSYM bundles) | container: `symbolic` by image UUID + address-slide; no mac/atos dependency | 📐 (SDK prerequisite: images section) |
 | Electron / Crashpad | minidump POSTed by Electron's built-in `crashReporter` to `POST /public/v2/apps/:slug/minidump` (`upload_file_minidump` + Sentry-electron-style annotations) | `breakpad-symbols` (zip of `dump_syms` `.sym`) | ✅ container `/symbolicate-minidump`: rebuild Breakpad tree from each `.sym` MODULE header → `minidump-stackwalk --json` → internal ticket comment (no symbols ⇒ module+offset + upload tip) | server ✅ · SDK ✅ (`@botiverse/hands-electron`, main+renderer) |
 
@@ -50,19 +50,30 @@ lane exists.
    the ELF BuildId (Android) / Mach-O UUID (iOS) from the crash record
    against the artifact before symbolicating; version_code only narrows the
    candidate set.
-4. **Android native capture: minimal async-signal-safe handler, not
-   Breakpad.** Breakpad/Crashpad in-process brings a large NDK dependency
-   into a Kotlin SDK for marginal gain. v1 (same store-then-send shape and
-   the same handler discipline as the iOS SDK): the fatal-signal handler
-   writes only a minimal, preallocated append-only record (signal number,
-   fault address, raw frame pointers/offsets via a signal-safe unwinder) —
-   no allocation, no JSON, no HTTP, no path assembly; all
-   `pc <offset> <soname> (BuildId)` formatting and the upload happen on the
-   NEXT launch. System tombstones/debuggerd output are NOT a data source:
-   app processes cannot read /data/tombstones on release devices
-   (`ApplicationExitInfo` traces are the only sanctioned peek, API 30+ and
-   NDK-crash coverage is spotty). Crashpad reconsidered only if we need
-   out-of-process minidump quality.
+   For Android native frames this is strictly fail-closed: a missing crash
+   BuildId, an unreadable archive BuildId, or a mismatch produces an
+   unsymbolicated evidence block. Basename-only and version-only fallbacks are
+   forbidden, including when an archive contains the same soname for multiple
+   ABIs.
+4. **Android native capture: QNC2 crash context, not handler unwind.**
+   Breakpad/Crashpad in-process brings a large NDK dependency into a Kotlin
+   SDK. The QNC2 fatal-signal handler therefore stays bounded and
+   async-signal-safe, but treats the kernel-provided `ucontext` as the source
+   of truth: signal/siginfo, crash-thread pid/tid/name, PC/LR/SP and relevant
+   registers, context PC/LR frames, precomputed loaded-image ELF BuildIds, and
+   `/proc/self/maps`. It does not call `_Unwind_Backtrace` from the handler —
+   that was the QNC1 bug which produced recorder frames. Mapping, JSON, HTTP,
+   and upload still happen on the NEXT launch. API 30+
+   `ApplicationExitInfo` supplies the sanctioned tombstone/abort-description
+   evidence when the OEM retained it. Matching is fail-closed on the QNC2
+   recorded pid, `REASON_CRASH_NATIVE`, and a five-second timestamp window;
+   one system exit can bind to only one pending QNC, and that identity is
+   persisted for deterministic retry. Coverage is best-effort, never invented.
+   QNC filenames use millisecond timestamp + pid + tid and `O_EXCL` with a
+   bounded collision suffix, so a same-time crash loop cannot truncate an
+   earlier record.
+   Crashpad remains the upgrade path if we later require full out-of-process
+   stack unwinding/minidumps.
 5. **iOS SDK prerequisite before any server work:** extend the crash record
    with the loaded-images table (`dyld` image list: UUID, address, path) so
    offsets are computable. Until then, dSYM upload is accepted but unused.

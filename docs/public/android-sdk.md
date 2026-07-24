@@ -130,7 +130,16 @@ class App : Application() {
 To get readable (deobfuscated) stacks in the console, publish the release
 with its R8/ProGuard `mapping.txt` (and, for NDK crashes, the unstripped
 `.so` archive) — Hands symbolicates crash reports for that `versionCode`
-automatically.
+automatically. QNC2 native reports preserve the crashing thread's PC/LR/SP,
+registers, thread identity, and loaded-image ELF BuildIds. Symbolication is
+strictly fail-closed: the crash frame's BuildId must exactly match an ELF in
+the uploaded archive; Hands never guesses by version or filename. On Android
+11+ the SDK also attaches the matching `ApplicationExitInfo` trace and exit
+description when the OS retained them, providing the sanctioned
+tombstone/abort-message equivalent without reading `/data/tombstones`. The
+match requires the recorded process id, native-crash reason, and a narrow
+timestamp window; retained evidence is assigned one-to-one and persisted for
+deterministic retry rather than guessed from the nearest package exit.
 
 ## Release health
 

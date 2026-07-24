@@ -31,6 +31,7 @@ import {
   parseWithDispatcher,
   type ParserKind,
 } from "./parsers/index.js";
+import { selectNativeSymbolCandidate } from "./native-symbols.js";
 
 const app = new Hono();
 
@@ -179,9 +180,11 @@ app.post("/retrace", async (c) => {
 /**
  * POST /symbolicate-native — body = raw native-symbols zip (unstripped .so
  * files), X-Quiver-Frames header = JSON array of
- * { index, offset, soname, build_id? } (offset hex like "0x1a2b" or bare
- * hex). Extracts the zip, matches each frame's soname (verifying the ELF
- * BuildId when provided), and resolves offsets with llvm-symbolizer.
+ * { index, offset, soname, build_id } (offset hex like "0x1a2b" or bare
+ * hex). Extracts the zip, selects a same-basename candidate only when its ELF
+ * BuildId exactly matches the crash frame, and resolves offsets with
+ * llvm-symbolizer. Missing/unreadable/mismatched BuildIds fail closed; the
+ * endpoint never falls back to basename-only symbolication.
  * Returns { frames: [{ index, resolved | error }] }.
  */
 app.post("/symbolicate-native", async (c) => {
@@ -210,13 +213,19 @@ app.post("/symbolicate-native", async (c) => {
       maxBuffer: 8 * 1024 * 1024,
     });
 
-    // Index extracted .so files by basename (archives often nest abi dirs).
-    const soByName = new Map<string, string>();
+    // Index every extracted .so by basename. A native-symbols archive normally
+    // contains the same soname for multiple ABIs, so keeping only the first
+    // candidate would make resolution depend on unzip traversal order.
+    const soByName = new Map<string, string[]>();
     const walk = async (d: string): Promise<void> => {
       for (const entry of await readdir(d, { withFileTypes: true })) {
         const full = join(d, entry.name);
         if (entry.isDirectory()) await walk(full);
-        else if (entry.name.endsWith(".so") && !soByName.has(entry.name)) soByName.set(entry.name, full);
+        else if (entry.name.endsWith(".so")) {
+          const candidates = soByName.get(entry.name) ?? [];
+          candidates.push(full);
+          soByName.set(entry.name, candidates);
+        }
       }
     };
     await walk(outDir);
@@ -241,21 +250,20 @@ app.post("/symbolicate-native", async (c) => {
     const results: Array<{ index: number; resolved?: string; error?: string }> = [];
     for (const frame of frames) {
       const soname = String(frame.soname ?? "").split("/").pop() ?? "";
-      const soPath = soname ? soByName.get(soname) : undefined;
-      if (!soPath) {
+      const candidates = soname ? soByName.get(soname) : undefined;
+      if (!candidates || candidates.length === 0) {
         results.push({ index: frame.index, error: `no ${soname || "(missing soname)"} in symbols archive` });
         continue;
       }
-      if (frame.build_id) {
-        const actual = await elfBuildId(soPath);
-        if (actual && actual !== String(frame.build_id).toLowerCase()) {
-          results.push({
-            index: frame.index,
-            error: `BuildId mismatch: crash ${frame.build_id}, archive ${actual}`,
-          });
-          continue;
-        }
+      const candidateIds = await Promise.all(
+        candidates.map(async (candidate) => ({ path: candidate, buildId: await elfBuildId(candidate) })),
+      );
+      const selected = selectNativeSymbolCandidate(candidateIds, frame.build_id, soname);
+      if (!selected.ok) {
+        results.push({ index: frame.index, error: selected.error });
+        continue;
       }
+      const soPath = selected.path;
       const offset = String(frame.offset ?? "").startsWith("0x")
         ? String(frame.offset)
         : `0x${frame.offset}`;
