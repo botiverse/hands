@@ -169,6 +169,7 @@ export const AppPermission = z.enum([
   "feedback:write",
   "feedback:read",
   "feedback:comment",
+  "feedback:route",
 ]);
 
 export const auth = [{ bearerAuth: [] }];

@@ -6,6 +6,9 @@ import { describe, expect, it } from "vitest";
 const migrationPath = fileURLToPath(
   new URL("../../migrations/sql/0051_feedback_conversations.sql", import.meta.url),
 );
+const routeMigrationPath = fileURLToPath(
+  new URL("../../migrations/sql/0052_feedback_route_subjects.sql", import.meta.url),
+);
 
 function makeDb() {
   const db = new Database(":memory:");
@@ -13,6 +16,7 @@ function makeDb() {
   db.exec(`
     CREATE TABLE apps (
       id TEXT PRIMARY KEY,
+      org_id TEXT,
       created_at INTEGER NOT NULL
     );
     CREATE TABLE raft_accounts (id TEXT PRIMARY KEY);
@@ -238,5 +242,64 @@ describe("feedback conversations migration", () => {
     expect(() => db.prepare("DELETE FROM apps WHERE id = 'app-1'").run()).not.toThrow();
     expect(db.prepare("SELECT id FROM feedback_events WHERE id = 'event-1'").get()).toBeUndefined();
     expect(db.prepare("SELECT id FROM webhook_deliveries WHERE id = 'delivery-1'").get()).toBeUndefined();
+  });
+
+  it("freezes v1 route ownership, dedicated subscribers, and event snapshots", () => {
+    const db = makeDb();
+    db.exec(`
+      INSERT INTO apps (id, org_id, created_at) VALUES ('app-1', 'org-1', 1), ('app-2', 'org-2', 1);
+      INSERT INTO feedback_tickets
+        (id, app_id, message, reporter_id, created_at, updated_at)
+      VALUES ('ticket-1', 'app-1', 'hello', 'reporter_12345678', 2, 2);
+      INSERT INTO webhooks
+        (id, org_id, app_id, events_json, enabled)
+      VALUES
+        ('generic', 'org-1', 'app-1', '["feedback:comment_created"]', 1),
+        ('dedicated', 'org-1', 'app-1', '["feedback:comment_created"]', 1),
+        ('wrong-app', 'org-2', 'app-2', '["feedback:comment_created"]', 1);
+    `);
+    db.exec(readFileSync(migrationPath, "utf8"));
+    db.exec(readFileSync(routeMigrationPath, "utf8"));
+
+    const subject = `rfr_v1_${"A".repeat(64)}`;
+    db.prepare(`
+      INSERT INTO app_reporter_routes
+        (app_id, reporter_integration_id, reporter_id, route_subject, subject_version, created_at)
+      VALUES ('app-1', 'legacy-feedback:app-1', 'reporter_12345678', ?, 'v1', 3)
+    `).run(subject);
+    expect(() => db.prepare(
+      "UPDATE app_reporter_routes SET route_subject = ? WHERE app_id = 'app-1'",
+    ).run(`rfr_v1_${"B".repeat(64)}`)).toThrow(/immutable/);
+    expect(() => db.prepare(
+      "DELETE FROM app_reporter_routes WHERE app_id = 'app-1'",
+    ).run()).toThrow(/immutable/);
+
+    db.prepare(`
+      INSERT INTO app_reporter_webhook_subscriptions
+        (app_id, reporter_integration_id, webhook_id, created_at)
+      VALUES ('app-1', 'legacy-feedback:app-1', 'dedicated', 4)
+    `).run();
+    expect(() => db.prepare(`
+      INSERT INTO app_reporter_webhook_subscriptions
+        (app_id, reporter_integration_id, webhook_id, created_at)
+      VALUES ('app-1', 'legacy-feedback:app-1', 'wrong-app', 4)
+    `).run()).toThrow(/mismatch/);
+
+    db.prepare(`
+      INSERT INTO feedback_events
+        (id, event_type, app_id, ticket_id, reporter_integration_id, reporter_id,
+         payload_json, route_outcome, route_subject, created_at)
+      VALUES ('bound-event', 'feedback:comment_created', 'app-1', 'ticket-1',
+              'legacy-feedback:app-1', 'reporter_12345678', '{}',
+              'route_bound', ?, 5)
+    `).run(subject);
+    expect(() => db.prepare(`
+      INSERT INTO feedback_events
+        (id, event_type, app_id, ticket_id, reporter_integration_id, reporter_id,
+         payload_json, route_outcome, route_subject, created_at)
+      VALUES ('bad-event', 'feedback:comment_created', 'app-1', 'ticket-1',
+              'legacy-feedback:app-1', 'reporter_12345678', '{}',
+              'route_unbound', ?, 5)
+    `).run(subject)).toThrow(/snapshot mismatch/);
   });
 });

@@ -633,7 +633,25 @@ function makeMockDb() {
       reporter_integration_id TEXT NOT NULL REFERENCES app_reporter_integrations(id) ON DELETE CASCADE,
       reporter_id TEXT NOT NULL,
       payload_json TEXT NOT NULL,
+      route_outcome TEXT NOT NULL DEFAULT 'route_unbound',
+      route_subject TEXT,
       created_at INTEGER NOT NULL
+    );
+    CREATE TABLE app_reporter_routes (
+      app_id TEXT NOT NULL,
+      reporter_integration_id TEXT NOT NULL,
+      reporter_id TEXT NOT NULL,
+      route_subject TEXT NOT NULL,
+      subject_version TEXT NOT NULL,
+      created_at INTEGER NOT NULL,
+      PRIMARY KEY (app_id, reporter_integration_id, reporter_id)
+    );
+    CREATE TABLE app_reporter_webhook_subscriptions (
+      app_id TEXT NOT NULL,
+      reporter_integration_id TEXT NOT NULL,
+      webhook_id TEXT NOT NULL,
+      created_at INTEGER NOT NULL,
+      PRIMARY KEY (app_id, reporter_integration_id, webhook_id)
     );
     CREATE TABLE feedback_reporter_rate_windows (
       app_id TEXT NOT NULL,
@@ -2435,6 +2453,7 @@ describe("quiver Hono app — auth + dispatch", () => {
       "feedback:write",
       "feedback:read",
       "feedback:comment",
+      "feedback:route",
     ]);
     expect(body.permissions.find((entry: any) => entry.permission === "app:read").label)
       .toBe("App read");
@@ -7222,7 +7241,8 @@ describe("quiver public API v2 — scope resolution", () => {
 
   it("feedback: trusted server proxy persists and rate-limits by pseudonymous reporter id", async () => {
     const env = makeEnv();
-    env.APK_BUCKET = { put: async () => {}, get: async () => null };
+    let r2Writes = 0;
+    env.APK_BUCKET = { put: async () => { r2Writes += 1; }, get: async () => null };
     const { handlePublicFeedbackSubmit } = await import("../src/routes/feedback");
     const { generateDeployToken, hashDeployToken } = await import("../src/lib/deploy_tokens");
     const credential = generateDeployToken();
@@ -7239,7 +7259,9 @@ describe("quiver public API v2 — scope resolution", () => {
       `INSERT INTO app_deploy_tokens
        (id, app_id, name, token_prefix, token_hash, app_role, scopes_json,
         created_by_actor, created_at, reporter_integration_id)
-       VALUES (?1, ?2, ?3, ?4, ?5, NULL, '["feedback:write"]', ?6, ?7, ?8)`,
+       VALUES (?1, ?2, ?3, ?4, ?5, NULL,
+               '["feedback:write","feedback:read","feedback:comment","feedback:route"]',
+               ?6, ?7, ?8)`,
     ).bind(
       "proxy-token",
       "app-scope",
@@ -7255,7 +7277,8 @@ describe("quiver public API v2 — scope resolution", () => {
        (id, app_id, name, token_prefix, token_hash, app_role, scopes_json,
         created_by_actor, created_at, reporter_integration_id)
        VALUES ('proxy-token-2', 'app-scope', 'feedback proxy 2', ?1, ?2, NULL,
-               '["feedback:write"]', 'test', ?3, 'integration-proxy-2')`,
+               '["feedback:write","feedback:read","feedback:comment","feedback:route"]',
+               'test', ?3, 'integration-proxy-2')`,
     ).bind(
       secondCredential.token_prefix,
       await hashDeployToken(secondCredential.token),
@@ -7292,11 +7315,17 @@ describe("quiver public API v2 — scope resolution", () => {
       reporterId: string,
       bearer = credential.token,
       submissionId?: string,
+      withAttachment = false,
     ) => {
       const responseHeaders = new Headers();
       const form = new FormData();
       form.set("message", "Proxy feedback");
       if (submissionId) form.set("submission_id", submissionId);
+      if (withAttachment) {
+        form.append("attachments", new File([new Uint8Array([1, 2, 3])], "route.txt", {
+          type: "text/plain",
+        }));
+      }
       return handlePublicFeedbackSubmit({
         env,
         executionCtx: { waitUntil: () => {} },
@@ -7321,6 +7350,26 @@ describe("quiver public API v2 — scope resolution", () => {
     };
 
     const reporterA = "a".repeat(64);
+    const missingRoute = await submit("z".repeat(64), credential.token, undefined, true);
+    expect(missingRoute.status).toBe(409);
+    expect(await missingRoute.json()).toMatchObject({ error: "route_required" });
+    expect(r2Writes).toBe(0);
+    expect((await env.DB.prepare(
+      "SELECT COUNT(*) AS count FROM feedback_tickets WHERE reporter_id = ?1",
+    ).bind("z".repeat(64)).first() as any).count).toBe(0);
+    for (const [integrationId, reporterId, marker] of ([
+      ["integration-proxy", reporterA, "A"],
+      ["integration-proxy-2", reporterA, "B"],
+      ["integration-proxy", "b".repeat(64), "C"],
+      ["integration-proxy", "g".repeat(64), "D"],
+      ["integration-proxy", "h".repeat(64), "E"],
+    ] as const)) {
+      await env.DB.prepare(
+        `INSERT INTO app_reporter_routes
+         (app_id, reporter_integration_id, reporter_id, route_subject, subject_version, created_at)
+         VALUES ('app-scope', ?1, ?2, ?3, 'v1', ?4)`,
+      ).bind(integrationId, reporterId, `rfr_v1_${marker.repeat(64)}`, Date.now()).run();
+    }
     for (let index = 0; index < 100; index += 1) expect((await submit(reporterA)).status).toBe(201);
     const limited = await submit(reporterA);
     expect(limited.status).toBe(429);
@@ -8544,6 +8593,83 @@ describe("Hands iOS simulator QA artifacts", () => {
     });
   });
 
+  it("binds immutable reporter routes and exact integration webhooks without subject disclosure", async () => {
+    const { env } = makeEnv() as any;
+    const { generateDeployToken, hashDeployToken } = await import("../src/lib/deploy_tokens");
+    const {
+      handleBindReporterRouteSubject,
+      handleBindReporterWebhook,
+      handleGetReporterRouteMetadata,
+    } = await import("../src/routes/reporter_routes");
+    const now = Date.now();
+    const integrationId = "91919191-9191-4191-8191-919191919191";
+    const reporterId = "route_reporter_123456789";
+    const credential = generateDeployToken();
+    await env.DB.prepare(
+      `INSERT INTO app_reporter_integrations
+       (id, app_id, name, created_at, updated_at)
+       VALUES (?1, 'app-ios', 'Route', ?2, ?2)`,
+    ).bind(integrationId, now).run();
+    await env.DB.prepare(
+      `INSERT INTO app_deploy_tokens
+       (id, app_id, name, token_prefix, token_hash, app_role, scopes_json,
+        created_by_actor, created_at, reporter_integration_id)
+       VALUES ('route-token', 'app-ios', 'route', ?1, ?2, NULL,
+               '["feedback:write","feedback:read","feedback:comment","feedback:route"]',
+               'test', ?3, ?4)`,
+    ).bind(credential.token_prefix, await hashDeployToken(credential.token), now, integrationId).run();
+    const subjectA = `rfr_v1_${"A".repeat(64)}`;
+    const subjectB = `rfr_v1_${"B".repeat(64)}`;
+    const bindContext = (subject: string) => ({
+      env,
+      req: {
+        param: (name: string) => name === "appId" ? "app-ios" : undefined,
+        header: (name: string) => name === "X-Hands-Reporter-Id"
+          ? reporterId
+          : name === "authorization" ? `Bearer ${credential.token}` : undefined,
+        json: async () => ({ route_subject: subject }),
+      },
+      json: (data: unknown, status = 200) => new Response(JSON.stringify(data), { status }),
+    }) as any;
+    const created = await handleBindReporterRouteSubject(bindContext(subjectA));
+    expect(created.status).toBe(201);
+    expect(JSON.stringify(await created.json())).not.toContain(subjectA);
+    expect((await handleBindReporterRouteSubject(bindContext(subjectA))).status).toBe(200);
+    expect((await handleBindReporterRouteSubject(bindContext(subjectB))).status).toBe(409);
+    expect((await env.DB.prepare(
+      "SELECT route_subject FROM app_reporter_routes WHERE app_id = 'app-ios' AND reporter_integration_id = ?1",
+    ).bind(integrationId).first() as any).route_subject).toBe(subjectA);
+
+    await env.DB.prepare(
+      `INSERT INTO webhooks
+       (id, org_id, app_id, url, secret, events_json, enabled, created_at, updated_at)
+       VALUES ('route-hook', 'default', 'app-ios', 'https://example.test/route',
+               'secret', '["feedback:comment_created"]', 1, ?1, ?1)`,
+    ).bind(now).run();
+    const adminContext = (handler: "bind" | "metadata") => ({
+      env,
+      req: {
+        param: (name: string) => name === "appId" ? "app-ios"
+          : name === "integrationId" ? integrationId
+            : name === "webhookId" ? "route-hook" : undefined,
+        query: (name: string) => name === "reporter_integration_id" ? integrationId
+          : name === "reporter_id" ? reporterId : undefined,
+      },
+      json: (data: unknown, status = 200) => new Response(JSON.stringify(data), { status }),
+    }) as any;
+    expect((await handleBindReporterWebhook(adminContext("bind"))).status).toBe(201);
+    expect((await handleBindReporterWebhook(adminContext("bind"))).status).toBe(200);
+    const metadata = await handleGetReporterRouteMetadata(adminContext("metadata"));
+    const metadataBody = await metadata.json() as any;
+    expect(metadataBody).toMatchObject({
+      route: { bound: true, subject_version: "v1" },
+      matching_subscriber_count: 1,
+      events: [],
+    });
+    expect(JSON.stringify(metadataBody)).not.toContain(subjectA);
+    expect(JSON.stringify(metadataBody)).not.toContain(reporterId);
+  });
+
   it("reporter feedback bearer routes isolate integrations and converge comment replay", async () => {
     const { env } = makeEnv() as any;
     env.FEEDBACK_AUDIT_HMAC_KEY = "test-audit-key-with-enough-entropy";
@@ -8570,7 +8696,7 @@ describe("Hands iOS simulator QA artifacts", () => {
          (id, app_id, name, token_prefix, token_hash, app_role, scopes_json,
           created_by_actor, created_at, reporter_integration_id)
          VALUES (?1, 'app-ios', ?1, ?2, ?3, NULL,
-                 '["feedback:write","feedback:read","feedback:comment"]',
+                 '["feedback:write","feedback:read","feedback:comment","feedback:route"]',
                  'test', ?4, ?5)`,
       ).bind(id, credential.token_prefix, await hashDeployToken(credential.token), now, integrationId).run();
     };
@@ -8589,6 +8715,16 @@ describe("Hands iOS simulator QA artifacts", () => {
        VALUES ('reporter-hook', 'default', 'app-ios', 'https://example.test/hook',
                'secret', '["feedback:comment_created","feedback:status_changed"]', 1, ?1, ?1)`,
     ).bind(now).run();
+    await env.DB.prepare(
+      `INSERT INTO app_reporter_routes
+       (app_id, reporter_integration_id, reporter_id, route_subject, subject_version, created_at)
+       VALUES ('app-ios', ?1, ?2, ?3, 'v1', ?4)`,
+    ).bind(integrationA, reporterId, `rfr_v1_${"A".repeat(64)}`, now).run();
+    await env.DB.prepare(
+      `INSERT INTO app_reporter_webhook_subscriptions
+       (app_id, reporter_integration_id, webhook_id, created_at)
+       VALUES ('app-ios', ?1, 'reporter-hook', ?2)`,
+    ).bind(integrationA, now).run();
 
     const context = (
       handler: "list" | "detail" | "comment",
@@ -8664,6 +8800,10 @@ describe("Hands iOS simulator QA artifacts", () => {
     });
     expect(JSON.parse(reporterEvent!.payload_json).payload.comment).toHaveProperty("id");
     expect(JSON.parse(reporterEvent!.payload_json).payload.comment).toHaveProperty("created_at");
+    expect(JSON.parse(reporterEvent!.payload_json).payload).toMatchObject({
+      route_outcome: "route_bound",
+      route_subject: `rfr_v1_${"A".repeat(64)}`,
+    });
     expect((await env.DB.prepare(
       "SELECT COUNT(*) AS count FROM webhook_deliveries WHERE webhook_id = 'reporter-hook' AND event_id IS NOT NULL",
     ).first() as any).count).toBe(1);

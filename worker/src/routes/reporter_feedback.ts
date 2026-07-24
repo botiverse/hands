@@ -383,8 +383,21 @@ export async function handleAddReporterComment(c: ReporterContext) {
       c.env.DB.prepare(
         `INSERT INTO feedback_events
          (id, event_type, app_id, ticket_id, reporter_integration_id,
-          reporter_id, payload_json, created_at)
-         VALUES (?1, 'feedback:comment_created', ?2, ?3, ?4, ?5, ?6, ?7)`,
+          reporter_id, payload_json, route_outcome, route_subject, created_at)
+         SELECT ?1, 'feedback:comment_created', ?2, ?3, ?4, ?5,
+                CASE WHEN r.route_subject IS NULL
+                  THEN json_set(?6, '$.payload.route_outcome', 'route_unbound')
+                  ELSE json_set(?6, '$.payload.route_outcome', 'route_bound',
+                                     '$.payload.route_subject', r.route_subject)
+                END,
+                CASE WHEN r.route_subject IS NULL THEN 'route_unbound' ELSE 'route_bound' END,
+                r.route_subject, ?7
+         FROM feedback_tickets t
+         LEFT JOIN app_reporter_routes r
+           ON r.app_id = t.app_id AND r.reporter_integration_id = t.reporter_integration_id
+          AND r.reporter_id = t.reporter_id
+         WHERE t.id = ?3 AND t.app_id = ?2
+           AND t.reporter_integration_id = ?4 AND t.reporter_id = ?5`,
       ).bind(
         eventId,
         authorized.principal.appId,
@@ -400,16 +413,47 @@ export async function handleAddReporterComment(c: ReporterContext) {
           attempts, max_attempts, next_attempt_at, created_at, updated_at)
          SELECT ?1 || ':' || w.id, w.id, 'feedback:comment_created', ?1, ?2,
                 'pending', 0, 3, ?3, ?3, ?3
-         FROM webhooks w
-         WHERE w.org_id = ?4 AND w.enabled = 1 AND w.archived_at IS NULL
+         FROM feedback_events fe
+         JOIN webhooks w ON w.org_id = ?4
+         WHERE fe.id = ?1 AND w.enabled = 1 AND w.archived_at IS NULL
            AND (w.app_id IS NULL OR w.app_id = ?5)
            AND CASE WHEN json_valid(w.events_json) THEN (
              json_array_length(w.events_json) = 0
              OR EXISTS (SELECT 1 FROM json_each(w.events_json) e
                         WHERE e.value IN ('feedback:comment_created', '*'))
            ) ELSE 0 END
+           AND NOT EXISTS (
+             SELECT 1 FROM app_reporter_webhook_subscriptions s
+             WHERE s.webhook_id = w.id AND s.app_id = fe.app_id
+               AND s.reporter_integration_id = fe.reporter_integration_id
+           )
          ON CONFLICT(webhook_id, event_id) WHERE event_id IS NOT NULL DO NOTHING`,
       ).bind(eventId, eventBody, now, ticket.org_id, authorized.principal.appId),
+      c.env.DB.prepare(
+        `INSERT INTO webhook_deliveries
+         (id, webhook_id, event_type, event_id, payload_json, status,
+          attempts, max_attempts, next_attempt_at, created_at, updated_at)
+         SELECT ?1 || ':' || w.id, w.id, 'feedback:comment_created', ?1,
+                fe.payload_json, 'pending', 0, 3, ?2, ?2, ?2
+         FROM feedback_events fe
+         JOIN app_reporter_webhook_subscriptions s
+           ON s.app_id = fe.app_id
+          AND s.reporter_integration_id = fe.reporter_integration_id
+         JOIN webhooks w ON w.id = s.webhook_id
+         JOIN app_reporter_integrations ri
+           ON ri.id = s.reporter_integration_id AND ri.app_id = s.app_id
+         WHERE fe.id = ?1 AND fe.route_outcome = 'route_bound'
+           AND fe.route_subject IS NOT NULL
+           AND w.app_id = fe.app_id AND w.org_id = ?3
+           AND w.enabled = 1 AND w.archived_at IS NULL
+           AND ri.archived_at IS NULL
+           AND CASE WHEN json_valid(w.events_json) THEN (
+             json_array_length(w.events_json) = 0
+             OR EXISTS (SELECT 1 FROM json_each(w.events_json) e
+                        WHERE e.value IN ('feedback:comment_created', '*'))
+           ) ELSE 0 END
+         ON CONFLICT(webhook_id, event_id) WHERE event_id IS NOT NULL DO NOTHING`,
+      ).bind(eventId, now, ticket.org_id),
     ]);
   } catch (error) {
     const concurrent = await existingComment();

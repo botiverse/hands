@@ -113,6 +113,11 @@ import {
   cleanupReporterFeedbackData,
 } from "./routes/reporter_feedback";
 import {
+  handleBindReporterRouteSubject,
+  handleBindReporterWebhook,
+  handleGetReporterRouteMetadata,
+} from "./routes/reporter_routes";
+import {
   handleGetAscCredentials,
   handleSetAscCredentials,
   handleDeleteAscCredentials,
@@ -562,6 +567,7 @@ app.post("/public/v2/apps/:slug/metrics", handleDeviceRegister);
 app.post("/public/v2/apps/:slug/sessions", handleSessionEvent);
 app.post("/public/v2/apps/:slug/feedback/presign", handlePresignFeedbackAttachments);
 app.get("/api/apps/:appId/reporter-feedback", handleListReporterFeedback);
+app.put("/api/apps/:appId/reporter-feedback/route-subject", handleBindReporterRouteSubject);
 app.get("/api/apps/:appId/reporter-feedback/:ticketId", handleGetReporterFeedback);
 app.post("/api/apps/:appId/reporter-feedback/:ticketId/comments", handleAddReporterComment);
 app.get(
@@ -657,6 +663,12 @@ admin.patch("/api/apps/:appId", requireAppRole("admin"), handleUpdateApp);
 admin.post("/api/apps/:appId/archive", requireAppRole("admin"), handleArchiveApp);
 admin.post("/api/apps/:appId/purge", requireAppRole("admin"), handlePurgeApp);
 admin.get("/api/apps/:appId/feature-flags/:key", requireAppRole("viewer"), handleGetFeatureFlag);
+admin.get("/api/apps/:appId/reporter-feedback-metadata", requireAppRole("viewer"), handleGetReporterRouteMetadata);
+admin.put(
+  "/api/apps/:appId/reporter-integrations/:integrationId/webhooks/:webhookId",
+  requireAppRole("admin"),
+  handleBindReporterWebhook,
+);
 // Feature flags are rollout controls (like bump-rollout / force-update), so they
 // sit at the publisher (ship) tier rather than admin.
 admin.put("/api/apps/:appId/feature-flags/:key", requireAppRole("publisher"), handleUpdateFeatureFlag);

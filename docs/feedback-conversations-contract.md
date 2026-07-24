@@ -70,7 +70,8 @@ Trusted integrations may use one custom token with this feedback-only grant:
   "scopes": [
     "feedback:write",
     "feedback:read",
-    "feedback:comment"
+    "feedback:comment",
+    "feedback:route"
   ],
   "reporter_integration_id": "integration-uuid"
 }
@@ -78,9 +79,10 @@ Trusted integrations may use one custom token with this feedback-only grant:
 
 The grant must be valid, app-scoped, role-free, bound to an active reporter
 integration on the same app, and contain only recognized feedback-proxy scopes
-from the allowlist `feedback:write`, `feedback:read`, and `feedback:comment`.
-Existing tokens granted only `feedback:write` remain valid for submission after
-the legacy integration backfill. Role tokens, role-plus-scope grants, empty or
+from the allowlist `feedback:write`, `feedback:read`, `feedback:comment`, and
+`feedback:route`. T5 trusted submissions require an immutable route binding;
+legacy write-only tokens remain valid only for tickets already created before
+that gate. Role tokens, role-plus-scope grants, empty or
 unknown scopes, and grants containing app read, publish, or admin permissions
 are rejected by trusted reporter routes.
 

@@ -7,6 +7,7 @@ export const APP_PERMISSIONS = [
   "feedback:write",
   "feedback:read",
   "feedback:comment",
+  "feedback:route",
 ] as const;
 
 export type AppPermission = (typeof APP_PERMISSIONS)[number];
@@ -18,6 +19,7 @@ export const APP_PERMISSION_LABELS: Record<AppPermission, string> = {
   "feedback:write": "Feedback write",
   "feedback:read": "Reporter feedback read",
   "feedback:comment": "Reporter feedback comment",
+  "feedback:route": "Reporter route binding",
 };
 
 export const APP_PERMISSION_DESCRIPTIONS: Record<AppPermission, string> = {
@@ -27,6 +29,7 @@ export const APP_PERMISSION_DESCRIPTIONS: Record<AppPermission, string> = {
   "feedback:write": "Submit feedback tickets for this app.",
   "feedback:read": "Read tickets owned by a reporter integration.",
   "feedback:comment": "Comment on tickets owned by a reporter integration.",
+  "feedback:route": "Bind an opaque route subject to a reporter integration.",
 };
 
 export const APP_ROLE_PERMISSIONS: Record<AppRole, readonly AppPermission[]> = {
@@ -52,6 +55,7 @@ export const FEEDBACK_TOKEN_PERMISSIONS = [
   "feedback:write",
   "feedback:read",
   "feedback:comment",
+  "feedback:route",
 ] as const satisfies readonly AppPermission[];
 
 export type FeedbackTokenPermission = (typeof FEEDBACK_TOKEN_PERMISSIONS)[number];

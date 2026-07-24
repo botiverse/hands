@@ -39,7 +39,32 @@ const ReporterCommentInput = z.object({
   submission_id: z.string().uuid(),
 }).openapi("ReporterFeedbackCommentInput");
 
+const ReporterRouteInput = z.object({
+  route_subject: z.string().regex(/^rfr_v1_[A-Za-z0-9_-]+$/).max(160),
+}).strict().openapi("ReporterRouteSubjectInput");
+
 export function registerFeedbackRoutes(registry: OpenApiRegistry) {
+  register(registry, {
+    method: "put",
+    path: "/api/apps/{appId}/reporter-feedback/route-subject",
+    tags: ["Reporter Feedback"],
+    summary: "Bind an immutable opaque v1 reporter route subject",
+    security: auth,
+    request: {
+      params: AppIdParam,
+      headers: ReporterHeaders,
+      body: { content: json(ReporterRouteInput), required: true },
+    },
+    responses: {
+      200: success("Exact idempotent replay; subject is not returned.", GenericObject),
+      201: success("Route binding created; subject is not returned.", GenericObject),
+      400: error("Malformed route subject."),
+      401: error("Missing or invalid bearer token."),
+      403: error("Invalid reporter integration grant."),
+      409: error("A different immutable v1 subject already exists."),
+    },
+  });
+
   register(registry, {
     method: "get",
     path: "/api/apps/{appId}/reporter-feedback",
