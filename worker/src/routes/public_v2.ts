@@ -363,19 +363,31 @@ function bumpReleaseMetric(
   c: Context<{ Bindings: Env }>,
   releaseId: string | undefined,
   kind: "offered" | "current",
+  deviceId: string | null,
 ): void {
   if (!releaseId) return;
   const column = kind === "offered" ? "offered_count" : "current_count";
   const now = Date.now();
-  const run = c.env.DB.prepare(
+  const statements = [c.env.DB.prepare(
     `INSERT INTO release_metrics (release_id, ${column}, last_checked_at)
      VALUES (?1, 1, ?2)
      ON CONFLICT(release_id) DO UPDATE SET
        ${column} = ${column} + 1,
        last_checked_at = ?3`,
   )
-    .bind(releaseId, now, now)
-    .run();
+    .bind(releaseId, now, now)];
+  if (deviceId) {
+    statements.push(c.env.DB.prepare(
+      `INSERT INTO release_metric_devices
+       (release_id, metric_kind, device_id, first_checked_at, last_checked_at)
+       VALUES (?1, ?2, ?3, ?4, ?4)
+       ON CONFLICT(release_id, metric_kind, device_id) DO UPDATE SET
+         last_checked_at = excluded.last_checked_at`,
+    ).bind(releaseId, kind, deviceId, now));
+  }
+  const run = statements.length === 1
+    ? statements[0]!.run()
+    : c.env.DB.batch(statements);
   try {
     c.executionCtx.waitUntil(run.catch(() => {}));
   } catch {
@@ -400,13 +412,22 @@ export async function handlePublicV2UpdateCheck(c: Context<{ Bindings: Env }>) {
     );
   }
 
+  const rawDeviceId =
+    c.req.header("X-Hands-Device-Id") ?? c.req.header("X-Quiver-Device-Id") ?? c.req.query("device_id") ?? null;
+  const trimmedDeviceId = rawDeviceId?.trim() ?? "";
+  // Stable SDK ids are bounded per-install identifiers. Missing/blank/oversize
+  // legacy values still contribute to PV but must not fabricate a UV row.
+  const metricDeviceId = trimmedDeviceId.length > 0 && trimmedDeviceId.length <= 256
+    ? trimmedDeviceId
+    : null;
+
   const latestResponse = await handlePublicV2Latest(c);
   if (latestResponse.status !== 200) return latestResponse;
   const latest = (await latestResponse.json()) as PublicLatestResponse;
 
   if (latest.build.version_code <= currentVersionCode) {
     if (latest.build.version_code === currentVersionCode) {
-      bumpReleaseMetric(c, latest.scoped?.release_id, "current");
+      bumpReleaseMetric(c, latest.scoped?.release_id, "current", metricDeviceId);
     }
     return c.json({
       update_available: false,
@@ -451,13 +472,12 @@ export async function handlePublicV2UpdateCheck(c: Context<{ Bindings: Env }>) {
     );
   }
 
-  bumpReleaseMetric(c, latest.scoped?.release_id, "offered");
+  bumpReleaseMetric(c, latest.scoped?.release_id, "offered", metricDeviceId);
   // Delta (differential) download offer: if the client's installed version has
   // a patch to the latest build for its arch, and that patch is meaningfully
   // smaller than the full APK, offer it. The full `asset` stays the fallback;
   // old SDKs ignore the extra `patch` field. See docs/delta-download-design.md.
-  const deviceId =
-    c.req.header("X-Hands-Device-Id") ?? c.req.header("X-Quiver-Device-Id") ?? c.req.query("device_id") ?? null;
+  const deviceId = rawDeviceId;
   const patch =
     currentVersionCode > 0
       ? await findDeltaPatch(c, {

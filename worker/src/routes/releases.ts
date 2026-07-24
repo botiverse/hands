@@ -491,7 +491,11 @@ export async function handleListReleases(c: Context<{ Bindings: Env }>) {
 
   const { results } = await c.env.DB.prepare(
     `SELECT r.*, c.slug AS channel, b.version_name, b.version_code,
-            rm.offered_count, rm.current_count, rm.last_checked_at
+            rm.offered_count, rm.current_count, rm.last_checked_at,
+            (SELECT COUNT(*) FROM release_metric_devices rmd
+             WHERE rmd.release_id = r.id AND rmd.metric_kind = 'offered') AS offered_uv,
+            (SELECT COUNT(*) FROM release_metric_devices rmd
+             WHERE rmd.release_id = r.id AND rmd.metric_kind = 'current') AS current_uv
      FROM releases r
      JOIN builds b ON b.id = r.build_id
      LEFT JOIN channels c ON c.id = r.channel_id
@@ -510,7 +514,11 @@ export async function handleGetRelease(c: Context<{ Bindings: Env }>) {
   const releaseId = c.req.param("releaseId") ?? "";
   const release = await c.env.DB.prepare(
     `SELECT r.*, c.slug AS channel,
-            rm.offered_count, rm.current_count, rm.last_checked_at
+            rm.offered_count, rm.current_count, rm.last_checked_at,
+            (SELECT COUNT(*) FROM release_metric_devices rmd
+             WHERE rmd.release_id = r.id AND rmd.metric_kind = 'offered') AS offered_uv,
+            (SELECT COUNT(*) FROM release_metric_devices rmd
+             WHERE rmd.release_id = r.id AND rmd.metric_kind = 'current') AS current_uv
      FROM releases r
      LEFT JOIN channels c ON c.id = r.channel_id
      LEFT JOIN release_metrics rm ON rm.release_id = r.id

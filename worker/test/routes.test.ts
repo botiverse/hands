@@ -317,6 +317,14 @@ function makeMockDb() {
       current_count INTEGER NOT NULL DEFAULT 0,
       last_checked_at INTEGER
     );
+    CREATE TABLE release_metric_devices (
+      release_id TEXT NOT NULL,
+      metric_kind TEXT NOT NULL CHECK(metric_kind IN ('current', 'offered')),
+      device_id TEXT NOT NULL,
+      first_checked_at INTEGER NOT NULL,
+      last_checked_at INTEGER NOT NULL,
+      PRIMARY KEY (release_id, metric_kind, device_id)
+    );
     CREATE TABLE release_checks (
       id TEXT PRIMARY KEY,
       release_id TEXT NOT NULL REFERENCES releases(id) ON DELETE CASCADE,
@@ -5350,7 +5358,7 @@ describe("quiver public API v2 — scope resolution", () => {
     expect(rolloutIncludes("rel-x", bucket, "device-1")).toBe(false);
   });
 
-  it("updates/check records offered/current release metrics", async () => {
+  it("update checks retain PV while deduplicating stable-device UV by release and kind", async () => {
     const env = makeEnv();
     const { handlePublicV2UpdateCheck } = await import("../src/routes/public_v2");
     await seedRelease(env, "rel-metric", "build-metric", [["full", "all"]], {
@@ -5366,18 +5374,47 @@ describe("quiver public API v2 — scope resolution", () => {
       platform: "android",
       arch: "arm64-v8a",
     });
-    // Two older clients (offered) + one already-current client.
-    await handlePublicV2UpdateCheck(makePublicContext(env, query("10")));
+    // Six offered events: one stable device repeats, one second device, and
+    // three legacy/invalid ids. Only two exact UV rows are allowed.
+    await handlePublicV2UpdateCheck(makePublicContext(env, query("10"), { "X-Quiver-Device-Id": "device-a" }));
+    await handlePublicV2UpdateCheck(makePublicContext(env, query("15"), { "X-Quiver-Device-Id": "device-a" }));
+    await handlePublicV2UpdateCheck(makePublicContext(env, query("15"), { "X-Hands-Device-Id": "device-b" }));
     await handlePublicV2UpdateCheck(makePublicContext(env, query("15")));
-    await handlePublicV2UpdateCheck(makePublicContext(env, query("20")));
+    await handlePublicV2UpdateCheck(makePublicContext(env, query("15"), { "X-Hands-Device-Id": "   " }));
+    await handlePublicV2UpdateCheck(makePublicContext(env, query("15"), { "X-Hands-Device-Id": "x".repeat(257) }));
+    // The same device is independently unique for the current kind; a repeat
+    // increments PV while preserving one current UV row.
+    await handlePublicV2UpdateCheck(makePublicContext(env, query("20"), { "X-Quiver-Device-Id": "device-a" }));
+    await handlePublicV2UpdateCheck(makePublicContext(env, query("20"), { "X-Quiver-Device-Id": "device-a" }));
 
     const row = (await env.DB.prepare(
       "SELECT offered_count, current_count FROM release_metrics WHERE release_id = ?1",
     )
       .bind("rel-metric")
       .first()) as { offered_count: number; current_count: number } | null;
-    expect(row?.offered_count).toBe(2);
-    expect(row?.current_count).toBe(1);
+    expect(row?.offered_count).toBe(6);
+    expect(row?.current_count).toBe(2);
+    const uv = await env.DB.prepare(
+      `SELECT metric_kind, COUNT(*) AS n FROM release_metric_devices
+       WHERE release_id = ?1 GROUP BY metric_kind ORDER BY metric_kind`,
+    ).bind("rel-metric").all();
+    expect(uv.results).toEqual([
+      { metric_kind: "current", n: 1 },
+      { metric_kind: "offered", n: 2 },
+    ]);
+
+    const { handleListReleases } = await import("../src/routes/releases");
+    const listed = await responseJson<any>(await handleListReleases({
+      env,
+      req: { param: () => "app-scope", query: () => undefined },
+      json: (data: unknown, status = 200) => new Response(JSON.stringify(data), { status }),
+    } as any));
+    expect(listed.releases.find((release: any) => release.id === "rel-metric")).toMatchObject({
+      offered_count: 6,
+      current_count: 2,
+      offered_uv: 2,
+      current_uv: 1,
+    });
   });
 
   it("updates/check gates a partial rollout by device bucket and falls back to the previous release", async () => {

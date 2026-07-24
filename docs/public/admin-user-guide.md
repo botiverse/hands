@@ -42,9 +42,11 @@ For Android, Hands selects updates by `version_code`. A device receives an updat
 
 Set a rollout percentage when creating or editing a release (number input with 5/25/50/100 presets), and raise it with **Bump rollout**. Devices are bucketed by their stable device id, keep their bucket while the percentage climbs, and gated-out devices receive the previous active release. Clients without a device id (older SDKs) only receive fully rolled-out releases.
 
-Each release row shows update-check analytics: how many devices are already
-**on this version** and how many were **offered** it (update checks from older
-clients), so you can see real rollout coverage as the percentage climbs.
+Each release row shows unique per-install devices (UV): how many devices have
+checked while already **on this version** and how many unique older devices
+were **offered** it. Hover either number to see the all-time update-check event
+count (PV). UV collection requires a stable device id and starts at the metric
+upgrade; historical PV aggregates cannot be converted into exact historical UV.
 
 The app overview also exposes version-level metrics from
 `GET /api/apps/:id/analytics/versions`: devices that reported in the selected
