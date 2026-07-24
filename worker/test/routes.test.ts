@@ -3387,7 +3387,9 @@ describe("quiver releases — draft lifecycle", () => {
       scopes: [{ scope_type: "device_group", scope_value: "group-release-test" }],
     }, "tester", "rel-group-draft");
 
-    const response = await handlePublishRelease(makeReleaseContext("rel-group-draft"));
+    const response = await handlePublishRelease(makeReleaseContext("rel-group-draft", {
+      expected_scope: { scope_type: "device_group", scope_value: "group-release-test" },
+    }));
     expect(response.status).toBe(200);
     const { results } = await env.DB.prepare(
       "SELECT id, status, superseded_by_release_id FROM releases ORDER BY id",
@@ -3398,7 +3400,7 @@ describe("quiver releases — draft lifecycle", () => {
     ]);
   });
 
-  it("treats a legacy mixed scope containing full:all as full coverage when publishing", async () => {
+  it("rejects a legacy mixed scope at publish without activation side effects", async () => {
     const { createRelease, handlePublishRelease } = await import("../src/routes/releases");
     const now = Date.now();
     await env.DB.prepare(
@@ -3419,15 +3421,23 @@ describe("quiver releases — draft lifecycle", () => {
        VALUES (?, ?, 'full', 'all', ?)`,
     ).bind("scope-legacy-full", "rel-legacy-mixed", now).run();
 
-    const response = await handlePublishRelease(makeReleaseContext("rel-legacy-mixed"));
-    expect(response.status).toBe(200);
+    const response = await handlePublishRelease(makeReleaseContext("rel-legacy-mixed", {
+      expected_scope: { scope_type: "device_group", scope_value: "group-legacy-mixed" },
+    }));
+    expect(response.status).toBe(409);
+    await expect(responseJson<any>(response)).resolves.toMatchObject({
+      code: "RELEASE_SCOPE_PRECONDITION_FAILED",
+    });
     const { results } = await env.DB.prepare(
       "SELECT id, status, superseded_by_release_id FROM releases ORDER BY id",
     ).all();
     expect(results).toEqual([
-      { id: "rel-fallback", status: "superseded", superseded_by_release_id: "rel-legacy-mixed" },
-      { id: "rel-legacy-mixed", status: "active", superseded_by_release_id: null },
+      { id: "rel-fallback", status: "active", superseded_by_release_id: null },
+      { id: "rel-legacy-mixed", status: "draft", superseded_by_release_id: null },
     ]);
+    await expect(env.DB.prepare(
+      "SELECT COUNT(*) AS count FROM audit_logs WHERE action = 'release.publish'",
+    ).first()).resolves.toEqual({ count: 0 });
   });
 
   it("publishes a partial full-scope rollout without superseding the full fallback release", async () => {
@@ -3539,6 +3549,279 @@ describe("quiver releases — draft lifecycle", () => {
       status: "draft",
       scopes: [{ scope_type: "device_group", scope_value: "group-other-app" }],
     }, "tester", "rel-cross-app-group")).rejects.toThrow("device group not found for app");
+  });
+
+  it("defaults omitted scopes to full but rejects every explicit empty or malformed scope list", async () => {
+    const { createRelease, handleUpdateRelease } = await import("../src/routes/releases");
+    const now = Date.now();
+    await env.DB.prepare(
+      `INSERT INTO device_groups (id, app_id, name, description, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+    ).bind("group-scope-validation", "app-release", "Scope validation", null, now, now).run();
+
+    await createRelease(env.DB as any, "app-release", {
+      build_id: "build-draft",
+      status: "draft",
+    }, "tester", "rel-omitted-scope");
+    await expect(env.DB.prepare(
+      "SELECT scope_type, scope_value FROM release_scopes WHERE release_id = 'rel-omitted-scope'",
+    ).first()).resolves.toEqual({ scope_type: "full", scope_value: "all" });
+
+    const invalidLists: unknown[] = [
+      [],
+      [{ scope_type: "", scope_value: "all" }],
+      [{ scope_type: "full", scope_value: "   " }],
+      [
+        { scope_type: "device_group", scope_value: "group-scope-validation" },
+        { scope_type: "", scope_value: "discard-me" },
+      ],
+    ];
+    for (const [index, scopes] of invalidLists.entries()) {
+      await expect(createRelease(env.DB as any, "app-release", {
+        build_id: "build-draft",
+        status: "draft",
+        scopes: scopes as any,
+      }, "tester", `rel-invalid-scope-${index}`)).rejects.toThrow(/release scope/);
+    }
+    await expect(env.DB.prepare(
+      "SELECT COUNT(*) AS count FROM releases WHERE id LIKE 'rel-invalid-scope-%'",
+    ).first()).resolves.toEqual({ count: 0 });
+
+    await createRelease(env.DB as any, "app-release", {
+      build_id: "build-draft",
+      status: "draft",
+      scopes: [{ scope_type: "device_group", scope_value: "group-scope-validation" }],
+    }, "tester", "rel-scope-update-guard");
+    const beforeAudit = await env.DB.prepare(
+      "SELECT COUNT(*) AS count FROM audit_logs WHERE action = 'release.update'",
+    ).first();
+    for (const scopes of invalidLists) {
+      const response = await handleUpdateRelease(makeReleaseContext("rel-scope-update-guard", {
+        scopes,
+      }));
+      expect(response.status).toBe(400);
+    }
+    await expect(env.DB.prepare(
+      "SELECT scope_type, scope_value FROM release_scopes WHERE release_id = 'rel-scope-update-guard'",
+    ).all()).resolves.toMatchObject({
+      results: [{ scope_type: "device_group", scope_value: "group-scope-validation" }],
+    });
+    await expect(env.DB.prepare(
+      "SELECT COUNT(*) AS count FROM audit_logs WHERE action = 'release.update'",
+    ).first()).resolves.toEqual(beforeAudit);
+  });
+
+  it("requires an exact device-group publish precondition and rechecks it on replay", async () => {
+    const { createRelease, handlePublishRelease } = await import("../src/routes/releases");
+    const now = Date.now();
+    await env.DB.prepare(
+      `INSERT INTO device_groups (id, app_id, name, description, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+    ).bind("group-publish-guard", "app-release", "Publish guard", null, now, now).run();
+    await createRelease(env.DB as any, "app-release", {
+      build_id: "build-active",
+      status: "active",
+    }, "tester", "rel-publish-guard-fallback");
+    await createRelease(env.DB as any, "app-release", {
+      build_id: "build-draft",
+      status: "draft",
+      scopes: [{ scope_type: "device_group", scope_value: "group-publish-guard" }],
+    }, "tester", "rel-publish-guard-draft");
+
+    for (const body of [
+      {},
+      { expected_scope: {} },
+      { expected_scope: { scope_type: "device_group", scope_value: "wrong-group" } },
+    ]) {
+      const response = await handlePublishRelease(makeReleaseContext("rel-publish-guard-draft", body));
+      expect(response.status).toBe(409);
+      await expect(responseJson<any>(response)).resolves.toMatchObject({
+        code: "RELEASE_SCOPE_PRECONDITION_FAILED",
+      });
+    }
+    await expect(env.DB.prepare(
+      "SELECT status FROM releases WHERE id = 'rel-publish-guard-draft'",
+    ).first()).resolves.toEqual({ status: "draft" });
+    await expect(env.DB.prepare(
+      "SELECT status, superseded_by_release_id FROM releases WHERE id = 'rel-publish-guard-fallback'",
+    ).first()).resolves.toEqual({ status: "active", superseded_by_release_id: null });
+    await expect(env.DB.prepare(
+      "SELECT COUNT(*) AS count FROM audit_logs WHERE action = 'release.publish'",
+    ).first()).resolves.toEqual({ count: 0 });
+
+    const exactBody = {
+      expected_scope: { scope_type: "device_group", scope_value: "group-publish-guard" },
+    };
+    const published = await handlePublishRelease(makeReleaseContext("rel-publish-guard-draft", exactBody));
+    expect(published.status).toBe(200);
+    await expect(env.DB.prepare(
+      "SELECT status FROM releases WHERE id = 'rel-publish-guard-draft'",
+    ).first()).resolves.toEqual({ status: "active" });
+    await expect(env.DB.prepare(
+      "SELECT status, superseded_by_release_id FROM releases WHERE id = 'rel-publish-guard-fallback'",
+    ).first()).resolves.toEqual({ status: "active", superseded_by_release_id: null });
+
+    const replayWithoutExpectation = await handlePublishRelease(
+      makeReleaseContext("rel-publish-guard-draft"),
+    );
+    expect(replayWithoutExpectation.status).toBe(409);
+    const exactReplay = await handlePublishRelease(
+      makeReleaseContext("rel-publish-guard-draft", exactBody),
+    );
+    expect(exactReplay.status).toBe(200);
+  });
+
+  it("publishes platform, cohort, and IP scopes only with their exact generic expectation", async () => {
+    const { createRelease, handlePublishRelease } = await import("../src/routes/releases");
+    await createRelease(env.DB as any, "app-release", {
+      build_id: "build-active",
+      status: "active",
+    }, "tester", "rel-generic-scope-fallback");
+
+    const scopeCases = [
+      { scope_type: "platform", scope_value: "android" },
+      { scope_type: "user_cohort", scope_value: "internal-qa" },
+      { scope_type: "ip_range", scope_value: "203.0.113.0/24" },
+    ];
+    for (const [index, scope] of scopeCases.entries()) {
+      const releaseId = `rel-generic-scope-${index}`;
+      await createRelease(env.DB as any, "app-release", {
+        build_id: "build-draft",
+        status: "draft",
+        scopes: [scope],
+      }, "tester", releaseId);
+      const auditBefore = await env.DB.prepare(
+        "SELECT COUNT(*) AS count FROM audit_logs WHERE action = 'release.publish'",
+      ).first();
+
+      for (const expected_scope of [
+        undefined,
+        { scope_type: "device_group", scope_value: scope.scope_value },
+        { scope_type: scope.scope_type, scope_value: `${scope.scope_value}-wrong` },
+      ]) {
+        const body = expected_scope ? { expected_scope } : {};
+        const rejected = await handlePublishRelease(makeReleaseContext(releaseId, body));
+        expect(rejected.status).toBe(409);
+      }
+      await expect(env.DB.prepare(
+        "SELECT status FROM releases WHERE id = ?1",
+      ).bind(releaseId).first()).resolves.toEqual({ status: "draft" });
+      await expect(env.DB.prepare(
+        "SELECT COUNT(*) AS count FROM audit_logs WHERE action = 'release.publish'",
+      ).first()).resolves.toEqual(auditBefore);
+
+      const exactBody = { expected_scope: scope };
+      const published = await handlePublishRelease(makeReleaseContext(releaseId, exactBody));
+      expect(published.status).toBe(200);
+      await expect(env.DB.prepare(
+        "SELECT status FROM releases WHERE id = ?1",
+      ).bind(releaseId).first()).resolves.toEqual({ status: "active" });
+      await expect(env.DB.prepare(
+        "SELECT status, superseded_by_release_id FROM releases WHERE id = 'rel-generic-scope-fallback'",
+      ).first()).resolves.toEqual({ status: "active", superseded_by_release_id: null });
+
+      const replayMissing = await handlePublishRelease(makeReleaseContext(releaseId));
+      expect(replayMissing.status).toBe(409);
+      const replayWrong = await handlePublishRelease(makeReleaseContext(releaseId, {
+        expected_scope: { scope_type: scope.scope_type, scope_value: `${scope.scope_value}-wrong` },
+      }));
+      expect(replayWrong.status).toBe(409);
+      const replayExact = await handlePublishRelease(makeReleaseContext(releaseId, exactBody));
+      expect(replayExact.status).toBe(200);
+    }
+  });
+
+  it("rejects full-scope drift and zero scope rows when device-group activation is expected", async () => {
+    const { createRelease, handlePublishRelease } = await import("../src/routes/releases");
+    const now = Date.now();
+    await env.DB.prepare(
+      `INSERT INTO device_groups (id, app_id, name, description, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+    ).bind("group-drift-guard", "app-release", "Drift guard", null, now, now).run();
+
+    for (const releaseId of ["rel-scope-drift-full", "rel-scope-drift-zero"]) {
+      await createRelease(env.DB as any, "app-release", {
+        build_id: "build-draft",
+        status: "draft",
+        scopes: [{ scope_type: "device_group", scope_value: "group-drift-guard" }],
+      }, "tester", releaseId);
+    }
+    await env.DB.prepare(
+      `UPDATE release_scopes SET scope_type = 'full', scope_value = 'all'
+       WHERE release_id = 'rel-scope-drift-full'`,
+    ).run();
+    await env.DB.prepare(
+      "DELETE FROM release_scopes WHERE release_id = 'rel-scope-drift-zero'",
+    ).run();
+
+    for (const releaseId of ["rel-scope-drift-full", "rel-scope-drift-zero"]) {
+      const response = await handlePublishRelease(makeReleaseContext(releaseId, {
+        expected_scope: { scope_type: "device_group", scope_value: "group-drift-guard" },
+      }));
+      expect(response.status).toBe(409);
+      await expect(env.DB.prepare(
+        "SELECT status FROM releases WHERE id = ?1",
+      ).bind(releaseId).first()).resolves.toEqual({ status: "draft" });
+    }
+    await expect(env.DB.prepare(
+      "SELECT COUNT(*) AS count FROM audit_logs WHERE action = 'release.publish'",
+    ).first()).resolves.toEqual({ count: 0 });
+  });
+
+  it("fails the transactional publish CAS when scope drifts after preflight but before the batch", async () => {
+    const { createRelease, handlePublishRelease } = await import("../src/routes/releases");
+    const now = Date.now();
+    await env.DB.prepare(
+      `INSERT INTO device_groups (id, app_id, name, description, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+    ).bind("group-cas-race", "app-release", "CAS race", null, now, now).run();
+    await createRelease(env.DB as any, "app-release", {
+      build_id: "build-active",
+      status: "active",
+    }, "tester", "rel-cas-race-fallback");
+    await createRelease(env.DB as any, "app-release", {
+      build_id: "build-draft",
+      status: "draft",
+      scopes: [{ scope_type: "device_group", scope_value: "group-cas-race" }],
+    }, "tester", "rel-cas-race-draft");
+
+    const db = env.DB as any;
+    const originalBatch = db.batch.bind(db);
+    let injected = false;
+    db.batch = async (statements: any[]) => {
+      if (!injected) {
+        injected = true;
+        await env.DB.prepare(
+          `UPDATE release_scopes SET scope_type = 'full', scope_value = 'all'
+           WHERE release_id = 'rel-cas-race-draft'`,
+        ).run();
+      }
+      return originalBatch(statements);
+    };
+    const waitUntil = vi.fn();
+    const context = makeReleaseContext("rel-cas-race-draft", {
+      expected_scope: { scope_type: "device_group", scope_value: "group-cas-race" },
+    });
+    context.executionCtx.waitUntil = waitUntil;
+
+    const response = await handlePublishRelease(context);
+    expect(response.status).toBe(409);
+    await expect(responseJson<any>(response)).resolves.toMatchObject({
+      code: "RELEASE_SCOPE_PRECONDITION_FAILED",
+    });
+    expect(waitUntil).not.toHaveBeenCalled();
+    await expect(env.DB.prepare(
+      "SELECT status FROM releases WHERE id = 'rel-cas-race-draft'",
+    ).first()).resolves.toEqual({ status: "draft" });
+    await expect(env.DB.prepare(
+      "SELECT status, superseded_by_release_id FROM releases WHERE id = 'rel-cas-race-fallback'",
+    ).first()).resolves.toEqual({ status: "active", superseded_by_release_id: null });
+    await expect(env.DB.prepare(
+      "SELECT COUNT(*) AS count FROM audit_logs WHERE action = 'release.publish'",
+    ).first()).resolves.toEqual({ count: 0 });
+    await expect(env.DB.prepare(
+      "SELECT COUNT(*) AS count FROM release_shares WHERE release_id = 'rel-cas-race-draft'",
+    ).first()).resolves.toEqual({ count: 0 });
   });
 
   it("rejects mixing full:all with a device-group scope on create and active update", async () => {
@@ -4330,6 +4613,10 @@ describe("quiver public API v2 — scope resolution", () => {
       `INSERT INTO releases (id, app_id, build_id, channel_id, product_type, release_type, status,
                              is_full, changelog, created_by, created_at, updated_at)
        VALUES ('rel-ext', 'app-scope', 'b-ext', 'ch-scope-prod', 'cli-binary', 'stable', 'draft', 1, NULL, 'tester', ?1, ?1)`,
+    ).bind(now).run();
+    await env.DB.prepare(
+      `INSERT INTO release_scopes (id, release_id, scope_type, scope_value, created_at)
+       VALUES ('scope-rel-ext-full', 'rel-ext', 'full', 'all', ?1)`,
     ).bind(now).run();
 
     const { handlePublishRelease, handleGetRelease } = await import("../src/routes/releases");

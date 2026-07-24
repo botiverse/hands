@@ -259,6 +259,15 @@ describe("device-group rollout commands", () => {
       if (req.url === "/api/apps/app-1/releases/release-1" && req.method === "PATCH") {
         return res.end(JSON.stringify({ id: "release-1", status: "draft" }));
       }
+      if (req.url === "/api/apps/app-1/releases/release-1" && req.method === "GET") {
+        return res.end(JSON.stringify({
+          release: { id: "release-1", status: "draft" },
+          scopes: [{ scope_type: "device_group", scope_value: "group-1" }],
+        }));
+      }
+      if (req.url === "/api/apps/app-1/releases/release-1/publish" && req.method === "POST") {
+        return res.end(JSON.stringify({ id: "release-1", status: "active" }));
+      }
       res.statusCode = 404;
       return res.end(JSON.stringify({ error: "not found" }));
     });
@@ -295,6 +304,12 @@ describe("device-group rollout commands", () => {
         "node", "hands", "releases", "update", "raft-android", "release-1",
         "--device-group", "group-1",
       ]);
+      const publishProgram = new Command();
+      registerReleaseCommands(publishProgram);
+      await publishProgram.parseAsync([
+        "node", "hands", "releases", "publish", "raft-android", "release-1",
+        "--device-group", "group-1",
+      ]);
 
       expect(requests.find((request) => request.url.endsWith("/device-groups"))).toMatchObject({
         method: "POST",
@@ -311,6 +326,105 @@ describe("device-group rollout commands", () => {
         method: "PATCH",
         body: { scopes: [{ scope_type: "device_group", scope_value: "group-1" }] },
       });
+      expect(requests.find((request) => request.url.endsWith("/releases/release-1/publish"))).toMatchObject({
+        method: "POST",
+        body: { expected_scope: { scope_type: "device_group", scope_value: "group-1" } },
+      });
+    } finally {
+      if (originalApi === undefined) delete process.env.HANDS_API;
+      else process.env.HANDS_API = originalApi;
+      if (originalToken === undefined) delete process.env.HANDS_BEARER_TOKEN;
+      else process.env.HANDS_BEARER_TOKEN = originalToken;
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
+  it("derives every exact scoped publish precondition from detail and refuses invalid stored scopes", async () => {
+    const requests: Array<{ method: string; url: string; body?: any }> = [];
+    const details: Record<string, unknown[]> = {
+      "release-platform": [{ scope_type: "platform", scope_value: "android" }],
+      "release-cohort": [{ scope_type: "user_cohort", scope_value: "internal-qa" }],
+      "release-ip": [{ scope_type: "ip_range", scope_value: "203.0.113.0/24" }],
+      "release-full": [{ scope_type: "full", scope_value: "all" }],
+      "release-zero": [],
+      "release-mixed": [
+        { scope_type: "platform", scope_value: "android" },
+        { scope_type: "user_cohort", scope_value: "internal-qa" },
+      ],
+      "release-unknown": [{ scope_type: "future_scope", scope_value: "value" }],
+    };
+    const server = createServer(async (req, res) => {
+      let body: any = undefined;
+      if (req.headers["content-type"]?.includes("application/json")) {
+        const chunks: Buffer[] = [];
+        for await (const chunk of req) chunks.push(Buffer.from(chunk));
+        body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+      }
+      requests.push({ method: req.method ?? "GET", url: req.url ?? "", body });
+      res.setHeader("content-type", "application/json");
+      if (req.url === "/api/apps") {
+        return res.end(JSON.stringify({ apps: [{ id: "app-1", slug: "raft-android" }] }));
+      }
+      const detailMatch = req.url?.match(/^\/api\/apps\/app-1\/releases\/([^/]+)$/);
+      if (detailMatch && req.method === "GET") {
+        const releaseId = detailMatch[1] ?? "";
+        return res.end(JSON.stringify({
+          release: { id: releaseId, status: "draft" },
+          scopes: details[releaseId],
+        }));
+      }
+      const publishMatch = req.url?.match(/^\/api\/apps\/app-1\/releases\/([^/]+)\/publish$/);
+      if (publishMatch && req.method === "POST") {
+        return res.end(JSON.stringify({ id: publishMatch[1], status: "active" }));
+      }
+      res.statusCode = 404;
+      return res.end(JSON.stringify({ error: "not found" }));
+    });
+
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("bad address");
+    const originalApi = process.env.HANDS_API;
+    const originalToken = process.env.HANDS_BEARER_TOKEN;
+    process.env.HANDS_API = `http://127.0.0.1:${address.port}`;
+    process.env.HANDS_BEARER_TOKEN = "test-token";
+
+    const runPublish = async (releaseId: string, extra: string[] = []) => {
+      const program = new Command();
+      const { registerReleaseCommands } = await import("../src/commands/releases.js");
+      registerReleaseCommands(program);
+      return program.parseAsync([
+        "node", "hands", "releases", "publish", "raft-android", releaseId, ...extra,
+      ]);
+    };
+
+    try {
+      for (const releaseId of ["release-platform", "release-cohort", "release-ip", "release-full"]) {
+        await runPublish(releaseId);
+      }
+      const publishBodies = Object.fromEntries(
+        requests
+          .filter((request) => request.method === "POST" && request.url.endsWith("/publish"))
+          .map((request) => [request.url.split("/").at(-2), request.body]),
+      );
+      expect(publishBodies).toMatchObject({
+        "release-platform": { expected_scope: { scope_type: "platform", scope_value: "android" } },
+        "release-cohort": { expected_scope: { scope_type: "user_cohort", scope_value: "internal-qa" } },
+        "release-ip": { expected_scope: { scope_type: "ip_range", scope_value: "203.0.113.0/24" } },
+        "release-full": {},
+      });
+
+      const postsBeforeInvalid = requests.filter(
+        (request) => request.method === "POST" && request.url.endsWith("/publish"),
+      ).length;
+      for (const releaseId of ["release-zero", "release-mixed", "release-unknown"]) {
+        await expect(runPublish(releaseId)).rejects.toThrow(/refusing|exactly one/);
+      }
+      await expect(runPublish("release-platform", ["--device-group", "group-wrong"]))
+        .rejects.toThrow("does not match stored platform:android");
+      expect(requests.filter(
+        (request) => request.method === "POST" && request.url.endsWith("/publish"),
+      )).toHaveLength(postsBeforeInvalid);
     } finally {
       if (originalApi === undefined) delete process.env.HANDS_API;
       else process.env.HANDS_API = originalApi;

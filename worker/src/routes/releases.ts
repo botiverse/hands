@@ -75,13 +75,46 @@ function jsonString(value: unknown, fallback: Record<string, unknown> | unknown[
 }
 
 function normalizeScopes(scopes: ReleaseScopeInput[] | undefined): ReleaseScopeInput[] {
-  const filtered = (scopes ?? [])
-    .map((scope) => ({
-      scope_type: String(scope.scope_type ?? "").trim(),
-      scope_value: String(scope.scope_value ?? "").trim(),
-    }))
-    .filter((scope) => scope.scope_type && scope.scope_value);
-  return filtered.length > 0 ? filtered : [{ scope_type: "full", scope_value: "all" }];
+  // An omitted scope keeps the generic release default. An explicitly supplied
+  // scope list is an operator boundary: never filter invalid entries and then
+  // silently widen an empty result to full rollout.
+  if (scopes === undefined) return [{ scope_type: "full", scope_value: "all" }];
+  if (!Array.isArray(scopes) || scopes.length === 0) {
+    throw new Error("release scopes must be a non-empty array when provided");
+  }
+  return scopes.map((scope, index) => {
+    if (!scope || typeof scope !== "object") {
+      throw new Error(`release scope at index ${index} must be an object`);
+    }
+    const scopeType = typeof scope.scope_type === "string" ? scope.scope_type.trim() : "";
+    const scopeValue = typeof scope.scope_value === "string" ? scope.scope_value.trim() : "";
+    if (!scopeType || !scopeValue) {
+      throw new Error(`release scope at index ${index} requires non-empty scope_type and scope_value`);
+    }
+    return { scope_type: scopeType, scope_value: scopeValue };
+  });
+}
+
+function matchesPublishScopeExpectation(
+  scopes: ReleaseScopeInput[],
+  expectedScope: ReleaseScopeInput | null,
+): boolean {
+  if (scopes.length !== 1) return false;
+  const scope = scopes[0];
+  if (expectedScope !== null) {
+    return scope?.scope_type === expectedScope.scope_type && scope.scope_value === expectedScope.scope_value;
+  }
+  return scope?.scope_type === "full" && scope.scope_value === "all";
+}
+
+function parseExpectedPublishScope(raw: unknown): ReleaseScopeInput | null {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const candidate = raw as Partial<ReleaseScopeInput>;
+  const scopeType = typeof candidate.scope_type === "string" ? candidate.scope_type.trim() : "";
+  const scopeValue = typeof candidate.scope_value === "string" ? candidate.scope_value.trim() : "";
+  if (!scopeType || !scopeValue || !RELEASE_SCOPE_TYPES.has(scopeType)) return null;
+  if (scopeType === "full" && scopeValue !== "all") return null;
+  return { scope_type: scopeType, scope_value: scopeValue };
 }
 
 async function validateScopes(
@@ -1039,62 +1072,129 @@ export async function handlePublishRelease(c: AdminContext) {
   if (!existing) return c.json({ error: "not found" }, 404);
   // The external-target gate runs on EVERY publish attempt — including
   // already-active replays — before any no-op shortcut.
-  const publishBody = (await c.req.json().catch(() => ({}))) as { required_external_targets?: unknown };
+  const publishBody = (await c.req.json().catch(() => ({}))) as {
+    required_external_targets?: unknown;
+    expected_scope?: unknown;
+  };
   const gateFail = await assertExternalTargetGate(c, existing, publishBody.required_external_targets);
   if (gateFail) return gateFail;
-  if (existing.status === "active") return c.json(existing);
-  if (existing.status !== "draft") {
-    return c.json({ error: `cannot publish ${existing.status} release` }, 409);
+
+  let expectedScope: ReleaseScopeInput | null = null;
+  if (Object.prototype.hasOwnProperty.call(publishBody, "expected_scope")) {
+    expectedScope = parseExpectedPublishScope(publishBody.expected_scope);
+    if (!expectedScope) {
+      return c.json({
+        error: "expected_scope must contain a supported non-empty scope_type and scope_value",
+        code: "RELEASE_SCOPE_PRECONDITION_FAILED",
+      }, 409);
+    }
   }
-  const now = Date.now();
+
   const { results: releaseScopes } = await c.env.DB.prepare(
     "SELECT scope_type, scope_value FROM release_scopes WHERE release_id = ?1 ORDER BY created_at, id",
   ).bind(releaseId).all<ReleaseScopeInput>();
+  if (!matchesPublishScopeExpectation(releaseScopes, expectedScope)) {
+    return c.json({
+      error: expectedScope === null
+        ? "publish without an expected_scope precondition requires exactly one full:all scope"
+        : "release scope does not exactly match expected_scope",
+      code: "RELEASE_SCOPE_PRECONDITION_FAILED",
+    }, 409);
+  }
+  if (existing.status === "active") return c.json(withReleaseNotes(existing));
+  if (existing.status !== "draft") {
+    return c.json({ error: `cannot publish ${existing.status} release` }, 409);
+  }
+
+  const now = Date.now();
+  const auditId = crypto.randomUUID();
+  const auditPayload = JSON.stringify({
+    release_id: releaseId,
+    build_id: existing.build_id,
+    expected_scope: expectedScope,
+  });
+
+  // D1 batch is transactional. Every side effect is gated by the conditional
+  // audit insert, whose SELECT re-checks draft state and the exact stored scope
+  // inside the same batch. A stale preflight read therefore becomes a clean
+  // 409 with zero audit, fallback, activation, or webhook side effects.
   const statements = [
+    c.env.DB
+      .prepare(
+        `INSERT INTO audit_logs (id, app_id, action, actor, payload, created_at)
+         SELECT ?1, ?2, 'release.publish', ?3, ?4, ?5
+         FROM releases r
+         WHERE r.id = ?6 AND r.app_id = ?2 AND r.status = 'draft'
+           AND (
+             (?7 IS NULL AND ?8 IS NULL
+               AND (SELECT COUNT(*) FROM release_scopes s WHERE s.release_id = r.id) = 1
+               AND EXISTS (
+                 SELECT 1 FROM release_scopes s
+                 WHERE s.release_id = r.id AND s.scope_type = 'full' AND s.scope_value = 'all'
+               ))
+             OR
+             (?7 IS NOT NULL AND ?8 IS NOT NULL
+               AND (SELECT COUNT(*) FROM release_scopes s WHERE s.release_id = r.id) = 1
+               AND EXISTS (
+                 SELECT 1 FROM release_scopes s
+                 WHERE s.release_id = r.id AND s.scope_type = ?7 AND s.scope_value = ?8
+               ))
+           )`,
+      )
+      .bind(
+        auditId,
+        appId,
+        currentActor(c),
+        auditPayload,
+        now,
+        releaseId,
+        expectedScope?.scope_type ?? null,
+        expectedScope?.scope_value ?? null,
+      ),
+    c.env.DB
+      .prepare(
+        `UPDATE releases
+         SET status = 'superseded', superseded_by_release_id = ?1, updated_at = ?2
+         WHERE app_id = ?3 AND channel_id = ?4 AND product_type = ?5
+           AND release_type = ?6 AND status = 'active' AND id <> ?1
+           AND EXISTS (
+             SELECT 1 FROM releases next
+             WHERE next.id = ?1 AND next.app_id = ?3 AND next.status = 'draft'
+               AND (next.rollout_cohort_count IS NULL OR next.rollout_cohort_count >= 100)
+               AND (SELECT COUNT(*) FROM release_scopes s WHERE s.release_id = next.id) = 1
+               AND EXISTS (
+                 SELECT 1 FROM release_scopes s
+                 WHERE s.release_id = next.id AND s.scope_type = 'full' AND s.scope_value = 'all'
+               )
+               AND EXISTS (SELECT 1 FROM audit_logs a WHERE a.id = ?7)
+           )`,
+      )
+      .bind(
+        releaseId,
+        now,
+        appId,
+        existing.channel_id,
+        existing.product_type,
+        existing.release_type,
+        auditId,
+      ),
     c.env.DB
       .prepare(
         `UPDATE releases
          SET status = 'active', updated_at = ?1
-         WHERE id = ?2 AND app_id = ?3 AND status = 'draft'`,
+         WHERE id = ?2 AND app_id = ?3 AND status = 'draft'
+           AND EXISTS (SELECT 1 FROM audit_logs WHERE id = ?4)`,
       )
-      .bind(now, releaseId, appId),
-    c.env.DB
-      .prepare(
-        "INSERT INTO audit_logs (id, app_id, action, actor, payload, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-      )
-      .bind(
-        crypto.randomUUID(),
-        appId,
-        "release.publish",
-        currentActor(c),
-        JSON.stringify({ release_id: releaseId, build_id: existing.build_id }),
-        now,
-      ),
+      .bind(now, releaseId, appId, auditId),
   ];
-  // Scoped and partial-rollout releases must coexist with the previous full
-  // active release so non-members can fall back. A full-coverage activation is
-  // the only event that supersedes every older active release in the lane.
-  if (isFullCoverage(releaseScopes, existing.rollout_cohort_count)) {
-    statements.splice(1, 0,
-      c.env.DB
-        .prepare(
-          `UPDATE releases
-           SET status = 'superseded', superseded_by_release_id = ?1, updated_at = ?2
-           WHERE app_id = ?3 AND channel_id = ?4 AND product_type = ?5
-             AND release_type = ?6 AND status = 'active' AND id <> ?7`,
-        )
-        .bind(
-          releaseId,
-          now,
-          appId,
-          existing.channel_id,
-          existing.product_type,
-          existing.release_type,
-          releaseId,
-        ),
-    );
+  const batchResults = await c.env.DB.batch(statements);
+  if (Number(batchResults[0]?.meta?.changes ?? 0) !== 1 ||
+      Number(batchResults[2]?.meta?.changes ?? 0) !== 1) {
+    return c.json({
+      error: "release status or scope changed before publish",
+      code: "RELEASE_SCOPE_PRECONDITION_FAILED",
+    }, 409);
   }
-  await c.env.DB.batch(statements);
 
   const orgId = c.get("org_id");
   if (orgId) {
