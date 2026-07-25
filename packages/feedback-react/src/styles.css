@@ -74,6 +74,16 @@
   overscroll-behavior: contain;
   scrollbar-gutter: stable;
 }
+.hands-feedback-detail .hands-feedback-middle {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.hands-feedback-detail
+  .hands-feedback-middle
+  > *:not(.hands-feedback-conversation) {
+  flex: none;
+}
 .hands-feedback-list-scroll,
 .hands-feedback-new-fields {
   display: grid;
@@ -216,9 +226,10 @@
 }
 .hands-feedback-conversation {
   display: grid;
+  flex: 1;
   gap: 10px;
-  max-height: min(56vh, 520px);
-  min-height: 120px;
+  max-height: none;
+  min-height: 0;
   overflow-y: auto;
   overscroll-behavior: contain;
   padding: 2px;
@@ -316,9 +327,6 @@
   }
   .hands-feedback-ticket-state {
     white-space: nowrap;
-  }
-  .hands-feedback-conversation {
-    max-height: none;
   }
   .hands-feedback-pending-attachments li {
     grid-template-columns: minmax(0, 1fr) auto;

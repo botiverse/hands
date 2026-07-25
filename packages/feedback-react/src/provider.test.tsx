@@ -14,7 +14,11 @@ import {
   nextUnreadReport,
   useHandsFeedback,
 } from "./provider.js";
-import { feedbackMessage, resolveFeedbackLocale } from "./locale.js";
+import {
+  feedbackMessage,
+  resolveFeedbackLocale,
+  resolveFeedbackLocaleFromPreferences,
+} from "./locale.js";
 import type { HandsFeedbackTransport } from "./types.js";
 
 const transport = {} as HandsFeedbackTransport;
@@ -43,6 +47,10 @@ describe("FeedbackProvider", () => {
     );
     expect(html).toContain("新建反馈");
     expect(resolveFeedbackLocale("en")).toBe("en");
+    expect(resolveFeedbackLocaleFromPreferences(["en-US", "zh-CN"])).toBe("en");
+    expect(
+      resolveFeedbackLocaleFromPreferences(["fr-FR", "zh-CN", "en-US"]),
+    ).toBe("zh-CN");
     expect(
       feedbackMessage(
         "en",
@@ -145,6 +153,12 @@ describe("FeedbackProvider", () => {
     expect(css).toMatch(/\.hands-feedback-middle[^}]*overflow-y:\s*auto/);
     expect(css).toMatch(/env\(safe-area-inset-bottom\)/);
     expect(css).toMatch(/prefers-reduced-motion:\s*reduce/);
+    expect(css).toMatch(
+      /\.hands-feedback-detail \.hands-feedback-middle[^}]*overflow:\s*hidden/,
+    );
+    expect(css).toMatch(
+      /\.hands-feedback-conversation[^}]*flex:\s*1[^}]*overflow-y:\s*auto/,
+    );
     expect(css).not.toMatch(/display:\s*none[^}]*hands-feedback-conversation/);
   });
 

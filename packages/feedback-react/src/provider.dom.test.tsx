@@ -7,6 +7,7 @@ import {
   screen,
   waitFor,
 } from "@testing-library/react";
+import { useState } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { FeedbackWorkspace } from "./components.js";
 import { FeedbackProvider } from "./provider.js";
@@ -60,15 +61,30 @@ function transport(): HandsFeedbackTransport {
 describe("FeedbackWorkspace browser behavior", () => {
   it("supports host copy and date localization overrides through one provider contract", async () => {
     const adapter = transport();
+    adapter.getTicket = vi.fn(async () => ({
+      ...detail,
+      attachments: [
+        {
+          id: "attachment-1",
+          filename: "proof.png",
+          contentType: "image/png",
+          sizeBytes: 2048,
+          createdAt: 4,
+        },
+      ],
+    }));
     render(
       <FeedbackProvider
         transport={adapter}
         messages={{
           newFeedback: "Create report",
           statusFilter: "Ticket state",
-          unread: "new items",
+          unreadCount: "{count} new items",
+          attachmentSummary: "FILE {name} SIZE {size}",
+          openAttachment: "OPEN {name}",
         }}
         formatDate={(value, { locale }) => `DATE:${locale}:${value.getTime()}`}
+        formatFileSize={(bytes, { locale }) => `SIZE:${locale}:${bytes}`}
       >
         <FeedbackWorkspace />
       </FeedbackProvider>,
@@ -78,6 +94,11 @@ describe("FeedbackWorkspace browser behavior", () => {
     expect(screen.getByRole("group", { name: "Ticket state" })).toBeTruthy();
     expect(screen.getByLabelText("2 new items")).toBeTruthy();
     expect(screen.getByText("DATE:en:2", { exact: false })).toBeTruthy();
+    fireEvent.click(screen.getByText(ticket.message));
+    expect(
+      await screen.findByText("FILE proof.png SIZE SIZE:en:2048"),
+    ).toBeTruthy();
+    expect(screen.getByLabelText("OPEN proof.png")).toBeTruthy();
   });
 
   it("localizes closed errors and parameterized attachment validation through message overrides", async () => {
@@ -356,6 +377,75 @@ describe("FeedbackWorkspace browser behavior", () => {
     expect(uploadSignal?.aborted).toBe(true);
     expect(editor.value).toBe("Only once");
     expect(screen.getByText("Submit feedback")).toBeTruthy();
+  });
+
+  it("aborts and resets an in-flight create when the reporter transport changes", async () => {
+    const first = transport();
+    const second = transport();
+    let firstSignal: AbortSignal | undefined;
+    let resolveFirst: ((value: FeedbackTicketDetail) => void) | undefined;
+    first.createTicket = vi.fn(
+      ({ signal }) =>
+        new Promise<FeedbackTicketDetail>((resolve) => {
+          firstSignal = signal;
+          resolveFirst = resolve;
+        }),
+    );
+    const view = render(
+      <FeedbackProvider transport={first}>
+        <FeedbackWorkspace />
+      </FeedbackProvider>,
+    );
+    fireEvent.click(await screen.findByText("New feedback"));
+    const editor = screen.getByLabelText(
+      "What would you like us to know?",
+    ) as HTMLTextAreaElement;
+    fireEvent.change(editor, { target: { value: "Preserve across session" } });
+    fireEvent.click(screen.getByText("Submit feedback"));
+    expect(await screen.findByText("Submitting…")).toBeTruthy();
+
+    view.rerender(
+      <FeedbackProvider transport={second}>
+        <FeedbackWorkspace />
+      </FeedbackProvider>,
+    );
+    await waitFor(() => expect(firstSignal?.aborted).toBe(true));
+    expect(editor.value).toBe("Preserve across session");
+    expect(screen.getByText("Submit feedback")).toBeTruthy();
+    resolveFirst?.(detail);
+    await Promise.resolve();
+    expect(
+      screen.getByRole("heading", { name: "New feedback" }),
+    ).toBeTruthy();
+    expect(second.createTicket).not.toHaveBeenCalled();
+  });
+
+  it("restores row focus after a delayed controlled host commits the inbox route", async () => {
+    const adapter = transport();
+    function DelayedHost() {
+      const [route, setRoute] = useState<{
+        view: "inbox" | "new" | "ticket";
+        ticketId?: string;
+      }>({ view: "inbox" });
+      return (
+        <FeedbackProvider transport={adapter}>
+          <FeedbackWorkspace
+            route={route}
+            onRouteChange={(next) => setTimeout(() => setRoute(next), 40)}
+          />
+        </FeedbackProvider>
+      );
+    }
+    render(<DelayedHost />);
+    const row = await screen.findByRole("button", {
+      name: /A reporter-visible ticket/,
+    });
+    fireEvent.click(row);
+    expect(await screen.findByText("Thanks")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Back" }));
+    await waitFor(() => expect(document.activeElement).toBe(row), {
+      timeout: 1000,
+    });
   });
 
   it("loads, deduplicates, and orders conversations beyond the first 100 comments", async () => {

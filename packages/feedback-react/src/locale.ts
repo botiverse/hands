@@ -9,6 +9,7 @@ export type FeedbackMessageKey =
   | "attachmentTooLarge"
   | "attachmentTooMany"
   | "attachmentUnsupported"
+  | "attachmentSummary"
   | "attachments"
   | "back"
   | "cancel"
@@ -55,7 +56,7 @@ export type FeedbackMessageKey =
   | "replySent"
   | "ticketUpdated"
   | "ticketHeading"
-  | "unread"
+  | "unreadCount"
   | "update"
   | "uploadCanceled"
   | "uploadFailed"
@@ -71,6 +72,7 @@ const messages: Record<FeedbackLocale, FeedbackMessages> = {
     attachmentTooLarge: "{name} is larger than 10 MB.",
     attachmentTooMany: "Choose no more than {count} screenshots.",
     attachmentUnsupported: "{name} is not a supported image.",
+    attachmentSummary: "{name} · {size}",
     attachments: "Attachments",
     back: "Back",
     cancel: "Cancel",
@@ -95,7 +97,7 @@ const messages: Record<FeedbackLocale, FeedbackMessages> = {
     newFeedback: "New feedback",
     newReplies: "New replies",
     noReplies: "No replies yet",
-    openAttachment: "Open attachment",
+    openAttachment: "Open attachment {name}",
     problem: "Problem",
     question: "What would you like us to know?",
     refresh: "Refresh",
@@ -103,7 +105,7 @@ const messages: Record<FeedbackLocale, FeedbackMessages> = {
     reply: "Reply",
     retry: "Try again",
     retryUpload: "Retry upload",
-    screenshots: "Screenshots (up to 3)",
+    screenshots: "Screenshots (up to {count})",
     sendReply: "Send reply",
     sending: "Sending…",
     submit: "Submit feedback",
@@ -118,11 +120,11 @@ const messages: Record<FeedbackLocale, FeedbackMessages> = {
     replySent: "Reply sent",
     ticketUpdated: "Ticket updated",
     ticketHeading: "Feedback ticket",
-    unread: "unread",
+    unreadCount: "{count} unread",
     update: "Update",
     uploadCanceled: "Upload canceled",
     uploadFailed: "Upload failed",
-    uploadProgress: "upload progress",
+    uploadProgress: "Upload progress for {name}",
     you: "You",
   },
   "zh-CN": {
@@ -130,6 +132,7 @@ const messages: Record<FeedbackLocale, FeedbackMessages> = {
     attachmentTooLarge: "{name} 超过 10 MB。",
     attachmentTooMany: "最多选择 {count} 张截图。",
     attachmentUnsupported: "{name} 不是支持的图片格式。",
+    attachmentSummary: "{name} · {size}",
     attachments: "附件",
     back: "返回",
     cancel: "取消",
@@ -153,7 +156,7 @@ const messages: Record<FeedbackLocale, FeedbackMessages> = {
     newFeedback: "新建反馈",
     newReplies: "有新回复",
     noReplies: "暂无回复",
-    openAttachment: "打开附件",
+    openAttachment: "打开附件 {name}",
     problem: "问题",
     question: "你想告诉我们什么？",
     refresh: "刷新",
@@ -161,7 +164,7 @@ const messages: Record<FeedbackLocale, FeedbackMessages> = {
     reply: "回复",
     retry: "重试",
     retryUpload: "重试上传",
-    screenshots: "截图（最多 3 张）",
+    screenshots: "截图（最多 {count} 张）",
     sendReply: "发送回复",
     sending: "发送中…",
     submit: "提交反馈",
@@ -176,11 +179,11 @@ const messages: Record<FeedbackLocale, FeedbackMessages> = {
     replySent: "回复已发送",
     ticketUpdated: "工单已更新",
     ticketHeading: "反馈工单",
-    unread: "条未读",
+    unreadCount: "{count} 条未读",
     update: "更新",
     uploadCanceled: "上传已取消",
     uploadFailed: "上传失败",
-    uploadProgress: "上传进度",
+    uploadProgress: "{name} 的上传进度",
     you: "你",
   },
 };
@@ -194,8 +197,18 @@ export function resolveFeedbackLocale(
       ...(navigator.languages ?? []),
       navigator.language,
     ].filter(Boolean);
-    if (requested.some((value) => value.toLowerCase().startsWith("zh")))
-      return "zh-CN";
+    return resolveFeedbackLocaleFromPreferences(requested);
+  }
+  return "en";
+}
+
+export function resolveFeedbackLocaleFromPreferences(
+  preferences: readonly string[],
+): FeedbackLocale {
+  for (const value of preferences) {
+    const normalized = value.toLowerCase();
+    if (normalized.startsWith("en")) return "en";
+    if (normalized.startsWith("zh")) return "zh-CN";
   }
   return "en";
 }

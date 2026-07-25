@@ -27,6 +27,7 @@ type FeedbackContextValue = {
   locale: FeedbackLocale;
   message(key: FeedbackMessageKey, values?: FeedbackMessageValues): string;
   formatDate(value: number): string;
+  formatFileSize(value: number): string;
   unreadTotal: number | null;
   reportUnread(change: FeedbackUnreadChange): void;
 };
@@ -52,6 +53,11 @@ export type FeedbackProviderProps = {
   messages?: Partial<FeedbackMessages>;
   /** Override date/time presentation while retaining the resolved SDK locale. */
   formatDate?: (value: Date, context: { locale: FeedbackLocale }) => string;
+  /** Override attachment size presentation for the selected locale. */
+  formatFileSize?: (
+    bytes: number,
+    context: { locale: FeedbackLocale },
+  ) => string;
   onUnreadChanged?: (change: FeedbackUnreadChange) => void;
   children: ReactNode;
 };
@@ -62,6 +68,7 @@ export function FeedbackProvider({
   locale: localeOverride,
   messages,
   formatDate: formatDateOverride,
+  formatFileSize: formatFileSizeOverride,
   onUnreadChanged,
   children,
 }: FeedbackProviderProps) {
@@ -80,6 +87,17 @@ export function FeedbackProvider({
         timeStyle: "short",
       }).format(new Date(value)),
     [formatDateOverride, locale],
+  );
+  const formatFileSize = useCallback(
+    (bytes: number) =>
+      formatFileSizeOverride?.(bytes, { locale }) ??
+      new Intl.NumberFormat(locale, {
+        style: "unit",
+        unit: "kilobyte",
+        unitDisplay: "short",
+        maximumFractionDigits: 0,
+      }).format(Math.ceil(bytes / 1024)),
+    [formatFileSizeOverride, locale],
   );
   const lastReported = useRef<{
     transport: HandsFeedbackTransport;
@@ -108,10 +126,20 @@ export function FeedbackProvider({
       locale,
       message,
       formatDate,
+      formatFileSize,
       unreadTotal,
       reportUnread,
     }),
-    [transport, theme, locale, message, formatDate, unreadTotal, reportUnread],
+    [
+      transport,
+      theme,
+      locale,
+      message,
+      formatDate,
+      formatFileSize,
+      unreadTotal,
+      reportUnread,
+    ],
   );
   return (
     <FeedbackContext.Provider value={value}>

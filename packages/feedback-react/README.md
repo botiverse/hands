@@ -45,7 +45,9 @@ SDK locale. Supported locales are `en` and `zh-CN`; an explicit provider
 Localization is provider-driven rather than limited to the built-in bundles.
 `messages` accepts a typed partial override (missing keys fall back to the
 resolved locale), including parameterized validation strings. `formatDate`
-lets the host apply its own date/time conventions without rebuilding SDK UI:
+and `formatFileSize` let the host apply its own formatting conventions without
+rebuilding SDK UI. Browser negotiation selects the first supported entry in
+`navigator.languages` order, then falls back to English.
 
 ```tsx
 <FeedbackProvider
@@ -56,6 +58,7 @@ lets the host apply its own date/time conventions without rebuilding SDK UI:
     attachmentUnsupported: t("feedback.attachmentUnsupported"), // `{name}`
   }}
   formatDate={(date, { locale }) => appDateFormatter(date, locale)}
+  formatFileSize={(bytes, { locale }) => appFileSizeFormatter(bytes, locale)}
 >
   <FeedbackWorkspace />
 </FeedbackProvider>

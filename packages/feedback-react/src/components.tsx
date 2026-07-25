@@ -346,7 +346,9 @@ export function FeedbackInbox({
                     {ticket.unread && (
                       <span
                         className="hands-feedback-unread-dot"
-                        aria-label={`${ticket.unreadCount} ${message("unread")}`}
+                        aria-label={message("unreadCount", {
+                          count: ticket.unreadCount,
+                        })}
                       />
                     )}
                     <StatusBadge status={ticket.status} />
@@ -393,7 +395,8 @@ export function FeedbackTicket({
   onDraftChange,
   onReadSuccess,
 }: FeedbackTicketProps) {
-  const { formatDate, message, reportUnread, transport } = useHandsFeedback();
+  const { formatDate, formatFileSize, message, reportUnread, transport } =
+    useHandsFeedback();
   const safeError = useSafeError();
   const [detail, setDetail] = useState<FeedbackTicketDetail | null>(null);
   const [internalDraft, setInternalDraft] = useState("");
@@ -591,7 +594,9 @@ export function FeedbackTicket({
                     key={attachment.id}
                     type="button"
                     disabled={!onOpenAttachment}
-                    aria-label={`${message("openAttachment")} ${attachment.filename}`}
+                    aria-label={message("openAttachment", {
+                      name: attachment.filename,
+                    })}
                     onClick={() =>
                       onOpenAttachment?.({
                         ticketId,
@@ -599,8 +604,10 @@ export function FeedbackTicket({
                       })
                     }
                   >
-                    {attachment.filename} ·{" "}
-                    {Math.ceil(attachment.sizeBytes / 1024)} KB
+                    {message("attachmentSummary", {
+                      name: attachment.filename,
+                      size: formatFileSize(attachment.sizeBytes),
+                    })}
                   </button>
                 ))}
               </div>
@@ -736,7 +743,16 @@ export function NewFeedback({ onCancel, onCreated }: NewFeedbackProps) {
     null,
   );
   const textareaRef = useAutosize(message);
-  useEffect(() => () => actionController.current?.abort(), []);
+  useEffect(() => {
+    actionController.current?.abort();
+    actionController.current = null;
+    createSubmission.current = null;
+    setSending(false);
+    setAttachments((current) =>
+      current.map((item) => ({ ...item, state: "ready", progress: 0 })),
+    );
+    return () => actionController.current?.abort();
+  }, [transport]);
 
   const submit = async () => {
     const normalized = message.trim();
@@ -886,7 +902,7 @@ export function NewFeedback({ onCancel, onCreated }: NewFeedbackProps) {
           rows={2}
         />
         <label htmlFor="hands-feedback-attachments">
-          {copy("screenshots")}
+          {copy("screenshots", { count: MAX_FEEDBACK_ATTACHMENTS })}
         </label>
         <Input
           id="hands-feedback-attachments"
@@ -905,7 +921,9 @@ export function NewFeedback({ onCancel, onCreated }: NewFeedbackProps) {
                   <progress
                     max={1}
                     value={item.progress || undefined}
-                    aria-label={`${item.file.name} ${copy("uploadProgress")}`}
+                    aria-label={copy("uploadProgress", {
+                      name: item.file.name,
+                    })}
                   />
                 )}
                 {item.state === "failed" && (
@@ -994,25 +1012,30 @@ export function FeedbackWorkspace({
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [readTicketId, setReadTicketId] = useState<string | null>(null);
   const originTicket = useRef<string | null>(initialTicketId ?? null);
+  const pendingInboxFocus = useRef<string | null>(null);
   const rootRef = useRef<HTMLDivElement | null>(null);
   const navigate = (next: FeedbackWorkspaceRoute) => {
     if (!controlledRoute) setInternalRoute(next);
     onRouteChange?.(next);
   };
   const back = () => {
-    const focusId = originTicket.current;
+    pendingInboxFocus.current = originTicket.current ?? "";
     navigate({ view: "inbox" });
-    requestAnimationFrame(() =>
-      Array.from(
-        rootRef.current?.querySelectorAll<HTMLElement>("[data-ticket-id]") ??
-          [],
-      )
-        .find((element) => element.dataset.ticketId === focusId)
-        ?.focus(),
-    );
   };
   useEffect(() => {
-    if (route.view !== "inbox")
+    if (route.view === "inbox" && pendingInboxFocus.current !== null) {
+      const focusId = pendingInboxFocus.current;
+      pendingInboxFocus.current = null;
+      requestAnimationFrame(() => {
+        const root = rootRef.current;
+        const row = Array.from(
+          root?.querySelectorAll<HTMLElement>("[data-ticket-id]") ?? [],
+        ).find((element) => element.dataset.ticketId === focusId);
+        (
+          row ?? root?.querySelector<HTMLElement>("[data-feedback-list-scroll]")
+        )?.focus();
+      });
+    } else if (route.view !== "inbox")
       requestAnimationFrame(() =>
         rootRef.current
           ?.querySelector<HTMLElement>("section:not([hidden]) h2")
