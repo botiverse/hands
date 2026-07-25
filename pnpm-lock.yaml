@@ -127,6 +127,30 @@ importers:
         specifier: ^2.1.9
         version: 2.1.9(@types/node@22.20.0)(lightningcss@1.32.0)
 
+  packages/feedback-react:
+    devDependencies:
+      '@types/react':
+        specifier: ^19.2.17
+        version: 19.2.17
+      '@types/react-dom':
+        specifier: ^19.2.3
+        version: 19.2.3(@types/react@19.2.17)
+      raft-ui:
+        specifier: ^0.0.18
+        version: 0.0.18(@types/react-dom@19.2.3(@types/react@19.2.17))(@types/react@19.2.17)(react-dom@19.2.7(react@19.2.7))(react@19.2.7)(tailwindcss@4.3.2)
+      react:
+        specifier: ^19.2.7
+        version: 19.2.7
+      react-dom:
+        specifier: ^19.2.7
+        version: 19.2.7(react@19.2.7)
+      typescript:
+        specifier: ^5.9.3
+        version: 5.9.3
+      vitest:
+        specifier: ^2.1.9
+        version: 2.1.9(@types/node@24.13.2)(lightningcss@1.32.0)
+
   packages/node:
     devDependencies:
       '@types/node':
