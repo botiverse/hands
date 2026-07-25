@@ -13,7 +13,12 @@ export type {
 } from "./components.js";
 export { FeedbackProvider, useHandsFeedback } from "./provider.js";
 export type { FeedbackProviderProps } from "./provider.js";
-export { resolveFeedbackLocale } from "./locale.js";
+export { feedbackMessage, resolveFeedbackLocale } from "./locale.js";
+export type {
+  FeedbackMessageKey,
+  FeedbackMessages,
+  FeedbackMessageValues,
+} from "./locale.js";
 export { FeedbackTransportError } from "./types.js";
 export type {
   AddFeedbackCommentInput,

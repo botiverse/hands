@@ -14,7 +14,7 @@ import {
   nextUnreadReport,
   useHandsFeedback,
 } from "./provider.js";
-import { resolveFeedbackLocale } from "./locale.js";
+import { feedbackMessage, resolveFeedbackLocale } from "./locale.js";
 import type { HandsFeedbackTransport } from "./types.js";
 
 const transport = {} as HandsFeedbackTransport;
@@ -43,6 +43,14 @@ describe("FeedbackProvider", () => {
     );
     expect(html).toContain("新建反馈");
     expect(resolveFeedbackLocale("en")).toBe("en");
+    expect(
+      feedbackMessage(
+        "en",
+        "attachmentTooMany",
+        { attachmentTooMany: "Limit {count}" },
+        { count: 3 },
+      ),
+    ).toBe("Limit 3");
   });
 
   it("renders the ticket inbox as the landing surface", () => {

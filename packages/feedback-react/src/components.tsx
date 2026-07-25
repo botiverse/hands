@@ -16,7 +16,7 @@ import {
   Input,
   Skeleton,
 } from "raft-ui";
-import { feedbackErrorMessage, feedbackStatusLabel } from "./locale.js";
+import type { FeedbackMessageKey, FeedbackMessageValues } from "./locale.js";
 import { useHandsFeedback } from "./provider.js";
 import { FeedbackTransportError } from "./types.js";
 import type {
@@ -68,18 +68,21 @@ export function validateFeedbackAttachments(files: File[]): string | null {
   return null;
 }
 
-function localizedAttachmentError(files: File[], locale: "en" | "zh-CN") {
+function localizedAttachmentError(
+  files: File[],
+  message: (key: FeedbackMessageKey, values?: FeedbackMessageValues) => string,
+) {
   const error = validateFeedbackAttachments(files);
-  if (!error || locale === "en") return error;
+  if (!error) return null;
   if (files.length > MAX_FEEDBACK_ATTACHMENTS)
-    return `最多选择 ${MAX_FEEDBACK_ATTACHMENTS} 张截图。`;
+    return message("attachmentTooMany", { count: MAX_FEEDBACK_ATTACHMENTS });
   const invalid = files.find(
     (file) =>
       !(FEEDBACK_ATTACHMENT_TYPES as readonly string[]).includes(file.type),
   );
-  if (invalid) return `${invalid.name} 不是支持的图片格式。`;
+  if (invalid) return message("attachmentUnsupported", { name: invalid.name });
   const large = files.find((file) => file.size > MAX_FEEDBACK_ATTACHMENT_BYTES);
-  return large ? `${large.name} 超过 10 MB。` : error;
+  return large ? message("attachmentTooLarge", { name: large.name }) : error;
 }
 
 function submissionId() {
@@ -105,14 +108,24 @@ export function isNearConversationBottom(
 }
 
 function useSafeError() {
-  const { locale } = useHandsFeedback();
+  const { message } = useHandsFeedback();
   return useCallback(
-    (error: unknown) =>
-      feedbackErrorMessage(
-        locale,
-        error instanceof FeedbackTransportError ? error.code : undefined,
-      ),
-    [locale],
+    (error: unknown) => {
+      const keys = {
+        conflict: "errorConflict",
+        invalid: "errorInvalid",
+        not_found: "errorNotFound",
+        rate_limited: "errorRateLimited",
+        unauthorized: "errorUnauthorized",
+        unavailable: "errorUnavailable",
+      } as const;
+      return message(
+        error instanceof FeedbackTransportError
+          ? keys[error.code]
+          : "errorUnavailable",
+      );
+    },
+    [message],
   );
 }
 
@@ -128,22 +141,31 @@ function useAutosize(value: string) {
 }
 
 function StatusBadge({ status }: { status: FeedbackTicketSummary["status"] }) {
-  const { locale } = useHandsFeedback();
+  const { message } = useHandsFeedback();
+  const label = message(
+    status === "in_progress"
+      ? "statusInProgress"
+      : status === "resolved"
+        ? "statusResolved"
+        : status === "closed"
+          ? "statusClosed"
+          : "statusOpen",
+  );
   if (status === "in_progress")
     return (
       <Badge variant="information" uppercase={false}>
-        {feedbackStatusLabel(locale, status)}
+        {label}
       </Badge>
     );
   if (status === "resolved")
     return (
       <Badge variant="success" uppercase={false}>
-        {feedbackStatusLabel(locale, status)}
+        {label}
       </Badge>
     );
   return (
     <Badge appearance="outline" uppercase={false}>
-      {feedbackStatusLabel(locale, status)}
+      {label}
     </Badge>
   );
 }
@@ -163,7 +185,7 @@ export function FeedbackInbox({
   hidden = false,
   readTicketId,
 }: FeedbackInboxProps) {
-  const { locale, message, reportUnread, transport } = useHandsFeedback();
+  const { formatDate, message, reportUnread, transport } = useHandsFeedback();
   const safeError = useSafeError();
   const [tickets, setTickets] = useState<FeedbackTicketSummary[]>([]);
   const [filter, setFilter] = useState<"all" | "open" | "resolved">("all");
@@ -210,14 +232,16 @@ export function FeedbackInbox({
     },
     [pageSize, reportUnread, safeError, transport],
   );
+  const initialLoad = useRef(load);
+  initialLoad.current = load;
 
   useEffect(() => {
-    void load();
+    void initialLoad.current();
     return () => {
       controllerRef.current?.abort();
       request.current += 1;
     };
-  }, [load]);
+  }, [pageSize, transport]);
 
   useEffect(() => {
     if (!readTicketId) return;
@@ -264,10 +288,8 @@ export function FeedbackInbox({
             onClick={() => setFilter(value)}
           >
             {value === "all"
-              ? locale === "zh-CN"
-                ? "全部"
-                : "All"
-              : feedbackStatusLabel(locale, value)}
+              ? message("all")
+              : message(value === "open" ? "statusOpen" : "statusResolved")}
           </Button>
         ))}
       </div>
@@ -317,11 +339,7 @@ export function FeedbackInbox({
                       {ticket.kind === "bug"
                         ? message("problem")
                         : message("feedback")}{" "}
-                      ·{" "}
-                      {new Intl.DateTimeFormat(locale, {
-                        dateStyle: "medium",
-                        timeStyle: "short",
-                      }).format(new Date(ticket.updatedAt))}
+                      · {formatDate(ticket.updatedAt)}
                     </span>
                   </span>
                   <span className="hands-feedback-ticket-state">
@@ -375,7 +393,7 @@ export function FeedbackTicket({
   onDraftChange,
   onReadSuccess,
 }: FeedbackTicketProps) {
-  const { locale, message, reportUnread, transport } = useHandsFeedback();
+  const { formatDate, message, reportUnread, transport } = useHandsFeedback();
   const safeError = useSafeError();
   const [detail, setDetail] = useState<FeedbackTicketDetail | null>(null);
   const [internalDraft, setInternalDraft] = useState("");
@@ -460,25 +478,19 @@ export function FeedbackTicket({
         }
       }
     },
-    [
-      locale,
-      message,
-      onReadSuccess,
-      reportUnread,
-      safeError,
-      ticketId,
-      transport,
-    ],
+    [message, onReadSuccess, reportUnread, safeError, ticketId, transport],
   );
+  const initialLoad = useRef(load);
+  initialLoad.current = load;
 
   useEffect(() => {
-    void load();
+    void initialLoad.current();
     return () => {
       loadController.current?.abort();
       actionController.current?.abort();
       loadRequest.current += 1;
     };
-  }, [load]);
+  }, [ticketId, transport]);
 
   useLayoutEffect(() => {
     if (scrollIntent.current === "bottom" && conversationRef.current)
@@ -567,12 +579,7 @@ export function FeedbackTicket({
           <>
             <div className="hands-feedback-ticket-body">
               <h3>{detail.ticket.message}</h3>
-              <span>
-                {new Intl.DateTimeFormat(locale, {
-                  dateStyle: "medium",
-                  timeStyle: "short",
-                }).format(new Date(detail.ticket.createdAt))}
-              </span>
+              <span>{formatDate(detail.ticket.createdAt)}</span>
             </div>
             {detail.attachments.length > 0 && (
               <div
@@ -632,12 +639,7 @@ export function FeedbackTicket({
                           ? message("team")
                           : message("update")}
                     </strong>
-                    <span>
-                      {new Intl.DateTimeFormat(locale, {
-                        dateStyle: "medium",
-                        timeStyle: "short",
-                      }).format(new Date(comment.createdAt))}
-                    </span>
+                    <span>{formatDate(comment.createdAt)}</span>
                   </div>
                   <p>{comment.body}</p>
                 </article>
@@ -721,7 +723,7 @@ export type NewFeedbackProps = {
 };
 
 export function NewFeedback({ onCancel, onCreated }: NewFeedbackProps) {
-  const { locale, message: copy, reportUnread, transport } = useHandsFeedback();
+  const { message: copy, reportUnread, transport } = useHandsFeedback();
   const safeError = useSafeError();
   const [kind, setKind] = useState<FeedbackKind>("feedback");
   const [message, setMessage] = useState("");
@@ -740,7 +742,7 @@ export function NewFeedback({ onCancel, onCreated }: NewFeedbackProps) {
     const normalized = message.trim();
     if (!normalized || sending) return;
     const files = attachments.map(({ file }) => file);
-    const attachmentError = localizedAttachmentError(files, locale);
+    const attachmentError = localizedAttachmentError(files, copy);
     if (attachmentError) {
       setError(attachmentError);
       return;
@@ -809,7 +811,7 @@ export function NewFeedback({ onCancel, onCreated }: NewFeedbackProps) {
   const choose = (event: ChangeEvent<HTMLInputElement>) => {
     const selected = Array.from(event.currentTarget.files ?? []);
     const combined = [...attachments.map(({ file }) => file), ...selected];
-    const attachmentError = localizedAttachmentError(combined, locale);
+    const attachmentError = localizedAttachmentError(combined, copy);
     if (attachmentError) {
       setError(attachmentError);
       event.currentTarget.value = "";

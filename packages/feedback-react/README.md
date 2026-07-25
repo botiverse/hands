@@ -42,6 +42,25 @@ All visible copy, closed error copy, dates, and accessibility labels share the
 SDK locale. Supported locales are `en` and `zh-CN`; an explicit provider
 `locale` takes precedence over browser language detection.
 
+Localization is provider-driven rather than limited to the built-in bundles.
+`messages` accepts a typed partial override (missing keys fall back to the
+resolved locale), including parameterized validation strings. `formatDate`
+lets the host apply its own date/time conventions without rebuilding SDK UI:
+
+```tsx
+<FeedbackProvider
+  transport={transport}
+  locale={appLocale}
+  messages={{
+    newFeedback: t("feedback.new"),
+    attachmentUnsupported: t("feedback.attachmentUnsupported"), // `{name}`
+  }}
+  formatDate={(date, { locale }) => appDateFormatter(date, locale)}
+>
+  <FeedbackWorkspace />
+</FeedbackProvider>
+```
+
 ## Security boundary
 
 - The package has no `appToken`, `clientSecret`, `reporterId`, or arbitrary

@@ -58,6 +58,64 @@ function transport(): HandsFeedbackTransport {
 }
 
 describe("FeedbackWorkspace browser behavior", () => {
+  it("supports host copy and date localization overrides through one provider contract", async () => {
+    const adapter = transport();
+    render(
+      <FeedbackProvider
+        transport={adapter}
+        messages={{
+          newFeedback: "Create report",
+          statusFilter: "Ticket state",
+          unread: "new items",
+        }}
+        formatDate={(value, { locale }) => `DATE:${locale}:${value.getTime()}`}
+      >
+        <FeedbackWorkspace />
+      </FeedbackProvider>,
+    );
+    expect(await screen.findByText(ticket.message)).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Create report" })).toBeTruthy();
+    expect(screen.getByRole("group", { name: "Ticket state" })).toBeTruthy();
+    expect(screen.getByLabelText("2 new items")).toBeTruthy();
+    expect(screen.getByText("DATE:en:2", { exact: false })).toBeTruthy();
+  });
+
+  it("localizes closed errors and parameterized attachment validation through message overrides", async () => {
+    const adapter = transport();
+    adapter.listTickets = vi.fn(async () => {
+      throw new Error("hidden");
+    });
+    const list = render(
+      <FeedbackProvider
+        transport={adapter}
+        messages={{ errorUnavailable: "Localized safe failure" }}
+      >
+        <FeedbackWorkspace />
+      </FeedbackProvider>,
+    );
+    expect((await screen.findByRole("alert")).textContent).toContain(
+      "Localized safe failure",
+    );
+    list.unmount();
+
+    render(
+      <FeedbackProvider
+        transport={transport()}
+        messages={{ attachmentUnsupported: "Unsupported: {name}" }}
+      >
+        <FeedbackWorkspace />
+      </FeedbackProvider>,
+    );
+    fireEvent.click(await screen.findByText("New feedback"));
+    const file = new File(["text"], "notes.txt", { type: "text/plain" });
+    fireEvent.change(screen.getByLabelText("Screenshots (up to 3)"), {
+      target: { files: [file] },
+    });
+    expect((await screen.findByRole("alert")).textContent).toContain(
+      "Unsupported: notes.txt",
+    );
+  });
+
   it("lands on the Hands-backed list and reports authoritative unread changes", async () => {
     const adapter = transport();
     const onUnreadChanged = vi.fn();

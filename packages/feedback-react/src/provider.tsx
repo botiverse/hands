@@ -17,13 +17,16 @@ import {
   feedbackMessage,
   resolveFeedbackLocale,
   type FeedbackMessageKey,
+  type FeedbackMessages,
+  type FeedbackMessageValues,
 } from "./locale.js";
 
 type FeedbackContextValue = {
   transport: HandsFeedbackTransport;
   theme: FeedbackTheme;
   locale: FeedbackLocale;
-  message(key: FeedbackMessageKey): string;
+  message(key: FeedbackMessageKey, values?: FeedbackMessageValues): string;
+  formatDate(value: number): string;
   unreadTotal: number | null;
   reportUnread(change: FeedbackUnreadChange): void;
 };
@@ -45,6 +48,10 @@ export type FeedbackProviderProps = {
   theme?: FeedbackTheme;
   /** Defaults to browser language (`zh*` -> `zh-CN`, otherwise `en`). */
   locale?: FeedbackLocale;
+  /** Partial copy override; missing keys fall back to the selected SDK locale. */
+  messages?: Partial<FeedbackMessages>;
+  /** Override date/time presentation while retaining the resolved SDK locale. */
+  formatDate?: (value: Date, context: { locale: FeedbackLocale }) => string;
   onUnreadChanged?: (change: FeedbackUnreadChange) => void;
   children: ReactNode;
 };
@@ -53,14 +60,26 @@ export function FeedbackProvider({
   transport,
   theme = "elegant",
   locale: localeOverride,
+  messages,
+  formatDate: formatDateOverride,
   onUnreadChanged,
   children,
 }: FeedbackProviderProps) {
   const [unreadTotal, setUnreadTotal] = useState<number | null>(null);
   const locale = resolveFeedbackLocale(localeOverride);
   const message = useCallback(
-    (key: FeedbackMessageKey) => feedbackMessage(locale, key),
-    [locale],
+    (key: FeedbackMessageKey, values?: FeedbackMessageValues) =>
+      feedbackMessage(locale, key, messages, values),
+    [locale, messages],
+  );
+  const formatDate = useCallback(
+    (value: number) =>
+      formatDateOverride?.(new Date(value), { locale }) ??
+      new Intl.DateTimeFormat(locale, {
+        dateStyle: "medium",
+        timeStyle: "short",
+      }).format(new Date(value)),
+    [formatDateOverride, locale],
   );
   const lastReported = useRef<{
     transport: HandsFeedbackTransport;
@@ -88,10 +107,11 @@ export function FeedbackProvider({
       theme,
       locale,
       message,
+      formatDate,
       unreadTotal,
       reportUnread,
     }),
-    [transport, theme, locale, message, unreadTotal, reportUnread],
+    [transport, theme, locale, message, formatDate, unreadTotal, reportUnread],
   );
   return (
     <FeedbackContext.Provider value={value}>

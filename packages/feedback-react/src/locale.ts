@@ -5,12 +5,22 @@ import type {
 } from "./types.js";
 
 export type FeedbackMessageKey =
+  | "all"
+  | "attachmentTooLarge"
+  | "attachmentTooMany"
+  | "attachmentUnsupported"
   | "attachments"
   | "back"
   | "cancel"
   | "conversation"
   | "emptyBody"
   | "emptyTitle"
+  | "errorConflict"
+  | "errorInvalid"
+  | "errorNotFound"
+  | "errorRateLimited"
+  | "errorUnauthorized"
+  | "errorUnavailable"
   | "feedback"
   | "feedbackType"
   | "inboxDescription"
@@ -36,6 +46,10 @@ export type FeedbackMessageKey =
   | "submit"
   | "submitting"
   | "statusFilter"
+  | "statusClosed"
+  | "statusInProgress"
+  | "statusOpen"
+  | "statusResolved"
   | "team"
   | "feedbackCreated"
   | "replySent"
@@ -48,14 +62,28 @@ export type FeedbackMessageKey =
   | "uploadProgress"
   | "you";
 
-const messages: Record<FeedbackLocale, Record<FeedbackMessageKey, string>> = {
+export type FeedbackMessages = Record<FeedbackMessageKey, string>;
+export type FeedbackMessageValues = Record<string, string | number>;
+
+const messages: Record<FeedbackLocale, FeedbackMessages> = {
   en: {
+    all: "All",
+    attachmentTooLarge: "{name} is larger than 10 MB.",
+    attachmentTooMany: "Choose no more than {count} screenshots.",
+    attachmentUnsupported: "{name} is not a supported image.",
     attachments: "Attachments",
     back: "Back",
     cancel: "Cancel",
     conversation: "Conversation",
     emptyBody: "Send your first idea or report a problem.",
     emptyTitle: "No feedback yet",
+    errorConflict: "This retry no longer matches the original request.",
+    errorInvalid: "Check the feedback details and try again.",
+    errorNotFound: "This feedback ticket is no longer available.",
+    errorRateLimited: "Too many feedback requests. Try again later.",
+    errorUnauthorized:
+      "Your feedback session expired. Reopen feedback and try again.",
+    errorUnavailable: "Feedback is temporarily unavailable.",
     feedback: "Feedback",
     feedbackType: "Feedback type",
     inboxDescription: "Your feedback and replies from the team.",
@@ -81,6 +109,10 @@ const messages: Record<FeedbackLocale, Record<FeedbackMessageKey, string>> = {
     submit: "Submit feedback",
     submitting: "Submitting…",
     statusFilter: "Status filter",
+    statusClosed: "Closed",
+    statusInProgress: "In progress",
+    statusOpen: "Open",
+    statusResolved: "Resolved",
     team: "Team",
     feedbackCreated: "Feedback created",
     replySent: "Reply sent",
@@ -94,12 +126,22 @@ const messages: Record<FeedbackLocale, Record<FeedbackMessageKey, string>> = {
     you: "You",
   },
   "zh-CN": {
+    all: "全部",
+    attachmentTooLarge: "{name} 超过 10 MB。",
+    attachmentTooMany: "最多选择 {count} 张截图。",
+    attachmentUnsupported: "{name} 不是支持的图片格式。",
     attachments: "附件",
     back: "返回",
     cancel: "取消",
     conversation: "对话",
     emptyBody: "提交第一个想法或问题。",
     emptyTitle: "暂无反馈",
+    errorConflict: "本次重试与原请求不一致。",
+    errorInvalid: "请检查反馈内容后重试。",
+    errorNotFound: "该反馈工单已不可用。",
+    errorRateLimited: "请求过于频繁，请稍后重试。",
+    errorUnauthorized: "反馈会话已过期，请重新打开后重试。",
+    errorUnavailable: "反馈服务暂时不可用。",
     feedback: "反馈",
     feedbackType: "反馈类型",
     inboxDescription: "你的反馈和团队回复。",
@@ -125,6 +167,10 @@ const messages: Record<FeedbackLocale, Record<FeedbackMessageKey, string>> = {
     submit: "提交反馈",
     submitting: "提交中…",
     statusFilter: "状态筛选",
+    statusClosed: "已关闭",
+    statusInProgress: "处理中",
+    statusOpen: "待处理",
+    statusResolved: "已解决",
     team: "团队",
     feedbackCreated: "反馈已创建",
     replySent: "回复已发送",
@@ -157,8 +203,14 @@ export function resolveFeedbackLocale(
 export function feedbackMessage(
   locale: FeedbackLocale,
   key: FeedbackMessageKey,
+  overrides?: Partial<FeedbackMessages>,
+  values?: FeedbackMessageValues,
 ): string {
-  return messages[locale][key];
+  const template = overrides?.[key] ?? messages[locale][key];
+  if (!values) return template;
+  return template.replace(/\{([^}]+)\}/g, (match, name: string) =>
+    Object.hasOwn(values, name) ? String(values[name]) : match,
+  );
 }
 
 export function feedbackStatusLabel(
@@ -186,32 +238,13 @@ export function feedbackErrorMessage(
   locale: FeedbackLocale,
   code?: FeedbackTransportErrorCode,
 ): string {
-  const fallback =
-    locale === "zh-CN"
-      ? "反馈服务暂时不可用。"
-      : "Feedback is temporarily unavailable.";
-  if (!code) return fallback;
-  const copy: Record<
-    FeedbackLocale,
-    Record<FeedbackTransportErrorCode, string>
-  > = {
-    en: {
-      conflict: "This retry no longer matches the original request.",
-      invalid: "Check the feedback details and try again.",
-      not_found: "This feedback ticket is no longer available.",
-      rate_limited: "Too many feedback requests. Try again later.",
-      unauthorized:
-        "Your feedback session expired. Reopen feedback and try again.",
-      unavailable: fallback,
-    },
-    "zh-CN": {
-      conflict: "本次重试与原请求不一致。",
-      invalid: "请检查反馈内容后重试。",
-      not_found: "该反馈工单已不可用。",
-      rate_limited: "请求过于频繁，请稍后重试。",
-      unauthorized: "反馈会话已过期，请重新打开后重试。",
-      unavailable: fallback,
-    },
+  const keys: Record<FeedbackTransportErrorCode, FeedbackMessageKey> = {
+    conflict: "errorConflict",
+    invalid: "errorInvalid",
+    not_found: "errorNotFound",
+    rate_limited: "errorRateLimited",
+    unauthorized: "errorUnauthorized",
+    unavailable: "errorUnavailable",
   };
-  return copy[locale][code];
+  return feedbackMessage(locale, code ? keys[code] : "errorUnavailable");
 }
