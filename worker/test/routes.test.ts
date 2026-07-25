@@ -8797,6 +8797,46 @@ describe("Hands iOS simulator QA artifacts", () => {
         path: "/api/apps/{app_id}/reporter-integrations/{reporter_integration_id}/webhooks/{webhook_id}",
       },
     });
+    expect(byName["list-reporter-integrations"].endpoint).toEqual({
+      method: "GET",
+      path: "/api/apps/{app_id}/reporter-integrations",
+    });
+    expect(byName["create-reporter-integration"]).toMatchObject({
+      endpoint: { method: "POST", path: "/api/apps/{app_id}/reporter-integrations" },
+      parameters: {
+        app_id: { type: "string", in: "path", required: true },
+        name: { type: "string", in: "body", required: true },
+      },
+    });
+    expect(byName["update-reporter-integration"]).toMatchObject({
+      endpoint: {
+        method: "PATCH",
+        path: "/api/apps/{app_id}/reporter-integrations/{reporter_integration_id}",
+      },
+      parameters: {
+        app_id: { type: "string", in: "path", required: true },
+        reporter_integration_id: { type: "string", in: "path", required: true },
+        archived: { type: "boolean", in: "body", required: true },
+      },
+    });
+    expect(byName["list-webhooks"].endpoint).toEqual({
+      method: "GET",
+      path: "/api/orgs/{org_id}/webhooks",
+    });
+    expect(byName["create-webhook"]).toMatchObject({
+      endpoint: { method: "POST", path: "/api/orgs/{org_id}/webhooks" },
+      parameters: {
+        org_id: { type: "string", in: "path", required: true },
+        url: { type: "string", in: "body", required: true },
+        secret: { type: "string", in: "body", required: true },
+        events: { type: "array", in: "body", required: false },
+        app_id: { type: "string", in: "body", required: false },
+      },
+    });
+    expect(byName["delete-webhook"].endpoint).toEqual({
+      method: "DELETE",
+      path: "/api/orgs/{org_id}/webhooks/{webhook_id}",
+    });
     expect(byName["get-reporter-feedback-metadata"]).toMatchObject({
       endpoint: { method: "GET", path: "/api/apps/{app_id}/reporter-feedback-metadata" },
       parameters: {
