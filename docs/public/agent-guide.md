@@ -122,11 +122,13 @@ raft integration invoke --service <hands-service> --action create-release \
 # attach reviewed bilingual notes (change-logs/<version>/*.md is the source of truth)
 raft integration invoke --service <hands-service> --action update-release \
   --param app_id=<app-uuid> --param release_id=<release-uuid> \
+  --param expected_revision=<fresh-detail-revision> \
   --param release_notes='{"en":"...","zh-CN":"..."}'
 
 # ONLY after explicit human approval of the draft:
 raft integration invoke --service <hands-service> --action publish-release \
   --param app_id=<app-uuid> --param release_id=<release-uuid> \
+  --param expected_revision=<same-fresh-detail-revision> \
   --param expected_scopes='[{"scope_type":"full","scope_value":"all"}]'
 ```
 
@@ -147,8 +149,11 @@ hands releases update <app> <releaseId> \
 hands releases publish <app> <releaseId>              # explicit go-live
 ```
 
-Always derive `expected_scopes` from fresh release detail immediately before
-publish. The transition compares the complete set atomically. For a staged
+Always derive `expected_revision` and `expected_scopes` from the same fresh
+release detail immediately before a write. Every lifecycle mutation increments
+the revision; a stale write returns `409 RELEASE_REVISION_CONFLICT` with zero
+release, scope, fallback, or audit effects. Publish also compares the complete
+scope set atomically. For a staged
 full rollout with mandatory acceptance devices, keep one release and set
 `scopes` to `full:all` plus each `device_group`; group members always receive
 the target while other identified clients remain percentage-gated. Raise

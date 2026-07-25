@@ -65,6 +65,7 @@ interface ReleaseUpdateInput {
   // without deleting it. Editable even on locked (superseded/cancelled)
   // releases so junk/duplicate old entries can be cleaned from the changelog.
   hidden?: boolean;
+  expected_revision?: number;
 }
 
 interface ReleaseRow {
@@ -76,6 +77,7 @@ interface ReleaseRow {
   release_type: string;
   status: string;
   activated_at: number | null;
+  revision: number;
   is_full: number;
   superseded_by_release_id: string | null;
   rollout_cohort_count: number | null;
@@ -87,6 +89,16 @@ interface ReleaseRow {
   created_by: string;
   created_at: number;
   updated_at: number;
+}
+
+interface ExternalTargetGatePlan {
+  buildId: string;
+  expectedFreezeToken: string | null;
+  expectedRequiredTargetsJson: string | null;
+  nextFreezeToken: string;
+  nextRequiredTargetsJson: string;
+  requiredTargets: string[];
+  freezesBuild: boolean;
 }
 
 function jsonString(value: unknown, fallback: Record<string, unknown> | unknown[] = {}): string {
@@ -229,22 +241,6 @@ function validateRolloutCohortCount(value: number | null | undefined): void {
   }
 }
 
-async function insertAuditLog(
-  db: D1Database,
-  appId: string,
-  action: string,
-  actor: string,
-  payload: unknown,
-  now = Date.now(),
-) {
-  await db
-    .prepare(
-      "INSERT INTO audit_logs (id, app_id, action, actor, payload, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-    )
-    .bind(crypto.randomUUID(), appId, action, actor, JSON.stringify(payload), now)
-    .run();
-}
-
 function releaseStatus(inputStatus: ReleaseInput["status"] | undefined): "draft" | "active" {
   if (!inputStatus) return "active";
   if (inputStatus !== "draft" && inputStatus !== "active") {
@@ -268,6 +264,157 @@ function withReleaseNotes<T extends { changelog?: string | null }>(
     ...row,
     release_notes: parseReleaseNotes(row.changelog ?? null),
   };
+}
+
+class ReleaseRevisionConflictError extends Error {
+  readonly code = "RELEASE_REVISION_CONFLICT";
+
+  constructor(
+    readonly expectedRevision: number,
+    readonly currentRevision: number | null,
+  ) {
+    super(
+      currentRevision === null
+        ? "release disappeared during mutation"
+        : `release revision changed: expected ${expectedRevision}, current ${currentRevision}`,
+    );
+    this.name = "ReleaseRevisionConflictError";
+  }
+}
+
+function expectedReleaseRevision(raw: unknown, currentRevision: number): number {
+  if (raw === undefined) return currentRevision;
+  const parsed = typeof raw === "string" && raw.trim() !== "" ? Number(raw) : raw;
+  if (!Number.isInteger(parsed) || Number(parsed) < 0) {
+    throw new Error("expected_revision must be a non-negative integer");
+  }
+  return Number(parsed);
+}
+
+function releaseRevisionConflictResponse(
+  c: AdminContext,
+  expectedRevision: number,
+  currentRevision: number | null,
+) {
+  return c.json({
+    error: currentRevision === null
+      ? "release disappeared during mutation"
+      : "release changed before the operation completed",
+    code: "RELEASE_REVISION_CONFLICT",
+    expected_revision: expectedRevision,
+    current_revision: currentRevision,
+  }, 409);
+}
+
+async function currentReleaseRevision(
+  db: D1Database,
+  appId: string,
+  releaseId: string,
+): Promise<number | null> {
+  const row = await db.prepare(
+    "SELECT revision FROM releases WHERE app_id = ?1 AND id = ?2",
+  ).bind(appId, releaseId).first<{ revision: number }>();
+  return row?.revision ?? null;
+}
+
+async function releaseScopesForMutation(
+  db: D1Database,
+  releaseId: string,
+): Promise<ReleaseScopeInput[]> {
+  const { results } = await db.prepare(
+    "SELECT scope_type, scope_value FROM release_scopes WHERE release_id = ?1 ORDER BY created_at, id",
+  ).bind(releaseId).all<ReleaseScopeInput>();
+  return results;
+}
+
+function conditionalReleaseAuditStatement(
+  db: D1Database,
+  options: {
+    auditId: string;
+    appId: string;
+    action: string;
+    actor: string;
+    payload: unknown;
+    now: number;
+    release: ReleaseRow;
+    expectedRevision: number;
+    expectedScopes: ReleaseScopeInput[];
+    externalTargetGate?: ExternalTargetGatePlan | null;
+  },
+): D1PreparedStatement {
+  const binds: (string | number | null)[] = [];
+  const bind = (value: string | number | null): string => {
+    binds.push(value);
+    return `?${binds.length}`;
+  };
+  const auditIdParam = bind(options.auditId);
+  const appIdParam = bind(options.appId);
+  const actionParam = bind(options.action);
+  const actorParam = bind(options.actor);
+  const payloadParam = bind(JSON.stringify(options.payload));
+  const nowParam = bind(options.now);
+  const releaseIdParam = bind(options.release.id);
+  const revisionParam = bind(options.expectedRevision);
+  const statusParam = bind(options.release.status);
+  const rolloutPredicate = options.release.rollout_cohort_count === null
+    ? "r.rollout_cohort_count IS NULL"
+    : `r.rollout_cohort_count = ${bind(options.release.rollout_cohort_count)}`;
+  const scopeCountParam = bind(options.expectedScopes.length);
+  const scopePredicates = options.expectedScopes.map((scope) => {
+    const typeParam = bind(scope.scope_type);
+    const valueParam = bind(scope.scope_value);
+    return `EXISTS (
+      SELECT 1 FROM release_scopes s
+      WHERE s.release_id = r.id AND s.scope_type = ${typeParam} AND s.scope_value = ${valueParam}
+    )`;
+  });
+  let externalTargetPredicate = "";
+  if (options.externalTargetGate) {
+    const gate = options.externalTargetGate;
+    const buildIdParam = bind(gate.buildId);
+    const freezePredicate = gate.expectedFreezeToken === null
+      ? "b.freeze_token IS NULL AND b.required_targets_json IS NULL AND b.targets_frozen_at IS NULL"
+      : `b.freeze_token = ${bind(gate.expectedFreezeToken)} AND b.required_targets_json = ${bind(gate.expectedRequiredTargetsJson)}`;
+    const targetCountParam = bind(gate.requiredTargets.length);
+    const targetPredicates = gate.requiredTargets.map((target) => {
+      const targetParam = bind(target);
+      return `EXISTS (
+        SELECT 1 FROM external_build_targets t
+        WHERE t.build_id = b.id AND t.target = ${targetParam}
+      )`;
+    });
+    externalTargetPredicate = `AND EXISTS (
+         SELECT 1 FROM builds b
+         WHERE b.id = r.build_id AND b.id = ${buildIdParam}
+           AND ${freezePredicate}
+           AND (SELECT COUNT(*) FROM external_build_targets t WHERE t.build_id = b.id) = ${targetCountParam}
+           ${targetPredicates.map((predicate) => `AND ${predicate}`).join("\n           ")}
+       )`;
+  }
+
+  return db.prepare(
+    `INSERT INTO audit_logs (id, app_id, action, actor, payload, created_at)
+     SELECT ${auditIdParam}, ${appIdParam}, ${actionParam}, ${actorParam}, ${payloadParam}, ${nowParam}
+     FROM releases r
+     WHERE r.id = ${releaseIdParam} AND r.app_id = ${appIdParam}
+       AND r.revision = ${revisionParam} AND r.status = ${statusParam}
+       AND ${rolloutPredicate}
+       AND (SELECT COUNT(*) FROM release_scopes s WHERE s.release_id = r.id) = ${scopeCountParam}
+       ${scopePredicates.map((predicate) => `AND ${predicate}`).join("\n       ")}
+       ${externalTargetPredicate}`,
+  ).bind(...binds);
+}
+
+async function throwReleaseMutationConflict(
+  db: D1Database,
+  appId: string,
+  releaseId: string,
+  expectedRevision: number,
+): Promise<never> {
+  throw new ReleaseRevisionConflictError(
+    expectedRevision,
+    await currentReleaseRevision(db, appId, releaseId),
+  );
 }
 
 export async function getReleaseForApp(
@@ -409,7 +556,8 @@ export async function createRelease(
       db
         .prepare(
           `UPDATE releases
-           SET status = 'superseded', superseded_by_release_id = ?1, updated_at = ?2
+           SET status = 'superseded', superseded_by_release_id = ?1,
+               revision = revision + 1, updated_at = ?2
            WHERE app_id = ?3 AND channel_id = ?4 AND product_type = ?5
              AND release_type = ?6 AND status = 'active' AND id <> ?7`,
         )
@@ -461,6 +609,10 @@ async function updateReleaseFields(
       );
     }
   }
+  const expectedRevision = expectedReleaseRevision(input.expected_revision, release.revision);
+  if (expectedRevision !== release.revision) {
+    throw new ReleaseRevisionConflictError(expectedRevision, release.revision);
+  }
   const now = Date.now();
   const sets: string[] = [];
   const binds: (string | number | null)[] = [];
@@ -498,49 +650,96 @@ async function updateReleaseFields(
     binds.push(input.hidden ? 1 : 0);
   }
 
-  const statements: D1PreparedStatement[] = [];
-  if (sets.length > 0) {
-    sets.push(`updated_at = ?${binds.length + 1}`);
-    binds.push(now);
-    statements.push(
-      db
-        .prepare(`UPDATE releases SET ${sets.join(", ")} WHERE id = ?${binds.length + 1} AND app_id = ?${binds.length + 2}`)
-        .bind(...binds, release.id, appId),
-    );
-  }
-
   let scopes: ReleaseScopeInput[] | undefined;
   if (input.scopes !== undefined) {
     scopes = await validateScopes(db, appId, input.scopes);
+    sets.push(`is_full = ?${binds.length + 1}`);
+    binds.push(isFullRelease(scopes));
+  }
+
+  const existingScopes = await releaseScopesForMutation(db, release.id);
+  const nextScopes = scopes ?? existingScopes;
+  const nextRollout = input.rollout_cohort_count !== undefined
+    ? input.rollout_cohort_count
+    : release.rollout_cohort_count;
+  const auditId = crypto.randomUUID();
+  const auditPayload = {
+    release_id: release.id,
+    expected_revision: expectedRevision,
+    ...input,
+    scopes,
+  };
+  const statements: D1PreparedStatement[] = [
+    conditionalReleaseAuditStatement(db, {
+      auditId,
+      appId,
+      action: "release.update",
+      actor,
+      payload: auditPayload,
+      now,
+      release,
+      expectedRevision,
+      expectedScopes: existingScopes,
+    }),
+  ];
+
+  sets.push(`updated_at = ?${binds.length + 1}`);
+  binds.push(now);
+  sets.push("revision = revision + 1");
+  const releaseIdPosition = binds.length + 1;
+  const appIdPosition = releaseIdPosition + 1;
+  const revisionPosition = appIdPosition + 1;
+  const statusPosition = revisionPosition + 1;
+  const auditIdPosition = statusPosition + 1;
+  statements.push(
+    db.prepare(
+      `UPDATE releases SET ${sets.join(", ")}
+       WHERE id = ?${releaseIdPosition} AND app_id = ?${appIdPosition}
+         AND revision = ?${revisionPosition} AND status = ?${statusPosition}
+         AND EXISTS (SELECT 1 FROM audit_logs WHERE id = ?${auditIdPosition})`,
+    ).bind(
+      ...binds,
+      release.id,
+      appId,
+      expectedRevision,
+      release.status,
+      auditId,
+    ),
+  );
+
+  if (scopes !== undefined) {
     statements.push(
-      db.prepare("DELETE FROM release_scopes WHERE release_id = ?1").bind(release.id),
+      db.prepare(
+        `DELETE FROM release_scopes
+         WHERE release_id = ?1 AND EXISTS (SELECT 1 FROM audit_logs WHERE id = ?2)`,
+      ).bind(release.id, auditId),
       ...scopes.map((scope) =>
-        db
-          .prepare(
-            "INSERT INTO release_scopes (id, release_id, scope_type, scope_value, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
-          )
-          .bind(crypto.randomUUID(), release.id, scope.scope_type, scope.scope_value, now),
+        db.prepare(
+          `INSERT INTO release_scopes (id, release_id, scope_type, scope_value, created_at)
+           SELECT ?1, ?2, ?3, ?4, ?5
+           WHERE EXISTS (SELECT 1 FROM audit_logs WHERE id = ?6)`,
+        ).bind(
+          crypto.randomUUID(),
+          release.id,
+          scope.scope_type,
+          scope.scope_value,
+          now,
+          auditId,
+        )
       ),
-      db
-        .prepare("UPDATE releases SET is_full = ?1, updated_at = ?2 WHERE id = ?3 AND app_id = ?4")
-      .bind(isFullRelease(scopes), now, release.id, appId),
     );
   }
 
   if (release.status === "active" && (input.scopes !== undefined || input.rollout_cohort_count !== undefined)) {
-    const nextScopes = scopes ?? (await db.prepare(
-      "SELECT scope_type, scope_value FROM release_scopes WHERE release_id = ?1 ORDER BY created_at, id",
-    ).bind(release.id).all<ReleaseScopeInput>()).results;
-    const nextRollout = input.rollout_cohort_count !== undefined
-      ? input.rollout_cohort_count
-      : release.rollout_cohort_count;
     if (isFullCoverage(nextScopes, nextRollout)) {
       statements.push(
         db.prepare(
           `UPDATE releases
-           SET status = 'superseded', superseded_by_release_id = ?1, updated_at = ?2
+           SET status = 'superseded', superseded_by_release_id = ?1,
+               revision = revision + 1, updated_at = ?2
            WHERE app_id = ?3 AND channel_id = ?4 AND product_type = ?5
-             AND release_type = ?6 AND status = 'active' AND id <> ?7`,
+             AND release_type = ?6 AND status = 'active' AND id <> ?7
+             AND EXISTS (SELECT 1 FROM audit_logs WHERE id = ?8)`,
         ).bind(
           release.id,
           now,
@@ -549,6 +748,7 @@ async function updateReleaseFields(
           release.product_type,
           release.release_type,
           release.id,
+          auditId,
         ),
       );
     } else {
@@ -559,28 +759,20 @@ async function updateReleaseFields(
       statements.push(
         db.prepare(
           `UPDATE releases
-           SET status = 'active', superseded_by_release_id = NULL, updated_at = ?1
-           WHERE app_id = ?2 AND superseded_by_release_id = ?3 AND status = 'superseded'`,
-        ).bind(now, appId, release.id),
+           SET status = 'active', superseded_by_release_id = NULL,
+               revision = revision + 1, updated_at = ?1
+           WHERE app_id = ?2 AND superseded_by_release_id = ?3 AND status = 'superseded'
+             AND EXISTS (SELECT 1 FROM audit_logs WHERE id = ?4)`,
+        ).bind(now, appId, release.id, auditId),
       );
     }
   }
 
-  statements.push(
-    db
-      .prepare(
-        "INSERT INTO audit_logs (id, app_id, action, actor, payload, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-      )
-      .bind(
-        crypto.randomUUID(),
-        appId,
-        "release.update",
-        actor,
-        JSON.stringify({ release_id: release.id, ...input, scopes }),
-        now,
-      ),
-  );
-  await db.batch(statements);
+  const batchResults = await db.batch(statements);
+  if (Number(batchResults[0]?.meta?.changes ?? 0) !== 1 ||
+      Number(batchResults[1]?.meta?.changes ?? 0) !== 1) {
+    await throwReleaseMutationConflict(db, appId, release.id, expectedRevision);
+  }
   const updated = await getReleaseForApp(db, appId, release.id);
   if (!updated) throw new Error("release not found after update");
   return updated;
@@ -993,6 +1185,8 @@ export async function handleCreateReleaseDraft(c: AdminContext) {
         id,
         app_id: appId,
         status: "draft",
+        activated_at: null,
+        revision: 0,
         ...draftBody,
         changelog,
         release_notes: parseReleaseNotes(changelog),
@@ -1033,6 +1227,8 @@ export async function handleCreateRelease(c: AdminContext) {
       id,
       app_id: appId,
       status,
+      activated_at: status === "active" ? Date.now() : null,
+      revision: 0,
       ...body,
       changelog,
       release_notes: parseReleaseNotes(changelog),
@@ -1055,6 +1251,9 @@ export async function handleUpdateRelease(c: AdminContext) {
     const release = await updateReleaseFields(c.env.DB, appId, existing, body, currentActor(c));
     return c.json(withReleaseNotes(release));
   } catch (e) {
+    if (e instanceof ReleaseRevisionConflictError) {
+      return releaseRevisionConflictResponse(c, e.expectedRevision, e.currentRevision);
+    }
     return c.json({ error: (e as Error).message }, 400);
   }
 }
@@ -1087,119 +1286,132 @@ function targetSetDiff(required: string[], declared: string[]): { missing: strin
 }
 
 /**
- * Freeze + assert the external-target contract inside the publish path.
- * Every external build's target set is frozen on its first publish attempt
- * (freeze_token = random ownership; declarations are conditionally rejected
- * once frozen). cli-binary requires a caller-supplied exact expected set; a
- * failed assertion clears ONLY a freeze this attempt created. Runs on every
- * publish attempt including already-active replays — no early no-op path.
- * Returns a Response on failure, null to proceed.
+ * Build a read-only external-target plan. The caller must commit a new freeze
+ * only inside the same D1 batch as the release revision/scope transition.
  */
-async function assertExternalTargetGate(
+async function prepareExternalTargetGate(
   c: AdminContext,
   release: { build_id: string },
   requiredRaw: unknown,
-): Promise<Response | null> {
+): Promise<{ plan: ExternalTargetGatePlan | null } | { response: Response }> {
   const build = await c.env.DB.prepare(
     `SELECT id, source, product_type, freeze_token, required_targets_json FROM builds WHERE id = ?1`,
   )
     .bind(release.build_id)
     .first<{ id: string; source: string; product_type: string; freeze_token: string | null; required_targets_json: string | null }>();
-  if (!build) return c.json({ error: "release build not found" }, 409);
+  if (!build) return { response: c.json({ error: "release build not found" }, 409) };
 
   if (build.source !== "external") {
     if (requiredRaw !== undefined) {
-      return c.json({ error: "required_external_targets only applies to external builds" }, 400);
+      return { response: c.json({ error: "required_external_targets only applies to external builds" }, 400) };
     }
-    return null;
+    return { plan: null };
   }
 
   let callerSet: string[] | undefined;
   if (requiredRaw !== undefined) {
     const canon = canonicalizeRequiredTargets(requiredRaw);
-    if ("error" in canon) return c.json({ error: canon.error }, 400);
+    if ("error" in canon) return { response: c.json({ error: canon.error }, 400) };
     callerSet = canon.set;
   }
   if (build.product_type === "cli-binary" && !callerSet && !build.freeze_token) {
-    return c.json(
-      { error: "required_external_targets is required when publishing a cli-binary external build" },
-      400,
-    );
+    return {
+      response: c.json(
+        { error: "required_external_targets is required when publishing a cli-binary external build" },
+        400,
+      ),
+    };
   }
 
-  const readDeclared = async (): Promise<string[]> => {
-    const { results } = await c.env.DB.prepare(
-      `SELECT target FROM external_build_targets WHERE build_id = ?1 ORDER BY target`,
-    )
-      .bind(build.id)
-      .all<{ target: string }>();
-    return (results || []).map((r) => r.target);
-  };
-
-  if (!build.freeze_token) {
-    const token = crypto.randomUUID();
-    const cas = await c.env.DB.prepare(
-      `UPDATE builds SET freeze_token = ?1, targets_frozen_at = ?2, required_targets_json = ?3
-       WHERE id = ?4 AND freeze_token IS NULL`,
-    )
-      .bind(token, Date.now(), JSON.stringify(callerSet ?? []), build.id)
-      .run();
-    if ((cas.meta?.changes ?? 0) === 1) {
-      // We own the freeze; declarations are now blocked, so this read is final.
-      const declared = await readDeclared();
-      const required = callerSet ?? declared;
-      await c.env.DB.prepare(
-        `UPDATE builds SET required_targets_json = ?1 WHERE id = ?2 AND freeze_token = ?3`,
-      )
-        .bind(JSON.stringify(required), build.id, token)
-        .run();
-      const diff = targetSetDiff(required, declared);
-      if (diff.missing.length > 0 || diff.unexpected.length > 0) {
-        // Roll back OUR freeze only, so the build isn't locked by a failed attempt.
-        await c.env.DB.prepare(
-          `UPDATE builds SET freeze_token = NULL, targets_frozen_at = NULL, required_targets_json = NULL
-           WHERE id = ?1 AND freeze_token = ?2`,
-        )
-          .bind(build.id, token)
-          .run();
-        return c.json(
-          { error: "external target set does not match the required set", code: "EXTERNAL_TARGETS_MISMATCH", missing: diff.missing, unexpected: diff.unexpected },
-          400,
-        );
-      }
-      return null;
-    }
-    // Lost the freeze race — fall through to the stored-contract path.
-  }
-
-  const frozen = await c.env.DB.prepare(
-    `SELECT required_targets_json FROM builds WHERE id = ?1`,
+  const { results } = await c.env.DB.prepare(
+    `SELECT target FROM external_build_targets WHERE build_id = ?1 ORDER BY target`,
   )
     .bind(build.id)
-    .first<{ required_targets_json: string | null }>();
-  let stored: string[] = [];
-  try {
-    stored = JSON.parse(frozen?.required_targets_json ?? "[]") as string[];
-  } catch {
-    stored = [];
+    .all<{ target: string }>();
+  const declared = (results || []).map((row) => row.target);
+
+  let required: string[];
+  if (build.freeze_token) {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(build.required_targets_json ?? "null");
+    } catch {
+      parsed = null;
+    }
+    const canonical = canonicalizeRequiredTargets(parsed);
+    if ("error" in canonical) {
+      return {
+        response: c.json({
+          error: "frozen external target contract is invalid",
+          code: "EXTERNAL_TARGETS_CONTRACT_MISMATCH",
+        }, 409),
+      };
+    }
+    required = canonical.set;
+    if (callerSet && (callerSet.length !== required.length || callerSet.some((target, index) => target !== required[index]))) {
+      return {
+        response: c.json(
+          { error: "required_external_targets differs from the frozen contract", code: "EXTERNAL_TARGETS_CONTRACT_MISMATCH", frozen: required },
+          400,
+        ),
+      };
+    }
+  } else {
+    required = callerSet ?? declared;
   }
-  if (callerSet && (callerSet.length !== stored.length || callerSet.some((t, i) => t !== stored[i]))) {
-    return c.json(
-      { error: "required_external_targets differs from the frozen contract", code: "EXTERNAL_TARGETS_CONTRACT_MISMATCH", frozen: stored },
-      400,
-    );
-  }
-  const declared = await readDeclared();
-  const diff = targetSetDiff(stored, declared);
+
+  const diff = targetSetDiff(required, declared);
   if (diff.missing.length > 0 || diff.unexpected.length > 0) {
-    // Frozen contract violated after freeze — declarations are blocked, so
-    // this indicates out-of-band mutation; fail closed.
-    return c.json(
-      { error: "declared targets no longer match the frozen contract", code: "EXTERNAL_TARGETS_MISMATCH", missing: diff.missing, unexpected: diff.unexpected },
-      409,
-    );
+    return {
+      response: c.json(
+        {
+          error: build.freeze_token
+            ? "declared targets no longer match the frozen contract"
+            : "external target set does not match the required set",
+          code: "EXTERNAL_TARGETS_MISMATCH",
+          missing: diff.missing,
+          unexpected: diff.unexpected,
+        },
+        build.freeze_token ? 409 : 400,
+      ),
+    };
   }
-  return null;
+
+  const nextFreezeToken = build.freeze_token ?? crypto.randomUUID();
+  return {
+    plan: {
+      buildId: build.id,
+      expectedFreezeToken: build.freeze_token,
+      expectedRequiredTargetsJson: build.required_targets_json,
+      nextFreezeToken,
+      nextRequiredTargetsJson: build.freeze_token
+        ? build.required_targets_json ?? "[]"
+        : JSON.stringify(required),
+      requiredTargets: required,
+      freezesBuild: build.freeze_token === null,
+    },
+  };
+}
+
+function externalTargetFreezeStatement(
+  db: D1Database,
+  plan: ExternalTargetGatePlan,
+  auditId: string,
+  now: number,
+): D1PreparedStatement {
+  return db.prepare(
+    `UPDATE builds
+     SET freeze_token = ?1, targets_frozen_at = ?2, required_targets_json = ?3
+     WHERE id = ?4 AND freeze_token IS NULL
+       AND required_targets_json IS NULL AND targets_frozen_at IS NULL
+       AND EXISTS (SELECT 1 FROM audit_logs WHERE id = ?5)`,
+  ).bind(
+    plan.nextFreezeToken,
+    now,
+    plan.nextRequiredTargetsJson,
+    plan.buildId,
+    auditId,
+  );
 }
 
 export async function handlePublishRelease(c: AdminContext) {
@@ -1207,15 +1419,21 @@ export async function handlePublishRelease(c: AdminContext) {
   const releaseId = c.req.param("releaseId") ?? "";
   const existing = await getReleaseForApp(c.env.DB, appId, releaseId);
   if (!existing) return c.json({ error: "not found" }, 404);
-  // The external-target gate runs on EVERY publish attempt — including
-  // already-active replays — before any no-op shortcut.
   const publishBody = (await c.req.json().catch(() => ({}))) as {
     required_external_targets?: unknown;
     expected_scope?: unknown;
     expected_scopes?: unknown;
+    expected_revision?: unknown;
   };
-  const gateFail = await assertExternalTargetGate(c, existing, publishBody.required_external_targets);
-  if (gateFail) return gateFail;
+  let expectedRevision: number;
+  try {
+    expectedRevision = expectedReleaseRevision(publishBody.expected_revision, existing.revision);
+  } catch (error) {
+    return c.json({ error: (error as Error).message }, 400);
+  }
+  if (expectedRevision !== existing.revision) {
+    return releaseRevisionConflictResponse(c, expectedRevision, existing.revision);
+  }
 
   const hasExpectedScope = Object.prototype.hasOwnProperty.call(publishBody, "expected_scope");
   const hasExpectedScopes = Object.prototype.hasOwnProperty.call(publishBody, "expected_scopes");
@@ -1260,58 +1478,97 @@ export async function handlePublishRelease(c: AdminContext) {
       code: "RELEASE_SCOPE_PRECONDITION_FAILED",
     }, 409);
   }
-  if (existing.status === "active") return c.json(withReleaseNotes(existing));
-  if (existing.status !== "draft") {
+  if (existing.status !== "draft" && existing.status !== "active") {
     return c.json({ error: `cannot publish ${existing.status} release` }, 409);
+  }
+
+  const targetGateResult = await prepareExternalTargetGate(
+    c,
+    existing,
+    publishBody.required_external_targets,
+  );
+  if ("response" in targetGateResult) return targetGateResult.response;
+  const externalTargetGate = targetGateResult.plan;
+
+  if (existing.status === "active") {
+    if (externalTargetGate?.freezesBuild) {
+      const now = Date.now();
+      const auditId = crypto.randomUUID();
+      const batchResults = await c.env.DB.batch([
+        conditionalReleaseAuditStatement(c.env.DB, {
+          auditId,
+          appId,
+          action: "release.external_targets_freeze",
+          actor: currentActor(c),
+          payload: {
+            release_id: releaseId,
+            build_id: existing.build_id,
+            expected_revision: expectedRevision,
+            expected_scopes: expectedScopes,
+          },
+          now,
+          release: existing,
+          expectedRevision,
+          expectedScopes,
+          externalTargetGate,
+        }),
+        externalTargetFreezeStatement(c.env.DB, externalTargetGate, auditId, now),
+      ]);
+      if (Number(batchResults[0]?.meta?.changes ?? 0) !== 1 ||
+          Number(batchResults[1]?.meta?.changes ?? 0) !== 1) {
+        const currentRevision = await currentReleaseRevision(c.env.DB, appId, releaseId);
+        if (currentRevision !== expectedRevision) {
+          return releaseRevisionConflictResponse(c, expectedRevision, currentRevision);
+        }
+        return c.json({
+          error: "external target contract changed before freeze",
+          code: "EXTERNAL_TARGETS_CONTRACT_MISMATCH",
+        }, 409);
+      }
+    }
+    const active = await getReleaseForApp(c.env.DB, appId, releaseId);
+    return c.json(withReleaseNotes(active ?? existing));
   }
 
   const now = Date.now();
   const auditId = crypto.randomUUID();
-  const auditPayload = JSON.stringify({
+  const auditPayload = {
     release_id: releaseId,
     build_id: existing.build_id,
+    expected_revision: expectedRevision,
     expected_scopes: expectedScopes,
-  });
-
-  const scopeAssertionBinds: string[] = [];
-  const scopeAssertions = expectedScopes.map((scope, index) => {
-    const typePosition = 8 + index * 2;
-    const valuePosition = typePosition + 1;
-    scopeAssertionBinds.push(scope.scope_type, scope.scope_value);
-    return `EXISTS (
-      SELECT 1 FROM release_scopes s
-      WHERE s.release_id = r.id AND s.scope_type = ?${typePosition} AND s.scope_value = ?${valuePosition}
-    )`;
-  });
+    required_external_targets: externalTargetGate?.requiredTargets,
+  };
 
   // D1 batch is transactional. Every side effect is gated by the conditional
-  // audit insert, whose SELECT re-checks draft state and the exact stored scope
-  // inside the same batch. A stale preflight read therefore becomes a clean
-  // 409 with zero audit, fallback, activation, or webhook side effects.
-  const statements = [
-    c.env.DB
-      .prepare(
-        `INSERT INTO audit_logs (id, app_id, action, actor, payload, created_at)
-         SELECT ?1, ?2, 'release.publish', ?3, ?4, ?5
-         FROM releases r
-         WHERE r.id = ?6 AND r.app_id = ?2 AND r.status = 'draft'
-           AND (SELECT COUNT(*) FROM release_scopes s WHERE s.release_id = r.id) = ?7
-           AND ${scopeAssertions.join(" AND ")}`,
-      )
-      .bind(
-        auditId,
-        appId,
-        currentActor(c),
-        auditPayload,
-        now,
-        releaseId,
-        expectedScopes.length,
-        ...scopeAssertionBinds,
-      ),
+  // audit insert, whose SELECT re-checks draft state, exact stored scopes, and
+  // the external target/freeze precondition. A stale preflight read therefore
+  // becomes a clean 409 with zero freeze, audit, fallback, or activation.
+  const statements: D1PreparedStatement[] = [
+    conditionalReleaseAuditStatement(c.env.DB, {
+      auditId,
+      appId,
+      action: "release.publish",
+      actor: currentActor(c),
+      payload: auditPayload,
+      now,
+      release: existing,
+      expectedRevision,
+      expectedScopes,
+      externalTargetGate,
+    }),
+  ];
+  let freezeResultIndex: number | null = null;
+  if (externalTargetGate?.freezesBuild) {
+    freezeResultIndex = statements.length;
+    statements.push(externalTargetFreezeStatement(c.env.DB, externalTargetGate, auditId, now));
+  }
+  statements.push(
     c.env.DB
       .prepare(
         `UPDATE releases
-         SET status = 'superseded', superseded_by_release_id = ?1, updated_at = ?2
+         SET status = 'superseded', superseded_by_release_id = ?1,
+             revision = revision + 1, updated_at = ?2
          WHERE app_id = ?3 AND channel_id = ?4 AND product_type = ?5
            AND release_type = ?6 AND status = 'active' AND id <> ?1
            AND EXISTS (
@@ -1334,22 +1591,41 @@ export async function handlePublishRelease(c: AdminContext) {
         existing.release_type,
         auditId,
       ),
+  );
+  const activationResultIndex = statements.length;
+  statements.push(
     c.env.DB
       .prepare(
          `UPDATE releases
-         SET status = 'active', activated_at = ?1, updated_at = ?1
-         WHERE id = ?2 AND app_id = ?3 AND status = 'draft'
-           AND EXISTS (SELECT 1 FROM audit_logs WHERE id = ?4)`,
+         SET status = 'active', activated_at = ?1,
+             revision = revision + 1, updated_at = ?1
+         WHERE id = ?2 AND app_id = ?3 AND status = 'draft' AND revision = ?4
+           AND EXISTS (SELECT 1 FROM audit_logs WHERE id = ?5)`,
       )
-      .bind(now, releaseId, appId, auditId),
-  ];
+      .bind(now, releaseId, appId, expectedRevision, auditId),
+  );
   const batchResults = await c.env.DB.batch(statements);
   if (Number(batchResults[0]?.meta?.changes ?? 0) !== 1 ||
-      Number(batchResults[2]?.meta?.changes ?? 0) !== 1) {
-    return c.json({
-      error: "release status or scope changed before publish",
-      code: "RELEASE_SCOPE_PRECONDITION_FAILED",
-    }, 409);
+      Number(batchResults[activationResultIndex]?.meta?.changes ?? 0) !== 1 ||
+      (freezeResultIndex !== null && Number(batchResults[freezeResultIndex]?.meta?.changes ?? 0) !== 1)) {
+    const currentRevision = await currentReleaseRevision(c.env.DB, appId, releaseId);
+    if (currentRevision !== expectedRevision) {
+      return releaseRevisionConflictResponse(c, expectedRevision, currentRevision);
+    }
+    const currentScopes = await releaseScopesForMutation(c.env.DB, releaseId);
+    if (!matchesPublishScopeExpectation(currentScopes, expectedScopes)) {
+      return c.json({
+        error: "release status or scope changed before publish",
+        code: "RELEASE_SCOPE_PRECONDITION_FAILED",
+      }, 409);
+    }
+    if (externalTargetGate) {
+      return c.json({
+        error: "external target contract changed before publish",
+        code: "EXTERNAL_TARGETS_CONTRACT_MISMATCH",
+      }, 409);
+    }
+    return releaseRevisionConflictResponse(c, expectedRevision, currentRevision);
   }
 
   const orgId = c.get("org_id");
@@ -1406,46 +1682,78 @@ export async function handleDeleteRelease(c: AdminContext) {
   const releaseId = c.req.param("releaseId") ?? "";
   const existing = await getReleaseForApp(c.env.DB, appId, releaseId);
   if (!existing) return c.json({ error: "not found" }, 404);
+  let expectedRevision: number;
+  try {
+    expectedRevision = expectedReleaseRevision(
+      c.req.query("expected_revision"),
+      existing.revision,
+    );
+  } catch (error) {
+    return c.json({ error: (error as Error).message }, 400);
+  }
+  if (expectedRevision !== existing.revision) {
+    return releaseRevisionConflictResponse(c, expectedRevision, existing.revision);
+  }
   if (existing.status === "cancelled") {
-    return c.json({ ok: true, id: releaseId, status: "cancelled" });
+    return c.json({
+      ok: true,
+      id: releaseId,
+      status: "cancelled",
+      revision: existing.revision,
+    });
   }
   if (existing.status === "superseded") {
     return c.json({ error: "cannot cancel superseded release" }, 409);
   }
   const now = Date.now();
+  const auditId = crypto.randomUUID();
+  const existingScopes = await releaseScopesForMutation(c.env.DB, releaseId);
   const statements: D1PreparedStatement[] = [
+    conditionalReleaseAuditStatement(c.env.DB, {
+      auditId,
+      appId,
+      action: "release.cancel",
+      actor: currentActor(c),
+      payload: {
+        release_id: releaseId,
+        previous_status: existing.status,
+        expected_revision: expectedRevision,
+      },
+      now,
+      release: existing,
+      expectedRevision,
+      expectedScopes: existingScopes,
+    }),
     c.env.DB
       .prepare(
         `UPDATE releases
-         SET status = 'cancelled', superseded_by_release_id = NULL, updated_at = ?1
-         WHERE id = ?2 AND app_id = ?3`,
+         SET status = 'cancelled', superseded_by_release_id = NULL,
+             revision = revision + 1, updated_at = ?1
+         WHERE id = ?2 AND app_id = ?3 AND revision = ?4 AND status = ?5
+           AND EXISTS (SELECT 1 FROM audit_logs WHERE id = ?6)`,
       )
-      .bind(now, releaseId, appId),
+      .bind(now, releaseId, appId, expectedRevision, existing.status, auditId),
   ];
   if (existing.status === "active") {
     statements.push(
       c.env.DB.prepare(
         `UPDATE releases
-         SET status = 'active', superseded_by_release_id = NULL, updated_at = ?1
-         WHERE app_id = ?2 AND superseded_by_release_id = ?3 AND status = 'superseded'`,
-      ).bind(now, appId, releaseId),
+         SET status = 'active', superseded_by_release_id = NULL,
+             revision = revision + 1, updated_at = ?1
+         WHERE app_id = ?2 AND superseded_by_release_id = ?3 AND status = 'superseded'
+           AND EXISTS (SELECT 1 FROM audit_logs WHERE id = ?4)`,
+      ).bind(now, appId, releaseId, auditId),
     );
   }
-  statements.push(
-    c.env.DB
-      .prepare(
-        "INSERT INTO audit_logs (id, app_id, action, actor, payload, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-      )
-      .bind(
-        crypto.randomUUID(),
-        appId,
-        "release.cancel",
-        currentActor(c),
-        JSON.stringify({ release_id: releaseId, previous_status: existing.status }),
-        now,
-      ),
-  );
-  await c.env.DB.batch(statements);
+  const batchResults = await c.env.DB.batch(statements);
+  if (Number(batchResults[0]?.meta?.changes ?? 0) !== 1 ||
+      Number(batchResults[1]?.meta?.changes ?? 0) !== 1) {
+    return releaseRevisionConflictResponse(
+      c,
+      expectedRevision,
+      await currentReleaseRevision(c.env.DB, appId, releaseId),
+    );
+  }
   const orgId = c.get("org_id");
   if (orgId && existing.status === "active") {
     c.executionCtx?.waitUntil(
@@ -1457,15 +1765,31 @@ export async function handleDeleteRelease(c: AdminContext) {
       }),
     );
   }
-  return c.json({ ok: true, id: releaseId, status: "cancelled" });
+  return c.json({
+    ok: true,
+    id: releaseId,
+    status: "cancelled",
+    revision: expectedRevision + 1,
+  });
 }
 
 export async function handleRollbackRelease(c: AdminContext) {
   const appId = c.req.param("appId") ?? "";
   const releaseId = c.req.param("releaseId") ?? "";
-  const body = (await c.req.json().catch(() => ({}))) as Partial<ReleaseInput>;
+  const body = (await c.req.json().catch(() => ({}))) as Partial<ReleaseInput> & {
+    expected_revision?: unknown;
+  };
   const existing = await getReleaseForApp(c.env.DB, appId, releaseId);
   if (!existing) return c.json({ error: "not found" }, 404);
+  let expectedRevision: number;
+  try {
+    expectedRevision = expectedReleaseRevision(body.expected_revision, existing.revision);
+  } catch (error) {
+    return c.json({ error: (error as Error).message }, 400);
+  }
+  if (expectedRevision !== existing.revision) {
+    return releaseRevisionConflictResponse(c, expectedRevision, existing.revision);
+  }
   if (existing.status === "draft") {
     return c.json({ error: "cannot restore a draft; publish the existing release instead" }, 409);
   }
@@ -1473,11 +1797,7 @@ export async function handleRollbackRelease(c: AdminContext) {
     return c.json({ error: "release is already active" }, 409);
   }
 
-  const { results: existingScopes } = await c.env.DB.prepare(
-    "SELECT scope_type, scope_value FROM release_scopes WHERE release_id = ?1 ORDER BY created_at, id",
-  )
-    .bind(releaseId)
-    .all<ReleaseScopeInput>();
+  const existingScopes = await releaseScopesForMutation(c.env.DB, releaseId);
   const requestedBuildId = body.build_id ?? c.req.query("build_id");
   if (requestedBuildId && requestedBuildId !== existing.build_id) {
     return c.json({
@@ -1507,14 +1827,62 @@ export async function handleRollbackRelease(c: AdminContext) {
     validateRolloutCohortCount(rollout);
     const changelog = inputChangelog(body);
     const now = Date.now();
-    const statements: D1PreparedStatement[] = [];
+    const restoresDraft = existing.status === "cancelled" && existing.activated_at === null;
+    const nextStatus = restoresDraft ? "draft" : "active";
+    const auditId = crypto.randomUUID();
+    const statements: D1PreparedStatement[] = [
+      conditionalReleaseAuditStatement(c.env.DB, {
+        auditId,
+        appId,
+        action: "release.rollback",
+        actor: currentActor(c),
+        payload: {
+          release_id: releaseId,
+          build_id: existing.build_id,
+          previous_status: existing.status,
+          next_status: nextStatus,
+          expected_revision: expectedRevision,
+          scopes,
+        },
+        now,
+        release: existing,
+        expectedRevision,
+        expectedScopes: existingScopes,
+      }),
+      c.env.DB.prepare(
+        `UPDATE releases
+         SET status = ?1, activated_at = ?2, is_full = ?3,
+             rollout_cohort_count = ?4, availability_at = ?5,
+             should_force_update = ?6, changelog = ?7, provenance_json = ?8,
+             superseded_by_release_id = NULL, revision = revision + 1, updated_at = ?9
+         WHERE id = ?10 AND app_id = ?11 AND revision = ?12 AND status = ?13
+           AND EXISTS (SELECT 1 FROM audit_logs WHERE id = ?14)`,
+      ).bind(
+        nextStatus,
+        restoresDraft ? null : now,
+        isFullRelease(scopes),
+        rollout,
+        body.availability_at !== undefined ? body.availability_at : existing.availability_at,
+        body.should_force_update !== undefined ? (body.should_force_update ? 1 : 0) : existing.should_force_update,
+        changelog === undefined ? existing.changelog : changelog,
+        jsonString(body.provenance_json ?? existing.provenance_json),
+        now,
+        releaseId,
+        appId,
+        expectedRevision,
+        existing.status,
+        auditId,
+      ),
+    ];
 
-    if (isFullCoverage(scopes, rollout)) {
+    if (!restoresDraft && isFullCoverage(scopes, rollout)) {
       statements.push(c.env.DB.prepare(
         `UPDATE releases
-         SET status = 'superseded', superseded_by_release_id = ?1, updated_at = ?2
+         SET status = 'superseded', superseded_by_release_id = ?1,
+             revision = revision + 1, updated_at = ?2
          WHERE app_id = ?3 AND channel_id = ?4 AND product_type = ?5
-           AND release_type = ?6 AND status = 'active' AND id <> ?1`,
+           AND release_type = ?6 AND status = 'active' AND id <> ?1
+           AND EXISTS (SELECT 1 FROM audit_logs WHERE id = ?7)`,
       ).bind(
         releaseId,
         now,
@@ -1522,57 +1890,43 @@ export async function handleRollbackRelease(c: AdminContext) {
         existing.channel_id,
         existing.product_type,
         existing.release_type,
+        auditId,
       ));
-    } else {
+    } else if (!restoresDraft) {
       statements.push(c.env.DB.prepare(
         `UPDATE releases
-         SET status = 'active', superseded_by_release_id = NULL, updated_at = ?1
-         WHERE app_id = ?2 AND superseded_by_release_id = ?3 AND status = 'superseded'`,
-      ).bind(now, appId, releaseId));
+         SET status = 'active', superseded_by_release_id = NULL,
+             revision = revision + 1, updated_at = ?1
+         WHERE app_id = ?2 AND superseded_by_release_id = ?3 AND status = 'superseded'
+           AND EXISTS (SELECT 1 FROM audit_logs WHERE id = ?4)`,
+      ).bind(now, appId, releaseId, auditId));
     }
-
-    statements.push(c.env.DB.prepare(
-      `UPDATE releases
-       SET status = 'active', activated_at = ?1, is_full = ?2,
-           rollout_cohort_count = ?3, availability_at = ?4,
-           should_force_update = ?5, changelog = ?6, provenance_json = ?7,
-           superseded_by_release_id = NULL, updated_at = ?1
-       WHERE id = ?8 AND app_id = ?9`,
-    ).bind(
-      now,
-      isFullRelease(scopes),
-      rollout,
-      body.availability_at !== undefined ? body.availability_at : existing.availability_at,
-      body.should_force_update !== undefined ? (body.should_force_update ? 1 : 0) : existing.should_force_update,
-      changelog === undefined ? existing.changelog : changelog,
-      jsonString(body.provenance_json ?? existing.provenance_json),
-      releaseId,
-      appId,
-    ));
 
     if (body.scopes !== undefined) {
       statements.push(
-        c.env.DB.prepare("DELETE FROM release_scopes WHERE release_id = ?1").bind(releaseId),
+        c.env.DB.prepare(
+          `DELETE FROM release_scopes
+           WHERE release_id = ?1 AND EXISTS (SELECT 1 FROM audit_logs WHERE id = ?2)`,
+        ).bind(releaseId, auditId),
         ...scopes.map((scope) => c.env.DB.prepare(
-          "INSERT INTO release_scopes (id, release_id, scope_type, scope_value, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
-        ).bind(crypto.randomUUID(), releaseId, scope.scope_type, scope.scope_value, now)),
+          `INSERT INTO release_scopes (id, release_id, scope_type, scope_value, created_at)
+           SELECT ?1, ?2, ?3, ?4, ?5
+           WHERE EXISTS (SELECT 1 FROM audit_logs WHERE id = ?6)`,
+        ).bind(crypto.randomUUID(), releaseId, scope.scope_type, scope.scope_value, now, auditId)),
+      );
+    }
+    const batchResults = await c.env.DB.batch(statements);
+    if (Number(batchResults[0]?.meta?.changes ?? 0) !== 1 ||
+        Number(batchResults[1]?.meta?.changes ?? 0) !== 1) {
+      return releaseRevisionConflictResponse(
+        c,
+        expectedRevision,
+        await currentReleaseRevision(c.env.DB, appId, releaseId),
       );
     }
 
-    statements.push(c.env.DB.prepare(
-      "INSERT INTO audit_logs (id, app_id, action, actor, payload, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-    ).bind(
-      crypto.randomUUID(),
-      appId,
-      "release.rollback",
-      currentActor(c),
-      JSON.stringify({ release_id: releaseId, build_id: existing.build_id, previous_status: existing.status, scopes }),
-      now,
-    ));
-    await c.env.DB.batch(statements);
-
     const orgId = c.get("org_id");
-    if (orgId) {
+    if (orgId && !restoresDraft) {
       c.executionCtx?.waitUntil(
         emitWebhookEvent(c.env.DB, {
           orgId,
@@ -1583,8 +1937,15 @@ export async function handleRollbackRelease(c: AdminContext) {
       );
     }
     const release = await getReleaseForApp(c.env.DB, appId, releaseId);
-    return c.json(release ? { ...withReleaseNotes(release), reactivated: true } : release);
+    return c.json(release ? {
+      ...withReleaseNotes(release),
+      restored_to_draft: restoresDraft,
+      reactivated: !restoresDraft,
+    } : release);
   } catch (e) {
+    if (e instanceof ReleaseRevisionConflictError) {
+      return releaseRevisionConflictResponse(c, e.expectedRevision, e.currentRevision);
+    }
     return c.json({ error: (e as Error).message }, 400);
   }
 }
@@ -1596,9 +1957,19 @@ export async function handleBumpRollout(c: AdminContext) {
     to?: number;
     by?: number;
     delta?: number;
+    expected_revision?: unknown;
   };
   const existing = await getReleaseForApp(c.env.DB, appId, releaseId);
   if (!existing) return c.json({ error: "not found" }, 404);
+  let expectedRevision: number;
+  try {
+    expectedRevision = expectedReleaseRevision(body.expected_revision, existing.revision);
+  } catch (error) {
+    return c.json({ error: (error as Error).message }, 400);
+  }
+  if (expectedRevision !== existing.revision) {
+    return releaseRevisionConflictResponse(c, expectedRevision, existing.revision);
+  }
   if (existing.status !== "draft" && existing.status !== "active") {
     return c.json({ error: `cannot change rollout on ${existing.status} release` }, 409);
   }
@@ -1612,21 +1983,41 @@ export async function handleBumpRollout(c: AdminContext) {
     return c.json({ error: (error as Error).message }, 400);
   }
   const now = Date.now();
-  const { results: scopes } = await c.env.DB.prepare(
-    "SELECT scope_type, scope_value FROM release_scopes WHERE release_id = ?1 ORDER BY created_at, id",
-  ).bind(releaseId).all<ReleaseScopeInput>();
+  const scopes = await releaseScopesForMutation(c.env.DB, releaseId);
+  const auditId = crypto.randomUUID();
   const statements: D1PreparedStatement[] = [
+    conditionalReleaseAuditStatement(c.env.DB, {
+      auditId,
+      appId,
+      action: "release.bump_rollout",
+      actor: currentActor(c),
+      payload: {
+        release_id: releaseId,
+        previous: existing.rollout_cohort_count,
+        next,
+        expected_revision: expectedRevision,
+      },
+      now,
+      release: existing,
+      expectedRevision,
+      expectedScopes: scopes,
+    }),
     c.env.DB.prepare(
-      "UPDATE releases SET rollout_cohort_count = ?1, updated_at = ?2 WHERE id = ?3 AND app_id = ?4",
-    ).bind(next, now, releaseId, appId),
+      `UPDATE releases
+       SET rollout_cohort_count = ?1, revision = revision + 1, updated_at = ?2
+       WHERE id = ?3 AND app_id = ?4 AND revision = ?5 AND status = ?6
+         AND EXISTS (SELECT 1 FROM audit_logs WHERE id = ?7)`,
+    ).bind(next, now, releaseId, appId, expectedRevision, existing.status, auditId),
   ];
   if (existing.status === "active") {
     if (isFullCoverage(scopes, next)) {
       statements.push(c.env.DB.prepare(
         `UPDATE releases
-         SET status = 'superseded', superseded_by_release_id = ?1, updated_at = ?2
+         SET status = 'superseded', superseded_by_release_id = ?1,
+             revision = revision + 1, updated_at = ?2
          WHERE app_id = ?3 AND channel_id = ?4 AND product_type = ?5
-           AND release_type = ?6 AND status = 'active' AND id <> ?1`,
+           AND release_type = ?6 AND status = 'active' AND id <> ?1
+           AND EXISTS (SELECT 1 FROM audit_logs WHERE id = ?7)`,
       ).bind(
         releaseId,
         now,
@@ -1634,27 +2025,32 @@ export async function handleBumpRollout(c: AdminContext) {
         existing.channel_id,
         existing.product_type,
         existing.release_type,
+        auditId,
       ));
     } else {
       statements.push(c.env.DB.prepare(
         `UPDATE releases
-         SET status = 'active', superseded_by_release_id = NULL, updated_at = ?1
-         WHERE app_id = ?2 AND superseded_by_release_id = ?3 AND status = 'superseded'`,
-      ).bind(now, appId, releaseId));
+         SET status = 'active', superseded_by_release_id = NULL,
+             revision = revision + 1, updated_at = ?1
+         WHERE app_id = ?2 AND superseded_by_release_id = ?3 AND status = 'superseded'
+           AND EXISTS (SELECT 1 FROM audit_logs WHERE id = ?4)`,
+      ).bind(now, appId, releaseId, auditId));
     }
   }
-  statements.push(c.env.DB.prepare(
-    "INSERT INTO audit_logs (id, app_id, action, actor, payload, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-  ).bind(
-    crypto.randomUUID(),
-    appId,
-    "release.bump_rollout",
-    currentActor(c),
-    JSON.stringify({ release_id: releaseId, previous: existing.rollout_cohort_count, next }),
-    now,
-  ));
-  await c.env.DB.batch(statements);
-  return c.json({ ok: true, rollout_cohort_count: next });
+  const batchResults = await c.env.DB.batch(statements);
+  if (Number(batchResults[0]?.meta?.changes ?? 0) !== 1 ||
+      Number(batchResults[1]?.meta?.changes ?? 0) !== 1) {
+    return releaseRevisionConflictResponse(
+      c,
+      expectedRevision,
+      await currentReleaseRevision(c.env.DB, appId, releaseId),
+    );
+  }
+  return c.json({
+    ok: true,
+    rollout_cohort_count: next,
+    revision: expectedRevision + 1,
+  });
 }
 
 export async function handleForceUpdate(c: AdminContext) {
@@ -1663,9 +2059,19 @@ export async function handleForceUpdate(c: AdminContext) {
   const body = (await c.req.json().catch(() => ({}))) as {
     enabled?: boolean;
     should_force_update?: boolean;
+    expected_revision?: unknown;
   };
   const existing = await getReleaseForApp(c.env.DB, appId, releaseId);
   if (!existing) return c.json({ error: "not found" }, 404);
+  let expectedRevision: number;
+  try {
+    expectedRevision = expectedReleaseRevision(body.expected_revision, existing.revision);
+  } catch (error) {
+    return c.json({ error: (error as Error).message }, 400);
+  }
+  if (expectedRevision !== existing.revision) {
+    return releaseRevisionConflictResponse(c, expectedRevision, existing.revision);
+  }
   const next =
     body.should_force_update !== undefined
       ? body.should_force_update
@@ -1673,14 +2079,50 @@ export async function handleForceUpdate(c: AdminContext) {
         ? body.enabled
         : !Boolean(existing.should_force_update);
   const now = Date.now();
-  await c.env.DB.prepare(
-    "UPDATE releases SET should_force_update = ?1, updated_at = ?2 WHERE id = ?3 AND app_id = ?4",
-  )
-    .bind(next ? 1 : 0, now, releaseId, appId)
-    .run();
-  await insertAuditLog(c.env.DB, appId, "release.force_update", currentActor(c), {
-    release_id: releaseId,
+  const auditId = crypto.randomUUID();
+  const scopes = await releaseScopesForMutation(c.env.DB, releaseId);
+  const batchResults = await c.env.DB.batch([
+    conditionalReleaseAuditStatement(c.env.DB, {
+      auditId,
+      appId,
+      action: "release.force_update",
+      actor: currentActor(c),
+      payload: {
+        release_id: releaseId,
+        should_force_update: next,
+        expected_revision: expectedRevision,
+      },
+      now,
+      release: existing,
+      expectedRevision,
+      expectedScopes: scopes,
+    }),
+    c.env.DB.prepare(
+      `UPDATE releases
+       SET should_force_update = ?1, revision = revision + 1, updated_at = ?2
+       WHERE id = ?3 AND app_id = ?4 AND revision = ?5 AND status = ?6
+         AND EXISTS (SELECT 1 FROM audit_logs WHERE id = ?7)`,
+    ).bind(
+      next ? 1 : 0,
+      now,
+      releaseId,
+      appId,
+      expectedRevision,
+      existing.status,
+      auditId,
+    ),
+  ]);
+  if (Number(batchResults[0]?.meta?.changes ?? 0) !== 1 ||
+      Number(batchResults[1]?.meta?.changes ?? 0) !== 1) {
+    return releaseRevisionConflictResponse(
+      c,
+      expectedRevision,
+      await currentReleaseRevision(c.env.DB, appId, releaseId),
+    );
+  }
+  return c.json({
+    ok: true,
     should_force_update: next,
-  }, now);
-  return c.json({ ok: true, should_force_update: next });
+    revision: expectedRevision + 1,
+  });
 }

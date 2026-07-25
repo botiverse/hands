@@ -440,10 +440,13 @@ hands releases publish raft-android <release-id> --device-group <group-id>
 
 The final publish remains an explicit authorization step. The CLI first reads
 release detail, canonicalizes every stored scope, and sends the complete set as
-`expected_scopes`. Empty, duplicate, malformed, or unsupported scope state is
+`expected_scopes` together with that detail's `expected_revision`. The update
+command also fresh-reads and sends the revision before PATCH. Empty, duplicate,
+malformed, or unsupported scope state is
 rejected locally without a publish request. A repeatable `--device-group`
 asserts the exact stored device-group subset. Activation returns `409` if any
-scope drifts between the detail read and the guarded server transition.
+scope or revision drifts between the detail read and the guarded server
+transition.
 Only exact group members receive the release; other devices fall back to the
 prior active release. List groups with `hands device-groups list <app>` and
 remove members with `device-groups remove-member`. Rename or change the

@@ -42,6 +42,30 @@ const ReleaseInput = z
   .catchall(z.unknown())
   .openapi("ReleaseInput");
 
+const RevisionMutationInput = z
+  .object({
+    expected_revision: z.number().int().nonnegative().optional().openapi({
+      description: "Revision from fresh release detail. Stale values return RELEASE_REVISION_CONFLICT.",
+    }),
+  })
+  .catchall(z.unknown())
+  .openapi("RevisionMutationInput");
+
+const PublishReleaseInput = z
+  .object({
+    expected_revision: z.number().int().nonnegative().optional().openapi({
+      description: "Revision from the same fresh detail read as expected_scopes.",
+    }),
+    expected_scope: GenericObject.optional().openapi({
+      description: "Legacy single-scope precondition. Do not combine with expected_scopes.",
+    }),
+    expected_scopes: z.array(GenericObject).min(1).optional().openapi({
+      description: "Canonical exact release scope-set precondition.",
+    }),
+  })
+  .catchall(z.unknown())
+  .openapi("PublishReleaseInput");
+
 const ReleaseShare = z
   .object({
     id: z.string(),
@@ -230,13 +254,15 @@ export function registerReleaseRoutes(registry: OpenApiRegistry) {
 
   for (const [method, path, summary, bodyRequired] of [
     ["get", "/api/apps/{appId}/releases/{releaseId}", "Get a release", false],
-    ["patch", "/api/apps/{appId}/releases/{releaseId}", "Update release metadata and scopes", true],
-    ["post", "/api/apps/{appId}/releases/{releaseId}/publish", "Publish a draft with an exact expected_scopes precondition", true],
-    ["delete", "/api/apps/{appId}/releases/{releaseId}", "Cancel or delete a release", false],
-    ["post", "/api/apps/{appId}/releases/{releaseId}/rollback", "Restore a superseded or cancelled release", false],
-    ["post", "/api/apps/{appId}/releases/{releaseId}/bump-rollout", "Update rollout percentage", true],
-    ["post", "/api/apps/{appId}/releases/{releaseId}/force-update", "Toggle force update", true],
+    ["patch", "/api/apps/{appId}/releases/{releaseId}", "Update release metadata and scopes with a revision precondition", true],
+    ["post", "/api/apps/{appId}/releases/{releaseId}/publish", "Publish a draft with exact revision and expected_scopes preconditions", true],
+    ["delete", "/api/apps/{appId}/releases/{releaseId}", "Cancel a release with a revision precondition", false],
+    ["post", "/api/apps/{appId}/releases/{releaseId}/rollback", "Restore a cancelled draft to draft or a previously active release to active", false],
+    ["post", "/api/apps/{appId}/releases/{releaseId}/bump-rollout", "Update rollout percentage with a revision precondition", true],
+    ["post", "/api/apps/{appId}/releases/{releaseId}/force-update", "Toggle force update with a revision precondition", true],
   ] as const) {
+    const isPublish = path.endsWith("/publish");
+    const isRollback = path.endsWith("/rollback");
     register(registry, {
       method,
       path,
@@ -245,8 +271,20 @@ export function registerReleaseRoutes(registry: OpenApiRegistry) {
       security: auth,
       request: {
         params: AppReleaseParams,
-        ...(bodyRequired
-          ? { body: { content: json(GenericObject), required: true } }
+        ...(method === "delete"
+          ? {
+              query: z.object({
+                expected_revision: z.coerce.number().int().nonnegative().optional(),
+              }),
+            }
+          : {}),
+        ...(bodyRequired || isRollback
+          ? {
+              body: {
+                content: json(isPublish ? PublishReleaseInput : RevisionMutationInput),
+                required: bodyRequired,
+              },
+            }
           : {}),
       },
       responses: {
@@ -254,7 +292,7 @@ export function registerReleaseRoutes(registry: OpenApiRegistry) {
         400: error("Invalid release operation."),
         403: error("Current principal cannot modify this release."),
         404: error("Release was not found."),
-        409: error("Release lifecycle or exact scope precondition conflict."),
+        409: error("Release revision, lifecycle, or exact scope precondition conflict."),
       },
     });
   }

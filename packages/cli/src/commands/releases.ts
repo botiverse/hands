@@ -85,6 +85,13 @@ function parseRolloutPercent(value: string): number {
   return parsed;
 }
 
+function releaseRevision(raw: unknown): number {
+  if (!Number.isInteger(raw) || Number(raw) < 0) {
+    throw new Error("release detail is missing a valid revision; refusing mutation");
+  }
+  return Number(raw);
+}
+
 export function registerReleaseCommands(program: Command): void {
   const releases = program
     .command("releases")
@@ -108,9 +115,11 @@ export function registerReleaseCommands(program: Command): void {
         status: string;
         changelog: string | null;
         rollout_cohort_count: number | null;
+        revision: number;
       };
       console.log(`Release ${r.id}`);
       console.log(`  status:  ${r.status}`);
+      console.log(`  revision: ${r.revision}`);
       console.log(`  rollout: ${r.rollout_cohort_count ?? 100}%`);
       console.log(`  changelog:`);
       console.log((r.changelog ?? "(none)").split("\n").map((l) => "    " + l).join("\n"));
@@ -217,6 +226,10 @@ export function registerReleaseCommands(program: Command): void {
           ];
         }
         if (rolloutPercent !== undefined) body.rollout_cohort_count = rolloutPercent === 100 ? null : rolloutPercent;
+        const detail = await apiRequest<{ release?: { revision?: unknown } }>(
+          `/api/apps/${appId}/releases/${releaseId}`,
+        );
+        body.expected_revision = releaseRevision(detail.release?.revision);
         const updated = await apiRequest<Record<string, unknown>>(
           `/api/apps/${appId}/releases/${releaseId}`,
           { method: "PATCH", body },
@@ -252,10 +265,14 @@ export function registerReleaseCommands(program: Command): void {
       opts: { deviceGroup?: string[]; json?: boolean },
     ) => {
       const appId = await resolveAppId(appIdOrSlug);
-      const detail = await apiRequest<{ scopes?: unknown }>(
+      const detail = await apiRequest<{
+        release?: { revision?: unknown };
+        scopes?: unknown;
+      }>(
         `/api/apps/${appId}/releases/${releaseId}`,
       );
       const scopes = normalizeStoredScopes(detail.scopes);
+      const expectedRevision = releaseRevision(detail.release?.revision);
       const assertedGroups = normalizeDeviceGroupIds(opts.deviceGroup, "--device-group");
       if (opts.deviceGroup !== undefined) {
         const storedGroups = scopes
@@ -273,7 +290,13 @@ export function registerReleaseCommands(program: Command): void {
       }
       const result = await apiRequest<Record<string, unknown>>(
         `/api/apps/${appId}/releases/${releaseId}/publish`,
-        { method: "POST", body: { expected_scopes: scopes } },
+        {
+          method: "POST",
+          body: {
+            expected_scopes: scopes,
+            expected_revision: expectedRevision,
+          },
+        },
       );
       if (opts.json) {
         console.log(JSON.stringify(result, null, 2));

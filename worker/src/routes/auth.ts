@@ -742,9 +742,9 @@ export async function handleAgentHelp(c: Context<{ Bindings: Env }>) {
       create_share:
         "POST /api/apps/{app_id}/releases/{release_id}/shares — body: {ttl_seconds?, password?} — publisher; no expiry unless set",
       update_release:
-        "PATCH /api/apps/{app_id}/releases/{release_id} — body: {changelog?, release_notes?, hidden?} — publisher",
+        "PATCH /api/apps/{app_id}/releases/{release_id} — body: {expected_revision?, changelog?, release_notes?, hidden?} — publisher; stale revision returns 409 without side effects",
       publish_release:
-        "POST /api/apps/{app_id}/releases/{release_id}/publish — publisher; live-facing, needs explicit human authorization",
+        "POST /api/apps/{app_id}/releases/{release_id}/publish — body: {expected_revision?, expected_scopes} — publisher; live-facing, needs explicit human authorization",
       create_ios_simulator_artifact:
         "POST /api/apps/{app_id}/qa-artifacts/ios-simulator — publisher; declares filename/size/SHA/source/version/build/bundle/GitHub run and returns a presigned PUT URL",
       complete_ios_simulator_artifact:
@@ -1060,11 +1060,12 @@ export async function handleAgentManifest(c: Context<{ Bindings: Env }>) {
       {
         name: "update-release",
         description:
-          "Update a release's changelog/bilingual release notes, rollout fields, or hidden flag. Requires app publisher.",
+          "Update a release's changelog/bilingual release notes, rollout fields, or hidden flag. Pass the revision from fresh release detail; stale revisions fail with RELEASE_REVISION_CONFLICT. Requires app publisher.",
         endpoint: { method: "PATCH", path: "/api/apps/{app_id}/releases/{release_id}" },
         parameters: {
           app_id: { type: "string", in: "path", required: true, description: "App UUID." },
           release_id: { type: "string", in: "path", required: true, description: "Release UUID." },
+          expected_revision: { type: "number", in: "body", required: false, description: "Revision from fresh release detail. A stale value returns 409 with zero mutation side effects." },
           changelog: { type: "string", in: "body", required: false, description: "Changelog text." },
           release_notes: { type: "object", in: "body", required: false, description: "Bilingual notes object." },
           hidden: { type: "boolean", in: "body", required: false, description: "Hide/show on public history without deleting." },
@@ -1075,11 +1076,12 @@ export async function handleAgentManifest(c: Context<{ Bindings: Env }>) {
       {
         name: "publish-release",
         description:
-          "Publish (activate) a draft release. Live-facing: only run with explicit human authorization. Requires app publisher.",
+          "Publish (activate) a draft release using exact scope and revision preconditions. Live-facing: only run with explicit human authorization. Requires app publisher.",
         endpoint: { method: "POST", path: "/api/apps/{app_id}/releases/{release_id}/publish" },
         parameters: {
           app_id: { type: "string", in: "path", required: true, description: "App UUID." },
           release_id: { type: "string", in: "path", required: true, description: "Release UUID." },
+          expected_revision: { type: "number", in: "body", required: false, description: "Revision from the same fresh detail read used to derive expected_scopes." },
           expected_scope: { type: "object", in: "body", required: false, description: "Legacy single-scope precondition. New callers should send expected_scopes. Do not combine both fields." },
           expected_scopes: { type: "array", in: "body", required: false, description: "Canonical exact-set precondition. Every stored scope must match atomically, including full:all and mandatory device_group entries." },
         },
@@ -1091,15 +1093,17 @@ export async function handleAgentManifest(c: Context<{ Bindings: Env }>) {
         parameters: {
           app_id: { type: "string", in: "path", required: true, description: "App UUID." },
           release_id: { type: "string", in: "path", required: true, description: "Release UUID." },
+          expected_revision: { type: "number", in: "query", required: false, description: "Revision from fresh release detail." },
         },
       },
       {
         name: "restore-release",
-        description: "Reactivate the same superseded or cancelled release row. This never creates a duplicate release for the version. Requires app publisher.",
+        description: "Restore the same release row. A never-published cancelled draft returns to draft and must pass normal publish gates; a previously active release returns to active. Requires app publisher.",
         endpoint: { method: "POST", path: "/api/apps/{app_id}/releases/{release_id}/rollback" },
         parameters: {
           app_id: { type: "string", in: "path", required: true, description: "App UUID." },
-          release_id: { type: "string", in: "path", required: true, description: "Existing release UUID to reactivate." },
+          release_id: { type: "string", in: "path", required: true, description: "Existing release UUID to restore." },
+          expected_revision: { type: "number", in: "body", required: false, description: "Revision from fresh release detail." },
         },
       },
       {

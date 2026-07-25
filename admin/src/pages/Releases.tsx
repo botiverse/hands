@@ -396,6 +396,7 @@ function ReleaseRow({
     queryKey: ["release-detail", r.id],
     queryFn: () => getRelease(appId, r.id),
   });
+  const currentRevision = detail.data?.release.revision ?? r.revision;
 
   const publish = useMutation({
     mutationFn: () => {
@@ -408,6 +409,7 @@ function ReleaseRow({
           scope_type: scope.scope_type,
           scope_value: scope.scope_value,
         })),
+        currentRevision,
       );
     },
     onSuccess: () => {
@@ -423,9 +425,16 @@ function ReleaseRow({
   });
 
   const rollback = useMutation({
-    mutationFn: () => rollbackRelease(appId, r.id, {}),
-    onSuccess: () => {
-      toast.show({ kind: "success", title: `Restored ${channelSlug}` });
+    mutationFn: () => rollbackRelease(appId, r.id, {
+      expected_revision: currentRevision,
+    }),
+    onSuccess: (data) => {
+      toast.show({
+        kind: "success",
+        title: data.restored_to_draft
+          ? `Restored ${channelSlug} draft`
+          : `Restored ${channelSlug} as active`,
+      });
       onAction();
     },
     onError: (e) =>
@@ -437,7 +446,10 @@ function ReleaseRow({
   });
 
   const bump = useMutation({
-    mutationFn: (target: number) => bumpRollout(appId, r.id, { to: target }),
+    mutationFn: (target: number) => bumpRollout(appId, r.id, {
+      to: target,
+      expected_revision: currentRevision,
+    }),
     onSuccess: (data) => {
       toast.show({
         kind: "success",
@@ -455,7 +467,10 @@ function ReleaseRow({
   });
 
   const toggleForce = useMutation({
-    mutationFn: () => forceUpdate(appId, r.id, { enabled: !r.should_force_update }),
+    mutationFn: () => forceUpdate(appId, r.id, {
+      enabled: !r.should_force_update,
+      expected_revision: currentRevision,
+    }),
     onSuccess: (data) => {
       toast.show({
         kind: "success",
@@ -474,7 +489,7 @@ function ReleaseRow({
   });
 
   const cancel = useMutation({
-    mutationFn: () => deleteRelease(appId, r.id),
+    mutationFn: () => deleteRelease(appId, r.id, currentRevision),
     onSuccess: () => {
       toast.show({
         kind: "success",
@@ -603,7 +618,9 @@ function ReleaseRow({
             onClick={() => rollback.mutate()}
             disabled={rollback.isPending}
           >
-            Restore as active
+            {r.status === "cancelled" && r.activated_at == null
+              ? "Restore draft"
+              : "Restore as active"}
           </Button>
         )}
         {(r.status === "draft" || r.status === "active") && (
@@ -822,6 +839,7 @@ function EditReleaseDialog({
   const save = useMutation({
     mutationFn: () =>
       updateRelease(appId, release.id, {
+        expected_revision: detail?.release.revision ?? release.revision,
         changelog: changelog.trim() || null,
         should_force_update: shouldForceUpdate,
         rollout_cohort_count:
@@ -1109,7 +1127,12 @@ function NewReleaseDialog({
         }
       }
       if (mode === "publish") {
-        const published = await publishRelease(appId, release.id, scopes);
+        const published = await publishRelease(
+          appId,
+          release.id,
+          scopes,
+          release.revision,
+        );
         return { release: published, assetFailures, mode };
       }
       return { release, assetFailures, mode };

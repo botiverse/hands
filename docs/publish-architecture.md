@@ -386,8 +386,9 @@ ToDesktop runs builds on actual Win/Mac/Linux VMs, captures screenshots + auto-u
       `409 RELEASE_VERSION_ALREADY_EXISTS` with the existing coordinates if
       the lane/version lifecycle already exists, including if it is cancelled
    b. Insert release_scopes row(s)
-   c. Publish only after an exact `expected_scopes` set matches atomically;
-      set status=`active` and refresh `activated_at`
+   c. Publish only after the fresh `expected_revision` and exact
+      `expected_scopes` set match atomically; set status=`active`, increment
+      `revision`, and refresh `activated_at`
    d. At full coverage, mark prior active releases on the same lane as
       `superseded`; during partial rollout, retain an eligible prior full
       release as fallback
@@ -397,11 +398,14 @@ ToDesktop runs builds on actual Win/Mac/Linux VMs, captures screenshots + auto-u
 
 ### 4.4 Rollback
 
-Admin picks a superseded or cancelled historical release on the same lane and
-chooses **Restore as active**. The server reactivates that exact release row,
-clears its supersession link, and refreshes `activated_at`; it never inserts a
-second release for the version. A full-coverage restore supersedes the current
-active release. A partial restore preserves or reactivates its fallback.
+Admin picks a superseded or cancelled historical release on the same lane. A
+cancelled row with `activated_at = null` was never published and uses
+**Restore draft**; the server returns that exact row to `draft`, so it must pass
+the normal publish gates. Previously active rows use **Restore as active**;
+the server clears the supersession link and refreshes `activated_at`. Neither
+path inserts a second release for the version. Every path requires the fresh
+revision. A full-coverage active restore supersedes the current active release;
+a partial active restore preserves or reactivates its fallback.
 
 ## 5. Public client API
 
@@ -604,9 +608,10 @@ LIMIT 1;
 3. **`full` is the only match**: `priority=1`; behaves like v1 (any active release on the channel).
 4. **No release matches**: 404 with body `{"error": "no active release for this client"}`. v1 clients that ignored scope will see this and should fall back to their bundled copy.
 5. **Release cancelled (`status='cancelled'`)** mid-request: never returned. Server filters by `status='active'` in Step 1.
-6. **Restore reuses the release ID**: a superseded or cancelled release moves
-   back to `active` and receives a new `activated_at`. The endpoint rejects
-   drafts and already-active rows and never clones a version lifecycle.
+6. **Restore reuses the release ID**: a never-published cancelled row moves
+   back to `draft`; a previously active row moves back to `active` and receives
+   a new `activated_at`. The endpoint rejects drafts and already-active rows
+   and never clones a version lifecycle.
 7. **`ip_range` matching** is server-trusted: we use `cf.clientIp` only, never the client `X-Forwarded-For`. v2 client must NOT send `X-Forwarded-For`; server strips it if present.
 8. **Cross-product-type scope**: scopes are per-release, but releases are per-`product_type`. A `platform` scope on an Android release cannot accidentally match an Electron client because the platform strings are disjoint.
 

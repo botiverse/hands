@@ -27,7 +27,7 @@ describe("release identity migration", () => {
       CREATE TABLE builds (
         id TEXT PRIMARY KEY,
         app_id TEXT NOT NULL,
-        channel_id TEXT NOT NULL,
+        channel_id TEXT,
         product_type TEXT NOT NULL,
         release_type TEXT NOT NULL,
         version_name TEXT NOT NULL,
@@ -62,8 +62,10 @@ describe("release identity migration", () => {
         ('build-conflict', 'app-a', 'main', 'android-apk', 'stable', '1.0.0', 100),
         ('build-cancel-conflict', 'app-a', 'main', 'android-apk', 'stable', '1.0.1', 101),
         ('build-new', 'app-a', 'main', 'android-apk', 'stable', '1.0.3', 103),
+        ('build-released-null', 'app-a', NULL, 'android-apk', 'stable', '1.0.4', 104),
         ('build-other-channel', 'app-a', 'beta', 'android-apk', 'stable', '1.0.0', 100),
-        ('build-unreleased', 'app-a', 'main', 'android-apk', 'stable', '9.0.0', 900);
+        ('build-unreleased', 'app-a', 'main', 'android-apk', 'stable', '9.0.0', 900),
+        ('build-unreleased-null', 'app-a', NULL, 'android-apk', 'stable', '9.0.1', 901);
 
       INSERT INTO releases
         (id, app_id, build_id, channel_id, product_type, release_type, status, created_at, updated_at)
@@ -71,7 +73,8 @@ describe("release identity migration", () => {
         ('release-legacy-a', 'app-a', 'build-legacy-a', 'main', 'android-apk', 'stable', 'active', 10, 20),
         ('release-legacy-b', 'app-a', 'build-legacy-b', 'main', 'android-apk', 'stable', 'cancelled', 11, 21),
         ('release-cancelled', 'app-a', 'build-cancelled', 'main', 'android-apk', 'stable', 'cancelled', 12, 22),
-        ('release-draft', 'app-a', 'build-draft', 'main', 'android-apk', 'stable', 'draft', 13, 23);
+        ('release-draft', 'app-a', 'build-draft', 'main', 'android-apk', 'stable', 'draft', 13, 23),
+        ('release-released-null', 'app-a', 'build-released-null', 'main', 'android-apk', 'stable', 'draft', 14, 24);
 
       INSERT INTO release_scopes (id, release_id, scope_type, scope_value, created_at)
       VALUES
@@ -84,12 +87,13 @@ describe("release identity migration", () => {
     expect(() => db.exec(readFileSync(migrationPath, "utf8"))).not.toThrow();
 
     expect(db.prepare(`
-      SELECT id, status, activated_at FROM releases ORDER BY id
+      SELECT id, status, activated_at, revision FROM releases ORDER BY id
     `).all()).toEqual([
-      { id: "release-cancelled", status: "cancelled", activated_at: 22 },
-      { id: "release-draft", status: "draft", activated_at: null },
-      { id: "release-legacy-a", status: "active", activated_at: 20 },
-      { id: "release-legacy-b", status: "cancelled", activated_at: 21 },
+      { id: "release-cancelled", status: "cancelled", activated_at: null, revision: 0 },
+      { id: "release-draft", status: "draft", activated_at: null, revision: 0 },
+      { id: "release-legacy-a", status: "active", activated_at: 20, revision: 0 },
+      { id: "release-legacy-b", status: "cancelled", activated_at: null, revision: 0 },
+      { id: "release-released-null", status: "draft", activated_at: null, revision: 0 },
     ]);
     expect(db.prepare(`
       SELECT release_id, scope_type, scope_value FROM release_scopes ORDER BY id
@@ -138,7 +142,16 @@ describe("release identity migration", () => {
       UPDATE builds SET version_code = 104 WHERE id = 'build-new'
     `).run()).toThrow("released build identity is immutable");
     expect(() => db.prepare(`
+      UPDATE builds SET channel_id = 'main' WHERE id = 'build-released-null'
+    `).run()).toThrow("released build identity is immutable");
+    expect(() => db.prepare(`
+      UPDATE builds SET channel_id = NULL WHERE id = 'build-new'
+    `).run()).toThrow("released build identity is immutable");
+    expect(() => db.prepare(`
       UPDATE builds SET version_code = 901 WHERE id = 'build-unreleased'
+    `).run()).not.toThrow();
+    expect(() => db.prepare(`
+      UPDATE builds SET channel_id = 'main' WHERE id = 'build-unreleased-null'
     `).run()).not.toThrow();
     expect(() => db.prepare(`
       UPDATE releases SET status = 'active' WHERE id = 'release-new'

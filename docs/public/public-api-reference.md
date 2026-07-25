@@ -65,6 +65,7 @@ example:
 
 ```json
 {
+  "expected_revision": 4,
   "expected_scopes": [
     { "scope_type": "full", "scope_value": "all" },
     { "scope_type": "device_group", "scope_value": "<group UUID>" }
@@ -76,14 +77,21 @@ Hands rechecks the exact set inside the guarded activation operation and
 returns `409 RELEASE_SCOPE_PRECONDITION_FAILED` on missing, malformed,
 duplicate, unexpected, or drifted scope state. `expected_scope` remains a
 legacy single-scope compatibility field; new callers should always send
-`expected_scopes`.
+`expected_scopes`. Release detail also exposes an integer `revision`; send that
+value as `expected_revision` on PATCH, publish, cancel, restore, rollout-bump,
+and force-update writes. A stale revision returns
+`409 RELEASE_REVISION_CONFLICT` without changing the release, its scopes,
+fallback releases, or audit log.
 
 The admin release API permits only one lifecycle for each
 app/channel/product/release-type/version code. Duplicate creation returns
 `409 RELEASE_VERSION_ALREADY_EXISTS` with the existing release/build/status
 coordinates, including after cancellation. The rollback endpoint restores a
-superseded or cancelled release in place and returns the same release ID with a
-new activation time.
+superseded or cancelled release in place. A cancelled row whose
+`activated_at` is null was never published, so it returns to `draft` and must
+pass normal publish readiness, exact-scope, external-target, and revision
+gates. Only a previously active row returns to `active` with a new activation
+time.
 
 ### Update Available
 

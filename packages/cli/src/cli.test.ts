@@ -261,7 +261,7 @@ describe("device-group rollout commands", () => {
       }
       if (req.url === "/api/apps/app-1/releases/release-1" && req.method === "GET") {
         return res.end(JSON.stringify({
-          release: { id: "release-1", status: "draft" },
+          release: { id: "release-1", status: "draft", revision: 7 },
           scopes: [{ scope_type: "device_group", scope_value: "group-1" }],
         }));
       }
@@ -322,14 +322,20 @@ describe("device-group rollout commands", () => {
           description: "Physical acceptance devices",
         },
       });
-      expect(requests.find((request) => request.url.endsWith("/releases/release-1"))).toMatchObject({
+      expect(requests.find((request) =>
+        request.url.endsWith("/releases/release-1") && request.method === "PATCH"
+      )).toMatchObject({
         method: "PATCH",
-        body: { scopes: [{ scope_type: "device_group", scope_value: "group-1" }] },
+        body: {
+          scopes: [{ scope_type: "device_group", scope_value: "group-1" }],
+          expected_revision: 7,
+        },
       });
       expect(requests.find((request) => request.url.endsWith("/releases/release-1/publish"))).toMatchObject({
         method: "POST",
         body: {
           expected_scopes: [{ scope_type: "device_group", scope_value: "group-1" }],
+          expected_revision: 7,
         },
       });
     } finally {
@@ -354,6 +360,11 @@ describe("device-group rollout commands", () => {
       res.setHeader("content-type", "application/json");
       if (req.url === "/api/apps") {
         return res.end(JSON.stringify({ apps: [{ id: "app-1", slug: "raft-android" }] }));
+      }
+      if (req.url?.startsWith("/api/apps/app-1/releases/") && req.method === "GET") {
+        return res.end(JSON.stringify({
+          release: { id: req.url.split("/").at(-1), status: "draft", revision: 11 },
+        }));
       }
       if (req.url?.startsWith("/api/apps/app-1/releases/") && req.method === "PATCH") {
         return res.end(JSON.stringify({ id: req.url.split("/").at(-1), status: "draft" }));
@@ -401,10 +412,12 @@ describe("device-group rollout commands", () => {
             { scope_type: "device_group", scope_value: "group-z" },
           ],
           rollout_cohort_count: 25,
+          expected_revision: 11,
         },
         "release-full": {
           scopes: [{ scope_type: "full", scope_value: "all" }],
           rollout_cohort_count: null,
+          expected_revision: 11,
         },
       });
 
@@ -472,7 +485,7 @@ describe("device-group rollout commands", () => {
       if (detailMatch && req.method === "GET") {
         const releaseId = detailMatch[1] ?? "";
         return res.end(JSON.stringify({
-          release: { id: releaseId, status: "draft" },
+          release: { id: releaseId, status: "draft", revision: 17 },
           scopes: details[releaseId],
         }));
       }
@@ -515,15 +528,16 @@ describe("device-group rollout commands", () => {
           .map((request) => [request.url.split("/").at(-2), request.body]),
       );
       expect(publishBodies).toEqual({
-        "release-platform": { expected_scopes: [{ scope_type: "platform", scope_value: "android" }] },
-        "release-cohort": { expected_scopes: [{ scope_type: "user_cohort", scope_value: "internal-qa" }] },
-        "release-ip": { expected_scopes: [{ scope_type: "ip_range", scope_value: "203.0.113.0/24" }] },
-        "release-full": { expected_scopes: [{ scope_type: "full", scope_value: "all" }] },
+        "release-platform": { expected_scopes: [{ scope_type: "platform", scope_value: "android" }], expected_revision: 17 },
+        "release-cohort": { expected_scopes: [{ scope_type: "user_cohort", scope_value: "internal-qa" }], expected_revision: 17 },
+        "release-ip": { expected_scopes: [{ scope_type: "ip_range", scope_value: "203.0.113.0/24" }], expected_revision: 17 },
+        "release-full": { expected_scopes: [{ scope_type: "full", scope_value: "all" }], expected_revision: 17 },
         "release-mixed": {
           expected_scopes: [
             { scope_type: "platform", scope_value: "android" },
             { scope_type: "user_cohort", scope_value: "internal-qa" },
           ],
+          expected_revision: 17,
         },
         "release-full-groups": {
           expected_scopes: [
@@ -531,6 +545,7 @@ describe("device-group rollout commands", () => {
             { scope_type: "device_group", scope_value: "group-a" },
             { scope_type: "device_group", scope_value: "group-z" },
           ],
+          expected_revision: 17,
         },
       });
 

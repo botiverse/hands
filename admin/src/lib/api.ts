@@ -212,6 +212,8 @@ export interface Release {
   product_type: string;
   release_type: string;
   status: string;            // 'draft' | 'active' | 'superseded' | 'cancelled'
+  activated_at: number | null;
+  revision: number;
   is_full: number;
   superseded_by_release_id: string | null;
   rollout_cohort_count: number | null;
@@ -1397,6 +1399,7 @@ export const updateRelease = (
     availability_at?: number | null | undefined;
     provenance_json?: unknown;
     scopes?: { scope_type: string; scope_value: string }[];
+    expected_revision: number;
   },
 ) =>
   request<Release>(`/api/apps/${appId}/releases/${releaseId}`, {
@@ -1409,16 +1412,20 @@ export const publishRelease = (
   appId: string,
   releaseId: string,
   expectedScopes: { scope_type: string; scope_value: string }[],
+  expectedRevision: number,
 ) =>
   request<Release>(`/api/apps/${appId}/releases/${releaseId}/publish`, {
     method: "POST",
     admin: true,
-    body: JSON.stringify({ expected_scopes: expectedScopes }),
+    body: JSON.stringify({
+      expected_scopes: expectedScopes,
+      expected_revision: expectedRevision,
+    }),
   });
 
-export const deleteRelease = (appId: string, releaseId: string) =>
-  request<{ ok: boolean; id: string; status: "cancelled" }>(
-    `/api/apps/${appId}/releases/${releaseId}`,
+export const deleteRelease = (appId: string, releaseId: string, expectedRevision: number) =>
+  request<{ ok: boolean; id: string; status: "cancelled"; revision: number }>(
+    `/api/apps/${appId}/releases/${releaseId}?expected_revision=${expectedRevision}`,
     { method: "DELETE", admin: true },
   );
 
@@ -1428,9 +1435,10 @@ export const rollbackRelease = (
   input?: {
     build_id?: string | undefined;
     scopes?: { scope_type: string; scope_value: string }[];
+    expected_revision: number;
   },
 ) =>
-  request<Release>(`/api/apps/${appId}/releases/${releaseId}/rollback`, {
+  request<Release & { restored_to_draft: boolean; reactivated: boolean }>(`/api/apps/${appId}/releases/${releaseId}/rollback`, {
     method: "POST",
     admin: true,
     body: JSON.stringify(input ?? {}),
@@ -1439,9 +1447,9 @@ export const rollbackRelease = (
 export const bumpRollout = (
   appId: string,
   releaseId: string,
-  input: { to?: number; by?: number },
+  input: { to?: number; by?: number; expected_revision: number },
 ) =>
-  request<{ ok: boolean; rollout_cohort_count: number | null }>(
+  request<{ ok: boolean; rollout_cohort_count: number | null; revision: number }>(
     `/api/apps/${appId}/releases/${releaseId}/bump-rollout`,
     { method: "POST", admin: true, body: JSON.stringify(input) },
   );
@@ -1449,9 +1457,9 @@ export const bumpRollout = (
 export const forceUpdate = (
   appId: string,
   releaseId: string,
-  input?: { enabled?: boolean },
+  input?: { enabled?: boolean; expected_revision: number },
 ) =>
-  request<{ ok: boolean; should_force_update: number }>(
+  request<{ ok: boolean; should_force_update: number; revision: number }>(
     `/api/apps/${appId}/releases/${releaseId}/force-update`,
     { method: "POST", admin: true, body: JSON.stringify(input ?? {}) },
   );

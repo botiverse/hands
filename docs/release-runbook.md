@@ -214,8 +214,10 @@ release. Raising the rollout to 100% supersedes that fallback. `--full` without
 `--always-include-group` resets the scope to only `full:all`. The legacy
 `--device-group <id>` update remains an exact group-only rollout.
 
-Restoring a superseded or cancelled release reactivates that same release ID
-and records a fresh activation time. It never clones the build into another
-release lifecycle. Use **Restore as active** in Admin or
-`POST /api/apps/:appId/releases/:releaseId/rollback`; an already-active or
-draft release cannot be restored.
+Restoring always reuses the same release ID and never clones the build into a
+second lifecycle. A cancelled release with `activated_at = null` was never
+published: Admin shows **Restore draft**, and rollback returns it to `draft` so
+normal publish gates still apply. A superseded release or a cancelled release
+with a prior activation uses **Restore as active** and records a fresh
+activation time. Send the revision from fresh release detail; stale restore
+requests return `409 RELEASE_REVISION_CONFLICT` with zero side effects.
