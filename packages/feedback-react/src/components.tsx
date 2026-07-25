@@ -1,18 +1,29 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
+  type ChangeEvent,
+  type KeyboardEvent,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
+import {
+  Badge,
   Button,
   EmptyState,
   EmptyStateTitle,
   Input,
   Skeleton,
 } from "raft-ui";
+import { feedbackErrorMessage, feedbackStatusLabel } from "./locale.js";
 import { useHandsFeedback } from "./provider.js";
 import { FeedbackTransportError } from "./types.js";
 import type {
   FeedbackComment,
   FeedbackKind,
-  FeedbackTicketSummary,
   FeedbackTicketDetail,
+  FeedbackTicketSummary,
 } from "./types.js";
 
 export const MAX_FEEDBACK_ATTACHMENTS = 3;
@@ -27,7 +38,7 @@ export const FEEDBACK_ATTACHMENT_TYPES = [
 export function mergeTicketPages(
   current: FeedbackTicketSummary[],
   incoming: FeedbackTicketSummary[],
-): FeedbackTicketSummary[] {
+) {
   const merged = new Map(current.map((ticket) => [ticket.id, ticket]));
   for (const ticket of incoming) merged.set(ticket.id, ticket);
   return [...merged.values()];
@@ -36,176 +47,310 @@ export function mergeTicketPages(
 export function mergeCommentPages(
   current: FeedbackComment[],
   incoming: FeedbackComment[],
-): FeedbackComment[] {
+) {
   const merged = new Map(current.map((comment) => [comment.id, comment]));
   for (const comment of incoming) merged.set(comment.id, comment);
-  return [...merged.values()].sort((left, right) =>
-    left.createdAt - right.createdAt || left.id.localeCompare(right.id));
+  return [...merged.values()].sort(
+    (left, right) =>
+      left.createdAt - right.createdAt || left.id.localeCompare(right.id),
+  );
 }
 
 export function validateFeedbackAttachments(files: File[]): string | null {
-  if (files.length > MAX_FEEDBACK_ATTACHMENTS) {
+  if (files.length > MAX_FEEDBACK_ATTACHMENTS)
     return `Choose no more than ${MAX_FEEDBACK_ATTACHMENTS} screenshots.`;
-  }
   for (const file of files) {
-    if (!(FEEDBACK_ATTACHMENT_TYPES as readonly string[]).includes(file.type)) {
+    if (!(FEEDBACK_ATTACHMENT_TYPES as readonly string[]).includes(file.type))
       return `${file.name} is not a supported image.`;
-    }
-    if (file.size > MAX_FEEDBACK_ATTACHMENT_BYTES) {
+    if (file.size > MAX_FEEDBACK_ATTACHMENT_BYTES)
       return `${file.name} is larger than 10 MB.`;
-    }
   }
   return null;
 }
 
-function stableSubmissionId(
+function localizedAttachmentError(files: File[], locale: "en" | "zh-CN") {
+  const error = validateFeedbackAttachments(files);
+  if (!error || locale === "en") return error;
+  if (files.length > MAX_FEEDBACK_ATTACHMENTS)
+    return `最多选择 ${MAX_FEEDBACK_ATTACHMENTS} 张截图。`;
+  const invalid = files.find(
+    (file) =>
+      !(FEEDBACK_ATTACHMENT_TYPES as readonly string[]).includes(file.type),
+  );
+  if (invalid) return `${invalid.name} 不是支持的图片格式。`;
+  const large = files.find((file) => file.size > MAX_FEEDBACK_ATTACHMENT_BYTES);
+  return large ? `${large.name} 超过 10 MB。` : error;
+}
+
+function submissionId() {
+  if (!globalThis.crypto?.randomUUID)
+    throw new Error("A secure randomUUID implementation is required");
+  return globalThis.crypto.randomUUID();
+}
+
+export function stableFeedbackSubmission(
   previous: { fingerprint: string; id: string } | null,
   fingerprint: string,
-): { fingerprint: string; id: string } {
+) {
   return previous?.fingerprint === fingerprint
     ? previous
     : { fingerprint, id: submissionId() };
 }
 
-function errorMessage(error: unknown): string {
-  if (!(error instanceof FeedbackTransportError)) return "Feedback is temporarily unavailable.";
-  switch (error.code) {
-    case "conflict": return "This retry no longer matches the original request.";
-    case "invalid": return "Check the feedback details and try again.";
-    case "not_found": return "This feedback ticket is no longer available.";
-    case "rate_limited": return "Too many feedback requests. Try again later.";
-    case "unauthorized": return "Your feedback session expired. Reopen feedback and try again.";
-    case "unavailable": return "Feedback is temporarily unavailable.";
-  }
+export function isNearConversationBottom(
+  input: Pick<HTMLElement, "scrollHeight" | "scrollTop" | "clientHeight">,
+  threshold = 64,
+) {
+  return input.scrollHeight - input.scrollTop - input.clientHeight <= threshold;
 }
 
-function statusLabel(status: FeedbackTicketSummary["status"]): string {
-  return status === "in_progress" ? "In progress" : `${status[0]!.toUpperCase()}${status.slice(1)}`;
+function useSafeError() {
+  const { locale } = useHandsFeedback();
+  return useCallback(
+    (error: unknown) =>
+      feedbackErrorMessage(
+        locale,
+        error instanceof FeedbackTransportError ? error.code : undefined,
+      ),
+    [locale],
+  );
 }
 
-function formatDate(value: number): string {
-  return new Intl.DateTimeFormat(undefined, {
-    dateStyle: "medium",
-    timeStyle: "short",
-  }).format(new Date(value));
+function useAutosize(value: string) {
+  const ref = useRef<HTMLTextAreaElement | null>(null);
+  useLayoutEffect(() => {
+    const textarea = ref.current;
+    if (!textarea) return;
+    textarea.style.height = "auto";
+    textarea.style.height = `${Math.min(textarea.scrollHeight, 240)}px`;
+  }, [value]);
+  return ref;
 }
 
-function submissionId(): string {
-  if (!globalThis.crypto?.randomUUID) throw new Error("A secure randomUUID implementation is required");
-  return globalThis.crypto.randomUUID();
+function StatusBadge({ status }: { status: FeedbackTicketSummary["status"] }) {
+  const { locale } = useHandsFeedback();
+  if (status === "in_progress")
+    return (
+      <Badge variant="information" uppercase={false}>
+        {feedbackStatusLabel(locale, status)}
+      </Badge>
+    );
+  if (status === "resolved")
+    return (
+      <Badge variant="success" uppercase={false}>
+        {feedbackStatusLabel(locale, status)}
+      </Badge>
+    );
+  return (
+    <Badge appearance="outline" uppercase={false}>
+      {feedbackStatusLabel(locale, status)}
+    </Badge>
+  );
 }
 
 export type FeedbackInboxProps = {
   onSelectTicket(ticketId: string): void;
   onNewFeedback(): void;
   pageSize?: number;
+  hidden?: boolean;
+  readTicketId?: string | null;
 };
 
-export function FeedbackInbox({ onSelectTicket, onNewFeedback, pageSize = 20 }: FeedbackInboxProps) {
-  const { transport, reportUnread } = useHandsFeedback();
+export function FeedbackInbox({
+  onSelectTicket,
+  onNewFeedback,
+  pageSize = 20,
+  hidden = false,
+  readTicketId,
+}: FeedbackInboxProps) {
+  const { locale, message, reportUnread, transport } = useHandsFeedback();
+  const safeError = useSafeError();
   const [tickets, setTickets] = useState<FeedbackTicketSummary[]>([]);
+  const [filter, setFilter] = useState<"all" | "open" | "resolved">("all");
   const [cursor, setCursor] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [retryCursor, setRetryCursor] = useState<string | undefined>(undefined);
   const request = useRef(0);
-  const requestController = useRef<AbortController | null>(null);
+  const controllerRef = useRef<AbortController | null>(null);
 
-  const load = useCallback(async (nextCursor?: string) => {
-    requestController.current?.abort();
-    const controller = new AbortController();
-    requestController.current = controller;
-    const id = ++request.current;
-    nextCursor ? setLoadingMore(true) : setLoading(true);
-    setError(null);
-    const signal = controller.signal;
-    try {
-      const page = await transport.listTickets({
-        ...(nextCursor ? { cursor: nextCursor } : {}),
-        limit: pageSize,
-        signal,
-      });
-      if (request.current !== id) return;
-      reportUnread({ total: page.unreadTotal, source: "list" });
-      setTickets((current) => nextCursor ? mergeTicketPages(current, page.tickets) : page.tickets);
-      setCursor(page.nextCursor);
-    } catch (cause) {
-      if (request.current === id && !signal.aborted) setError(errorMessage(cause));
-    } finally {
-      if (request.current === id) {
-        setLoading(false);
-        setLoadingMore(false);
+  const load = useCallback(
+    async (nextCursor?: string) => {
+      controllerRef.current?.abort();
+      const controller = new AbortController();
+      controllerRef.current = controller;
+      const id = ++request.current;
+      nextCursor ? setLoadingMore(true) : setLoading(true);
+      setError(null);
+      setRetryCursor(undefined);
+      try {
+        const page = await transport.listTickets({
+          ...(nextCursor ? { cursor: nextCursor } : {}),
+          limit: pageSize,
+          signal: controller.signal,
+        });
+        if (controller.signal.aborted || request.current !== id) return;
+        reportUnread({ total: page.unreadTotal, source: "list" });
+        setTickets((current) =>
+          nextCursor ? mergeTicketPages(current, page.tickets) : page.tickets,
+        );
+        setCursor(page.nextCursor);
+      } catch (cause) {
+        if (!controller.signal.aborted && request.current === id) {
+          setError(safeError(cause));
+          setRetryCursor(nextCursor);
+        }
+      } finally {
+        if (!controller.signal.aborted && request.current === id) {
+          setLoading(false);
+          setLoadingMore(false);
+        }
       }
-    }
-  }, [pageSize, reportUnread, transport]);
+    },
+    [pageSize, reportUnread, safeError, transport],
+  );
 
   useEffect(() => {
     void load();
     return () => {
-      requestController.current?.abort();
+      controllerRef.current?.abort();
       request.current += 1;
     };
   }, [load]);
 
+  useEffect(() => {
+    if (!readTicketId) return;
+    setTickets((current) =>
+      current.map((ticket) =>
+        ticket.id === readTicketId
+          ? { ...ticket, unread: false, unreadCount: 0 }
+          : ticket,
+      ),
+    );
+  }, [readTicketId]);
+
+  const visibleTickets = tickets.filter(
+    (ticket) =>
+      filter === "all" ||
+      (filter === "open"
+        ? ticket.status === "open" || ticket.status === "in_progress"
+        : ticket.status === "resolved" || ticket.status === "closed"),
+  );
+
   return (
-    <section className="hands-feedback-inbox" aria-labelledby="hands-feedback-inbox-title">
+    <section
+      className="hands-feedback-inbox"
+      aria-labelledby="hands-feedback-inbox-title"
+      hidden={hidden}
+    >
       <header className="hands-feedback-header">
         <div>
-          <h2 id="hands-feedback-inbox-title">Feedback</h2>
-          <p>Your feedback and replies from the team.</p>
+          <h2 id="hands-feedback-inbox-title">{message("feedback")}</h2>
+          <p>{message("inboxDescription")}</p>
         </div>
-        <Button onClick={onNewFeedback}>New feedback</Button>
+        <Button onClick={onNewFeedback}>{message("newFeedback")}</Button>
       </header>
-      {loading && (
-        <div className="hands-feedback-stack" aria-label="Loading feedback">
-          <Skeleton className="hands-feedback-skeleton-row" />
-          <Skeleton className="hands-feedback-skeleton-row" />
-          <Skeleton className="hands-feedback-skeleton-row" />
-        </div>
-      )}
-      {error && (
-        <div className="hands-feedback-error" role="alert">
-          <span>{error}</span>
-          <Button variant="outline" onClick={() => void load()}>Try again</Button>
-        </div>
-      )}
-      {!loading && !error && tickets.length === 0 && (
-        <EmptyState>
-          <EmptyStateTitle>No feedback yet</EmptyStateTitle>
-          <p>Send your first idea or report a problem.</p>
-          <Button onClick={onNewFeedback}>New feedback</Button>
-        </EmptyState>
-      )}
-      {tickets.length > 0 && (
-        <ul className="hands-feedback-ticket-list">
-          {tickets.map((ticket) => (
-            <li key={ticket.id}>
-              <button
-                className="hands-feedback-ticket-row"
-                data-unread={ticket.unread || undefined}
-                onClick={() => onSelectTicket(ticket.id)}
-                type="button"
-              >
-                <span className="hands-feedback-ticket-copy">
-                  <span className="hands-feedback-ticket-title">{ticket.message}</span>
-                  <span className="hands-feedback-ticket-meta">
-                    {ticket.kind === "bug" ? "Problem" : "Feedback"} · {formatDate(ticket.updatedAt)}
+      <div
+        className="hands-feedback-filter"
+        role="group"
+        aria-label={message("statusFilter")}
+      >
+        {(["all", "open", "resolved"] as const).map((value) => (
+          <Button
+            key={value}
+            variant={filter === value ? "primary" : "outline"}
+            aria-pressed={filter === value}
+            onClick={() => setFilter(value)}
+          >
+            {value === "all"
+              ? locale === "zh-CN"
+                ? "全部"
+                : "All"
+              : feedbackStatusLabel(locale, value)}
+          </Button>
+        ))}
+      </div>
+      <div
+        className="hands-feedback-middle hands-feedback-list-scroll"
+        data-feedback-list-scroll
+        tabIndex={-1}
+      >
+        {loading && (
+          <div className="hands-feedback-stack" aria-label={message("loading")}>
+            <Skeleton className="hands-feedback-skeleton-row" />
+            <Skeleton className="hands-feedback-skeleton-row" />
+            <Skeleton className="hands-feedback-skeleton-row" />
+          </div>
+        )}
+        {error && (
+          <div className="hands-feedback-error" role="alert">
+            <span>{error}</span>
+            <Button variant="outline" onClick={() => void load(retryCursor)}>
+              {message("retry")}
+            </Button>
+          </div>
+        )}
+        {!loading && !error && visibleTickets.length === 0 && (
+          <EmptyState>
+            <EmptyStateTitle>{message("emptyTitle")}</EmptyStateTitle>
+            <p>{message("emptyBody")}</p>
+            <Button onClick={onNewFeedback}>{message("newFeedback")}</Button>
+          </EmptyState>
+        )}
+        {visibleTickets.length > 0 && (
+          <ul className="hands-feedback-ticket-list">
+            {visibleTickets.map((ticket) => (
+              <li key={ticket.id}>
+                <button
+                  className="hands-feedback-ticket-row"
+                  data-ticket-id={ticket.id}
+                  data-unread={ticket.unread || undefined}
+                  onClick={() => onSelectTicket(ticket.id)}
+                  type="button"
+                >
+                  <span className="hands-feedback-ticket-copy">
+                    <span className="hands-feedback-ticket-title">
+                      {ticket.message}
+                    </span>
+                    <span className="hands-feedback-ticket-meta">
+                      {ticket.kind === "bug"
+                        ? message("problem")
+                        : message("feedback")}{" "}
+                      ·{" "}
+                      {new Intl.DateTimeFormat(locale, {
+                        dateStyle: "medium",
+                        timeStyle: "short",
+                      }).format(new Date(ticket.updatedAt))}
+                    </span>
                   </span>
-                </span>
-                <span className="hands-feedback-ticket-state">
-                  {ticket.unread && <span className="hands-feedback-unread-dot" aria-label={`${ticket.unreadCount} unread`} />}
-                  <span className="hands-feedback-status" data-status={ticket.status}>{statusLabel(ticket.status)}</span>
-                </span>
-              </button>
-            </li>
-          ))}
-        </ul>
-      )}
-      {cursor && (
-        <Button variant="outline" disabled={loadingMore} onClick={() => void load(cursor)}>
-          {loadingMore ? "Loading…" : "Load more"}
-        </Button>
-      )}
+                  <span className="hands-feedback-ticket-state">
+                    {ticket.unread && (
+                      <span
+                        className="hands-feedback-unread-dot"
+                        aria-label={`${ticket.unreadCount} ${message("unread")}`}
+                      />
+                    )}
+                    <StatusBadge status={ticket.status} />
+                  </span>
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+        {cursor && (
+          <Button
+            variant="outline"
+            disabled={loadingMore}
+            onClick={() => void load(cursor)}
+          >
+            {loadingMore ? message("loadingMore") : message("loadMore")}
+          </Button>
+        )}
+      </div>
+      <div className="hands-feedback-live" aria-live="polite">
+        {loadingMore ? message("loadingMore") : (error ?? "")}
+      </div>
     </section>
   );
 }
@@ -213,52 +358,118 @@ export function FeedbackInbox({ onSelectTicket, onNewFeedback, pageSize = 20 }: 
 export type FeedbackTicketProps = {
   ticketId: string;
   onBack(): void;
-  onOpenAttachment?: (input: { ticketId: string; attachmentId: string }) => void;
+  onOpenAttachment?: (input: {
+    ticketId: string;
+    attachmentId: string;
+  }) => void;
+  draft?: string;
+  onDraftChange?: (value: string) => void;
+  onReadSuccess?: (ticketId: string) => void;
 };
 
-export function FeedbackTicket({ ticketId, onBack, onOpenAttachment }: FeedbackTicketProps) {
-  const { transport, reportUnread } = useHandsFeedback();
+export function FeedbackTicket({
+  ticketId,
+  onBack,
+  onOpenAttachment,
+  draft,
+  onDraftChange,
+  onReadSuccess,
+}: FeedbackTicketProps) {
+  const { locale, message, reportUnread, transport } = useHandsFeedback();
+  const safeError = useSafeError();
   const [detail, setDetail] = useState<FeedbackTicketDetail | null>(null);
-  const [reply, setReply] = useState("");
+  const [internalDraft, setInternalDraft] = useState("");
+  const reply = draft ?? internalDraft;
+  const setReply = onDraftChange ?? setInternalDraft;
   const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
   const [sending, setSending] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [retryLoad, setRetryLoad] = useState<{
+    cursor: string | undefined;
+    refresh: boolean;
+  }>({ cursor: undefined, refresh: false });
+  const [actionError, setActionError] = useState<string | null>(null);
+  const [announcement, setAnnouncement] = useState("");
+  const [newReplies, setNewReplies] = useState(false);
   const loadRequest = useRef(0);
   const loadController = useRef<AbortController | null>(null);
   const actionController = useRef<AbortController | null>(null);
-  const commentSubmission = useRef<{ fingerprint: string; id: string } | null>(null);
+  const commentSubmission = useRef<{ fingerprint: string; id: string } | null>(
+    null,
+  );
+  const conversationRef = useRef<HTMLDivElement | null>(null);
+  const textareaRef = useAutosize(reply);
+  const scrollIntent = useRef<"bottom" | "preserve" | null>(null);
 
-  const load = useCallback(async (commentCursor?: string) => {
-    loadController.current?.abort();
-    const controller = new AbortController();
-    loadController.current = controller;
-    const requestId = ++loadRequest.current;
-    commentCursor ? setLoadingMore(true) : setLoading(true);
-    if (!commentCursor) setDetail(null);
-    setError(null);
-    const signal = controller.signal;
-    try {
-      const result = await transport.getTicket({
-        ticketId,
-        ...(commentCursor ? { commentCursor } : {}),
-        commentLimit: 100,
-        signal,
-      });
-      if (signal.aborted || requestId !== loadRequest.current) return;
-      reportUnread({ total: result.unreadTotal, source: "detail" });
-      setDetail((current) => commentCursor && current
-        ? { ...result, comments: mergeCommentPages(current.comments, result.comments) }
-        : result);
-    } catch (cause) {
-      if (!signal.aborted) setError(errorMessage(cause));
-    } finally {
-      if (!signal.aborted && requestId === loadRequest.current) {
-        setLoading(false);
-        setLoadingMore(false);
+  const load = useCallback(
+    async (commentCursor?: string, refresh = false) => {
+      loadController.current?.abort();
+      const controller = new AbortController();
+      loadController.current = controller;
+      const requestId = ++loadRequest.current;
+      commentCursor ? setLoadingMore(true) : setLoading(!refresh);
+      if (!commentCursor && !refresh) setDetail(null);
+      setLoadError(null);
+      setRetryLoad({ cursor: undefined, refresh: false });
+      const nearBottom = conversationRef.current
+        ? isNearConversationBottom(conversationRef.current)
+        : true;
+      try {
+        const result = await transport.getTicket({
+          ticketId,
+          ...(commentCursor ? { commentCursor } : {}),
+          commentLimit: 100,
+          signal: controller.signal,
+        });
+        if (controller.signal.aborted || requestId !== loadRequest.current)
+          return;
+        reportUnread({ total: result.unreadTotal, source: "detail" });
+        if (!commentCursor) onReadSuccess?.(ticketId);
+        setDetail((current) => {
+          const next =
+            commentCursor && current
+              ? {
+                  ...result,
+                  comments: mergeCommentPages(
+                    current.comments,
+                    result.comments,
+                  ),
+                }
+              : result;
+          if (
+            refresh &&
+            current &&
+            next.comments.length > current.comments.length &&
+            !nearBottom
+          )
+            setNewReplies(true);
+          return next;
+        });
+        scrollIntent.current = nearBottom ? "bottom" : "preserve";
+        setAnnouncement(message("ticketUpdated"));
+      } catch (cause) {
+        if (!controller.signal.aborted && requestId === loadRequest.current) {
+          setLoadError(safeError(cause));
+          setRetryLoad({ cursor: commentCursor, refresh });
+        }
+      } finally {
+        if (!controller.signal.aborted && requestId === loadRequest.current) {
+          setLoading(false);
+          setLoadingMore(false);
+        }
       }
-    }
-  }, [reportUnread, ticketId, transport]);
+    },
+    [
+      locale,
+      message,
+      onReadSuccess,
+      reportUnread,
+      safeError,
+      ticketId,
+      transport,
+    ],
+  );
 
   useEffect(() => {
     void load();
@@ -269,15 +480,24 @@ export function FeedbackTicket({ ticketId, onBack, onOpenAttachment }: FeedbackT
     };
   }, [load]);
 
+  useLayoutEffect(() => {
+    if (scrollIntent.current === "bottom" && conversationRef.current)
+      conversationRef.current.scrollTop = conversationRef.current.scrollHeight;
+    scrollIntent.current = null;
+  }, [detail]);
+
   const send = async () => {
     const body = reply.trim();
     if (!body || sending) return;
     setSending(true);
-    setError(null);
+    setActionError(null);
     actionController.current?.abort();
     const controller = new AbortController();
     actionController.current = controller;
-    commentSubmission.current = stableSubmissionId(commentSubmission.current, body);
+    commentSubmission.current = stableFeedbackSubmission(
+      commentSubmission.current,
+      body,
+    );
     try {
       const result = await transport.addComment({
         ticketId,
@@ -287,83 +507,213 @@ export function FeedbackTicket({ ticketId, onBack, onOpenAttachment }: FeedbackT
       });
       if (controller.signal.aborted) return;
       reportUnread({ total: result.unreadTotal, source: "comment" });
+      scrollIntent.current = "bottom";
       setDetail(result);
       setReply("");
+      setNewReplies(false);
       commentSubmission.current = null;
+      setAnnouncement(message("replySent"));
+      requestAnimationFrame(() => textareaRef.current?.focus());
     } catch (cause) {
-      if (!controller.signal.aborted) setError(errorMessage(cause));
+      if (!controller.signal.aborted) {
+        setActionError(safeError(cause));
+        setAnnouncement(safeError(cause));
+      }
     } finally {
       if (!controller.signal.aborted) setSending(false);
     }
   };
 
+  const onReplyKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
+    if (
+      event.key !== "Enter" ||
+      event.shiftKey ||
+      event.nativeEvent.isComposing ||
+      event.keyCode === 229
+    )
+      return;
+    event.preventDefault();
+    void send();
+  };
+
   return (
-    <section className="hands-feedback-detail" aria-labelledby="hands-feedback-ticket-heading">
+    <section
+      className="hands-feedback-detail"
+      aria-labelledby="hands-feedback-ticket-heading"
+    >
       <header className="hands-feedback-header">
-        <Button variant="outline" onClick={onBack}>Back</Button>
-        <h2 id="hands-feedback-ticket-heading">Feedback ticket</h2>
-        {detail && <span className="hands-feedback-status" data-status={detail.ticket.status}>{statusLabel(detail.ticket.status)}</span>}
+        <Button variant="outline" onClick={onBack}>
+          {message("back")}
+        </Button>
+        <h2 id="hands-feedback-ticket-heading" tabIndex={-1}>
+          {message("ticketHeading")}
+        </h2>
+        {detail ? <StatusBadge status={detail.ticket.status} /> : <span />}
       </header>
-      {loading && <Skeleton className="hands-feedback-skeleton-detail" />}
-      {error && <div className="hands-feedback-error" role="alert">{error}</div>}
-      {detail && (
-        <>
-          <div className="hands-feedback-ticket-body">
-            <h3>{detail.ticket.message}</h3>
-            <span>{formatDate(detail.ticket.createdAt)}</span>
-          </div>
-          {detail.attachments.length > 0 && (
-            <div className="hands-feedback-attachments" aria-label="Attachments">
-              {detail.attachments.map((attachment) => (
-                <button
-                  key={attachment.id}
-                  type="button"
-                  disabled={!onOpenAttachment}
-                  aria-label={`Open attachment ${attachment.filename}`}
-                  onClick={() => onOpenAttachment?.({ ticketId, attachmentId: attachment.id })}
-                >
-                  {attachment.filename} · {Math.ceil(attachment.sizeBytes / 1024)} KB
-                </button>
-              ))}
-            </div>
-          )}
-          <div className="hands-feedback-conversation" aria-label="Conversation">
-            {detail.comments.map((comment) => (
-              <article key={comment.id} data-author={comment.authorType}>
-                <div className="hands-feedback-comment-meta">
-                  <strong>{comment.authorType === "reporter" ? "You" : comment.authorType === "staff" ? "Team" : "Update"}</strong>
-                  <span>{formatDate(comment.createdAt)}</span>
-                </div>
-                <p>{comment.body}</p>
-              </article>
-            ))}
-          </div>
-          {detail.nextCommentCursor && (
+      <div className="hands-feedback-middle">
+        {loading && <Skeleton className="hands-feedback-skeleton-detail" />}
+        {loadError && (
+          <div className="hands-feedback-error" role="alert">
+            <span>{loadError}</span>
             <Button
               variant="outline"
-              disabled={loadingMore}
-              onClick={() => void load(detail.nextCommentCursor!)}
+              onClick={() => void load(retryLoad.cursor, retryLoad.refresh)}
             >
-              {loadingMore ? "Loading…" : "Load more replies"}
-            </Button>
-          )}
-          <div className="hands-feedback-composer">
-            <label htmlFor="hands-feedback-reply">Reply</label>
-            <textarea
-              id="hands-feedback-reply"
-              maxLength={10_000}
-              value={reply}
-              onChange={(event) => setReply(event.target.value)}
-            />
-            <Button disabled={!reply.trim() || sending} onClick={() => void send()}>
-              {sending ? "Sending…" : "Send reply"}
+              {message("retry")}
             </Button>
           </div>
-        </>
+        )}
+        {detail && (
+          <>
+            <div className="hands-feedback-ticket-body">
+              <h3>{detail.ticket.message}</h3>
+              <span>
+                {new Intl.DateTimeFormat(locale, {
+                  dateStyle: "medium",
+                  timeStyle: "short",
+                }).format(new Date(detail.ticket.createdAt))}
+              </span>
+            </div>
+            {detail.attachments.length > 0 && (
+              <div
+                className="hands-feedback-attachments"
+                aria-label={message("attachments")}
+              >
+                {detail.attachments.map((attachment) => (
+                  <button
+                    key={attachment.id}
+                    type="button"
+                    disabled={!onOpenAttachment}
+                    aria-label={`${message("openAttachment")} ${attachment.filename}`}
+                    onClick={() =>
+                      onOpenAttachment?.({
+                        ticketId,
+                        attachmentId: attachment.id,
+                      })
+                    }
+                  >
+                    {attachment.filename} ·{" "}
+                    {Math.ceil(attachment.sizeBytes / 1024)} KB
+                  </button>
+                ))}
+              </div>
+            )}
+            <div className="hands-feedback-conversation-toolbar">
+              <strong>{message("conversation")}</strong>
+              <Button
+                variant="outline"
+                onClick={() => void load(undefined, true)}
+              >
+                {message("refresh")}
+              </Button>
+            </div>
+            <div
+              className="hands-feedback-conversation"
+              aria-label={message("conversation")}
+              ref={conversationRef}
+              onScroll={() => {
+                if (
+                  conversationRef.current &&
+                  isNearConversationBottom(conversationRef.current)
+                )
+                  setNewReplies(false);
+              }}
+            >
+              {detail.comments.length === 0 && (
+                <p className="hands-feedback-muted">{message("noReplies")}</p>
+              )}
+              {detail.comments.map((comment) => (
+                <article key={comment.id} data-author={comment.authorType}>
+                  <div className="hands-feedback-comment-meta">
+                    <strong>
+                      {comment.authorType === "reporter"
+                        ? message("you")
+                        : comment.authorType === "staff"
+                          ? message("team")
+                          : message("update")}
+                    </strong>
+                    <span>
+                      {new Intl.DateTimeFormat(locale, {
+                        dateStyle: "medium",
+                        timeStyle: "short",
+                      }).format(new Date(comment.createdAt))}
+                    </span>
+                  </div>
+                  <p>{comment.body}</p>
+                </article>
+              ))}
+            </div>
+            {newReplies && (
+              <Button
+                className="hands-feedback-new-replies"
+                onClick={() => {
+                  if (conversationRef.current)
+                    conversationRef.current.scrollTop =
+                      conversationRef.current.scrollHeight;
+                  setNewReplies(false);
+                }}
+              >
+                {message("newReplies")}
+              </Button>
+            )}
+            {detail.nextCommentCursor && (
+              <Button
+                variant="outline"
+                disabled={loadingMore}
+                onClick={() => void load(detail.nextCommentCursor!)}
+              >
+                {loadingMore
+                  ? message("loadingMore")
+                  : message("loadMoreReplies")}
+              </Button>
+            )}
+          </>
+        )}
+      </div>
+      {detail && (
+        <div className="hands-feedback-composer">
+          <label htmlFor={`hands-feedback-reply-${ticketId}`}>
+            {message("reply")}
+          </label>
+          <textarea
+            ref={textareaRef}
+            id={`hands-feedback-reply-${ticketId}`}
+            maxLength={10_000}
+            value={reply}
+            onChange={(event) => setReply(event.target.value)}
+            onKeyDown={onReplyKeyDown}
+            rows={1}
+          />
+          {actionError && (
+            <div className="hands-feedback-error" role="alert">
+              {actionError}
+            </div>
+          )}
+          <Button
+            disabled={!reply.trim() || sending}
+            onClick={() => void send()}
+          >
+            {sending ? message("sending") : message("sendReply")}
+          </Button>
+        </div>
       )}
+      <div
+        className="hands-feedback-live"
+        aria-live="polite"
+        aria-atomic="true"
+      >
+        {announcement}
+      </div>
     </section>
   );
 }
+
+type PendingAttachment = {
+  id: string;
+  file: File;
+  progress: number;
+  state: "ready" | "uploading" | "failed";
+};
 
 export type NewFeedbackProps = {
   onCancel(): void;
@@ -371,131 +721,352 @@ export type NewFeedbackProps = {
 };
 
 export function NewFeedback({ onCancel, onCreated }: NewFeedbackProps) {
-  const { transport, reportUnread } = useHandsFeedback();
+  const { locale, message: copy, reportUnread, transport } = useHandsFeedback();
+  const safeError = useSafeError();
   const [kind, setKind] = useState<FeedbackKind>("feedback");
   const [message, setMessage] = useState("");
-  const [attachments, setAttachments] = useState<File[]>([]);
+  const [attachments, setAttachments] = useState<PendingAttachment[]>([]);
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [announcement, setAnnouncement] = useState("");
   const actionController = useRef<AbortController | null>(null);
-  const createSubmission = useRef<{ fingerprint: string; id: string } | null>(null);
-
+  const createSubmission = useRef<{ fingerprint: string; id: string } | null>(
+    null,
+  );
+  const textareaRef = useAutosize(message);
   useEffect(() => () => actionController.current?.abort(), []);
 
   const submit = async () => {
     const normalized = message.trim();
     if (!normalized || sending) return;
-    const attachmentError = validateFeedbackAttachments(attachments);
+    const files = attachments.map(({ file }) => file);
+    const attachmentError = localizedAttachmentError(files, locale);
     if (attachmentError) {
       setError(attachmentError);
       return;
     }
     setSending(true);
     setError(null);
+    setAttachments((current) =>
+      current.map((item) => ({ ...item, state: "uploading", progress: 0 })),
+    );
     actionController.current?.abort();
     const controller = new AbortController();
     actionController.current = controller;
     const fingerprint = JSON.stringify([
       kind,
       normalized,
-      ...attachments.map((file) => [file.name, file.type, file.size, file.lastModified]),
+      ...files.map((file) => [
+        file.name,
+        file.type,
+        file.size,
+        file.lastModified,
+      ]),
     ]);
-    createSubmission.current = stableSubmissionId(createSubmission.current, fingerprint);
+    createSubmission.current = stableFeedbackSubmission(
+      createSubmission.current,
+      fingerprint,
+    );
     try {
       const result = await transport.createTicket({
         kind,
         message: normalized,
         submissionId: createSubmission.current.id,
-        attachments,
+        attachments: files,
         signal: controller.signal,
+        onAttachmentProgress: ({ index, progress }) => {
+          if (controller.signal.aborted) return;
+          setAttachments((current) =>
+            current.map((item, itemIndex) =>
+              itemIndex === index
+                ? { ...item, progress: Math.max(0, Math.min(1, progress)) }
+                : item,
+            ),
+          );
+        },
       });
       if (controller.signal.aborted) return;
       reportUnread({ total: result.unreadTotal, source: "create" });
       createSubmission.current = null;
+      setAnnouncement(copy("feedbackCreated"));
       onCreated(result.ticket.id);
     } catch (cause) {
-      if (!controller.signal.aborted) setError(errorMessage(cause));
+      if (!controller.signal.aborted) {
+        const safe = safeError(cause);
+        setError(safe);
+        setAnnouncement(safe);
+        setAttachments((current) =>
+          current.map((item) =>
+            item.state === "uploading" ? { ...item, state: "failed" } : item,
+          ),
+        );
+      }
     } finally {
       if (!controller.signal.aborted) setSending(false);
     }
   };
 
+  const choose = (event: ChangeEvent<HTMLInputElement>) => {
+    const selected = Array.from(event.currentTarget.files ?? []);
+    const combined = [...attachments.map(({ file }) => file), ...selected];
+    const attachmentError = localizedAttachmentError(combined, locale);
+    if (attachmentError) {
+      setError(attachmentError);
+      event.currentTarget.value = "";
+      return;
+    }
+    setError(null);
+    setAttachments((current) => [
+      ...current,
+      ...selected.map((file) => ({
+        id: submissionId(),
+        file,
+        progress: 0,
+        state: "ready" as const,
+      })),
+    ]);
+    event.currentTarget.value = "";
+  };
+
+  const cancelUpload = () => {
+    actionController.current?.abort();
+    setSending(false);
+    setAttachments((current) =>
+      current.map((item) => ({ ...item, state: "ready", progress: 0 })),
+    );
+    setAnnouncement(copy("uploadCanceled"));
+  };
+
   return (
-    <section className="hands-feedback-new" aria-labelledby="hands-feedback-new-title">
+    <section
+      className="hands-feedback-new"
+      aria-labelledby="hands-feedback-new-title"
+    >
       <header className="hands-feedback-header">
         <div>
-          <h2 id="hands-feedback-new-title">New feedback</h2>
-          <p>Share an idea or report a problem.</p>
+          <h2 id="hands-feedback-new-title" tabIndex={-1}>
+            {copy("newFeedback")}
+          </h2>
+          <p>{copy("newDescription")}</p>
         </div>
-        <Button variant="outline" onClick={onCancel}>Cancel</Button>
+        <Button variant="outline" onClick={onCancel}>
+          {copy("cancel")}
+        </Button>
       </header>
-      <div className="hands-feedback-kind" role="group" aria-label="Feedback type">
-        <Button aria-pressed={kind === "feedback"} variant={kind === "feedback" ? "primary" : "outline"} onClick={() => setKind("feedback")}>Feedback</Button>
-        <Button aria-pressed={kind === "bug"} variant={kind === "bug" ? "primary" : "outline"} onClick={() => setKind("bug")}>Problem</Button>
+      <div className="hands-feedback-middle hands-feedback-new-fields">
+        <div
+          className="hands-feedback-kind"
+          role="group"
+          aria-label={copy("feedbackType")}
+        >
+          <Button
+            aria-pressed={kind === "feedback"}
+            variant={kind === "feedback" ? "primary" : "outline"}
+            onClick={() => setKind("feedback")}
+          >
+            {copy("feedback")}
+          </Button>
+          <Button
+            aria-pressed={kind === "bug"}
+            variant={kind === "bug" ? "primary" : "outline"}
+            onClick={() => setKind("bug")}
+          >
+            {copy("problem")}
+          </Button>
+        </div>
+        <label htmlFor="hands-feedback-message">{copy("question")}</label>
+        <textarea
+          ref={textareaRef}
+          id="hands-feedback-message"
+          maxLength={10_000}
+          value={message}
+          onChange={(event) => setMessage(event.target.value)}
+          rows={2}
+        />
+        <label htmlFor="hands-feedback-attachments">
+          {copy("screenshots")}
+        </label>
+        <Input
+          id="hands-feedback-attachments"
+          type="file"
+          accept={FEEDBACK_ATTACHMENT_TYPES.join(",")}
+          multiple
+          disabled={sending || attachments.length >= MAX_FEEDBACK_ATTACHMENTS}
+          onChange={choose}
+        />
+        {attachments.length > 0 && (
+          <ul className="hands-feedback-pending-attachments">
+            {attachments.map((item) => (
+              <li key={item.id}>
+                <span>{item.file.name}</span>
+                {item.state === "uploading" && (
+                  <progress
+                    max={1}
+                    value={item.progress || undefined}
+                    aria-label={`${item.file.name} ${copy("uploadProgress")}`}
+                  />
+                )}
+                {item.state === "failed" && (
+                  <span role="status">{copy("uploadFailed")}</span>
+                )}
+                <Button
+                  variant="outline"
+                  disabled={sending}
+                  onClick={() =>
+                    setAttachments((current) =>
+                      current.filter(({ id }) => id !== item.id),
+                    )
+                  }
+                >
+                  {copy("remove")}
+                </Button>
+              </li>
+            ))}
+          </ul>
+        )}
+        {error && (
+          <div className="hands-feedback-error" role="alert">
+            {error}
+          </div>
+        )}
       </div>
-      <label htmlFor="hands-feedback-message">What would you like us to know?</label>
-      <textarea
-        id="hands-feedback-message"
-        maxLength={10_000}
-        value={message}
-        onChange={(event) => setMessage(event.target.value)}
-      />
-      <label htmlFor="hands-feedback-attachments">Screenshots (up to 3)</label>
-      <Input
-        id="hands-feedback-attachments"
-        type="file"
-        accept={FEEDBACK_ATTACHMENT_TYPES.join(",")}
-        multiple
-        onChange={(event) => {
-          const selected = Array.from(event.currentTarget.files ?? []);
-          const attachmentError = validateFeedbackAttachments(selected);
-          setError(attachmentError);
-          setAttachments(attachmentError ? [] : selected);
-          if (attachmentError) event.currentTarget.value = "";
-        }}
-      />
-      {error && <div className="hands-feedback-error" role="alert">{error}</div>}
-      <Button disabled={!message.trim() || sending} onClick={() => void submit()}>
-        {sending ? "Submitting…" : "Submit feedback"}
-      </Button>
+      <footer className="hands-feedback-submit-bar">
+        {sending ? (
+          <Button variant="outline" onClick={cancelUpload}>
+            {copy("cancel")}
+          </Button>
+        ) : attachments.some(({ state }) => state === "failed") ? (
+          <Button
+            variant="outline"
+            disabled={!message.trim()}
+            onClick={() => void submit()}
+          >
+            {copy("retryUpload")}
+          </Button>
+        ) : null}
+        <Button
+          disabled={!message.trim() || sending}
+          onClick={() => void submit()}
+        >
+          {sending ? copy("submitting") : copy("submit")}
+        </Button>
+      </footer>
+      <div
+        className="hands-feedback-live"
+        aria-live="polite"
+        aria-atomic="true"
+      >
+        {announcement}
+      </div>
     </section>
   );
 }
 
+export type FeedbackWorkspaceRoute = {
+  view: "inbox" | "new" | "ticket";
+  ticketId?: string;
+};
 export type FeedbackWorkspaceProps = {
   initialTicketId?: string;
-  onRouteChange?: (route: { view: "inbox" | "new" | "ticket"; ticketId?: string }) => void;
+  route?: FeedbackWorkspaceRoute;
+  onRouteChange?: (route: FeedbackWorkspaceRoute) => void;
   onOpenAttachment?: FeedbackTicketProps["onOpenAttachment"];
 };
 
-export function FeedbackWorkspace({ initialTicketId, onRouteChange, onOpenAttachment }: FeedbackWorkspaceProps) {
+export function FeedbackWorkspace({
+  initialTicketId,
+  route: controlledRoute,
+  onRouteChange,
+  onOpenAttachment,
+}: FeedbackWorkspaceProps) {
   const { theme } = useHandsFeedback();
-  const initial = useMemo(() => initialTicketId
-    ? { view: "ticket" as const, ticketId: initialTicketId }
-    : { view: "inbox" as const }, [initialTicketId]);
-  const [route, setRoute] = useState<{ view: "inbox" | "new" | "ticket"; ticketId?: string }>(initial);
-  const navigate = (next: typeof route) => {
-    setRoute(next);
+  const initial = useMemo<FeedbackWorkspaceRoute>(
+    () =>
+      initialTicketId
+        ? { view: "ticket", ticketId: initialTicketId }
+        : { view: "inbox" },
+    [initialTicketId],
+  );
+  const [internalRoute, setInternalRoute] = useState(initial);
+  const route = controlledRoute ?? internalRoute;
+  const [drafts, setDrafts] = useState<Record<string, string>>({});
+  const [readTicketId, setReadTicketId] = useState<string | null>(null);
+  const originTicket = useRef<string | null>(initialTicketId ?? null);
+  const rootRef = useRef<HTMLDivElement | null>(null);
+  const navigate = (next: FeedbackWorkspaceRoute) => {
+    if (!controlledRoute) setInternalRoute(next);
     onRouteChange?.(next);
   };
+  const back = () => {
+    const focusId = originTicket.current;
+    navigate({ view: "inbox" });
+    requestAnimationFrame(() =>
+      Array.from(
+        rootRef.current?.querySelectorAll<HTMLElement>("[data-ticket-id]") ??
+          [],
+      )
+        .find((element) => element.dataset.ticketId === focusId)
+        ?.focus(),
+    );
+  };
+  useEffect(() => {
+    if (route.view !== "inbox")
+      requestAnimationFrame(() =>
+        rootRef.current
+          ?.querySelector<HTMLElement>("section:not([hidden]) h2")
+          ?.focus(),
+      );
+  }, [route]);
+  useEffect(() => {
+    const viewport = globalThis.window?.visualViewport;
+    const root = rootRef.current;
+    if (!viewport || !root) return;
+    const sync = () =>
+      root.style.setProperty(
+        "--hf-visual-viewport-height",
+        `${viewport.height}px`,
+      );
+    sync();
+    viewport.addEventListener("resize", sync);
+    viewport.addEventListener("scroll", sync);
+    return () => {
+      viewport.removeEventListener("resize", sync);
+      viewport.removeEventListener("scroll", sync);
+    };
+  }, []);
   return (
-    <div className="hands-feedback-root" data-hands-feedback-theme={theme}>
-      {route.view === "inbox" && (
-        <FeedbackInbox
-          onNewFeedback={() => navigate({ view: "new" })}
-          onSelectTicket={(ticketId) => navigate({ view: "ticket", ticketId })}
-        />
-      )}
+    <div
+      className="hands-feedback-root"
+      data-hands-feedback-theme={theme}
+      ref={rootRef}
+    >
+      <FeedbackInbox
+        hidden={route.view !== "inbox"}
+        readTicketId={readTicketId}
+        onNewFeedback={() => navigate({ view: "new" })}
+        onSelectTicket={(ticketId) => {
+          originTicket.current = ticketId;
+          navigate({ view: "ticket", ticketId });
+        }}
+      />
       {route.view === "new" && (
         <NewFeedback
           onCancel={() => navigate({ view: "inbox" })}
-          onCreated={(ticketId) => navigate({ view: "ticket", ticketId })}
+          onCreated={(ticketId) => {
+            originTicket.current = ticketId;
+            navigate({ view: "ticket", ticketId });
+          }}
         />
       )}
       {route.view === "ticket" && route.ticketId && (
         <FeedbackTicket
           ticketId={route.ticketId}
-          onBack={() => navigate({ view: "inbox" })}
+          draft={drafts[route.ticketId] ?? ""}
+          onDraftChange={(value) =>
+            setDrafts((current) => ({ ...current, [route.ticketId!]: value }))
+          }
+          onReadSuccess={setReadTicketId}
+          onBack={back}
           {...(onOpenAttachment ? { onOpenAttachment } : {})}
         />
       )}

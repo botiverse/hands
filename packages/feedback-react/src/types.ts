@@ -1,4 +1,5 @@
 export type FeedbackTheme = "elegant" | "brutal";
+export type FeedbackLocale = "en" | "zh-CN";
 export type FeedbackKind = "feedback" | "bug";
 export type FeedbackStatus = "open" | "in_progress" | "resolved" | "closed";
 
@@ -51,6 +52,8 @@ export type CreateFeedbackInput = {
   message: string;
   submissionId: string;
   attachments: File[];
+  /** Optional upload progress bridge. Values are clamped by the SDK to 0..1. */
+  onAttachmentProgress?: (input: { index: number; progress: number }) => void;
 };
 
 export type AddFeedbackCommentInput = {
@@ -79,8 +82,12 @@ export type HandsFeedbackTransport = {
     commentLimit: number;
     signal: AbortSignal;
   }): Promise<FeedbackTicketDetail>;
-  createTicket(input: CreateFeedbackInput & { signal: AbortSignal }): Promise<FeedbackTicketDetail>;
-  addComment(input: AddFeedbackCommentInput & { signal: AbortSignal }): Promise<FeedbackTicketDetail>;
+  createTicket(
+    input: CreateFeedbackInput & { signal: AbortSignal },
+  ): Promise<FeedbackTicketDetail>;
+  addComment(
+    input: AddFeedbackCommentInput & { signal: AbortSignal },
+  ): Promise<FeedbackTicketDetail>;
 };
 
 export type FeedbackUnreadChange = {
