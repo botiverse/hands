@@ -194,7 +194,7 @@ import {
   handleDeleteWebhook,
   handleListDeliveries,
   handleListWebhooks,
-  handleReapDeliveries,
+  reapWebhookDeliveries,
   handleUpdateWebhook,
 } from "./routes/webhooks";
 import { handleHealth } from "./routes/health";
@@ -972,21 +972,31 @@ export interface ScheduledController {
 }
 
 export async function scheduled(
-  _controller: ScheduledController,
+  controller: ScheduledController,
   env: Env,
   ctx: ExecutionContext,
 ): Promise<void> {
-  // Build a minimal Hono context for the reaper handler.
-  const fakeC = {
-    env,
-    req: { param: () => ({}) },
-    json: (data: unknown, status = 200) => new Response(JSON.stringify(data), {
-      status,
-      headers: { "content-type": "application/json" },
-    }),
-  } as unknown as Parameters<typeof handleReapDeliveries>[0];
+  const reaperStartedAt = Date.now();
+  const reaper = reapWebhookDeliveries(env, {
+    scheduledTime: controller.scheduledTime,
+  }).then((summary) => {
+    // Deliberately metadata-only: never log a subscriber URL, request body,
+    // response body, signing secret, event id, or delivery id.
+    console.info("hands_webhook_reaper_summary", JSON.stringify(summary));
+  }).catch((error) => {
+    console.error("hands_webhook_reaper_summary", JSON.stringify({
+      scheduledTime: controller.scheduledTime,
+      selected: 0,
+      succeeded: 0,
+      retried: 0,
+      terminalized: 0,
+      durationMs: Math.max(0, Date.now() - reaperStartedAt),
+      errorCodes: { reaper_unhandled: 1 },
+    }));
+    throw error;
+  });
   ctx.waitUntil(Promise.all([
-    handleReapDeliveries(fakeC),
+    reaper,
     cleanupReporterFeedbackData(env),
   ]).then(() => undefined));
 }
