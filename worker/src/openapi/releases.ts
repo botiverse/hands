@@ -66,6 +66,17 @@ const PublishReleaseInput = z
   .catchall(z.unknown())
   .openapi("PublishReleaseInput");
 
+const AppUpdateCleanupTerminalInput = z.object({
+  operation_id: z.string().min(1).max(128),
+  run_case_id: z.string().min(1).max(128),
+  attempt: z.number().int().positive(),
+  artifact_bundle_digest: z.string().regex(/^[0-9a-f]{64}$/),
+  expected_release_revision: z.number().int().nonnegative(),
+  target_device_id: z.string().min(1).max(200).openapi({
+    description: "Exact installation id used for resolver readback. Hands stores only its SHA-256 digest.",
+  }),
+}).openapi("AppUpdateCleanupTerminalInput");
+
 const ReleaseShare = z
   .object({
     id: z.string(),
@@ -296,6 +307,28 @@ export function registerReleaseRoutes(registry: OpenApiRegistry) {
       },
     });
   }
+
+  register(registry, {
+    method: "post",
+    path: "/api/apps/{appId}/releases/{releaseId}/app-update-cleanup-terminal",
+    tags: ["Releases"],
+    summary: "Freeze one signed Android App Update cleanup terminal receipt",
+    description:
+      "Live-facing. Reads an already-cancelled current release generation through the Hands resolver, then atomically freezes one immutable operation, receipt, and signed delivery set. It never cancels or mutates the release.",
+    security: auth,
+    request: {
+      params: AppReleaseParams,
+      body: { content: json(AppUpdateCleanupTerminalInput), required: true },
+    },
+    responses: {
+      200: success("Exact response-loss replay of the frozen receipt.", GenericObject),
+      201: success("Created the immutable receipt and delivery set.", GenericObject),
+      400: error("Input is not the exact closed contract."),
+      403: error("Current principal cannot emit this terminal receipt."),
+      404: error("Release was not found."),
+      409: error("Release generation, target scope, artifact, subscriber, or immutable binding conflict."),
+    },
+  });
 
   register(registry, {
     method: "get",

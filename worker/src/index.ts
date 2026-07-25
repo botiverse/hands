@@ -177,6 +177,7 @@ import {
   handleUpsertReleaseCheck,
   handleListReleaseChecks,
 } from "./routes/releases";
+import { handleEmitAppUpdateCleanupTerminal } from "./routes/app_update_cleanup";
 import { handleListChannels, handleCreateChannel, handleUpdateChannel, handleDeleteChannel } from "./routes/channels";
 import {
   handleAddDeviceGroupMember,
@@ -738,6 +739,11 @@ admin.patch("/api/apps/:appId/releases/:releaseId", requireAppRole("publisher"),
 admin.post("/api/apps/:appId/releases/:releaseId/publish", requireAppRole("publisher"), handlePublishRelease);
 admin.delete("/api/apps/:appId/releases/:releaseId", requireAppRole("publisher"), handleDeleteRelease);
 admin.post("/api/apps/:appId/releases/:releaseId/rollback", requireAppRole("publisher"), handleRollbackRelease);
+admin.post(
+  "/api/apps/:appId/releases/:releaseId/app-update-cleanup-terminal",
+  requireAppRole("publisher"),
+  handleEmitAppUpdateCleanupTerminal,
+);
 admin.post("/api/apps/:appId/releases/:releaseId/bump-rollout", requireAppRole("publisher"), handleBumpRollout);
 admin.post("/api/apps/:appId/releases/:releaseId/force-update", requireAppRole("publisher"), handleForceUpdate);
 admin.get("/api/apps/:appId/releases/:releaseId/checks", requireAppRole("viewer"), handleListReleaseChecks);

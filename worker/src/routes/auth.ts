@@ -1097,6 +1097,25 @@ export async function handleAgentManifest(c: Context<{ Bindings: Env }>) {
         },
       },
       {
+        name: "emit-app-update-cleanup-terminal",
+        description:
+          "Live-facing: after an Android release has already been cancelled, prove the exact target installation cannot resolve that current release generation, then atomically freeze one immutable cleanup terminal operation/receipt and its signed webhook deliveries. Exact response-loss replay reuses the same operation, receipt, payload bytes, subscribers, and signing generations. This action never cancels or mutates a release. Requires app publisher and explicit human authorization.",
+        endpoint: {
+          method: "POST",
+          path: "/api/apps/{app_id}/releases/{release_id}/app-update-cleanup-terminal",
+        },
+        parameters: {
+          app_id: { type: "string", in: "path", required: true, description: "Hands Android app UUID." },
+          release_id: { type: "string", in: "path", required: true, description: "Exact already-cancelled Hands release UUID." },
+          operation_id: { type: "string", in: "body", required: true, description: "Caller-frozen idempotency identity. Replays must reuse it exactly." },
+          run_case_id: { type: "string", in: "body", required: true, description: "Frozen Stamp run-case identity." },
+          attempt: { type: "number", in: "body", required: true, description: "Positive frozen Stamp attempt." },
+          artifact_bundle_digest: { type: "string", in: "body", required: true, description: "Lowercase 64-hex frozen Stamp artifact-bundle digest." },
+          expected_release_revision: { type: "number", in: "body", required: true, description: "Current cancelled release revision used for the server-side inactive readback." },
+          target_device_id: { type: "string", in: "body", required: true, description: "Exact Hands installation device id used only for resolver readback; stored only as SHA-256." },
+        },
+      },
+      {
         name: "restore-release",
         description: "Restore the same release row. A never-published cancelled draft returns to draft and must pass normal publish gates; a previously active release returns to active. Requires app publisher.",
         endpoint: { method: "POST", path: "/api/apps/{app_id}/releases/{release_id}/rollback" },

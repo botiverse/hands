@@ -24,12 +24,47 @@ import { presignR2DownloadUrl } from "../lib/r2_presign";
 import { parseReleaseNotes, resolveReleaseNote, type ReleaseNotes } from "../lib/release_notes";
 import { isFeatureEnabled } from "../lib/feature_flags";
 
-interface ScopedResolution {
+export interface ScopedResolution {
   release_id: string;
   scope_type: "full" | "platform" | "user_cohort" | "ip_range" | "device_group";
   scope_value: string;
   priority: number;
   release_activated_at: number;
+}
+
+export interface ActiveReleaseCandidate {
+  id: string;
+  build_id: string;
+  created_at: number;
+  activated_at: number;
+  product_type: string;
+  rollout_cohort_count: number | null;
+  changelog: string | null;
+}
+
+export interface ActiveReleaseResolution {
+  candidates: ActiveReleaseCandidate[];
+  scopes: ActiveReleaseScope[];
+  deviceGroupIds: string[];
+  rolloutEligibleReleaseIds: string[];
+  matched: ScopedResolution[];
+  winner: ScopedResolution | null;
+}
+
+export interface ActiveReleaseScope {
+  release_id: string;
+  scope_type: string;
+  scope_value: string;
+}
+
+export interface ActiveReleaseClientFacts {
+  appId: string;
+  channelId: string;
+  productType: string | null;
+  deviceId: string | null;
+  cohort: string | null;
+  clientPlatform: string | null;
+  clientIp: string | null;
 }
 
 type PublicAssetResponse = {
@@ -76,6 +111,123 @@ const PRIORITY = {
   full: 1,
 } as const;
 
+/**
+ * Canonical active-release candidate + scope + rollout resolver.  Public
+ * update checks and server-side terminal readbacks share this function so a
+ * producer cannot substitute a lifecycle-status shortcut for actual client
+ * resolution.
+ */
+export async function resolveActiveReleaseForClient(
+  db: D1Database,
+  facts: ActiveReleaseClientFacts,
+): Promise<ActiveReleaseResolution> {
+  const candidateSql = facts.productType
+    ? `SELECT r.id, r.build_id, r.created_at,
+              COALESCE(r.activated_at, r.created_at) AS activated_at,
+              r.product_type, r.rollout_cohort_count, r.changelog
+       FROM releases r
+       JOIN builds b ON b.id = r.build_id
+       WHERE r.app_id = ?1 AND r.channel_id = ?2 AND r.product_type = ?3
+         AND r.status = 'active'
+         AND b.product_type != 'ios-simulator-qa' AND b.release_type != 'qa'
+       ORDER BY COALESCE(r.activated_at, r.created_at) DESC`
+    : `SELECT r.id, r.build_id, r.created_at,
+              COALESCE(r.activated_at, r.created_at) AS activated_at,
+              r.product_type, r.rollout_cohort_count, r.changelog
+       FROM releases r
+       JOIN builds b ON b.id = r.build_id
+       WHERE r.app_id = ?1 AND r.channel_id = ?2
+         AND r.status = 'active'
+         AND b.product_type != 'ios-simulator-qa' AND b.release_type != 'qa'
+       ORDER BY COALESCE(r.activated_at, r.created_at) DESC`;
+  const statement = db.prepare(candidateSql);
+  const { results: candidates } = await (facts.productType
+    ? statement.bind(facts.appId, facts.channelId, facts.productType)
+    : statement.bind(facts.appId, facts.channelId)
+  ).all<ActiveReleaseCandidate>();
+
+  // Membership is an input to resolution, not a property of the candidate
+  // set. Preserve it even when there are currently no active candidates so a
+  // caller that repeats this resolution in a commit CAS can detect membership
+  // drift rather than snapshotting a misleading empty set.
+  const deviceGroupIds = new Set<string>();
+  if (facts.deviceId) {
+    const { results: memberships } = await db.prepare(
+      `SELECT m.group_id
+       FROM device_group_members m
+       JOIN device_groups g ON g.id = m.group_id
+       WHERE g.app_id = ?1 AND m.device_id = ?2`,
+    ).bind(facts.appId, facts.deviceId).all<{ group_id: string }>();
+    for (const membership of memberships) deviceGroupIds.add(membership.group_id);
+  }
+  if (candidates.length === 0) {
+    return {
+      candidates,
+      scopes: [],
+      deviceGroupIds: [...deviceGroupIds].sort(),
+      rolloutEligibleReleaseIds: [],
+      matched: [],
+      winner: null,
+    };
+  }
+
+  const candidateIds = candidates.map((candidate) => candidate.id);
+  const placeholders = candidateIds.map(() => "?").join(",");
+  const { results: scopes } = await db.prepare(
+    `SELECT release_id, scope_type, scope_value
+     FROM release_scopes
+     WHERE release_id IN (${placeholders})`,
+  ).bind(...candidateIds).all<ActiveReleaseScope>();
+
+  const matched: ScopedResolution[] = [];
+  const rolloutEligibleReleaseIds = new Set(
+    candidates
+      .filter((release) => rolloutIncludes(
+        release.id,
+        release.rollout_cohort_count,
+        facts.deviceId,
+      ))
+      .map((release) => release.id),
+  );
+  for (const release of candidates) {
+    for (const scope of scopes) {
+      if (scope.release_id !== release.id) continue;
+      if (!matchesScope(
+        scope.scope_type,
+        scope.scope_value,
+        facts.cohort,
+        facts.clientPlatform,
+        facts.clientIp,
+        deviceGroupIds,
+      )) continue;
+      if (scope.scope_type !== "device_group" &&
+          !rolloutEligibleReleaseIds.has(release.id)) continue;
+      matched.push({
+        release_id: release.id,
+        scope_type: scope.scope_type as ScopedResolution["scope_type"],
+        scope_value: scope.scope_value,
+        priority: PRIORITY[scope.scope_type as keyof typeof PRIORITY] ?? 0,
+        release_activated_at: release.activated_at,
+      });
+    }
+  }
+  matched.sort((left, right) => {
+    if (left.priority !== right.priority) return right.priority - left.priority;
+    if (left.release_activated_at !== right.release_activated_at) {
+      return right.release_activated_at - left.release_activated_at;
+    }
+    return left.release_id < right.release_id ? -1 : 1;
+  });
+  return {
+    candidates,
+    scopes,
+    deviceGroupIds: [...deviceGroupIds].sort(),
+    rolloutEligibleReleaseIds: [...rolloutEligibleReleaseIds].sort(),
+    matched,
+    winner: matched[0] ?? null,
+  };
+}
+
 export async function handlePublicV2Latest(c: Context<{ Bindings: Env }>) {
   const slug = c.req.param("slug");
   const channel = c.req.query("channel") ?? "main";
@@ -111,42 +263,17 @@ export async function handlePublicV2Latest(c: Context<{ Bindings: Env }>) {
     );
   }
 
-  // Candidates: active releases on (channel, [product_type]). No time window:
-  // an active release must stay resolvable no matter how old it is.
-  const candidateSql = productType
-    ? `SELECT r.id, r.build_id, r.created_at,
-              COALESCE(r.activated_at, r.created_at) AS activated_at,
-              r.product_type, r.rollout_cohort_count, r.changelog
-       FROM releases r
-       JOIN builds b ON b.id = r.build_id
-       WHERE r.app_id = ?1 AND r.channel_id = ?2 AND r.product_type = ?3
-         AND r.status = 'active'
-         AND b.product_type != 'ios-simulator-qa' AND b.release_type != 'qa'
-       ORDER BY COALESCE(r.activated_at, r.created_at) DESC`
-    : `SELECT r.id, r.build_id, r.created_at,
-              COALESCE(r.activated_at, r.created_at) AS activated_at,
-              r.product_type, r.rollout_cohort_count, r.changelog
-       FROM releases r
-       JOIN builds b ON b.id = r.build_id
-       WHERE r.app_id = ?1 AND r.channel_id = ?2
-         AND r.status = 'active'
-         AND b.product_type != 'ios-simulator-qa' AND b.release_type != 'qa'
-       ORDER BY COALESCE(r.activated_at, r.created_at) DESC`;
-  const candidateStmt = c.env.DB.prepare(candidateSql);
-  const allCandidates = await (productType
-    ? candidateStmt.bind(app.id, channelRow.id, productType)
-    : candidateStmt.bind(app.id, channelRow.id)
-  ).all<{
-    id: string;
-    build_id: string;
-    created_at: number;
-    activated_at: number;
-    product_type: string;
-    rollout_cohort_count: number | null;
-    changelog: string | null;
-  }>();
-
-  if (allCandidates.results.length === 0) {
+  const resolution = await resolveActiveReleaseForClient(c.env.DB, {
+    appId: app.id,
+    channelId: channelRow.id,
+    productType: productType ?? null,
+    deviceId,
+    cohort,
+    clientPlatform,
+    clientIp,
+  });
+  const allCandidates = { results: resolution.candidates };
+  if (resolution.candidates.length === 0) {
     return c.json(
       {
         error: `no active release for this client on channel '${channel}'`,
@@ -157,67 +284,7 @@ export async function handlePublicV2Latest(c: Context<{ Bindings: Env }>) {
     );
   }
 
-  // Pull all scopes for those releases in one query.
-  const candidateIds = allCandidates.results.map((r) => r.id);
-  if (candidateIds.length === 0) {
-    return c.json({ error: "no candidates" }, 404);
-  }
-  const placeholders = candidateIds.map(() => "?").join(",");
-  const { results: scopes } = await c.env.DB.prepare(
-    `SELECT release_id, scope_type, scope_value
-     FROM release_scopes
-     WHERE release_id IN (${placeholders})`,
-  )
-    .bind(...candidateIds)
-    .all<{ release_id: string; scope_type: string; scope_value: string }>();
-
-  const deviceGroupIds = new Set<string>();
-  if (deviceId) {
-    const { results: memberships } = await c.env.DB.prepare(
-      `SELECT m.group_id
-       FROM device_group_members m
-       JOIN device_groups g ON g.id = m.group_id
-       WHERE g.app_id = ?1 AND m.device_id = ?2`,
-    ).bind(app.id, deviceId).all<{ group_id: string }>();
-    for (const membership of memberships) deviceGroupIds.add(membership.group_id);
-  }
-
-  // Build match list (release, scope, priority).
-  const matched: ScopedResolution[] = [];
-  const rolloutEligibleReleaseIds = new Set(
-    allCandidates.results
-      .filter((release) => rolloutIncludes(release.id, release.rollout_cohort_count, deviceId))
-      .map((release) => release.id),
-  );
-  for (const release of allCandidates.results) {
-    for (const s of scopes) {
-      if (s.release_id !== release.id) continue;
-      const ok = matchesScope(
-        s.scope_type,
-        s.scope_value,
-        cohort,
-        clientPlatform,
-        clientIp,
-        deviceGroupIds,
-      );
-      if (!ok) continue;
-      // Device groups are mandatory overrides on a staged release: a listed QA
-      // or customer device always receives the release, while its full:all
-      // scope remains percentage-gated for everybody else.
-      if (s.scope_type !== "device_group" && !rolloutEligibleReleaseIds.has(release.id)) continue;
-      const prio =
-        PRIORITY[s.scope_type as keyof typeof PRIORITY] ?? 0;
-      matched.push({
-        release_id: release.id,
-        scope_type: s.scope_type as ScopedResolution["scope_type"],
-        scope_value: s.scope_value,
-        priority: prio,
-        release_activated_at: release.activated_at,
-      });
-    }
-  }
-
-  if (matched.length === 0) {
+  if (!resolution.winner) {
     return c.json(
       {
         error: "no active release matches this client",
@@ -229,16 +296,11 @@ export async function handlePublicV2Latest(c: Context<{ Bindings: Env }>) {
     );
   }
 
-  // Sort by priority DESC, latest activation DESC, release_id ASC.
-  matched.sort((a, b) => {
-    if (a.priority !== b.priority) return b.priority - a.priority;
-    if (a.release_activated_at !== b.release_activated_at) {
-      return b.release_activated_at - a.release_activated_at;
-    }
-    return a.release_id < b.release_id ? -1 : 1;
-  });
-
-  const winner = matched[0]!;
+  const winner = resolution.winner;
+  const candidateIds = resolution.candidates.map((candidate) => candidate.id);
+  const rolloutEligibleReleaseIds = new Set(
+    resolution.rolloutEligibleReleaseIds,
+  );
 
   // Build the response: build + assets + scoped block + fallback release.
   const build = await c.env.DB.prepare(

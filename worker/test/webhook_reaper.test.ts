@@ -18,6 +18,7 @@ function makeDb() {
       event_type TEXT NOT NULL,
       event_id TEXT,
       feedback_submission_event_id TEXT,
+      app_update_terminal_receipt_id TEXT,
       payload_json TEXT NOT NULL,
       signing_secret TEXT,
       status TEXT NOT NULL DEFAULT 'pending',

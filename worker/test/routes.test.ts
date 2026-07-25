@@ -49,6 +49,7 @@ import {
   handleGetIosSimulatorArtifact,
   handleListIosSimulatorArtifacts,
 } from "../src/routes/qa_artifacts";
+import { handleEmitAppUpdateCleanupTerminal } from "../src/routes/app_update_cleanup";
 
 // ---------- Test harness ----------
 
@@ -102,6 +103,7 @@ describe("quiver OpenAPI document", () => {
       "/api/apps/{appId}/qa-artifacts/ios-simulator/{assetId}/complete",
       "/api/apps/{appId}/qa-artifacts/ios-simulator/{assetId}/download",
       "/api/apps/{appId}/releases/{releaseId}/publish",
+      "/api/apps/{appId}/releases/{releaseId}/app-update-cleanup-terminal",
       "/api/apps/{appId}/feedback/{ticketId}/comments",
       "/api/app-permissions",
       "/api/apps/{appId}/client-key",
@@ -613,6 +615,44 @@ function makeMockDb() {
       updated_at INTEGER NOT NULL,
       archived_at INTEGER
     );
+    CREATE TABLE app_update_cleanup_terminal_receipts (
+      operation_id TEXT PRIMARY KEY REFERENCES operation_logs(id) ON DELETE RESTRICT,
+      receipt_digest TEXT NOT NULL UNIQUE,
+      run_case_id TEXT NOT NULL UNIQUE,
+      attempt INTEGER NOT NULL CHECK (attempt > 0),
+      artifact_bundle_digest TEXT NOT NULL,
+      app_id TEXT NOT NULL,
+      release_id TEXT NOT NULL UNIQUE,
+      release_revision INTEGER NOT NULL,
+      build_id TEXT NOT NULL,
+      app_slug TEXT NOT NULL,
+      channel_slug TEXT NOT NULL,
+      target_artifact_sha256 TEXT NOT NULL,
+      target_version_code INTEGER NOT NULL,
+      target_installation_digest TEXT NOT NULL,
+      cancel_readback TEXT NOT NULL CHECK (cancel_readback = 'inactive'),
+      scope_deactivated INTEGER NOT NULL CHECK (scope_deactivated = 1),
+      scope_readback_json TEXT NOT NULL,
+      delivery_bindings_json TEXT NOT NULL,
+      canonical_request_json TEXT NOT NULL,
+      event_payload_json TEXT NOT NULL,
+      canonical_receipt_json TEXT NOT NULL,
+      created_at INTEGER NOT NULL
+    );
+    CREATE TRIGGER app_update_cleanup_terminal_receipts_no_update
+      BEFORE UPDATE ON app_update_cleanup_terminal_receipts
+      BEGIN SELECT RAISE(ABORT, 'App Update cleanup terminal receipts are immutable'); END;
+    CREATE TRIGGER app_update_cleanup_terminal_receipts_no_delete
+      BEFORE DELETE ON app_update_cleanup_terminal_receipts
+      BEGIN SELECT RAISE(ABORT, 'App Update cleanup terminal receipts are immutable'); END;
+    CREATE TRIGGER app_update_cleanup_terminal_operation_no_update
+      BEFORE UPDATE ON operation_logs
+      WHEN OLD.kind = 'app-update-cleanup-terminal'
+      BEGIN SELECT RAISE(ABORT, 'App Update cleanup terminal operations are immutable'); END;
+    CREATE TRIGGER app_update_cleanup_terminal_operation_no_delete
+      BEFORE DELETE ON operation_logs
+      WHEN OLD.kind = 'app-update-cleanup-terminal'
+      BEGIN SELECT RAISE(ABORT, 'App Update cleanup terminal operations are immutable'); END;
     -- Migration 0018: apps.default_channel_id (nullable FK to channels).
     -- SQLite ALTER TABLE ADD COLUMN is non-destructive; add inline so the
     -- test schema matches the migration shape.
@@ -623,6 +663,7 @@ function makeMockDb() {
       event_type TEXT NOT NULL,
       event_id TEXT REFERENCES feedback_events(id) ON DELETE SET NULL,
       feedback_submission_event_id TEXT REFERENCES feedback_submission_events(id) ON DELETE SET NULL,
+      app_update_terminal_receipt_id TEXT REFERENCES app_update_cleanup_terminal_receipts(operation_id) ON DELETE RESTRICT,
       payload_json TEXT NOT NULL,
       signing_secret TEXT,
       signature_key_version TEXT NOT NULL DEFAULT 'legacy-v1',
@@ -641,6 +682,9 @@ function makeMockDb() {
     );
     CREATE UNIQUE INDEX idx_webhook_deliveries_event
       ON webhook_deliveries(webhook_id, event_id) WHERE event_id IS NOT NULL;
+    CREATE UNIQUE INDEX idx_webhook_deliveries_app_update_terminal
+      ON webhook_deliveries(webhook_id, app_update_terminal_receipt_id)
+      WHERE app_update_terminal_receipt_id IS NOT NULL;
     CREATE TABLE feedback_events (
       id TEXT PRIMARY KEY,
       event_type TEXT NOT NULL,
@@ -4898,6 +4942,495 @@ describe("quiver releases — draft lifecycle", () => {
     expect(release).toMatchObject({ status: "cancelled" });
     expect(build).toMatchObject({ id: "build-draft" });
     expect(asset).toMatchObject({ id: "asset-1" });
+  });
+});
+
+describe("Android App Update cleanup terminal producer", () => {
+  let env: MockEnv;
+  const artifactDigest = "b".repeat(64);
+  const targetHash = "a".repeat(64);
+
+  beforeEach(async () => {
+    env = makeMockEnv();
+    const now = Date.now();
+    await env.DB.prepare(
+      "INSERT INTO apps (id, org_id, slug, name, platform, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+    ).bind("app-terminal", "default", "app-terminal", "App Terminal", "android", now).run();
+    await env.DB.prepare(
+      "INSERT INTO channels (id, app_id, slug, name, created_at) VALUES (?, ?, ?, ?, ?)",
+    ).bind("channel-terminal", "app-terminal", "main", "Main", now).run();
+    await env.DB.prepare(
+      `INSERT INTO builds
+       (id, app_id, channel_id, product_type, release_type, version_name, version_code,
+        source, status, build_metadata_json, parsed_metadata_json, should_force_update,
+        provenance_json, created_at, updated_at)
+       VALUES (?, ?, ?, 'android-apk', 'stable', '2.0.0', 200, 'ci', 'succeeded',
+               '{}', '{}', 0, '{}', ?, ?)`,
+    ).bind("build-terminal", "app-terminal", "channel-terminal", now, now).run();
+    await env.DB.prepare(
+      `INSERT INTO build_assets
+       (id, build_id, artifact_kind, platform, arch, variant, filetype, r2_key,
+        file_hash, size_bytes, metadata_json, created_at)
+       VALUES (?, ?, 'installable', 'android', NULL, NULL, 'apk', ?, ?, 42, '{}', ?)`,
+    ).bind("asset-terminal", "build-terminal", "apps/terminal.apk", targetHash, now).run();
+    await env.DB.prepare(
+      `INSERT INTO releases
+       (id, app_id, build_id, channel_id, product_type, release_type, status,
+        activated_at, revision, is_full, rollout_cohort_count,
+        rollout_target_cohorts_json, should_force_update, provenance_json,
+        created_by, created_at, updated_at)
+       VALUES (?, ?, ?, ?, 'android-apk', 'stable', 'cancelled', NULL, 4, 0, 100,
+               '[]', 0, '{}', 'tester', ?, ?)`,
+    ).bind(
+      "release-terminal",
+      "app-terminal",
+      "build-terminal",
+      "channel-terminal",
+      now,
+      now,
+    ).run();
+    await env.DB.prepare(
+      `INSERT INTO device_groups (id, app_id, name, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?)`,
+    ).bind("group-terminal", "app-terminal", "Terminal target", now, now).run();
+    await env.DB.prepare(
+      `INSERT INTO device_group_members (group_id, device_id, label, created_at)
+       VALUES (?, ?, ?, ?)`,
+    ).bind("group-terminal", "device-terminal", "fixture", now).run();
+    await env.DB.prepare(
+      `INSERT INTO release_scopes (id, release_id, scope_type, scope_value, created_at)
+       VALUES (?, ?, 'device_group', ?, ?)`,
+    ).bind("scope-terminal", "release-terminal", "group-terminal", now).run();
+    await env.DB.prepare(
+      `INSERT INTO webhooks
+       (id, org_id, app_id, url, secret, signature_key_version, events_json,
+        enabled, created_by, created_at, updated_at, archived_at)
+       VALUES (?, 'default', ?, ?, ?, 'key-v7', ?, 1, NULL, ?, ?, NULL)`,
+    ).bind(
+      "webhook-terminal",
+      "app-terminal",
+      "https://stamp.example/hooks/hands",
+      "frozen-signing-secret",
+      JSON.stringify(["app_update:cleanup_terminal"]),
+      now,
+      now,
+    ).run();
+  });
+
+  function input(overrides: Record<string, unknown> = {}) {
+    return {
+      operation_id: "operation-terminal-1",
+      run_case_id: "run-case-terminal-1",
+      attempt: 2,
+      artifact_bundle_digest: artifactDigest,
+      expected_release_revision: 4,
+      target_device_id: "device-terminal",
+      ...overrides,
+    };
+  }
+
+  function context(body: unknown, releaseId = "release-terminal") {
+    return {
+      env,
+      req: {
+        param: (name: string) => name === "appId"
+          ? "app-terminal"
+          : name === "releaseId" ? releaseId : "",
+        json: async () => body,
+      },
+      get: (key: string) => key === "org_id"
+        ? "default"
+        : key === "admin_actor" ? "tester" : undefined,
+      json: (data: unknown, status = 200) => new Response(JSON.stringify(data), {
+        status,
+        headers: { "content-type": "application/json" },
+      }),
+    } as any;
+  }
+
+  async function counts() {
+    return {
+      operations: (await env.DB.prepare(
+        "SELECT COUNT(*) count FROM operation_logs WHERE kind = 'app-update-cleanup-terminal'",
+      ).first() as any).count,
+      receipts: (await env.DB.prepare(
+        "SELECT COUNT(*) count FROM app_update_cleanup_terminal_receipts",
+      ).first() as any).count,
+      deliveries: (await env.DB.prepare(
+        "SELECT COUNT(*) count FROM webhook_deliveries WHERE app_update_terminal_receipt_id IS NOT NULL",
+      ).first() as any).count,
+    };
+  }
+
+  async function seedActiveResolverWinner(options: {
+    releaseId: string;
+    buildId: string;
+    assetId: string;
+    versionCode: number;
+    artifactHash: string;
+  }) {
+    const now = Date.now() + 100;
+    await env.DB.prepare(
+      `INSERT INTO builds
+       (id, app_id, channel_id, product_type, release_type, version_name, version_code,
+        source, status, build_metadata_json, parsed_metadata_json, should_force_update,
+        provenance_json, created_at, updated_at)
+       VALUES (?, 'app-terminal', 'channel-terminal', 'android-apk', 'stable', ?, ?,
+               'ci', 'succeeded', '{}', '{}', 0, '{}', ?, ?)`,
+    ).bind(
+      options.buildId,
+      `2.0.${options.versionCode}`,
+      options.versionCode,
+      now,
+      now,
+    ).run();
+    await env.DB.prepare(
+      `INSERT INTO build_assets
+       (id, build_id, artifact_kind, platform, arch, variant, filetype, r2_key,
+        file_hash, size_bytes, metadata_json, created_at)
+       VALUES (?, ?, 'installable', 'android', NULL, NULL, 'apk', ?, ?, 42, '{}', ?)`,
+    ).bind(
+      options.assetId,
+      options.buildId,
+      `apps/${options.assetId}.apk`,
+      options.artifactHash,
+      now,
+    ).run();
+    await env.DB.prepare(
+      `INSERT INTO releases
+       (id, app_id, build_id, channel_id, product_type, release_type, status,
+        activated_at, revision, is_full, rollout_cohort_count,
+        rollout_target_cohorts_json, should_force_update, provenance_json,
+        created_by, created_at, updated_at)
+       VALUES (?, 'app-terminal', ?, 'channel-terminal', 'android-apk', 'stable',
+               'active', ?, 0, 0, 100, '[]', 0, '{}', 'tester', ?, ?)`,
+    ).bind(options.releaseId, options.buildId, now, now, now).run();
+    await env.DB.prepare(
+      `INSERT INTO release_scopes (id, release_id, scope_type, scope_value, created_at)
+       VALUES (?, ?, 'device_group', 'group-terminal', ?)`,
+    ).bind(`scope-${options.releaseId}`, options.releaseId, now).run();
+  }
+
+  it("atomically freezes the exact event, resolver readback, subscriber, signing generation, and receipt", async () => {
+    const response = await handleEmitAppUpdateCleanupTerminal(context(input()));
+    expect(response.status).toBe(201);
+    const body = await response.json() as any;
+    expect(body.replay).toBe(false);
+    expect(Object.keys(body.event).sort()).toEqual([
+      "app_slug",
+      "artifact_bundle_digest",
+      "attempt",
+      "cancel_readback",
+      "channel",
+      "operation_id",
+      "receipt_digest",
+      "run_case_id",
+      "scope_deactivated",
+      "target_artifact_sha256",
+      "target_version_code",
+    ]);
+    expect(body.event).toMatchObject({
+      operation_id: "operation-terminal-1",
+      run_case_id: "run-case-terminal-1",
+      attempt: 2,
+      artifact_bundle_digest: artifactDigest,
+      app_slug: "app-terminal",
+      channel: "main",
+      target_artifact_sha256: targetHash,
+      target_version_code: 200,
+      cancel_readback: "inactive",
+      scope_deactivated: true,
+    });
+    expect(body.event.receipt_digest).toMatch(/^sha256:[0-9a-f]{64}$/);
+    expect(body.receipt).toMatchObject({
+      delivery_bindings_digest: expect.stringMatching(/^sha256:[0-9a-f]{64}$/),
+      delivery_count: 1,
+    });
+    expect(body.readback).toMatchObject({
+      source: "hands_current_release_resolver",
+      release_revision: 4,
+      release_status: "cancelled",
+      target_matched_preserved_scope: true,
+      target_release_reachable: false,
+      scope_inactive: true,
+    });
+
+    expect(await counts()).toEqual({ operations: 1, receipts: 1, deliveries: 1 });
+    const delivery = await env.DB.prepare(
+      `SELECT event_type, payload_json, signing_secret, signature_key_version,
+              app_update_terminal_receipt_id, attempts, status
+       FROM webhook_deliveries WHERE webhook_id = ?`,
+    ).bind("webhook-terminal").first() as any;
+    expect(delivery).toMatchObject({
+      event_type: "app_update:cleanup_terminal",
+      signing_secret: "frozen-signing-secret",
+      signature_key_version: "key-v7",
+      app_update_terminal_receipt_id: "operation-terminal-1",
+      attempts: 0,
+      status: "pending",
+    });
+    expect(JSON.parse(delivery.payload_json).payload).toEqual(body.event);
+
+    const stored = await env.DB.prepare(
+      `SELECT canonical_request_json, scope_readback_json
+       FROM app_update_cleanup_terminal_receipts WHERE operation_id = ?`,
+    ).bind("operation-terminal-1").first() as any;
+    expect(stored.canonical_request_json).not.toContain("device-terminal");
+    expect(stored.scope_readback_json).not.toContain("device-terminal");
+  });
+
+  it("replays response loss with the same receipt and zero new rows or signing drift", async () => {
+    const first = await handleEmitAppUpdateCleanupTerminal(context(input()));
+    const firstBody = await first.json() as any;
+    const frozen = await env.DB.prepare(
+      "SELECT payload_json, signing_secret, signature_key_version FROM webhook_deliveries",
+    ).first() as any;
+
+    await env.DB.prepare(
+      `UPDATE webhooks SET secret = 'rotated-secret', signature_key_version = 'key-v8',
+                           archived_at = ?
+       WHERE id = 'webhook-terminal'`,
+    ).bind(Date.now()).run();
+    await env.DB.prepare(
+      "UPDATE releases SET status = 'active', revision = 5 WHERE id = 'release-terminal'",
+    ).run();
+    const replay = await handleEmitAppUpdateCleanupTerminal(context(input()));
+    expect(replay.status).toBe(200);
+    const replayBody = await replay.json() as any;
+    expect(replayBody.replay).toBe(true);
+    expect(replayBody.event).toEqual(firstBody.event);
+    expect(await counts()).toEqual({ operations: 1, receipts: 1, deliveries: 1 });
+    expect(await env.DB.prepare(
+      "SELECT payload_json, signing_secret, signature_key_version FROM webhook_deliveries",
+    ).first()).toEqual(frozen);
+  });
+
+  it("collapses concurrent identical requests onto one operation, receipt, and delivery", async () => {
+    const [left, right] = await Promise.all([
+      handleEmitAppUpdateCleanupTerminal(context(input())),
+      handleEmitAppUpdateCleanupTerminal(context(input())),
+    ]);
+    expect([left.status, right.status].sort()).toEqual([200, 201]);
+    const bodies = await Promise.all([left.json(), right.json()]) as any[];
+    expect(bodies[0].event).toEqual(bodies[1].event);
+    expect(bodies.map((body) => body.replay).sort()).toEqual([false, true]);
+    expect(await counts()).toEqual({ operations: 1, receipts: 1, deliveries: 1 });
+  });
+
+  it("rejects cross-run, stale-attempt, different-bundle, and new-operation rebinding with zero duplicates", async () => {
+    expect((await handleEmitAppUpdateCleanupTerminal(context(input()))).status).toBe(201);
+    for (const changed of [
+      { attempt: 3 },
+      { artifact_bundle_digest: "c".repeat(64) },
+      { run_case_id: "run-case-terminal-2" },
+      { operation_id: "operation-terminal-2" },
+    ]) {
+      const response = await handleEmitAppUpdateCleanupTerminal(context(input(changed)));
+      expect(response.status, JSON.stringify(changed)).toBe(409);
+      expect((await response.json() as any).code).toBe("APP_UPDATE_TERMINAL_BINDING_CONFLICT");
+    }
+    expect(await counts()).toEqual({ operations: 1, receipts: 1, deliveries: 1 });
+  });
+
+  it("does not treat cancelled status alone as target scope inactivity", async () => {
+    const response = await handleEmitAppUpdateCleanupTerminal(context(input({
+      target_device_id: "another-device",
+    })));
+    expect(response.status).toBe(409);
+    expect((await response.json() as any).code).toBe("APP_UPDATE_TARGET_OUTSIDE_RELEASE_SCOPE");
+    expect(await counts()).toEqual({ operations: 0, receipts: 0, deliveries: 0 });
+  });
+
+  it("rejects when the canonical resolver winner still serves the same B version and artifact", async () => {
+    await seedActiveResolverWinner({
+      releaseId: "release-active-same-b",
+      buildId: "build-active-same-b",
+      assetId: "asset-active-same-b",
+      versionCode: 200,
+      artifactHash: targetHash,
+    });
+    const response = await handleEmitAppUpdateCleanupTerminal(context(input()));
+    expect(response.status).toBe(409);
+    expect((await response.json() as any).code).toBe("APP_UPDATE_TARGET_STILL_REACHABLE");
+    expect(await counts()).toEqual({ operations: 0, receipts: 0, deliveries: 0 });
+    expect((await env.DB.prepare(
+      "SELECT COUNT(*) count FROM audit_logs WHERE action='release.app_update_cleanup_terminal'",
+    ).first() as any).count).toBe(0);
+  });
+
+  it("repeats the canonical winner gate in the commit CAS", async () => {
+    const originalBatch = (env.DB as any).batch.bind(env.DB);
+    let injected = false;
+    (env.DB as any).batch = async (statements: unknown[]) => {
+      if (!injected) {
+        injected = true;
+        await seedActiveResolverWinner({
+          releaseId: "release-race-same-b",
+          buildId: "build-race-same-b",
+          assetId: "asset-race-same-b",
+          versionCode: 200,
+          artifactHash: targetHash,
+        });
+      }
+      return originalBatch(statements);
+    };
+
+    const response = await handleEmitAppUpdateCleanupTerminal(context(input()));
+    expect(response.status).toBe(409);
+    expect((await response.json() as any).code).toBe(
+      "APP_UPDATE_TERMINAL_PRECONDITION_CHANGED",
+    );
+    expect(await counts()).toEqual({ operations: 0, receipts: 0, deliveries: 0 });
+    expect((await env.DB.prepare(
+      "SELECT COUNT(*) count FROM audit_logs WHERE action='release.app_update_cleanup_terminal'",
+    ).first() as any).count).toBe(0);
+  });
+
+  it("allows a canonical active winner that serves a different artifact", async () => {
+    await seedActiveResolverWinner({
+      releaseId: "release-active-different",
+      buildId: "build-active-different",
+      assetId: "asset-active-different",
+      versionCode: 201,
+      artifactHash: "e".repeat(64),
+    });
+    const response = await handleEmitAppUpdateCleanupTerminal(context(input()));
+    expect(response.status).toBe(201);
+    const body = await response.json() as any;
+    expect(body.readback).toMatchObject({
+      resolver_candidate_count: 1,
+      resolver_winner_release_id: "release-active-different",
+      resolver_winner_version_code: 201,
+      target_release_reachable: false,
+      scope_inactive: true,
+    });
+    expect(await counts()).toEqual({ operations: 1, receipts: 1, deliveries: 1 });
+  });
+
+  it("rejects commit-time drift in the canonical winner build facts", async () => {
+    await seedActiveResolverWinner({
+      releaseId: "release-active-build-drift",
+      buildId: "build-active-build-drift",
+      assetId: "asset-active-build-drift",
+      versionCode: 201,
+      artifactHash: "e".repeat(64),
+    });
+    const originalBatch = (env.DB as any).batch.bind(env.DB);
+    (env.DB as any).batch = async (statements: unknown[]) => {
+      await env.DB.prepare(
+        "UPDATE builds SET version_code = 202 WHERE id = 'build-active-build-drift'",
+      ).run();
+      return originalBatch(statements);
+    };
+
+    const response = await handleEmitAppUpdateCleanupTerminal(context(input()));
+    expect(response.status).toBe(409);
+    expect((await response.json() as any).code).toBe(
+      "APP_UPDATE_TERMINAL_PRECONDITION_CHANGED",
+    );
+    expect(await counts()).toEqual({ operations: 0, receipts: 0, deliveries: 0 });
+  });
+
+  it("rejects commit-time drift in the canonical winner APK identity", async () => {
+    await seedActiveResolverWinner({
+      releaseId: "release-active-asset-drift",
+      buildId: "build-active-asset-drift",
+      assetId: "asset-active-asset-drift",
+      versionCode: 201,
+      artifactHash: "e".repeat(64),
+    });
+    const originalBatch = (env.DB as any).batch.bind(env.DB);
+    (env.DB as any).batch = async (statements: unknown[]) => {
+      await env.DB.prepare(
+        `UPDATE build_assets SET file_hash = ?
+         WHERE id = 'asset-active-asset-drift'`,
+      ).bind("f".repeat(64)).run();
+      return originalBatch(statements);
+    };
+
+    const response = await handleEmitAppUpdateCleanupTerminal(context(input()));
+    expect(response.status).toBe(409);
+    expect((await response.json() as any).code).toBe(
+      "APP_UPDATE_TERMINAL_PRECONDITION_CHANGED",
+    );
+    expect(await counts()).toEqual({ operations: 0, receipts: 0, deliveries: 0 });
+  });
+
+  it("fails closed with zero side effects on stale generation, active release, no subscriber, or ambiguous target", async () => {
+    const cases: Array<{
+      prepare: () => Promise<void>;
+      body?: Record<string, unknown>;
+      code: string;
+    }> = [
+      {
+        prepare: async () => undefined,
+        body: { expected_release_revision: 3 },
+        code: "RELEASE_REVISION_CONFLICT",
+      },
+      {
+        prepare: async () => {
+          await env.DB.prepare("UPDATE releases SET status = 'active' WHERE id = 'release-terminal'").run();
+        },
+        code: "APP_UPDATE_RELEASE_NOT_INACTIVE",
+      },
+      {
+        prepare: async () => {
+          await env.DB.prepare("UPDATE webhooks SET enabled = 0 WHERE id = 'webhook-terminal'").run();
+        },
+        code: "APP_UPDATE_TERMINAL_SUBSCRIBER_MISSING",
+      },
+      {
+        prepare: async () => {
+          await env.DB.prepare(
+            `INSERT INTO build_assets
+             (id, build_id, artifact_kind, platform, arch, variant, filetype, r2_key,
+              file_hash, size_bytes, metadata_json, created_at)
+             VALUES ('asset-terminal-2', 'build-terminal', 'installable', 'android', 'arm64',
+                     NULL, 'apk', 'apps/terminal-arm64.apk', ?, 42, '{}', ?)`,
+          ).bind("d".repeat(64), Date.now()).run();
+        },
+        code: "APP_UPDATE_TARGET_ARTIFACT_AMBIGUOUS",
+      },
+    ];
+
+    for (const testCase of cases) {
+      await testCase.prepare();
+      const response = await handleEmitAppUpdateCleanupTerminal(context(input(testCase.body)));
+      expect(response.status, testCase.code).toBe(409);
+      expect((await response.json() as any).code).toBe(testCase.code);
+      expect(await counts()).toEqual({ operations: 0, receipts: 0, deliveries: 0 });
+      // Restore fixture state for the next independent failure.
+      await env.DB.prepare("UPDATE releases SET status = 'cancelled' WHERE id = 'release-terminal'").run();
+      await env.DB.prepare("UPDATE webhooks SET enabled = 1 WHERE id = 'webhook-terminal'").run();
+      await env.DB.prepare("DELETE FROM build_assets WHERE id = 'asset-terminal-2'").run();
+    }
+  });
+
+  it("makes the terminal operation and receipt mechanically immutable", async () => {
+    expect((await handleEmitAppUpdateCleanupTerminal(context(input()))).status).toBe(201);
+    const { handleRetryOperation, handleDeleteOperation } = await import("../src/routes/operations");
+    const operationContext = {
+      env,
+      req: { param: () => "operation-terminal-1" },
+      json: (data: unknown, status = 200) => new Response(JSON.stringify(data), {
+        status,
+        headers: { "content-type": "application/json" },
+      }),
+    } as any;
+    expect((await handleRetryOperation(operationContext)).status).toBe(400);
+    expect((await handleDeleteOperation(operationContext)).status).toBe(409);
+    await expect(env.DB.prepare(
+      "UPDATE operation_logs SET status = 'failed' WHERE id = ?",
+    ).bind("operation-terminal-1").run()).rejects.toThrow(/immutable/i);
+    await expect(env.DB.prepare(
+      "DELETE FROM operation_logs WHERE id = ?",
+    ).bind("operation-terminal-1").run()).rejects.toThrow(/immutable/i);
+    await expect(env.DB.prepare(
+      "UPDATE app_update_cleanup_terminal_receipts SET attempt = 99 WHERE operation_id = ?",
+    ).bind("operation-terminal-1").run()).rejects.toThrow(/immutable/i);
+    await expect(env.DB.prepare(
+      "DELETE FROM app_update_cleanup_terminal_receipts WHERE operation_id = ?",
+    ).bind("operation-terminal-1").run()).rejects.toThrow(/immutable/i);
   });
 });
 

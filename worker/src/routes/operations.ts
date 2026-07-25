@@ -27,6 +27,7 @@ export interface OperationLog {
     | "testflight-upload"
     | "testflight-publish"
     | "testflight-expire"
+    | "app-update-cleanup-terminal"
     | "delta-generate";
   status: "pending" | "in_progress" | "success" | "failed" | "cancelled";
   parent_op_id: string | null;
@@ -185,10 +186,12 @@ export async function handleRetryOperation(c: Context<{ Bindings: Env }>) {
   const id = c.req.param("opId") ?? "";
   const existing = await getOperation(c.env.DB, id);
   if (!existing) return c.json({ error: "not found" }, 404);
-  if (existing.kind === "testflight-expire") {
+  if (existing.kind === "testflight-expire" || existing.kind === "app-update-cleanup-terminal") {
     return c.json(
       {
-        error: "retry cannot rewrite a durable TestFlight expire receipt; invoke the exact expire action again",
+        error: existing.kind === "testflight-expire"
+          ? "retry cannot rewrite a durable TestFlight expire receipt; invoke the exact expire action again"
+          : "retry cannot rewrite a durable App Update cleanup terminal receipt; replay the exact terminal action",
         operation: existing,
       },
       400,
@@ -241,9 +244,13 @@ export async function handleDeleteOperation(c: Context<{ Bindings: Env }>) {
   const id = c.req.param("opId") ?? "";
   const existing = await getOperation(c.env.DB, id);
   if (!existing) return c.json({ error: "not found" }, 404);
-  if (existing.kind === "testflight-expire") {
+  if (existing.kind === "testflight-expire" || existing.kind === "app-update-cleanup-terminal") {
     return c.json(
-      { error: "durable TestFlight expire receipts cannot be deleted" },
+      {
+        error: existing.kind === "testflight-expire"
+          ? "durable TestFlight expire receipts cannot be deleted"
+          : "durable App Update cleanup terminal receipts cannot be deleted",
+      },
       409,
     );
   }

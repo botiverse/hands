@@ -35,6 +35,7 @@ type WebhookEventType =
   | "release:superseded"
   | "release:rolled_back"
   | "release:cancelled"
+  | "app_update:cleanup_terminal"
   | "build:succeeded"
   | "build:failed";
 
@@ -340,7 +341,11 @@ export async function reapWebhookDeliveries(
   // occupying the oldest slots forever.
   const { results: due } = await env.DB.prepare(
     `SELECT d.id, d.webhook_id,
-            COALESCE(d.event_id, d.feedback_submission_event_id) AS event_id,
+            COALESCE(
+              d.event_id,
+              d.feedback_submission_event_id,
+              d.app_update_terminal_receipt_id
+            ) AS event_id,
             d.attempts, d.max_attempts, d.payload_json, d.signing_secret,
             w.id AS resolved_webhook_id, w.url AS webhook_url,
             w.secret AS webhook_secret, w.enabled AS webhook_enabled,
