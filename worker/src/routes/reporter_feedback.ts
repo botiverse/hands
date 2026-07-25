@@ -393,6 +393,7 @@ export async function handleAddReporterComment(c: ReporterContext) {
                 CASE WHEN r.route_subject IS NULL THEN 'route_unbound' ELSE 'route_bound' END,
                 r.route_subject, ?7
          FROM feedback_tickets t
+         JOIN apps a ON a.id = t.app_id AND a.archived = 0
          LEFT JOIN app_reporter_routes r
            ON r.app_id = t.app_id AND r.reporter_integration_id = t.reporter_integration_id
           AND r.reporter_id = t.reporter_id
@@ -409,11 +410,13 @@ export async function handleAddReporterComment(c: ReporterContext) {
       ),
       c.env.DB.prepare(
         `INSERT INTO webhook_deliveries
-         (id, webhook_id, event_type, event_id, payload_json, status,
+         (id, webhook_id, event_type, event_id, payload_json,
+          signing_secret, signature_key_version, status,
           attempts, max_attempts, next_attempt_at, created_at, updated_at)
          SELECT ?1 || ':' || w.id, w.id, 'feedback:comment_created', ?1, ?2,
-                'pending', 0, 3, ?3, ?3, ?3
+                w.secret, w.signature_key_version, 'pending', 0, 3, ?3, ?3, ?3
          FROM feedback_events fe
+         JOIN apps a ON a.id = fe.app_id AND a.archived = 0
          JOIN webhooks w ON w.org_id = ?4
          WHERE fe.id = ?1 AND w.enabled = 1 AND w.archived_at IS NULL
            AND (w.app_id IS NULL OR w.app_id = ?5)
@@ -431,10 +434,12 @@ export async function handleAddReporterComment(c: ReporterContext) {
       ).bind(eventId, eventBody, now, ticket.org_id, authorized.principal.appId),
       c.env.DB.prepare(
         `INSERT INTO webhook_deliveries
-         (id, webhook_id, event_type, event_id, payload_json, status,
+         (id, webhook_id, event_type, event_id, payload_json,
+          signing_secret, signature_key_version, status,
           attempts, max_attempts, next_attempt_at, created_at, updated_at)
          SELECT ?1 || ':' || w.id, w.id, 'feedback:comment_created', ?1,
-                fe.payload_json, 'pending', 0, 3, ?2, ?2, ?2
+                fe.payload_json, w.secret, w.signature_key_version,
+                'pending', 0, 3, ?2, ?2, ?2
          FROM feedback_events fe
          JOIN app_reporter_webhook_subscriptions s
            ON s.app_id = fe.app_id
@@ -442,6 +447,7 @@ export async function handleAddReporterComment(c: ReporterContext) {
          JOIN webhooks w ON w.id = s.webhook_id
          JOIN app_reporter_integrations ri
            ON ri.id = s.reporter_integration_id AND ri.app_id = s.app_id
+         JOIN apps a ON a.id = s.app_id AND a.archived = 0
          WHERE fe.id = ?1 AND fe.route_outcome = 'route_bound'
            AND fe.route_subject IS NOT NULL
            AND w.app_id = fe.app_id AND w.org_id = ?3

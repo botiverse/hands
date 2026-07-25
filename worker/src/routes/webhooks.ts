@@ -279,7 +279,8 @@ export async function handleReapDeliveries(c: Context<{ Bindings: Env }>) {
   const now = Date.now();
   // Find all deliveries ready to attempt
   const { results: due } = await c.env.DB.prepare(
-    `SELECT id, webhook_id, event_id, attempts, max_attempts, payload_json
+    `SELECT id, webhook_id, COALESCE(event_id, feedback_submission_event_id) AS event_id,
+            attempts, max_attempts, payload_json, signing_secret
      FROM webhook_deliveries
      WHERE status = 'pending'
        AND (next_attempt_at IS NULL OR next_attempt_at <= ?1)
@@ -294,6 +295,7 @@ export async function handleReapDeliveries(c: Context<{ Bindings: Env }>) {
       attempts: number;
       max_attempts: number;
       payload_json: string;
+      signing_secret: string | null;
     }>();
 
   let succeeded = 0;
@@ -308,7 +310,7 @@ export async function handleReapDeliveries(c: Context<{ Bindings: Env }>) {
 
     const result = await postOnce(
       wh.url,
-      wh.secret,
+      d.signing_secret ?? wh.secret,
       d.payload_json,
       d.id,
       d.event_id,

@@ -17,6 +17,7 @@ function makeDb() {
     CREATE TABLE apps (
       id TEXT PRIMARY KEY,
       org_id TEXT,
+      archived INTEGER NOT NULL DEFAULT 0,
       created_at INTEGER NOT NULL
     );
     CREATE TABLE raft_accounts (id TEXT PRIMARY KEY);
@@ -77,6 +78,7 @@ function makeDb() {
       id TEXT PRIMARY KEY,
       org_id TEXT NOT NULL,
       app_id TEXT REFERENCES apps(id) ON DELETE CASCADE,
+      secret TEXT NOT NULL DEFAULT 'test-secret',
       events_json TEXT NOT NULL,
       enabled INTEGER NOT NULL,
       archived_at INTEGER
@@ -274,6 +276,19 @@ describe("feedback conversations migration", () => {
       "DELETE FROM app_reporter_routes WHERE app_id = 'app-1'",
     ).run()).toThrow(/immutable/);
 
+    db.prepare("UPDATE apps SET archived = 1 WHERE id = 'app-1'").run();
+    expect(() => db.prepare(`
+      INSERT INTO app_reporter_routes
+        (app_id, reporter_integration_id, reporter_id, route_subject, subject_version, created_at)
+      VALUES ('app-1', 'legacy-feedback:app-1', 'other_reporter_1234', ?, 'v1', 3)
+    `).run(`rfr_v1_${"C".repeat(64)}`)).toThrow(/mismatch/);
+    expect(() => db.prepare(`
+      INSERT INTO app_reporter_webhook_subscriptions
+        (app_id, reporter_integration_id, webhook_id, created_at)
+      VALUES ('app-1', 'legacy-feedback:app-1', 'dedicated', 4)
+    `).run()).toThrow(/mismatch/);
+    db.prepare("UPDATE apps SET archived = 0 WHERE id = 'app-1'").run();
+
     db.prepare(`
       INSERT INTO app_reporter_webhook_subscriptions
         (app_id, reporter_integration_id, webhook_id, created_at)
@@ -301,5 +316,10 @@ describe("feedback conversations migration", () => {
               'legacy-feedback:app-1', 'reporter_12345678', '{}',
               'route_unbound', ?, 5)
     `).run(subject)).toThrow(/snapshot mismatch/);
+
+    db.prepare("UPDATE apps SET archived = 1 WHERE id = 'app-1'").run();
+    expect(() => db.prepare("DELETE FROM apps WHERE id = 'app-1'").run()).not.toThrow();
+    expect(db.prepare("SELECT 1 FROM app_reporter_routes WHERE app_id = 'app-1'").get()).toBeUndefined();
+    expect(db.prepare("SELECT 1 FROM app_reporter_webhook_subscriptions WHERE app_id = 'app-1'").get()).toBeUndefined();
   });
 });

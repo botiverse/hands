@@ -363,6 +363,38 @@ export async function handlePublicFeedbackSubmit(c: Context<{ Bindings: Env }>) 
 
   const now = Date.now();
   const ticketId = crypto.randomUUID();
+  const submissionEventId = reporterIntegrationId ? crypto.randomUUID() : null;
+  const genericSubmissionPayload = app.org_id ? JSON.stringify({
+    event: "feedback:new",
+    delivered_at: now,
+    org_id: app.org_id,
+    app_id: app.id,
+    payload: {
+      ticket_id: ticketId,
+      app_slug: app.slug,
+      kind,
+      message: message.slice(0, 500),
+      version_name: meta("version_name"),
+      version_code: versionCode,
+      attachments: attachmentRows.length,
+      reporter_id: reporterId || null,
+      reporter_integration_id: reporterIntegrationId,
+    },
+  }) : null;
+  const dedicatedSubmissionPayload = submissionEventId ? JSON.stringify({
+    id: submissionEventId,
+    event: "feedback:new",
+    created_at: now,
+    delivered_at: now,
+    org_id: app.org_id,
+    app_id: app.id,
+    payload: {
+      ticket_id: ticketId,
+      kind,
+      reporter_integration_id: reporterIntegrationId,
+      reporter_id: reporterId,
+    },
+  }) : null;
 
   for (const [index, attachment] of attachmentRows.entries()) {
     if (!attachment.inlineFile) continue;
@@ -383,6 +415,10 @@ export async function handlePublicFeedbackSubmit(c: Context<{ Bindings: Env }>) 
               ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22
        WHERE ?20 IS NULL OR EXISTS (
          SELECT 1 FROM app_reporter_routes r
+         JOIN apps active_app ON active_app.id = r.app_id AND active_app.archived = 0
+         JOIN app_reporter_integrations active_ri
+           ON active_ri.id = r.reporter_integration_id
+          AND active_ri.app_id = r.app_id AND active_ri.archived_at IS NULL
          WHERE r.app_id = ?2 AND r.reporter_integration_id = ?20
            AND r.reporter_id = ?19
        )`,
@@ -417,6 +453,92 @@ export async function handlePublicFeedbackSubmit(c: Context<{ Bindings: Env }>) 
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)`,
       ).bind(a.id, ticketId, a.r2Key, a.filename, a.contentType, a.sizeBytes, now),
     ),
+    ...(submissionEventId && dedicatedSubmissionPayload
+      ? [
+          ...(genericSubmissionPayload && app.org_id ? [c.env.DB.prepare(
+            `INSERT INTO feedback_submission_events
+             (id, event_type, app_id, ticket_id, reporter_integration_id,
+              reporter_id, payload_json, route_outcome, route_subject, created_at)
+             SELECT ?1, 'feedback:new', ?2, ?3, ?4, ?5,
+                    json_set(?6, '$.payload.route_outcome', 'route_bound',
+                                 '$.payload.route_subject', r.route_subject),
+                    'route_bound', r.route_subject, ?7
+             FROM feedback_tickets t
+             JOIN apps a ON a.id = t.app_id AND a.archived = 0
+             JOIN app_reporter_integrations ri
+               ON ri.id = t.reporter_integration_id
+              AND ri.app_id = t.app_id AND ri.archived_at IS NULL
+             JOIN app_reporter_routes r
+               ON r.app_id = t.app_id
+              AND r.reporter_integration_id = t.reporter_integration_id
+              AND r.reporter_id = t.reporter_id
+             WHERE t.id = ?3 AND t.app_id = ?2
+               AND t.reporter_integration_id = ?4 AND t.reporter_id = ?5`,
+          ).bind(
+            submissionEventId,
+            app.id,
+            ticketId,
+            reporterIntegrationId,
+            reporterId,
+            dedicatedSubmissionPayload,
+            now,
+          ),
+          c.env.DB.prepare(
+            `INSERT INTO webhook_deliveries
+             (id, webhook_id, event_type, feedback_submission_event_id,
+              payload_json, signing_secret, signature_key_version, status,
+              attempts, max_attempts, next_attempt_at, created_at, updated_at)
+             SELECT ?1 || ':' || w.id, w.id, 'feedback:new', ?1, ?2,
+                    w.secret, w.signature_key_version, 'pending', 0, 3, ?3, ?3, ?3
+             FROM feedback_submission_events fe
+             JOIN apps a ON a.id = fe.app_id AND a.archived = 0
+             JOIN app_reporter_integrations ri
+               ON ri.id = fe.reporter_integration_id
+              AND ri.app_id = fe.app_id AND ri.archived_at IS NULL
+             JOIN webhooks w ON w.org_id = ?4
+             WHERE fe.id = ?1 AND w.enabled = 1 AND w.archived_at IS NULL
+               AND (w.app_id IS NULL OR w.app_id = ?5)
+               AND CASE WHEN json_valid(w.events_json) THEN (
+                 json_array_length(w.events_json) = 0
+                 OR EXISTS (SELECT 1 FROM json_each(w.events_json) e
+                            WHERE e.value IN ('feedback:new', '*'))
+               ) ELSE 0 END
+               AND NOT EXISTS (
+                 SELECT 1 FROM app_reporter_webhook_subscriptions s
+                 WHERE s.webhook_id = w.id AND s.app_id = fe.app_id
+                   AND s.reporter_integration_id = fe.reporter_integration_id
+               )
+             ON CONFLICT(webhook_id, feedback_submission_event_id)
+               WHERE feedback_submission_event_id IS NOT NULL DO NOTHING`,
+          ).bind(submissionEventId, genericSubmissionPayload, now, app.org_id, app.id),
+          c.env.DB.prepare(
+            `INSERT INTO webhook_deliveries
+             (id, webhook_id, event_type, feedback_submission_event_id,
+              payload_json, signing_secret, signature_key_version, status,
+              attempts, max_attempts, next_attempt_at, created_at, updated_at)
+             SELECT ?1 || ':' || w.id, w.id, 'feedback:new', ?1, fe.payload_json,
+                    w.secret, w.signature_key_version, 'pending', 0, 3, ?2, ?2, ?2
+             FROM feedback_submission_events fe
+             JOIN apps a ON a.id = fe.app_id AND a.archived = 0
+             JOIN app_reporter_webhook_subscriptions s
+               ON s.app_id = fe.app_id
+              AND s.reporter_integration_id = fe.reporter_integration_id
+             JOIN app_reporter_integrations ri
+               ON ri.id = s.reporter_integration_id
+              AND ri.app_id = s.app_id AND ri.archived_at IS NULL
+             JOIN webhooks w ON w.id = s.webhook_id
+             WHERE fe.id = ?1 AND w.app_id = fe.app_id AND w.org_id = ?3
+               AND w.enabled = 1 AND w.archived_at IS NULL
+               AND CASE WHEN json_valid(w.events_json) THEN (
+                 json_array_length(w.events_json) = 0
+                 OR EXISTS (SELECT 1 FROM json_each(w.events_json) e
+                            WHERE e.value IN ('feedback:new', '*'))
+               ) ELSE 0 END
+             ON CONFLICT(webhook_id, feedback_submission_event_id)
+               WHERE feedback_submission_event_id IS NOT NULL DO NOTHING`,
+          ).bind(submissionEventId, now, app.org_id)] : []),
+        ]
+      : []),
   ];
   const cleanupInlineUploads = () => Promise.allSettled(
     attachmentRows
@@ -531,7 +653,7 @@ export async function handlePublicFeedbackSubmit(c: Context<{ Bindings: Env }>) 
     }
   }
 
-  if (app.org_id) {
+  if (app.org_id && !reporterIntegrationId) {
     await emitWebhookEvent(c.env.DB, {
       orgId: app.org_id,
       appId: app.id,
@@ -2107,6 +2229,7 @@ function feedbackReporterEventStatements(
               CASE WHEN r.route_subject IS NULL THEN 'route_unbound' ELSE 'route_bound' END,
               r.route_subject, ?8
        FROM feedback_tickets t
+       JOIN apps a ON a.id = t.app_id AND a.archived = 0
        JOIN app_reporter_integrations ri
          ON ri.id = t.reporter_integration_id
         AND ri.app_id = t.app_id AND ri.archived_at IS NULL
@@ -2130,12 +2253,15 @@ function feedbackReporterEventStatements(
     ),
     db.prepare(
       `INSERT INTO webhook_deliveries
-       (id, webhook_id, event_type, event_id, payload_json, status,
+       (id, webhook_id, event_type, event_id, payload_json,
+        signing_secret, signature_key_version, status,
         attempts, max_attempts, next_attempt_at, created_at, updated_at)
-       SELECT ?1 || ':' || w.id, w.id, ?2, ?1, ?3, 'pending', 0, 3,
+       SELECT ?1 || ':' || w.id, w.id, ?2, ?1, ?3,
+              w.secret, w.signature_key_version, 'pending', 0, 3,
               ?4, ?4, ?4
        FROM feedback_events fe
        JOIN webhooks w ON w.org_id = ?5
+       JOIN apps a ON a.id = fe.app_id AND a.archived = 0
        WHERE fe.id = ?1
          AND w.enabled = 1 AND w.archived_at IS NULL
          AND (w.app_id IS NULL OR w.app_id = ?6)
@@ -2153,9 +2279,11 @@ function feedbackReporterEventStatements(
     ).bind(eventId, input.eventType, payloadJson, input.createdAt, input.orgId, input.appId),
     db.prepare(
       `INSERT INTO webhook_deliveries
-       (id, webhook_id, event_type, event_id, payload_json, status,
+       (id, webhook_id, event_type, event_id, payload_json,
+        signing_secret, signature_key_version, status,
         attempts, max_attempts, next_attempt_at, created_at, updated_at)
-       SELECT ?1 || ':' || w.id, w.id, ?2, ?1, fe.payload_json, 'pending', 0, 3,
+       SELECT ?1 || ':' || w.id, w.id, ?2, ?1, fe.payload_json,
+              w.secret, w.signature_key_version, 'pending', 0, 3,
               ?3, ?3, ?3
        FROM feedback_events fe
        JOIN app_reporter_webhook_subscriptions s
@@ -2164,6 +2292,7 @@ function feedbackReporterEventStatements(
        JOIN webhooks w ON w.id = s.webhook_id
        JOIN app_reporter_integrations ri
          ON ri.id = s.reporter_integration_id AND ri.app_id = s.app_id
+       JOIN apps a ON a.id = s.app_id AND a.archived = 0
        WHERE fe.id = ?1 AND fe.route_outcome = 'route_bound'
          AND fe.route_subject IS NOT NULL
          AND w.app_id = fe.app_id AND w.org_id = ?4
