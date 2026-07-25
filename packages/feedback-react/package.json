@@ -15,10 +15,17 @@
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
     },
-    "./styles.css": "./dist/styles.css"
+    "./styles.css": "./dist/styles.css",
+    "./source": {
+      "types": "./src/index.ts",
+      "import": "./src/index.ts"
+    },
+    "./source/styles.css": "./src/styles.css"
   },
   "files": [
     "dist",
+    "src",
+    "!src/**/*.test.tsx",
     "README.md"
   ],
   "scripts": {

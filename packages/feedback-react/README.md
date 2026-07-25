@@ -46,3 +46,15 @@ their build purges library classes:
 @source '../node_modules/raft-ui/dist';
 @source '../node_modules/@botiverse/hands-feedback-react/dist';
 ```
+
+For a source-pinned integration before an npm release, install this package's
+Hands monorepo subdirectory with pnpm's `path:` git selector, then import the
+explicit source exports:
+
+```tsx
+import { FeedbackProvider, FeedbackWorkspace } from "@botiverse/hands-feedback-react/source";
+import "@botiverse/hands-feedback-react/source/styles.css";
+```
+
+The host bundler must support TypeScript/TSX dependencies. Published consumers
+should use the compiled root exports shown above.
