@@ -8797,9 +8797,15 @@ describe("Hands iOS simulator QA artifacts", () => {
         path: "/api/apps/{app_id}/reporter-integrations/{reporter_integration_id}/webhooks/{webhook_id}",
       },
     });
-    expect(byName["list-reporter-integrations"].endpoint).toEqual({
-      method: "GET",
-      path: "/api/apps/{app_id}/reporter-integrations",
+    expect(byName["list-reporter-integrations"]).toMatchObject({
+      endpoint: {
+        method: "GET",
+        path: "/api/apps/{app_id}/reporter-integrations",
+      },
+      parameters: {
+        app_id: { type: "string", in: "path", required: true },
+        include_archived: { type: "string", in: "query", required: false },
+      },
     });
     expect(byName["create-reporter-integration"]).toMatchObject({
       endpoint: { method: "POST", path: "/api/apps/{app_id}/reporter-integrations" },
@@ -8819,9 +8825,14 @@ describe("Hands iOS simulator QA artifacts", () => {
         archived: { type: "boolean", in: "body", required: true },
       },
     });
-    expect(byName["list-webhooks"].endpoint).toEqual({
-      method: "GET",
-      path: "/api/orgs/{org_id}/webhooks",
+    expect(byName["list-webhooks"]).toMatchObject({
+      endpoint: {
+        method: "GET",
+        path: "/api/orgs/{org_id}/webhooks",
+      },
+      parameters: {
+        org_id: { type: "string", in: "path", required: true },
+      },
     });
     expect(byName["create-webhook"]).toMatchObject({
       endpoint: { method: "POST", path: "/api/orgs/{org_id}/webhooks" },
@@ -8833,9 +8844,15 @@ describe("Hands iOS simulator QA artifacts", () => {
         app_id: { type: "string", in: "body", required: false },
       },
     });
-    expect(byName["delete-webhook"].endpoint).toEqual({
-      method: "DELETE",
-      path: "/api/orgs/{org_id}/webhooks/{webhook_id}",
+    expect(byName["delete-webhook"]).toMatchObject({
+      endpoint: {
+        method: "DELETE",
+        path: "/api/orgs/{org_id}/webhooks/{webhook_id}",
+      },
+      parameters: {
+        org_id: { type: "string", in: "path", required: true },
+        webhook_id: { type: "string", in: "path", required: true },
+      },
     });
     expect(byName["get-reporter-feedback-metadata"]).toMatchObject({
       endpoint: { method: "GET", path: "/api/apps/{app_id}/reporter-feedback-metadata" },

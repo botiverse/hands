@@ -1409,7 +1409,7 @@ export async function handleAgentManifest(c: Context<{ Bindings: Env }>) {
       {
         name: "list-reporter-integrations",
         description:
-          "List active reporter integrations for an app. Requires app viewer and returns metadata only.",
+          "List active reporter integrations for an app. Requires app admin and returns metadata only.",
         endpoint: { method: "GET", path: "/api/apps/{app_id}/reporter-integrations" },
         parameters: {
           app_id: { type: "string", in: "path", required: true, description: "Hands app id." },
