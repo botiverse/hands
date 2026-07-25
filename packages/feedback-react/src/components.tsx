@@ -7,7 +7,9 @@ import {
   Skeleton,
 } from "raft-ui";
 import { useHandsFeedback } from "./provider.js";
+import { FeedbackTransportError } from "./types.js";
 import type {
+  FeedbackComment,
   FeedbackKind,
   FeedbackTicketSummary,
   FeedbackTicketDetail,
@@ -29,6 +31,16 @@ export function mergeTicketPages(
   const merged = new Map(current.map((ticket) => [ticket.id, ticket]));
   for (const ticket of incoming) merged.set(ticket.id, ticket);
   return [...merged.values()];
+}
+
+export function mergeCommentPages(
+  current: FeedbackComment[],
+  incoming: FeedbackComment[],
+): FeedbackComment[] {
+  const merged = new Map(current.map((comment) => [comment.id, comment]));
+  for (const comment of incoming) merged.set(comment.id, comment);
+  return [...merged.values()].sort((left, right) =>
+    left.createdAt - right.createdAt || left.id.localeCompare(right.id));
 }
 
 export function validateFeedbackAttachments(files: File[]): string | null {
@@ -56,7 +68,15 @@ function stableSubmissionId(
 }
 
 function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : "Feedback is temporarily unavailable";
+  if (!(error instanceof FeedbackTransportError)) return "Feedback is temporarily unavailable.";
+  switch (error.code) {
+    case "conflict": return "This retry no longer matches the original request.";
+    case "invalid": return "Check the feedback details and try again.";
+    case "not_found": return "This feedback ticket is no longer available.";
+    case "rate_limited": return "Too many feedback requests. Try again later.";
+    case "unauthorized": return "Your feedback session expired. Reopen feedback and try again.";
+    case "unavailable": return "Feedback is temporarily unavailable.";
+  }
 }
 
 function statusLabel(status: FeedbackTicketSummary["status"]): string {
@@ -138,9 +158,9 @@ export function FeedbackInbox({ onSelectTicket, onNewFeedback, pageSize = 20 }: 
       </header>
       {loading && (
         <div className="hands-feedback-stack" aria-label="Loading feedback">
-          <Skeleton className="h-16 w-full" />
-          <Skeleton className="h-16 w-full" />
-          <Skeleton className="h-16 w-full" />
+          <Skeleton className="hands-feedback-skeleton-row" />
+          <Skeleton className="hands-feedback-skeleton-row" />
+          <Skeleton className="hands-feedback-skeleton-row" />
         </div>
       )}
       {error && (
@@ -201,35 +221,49 @@ export function FeedbackTicket({ ticketId, onBack, onOpenAttachment }: FeedbackT
   const [detail, setDetail] = useState<FeedbackTicketDetail | null>(null);
   const [reply, setReply] = useState("");
   const [loading, setLoading] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const loadRequest = useRef(0);
+  const loadController = useRef<AbortController | null>(null);
   const actionController = useRef<AbortController | null>(null);
   const commentSubmission = useRef<{ fingerprint: string; id: string } | null>(null);
 
-  const load = useCallback(async (externalSignal?: AbortSignal) => {
+  const load = useCallback(async (commentCursor?: string) => {
+    loadController.current?.abort();
+    const controller = new AbortController();
+    loadController.current = controller;
     const requestId = ++loadRequest.current;
-    setLoading(true);
-    setDetail(null);
+    commentCursor ? setLoadingMore(true) : setLoading(true);
+    if (!commentCursor) setDetail(null);
     setError(null);
-    const signal = externalSignal ?? new AbortController().signal;
+    const signal = controller.signal;
     try {
-      const result = await transport.getTicket({ ticketId, commentLimit: 100, signal });
+      const result = await transport.getTicket({
+        ticketId,
+        ...(commentCursor ? { commentCursor } : {}),
+        commentLimit: 100,
+        signal,
+      });
       if (signal.aborted || requestId !== loadRequest.current) return;
       reportUnread({ total: result.unreadTotal, source: "detail" });
-      setDetail(result);
+      setDetail((current) => commentCursor && current
+        ? { ...result, comments: mergeCommentPages(current.comments, result.comments) }
+        : result);
     } catch (cause) {
       if (!signal.aborted) setError(errorMessage(cause));
     } finally {
-      if (!signal.aborted && requestId === loadRequest.current) setLoading(false);
+      if (!signal.aborted && requestId === loadRequest.current) {
+        setLoading(false);
+        setLoadingMore(false);
+      }
     }
   }, [reportUnread, ticketId, transport]);
 
   useEffect(() => {
-    const controller = new AbortController();
-    void load(controller.signal);
+    void load();
     return () => {
-      controller.abort();
+      loadController.current?.abort();
       actionController.current?.abort();
       loadRequest.current += 1;
     };
@@ -264,17 +298,18 @@ export function FeedbackTicket({ ticketId, onBack, onOpenAttachment }: FeedbackT
   };
 
   return (
-    <section className="hands-feedback-detail" aria-labelledby="hands-feedback-ticket-title">
+    <section className="hands-feedback-detail" aria-labelledby="hands-feedback-ticket-heading">
       <header className="hands-feedback-header">
         <Button variant="outline" onClick={onBack}>Back</Button>
+        <h2 id="hands-feedback-ticket-heading">Feedback ticket</h2>
         {detail && <span className="hands-feedback-status" data-status={detail.ticket.status}>{statusLabel(detail.ticket.status)}</span>}
       </header>
-      {loading && <Skeleton className="h-40 w-full" />}
+      {loading && <Skeleton className="hands-feedback-skeleton-detail" />}
       {error && <div className="hands-feedback-error" role="alert">{error}</div>}
       {detail && (
         <>
           <div className="hands-feedback-ticket-body">
-            <h2 id="hands-feedback-ticket-title">{detail.ticket.message}</h2>
+            <h3>{detail.ticket.message}</h3>
             <span>{formatDate(detail.ticket.createdAt)}</span>
           </div>
           {detail.attachments.length > 0 && (
@@ -303,6 +338,15 @@ export function FeedbackTicket({ ticketId, onBack, onOpenAttachment }: FeedbackT
               </article>
             ))}
           </div>
+          {detail.nextCommentCursor && (
+            <Button
+              variant="outline"
+              disabled={loadingMore}
+              onClick={() => void load(detail.nextCommentCursor!)}
+            >
+              {loadingMore ? "Loading…" : "Load more replies"}
+            </Button>
+          )}
           <div className="hands-feedback-composer">
             <label htmlFor="hands-feedback-reply">Reply</label>
             <textarea
@@ -386,8 +430,8 @@ export function NewFeedback({ onCancel, onCreated }: NewFeedbackProps) {
         <Button variant="outline" onClick={onCancel}>Cancel</Button>
       </header>
       <div className="hands-feedback-kind" role="group" aria-label="Feedback type">
-        <Button variant={kind === "feedback" ? "primary" : "outline"} onClick={() => setKind("feedback")}>Feedback</Button>
-        <Button variant={kind === "bug" ? "primary" : "outline"} onClick={() => setKind("bug")}>Problem</Button>
+        <Button aria-pressed={kind === "feedback"} variant={kind === "feedback" ? "primary" : "outline"} onClick={() => setKind("feedback")}>Feedback</Button>
+        <Button aria-pressed={kind === "bug"} variant={kind === "bug" ? "primary" : "outline"} onClick={() => setKind("bug")}>Problem</Button>
       </div>
       <label htmlFor="hands-feedback-message">What would you like us to know?</label>
       <textarea

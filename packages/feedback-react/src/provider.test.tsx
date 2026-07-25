@@ -1,8 +1,10 @@
 import { renderToStaticMarkup } from "react-dom/server";
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import {
   FeedbackWorkspace,
   MAX_FEEDBACK_ATTACHMENT_BYTES,
+  mergeCommentPages,
   mergeTicketPages,
   validateFeedbackAttachments,
 } from "./components.js";
@@ -73,6 +75,31 @@ describe("FeedbackProvider", () => {
       { id: "ticket-1", message: "Fresh" },
       { id: "ticket-2", message: "Second" },
     ]);
+  });
+
+  it("deduplicates overlapping comment pages in chronological order", () => {
+    const comment = (id: string, createdAt: number, body = id) => ({
+      id,
+      createdAt,
+      body,
+      authorType: "staff" as const,
+    });
+    expect(mergeCommentPages(
+      [comment("b", 2), comment("a", 1)],
+      [comment("b", 2, "fresh"), comment("c", 3)],
+    )).toEqual([
+      comment("a", 1),
+      comment("b", 2, "fresh"),
+      comment("c", 3),
+    ]);
+  });
+
+  it("ships package-owned nonzero skeleton sizing without Tailwind utilities", () => {
+    const css = readFileSync(new URL("./styles.css", import.meta.url), "utf8");
+    expect(css).toMatch(/\.hands-feedback-skeleton-row[^}]*height:\s*4rem/);
+    expect(css).toMatch(/\.hands-feedback-skeleton-detail[^}]*height:\s*10rem/);
+    expect(css).not.toMatch(/\.h-16\b|\.h-40\b|\.w-full\b/);
+    expect(css).toMatch(/@media \(max-width: 640px\)/);
   });
 
   it("rejects unsafe screenshot selections before calling the transport", () => {

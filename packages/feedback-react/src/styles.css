@@ -38,6 +38,8 @@
 .hands-feedback-header { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
 .hands-feedback-header p { color: var(--hf-muted); font-size: 14px; margin-top: 4px; }
 .hands-feedback-stack { display: grid; gap: 8px; }
+.hands-feedback-skeleton-row { display: block; height: 4rem; width: 100%; }
+.hands-feedback-skeleton-detail { display: block; height: 10rem; width: 100%; }
 .hands-feedback-ticket-list { border: 1px solid var(--hf-border); border-radius: var(--hf-radius); box-shadow: var(--hf-shadow); list-style: none; margin: 0; overflow: hidden; padding: 0; }
 .hands-feedback-ticket-list li { margin: 0; padding: 0; }
 .hands-feedback-ticket-row { width: 100%; display: flex; align-items: center; justify-content: space-between; gap: 16px; border: 0; border-bottom: 1px solid var(--hf-border); background: var(--hf-bg); color: inherit; padding: 14px 16px; text-align: left; cursor: pointer; }
@@ -61,6 +63,7 @@
 .hands-feedback-composer,
 .hands-feedback-attachments { border: 1px solid var(--hf-border); border-radius: var(--hf-radius); background: var(--hf-bg); padding: 16px; }
 .hands-feedback-ticket-body { display: grid; gap: 8px; }
+.hands-feedback-ticket-body h3 { margin: 0; }
 .hands-feedback-conversation { display: grid; gap: 10px; }
 .hands-feedback-conversation article[data-author="reporter"] { margin-left: min(48px, 8vw); background: var(--hf-surface); }
 .hands-feedback-conversation article[data-author="staff"] { margin-right: min(48px, 8vw); }

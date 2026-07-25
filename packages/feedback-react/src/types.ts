@@ -87,3 +87,22 @@ export type FeedbackUnreadChange = {
   total: number;
   source: "list" | "detail" | "create" | "comment";
 };
+
+export type FeedbackTransportErrorCode =
+  | "conflict"
+  | "invalid"
+  | "not_found"
+  | "rate_limited"
+  | "unauthorized"
+  | "unavailable";
+
+/** A transport may throw this closed error; arbitrary Error.message is never rendered. */
+export class FeedbackTransportError extends Error {
+  readonly code: FeedbackTransportErrorCode;
+
+  constructor(code: FeedbackTransportErrorCode, options?: ErrorOptions) {
+    super(code, options);
+    this.name = "FeedbackTransportError";
+    this.code = code;
+  }
+}

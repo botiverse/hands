@@ -12,6 +12,7 @@ export type {
 } from "./components.js";
 export { FeedbackProvider, useHandsFeedback } from "./provider.js";
 export type { FeedbackProviderProps } from "./provider.js";
+export { FeedbackTransportError } from "./types.js";
 export type {
   AddFeedbackCommentInput,
   CreateFeedbackInput,
@@ -24,5 +25,6 @@ export type {
   FeedbackTicketDetail,
   FeedbackTicketPage,
   FeedbackUnreadChange,
+  FeedbackTransportErrorCode,
   HandsFeedbackTransport,
 } from "./types.js";
