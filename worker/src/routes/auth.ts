@@ -1393,6 +1393,32 @@ export async function handleAgentManifest(c: Context<{ Bindings: Env }>) {
         },
       },
       {
+        name: "bind-reporter-webhook",
+        description:
+          "Bind one active app webhook as the exact subscriber for one active reporter integration. Requires app admin and does not create or enable a webhook.",
+        endpoint: {
+          method: "PUT",
+          path: "/api/apps/{app_id}/reporter-integrations/{reporter_integration_id}/webhooks/{webhook_id}",
+        },
+        parameters: {
+          app_id: { type: "string", in: "path", required: true, description: "Hands app id." },
+          reporter_integration_id: { type: "string", in: "path", required: true, description: "Reporter integration id." },
+          webhook_id: { type: "string", in: "path", required: true, description: "Existing active app webhook id." },
+        },
+      },
+      {
+        name: "get-reporter-feedback-metadata",
+        description:
+          "Read safe exact grant, route, audit, subscriber, event, delivery, payload-digest, and signature metadata without returning route subject, reporter id, body, or token secret. Requires app viewer.",
+        endpoint: { method: "GET", path: "/api/apps/{app_id}/reporter-feedback-metadata" },
+        parameters: {
+          app_id: { type: "string", in: "path", required: true, description: "Hands app id." },
+          reporter_integration_id: { type: "string", in: "query", required: true, description: "Exact reporter integration id." },
+          reporter_id: { type: "string", in: "query", required: true, description: "Exact opaque reporter id; never echoed." },
+          token_id: { type: "string", in: "query", required: true, description: "Exact app token id; token secret/prefix is never returned." },
+        },
+      },
+      {
         name: "get-feedback",
         description:
           "Get a feedback/crash ticket with device context, attachments, and comments. ticket_id may be a full UUID or a unique short-id prefix.",

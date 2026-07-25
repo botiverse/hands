@@ -30,6 +30,8 @@ declare global {
     AGC_CRED_ENC_KEY?: string;
     RAFT_ALLOWED_SERVER_IDS?: string;
     RAFT_ALLOWED_SERVER_SLUGS?: string;
+    FEEDBACK_AUDIT_HMAC_KEY?: string;
+    FEEDBACK_AUDIT_KEY_VERSION?: string;
   }
 }
 

@@ -39,7 +39,74 @@ const ReporterCommentInput = z.object({
   submission_id: z.string().uuid(),
 }).openapi("ReporterFeedbackCommentInput");
 
+const ReporterRouteInput = z.object({
+  route_subject: z.string().regex(/^rfr_v1_[A-Za-z0-9_-]+$/).max(160),
+}).strict().openapi("ReporterRouteSubjectInput");
+
+const ReporterWebhookParams = AppIdParam.extend({
+  integrationId: z.string().min(1),
+  webhookId: z.string().min(1),
+});
+
 export function registerFeedbackRoutes(registry: OpenApiRegistry) {
+  register(registry, {
+    method: "put",
+    path: "/api/apps/{appId}/reporter-feedback/route-subject",
+    tags: ["Reporter Feedback"],
+    summary: "Bind an immutable opaque v1 reporter route subject",
+    security: auth,
+    request: {
+      params: AppIdParam,
+      headers: ReporterHeaders,
+      body: { content: json(ReporterRouteInput), required: true },
+    },
+    responses: {
+      200: success("Exact idempotent replay; subject is not returned.", GenericObject),
+      201: success("Route binding created; subject is not returned.", GenericObject),
+      400: error("Malformed route subject."),
+      401: error("Missing or invalid bearer token."),
+      403: error("Invalid reporter integration grant."),
+      409: error("A different immutable v1 subject already exists."),
+    },
+  });
+
+  register(registry, {
+    method: "put",
+    path: "/api/apps/{appId}/reporter-integrations/{integrationId}/webhooks/{webhookId}",
+    tags: ["Reporter Feedback"],
+    summary: "Bind one active webhook as the exact reporter-integration subscriber",
+    security: auth,
+    request: { params: ReporterWebhookParams },
+    responses: {
+      200: success("Exact idempotent replay.", GenericObject),
+      201: success("Dedicated reporter webhook subscription created.", GenericObject),
+      403: error("Current principal cannot administer this app."),
+      409: error("App, integration, or webhook is inactive or mismatched."),
+    },
+  });
+
+  register(registry, {
+    method: "get",
+    path: "/api/apps/{appId}/reporter-feedback-metadata",
+    tags: ["Reporter Feedback"],
+    summary: "Read safe route, grant, audit, and delivery metadata",
+    security: auth,
+    request: {
+      params: AppIdParam,
+      query: z.object({
+        reporter_integration_id: z.string().min(1),
+        reporter_id: z.string().min(16).max(200),
+        token_id: z.string().min(1),
+      }),
+    },
+    responses: {
+      200: success("Safe metadata; never returns route subject, reporter id, body, or token secret.", GenericObject),
+      400: error("Required coordinate or token id is missing."),
+      403: error("Current principal cannot view this app."),
+      503: error("Reporter audit metadata is not configured."),
+    },
+  });
+
   register(registry, {
     method: "get",
     path: "/api/apps/{appId}/reporter-feedback",

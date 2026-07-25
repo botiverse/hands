@@ -21,6 +21,7 @@ The initial registry is:
 | `feedback:write` | Submit feedback tickets for the app. |
 | `feedback:read` | Token-only: read tickets owned by a reporter integration. |
 | `feedback:comment` | Token-only: comment on tickets owned by a reporter integration. |
+| `feedback:route` | Token-only: bind an opaque immutable route subject for webhook routing. |
 
 App roles are centrally defined bundles:
 
@@ -34,10 +35,10 @@ App roles are centrally defined bundles:
 the Console. Adding a permission happens in the registry, not in a UI-specific
 role/permission union.
 
-`feedback:read` and `feedback:comment` intentionally appear in no role bundle.
+`feedback:read`, `feedback:comment`, and `feedback:route` intentionally appear in no role bundle.
 They are accepted only by the dedicated reporter Bearer guard, which rejects
 cookies, human sessions, dev-token bypass, role fallback, mixed role grants,
-and any explicit scope outside the three feedback capabilities. Reporter
+and any explicit scope outside the four feedback capabilities. Reporter
 credentials also carry a stable `reporter_integration_id`; rotating a token
 keeps that principal while archiving it revokes active credentials.
 
