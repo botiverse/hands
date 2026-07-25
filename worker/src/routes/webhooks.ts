@@ -119,8 +119,8 @@ export async function handleCreateWebhook(c: AdminContext) {
 export async function handleDeleteWebhook(c: AdminContext) {
   const orgId = c.req.param("orgId") ?? "";
   const webhookId = c.req.param("webhookId") ?? "";
-  // Soft-delete (set archived_at) so deliveries-in-flight still have a
-  // valid webhook row to reference.
+  // Soft-delete (set archived_at) so the scheduled reaper can identify and
+  // terminalize pending deliveries without attempting the retired endpoint.
   await c.env.DB.prepare(
     `UPDATE webhooks SET archived_at = ?1 WHERE id = ?2 AND org_id = ?3`,
   ).bind(Date.now(), webhookId, orgId).run();
@@ -275,98 +275,209 @@ export async function emitWebhookEvent(
 
 const BACKOFF_SCHEDULE_MS = [5 * 60_000, 30 * 60_000, 2 * 60 * 60_000]; // 5m, 30m, 2h
 
+const DELIVERY_ATTEMPT_TIMEOUT_MS = 10_000;
+const DELIVERY_REAPER_CONCURRENCY = 5;
+const DELIVERY_REAPER_BATCH_SIZE = 50;
+const DELIVERY_RESPONSE_BODY_LIMIT_BYTES = 500;
+
+interface ReapDeliveriesOptions {
+  now?: number;
+  scheduledTime?: number | null;
+  fetchImpl?: typeof fetch;
+  deliveryTimeoutMs?: number;
+  concurrency?: number;
+}
+
+export interface ReapDeliveriesSummary {
+  scheduledTime: number | null;
+  selected: number;
+  succeeded: number;
+  retried: number;
+  terminalized: number;
+  durationMs: number;
+  errorCodes: Record<string, number>;
+}
+
+interface DueDelivery {
+  id: string;
+  webhook_id: string;
+  event_id: string | null;
+  attempts: number;
+  max_attempts: number;
+  payload_json: string;
+  signing_secret: string | null;
+  resolved_webhook_id: string | null;
+  webhook_url: string | null;
+  webhook_secret: string | null;
+  webhook_enabled: number | null;
+  webhook_archived_at: number | null;
+}
+
 export async function handleReapDeliveries(c: Context<{ Bindings: Env }>) {
-  const now = Date.now();
-  // Find all deliveries ready to attempt
-  const { results: due } = await c.env.DB.prepare(
-    `SELECT id, webhook_id, COALESCE(event_id, feedback_submission_event_id) AS event_id,
-            attempts, max_attempts, payload_json, signing_secret
-     FROM webhook_deliveries
-     WHERE status = 'pending'
-       AND (next_attempt_at IS NULL OR next_attempt_at <= ?1)
-     ORDER BY created_at ASC
-     LIMIT 50`,
+  const summary = await reapWebhookDeliveries(c.env);
+  return c.json({
+    processed: summary.selected,
+    failed: summary.retried + summary.terminalized,
+    ...summary,
+  });
+}
+
+export async function reapWebhookDeliveries(
+  env: Pick<Env, "DB">,
+  options: ReapDeliveriesOptions = {},
+): Promise<ReapDeliveriesSummary> {
+  const startedAt = Date.now();
+  const now = options.now ?? startedAt;
+  const fetchImpl = options.fetchImpl ?? fetch;
+  const deliveryTimeoutMs = options.deliveryTimeoutMs ?? DELIVERY_ATTEMPT_TIMEOUT_MS;
+  const concurrency = Math.max(1, Math.min(
+    options.concurrency ?? DELIVERY_REAPER_CONCURRENCY,
+    DELIVERY_REAPER_BATCH_SIZE,
+  ));
+
+  // Resolve the webhook in the same bounded query. LEFT JOIN intentionally
+  // keeps orphaned deliveries visible so they can be terminalized instead of
+  // occupying the oldest slots forever.
+  const { results: due } = await env.DB.prepare(
+    `SELECT d.id, d.webhook_id,
+            COALESCE(d.event_id, d.feedback_submission_event_id) AS event_id,
+            d.attempts, d.max_attempts, d.payload_json, d.signing_secret,
+            w.id AS resolved_webhook_id, w.url AS webhook_url,
+            w.secret AS webhook_secret, w.enabled AS webhook_enabled,
+            w.archived_at AS webhook_archived_at
+     FROM webhook_deliveries d
+     LEFT JOIN webhooks w ON w.id = d.webhook_id
+     WHERE d.status = 'pending'
+       AND (d.next_attempt_at IS NULL OR d.next_attempt_at <= ?1)
+     ORDER BY d.created_at ASC, d.id ASC
+     LIMIT ${DELIVERY_REAPER_BATCH_SIZE}`,
   )
     .bind(now)
-    .all<{
-      id: string;
-      webhook_id: string;
-      event_id: string | null;
-      attempts: number;
-      max_attempts: number;
-      payload_json: string;
-      signing_secret: string | null;
-    }>();
+    .all<DueDelivery>();
 
-  let succeeded = 0;
-  let failed = 0;
-  for (const d of due) {
-    const wh = await c.env.DB.prepare(
-      `SELECT url, secret FROM webhooks WHERE id = ?1`,
-    )
-      .bind(d.webhook_id)
-      .first<{ url: string; secret: string }>();
-    if (!wh) continue;
+  const summary: ReapDeliveriesSummary = {
+    scheduledTime: options.scheduledTime ?? null,
+    selected: due.length,
+    succeeded: 0,
+    retried: 0,
+    terminalized: 0,
+    durationMs: 0,
+    errorCodes: {},
+  };
+  const recordError = (code: string) => {
+    summary.errorCodes[code] = (summary.errorCodes[code] ?? 0) + 1;
+  };
+
+  const processDelivery = async (d: DueDelivery) => {
+    const unavailableCode = !d.resolved_webhook_id
+      ? "webhook_missing"
+      : d.webhook_archived_at !== null
+        ? "webhook_archived"
+        : d.webhook_enabled !== 1
+          ? "webhook_disabled"
+          : null;
+    if (unavailableCode) {
+      await env.DB.prepare(
+        `UPDATE webhook_deliveries
+         SET status = 'failed', next_attempt_at = NULL, last_error = ?1,
+             completed_at = ?2, updated_at = ?2
+         WHERE id = ?3 AND status = 'pending'`,
+      ).bind(unavailableCode, now, d.id).run();
+      summary.terminalized++;
+      recordError(unavailableCode);
+      return;
+    }
 
     const result = await postOnce(
-      wh.url,
-      d.signing_secret ?? wh.secret,
+      d.webhook_url!,
+      d.signing_secret ?? d.webhook_secret!,
       d.payload_json,
       d.id,
       d.event_id,
+      fetchImpl,
+      deliveryTimeoutMs,
     );
     const nextAttempts = d.attempts + 1;
     if (result.ok) {
-      await c.env.DB.prepare(
+      await env.DB.prepare(
         `UPDATE webhook_deliveries
          SET status = 'succeeded', attempts = ?1, last_attempt_at = ?2,
-             last_response_status = ?3, last_response_body = ?4,
+             next_attempt_at = NULL, last_response_status = ?3,
+             last_response_body = ?4, last_error = NULL,
              completed_at = ?2, updated_at = ?2
-         WHERE id = ?5`,
-      ).bind(nextAttempts, now, result.status, result.body?.slice(0, 500), d.id).run();
-      succeeded++;
-    } else {
-      if (nextAttempts >= d.max_attempts) {
-        await c.env.DB.prepare(
-          `UPDATE webhook_deliveries
-           SET status = 'failed', attempts = ?1, last_attempt_at = ?2,
-               last_response_status = ?3, last_response_body = ?4,
-               last_error = ?5, completed_at = ?2, updated_at = ?2
-           WHERE id = ?6`,
-        ).bind(
-          nextAttempts,
-          now,
-          result.status,
-          result.body?.slice(0, 500),
-          result.error,
-          d.id,
-        ).run();
-      } else {
-        const backoff =
-          BACKOFF_SCHEDULE_MS[d.attempts] ??
-          BACKOFF_SCHEDULE_MS[BACKOFF_SCHEDULE_MS.length - 1] ??
-          60_000;
-        await c.env.DB.prepare(
-          `UPDATE webhook_deliveries
-           SET attempts = ?1, last_attempt_at = ?2, next_attempt_at = ?3,
-               last_response_status = ?4, last_response_body = ?5,
-               last_error = ?6, updated_at = ?2
-           WHERE id = ?7`,
-        ).bind(
-          nextAttempts,
-          now,
-          now + backoff,
-          result.status,
-          result.body?.slice(0, 500),
-          result.error,
-          d.id,
-        ).run();
-      }
-      failed++;
+         WHERE id = ?5 AND status = 'pending'`,
+      ).bind(nextAttempts, now, result.status, result.body ?? null, d.id).run();
+      summary.succeeded++;
+      return;
     }
-  }
 
-  return c.json({ processed: due.length, succeeded, failed });
+    const errorCode = result.errorCode ?? "webhook_http_error";
+    recordError(errorCode);
+    if (nextAttempts >= d.max_attempts) {
+      await env.DB.prepare(
+        `UPDATE webhook_deliveries
+         SET status = 'failed', attempts = ?1, last_attempt_at = ?2,
+             next_attempt_at = NULL, last_response_status = ?3,
+             last_response_body = ?4, last_error = ?5,
+             completed_at = ?2, updated_at = ?2
+         WHERE id = ?6 AND status = 'pending'`,
+      ).bind(
+        nextAttempts,
+        now,
+        result.status,
+        result.body ?? null,
+        errorCode,
+        d.id,
+      ).run();
+      summary.terminalized++;
+      return;
+    }
+
+    const backoff =
+      BACKOFF_SCHEDULE_MS[d.attempts] ??
+      BACKOFF_SCHEDULE_MS[BACKOFF_SCHEDULE_MS.length - 1] ??
+      60_000;
+    await env.DB.prepare(
+      `UPDATE webhook_deliveries
+       SET attempts = ?1, last_attempt_at = ?2, next_attempt_at = ?3,
+           last_response_status = ?4, last_response_body = ?5,
+           last_error = ?6, updated_at = ?2
+       WHERE id = ?7 AND status = 'pending'`,
+    ).bind(
+      nextAttempts,
+      now,
+      now + backoff,
+      result.status,
+      result.body ?? null,
+      errorCode,
+      d.id,
+    ).run();
+    summary.retried++;
+  };
+
+  let nextIndex = 0;
+  const workers = Array.from(
+    { length: Math.min(concurrency, due.length) },
+    async () => {
+      while (true) {
+        const index = nextIndex++;
+        const delivery = due[index];
+        if (!delivery) return;
+        try {
+          await processDelivery(delivery);
+        } catch {
+          // A single D1/fetch/runtime failure must not prevent later rows in
+          // the bounded batch from making progress. The untouched pending row
+          // remains eligible for a future cron invocation.
+          summary.retried++;
+          recordError("delivery_processing_error");
+        }
+      }
+    },
+  );
+  await Promise.all(workers);
+  summary.durationMs = Math.max(0, Date.now() - startedAt);
+  return summary;
 }
 
 async function postOnce(
@@ -375,41 +486,106 @@ async function postOnce(
   body: string,
   deliveryId: string,
   eventId: string | null,
-): Promise<{ ok: boolean; status: number; body?: string; error?: string }> {
+  fetchImpl: typeof fetch,
+  timeoutMs: number,
+): Promise<{ ok: boolean; status: number; body?: string; errorCode?: string }> {
+  const controller = new AbortController();
+  let timedOut = false;
+  let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
   try {
-    const sig = await hmacSha256Hex(secret, body);
-    const event = (() => {
-      try { return JSON.parse(body).event ?? ""; } catch { return ""; }
-    })();
-    const headers: Record<string, string> = {
-      "content-type": "application/json",
-      // New canonical headers; legacy X-Quiver-* sent too so existing
-      // webhook consumers keep verifying without a change.
-      "X-Hands-Signature": `sha256=${sig}`,
-      "X-Hands-Event": event,
-      "X-Hands-Delivery-Id": deliveryId,
-      "X-Quiver-Signature": `sha256=${sig}`,
-      "X-Quiver-Event": event,
-    };
-    if (eventId) headers["X-Hands-Event-Id"] = eventId;
-    const r = await fetch(url, {
-      method: "POST",
-      headers,
-      body,
+    const deadline = new Promise<never>((_resolve, reject) => {
+      timeoutHandle = setTimeout(() => {
+        timedOut = true;
+        controller.abort();
+        reject(new Error("delivery_timeout"));
+      }, timeoutMs);
     });
-    const text = await r.text().catch(() => "");
-    return {
-      ok: r.ok,
-      status: r.status,
-      body: text,
-    };
-  } catch (e) {
+    return await Promise.race([
+      (async () => {
+        const sig = await hmacSha256Hex(secret, body);
+        const event = (() => {
+          try { return JSON.parse(body).event ?? ""; } catch { return ""; }
+        })();
+        const headers: Record<string, string> = {
+          "content-type": "application/json",
+          // New canonical headers; legacy X-Quiver-* sent too so existing
+          // webhook consumers keep verifying without a change.
+          "X-Hands-Signature": `sha256=${sig}`,
+          "X-Hands-Event": event,
+          "X-Hands-Delivery-Id": deliveryId,
+          "X-Quiver-Signature": `sha256=${sig}`,
+          "X-Quiver-Event": event,
+        };
+        if (eventId) headers["X-Hands-Event-Id"] = eventId;
+        const response = await fetchImpl(url, {
+          method: "POST",
+          headers,
+          body,
+          signal: controller.signal,
+        });
+        const responseBody = await readResponseBodyPrefix(
+          response,
+          DELIVERY_RESPONSE_BODY_LIMIT_BYTES,
+          controller.signal,
+        );
+        return {
+          ok: response.ok,
+          status: response.status,
+          body: responseBody,
+          ...(response.ok ? {} : { errorCode: "webhook_http_error" }),
+        };
+      })(),
+      deadline,
+    ]);
+  } catch {
     return {
       ok: false,
       status: 0,
-      error: (e as Error).message,
+      errorCode: timedOut ? "delivery_timeout" : "webhook_fetch_error",
     };
+  } finally {
+    if (timeoutHandle !== undefined) clearTimeout(timeoutHandle);
   }
+}
+
+async function readResponseBodyPrefix(
+  response: Response,
+  maxBytes: number,
+  signal: AbortSignal,
+): Promise<string> {
+  if (!response.body || maxBytes <= 0) return "";
+
+  const reader = response.body.getReader();
+  const prefix = new Uint8Array(maxBytes);
+  let length = 0;
+  const cancelForAbort = () => {
+    void reader.cancel("delivery_aborted").catch(() => undefined);
+  };
+  if (signal.aborted) cancelForAbort();
+  else signal.addEventListener("abort", cancelForAbort, { once: true });
+
+  try {
+    while (length < maxBytes) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (!value || value.byteLength === 0) continue;
+      const take = Math.min(value.byteLength, maxBytes - length);
+      prefix.set(value.subarray(0, take), length);
+      length += take;
+      if (length === maxBytes) {
+        // Cancellation is advisory cleanup. A hostile stream may return a
+        // cancel promise that never settles, so it must not become another
+        // head-of-line wait after the bounded prefix is already complete.
+        void reader.cancel("response_body_prefix_complete").catch(() => undefined);
+        break;
+      }
+    }
+  } finally {
+    signal.removeEventListener("abort", cancelForAbort);
+    reader.releaseLock();
+  }
+
+  return new TextDecoder().decode(prefix.subarray(0, length));
 }
 
 async function hmacSha256Hex(secret: string, body: string): Promise<string> {
