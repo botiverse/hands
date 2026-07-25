@@ -1407,6 +1407,69 @@ export async function handleAgentManifest(c: Context<{ Bindings: Env }>) {
         },
       },
       {
+        name: "list-reporter-integrations",
+        description:
+          "List active reporter integrations for an app. Requires app admin and returns metadata only.",
+        endpoint: { method: "GET", path: "/api/apps/{app_id}/reporter-integrations" },
+        parameters: {
+          app_id: { type: "string", in: "path", required: true, description: "Hands app id." },
+          include_archived: { type: "string", in: "query", required: false, description: "Use 1 to include archived integrations." },
+        },
+      },
+      {
+        name: "create-reporter-integration",
+        description:
+          "Create an app-scoped reporter integration without creating credentials or subscriptions. Requires app admin.",
+        endpoint: { method: "POST", path: "/api/apps/{app_id}/reporter-integrations" },
+        parameters: {
+          app_id: { type: "string", in: "path", required: true, description: "Hands app id." },
+          name: { type: "string", in: "body", required: true, description: "Integration display name." },
+        },
+      },
+      {
+        name: "update-reporter-integration",
+        description:
+          "Archive or unarchive a reporter integration. Archiving atomically revokes its active tokens. Requires app admin.",
+        endpoint: { method: "PATCH", path: "/api/apps/{app_id}/reporter-integrations/{reporter_integration_id}" },
+        parameters: {
+          app_id: { type: "string", in: "path", required: true, description: "Hands app id." },
+          reporter_integration_id: { type: "string", in: "path", required: true, description: "Reporter integration id." },
+          archived: { type: "boolean", in: "body", required: true, description: "Archive when true; unarchive when false." },
+        },
+      },
+      {
+        name: "list-webhooks",
+        description:
+          "List active webhook metadata for an organization without returning signing secrets. Requires org admin.",
+        endpoint: { method: "GET", path: "/api/orgs/{org_id}/webhooks" },
+        parameters: {
+          org_id: { type: "string", in: "path", required: true, description: "Hands organization id." },
+        },
+      },
+      {
+        name: "create-webhook",
+        description:
+          "Create an enabled org/app webhook. Requires org admin; the signing secret is accepted but never returned.",
+        endpoint: { method: "POST", path: "/api/orgs/{org_id}/webhooks" },
+        parameters: {
+          org_id: { type: "string", in: "path", required: true, description: "Hands organization id." },
+          url: { type: "string", in: "body", required: true, description: "HTTPS delivery URL." },
+          secret: { type: "string", in: "body", required: true, description: "Webhook HMAC signing secret." },
+          events: { type: "array", in: "body", required: false, description: "Subscribed event names; empty means all." },
+          app_id: { type: "string", in: "body", required: false, description: "Optional exact app scope." },
+        },
+      },
+      {
+        name: "delete-webhook",
+        description:
+          "Archive a webhook so it receives no new deliveries. Requires org admin.",
+        endpoint: { method: "DELETE", path: "/api/orgs/{org_id}/webhooks/{webhook_id}" },
+        parameters: {
+          org_id: { type: "string", in: "path", required: true, description: "Hands organization id." },
+          webhook_id: { type: "string", in: "path", required: true, description: "Webhook id." },
+        },
+      },
+      {
         name: "get-reporter-feedback-metadata",
         description:
           "Read safe exact grant, route, audit, subscriber, event, delivery, payload-digest, and signature metadata without returning route subject, reporter id, body, or token secret. Requires app viewer.",
