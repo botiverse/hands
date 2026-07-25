@@ -1246,7 +1246,7 @@ export async function handleAgentManifest(c: Context<{ Bindings: Env }>) {
       {
         name: "expire-testflight-build",
         description:
-          "Expire one exact App Store Connect Build from TestFlight availability. Requires the resolved ASC build id plus exact immutable version/build confirmations, is idempotent with immediate readback, and never mutates App Store production or a Hands release. Requires app admin and explicit human authorization for the live-facing mutation.",
+          "Expire one exact App Store Connect Build from TestFlight availability. Requires the resolved ASC build id plus exact immutable version/build confirmations, persists a redacted operation intent before Apple mutation, terminalizes PATCH/readback outcome, is idempotent with immediate readback, and never mutates App Store production or a Hands release. Requires app admin and explicit human authorization for the live-facing mutation.",
         endpoint: {
           method: "POST",
           path: "/api/apps/{app_id}/builds/{build_id}/testflight-expire",

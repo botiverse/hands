@@ -26,6 +26,7 @@ export interface OperationLog {
     | "signed_url"
     | "testflight-upload"
     | "testflight-publish"
+    | "testflight-expire"
     | "delta-generate";
   status: "pending" | "in_progress" | "success" | "failed" | "cancelled";
   parent_op_id: string | null;
@@ -184,6 +185,15 @@ export async function handleRetryOperation(c: Context<{ Bindings: Env }>) {
   const id = c.req.param("opId") ?? "";
   const existing = await getOperation(c.env.DB, id);
   if (!existing) return c.json({ error: "not found" }, 404);
+  if (existing.kind === "testflight-expire") {
+    return c.json(
+      {
+        error: "retry cannot rewrite a durable TestFlight expire receipt; invoke the exact expire action again",
+        operation: existing,
+      },
+      400,
+    );
+  }
   if (existing.status === "in_progress") {
     return c.json(
       { error: "operation already in_progress; wait or cancel first" },
@@ -231,6 +241,12 @@ export async function handleDeleteOperation(c: Context<{ Bindings: Env }>) {
   const id = c.req.param("opId") ?? "";
   const existing = await getOperation(c.env.DB, id);
   if (!existing) return c.json({ error: "not found" }, 404);
+  if (existing.kind === "testflight-expire") {
+    return c.json(
+      { error: "durable TestFlight expire receipts cannot be deleted" },
+      409,
+    );
+  }
   await c.env.DB.prepare("DELETE FROM operation_logs WHERE id = ?").bind(id).run();
   return c.json({ ok: true, id });
 }

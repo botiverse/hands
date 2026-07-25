@@ -173,7 +173,9 @@ production publishing. The integration exposes six actions:
   ids for the exact app.
 - `expire-testflight-build` (app admin): after explicit human authorization,
   expire one exact beta build using its ASC build id plus immutable
-  version/build confirmations; exact retries are no-ops.
+  version/build confirmations; a durable redacted operation receipt is written
+  before Apple mutation, PATCH/readback outcomes are terminalized, and exact
+  retries are no-ops linked to any prior PATCH-confirmed operation.
 - `publish-testflight-build` (publisher): assign a processed build to selected
   groups, upsert localized What to Test text, and submit external Beta App
   Review when requested.

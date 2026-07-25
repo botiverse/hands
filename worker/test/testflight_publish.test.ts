@@ -8,6 +8,7 @@ import {
   parseExpireInput,
   parsePublishInput,
   publishProcessedAscBuild,
+  runTestflightExpireOperation,
   TestflightPublishError,
 } from "../src/routes/testflight";
 
@@ -246,6 +247,74 @@ function baseArgs() {
   } as const;
 }
 
+function operationReceiptDb() {
+  const rows: Array<Record<string, any>> = [];
+  const db = {
+    prepare(sql: string) {
+      let params: any[] = [];
+      const statement = {
+        bind(...values: any[]) {
+          params = values;
+          return statement;
+        },
+        async run() {
+          if (sql.includes("INSERT INTO operation_logs")) {
+            rows.push({
+              id: params[0],
+              app_id: params[1],
+              kind: params[2],
+              status: params[3],
+              parent_op_id: params[4],
+              step_number: params[5],
+              actor: params[6],
+              input: params[7],
+              output: params[8],
+              error: params[9],
+              progress: params[10],
+              retry_count: params[11],
+              created_at: params[12],
+              updated_at: params[13],
+              completed_at: params[14],
+            });
+            return { success: true };
+          }
+          if (sql.includes("UPDATE operation_logs SET")) {
+            const id = params.at(-1);
+            const row = rows.find((candidate) => candidate.id === id);
+            const setClause = sql.match(/SET ([\s\S]+?) WHERE/)?.[1] ?? "";
+            const fields = setClause.split(",").map((entry) => entry.trim().split(" ")[0]);
+            fields.forEach((field, index) => {
+              if (row && field) row[field] = params[index];
+            });
+            return { success: true };
+          }
+          throw new Error(`unexpected run SQL: ${sql}`);
+        },
+        async first() {
+          if (sql.includes("SELECT * FROM operation_logs WHERE id")) {
+            return rows.find((row) => row.id === params[0]) ?? null;
+          }
+          if (sql.includes("SELECT id FROM operation_logs")) {
+            const [appId, excludedId, buildId, ascBuildId] = params;
+            return rows
+              .filter((row) => row.app_id === appId && row.kind === "testflight-expire" && row.id !== excludedId)
+              .find((row) => {
+                const input = JSON.parse(row.input);
+                const output = JSON.parse(row.output);
+                return input.build_id === buildId
+                  && input.asc_build_id === ascBuildId
+                  && output.patch_confirmed === true;
+              }) ?? null;
+          }
+          throw new Error(`unexpected first SQL: ${sql}`);
+        },
+      };
+      return statement;
+    },
+  };
+  return { db: db as unknown as D1Database, rows };
+}
+
 afterEach(() => {
   vi.unstubAllGlobals();
 });
@@ -362,6 +431,89 @@ describe("publishProcessedAscBuild", () => {
       expectedAscBuildId: "build-1",
     })).rejects.toMatchObject({ code: "ASC_BUILD_NOT_READY" });
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("preserves PATCH-confirmed intent when readback fails and links the no-op retry", async () => {
+    const { db, rows } = operationReceiptDb();
+    const args = baseArgs();
+    const coordinate = {
+      appId: "app-hands",
+      actor: "reviewer@example.test",
+      handsBuildId: args.handsBuild.id,
+      bundleId: args.bundleId,
+      ascAppId: args.ascAppId,
+      ascBuildId: args.ascBuild.id,
+      version: args.handsBuild.version_name,
+      buildNumber: String(args.handsBuild.version_code),
+    };
+
+    let firstOperationId = "";
+    await expect(runTestflightExpireOperation(db, coordinate, {
+      beforeExecute: async (operationId) => {
+        firstOperationId = operationId;
+      },
+      execute: async ({ onPatchConfirmed }) => {
+        await onPatchConfirmed({
+          ...args.ascBuild,
+          attributes: { ...args.ascBuild.attributes, expired: true },
+        });
+        throw new TestflightPublishError(
+          409,
+          "ASC_EXPIRE_READBACK_FAILED",
+          "readback failed after patch",
+        );
+      },
+    })).rejects.toMatchObject({
+      code: "ASC_EXPIRE_READBACK_FAILED",
+      details: {
+        operation_id: expect.any(String),
+        patch_confirmed: true,
+        phase: "readback_failed",
+      },
+    });
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      id: firstOperationId,
+      actor: "reviewer@example.test",
+      kind: "testflight-expire",
+      status: "failed",
+    });
+    expect(JSON.parse(rows[0]!.input)).toEqual({
+      build_id: "hands-build-1",
+      bundle_id: "build.raft.app",
+      asc_app_id: "app-1",
+      asc_build_id: "build-1",
+      version: "1.0.0",
+      build_number: "1000005",
+    });
+    expect(JSON.parse(rows[0]!.output)).toMatchObject({
+      phase: "readback_failed",
+      patch_confirmed: true,
+      readback_confirmed: false,
+      asc_build_id: "build-1",
+    });
+    expect(rows[0]!.input).not.toContain("PRIVATE KEY");
+
+    const retry = await runTestflightExpireOperation(db, coordinate, {
+      execute: async () => ({
+        changed: false,
+        ascBuild: {
+          ...args.ascBuild,
+          attributes: { ...args.ascBuild.attributes, expired: true },
+        },
+      }),
+    });
+    expect(retry).toMatchObject({
+      changed: false,
+      priorMutationOperationId: firstOperationId,
+    });
+    expect(rows).toHaveLength(2);
+    expect(JSON.parse(rows[1]!.output)).toMatchObject({
+      phase: "already_expired",
+      changed: false,
+      prior_mutation_operation_id: firstOperationId,
+    });
   });
 
   it("rejects a bundle assertion mismatch before operation or Apple access", async () => {

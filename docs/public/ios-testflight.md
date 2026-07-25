@@ -97,9 +97,14 @@ build + sign IPA  ──────────▶ build + assets in R2
 
    Hands resolves the immutable build tuple again, refuses any ASC id or
    version/build mismatch, sets only the ASC Build resource's `expired` flag,
-   and immediately reads the same build back. Retrying an already-expired exact
-   build is a `200` no-op with `changed=false`. Expiration removes TestFlight
-   availability; Apple keeps the build record for audit/history.
+   and immediately reads the same build back. Before the Apple mutation it
+   stores a redacted operation intent containing the actor and exact build
+   coordinate; PATCH/readback success or failure terminalizes that receipt.
+   Retrying an already-expired exact build is a `200` no-op with
+   `changed=false` and links to any prior PATCH-confirmed operation, so a lost
+   readback or audit response cannot erase who triggered the mutation.
+   Expiration removes TestFlight availability; Apple keeps the build record for
+   audit/history. Responses include `operation_id` for supported inspection.
 
 These endpoints and the matching CLI/integration actions are TestFlight-only.
 They never activate a Hands release and never create, submit, or release an

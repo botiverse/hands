@@ -2200,6 +2200,61 @@ describe("quiver operation retry — legacy publish is not replayed", () => {
       .all();
     expect(releases.results).toHaveLength(0);
   });
+
+  it("keeps TestFlight expire receipts terminal and undeletable", async () => {
+    const now = Date.now();
+    const output = JSON.stringify({
+      phase: "readback_failed",
+      patch_confirmed: true,
+      readback_confirmed: false,
+      asc_build_id: "asc-build-1",
+    });
+    await env.DB
+      .prepare(
+        `INSERT INTO operation_logs
+         (id, app_id, kind, status, actor, input, output, error, progress,
+          retry_count, created_at, updated_at, completed_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .bind(
+        "op-expire",
+        "a1",
+        "testflight-expire",
+        "failed",
+        "tester",
+        JSON.stringify({ build_id: "hands-build-1", asc_build_id: "asc-build-1" }),
+        output,
+        JSON.stringify({ code: "ASC_EXPIRE_READBACK_FAILED" }),
+        70,
+        0,
+        now,
+        now,
+        now,
+      )
+      .run();
+
+    const { handleDeleteOperation, handleRetryOperation } = await import("../src/routes/operations");
+    const context = {
+      env,
+      req: { param: (name: string) => (name === "opId" ? "op-expire" : "") },
+      json: (body: unknown, status = 200) =>
+        new Response(JSON.stringify(body), { status }),
+    } as any;
+    expect((await handleRetryOperation(context)).status).toBe(400);
+    expect((await handleDeleteOperation(context)).status).toBe(409);
+
+    const preserved = await env.DB.prepare(
+      `SELECT status, output, progress, retry_count, completed_at
+       FROM operation_logs WHERE id = ?`,
+    ).bind("op-expire").first() as any;
+    expect(preserved).toMatchObject({
+      status: "failed",
+      output,
+      progress: 70,
+      retry_count: 0,
+      completed_at: now,
+    });
+  });
 });
 
 describe("quiver Hono app — auth + dispatch", () => {

@@ -290,7 +290,7 @@ export function registerBuildRoutes(registry: OpenApiRegistry) {
     tags: ["TestFlight"],
     summary: "Expire one exact TestFlight build",
     description:
-      "Requires the resolved App Store Connect build id plus the immutable Hands version/build tuple as confirmation. Idempotently marks only that Build resource expired, immediately reads it back, and never mutates an App Store production version or a Hands release.",
+      "Requires the resolved App Store Connect build id plus the immutable Hands version/build tuple as confirmation. Persists a redacted actor/coordinate operation intent before Apple mutation, terminalizes PATCH/readback outcome, idempotently marks only that Build resource expired, and never mutates an App Store production version or a Hands release.",
     security: auth,
     request: {
       params: AppBuildParams,
