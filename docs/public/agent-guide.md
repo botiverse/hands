@@ -163,7 +163,7 @@ presence.
 ### TestFlight upload and distribution
 
 TestFlight is a separate state machine from the Hands draft and from App Store
-production publishing. The integration exposes five actions:
+production publishing. The integration exposes six actions:
 
 - `upload-testflight-build` (app admin): stream the existing signed Hands IPA
   to Apple's Build Upload API.
@@ -171,6 +171,11 @@ production publishing. The integration exposes five actions:
   `state.state=COMPLETE|FAILED`, retaining Apple's errors/warnings/infos.
 - `list-testflight-groups` (viewer): get stable internal/external beta group
   ids for the exact app.
+- `expire-testflight-build` (app admin): after explicit human authorization,
+  expire one exact beta build using its ASC build id plus immutable
+  version/build confirmations; a durable redacted operation receipt is written
+  before Apple mutation, PATCH/readback outcomes are terminalized, and exact
+  retries are no-ops linked to any prior PATCH-confirmed operation.
 - `publish-testflight-build` (publisher): assign a processed build to selected
   groups, upsert localized What to Test text, and submit external Beta App
   Review when requested.
@@ -211,6 +216,18 @@ raft integration invoke --service <hands-service> \
     "group_ids":["<asc-beta-group-id>"],
     "what_to_test":{"en-US":"Verify login and Activity."},
     "notify_testers":false
+  }' --json
+
+# Live-facing and irreversible for TestFlight availability: run only after an
+# explicit human selects the exact build. All three confirmations are required.
+raft integration invoke --service <hands-service> \
+  --action expire-testflight-build \
+  --param app_id=<app-uuid> \
+  --param build_id=<hands-build-uuid> \
+  --data-json '{
+    "asc_build_id":"<exact-asc-build-id>",
+    "confirm_version":"1.0.0",
+    "confirm_build_number":"1000006"
   }' --json
 ```
 

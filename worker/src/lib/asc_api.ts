@@ -379,6 +379,32 @@ export async function resolveAscBuild(
   return res.data?.[0] ?? null;
 }
 
+/**
+ * Mark one exact processed build as expired in TestFlight.
+ *
+ * App Store Connect keeps the build record for audit/history; setting
+ * `expired=true` only removes its TestFlight availability. This endpoint does
+ * not mutate an App Store production version.
+ */
+export async function expireAscBuild(
+  creds: AscApiCredentials,
+  ascBuildId: string,
+): Promise<AscBuildResource> {
+  const res = await ascRequest<{ data: AscBuildResource }>(
+    creds,
+    "PATCH",
+    `/v1/builds/${encodeURIComponent(ascBuildId)}`,
+    {
+      data: {
+        type: "builds",
+        id: ascBuildId,
+        attributes: { expired: true },
+      },
+    },
+  );
+  return res.data;
+}
+
 export async function listBetaGroups(
   creds: AscApiCredentials,
   ascAppId: string,

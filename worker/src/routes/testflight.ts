@@ -36,6 +36,7 @@ import {
   createBetaAppReviewSubmission,
   createBuildUpload,
   createBuildUploadFile,
+  expireAscBuild,
   getAssignedBetaGroupIds,
   getBetaAppReviewSubmission,
   getBetaBuildLocalizations,
@@ -77,13 +78,20 @@ interface TestflightPublishInput {
   bundle_id?: string;
 }
 
+interface TestflightExpireInput {
+  asc_build_id: string;
+  confirm_version: string;
+  confirm_build_number: string;
+  bundle_id?: string;
+}
+
 export class TestflightPublishError extends Error {
-  status: 400 | 404 | 409;
+  status: 400 | 404 | 409 | 500 | 502;
   code: string;
   details: Record<string, unknown>;
 
   constructor(
-    status: 400 | 404 | 409,
+    status: 400 | 404 | 409 | 500 | 502,
     code: string,
     message: string,
     details: Record<string, unknown> = {},
@@ -309,6 +317,80 @@ export function parsePublishInput(raw: unknown): TestflightPublishInput {
     notify_testers: body.notify_testers ?? false,
     ...(bundleId ? { bundle_id: bundleId } : {}),
   };
+}
+
+export function parseExpireInput(raw: unknown): TestflightExpireInput {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    throw new TestflightPublishError(
+      400,
+      "INVALID_EXPIRE_INPUT",
+      "an exact TestFlight expire confirmation body is required",
+    );
+  }
+  const body = raw as Record<string, unknown>;
+  const allowed = new Set([
+    "asc_build_id",
+    "confirm_version",
+    "confirm_build_number",
+    "bundle_id",
+  ]);
+  if (Object.keys(body).some((key) => !allowed.has(key))) {
+    throw new TestflightPublishError(
+      400,
+      "INVALID_EXPIRE_INPUT",
+      "unexpected TestFlight expire input field",
+    );
+  }
+  const ascBuildId =
+    typeof body.asc_build_id === "string" ? body.asc_build_id.trim() : "";
+  const confirmVersion =
+    typeof body.confirm_version === "string" ? body.confirm_version.trim() : "";
+  const confirmBuildNumber =
+    typeof body.confirm_build_number === "string"
+      ? body.confirm_build_number.trim()
+      : "";
+  const bundleId =
+    typeof body.bundle_id === "string" ? body.bundle_id.trim() : undefined;
+  if (!ascBuildId || !confirmVersion || !/^\d+$/.test(confirmBuildNumber)) {
+    throw new TestflightPublishError(
+      400,
+      "INVALID_EXPIRE_INPUT",
+      "asc_build_id, confirm_version, and numeric confirm_build_number are required",
+    );
+  }
+  if (body.bundle_id !== undefined && !bundleId) {
+    throw new TestflightPublishError(
+      400,
+      "INVALID_BUNDLE_ID",
+      "bundle_id must be a non-empty string when provided",
+    );
+  }
+  return {
+    asc_build_id: ascBuildId,
+    confirm_version: confirmVersion,
+    confirm_build_number: confirmBuildNumber,
+    ...(bundleId ? { bundle_id: bundleId } : {}),
+  };
+}
+
+export function assertExpireConfirmation(
+  build: Pick<HandsTestflightBuild, "version_name" | "version_code">,
+  input: Pick<TestflightExpireInput, "confirm_version" | "confirm_build_number">,
+): void {
+  if (
+    input.confirm_version !== build.version_name ||
+    input.confirm_build_number !== String(build.version_code)
+  ) {
+    throw new TestflightPublishError(
+      409,
+      "EXPIRE_CONFIRMATION_MISMATCH",
+      "the version/build confirmation does not match the immutable Hands build",
+      {
+        expected_version: build.version_name,
+        expected_build_number: String(build.version_code),
+      },
+    );
+  }
 }
 
 function publicGroup(group: BetaGroupResource) {
@@ -842,6 +924,389 @@ export async function handleTestflightPublishStatus(c: AdminContext) {
       }),
     );
   } catch (error) {
+    return testflightErrorResponse(c, error);
+  }
+}
+
+function expireStatusPayload(args: {
+  handsBuild: HandsTestflightBuild;
+  bundleId: string;
+  ascAppId: string;
+  ascBuild: AscBuildResource;
+  changed: boolean;
+}) {
+  return {
+    ok: true,
+    changed: args.changed,
+    hands_build_id: args.handsBuild.id,
+    bundle_id: args.bundleId,
+    asc_app_id: args.ascAppId,
+    asc_build_id: args.ascBuild.id,
+    version: args.handsBuild.version_name,
+    build_number: String(args.handsBuild.version_code),
+    processing_state: args.ascBuild.attributes.processingState,
+    expired: args.ascBuild.attributes.expired === true,
+    expiration_date: args.ascBuild.attributes.expirationDate,
+  };
+}
+
+export async function expireResolvedAscBuild(
+  creds: AscApiCredentials,
+  args: {
+    ascAppId: string;
+    handsBuild: HandsTestflightBuild;
+    ascBuild: AscBuildResource;
+    expectedAscBuildId: string;
+    onPatchConfirmed?: (patched: AscBuildResource) => Promise<void>;
+  },
+): Promise<{ changed: boolean; ascBuild: AscBuildResource }> {
+  if (args.ascBuild.id !== args.expectedAscBuildId) {
+    throw new TestflightPublishError(
+      409,
+      "ASC_BUILD_ID_MISMATCH",
+      "asc_build_id does not match the App Store Connect build resolved from the immutable Hands version tuple",
+      { resolved_asc_build_id: args.ascBuild.id },
+    );
+  }
+  if (args.ascBuild.attributes.expired === true) {
+    return { changed: false, ascBuild: args.ascBuild };
+  }
+  if (args.ascBuild.attributes.processingState !== "VALID") {
+    throw new TestflightPublishError(
+      409,
+      "ASC_BUILD_NOT_READY",
+      "only a VALID App Store Connect build can be expired",
+      { processing_state: args.ascBuild.attributes.processingState },
+    );
+  }
+
+  const patched = await expireAscBuild(creds, args.ascBuild.id);
+  if (patched.id !== args.ascBuild.id || patched.attributes.expired !== true) {
+    throw new TestflightPublishError(
+      409,
+      "ASC_EXPIRE_NOT_CONFIRMED",
+      "App Store Connect did not confirm the exact build as expired",
+    );
+  }
+  await args.onPatchConfirmed?.(patched);
+  const readback = await resolveAscBuild(creds, {
+    ascAppId: args.ascAppId,
+    version: args.handsBuild.version_name,
+    buildNumber: String(args.handsBuild.version_code),
+  });
+  if (
+    !readback ||
+    readback.id !== args.ascBuild.id ||
+    readback.attributes.expired !== true
+  ) {
+    throw new TestflightPublishError(
+      409,
+      "ASC_EXPIRE_READBACK_FAILED",
+      "the exact App Store Connect build did not read back as expired",
+    );
+  }
+  return { changed: true, ascBuild: readback };
+}
+
+type TestflightExpireOperationCoordinate = {
+  appId: string;
+  actor: string;
+  handsBuildId: string;
+  bundleId: string;
+  ascAppId: string;
+  ascBuildId: string;
+  version: string;
+  buildNumber: string;
+};
+
+type TestflightExpireExecution = {
+  changed: boolean;
+  ascBuild: AscBuildResource;
+};
+
+/**
+ * Persist an exact redacted intent before the irreversible Apple PATCH, then
+ * preserve the PATCH/readback outcome in the same operation row. Even if a
+ * later audit write fails, the actor + exact coordinate + effect phase remain
+ * durable and an already-expired retry can link back to the original mutation.
+ */
+export async function runTestflightExpireOperation(
+  db: D1Database,
+  coordinate: TestflightExpireOperationCoordinate,
+  callbacks: {
+    beforeExecute?: (operationId: string) => Promise<void>;
+    execute: (hooks: {
+      onPatchConfirmed: (patched: AscBuildResource) => Promise<void>;
+    }) => Promise<TestflightExpireExecution>;
+  },
+) {
+  const operation = await createOperation(db, {
+    app_id: coordinate.appId,
+    kind: "testflight-expire",
+    actor: coordinate.actor,
+    input: JSON.stringify({
+      build_id: coordinate.handsBuildId,
+      bundle_id: coordinate.bundleId,
+      asc_app_id: coordinate.ascAppId,
+      asc_build_id: coordinate.ascBuildId,
+      version: coordinate.version,
+      build_number: coordinate.buildNumber,
+    }),
+  });
+  let patchConfirmed = false;
+  try {
+    await updateOperation(db, operation.id, {
+      status: "in_progress",
+      progress: 10,
+      output: JSON.stringify({
+        phase: "intent_recorded",
+        patch_confirmed: false,
+        readback_confirmed: false,
+      }),
+    });
+    await callbacks.beforeExecute?.(operation.id);
+    const result = await callbacks.execute({
+      onPatchConfirmed: async (patched) => {
+        patchConfirmed = true;
+        // The intent row already exists, so failure to add this intermediate
+        // breadcrumb must not skip the exact Apple readback or erase intent.
+        await updateOperation(db, operation.id, {
+          status: "in_progress",
+          progress: 70,
+          output: JSON.stringify({
+            phase: "apple_patch_confirmed",
+            patch_confirmed: true,
+            readback_confirmed: false,
+            asc_build_id: patched.id,
+          }),
+        }).catch(() => null);
+      },
+    });
+    const priorMutation = result.changed
+      ? null
+      : await db.prepare(
+          `SELECT id FROM operation_logs
+           WHERE app_id = ?1 AND kind = 'testflight-expire' AND id != ?2
+             AND json_extract(input, '$.build_id') = ?3
+             AND json_extract(input, '$.asc_build_id') = ?4
+             AND json_extract(output, '$.patch_confirmed') = 1
+           ORDER BY created_at ASC LIMIT 1`,
+        ).bind(
+          coordinate.appId,
+          operation.id,
+          coordinate.handsBuildId,
+          coordinate.ascBuildId,
+        ).first<{ id: string }>();
+    const output = {
+      phase: result.changed ? "readback_confirmed" : "already_expired",
+      changed: result.changed,
+      patch_confirmed: patchConfirmed,
+      readback_confirmed: true,
+      asc_build_id: result.ascBuild.id,
+      prior_mutation_operation_id: priorMutation?.id ?? null,
+    };
+    await updateOperation(db, operation.id, {
+      status: "success",
+      progress: 100,
+      output: JSON.stringify(output),
+      completed_at: Date.now(),
+    });
+    return {
+      operationId: operation.id,
+      priorMutationOperationId: priorMutation?.id ?? null,
+      ...result,
+    };
+  } catch (error) {
+    const phase = patchConfirmed ? "readback_failed" : "pre_patch_failed";
+    await updateOperation(db, operation.id, {
+      status: "failed",
+      output: JSON.stringify({
+        phase,
+        patch_confirmed: patchConfirmed,
+        readback_confirmed: false,
+        asc_build_id: coordinate.ascBuildId,
+      }),
+      error: JSON.stringify({
+        code: error instanceof TestflightPublishError
+          ? error.code
+          : error instanceof AscApiError
+            ? "ASC_API_ERROR"
+            : "TESTFLIGHT_EXPIRE_OPERATION_FAILED",
+      }),
+      completed_at: Date.now(),
+    }).catch(() => null);
+    const details = {
+      operation_id: operation.id,
+      patch_confirmed: patchConfirmed,
+      phase,
+    };
+    if (error instanceof TestflightPublishError) {
+      error.details = { ...error.details, ...details };
+      throw error;
+    }
+    if (error instanceof AscApiError) {
+      throw new TestflightPublishError(
+        502,
+        "ASC_EXPIRE_OPERATION_FAILED",
+        "App Store Connect expire operation failed; inspect the durable operation receipt",
+        { ...details, upstream_status: error.status },
+      );
+    }
+    throw new TestflightPublishError(
+      500,
+      "TESTFLIGHT_EXPIRE_OPERATION_FAILED",
+      "TestFlight expire operation failed; inspect the durable operation receipt",
+      details,
+    );
+  }
+}
+
+/**
+ * Expire one exact TestFlight build. This only toggles the ASC Build resource's
+ * TestFlight availability; it never submits, publishes, or edits an App Store
+ * production version and never mutates a Hands release.
+ */
+export async function handleTestflightExpire(c: AdminContext) {
+  const appId = c.req.param("appId") ?? "";
+  let failureAudit: {
+    buildId: string;
+    ascBuildId: string;
+    version: string;
+    buildNumber: string;
+  } | null = null;
+  try {
+    const input = parseExpireInput(await c.req.json().catch(() => null));
+    const build = await loadHandsTestflightBuild(
+      c,
+      appId,
+      c.req.param("buildId") ?? "",
+    );
+    assertExpireConfirmation(build, input);
+
+    const bundleId = await resolveBuildBundleId(c, build, input.bundle_id);
+    const creds = await loadAscCredentials(c, appId);
+    const ascAppId = await resolveAscAppId(creds, bundleId);
+    if (!ascAppId) {
+      throw new TestflightPublishError(
+        404,
+        "ASC_APP_NOT_FOUND",
+        `no App Store Connect app record for bundle id ${bundleId}`,
+      );
+    }
+    const ascBuild = await resolveAscBuild(creds, {
+      ascAppId,
+      version: build.version_name,
+      buildNumber: String(build.version_code),
+    });
+    if (!ascBuild) {
+      throw new TestflightPublishError(
+        409,
+        "ASC_BUILD_NOT_AVAILABLE",
+        "the exact App Store Connect build is not available",
+      );
+    }
+    // Freeze the caller assertion before creating the intent receipt; no
+    // operation or audit row is created for a mismatched ASC id.
+    if (ascBuild.id !== input.asc_build_id) {
+      throw new TestflightPublishError(
+        409,
+        "ASC_BUILD_ID_MISMATCH",
+        "asc_build_id does not match the App Store Connect build resolved from the immutable Hands version tuple",
+        { resolved_asc_build_id: ascBuild.id },
+      );
+    }
+    failureAudit = {
+      buildId: build.id,
+      ascBuildId: ascBuild.id,
+      version: build.version_name,
+      buildNumber: String(build.version_code),
+    };
+    const expired = await runTestflightExpireOperation(c.env.DB, {
+      appId,
+      actor: currentActor(c),
+      handsBuildId: build.id,
+      bundleId,
+      ascAppId,
+      ascBuildId: ascBuild.id,
+      version: build.version_name,
+      buildNumber: String(build.version_code),
+    }, {
+      beforeExecute: async (operationId) => {
+        await insertAuditLog(c.env.DB, c, {
+          app_id: appId,
+          action: "testflight.expire_intent",
+          payload: {
+            operation_id: operationId,
+            build_id: build.id,
+            asc_build_id: ascBuild.id,
+            version: build.version_name,
+            build_number: String(build.version_code),
+          },
+        });
+      },
+      execute: ({ onPatchConfirmed }) => expireResolvedAscBuild(creds, {
+        ascAppId,
+        handsBuild: build,
+        ascBuild,
+        expectedAscBuildId: input.asc_build_id,
+        onPatchConfirmed,
+      }),
+    });
+    try {
+      await insertAuditLog(c.env.DB, c, {
+        app_id: appId,
+        action: "testflight.expire",
+        payload: {
+          operation_id: expired.operationId,
+          prior_mutation_operation_id: expired.priorMutationOperationId,
+          build_id: build.id,
+          asc_build_id: ascBuild.id,
+          version: build.version_name,
+          build_number: String(build.version_code),
+          changed: expired.changed,
+        },
+      });
+    } catch {
+      return c.json({
+        error: "TestFlight build state changed but final audit write failed; inspect the durable operation receipt",
+        code: "TESTFLIGHT_EXPIRE_AUDIT_FAILED",
+        operation_id: expired.operationId,
+        prior_mutation_operation_id: expired.priorMutationOperationId,
+        changed: expired.changed,
+        expired: expired.ascBuild.attributes.expired === true,
+      }, 500);
+    }
+    return c.json({
+      operation_id: expired.operationId,
+      prior_mutation_operation_id: expired.priorMutationOperationId,
+      ...expireStatusPayload({
+        handsBuild: build,
+        bundleId,
+        ascAppId,
+        ascBuild: expired.ascBuild,
+        changed: expired.changed,
+      }),
+    });
+  } catch (error) {
+    if (
+      failureAudit
+      && error instanceof TestflightPublishError
+      && typeof error.details.operation_id === "string"
+    ) {
+      await insertAuditLog(c.env.DB, c, {
+        app_id: appId,
+        action: "testflight.expire_failed",
+        payload: {
+          operation_id: error.details.operation_id,
+          build_id: failureAudit.buildId,
+          asc_build_id: failureAudit.ascBuildId,
+          version: failureAudit.version,
+          build_number: failureAudit.buildNumber,
+          patch_confirmed: error.details.patch_confirmed === true,
+          phase: error.details.phase,
+        },
+      }).catch(() => null);
+    }
     return testflightErrorResponse(c, error);
   }
 }

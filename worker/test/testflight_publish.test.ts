@@ -2,9 +2,13 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { Hono } from "hono";
 import type { AscApiCredentials } from "../src/lib/asc_api";
 import {
+  assertExpireConfirmation,
+  expireResolvedAscBuild,
   handleTestflightPublish,
+  parseExpireInput,
   parsePublishInput,
   publishProcessedAscBuild,
+  runTestflightExpireOperation,
   TestflightPublishError,
 } from "../src/routes/testflight";
 
@@ -243,11 +247,275 @@ function baseArgs() {
   } as const;
 }
 
+function operationReceiptDb() {
+  const rows: Array<Record<string, any>> = [];
+  const db = {
+    prepare(sql: string) {
+      let params: any[] = [];
+      const statement = {
+        bind(...values: any[]) {
+          params = values;
+          return statement;
+        },
+        async run() {
+          if (sql.includes("INSERT INTO operation_logs")) {
+            rows.push({
+              id: params[0],
+              app_id: params[1],
+              kind: params[2],
+              status: params[3],
+              parent_op_id: params[4],
+              step_number: params[5],
+              actor: params[6],
+              input: params[7],
+              output: params[8],
+              error: params[9],
+              progress: params[10],
+              retry_count: params[11],
+              created_at: params[12],
+              updated_at: params[13],
+              completed_at: params[14],
+            });
+            return { success: true };
+          }
+          if (sql.includes("UPDATE operation_logs SET")) {
+            const id = params.at(-1);
+            const row = rows.find((candidate) => candidate.id === id);
+            const setClause = sql.match(/SET ([\s\S]+?) WHERE/)?.[1] ?? "";
+            const fields = setClause.split(",").map((entry) => entry.trim().split(" ")[0]);
+            fields.forEach((field, index) => {
+              if (row && field) row[field] = params[index];
+            });
+            return { success: true };
+          }
+          throw new Error(`unexpected run SQL: ${sql}`);
+        },
+        async first() {
+          if (sql.includes("SELECT * FROM operation_logs WHERE id")) {
+            return rows.find((row) => row.id === params[0]) ?? null;
+          }
+          if (sql.includes("SELECT id FROM operation_logs")) {
+            const [appId, excludedId, buildId, ascBuildId] = params;
+            return rows
+              .filter((row) => row.app_id === appId && row.kind === "testflight-expire" && row.id !== excludedId)
+              .find((row) => {
+                const input = JSON.parse(row.input);
+                const output = JSON.parse(row.output);
+                return input.build_id === buildId
+                  && input.asc_build_id === ascBuildId
+                  && output.patch_confirmed === true;
+              }) ?? null;
+          }
+          throw new Error(`unexpected first SQL: ${sql}`);
+        },
+      };
+      return statement;
+    },
+  };
+  return { db: db as unknown as D1Database, rows };
+}
+
 afterEach(() => {
   vi.unstubAllGlobals();
 });
 
 describe("publishProcessedAscBuild", () => {
+  it("requires an exact closed expire confirmation body", () => {
+    expect(parseExpireInput({
+      asc_build_id: "build-1",
+      confirm_version: "1.0.0",
+      confirm_build_number: "1000005",
+    })).toEqual({
+      asc_build_id: "build-1",
+      confirm_version: "1.0.0",
+      confirm_build_number: "1000005",
+    });
+    expect(() => parseExpireInput({
+      asc_build_id: "build-1",
+      confirm_version: "1.0.0",
+      confirm_build_number: 1000005,
+    })).toThrowError(expect.objectContaining({ code: "INVALID_EXPIRE_INPUT" }));
+    expect(() => parseExpireInput({
+      asc_build_id: "build-1",
+      confirm_version: "1.0.0",
+      confirm_build_number: "1000005",
+      force: true,
+    })).toThrowError(expect.objectContaining({ code: "INVALID_EXPIRE_INPUT" }));
+    expect(() => assertExpireConfirmation(
+      baseArgs().handsBuild,
+      { confirm_version: "1.0.0", confirm_build_number: "1000006" },
+    )).toThrowError(expect.objectContaining({
+      code: "EXPIRE_CONFIRMATION_MISMATCH",
+      details: {
+        expected_version: "1.0.0",
+        expected_build_number: "1000005",
+      },
+    }));
+  });
+
+  it("expires one resolved exact build, reads it back, and makes an exact retry a no-op", async () => {
+    const creds = await generateTestCreds();
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = new URL(String(input));
+      if (init?.method === "PATCH" && url.pathname === "/v1/builds/build-1") {
+        expect(JSON.parse(String(init.body))).toEqual({
+          data: {
+            type: "builds",
+            id: "build-1",
+            attributes: { expired: true },
+          },
+        });
+        return Response.json({
+          data: {
+            ...baseArgs().ascBuild,
+            attributes: { ...baseArgs().ascBuild.attributes, expired: true },
+          },
+        });
+      }
+      if (init?.method === "GET" && url.pathname === "/v1/builds") {
+        expect(url.searchParams.get("filter[app]")).toBe("app-1");
+        expect(url.searchParams.get("filter[version]")).toBe("1000005");
+        expect(url.searchParams.get("filter[preReleaseVersion.version]")).toBe("1.0.0");
+        return Response.json({
+          data: [{
+            ...baseArgs().ascBuild,
+            attributes: { ...baseArgs().ascBuild.attributes, expired: true },
+          }],
+        });
+      }
+      return Response.json({ errors: [{ title: "UNEXPECTED_REQUEST" }] }, { status: 500 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const args = baseArgs();
+
+    const first = await expireResolvedAscBuild(creds, {
+      ascAppId: args.ascAppId,
+      handsBuild: args.handsBuild,
+      ascBuild: args.ascBuild,
+      expectedAscBuildId: "build-1",
+    });
+    expect(first.changed).toBe(true);
+    expect(first.ascBuild.attributes.expired).toBe(true);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+
+    fetchMock.mockClear();
+    const replay = await expireResolvedAscBuild(creds, {
+      ascAppId: args.ascAppId,
+      handsBuild: args.handsBuild,
+      ascBuild: first.ascBuild,
+      expectedAscBuildId: "build-1",
+    });
+    expect(replay.changed).toBe(false);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("rejects a mismatched ASC id or non-VALID build before Apple mutation", async () => {
+    const creds = await generateTestCreds();
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    const args = baseArgs();
+
+    await expect(expireResolvedAscBuild(creds, {
+      ascAppId: args.ascAppId,
+      handsBuild: args.handsBuild,
+      ascBuild: args.ascBuild,
+      expectedAscBuildId: "other-build",
+    })).rejects.toMatchObject({ code: "ASC_BUILD_ID_MISMATCH" });
+    await expect(expireResolvedAscBuild(creds, {
+      ascAppId: args.ascAppId,
+      handsBuild: args.handsBuild,
+      ascBuild: {
+        ...args.ascBuild,
+        attributes: { ...args.ascBuild.attributes, processingState: "PROCESSING" },
+      },
+      expectedAscBuildId: "build-1",
+    })).rejects.toMatchObject({ code: "ASC_BUILD_NOT_READY" });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("preserves PATCH-confirmed intent when readback fails and links the no-op retry", async () => {
+    const { db, rows } = operationReceiptDb();
+    const args = baseArgs();
+    const coordinate = {
+      appId: "app-hands",
+      actor: "reviewer@example.test",
+      handsBuildId: args.handsBuild.id,
+      bundleId: args.bundleId,
+      ascAppId: args.ascAppId,
+      ascBuildId: args.ascBuild.id,
+      version: args.handsBuild.version_name,
+      buildNumber: String(args.handsBuild.version_code),
+    };
+
+    let firstOperationId = "";
+    await expect(runTestflightExpireOperation(db, coordinate, {
+      beforeExecute: async (operationId) => {
+        firstOperationId = operationId;
+      },
+      execute: async ({ onPatchConfirmed }) => {
+        await onPatchConfirmed({
+          ...args.ascBuild,
+          attributes: { ...args.ascBuild.attributes, expired: true },
+        });
+        throw new TestflightPublishError(
+          409,
+          "ASC_EXPIRE_READBACK_FAILED",
+          "readback failed after patch",
+        );
+      },
+    })).rejects.toMatchObject({
+      code: "ASC_EXPIRE_READBACK_FAILED",
+      details: {
+        operation_id: expect.any(String),
+        patch_confirmed: true,
+        phase: "readback_failed",
+      },
+    });
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      id: firstOperationId,
+      actor: "reviewer@example.test",
+      kind: "testflight-expire",
+      status: "failed",
+    });
+    expect(JSON.parse(rows[0]!.input)).toEqual({
+      build_id: "hands-build-1",
+      bundle_id: "build.raft.app",
+      asc_app_id: "app-1",
+      asc_build_id: "build-1",
+      version: "1.0.0",
+      build_number: "1000005",
+    });
+    expect(JSON.parse(rows[0]!.output)).toMatchObject({
+      phase: "readback_failed",
+      patch_confirmed: true,
+      readback_confirmed: false,
+      asc_build_id: "build-1",
+    });
+    expect(rows[0]!.input).not.toContain("PRIVATE KEY");
+
+    const retry = await runTestflightExpireOperation(db, coordinate, {
+      execute: async () => ({
+        changed: false,
+        ascBuild: {
+          ...args.ascBuild,
+          attributes: { ...args.ascBuild.attributes, expired: true },
+        },
+      }),
+    });
+    expect(retry).toMatchObject({
+      changed: false,
+      priorMutationOperationId: firstOperationId,
+    });
+    expect(rows).toHaveLength(2);
+    expect(JSON.parse(rows[1]!.output)).toMatchObject({
+      phase: "already_expired",
+      changed: false,
+      prior_mutation_operation_id: firstOperationId,
+    });
+  });
+
   it("rejects a bundle assertion mismatch before operation or Apple access", async () => {
     let operationWrites = 0;
     const db = {

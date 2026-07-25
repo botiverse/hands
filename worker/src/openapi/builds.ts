@@ -117,6 +117,12 @@ const TestflightPublishInput = TestflightBundleAssertion.extend({
   }),
 }).openapi("TestflightPublishInput");
 
+const TestflightExpireInput = TestflightBundleAssertion.extend({
+  asc_build_id: z.string().min(1),
+  confirm_version: z.string().min(1),
+  confirm_build_number: z.string().regex(/^\d+$/),
+}).strict().openapi("TestflightExpireInput");
+
 export function registerBuildRoutes(registry: OpenApiRegistry) {
   register(registry, {
     method: "get",
@@ -275,6 +281,28 @@ export function registerBuildRoutes(registry: OpenApiRegistry) {
       403: error("App viewer role is required."),
       404: error("Hands build or App Store Connect app was not found."),
       502: error("Apple group lookup failed."),
+    },
+  });
+
+  register(registry, {
+    method: "post",
+    path: "/api/apps/{appId}/builds/{buildId}/testflight-expire",
+    tags: ["TestFlight"],
+    summary: "Expire one exact TestFlight build",
+    description:
+      "Requires the resolved App Store Connect build id plus the immutable Hands version/build tuple as confirmation. Persists a redacted actor/coordinate operation intent before Apple mutation, terminalizes PATCH/readback outcome, idempotently marks only that Build resource expired, and never mutates an App Store production version or a Hands release.",
+    security: auth,
+    request: {
+      params: AppBuildParams,
+      body: { content: json(TestflightExpireInput), required: true },
+    },
+    responses: {
+      200: success("Exact build expired, or an already-expired exact build confirmed unchanged.", GenericObject),
+      400: error("ASC credentials, bundle assertion, or confirmation body is invalid."),
+      403: error("App admin role is required."),
+      404: error("Hands build or App Store Connect app was not found."),
+      409: error("The exact build coordinate or post-expire readback did not match."),
+      502: error("Apple rejected the expire request."),
     },
   });
 
