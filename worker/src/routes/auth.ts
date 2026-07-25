@@ -720,7 +720,7 @@ export async function handleAgentHelp(c: Context<{ Bindings: Env }>) {
       "3. Triage as you work: update-feedback (change status/assignee, e.g. close a fixed ticket) and comment-feedback (attribution note, internal=true for staff-only). Requires org member (or app publisher).",
       "4. Release management (app publisher): create-release from an existing build (DRAFT by default) → update-release with bilingual release_notes → after explicit human authorization, publish-release. See docs.release_guide.",
       "5. iOS simulator QA fixtures: create-ios-simulator-artifact → PUT the .app.zip to upload.url with the returned headers → complete-ios-simulator-artifact → get/presign the durable exact-byte artifact. QA artifacts can never become releases or update offers.",
-      "6. TestFlight: an app admin runs upload-testflight-build and polls get-testflight-upload-status to COMPLETE; an app viewer lists stable beta-group ids, then an app publisher runs publish-testflight-build and polls distribution status. These actions never activate a Hands release or submit an App Store production release.",
+      "6. TestFlight: an app admin runs upload-testflight-build and polls get-testflight-upload-status to COMPLETE; an app viewer lists stable beta-group ids, then an app publisher runs publish-testflight-build and polls distribution status. If an exact beta build must be removed from testing, an app admin uses expire-testflight-build with the ASC build id plus version/build confirmations. These actions never activate a Hands release or submit an App Store production release.",
     ],
     auth: {
       raft_agents:
@@ -753,6 +753,8 @@ export async function handleAgentHelp(c: Context<{ Bindings: Env }>) {
         "POST /api/apps/{app_id}/builds/{build_id}/testflight-upload — admin; streams the stored signed IPA to Apple's Build Upload API without distributing it",
       publish_testflight_build:
         "POST /api/apps/{app_id}/builds/{build_id}/testflight-publish — publisher; assigns processed builds to beta groups and optionally submits external Beta App Review",
+      expire_testflight_build:
+        "POST /api/apps/{app_id}/builds/{build_id}/testflight-expire — admin; exact ASC build id + immutable version/build confirmation; expires TestFlight availability only",
     },
     docs: {
       agent_guide: `${origin}/docs/agent-cli-feedback`,
@@ -1239,6 +1241,23 @@ export async function handleAgentManifest(c: Context<{ Bindings: Env }>) {
           app_id: { type: "string", in: "path", required: true, description: "Hands app UUID." },
           build_id: { type: "string", in: "path", required: true, description: "Hands build UUID used to resolve the bundle id." },
           bundle_id: { type: "string", in: "query", required: false, description: "Optional bundle-id assertion; it must match immutable build metadata, and is only a fallback when metadata is absent." },
+        },
+      },
+      {
+        name: "expire-testflight-build",
+        description:
+          "Expire one exact App Store Connect Build from TestFlight availability. Requires the resolved ASC build id plus exact immutable version/build confirmations, is idempotent with immediate readback, and never mutates App Store production or a Hands release. Requires app admin and explicit human authorization for the live-facing mutation.",
+        endpoint: {
+          method: "POST",
+          path: "/api/apps/{app_id}/builds/{build_id}/testflight-expire",
+        },
+        parameters: {
+          app_id: { type: "string", in: "path", required: true, description: "Hands app UUID." },
+          build_id: { type: "string", in: "path", required: true, description: "Hands iOS build UUID whose exact ASC build should be expired." },
+          asc_build_id: { type: "string", in: "body", required: true, description: "Exact App Store Connect Build id returned by get-testflight-publish-status." },
+          confirm_version: { type: "string", in: "body", required: true, description: "Exact immutable Hands marketing version confirmation." },
+          confirm_build_number: { type: "string", in: "body", required: true, description: "Exact immutable Hands numeric build-number confirmation." },
+          bundle_id: { type: "string", in: "body", required: false, description: "Optional bundle-id assertion; it must match immutable build metadata, and is only a fallback when metadata is absent." },
         },
       },
       {

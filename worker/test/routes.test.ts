@@ -95,6 +95,7 @@ describe("quiver OpenAPI document", () => {
       "/api/apps/{appId}/builds/{buildId}/testflight-upload",
       "/api/apps/{appId}/testflight-uploads/{buildUploadId}",
       "/api/apps/{appId}/builds/{buildId}/testflight-groups",
+      "/api/apps/{appId}/builds/{buildId}/testflight-expire",
       "/api/apps/{appId}/builds/{buildId}/testflight-publish",
       "/api/apps/{appId}/qa-artifacts/ios-simulator",
       "/api/apps/{appId}/qa-artifacts/ios-simulator/{assetId}",
@@ -8535,6 +8536,10 @@ describe("Hands iOS simulator QA artifacts", () => {
         method: "GET",
         path: "/api/apps/{app_id}/builds/{build_id}/testflight-groups",
       },
+      "expire-testflight-build": {
+        method: "POST",
+        path: "/api/apps/{app_id}/builds/{build_id}/testflight-expire",
+      },
       "publish-testflight-build": {
         method: "POST",
         path: "/api/apps/{app_id}/builds/{build_id}/testflight-publish",
@@ -8574,6 +8579,14 @@ describe("Hands iOS simulator QA artifacts", () => {
     expect(byName["get-release"].endpoint.method).toBe("GET");
     expect(byName["get-release"].parameters).not.toHaveProperty("expected_scope");
     expect(byName["publish-release"].endpoint.method).toBe("POST");
+    expect(byName["expire-testflight-build"].parameters).toMatchObject({
+      app_id: { type: "string", in: "path", required: true },
+      build_id: { type: "string", in: "path", required: true },
+      asc_build_id: { type: "string", in: "body", required: true },
+      confirm_version: { type: "string", in: "body", required: true },
+      confirm_build_number: { type: "string", in: "body", required: true },
+      bundle_id: { type: "string", in: "body", required: false },
+    });
     expect(byName["publish-release"].parameters.expected_scope).toMatchObject({
       type: "object",
       in: "body",

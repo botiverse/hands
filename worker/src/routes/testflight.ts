@@ -36,6 +36,7 @@ import {
   createBetaAppReviewSubmission,
   createBuildUpload,
   createBuildUploadFile,
+  expireAscBuild,
   getAssignedBetaGroupIds,
   getBetaAppReviewSubmission,
   getBetaBuildLocalizations,
@@ -74,6 +75,13 @@ interface TestflightPublishInput {
   group_ids: string[];
   what_to_test: Record<string, string>;
   notify_testers: boolean;
+  bundle_id?: string;
+}
+
+interface TestflightExpireInput {
+  asc_build_id: string;
+  confirm_version: string;
+  confirm_build_number: string;
   bundle_id?: string;
 }
 
@@ -309,6 +317,80 @@ export function parsePublishInput(raw: unknown): TestflightPublishInput {
     notify_testers: body.notify_testers ?? false,
     ...(bundleId ? { bundle_id: bundleId } : {}),
   };
+}
+
+export function parseExpireInput(raw: unknown): TestflightExpireInput {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    throw new TestflightPublishError(
+      400,
+      "INVALID_EXPIRE_INPUT",
+      "an exact TestFlight expire confirmation body is required",
+    );
+  }
+  const body = raw as Record<string, unknown>;
+  const allowed = new Set([
+    "asc_build_id",
+    "confirm_version",
+    "confirm_build_number",
+    "bundle_id",
+  ]);
+  if (Object.keys(body).some((key) => !allowed.has(key))) {
+    throw new TestflightPublishError(
+      400,
+      "INVALID_EXPIRE_INPUT",
+      "unexpected TestFlight expire input field",
+    );
+  }
+  const ascBuildId =
+    typeof body.asc_build_id === "string" ? body.asc_build_id.trim() : "";
+  const confirmVersion =
+    typeof body.confirm_version === "string" ? body.confirm_version.trim() : "";
+  const confirmBuildNumber =
+    typeof body.confirm_build_number === "string"
+      ? body.confirm_build_number.trim()
+      : "";
+  const bundleId =
+    typeof body.bundle_id === "string" ? body.bundle_id.trim() : undefined;
+  if (!ascBuildId || !confirmVersion || !/^\d+$/.test(confirmBuildNumber)) {
+    throw new TestflightPublishError(
+      400,
+      "INVALID_EXPIRE_INPUT",
+      "asc_build_id, confirm_version, and numeric confirm_build_number are required",
+    );
+  }
+  if (body.bundle_id !== undefined && !bundleId) {
+    throw new TestflightPublishError(
+      400,
+      "INVALID_BUNDLE_ID",
+      "bundle_id must be a non-empty string when provided",
+    );
+  }
+  return {
+    asc_build_id: ascBuildId,
+    confirm_version: confirmVersion,
+    confirm_build_number: confirmBuildNumber,
+    ...(bundleId ? { bundle_id: bundleId } : {}),
+  };
+}
+
+export function assertExpireConfirmation(
+  build: Pick<HandsTestflightBuild, "version_name" | "version_code">,
+  input: Pick<TestflightExpireInput, "confirm_version" | "confirm_build_number">,
+): void {
+  if (
+    input.confirm_version !== build.version_name ||
+    input.confirm_build_number !== String(build.version_code)
+  ) {
+    throw new TestflightPublishError(
+      409,
+      "EXPIRE_CONFIRMATION_MISMATCH",
+      "the version/build confirmation does not match the immutable Hands build",
+      {
+        expected_version: build.version_name,
+        expected_build_number: String(build.version_code),
+      },
+    );
+  }
 }
 
 function publicGroup(group: BetaGroupResource) {
@@ -841,6 +923,151 @@ export async function handleTestflightPublishStatus(c: AdminContext) {
         ...(distribution ? { distribution } : {}),
       }),
     );
+  } catch (error) {
+    return testflightErrorResponse(c, error);
+  }
+}
+
+function expireStatusPayload(args: {
+  handsBuild: HandsTestflightBuild;
+  bundleId: string;
+  ascAppId: string;
+  ascBuild: AscBuildResource;
+  changed: boolean;
+}) {
+  return {
+    ok: true,
+    changed: args.changed,
+    hands_build_id: args.handsBuild.id,
+    bundle_id: args.bundleId,
+    asc_app_id: args.ascAppId,
+    asc_build_id: args.ascBuild.id,
+    version: args.handsBuild.version_name,
+    build_number: String(args.handsBuild.version_code),
+    processing_state: args.ascBuild.attributes.processingState,
+    expired: args.ascBuild.attributes.expired === true,
+    expiration_date: args.ascBuild.attributes.expirationDate,
+  };
+}
+
+export async function expireResolvedAscBuild(
+  creds: AscApiCredentials,
+  args: {
+    ascAppId: string;
+    handsBuild: HandsTestflightBuild;
+    ascBuild: AscBuildResource;
+    expectedAscBuildId: string;
+  },
+): Promise<{ changed: boolean; ascBuild: AscBuildResource }> {
+  if (args.ascBuild.id !== args.expectedAscBuildId) {
+    throw new TestflightPublishError(
+      409,
+      "ASC_BUILD_ID_MISMATCH",
+      "asc_build_id does not match the App Store Connect build resolved from the immutable Hands version tuple",
+      { resolved_asc_build_id: args.ascBuild.id },
+    );
+  }
+  if (args.ascBuild.attributes.expired === true) {
+    return { changed: false, ascBuild: args.ascBuild };
+  }
+  if (args.ascBuild.attributes.processingState !== "VALID") {
+    throw new TestflightPublishError(
+      409,
+      "ASC_BUILD_NOT_READY",
+      "only a VALID App Store Connect build can be expired",
+      { processing_state: args.ascBuild.attributes.processingState },
+    );
+  }
+
+  const patched = await expireAscBuild(creds, args.ascBuild.id);
+  if (patched.id !== args.ascBuild.id || patched.attributes.expired !== true) {
+    throw new TestflightPublishError(
+      409,
+      "ASC_EXPIRE_NOT_CONFIRMED",
+      "App Store Connect did not confirm the exact build as expired",
+    );
+  }
+  const readback = await resolveAscBuild(creds, {
+    ascAppId: args.ascAppId,
+    version: args.handsBuild.version_name,
+    buildNumber: String(args.handsBuild.version_code),
+  });
+  if (
+    !readback ||
+    readback.id !== args.ascBuild.id ||
+    readback.attributes.expired !== true
+  ) {
+    throw new TestflightPublishError(
+      409,
+      "ASC_EXPIRE_READBACK_FAILED",
+      "the exact App Store Connect build did not read back as expired",
+    );
+  }
+  return { changed: true, ascBuild: readback };
+}
+
+/**
+ * Expire one exact TestFlight build. This only toggles the ASC Build resource's
+ * TestFlight availability; it never submits, publishes, or edits an App Store
+ * production version and never mutates a Hands release.
+ */
+export async function handleTestflightExpire(c: AdminContext) {
+  const appId = c.req.param("appId") ?? "";
+  try {
+    const input = parseExpireInput(await c.req.json().catch(() => null));
+    const build = await loadHandsTestflightBuild(
+      c,
+      appId,
+      c.req.param("buildId") ?? "",
+    );
+    assertExpireConfirmation(build, input);
+
+    const bundleId = await resolveBuildBundleId(c, build, input.bundle_id);
+    const creds = await loadAscCredentials(c, appId);
+    const ascAppId = await resolveAscAppId(creds, bundleId);
+    if (!ascAppId) {
+      throw new TestflightPublishError(
+        404,
+        "ASC_APP_NOT_FOUND",
+        `no App Store Connect app record for bundle id ${bundleId}`,
+      );
+    }
+    const ascBuild = await resolveAscBuild(creds, {
+      ascAppId,
+      version: build.version_name,
+      buildNumber: String(build.version_code),
+    });
+    if (!ascBuild) {
+      throw new TestflightPublishError(
+        409,
+        "ASC_BUILD_NOT_AVAILABLE",
+        "the exact App Store Connect build is not available",
+      );
+    }
+    const expired = await expireResolvedAscBuild(creds, {
+      ascAppId,
+      handsBuild: build,
+      ascBuild,
+      expectedAscBuildId: input.asc_build_id,
+    });
+    await insertAuditLog(c.env.DB, c, {
+      app_id: appId,
+      action: "testflight.expire",
+      payload: {
+        build_id: build.id,
+        asc_build_id: ascBuild.id,
+        version: build.version_name,
+        build_number: String(build.version_code),
+        changed: expired.changed,
+      },
+    });
+    return c.json(expireStatusPayload({
+      handsBuild: build,
+      bundleId,
+      ascAppId,
+      ascBuild: expired.ascBuild,
+      changed: expired.changed,
+    }));
   } catch (error) {
     return testflightErrorResponse(c, error);
   }

@@ -120,6 +120,7 @@ import {
 } from "./routes/asc_credentials";
 import {
   handleListTestflightGroups,
+  handleTestflightExpire,
   handleTestflightPublish,
   handleTestflightPublishStatus,
   handleTestflightUpload,
@@ -923,6 +924,7 @@ admin.post("/api/apps/:appId/asc-credentials/verify", requireAppRole("admin"), h
 admin.post("/api/apps/:appId/builds/:buildId/testflight-upload", requireAppRole("admin"), handleTestflightUpload);
 admin.get("/api/apps/:appId/testflight-uploads/:buildUploadId", requireAppRole("viewer"), handleTestflightUploadStatus);
 admin.get("/api/apps/:appId/builds/:buildId/testflight-groups", requireAppRole("viewer"), handleListTestflightGroups);
+admin.post("/api/apps/:appId/builds/:buildId/testflight-expire", requireAppRole("admin"), handleTestflightExpire);
 admin.post("/api/apps/:appId/builds/:buildId/testflight-publish", requireAppRole("publisher"), handleTestflightPublish);
 admin.get("/api/apps/:appId/builds/:buildId/testflight-publish", requireAppRole("viewer"), handleTestflightPublishStatus);
 admin.get("/api/apps/:appId/appstore-review", requireAppRole("viewer"), handleAppStoreReview);

@@ -12,6 +12,7 @@ import {
   createBuildUpload,
   createBuildUploadFile,
   commitBuildUploadFile,
+  expireAscBuild,
   resolveAscBuild,
   resolveAscAppId,
   AscApiError,
@@ -264,5 +265,36 @@ describe("TestFlight build resolution", () => {
       buildNumber: "1000005",
     });
     expect(build?.id).toBe("build-1");
+  });
+
+  it("expires only the exact ASC Build resource with the documented PATCH shape", async () => {
+    const { creds } = await generateTestCreds();
+    const fetchMock = vi.fn(async (url: unknown, init?: RequestInit) => {
+      expect(new URL(String(url)).pathname).toBe("/v1/builds/build-1");
+      expect(init?.method).toBe("PATCH");
+      expect(JSON.parse(String(init?.body))).toEqual({
+        data: {
+          type: "builds",
+          id: "build-1",
+          attributes: { expired: true },
+        },
+      });
+      return Response.json({
+        data: {
+          id: "build-1",
+          attributes: {
+            version: "1000005",
+            processingState: "VALID",
+            expired: true,
+          },
+        },
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const build = await expireAscBuild(creds, "build-1");
+    expect(build.id).toBe("build-1");
+    expect(build.attributes.expired).toBe(true);
+    expect(fetchMock).toHaveBeenCalledOnce();
   });
 });

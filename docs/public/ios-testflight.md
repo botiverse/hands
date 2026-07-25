@@ -82,6 +82,24 @@ build + sign IPA  ──────────▶ build + assets in R2
    Beta App Review, auto-notify, assigned-group, and localization state. It
    distinguishes `waiting_for_review`, `in_review`, `approved_not_notified`,
    `testing`, `rejected`, `expired`, and processing failures.
+7. **Expire an exact beta build when it must leave testing** — after explicit
+   human authorization, an app admin supplies all three independent
+   confirmations from the status response:
+
+   ```
+   POST /api/apps/{app_id}/builds/{build_id}/testflight-expire
+   {
+     "asc_build_id": "<exact-asc-build-id>",
+     "confirm_version": "1.0.0",
+     "confirm_build_number": "1000006"
+   }
+   ```
+
+   Hands resolves the immutable build tuple again, refuses any ASC id or
+   version/build mismatch, sets only the ASC Build resource's `expired` flag,
+   and immediately reads the same build back. Retrying an already-expired exact
+   build is a `200` no-op with `changed=false`. Expiration removes TestFlight
+   availability; Apple keeps the build record for audit/history.
 
 These endpoints and the matching CLI/integration actions are TestFlight-only.
 They never activate a Hands release and never create, submit, or release an
@@ -100,8 +118,8 @@ Hands is the credential's only home — CI never needs a copy, so rotation
 stays single-source.
 
 Hands roles are intentionally split: uploading to Apple requires app admin,
-distribution requires app publisher, and status/group reads require app
-viewer. Apple's own role boundary still applies to the stored key: external
+expiring an exact beta build requires app admin, distribution requires app
+publisher, and status/group reads require app viewer. Apple's own role boundary still applies to the stored key: external
 testing requires Account Holder, Admin, or App Manager; internal testing also
 permits Developer or Marketing.
 
@@ -142,6 +160,7 @@ Raft integration actions:
 - `upload-testflight-build`
 - `get-testflight-upload-status`
 - `list-testflight-groups`
+- `expire-testflight-build`
 - `publish-testflight-build`
 - `get-testflight-publish-status`
 

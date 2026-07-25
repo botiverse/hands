@@ -2,7 +2,10 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { Hono } from "hono";
 import type { AscApiCredentials } from "../src/lib/asc_api";
 import {
+  assertExpireConfirmation,
+  expireResolvedAscBuild,
   handleTestflightPublish,
+  parseExpireInput,
   parsePublishInput,
   publishProcessedAscBuild,
   TestflightPublishError,
@@ -248,6 +251,119 @@ afterEach(() => {
 });
 
 describe("publishProcessedAscBuild", () => {
+  it("requires an exact closed expire confirmation body", () => {
+    expect(parseExpireInput({
+      asc_build_id: "build-1",
+      confirm_version: "1.0.0",
+      confirm_build_number: "1000005",
+    })).toEqual({
+      asc_build_id: "build-1",
+      confirm_version: "1.0.0",
+      confirm_build_number: "1000005",
+    });
+    expect(() => parseExpireInput({
+      asc_build_id: "build-1",
+      confirm_version: "1.0.0",
+      confirm_build_number: 1000005,
+    })).toThrowError(expect.objectContaining({ code: "INVALID_EXPIRE_INPUT" }));
+    expect(() => parseExpireInput({
+      asc_build_id: "build-1",
+      confirm_version: "1.0.0",
+      confirm_build_number: "1000005",
+      force: true,
+    })).toThrowError(expect.objectContaining({ code: "INVALID_EXPIRE_INPUT" }));
+    expect(() => assertExpireConfirmation(
+      baseArgs().handsBuild,
+      { confirm_version: "1.0.0", confirm_build_number: "1000006" },
+    )).toThrowError(expect.objectContaining({
+      code: "EXPIRE_CONFIRMATION_MISMATCH",
+      details: {
+        expected_version: "1.0.0",
+        expected_build_number: "1000005",
+      },
+    }));
+  });
+
+  it("expires one resolved exact build, reads it back, and makes an exact retry a no-op", async () => {
+    const creds = await generateTestCreds();
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = new URL(String(input));
+      if (init?.method === "PATCH" && url.pathname === "/v1/builds/build-1") {
+        expect(JSON.parse(String(init.body))).toEqual({
+          data: {
+            type: "builds",
+            id: "build-1",
+            attributes: { expired: true },
+          },
+        });
+        return Response.json({
+          data: {
+            ...baseArgs().ascBuild,
+            attributes: { ...baseArgs().ascBuild.attributes, expired: true },
+          },
+        });
+      }
+      if (init?.method === "GET" && url.pathname === "/v1/builds") {
+        expect(url.searchParams.get("filter[app]")).toBe("app-1");
+        expect(url.searchParams.get("filter[version]")).toBe("1000005");
+        expect(url.searchParams.get("filter[preReleaseVersion.version]")).toBe("1.0.0");
+        return Response.json({
+          data: [{
+            ...baseArgs().ascBuild,
+            attributes: { ...baseArgs().ascBuild.attributes, expired: true },
+          }],
+        });
+      }
+      return Response.json({ errors: [{ title: "UNEXPECTED_REQUEST" }] }, { status: 500 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const args = baseArgs();
+
+    const first = await expireResolvedAscBuild(creds, {
+      ascAppId: args.ascAppId,
+      handsBuild: args.handsBuild,
+      ascBuild: args.ascBuild,
+      expectedAscBuildId: "build-1",
+    });
+    expect(first.changed).toBe(true);
+    expect(first.ascBuild.attributes.expired).toBe(true);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+
+    fetchMock.mockClear();
+    const replay = await expireResolvedAscBuild(creds, {
+      ascAppId: args.ascAppId,
+      handsBuild: args.handsBuild,
+      ascBuild: first.ascBuild,
+      expectedAscBuildId: "build-1",
+    });
+    expect(replay.changed).toBe(false);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("rejects a mismatched ASC id or non-VALID build before Apple mutation", async () => {
+    const creds = await generateTestCreds();
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    const args = baseArgs();
+
+    await expect(expireResolvedAscBuild(creds, {
+      ascAppId: args.ascAppId,
+      handsBuild: args.handsBuild,
+      ascBuild: args.ascBuild,
+      expectedAscBuildId: "other-build",
+    })).rejects.toMatchObject({ code: "ASC_BUILD_ID_MISMATCH" });
+    await expect(expireResolvedAscBuild(creds, {
+      ascAppId: args.ascAppId,
+      handsBuild: args.handsBuild,
+      ascBuild: {
+        ...args.ascBuild,
+        attributes: { ...args.ascBuild.attributes, processingState: "PROCESSING" },
+      },
+      expectedAscBuildId: "build-1",
+    })).rejects.toMatchObject({ code: "ASC_BUILD_NOT_READY" });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it("rejects a bundle assertion mismatch before operation or Apple access", async () => {
     let operationWrites = 0;
     const db = {
