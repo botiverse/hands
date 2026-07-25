@@ -150,7 +150,7 @@ Goal: introduce `product_types`, `release_types`, `build_assets`, `releases`, `r
 | P2.5.2 Releases tab (table view, scope column, status, actions) | ✅ DONE | 3h | |
 | P2.5.3 Prepare release modal (validation checks + scope radio + cohort slider) | ✅ DONE | 3h | ToDesktop's validation checks inspiration |
 | P2.5.4 Backend: `POST /api/releases` (promote build → release with scope) | ✅ DONE | 3h | with scope resolution logic |
-| P2.5.5 Backend: `POST /api/releases/:id/rollback` | ✅ DONE | 2h | creates new release pointing to older build |
+| P2.5.5 Backend: `POST /api/releases/:id/rollback` | ✅ DONE | 2h | restores the same superseded/cancelled release row and refreshes activation time |
 | P2.5.6 Backend: `POST /api/releases/:id/bump-rollout` | ✅ DONE | 1h | increments `rollout_cohort_count` |
 | P2.5.7 Backend: `POST /api/releases/:id/force-update` toggle | ✅ DONE | 1h | flips `should_force_update` |
 | P2.5.8 Backend: webhook dispatch on release lifecycle events | ✅ DONE | 3h | commit `0a71ee2`. webhooks + webhook_deliveries tables (migration 0017); 6 org-scoped admin routes under `/api/orgs/:orgId/webhooks`; Worker Cron `*/5 * * * *` reaper (`handleReapDeliveries`) with HMAC SHA-256 signing, 3-attempt exponential backoff (5m / 30m / 2h); `emitWebhookEvent()` wired into handleCreateRelease / handleRollbackRelease / handleCreateBuild (terminal status) / handleUpdateBuild (terminal status). |

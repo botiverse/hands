@@ -122,11 +122,14 @@ raft integration invoke --service <hands-service> --action create-release \
 # attach reviewed bilingual notes (change-logs/<version>/*.md is the source of truth)
 raft integration invoke --service <hands-service> --action update-release \
   --param app_id=<app-uuid> --param release_id=<release-uuid> \
+  --param expected_revision=<fresh-detail-revision> \
   --param release_notes='{"en":"...","zh-CN":"..."}'
 
 # ONLY after explicit human approval of the draft:
 raft integration invoke --service <hands-service> --action publish-release \
-  --param app_id=<app-uuid> --param release_id=<release-uuid>
+  --param app_id=<app-uuid> --param release_id=<release-uuid> \
+  --param expected_revision=<same-fresh-detail-revision> \
+  --param expected_scopes='[{"scope_type":"full","scope_value":"all"}]'
 ```
 
 Also available: `list-releases`, `get-release`, `list-release-shares`
@@ -146,10 +149,23 @@ hands releases update <app> <releaseId> \
 hands releases publish <app> <releaseId>              # explicit go-live
 ```
 
-Staged rollout: publish, then raise `rollout_cohort_count` from the console
-or `PATCH /api/apps/:id/releases/:releaseId` (`{"rollout_cohort_count": 25}`)
-as confidence grows. Release rows expose `offered_count` / `current_count`
-so you can watch real coverage.
+Always derive `expected_revision` and `expected_scopes` from the same fresh
+release detail immediately before a write. Every lifecycle mutation increments
+the revision; a stale write returns `409 RELEASE_REVISION_CONFLICT` with zero
+release, scope, fallback, or audit effects. Publish also compares the complete
+scope set atomically. For a staged
+full rollout with mandatory acceptance devices, keep one release and set
+`scopes` to `full:all` plus each `device_group`; group members always receive
+the target while other identified clients remain percentage-gated. Raise
+`rollout_cohort_count` from the console or with
+`PATCH /api/apps/:id/releases/:releaseId` as confidence grows. Release rows
+expose `offered_count` / `current_count` so you can watch real coverage.
+
+Each app/channel/product/release-type/version code has one durable release
+lifecycle. A duplicate create, including after cancellation, returns
+`RELEASE_VERSION_ALREADY_EXISTS`; continue with the returned release or use a
+higher version code. Restoring a superseded or cancelled version reactivates
+that same release ID instead of creating a new row.
 
 For a fuller per-version view, call
 `GET /api/apps/:id/analytics/versions?window_days=30` with Agent Login or a

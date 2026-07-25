@@ -271,6 +271,8 @@ function makeMockDb() {
       product_type TEXT NOT NULL,
       release_type TEXT NOT NULL,
       status TEXT NOT NULL DEFAULT 'active',
+      activated_at INTEGER,
+      revision INTEGER NOT NULL DEFAULT 0,
       is_full INTEGER NOT NULL DEFAULT 1,
       superseded_by_release_id TEXT REFERENCES releases(id) ON DELETE SET NULL,
       rollout_cohort_count INTEGER,
@@ -3336,6 +3338,35 @@ describe("quiver apps — default_channel_id", () => {
 describe("quiver releases — draft lifecycle", () => {
   let env: MockEnv;
 
+  async function seedReleaseBuild(buildId: string, versionCode: number) {
+    const now = Date.now();
+    await env.DB
+      .prepare(
+        `INSERT INTO builds (id, app_id, channel_id, product_type, release_type, version_name, version_code,
+                             source, status, build_metadata_json, parsed_metadata_json,
+                             should_force_update, provenance_json, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .bind(
+        buildId,
+        "app-release",
+        "ch-main",
+        "android-apk",
+        "stable",
+        `1.0.${versionCode}`,
+        versionCode,
+        "web",
+        "succeeded",
+        "{}",
+        "{}",
+        0,
+        "{}",
+        now,
+        now,
+      )
+      .run();
+  }
+
   beforeEach(async () => {
     env = makeMockEnv();
     const now = Date.now();
@@ -3382,6 +3413,7 @@ describe("quiver releases — draft lifecycle", () => {
   function makeReleaseContext(
     releaseId: string,
     body: unknown = {},
+    query: Record<string, string | undefined> = {},
   ) {
     return {
       env,
@@ -3389,7 +3421,7 @@ describe("quiver releases — draft lifecycle", () => {
         param: (name: string) =>
           name === "appId" ? "app-release" : name === "releaseId" ? releaseId : "",
         json: async () => body,
-        query: () => undefined,
+        query: (name: string) => query[name],
       },
       get: (key: string) => (key === "admin_actor" ? "tester" : undefined),
       executionCtx: { waitUntil: () => undefined },
@@ -3450,6 +3482,36 @@ describe("quiver releases — draft lifecycle", () => {
       { id: "rel-active", status: "active", superseded_by_release_id: null },
       { id: "rel-draft", status: "draft", superseded_by_release_id: null },
     ]);
+  });
+
+  it("returns the existing lifecycle in a structured 409 even when it is cancelled", async () => {
+    const { createRelease, handleCreateReleaseDraft } = await import("../src/routes/releases");
+    await seedReleaseBuild("build-version-original", 30);
+    await seedReleaseBuild("build-version-race", 30);
+    await createRelease(env.DB as any, "app-release", {
+      build_id: "build-version-original",
+      status: "draft",
+    }, "tester", "rel-version-reserved");
+    await env.DB.prepare(
+      "UPDATE releases SET status = 'cancelled' WHERE id = 'rel-version-reserved'",
+    ).run();
+
+    const response = await handleCreateReleaseDraft(makeReleaseContext("", {
+      build_id: "build-version-race",
+    }));
+
+    expect(response.status).toBe(409);
+    await expect(responseJson<any>(response)).resolves.toMatchObject({
+      code: "RELEASE_VERSION_ALREADY_EXISTS",
+      release_id: "rel-version-reserved",
+      build_id: "build-version-original",
+      release_status: "cancelled",
+      version_name: "1.0.30",
+      version_code: 30,
+    });
+    await expect(env.DB.prepare(
+      "SELECT COUNT(*) AS count FROM releases WHERE build_id = 'build-version-race'",
+    ).first()).resolves.toEqual({ count: 0 });
   });
 
   it("publishes a draft and supersedes the previous active release", async () => {
@@ -3695,8 +3757,9 @@ describe("quiver releases — draft lifecycle", () => {
       "SELECT COUNT(*) AS count FROM releases WHERE id LIKE 'rel-invalid-scope-%'",
     ).first()).resolves.toEqual({ count: 0 });
 
+    await seedReleaseBuild("build-scope-update", 3);
     await createRelease(env.DB as any, "app-release", {
-      build_id: "build-draft",
+      build_id: "build-scope-update",
       status: "draft",
       scopes: [{ scope_type: "device_group", scope_value: "group-scope-validation" }],
     }, "tester", "rel-scope-update-guard");
@@ -3793,8 +3856,10 @@ describe("quiver releases — draft lifecycle", () => {
     ];
     for (const [index, scope] of scopeCases.entries()) {
       const releaseId = `rel-generic-scope-${index}`;
+      const buildId = `build-generic-scope-${index}`;
+      await seedReleaseBuild(buildId, 10 + index);
       await createRelease(env.DB as any, "app-release", {
-        build_id: "build-draft",
+        build_id: buildId,
         status: "draft",
         scopes: [scope],
       }, "tester", releaseId);
@@ -3847,9 +3912,11 @@ describe("quiver releases — draft lifecycle", () => {
        VALUES (?, ?, ?, ?, ?, ?)`,
     ).bind("group-drift-guard", "app-release", "Drift guard", null, now, now).run();
 
-    for (const releaseId of ["rel-scope-drift-full", "rel-scope-drift-zero"]) {
+    for (const [index, releaseId] of ["rel-scope-drift-full", "rel-scope-drift-zero"].entries()) {
+      const buildId = `build-scope-drift-${index}`;
+      await seedReleaseBuild(buildId, 20 + index);
       await createRelease(env.DB as any, "app-release", {
-        build_id: "build-draft",
+        build_id: buildId,
         status: "draft",
         scopes: [{ scope_type: "device_group", scope_value: "group-drift-guard" }],
       }, "tester", releaseId);
@@ -3890,7 +3957,11 @@ describe("quiver releases — draft lifecycle", () => {
     await createRelease(env.DB as any, "app-release", {
       build_id: "build-draft",
       status: "draft",
-      scopes: [{ scope_type: "device_group", scope_value: "group-cas-race" }],
+      rollout_cohort_count: 25,
+      scopes: [
+        { scope_type: "full", scope_value: "all" },
+        { scope_type: "device_group", scope_value: "group-cas-race" },
+      ],
     }, "tester", "rel-cas-race-draft");
 
     const db = env.DB as any;
@@ -3900,15 +3971,18 @@ describe("quiver releases — draft lifecycle", () => {
       if (!injected) {
         injected = true;
         await env.DB.prepare(
-          `UPDATE release_scopes SET scope_type = 'full', scope_value = 'all'
-           WHERE release_id = 'rel-cas-race-draft'`,
+          `DELETE FROM release_scopes
+           WHERE release_id = 'rel-cas-race-draft' AND scope_type = 'device_group'`,
         ).run();
       }
       return originalBatch(statements);
     };
     const waitUntil = vi.fn();
     const context = makeReleaseContext("rel-cas-race-draft", {
-      expected_scope: { scope_type: "device_group", scope_value: "group-cas-race" },
+      expected_scopes: [
+        { scope_type: "full", scope_value: "all" },
+        { scope_type: "device_group", scope_value: "group-cas-race" },
+      ],
     });
     context.executionCtx.waitUntil = waitUntil;
 
@@ -3932,41 +4006,736 @@ describe("quiver releases — draft lifecycle", () => {
     ).first()).resolves.toEqual({ count: 0 });
   });
 
-  it("rejects mixing full:all with a device-group scope on create and active update", async () => {
-    const { createRelease, handleUpdateRelease } = await import("../src/routes/releases");
+  it("supports a full rollout with always-included device groups and rejects incompatible mixes", async () => {
+    const { createRelease, handleBumpRollout, handlePublishRelease } = await import("../src/routes/releases");
     const now = Date.now();
     await env.DB.prepare(
       `INSERT INTO device_groups (id, app_id, name, description, created_at, updated_at)
        VALUES (?, ?, ?, ?, ?, ?)`,
-    ).bind("group-no-mixed-full", "app-release", "No mixed full", null, now, now).run();
+    ).bind("group-no-mixed-full", "app-release", "Always included", null, now, now).run();
     const mixedScopes = [
       { scope_type: "full", scope_value: "all" },
       { scope_type: "device_group", scope_value: "group-no-mixed-full" },
     ];
-    await expect(createRelease(env.DB as any, "app-release", {
-      build_id: "build-draft",
-      status: "draft",
-      scopes: mixedScopes,
-    }, "tester", "rel-mixed-create")).rejects.toThrow("full release scope cannot be combined");
-
     await createRelease(env.DB as any, "app-release", {
       build_id: "build-active",
       status: "active",
     }, "tester", "rel-mixed-fallback");
     await createRelease(env.DB as any, "app-release", {
       build_id: "build-draft",
-      status: "active",
+      status: "draft",
+      rollout_cohort_count: 25,
+      scopes: mixedScopes,
     }, "tester", "rel-mixed-current");
-    const response = await handleUpdateRelease(makeReleaseContext("rel-mixed-current", { scopes: mixedScopes }));
-    expect(response.status).toBe(400);
-    await expect(responseJson<any>(response)).resolves.toMatchObject({
-      error: "full release scope cannot be combined with other scopes",
+
+    const legacyExpectation = await handlePublishRelease(makeReleaseContext("rel-mixed-current", {
+      expected_scope: { scope_type: "full", scope_value: "all" },
+    }));
+    expect(legacyExpectation.status).toBe(409);
+    const published = await handlePublishRelease(makeReleaseContext("rel-mixed-current", {
+      expected_scopes: [...mixedScopes].reverse(),
+    }));
+    expect(published.status).toBe(200);
+    await expect(env.DB.prepare(
+      "SELECT status, is_full, rollout_cohort_count FROM releases WHERE id = 'rel-mixed-current'",
+    ).first()).resolves.toEqual({
+      status: "active",
+      is_full: 1,
+      rollout_cohort_count: 25,
     });
+    await expect(env.DB.prepare(
+      "SELECT status, superseded_by_release_id FROM releases WHERE id = 'rel-mixed-fallback'",
+    ).first()).resolves.toEqual({
+      status: "active",
+      superseded_by_release_id: null,
+    });
+
+    const bumped = await handleBumpRollout(makeReleaseContext("rel-mixed-current", { to: 100 }));
+    expect(bumped.status).toBe(200);
     await expect(env.DB.prepare(
       "SELECT status, superseded_by_release_id FROM releases WHERE id = 'rel-mixed-fallback'",
     ).first()).resolves.toEqual({
       status: "superseded",
       superseded_by_release_id: "rel-mixed-current",
+    });
+
+    await seedReleaseBuild("build-invalid-scope-mix", 31);
+    await expect(createRelease(env.DB as any, "app-release", {
+      build_id: "build-invalid-scope-mix",
+      status: "draft",
+      scopes: [
+        { scope_type: "full", scope_value: "all" },
+        { scope_type: "platform", scope_value: "android" },
+      ],
+    }, "tester", "rel-invalid-scope-mix")).rejects.toThrow(
+      "full:all may be combined only with device_group scopes",
+    );
+    await seedReleaseBuild("build-duplicate-scope", 32);
+    await expect(createRelease(env.DB as any, "app-release", {
+      build_id: "build-duplicate-scope",
+      status: "draft",
+      scopes: [mixedScopes[0]!, mixedScopes[0]!],
+    }, "tester", "rel-duplicate-scope")).rejects.toThrow("duplicate release scope");
+  });
+
+  it("rejects a stale rollout bump after an actual scope PATCH and preserves the full fallback", async () => {
+    const {
+      createRelease,
+      handleBumpRollout,
+      handleUpdateRelease,
+    } = await import("../src/routes/releases");
+    const { handlePublicV2Latest } = await import("../src/routes/public_v2");
+    const now = Date.now();
+    await env.DB.prepare(
+      `INSERT INTO device_groups (id, app_id, name, description, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+    ).bind("group-bump-barrier", "app-release", "Bump barrier", null, now, now).run();
+    await createRelease(env.DB as any, "app-release", {
+      build_id: "build-active",
+      status: "active",
+    }, "tester", "rel-bump-barrier-fallback");
+    await createRelease(env.DB as any, "app-release", {
+      build_id: "build-draft",
+      status: "active",
+      rollout_cohort_count: 25,
+      scopes: [
+        { scope_type: "full", scope_value: "all" },
+        { scope_type: "device_group", scope_value: "group-bump-barrier" },
+      ],
+    }, "tester", "rel-bump-barrier-current");
+
+    const db = env.DB as any;
+    const originalBatch = db.batch.bind(db);
+    let injected = false;
+    let patchStatus: number | null = null;
+    db.batch = async (statements: any[]) => {
+      if (!injected) {
+        injected = true;
+        const patched = await handleUpdateRelease(makeReleaseContext(
+          "rel-bump-barrier-current",
+          {
+            expected_revision: 0,
+            scopes: [{ scope_type: "device_group", scope_value: "group-bump-barrier" }],
+          },
+        ));
+        patchStatus = patched.status;
+      }
+      return originalBatch(statements);
+    };
+
+    let bumped: Response;
+    try {
+      bumped = await handleBumpRollout(makeReleaseContext(
+        "rel-bump-barrier-current",
+        { to: 100, expected_revision: 0 },
+      ));
+    } finally {
+      db.batch = originalBatch;
+    }
+
+    expect(patchStatus).toBe(200);
+    expect(bumped.status).toBe(409);
+    await expect(responseJson<any>(bumped)).resolves.toMatchObject({
+      code: "RELEASE_REVISION_CONFLICT",
+      expected_revision: 0,
+      current_revision: 1,
+    });
+    await expect(env.DB.prepare(
+      `SELECT id, status, revision, rollout_cohort_count, superseded_by_release_id
+       FROM releases WHERE id IN ('rel-bump-barrier-current', 'rel-bump-barrier-fallback')
+       ORDER BY id`,
+    ).all()).resolves.toEqual({
+      results: [
+        {
+          id: "rel-bump-barrier-current",
+          status: "active",
+          revision: 1,
+          rollout_cohort_count: 25,
+          superseded_by_release_id: null,
+        },
+        {
+          id: "rel-bump-barrier-fallback",
+          status: "active",
+          revision: 0,
+          rollout_cohort_count: null,
+          superseded_by_release_id: null,
+        },
+      ],
+      success: true,
+    });
+    await expect(env.DB.prepare(
+      `SELECT scope_type, scope_value FROM release_scopes
+       WHERE release_id = 'rel-bump-barrier-current' ORDER BY scope_type, scope_value`,
+    ).all()).resolves.toMatchObject({
+      results: [{ scope_type: "device_group", scope_value: "group-bump-barrier" }],
+    });
+    await expect(env.DB.prepare(
+      "SELECT COUNT(*) AS count FROM audit_logs WHERE action = 'release.bump_rollout'",
+    ).first()).resolves.toEqual({ count: 0 });
+
+    const publicContext = (deviceId?: string) => ({
+      env,
+      req: {
+        url: "https://hands.test/public/v2/apps/release-app/latest",
+        param: (name: string) => name === "slug" ? "release-app" : "",
+        query: (name: string) => ({
+          channel: "main",
+          product_type: "android-apk",
+          platform: "android",
+        } as Record<string, string>)[name],
+        header: (name: string) =>
+          name === "X-Hands-Device-Id" ? deviceId :
+          name === "CF-Connecting-IP" ? "203.0.113.7" : undefined,
+        raw: { cf: {} },
+      },
+      json: (data: unknown, status = 200) => new Response(JSON.stringify(data), {
+        status,
+        headers: { "content-type": "application/json" },
+      }),
+    }) as any;
+    for (const deviceId of [undefined, "non-group-device"]) {
+      const resolved = await handlePublicV2Latest(publicContext(deviceId));
+      expect(resolved.status).toBe(200);
+      await expect(responseJson<any>(resolved)).resolves.toMatchObject({
+        build: { id: "build-active", version_code: 1 },
+        scoped: { release_id: "rel-bump-barrier-fallback", scope_type: "full" },
+      });
+    }
+  });
+
+  it("lets cancel win a rollout-bump race without stale audit or fallback damage", async () => {
+    const {
+      createRelease,
+      handleBumpRollout,
+      handleDeleteRelease,
+    } = await import("../src/routes/releases");
+    const { handlePublicV2Latest } = await import("../src/routes/public_v2");
+    await createRelease(env.DB as any, "app-release", {
+      build_id: "build-active",
+      status: "active",
+    }, "tester", "rel-cancel-race-fallback");
+    await createRelease(env.DB as any, "app-release", {
+      build_id: "build-draft",
+      status: "active",
+      rollout_cohort_count: 25,
+    }, "tester", "rel-cancel-race-current");
+
+    const db = env.DB as any;
+    const originalBatch = db.batch.bind(db);
+    let injected = false;
+    let cancelStatus: number | null = null;
+    db.batch = async (statements: any[]) => {
+      if (!injected) {
+        injected = true;
+        const cancelled = await handleDeleteRelease(makeReleaseContext(
+          "rel-cancel-race-current",
+          {},
+          { expected_revision: "0" },
+        ));
+        cancelStatus = cancelled.status;
+      }
+      return originalBatch(statements);
+    };
+
+    let bumped: Response;
+    try {
+      bumped = await handleBumpRollout(makeReleaseContext(
+        "rel-cancel-race-current",
+        { to: 100, expected_revision: 0 },
+      ));
+    } finally {
+      db.batch = originalBatch;
+    }
+
+    expect(cancelStatus).toBe(200);
+    expect(bumped.status).toBe(409);
+    await expect(responseJson<any>(bumped)).resolves.toMatchObject({
+      code: "RELEASE_REVISION_CONFLICT",
+      expected_revision: 0,
+      current_revision: 1,
+    });
+    await expect(env.DB.prepare(
+      `SELECT id, status, revision, rollout_cohort_count, superseded_by_release_id
+       FROM releases WHERE id IN ('rel-cancel-race-current', 'rel-cancel-race-fallback')
+       ORDER BY id`,
+    ).all()).resolves.toEqual({
+      results: [
+        {
+          id: "rel-cancel-race-current",
+          status: "cancelled",
+          revision: 1,
+          rollout_cohort_count: 25,
+          superseded_by_release_id: null,
+        },
+        {
+          id: "rel-cancel-race-fallback",
+          status: "active",
+          revision: 0,
+          rollout_cohort_count: null,
+          superseded_by_release_id: null,
+        },
+      ],
+      success: true,
+    });
+    await expect(env.DB.prepare(
+      "SELECT COUNT(*) AS count FROM audit_logs WHERE action = 'release.bump_rollout'",
+    ).first()).resolves.toEqual({ count: 0 });
+
+    const resolved = await handlePublicV2Latest({
+      env,
+      req: {
+        url: "https://hands.test/public/v2/apps/release-app/latest",
+        param: (name: string) => name === "slug" ? "release-app" : "",
+        query: (name: string) => ({
+          channel: "main",
+          product_type: "android-apk",
+          platform: "android",
+        } as Record<string, string>)[name],
+        header: (name: string) => name === "CF-Connecting-IP" ? "203.0.113.9" : undefined,
+        raw: { cf: {} },
+      },
+      json: (data: unknown, status = 200) => new Response(JSON.stringify(data), {
+        status,
+        headers: { "content-type": "application/json" },
+      }),
+    } as any);
+    expect(resolved.status).toBe(200);
+    await expect(responseJson<any>(resolved)).resolves.toMatchObject({
+      build: { id: "build-active", version_code: 1 },
+      scoped: { release_id: "rel-cancel-race-fallback", scope_type: "full" },
+    });
+  });
+
+  it("allows only one duplicate restore to reactivate a cancelled release", async () => {
+    const {
+      createRelease,
+      handleDeleteRelease,
+      handleRollbackRelease,
+    } = await import("../src/routes/releases");
+    await createRelease(env.DB as any, "app-release", {
+      build_id: "build-active",
+      status: "active",
+    }, "tester", "rel-duplicate-restore-fallback");
+    await createRelease(env.DB as any, "app-release", {
+      build_id: "build-draft",
+      status: "active",
+    }, "tester", "rel-duplicate-restore-current");
+    const cancelled = await handleDeleteRelease(makeReleaseContext(
+      "rel-duplicate-restore-current",
+      {},
+      { expected_revision: "0" },
+    ));
+    expect(cancelled.status).toBe(200);
+
+    const db = env.DB as any;
+    const originalBatch = db.batch.bind(db);
+    let injected = false;
+    let winnerStatus: number | null = null;
+    db.batch = async (statements: any[]) => {
+      if (!injected) {
+        injected = true;
+        const winner = await handleRollbackRelease(makeReleaseContext(
+          "rel-duplicate-restore-current",
+          { expected_revision: 1 },
+        ));
+        winnerStatus = winner.status;
+      }
+      return originalBatch(statements);
+    };
+
+    let loser: Response;
+    try {
+      loser = await handleRollbackRelease(makeReleaseContext(
+        "rel-duplicate-restore-current",
+        { expected_revision: 1 },
+      ));
+    } finally {
+      db.batch = originalBatch;
+    }
+
+    expect(winnerStatus).toBe(200);
+    expect(loser.status).toBe(409);
+    await expect(responseJson<any>(loser)).resolves.toMatchObject({
+      code: "RELEASE_REVISION_CONFLICT",
+      expected_revision: 1,
+      current_revision: 2,
+    });
+    await expect(env.DB.prepare(
+      `SELECT id, status, revision, superseded_by_release_id
+       FROM releases WHERE id IN ('rel-duplicate-restore-current', 'rel-duplicate-restore-fallback')
+       ORDER BY id`,
+    ).all()).resolves.toEqual({
+      results: [
+        {
+          id: "rel-duplicate-restore-current",
+          status: "active",
+          revision: 2,
+          superseded_by_release_id: null,
+        },
+        {
+          id: "rel-duplicate-restore-fallback",
+          status: "superseded",
+          revision: 3,
+          superseded_by_release_id: "rel-duplicate-restore-current",
+        },
+      ],
+      success: true,
+    });
+    await expect(env.DB.prepare(
+      "SELECT COUNT(*) AS count FROM audit_logs WHERE action = 'release.rollback'",
+    ).first()).resolves.toEqual({ count: 1 });
+  });
+
+  it("returns stale revision conflicts with zero effects for every release mutation", async () => {
+    const {
+      createRelease,
+      handleBumpRollout,
+      handleDeleteRelease,
+      handleForceUpdate,
+      handlePublishRelease,
+      handleRollbackRelease,
+      handleUpdateRelease,
+    } = await import("../src/routes/releases");
+    await createRelease(env.DB as any, "app-release", {
+      build_id: "build-active",
+      status: "active",
+    }, "tester", "rel-stale-active");
+    await createRelease(env.DB as any, "app-release", {
+      build_id: "build-draft",
+      status: "draft",
+    }, "tester", "rel-stale-draft");
+    await seedReleaseBuild("build-stale-new", 33);
+    await createRelease(env.DB as any, "app-release", {
+      build_id: "build-stale-new",
+      status: "active",
+    }, "tester", "rel-stale-new");
+
+    const readState = async () => ({
+      releases: (await env.DB.prepare(
+        `SELECT id, status, revision, rollout_cohort_count, should_force_update,
+                superseded_by_release_id, changelog
+         FROM releases ORDER BY id`,
+      ).all()).results,
+      scopes: (await env.DB.prepare(
+        `SELECT release_id, scope_type, scope_value
+         FROM release_scopes ORDER BY release_id, scope_type, scope_value`,
+      ).all()).results,
+      audits: (await env.DB.prepare(
+        "SELECT action, payload FROM audit_logs ORDER BY created_at, id",
+      ).all()).results,
+    });
+    const before = await readState();
+    const staleRevision = 999;
+    const responses = [
+      await handleUpdateRelease(makeReleaseContext("rel-stale-draft", {
+        changelog: "must not land",
+        expected_revision: staleRevision,
+      })),
+      await handlePublishRelease(makeReleaseContext("rel-stale-draft", {
+        expected_scopes: [{ scope_type: "full", scope_value: "all" }],
+        expected_revision: staleRevision,
+      })),
+      await handleDeleteRelease(makeReleaseContext(
+        "rel-stale-new",
+        {},
+        { expected_revision: String(staleRevision) },
+      )),
+      await handleRollbackRelease(makeReleaseContext("rel-stale-active", {
+        expected_revision: staleRevision,
+      })),
+      await handleBumpRollout(makeReleaseContext("rel-stale-new", {
+        to: 100,
+        expected_revision: staleRevision,
+      })),
+      await handleForceUpdate(makeReleaseContext("rel-stale-new", {
+        enabled: true,
+        expected_revision: staleRevision,
+      })),
+    ];
+    for (const response of responses) {
+      expect(response.status).toBe(409);
+      await expect(responseJson<any>(response)).resolves.toMatchObject({
+        code: "RELEASE_REVISION_CONFLICT",
+        expected_revision: staleRevision,
+      });
+    }
+    expect(await readState()).toEqual(before);
+
+    const invalid = await handleUpdateRelease(makeReleaseContext("rel-stale-draft", {
+      expected_revision: "not-a-revision",
+    }));
+    expect(invalid.status).toBe(400);
+    await expect(responseJson<any>(invalid)).resolves.toMatchObject({
+      error: "expected_revision must be a non-negative integer",
+    });
+    expect(await readState()).toEqual(before);
+  });
+
+  it("restores a never-published external release only to draft and reruns publish gates", async () => {
+    const {
+      createRelease,
+      handleDeleteRelease,
+      handlePublishRelease,
+      handleRollbackRelease,
+    } = await import("../src/routes/releases");
+    const { handlePublicV2Latest } = await import("../src/routes/public_v2");
+    const now = Date.now();
+    for (const [buildId, versionCode, source] of [
+      ["build-draft-restore-fallback", 34, "web"],
+      ["build-draft-restore-target", 35, "external"],
+    ] as const) {
+      await env.DB.prepare(
+        `INSERT INTO builds (id, app_id, channel_id, product_type, release_type, version_name, version_code,
+                             source, status, build_metadata_json, parsed_metadata_json,
+                             should_force_update, provenance_json, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ).bind(
+        buildId,
+        "app-release",
+        "ch-main",
+        "cli-binary",
+        "stable",
+        `2.0.${versionCode}`,
+        versionCode,
+        source,
+        "succeeded",
+        "{}",
+        "{}",
+        0,
+        "{}",
+        now,
+        now,
+      ).run();
+    }
+    for (const target of ["darwin-arm64", "linux-x64"]) {
+      await env.DB.prepare(
+        `INSERT INTO external_build_targets
+         (id, app_id, build_id, version_name, target, source_url, raw_sha256, raw_size_bytes,
+          node_version, metadata_json, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ).bind(
+        `target-draft-restore-${target}`,
+        "app-release",
+        "build-draft-restore-target",
+        "2.0.35",
+        target,
+        `https://cdn.test/2.0.35/${target}`,
+        target === "darwin-arm64" ? "a".repeat(64) : "b".repeat(64),
+        100,
+        "24.15.0",
+        "{}",
+        now,
+        now,
+      ).run();
+    }
+    await createRelease(env.DB as any, "app-release", {
+      build_id: "build-draft-restore-fallback",
+      status: "active",
+    }, "tester", "rel-draft-restore-fallback");
+    await createRelease(env.DB as any, "app-release", {
+      build_id: "build-draft-restore-target",
+      status: "draft",
+    }, "tester", "rel-draft-restore-target");
+
+    const cancelled = await handleDeleteRelease(makeReleaseContext(
+      "rel-draft-restore-target",
+      {},
+      { expected_revision: "0" },
+    ));
+    expect(cancelled.status).toBe(200);
+    const restored = await handleRollbackRelease(makeReleaseContext(
+      "rel-draft-restore-target",
+      { expected_revision: 1 },
+    ));
+    expect(restored.status).toBe(200);
+    await expect(responseJson<any>(restored)).resolves.toMatchObject({
+      id: "rel-draft-restore-target",
+      status: "draft",
+      activated_at: null,
+      revision: 2,
+      restored_to_draft: true,
+      reactivated: false,
+    });
+    await expect(env.DB.prepare(
+      `SELECT id, status, revision, superseded_by_release_id FROM releases
+       WHERE id IN ('rel-draft-restore-fallback', 'rel-draft-restore-target') ORDER BY id`,
+    ).all()).resolves.toEqual({
+      results: [
+        {
+          id: "rel-draft-restore-fallback",
+          status: "active",
+          revision: 0,
+          superseded_by_release_id: null,
+        },
+        {
+          id: "rel-draft-restore-target",
+          status: "draft",
+          revision: 2,
+          superseded_by_release_id: null,
+        },
+      ],
+      success: true,
+    });
+
+    const wrongTargets = await handlePublishRelease(makeReleaseContext(
+      "rel-draft-restore-target",
+      {
+        expected_revision: 2,
+        expected_scopes: [{ scope_type: "full", scope_value: "all" }],
+        required_external_targets: ["darwin-arm64", "win32-x64"],
+      },
+    ));
+    expect(wrongTargets.status).toBe(400);
+    await expect(responseJson<any>(wrongTargets)).resolves.toMatchObject({
+      missing: ["win32-x64"],
+      unexpected: ["linux-x64"],
+    });
+    await expect(env.DB.prepare(
+      "SELECT status, revision FROM releases WHERE id = 'rel-draft-restore-target'",
+    ).first()).resolves.toEqual({ status: "draft", revision: 2 });
+    await expect(env.DB.prepare(
+      "SELECT freeze_token FROM builds WHERE id = 'build-draft-restore-target'",
+    ).first()).resolves.toEqual({ freeze_token: null });
+
+    const beforePublish = await handlePublicV2Latest({
+      env,
+      req: {
+        url: "https://hands.test/public/v2/apps/release-app/latest",
+        param: (name: string) => name === "slug" ? "release-app" : "",
+        query: (name: string) => ({
+          channel: "main",
+          product_type: "cli-binary",
+        } as Record<string, string>)[name],
+        header: (name: string) => name === "CF-Connecting-IP" ? "203.0.113.11" : undefined,
+        raw: { cf: {} },
+      },
+      json: (data: unknown, status = 200) => new Response(JSON.stringify(data), {
+        status,
+        headers: { "content-type": "application/json" },
+      }),
+    } as any);
+    expect(beforePublish.status).toBe(200);
+    await expect(responseJson<any>(beforePublish)).resolves.toMatchObject({
+      build: { id: "build-draft-restore-fallback", version_code: 34 },
+      scoped: { release_id: "rel-draft-restore-fallback", scope_type: "full" },
+    });
+
+    const published = await handlePublishRelease(makeReleaseContext(
+      "rel-draft-restore-target",
+      {
+        expected_revision: 2,
+        expected_scopes: [{ scope_type: "full", scope_value: "all" }],
+        required_external_targets: ["linux-x64", "darwin-arm64"],
+      },
+    ));
+    expect(published.status).toBe(200);
+    await expect(responseJson<any>(published)).resolves.toMatchObject({
+      status: "active",
+      revision: 3,
+    });
+    await expect(env.DB.prepare(
+      "SELECT status, superseded_by_release_id FROM releases WHERE id = 'rel-draft-restore-fallback'",
+    ).first()).resolves.toEqual({
+      status: "superseded",
+      superseded_by_release_id: "rel-draft-restore-target",
+    });
+  });
+
+  it("restores the same release id with a fresh activation and cancellation restores its fallback", async () => {
+    const { createRelease, handleDeleteRelease, handleRollbackRelease } = await import("../src/routes/releases");
+    await createRelease(env.DB as any, "app-release", {
+      build_id: "build-active",
+      status: "active",
+    }, "tester", "rel-restore-fallback");
+    await createRelease(env.DB as any, "app-release", {
+      build_id: "build-draft",
+      status: "active",
+    }, "tester", "rel-restore-current");
+    await env.DB.prepare(
+      "UPDATE releases SET activated_at = 1 WHERE id = 'rel-restore-fallback'",
+    ).run();
+
+    const restoredResponse = await handleRollbackRelease(
+      makeReleaseContext("rel-restore-fallback"),
+    );
+    expect(restoredResponse.status).toBe(200);
+    await expect(responseJson<any>(restoredResponse)).resolves.toMatchObject({
+      id: "rel-restore-fallback",
+      status: "active",
+      reactivated: true,
+    });
+    await expect(env.DB.prepare(
+      `SELECT id, status, superseded_by_release_id, activated_at
+       FROM releases ORDER BY id`,
+    ).all()).resolves.toMatchObject({
+      results: [
+        {
+          id: "rel-restore-current",
+          status: "superseded",
+          superseded_by_release_id: "rel-restore-fallback",
+        },
+        {
+          id: "rel-restore-fallback",
+          status: "active",
+          superseded_by_release_id: null,
+          activated_at: expect.any(Number),
+        },
+      ],
+    });
+    const activated = await env.DB.prepare(
+      "SELECT activated_at FROM releases WHERE id = 'rel-restore-fallback'",
+    ).first() as { activated_at: number } | null;
+    expect(activated!.activated_at).toBeGreaterThan(1);
+    await expect(env.DB.prepare(
+      "SELECT COUNT(*) AS count FROM releases",
+    ).first()).resolves.toEqual({ count: 2 });
+
+    const duplicateRestore = await handleRollbackRelease(
+      makeReleaseContext("rel-restore-fallback"),
+    );
+    expect(duplicateRestore.status).toBe(409);
+
+    const cancelled = await handleDeleteRelease(
+      makeReleaseContext("rel-restore-fallback"),
+    );
+    expect(cancelled.status).toBe(200);
+    await expect(env.DB.prepare(
+      "SELECT id, status, superseded_by_release_id FROM releases ORDER BY id",
+    ).all()).resolves.toEqual({
+      results: [
+        { id: "rel-restore-current", status: "active", superseded_by_release_id: null },
+        { id: "rel-restore-fallback", status: "cancelled", superseded_by_release_id: null },
+      ],
+      success: true,
+    });
+
+    const restoredAfterCancel = await handleRollbackRelease(
+      makeReleaseContext("rel-restore-fallback", { expected_revision: 3 }),
+    );
+    expect(restoredAfterCancel.status).toBe(200);
+    await expect(responseJson<any>(restoredAfterCancel)).resolves.toMatchObject({
+      id: "rel-restore-fallback",
+      status: "active",
+      revision: 4,
+      restored_to_draft: false,
+      reactivated: true,
+    });
+    await expect(env.DB.prepare(
+      "SELECT id, status, superseded_by_release_id FROM releases ORDER BY id",
+    ).all()).resolves.toEqual({
+      results: [
+        {
+          id: "rel-restore-current",
+          status: "superseded",
+          superseded_by_release_id: "rel-restore-fallback",
+        },
+        {
+          id: "rel-restore-fallback",
+          status: "active",
+          superseded_by_release_id: null,
+        },
+      ],
+      success: true,
     });
   });
 
@@ -4169,6 +4938,7 @@ describe("quiver public API v2 — scope resolution", () => {
       versionName?: string;
       shouldForceUpdate?: number;
       rolloutCohortCount?: number | null;
+      activatedAt?: number | null;
     } = {},
   ) {
     const now = opts.createdAt ?? Date.now();
@@ -4198,8 +4968,9 @@ describe("quiver public API v2 — scope resolution", () => {
       .run();
     await env.DB.prepare(
       `INSERT INTO releases (id, app_id, build_id, channel_id, product_type, release_type, status,
-                             is_full, rollout_cohort_count, changelog, created_by, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                             activated_at, is_full, rollout_cohort_count, changelog,
+                             created_by, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
       .bind(
         releaseId,
@@ -4209,7 +4980,8 @@ describe("quiver public API v2 — scope resolution", () => {
         opts.productType ?? "android-apk",
         "stable",
         "active",
-        scopes.length === 1 && scopes[0]?.[0] === "full" && scopes[0]?.[1] === "all" ? 1 : 0,
+        opts.activatedAt === undefined ? now : opts.activatedAt,
+        scopes.some(([scopeType, scopeValue]) => scopeType === "full" && scopeValue === "all") ? 1 : 0,
         opts.rolloutCohortCount === undefined ? 100 : opts.rolloutCohortCount,
         null,
         "tester",
@@ -4707,6 +5479,13 @@ describe("quiver public API v2 — scope resolution", () => {
        VALUES ('b-ext', 'app-scope', 'ch-scope-prod', 'cli-binary', 'stable', '2.0.0', 2000000,
                'external', 'succeeded', '{}', '{}', 0, '{"ci_provider":"gha","source_commit":"abc123"}', ?1, ?1)`,
     ).bind(now).run();
+    await env.DB.prepare(
+      `INSERT INTO builds (id, app_id, channel_id, product_type, release_type, version_name, version_code,
+                           source, status, build_metadata_json, parsed_metadata_json, should_force_update,
+                           provenance_json, created_at, updated_at)
+       VALUES ('b-ext-fallback', 'app-scope', 'ch-scope-prod', 'cli-binary', 'stable', '1.9.0', 1900000,
+               'web', 'succeeded', '{}', '{}', 0, '{}', ?1, ?1)`,
+    ).bind(now).run();
     for (const [t, gz] of [["darwin-arm64", "https://cdn.test/2.0.0/darwin-arm64.gz"], ["linux-x64", null]] as const) {
       await env.DB.prepare(
         `INSERT INTO external_build_targets
@@ -4727,8 +5506,22 @@ describe("quiver public API v2 — scope resolution", () => {
       `INSERT INTO release_scopes (id, release_id, scope_type, scope_value, created_at)
        VALUES ('scope-rel-ext-full', 'rel-ext', 'full', 'all', ?1)`,
     ).bind(now).run();
+    await env.DB.prepare(
+      `INSERT INTO releases (id, app_id, build_id, channel_id, product_type, release_type, status,
+                             activated_at, is_full, changelog, created_by, created_at, updated_at)
+       VALUES ('rel-ext-fallback', 'app-scope', 'b-ext-fallback', 'ch-scope-prod', 'cli-binary',
+               'stable', 'active', ?1, 1, NULL, 'tester', ?1, ?1)`,
+    ).bind(now).run();
+    await env.DB.prepare(
+      `INSERT INTO release_scopes (id, release_id, scope_type, scope_value, created_at)
+       VALUES ('scope-rel-ext-fallback', 'rel-ext-fallback', 'full', 'all', ?1)`,
+    ).bind(now).run();
 
-    const { handlePublishRelease, handleGetRelease } = await import("../src/routes/releases");
+    const {
+      handleBumpRollout,
+      handleGetRelease,
+      handlePublishRelease,
+    } = await import("../src/routes/releases");
     const ctx = (params: Record<string, string>, body: unknown = {}) =>
       ({
         env,
@@ -4748,6 +5541,19 @@ describe("quiver public API v2 — scope resolution", () => {
     const noSet = await handlePublishRelease(ctx({ appId: "app-scope", releaseId: "rel-ext" }));
     expect(noSet.status).toBe(400);
 
+    // Scope validation happens before the external freeze plan is committed.
+    const wrongScope = await handlePublishRelease(ctx(
+      { appId: "app-scope", releaseId: "rel-ext" },
+      {
+        required_external_targets: ["darwin-arm64", "linux-x64"],
+        expected_scopes: [{ scope_type: "platform", scope_value: "android" }],
+      },
+    ));
+    expect(wrongScope.status).toBe(409);
+    await expect(env.DB.prepare(
+      "SELECT freeze_token, required_targets_json FROM builds WHERE id = 'b-ext'",
+    ).first()).resolves.toEqual({ freeze_token: null, required_targets_json: null });
+
     // Wrong set → 400 with named missing/unexpected; freeze rolled back.
     const wrong = await handlePublishRelease(
       ctx({ appId: "app-scope", releaseId: "rel-ext" }, { required_external_targets: ["darwin-arm64", "win32-x64"] }),
@@ -4765,14 +5571,74 @@ describe("quiver public API v2 — scope resolution", () => {
     );
     expect(dup.status).toBe(400);
 
+    // A release mutation after target preflight but before the publish batch
+    // must win without allowing the stale publisher to freeze the build.
+    const db = env.DB as any;
+    const originalBatch = db.batch.bind(db);
+    let injected = false;
+    let bumpStatus: number | null = null;
+    db.batch = async (statements: any[]) => {
+      if (!injected) {
+        injected = true;
+        const bumped = await handleBumpRollout(ctx(
+          { appId: "app-scope", releaseId: "rel-ext" },
+          { to: 25, expected_revision: 0 },
+        ));
+        bumpStatus = bumped.status;
+      }
+      return originalBatch(statements);
+    };
+    let stalePublish: Response;
+    try {
+      stalePublish = await handlePublishRelease(ctx(
+        { appId: "app-scope", releaseId: "rel-ext" },
+        {
+          required_external_targets: ["darwin-arm64", "linux-x64"],
+          expected_scopes: [{ scope_type: "full", scope_value: "all" }],
+          expected_revision: 0,
+        },
+      ));
+    } finally {
+      db.batch = originalBatch;
+    }
+    expect(bumpStatus).toBe(200);
+    expect(stalePublish.status).toBe(409);
+    await expect(stalePublish.json()).resolves.toMatchObject({
+      code: "RELEASE_REVISION_CONFLICT",
+      expected_revision: 0,
+      current_revision: 1,
+    });
+    await expect(env.DB.prepare(
+      "SELECT freeze_token, required_targets_json FROM builds WHERE id = 'b-ext'",
+    ).first()).resolves.toEqual({ freeze_token: null, required_targets_json: null });
+    await expect(env.DB.prepare(
+      "SELECT status, revision, rollout_cohort_count FROM releases WHERE id = 'rel-ext'",
+    ).first()).resolves.toEqual({ status: "draft", revision: 1, rollout_cohort_count: 25 });
+    await expect(env.DB.prepare(
+      "SELECT status, superseded_by_release_id FROM releases WHERE id = 'rel-ext-fallback'",
+    ).first()).resolves.toEqual({ status: "active", superseded_by_release_id: null });
+    await expect(env.DB.prepare(
+      "SELECT COUNT(*) AS count FROM audit_logs WHERE action = 'release.publish'",
+    ).first()).resolves.toEqual({ count: 0 });
+
     // Exact set → publish succeeds and freezes.
     const ok = await handlePublishRelease(
-      ctx({ appId: "app-scope", releaseId: "rel-ext" }, { required_external_targets: ["linux-x64", "darwin-arm64"] }),
+      ctx(
+        { appId: "app-scope", releaseId: "rel-ext" },
+        {
+          required_external_targets: ["linux-x64", "darwin-arm64"],
+          expected_scopes: [{ scope_type: "full", scope_value: "all" }],
+          expected_revision: 1,
+        },
+      ),
     );
     expect(ok.status).toBe(200);
     const frozen = (await env.DB.prepare("SELECT freeze_token, required_targets_json FROM builds WHERE id = 'b-ext'").first()) as any;
     expect(frozen.freeze_token).not.toBeNull();
     expect(JSON.parse(frozen.required_targets_json)).toEqual(["darwin-arm64", "linux-x64"]);
+    await expect(env.DB.prepare(
+      "SELECT COUNT(*) AS count FROM audit_logs WHERE action = 'release.publish'",
+    ).first()).resolves.toEqual({ count: 1 });
 
     // Post-freeze: replay publish (already active) re-asserts and no-ops OK;
     // a different set on replay → contract mismatch.
@@ -5360,6 +6226,46 @@ describe("quiver public API v2 — scope resolution", () => {
     });
   });
 
+  it("uses latest activation rather than creation time for same-priority scopes", async () => {
+    const env = makeEnv();
+    configureR2Presign(env);
+    const now = Date.now();
+    await env.DB.prepare(
+      `INSERT INTO device_groups (id, app_id, name, description, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+    ).bind("group-reactivated", "app-scope", "Reactivated devices", null, now, now).run();
+    await env.DB.prepare(
+      `INSERT INTO device_group_members (group_id, device_id, label, created_at)
+       VALUES (?, ?, ?, ?)`,
+    ).bind("group-reactivated", "device-reactivated", null, now).run();
+    await seedRelease(env, "rel-created-old", "build-created-old", [["device_group", "group-reactivated"]], {
+      createdAt: now - 2_000,
+      activatedAt: now + 1_000,
+      versionCode: 11,
+    });
+    await seedAsset(env, "build-created-old", "asset-created-old", { arch: "arm64-v8a" });
+    await seedRelease(env, "rel-created-new", "build-created-new", [["device_group", "group-reactivated"]], {
+      createdAt: now,
+      activatedAt: now,
+      versionCode: 12,
+    });
+    await seedAsset(env, "build-created-new", "asset-created-new", { arch: "arm64-v8a" });
+    const { handlePublicV2Latest } = await import("../src/routes/public_v2");
+
+    const response = await handlePublicV2Latest(makePublicContext(env, {
+      channel: "production",
+      product_type: "android-apk",
+      platform: "android",
+      arch: "arm64-v8a",
+    }, { "X-Hands-Device-Id": "device-reactivated" }));
+
+    expect(response.status).toBe(200);
+    await expect(responseJson<any>(response)).resolves.toMatchObject({
+      build: { version_code: 11 },
+      scoped: { release_id: "rel-created-old", scope_type: "device_group" },
+    });
+  });
+
   it("resolves ip_range from Cloudflare's edge-owned client IP header, never X-Forwarded-For", async () => {
     const env = makeEnv();
     configureR2Presign(env);
@@ -5517,7 +6423,7 @@ describe("quiver public API v2 — scope resolution", () => {
     });
   });
 
-  it("updates/check gates a partial rollout by device bucket and falls back to the previous release", async () => {
+  it("combines percentage rollout with an always-included device group", async () => {
     const env = makeEnv();
     const { handlePublicV2UpdateCheck, rolloutBucket } = await import(
       "../src/routes/public_v2"
@@ -5528,7 +6434,15 @@ describe("quiver public API v2 — scope resolution", () => {
       createdAt: Date.now() - 1000,
     });
     await seedAsset(env, "build-stable", "asset-stable", { arch: "arm64-v8a" });
-    await seedRelease(env, "rel-gated", "build-gated", [["full", "all"]], {
+    const now = Date.now();
+    await env.DB.prepare(
+      `INSERT INTO device_groups (id, app_id, name, description, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+    ).bind("group-always", "app-scope", "Always included", null, now, now).run();
+    await seedRelease(env, "rel-gated", "build-gated", [
+      ["full", "all"],
+      ["device_group", "group-always"],
+    ], {
       versionCode: 11,
       versionName: "1.0.11",
       rolloutCohortCount: 30,
@@ -5547,6 +6461,10 @@ describe("quiver public API v2 — scope resolution", () => {
     }
     expect(inDevice).not.toBe("");
     expect(outDevice).not.toBe("");
+    await env.DB.prepare(
+      `INSERT INTO device_group_members (group_id, device_id, label, created_at)
+       VALUES (?, ?, ?, ?)`,
+    ).bind("group-always", outDevice, "Outside percentage", now).run();
 
     const query = {
       channel: "production",
@@ -5565,12 +6483,32 @@ describe("quiver public API v2 — scope resolution", () => {
     expect(inBody.latest.version_code).toBe(11);
     expect(inBody.scoped.rollout_cohort_count).toBe(30);
 
-    const outResponse = await handlePublicV2UpdateCheck(
-      makePublicContext(env, query, { "X-Quiver-Device-Id": outDevice }),
+    const memberResponse = await handlePublicV2UpdateCheck(
+      makePublicContext(env, query, { "X-Hands-Device-Id": outDevice }),
     );
-    expect(outResponse.status).toBe(200);
+    expect(memberResponse.status).toBe(200);
+    const memberBody = await responseJson<any>(memberResponse);
+    expect(memberBody.update_available).toBe(true);
+    expect(memberBody.latest.version_code).toBe(11);
+    expect(memberBody.scoped).toMatchObject({
+      scope_type: "device_group",
+      scope_value: "group-always",
+      rollout_cohort_count: 30,
+    });
+
+    let nonMemberOutDevice = "";
+    for (let i = 1000; i < 2000; i++) {
+      const candidate = `non-member-${i}`;
+      if (rolloutBucket("rel-gated", candidate) >= 30) {
+        nonMemberOutDevice = candidate;
+        break;
+      }
+    }
+    expect(nonMemberOutDevice).not.toBe("");
+    const outResponse = await handlePublicV2UpdateCheck(
+      makePublicContext(env, query, { "X-Hands-Device-Id": nonMemberOutDevice }),
+    );
     const outBody = await responseJson<any>(outResponse);
-    expect(outBody.update_available).toBe(true);
     expect(outBody.latest.version_code).toBe(10);
 
     const legacyResponse = await handlePublicV2UpdateCheck(
@@ -7936,6 +8874,7 @@ describe("quiver public API v2 — scope resolution", () => {
     const { handleCreateReleaseDraft } = await import("../src/routes/releases");
     // seed a build to release
     await seedRelease(env, "rel-seed", "build-draftonly", [["full", "all"]], { versionCode: 21 });
+    await env.DB.prepare("DELETE FROM releases WHERE id = 'rel-seed'").run();
     const ctx = (body: unknown) =>
       ({
         env,
@@ -8875,6 +9814,11 @@ describe("Hands iOS simulator QA artifacts", () => {
     });
     expect(byName["create-release"].parameters.scopes).toMatchObject({ type: "array", in: "body" });
     expect(byName["update-release"].parameters.scopes).toMatchObject({ type: "array", in: "body" });
+    expect(byName["update-release"].parameters.expected_revision).toMatchObject({
+      type: "number",
+      in: "body",
+      required: false,
+    });
     expect(byName["get-release"].endpoint.method).toBe("GET");
     expect(byName["get-release"].parameters).not.toHaveProperty("expected_scope");
     expect(byName["publish-release"].endpoint.method).toBe("POST");
@@ -8888,6 +9832,11 @@ describe("Hands iOS simulator QA artifacts", () => {
     });
     expect(byName["publish-release"].parameters.expected_scope).toMatchObject({
       type: "object",
+      in: "body",
+      required: false,
+    });
+    expect(byName["publish-release"].parameters.expected_revision).toMatchObject({
+      type: "number",
       in: "body",
       required: false,
     });

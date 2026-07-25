@@ -258,7 +258,8 @@ win32-arm64-NULL-msi
 
 ### 3.9 `releases` — promote build to "live" with scope
 
-A release is **a build that's been promoted**. It can have multiple scope records (full + partial overrides).
+A release is **a build that's been promoted**. It can have one full scope plus
+mandatory device-group overrides, all within the same lifecycle.
 
 ```
 releases
@@ -269,7 +270,8 @@ releases
   product_type            TEXT NOT NULL         -- denormalized from build for query speed
   release_type            TEXT NOT NULL         -- denormalized from build
   status                  TEXT NOT NULL         -- 'draft' | 'active' | 'superseded' | 'cancelled'
-  is_full                 INTEGER NOT NULL     -- 1 if this release covers all users; 0 if scoped
+  activated_at            INTEGER              -- latest successful publish/restore time; null for never-active drafts
+  is_full                 INTEGER NOT NULL     -- 1 iff scopes contain full:all; percentage may still be below 100
   superseded_by_release_id TEXT REFERENCES releases(id)
   rollout_cohort_count    INTEGER              -- null = 100%, otherwise staged %
   rollout_target_cohorts_json TEXT NOT NULL DEFAULT '[]'
@@ -279,16 +281,25 @@ releases
   provenance_json         TEXT NOT NULL DEFAULT '{}'
   created_by              TEXT NOT NULL         -- 'admin@...'
   created_at              INTEGER NOT NULL
-  INDEX (app_id, channel_id, product_type, release_type, status, created_at DESC)
+  INDEX (app_id, channel_id, product_type, release_type, status, activated_at DESC)
   INDEX (build_id)
   INDEX (status, created_at DESC)
 ```
 
 A release goes through status:
 - `draft` — editable release metadata and scopes; not returned by public update checks and does not supersede active releases.
-- `active` — currently live for this (channel, product_type, release_type).
+- `active` — currently eligible on this lane; a partial rollout may coexist
+  with an older active full fallback.
 - `superseded` — newer release was published on the same lane.
 - `cancelled` — soft-deleted / cancelled release; build rows and assets remain in storage.
+
+The lifecycle identity is
+`(app_id, channel_id, product_type, release_type, build.version_code)`. Exactly
+one release row may ever be created for that identity, regardless of status.
+Historical duplicate rows are retained for audit compatibility, so the current
+schema enforces new writes with an insert trigger rather than deleting history
+to add a unique index. Release identity and the identity fields of a referenced
+build are immutable after creation.
 
 ### 3.10 `release_scopes` — partial release overrides
 
@@ -298,11 +309,17 @@ A release can be partial (only some users get it). Each scope record defines one
 release_scopes
   id              TEXT PRIMARY KEY
   release_id      TEXT NOT NULL REFERENCES releases(id) ON DELETE CASCADE
-  scope_type      TEXT NOT NULL         -- 'full' | 'platform' | 'ip_range' | 'user_cohort'
+  scope_type      TEXT NOT NULL         -- 'full' | 'platform' | 'ip_range' | 'user_cohort' | 'device_group'
   scope_value     TEXT NOT NULL         -- 'all' | 'darwin,linux' (CSV for platform) | '10.0.0.0/8' (CIDR) | 'cohort-uuid' (cohort ID)
   created_at      INTEGER NOT NULL
   INDEX (release_id)
 ```
+
+`full:all` may appear once and may be combined only with one or more
+`device_group` entries. This is one release: group members bypass the
+percentage gate, while non-members are evaluated against
+`rollout_cohort_count`. `is_full=1` records the presence of `full:all`; full
+coverage is reached only when the percentage is null/100.
 
 **Examples**:
 - Full release: `scope_type='full', scope_value='all'`
@@ -351,30 +368,44 @@ ToDesktop runs builds on actual Win/Mac/Linux VMs, captures screenshots + auto-u
    - Build status is 'succeeded' ✓
    - Version is higher/lower than previous release ✓
    - Signing credentials valid ✓
-   - No active release with same version_code ✓
+   - No release lifecycle with the same version_code in this lane ✓
 
-3. Admin picks release scope (radio buttons):
+3. Admin picks release scope:
    - [Full release] — all users on this (channel, product_type, release_type)
+     - rollout percentage (0-100)
+     - zero or more always-included device groups
    - [Platform release] — checkboxes: darwin-arm64, darwin-x64, ..., win32-x64
    - [IP range release] — text input CIDR list
 
-4. Optional: rollout_cohort_count slider (0-100)
-   Optional: availability_at datetime (schedule for later)
+4. Optional: availability_at datetime (schedule for later)
    Optional: should_force_update checkbox
 
 5. Click "Save draft" or "Publish now"
 6. Server:
-   a. Insert releases row (status='draft')
+   a. Insert the one releases row (status='draft'); return
+      `409 RELEASE_VERSION_ALREADY_EXISTS` with the existing coordinates if
+      the lane/version lifecycle already exists, including if it is cancelled
    b. Insert release_scopes row(s)
-   c. If publishing now, set the release to `active`
-   d. If publishing now, mark previous release(s) on same (channel, product_type, release_type) as 'superseded' (link via superseded_by_release_id)
+   c. Publish only after the fresh `expected_revision` and exact
+      `expected_scopes` set match atomically; set status=`active`, increment
+      `revision`, and refresh `activated_at`
+   d. At full coverage, mark prior active releases on the same lane as
+      `superseded`; during partial rollout, retain an eligible prior full
+      release as fallback
    e. If publishing now, emit SSE event "release:new"
    f. If publishing now, fire webhook (if configured)
 ```
 
 ### 4.4 Rollback
 
-Admin picks any historical release on the same (channel, product_type, release_type) → "Roll back to this version" → inserts new release with `status='active'` pointing to the older build, marks current as `superseded`.
+Admin picks a superseded or cancelled historical release on the same lane. A
+cancelled row with `activated_at = null` was never published and uses
+**Restore draft**; the server returns that exact row to `draft`, so it must pass
+the normal publish gates. Previously active rows use **Restore as active**;
+the server clears the supersession link and refreshes `activated_at`. Neither
+path inserts a second release for the version. Every path requires the fresh
+revision. A full-coverage active restore supersedes the current active release;
+a partial active restore preserves or reactivates its fallback.
 
 ## 5. Public client API
 
@@ -573,11 +604,14 @@ LIMIT 1;
 **Edge cases the contract locks in:**
 
 1. **Empty `cohort` header + cohort-scoped release**: no match (server treats `cohort IS NULL` as mismatch, never as `''`).
-2. **Multiple matches at the same priority**: `created_at DESC` wins. Ties broken by `release_id` (UUID lex order) for determinism.
+2. **Multiple matches at the same priority**: `activated_at DESC` wins. Ties broken by `release_id` (UUID lex order) for determinism.
 3. **`full` is the only match**: `priority=1`; behaves like v1 (any active release on the channel).
 4. **No release matches**: 404 with body `{"error": "no active release for this client"}`. v1 clients that ignored scope will see this and should fall back to their bundled copy.
 5. **Release cancelled (`status='cancelled'`)** mid-request: never returned. Server filters by `status='active'` in Step 1.
-6. **Rollback creates a new release**: original release moves to `superseded`; new release inherits the original's scopes (unless `POST /api/apps/:appId/releases/:id/rollback` overrides). Server returns the new one.
+6. **Restore reuses the release ID**: a never-published cancelled row moves
+   back to `draft`; a previously active row moves back to `active` and receives
+   a new `activated_at`. The endpoint rejects drafts and already-active rows
+   and never clones a version lifecycle.
 7. **`ip_range` matching** is server-trusted: we use `cf.clientIp` only, never the client `X-Forwarded-For`. v2 client must NOT send `X-Forwarded-For`; server strips it if present.
 8. **Cross-product-type scope**: scopes are per-release, but releases are per-`product_type`. A `platform` scope on an Android release cannot accidentally match an Electron client because the platform strings are disjoint.
 
@@ -811,7 +845,7 @@ After push, build sits in `succeeded` state in the Builds tab. User then opens i
 ✓ Build status: succeeded
 ✓ Version is higher than previous release (1.2.3 = 42)
 ✓ Code signing credentials valid for: darwin-arm64, darwin-x64, linux-x64, win32-x64, win32-arm64
-✓ No active release with same version_code
+✓ No existing release lifecycle with same version_code
 
 Release scope:
 ( ) Full release           — all users on this (channel, product_type, release_type)

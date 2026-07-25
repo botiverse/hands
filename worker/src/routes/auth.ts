@@ -742,9 +742,9 @@ export async function handleAgentHelp(c: Context<{ Bindings: Env }>) {
       create_share:
         "POST /api/apps/{app_id}/releases/{release_id}/shares — body: {ttl_seconds?, password?} — publisher; no expiry unless set",
       update_release:
-        "PATCH /api/apps/{app_id}/releases/{release_id} — body: {changelog?, release_notes?, hidden?} — publisher",
+        "PATCH /api/apps/{app_id}/releases/{release_id} — body: {expected_revision?, changelog?, release_notes?, hidden?} — publisher; stale revision returns 409 without side effects",
       publish_release:
-        "POST /api/apps/{app_id}/releases/{release_id}/publish — publisher; live-facing, needs explicit human authorization",
+        "POST /api/apps/{app_id}/releases/{release_id}/publish — body: {expected_revision?, expected_scopes} — publisher; live-facing, needs explicit human authorization",
       create_ios_simulator_artifact:
         "POST /api/apps/{app_id}/qa-artifacts/ios-simulator — publisher; declares filename/size/SHA/source/version/build/bundle/GitHub run and returns a presigned PUT URL",
       complete_ios_simulator_artifact:
@@ -1045,7 +1045,7 @@ export async function handleAgentManifest(c: Context<{ Bindings: Env }>) {
       {
         name: "create-release",
         description:
-          "Create a DRAFT release from an existing build. The server enforces draft — activation has exactly one path: the publish-release action. Requires app publisher.",
+          "Create the one DRAFT release lifecycle for a build version. A second release in the same app/channel/product/release-type/version lane fails with RELEASE_VERSION_ALREADY_EXISTS and returns the existing release id. Requires app publisher.",
         endpoint: { method: "POST", path: "/api/apps/{app_id}/releases/draft" },
         parameters: {
           app_id: { type: "string", in: "path", required: true, description: "App UUID." },
@@ -1053,32 +1053,57 @@ export async function handleAgentManifest(c: Context<{ Bindings: Env }>) {
           channel_id: { type: "string", in: "body", required: false, description: "Channel UUID (defaults to the build's channel)." },
           changelog: { type: "string", in: "body", required: false, description: "Changelog text (single-language fallback)." },
           release_notes: { type: "object", in: "body", required: false, description: "Bilingual notes, e.g. {\"en\": \"...\", \"zh-CN\": \"...\"}." },
-          scopes: { type: "array", in: "body", required: false, description: "Release scopes. Exact device targeting uses [{\"scope_type\":\"device_group\",\"scope_value\":\"<group UUID>\"}]." },
+          rollout_cohort_count: { type: "number", in: "body", required: false, description: "Stable full-scope rollout percentage, integer 0..100. Null/omitted means 100%." },
+          scopes: { type: "array", in: "body", required: false, description: "Exact scope set. full:all may be combined with device_group entries so listed devices are always included while everyone else is percentage-gated." },
         },
       },
       {
         name: "update-release",
         description:
-          "Update a release's changelog/bilingual release notes, rollout fields, or hidden flag. Requires app publisher.",
+          "Update a release's changelog/bilingual release notes, rollout fields, or hidden flag. Pass the revision from fresh release detail; stale revisions fail with RELEASE_REVISION_CONFLICT. Requires app publisher.",
         endpoint: { method: "PATCH", path: "/api/apps/{app_id}/releases/{release_id}" },
         parameters: {
           app_id: { type: "string", in: "path", required: true, description: "App UUID." },
           release_id: { type: "string", in: "path", required: true, description: "Release UUID." },
+          expected_revision: { type: "number", in: "body", required: false, description: "Revision from fresh release detail. A stale value returns 409 with zero mutation side effects." },
           changelog: { type: "string", in: "body", required: false, description: "Changelog text." },
           release_notes: { type: "object", in: "body", required: false, description: "Bilingual notes object." },
           hidden: { type: "boolean", in: "body", required: false, description: "Hide/show on public history without deleting." },
-          scopes: { type: "array", in: "body", required: false, description: "Replace release scopes. Exact device targeting uses device_group with a same-app group UUID." },
+          rollout_cohort_count: { type: "number", in: "body", required: false, description: "Stable full-scope rollout percentage, integer 0..100. Null means 100%." },
+          scopes: { type: "array", in: "body", required: false, description: "Replace the exact scope set. full:all plus device_group entries expresses mandatory groups over a percentage rollout." },
         },
       },
       {
         name: "publish-release",
         description:
-          "Publish (activate) a draft release. Live-facing: only run with explicit human authorization. Requires app publisher.",
+          "Publish (activate) a draft release using exact scope and revision preconditions. Live-facing: only run with explicit human authorization. Requires app publisher.",
         endpoint: { method: "POST", path: "/api/apps/{app_id}/releases/{release_id}/publish" },
         parameters: {
           app_id: { type: "string", in: "path", required: true, description: "App UUID." },
           release_id: { type: "string", in: "path", required: true, description: "Release UUID." },
-          expected_scope: { type: "object", in: "body", required: false, description: "Required for any non-full scoped activation, e.g. {\"scope_type\":\"device_group\",\"scope_value\":\"<group UUID>\"}. Publish fails with 409 unless the draft has exactly this one scope. Omit only for an exact full:all release." },
+          expected_revision: { type: "number", in: "body", required: false, description: "Revision from the same fresh detail read used to derive expected_scopes." },
+          expected_scope: { type: "object", in: "body", required: false, description: "Legacy single-scope precondition. New callers should send expected_scopes. Do not combine both fields." },
+          expected_scopes: { type: "array", in: "body", required: false, description: "Canonical exact-set precondition. Every stored scope must match atomically, including full:all and mandatory device_group entries." },
+        },
+      },
+      {
+        name: "cancel-release",
+        description: "Cancel one draft or active release without deleting its build, assets, or audit history. Requires app publisher.",
+        endpoint: { method: "DELETE", path: "/api/apps/{app_id}/releases/{release_id}" },
+        parameters: {
+          app_id: { type: "string", in: "path", required: true, description: "App UUID." },
+          release_id: { type: "string", in: "path", required: true, description: "Release UUID." },
+          expected_revision: { type: "number", in: "query", required: false, description: "Revision from fresh release detail." },
+        },
+      },
+      {
+        name: "restore-release",
+        description: "Restore the same release row. A never-published cancelled draft returns to draft and must pass normal publish gates; a previously active release returns to active. Requires app publisher.",
+        endpoint: { method: "POST", path: "/api/apps/{app_id}/releases/{release_id}/rollback" },
+        parameters: {
+          app_id: { type: "string", in: "path", required: true, description: "App UUID." },
+          release_id: { type: "string", in: "path", required: true, description: "Existing release UUID to restore." },
+          expected_revision: { type: "number", in: "body", required: false, description: "Revision from fresh release detail." },
         },
       },
       {

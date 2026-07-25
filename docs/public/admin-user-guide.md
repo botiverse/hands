@@ -38,9 +38,21 @@ The standard flow follows the draft-first policy: CI creates a **draft** release
 
 For Android, Hands selects updates by `version_code`. A device receives an update only when the published release has a higher `version_code` than the client reports.
 
+Hands keeps one release lifecycle per app, channel, product type, release type,
+and version code. Cancelling preserves the row and audit history and does not
+free the version for another release. **Restore as active** reactivates a
+superseded or cancelled row with the same release ID; active and draft rows do
+not expose that action.
+
 ### Staged rollouts
 
-Set a rollout percentage when creating or editing a release (number input with 5/25/50/100 presets), and raise it with **Bump rollout**. Devices are bucketed by their stable device id, keep their bucket while the percentage climbs, and gated-out devices receive the previous active release. Clients without a device id (older SDKs) only receive fully rolled-out releases.
+Set a rollout percentage when creating or editing a full release (number input
+with 5/25/50/100 presets), and raise it with **Bump rollout**. Select any number
+of **Always included device groups** on that same release for acceptance or QA
+devices. Group members receive the target regardless of their bucket; other
+devices keep a stable bucket while the percentage climbs. Gated-out and
+anonymous clients receive the previous eligible full release until rollout
+reaches 100%.
 
 Each release row shows unique per-install devices (UV): how many devices have
 checked while already **on this version** and how many unique older devices

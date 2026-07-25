@@ -12,7 +12,7 @@
  *   4. platform     (priority 2) — CSV match on X-Quiver-Client-Platform
  *   5. full         (priority 1) — catch-all
  *
- * Within a priority level, ties broken by created_at DESC, then release_id.
+ * Within a priority level, ties break by latest activation, then release_id.
  *
  * `/public/apps/:slug/latest` is also wired to this resolver so Quiver has
  * a single release-backed public lookup path.
@@ -29,7 +29,7 @@ interface ScopedResolution {
   scope_type: "full" | "platform" | "user_cohort" | "ip_range" | "device_group";
   scope_value: string;
   priority: number;
-  release_created_at: number;
+  release_activated_at: number;
 }
 
 type PublicAssetResponse = {
@@ -114,20 +114,24 @@ export async function handlePublicV2Latest(c: Context<{ Bindings: Env }>) {
   // Candidates: active releases on (channel, [product_type]). No time window:
   // an active release must stay resolvable no matter how old it is.
   const candidateSql = productType
-    ? `SELECT r.id, r.build_id, r.created_at, r.product_type, r.rollout_cohort_count, r.changelog
+    ? `SELECT r.id, r.build_id, r.created_at,
+              COALESCE(r.activated_at, r.created_at) AS activated_at,
+              r.product_type, r.rollout_cohort_count, r.changelog
        FROM releases r
        JOIN builds b ON b.id = r.build_id
        WHERE r.app_id = ?1 AND r.channel_id = ?2 AND r.product_type = ?3
          AND r.status = 'active'
          AND b.product_type != 'ios-simulator-qa' AND b.release_type != 'qa'
-       ORDER BY r.created_at DESC`
-    : `SELECT r.id, r.build_id, r.created_at, r.product_type, r.rollout_cohort_count, r.changelog
+       ORDER BY COALESCE(r.activated_at, r.created_at) DESC`
+    : `SELECT r.id, r.build_id, r.created_at,
+              COALESCE(r.activated_at, r.created_at) AS activated_at,
+              r.product_type, r.rollout_cohort_count, r.changelog
        FROM releases r
        JOIN builds b ON b.id = r.build_id
        WHERE r.app_id = ?1 AND r.channel_id = ?2
          AND r.status = 'active'
          AND b.product_type != 'ios-simulator-qa' AND b.release_type != 'qa'
-       ORDER BY r.created_at DESC`;
+       ORDER BY COALESCE(r.activated_at, r.created_at) DESC`;
   const candidateStmt = c.env.DB.prepare(candidateSql);
   const allCandidates = await (productType
     ? candidateStmt.bind(app.id, channelRow.id, productType)
@@ -136,21 +140,13 @@ export async function handlePublicV2Latest(c: Context<{ Bindings: Env }>) {
     id: string;
     build_id: string;
     created_at: number;
+    activated_at: number;
     product_type: string;
     rollout_cohort_count: number | null;
     changelog: string | null;
   }>();
 
-  // Rollout gate: a release with rollout_cohort_count < 100 is only served to
-  // clients whose stable per-release bucket falls below the percentage.
-  // Clients that do not send a device id only ever see fully rolled-out
-  // releases. Gated-out clients fall through to the previous active release.
-  const candidates = {
-    results: allCandidates.results.filter((release) =>
-      rolloutIncludes(release.id, release.rollout_cohort_count, deviceId),
-    ),
-  };
-  if (candidates.results.length === 0) {
+  if (allCandidates.results.length === 0) {
     return c.json(
       {
         error: `no active release for this client on channel '${channel}'`,
@@ -162,7 +158,7 @@ export async function handlePublicV2Latest(c: Context<{ Bindings: Env }>) {
   }
 
   // Pull all scopes for those releases in one query.
-  const candidateIds = candidates.results.map((r) => r.id);
+  const candidateIds = allCandidates.results.map((r) => r.id);
   if (candidateIds.length === 0) {
     return c.json({ error: "no candidates" }, 404);
   }
@@ -188,7 +184,12 @@ export async function handlePublicV2Latest(c: Context<{ Bindings: Env }>) {
 
   // Build match list (release, scope, priority).
   const matched: ScopedResolution[] = [];
-  for (const release of candidates.results) {
+  const rolloutEligibleReleaseIds = new Set(
+    allCandidates.results
+      .filter((release) => rolloutIncludes(release.id, release.rollout_cohort_count, deviceId))
+      .map((release) => release.id),
+  );
+  for (const release of allCandidates.results) {
     for (const s of scopes) {
       if (s.release_id !== release.id) continue;
       const ok = matchesScope(
@@ -200,6 +201,10 @@ export async function handlePublicV2Latest(c: Context<{ Bindings: Env }>) {
         deviceGroupIds,
       );
       if (!ok) continue;
+      // Device groups are mandatory overrides on a staged release: a listed QA
+      // or customer device always receives the release, while its full:all
+      // scope remains percentage-gated for everybody else.
+      if (s.scope_type !== "device_group" && !rolloutEligibleReleaseIds.has(release.id)) continue;
       const prio =
         PRIORITY[s.scope_type as keyof typeof PRIORITY] ?? 0;
       matched.push({
@@ -207,7 +212,7 @@ export async function handlePublicV2Latest(c: Context<{ Bindings: Env }>) {
         scope_type: s.scope_type as ScopedResolution["scope_type"],
         scope_value: s.scope_value,
         priority: prio,
-        release_created_at: release.created_at,
+        release_activated_at: release.activated_at,
       });
     }
   }
@@ -224,11 +229,11 @@ export async function handlePublicV2Latest(c: Context<{ Bindings: Env }>) {
     );
   }
 
-  // Sort by priority DESC, created_at DESC, release_id ASC (deterministic tie-break).
+  // Sort by priority DESC, latest activation DESC, release_id ASC.
   matched.sort((a, b) => {
     if (a.priority !== b.priority) return b.priority - a.priority;
-    if (a.release_created_at !== b.release_created_at) {
-      return b.release_created_at - a.release_created_at;
+    if (a.release_activated_at !== b.release_activated_at) {
+      return b.release_activated_at - a.release_activated_at;
     }
     return a.release_id < b.release_id ? -1 : 1;
   });
@@ -243,7 +248,7 @@ export async function handlePublicV2Latest(c: Context<{ Bindings: Env }>) {
      WHERE id = ?1`,
   )
     .bind(
-      candidates.results.find((r) => r.id === winner.release_id)?.build_id ??
+      allCandidates.results.find((r) => r.id === winner.release_id)?.build_id ??
         null,
     )
     .first<{
@@ -314,14 +319,14 @@ export async function handlePublicV2Latest(c: Context<{ Bindings: Env }>) {
   if (winner.scope_type !== "full") {
     fallbackRelease = await buildFallbackRelease(
       c,
-      candidateIds,
+      candidateIds.filter((id) => rolloutEligibleReleaseIds.has(id)),
       winner,
       productType ?? null,
     );
   }
 
   const rawChangelog =
-    candidates.results.find((r) => r.id === winner.release_id)?.changelog ??
+    allCandidates.results.find((r) => r.id === winner.release_id)?.changelog ??
       build.changelog;
 
   return c.json({
@@ -346,7 +351,7 @@ export async function handlePublicV2Latest(c: Context<{ Bindings: Env }>) {
       scope_value: winner.scope_value,
       release_id: winner.release_id,
       rollout_cohort_count:
-        candidates.results.find((r) => r.id === winner.release_id)
+        allCandidates.results.find((r) => r.id === winner.release_id)
           ?.rollout_cohort_count ?? null,
     },
     fallback_release: fallbackRelease,
@@ -810,6 +815,7 @@ async function buildFallbackRelease(
   build: { version: string; version_code: number; platform: string };
   assets: Array<{ platform: string; download_url: string }>;
 } | null> {
+  if (candidateIds.length === 0) return null;
   // Look for a `full` match in the same candidate set, excluding the winner.
   const fallbackSql = productType
     ? `SELECT r.id AS release_id, r.build_id, r.product_type,
@@ -818,14 +824,18 @@ async function buildFallbackRelease(
        JOIN release_scopes s ON s.release_id = r.id
        WHERE r.id IN (${candidateIds.map(() => "?").join(",")})
          AND r.id != ?
-         AND s.scope_type = 'full' AND s.scope_value = 'all'`
+         AND s.scope_type = 'full' AND s.scope_value = 'all'
+       ORDER BY COALESCE(r.activated_at, r.created_at) DESC, r.id ASC
+       LIMIT 1`
     : `SELECT r.id AS release_id, r.build_id, r.product_type,
               s.scope_type, s.scope_value
        FROM releases r
        JOIN release_scopes s ON s.release_id = r.id
        WHERE r.id IN (${candidateIds.map(() => "?").join(",")})
          AND r.id != ?
-         AND s.scope_type = 'full' AND s.scope_value = 'all'`;
+         AND s.scope_type = 'full' AND s.scope_value = 'all'
+       ORDER BY COALESCE(r.activated_at, r.created_at) DESC, r.id ASC
+       LIMIT 1`;
   const stmt = c.env.DB.prepare(fallbackSql);
   const params = productType
     ? [...candidateIds, winner.release_id]

@@ -439,17 +439,47 @@ hands releases publish raft-android <release-id> --device-group <group-id>
 ```
 
 The final publish remains an explicit authorization step. The CLI first reads
-release detail and sends the exact stored non-full scope as an expected-scope
-precondition; zero, mixed, empty, or unsupported scope state is rejected
-locally without a publish request. `--device-group` adds an explicit assertion
-that the stored scope is that exact group. Activation returns `409` if the
-scope then drifts between detail read and the guarded server transition.
-Publishing an exact `full:all` release sends no precondition.
+release detail, canonicalizes every stored scope, and sends the complete set as
+`expected_scopes` together with that detail's `expected_revision`. The update
+command also fresh-reads and sends the revision before PATCH. Empty, duplicate,
+malformed, or unsupported scope state is
+rejected locally without a publish request. A repeatable `--device-group`
+asserts the exact stored device-group subset. Activation returns `409` if any
+scope or revision drifts between the detail read and the guarded server
+transition.
 Only exact group members receive the release; other devices fall back to the
 prior active release. List groups with `hands device-groups list <app>` and
 remove members with `device-groups remove-member`. Rename or change the
 operator note with `device-groups update`. Do not use IMEI or hardware serial
 numbers.
+
+### Percentage rollout with mandatory groups
+
+One release can combine a percentage-gated `full:all` scope with device groups
+whose members are always included:
+
+```bash
+hands releases update raft-android <release-id> \
+  --full \
+  --rollout-percent 25 \
+  --always-include-group <acceptance-group-id> \
+  --always-include-group <qa-group-id>
+
+hands releases publish raft-android <release-id> \
+  --device-group <acceptance-group-id> \
+  --device-group <qa-group-id>
+```
+
+`--always-include-group` is repeatable and implies `full:all`; `--full` by
+itself resets the scope to full only. `--rollout-percent` accepts integers from
+0 through 100, with 100 stored as an unrestricted full rollout. The legacy
+update form `--device-group <id>` still replaces the scope with one exact
+group-only rollout and cannot be combined with the full-rollout options.
+
+There is one release lifecycle per app/channel/product/release-type/version
+code. Cancelling does not free a version for a second release. Restoring a
+superseded or cancelled release reactivates its original ID; it does not create
+a replacement row for the same version.
 
 ## Share Links
 

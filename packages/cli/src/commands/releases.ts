@@ -30,6 +30,68 @@ const RELEASE_SCOPE_TYPES = new Set(["full", "platform", "user_cohort", "ip_rang
 
 const DEFAULT_SHARE_TTL_SECONDS = "604800";
 
+function collectRepeated(value: string, previous: string[] = []): string[] {
+  return [...previous, value];
+}
+
+function normalizeDeviceGroupIds(values: string[] | undefined, flag: string): string[] {
+  const normalized = (values ?? []).map((value) => value.trim());
+  if (normalized.some((value) => !value)) {
+    throw new Error(`${flag} requires a non-empty group id`);
+  }
+  const unique = [...new Set(normalized)];
+  if (unique.length !== normalized.length) {
+    throw new Error(`${flag} may not repeat the same group id`);
+  }
+  return unique.sort();
+}
+
+function normalizeStoredScopes(raw: unknown): ReleaseScope[] {
+  if (!Array.isArray(raw) || raw.length === 0) {
+    throw new Error("publish requires a non-empty stored release scope set; refusing publish");
+  }
+  const scopes = raw.map((entry, index) => {
+    const scope = entry as Partial<ReleaseScope> | null;
+    const scopeType = typeof scope?.scope_type === "string" ? scope.scope_type.trim() : "";
+    const scopeValue = typeof scope?.scope_value === "string" ? scope.scope_value.trim() : "";
+    if (!scopeType || !scopeValue || !RELEASE_SCOPE_TYPES.has(scopeType)) {
+      throw new Error(`stored release scope at index ${index} is empty or unsupported; refusing publish`);
+    }
+    if (scopeType === "full" && scopeValue !== "all") {
+      throw new Error("stored full release scope must be exactly full:all; refusing publish");
+    }
+    return { scope_type: scopeType, scope_value: scopeValue };
+  });
+  const keys = scopes.map((scope) => `${scope.scope_type}\u0000${scope.scope_value}`);
+  if (new Set(keys).size !== keys.length) {
+    throw new Error("stored release scope set contains duplicates; refusing publish");
+  }
+  const hasFull = scopes.some((scope) => scope.scope_type === "full");
+  if (hasFull && scopes.some((scope) => scope.scope_type !== "full" && scope.scope_type !== "device_group")) {
+    throw new Error("stored full release scope may be combined only with device groups; refusing publish");
+  }
+  return scopes.sort((left, right) => {
+    const leftRank = left.scope_type === "full" ? 0 : left.scope_type === "device_group" ? 1 : 2;
+    const rightRank = right.scope_type === "full" ? 0 : right.scope_type === "device_group" ? 1 : 2;
+    return leftRank - rightRank || left.scope_type.localeCompare(right.scope_type) || left.scope_value.localeCompare(right.scope_value);
+  });
+}
+
+function parseRolloutPercent(value: string): number {
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed < 0 || parsed > 100) {
+    throw new Error("--rollout-percent must be an integer from 0 to 100");
+  }
+  return parsed;
+}
+
+function releaseRevision(raw: unknown): number {
+  if (!Number.isInteger(raw) || Number(raw) < 0) {
+    throw new Error("release detail is missing a valid revision; refusing mutation");
+  }
+  return Number(raw);
+}
+
 export function registerReleaseCommands(program: Command): void {
   const releases = program
     .command("releases")
@@ -53,9 +115,11 @@ export function registerReleaseCommands(program: Command): void {
         status: string;
         changelog: string | null;
         rollout_cohort_count: number | null;
+        revision: number;
       };
       console.log(`Release ${r.id}`);
       console.log(`  status:  ${r.status}`);
+      console.log(`  revision: ${r.revision}`);
       console.log(`  rollout: ${r.rollout_cohort_count ?? 100}%`);
       console.log(`  changelog:`);
       console.log((r.changelog ?? "(none)").split("\n").map((l) => "    " + l).join("\n"));
@@ -75,6 +139,13 @@ export function registerReleaseCommands(program: Command): void {
       (value: string, prev: string[] = []) => [...prev, value],
     )
     .option("--device-group <groupId>", "Replace release scope with one exact-rollout device group UUID.")
+    .option("--full", "Reset release scope to full:all.", false)
+    .option(
+      "--always-include-group <groupId>",
+      "Always include a device group alongside the full percentage rollout. Repeatable.",
+      collectRepeated,
+    )
+    .option("--rollout-percent <percent>", "Set the stable full-scope rollout percentage (0-100).")
     .option("--json", "Output JSON.", false)
     .action(
       async (
@@ -84,6 +155,9 @@ export function registerReleaseCommands(program: Command): void {
           changelog?: string[];
           changelogFile?: string[];
           deviceGroup?: string;
+          full?: boolean;
+          alwaysIncludeGroup?: string[];
+          rolloutPercent?: string;
           json?: boolean;
         },
       ) => {
@@ -117,16 +191,45 @@ export function registerReleaseCommands(program: Command): void {
         } else if (plain !== undefined) {
           changelog = plain;
         }
-        if (changelog === undefined && !opts.deviceGroup) {
+        const alwaysIncludeGroups = normalizeDeviceGroupIds(
+          opts.alwaysIncludeGroup,
+          "--always-include-group",
+        );
+        if (opts.deviceGroup && (opts.full || alwaysIncludeGroups.length > 0)) {
+          throw new Error("--device-group cannot be combined with --full or --always-include-group");
+        }
+        const rolloutPercent = opts.rolloutPercent === undefined
+          ? undefined
+          : parseRolloutPercent(opts.rolloutPercent);
+        if (
+          changelog === undefined &&
+          !opts.deviceGroup &&
+          !opts.full &&
+          alwaysIncludeGroups.length === 0 &&
+          rolloutPercent === undefined
+        ) {
           throw new Error(
-            "nothing to update: pass --changelog(-file) or --device-group",
+            "nothing to update: pass --changelog(-file), a scope option, or --rollout-percent",
           );
         }
         const body: Record<string, unknown> = {};
         if (changelog !== undefined) body.changelog = changelog;
         if (opts.deviceGroup) {
           body.scopes = [{ scope_type: "device_group", scope_value: opts.deviceGroup }];
+        } else if (opts.full || alwaysIncludeGroups.length > 0) {
+          body.scopes = [
+            { scope_type: "full", scope_value: "all" },
+            ...alwaysIncludeGroups.map((groupId) => ({
+              scope_type: "device_group",
+              scope_value: groupId,
+            })),
+          ];
         }
+        if (rolloutPercent !== undefined) body.rollout_cohort_count = rolloutPercent === 100 ? null : rolloutPercent;
+        const detail = await apiRequest<{ release?: { revision?: unknown } }>(
+          `/api/apps/${appId}/releases/${releaseId}`,
+        );
+        body.expected_revision = releaseRevision(detail.release?.revision);
         const updated = await apiRequest<Record<string, unknown>>(
           `/api/apps/${appId}/releases/${releaseId}`,
           { method: "PATCH", body },
@@ -135,9 +238,15 @@ export function registerReleaseCommands(program: Command): void {
           console.log(JSON.stringify(updated, null, 2));
           return;
         }
-        console.log(
-          `Updated release ${releaseId}${changelog !== undefined ? ` changelog${langs.length ? ` (${langs.join(", ")})` : ""}` : ""}${opts.deviceGroup ? ` scope=device_group:${opts.deviceGroup}` : ""}.`,
-        );
+        const updates = [
+          changelog !== undefined ? `changelog${langs.length ? ` (${langs.join(", ")})` : ""}` : "",
+          opts.deviceGroup ? `scope=device_group:${opts.deviceGroup}` : "",
+          opts.full || alwaysIncludeGroups.length > 0
+            ? `scope=full:all${alwaysIncludeGroups.map((groupId) => `+device_group:${groupId}`).join("")}`
+            : "",
+          rolloutPercent !== undefined ? `rollout=${rolloutPercent}%` : "",
+        ].filter(Boolean);
+        console.log(`Updated release ${releaseId} ${updates.join(" ")}.`);
       },
     );
 
@@ -146,50 +255,54 @@ export function registerReleaseCommands(program: Command): void {
     .description("Publish a draft release (the explicit human/agent step after changelog review).")
     .option(
       "--device-group <groupId>",
-      "Assert that the stored release scope is exactly this device group before activation.",
+      "Assert the exact stored device-group set before activation. Repeatable.",
+      collectRepeated,
     )
     .option("--json", "Output JSON.", false)
     .action(async (
       appIdOrSlug: string,
       releaseId: string,
-      opts: { deviceGroup?: string; json?: boolean },
+      opts: { deviceGroup?: string[]; json?: boolean },
     ) => {
       const appId = await resolveAppId(appIdOrSlug);
-      const detail = await apiRequest<{ scopes?: unknown }>(
+      const detail = await apiRequest<{
+        release?: { revision?: unknown };
+        scopes?: unknown;
+      }>(
         `/api/apps/${appId}/releases/${releaseId}`,
       );
-      if (!Array.isArray(detail.scopes) || detail.scopes.length !== 1) {
-        throw new Error("publish requires exactly one stored release scope; refusing zero or mixed scopes");
-      }
-      const rawScope = detail.scopes[0] as Partial<ReleaseScope> | null;
-      const scopeType = typeof rawScope?.scope_type === "string" ? rawScope.scope_type.trim() : "";
-      const scopeValue = typeof rawScope?.scope_value === "string" ? rawScope.scope_value.trim() : "";
-      if (!scopeType || !scopeValue || !RELEASE_SCOPE_TYPES.has(scopeType)) {
-        throw new Error("stored release scope is empty or unsupported; refusing publish");
-      }
-      if (scopeType === "full" && scopeValue !== "all") {
-        throw new Error("stored full release scope must be exactly full:all; refusing publish");
-      }
-      if (opts.deviceGroup && (scopeType !== "device_group" || scopeValue !== opts.deviceGroup)) {
-        throw new Error(`--device-group ${opts.deviceGroup} does not match stored ${scopeType}:${scopeValue}`);
-      }
-
-      const body: Record<string, unknown> = {};
-      if (scopeType !== "full") {
-        body.expected_scope = {
-          scope_type: scopeType,
-          scope_value: scopeValue,
-        };
+      const scopes = normalizeStoredScopes(detail.scopes);
+      const expectedRevision = releaseRevision(detail.release?.revision);
+      const assertedGroups = normalizeDeviceGroupIds(opts.deviceGroup, "--device-group");
+      if (opts.deviceGroup !== undefined) {
+        const storedGroups = scopes
+          .filter((scope) => scope.scope_type === "device_group")
+          .map((scope) => scope.scope_value)
+          .sort();
+        if (
+          assertedGroups.length !== storedGroups.length ||
+          assertedGroups.some((groupId, index) => groupId !== storedGroups[index])
+        ) {
+          throw new Error(
+            `--device-group assertions [${assertedGroups.join(", ")}] do not match stored [${storedGroups.join(", ")}]`,
+          );
+        }
       }
       const result = await apiRequest<Record<string, unknown>>(
         `/api/apps/${appId}/releases/${releaseId}/publish`,
-        { method: "POST", body },
+        {
+          method: "POST",
+          body: {
+            expected_scopes: scopes,
+            expected_revision: expectedRevision,
+          },
+        },
       );
       if (opts.json) {
         console.log(JSON.stringify(result, null, 2));
         return;
       }
-      console.log(`Published release ${releaseId}${opts.deviceGroup ? ` to device_group:${opts.deviceGroup}` : ""}.`);
+      console.log(`Published release ${releaseId} with ${scopes.length} exact scope${scopes.length === 1 ? "" : "s"}.`);
     });
 
   releases
