@@ -237,13 +237,12 @@ export async function handleGetReporterRouteMetadata(c: AdminContext) {
        FROM feedback_submission_events
      ) events
      LEFT JOIN webhook_deliveries wd
-       ON (events.submission = 0 AND wd.event_id = events.event_id)
-       OR (events.submission = 1 AND wd.feedback_submission_event_id = events.event_id)
-     LEFT JOIN app_reporter_webhook_subscriptions s
-       ON s.webhook_id = wd.webhook_id AND s.app_id = events.app_id
-      AND s.reporter_integration_id = events.reporter_integration_id
+       ON wd.reporter_delivery = 1 AND (
+         (events.submission = 0 AND wd.event_id = events.event_id)
+         OR (events.submission = 1 AND wd.feedback_submission_event_id = events.event_id)
+       )
      WHERE events.app_id = ?1 AND events.reporter_integration_id = ?2
-       AND events.reporter_id = ?3 AND (wd.id IS NULL OR s.webhook_id IS NOT NULL)
+       AND events.reporter_id = ?3
      ORDER BY events.created_at DESC, events.event_id DESC LIMIT 100`,
   ).bind(appId, integrationId, reporterId).all<{
     event_id: string;

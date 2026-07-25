@@ -411,10 +411,10 @@ export async function handleAddReporterComment(c: ReporterContext) {
       c.env.DB.prepare(
         `INSERT INTO webhook_deliveries
          (id, webhook_id, event_type, event_id, payload_json,
-          signing_secret, signature_key_version, status,
+          signing_secret, signature_key_version, reporter_delivery, status,
           attempts, max_attempts, next_attempt_at, created_at, updated_at)
          SELECT ?1 || ':' || w.id, w.id, 'feedback:comment_created', ?1, ?2,
-                w.secret, w.signature_key_version, 'pending', 0, 3, ?3, ?3, ?3
+                w.secret, w.signature_key_version, 0, 'pending', 0, 3, ?3, ?3, ?3
          FROM feedback_events fe
          JOIN apps a ON a.id = fe.app_id AND a.archived = 0
          JOIN webhooks w ON w.org_id = ?4
@@ -435,11 +435,11 @@ export async function handleAddReporterComment(c: ReporterContext) {
       c.env.DB.prepare(
         `INSERT INTO webhook_deliveries
          (id, webhook_id, event_type, event_id, payload_json,
-          signing_secret, signature_key_version, status,
+          signing_secret, signature_key_version, reporter_delivery, status,
           attempts, max_attempts, next_attempt_at, created_at, updated_at)
          SELECT ?1 || ':' || w.id, w.id, 'feedback:comment_created', ?1,
                 fe.payload_json, w.secret, w.signature_key_version,
-                'pending', 0, 3, ?2, ?2, ?2
+                1, 'pending', 0, 3, ?2, ?2, ?2
          FROM feedback_events fe
          JOIN app_reporter_webhook_subscriptions s
            ON s.app_id = fe.app_id

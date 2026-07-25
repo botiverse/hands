@@ -486,10 +486,10 @@ export async function handlePublicFeedbackSubmit(c: Context<{ Bindings: Env }>) 
           c.env.DB.prepare(
             `INSERT INTO webhook_deliveries
              (id, webhook_id, event_type, feedback_submission_event_id,
-              payload_json, signing_secret, signature_key_version, status,
+              payload_json, signing_secret, signature_key_version, reporter_delivery, status,
               attempts, max_attempts, next_attempt_at, created_at, updated_at)
              SELECT ?1 || ':' || w.id, w.id, 'feedback:new', ?1, ?2,
-                    w.secret, w.signature_key_version, 'pending', 0, 3, ?3, ?3, ?3
+                    w.secret, w.signature_key_version, 0, 'pending', 0, 3, ?3, ?3, ?3
              FROM feedback_submission_events fe
              JOIN apps a ON a.id = fe.app_id AND a.archived = 0
              JOIN app_reporter_integrations ri
@@ -514,10 +514,10 @@ export async function handlePublicFeedbackSubmit(c: Context<{ Bindings: Env }>) 
           c.env.DB.prepare(
             `INSERT INTO webhook_deliveries
              (id, webhook_id, event_type, feedback_submission_event_id,
-              payload_json, signing_secret, signature_key_version, status,
+              payload_json, signing_secret, signature_key_version, reporter_delivery, status,
               attempts, max_attempts, next_attempt_at, created_at, updated_at)
              SELECT ?1 || ':' || w.id, w.id, 'feedback:new', ?1, fe.payload_json,
-                    w.secret, w.signature_key_version, 'pending', 0, 3, ?2, ?2, ?2
+                    w.secret, w.signature_key_version, 1, 'pending', 0, 3, ?2, ?2, ?2
              FROM feedback_submission_events fe
              JOIN apps a ON a.id = fe.app_id AND a.archived = 0
              JOIN app_reporter_webhook_subscriptions s
@@ -2254,10 +2254,10 @@ function feedbackReporterEventStatements(
     db.prepare(
       `INSERT INTO webhook_deliveries
        (id, webhook_id, event_type, event_id, payload_json,
-        signing_secret, signature_key_version, status,
+        signing_secret, signature_key_version, reporter_delivery, status,
         attempts, max_attempts, next_attempt_at, created_at, updated_at)
        SELECT ?1 || ':' || w.id, w.id, ?2, ?1, ?3,
-              w.secret, w.signature_key_version, 'pending', 0, 3,
+              w.secret, w.signature_key_version, 0, 'pending', 0, 3,
               ?4, ?4, ?4
        FROM feedback_events fe
        JOIN webhooks w ON w.org_id = ?5
@@ -2280,10 +2280,10 @@ function feedbackReporterEventStatements(
     db.prepare(
       `INSERT INTO webhook_deliveries
        (id, webhook_id, event_type, event_id, payload_json,
-        signing_secret, signature_key_version, status,
+        signing_secret, signature_key_version, reporter_delivery, status,
         attempts, max_attempts, next_attempt_at, created_at, updated_at)
        SELECT ?1 || ':' || w.id, w.id, ?2, ?1, fe.payload_json,
-              w.secret, w.signature_key_version, 'pending', 0, 3,
+              w.secret, w.signature_key_version, 1, 'pending', 0, 3,
               ?3, ?3, ?3
        FROM feedback_events fe
        JOIN app_reporter_webhook_subscriptions s

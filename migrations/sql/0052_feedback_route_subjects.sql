@@ -133,6 +133,10 @@ ALTER TABLE webhook_deliveries
 ALTER TABLE webhook_deliveries
   ADD COLUMN signature_key_version TEXT NOT NULL DEFAULT 'legacy-v1';
 
+ALTER TABLE webhook_deliveries
+  ADD COLUMN reporter_delivery INTEGER NOT NULL DEFAULT 0
+    CHECK (reporter_delivery IN (0, 1));
+
 CREATE UNIQUE INDEX idx_webhook_deliveries_submission_event
   ON webhook_deliveries(webhook_id, feedback_submission_event_id)
   WHERE feedback_submission_event_id IS NOT NULL;

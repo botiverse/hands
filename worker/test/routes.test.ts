@@ -615,6 +615,7 @@ function makeMockDb() {
       payload_json TEXT NOT NULL,
       signing_secret TEXT,
       signature_key_version TEXT NOT NULL DEFAULT 'legacy-v1',
+      reporter_delivery INTEGER NOT NULL DEFAULT 0,
       status TEXT NOT NULL DEFAULT 'pending',
       attempts INTEGER NOT NULL DEFAULT 0,
       max_attempts INTEGER NOT NULL DEFAULT 3,
@@ -2979,10 +2980,10 @@ describe("quiver webhooks — SQL smoke", () => {
     await env.DB.prepare(
       `INSERT INTO webhook_deliveries
        (id, webhook_id, event_type, event_id, payload_json,
-        signing_secret, signature_key_version, status,
+        signing_secret, signature_key_version, reporter_delivery, status,
         attempts, max_attempts, next_attempt_at, created_at, updated_at)
        VALUES ('delivery-retry', 'wh-retry', 'feedback:status_changed',
-               'event-retry', ?1, 'retry-secret', 'retry-v1',
+               'event-retry', ?1, 'retry-secret', 'retry-v1', 1,
                'pending', 0, 3, 0, 1, 1)`,
     ).bind(payload).run();
     const calls: Array<{ body: string; headers: Headers }> = [];
@@ -7490,7 +7491,7 @@ describe("quiver public API v2 — scope resolution", () => {
     expect((await submit("h".repeat(64), credential.token, ownedSubmission)).status).toBe(409);
 
     const trustedDelivery = (await env.DB.prepare(
-      `SELECT payload_json, signing_secret, signature_key_version,
+      `SELECT payload_json, signing_secret, signature_key_version, reporter_delivery,
               feedback_submission_event_id
        FROM webhook_deliveries
        WHERE webhook_id = ?1 AND event_type = 'feedback:new'`,
@@ -7498,6 +7499,7 @@ describe("quiver public API v2 — scope resolution", () => {
       payload_json: string;
       signing_secret: string;
       signature_key_version: string;
+      reporter_delivery: number;
       feedback_submission_event_id: string;
     };
     expect(JSON.parse(trustedDelivery.payload_json).payload.reporter_id).toBe("g".repeat(64));
@@ -7510,6 +7512,7 @@ describe("quiver public API v2 — scope resolution", () => {
     expect(trustedDelivery).toMatchObject({
       signing_secret: "secret",
       signature_key_version: "v1",
+      reporter_delivery: 1,
     });
     const submissionLedger = await env.DB.prepare(
       `SELECT id, ticket_id, route_outcome FROM feedback_submission_events
@@ -7517,10 +7520,11 @@ describe("quiver public API v2 — scope resolution", () => {
     ).bind(trustedDelivery.feedback_submission_event_id).first() as any;
     expect(submissionLedger).toMatchObject({ route_outcome: "route_bound" });
     const genericDelivery = await env.DB.prepare(
-      `SELECT payload_json FROM webhook_deliveries
+      `SELECT payload_json, reporter_delivery FROM webhook_deliveries
        WHERE webhook_id = 'generic-feedback-webhook' AND event_type = 'feedback:new'`,
-    ).first() as { payload_json: string } | null;
+    ).first() as { payload_json: string; reporter_delivery: number } | null;
     expect(genericDelivery).not.toBeNull();
+    expect(genericDelivery?.reporter_delivery).toBe(0);
     expect(JSON.stringify(genericDelivery)).not.toContain("route_subject");
     expect((await env.DB.prepare(
       `SELECT COUNT(*) AS count FROM webhook_deliveries
@@ -8858,10 +8862,10 @@ describe("Hands iOS simulator QA artifacts", () => {
     await env.DB.prepare(
       `INSERT INTO webhook_deliveries
        (id, webhook_id, event_type, feedback_submission_event_id, payload_json,
-        signing_secret, signature_key_version, status, attempts, max_attempts,
+        signing_secret, signature_key_version, reporter_delivery, status, attempts, max_attempts,
         created_at, updated_at, completed_at)
        VALUES ('route-metadata-delivery', 'route-hook', 'feedback:new',
-               'route-metadata-event', ?1, 'snapshot-secret', 'route-sign-v1',
+               'route-metadata-event', ?1, 'snapshot-secret', 'route-sign-v1', 1,
                'succeeded', 1, 3, ?2, ?2, ?2)`,
     ).bind(metadataEventPayload, now).run();
     const oracleBeforeRotation = await handleGetReporterRouteMetadata(adminContext("metadata"));
@@ -8886,6 +8890,37 @@ describe("Hands iOS simulator QA artifacts", () => {
     expect(oracleAfterRotationBody.events[0].signature_key_version).toBe("route-sign-v1");
     expect(JSON.stringify(oracleAfterRotationBody)).not.toContain(subjectA);
     expect(JSON.stringify(oracleAfterRotationBody)).not.toContain(reporterId);
+
+    await env.DB.prepare(
+      `DELETE FROM app_reporter_webhook_subscriptions
+       WHERE app_id = 'app-ios' AND reporter_integration_id = ?1 AND webhook_id = 'route-hook'`,
+    ).bind(integrationId).run();
+    const unboundPayload = JSON.stringify({ id: "route-unbound-event", event: "feedback:status_changed" });
+    await env.DB.prepare(
+      `INSERT INTO feedback_events
+       (id, event_type, app_id, ticket_id, reporter_integration_id, reporter_id,
+        payload_json, route_outcome, route_subject, created_at)
+       VALUES ('route-unbound-event', 'feedback:status_changed', 'app-ios',
+               'route-metadata-ticket', ?1, ?2, ?3, 'route_unbound', NULL, ?4)`,
+    ).bind(integrationId, reporterId, unboundPayload, now + 1).run();
+    await env.DB.prepare(
+      `INSERT INTO webhook_deliveries
+       (id, webhook_id, event_type, event_id, payload_json, signing_secret,
+        signature_key_version, reporter_delivery, status, attempts, max_attempts,
+        created_at, updated_at)
+       VALUES ('route-unbound-generic', 'route-hook', 'feedback:status_changed',
+               'route-unbound-event', ?1, 'snapshot-secret', 'route-sign-v1', 0,
+               'pending', 0, 3, ?2, ?2)`,
+    ).bind(unboundPayload, now + 1).run();
+    const oracleBeforeLaterBind = await handleGetReporterRouteMetadata(adminContext("metadata"));
+    const unboundBefore = (await oracleBeforeLaterBind.json() as any).events
+      .find((event: any) => event.event_id === "route-unbound-event");
+    expect(unboundBefore).toMatchObject({ route_outcome: "route_unbound", delivery_id: null });
+    expect((await handleBindReporterWebhook(adminContext("bind"))).status).toBe(201);
+    const oracleAfterLaterBind = await handleGetReporterRouteMetadata(adminContext("metadata"));
+    const unboundAfter = (await oracleAfterLaterBind.json() as any).events
+      .find((event: any) => event.event_id === "route-unbound-event");
+    expect(unboundAfter).toMatchObject({ route_outcome: "route_unbound", delivery_id: null });
 
     await env.DB.prepare("UPDATE apps SET archived = 1 WHERE id = 'app-ios'").run();
     expect((await handleBindReporterRouteSubject(
