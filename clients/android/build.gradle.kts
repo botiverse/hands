@@ -44,6 +44,7 @@ android {
 
     defaultConfig {
         minSdk = 24
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         consumerProguardFiles("consumer-rules.pro")
         ndk {
             abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86_64")
@@ -79,6 +80,9 @@ dependencies {
     // file-by-file engine; the CLI/CI side generates patches with the SAME jar.
     implementation("com.eidu:archive-patcher:3.0.0")
     testImplementation("junit:junit:4.13.2")
+    androidTestImplementation("androidx.test:core-ktx:1.6.1")
+    androidTestImplementation("androidx.test.ext:junit:1.2.1")
+    androidTestImplementation("androidx.test:runner:1.6.2")
 }
 
 tasks.matching { it.name == "testReleaseUnitTest" }.configureEach {
