@@ -4,14 +4,98 @@ import android.app.DownloadManager
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
-import android.content.IntentFilter
-import android.database.Cursor
 import android.net.Uri
-import android.os.Build
 import android.os.Environment
+import android.util.Log
 import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
 import java.io.File
+import java.net.URI
+
+internal enum class DownloadInstallResult {
+    IGNORED,
+    UNAVAILABLE_OR_UNSAFE_URI,
+    INSTALL_STARTED,
+    INSTALL_FAILED,
+}
+
+internal fun validatedApkContentUri(uriString: String?): String? {
+    val candidate = uriString?.takeIf { it.isNotBlank() } ?: return null
+    val parsed = try {
+        URI(candidate)
+    } catch (_: Exception) {
+        return null
+    }
+    return candidate.takeIf {
+        parsed.scheme.equals("content", ignoreCase = true) &&
+            !parsed.rawAuthority.isNullOrBlank()
+    }
+}
+
+internal fun resolveDownloadedApkContentUri(
+    uriString: String?,
+    fileProviderUri: (File) -> String,
+): String? {
+    val candidate = uriString?.takeIf { it.isNotBlank() } ?: return null
+    val parsed = try {
+        URI(candidate)
+    } catch (_: Exception) {
+        return null
+    }
+    return when {
+        parsed.scheme.equals("content", ignoreCase = true) ->
+            validatedApkContentUri(candidate)
+        parsed.scheme.equals("file", ignoreCase = true) -> {
+            val file = try {
+                File(parsed)
+            } catch (_: Exception) {
+                return null
+            }
+            validatedApkContentUri(fileProviderUri(file))
+        }
+        else -> null
+    }
+}
+
+internal fun handleCompletedDownload(
+    expectedDownloadId: Long,
+    completedDownloadId: Long,
+    downloadedUri: (Long) -> String?,
+    fileProviderUri: (File) -> String,
+    launchInstaller: (String) -> Unit,
+    onFailure: (Exception) -> Unit = {},
+): DownloadInstallResult {
+    if (completedDownloadId != expectedDownloadId) return DownloadInstallResult.IGNORED
+
+    return try {
+        val apkUri = resolveDownloadedApkContentUri(
+            downloadedUri(completedDownloadId),
+            fileProviderUri,
+        )
+            ?: return DownloadInstallResult.UNAVAILABLE_OR_UNSAFE_URI
+        launchInstaller(apkUri)
+        DownloadInstallResult.INSTALL_STARTED
+    } catch (exception: Exception) {
+        try {
+            onFailure(exception)
+        } catch (_: Exception) {
+            // Receiver failures must never escape into the host process.
+        }
+        DownloadInstallResult.INSTALL_FAILED
+    }
+}
+
+internal fun apkInstallIntentFlags(): Int =
+    Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_GRANT_READ_URI_PERMISSION
+
+internal fun triggerApkInstall(ctx: Context, apkUri: Uri) {
+    if (validatedApkContentUri(apkUri.toString()) == null) return
+    val install = Intent(Intent.ACTION_VIEW).apply {
+        setDataAndType(apkUri, "application/vnd.android.package-archive")
+        flags = apkInstallIntentFlags()
+    }
+    ctx.startActivity(install)
+}
 
 /**
  * Downloads the APK from [downloadUrl] using Android's DownloadManager and
@@ -43,21 +127,13 @@ class ApkInstaller(private val context: Context) {
             .setAllowedOverRoaming(true)
             .setMimeType("application/vnd.android.package-archive")
 
-        // For Android 10+, use a public Downloads subdir so the system
-        // installer can read the file without scoped storage gymnastics.
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            request.setDestinationInExternalPublicDir(
-                Environment.DIRECTORY_DOWNLOADS,
-                fileName,
-            )
-        } else {
-            @Suppress("DEPRECATION")
-            request.setDestinationInExternalFilesDir(
-                context,
-                Environment.DIRECTORY_DOWNLOADS,
-                fileName,
-            )
-        }
+        // Keep the file app-scoped. DownloadManager may still report it as a
+        // file:// URI, which the completion path converts through FileProvider.
+        request.setDestinationInExternalFilesDir(
+            context,
+            Environment.DIRECTORY_DOWNLOADS,
+            fileName,
+        )
 
         return dm.enqueue(request)
     }
@@ -71,13 +147,35 @@ class ApkInstaller(private val context: Context) {
     fun createInstallReceiver(downloadId: Long): BroadcastReceiver {
         return object : BroadcastReceiver() {
             override fun onReceive(ctx: Context?, intent: Intent?) {
-                val dm = ContextCompat.getSystemService(
-                    ctx ?: context,
-                    DownloadManager::class.java,
-                ) ?: return
-                val id = intent?.getLongExtra(DownloadManager.EXTRA_DOWNLOAD_ID, -1L)
-                if (id != downloadId) return
-                triggerInstall(ctx ?: context, dm, id)
+                try {
+                    val receiverContext = ctx ?: context
+                    val dm = ContextCompat.getSystemService(
+                        receiverContext,
+                        DownloadManager::class.java,
+                    ) ?: return
+                    val id = intent?.getLongExtra(DownloadManager.EXTRA_DOWNLOAD_ID, -1L)
+                    val result = handleCompletedDownload(
+                        expectedDownloadId = downloadId,
+                        completedDownloadId = id ?: -1L,
+                        downloadedUri = { dm.getUriForDownloadedFile(it)?.toString() },
+                        fileProviderUri = {
+                            FileProvider.getUriForFile(
+                                receiverContext,
+                                "${receiverContext.packageName}.hands.fileprovider",
+                                it,
+                            ).toString()
+                        },
+                        launchInstaller = { triggerApkInstall(receiverContext, Uri.parse(it)) },
+                        onFailure = {
+                            Log.e(TAG, "Unable to launch the package installer", it)
+                        },
+                    )
+                    if (result == DownloadInstallResult.UNAVAILABLE_OR_UNSAFE_URI) {
+                        Log.e(TAG, "Downloaded APK URI was unavailable or unsafe")
+                    }
+                } catch (exception: Exception) {
+                    Log.e(TAG, "Unable to handle the completed APK download", exception)
+                }
             }
         }
     }
@@ -95,34 +193,10 @@ class ApkInstaller(private val context: Context) {
     fun installLocalApk(file: File) {
         val authority = "${context.packageName}.hands.fileprovider"
         val apkUri = FileProvider.getUriForFile(context, authority, file)
-
-        val install = Intent(Intent.ACTION_VIEW).apply {
-            setDataAndType(apkUri, "application/vnd.android.package-archive")
-            flags = Intent.FLAG_ACTIVITY_NEW_TASK or
-                Intent.FLAG_GRANT_READ_URI_PERMISSION
-        }
-        context.startActivity(install)
+        triggerApkInstall(context, apkUri)
     }
 
-    private fun triggerInstall(ctx: Context, dm: DownloadManager, downloadId: Long) {
-        val query = DownloadManager.Query().setFilterById(downloadId)
-        val cursor: Cursor = dm.query(query)
-        if (!cursor.moveToFirst()) {
-            cursor.close()
-            return
-        }
-        val columnIndex = cursor.getColumnIndex(DownloadManager.COLUMN_LOCAL_URI)
-        val localUriString = if (columnIndex >= 0) cursor.getString(columnIndex) else null
-        cursor.close()
-
-        if (localUriString == null) return
-        val apkUri = Uri.parse(localUriString)
-
-        val install = Intent(Intent.ACTION_VIEW).apply {
-            setDataAndType(apkUri, "application/vnd.android.package-archive")
-            flags = Intent.FLAG_ACTIVITY_NEW_TASK or
-                Intent.FLAG_GRANT_READ_URI_PERMISSION
-        }
-        ctx.startActivity(install)
+    private companion object {
+        const val TAG = "HandsApkInstaller"
     }
 }
