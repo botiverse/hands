@@ -6,7 +6,7 @@ on:
       version:
         description: "SDK version to publish, for example 0.1.0"
         required: true
-        default: "0.12.1"
+        default: "0.12.2"
   push:
     tags:
       - "android-sdk-v*"
