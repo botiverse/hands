@@ -359,7 +359,8 @@ malformed ticket UUIDs return `404` without revealing another reporter's data.
 List and detail responses include Hands-authoritative unread state: each ticket
 has `unread` and `unread_count`, while the response has `unread_total` (the
 number of owned tickets with unread visible staff/system replies). A successful
-detail read advances a monotonic receipt through the latest visible reply;
+detail read advances a monotonic receipt through the latest visible reply in
+the returned comment page; concurrent or later replies remain unread;
 reporter comments and internal staff notes never create unread state.
 
 Reporter comments require a client-generated UUID `submission_id`: new comments

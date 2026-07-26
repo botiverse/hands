@@ -201,7 +201,9 @@ GET /api/apps/{appId}/reporter-feedback/{ticketId}?comment_cursor=<opaque>&comme
 The response contains the same reporter-safe ticket projection, original
 attachment metadata, and non-internal comments only. Comment pagination orders
 by `(created_at ASC, id ASC)` and clamps the page size to `1..100`. A successful
-detail response advances the ticket's monotonic read receipt and returns the
+detail response advances the ticket's monotonic read receipt only through the
+latest visible staff/system comment in that returned page, so a concurrent
+reply outside the response snapshot remains unread. The response returns the
 updated authoritative `unread_total`.
 
 Comment DTO:
@@ -256,7 +258,8 @@ body must be non-empty and is limited to 10,000 Unicode code points.
 `submission_id` is required, must be a full UUID, and is normalized to
 lowercase. Text-only requests retain the existing SHA-256 fingerprint of the
 normalized body bytes. Requests with attachments use a versioned composite of
-the body plus ordered attachment metadata and byte digests, so changing
+the body plus each original ordered filename, content type, size, and byte
+digest, so changing
 filenames, types, sizes, order, or bytes conflicts under the same submission id.
 
 Idempotency is scoped to
@@ -339,6 +342,12 @@ store a monotonic `(created_at, comment_id)` cursor. Only visible staff/system
 comments after that cursor count as unread; reporter comments and internal
 comments do not. The comment id tie-breaker prevents equal-millisecond replies
 from being lost.
+
+Before uploading reporter attachments, the Worker records durable R2 cleanup
+intents. Every attempted generated key is cleaned on upload or D1 failure;
+failed deletes remain due for the scheduled cleanup pass. Cleanup first checks
+for a committed attachment reference, so a stale intent can never delete a
+successfully committed reply file.
 
 Comments remain immutable in v1. Deletion/edit history is outside this slice.
 

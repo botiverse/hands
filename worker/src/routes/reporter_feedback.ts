@@ -329,13 +329,8 @@ async function markTicketRead(
   c: ReporterContext,
   principal: ReporterPrincipal,
   ticketId: string,
+  latest: { id: string; created_at: number } | null,
 ): Promise<void> {
-  const latest = await c.env.DB.prepare(
-    `SELECT id, created_at FROM feedback_comments
-     WHERE ticket_id = ?1 AND internal = 0
-       AND author_type IN ('staff', 'system')
-     ORDER BY created_at DESC, id DESC LIMIT 1`,
-  ).bind(ticketId).first<{ id: string; created_at: number }>();
   if (!latest) return;
   const now = Date.now();
   await c.env.DB.prepare(
@@ -393,17 +388,25 @@ export async function handleGetReporterFeedback(c: ReporterContext) {
        ORDER BY created_at, id`,
     ).bind(ticketId).all(),
   ]);
-  await auditRead(c, authorized.principal, authorized.pseudonym, "detail", { ticketId });
-  await markTicketRead(c, authorized.principal, ticketId);
-  const totalUnread = await unreadTotal(c, authorized.principal);
-  const { org_id: _orgId, ...safeTicket } = ticket;
   const commentPage = comments.slice(0, commentLimit);
+  const readWatermark = [...commentPage].reverse().find((comment) =>
+    (comment.author_type === "staff" || comment.author_type === "system")
+    && typeof comment.created_at === "number"
+    && typeof comment.id === "string"
+  ) as { id: string; created_at: number } | undefined;
+  await auditRead(c, authorized.principal, authorized.pseudonym, "detail", { ticketId });
+  await markTicketRead(c, authorized.principal, ticketId, readWatermark ?? null);
+  const [totalUnread, refreshedTicket] = await Promise.all([
+    unreadTotal(c, authorized.principal),
+    ownedTicket(c, authorized.principal, ticketId),
+  ]);
+  const { org_id: _orgId, ...safeTicket } = refreshedTicket ?? ticket;
   const lastComment = commentPage.at(-1);
   const nextCommentCursor = comments.length > commentLimit && lastComment
     ? encodeCursor(lastComment.created_at, lastComment.id)
     : null;
   return c.json({
-    ticket: { ...ticketDto(safeTicket), unread: false, unread_count: 0 },
+    ticket: ticketDto(safeTicket),
     comments: commentPage,
     next_comment_cursor: nextCommentCursor,
     attachments,
@@ -418,6 +421,7 @@ async function sha256Hex(input: string): Promise<string> {
 
 type ReporterCommentAttachment = {
   bytes: ArrayBuffer;
+  fingerprintFilename: string;
   filename: string;
   contentType: string;
   sizeBytes: number;
@@ -465,6 +469,7 @@ async function parseReporterCommentInput(c: ReporterContext): Promise<{
     const digest = await crypto.subtle.digest("SHA-256", bytes);
     attachments.push({
       bytes,
+      fingerprintFilename: file.name,
       filename: safeFilename(file.name),
       contentType: file.type.toLowerCase(),
       sizeBytes: file.size,
@@ -492,7 +497,7 @@ export async function handleAddReporterComment(c: ReporterContext) {
         "reporter-comment-v2",
         text,
         ...attachments.map((attachment) => [
-          attachment.filename,
+          attachment.fingerprintFilename,
           attachment.contentType,
           attachment.sizeBytes,
           attachment.digest,
@@ -539,11 +544,19 @@ export async function handleAddReporterComment(c: ReporterContext) {
   });
   const uploadedKeys: string[] = [];
   try {
+    if (attachmentRows.length > 0) {
+      await c.env.DB.batch(attachmentRows.map((attachment) => c.env.DB.prepare(
+        `INSERT INTO feedback_reporter_r2_cleanup
+         (r2_key, created_at, updated_at, attempts, next_attempt_at)
+         VALUES (?1, ?2, ?2, 0, ?2)
+         ON CONFLICT(r2_key) DO NOTHING`,
+      ).bind(attachment.r2Key, now)));
+    }
     for (const attachment of attachmentRows) {
+      uploadedKeys.push(attachment.r2Key);
       await c.env.APK_BUCKET.put(attachment.r2Key, attachment.bytes, {
         httpMetadata: { contentType: attachment.contentType },
       });
-      uploadedKeys.push(attachment.r2Key);
     }
     await c.env.DB.batch([
       c.env.DB.prepare(
@@ -664,8 +677,28 @@ export async function handleAddReporterComment(c: ReporterContext) {
          ON CONFLICT(webhook_id, event_id) WHERE event_id IS NOT NULL DO NOTHING`,
       ).bind(eventId, now, ticket.org_id),
     ]);
+    if (attachmentRows.length > 0) {
+      await Promise.allSettled(attachmentRows.map((attachment) => c.env.DB.prepare(
+        "DELETE FROM feedback_reporter_r2_cleanup WHERE r2_key = ?1",
+      ).bind(attachment.r2Key).run()));
+    }
   } catch (error) {
-    await Promise.allSettled(uploadedKeys.map((key) => c.env.APK_BUCKET.delete(key)));
+    const cleanupResults = await Promise.allSettled(
+      uploadedKeys.map((key) => c.env.APK_BUCKET.delete(key)),
+    );
+    await Promise.allSettled(uploadedKeys.map((key, index) => {
+      const cleanup = cleanupResults[index];
+      return cleanup?.status === "fulfilled"
+        ? c.env.DB.prepare(
+            "DELETE FROM feedback_reporter_r2_cleanup WHERE r2_key = ?1",
+          ).bind(key).run()
+        : c.env.DB.prepare(
+            `UPDATE feedback_reporter_r2_cleanup
+             SET attempts = attempts + 1, last_error = 'r2 delete failed',
+                 next_attempt_at = ?2, updated_at = ?3
+             WHERE r2_key = ?1`,
+          ).bind(key, now + 60_000, Date.now()).run();
+    }));
     const concurrent = await existingComment();
     if (concurrent) {
       if (concurrent.submission_fingerprint !== fingerprint) {
@@ -718,6 +751,34 @@ export async function handleDownloadReporterAttachment(c: ReporterContext) {
 }
 
 export async function cleanupReporterFeedbackData(env: Env, now = Date.now()) {
+  const { results: cleanupRows } = await env.DB.prepare(
+    `SELECT r2_key FROM feedback_reporter_r2_cleanup
+     WHERE next_attempt_at <= ?1 ORDER BY next_attempt_at, r2_key LIMIT 100`,
+  ).bind(now).all<{ r2_key: string }>();
+  for (const row of cleanupRows) {
+    const referenced = await env.DB.prepare(
+      "SELECT 1 AS found FROM feedback_attachments WHERE r2_key = ?1 LIMIT 1",
+    ).bind(row.r2_key).first<{ found: number }>();
+    if (referenced) {
+      await env.DB.prepare(
+        "DELETE FROM feedback_reporter_r2_cleanup WHERE r2_key = ?1",
+      ).bind(row.r2_key).run();
+      continue;
+    }
+    try {
+      await env.APK_BUCKET.delete(row.r2_key);
+      await env.DB.prepare(
+        "DELETE FROM feedback_reporter_r2_cleanup WHERE r2_key = ?1",
+      ).bind(row.r2_key).run();
+    } catch {
+      await env.DB.prepare(
+        `UPDATE feedback_reporter_r2_cleanup
+         SET attempts = attempts + 1, last_error = 'r2 delete failed',
+             next_attempt_at = ?2, updated_at = ?1
+         WHERE r2_key = ?3`,
+      ).bind(now, now + 60_000, row.r2_key).run();
+    }
+  }
   await env.DB.batch([
     env.DB.prepare(
       "DELETE FROM feedback_reporter_rate_windows WHERE updated_at < ?1",

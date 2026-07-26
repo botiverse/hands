@@ -725,6 +725,14 @@ function makeMockDb() {
       updated_at INTEGER NOT NULL,
       PRIMARY KEY (app_id, reporter_integration_id, reporter_id, ticket_id)
     );
+    CREATE TABLE feedback_reporter_r2_cleanup (
+      r2_key TEXT PRIMARY KEY,
+      attempts INTEGER NOT NULL DEFAULT 0,
+      last_error TEXT,
+      next_attempt_at INTEGER NOT NULL,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    );
   `);
 
   // Replace `?N` numbered placeholders with anonymous `?` (better-sqlite3 compat).
@@ -10233,6 +10241,7 @@ describe("Hands iOS simulator QA artifacts", () => {
     const { generateDeployToken, hashDeployToken } = await import("../src/lib/deploy_tokens");
     const {
       handleAddReporterComment,
+      cleanupReporterFeedbackData,
       handleDownloadReporterAttachment,
       handleGetReporterFeedback,
       handleListReporterFeedback,
@@ -10413,13 +10422,15 @@ describe("Hands iOS simulator QA artifacts", () => {
       { comment_limit: "2" },
     ));
     const page1Body = await page1.json() as any;
-    expect(page1Body.ticket).toMatchObject({ unread: false, unread_count: 0 });
-    expect(page1Body.unread_total).toBe(0);
+    expect(page1Body.ticket).toMatchObject({ unread: true, unread_count: 2 });
+    expect(page1Body.unread_total).toBe(1);
     const page2 = await handleGetReporterFeedback(context(
       "detail", credentialA.token, ticketA, undefined, reporterId,
       { comment_limit: "2", comment_cursor: page1Body.next_comment_cursor },
     ));
     const page2Body = await page2.json() as any;
+    expect(page2Body.ticket).toMatchObject({ unread: false, unread_count: 0 });
+    expect(page2Body.unread_total).toBe(0);
     const firstFour = [...page1Body.comments, ...page2Body.comments].map((comment: any) => comment.id);
     const expectedFirstFour = (await env.DB.prepare(
       `SELECT id FROM feedback_comments WHERE ticket_id = ?1 AND internal = 0
@@ -10463,6 +10474,40 @@ describe("Hands iOS simulator QA artifacts", () => {
     ).bind(ticketA, now + 300).run();
     const unreadInternal = await handleListReporterFeedback(context("list", credentialA.token));
     expect((await unreadInternal.json() as any).tickets[0].unread_count).toBe(1);
+    await handleGetReporterFeedback(context("detail", credentialA.token, ticketA));
+
+    const raceCommentId = "45454545-4545-4454-8454-454545454545";
+    const originalPrepare = env.DB.prepare.bind(env.DB);
+    let injectRace = true;
+    env.DB.prepare = (sql: string) => {
+      const statement = originalPrepare(sql);
+      if (!sql.includes("SELECT id, author_type, body, created_at")) return statement;
+      const originalBind = statement.bind.bind(statement);
+      statement.bind = (...params: unknown[]) => {
+        const bound = originalBind(...params);
+        const originalAll = bound.all.bind(bound);
+        bound.all = async () => {
+          const snapshot = await originalAll();
+          if (injectRace) {
+            injectRace = false;
+            await originalPrepare(
+              `INSERT INTO feedback_comments
+               (id, ticket_id, author_actor, author_type, body, internal, created_at)
+               VALUES (?1, ?2, 'staff:test', 'staff', 'raced after snapshot', 0, ?3)`,
+            ).bind(raceCommentId, ticketA, now + 400).run();
+          }
+          return snapshot;
+        };
+        return bound;
+      };
+      return statement;
+    };
+    const raceDetail = await handleGetReporterFeedback(context("detail", credentialA.token, ticketA));
+    env.DB.prepare = originalPrepare;
+    const raceBody = await raceDetail.json() as any;
+    expect(raceBody.comments.some((comment: any) => comment.id === raceCommentId)).toBe(false);
+    expect(raceBody.ticket).toMatchObject({ unread: true, unread_count: 1 });
+    expect(raceBody.unread_total).toBe(1);
     await handleGetReporterFeedback(context("detail", credentialA.token, ticketA));
 
     const emojiSubmission = "12121212-1212-4212-8212-121212121212";
@@ -10519,6 +10564,17 @@ describe("Hands iOS simulator QA artifacts", () => {
     ));
     expect(attachmentReplay.status).toBe(200);
     expect(storedObjects.size).toBe(1);
+    const sanitizedCollisionForm = new FormData();
+    sanitizedCollisionForm.set("body", "reply with screenshot");
+    sanitizedCollisionForm.set("submission_id", attachmentSubmission);
+    sanitizedCollisionForm.append("attachments", new File(
+      [new Uint8Array([1, 2, 3, 4])],
+      "screen?shot.png",
+      { type: "image/png" },
+    ));
+    expect((await handleAddReporterComment(context(
+      "comment", credentialA.token, ticketA, sanitizedCollisionForm,
+    ))).status).toBe(409);
     const changedFileForm = new FormData();
     changedFileForm.set("body", "reply with screenshot");
     changedFileForm.set("submission_id", attachmentSubmission);
@@ -10585,8 +10641,8 @@ describe("Hands iOS simulator QA artifacts", () => {
     let uploadAttempt = 0;
     env.APK_BUCKET.put = async (key: string, value: ArrayBuffer) => {
       uploadAttempt += 1;
-      if (uploadAttempt === 2) throw new Error("simulated R2 failure");
       storedObjects.set(key, new Uint8Array(value));
+      if (uploadAttempt === 2) throw new Error("simulated R2 failure");
     };
     const r2FailureForm = new FormData();
     r2FailureForm.set("body", "r2 failure");
@@ -10596,7 +10652,38 @@ describe("Hands iOS simulator QA artifacts", () => {
     await expect(handleAddReporterComment(context(
       "comment", credentialA.token, ticketA, r2FailureForm,
     ))).rejects.toThrow("simulated R2 failure");
-    expect(deletedObjects.some((key) => key.includes("/comments/"))).toBe(true);
+    expect([...storedObjects.keys()].some((key) => key.endsWith("/0-a.png") || key.endsWith("/1-b.png"))).toBe(false);
+    expect((await env.DB.prepare(
+      "SELECT COUNT(*) AS count FROM feedback_reporter_r2_cleanup",
+    ).first() as any).count).toBe(0);
+
+    env.APK_BUCKET.put = async (key: string, value: ArrayBuffer) => {
+      storedObjects.set(key, new Uint8Array(value));
+      throw new Error("stored then failed");
+    };
+    env.APK_BUCKET.delete = async () => {
+      throw new Error("delete unavailable");
+    };
+    const compensatedForm = new FormData();
+    compensatedForm.set("body", "cleanup compensation");
+    compensatedForm.set("submission_id", "92929292-9292-4929-8929-929292929292");
+    compensatedForm.append("attachments", new File(["retry"], "retry.png", { type: "image/png" }));
+    await expect(handleAddReporterComment(context(
+      "comment", credentialA.token, ticketA, compensatedForm,
+    ))).rejects.toThrow("stored then failed");
+    const cleanupIntent = await env.DB.prepare(
+      "SELECT r2_key, attempts, last_error FROM feedback_reporter_r2_cleanup",
+    ).first() as any;
+    expect(cleanupIntent).toMatchObject({ attempts: 1, last_error: "r2 delete failed" });
+    expect(storedObjects.has(cleanupIntent.r2_key)).toBe(true);
+    env.APK_BUCKET.delete = async (key: string) => {
+      storedObjects.delete(key);
+    };
+    await cleanupReporterFeedbackData(env, Date.now() + 61_000);
+    expect(storedObjects.has(cleanupIntent.r2_key)).toBe(false);
+    expect((await env.DB.prepare(
+      "SELECT COUNT(*) AS count FROM feedback_reporter_r2_cleanup",
+    ).first() as any).count).toBe(0);
 
     env.APK_BUCKET.put = async (key: string, value: ArrayBuffer) => {
       storedObjects.set(key, new Uint8Array(value));

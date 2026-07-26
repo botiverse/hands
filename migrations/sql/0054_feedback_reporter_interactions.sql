@@ -95,3 +95,15 @@ WHEN NEW.origin = 'reporter' AND NOT EXISTS (
 BEGIN
   SELECT RAISE(ABORT, 'feedback reporter attachment owner mismatch');
 END;
+
+CREATE TABLE feedback_reporter_r2_cleanup (
+  r2_key TEXT PRIMARY KEY,
+  attempts INTEGER NOT NULL DEFAULT 0 CHECK (attempts >= 0),
+  last_error TEXT,
+  next_attempt_at INTEGER NOT NULL,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+
+CREATE INDEX idx_feedback_reporter_r2_cleanup_due
+  ON feedback_reporter_r2_cleanup(next_attempt_at, r2_key);
