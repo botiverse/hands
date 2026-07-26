@@ -10527,6 +10527,58 @@ describe("Hands iOS simulator QA artifacts", () => {
     expect(legacyPage2Body.comments.map((comment: any) => comment.id)).not.toContain(bridgeLow);
     await env.DB.prepare("DELETE FROM feedback_tickets WHERE id = ?1").bind(legacyTicket).run();
 
+    const sparseLegacyTicket = "91909090-9090-4090-8090-909090909090";
+    const sparsePrevious = "01010101-0101-4101-8101-010101010101";
+    const sparseMid = "88888888-8888-4888-8888-888888888888";
+    const sparseHigh = "ffffffff-ffff-4fff-8fff-fffffffffff0";
+    const sparseLow = "11111111-1111-4111-8111-111111111110";
+    await env.DB.prepare(
+      `INSERT INTO feedback_tickets
+       (id, app_id, kind, status, message, metadata_json, reporter_id,
+        reporter_integration_id, created_at, updated_at)
+       VALUES (?1, 'app-ios', 'feedback', 'open', 'Sparse legacy receipt', '{}',
+               ?2, ?3, ?4, ?4)`,
+    ).bind(sparseLegacyTicket, reporterId, integrationA, bridgeTime).run();
+    await env.DB.prepare(
+      `INSERT INTO feedback_comments
+       (id, ticket_id, author_actor, author_type, body, internal, created_at)
+       VALUES (?1, ?2, 'staff:test', 'staff', 'previous', 0, ?3)`,
+    ).bind(sparsePrevious, sparseLegacyTicket, bridgeTime - 1).run();
+    for (const id of [sparseMid, sparseHigh, sparseLow]) {
+      await env.DB.prepare(
+        `INSERT INTO feedback_comments
+         (id, ticket_id, author_actor, author_type, body, internal, created_at)
+         VALUES (?1, ?2, 'staff:test', 'staff', ?1, 0, ?3)`,
+      ).bind(id, sparseLegacyTicket, bridgeTime).run();
+    }
+    const sparsePreviousRow = await env.DB.prepare(
+      "SELECT reporter_sequence FROM feedback_comments WHERE id = ?1",
+    ).bind(sparsePrevious).first() as any;
+    await env.DB.prepare(
+      `INSERT INTO feedback_reporter_ticket_reads
+       (app_id, reporter_integration_id, reporter_id, ticket_id,
+        read_through_sequence, read_through_comment_id, updated_at)
+       VALUES ('app-ios', ?1, ?2, ?3, ?4, ?5, ?6)`,
+    ).bind(
+      integrationA,
+      reporterId,
+      sparseLegacyTicket,
+      sparsePreviousRow.reporter_sequence,
+      sparsePrevious,
+      now,
+    ).run();
+    const sparseCursor = btoa(JSON.stringify([bridgeTime - 1, sparsePrevious]))
+      .replaceAll("+", "-").replaceAll("/", "_").replaceAll("=", "");
+    const sparsePage = await handleGetReporterFeedback(context(
+      "detail", credentialA.token, sparseLegacyTicket, undefined, reporterId,
+      { comment_limit: "1", comment_cursor: sparseCursor },
+    ));
+    const sparseBody = await sparsePage.json() as any;
+    expect(sparseBody.comments.map((comment: any) => comment.id)).toEqual([sparseLow]);
+    expect(sparseBody.ticket).toMatchObject({ unread: true, unread_count: 3 });
+    expect(sparseBody.unread_total).toBeGreaterThanOrEqual(1);
+    await env.DB.prepare("DELETE FROM feedback_tickets WHERE id = ?1").bind(sparseLegacyTicket).run();
+
     const afterRead = await handleListReporterFeedback(context("list", credentialA.token));
     expect(await afterRead.json()).toMatchObject({
       unread_total: 0,

@@ -430,11 +430,17 @@ export async function handleGetReporterFeedback(c: ReporterContext) {
     ).bind(ticketId).all(),
   ]);
   const commentPage = comments.slice(0, commentLimit);
-  const readWatermark = [...commentPage].reverse().find((comment) =>
-    (comment.author_type === "staff" || comment.author_type === "system")
-    && typeof comment.reporter_sequence === "number"
-    && typeof comment.id === "string"
-  ) as { id: string; reporter_sequence: number } | undefined;
+  // A legacy (created_at, id)-ordered page is not necessarily contiguous in
+  // reporter_sequence, so a single high-water receipt cannot represent it
+  // without false-reading unseen rows. Legacy sessions paginate only; the next
+  // fresh sequence session advances the authoritative receipt.
+  const readWatermark = commentCursor.mode === "sequence"
+    ? [...commentPage].reverse().find((comment) =>
+        (comment.author_type === "staff" || comment.author_type === "system")
+        && typeof comment.reporter_sequence === "number"
+        && typeof comment.id === "string"
+      ) as { id: string; reporter_sequence: number } | undefined
+    : undefined;
   await auditRead(c, authorized.principal, authorized.pseudonym, "detail", { ticketId });
   await markTicketRead(c, authorized.principal, ticketId, readWatermark ?? null);
   const [totalUnread, refreshedTicket] = await Promise.all([

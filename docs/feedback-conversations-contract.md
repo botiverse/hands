@@ -205,7 +205,10 @@ by the immutable database-assigned sequence and clamps the page size to
 whose random UUID sorts earlier. Sequence cursors carry an explicit version.
 During a rolling upgrade, a pre-sequence `(created_at, id)` cursor stays in
 legacy ordering and emits another legacy cursor until that pagination session
-is exhausted; the server never switches ordering mid-session. A successful
+is exhausted; the server never switches ordering mid-session. Because a legacy
+page can be sparse in sequence order, legacy pagination never advances the new
+single high-water read receipt. The next fresh sequence session advances it
+without falsely marking unseen legacy rows read. A successful
 detail response advances the ticket's monotonic read receipt only through the
 latest visible staff/system comment in that returned page, so a concurrent
 reply outside the response snapshot remains unread. The response returns the
