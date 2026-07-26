@@ -11,6 +11,8 @@ export type FeedbackMessageKey =
   | "attachmentUnsupported"
   | "attachmentSummary"
   | "attachments"
+  | "attachFile"
+  | "attachImage"
   | "back"
   | "cancel"
   | "conversation"
@@ -74,6 +76,8 @@ const messages: Record<FeedbackLocale, FeedbackMessages> = {
     attachmentUnsupported: "{name} is not a supported image.",
     attachmentSummary: "{name} · {size}",
     attachments: "Attachments",
+    attachFile: "Attach file",
+    attachImage: "Attach image",
     back: "Back",
     cancel: "Cancel",
     conversation: "Conversation",
@@ -134,6 +138,8 @@ const messages: Record<FeedbackLocale, FeedbackMessages> = {
     attachmentUnsupported: "{name} 不是支持的图片格式。",
     attachmentSummary: "{name} · {size}",
     attachments: "附件",
+    attachFile: "添加文件",
+    attachImage: "添加图片",
     back: "返回",
     cancel: "取消",
     conversation: "对话",

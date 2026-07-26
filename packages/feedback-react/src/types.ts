@@ -60,6 +60,9 @@ export type AddFeedbackCommentInput = {
   ticketId: string;
   body: string;
   submissionId: string;
+  attachments: File[];
+  /** Optional upload progress bridge. Values are clamped by the SDK to 0..1. */
+  onAttachmentProgress?: (input: { index: number; progress: number }) => void;
 };
 
 /**

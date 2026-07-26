@@ -26,6 +26,74 @@ import type {
   FeedbackTicketSummary,
 } from "./types.js";
 
+function ImageAttachmentIcon() {
+  return (
+    <svg aria-hidden="true" viewBox="0 0 24 24" width="16" height="16">
+      <rect
+        x="3"
+        y="3"
+        width="18"
+        height="18"
+        rx="1"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="2"
+      />
+      <circle
+        cx="8.5"
+        cy="8.5"
+        r="1.5"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="2"
+      />
+      <path
+        d="m4 18 5-5 3 3 3-4 5 6M17 5v6M14 8h6"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="2"
+      />
+    </svg>
+  );
+}
+
+function FileAttachmentIcon() {
+  return (
+    <svg aria-hidden="true" viewBox="0 0 24 24" width="16" height="16">
+      <path
+        d="m20 11.5-8.5 8.5a6 6 0 0 1-8.5-8.5l9-9a4 4 0 0 1 5.5 5.8l-9 9a2 2 0 1 1-2.8-2.8l8.3-8.3"
+        fill="none"
+        stroke="currentColor"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        strokeWidth="2"
+      />
+    </svg>
+  );
+}
+
+function SendIcon() {
+  return (
+    <svg aria-hidden="true" viewBox="0 0 24 24" width="16" height="16">
+      <path
+        d="m22 2-7 20-4-9-9-4Z"
+        fill="none"
+        stroke="currentColor"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        strokeWidth="2"
+      />
+      <path
+        d="M22 2 11 13"
+        fill="none"
+        stroke="currentColor"
+        strokeLinecap="round"
+        strokeWidth="2"
+      />
+    </svg>
+  );
+}
+
 export const MAX_FEEDBACK_ATTACHMENTS = 3;
 export const MAX_FEEDBACK_ATTACHMENT_BYTES = 10 * 1024 * 1024;
 export const FEEDBACK_ATTACHMENT_TYPES = [
@@ -405,6 +473,9 @@ export function FeedbackTicket({
   const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
   const [sending, setSending] = useState(false);
+  const [replyAttachments, setReplyAttachments] = useState<PendingAttachment[]>(
+    [],
+  );
   const [loadError, setLoadError] = useState<string | null>(null);
   const [retryLoad, setRetryLoad] = useState<{
     cursor: string | undefined;
@@ -421,6 +492,8 @@ export function FeedbackTicket({
   );
   const conversationRef = useRef<HTMLDivElement | null>(null);
   const textareaRef = useAutosize(reply);
+  const imageInputRef = useRef<HTMLInputElement | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
   const scrollIntent = useRef<"bottom" | "preserve" | null>(null);
 
   const load = useCallback(
@@ -504,27 +577,56 @@ export function FeedbackTicket({
   const send = async () => {
     const body = reply.trim();
     if (!body || sending) return;
+    const files = replyAttachments.map(({ file }) => file);
+    const attachmentError = localizedAttachmentError(files, message);
+    if (attachmentError) {
+      setActionError(attachmentError);
+      return;
+    }
     setSending(true);
     setActionError(null);
+    setReplyAttachments((current) =>
+      current.map((item) => ({ ...item, state: "uploading", progress: 0 })),
+    );
     actionController.current?.abort();
     const controller = new AbortController();
     actionController.current = controller;
     commentSubmission.current = stableFeedbackSubmission(
       commentSubmission.current,
-      body,
+      JSON.stringify([
+        body,
+        ...files.map((file) => [
+          file.name,
+          file.type,
+          file.size,
+          file.lastModified,
+        ]),
+      ]),
     );
     try {
       const result = await transport.addComment({
         ticketId,
         body,
         submissionId: commentSubmission.current.id,
+        attachments: files,
         signal: controller.signal,
+        onAttachmentProgress: ({ index, progress }) => {
+          if (controller.signal.aborted) return;
+          setReplyAttachments((current) =>
+            current.map((item, itemIndex) =>
+              itemIndex === index
+                ? { ...item, progress: Math.max(0, Math.min(1, progress)) }
+                : item,
+            ),
+          );
+        },
       });
       if (controller.signal.aborted) return;
       reportUnread({ total: result.unreadTotal, source: "comment" });
       scrollIntent.current = "bottom";
       setDetail(result);
       setReply("");
+      setReplyAttachments([]);
       setNewReplies(false);
       commentSubmission.current = null;
       setAnnouncement(message("replySent"));
@@ -533,10 +635,40 @@ export function FeedbackTicket({
       if (!controller.signal.aborted) {
         setActionError(safeError(cause));
         setAnnouncement(safeError(cause));
+        setReplyAttachments((current) =>
+          current.map((item) =>
+            item.state === "uploading" ? { ...item, state: "failed" } : item,
+          ),
+        );
       }
     } finally {
       if (!controller.signal.aborted) setSending(false);
     }
+  };
+
+  const chooseReplyAttachments = (event: ChangeEvent<HTMLInputElement>) => {
+    const selected = Array.from(event.currentTarget.files ?? []);
+    const combined = [
+      ...replyAttachments.map(({ file }) => file),
+      ...selected,
+    ];
+    const attachmentError = localizedAttachmentError(combined, message);
+    if (attachmentError) {
+      setActionError(attachmentError);
+      event.currentTarget.value = "";
+      return;
+    }
+    setActionError(null);
+    setReplyAttachments((current) => [
+      ...current,
+      ...selected.map((file) => ({
+        id: submissionId(),
+        file,
+        progress: 0,
+        state: "ready" as const,
+      })),
+    ]);
+    event.currentTarget.value = "";
   };
 
   const onReplyKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
@@ -681,7 +813,10 @@ export function FeedbackTicket({
       </div>
       {detail && (
         <div className="hands-feedback-composer">
-          <label htmlFor={`hands-feedback-reply-${ticketId}`}>
+          <label
+            className="hands-feedback-sr-only"
+            htmlFor={`hands-feedback-reply-${ticketId}`}
+          >
             {message("reply")}
           </label>
           <textarea
@@ -693,17 +828,110 @@ export function FeedbackTicket({
             onKeyDown={onReplyKeyDown}
             rows={1}
           />
+          <input
+            ref={imageInputRef}
+            data-testid="hands-feedback-reply-image-input"
+            className="hands-feedback-sr-only"
+            type="file"
+            accept={FEEDBACK_ATTACHMENT_TYPES.join(",")}
+            multiple
+            disabled={
+              sending || replyAttachments.length >= MAX_FEEDBACK_ATTACHMENTS
+            }
+            onChange={chooseReplyAttachments}
+          />
+          <input
+            ref={fileInputRef}
+            data-testid="hands-feedback-reply-file-input"
+            className="hands-feedback-sr-only"
+            type="file"
+            accept={FEEDBACK_ATTACHMENT_TYPES.join(",")}
+            multiple
+            disabled={
+              sending || replyAttachments.length >= MAX_FEEDBACK_ATTACHMENTS
+            }
+            onChange={chooseReplyAttachments}
+          />
+          {replyAttachments.length > 0 && (
+            <ul className="hands-feedback-pending-attachments hands-feedback-reply-attachments">
+              {replyAttachments.map((item) => (
+                <li key={item.id}>
+                  <span>{item.file.name}</span>
+                  {item.state === "uploading" && (
+                    <progress
+                      max={1}
+                      value={item.progress || undefined}
+                      aria-label={message("uploadProgress", {
+                        name: item.file.name,
+                      })}
+                    />
+                  )}
+                  {item.state === "failed" && (
+                    <span role="status">{message("uploadFailed")}</span>
+                  )}
+                  <Button
+                    variant="outline"
+                    disabled={sending}
+                    onClick={() =>
+                      setReplyAttachments((current) =>
+                        current.filter(({ id }) => id !== item.id),
+                      )
+                    }
+                  >
+                    {message("remove")}
+                  </Button>
+                </li>
+              ))}
+            </ul>
+          )}
           {actionError && (
             <div className="hands-feedback-error" role="alert">
               {actionError}
             </div>
           )}
-          <Button
-            disabled={!reply.trim() || sending}
-            onClick={() => void send()}
-          >
-            {sending ? message("sending") : message("sendReply")}
-          </Button>
+          <div className="hands-feedback-composer-toolbar">
+            <div className="hands-feedback-composer-attachments">
+              <Button
+                aria-label={message("attachImage")}
+                title={message("attachImage")}
+                size="icon-sm"
+                variant="outline"
+                disabled={
+                  sending ||
+                  replyAttachments.length >= MAX_FEEDBACK_ATTACHMENTS
+                }
+                onClick={() => imageInputRef.current?.click()}
+              >
+                <ImageAttachmentIcon />
+              </Button>
+              <Button
+                aria-label={message("attachFile")}
+                title={message("attachFile")}
+                size="icon-sm"
+                variant="outline"
+                disabled={
+                  sending ||
+                  replyAttachments.length >= MAX_FEEDBACK_ATTACHMENTS
+                }
+                onClick={() => fileInputRef.current?.click()}
+              >
+                <FileAttachmentIcon />
+              </Button>
+            </div>
+            <Button
+              aria-label={sending ? message("sending") : message("sendReply")}
+              title={sending ? message("sending") : message("sendReply")}
+              size="icon-sm"
+              variant="accent"
+              disabled={!reply.trim() || sending}
+              onClick={() => void send()}
+            >
+              <SendIcon />
+              <span className="hands-feedback-sr-only">
+                {sending ? message("sending") : message("sendReply")}
+              </span>
+            </Button>
+          </div>
         </div>
       )}
       <div
