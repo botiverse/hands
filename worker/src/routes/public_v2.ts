@@ -969,7 +969,10 @@ export async function handlePublicR2Download(c: Context<{ Bindings: Env }>) {
      JOIN apps a ON a.id = b.app_id
      JOIN releases r ON r.build_id = b.id
      WHERE ba.r2_key = ?1
-       AND ba.artifact_kind = 'installable'
+       AND (
+         ba.artifact_kind = 'installable'
+         OR (ba.artifact_kind = 'delta-patch' AND ba.filetype = 'patch')
+       )
        AND b.product_type != 'ios-simulator-qa' AND b.release_type != 'qa'
        AND r.status IN ('active', 'draft')
      LIMIT 1`,

@@ -6799,6 +6799,83 @@ describe("quiver public API v2 — scope resolution", () => {
     expect(await response.text()).toBe("apk");
   });
 
+  it("public R2 download serves only release-bound delta patches", async () => {
+    const env = makeEnv();
+    const { handlePublicR2Download, handlePublicV2UpdateCheck } = await import("../src/routes/public_v2");
+    await seedRelease(env, "rel-delta-download", "build-delta-download", [["full", "all"]], {
+      versionCode: 20,
+      versionName: "1.0.20",
+    });
+    await seedAsset(env, "build-delta-download", "asset-delta-download-full", {
+      arch: "arm64-v8a",
+      sizeBytes: 1000,
+    });
+    const key = "apps/app-scope/patch-download-10-20.patch";
+    await seedAsset(env, "build-delta-download", "asset-delta-download", {
+      artifactKind: "delta-patch",
+      arch: "arm64-v8a",
+      filetype: "patch",
+      sizeBytes: 200,
+      r2Key: key,
+      metadata: {
+        from_version_code: 10,
+        to_version_code: 20,
+        algorithm: "archive-patcher-v1",
+        target_sha256: "target-apk-sha256",
+      },
+    });
+    await env.DB.prepare(
+      `INSERT INTO feature_flags (id, app_id, key, default_enabled, updated_at)
+       VALUES ('ff-delta-download', 'app-scope', 'delta_updates', 1, ?1)`,
+    ).bind(Date.now()).run();
+    env.APK_BUCKET = {
+      get: async (requestedKey: string) => {
+        if (requestedKey !== key) return null;
+        return {
+          body: new Blob(["patch"]).stream(),
+          httpEtag: '"asset-delta-download"',
+          writeHttpMetadata: () => undefined,
+        };
+      },
+    };
+
+    const check = await handlePublicV2UpdateCheck(
+      makePublicContext(env, {
+        channel: "production",
+        product_type: "android-apk",
+        current_version_code: "10",
+        platform: "android",
+        arch: "arm64-v8a",
+      }),
+    );
+    const body = await responseJson<any>(check);
+    const url = new URL(body.patch.download_url);
+    const request = () => handlePublicR2Download(
+      makePublicDownloadContext(env, decodeURIComponent(url.pathname.replace("/public/r2/", "")), {
+        expires: url.searchParams.get("expires") ?? undefined,
+        sig: url.searchParams.get("sig") ?? undefined,
+      }),
+    );
+
+    const active = await request();
+    expect(active.status).toBe(200);
+    expect(active.headers.get("content-type")).toBe("application/octet-stream");
+    expect(active.headers.get("content-length")).toBe("200");
+    expect(active.headers.get("content-disposition")).toBe(
+      `attachment; filename="scope-app-1.0.20-20.patch"; filename*=UTF-8''scope-app-1.0.20-20.patch`,
+    );
+    expect(await active.text()).toBe("patch");
+
+    // A still-valid URL must stop working as soon as its release is no longer
+    // active or draft. The HMAC alone never authorizes an arbitrary R2 object.
+    await env.DB.prepare("UPDATE releases SET status = 'cancelled' WHERE id = ?1")
+      .bind("rel-delta-download")
+      .run();
+    const cancelled = await request();
+    expect(cancelled.status).toBe(404);
+    expect(await responseJson<any>(cancelled)).toEqual({ error: "asset not found" });
+  });
+
   it("public R2 download redirects to presigned R2 when S3 credentials are configured", async () => {
     const env = makeEnv();
     configureR2Presign(env);

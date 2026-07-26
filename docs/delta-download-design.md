@@ -84,6 +84,10 @@ old SDKs (they ignore the new field).
 ## Security
 
 - Patch served over a signed, expiring R2 URL (same as full APK today).
+- The public download proxy serves a patch only when the exact R2 object is a
+  `delta-patch`/`patch` asset on a non-QA build with an active or draft release;
+  unrelated build assets and cancelled releases stay inaccessible even if a
+  caller has a syntactically valid URL signature.
 - The reconstructed APK is verified by **sha256 against the server's recorded
   target hash** (integrity) **and signer-cert equality** (authenticity) before
   install. A corrupted/tampered patch can only produce a hash mismatch → full
@@ -114,6 +118,10 @@ let the client take the full download. This keeps delta a strict win.
   target_sha256}` when a matching `delta-patch` asset exists and is
   < `DELTA_MAX_SIZE_RATIO` (0.7) of the full APK. Full asset stays the
   fallback; old SDKs ignore the field.
+- **P1a public download authorization — FIXED**: signed patch URLs now resolve
+  through the public proxy only for release-bound `delta-patch` assets. The
+  previous proxy allowlist accepted only `installable`, causing every canonical
+  patch URL to return 404 even when `/updates/check` offered it.
 - **P1b storage — DONE (free)**: the existing build-asset API already accepts
   any `artifact_kind` + `metadata_json`, so no server change was needed to
   store `delta-patch` assets.
