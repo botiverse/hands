@@ -3,6 +3,13 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parse, printParseErrorCode } from "jsonc-parser";
 
+// Preview lanes were removed; fail loudly instead of silently rendering a
+// production config for a caller that still expects preview behavior.
+if (process.argv.includes("--preview")) {
+  console.error("Preview lanes were removed; --preview is no longer supported.");
+  process.exit(1);
+}
+
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const workerDir = resolve(scriptDir, "..");
 const sourcePath = resolve(workerDir, "wrangler.hands.jsonc");
