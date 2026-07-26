@@ -5,13 +5,16 @@
  */
 
 import type { Command } from "commander";
-import { existsSync, readFileSync } from "node:fs";
+import { createReadStream, existsSync, readFileSync } from "node:fs";
 import { mkdtemp, writeFile, rm } from "node:fs/promises";
 import { basename, extname, join } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { execFile } from "node:child_process";
+import { Writable } from "node:stream";
+import { pipeline } from "node:stream/promises";
 import { promisify } from "node:util";
+import { createGunzip } from "node:zlib";
 import { apiRequest, apiUploadFile } from "../lib/api.js";
 
 const execFileAsync = promisify(execFile);
@@ -80,6 +83,79 @@ interface TestflightPublishStatus {
 
 function collect(value: string, previous: string[] = []): string[] {
   return previous.concat(value);
+}
+
+export const ANDROID_DELTA_PATCH_ALGORITHM = "archive-patcher-v1+gzip";
+const ANDROID_DELTA_PATCH_MAGIC = Buffer.from("GFbFv1_0", "ascii");
+
+interface AndroidDeltaPatchSpec {
+  fromVersionCode: number;
+  patchPath: string;
+}
+
+export function androidDeltaPatchMetadata(args: {
+  fromVersionCode: number;
+  toVersionCode: number;
+  targetSha256: string;
+}): Record<string, unknown> {
+  return {
+    from_version_code: args.fromVersionCode,
+    to_version_code: args.toVersionCode,
+    algorithm: ANDROID_DELTA_PATCH_ALGORITHM,
+    target_sha256: args.targetSha256,
+  };
+}
+
+export async function assertGzipAndroidDeltaPatch(filePath: string): Promise<void> {
+  let prefix = Buffer.alloc(0);
+  try {
+    await pipeline(
+      createReadStream(filePath),
+      createGunzip(),
+      new Writable({
+        write(chunk: Buffer, _encoding, callback) {
+          if (prefix.length < ANDROID_DELTA_PATCH_MAGIC.length) {
+            prefix = Buffer.concat([prefix, chunk]).subarray(
+              0,
+              ANDROID_DELTA_PATCH_MAGIC.length,
+            );
+          }
+          callback();
+        },
+      }),
+    );
+  } catch {
+    throw new Error(
+      `--delta-patch must be a complete gzip-compressed official PatchGen output (.patch.gz): ${filePath}`,
+    );
+  }
+  if (!prefix.equals(ANDROID_DELTA_PATCH_MAGIC)) {
+    throw new Error(
+      `--delta-patch does not contain an archive-patcher v1 stream: ${filePath}`,
+    );
+  }
+}
+
+async function preflightAndroidDeltaPatches(
+  specs: string[] = [],
+): Promise<AndroidDeltaPatchSpec[]> {
+  const parsed = specs.map((spec) => {
+    const eq = spec.indexOf("=");
+    if (eq <= 0) {
+      throw new Error(`--delta-patch must be <from_version_code>=<path>, got: ${spec}`);
+    }
+    const fromVersionCode = Number(spec.slice(0, eq).trim());
+    const patchPath = spec.slice(eq + 1).trim();
+    if (!Number.isFinite(fromVersionCode)) {
+      throw new Error(`bad from_version_code in --delta-patch: ${spec}`);
+    }
+    if (!existsSync(patchPath)) throw new Error(`missing delta patch file: ${patchPath}`);
+    return { fromVersionCode, patchPath };
+  });
+  for (const patch of parsed) {
+    await assertGzipAndroidDeltaPatch(patch.patchPath);
+  }
+  return parsed;
 }
 
 export function shouldOutputJson(program: Command, localJson?: boolean): boolean {
@@ -530,7 +606,7 @@ export function registerBuildCommands(program: Command): void {
     .option("--metadata <path>", "Build metadata JSON support artifact.")
     .option(
       "--delta-patch <spec>",
-      "Delta patch as <from_version_code>=<path> (archive-patcher). Repeatable — clients on that version get offered this patch instead of the full APK.",
+      "Complete gzipped delta patch as <from_version_code>=<path> (official PatchGen .patch.gz output). Repeatable — clients on that version get offered this patch instead of the full APK.",
       collect,
       [],
     )
@@ -589,8 +665,6 @@ export function registerBuildCommands(program: Command): void {
           json?: boolean;
         },
       ) => {
-        const appId = await resolveAppId(appIdOrSlug);
-        const channelId = await resolveChannelId(appId, opts.channel);
         const versionCode = Number(opts.versionCode);
         if (!Number.isFinite(versionCode) || versionCode < 0) {
           throw new Error("--version-code must be a non-negative number");
@@ -602,6 +676,7 @@ export function registerBuildCommands(program: Command): void {
         const metadataJson = opts.metadata
           ? JSON.parse(readFileSync(opts.metadata, "utf8"))
           : {};
+        const deltaPatches = await preflightAndroidDeltaPatches(opts.deltaPatch);
         const provenance = {
           source_commit: opts.sourceCommit ?? null,
           source_branch: opts.sourceBranch ?? null,
@@ -610,6 +685,8 @@ export function registerBuildCommands(program: Command): void {
           ci_run_id: opts.ciRunId ?? null,
           ci_url: opts.ciUrl ?? null,
         };
+        const appId = await resolveAppId(appIdOrSlug);
+        const channelId = await resolveChannelId(appId, opts.channel);
 
         const build = await apiRequest<{ id: string }>(`/api/apps/${appId}/builds`, {
           method: "POST",
@@ -636,28 +713,22 @@ export function registerBuildCommands(program: Command): void {
           filetype: "apk",
         });
         assets.push(installable);
-        // Delta patches: <from_version_code>=<path>. target_sha256 is the new
-        // APK's hash so the client can verify the reconstructed file. The
-        // server offers a patch only when it beats the full APK size.
-        for (const spec of opts.deltaPatch ?? []) {
-          const eq = spec.indexOf("=");
-          if (eq <= 0) throw new Error(`--delta-patch must be <from_version_code>=<path>, got: ${spec}`);
-          const fromVersionCode = Number(spec.slice(0, eq).trim());
-          const patchPath = spec.slice(eq + 1).trim();
-          if (!Number.isFinite(fromVersionCode)) throw new Error(`bad from_version_code in --delta-patch: ${spec}`);
-          if (!existsSync(patchPath)) throw new Error(`missing delta patch file: ${patchPath}`);
+        // Delta inputs were fully preflighted before any remote mutation.
+        // target_sha256 is the new APK's hash so the client can verify the
+        // reconstructed file. The server offers a patch only when it beats
+        // the full APK size.
+        for (const { fromVersionCode, patchPath } of deltaPatches) {
           assets.push(
             await uploadAndRegisterAsset(appId, build.id, patchPath, {
               artifact_kind: "delta-patch",
               platform: "android",
               arch: opts.arch,
               filetype: "patch",
-              metadata_json: {
-                from_version_code: fromVersionCode,
-                to_version_code: versionCode,
-                algorithm: "archive-patcher-v1",
-                target_sha256: installable.file_hash,
-              },
+              metadata_json: androidDeltaPatchMetadata({
+                fromVersionCode,
+                toVersionCode: versionCode,
+                targetSha256: installable.file_hash,
+              }),
             }),
           );
         }
@@ -1864,12 +1935,11 @@ async function generateAndUploadAndroidDeltas(args: {
           platform: "android",
           arch: args.arch,
           filetype: "patch",
-          metadata_json: {
-            from_version_code: src.from_version_code,
-            to_version_code: args.toVersionCode,
-            algorithm: "archive-patcher-v1+gzip",
-            target_sha256: args.targetSha256,
-          },
+          metadata_json: androidDeltaPatchMetadata({
+            fromVersionCode: src.from_version_code,
+            toVersionCode: args.toVersionCode,
+            targetSha256: args.targetSha256,
+          }),
         }),
       );
     }
