@@ -1025,20 +1025,309 @@ export async function handleDeleteBuildAsset(c: Context<{ Bindings: Env }>) {
   const appId = c.req.param("appId") ?? "";
   const buildId = c.req.param("buildId") ?? "";
   const assetId = c.req.param("assetId") ?? "";
+  const expectedFileHash = c.req.query("expected_file_hash")?.trim().toLowerCase() ?? null;
+  const expectedSizeRaw = c.req.query("expected_size_bytes")?.trim() ?? null;
+  const guardedAgentDelete = expectedFileHash !== null || expectedSizeRaw !== null;
+
+  if (guardedAgentDelete) {
+    if (!expectedFileHash || expectedSizeRaw === null) {
+      return c.json(
+        {
+          error: "expected_file_hash and expected_size_bytes are required together",
+          code: "ASSET_DELETE_PRECONDITION_REQUIRED",
+        },
+        400,
+      );
+    }
+    if (!/^[a-f0-9]{64}$/.test(expectedFileHash)) {
+      return c.json({ error: "expected_file_hash must be a SHA-256 hex digest" }, 400);
+    }
+    if (!/^\d+$/.test(expectedSizeRaw) || !Number.isSafeInteger(Number(expectedSizeRaw))) {
+      return c.json({ error: "expected_size_bytes must be a non-negative safe integer" }, 400);
+    }
+  }
+
   const build = await getBuildForApp(c.env.DB, appId, buildId);
   if (!build) return c.json({ error: "build not found" }, 404);
   const asset = await c.env.DB.prepare(
-    "SELECT id FROM build_assets WHERE id = ?1 AND build_id = ?2",
+    `SELECT id, artifact_kind, r2_key, file_hash, size_bytes
+     FROM build_assets
+     WHERE id = ?1 AND build_id = ?2`,
   )
     .bind(assetId, buildId)
-    .first<{ id: string }>();
-  if (!asset) return c.json({ error: "asset not found" }, 404);
+    .first<{
+      id: string;
+      artifact_kind: string;
+      r2_key: string;
+      file_hash: string;
+      size_bytes: number;
+    }>();
+  if (!asset) {
+    if (guardedAgentDelete) {
+      const prior = await c.env.DB.prepare(
+        `SELECT id, payload
+         FROM audit_logs
+         WHERE app_id = ?1 AND action = 'build_asset.delete'
+           AND json_extract(payload, '$.buildId') = ?2
+           AND json_extract(payload, '$.assetId') = ?3
+           AND lower(json_extract(payload, '$.fileHash')) = ?4
+           AND CAST(json_extract(payload, '$.sizeBytes') AS INTEGER) = ?5
+           AND json_extract(payload, '$.r2Preserved') = 1
+         ORDER BY created_at DESC
+         LIMIT 1`,
+      )
+        .bind(appId, buildId, assetId, expectedFileHash, Number(expectedSizeRaw))
+        .first<{ id: string; payload: string }>();
+      if (!prior) {
+        return c.json(
+          {
+            error: "asset metadata is absent without a matching successful delete audit",
+            code: "ASSET_DELETE_PROVENANCE_NOT_FOUND",
+            metadata_absent: true,
+            r2_preserved: null,
+          },
+          404,
+        );
+      }
+      let payload: {
+        r2Key?: unknown;
+        fileHash?: unknown;
+        sizeBytes?: unknown;
+      };
+      try {
+        payload = JSON.parse(prior.payload) as typeof payload;
+      } catch {
+        return c.json(
+          { error: "matching delete audit is malformed", code: "ASSET_DELETE_AUDIT_INVALID" },
+          500,
+        );
+      }
+      if (
+        typeof payload.r2Key !== "string" ||
+        payload.fileHash !== expectedFileHash ||
+        payload.sizeBytes !== Number(expectedSizeRaw)
+      ) {
+        return c.json(
+          { error: "matching delete audit is incomplete", code: "ASSET_DELETE_AUDIT_INVALID" },
+          500,
+        );
+      }
+      let object: R2Object | null;
+      try {
+        object = await c.env.APK_BUCKET.head(payload.r2Key);
+      } catch {
+        return c.json(
+          {
+            error: "stored object readback is temporarily unavailable",
+            code: "ASSET_OBJECT_READBACK_FAILED",
+            metadata_absent: true,
+            r2_preserved: null,
+            audit_id: prior.id,
+          },
+          503,
+        );
+      }
+      if (!object || object.size !== payload.sizeBytes) {
+        return c.json(
+          {
+            error: "stored object from the successful delete audit is missing or changed",
+            code: "ASSET_OBJECT_PRECONDITION_FAILED",
+            metadata_absent: true,
+            r2_preserved: false,
+          },
+          409,
+        );
+      }
+      return c.json({
+        ok: true,
+        deleted: false,
+        idempotent_replay: true,
+        asset_id: assetId,
+        build_id: buildId,
+        metadata_absent: true,
+        r2_preserved: true,
+        r2_key: payload.r2Key,
+        file_hash: payload.fileHash,
+        size_bytes: payload.sizeBytes,
+        audit_id: prior.id,
+      });
+    }
+    return c.json({ error: "asset not found" }, 404);
+  }
 
-  await c.env.DB.prepare("DELETE FROM build_assets WHERE id = ?1 AND build_id = ?2")
-    .bind(assetId, buildId)
-    .run();
-  await insertAuditLog(c.env.DB, appId, "build_asset.delete", currentActor(c), { buildId, assetId });
-  return c.json({ ok: true });
+  if (guardedAgentDelete) {
+    const expectedSize = Number(expectedSizeRaw);
+    if (asset.artifact_kind === "installable") {
+      return c.json(
+        {
+          error: "guarded Agent deletion does not allow installable assets",
+          code: "INSTALLABLE_ASSET_DELETE_FORBIDDEN",
+        },
+        409,
+      );
+    }
+    if (asset.file_hash.toLowerCase() !== expectedFileHash || asset.size_bytes !== expectedSize) {
+      return c.json(
+        {
+          error: "build asset no longer matches the expected immutable bytes",
+          code: "ASSET_DELETE_PRECONDITION_FAILED",
+        },
+        409,
+      );
+    }
+    let object: R2Object | null;
+    try {
+      object = await c.env.APK_BUCKET.head(asset.r2_key);
+    } catch {
+      return c.json(
+        {
+          error: "stored object preflight is temporarily unavailable",
+          code: "ASSET_OBJECT_READBACK_FAILED",
+          r2_preserved: null,
+        },
+        503,
+      );
+    }
+    if (!object || object.size !== asset.size_bytes) {
+      return c.json(
+        {
+          error: "stored object is missing or its size no longer matches the asset metadata",
+          code: "ASSET_OBJECT_PRECONDITION_FAILED",
+        },
+        409,
+      );
+    }
+  }
+
+  const auditId = crypto.randomUUID();
+  const auditPayload = JSON.stringify({
+    buildId,
+    assetId,
+    artifactKind: asset.artifact_kind,
+    r2Key: asset.r2_key,
+    fileHash: asset.file_hash.toLowerCase(),
+    sizeBytes: asset.size_bytes,
+    r2Preserved: true,
+    guarded: guardedAgentDelete,
+  });
+  const now = Date.now();
+  const actor = currentActor(c);
+  const auditStatement = guardedAgentDelete
+    ? c.env.DB.prepare(
+      `INSERT INTO audit_logs (id, app_id, action, actor, payload, created_at)
+       SELECT ?1, ?2, 'build_asset.delete', ?3, ?4, ?5
+       FROM build_assets
+       WHERE id = ?6 AND build_id = ?7 AND artifact_kind <> 'installable'
+         AND lower(file_hash) = ?8 AND size_bytes = ?9
+         AND artifact_kind = ?10 AND r2_key = ?11`,
+    ).bind(
+      auditId,
+      appId,
+      actor,
+      auditPayload,
+      now,
+      assetId,
+      buildId,
+      expectedFileHash,
+      Number(expectedSizeRaw),
+      asset.artifact_kind,
+      asset.r2_key,
+    )
+    : c.env.DB.prepare(
+      `INSERT INTO audit_logs (id, app_id, action, actor, payload, created_at)
+       SELECT ?1, ?2, 'build_asset.delete', ?3, ?4, ?5
+       FROM build_assets
+       WHERE id = ?6 AND build_id = ?7 AND artifact_kind = ?8 AND r2_key = ?9`,
+    ).bind(
+      auditId,
+      appId,
+      actor,
+      auditPayload,
+      now,
+      assetId,
+      buildId,
+      asset.artifact_kind,
+      asset.r2_key,
+    );
+  const deleteStatement = guardedAgentDelete
+    ? c.env.DB.prepare(
+      `DELETE FROM build_assets
+       WHERE id = ?1 AND build_id = ?2 AND artifact_kind <> 'installable'
+         AND lower(file_hash) = ?3 AND size_bytes = ?4
+         AND artifact_kind = ?5 AND r2_key = ?6`,
+    ).bind(
+      assetId,
+      buildId,
+      expectedFileHash,
+      Number(expectedSizeRaw),
+      asset.artifact_kind,
+      asset.r2_key,
+    )
+    : c.env.DB.prepare(
+      `DELETE FROM build_assets
+       WHERE id = ?1 AND build_id = ?2 AND artifact_kind = ?3 AND r2_key = ?4`,
+    ).bind(assetId, buildId, asset.artifact_kind, asset.r2_key);
+  const results = await c.env.DB.batch([auditStatement, deleteStatement]);
+  const auditWrite = results[0];
+  const deletion = results[1];
+  if (!auditWrite || !deletion) {
+    throw new Error("atomic build-asset audit/delete batch returned an incomplete result");
+  }
+  const audited = Number(auditWrite.meta?.changes ?? 0) === 1;
+  const deleted = Number(deletion.meta?.changes ?? 0) === 1;
+  if (audited !== deleted) {
+    throw new Error("atomic build-asset audit/delete result mismatch");
+  }
+  if (!deleted) {
+    return c.json(
+      {
+        error: "build asset changed before the guarded delete committed",
+        code: "ASSET_DELETE_PRECONDITION_FAILED",
+      },
+      409,
+    );
+  }
+  if (guardedAgentDelete) {
+    let object: R2Object | null;
+    try {
+      object = await c.env.APK_BUCKET.head(asset.r2_key);
+    } catch {
+      return c.json(
+        {
+          error: "metadata was deleted and audited, but preserved object readback is temporarily unavailable",
+          code: "ASSET_OBJECT_READBACK_FAILED",
+          metadata_absent: true,
+          r2_preserved: null,
+          audit_id: auditId,
+        },
+        503,
+      );
+    }
+    if (!object || object.size !== asset.size_bytes) {
+      return c.json(
+        {
+          error: "metadata was deleted and audited, but the preserved object readback failed",
+          code: "ASSET_OBJECT_READBACK_FAILED",
+          metadata_absent: true,
+          r2_preserved: false,
+          audit_id: auditId,
+        },
+        503,
+      );
+    }
+  }
+  return c.json({
+    ok: true,
+    deleted,
+    asset_id: assetId,
+    build_id: buildId,
+    metadata_absent: true,
+    r2_preserved: true,
+    r2_key: asset.r2_key,
+    file_hash: asset.file_hash,
+    size_bytes: asset.size_bytes,
+    audit_id: auditId,
+  });
 }
 
 export async function handleDeleteBuild(c: Context<{ Bindings: Env }>) {

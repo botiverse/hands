@@ -5083,6 +5083,7 @@ describe("quiver public API v2 — scope resolution", () => {
       sizeBytes?: number;
       variant?: string | null;
       r2Key?: string;
+      fileHash?: string;
       metadata?: Record<string, unknown>;
     } = {},
   ) {
@@ -5100,7 +5101,7 @@ describe("quiver public API v2 — scope resolution", () => {
         opts.variant ?? null,
         opts.filetype ?? "apk",
         opts.r2Key ?? `apps/app-scope/${assetId}.apk`,
-        `${assetId}-hash`,
+        opts.fileHash ?? `${assetId}-hash`,
         opts.sizeBytes ?? 42,
         `${assetId}-sig`,
         JSON.stringify(opts.metadata ?? {}),
@@ -5209,6 +5210,7 @@ describe("quiver public API v2 — scope resolution", () => {
           status,
           headers: { location: url },
         }),
+      get: (name: string) => (name === "admin_actor" ? "raft:delete-agent@test" : undefined),
     } as any;
   }
 
@@ -7307,6 +7309,438 @@ describe("quiver public API v2 — scope resolution", () => {
       .bind("asset-presign-metadata")
       .first() as { download_count: number } | null;
     expect(row?.download_count).toBe(0);
+  });
+
+  it("guarded Agent delete removes only non-installable metadata and preserves R2", async () => {
+    const env = makeEnv();
+    const { handleDeleteBuildAsset } = await import("../src/routes/builds");
+    await seedRelease(env, "rel-delete-metadata", "build-delete-metadata", [["full", "all"]], {
+      versionCode: 14,
+      versionName: "1.0.14",
+    });
+    const hash = "a".repeat(64);
+    const r2Key = "apps/app-scope/delete-metadata.patch.gz";
+    await seedAsset(env, "build-delete-metadata", "asset-delete-metadata", {
+      artifactKind: "android-delta",
+      filetype: "patch",
+      sizeBytes: 123,
+      fileHash: hash,
+      r2Key,
+    });
+    let deleteCalls = 0;
+    let objectPresent = true;
+    env.APK_BUCKET = {
+      head: async (key: string) => objectPresent && key === r2Key ? { size: 123 } : null,
+      delete: async () => {
+        deleteCalls += 1;
+      },
+    };
+
+    const response = await handleDeleteBuildAsset(
+      makeBuildAssetDownloadContext(env, "build-delete-metadata", "asset-delete-metadata", {
+        expected_file_hash: hash,
+        expected_size_bytes: "123",
+      }),
+    );
+
+    expect(response.status).toBe(200);
+    await expect(responseJson<any>(response)).resolves.toMatchObject({
+      ok: true,
+      deleted: true,
+      asset_id: "asset-delete-metadata",
+      build_id: "build-delete-metadata",
+      metadata_absent: true,
+      r2_preserved: true,
+      r2_key: r2Key,
+      file_hash: hash,
+      size_bytes: 123,
+    });
+    expect(deleteCalls).toBe(0);
+    await expect(
+      env.DB.prepare("SELECT id FROM build_assets WHERE id = ?").bind("asset-delete-metadata").first(),
+    ).resolves.toBeNull();
+    const audit = await env.DB.prepare(
+      "SELECT actor, payload FROM audit_logs WHERE app_id = ? AND action = 'build_asset.delete'",
+    ).bind("app-scope").first() as { actor: string; payload: string } | null;
+    expect(audit?.actor).toBe("raft:delete-agent@test");
+    expect(JSON.parse(audit?.payload ?? "{}")).toMatchObject({
+      buildId: "build-delete-metadata",
+      assetId: "asset-delete-metadata",
+      artifactKind: "android-delta",
+      r2Key,
+      fileHash: hash,
+      sizeBytes: 123,
+      r2Preserved: true,
+      guarded: true,
+    });
+
+    const retry = await handleDeleteBuildAsset(
+      makeBuildAssetDownloadContext(env, "build-delete-metadata", "asset-delete-metadata", {
+        expected_file_hash: hash,
+        expected_size_bytes: "123",
+      }),
+    );
+    expect(retry.status).toBe(200);
+    await expect(responseJson<any>(retry)).resolves.toMatchObject({
+      ok: true,
+      deleted: false,
+      idempotent_replay: true,
+      metadata_absent: true,
+      r2_preserved: true,
+      r2_key: r2Key,
+    });
+
+    objectPresent = false;
+    const missingObjectRetry = await handleDeleteBuildAsset(
+      makeBuildAssetDownloadContext(env, "build-delete-metadata", "asset-delete-metadata", {
+        expected_file_hash: hash,
+        expected_size_bytes: "123",
+      }),
+    );
+    expect(missingObjectRetry.status).toBe(409);
+    await expect(responseJson<any>(missingObjectRetry)).resolves.toMatchObject({
+      code: "ASSET_OBJECT_PRECONDITION_FAILED",
+      metadata_absent: true,
+      r2_preserved: false,
+    });
+
+    const arbitraryAbsent = await handleDeleteBuildAsset(
+      makeBuildAssetDownloadContext(env, "build-delete-metadata", "asset-never-existed", {
+        expected_file_hash: hash,
+        expected_size_bytes: "123",
+      }),
+    );
+    expect(arbitraryAbsent.status).toBe(404);
+    await expect(responseJson<any>(arbitraryAbsent)).resolves.toMatchObject({
+      code: "ASSET_DELETE_PROVENANCE_NOT_FOUND",
+      metadata_absent: true,
+      r2_preserved: null,
+    });
+  });
+
+  it("rolls back metadata deletion when the atomic audit insert fails", async () => {
+    const env = makeEnv();
+    const { handleDeleteBuildAsset } = await import("../src/routes/builds");
+    await seedRelease(env, "rel-delete-audit-fail", "build-delete-audit-fail", [["full", "all"]], {
+      versionCode: 16,
+      versionName: "1.0.16",
+    });
+    const hash = "e".repeat(64);
+    const r2Key = "apps/app-scope/delete-audit-fail.patch.gz";
+    await seedAsset(env, "build-delete-audit-fail", "asset-delete-audit-fail", {
+      artifactKind: "android-delta",
+      filetype: "patch",
+      sizeBytes: 77,
+      fileHash: hash,
+      r2Key,
+    });
+    env.APK_BUCKET = {
+      head: async (key: string) => key === r2Key ? { size: 77 } : null,
+    };
+    await env.DB.prepare(
+      `CREATE TRIGGER force_build_asset_audit_failure
+       BEFORE INSERT ON audit_logs
+       WHEN NEW.action = 'build_asset.delete'
+       BEGIN
+         SELECT RAISE(ABORT, 'forced build asset audit failure');
+       END`,
+    ).run();
+
+    await expect(
+      handleDeleteBuildAsset(
+        makeBuildAssetDownloadContext(env, "build-delete-audit-fail", "asset-delete-audit-fail", {
+          expected_file_hash: hash,
+          expected_size_bytes: "77",
+        }),
+      ),
+    ).rejects.toThrow("forced build asset audit failure");
+
+    const asset = await env.DB.prepare(
+      "SELECT id, r2_key FROM build_assets WHERE id = ? AND build_id = ?",
+    ).bind("asset-delete-audit-fail", "build-delete-audit-fail").first();
+    expect(asset).toMatchObject({ id: "asset-delete-audit-fail", r2_key: r2Key });
+    const audit = await env.DB.prepare(
+      "SELECT id FROM audit_logs WHERE app_id = ? AND action = 'build_asset.delete'",
+    ).bind("app-scope").first();
+    expect(audit).toBeNull();
+  });
+
+  it("fails closed when the asset R2 key changes between preflight and the atomic batch", async () => {
+    const env = makeEnv();
+    const { handleDeleteBuildAsset } = await import("../src/routes/builds");
+    await seedRelease(env, "rel-delete-key-race", "build-delete-key-race", [["full", "all"]], {
+      versionCode: 17,
+      versionName: "1.0.17",
+    });
+    const hash = "f".repeat(64);
+    const oldKey = "apps/app-scope/delete-key-race-old.patch.gz";
+    const newKey = "apps/app-scope/delete-key-race-new.patch.gz";
+    await seedAsset(env, "build-delete-key-race", "asset-delete-key-race", {
+      artifactKind: "android-delta",
+      filetype: "patch",
+      sizeBytes: 88,
+      fileHash: hash,
+      r2Key: oldKey,
+    });
+    let preflightMutated = false;
+    env.APK_BUCKET = {
+      head: async (key: string) => {
+        if (key !== oldKey) return null;
+        if (!preflightMutated) {
+          preflightMutated = true;
+          await env.DB.prepare(
+            "UPDATE build_assets SET r2_key = ? WHERE id = ? AND build_id = ?",
+          ).bind(newKey, "asset-delete-key-race", "build-delete-key-race").run();
+        }
+        return { size: 88 };
+      },
+    };
+
+    const response = await handleDeleteBuildAsset(
+      makeBuildAssetDownloadContext(env, "build-delete-key-race", "asset-delete-key-race", {
+        expected_file_hash: hash,
+        expected_size_bytes: "88",
+      }),
+    );
+
+    expect(response.status).toBe(409);
+    await expect(responseJson<any>(response)).resolves.toMatchObject({
+      code: "ASSET_DELETE_PRECONDITION_FAILED",
+    });
+    const asset = await env.DB.prepare(
+      "SELECT id, r2_key FROM build_assets WHERE id = ? AND build_id = ?",
+    ).bind("asset-delete-key-race", "build-delete-key-race").first();
+    expect(asset).toMatchObject({ id: "asset-delete-key-race", r2_key: newKey });
+    const audit = await env.DB.prepare(
+      "SELECT id FROM audit_logs WHERE app_id = ? AND action = 'build_asset.delete'",
+    ).bind("app-scope").first();
+    expect(audit).toBeNull();
+  });
+
+  it("returns a durable audit receipt when first post-delete R2 readback fails and recovers on retry", async () => {
+    const env = makeEnv();
+    const { handleDeleteBuildAsset } = await import("../src/routes/builds");
+    await seedRelease(env, "rel-delete-post-head", "build-delete-post-head", [["full", "all"]], {
+      versionCode: 18,
+      versionName: "1.0.18",
+    });
+    const hash = "1".repeat(64);
+    const r2Key = "apps/app-scope/delete-post-head.patch.gz";
+    await seedAsset(env, "build-delete-post-head", "asset-delete-post-head", {
+      artifactKind: "android-delta",
+      filetype: "patch",
+      sizeBytes: 66,
+      fileHash: hash,
+      r2Key,
+    });
+    let headCalls = 0;
+    let readbackRecovered = false;
+    env.APK_BUCKET = {
+      head: async (key: string) => {
+        if (key !== r2Key) return null;
+        headCalls += 1;
+        if (headCalls === 1 || readbackRecovered) return { size: 66 };
+        return null;
+      },
+    };
+
+    const first = await handleDeleteBuildAsset(
+      makeBuildAssetDownloadContext(env, "build-delete-post-head", "asset-delete-post-head", {
+        expected_file_hash: hash,
+        expected_size_bytes: "66",
+      }),
+    );
+    expect(first.status).toBe(503);
+    const firstBody = await responseJson<any>(first);
+    expect(firstBody).toMatchObject({
+      code: "ASSET_OBJECT_READBACK_FAILED",
+      metadata_absent: true,
+      r2_preserved: false,
+    });
+    expect(firstBody.audit_id).toMatch(/^[0-9a-f-]{36}$/);
+    await expect(
+      env.DB.prepare("SELECT id FROM build_assets WHERE id = ?").bind("asset-delete-post-head").first(),
+    ).resolves.toBeNull();
+    const audit = await env.DB.prepare(
+      "SELECT id, payload FROM audit_logs WHERE id = ? AND action = 'build_asset.delete'",
+    ).bind(firstBody.audit_id).first() as { id: string; payload: string } | null;
+    expect(audit?.id).toBe(firstBody.audit_id);
+    expect(JSON.parse(audit?.payload ?? "{}")).toMatchObject({
+      buildId: "build-delete-post-head",
+      assetId: "asset-delete-post-head",
+      r2Key,
+      fileHash: hash,
+      sizeBytes: 66,
+    });
+
+    readbackRecovered = true;
+    const retry = await handleDeleteBuildAsset(
+      makeBuildAssetDownloadContext(env, "build-delete-post-head", "asset-delete-post-head", {
+        expected_file_hash: hash,
+        expected_size_bytes: "66",
+      }),
+    );
+    expect(retry.status).toBe(200);
+    await expect(responseJson<any>(retry)).resolves.toMatchObject({
+      ok: true,
+      deleted: false,
+      idempotent_replay: true,
+      metadata_absent: true,
+      r2_preserved: true,
+      r2_key: r2Key,
+      audit_id: firstBody.audit_id,
+    });
+  });
+
+  it("preserves a durable unknown receipt when post-delete and replay R2 HEAD reject", async () => {
+    const env = makeEnv();
+    const { handleDeleteBuildAsset } = await import("../src/routes/builds");
+    await seedRelease(env, "rel-delete-head-reject", "build-delete-head-reject", [["full", "all"]], {
+      versionCode: 19,
+      versionName: "1.0.19",
+    });
+    const hash = "2".repeat(64);
+    const r2Key = "apps/app-scope/delete-head-reject.patch.gz";
+    await seedAsset(env, "build-delete-head-reject", "asset-delete-head-reject", {
+      artifactKind: "android-delta",
+      filetype: "patch",
+      sizeBytes: 65,
+      fileHash: hash,
+      r2Key,
+    });
+    let headCalls = 0;
+    let readbackRecovered = false;
+    env.APK_BUCKET = {
+      head: async (key: string) => {
+        if (key !== r2Key) return null;
+        headCalls += 1;
+        if (headCalls === 1 || readbackRecovered) return { size: 65 };
+        throw new Error("forced transient R2 HEAD failure");
+      },
+    };
+
+    const first = await handleDeleteBuildAsset(
+      makeBuildAssetDownloadContext(env, "build-delete-head-reject", "asset-delete-head-reject", {
+        expected_file_hash: hash,
+        expected_size_bytes: "65",
+      }),
+    );
+    expect(first.status).toBe(503);
+    const firstBody = await responseJson<any>(first);
+    expect(firstBody).toMatchObject({
+      code: "ASSET_OBJECT_READBACK_FAILED",
+      metadata_absent: true,
+      r2_preserved: null,
+    });
+    expect(firstBody.audit_id).toMatch(/^[0-9a-f-]{36}$/);
+    await expect(
+      env.DB.prepare("SELECT id FROM build_assets WHERE id = ?").bind("asset-delete-head-reject").first(),
+    ).resolves.toBeNull();
+    const audit = await env.DB.prepare(
+      "SELECT id FROM audit_logs WHERE id = ? AND action = 'build_asset.delete'",
+    ).bind(firstBody.audit_id).first();
+    expect(audit).toMatchObject({ id: firstBody.audit_id });
+
+    const unavailableReplay = await handleDeleteBuildAsset(
+      makeBuildAssetDownloadContext(env, "build-delete-head-reject", "asset-delete-head-reject", {
+        expected_file_hash: hash,
+        expected_size_bytes: "65",
+      }),
+    );
+    expect(unavailableReplay.status).toBe(503);
+    await expect(responseJson<any>(unavailableReplay)).resolves.toMatchObject({
+      code: "ASSET_OBJECT_READBACK_FAILED",
+      metadata_absent: true,
+      r2_preserved: null,
+      audit_id: firstBody.audit_id,
+    });
+
+    readbackRecovered = true;
+    const recovered = await handleDeleteBuildAsset(
+      makeBuildAssetDownloadContext(env, "build-delete-head-reject", "asset-delete-head-reject", {
+        expected_file_hash: hash,
+        expected_size_bytes: "65",
+      }),
+    );
+    expect(recovered.status).toBe(200);
+    await expect(responseJson<any>(recovered)).resolves.toMatchObject({
+      ok: true,
+      deleted: false,
+      idempotent_replay: true,
+      metadata_absent: true,
+      r2_preserved: true,
+      r2_key: r2Key,
+      audit_id: firstBody.audit_id,
+    });
+  });
+
+  it("guarded Agent delete fails closed for stale facts, installables, and missing R2", async () => {
+    const env = makeEnv();
+    const { handleDeleteBuildAsset } = await import("../src/routes/builds");
+    await seedRelease(env, "rel-delete-guards", "build-delete-guards", [["full", "all"]], {
+      versionCode: 15,
+      versionName: "1.0.15",
+    });
+    const metadataHash = "b".repeat(64);
+    const installableHash = "c".repeat(64);
+    await seedAsset(env, "build-delete-guards", "asset-guarded-metadata", {
+      artifactKind: "metadata-file",
+      filetype: "json",
+      sizeBytes: 55,
+      fileHash: metadataHash,
+      r2Key: "apps/app-scope/guarded-metadata.json",
+    });
+    await seedAsset(env, "build-delete-guards", "asset-guarded-installable", {
+      artifactKind: "installable",
+      filetype: "apk",
+      sizeBytes: 99,
+      fileHash: installableHash,
+      r2Key: "apps/app-scope/guarded-installable.apk",
+    });
+    env.APK_BUCKET = {
+      head: async (key: string) => key.endsWith("guarded-installable.apk") ? { size: 99 } : null,
+    };
+
+    const stale = await handleDeleteBuildAsset(
+      makeBuildAssetDownloadContext(env, "build-delete-guards", "asset-guarded-metadata", {
+        expected_file_hash: "d".repeat(64),
+        expected_size_bytes: "55",
+      }),
+    );
+    expect(stale.status).toBe(409);
+    await expect(responseJson<any>(stale)).resolves.toMatchObject({
+      code: "ASSET_DELETE_PRECONDITION_FAILED",
+    });
+
+    const missingObject = await handleDeleteBuildAsset(
+      makeBuildAssetDownloadContext(env, "build-delete-guards", "asset-guarded-metadata", {
+        expected_file_hash: metadataHash,
+        expected_size_bytes: "55",
+      }),
+    );
+    expect(missingObject.status).toBe(409);
+    await expect(responseJson<any>(missingObject)).resolves.toMatchObject({
+      code: "ASSET_OBJECT_PRECONDITION_FAILED",
+    });
+
+    const installable = await handleDeleteBuildAsset(
+      makeBuildAssetDownloadContext(env, "build-delete-guards", "asset-guarded-installable", {
+        expected_file_hash: installableHash,
+        expected_size_bytes: "99",
+      }),
+    );
+    expect(installable.status).toBe(409);
+    await expect(responseJson<any>(installable)).resolves.toMatchObject({
+      code: "INSTALLABLE_ASSET_DELETE_FORBIDDEN",
+    });
+
+    const remaining = await env.DB.prepare(
+      "SELECT id FROM build_assets WHERE build_id = ? ORDER BY id",
+    ).bind("build-delete-guards").all();
+    expect(remaining.results.map((row: any) => row.id)).toEqual([
+      "asset-guarded-installable",
+      "asset-guarded-metadata",
+    ]);
   });
 
   it("creates public release shares with hashed tokens only", async () => {
@@ -9937,6 +10371,10 @@ describe("Hands iOS simulator QA artifacts", () => {
         method: "GET",
         path: "/api/apps/{app_id}/builds/{build_id}/testflight-publish",
       },
+      "delete-build-asset": {
+        method: "DELETE",
+        path: "/api/apps/{app_id}/builds/{build_id}/assets/{asset_id}",
+      },
     });
     const byName = Object.fromEntries(manifest.actions.map((action: any) => [action.name, action]));
     expect(byName["create-app"].parameters).toMatchObject({
@@ -10029,6 +10467,15 @@ describe("Hands iOS simulator QA artifacts", () => {
       type: "string",
       in: "path",
       required: true,
+    });
+    expect(byName["delete-build-asset"]).toMatchObject({
+      parameters: {
+        app_id: { type: "string", in: "path", required: true },
+        build_id: { type: "string", in: "path", required: true },
+        asset_id: { type: "string", in: "path", required: true },
+        expected_file_hash: { type: "string", in: "query", required: true },
+        expected_size_bytes: { type: "integer", in: "query", required: true },
+      },
     });
     expect(byName["add-app-member"].parameters).toMatchObject({
       app_id: { type: "string", in: "path", required: true },

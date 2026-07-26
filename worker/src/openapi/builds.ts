@@ -16,6 +16,10 @@ import {
 
 const AppBuildParams = AppIdParam.merge(BuildIdParam);
 const AppBuildAssetParams = AppBuildParams.merge(AssetIdParam);
+const GuardedBuildAssetDeleteQuery = z.object({
+  expected_file_hash: z.string().regex(/^[a-f0-9]{64}$/i).optional(),
+  expected_size_bytes: z.coerce.number().int().nonnegative().optional(),
+});
 const AppQaArtifactParams = AppIdParam.merge(AssetIdParam);
 const AppBuildUploadParams = AppIdParam.merge(
   z.object({ buildUploadId: z.string().openapi({ param: { name: "buildUploadId", in: "path" } }) }),
@@ -531,13 +535,18 @@ export function registerBuildRoutes(registry: OpenApiRegistry) {
     method: "delete",
     path: "/api/apps/{appId}/builds/{buildId}/assets/{assetId}",
     tags: ["Builds"],
-    summary: "Delete a build asset",
+    summary: "Delete build-asset metadata without deleting its stored object",
+    description:
+      "App-admin metadata deletion. Supplying both expected_file_hash and expected_size_bytes enables the guarded Agent path: non-installable only, R2 existence/size preflight, immutable byte preconditions, atomic audit+delete, and audit-backed idempotent absence readback. Arbitrary absent ids fail closed. The R2 object is never deleted.",
     security: auth,
-    request: { params: AppBuildAssetParams },
+    request: { params: AppBuildAssetParams, query: GuardedBuildAssetDeleteQuery },
     responses: {
-      200: success("Deleted build asset.", GenericObject),
+      200: success("Build-asset metadata is absent; the R2 object was preserved.", GenericObject),
+      400: error("Guarded delete preconditions were malformed or incomplete."),
       403: error("Current principal cannot delete build assets."),
       404: error("Build asset was not found."),
+      409: error("Guarded delete preconditions failed or the asset is installable."),
+      503: error("R2 readback was unavailable. Post-commit failures return metadata_absent, r2_preserved=null, and the durable audit_id."),
     },
   });
 
