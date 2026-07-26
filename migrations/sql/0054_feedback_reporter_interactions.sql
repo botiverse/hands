@@ -5,6 +5,27 @@ UPDATE feedback_comments SET reporter_sequence = rowid;
 CREATE UNIQUE INDEX idx_feedback_comments_reporter_sequence
   ON feedback_comments(reporter_sequence);
 
+CREATE TABLE feedback_comment_sequence_state (
+  singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+  high_water INTEGER NOT NULL CHECK (high_water >= 0)
+);
+
+INSERT INTO feedback_comment_sequence_state (singleton, high_water)
+SELECT 1, COALESCE(MAX(reporter_sequence), 0) FROM feedback_comments;
+
+CREATE TRIGGER feedback_comment_sequence_state_no_delete
+BEFORE DELETE ON feedback_comment_sequence_state
+BEGIN
+  SELECT RAISE(ABORT, 'feedback comment sequence state is durable');
+END;
+
+CREATE TRIGGER feedback_comment_sequence_state_monotonic
+BEFORE UPDATE ON feedback_comment_sequence_state
+WHEN NEW.singleton != OLD.singleton OR NEW.high_water != OLD.high_water + 1
+BEGIN
+  SELECT RAISE(ABORT, 'feedback comment sequence high-water must advance by one');
+END;
+
 CREATE TRIGGER feedback_comments_reporter_sequence_managed
 BEFORE INSERT ON feedback_comments
 WHEN NEW.reporter_sequence IS NOT NULL
@@ -15,7 +36,13 @@ END;
 CREATE TRIGGER feedback_comments_reporter_sequence_insert
 AFTER INSERT ON feedback_comments
 BEGIN
-  UPDATE feedback_comments SET reporter_sequence = NEW.rowid WHERE rowid = NEW.rowid;
+  UPDATE feedback_comment_sequence_state
+  SET high_water = high_water + 1 WHERE singleton = 1;
+  UPDATE feedback_comments
+  SET reporter_sequence = (
+    SELECT high_water FROM feedback_comment_sequence_state WHERE singleton = 1
+  )
+  WHERE rowid = NEW.rowid;
 END;
 
 CREATE TRIGGER feedback_comments_reporter_sequence_immutable

@@ -344,7 +344,11 @@ store a database-assigned monotonic comment sequence plus the corresponding
 comment id. Only visible staff/system comments after that sequence count as
 unread; reporter comments and internal comments do not. The sequence is fixed
 at insertion, so equal-millisecond replies cannot be lost regardless of random
-UUID lexical order.
+UUID lexical order. Allocation comes from a declared singleton high-water row
+that advances in the same transaction as comment insertion; deletes, cascades,
+and SQL export/import cannot compact or reuse earlier sequence values. Hidden
+SQLite rowids are used only for the one-time migration backfill, never as the
+ongoing allocator.
 
 Before uploading reporter attachments, the Worker records durable leased R2
 cleanup intents. Cleanup cannot claim an `uploading` intent until its bounded

@@ -100,14 +100,23 @@ describe("feedback reporter interactions migration", () => {
     ).all() as Array<{ reporter_sequence: number }>;
     expect(existingSequences.every((row) => row.reporter_sequence > 0)).toBe(true);
     expect(new Set(existingSequences.map((row) => row.reporter_sequence)).size).toBe(existingSequences.length);
+    const oldMax = existingSequences.at(-1)!.reporter_sequence;
+    db.prepare("DELETE FROM feedback_comments WHERE id = 'comment-staff'").run();
+    // Model a SQL export/import: declared sequence values survive, while the
+    // hidden rowid of the remaining high-sequence row is compacted into the gap.
+    db.prepare("UPDATE feedback_comments SET rowid = 2 WHERE id = 'comment-b'").run();
+    expect(db.prepare(
+      "SELECT rowid, reporter_sequence FROM feedback_comments WHERE id = 'comment-b'",
+    ).get()).toEqual({ rowid: 2, reporter_sequence: oldMax });
+    expect(db.prepare(
+      "SELECT high_water FROM feedback_comment_sequence_state WHERE singleton = 1",
+    ).get()).toEqual({ high_water: oldMax });
     db.prepare(
       "INSERT INTO feedback_comments (id, ticket_id, author_type, internal) VALUES ('later', 'ticket-a', 'staff', 0)",
     ).run();
     expect((db.prepare(
       "SELECT reporter_sequence FROM feedback_comments WHERE id = 'later'",
-    ).get() as { reporter_sequence: number }).reporter_sequence).toBeGreaterThan(
-      existingSequences.at(-1)!.reporter_sequence,
-    );
+    ).get() as { reporter_sequence: number }).reporter_sequence).toBe(oldMax + 1);
     expect(() => db.prepare(
       "UPDATE feedback_comments SET reporter_sequence = 999 WHERE id = 'later'",
     ).run()).toThrow("feedback comment sequence is immutable");
