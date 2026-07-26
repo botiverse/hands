@@ -253,10 +253,36 @@
   position: sticky;
 }
 .hands-feedback-composer {
-  display: grid;
+  background: var(--hf-bg);
+  border: 2px solid var(--hf-border-strong);
+  box-shadow: var(--hf-shadow);
+  display: flex;
+  flex-direction: column;
   flex: none;
   gap: 8px;
-  padding-bottom: max(14px, env(safe-area-inset-bottom));
+  margin: 0 4px max(4px, env(safe-area-inset-bottom)) 0;
+  padding: 8px;
+}
+.hands-feedback-composer-toolbar,
+.hands-feedback-composer-attachments {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+}
+.hands-feedback-composer-toolbar {
+  justify-content: space-between;
+}
+.hands-feedback-sr-only {
+  clip: rect(0, 0, 0, 0);
+  clip-path: inset(50%);
+  height: 1px;
+  overflow: hidden;
+  position: absolute;
+  white-space: nowrap;
+  width: 1px;
+}
+.hands-feedback-reply-attachments {
+  margin: 0;
 }
 .hands-feedback-submit-bar {
   display: flex;
@@ -281,6 +307,16 @@
 .hands-feedback-root textarea:focus {
   outline: 2px solid var(--hf-accent);
   outline-offset: 1px;
+}
+.hands-feedback-composer textarea {
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  min-height: 40px;
+  padding: 0 4px;
+}
+.hands-feedback-composer textarea:focus {
+  outline: none;
 }
 .hands-feedback-pending-attachments {
   display: grid;

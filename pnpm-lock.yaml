@@ -141,6 +141,9 @@ importers:
       jsdom:
         specifier: ^26.1.0
         version: 26.1.0
+      lucide-react:
+        specifier: ^1.23.0
+        version: 1.23.0(react@19.2.7)
       raft-ui:
         specifier: ^0.0.18
         version: 0.0.18(@types/react-dom@19.2.3(@types/react@19.2.17))(@types/react@19.2.17)(react-dom@19.2.7(react@19.2.7))(react@19.2.7)(tailwindcss@4.3.2)

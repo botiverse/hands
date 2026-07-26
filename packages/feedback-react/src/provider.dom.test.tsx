@@ -181,7 +181,7 @@ describe("FeedbackWorkspace browser behavior", () => {
       }),
     );
 
-    fireEvent.click(screen.getByText("Back"));
+    fireEvent.click(screen.getByRole("button", { name: "Back" }));
     expect(await screen.findByText(ticket.message)).toBeTruthy();
   });
 
@@ -282,16 +282,20 @@ describe("FeedbackWorkspace browser behavior", () => {
 
     fireEvent.click(await screen.findByText(ticket.message));
     const firstDraft = await screen.findByLabelText("Reply");
+    expect(firstDraft.closest(".hands-feedback-composer")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Attach image" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Attach file" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Send reply" })).toBeTruthy();
     fireEvent.change(firstDraft, { target: { value: "draft one" } });
     fireEvent.keyDown(firstDraft, { key: "Enter", isComposing: true });
     fireEvent.keyDown(firstDraft, { key: "Enter", shiftKey: true });
     expect(adapter.addComment).not.toHaveBeenCalled();
-    fireEvent.click(screen.getByText("Back"));
+    fireEvent.click(screen.getByRole("button", { name: "Back" }));
     fireEvent.click(await screen.findByText("Second ticket"));
     fireEvent.change(await screen.findByLabelText("Reply"), {
       target: { value: "draft two" },
     });
-    fireEvent.click(screen.getByText("Back"));
+    fireEvent.click(screen.getByRole("button", { name: "Back" }));
     fireEvent.click(await screen.findByText(ticket.message));
     const restored = (await screen.findByLabelText(
       "Reply",
@@ -302,6 +306,79 @@ describe("FeedbackWorkspace browser behavior", () => {
     expect(vi.mocked(adapter.addComment).mock.calls[0]![0].body).toBe(
       "draft one",
     );
+    expect(
+      vi.mocked(adapter.addComment).mock.calls[0]![0].attachments,
+    ).toEqual([]);
+  });
+
+  it("keeps reply attachments inside the composer and forwards upload progress", async () => {
+    const adapter = transport();
+    adapter.addComment = vi.fn(async (input) => {
+      input.onAttachmentProgress?.({ index: 0, progress: 0.5 });
+      return detail;
+    });
+    render(
+      <FeedbackProvider transport={adapter}>
+        <FeedbackWorkspace initialTicketId={ticket.id} />
+      </FeedbackProvider>,
+    );
+
+    const attachment = new File([new Uint8Array(128)], "reply.png", {
+      type: "image/png",
+    });
+    fireEvent.change(
+      await screen.findByTestId("hands-feedback-reply-image-input"),
+      { target: { files: [attachment] } },
+    );
+    expect(await screen.findByText("reply.png")).toBeTruthy();
+    fireEvent.change(screen.getByLabelText("Reply"), {
+      target: { value: "Reply with a screenshot" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Send reply" }));
+
+    await waitFor(() => expect(adapter.addComment).toHaveBeenCalledTimes(1));
+    const input = vi.mocked(adapter.addComment).mock.calls[0]![0];
+    expect(input.attachments).toEqual([attachment]);
+    expect(screen.queryByText("reply.png")).toBeNull();
+  });
+
+  it("aborts and resets an in-flight reply when the reporter transport changes", async () => {
+    const first = transport();
+    const second = transport();
+    let firstSignal: AbortSignal | undefined;
+    let resolveFirst: ((value: FeedbackTicketDetail) => void) | undefined;
+    first.addComment = vi.fn(
+      ({ signal }) =>
+        new Promise<FeedbackTicketDetail>((resolve) => {
+          firstSignal = signal;
+          resolveFirst = resolve;
+        }),
+    );
+    const view = render(
+      <FeedbackProvider transport={first}>
+        <FeedbackWorkspace initialTicketId={ticket.id} />
+      </FeedbackProvider>,
+    );
+    const editor = (await screen.findByLabelText("Reply")) as HTMLTextAreaElement;
+    fireEvent.change(editor, { target: { value: "Preserve this draft" } });
+    fireEvent.click(screen.getByRole("button", { name: "Send reply" }));
+    expect(first.addComment).toHaveBeenCalledTimes(1);
+
+    view.rerender(
+      <FeedbackProvider transport={second}>
+        <FeedbackWorkspace initialTicketId={ticket.id} />
+      </FeedbackProvider>,
+    );
+    await waitFor(() => expect(firstSignal?.aborted).toBe(true));
+    expect(editor.value).toBe("Preserve this draft");
+    expect(
+      (screen.getByRole("button", {
+        name: "Send reply",
+      }) as HTMLButtonElement).disabled,
+    ).toBe(false);
+    resolveFirst?.(detail);
+    await Promise.resolve();
+    expect(second.addComment).not.toHaveBeenCalled();
   });
 
   it("keeps create text and attachments across failure, reports progress, and reuses the retry ID", async () => {
@@ -548,7 +625,7 @@ describe("FeedbackWorkspace browser behavior", () => {
     );
 
     fireEvent.click(await screen.findByText("Load more replies"));
-    fireEvent.click(screen.getByText("Back"));
+    fireEvent.click(screen.getByRole("button", { name: "Back" }));
     expect(pageSignal?.aborted).toBe(true);
     resolvePage?.({
       ...detail,
