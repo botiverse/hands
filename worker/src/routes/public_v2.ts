@@ -974,6 +974,7 @@ export async function handlePublicR2Download(c: Context<{ Bindings: Env }>) {
          OR (ba.artifact_kind = 'delta-patch' AND ba.filetype = 'patch')
        )
        AND b.product_type != 'ios-simulator-qa' AND b.release_type != 'qa'
+       AND r.product_type != 'ios-simulator-qa' AND r.release_type != 'qa'
        AND r.status IN ('active', 'draft')
      LIMIT 1`,
   )
