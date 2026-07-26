@@ -202,7 +202,10 @@ The response contains the same reporter-safe ticket projection, original
 attachment metadata, and non-internal comments only. Comment pagination orders
 by the immutable database-assigned sequence and clamps the page size to
 `1..100`; opaque cursors therefore cannot skip a same-millisecond later insert
-whose random UUID sorts earlier. A successful
+whose random UUID sorts earlier. Sequence cursors carry an explicit version.
+During a rolling upgrade, a pre-sequence `(created_at, id)` cursor stays in
+legacy ordering and emits another legacy cursor until that pagination session
+is exhausted; the server never switches ordering mid-session. A successful
 detail response advances the ticket's monotonic read receipt only through the
 latest visible staff/system comment in that returned page, so a concurrent
 reply outside the response snapshot remains unread. The response returns the

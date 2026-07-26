@@ -40,24 +40,70 @@ function safeFilename(value: string): string {
   return value.replace(/[^A-Za-z0-9._-]/g, "_").slice(0, 120) || "attachment";
 }
 
-function encodeCursor(createdAt: unknown, id: unknown): string {
-  return btoa(JSON.stringify([createdAt, id]))
+function encodeCursorValue(value: unknown): string {
+  return btoa(JSON.stringify(value))
     .replaceAll("+", "-")
     .replaceAll("/", "_")
     .replaceAll("=", "");
 }
 
-function decodeCursor(value: string | undefined): [number, string] | null {
-  if (!value) return [Number.MAX_SAFE_INTEGER, "~"];
+function decodeCursorValue(value: string): unknown {
   try {
     const base64 = value.replaceAll("-", "+").replaceAll("_", "/");
     const padded = base64.padEnd(Math.ceil(base64.length / 4) * 4, "=");
-    const decoded = JSON.parse(atob(padded)) as [number, string];
+    return JSON.parse(atob(padded));
+  } catch {
+    return null;
+  }
+}
+
+function encodeCursor(createdAt: unknown, id: unknown): string {
+  return encodeCursorValue([createdAt, id]);
+}
+
+function decodeCursor(value: string | undefined): [number, string] | null {
+  if (!value) return [Number.MAX_SAFE_INTEGER, "~"];
+  try {
+    const decoded = decodeCursorValue(value) as [number, string];
     if (!Number.isSafeInteger(decoded[0]) || !UUID_RE.test(decoded[1])) return null;
     return [decoded[0], decoded[1].toLowerCase()];
   } catch {
     return null;
   }
+}
+
+type CommentCursor =
+  | { mode: "sequence"; sequence: number; id: string }
+  | { mode: "legacy"; createdAt: number; id: string };
+
+function decodeCommentCursor(value: string | undefined): CommentCursor | null {
+  if (!value) return { mode: "sequence", sequence: 0, id: "" };
+  const decoded = decodeCursorValue(value);
+  if (
+    Array.isArray(decoded)
+    && decoded.length === 3
+    && decoded[0] === "sequence-v1"
+    && Number.isSafeInteger(decoded[1])
+    && decoded[1] >= 0
+    && typeof decoded[2] === "string"
+    && UUID_RE.test(decoded[2])
+  ) {
+    return { mode: "sequence", sequence: decoded[1], id: decoded[2].toLowerCase() };
+  }
+  if (
+    Array.isArray(decoded)
+    && decoded.length === 2
+    && Number.isSafeInteger(decoded[0])
+    && typeof decoded[1] === "string"
+    && UUID_RE.test(decoded[1])
+  ) {
+    return { mode: "legacy", createdAt: decoded[0], id: decoded[1].toLowerCase() };
+  }
+  return null;
+}
+
+function encodeCommentSequenceCursor(sequence: unknown, id: unknown): string {
+  return encodeCursorValue(["sequence-v1", sequence, id]);
 }
 
 async function reporterHash(c: ReporterContext, principal: ReporterPrincipal) {
@@ -358,31 +404,24 @@ export async function handleGetReporterFeedback(c: ReporterContext) {
   const ticket = await ownedTicket(c, authorized.principal, ticketId);
   if (!ticket) return ticketNotFound(c);
   const commentLimit = Math.min(100, Math.max(1, Number(c.req.query("comment_limit") ?? "50") || 50));
-  const rawCommentCursor = c.req.query("comment_cursor");
-  const decodedCommentCursor = rawCommentCursor ? decodeCursor(rawCommentCursor) : [0, ""] as [number, string];
-  if (!decodedCommentCursor) return c.json({ error: "invalid comment cursor" }, 400);
-  const [commentCursorPosition, commentCursorId] = decodedCommentCursor;
-  // Pre-sequence cursors encoded epoch-millisecond created_at as their first
-  // coordinate. Accept those during rolling upgrades; all new cursors use the
-  // immutable database-assigned reporter_sequence.
-  const legacyCommentCursor = rawCommentCursor && commentCursorPosition > 10_000_000_000 ? 1 : 0;
+  const commentCursor = decodeCommentCursor(c.req.query("comment_cursor"));
+  if (!commentCursor) return c.json({ error: "invalid comment cursor" }, 400);
+  const commentStatement = commentCursor.mode === "sequence"
+    ? c.env.DB.prepare(
+        `SELECT id, author_type, body, created_at, reporter_sequence
+         FROM feedback_comments
+         WHERE ticket_id = ?1 AND internal = 0 AND reporter_sequence > ?2
+         ORDER BY reporter_sequence ASC LIMIT ?3`,
+      ).bind(ticketId, commentCursor.sequence, commentLimit + 1)
+    : c.env.DB.prepare(
+        `SELECT id, author_type, body, created_at, reporter_sequence
+         FROM feedback_comments
+         WHERE ticket_id = ?1 AND internal = 0
+           AND (created_at > ?2 OR (created_at = ?2 AND id > ?3))
+         ORDER BY created_at ASC, id ASC LIMIT ?4`,
+      ).bind(ticketId, commentCursor.createdAt, commentCursor.id, commentLimit + 1);
   const [{ results: comments }, { results: attachments }] = await Promise.all([
-    c.env.DB.prepare(
-      `SELECT id, author_type, body, created_at, reporter_sequence
-       FROM feedback_comments
-       WHERE ticket_id = ?1 AND internal = 0
-         AND (
-           (?4 = 0 AND reporter_sequence > ?2)
-           OR (?4 = 1 AND (created_at > ?2 OR (created_at = ?2 AND id > ?3)))
-         )
-       ORDER BY reporter_sequence ASC LIMIT ?5`,
-    ).bind(
-      ticketId,
-      commentCursorPosition,
-      commentCursorId,
-      legacyCommentCursor,
-      commentLimit + 1,
-    ).all<Record<string, unknown>>(),
+    commentStatement.all<Record<string, unknown>>(),
     c.env.DB.prepare(
       `SELECT id, filename, content_type, size_bytes, created_at
        FROM feedback_attachments
@@ -405,7 +444,9 @@ export async function handleGetReporterFeedback(c: ReporterContext) {
   const { org_id: _orgId, ...safeTicket } = refreshedTicket ?? ticket;
   const lastComment = commentPage.at(-1);
   const nextCommentCursor = comments.length > commentLimit && lastComment
-    ? encodeCursor(lastComment.reporter_sequence, lastComment.id)
+    ? commentCursor.mode === "legacy"
+      ? encodeCursor(lastComment.created_at, lastComment.id)
+      : encodeCommentSequenceCursor(lastComment.reporter_sequence, lastComment.id)
     : null;
   return c.json({
     ticket: ticketDto(safeTicket),

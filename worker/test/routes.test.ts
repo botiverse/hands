@@ -10491,6 +10491,42 @@ describe("Hands iOS simulator QA artifacts", () => {
     ).bind(ticketA).all() as any).results.map((comment: any) => comment.id);
     expect(firstFour).toEqual(expectedFirstFour);
 
+    const legacyTicket = "90909090-9090-4090-8090-909090909090";
+    const bridgeTime = now + 150;
+    const bridgeHigh = "eeeeeeee-1111-4111-8111-111111111111";
+    const bridgeLow = "11111111-2222-4222-8222-222222222222";
+    const bridgeHigher = "ffffffff-3333-4333-8333-333333333333";
+    await env.DB.prepare(
+      `INSERT INTO feedback_tickets
+       (id, app_id, kind, status, message, metadata_json, reporter_id,
+        reporter_integration_id, created_at, updated_at)
+       VALUES (?1, 'app-ios', 'feedback', 'open', 'Legacy cursor bridge', '{}',
+               ?2, ?3, ?4, ?4)`,
+    ).bind(legacyTicket, reporterId, integrationA, bridgeTime).run();
+    for (const id of [bridgeHigh, bridgeLow, bridgeHigher]) {
+      await env.DB.prepare(
+        `INSERT INTO feedback_comments
+         (id, ticket_id, author_actor, author_type, body, internal, created_at)
+         VALUES (?1, ?2, 'staff:test', 'staff', ?1, 0, ?3)`,
+      ).bind(id, legacyTicket, bridgeTime).run();
+    }
+    const legacyCursor = btoa(JSON.stringify([bridgeTime, bridgeLow]))
+      .replaceAll("+", "-").replaceAll("/", "_").replaceAll("=", "");
+    const legacyPage1 = await handleGetReporterFeedback(context(
+      "detail", credentialA.token, legacyTicket, undefined, reporterId,
+      { comment_limit: "1", comment_cursor: legacyCursor },
+    ));
+    const legacyPage1Body = await legacyPage1.json() as any;
+    expect(legacyPage1Body.comments.map((comment: any) => comment.id)).toEqual([bridgeHigh]);
+    const legacyPage2 = await handleGetReporterFeedback(context(
+      "detail", credentialA.token, legacyTicket, undefined, reporterId,
+      { comment_limit: "1", comment_cursor: legacyPage1Body.next_comment_cursor },
+    ));
+    const legacyPage2Body = await legacyPage2.json() as any;
+    expect(legacyPage2Body.comments.map((comment: any) => comment.id)).toEqual([bridgeHigher]);
+    expect(legacyPage2Body.comments.map((comment: any) => comment.id)).not.toContain(bridgeLow);
+    await env.DB.prepare("DELETE FROM feedback_tickets WHERE id = ?1").bind(legacyTicket).run();
+
     const afterRead = await handleListReporterFeedback(context("list", credentialA.token));
     expect(await afterRead.json()).toMatchObject({
       unread_total: 0,
