@@ -177,16 +177,20 @@ The server clamps `limit` to `1..50`. The opaque cursor orders by
       "updated_at": 0,
       "attachment_count": 1,
       "comment_count": 2,
-      "latest_comment_at": 0
+      "latest_comment_at": 0,
+      "unread": true,
+      "unread_count": 2
     }
   ],
-  "next_cursor": "opaque-or-null"
+  "next_cursor": "opaque-or-null",
+  "unread_total": 1
 }
 ```
 
 `comment_count` counts only non-internal comments. The response excludes
 contact data, assignee, client hashes, device identifiers, raw metadata,
-symbolication internals, and internal comment counts.
+symbolication internals, and internal comment counts. `unread_total` counts
+owned tickets with at least one unread visible staff/system comment.
 
 ### Get ticket conversation
 
@@ -196,7 +200,9 @@ GET /api/apps/{appId}/reporter-feedback/{ticketId}?comment_cursor=<opaque>&comme
 
 The response contains the same reporter-safe ticket projection, original
 attachment metadata, and non-internal comments only. Comment pagination orders
-by `(created_at ASC, id ASC)` and clamps the page size to `1..100`.
+by `(created_at ASC, id ASC)` and clamps the page size to `1..100`. A successful
+detail response advances the ticket's monotonic read receipt and returns the
+updated authoritative `unread_total`.
 
 Comment DTO:
 
@@ -221,7 +227,9 @@ GET /api/apps/{appId}/reporter-feedback/{ticketId}/attachments/{attachmentId}
 
 The query verifies app, integration, reporter, ticket, and attachment
 ownership before streaming bytes. Reporter queries return only rows whose
-`origin = 'submission'` and `visibility = 'reporter'`. Presigned URLs, if
+`origin IN ('submission', 'reporter')` and `visibility = 'reporter'`. Reporter
+origin rows are additionally bound to a visible reporter comment on the same
+ticket. Presigned URLs, if
 supported, remain short lived (maximum five minutes) and are created only after
 the same ownership check. Existing filename sanitization, safe content type,
 `Content-Disposition`, and no-sniff response rules remain mandatory.
@@ -238,11 +246,18 @@ Content-Type: application/json
 }
 ```
 
+Text-only JSON remains supported. To attach images, send multipart form fields
+`body`, `submission_id`, and up to three repeated `attachments`. Attachments are
+limited to GIF, JPEG, PNG, or WebP and 10 MiB each.
+
 Comments are plain text. Normalization is exactly ECMAScript `trim()` followed
 by UTF-8 encoding; v1 performs no NFC/NFKC Unicode normalization. The normalized
 body must be non-empty and is limited to 10,000 Unicode code points.
 `submission_id` is required, must be a full UUID, and is normalized to
-lowercase. The fingerprint is SHA-256 of the exact normalized UTF-8 bytes.
+lowercase. Text-only requests retain the existing SHA-256 fingerprint of the
+normalized body bytes. Requests with attachments use a versioned composite of
+the body plus ordered attachment metadata and byte digests, so changing
+filenames, types, sizes, order, or bytes conflicts under the same submission id.
 
 Idempotency is scoped to
 `(ticket_id, reporter_integration_id, reporter_id, submission_id)`:
@@ -252,8 +267,8 @@ Idempotency is scoped to
 - Same id with a different normalized body: `409`.
 - Ticket not owned by the reporter: `404`.
 
-Reporter comments are always non-internal. Comment attachments and reporter
-status changes are outside this first conversation slice.
+Reporter comments and their attachments are always reporter-visible and
+non-internal. Reporter status changes remain outside this slice.
 
 Ownership is checked before idempotency conflict handling. An exact replay does
 not update the ticket timestamp, write another audit row, create another event,
@@ -312,11 +327,18 @@ Schema checks enforce:
 - `author_type IN ('staff', 'system')` implies all reporter ownership and
   idempotency fields are null.
 
-`feedback_attachments` gains explicit `origin` (`submission`, `staff`, or
-`system`) and `visibility` (`reporter` or `internal`) fields. Existing rows
+`feedback_attachments` gains explicit `origin` (`submission`, `reporter`,
+`staff`, or `system`), `visibility` (`reporter` or `internal`), and nullable
+`comment_id` fields. Existing rows
 backfill to submission/reporter visibility. Any future staff or system upload
 must choose visibility explicitly; reporter DTOs never select staff/internal
 rows merely because they share the ticket.
+
+Reporter unread receipts are keyed by the full ownership tuple plus ticket and
+store a monotonic `(created_at, comment_id)` cursor. Only visible staff/system
+comments after that cursor count as unread; reporter comments and internal
+comments do not. The comment id tie-breaker prevents equal-millisecond replies
+from being lost.
 
 Comments remain immutable in v1. Deletion/edit history is outside this slice.
 
