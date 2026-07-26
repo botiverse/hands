@@ -474,8 +474,28 @@ function makeMockDb() {
       reporter_id TEXT,
       submission_id TEXT,
       submission_fingerprint TEXT,
+      reporter_sequence INTEGER,
       created_at INTEGER NOT NULL
     );
+    CREATE UNIQUE INDEX idx_feedback_comments_reporter_sequence
+      ON feedback_comments(reporter_sequence);
+    CREATE TRIGGER feedback_comments_reporter_sequence_managed
+    BEFORE INSERT ON feedback_comments
+    WHEN NEW.reporter_sequence IS NOT NULL
+    BEGIN
+      SELECT RAISE(ABORT, 'feedback comment sequence is managed');
+    END;
+    CREATE TRIGGER feedback_comments_reporter_sequence_insert
+    AFTER INSERT ON feedback_comments
+    BEGIN
+      UPDATE feedback_comments SET reporter_sequence = NEW.rowid WHERE rowid = NEW.rowid;
+    END;
+    CREATE TRIGGER feedback_comments_reporter_sequence_immutable
+    BEFORE UPDATE OF reporter_sequence ON feedback_comments
+    WHEN OLD.reporter_sequence IS NOT NULL
+    BEGIN
+      SELECT RAISE(ABORT, 'feedback comment sequence is immutable');
+    END;
     CREATE TABLE app_reporter_integrations (
       id TEXT PRIMARY KEY,
       app_id TEXT NOT NULL REFERENCES apps(id) ON DELETE CASCADE,
@@ -720,19 +740,30 @@ function makeMockDb() {
       reporter_integration_id TEXT NOT NULL,
       reporter_id TEXT NOT NULL,
       ticket_id TEXT NOT NULL,
-      read_through_created_at INTEGER NOT NULL,
+      read_through_sequence INTEGER NOT NULL,
       read_through_comment_id TEXT NOT NULL,
       updated_at INTEGER NOT NULL,
       PRIMARY KEY (app_id, reporter_integration_id, reporter_id, ticket_id)
     );
     CREATE TABLE feedback_reporter_r2_cleanup (
       r2_key TEXT PRIMARY KEY,
+      state TEXT NOT NULL,
+      lease_expires_at INTEGER NOT NULL,
       attempts INTEGER NOT NULL DEFAULT 0,
       last_error TEXT,
       next_attempt_at INTEGER NOT NULL,
       created_at INTEGER NOT NULL,
       updated_at INTEGER NOT NULL
     );
+    CREATE TRIGGER feedback_reporter_attachments_cleanup_insert
+    BEFORE INSERT ON feedback_attachments
+    WHEN NEW.origin = 'reporter' AND NOT EXISTS (
+      SELECT 1 FROM feedback_reporter_r2_cleanup cleanup
+      WHERE cleanup.r2_key = NEW.r2_key AND cleanup.state = 'uploading'
+    )
+    BEGIN
+      SELECT RAISE(ABORT, 'feedback reporter attachment cleanup intent missing');
+    END;
   `);
 
   // Replace `?N` numbered placeholders with anonymous `?` (better-sqlite3 compat).
@@ -10476,7 +10507,7 @@ describe("Hands iOS simulator QA artifacts", () => {
     expect((await unreadInternal.json() as any).tickets[0].unread_count).toBe(1);
     await handleGetReporterFeedback(context("detail", credentialA.token, ticketA));
 
-    const raceCommentId = "45454545-4545-4454-8454-454545454545";
+    const raceCommentId = "10101010-1010-4010-8010-101010101010";
     const originalPrepare = env.DB.prepare.bind(env.DB);
     let injectRace = true;
     env.DB.prepare = (sql: string) => {
@@ -10494,7 +10525,7 @@ describe("Hands iOS simulator QA artifacts", () => {
               `INSERT INTO feedback_comments
                (id, ticket_id, author_actor, author_type, body, internal, created_at)
                VALUES (?1, ?2, 'staff:test', 'staff', 'raced after snapshot', 0, ?3)`,
-            ).bind(raceCommentId, ticketA, now + 400).run();
+            ).bind(raceCommentId, ticketA, now + 200).run();
           }
           return snapshot;
         };
@@ -10610,6 +10641,41 @@ describe("Hands iOS simulator QA artifacts", () => {
     } as any);
     expect(crossIntegrationDownload.status).toBe(404);
 
+    env.APK_BUCKET.put = async (key: string, value: ArrayBuffer) => {
+      storedObjects.set(key, new Uint8Array(value));
+      await cleanupReporterFeedbackData(env, Date.now());
+    };
+    const cronRaceForm = new FormData();
+    cronRaceForm.set("body", "cron must not delete in-flight upload");
+    cronRaceForm.set("submission_id", "52525252-5252-4525-8525-525252525252");
+    cronRaceForm.append("attachments", new File(["cron"], "cron.png", { type: "image/png" }));
+    expect((await handleAddReporterComment(context(
+      "comment", credentialA.token, ticketA, cronRaceForm,
+    ))).status).toBe(201);
+    const cronRaceAttachment = await env.DB.prepare(
+      "SELECT r2_key FROM feedback_attachments WHERE filename = 'cron.png'",
+    ).first() as any;
+    expect(storedObjects.has(cronRaceAttachment.r2_key)).toBe(true);
+    expect((await env.DB.prepare(
+      "SELECT COUNT(*) AS count FROM feedback_reporter_r2_cleanup WHERE r2_key = ?1",
+    ).bind(cronRaceAttachment.r2_key).first() as any).count).toBe(0);
+
+    env.APK_BUCKET.put = async (key: string, value: ArrayBuffer) => {
+      storedObjects.set(key, new Uint8Array(value));
+      await cleanupReporterFeedbackData(env, Date.now() + 16 * 60_000);
+    };
+    const expiredLeaseForm = new FormData();
+    expiredLeaseForm.set("body", "expired writer must lose cleanup claim");
+    expiredLeaseForm.set("submission_id", "53535353-5353-4535-8535-535353535353");
+    expiredLeaseForm.append("attachments", new File(["expired"], "expired.png", { type: "image/png" }));
+    await expect(handleAddReporterComment(context(
+      "comment", credentialA.token, ticketA, expiredLeaseForm,
+    ))).rejects.toThrow("feedback reporter attachment cleanup intent missing");
+    expect([...storedObjects.keys()].some((key) => key.endsWith("/0-expired.png"))).toBe(false);
+    expect((await env.DB.prepare(
+      "SELECT COUNT(*) AS count FROM feedback_attachments WHERE filename = 'expired.png'",
+    ).first() as any).count).toBe(0);
+
     const invalidTypeForm = new FormData();
     invalidTypeForm.set("body", "bad type");
     invalidTypeForm.set("submission_id", "61616161-6161-4616-8616-616161616161");
@@ -10690,6 +10756,30 @@ describe("Hands iOS simulator QA artifacts", () => {
     };
     const originalBatch = env.DB.batch.bind(env.DB);
     env.DB.batch = async (statements: unknown[]) => {
+      if (statements.length > 2) {
+        await originalBatch(statements);
+        throw new Error("simulated ambiguous D1 success");
+      }
+      return originalBatch(statements);
+    };
+    const ambiguousForm = new FormData();
+    ambiguousForm.set("body", "ambiguous commit");
+    ambiguousForm.set("submission_id", "a0a0a0a0-a0a0-4a0a-8a0a-a0a0a0a0a0a0");
+    ambiguousForm.append("attachments", new File(["committed"], "committed.png", { type: "image/png" }));
+    const ambiguousResponse = await handleAddReporterComment(context(
+      "comment", credentialA.token, ticketA, ambiguousForm,
+    ));
+    expect(ambiguousResponse.status).toBe(200);
+    expect(await ambiguousResponse.json()).toMatchObject({ idempotent_replay: true });
+    const committedAttachment = await env.DB.prepare(
+      "SELECT r2_key FROM feedback_attachments WHERE filename = 'committed.png'",
+    ).first() as any;
+    expect(storedObjects.has(committedAttachment.r2_key)).toBe(true);
+    expect((await env.DB.prepare(
+      "SELECT COUNT(*) AS count FROM feedback_reporter_r2_cleanup WHERE r2_key = ?1",
+    ).bind(committedAttachment.r2_key).first() as any).count).toBe(0);
+
+    env.DB.batch = async (statements: unknown[]) => {
       if (statements.length > 2) throw new Error("simulated D1 failure");
       return originalBatch(statements);
     };
@@ -10720,7 +10810,7 @@ describe("Hands iOS simulator QA artifacts", () => {
     expect((await handleAddFeedbackComment(adminContext({ body: "internal note", internal: true }))).status).toBe(201);
     expect((await env.DB.prepare(
       "SELECT COUNT(*) AS count FROM feedback_events WHERE ticket_id = ?1 AND event_type = 'feedback:comment_created'",
-    ).bind(ticketA).first() as any).count).toBe(4);
+    ).bind(ticketA).first() as any).count).toBe(6);
     const staffEvent = await env.DB.prepare(
       `SELECT payload_json FROM feedback_events
        WHERE ticket_id = ?1 AND event_type = 'feedback:comment_created'

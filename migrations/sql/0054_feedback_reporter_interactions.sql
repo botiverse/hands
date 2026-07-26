@@ -1,10 +1,37 @@
+ALTER TABLE feedback_comments ADD COLUMN reporter_sequence INTEGER;
+
+UPDATE feedback_comments SET reporter_sequence = rowid;
+
+CREATE UNIQUE INDEX idx_feedback_comments_reporter_sequence
+  ON feedback_comments(reporter_sequence);
+
+CREATE TRIGGER feedback_comments_reporter_sequence_managed
+BEFORE INSERT ON feedback_comments
+WHEN NEW.reporter_sequence IS NOT NULL
+BEGIN
+  SELECT RAISE(ABORT, 'feedback comment sequence is managed');
+END;
+
+CREATE TRIGGER feedback_comments_reporter_sequence_insert
+AFTER INSERT ON feedback_comments
+BEGIN
+  UPDATE feedback_comments SET reporter_sequence = NEW.rowid WHERE rowid = NEW.rowid;
+END;
+
+CREATE TRIGGER feedback_comments_reporter_sequence_immutable
+BEFORE UPDATE OF reporter_sequence ON feedback_comments
+WHEN OLD.reporter_sequence IS NOT NULL
+BEGIN
+  SELECT RAISE(ABORT, 'feedback comment sequence is immutable');
+END;
+
 CREATE TABLE feedback_reporter_ticket_reads (
   app_id TEXT NOT NULL REFERENCES apps(id) ON DELETE CASCADE,
   reporter_integration_id TEXT NOT NULL
     REFERENCES app_reporter_integrations(id) ON DELETE CASCADE,
   reporter_id TEXT NOT NULL,
   ticket_id TEXT NOT NULL REFERENCES feedback_tickets(id) ON DELETE CASCADE,
-  read_through_created_at INTEGER NOT NULL CHECK (read_through_created_at >= 0),
+  read_through_sequence INTEGER NOT NULL CHECK (read_through_sequence > 0),
   read_through_comment_id TEXT NOT NULL,
   updated_at INTEGER NOT NULL,
   PRIMARY KEY (app_id, reporter_integration_id, reporter_id, ticket_id)
@@ -98,6 +125,8 @@ END;
 
 CREATE TABLE feedback_reporter_r2_cleanup (
   r2_key TEXT PRIMARY KEY,
+  state TEXT NOT NULL CHECK (state IN ('uploading', 'cleanup_claimed')),
+  lease_expires_at INTEGER NOT NULL,
   attempts INTEGER NOT NULL DEFAULT 0 CHECK (attempts >= 0),
   last_error TEXT,
   next_attempt_at INTEGER NOT NULL,
@@ -107,3 +136,13 @@ CREATE TABLE feedback_reporter_r2_cleanup (
 
 CREATE INDEX idx_feedback_reporter_r2_cleanup_due
   ON feedback_reporter_r2_cleanup(next_attempt_at, r2_key);
+
+CREATE TRIGGER feedback_reporter_attachments_cleanup_insert
+BEFORE INSERT ON feedback_attachments
+WHEN NEW.origin = 'reporter' AND NOT EXISTS (
+  SELECT 1 FROM feedback_reporter_r2_cleanup cleanup
+  WHERE cleanup.r2_key = NEW.r2_key AND cleanup.state = 'uploading'
+)
+BEGIN
+  SELECT RAISE(ABORT, 'feedback reporter attachment cleanup intent missing');
+END;

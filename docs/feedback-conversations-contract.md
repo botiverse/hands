@@ -200,7 +200,9 @@ GET /api/apps/{appId}/reporter-feedback/{ticketId}?comment_cursor=<opaque>&comme
 
 The response contains the same reporter-safe ticket projection, original
 attachment metadata, and non-internal comments only. Comment pagination orders
-by `(created_at ASC, id ASC)` and clamps the page size to `1..100`. A successful
+by the immutable database-assigned sequence and clamps the page size to
+`1..100`; opaque cursors therefore cannot skip a same-millisecond later insert
+whose random UUID sorts earlier. A successful
 detail response advances the ticket's monotonic read receipt only through the
 latest visible staff/system comment in that returned page, so a concurrent
 reply outside the response snapshot remains unread. The response returns the
@@ -338,16 +340,21 @@ must choose visibility explicitly; reporter DTOs never select staff/internal
 rows merely because they share the ticket.
 
 Reporter unread receipts are keyed by the full ownership tuple plus ticket and
-store a monotonic `(created_at, comment_id)` cursor. Only visible staff/system
-comments after that cursor count as unread; reporter comments and internal
-comments do not. The comment id tie-breaker prevents equal-millisecond replies
-from being lost.
+store a database-assigned monotonic comment sequence plus the corresponding
+comment id. Only visible staff/system comments after that sequence count as
+unread; reporter comments and internal comments do not. The sequence is fixed
+at insertion, so equal-millisecond replies cannot be lost regardless of random
+UUID lexical order.
 
-Before uploading reporter attachments, the Worker records durable R2 cleanup
-intents. Every attempted generated key is cleaned on upload or D1 failure;
-failed deletes remain due for the scheduled cleanup pass. Cleanup first checks
-for a committed attachment reference, so a stale intent can never delete a
-successfully committed reply file.
+Before uploading reporter attachments, the Worker records durable leased R2
+cleanup intents. Cleanup cannot claim an `uploading` intent until its bounded
+15-minute writer lease expires. Reporter attachment insertion requires the
+intent to remain `uploading`, and the attachment rows plus intent deletion
+commit in one D1 batch; if cleanup claims first, the writer must fail rather
+than commit a missing object. Every attempted key is reconciled after upload or
+D1 failure. Ambiguous D1 outcomes preserve keys already referenced by committed
+attachments, while failed deletes remain `cleanup_claimed` for the scheduled
+retry pass.
 
 Comments remain immutable in v1. Deletion/edit history is outside this slice.
 

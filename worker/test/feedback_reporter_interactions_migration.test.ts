@@ -81,7 +81,7 @@ describe("feedback reporter interactions migration", () => {
     const insertRead = db.prepare(`
       INSERT INTO feedback_reporter_ticket_reads
         (app_id, reporter_integration_id, reporter_id, ticket_id,
-         read_through_created_at, read_through_comment_id, updated_at)
+         read_through_sequence, read_through_comment_id, updated_at)
       VALUES (?, ?, ?, ?, 10, 'comment-a', 10)
     `);
     expect(() => insertRead.run(
@@ -94,6 +94,23 @@ describe("feedback reporter interactions migration", () => {
       UPDATE feedback_reporter_ticket_reads SET reporter_id = 'reporter-b'
       WHERE ticket_id = 'ticket-a'
     `).run()).toThrow("feedback reporter read owner mismatch");
+
+    const existingSequences = db.prepare(
+      "SELECT reporter_sequence FROM feedback_comments ORDER BY reporter_sequence",
+    ).all() as Array<{ reporter_sequence: number }>;
+    expect(existingSequences.every((row) => row.reporter_sequence > 0)).toBe(true);
+    expect(new Set(existingSequences.map((row) => row.reporter_sequence)).size).toBe(existingSequences.length);
+    db.prepare(
+      "INSERT INTO feedback_comments (id, ticket_id, author_type, internal) VALUES ('later', 'ticket-a', 'staff', 0)",
+    ).run();
+    expect((db.prepare(
+      "SELECT reporter_sequence FROM feedback_comments WHERE id = 'later'",
+    ).get() as { reporter_sequence: number }).reporter_sequence).toBeGreaterThan(
+      existingSequences.at(-1)!.reporter_sequence,
+    );
+    expect(() => db.prepare(
+      "UPDATE feedback_comments SET reporter_sequence = 999 WHERE id = 'later'",
+    ).run()).toThrow("feedback comment sequence is immutable");
   });
 
   it("requires reporter attachments to belong to a visible reporter comment on the same ticket", () => {
@@ -104,15 +121,28 @@ describe("feedback reporter interactions migration", () => {
          origin, visibility, created_at)
       VALUES (?, ?, ?, ?, 'reply.png', 'image/png', 4, 'reporter', 'reporter', 2)
     `);
+    const insertIntent = db.prepare(`
+      INSERT INTO feedback_reporter_r2_cleanup
+        (r2_key, state, lease_expires_at, attempts, next_attempt_at,
+         created_at, updated_at)
+      VALUES (?, 'uploading', 100, 0, 100, 1, 1)
+    `);
+    expect(() => insertAttachment.run(
+      "missing-intent", "ticket-a", "comment-a", "reply/missing",
+    )).toThrow("feedback reporter attachment cleanup intent missing");
+    insertIntent.run("reply/a");
     expect(() => insertAttachment.run(
       "reply-a", "ticket-a", "comment-a", "reply/a",
     )).not.toThrow();
+    insertIntent.run("reply/b");
     expect(() => insertAttachment.run(
       "wrong-ticket", "ticket-a", "comment-b", "reply/b",
     )).toThrow("feedback reporter attachment owner mismatch");
+    insertIntent.run("reply/c");
     expect(() => insertAttachment.run(
       "staff-comment", "ticket-a", "comment-staff", "reply/c",
     )).toThrow("feedback reporter attachment owner mismatch");
+    insertIntent.run("reply/internal");
     expect(() => db.prepare(`
       INSERT INTO feedback_attachments
         (id, ticket_id, comment_id, r2_key, filename, content_type, size_bytes,
