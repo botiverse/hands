@@ -8,6 +8,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { ImagePlus, Paperclip, Send } from "lucide-react";
 import {
   Badge,
   Button,
@@ -25,74 +26,6 @@ import type {
   FeedbackTicketDetail,
   FeedbackTicketSummary,
 } from "./types.js";
-
-function ImageAttachmentIcon() {
-  return (
-    <svg aria-hidden="true" viewBox="0 0 24 24" width="16" height="16">
-      <rect
-        x="3"
-        y="3"
-        width="18"
-        height="18"
-        rx="1"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="2"
-      />
-      <circle
-        cx="8.5"
-        cy="8.5"
-        r="1.5"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="2"
-      />
-      <path
-        d="m4 18 5-5 3 3 3-4 5 6M17 5v6M14 8h6"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="2"
-      />
-    </svg>
-  );
-}
-
-function FileAttachmentIcon() {
-  return (
-    <svg aria-hidden="true" viewBox="0 0 24 24" width="16" height="16">
-      <path
-        d="m20 11.5-8.5 8.5a6 6 0 0 1-8.5-8.5l9-9a4 4 0 0 1 5.5 5.8l-9 9a2 2 0 1 1-2.8-2.8l8.3-8.3"
-        fill="none"
-        stroke="currentColor"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-        strokeWidth="2"
-      />
-    </svg>
-  );
-}
-
-function SendIcon() {
-  return (
-    <svg aria-hidden="true" viewBox="0 0 24 24" width="16" height="16">
-      <path
-        d="m22 2-7 20-4-9-9-4Z"
-        fill="none"
-        stroke="currentColor"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-        strokeWidth="2"
-      />
-      <path
-        d="M22 2 11 13"
-        fill="none"
-        stroke="currentColor"
-        strokeLinecap="round"
-        strokeWidth="2"
-      />
-    </svg>
-  );
-}
 
 export const MAX_FEEDBACK_ATTACHMENTS = 3;
 export const MAX_FEEDBACK_ATTACHMENT_BYTES = 10 * 1024 * 1024;
@@ -910,7 +843,7 @@ export function FeedbackTicket({
                 }
                 onClick={() => imageInputRef.current?.click()}
               >
-                <ImageAttachmentIcon />
+                <ImagePlus aria-hidden="true" size={14} />
               </Button>
               <Button
                 aria-label={message("attachFile")}
@@ -923,7 +856,7 @@ export function FeedbackTicket({
                 }
                 onClick={() => fileInputRef.current?.click()}
               >
-                <FileAttachmentIcon />
+                <Paperclip aria-hidden="true" size={14} />
               </Button>
             </div>
             <Button
@@ -934,7 +867,7 @@ export function FeedbackTicket({
               disabled={!reply.trim() || sending}
               onClick={() => void send()}
             >
-              <SendIcon />
+              <Send aria-hidden="true" size={14} />
               <span className="hands-feedback-sr-only">
                 {sending ? message("sending") : message("sendReply")}
               </span>
