@@ -18,5 +18,5 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: "8.10.2"
-      - name: Assemble release AAR (includes NDK build)
-        run: gradle -p clients/android assembleRelease
+      - name: Assemble release AAR and run unit tests
+        run: gradle -p clients/android assembleRelease testReleaseUnitTest
