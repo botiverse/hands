@@ -496,6 +496,14 @@ export function FeedbackTicket({
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const scrollIntent = useRef<"bottom" | "preserve" | null>(null);
 
+  useEffect(() => {
+    actionController.current?.abort();
+    actionController.current = null;
+    commentSubmission.current = null;
+    setSending(false);
+    setReplyAttachments([]);
+  }, [ticketId, transport]);
+
   const load = useCallback(
     async (commentCursor?: string, refresh = false) => {
       loadController.current?.abort();

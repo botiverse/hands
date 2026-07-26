@@ -342,6 +342,45 @@ describe("FeedbackWorkspace browser behavior", () => {
     expect(screen.queryByText("reply.png")).toBeNull();
   });
 
+  it("aborts and resets an in-flight reply when the reporter transport changes", async () => {
+    const first = transport();
+    const second = transport();
+    let firstSignal: AbortSignal | undefined;
+    let resolveFirst: ((value: FeedbackTicketDetail) => void) | undefined;
+    first.addComment = vi.fn(
+      ({ signal }) =>
+        new Promise<FeedbackTicketDetail>((resolve) => {
+          firstSignal = signal;
+          resolveFirst = resolve;
+        }),
+    );
+    const view = render(
+      <FeedbackProvider transport={first}>
+        <FeedbackWorkspace initialTicketId={ticket.id} />
+      </FeedbackProvider>,
+    );
+    const editor = (await screen.findByLabelText("Reply")) as HTMLTextAreaElement;
+    fireEvent.change(editor, { target: { value: "Preserve this draft" } });
+    fireEvent.click(screen.getByRole("button", { name: "Send reply" }));
+    expect(first.addComment).toHaveBeenCalledTimes(1);
+
+    view.rerender(
+      <FeedbackProvider transport={second}>
+        <FeedbackWorkspace initialTicketId={ticket.id} />
+      </FeedbackProvider>,
+    );
+    await waitFor(() => expect(firstSignal?.aborted).toBe(true));
+    expect(editor.value).toBe("Preserve this draft");
+    expect(
+      (screen.getByRole("button", {
+        name: "Send reply",
+      }) as HTMLButtonElement).disabled,
+    ).toBe(false);
+    resolveFirst?.(detail);
+    await Promise.resolve();
+    expect(second.addComment).not.toHaveBeenCalled();
+  });
+
   it("keeps create text and attachments across failure, reports progress, and reuses the retry ID", async () => {
     const adapter = transport();
     let attempt = 0;
