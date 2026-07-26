@@ -19,7 +19,7 @@ repositories {
 }
 
 dependencies {
-    implementation("com.github.botiverse:hands:android-sdk-v0.12.1")
+    implementation("com.github.botiverse:hands:android-sdk-v0.12.2")
 }
 ```
 
@@ -37,7 +37,7 @@ repositories {
 }
 
 dependencies {
-    implementation("build.hands:hands-android-sdk:0.12.1")
+    implementation("build.hands:hands-android-sdk:0.12.2")
 }
 ```
 
