@@ -15,24 +15,43 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
+internal const val DOWNLOAD_COMPLETED_SENDER_PERMISSION =
+    "android.permission.SEND_DOWNLOAD_COMPLETED_INTENTS"
+
 /**
- * Dynamic receivers must declare their export policy when the host targets
- * Android 13 (API 33) or newer. Older Android releases only expose the legacy
- * two-argument overload.
+ * DownloadManager completion is sent by a privileged package rather than the
+ * system UID on some Android builds. The receiver must therefore be exported,
+ * while the signature sender permission prevents third-party spoofing.
  */
 internal fun downloadReceiverRegistrationFlags(sdkInt: Int): Int? =
-    if (sdkInt >= Build.VERSION_CODES.TIRAMISU) Context.RECEIVER_NOT_EXPORTED else null
+    if (sdkInt >= Build.VERSION_CODES.TIRAMISU) Context.RECEIVER_EXPORTED else null
 
 private fun Context.registerDownloadReceiver(
     receiver: BroadcastReceiver,
     filter: IntentFilter,
 ) {
-    val flags = downloadReceiverRegistrationFlags(Build.VERSION.SDK_INT)
+    registerDownloadReceiverForSdk(
+        sdkInt = Build.VERSION.SDK_INT,
+        registerLegacy = { senderPermission ->
+            @Suppress("DEPRECATION")
+            registerReceiver(receiver, filter, senderPermission, null)
+        },
+        registerModern = { senderPermission, flags ->
+            registerReceiver(receiver, filter, senderPermission, null, flags)
+        },
+    )
+}
+
+internal fun registerDownloadReceiverForSdk(
+    sdkInt: Int,
+    registerLegacy: (senderPermission: String) -> Unit,
+    registerModern: (senderPermission: String, flags: Int) -> Unit,
+) {
+    val flags = downloadReceiverRegistrationFlags(sdkInt)
     if (flags == null) {
-        @Suppress("DEPRECATION")
-        registerReceiver(receiver, filter)
+        registerLegacy(DOWNLOAD_COMPLETED_SENDER_PERMISSION)
     } else {
-        registerReceiver(receiver, filter, flags)
+        registerModern(DOWNLOAD_COMPLETED_SENDER_PERMISSION, flags)
     }
 }
 
