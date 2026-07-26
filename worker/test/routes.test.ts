@@ -6799,6 +6799,157 @@ describe("quiver public API v2 — scope resolution", () => {
     expect(await response.text()).toBe("apk");
   });
 
+  it("public R2 download serves only release-bound delta patches", async () => {
+    const env = makeEnv();
+    const {
+      generateSignedR2Url,
+      handlePublicR2Download,
+      handlePublicV2UpdateCheck,
+    } = await import("../src/routes/public_v2");
+    await seedRelease(env, "rel-delta-download", "build-delta-download", [["full", "all"]], {
+      versionCode: 20,
+      versionName: "1.0.20",
+    });
+    await seedAsset(env, "build-delta-download", "asset-delta-download-full", {
+      arch: "arm64-v8a",
+      sizeBytes: 1000,
+    });
+    const key = "apps/app-scope/patch-download-10-20.patch";
+    await seedAsset(env, "build-delta-download", "asset-delta-download", {
+      artifactKind: "delta-patch",
+      arch: "arm64-v8a",
+      filetype: "patch",
+      sizeBytes: 200,
+      r2Key: key,
+      metadata: {
+        from_version_code: 10,
+        to_version_code: 20,
+        algorithm: "archive-patcher-v1",
+        target_sha256: "target-apk-sha256",
+      },
+    });
+    await env.DB.prepare(
+      `INSERT INTO feature_flags (id, app_id, key, default_enabled, updated_at)
+       VALUES ('ff-delta-download', 'app-scope', 'delta_updates', 1, ?1)`,
+    ).bind(Date.now()).run();
+    env.APK_BUCKET = {
+      get: async (requestedKey: string) => {
+        if (requestedKey !== key) return null;
+        return {
+          body: new Blob(["patch"]).stream(),
+          httpEtag: '"asset-delta-download"',
+          writeHttpMetadata: () => undefined,
+        };
+      },
+    };
+
+    const check = await handlePublicV2UpdateCheck(
+      makePublicContext(env, {
+        channel: "production",
+        product_type: "android-apk",
+        current_version_code: "10",
+        platform: "android",
+        arch: "arm64-v8a",
+      }),
+    );
+    const body = await responseJson<any>(check);
+    const url = new URL(body.patch.download_url);
+    const requestUrl = (downloadUrl: URL) => handlePublicR2Download(
+      makePublicDownloadContext(
+        env,
+        decodeURIComponent(downloadUrl.pathname.replace("/public/r2/", "")),
+        {
+          expires: downloadUrl.searchParams.get("expires") ?? undefined,
+          sig: downloadUrl.searchParams.get("sig") ?? undefined,
+        },
+      ),
+    );
+    const request = () => requestUrl(url);
+    const expectAssetNotFound = async (response: Response) => {
+      expect(response.status).toBe(404);
+      expect(await responseJson<any>(response)).toEqual({ error: "asset not found" });
+    };
+
+    const active = await request();
+    expect(active.status).toBe(200);
+    expect(active.headers.get("content-type")).toBe("application/octet-stream");
+    expect(active.headers.get("content-length")).toBe("200");
+    expect(active.headers.get("content-disposition")).toBe(
+      `attachment; filename="scope-app-1.0.20-20.patch"; filename*=UTF-8''scope-app-1.0.20-20.patch`,
+    );
+    expect(await active.text()).toBe("patch");
+
+    // Release identity is independently writable from the build identity.
+    // Both sides must remain non-QA for a signed URL to authorize the object.
+    await env.DB.prepare("UPDATE releases SET release_type = 'qa' WHERE id = ?1")
+      .bind("rel-delta-download")
+      .run();
+    await expectAssetNotFound(await request());
+    await env.DB.prepare("UPDATE releases SET release_type = 'stable' WHERE id = ?1")
+      .bind("rel-delta-download")
+      .run();
+
+    await env.DB.prepare("UPDATE builds SET product_type = 'ios-simulator-qa' WHERE id = ?1")
+      .bind("build-delta-download")
+      .run();
+    await expectAssetNotFound(await request());
+    await env.DB.prepare("UPDATE builds SET product_type = 'android-apk' WHERE id = ?1")
+      .bind("build-delta-download")
+      .run();
+
+    // A support asset on the same active release does not become public merely
+    // because the caller can present a valid Worker-minted signature.
+    const supportKey = "apps/app-scope/delta-download-symbols.zip";
+    await seedAsset(env, "build-delta-download", "asset-delta-download-support", {
+      artifactKind: "native-symbols",
+      filetype: "zip",
+      r2Key: supportKey,
+    });
+    const supportUrl = new URL(
+      await generateSignedR2Url(env as any, supportKey, 3600, "https://quiver-worker.test"),
+    );
+    await expectAssetNotFound(await requestUrl(supportUrl));
+
+    // The delta allowlist is deliberately narrow: a delta-patch row with the
+    // wrong filetype is still private.
+    const wrongFiletypeKey = "apps/app-scope/delta-download-wrong-filetype.zip";
+    await seedAsset(env, "build-delta-download", "asset-delta-download-wrong-filetype", {
+      artifactKind: "delta-patch",
+      filetype: "zip",
+      r2Key: wrongFiletypeKey,
+    });
+    const wrongFiletypeUrl = new URL(
+      await generateSignedR2Url(env as any, wrongFiletypeKey, 3600, "https://quiver-worker.test"),
+    );
+    await expectAssetNotFound(await requestUrl(wrongFiletypeUrl));
+
+    // A delta-patch on a build with no release lifecycle is not public.
+    await seedRelease(env, "rel-unreleased-delta", "build-unreleased-delta", [["full", "all"]], {
+      versionCode: 21,
+      versionName: "1.0.21",
+    });
+    const unreleasedKey = "apps/app-scope/unreleased-delta.patch";
+    await seedAsset(env, "build-unreleased-delta", "asset-unreleased-delta", {
+      artifactKind: "delta-patch",
+      filetype: "patch",
+      r2Key: unreleasedKey,
+    });
+    await env.DB.prepare("DELETE FROM releases WHERE id = ?1")
+      .bind("rel-unreleased-delta")
+      .run();
+    const unreleasedUrl = new URL(
+      await generateSignedR2Url(env as any, unreleasedKey, 3600, "https://quiver-worker.test"),
+    );
+    await expectAssetNotFound(await requestUrl(unreleasedUrl));
+
+    // A still-valid URL must stop working as soon as its release is no longer
+    // active or draft. The HMAC alone never authorizes an arbitrary R2 object.
+    await env.DB.prepare("UPDATE releases SET status = 'cancelled' WHERE id = ?1")
+      .bind("rel-delta-download")
+      .run();
+    await expectAssetNotFound(await request());
+  });
+
   it("public R2 download redirects to presigned R2 when S3 credentials are configured", async () => {
     const env = makeEnv();
     configureR2Presign(env);

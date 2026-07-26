@@ -1,8 +1,10 @@
 package build.hands.update
 
 import android.app.DownloadManager
+import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.IntentFilter
+import android.os.Build
 import build.hands.update.installer.ApkInstaller
 import build.hands.update.internal.DeltaUpdater
 import build.hands.update.internal.HandsClient
@@ -12,6 +14,27 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+
+/**
+ * Dynamic receivers must declare their export policy when the host targets
+ * Android 13 (API 33) or newer. Older Android releases only expose the legacy
+ * two-argument overload.
+ */
+internal fun downloadReceiverRegistrationFlags(sdkInt: Int): Int? =
+    if (sdkInt >= Build.VERSION_CODES.TIRAMISU) Context.RECEIVER_NOT_EXPORTED else null
+
+private fun Context.registerDownloadReceiver(
+    receiver: BroadcastReceiver,
+    filter: IntentFilter,
+) {
+    val flags = downloadReceiverRegistrationFlags(Build.VERSION.SDK_INT)
+    if (flags == null) {
+        @Suppress("DEPRECATION")
+        registerReceiver(receiver, filter)
+    } else {
+        registerReceiver(receiver, filter, flags)
+    }
+}
 
 /**
  * High-level entry point for "check if there's a new version on the quiver
@@ -137,7 +160,7 @@ class UpdateChecker(
         val receiver = installer.createInstallReceiver(downloadId)
         // Register on Application context so the receiver survives Activity death.
         if (context is android.app.Application) {
-            context.registerReceiver(
+            context.registerDownloadReceiver(
                 receiver,
                 IntentFilter(DownloadManager.ACTION_DOWNLOAD_COMPLETE),
             )
