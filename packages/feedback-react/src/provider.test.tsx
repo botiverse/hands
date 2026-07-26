@@ -3,12 +3,22 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import {
   FeedbackWorkspace,
+  isNearConversationBottom,
   MAX_FEEDBACK_ATTACHMENT_BYTES,
   mergeCommentPages,
   mergeTicketPages,
   validateFeedbackAttachments,
 } from "./components.js";
-import { FeedbackProvider, nextUnreadReport, useHandsFeedback } from "./provider.js";
+import {
+  FeedbackProvider,
+  nextUnreadReport,
+  useHandsFeedback,
+} from "./provider.js";
+import {
+  feedbackMessage,
+  resolveFeedbackLocale,
+  resolveFeedbackLocaleFromPreferences,
+} from "./locale.js";
 import type { HandsFeedbackTransport } from "./types.js";
 
 const transport = {} as HandsFeedbackTransport;
@@ -29,6 +39,28 @@ describe("FeedbackProvider", () => {
     expect(html).toMatch(/>unknown/);
   });
 
+  it("supports explicit locale and has deterministic browser fallback", () => {
+    const html = renderToStaticMarkup(
+      <FeedbackProvider transport={transport} locale="zh-CN">
+        <FeedbackWorkspace />
+      </FeedbackProvider>,
+    );
+    expect(html).toContain("新建反馈");
+    expect(resolveFeedbackLocale("en")).toBe("en");
+    expect(resolveFeedbackLocaleFromPreferences(["en-US", "zh-CN"])).toBe("en");
+    expect(
+      resolveFeedbackLocaleFromPreferences(["fr-FR", "zh-CN", "en-US"]),
+    ).toBe("zh-CN");
+    expect(
+      feedbackMessage(
+        "en",
+        "attachmentTooMany",
+        { attachmentTooMany: "Limit {count}" },
+        { count: 3 },
+      ),
+    ).toBe("Limit 3");
+  });
+
   it("renders the ticket inbox as the landing surface", () => {
     const html = renderToStaticMarkup(
       <FeedbackProvider transport={transport} theme="brutal">
@@ -42,16 +74,33 @@ describe("FeedbackProvider", () => {
   });
 
   it("fails closed outside a reporter-scoped provider", () => {
-    expect(() => renderToStaticMarkup(<Probe />)).toThrow(/require FeedbackProvider/);
+    expect(() => renderToStaticMarkup(<Probe />)).toThrow(
+      /require FeedbackProvider/,
+    );
   });
 
   it("emits only authoritative unread total changes", () => {
-    expect(nextUnreadReport(null, { total: 3, source: "list" })).toEqual({ next: 3, notify: true });
-    expect(nextUnreadReport(3, { total: 3, source: "detail" })).toEqual({ next: 3, notify: false });
-    expect(nextUnreadReport(3, { total: 1, source: "detail" })).toEqual({ next: 1, notify: true });
-    expect(() => nextUnreadReport(1, { total: -1, source: "list" })).toThrow(/non-negative/);
-    expect(() => nextUnreadReport(1, { total: 1.5, source: "list" })).toThrow(/safe integer/);
-    expect(() => nextUnreadReport(1, { total: Number.NaN, source: "list" })).toThrow(/safe integer/);
+    expect(nextUnreadReport(null, { total: 3, source: "list" })).toEqual({
+      next: 3,
+      notify: true,
+    });
+    expect(nextUnreadReport(3, { total: 3, source: "detail" })).toEqual({
+      next: 3,
+      notify: false,
+    });
+    expect(nextUnreadReport(3, { total: 1, source: "detail" })).toEqual({
+      next: 1,
+      notify: true,
+    });
+    expect(() => nextUnreadReport(1, { total: -1, source: "list" })).toThrow(
+      /non-negative/,
+    );
+    expect(() => nextUnreadReport(1, { total: 1.5, source: "list" })).toThrow(
+      /safe integer/,
+    );
+    expect(() =>
+      nextUnreadReport(1, { total: Number.NaN, source: "list" }),
+    ).toThrow(/safe integer/);
   });
 
   it("deduplicates overlapping cursor pages and keeps the fresh ticket value", () => {
@@ -67,10 +116,13 @@ describe("FeedbackProvider", () => {
       attachmentCount: 0,
       commentCount: 0,
     };
-    const result = mergeTicketPages([ticket], [
-      { ...ticket, message: "Fresh", updatedAt: 2 },
-      { ...ticket, id: "ticket-2", message: "Second" },
-    ]);
+    const result = mergeTicketPages(
+      [ticket],
+      [
+        { ...ticket, message: "Fresh", updatedAt: 2 },
+        { ...ticket, id: "ticket-2", message: "Second" },
+      ],
+    );
     expect(result.map(({ id, message }) => ({ id, message }))).toEqual([
       { id: "ticket-1", message: "Fresh" },
       { id: "ticket-2", message: "Second" },
@@ -84,14 +136,12 @@ describe("FeedbackProvider", () => {
       body,
       authorType: "staff" as const,
     });
-    expect(mergeCommentPages(
-      [comment("b", 2), comment("a", 1)],
-      [comment("b", 2, "fresh"), comment("c", 3)],
-    )).toEqual([
-      comment("a", 1),
-      comment("b", 2, "fresh"),
-      comment("c", 3),
-    ]);
+    expect(
+      mergeCommentPages(
+        [comment("b", 2), comment("a", 1)],
+        [comment("b", 2, "fresh"), comment("c", 3)],
+      ),
+    ).toEqual([comment("a", 1), comment("b", 2, "fresh"), comment("c", 3)]);
   });
 
   it("ships package-owned nonzero skeleton sizing without Tailwind utilities", () => {
@@ -100,28 +150,64 @@ describe("FeedbackProvider", () => {
     expect(css).toMatch(/\.hands-feedback-skeleton-detail[^}]*height:\s*10rem/);
     expect(css).not.toMatch(/\.h-16\b|\.h-40\b|\.w-full\b/);
     expect(css).toMatch(/@media \(max-width: 640px\)/);
+    expect(css).toMatch(/\.hands-feedback-middle[^}]*overflow-y:\s*auto/);
+    expect(css).toMatch(/env\(safe-area-inset-bottom\)/);
+    expect(css).toMatch(/prefers-reduced-motion:\s*reduce/);
+    expect(css).toMatch(
+      /\.hands-feedback-detail \.hands-feedback-middle[^}]*overflow:\s*hidden/,
+    );
+    expect(css).toMatch(
+      /\.hands-feedback-conversation[^}]*flex:\s*1[^}]*overflow-y:\s*auto/,
+    );
+    expect(css).not.toMatch(/display:\s*none[^}]*hands-feedback-conversation/);
+  });
+
+  it("classifies the conversation follow threshold deterministically", () => {
+    expect(
+      isNearConversationBottom({
+        scrollHeight: 500,
+        scrollTop: 336,
+        clientHeight: 100,
+      }),
+    ).toBe(true);
+    expect(
+      isNearConversationBottom({
+        scrollHeight: 500,
+        scrollTop: 100,
+        clientHeight: 100,
+      }),
+    ).toBe(false);
   });
 
   it("rejects unsafe screenshot selections before calling the transport", () => {
-    const image = (name: string, type: string, size: number) => ({
-      name,
-      type,
-      size,
-      lastModified: 0,
-    }) as File;
-    expect(validateFeedbackAttachments([
-      image("1.png", "image/png", 1),
-      image("2.webp", "image/webp", 1),
-    ])).toBeNull();
-    expect(validateFeedbackAttachments([
-      image("1.png", "image/png", 1),
-      image("2.png", "image/png", 1),
-      image("3.png", "image/png", 1),
-      image("4.png", "image/png", 1),
-    ])).toMatch(/no more than 3/);
-    expect(validateFeedbackAttachments([image("notes.txt", "text/plain", 1)])).toMatch(/supported image/);
-    expect(validateFeedbackAttachments([
-      image("huge.png", "image/png", MAX_FEEDBACK_ATTACHMENT_BYTES + 1),
-    ])).toMatch(/larger than 10 MB/);
+    const image = (name: string, type: string, size: number) =>
+      ({
+        name,
+        type,
+        size,
+        lastModified: 0,
+      }) as File;
+    expect(
+      validateFeedbackAttachments([
+        image("1.png", "image/png", 1),
+        image("2.webp", "image/webp", 1),
+      ]),
+    ).toBeNull();
+    expect(
+      validateFeedbackAttachments([
+        image("1.png", "image/png", 1),
+        image("2.png", "image/png", 1),
+        image("3.png", "image/png", 1),
+        image("4.png", "image/png", 1),
+      ]),
+    ).toMatch(/no more than 3/);
+    expect(
+      validateFeedbackAttachments([image("notes.txt", "text/plain", 1)]),
+    ).toMatch(/supported image/);
+    expect(
+      validateFeedbackAttachments([
+        image("huge.png", "image/png", MAX_FEEDBACK_ATTACHMENT_BYTES + 1),
+      ]),
+    ).toMatch(/larger than 10 MB/);
   });
 });
