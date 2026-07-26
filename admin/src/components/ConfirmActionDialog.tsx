@@ -91,20 +91,24 @@ export function ConfirmActionDialog({
         if (!next) onCancel();
       }}
     >
-      <AlertDialogContent className="max-w-md w-full">
-        <AlertDialogHeader>
-          <AlertDialogTitle>{title}</AlertDialogTitle>
-          <AlertDialogDescription className="flex items-center gap-2 flex-wrap">
-            <span className="font-medium">{objectLabel}</span>
+      <AlertDialogContent className="w-[calc(100%-2rem)] max-w-xl">
+        <AlertDialogHeader className="grid-cols-1 items-start gap-1">
+          <AlertDialogTitle className="w-full break-words">
+            {title}
+          </AlertDialogTitle>
+          <AlertDialogDescription className="flex min-w-0 w-full flex-col items-start gap-1 sm:flex-row sm:flex-wrap sm:items-baseline sm:gap-x-2 sm:gap-y-1">
+            <span className="min-w-0 max-w-full break-words font-medium">
+              {objectLabel}
+            </span>
             {objectHint && (
-              <span className="font-mono text-xs text-slate-500">
+              <span className="min-w-0 max-w-full break-words font-mono text-xs text-slate-500">
                 {objectHint}
               </span>
             )}
           </AlertDialogDescription>
         </AlertDialogHeader>
 
-        <AlertDialogBody>
+        <AlertDialogBody className="max-h-[70vh] overflow-y-auto">
           {objectSummary && (
             <div className="mb-3 p-3 border border-slate-200 rounded-sm bg-slate-50 text-xs">
               {objectSummary}
@@ -126,12 +130,17 @@ export function ConfirmActionDialog({
           )}
         </AlertDialogBody>
 
-        <AlertDialogFooter>
-          <AlertDialogCancel variant="outline" disabled={pending}>
+        <AlertDialogFooter className="flex-col-reverse items-stretch gap-2 sm:flex-row sm:items-center sm:justify-end sm:gap-3">
+          <AlertDialogCancel
+            variant="outline"
+            className="w-full sm:w-auto"
+            disabled={pending}
+          >
             {cancelLabel}
           </AlertDialogCancel>
           <AlertDialogAction
             variant={confirmVariant}
+            className="w-full sm:w-auto"
             loading={pending}
             disabled={pending || confirmDisabled}
             onClick={onConfirm}
