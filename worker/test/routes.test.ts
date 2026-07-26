@@ -454,6 +454,7 @@ function makeMockDb() {
     CREATE TABLE feedback_attachments (
       id TEXT PRIMARY KEY,
       ticket_id TEXT NOT NULL,
+      comment_id TEXT,
       r2_key TEXT NOT NULL,
       filename TEXT NOT NULL,
       content_type TEXT,
@@ -473,8 +474,50 @@ function makeMockDb() {
       reporter_id TEXT,
       submission_id TEXT,
       submission_fingerprint TEXT,
+      reporter_sequence INTEGER,
       created_at INTEGER NOT NULL
     );
+    CREATE UNIQUE INDEX idx_feedback_comments_reporter_sequence
+      ON feedback_comments(reporter_sequence);
+    CREATE TABLE feedback_comment_sequence_state (
+      singleton INTEGER PRIMARY KEY,
+      high_water INTEGER NOT NULL
+    );
+    INSERT INTO feedback_comment_sequence_state (singleton, high_water) VALUES (1, 0);
+    CREATE TRIGGER feedback_comment_sequence_state_no_delete
+    BEFORE DELETE ON feedback_comment_sequence_state
+    BEGIN
+      SELECT RAISE(ABORT, 'feedback comment sequence state is durable');
+    END;
+    CREATE TRIGGER feedback_comment_sequence_state_monotonic
+    BEFORE UPDATE ON feedback_comment_sequence_state
+    WHEN NEW.singleton != OLD.singleton OR NEW.high_water != OLD.high_water + 1
+    BEGIN
+      SELECT RAISE(ABORT, 'feedback comment sequence high-water must advance by one');
+    END;
+    CREATE TRIGGER feedback_comments_reporter_sequence_managed
+    BEFORE INSERT ON feedback_comments
+    WHEN NEW.reporter_sequence IS NOT NULL
+    BEGIN
+      SELECT RAISE(ABORT, 'feedback comment sequence is managed');
+    END;
+    CREATE TRIGGER feedback_comments_reporter_sequence_insert
+    AFTER INSERT ON feedback_comments
+    BEGIN
+      UPDATE feedback_comment_sequence_state
+      SET high_water = high_water + 1 WHERE singleton = 1;
+      UPDATE feedback_comments
+      SET reporter_sequence = (
+        SELECT high_water FROM feedback_comment_sequence_state WHERE singleton = 1
+      )
+      WHERE rowid = NEW.rowid;
+    END;
+    CREATE TRIGGER feedback_comments_reporter_sequence_immutable
+    BEFORE UPDATE OF reporter_sequence ON feedback_comments
+    WHEN OLD.reporter_sequence IS NOT NULL
+    BEGIN
+      SELECT RAISE(ABORT, 'feedback comment sequence is immutable');
+    END;
     CREATE TABLE app_reporter_integrations (
       id TEXT PRIMARY KEY,
       app_id TEXT NOT NULL REFERENCES apps(id) ON DELETE CASCADE,
@@ -714,6 +757,35 @@ function makeMockDb() {
         app_id, reporter_integration_id, reporter_hash, audit_key_version,
         endpoint, throttle_window_started_at
       ) WHERE throttle_window_started_at IS NOT NULL;
+    CREATE TABLE feedback_reporter_ticket_reads (
+      app_id TEXT NOT NULL,
+      reporter_integration_id TEXT NOT NULL,
+      reporter_id TEXT NOT NULL,
+      ticket_id TEXT NOT NULL,
+      read_through_sequence INTEGER NOT NULL,
+      read_through_comment_id TEXT NOT NULL,
+      updated_at INTEGER NOT NULL,
+      PRIMARY KEY (app_id, reporter_integration_id, reporter_id, ticket_id)
+    );
+    CREATE TABLE feedback_reporter_r2_cleanup (
+      r2_key TEXT PRIMARY KEY,
+      state TEXT NOT NULL,
+      lease_expires_at INTEGER NOT NULL,
+      attempts INTEGER NOT NULL DEFAULT 0,
+      last_error TEXT,
+      next_attempt_at INTEGER NOT NULL,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    );
+    CREATE TRIGGER feedback_reporter_attachments_cleanup_insert
+    BEFORE INSERT ON feedback_attachments
+    WHEN NEW.origin = 'reporter' AND NOT EXISTS (
+      SELECT 1 FROM feedback_reporter_r2_cleanup cleanup
+      WHERE cleanup.r2_key = NEW.r2_key AND cleanup.state = 'uploading'
+    )
+    BEGIN
+      SELECT RAISE(ABORT, 'feedback reporter attachment cleanup intent missing');
+    END;
   `);
 
   // Replace `?N` numbered placeholders with anonymous `?` (better-sqlite3 compat).
@@ -10220,7 +10292,13 @@ describe("Hands iOS simulator QA artifacts", () => {
     env.FEEDBACK_AUDIT_HMAC_KEY = "test-audit-key-with-enough-entropy";
     env.FEEDBACK_AUDIT_KEY_VERSION = "test-v1";
     const { generateDeployToken, hashDeployToken } = await import("../src/lib/deploy_tokens");
-    const { handleAddReporterComment, handleGetReporterFeedback, handleListReporterFeedback } =
+    const {
+      handleAddReporterComment,
+      cleanupReporterFeedbackData,
+      handleDownloadReporterAttachment,
+      handleGetReporterFeedback,
+      handleListReporterFeedback,
+    } =
       await import("../src/routes/reporter_feedback");
     const now = Date.now();
     const reporterId = "r".repeat(64);
@@ -10275,7 +10353,7 @@ describe("Hands iOS simulator QA artifacts", () => {
       handler: "list" | "detail" | "comment",
       credential: string | null,
       ticketId?: string,
-      commentBody?: { body: string; submission_id: string },
+      commentBody?: { body: string; submission_id: string } | FormData,
       headerReporter = reporterId,
       queries: Record<string, string> = {},
     ) => {
@@ -10285,13 +10363,16 @@ describe("Hands iOS simulator QA artifacts", () => {
         header: (name: string, value: string) => responseHeaders.set(name, value),
         req: {
           param: (name: string) => name === "appId" ? "app-ios" : name === "ticketId" ? ticketId : undefined,
-          header: (name: string) => name === "X-Hands-Reporter-Id"
+          header: (name: string) => name.toLowerCase() === "content-type" && commentBody instanceof FormData
+            ? "multipart/form-data; boundary=test"
+            : name === "X-Hands-Reporter-Id"
             ? headerReporter
             : name === "authorization" && credential
               ? `Bearer ${credential}`
               : undefined,
           query: (name: string) => queries[name] ?? (handler === "list" && name === "limit" ? "50" : undefined),
-          json: async () => commentBody ?? {},
+          json: async () => commentBody instanceof FormData ? {} : commentBody ?? {},
+          formData: async () => commentBody instanceof FormData ? commentBody : new FormData(),
         },
         json: (data: unknown, status = 200) => new Response(JSON.stringify(data), {
           status,
@@ -10308,7 +10389,10 @@ describe("Hands iOS simulator QA artifacts", () => {
       attachment_count: 0,
       comment_count: 0,
       latest_comment_at: null,
+      unread: false,
+      unread_count: 0,
     });
+    expect(listABody.unread_total).toBe(0);
     expect((await handleGetReporterFeedback(context("detail", credentialA.token, ticketB))).status).toBe(404);
     expect((await handleListReporterFeedback(context("list", credentialA.token, undefined, undefined, ""))).status).toBe(400);
     expect((await handleListReporterFeedback(context("list", null))).status).toBe(401);
@@ -10332,6 +10416,11 @@ describe("Hands iOS simulator QA artifacts", () => {
     expect((await env.DB.prepare(
       "SELECT COUNT(*) AS count FROM feedback_comments WHERE ticket_id = ?1 AND author_type = 'reporter'",
     ).bind(ticketA).first() as any).count).toBe(1);
+    expect((await env.DB.prepare(
+      "SELECT submission_fingerprint FROM feedback_comments WHERE ticket_id = ?1 AND submission_id = ?2",
+    ).bind(ticketA, submissionId).first() as any).submission_fingerprint).toBe(
+      createHash("sha256").update("hello reporter loop").digest("hex"),
+    );
     expect((await env.DB.prepare(
       "SELECT COUNT(*) AS count FROM feedback_events WHERE ticket_id = ?1",
     ).bind(ticketA).first() as any).count).toBe(1);
@@ -10386,17 +10475,181 @@ describe("Hands iOS simulator QA artifacts", () => {
       { comment_limit: "2" },
     ));
     const page1Body = await page1.json() as any;
+    expect(page1Body.ticket).toMatchObject({ unread: true, unread_count: 2 });
+    expect(page1Body.unread_total).toBe(1);
     const page2 = await handleGetReporterFeedback(context(
       "detail", credentialA.token, ticketA, undefined, reporterId,
       { comment_limit: "2", comment_cursor: page1Body.next_comment_cursor },
     ));
     const page2Body = await page2.json() as any;
+    expect(page2Body.ticket).toMatchObject({ unread: false, unread_count: 0 });
+    expect(page2Body.unread_total).toBe(0);
     const firstFour = [...page1Body.comments, ...page2Body.comments].map((comment: any) => comment.id);
     const expectedFirstFour = (await env.DB.prepare(
       `SELECT id FROM feedback_comments WHERE ticket_id = ?1 AND internal = 0
        ORDER BY created_at ASC, id ASC LIMIT 4`,
     ).bind(ticketA).all() as any).results.map((comment: any) => comment.id);
     expect(firstFour).toEqual(expectedFirstFour);
+
+    const legacyTicket = "90909090-9090-4090-8090-909090909090";
+    const bridgeTime = now + 150;
+    const bridgeHigh = "eeeeeeee-1111-4111-8111-111111111111";
+    const bridgeLow = "11111111-2222-4222-8222-222222222222";
+    const bridgeHigher = "ffffffff-3333-4333-8333-333333333333";
+    await env.DB.prepare(
+      `INSERT INTO feedback_tickets
+       (id, app_id, kind, status, message, metadata_json, reporter_id,
+        reporter_integration_id, created_at, updated_at)
+       VALUES (?1, 'app-ios', 'feedback', 'open', 'Legacy cursor bridge', '{}',
+               ?2, ?3, ?4, ?4)`,
+    ).bind(legacyTicket, reporterId, integrationA, bridgeTime).run();
+    for (const id of [bridgeHigh, bridgeLow, bridgeHigher]) {
+      await env.DB.prepare(
+        `INSERT INTO feedback_comments
+         (id, ticket_id, author_actor, author_type, body, internal, created_at)
+         VALUES (?1, ?2, 'staff:test', 'staff', ?1, 0, ?3)`,
+      ).bind(id, legacyTicket, bridgeTime).run();
+    }
+    const legacyCursor = btoa(JSON.stringify([bridgeTime, bridgeLow]))
+      .replaceAll("+", "-").replaceAll("/", "_").replaceAll("=", "");
+    const legacyPage1 = await handleGetReporterFeedback(context(
+      "detail", credentialA.token, legacyTicket, undefined, reporterId,
+      { comment_limit: "1", comment_cursor: legacyCursor },
+    ));
+    const legacyPage1Body = await legacyPage1.json() as any;
+    expect(legacyPage1Body.comments.map((comment: any) => comment.id)).toEqual([bridgeHigh]);
+    const legacyPage2 = await handleGetReporterFeedback(context(
+      "detail", credentialA.token, legacyTicket, undefined, reporterId,
+      { comment_limit: "1", comment_cursor: legacyPage1Body.next_comment_cursor },
+    ));
+    const legacyPage2Body = await legacyPage2.json() as any;
+    expect(legacyPage2Body.comments.map((comment: any) => comment.id)).toEqual([bridgeHigher]);
+    expect(legacyPage2Body.comments.map((comment: any) => comment.id)).not.toContain(bridgeLow);
+    await env.DB.prepare("DELETE FROM feedback_tickets WHERE id = ?1").bind(legacyTicket).run();
+
+    const sparseLegacyTicket = "91909090-9090-4090-8090-909090909090";
+    const sparsePrevious = "01010101-0101-4101-8101-010101010101";
+    const sparseMid = "88888888-8888-4888-8888-888888888888";
+    const sparseHigh = "ffffffff-ffff-4fff-8fff-fffffffffff0";
+    const sparseLow = "11111111-1111-4111-8111-111111111110";
+    await env.DB.prepare(
+      `INSERT INTO feedback_tickets
+       (id, app_id, kind, status, message, metadata_json, reporter_id,
+        reporter_integration_id, created_at, updated_at)
+       VALUES (?1, 'app-ios', 'feedback', 'open', 'Sparse legacy receipt', '{}',
+               ?2, ?3, ?4, ?4)`,
+    ).bind(sparseLegacyTicket, reporterId, integrationA, bridgeTime).run();
+    await env.DB.prepare(
+      `INSERT INTO feedback_comments
+       (id, ticket_id, author_actor, author_type, body, internal, created_at)
+       VALUES (?1, ?2, 'staff:test', 'staff', 'previous', 0, ?3)`,
+    ).bind(sparsePrevious, sparseLegacyTicket, bridgeTime - 1).run();
+    for (const id of [sparseMid, sparseHigh, sparseLow]) {
+      await env.DB.prepare(
+        `INSERT INTO feedback_comments
+         (id, ticket_id, author_actor, author_type, body, internal, created_at)
+         VALUES (?1, ?2, 'staff:test', 'staff', ?1, 0, ?3)`,
+      ).bind(id, sparseLegacyTicket, bridgeTime).run();
+    }
+    const sparsePreviousRow = await env.DB.prepare(
+      "SELECT reporter_sequence FROM feedback_comments WHERE id = ?1",
+    ).bind(sparsePrevious).first() as any;
+    await env.DB.prepare(
+      `INSERT INTO feedback_reporter_ticket_reads
+       (app_id, reporter_integration_id, reporter_id, ticket_id,
+        read_through_sequence, read_through_comment_id, updated_at)
+       VALUES ('app-ios', ?1, ?2, ?3, ?4, ?5, ?6)`,
+    ).bind(
+      integrationA,
+      reporterId,
+      sparseLegacyTicket,
+      sparsePreviousRow.reporter_sequence,
+      sparsePrevious,
+      now,
+    ).run();
+    const sparseCursor = btoa(JSON.stringify([bridgeTime - 1, sparsePrevious]))
+      .replaceAll("+", "-").replaceAll("/", "_").replaceAll("=", "");
+    const sparsePage = await handleGetReporterFeedback(context(
+      "detail", credentialA.token, sparseLegacyTicket, undefined, reporterId,
+      { comment_limit: "1", comment_cursor: sparseCursor },
+    ));
+    const sparseBody = await sparsePage.json() as any;
+    expect(sparseBody.comments.map((comment: any) => comment.id)).toEqual([sparseLow]);
+    expect(sparseBody.ticket).toMatchObject({ unread: true, unread_count: 3 });
+    expect(sparseBody.unread_total).toBeGreaterThanOrEqual(1);
+    await env.DB.prepare("DELETE FROM feedback_tickets WHERE id = ?1").bind(sparseLegacyTicket).run();
+
+    const afterRead = await handleListReporterFeedback(context("list", credentialA.token));
+    expect(await afterRead.json()).toMatchObject({
+      unread_total: 0,
+      tickets: [{ id: ticketA, unread: false, unread_count: 0 }],
+    });
+    const tiedEarlier = "21212121-2121-4212-8212-212121212121";
+    const tiedLater = "31313131-3131-4313-8313-313131313131";
+    await env.DB.prepare(
+      `INSERT INTO feedback_comments
+       (id, ticket_id, author_actor, author_type, body, internal, created_at)
+       VALUES (?1, ?2, 'staff:test', 'staff', 'new visible reply', 0, ?3)`,
+    ).bind(tiedEarlier, ticketA, now + 200).run();
+    const unreadOnce = await handleListReporterFeedback(context("list", credentialA.token));
+    expect(await unreadOnce.json()).toMatchObject({
+      unread_total: 1,
+      tickets: [{ id: ticketA, unread: true, unread_count: 1 }],
+    });
+    await handleGetReporterFeedback(context("detail", credentialA.token, ticketA));
+    await env.DB.prepare(
+      `INSERT INTO feedback_comments
+       (id, ticket_id, author_actor, author_type, body, internal, created_at)
+       VALUES (?1, ?2, 'system', 'system', 'same timestamp later id', 0, ?3)`,
+    ).bind(tiedLater, ticketA, now + 200).run();
+    const unreadTie = await handleListReporterFeedback(context("list", credentialA.token));
+    expect(await unreadTie.json()).toMatchObject({
+      unread_total: 1,
+      tickets: [{ id: ticketA, unread: true, unread_count: 1 }],
+    });
+    await env.DB.prepare(
+      `INSERT INTO feedback_comments
+       (id, ticket_id, author_actor, author_type, body, internal, created_at)
+       VALUES ('41414141-4141-4414-8414-414141414141', ?1, 'staff:test', 'staff',
+               'internal does not count', 1, ?2)`,
+    ).bind(ticketA, now + 300).run();
+    const unreadInternal = await handleListReporterFeedback(context("list", credentialA.token));
+    expect((await unreadInternal.json() as any).tickets[0].unread_count).toBe(1);
+    await handleGetReporterFeedback(context("detail", credentialA.token, ticketA));
+
+    const raceCommentId = "10101010-1010-4010-8010-101010101010";
+    const originalPrepare = env.DB.prepare.bind(env.DB);
+    let injectRace = true;
+    env.DB.prepare = (sql: string) => {
+      const statement = originalPrepare(sql);
+      if (!sql.includes("SELECT id, author_type, body, created_at")) return statement;
+      const originalBind = statement.bind.bind(statement);
+      statement.bind = (...params: unknown[]) => {
+        const bound = originalBind(...params);
+        const originalAll = bound.all.bind(bound);
+        bound.all = async () => {
+          const snapshot = await originalAll();
+          if (injectRace) {
+            injectRace = false;
+            await originalPrepare(
+              `INSERT INTO feedback_comments
+               (id, ticket_id, author_actor, author_type, body, internal, created_at)
+               VALUES (?1, ?2, 'staff:test', 'staff', 'raced after snapshot', 0, ?3)`,
+            ).bind(raceCommentId, ticketA, now + 200).run();
+          }
+          return snapshot;
+        };
+        return bound;
+      };
+      return statement;
+    };
+    const raceDetail = await handleGetReporterFeedback(context("detail", credentialA.token, ticketA));
+    env.DB.prepare = originalPrepare;
+    const raceBody = await raceDetail.json() as any;
+    expect(raceBody.comments.some((comment: any) => comment.id === raceCommentId)).toBe(false);
+    expect(raceBody.ticket).toMatchObject({ unread: true, unread_count: 1 });
+    expect(raceBody.unread_total).toBe(1);
+    await handleGetReporterFeedback(context("detail", credentialA.token, ticketA));
 
     const emojiSubmission = "12121212-1212-4212-8212-121212121212";
     expect((await handleAddReporterComment(context(
@@ -10407,6 +10660,251 @@ describe("Hands iOS simulator QA artifacts", () => {
       "comment", credentialA.token, ticketA,
       { body: "😀".repeat(10_001), submission_id: "13131313-1313-4313-8313-131313131313" },
     ))).status).toBe(400);
+
+    const storedObjects = new Map<string, Uint8Array>();
+    const deletedObjects: string[] = [];
+    env.APK_BUCKET = {
+      put: async (key: string, value: ArrayBuffer) => {
+        storedObjects.set(key, new Uint8Array(value));
+      },
+      get: async (key: string) => {
+        const value = storedObjects.get(key);
+        return value ? { body: new Blob([value]).stream() } : null;
+      },
+      delete: async (key: string) => {
+        deletedObjects.push(key);
+        storedObjects.delete(key);
+      },
+    };
+    const attachmentSubmission = "51515151-5151-4515-8515-515151515151";
+    const attachmentForm = new FormData();
+    attachmentForm.set("body", "reply with screenshot");
+    attachmentForm.set("submission_id", attachmentSubmission);
+    attachmentForm.append("attachments", new File([new Uint8Array([1, 2, 3, 4])], "screen shot.png", {
+      type: "image/png",
+    }));
+    const attachmentResponse = await handleAddReporterComment(context(
+      "comment", credentialA.token, ticketA, attachmentForm,
+    ));
+    expect(attachmentResponse.status).toBe(201);
+    const attachmentRow = await env.DB.prepare(
+      `SELECT id, comment_id, r2_key, filename, content_type, size_bytes, origin, visibility
+       FROM feedback_attachments WHERE ticket_id = ?1 AND origin = 'reporter'`,
+    ).bind(ticketA).first() as any;
+    expect(attachmentRow).toMatchObject({
+      filename: "screen_shot.png",
+      content_type: "image/png",
+      size_bytes: 4,
+      origin: "reporter",
+      visibility: "reporter",
+    });
+    expect(attachmentRow.comment_id).toBe((await attachmentResponse.clone().json() as any).id);
+    expect(storedObjects.get(attachmentRow.r2_key)).toEqual(new Uint8Array([1, 2, 3, 4]));
+    const attachmentReplay = await handleAddReporterComment(context(
+      "comment", credentialA.token, ticketA, attachmentForm,
+    ));
+    expect(attachmentReplay.status).toBe(200);
+    expect(storedObjects.size).toBe(1);
+    const sanitizedCollisionForm = new FormData();
+    sanitizedCollisionForm.set("body", "reply with screenshot");
+    sanitizedCollisionForm.set("submission_id", attachmentSubmission);
+    sanitizedCollisionForm.append("attachments", new File(
+      [new Uint8Array([1, 2, 3, 4])],
+      "screen?shot.png",
+      { type: "image/png" },
+    ));
+    expect((await handleAddReporterComment(context(
+      "comment", credentialA.token, ticketA, sanitizedCollisionForm,
+    ))).status).toBe(409);
+    const changedFileForm = new FormData();
+    changedFileForm.set("body", "reply with screenshot");
+    changedFileForm.set("submission_id", attachmentSubmission);
+    changedFileForm.append("attachments", new File([new Uint8Array([4, 3, 2, 1])], "screen shot.png", {
+      type: "image/png",
+    }));
+    expect((await handleAddReporterComment(context(
+      "comment", credentialA.token, ticketA, changedFileForm,
+    ))).status).toBe(409);
+    const detailWithAttachment = await handleGetReporterFeedback(context("detail", credentialA.token, ticketA));
+    expect((await detailWithAttachment.json() as any).attachments).toContainEqual(expect.objectContaining({
+      id: attachmentRow.id,
+      filename: "screen_shot.png",
+      content_type: "image/png",
+      size_bytes: 4,
+    }));
+    const downloadResponse = await handleDownloadReporterAttachment({
+      ...context("detail", credentialA.token, ticketA),
+      req: {
+        ...context("detail", credentialA.token, ticketA).req,
+        param: (name: string) => name === "appId" ? "app-ios" : name === "ticketId" ? ticketA : attachmentRow.id,
+      },
+    } as any);
+    expect(downloadResponse.status).toBe(200);
+    expect(new Uint8Array(await downloadResponse.arrayBuffer())).toEqual(new Uint8Array([1, 2, 3, 4]));
+    expect(downloadResponse.headers.get("cache-control")).toBe("private, no-store");
+    const crossIntegrationDownload = await handleDownloadReporterAttachment({
+      ...context("detail", credentialB.token, ticketA),
+      req: {
+        ...context("detail", credentialB.token, ticketA).req,
+        param: (name: string) => name === "appId" ? "app-ios" : name === "ticketId" ? ticketA : attachmentRow.id,
+      },
+    } as any);
+    expect(crossIntegrationDownload.status).toBe(404);
+
+    env.APK_BUCKET.put = async (key: string, value: ArrayBuffer) => {
+      storedObjects.set(key, new Uint8Array(value));
+      await cleanupReporterFeedbackData(env, Date.now());
+    };
+    const cronRaceForm = new FormData();
+    cronRaceForm.set("body", "cron must not delete in-flight upload");
+    cronRaceForm.set("submission_id", "52525252-5252-4525-8525-525252525252");
+    cronRaceForm.append("attachments", new File(["cron"], "cron.png", { type: "image/png" }));
+    expect((await handleAddReporterComment(context(
+      "comment", credentialA.token, ticketA, cronRaceForm,
+    ))).status).toBe(201);
+    const cronRaceAttachment = await env.DB.prepare(
+      "SELECT r2_key FROM feedback_attachments WHERE filename = 'cron.png'",
+    ).first() as any;
+    expect(storedObjects.has(cronRaceAttachment.r2_key)).toBe(true);
+    expect((await env.DB.prepare(
+      "SELECT COUNT(*) AS count FROM feedback_reporter_r2_cleanup WHERE r2_key = ?1",
+    ).bind(cronRaceAttachment.r2_key).first() as any).count).toBe(0);
+
+    env.APK_BUCKET.put = async (key: string, value: ArrayBuffer) => {
+      storedObjects.set(key, new Uint8Array(value));
+      await cleanupReporterFeedbackData(env, Date.now() + 16 * 60_000);
+    };
+    const expiredLeaseForm = new FormData();
+    expiredLeaseForm.set("body", "expired writer must lose cleanup claim");
+    expiredLeaseForm.set("submission_id", "53535353-5353-4535-8535-535353535353");
+    expiredLeaseForm.append("attachments", new File(["expired"], "expired.png", { type: "image/png" }));
+    await expect(handleAddReporterComment(context(
+      "comment", credentialA.token, ticketA, expiredLeaseForm,
+    ))).rejects.toThrow("feedback reporter attachment cleanup intent missing");
+    expect([...storedObjects.keys()].some((key) => key.endsWith("/0-expired.png"))).toBe(false);
+    expect((await env.DB.prepare(
+      "SELECT COUNT(*) AS count FROM feedback_attachments WHERE filename = 'expired.png'",
+    ).first() as any).count).toBe(0);
+
+    const invalidTypeForm = new FormData();
+    invalidTypeForm.set("body", "bad type");
+    invalidTypeForm.set("submission_id", "61616161-6161-4616-8616-616161616161");
+    invalidTypeForm.append("attachments", new File(["x"], "x.txt", { type: "text/plain" }));
+    expect((await handleAddReporterComment(context(
+      "comment", credentialA.token, ticketA, invalidTypeForm,
+    ))).status).toBe(400);
+    const tooManyForm = new FormData();
+    tooManyForm.set("body", "too many");
+    tooManyForm.set("submission_id", "71717171-7171-4717-8717-717171717171");
+    for (let index = 0; index < 4; index += 1) {
+      tooManyForm.append("attachments", new File(["x"], `${index}.png`, { type: "image/png" }));
+    }
+    expect((await handleAddReporterComment(context(
+      "comment", credentialA.token, ticketA, tooManyForm,
+    ))).status).toBe(400);
+    const tooLargeForm = new FormData();
+    tooLargeForm.set("body", "too large");
+    tooLargeForm.set("submission_id", "81818181-8181-4818-8818-818181818181");
+    tooLargeForm.append("attachments", new File(
+      [new Uint8Array(10 * 1024 * 1024 + 1)],
+      "large.png",
+      { type: "image/png" },
+    ));
+    expect((await handleAddReporterComment(context(
+      "comment", credentialA.token, ticketA, tooLargeForm,
+    ))).status).toBe(400);
+
+    let uploadAttempt = 0;
+    env.APK_BUCKET.put = async (key: string, value: ArrayBuffer) => {
+      uploadAttempt += 1;
+      storedObjects.set(key, new Uint8Array(value));
+      if (uploadAttempt === 2) throw new Error("simulated R2 failure");
+    };
+    const r2FailureForm = new FormData();
+    r2FailureForm.set("body", "r2 failure");
+    r2FailureForm.set("submission_id", "91919191-9191-4919-8919-919191919191");
+    r2FailureForm.append("attachments", new File(["a"], "a.png", { type: "image/png" }));
+    r2FailureForm.append("attachments", new File(["b"], "b.png", { type: "image/png" }));
+    await expect(handleAddReporterComment(context(
+      "comment", credentialA.token, ticketA, r2FailureForm,
+    ))).rejects.toThrow("simulated R2 failure");
+    expect([...storedObjects.keys()].some((key) => key.endsWith("/0-a.png") || key.endsWith("/1-b.png"))).toBe(false);
+    expect((await env.DB.prepare(
+      "SELECT COUNT(*) AS count FROM feedback_reporter_r2_cleanup",
+    ).first() as any).count).toBe(0);
+
+    env.APK_BUCKET.put = async (key: string, value: ArrayBuffer) => {
+      storedObjects.set(key, new Uint8Array(value));
+      throw new Error("stored then failed");
+    };
+    env.APK_BUCKET.delete = async () => {
+      throw new Error("delete unavailable");
+    };
+    const compensatedForm = new FormData();
+    compensatedForm.set("body", "cleanup compensation");
+    compensatedForm.set("submission_id", "92929292-9292-4929-8929-929292929292");
+    compensatedForm.append("attachments", new File(["retry"], "retry.png", { type: "image/png" }));
+    await expect(handleAddReporterComment(context(
+      "comment", credentialA.token, ticketA, compensatedForm,
+    ))).rejects.toThrow("stored then failed");
+    const cleanupIntent = await env.DB.prepare(
+      "SELECT r2_key, attempts, last_error FROM feedback_reporter_r2_cleanup",
+    ).first() as any;
+    expect(cleanupIntent).toMatchObject({ attempts: 1, last_error: "r2 delete failed" });
+    expect(storedObjects.has(cleanupIntent.r2_key)).toBe(true);
+    env.APK_BUCKET.delete = async (key: string) => {
+      storedObjects.delete(key);
+    };
+    await cleanupReporterFeedbackData(env, Date.now() + 61_000);
+    expect(storedObjects.has(cleanupIntent.r2_key)).toBe(false);
+    expect((await env.DB.prepare(
+      "SELECT COUNT(*) AS count FROM feedback_reporter_r2_cleanup",
+    ).first() as any).count).toBe(0);
+
+    env.APK_BUCKET.put = async (key: string, value: ArrayBuffer) => {
+      storedObjects.set(key, new Uint8Array(value));
+    };
+    const originalBatch = env.DB.batch.bind(env.DB);
+    env.DB.batch = async (statements: unknown[]) => {
+      if (statements.length > 2) {
+        await originalBatch(statements);
+        throw new Error("simulated ambiguous D1 success");
+      }
+      return originalBatch(statements);
+    };
+    const ambiguousForm = new FormData();
+    ambiguousForm.set("body", "ambiguous commit");
+    ambiguousForm.set("submission_id", "a0a0a0a0-a0a0-4a0a-8a0a-a0a0a0a0a0a0");
+    ambiguousForm.append("attachments", new File(["committed"], "committed.png", { type: "image/png" }));
+    const ambiguousResponse = await handleAddReporterComment(context(
+      "comment", credentialA.token, ticketA, ambiguousForm,
+    ));
+    expect(ambiguousResponse.status).toBe(200);
+    expect(await ambiguousResponse.json()).toMatchObject({ idempotent_replay: true });
+    const committedAttachment = await env.DB.prepare(
+      "SELECT r2_key FROM feedback_attachments WHERE filename = 'committed.png'",
+    ).first() as any;
+    expect(storedObjects.has(committedAttachment.r2_key)).toBe(true);
+    expect((await env.DB.prepare(
+      "SELECT COUNT(*) AS count FROM feedback_reporter_r2_cleanup WHERE r2_key = ?1",
+    ).bind(committedAttachment.r2_key).first() as any).count).toBe(0);
+
+    env.DB.batch = async (statements: unknown[]) => {
+      if (statements.length > 2) throw new Error("simulated D1 failure");
+      return originalBatch(statements);
+    };
+    const d1FailureForm = new FormData();
+    d1FailureForm.set("body", "d1 failure");
+    d1FailureForm.set("submission_id", "a1a1a1a1-a1a1-4a1a-8a1a-a1a1a1a1a1a1");
+    d1FailureForm.append("attachments", new File(["d1"], "d1.png", { type: "image/png" }));
+    await expect(handleAddReporterComment(context(
+      "comment", credentialA.token, ticketA, d1FailureForm,
+    ))).rejects.toThrow("simulated D1 failure");
+    env.DB.batch = originalBatch;
+    expect([...storedObjects.keys()].some((key) => key.endsWith("/0-d1.png"))).toBe(false);
+    expect((await env.DB.prepare(
+      "SELECT COUNT(*) AS count FROM feedback_comments WHERE submission_id = ?1",
+    ).bind("a1a1a1a1-a1a1-4a1a-8a1a-a1a1a1a1a1a1").first() as any).count).toBe(0);
 
     const { handleAddFeedbackComment, handleUpdateFeedback } = await import("../src/routes/feedback");
     const adminContext = (body: unknown) => ({
@@ -10422,7 +10920,7 @@ describe("Hands iOS simulator QA artifacts", () => {
     expect((await handleAddFeedbackComment(adminContext({ body: "internal note", internal: true }))).status).toBe(201);
     expect((await env.DB.prepare(
       "SELECT COUNT(*) AS count FROM feedback_events WHERE ticket_id = ?1 AND event_type = 'feedback:comment_created'",
-    ).bind(ticketA).first() as any).count).toBe(3);
+    ).bind(ticketA).first() as any).count).toBe(6);
     const staffEvent = await env.DB.prepare(
       `SELECT payload_json FROM feedback_events
        WHERE ticket_id = ?1 AND event_type = 'feedback:comment_created'

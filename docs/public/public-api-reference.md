@@ -356,11 +356,20 @@ the route's `feedback:read` or `feedback:comment` scope, and contain no
 non-feedback scope. Ownership is the exact tuple `(app, reporter integration,
 reporter id)`. Lists return only owned tickets; targeted ownership misses and
 malformed ticket UUIDs return `404` without revealing another reporter's data.
-Reporter comments are text-only and require a client-generated UUID
-`submission_id`: new comments return `201`, exact replays return `200`, and
-reuse with different trimmed UTF-8 text returns `409`. Reporter-visible
-attachments are limited to original submission attachments and are served with
-private/no-store, safe-disposition, and no-sniff headers.
+List and detail responses include Hands-authoritative unread state: each ticket
+has `unread` and `unread_count`, while the response has `unread_total` (the
+number of owned tickets with unread visible staff/system replies). A successful
+detail read advances a monotonic receipt through the latest visible reply in
+the returned comment page; concurrent or later replies remain unread;
+reporter comments and internal staff notes never create unread state.
+
+Reporter comments require a client-generated UUID `submission_id`: new comments
+return `201`, exact replays return `200`, and reuse with different trimmed text
+or attachment bytes returns `409`. JSON remains supported for text-only replies.
+Multipart replies use `body`, `submission_id`, and up to three `attachments`;
+each file must be GIF, JPEG, PNG, or WebP and at most 10 MiB. Original submission
+attachments and reporter-comment attachments are served with private/no-store,
+safe-disposition, and no-sniff headers.
 
 Reporter comment and status webhooks carry a stable logical event id in both
 the signed JSON body and `X-Hands-Event-Id`. Each subscription delivery also

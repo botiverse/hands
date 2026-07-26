@@ -8,6 +8,7 @@ import {
   binary,
   error,
   json,
+  multipart,
   register,
   success,
   type OpenApiRegistry,
@@ -119,7 +120,7 @@ export function registerFeedbackRoutes(registry: OpenApiRegistry) {
       query: z.object({ limit: z.coerce.number().int().min(1).max(50).default(20), cursor: z.string().optional() }),
     },
     responses: {
-      200: success("Reporter-owned feedback list.", GenericObject),
+      200: success("Reporter-owned feedback list with authoritative unread totals.", GenericObject),
       400: error("Missing or malformed reporter id or cursor."),
       401: error("Missing or invalid bearer token."),
       403: error("Bearer grant is not an active reporter integration grant."),
@@ -142,7 +143,7 @@ export function registerFeedbackRoutes(registry: OpenApiRegistry) {
       }),
     },
     responses: {
-      200: success("Reporter-owned feedback details.", GenericObject),
+      200: success("Reporter-owned feedback details; successful reads advance the authoritative receipt.", GenericObject),
       400: error("Missing or malformed reporter id."),
       401: error("Missing or invalid bearer token."),
       403: error("Invalid reporter integration grant."),
@@ -155,21 +156,24 @@ export function registerFeedbackRoutes(registry: OpenApiRegistry) {
     method: "post",
     path: "/api/apps/{appId}/reporter-feedback/{ticketId}/comments",
     tags: ["Reporter Feedback"],
-    summary: "Add an idempotent reporter comment",
+    summary: "Add an idempotent reporter comment with optional image attachments",
     security: auth,
     request: {
       params: AppTicketParams,
       headers: ReporterHeaders,
-      body: { content: json(ReporterCommentInput), required: true },
+      body: {
+        content: { ...json(ReporterCommentInput), ...multipart() },
+        required: true,
+      },
     },
     responses: {
       200: success("Exact idempotent replay.", GenericObject),
       201: success("Reporter comment created.", GenericObject),
-      400: error("Invalid reporter id, body, or submission id."),
+      400: error("Invalid reporter id, body, submission id, or attachment."),
       401: error("Missing or invalid bearer token."),
       403: error("Invalid reporter integration grant."),
       404: error("Ticket is not owned by this reporter integration."),
-      409: error("Submission id was already used with a different body."),
+      409: error("Submission id was already used with a different body or attachment set."),
       429: error("Reporter rate limit exceeded."),
     },
   });
@@ -178,7 +182,7 @@ export function registerFeedbackRoutes(registry: OpenApiRegistry) {
     method: "get",
     path: "/api/apps/{appId}/reporter-feedback/{ticketId}/attachments/{attachmentId}",
     tags: ["Reporter Feedback"],
-    summary: "Download a reporter-visible submission attachment",
+    summary: "Download a reporter-visible submission or reporter-comment attachment",
     security: auth,
     request: { params: AttachmentParams, headers: ReporterHeaders },
     responses: {

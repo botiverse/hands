@@ -7,6 +7,15 @@ type ReporterContext = Context<{ Bindings: Env }>;
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const COMMENT_MAX_CHARS = 10_000;
+const COMMENT_MAX_ATTACHMENTS = 3;
+const COMMENT_MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024;
+const COMMENT_UPLOAD_LEASE_MS = 15 * 60_000;
+const COMMENT_ATTACHMENT_TYPES = new Set([
+  "image/gif",
+  "image/jpeg",
+  "image/png",
+  "image/webp",
+]);
 
 type ReporterEnv = Env & {
   FEEDBACK_AUDIT_HMAC_KEY?: string;
@@ -31,19 +40,31 @@ function safeFilename(value: string): string {
   return value.replace(/[^A-Za-z0-9._-]/g, "_").slice(0, 120) || "attachment";
 }
 
-function encodeCursor(createdAt: unknown, id: unknown): string {
-  return btoa(JSON.stringify([createdAt, id]))
+function encodeCursorValue(value: unknown): string {
+  return btoa(JSON.stringify(value))
     .replaceAll("+", "-")
     .replaceAll("/", "_")
     .replaceAll("=", "");
 }
 
-function decodeCursor(value: string | undefined): [number, string] | null {
-  if (!value) return [Number.MAX_SAFE_INTEGER, "~"];
+function decodeCursorValue(value: string): unknown {
   try {
     const base64 = value.replaceAll("-", "+").replaceAll("_", "/");
     const padded = base64.padEnd(Math.ceil(base64.length / 4) * 4, "=");
-    const decoded = JSON.parse(atob(padded)) as [number, string];
+    return JSON.parse(atob(padded));
+  } catch {
+    return null;
+  }
+}
+
+function encodeCursor(createdAt: unknown, id: unknown): string {
+  return encodeCursorValue([createdAt, id]);
+}
+
+function decodeCursor(value: string | undefined): [number, string] | null {
+  if (!value) return [Number.MAX_SAFE_INTEGER, "~"];
+  try {
+    const decoded = decodeCursorValue(value) as [number, string];
     if (!Number.isSafeInteger(decoded[0]) || !UUID_RE.test(decoded[1])) return null;
     return [decoded[0], decoded[1].toLowerCase()];
   } catch {
@@ -51,9 +72,38 @@ function decodeCursor(value: string | undefined): [number, string] | null {
   }
 }
 
-function decodeAscendingCursor(value: string | undefined): [number, string] | null {
-  if (!value) return [-1, ""];
-  return decodeCursor(value);
+type CommentCursor =
+  | { mode: "sequence"; sequence: number; id: string }
+  | { mode: "legacy"; createdAt: number; id: string };
+
+function decodeCommentCursor(value: string | undefined): CommentCursor | null {
+  if (!value) return { mode: "sequence", sequence: 0, id: "" };
+  const decoded = decodeCursorValue(value);
+  if (
+    Array.isArray(decoded)
+    && decoded.length === 3
+    && decoded[0] === "sequence-v1"
+    && Number.isSafeInteger(decoded[1])
+    && decoded[1] >= 0
+    && typeof decoded[2] === "string"
+    && UUID_RE.test(decoded[2])
+  ) {
+    return { mode: "sequence", sequence: decoded[1], id: decoded[2].toLowerCase() };
+  }
+  if (
+    Array.isArray(decoded)
+    && decoded.length === 2
+    && Number.isSafeInteger(decoded[0])
+    && typeof decoded[1] === "string"
+    && UUID_RE.test(decoded[1])
+  ) {
+    return { mode: "legacy", createdAt: decoded[0], id: decoded[1].toLowerCase() };
+  }
+  return null;
+}
+
+function encodeCommentSequenceCursor(sequence: unknown, id: unknown): string {
+  return encodeCursorValue(["sequence-v1", sequence, id]);
 }
 
 async function reporterHash(c: ReporterContext, principal: ReporterPrincipal) {
@@ -190,6 +240,9 @@ function ticketNotFound(c: ReporterContext) {
 }
 
 function ticketDto(row: Record<string, unknown>) {
+  const unreadCount = typeof row.unread_count === "number"
+    ? Math.max(0, row.unread_count)
+    : 0;
   return {
     id: row.id,
     kind: row.kind,
@@ -203,7 +256,36 @@ function ticketDto(row: Record<string, unknown>) {
     attachment_count: row.attachment_count,
     comment_count: row.comment_count,
     latest_comment_at: row.latest_comment_at,
+    unread: unreadCount > 0,
+    unread_count: unreadCount,
   };
+}
+
+const unreadCountSql = `(SELECT COUNT(*) FROM feedback_comments unread_comment
+  WHERE unread_comment.ticket_id = t.id
+    AND unread_comment.internal = 0
+    AND unread_comment.author_type IN ('staff', 'system')
+    AND (
+      rr.ticket_id IS NULL
+      OR unread_comment.reporter_sequence > rr.read_through_sequence
+    ))`;
+
+async function unreadTotal(
+  c: ReporterContext,
+  principal: ReporterPrincipal,
+): Promise<number> {
+  const row = await c.env.DB.prepare(
+    `SELECT COUNT(*) AS unread_total FROM feedback_tickets t
+     LEFT JOIN feedback_reporter_ticket_reads rr
+       ON rr.app_id = t.app_id
+      AND rr.reporter_integration_id = t.reporter_integration_id
+      AND rr.reporter_id = t.reporter_id
+      AND rr.ticket_id = t.id
+     WHERE t.app_id = ?1 AND t.reporter_integration_id = ?2
+       AND t.reporter_id = ?3 AND ${unreadCountSql} > 0`,
+  ).bind(principal.appId, principal.integrationId, principal.reporterId)
+    .first<{ unread_total: number }>();
+  return Math.max(0, row?.unread_total ?? 0);
 }
 
 export async function handleListReporterFeedback(c: ReporterContext) {
@@ -213,17 +295,24 @@ export async function handleListReporterFeedback(c: ReporterContext) {
   const decodedCursor = decodeCursor(c.req.query("cursor"));
   if (!decodedCursor) return c.json({ error: "invalid cursor" }, 400);
   const [cursorCreatedAt, cursorId] = decodedCursor;
-  const { results } = await c.env.DB.prepare(
+  const [{ results }, totalUnread] = await Promise.all([
+    c.env.DB.prepare(
     `SELECT t.id, t.kind, t.status, t.message, t.version_name, t.version_code,
             t.channel, t.created_at, t.updated_at,
             (SELECT COUNT(*) FROM feedback_attachments fa
-             WHERE fa.ticket_id = t.id AND fa.origin = 'submission'
+             WHERE fa.ticket_id = t.id AND fa.origin IN ('submission', 'reporter')
                AND fa.visibility = 'reporter') AS attachment_count,
             (SELECT COUNT(*) FROM feedback_comments fc
              WHERE fc.ticket_id = t.id AND fc.internal = 0) AS comment_count,
             (SELECT MAX(fc.created_at) FROM feedback_comments fc
-             WHERE fc.ticket_id = t.id AND fc.internal = 0) AS latest_comment_at
+             WHERE fc.ticket_id = t.id AND fc.internal = 0) AS latest_comment_at,
+            ${unreadCountSql} AS unread_count
      FROM feedback_tickets t
+     LEFT JOIN feedback_reporter_ticket_reads rr
+       ON rr.app_id = t.app_id
+      AND rr.reporter_integration_id = t.reporter_integration_id
+      AND rr.reporter_id = t.reporter_id
+      AND rr.ticket_id = t.id
      WHERE t.app_id = ?1 AND t.reporter_integration_id = ?2 AND t.reporter_id = ?3
        AND (t.created_at < ?4 OR (t.created_at = ?4 AND t.id < ?5))
      ORDER BY t.created_at DESC, t.id DESC LIMIT ?6`,
@@ -234,14 +323,20 @@ export async function handleListReporterFeedback(c: ReporterContext) {
     cursorCreatedAt,
     cursorId,
     limit + 1,
-  ).all<Record<string, unknown>>();
+  ).all<Record<string, unknown>>(),
+    unreadTotal(c, authorized.principal),
+  ]);
   const page = results.slice(0, limit);
   const last = page.at(-1);
   const nextCursor = results.length > limit && last
     ? encodeCursor(last.created_at, last.id)
     : null;
   await auditRead(c, authorized.principal, authorized.pseudonym, "list");
-  return c.json({ tickets: page.map(ticketDto), next_cursor: nextCursor });
+  return c.json({
+    tickets: page.map(ticketDto),
+    next_cursor: nextCursor,
+    unread_total: totalUnread,
+  });
 }
 
 async function ownedTicket(c: ReporterContext, principal: ReporterPrincipal, ticketId: string) {
@@ -249,17 +344,56 @@ async function ownedTicket(c: ReporterContext, principal: ReporterPrincipal, tic
     `SELECT t.id, t.kind, t.status, t.message, t.version_name, t.version_code,
             t.channel, t.created_at, t.updated_at, a.org_id,
             (SELECT COUNT(*) FROM feedback_attachments fa
-             WHERE fa.ticket_id = t.id AND fa.origin = 'submission'
+             WHERE fa.ticket_id = t.id AND fa.origin IN ('submission', 'reporter')
                AND fa.visibility = 'reporter') AS attachment_count,
             (SELECT COUNT(*) FROM feedback_comments fc
              WHERE fc.ticket_id = t.id AND fc.internal = 0) AS comment_count,
             (SELECT MAX(fc.created_at) FROM feedback_comments fc
-             WHERE fc.ticket_id = t.id AND fc.internal = 0) AS latest_comment_at
+             WHERE fc.ticket_id = t.id AND fc.internal = 0) AS latest_comment_at,
+            ${unreadCountSql} AS unread_count
      FROM feedback_tickets t JOIN apps a ON a.id = t.app_id
+     LEFT JOIN feedback_reporter_ticket_reads rr
+       ON rr.app_id = t.app_id
+      AND rr.reporter_integration_id = t.reporter_integration_id
+      AND rr.reporter_id = t.reporter_id
+      AND rr.ticket_id = t.id
      WHERE t.id = ?1 AND t.app_id = ?2
        AND t.reporter_integration_id = ?3 AND t.reporter_id = ?4`,
   ).bind(ticketId, principal.appId, principal.integrationId, principal.reporterId)
     .first<Record<string, unknown> & { org_id: string | null }>();
+}
+
+async function markTicketRead(
+  c: ReporterContext,
+  principal: ReporterPrincipal,
+  ticketId: string,
+  latest: { id: string; reporter_sequence: number } | null,
+): Promise<void> {
+  if (!latest) return;
+  const now = Date.now();
+  await c.env.DB.prepare(
+    `INSERT INTO feedback_reporter_ticket_reads
+     (app_id, reporter_integration_id, reporter_id, ticket_id,
+      read_through_sequence, read_through_comment_id, updated_at)
+     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+     ON CONFLICT(app_id, reporter_integration_id, reporter_id, ticket_id)
+     DO UPDATE SET
+       read_through_sequence = CASE
+         WHEN excluded.read_through_sequence > read_through_sequence
+         THEN excluded.read_through_sequence ELSE read_through_sequence END,
+       read_through_comment_id = CASE
+         WHEN excluded.read_through_sequence > read_through_sequence
+         THEN excluded.read_through_comment_id ELSE read_through_comment_id END,
+       updated_at = excluded.updated_at`,
+  ).bind(
+    principal.appId,
+    principal.integrationId,
+    principal.reporterId,
+    ticketId,
+    latest.reporter_sequence,
+    latest.id,
+    now,
+  ).run();
 }
 
 export async function handleGetReporterFeedback(c: ReporterContext) {
@@ -270,42 +404,170 @@ export async function handleGetReporterFeedback(c: ReporterContext) {
   const ticket = await ownedTicket(c, authorized.principal, ticketId);
   if (!ticket) return ticketNotFound(c);
   const commentLimit = Math.min(100, Math.max(1, Number(c.req.query("comment_limit") ?? "50") || 50));
-  const decodedCommentCursor = decodeAscendingCursor(c.req.query("comment_cursor"));
-  if (!decodedCommentCursor) return c.json({ error: "invalid comment cursor" }, 400);
-  const [commentCursorCreatedAt, commentCursorId] = decodedCommentCursor;
+  const commentCursor = decodeCommentCursor(c.req.query("comment_cursor"));
+  if (!commentCursor) return c.json({ error: "invalid comment cursor" }, 400);
+  const commentStatement = commentCursor.mode === "sequence"
+    ? c.env.DB.prepare(
+        `SELECT id, author_type, body, created_at, reporter_sequence
+         FROM feedback_comments
+         WHERE ticket_id = ?1 AND internal = 0 AND reporter_sequence > ?2
+         ORDER BY reporter_sequence ASC LIMIT ?3`,
+      ).bind(ticketId, commentCursor.sequence, commentLimit + 1)
+    : c.env.DB.prepare(
+        `SELECT id, author_type, body, created_at, reporter_sequence
+         FROM feedback_comments
+         WHERE ticket_id = ?1 AND internal = 0
+           AND (created_at > ?2 OR (created_at = ?2 AND id > ?3))
+         ORDER BY created_at ASC, id ASC LIMIT ?4`,
+      ).bind(ticketId, commentCursor.createdAt, commentCursor.id, commentLimit + 1);
   const [{ results: comments }, { results: attachments }] = await Promise.all([
-    c.env.DB.prepare(
-      `SELECT id, author_type, body, created_at
-       FROM feedback_comments
-       WHERE ticket_id = ?1 AND internal = 0
-         AND (created_at > ?2 OR (created_at = ?2 AND id > ?3))
-       ORDER BY created_at ASC, id ASC LIMIT ?4`,
-    ).bind(ticketId, commentCursorCreatedAt, commentCursorId, commentLimit + 1).all<Record<string, unknown>>(),
+    commentStatement.all<Record<string, unknown>>(),
     c.env.DB.prepare(
       `SELECT id, filename, content_type, size_bytes, created_at
        FROM feedback_attachments
-       WHERE ticket_id = ?1 AND origin = 'submission' AND visibility = 'reporter'
+       WHERE ticket_id = ?1 AND origin IN ('submission', 'reporter') AND visibility = 'reporter'
        ORDER BY created_at, id`,
     ).bind(ticketId).all(),
   ]);
-  await auditRead(c, authorized.principal, authorized.pseudonym, "detail", { ticketId });
-  const { org_id: _orgId, ...safeTicket } = ticket;
   const commentPage = comments.slice(0, commentLimit);
+  // A legacy (created_at, id)-ordered page is not necessarily contiguous in
+  // reporter_sequence, so a single high-water receipt cannot represent it
+  // without false-reading unseen rows. Legacy sessions paginate only; the next
+  // fresh sequence session advances the authoritative receipt.
+  const readWatermark = commentCursor.mode === "sequence"
+    ? [...commentPage].reverse().find((comment) =>
+        (comment.author_type === "staff" || comment.author_type === "system")
+        && typeof comment.reporter_sequence === "number"
+        && typeof comment.id === "string"
+      ) as { id: string; reporter_sequence: number } | undefined
+    : undefined;
+  await auditRead(c, authorized.principal, authorized.pseudonym, "detail", { ticketId });
+  await markTicketRead(c, authorized.principal, ticketId, readWatermark ?? null);
+  const [totalUnread, refreshedTicket] = await Promise.all([
+    unreadTotal(c, authorized.principal),
+    ownedTicket(c, authorized.principal, ticketId),
+  ]);
+  const { org_id: _orgId, ...safeTicket } = refreshedTicket ?? ticket;
   const lastComment = commentPage.at(-1);
   const nextCommentCursor = comments.length > commentLimit && lastComment
-    ? encodeCursor(lastComment.created_at, lastComment.id)
+    ? commentCursor.mode === "legacy"
+      ? encodeCursor(lastComment.created_at, lastComment.id)
+      : encodeCommentSequenceCursor(lastComment.reporter_sequence, lastComment.id)
     : null;
   return c.json({
     ticket: ticketDto(safeTicket),
-    comments: commentPage,
+    comments: commentPage.map(({ reporter_sequence: _sequence, ...comment }) => comment),
     next_comment_cursor: nextCommentCursor,
     attachments,
+    unread_total: totalUnread,
   });
 }
 
 async function sha256Hex(input: string): Promise<string> {
   const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(input));
   return Array.from(new Uint8Array(digest)).map((byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+type ReporterCommentAttachment = {
+  bytes: ArrayBuffer;
+  fingerprintFilename: string;
+  filename: string;
+  contentType: string;
+  sizeBytes: number;
+  digest: string;
+};
+
+async function parseReporterCommentInput(c: ReporterContext): Promise<{
+  text: string;
+  submissionId: string | null;
+  attachments: ReporterCommentAttachment[];
+} | null> {
+  const contentType = c.req.header("content-type") ?? "";
+  let rawText: unknown;
+  let rawSubmissionId: unknown;
+  let files: File[] = [];
+  if (contentType.toLowerCase().startsWith("multipart/form-data")) {
+    let form: FormData;
+    try {
+      form = await c.req.formData();
+    } catch {
+      return null;
+    }
+    rawText = form.get("body");
+    rawSubmissionId = form.get("submission_id");
+    for (const value of form.getAll("attachments")) {
+      if (typeof value !== "string") files.push(value as File);
+    }
+  } else {
+    const body = (await c.req.json().catch(() => null)) as Record<string, unknown> | null;
+    if (!body) return null;
+    rawText = body.body;
+    rawSubmissionId = body.submission_id;
+  }
+  const text = typeof rawText === "string" ? rawText.trim() : "";
+  const submissionId = fullUuid(typeof rawSubmissionId === "string" ? rawSubmissionId : undefined);
+  if (!text || [...text].length > COMMENT_MAX_CHARS || !submissionId) return null;
+  if (files.length > COMMENT_MAX_ATTACHMENTS) return null;
+  const attachments: ReporterCommentAttachment[] = [];
+  for (const file of files) {
+    if (
+      file.size > COMMENT_MAX_ATTACHMENT_BYTES
+      || !COMMENT_ATTACHMENT_TYPES.has(file.type.toLowerCase())
+    ) return null;
+    const bytes = await file.arrayBuffer();
+    const digest = await crypto.subtle.digest("SHA-256", bytes);
+    attachments.push({
+      bytes,
+      fingerprintFilename: file.name,
+      filename: safeFilename(file.name),
+      contentType: file.type.toLowerCase(),
+      sizeBytes: file.size,
+      digest: Array.from(new Uint8Array(digest))
+        .map((byte) => byte.toString(16).padStart(2, "0"))
+        .join(""),
+    });
+  }
+  return { text, submissionId, attachments };
+}
+
+async function reconcileReporterR2Keys(env: Env, keys: string[], now: number) {
+  for (const key of keys) {
+    let referenced: { found: number } | null;
+    try {
+      referenced = await env.DB.prepare(
+        "SELECT 1 AS found FROM feedback_attachments WHERE r2_key = ?1 LIMIT 1",
+      ).bind(key).first<{ found: number }>();
+    } catch {
+      // The durable uploading intent remains. A later scheduled pass will
+      // reconcile it after the writer lease expires.
+      continue;
+    }
+    if (referenced) {
+      await env.DB.prepare(
+        "DELETE FROM feedback_reporter_r2_cleanup WHERE r2_key = ?1",
+      ).bind(key).run().catch(() => undefined);
+      continue;
+    }
+    await env.DB.prepare(
+      `UPDATE feedback_reporter_r2_cleanup
+       SET state = 'cleanup_claimed', next_attempt_at = ?2, updated_at = ?2
+       WHERE r2_key = ?1`,
+    ).bind(key, now).run().catch(() => undefined);
+    try {
+      await env.APK_BUCKET.delete(key);
+      await env.DB.prepare(
+        "DELETE FROM feedback_reporter_r2_cleanup WHERE r2_key = ?1",
+      ).bind(key).run().catch(() => undefined);
+    } catch {
+      await env.DB.prepare(
+        `UPDATE feedback_reporter_r2_cleanup
+         SET state = 'cleanup_claimed', attempts = attempts + 1,
+             last_error = 'r2 delete failed', next_attempt_at = ?2,
+             updated_at = ?3
+         WHERE r2_key = ?1`,
+      ).bind(key, now + 60_000, Date.now()).run().catch(() => undefined);
+    }
+  }
 }
 
 export async function handleAddReporterComment(c: ReporterContext) {
@@ -315,13 +577,21 @@ export async function handleAddReporterComment(c: ReporterContext) {
   if (!ticketId) return ticketNotFound(c);
   const ticket = await ownedTicket(c, authorized.principal, ticketId);
   if (!ticket) return ticketNotFound(c);
-  const body = (await c.req.json().catch(() => ({}))) as { body?: unknown; submission_id?: unknown };
-  const text = typeof body.body === "string" ? body.body.trim() : "";
-  const submissionId = fullUuid(typeof body.submission_id === "string" ? body.submission_id : undefined);
-  if (!text) return c.json({ error: "body is required" }, 400);
-  if ([...text].length > COMMENT_MAX_CHARS) return c.json({ error: `body too long (max ${COMMENT_MAX_CHARS} chars)` }, 400);
-  if (!submissionId) return c.json({ error: "submission_id must be a UUID" }, 400);
-  const fingerprint = await sha256Hex(text);
+  const input = await parseReporterCommentInput(c);
+  if (!input) return c.json({ error: "invalid reporter comment" }, 400);
+  const { text, submissionId, attachments } = input;
+  const fingerprint = attachments.length === 0
+    ? await sha256Hex(text)
+    : await sha256Hex(JSON.stringify([
+        "reporter-comment-v2",
+        text,
+        ...attachments.map((attachment) => [
+          attachment.fingerprintFilename,
+          attachment.contentType,
+          attachment.sizeBytes,
+          attachment.digest,
+        ]),
+      ]));
   const existingComment = async () => c.env.DB.prepare(
     `SELECT id, submission_fingerprint, created_at FROM feedback_comments
      WHERE ticket_id = ?1 AND reporter_integration_id = ?2
@@ -339,6 +609,11 @@ export async function handleAddReporterComment(c: ReporterContext) {
   const now = Date.now();
   const commentId = crypto.randomUUID();
   const eventId = crypto.randomUUID();
+  const attachmentRows = attachments.map((attachment, index) => ({
+    ...attachment,
+    id: crypto.randomUUID(),
+    r2Key: `feedback/${authorized.principal.appId}/${ticketId}/comments/${commentId}/${index}-${attachment.filename}`,
+  }));
   const eventBody = buildFeedbackCommentEvent({
     eventId,
     eventType: "feedback:comment_created",
@@ -356,7 +631,22 @@ export async function handleAddReporterComment(c: ReporterContext) {
     reporter_hash: authorized.pseudonym.hash,
     audit_key_version: authorized.pseudonym.version,
   });
+  const uploadedKeys: string[] = [];
   try {
+    if (attachmentRows.length > 0) {
+      await c.env.DB.batch(attachmentRows.map((attachment) => c.env.DB.prepare(
+        `INSERT INTO feedback_reporter_r2_cleanup
+         (r2_key, state, lease_expires_at, created_at, updated_at,
+          attempts, next_attempt_at)
+         VALUES (?1, 'uploading', ?3, ?2, ?2, 0, ?3)`,
+      ).bind(attachment.r2Key, now, now + COMMENT_UPLOAD_LEASE_MS)));
+    }
+    for (const attachment of attachmentRows) {
+      uploadedKeys.push(attachment.r2Key);
+      await c.env.APK_BUCKET.put(attachment.r2Key, attachment.bytes, {
+        httpMetadata: { contentType: attachment.contentType },
+      });
+    }
     await c.env.DB.batch([
       c.env.DB.prepare(
         `INSERT INTO feedback_comments
@@ -376,6 +666,21 @@ export async function handleAddReporterComment(c: ReporterContext) {
         now,
       ),
       c.env.DB.prepare("UPDATE feedback_tickets SET updated_at = ?1 WHERE id = ?2").bind(now, ticketId),
+      ...attachmentRows.map((attachment) => c.env.DB.prepare(
+        `INSERT INTO feedback_attachments
+         (id, ticket_id, comment_id, r2_key, filename, content_type,
+          size_bytes, origin, visibility, created_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'reporter', 'reporter', ?8)`,
+      ).bind(
+        attachment.id,
+        ticketId,
+        commentId,
+        attachment.r2Key,
+        attachment.filename,
+        attachment.contentType,
+        attachment.sizeBytes,
+        now,
+      )),
       c.env.DB.prepare(
         `INSERT INTO audit_logs (id, app_id, action, actor, payload, created_at)
          VALUES (?1, ?2, 'feedback.reporter_comment', ?3, ?4, ?5)`,
@@ -460,9 +765,13 @@ export async function handleAddReporterComment(c: ReporterContext) {
            ) ELSE 0 END
          ON CONFLICT(webhook_id, event_id) WHERE event_id IS NOT NULL DO NOTHING`,
       ).bind(eventId, now, ticket.org_id),
+      ...attachmentRows.map((attachment) => c.env.DB.prepare(
+        "DELETE FROM feedback_reporter_r2_cleanup WHERE r2_key = ?1 AND state = 'uploading'",
+      ).bind(attachment.r2Key)),
     ]);
   } catch (error) {
     const concurrent = await existingComment();
+    await reconcileReporterR2Keys(c.env, uploadedKeys, now);
     if (concurrent) {
       if (concurrent.submission_fingerprint !== fingerprint) {
         return c.json({ error: "submission_id already used with a different body" }, 409);
@@ -486,7 +795,7 @@ export async function handleDownloadReporterAttachment(c: ReporterContext) {
      JOIN feedback_tickets t ON t.id = fa.ticket_id
      WHERE t.id = ?1 AND t.app_id = ?2
        AND t.reporter_integration_id = ?3 AND t.reporter_id = ?4
-       AND fa.id = ?5 AND fa.origin = 'submission' AND fa.visibility = 'reporter'`,
+       AND fa.id = ?5 AND fa.origin IN ('submission', 'reporter') AND fa.visibility = 'reporter'`,
   ).bind(
     ticketId,
     authorized.principal.appId,
@@ -514,6 +823,36 @@ export async function handleDownloadReporterAttachment(c: ReporterContext) {
 }
 
 export async function cleanupReporterFeedbackData(env: Env, now = Date.now()) {
+  const { results: cleanupRows } = await env.DB.prepare(
+    `SELECT r2_key FROM feedback_reporter_r2_cleanup
+     WHERE next_attempt_at <= ?1
+       AND (state = 'cleanup_claimed'
+            OR (state = 'uploading' AND lease_expires_at <= ?1))
+     ORDER BY next_attempt_at, r2_key LIMIT 100`,
+  ).bind(now).all<{ r2_key: string }>();
+  for (const row of cleanupRows) {
+    const referenced = await env.DB.prepare(
+      "SELECT 1 AS found FROM feedback_attachments WHERE r2_key = ?1 LIMIT 1",
+    ).bind(row.r2_key).first<{ found: number }>();
+    if (referenced) {
+      await env.DB.prepare(
+        "DELETE FROM feedback_reporter_r2_cleanup WHERE r2_key = ?1",
+      ).bind(row.r2_key).run();
+      continue;
+    }
+    await env.DB.prepare(
+      `UPDATE feedback_reporter_r2_cleanup
+       SET state = 'cleanup_claimed', updated_at = ?2
+       WHERE r2_key = ?1 AND NOT EXISTS (
+         SELECT 1 FROM feedback_attachments WHERE r2_key = ?1
+       ) AND (state = 'cleanup_claimed'
+              OR (state = 'uploading' AND lease_expires_at <= ?2))`,
+    ).bind(row.r2_key, now).run();
+    const claimed = await env.DB.prepare(
+      "SELECT 1 AS claimed FROM feedback_reporter_r2_cleanup WHERE r2_key = ?1 AND state = 'cleanup_claimed'",
+    ).bind(row.r2_key).first<{ claimed: number }>();
+    if (claimed) await reconcileReporterR2Keys(env, [row.r2_key], now);
+  }
   await env.DB.batch([
     env.DB.prepare(
       "DELETE FROM feedback_reporter_rate_windows WHERE updated_at < ?1",
