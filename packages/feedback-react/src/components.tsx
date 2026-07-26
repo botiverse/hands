@@ -8,7 +8,7 @@ import {
   useRef,
   useState,
 } from "react";
-import { ImagePlus, Paperclip, Send } from "lucide-react";
+import { ArrowLeft, ImagePlus, Paperclip, Send } from "lucide-react";
 import {
   Badge,
   Button,
@@ -630,8 +630,14 @@ export function FeedbackTicket({
       aria-labelledby="hands-feedback-ticket-heading"
     >
       <header className="hands-feedback-header">
-        <Button variant="outline" onClick={onBack}>
-          {message("back")}
+        <Button
+          aria-label={message("back")}
+          title={message("back")}
+          size="icon-sm"
+          variant="outline"
+          onClick={onBack}
+        >
+          <ArrowLeft aria-hidden="true" size={16} />
         </Button>
         <h2 id="hands-feedback-ticket-heading" tabIndex={-1}>
           {message("ticketHeading")}

@@ -181,7 +181,7 @@ describe("FeedbackWorkspace browser behavior", () => {
       }),
     );
 
-    fireEvent.click(screen.getByText("Back"));
+    fireEvent.click(screen.getByRole("button", { name: "Back" }));
     expect(await screen.findByText(ticket.message)).toBeTruthy();
   });
 
@@ -290,12 +290,12 @@ describe("FeedbackWorkspace browser behavior", () => {
     fireEvent.keyDown(firstDraft, { key: "Enter", isComposing: true });
     fireEvent.keyDown(firstDraft, { key: "Enter", shiftKey: true });
     expect(adapter.addComment).not.toHaveBeenCalled();
-    fireEvent.click(screen.getByText("Back"));
+    fireEvent.click(screen.getByRole("button", { name: "Back" }));
     fireEvent.click(await screen.findByText("Second ticket"));
     fireEvent.change(await screen.findByLabelText("Reply"), {
       target: { value: "draft two" },
     });
-    fireEvent.click(screen.getByText("Back"));
+    fireEvent.click(screen.getByRole("button", { name: "Back" }));
     fireEvent.click(await screen.findByText(ticket.message));
     const restored = (await screen.findByLabelText(
       "Reply",
@@ -625,7 +625,7 @@ describe("FeedbackWorkspace browser behavior", () => {
     );
 
     fireEvent.click(await screen.findByText("Load more replies"));
-    fireEvent.click(screen.getByText("Back"));
+    fireEvent.click(screen.getByRole("button", { name: "Back" }));
     expect(pageSignal?.aborted).toBe(true);
     resolvePage?.({
       ...detail,
