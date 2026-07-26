@@ -1343,6 +1343,22 @@ export async function handleAgentManifest(c: Context<{ Bindings: Env }>) {
         },
       },
       {
+        name: "delete-build-asset",
+        description:
+          "Delete one non-installable build-asset metadata row while preserving its R2 object. Requires app admin, exact app/build/asset binding, and immutable SHA-256/size preconditions. Audit and deletion commit atomically; an absent-row retry succeeds only by recovering the matching audit and rechecking R2. Installable assets, arbitrary absent ids, and missing/mismatched stored objects fail closed.",
+        endpoint: {
+          method: "DELETE",
+          path: "/api/apps/{app_id}/builds/{build_id}/assets/{asset_id}",
+        },
+        parameters: {
+          app_id: { type: "string", in: "path", required: true, description: "App UUID." },
+          build_id: { type: "string", in: "path", required: true, description: "Build UUID." },
+          asset_id: { type: "string", in: "path", required: true, description: "Non-installable build asset UUID." },
+          expected_file_hash: { type: "string", in: "query", required: true, description: "Expected lowercase or uppercase SHA-256 hex digest from a fresh list-build-assets read." },
+          expected_size_bytes: { type: "integer", in: "query", required: true, description: "Expected immutable byte size from the same fresh read." },
+        },
+      },
+      {
         name: "list-ios-simulator-artifacts",
         description:
           "List exact-byte iOS simulator .app.zip QA fixtures. Optional source_commit, github_run_id, and sha256 filters select the exact provenance coordinate. Requires app viewer.",
