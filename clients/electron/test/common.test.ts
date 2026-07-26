@@ -19,10 +19,10 @@ describe("Hands Electron migration contracts", () => {
       buildSubmitURL({
         appSlug: "raft desktop",
         clientKey: "public/key",
-        endpoint: "https://preview.hands.build/",
+        endpoint: "https://updates.example.com/",
       }),
     ).toBe(
-      "https://preview.hands.build/public/v2/apps/raft%20desktop/minidump?client_key=public%2Fkey",
+      "https://updates.example.com/public/v2/apps/raft%20desktop/minidump?client_key=public%2Fkey",
     );
   });
 
