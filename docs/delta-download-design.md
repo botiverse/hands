@@ -41,10 +41,10 @@ versions** to the new one, per arch (matching how we already split assets by
 (covers the vast majority of active installs; anyone older falls back to full).
 
 - New CLI step (or `publish-android` extension): for each `(prev_apk,
-  new_apk)` pair the generator emits `patch-<from_vc>-to-<to_vc>-<arch>.patch`.
+  new_apk)` pair the generator emits `patch-<from_vc>-to-<to_vc>-<arch>.patch.gz`.
 - Upload as build assets with `artifact_kind = 'delta-patch'` and
   `metadata_json = {from_version_code, to_version_code, algorithm:
-  "archive-patcher-v1"}`; store `file_hash` (patch sha256) and the **target
+  "archive-patcher-v1+gzip"}`; store `file_hash` (patch sha256) and the **target
   APK sha256** so the client can verify the reconstructed file.
 
 ### 2. Server (`/updates/check`)
@@ -55,7 +55,7 @@ stays the fallback, always present). When the client sends `current_version_code
 ```jsonc
 "patch": {
   "from_version_code": 1020100,
-  "algorithm": "archive-patcher-v1",
+  "algorithm": "archive-patcher-v1+gzip",
   "download_url": "<signed R2 url>",
   "size_bytes": 3145728,
   "target_sha256": "<sha256 of the reconstructed APK>"
@@ -71,7 +71,8 @@ old SDKs (they ignore the new field).
 1. Locate the installed base APK: `context.applicationInfo.sourceDir` (the
    currently-running APK — this *is* the `from_version_code` artifact).
 2. Download the patch (signed URL) to app storage.
-3. `FileByFileV1DeltaApplier().applyDelta(oldApk, patchStream, newApkOut)`.
+3. Gunzip the patch, then call
+   `FileByFileV1DeltaApplier().applyDelta(oldApk, patchStream, newApkOut)`.
 4. **Verify** the reconstructed APK: sha256 == `target_sha256` **and** its
    signing certificate matches the running app's (reject on mismatch — a delta
    must never install a differently-signed APK). PackageManager also rejects a
@@ -127,8 +128,11 @@ let the client take the full download. This keeps delta a strict win.
   store `delta-patch` assets.
 - **P1b upload outlet — DONE** (CLI 0.5.3, PR #209): `hands builds
   publish-android --delta-patch <from_version_code>=<path>` (repeatable)
-  uploads each patch as a `delta-patch` asset, stamping
-  `target_sha256` = the new APK's hash.
+  uploads official PatchGen `.patch.gz` output as a `delta-patch` asset,
+  stamping `algorithm = archive-patcher-v1+gzip` and `target_sha256` = the new
+  APK's hash. Before any API or upload request, the CLI decompresses the entire
+  stream, verifies gzip integrity and the archive-patcher v1 identifier, and
+  rejects raw or truncated input so bytes and metadata cannot disagree.
 - **P1b generation — NEXT**: an `android-release` CI step that, after building
   the new APK, downloads the last N (=3) published raft-android APKs, runs
   `FileByFileV1DeltaGenerator().generateDelta(old, new, out)`

@@ -12,6 +12,7 @@ import { mkdtempSync, readFileSync, rmSync, existsSync, writeFileSync } from "no
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer } from "node:http";
+import { gzipSync } from "node:zlib";
 import { Command } from "commander";
 import fixturePolicy from "./fixtures/collect-policy.json";
 
@@ -591,6 +592,170 @@ describe("electron build helpers", () => {
     expect(inferElectronFiletype("dist/Raft Setup 1.2.3.exe")).toBe("exe");
     expect(inferElectronFiletype("dist/Raft-1.2.3.AppImage")).toBe("AppImage");
     expect(inferElectronFiletype("dist/Raft Setup 1.2.3.exe.blockmap")).toBe("blockmap");
+  });
+});
+
+describe("Android delta patch metadata", () => {
+  it("marks metadata as gzip and rejects raw or truncated PatchGen output", async () => {
+    const {
+      ANDROID_DELTA_PATCH_ALGORITHM,
+      assertGzipAndroidDeltaPatch,
+      androidDeltaPatchMetadata,
+    } = await import("../src/commands/builds.js");
+
+    expect(ANDROID_DELTA_PATCH_ALGORITHM).toBe("archive-patcher-v1+gzip");
+    expect(
+      androidDeltaPatchMetadata({
+        fromVersionCode: 1000002,
+        toVersionCode: 1000003,
+        targetSha256: "a".repeat(64),
+      }),
+    ).toEqual({
+      from_version_code: 1000002,
+      to_version_code: 1000003,
+      algorithm: "archive-patcher-v1+gzip",
+      target_sha256: "a".repeat(64),
+    });
+
+    const dir = mkdtempSync(join(tmpdir(), "hands-android-delta-"));
+    const gzipPatch = join(dir, "valid.patch.gz");
+    const rawPatch = join(dir, "raw.patch");
+    const truncatedPatch = join(dir, "truncated.patch.gz");
+    try {
+      const complete = gzipSync(Buffer.from("GFbFv1_0patch-body", "ascii"));
+      writeFileSync(gzipPatch, complete);
+      writeFileSync(rawPatch, Buffer.from("GFbFv1_0", "ascii"));
+      writeFileSync(truncatedPatch, complete.subarray(0, complete.length - 4));
+      await expect(assertGzipAndroidDeltaPatch(gzipPatch)).resolves.toBeUndefined();
+      await expect(assertGzipAndroidDeltaPatch(rawPatch)).rejects.toThrow(
+        "must be a complete gzip-compressed official PatchGen output",
+      );
+      await expect(assertGzipAndroidDeltaPatch(truncatedPatch)).rejects.toThrow(
+        "must be a complete gzip-compressed official PatchGen output",
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("preflights before HTTP and sends the exact gzip asset metadata", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "hands-android-publish-"));
+    const apk = join(dir, "app.apk");
+    const validPatch = join(dir, "valid.patch.gz");
+    const rawPatch = join(dir, "raw.patch");
+    const truncatedPatch = join(dir, "truncated.patch.gz");
+    const complete = gzipSync(Buffer.from("GFbFv1_0patch-body", "ascii"));
+    writeFileSync(apk, "apk-bytes");
+    writeFileSync(validPatch, complete);
+    writeFileSync(rawPatch, Buffer.from("GFbFv1_0patch-body", "ascii"));
+    writeFileSync(truncatedPatch, complete.subarray(0, complete.length - 4));
+
+    const requests: Array<{ method: string; url: string; body?: any }> = [];
+    let uploadCount = 0;
+    const server = createServer(async (req, res) => {
+      let body: any = undefined;
+      if (req.headers["content-type"]?.includes("application/json")) {
+        const chunks: Buffer[] = [];
+        for await (const chunk of req) chunks.push(Buffer.from(chunk));
+        body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+      } else {
+        for await (const _chunk of req) {
+          // Drain multipart uploads before responding.
+        }
+      }
+      requests.push({ method: req.method ?? "GET", url: req.url ?? "", body });
+      res.setHeader("content-type", "application/json");
+      if (req.method === "GET" && req.url === "/api/apps") {
+        return res.end(JSON.stringify({ apps: [{ id: "app-1", slug: "android-app" }] }));
+      }
+      if (req.method === "GET" && req.url === "/api/apps/app-1/channels") {
+        return res.end(JSON.stringify({ channels: [{ id: "channel-1", slug: "main", name: "Main" }] }));
+      }
+      if (req.method === "POST" && req.url === "/api/apps/app-1/builds") {
+        return res.end(JSON.stringify({ id: "build-1" }));
+      }
+      if (req.method === "POST" && req.url === "/api/apps/app-1/upload") {
+        uploadCount += 1;
+        return res.end(JSON.stringify({
+          file_hash: uploadCount === 1 ? "a".repeat(64) : "b".repeat(64),
+          r2_key: `apps/app-1/upload-${uploadCount}`,
+          size_bytes: uploadCount === 1 ? 9 : complete.length,
+          original_filename: uploadCount === 1 ? "app.apk" : "valid.patch.gz",
+        }));
+      }
+      if (req.method === "POST" && req.url === "/api/apps/app-1/builds/build-1/assets") {
+        return res.end(JSON.stringify({ id: `asset-${uploadCount}` }));
+      }
+      if (req.method === "POST" && req.url === "/api/apps/app-1/releases") {
+        return res.end(JSON.stringify({ id: "release-1" }));
+      }
+      res.statusCode = 404;
+      return res.end(JSON.stringify({ error: "not found" }));
+    });
+
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("bad address");
+    const originalApi = process.env.HANDS_API;
+    const originalToken = process.env.HANDS_BEARER_TOKEN;
+    process.env.HANDS_API = `http://127.0.0.1:${address.port}`;
+    process.env.HANDS_BEARER_TOKEN = "test-token";
+
+    const runPublish = async (patchPath: string) => {
+      const { registerBuildCommands } = await import("../src/commands/builds.js");
+      const program = new Command().version("0.5.13").option("--json", "JSON output", false);
+      registerBuildCommands(program);
+      await program.parseAsync([
+        "node", "hands", "builds", "publish-android", "android-app",
+        "--apk", apk,
+        "--version-name", "1.0.0-alpha",
+        "--version-code", "1000003",
+        "--delta-patch", `1000002=${patchPath}`,
+        "--draft",
+      ]);
+    };
+
+    try {
+      await runPublish(validPatch);
+      const deltaAsset = requests.find(
+        (request) =>
+          request.method === "POST" &&
+          request.url.endsWith("/assets") &&
+          request.body?.artifact_kind === "delta-patch",
+      );
+      expect(deltaAsset?.body).toMatchObject({
+        artifact_kind: "delta-patch",
+        platform: "android",
+        arch: "arm64-v8a",
+        filetype: "patch",
+        file_hash: "b".repeat(64),
+        metadata_json: {
+          from_version_code: 1000002,
+          to_version_code: 1000003,
+          algorithm: "archive-patcher-v1+gzip",
+          target_sha256: "a".repeat(64),
+        },
+      });
+
+      requests.length = 0;
+      await expect(runPublish(rawPatch)).rejects.toThrow(
+        "must be a complete gzip-compressed official PatchGen output",
+      );
+      expect(requests).toEqual([]);
+
+      requests.length = 0;
+      await expect(runPublish(truncatedPatch)).rejects.toThrow(
+        "must be a complete gzip-compressed official PatchGen output",
+      );
+      expect(requests).toEqual([]);
+    } finally {
+      if (originalApi === undefined) delete process.env.HANDS_API;
+      else process.env.HANDS_API = originalApi;
+      if (originalToken === undefined) delete process.env.HANDS_BEARER_TOKEN;
+      else process.env.HANDS_BEARER_TOKEN = originalToken;
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 
