@@ -82,6 +82,7 @@ test("production config requires a closed key version before enabling reporter s
 
 test("deploy workflow binds the keyring only through the secret store", () => {
   const workflow = readFileSync(resolve(repositoryDir, ".github/workflows/deploy-hands-server.yml"), "utf8");
+  assert.match(workflow, /jobs:\n  deploy:\n    environment: reporter-session-production\n/);
   assert.match(
     workflow,
     /FEEDBACK_REPORTER_SESSION_KEYS: \$\{\{ secrets\.HANDS_FEEDBACK_REPORTER_SESSION_KEYS \}\}/,
