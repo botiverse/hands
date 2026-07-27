@@ -147,8 +147,11 @@
   background: var(--hf-surface);
 }
 .hands-feedback-ticket-row:hover {
-  outline: 2px solid var(--color-brutal-pink, var(--hf-border-strong));
+  box-shadow: 2px 2px 0 var(--hf-border-strong);
+  outline: 2px solid var(--hf-border-strong);
   outline-offset: -2px;
+  position: relative;
+  z-index: 1;
 }
 .hands-feedback-ticket-row:focus-visible {
   outline: 2px solid var(--hf-border-strong);

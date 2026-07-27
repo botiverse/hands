@@ -174,7 +174,10 @@ describe("FeedbackProvider", () => {
       /article\[data-author="staff"\][^}]*justify-self:\s*start/,
     );
     expect(css).toMatch(
-      /\.hands-feedback-ticket-row:hover\s*\{[^}]*outline:\s*2px solid var\(--color-brutal-pink/,
+      /\.hands-feedback-ticket-row:hover\s*\{[^}]*box-shadow:\s*2px 2px 0 var\(--hf-border-strong\)[^}]*outline:\s*2px solid var\(--hf-border-strong\)/,
+    );
+    expect(css).not.toMatch(
+      /\.hands-feedback-ticket-row:hover\s*\{[^}]*var\(--color-brutal-pink/,
     );
     expect(css).toMatch(
       /\.hands-feedback-ticket-row:focus-visible\s*\{[^}]*outline:\s*2px solid var\(--hf-border-strong\)/,
