@@ -21,7 +21,7 @@ repositories {
 }
 
 dependencies {
-    implementation("com.github.botiverse:hands:android-sdk-v0.12.3")
+    implementation("com.github.botiverse:hands:android-sdk-v0.12.4")
 }
 ```
 
@@ -39,7 +39,7 @@ repositories {
 }
 
 dependencies {
-    implementation("build.hands:hands-android-sdk:0.12.3")
+    implementation("build.hands:hands-android-sdk:0.12.4")
 }
 ```
 
@@ -118,6 +118,10 @@ before uploading the zip to Hands (`hands builds publish-android --symbols`);
 treat a missing or mismatched classifier as a release blocker. Published since
 `0.11.1`.
 
+Since `0.12.4`, the 64-bit crash library uses 16 KB-compatible ELF `PT_LOAD`
+alignment. CI checks both the packaged AAR and the matching unstripped symbols
+archive so a 4 KB-only native binary cannot be published silently.
+
 The classifier is also served by JitPack, but **AAR and classifier must come
 from the same channel**: JitPack rebuilds from source, so its Build IDs differ
 from the GitHub Packages build of the same tag. Never mix a JitPack AAR with a
@@ -126,7 +130,7 @@ to catch that.
 
 ## Release
 
-Push a tag `android-sdk-v<version>` (e.g. `android-sdk-v0.12.3`). That publishes to
+Push a tag `android-sdk-v<version>` (e.g. `android-sdk-v0.12.4`). That publishes to
 GitHub Packages (`build.hands:hands-android-sdk:<version>`, including the
 `native-symbols` classifier) and, on the first
 request, builds the same version on JitPack

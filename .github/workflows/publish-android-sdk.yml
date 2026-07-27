@@ -6,7 +6,7 @@ on:
       version:
         description: "SDK version to publish, for example 0.1.0"
         required: true
-        default: "0.12.3"
+        default: "0.12.4"
   push:
     tags:
       - "android-sdk-v*"
@@ -47,6 +47,17 @@ jobs:
 
       - name: Build SDK and unstripped native symbols
         run: gradle -p clients/android assembleRelease packageReleaseNativeSymbols -PVERSION_NAME=${{ steps.version.outputs.value }}
+
+      - name: Verify 16 KB ELF alignment
+        run: |
+          PYTHONDONTWRITEBYTECODE=1 python3 scripts/test_verify_android_elf_alignment.py
+          AAR="$(find clients/android/build/outputs/aar -type f -name '*-release.aar' -print -quit)"
+          SYMBOLS="$(find clients/android/build/outputs/native-symbols -type f -name '*-native-symbols.zip' -print -quit)"
+          test -n "${AAR}" && test -n "${SYMBOLS}"
+          python3 scripts/verify_android_elf_alignment.py \
+            --archive "${AAR}"
+          python3 scripts/verify_android_elf_alignment.py \
+            --archive "${SYMBOLS}"
 
       - name: Upload native symbols as workflow evidence
         uses: actions/upload-artifact@v4
