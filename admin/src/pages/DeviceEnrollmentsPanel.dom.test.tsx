@@ -9,6 +9,7 @@ import { ApiError, type DeviceEnrollment, type DeviceEnrollmentResult } from "..
 const mocks = vi.hoisted(() => ({
   listDeviceGroups: vi.fn(),
   listDeviceEnrollments: vi.fn(),
+  createDeviceEnrollment: vi.fn(),
   rebindDeviceEnrollment: vi.fn(),
   revokeDeviceEnrollment: vi.fn(),
   toast: vi.fn(),
@@ -19,6 +20,7 @@ vi.mock("../lib/api", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../lib/api")>()),
   listDeviceGroups: mocks.listDeviceGroups,
   listDeviceEnrollments: mocks.listDeviceEnrollments,
+  createDeviceEnrollment: mocks.createDeviceEnrollment,
   rebindDeviceEnrollment: mocks.rebindDeviceEnrollment,
   revokeDeviceEnrollment: mocks.revokeDeviceEnrollment,
 }));
@@ -27,14 +29,14 @@ vi.mock("../components/Toast", () => ({
   useToast: () => ({ show: mocks.toast }),
 }));
 
-import { DeviceEnrollmentRow, DeviceGroupsPanel } from "./AppDetail";
+import { DeviceEnrollmentRow, DeviceEnrollmentsPanel, DeviceGroupsPanel } from "./AppDetail";
 
 const enrollment: DeviceEnrollment = {
   id: "enrollment-123",
   app_id: "app-1",
   alias: "artin-huawei-tablet",
   label: "Android 12 QA",
-  current_device_id: "install-old",
+  current_device_id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
   status: "active",
   revision: 7,
   created_by: "artin",
@@ -49,7 +51,7 @@ function result(kind: "rebind" | "revoke", replayed = false): DeviceEnrollmentRe
   return {
     enrollment: {
       ...enrollment,
-      current_device_id: kind === "rebind" ? "install-new" : null,
+      current_device_id: kind === "rebind" ? "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb" : null,
       status: kind === "rebind" ? "active" : "revoked",
       revision: 8,
     },
@@ -57,8 +59,8 @@ function result(kind: "rebind" | "revoke", replayed = false): DeviceEnrollmentRe
     operation: {
       operation_id: "operation-first",
       kind,
-      from_device_id: "install-old",
-      to_device_id: kind === "rebind" ? "install-new" : null,
+      from_device_id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      to_device_id: kind === "rebind" ? "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb" : null,
       expected_revision: 7,
       resulting_revision: 8,
       migrated_group_memberships: 2,
@@ -107,6 +109,57 @@ describe("Android test-device enrollments", () => {
     expect(mocks.listDeviceEnrollments).toHaveBeenCalledWith("app-1");
   });
 
+  it("retries ambiguous create with one frozen operation key and shows replay receipt", async () => {
+    const created: DeviceEnrollmentResult = {
+      enrollment: {
+        ...enrollment,
+        id: "created-enrollment",
+        current_device_id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        revision: 1,
+      },
+      replayed: true,
+      operation: {
+        operation_id: "operation-first",
+        kind: "create",
+        from_device_id: null,
+        to_device_id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        expected_revision: null,
+        resulting_revision: 1,
+        migrated_group_memberships: 0,
+        migrated_feature_flags: 0,
+        actor: "artin",
+        created_at: 3,
+      },
+    };
+    mocks.createDeviceEnrollment
+      .mockRejectedValueOnce(new Error("response lost"))
+      .mockResolvedValueOnce(created);
+    render(wrapper(<DeviceEnrollmentsPanel appId="app-1" />));
+
+    fireEvent.change(screen.getByRole("textbox", { name: "Enrollment alias" }), {
+      target: { value: "artin-huawei-tablet" },
+    });
+    fireEvent.change(screen.getByRole("textbox", { name: "Current Android installation ID" }), {
+      target: { value: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Enroll" }));
+    const payload = {
+      alias: "artin-huawei-tablet",
+      device_id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      operation_id: "operation-first",
+    };
+    await waitFor(() => expect(mocks.createDeviceEnrollment).toHaveBeenCalledTimes(1));
+    expect(mocks.createDeviceEnrollment).toHaveBeenLastCalledWith("app-1", payload);
+    expect(mocks.uuid).toHaveBeenCalledTimes(1);
+
+    fireEvent.click(screen.getByRole("button", { name: "Enroll" }));
+    await waitFor(() => expect(mocks.createDeviceEnrollment).toHaveBeenCalledTimes(2));
+    expect(mocks.createDeviceEnrollment).toHaveBeenLastCalledWith("app-1", payload);
+    expect(mocks.uuid).toHaveBeenCalledTimes(1);
+    expect(await screen.findByText("operation: operation-first")).toBeTruthy();
+    expect(screen.getByText("replayed: true")).toBeTruthy();
+  });
+
   it("confirms exact rebind impact and retries an ambiguous failure with the same receipt key", async () => {
     mocks.rebindDeviceEnrollment
       .mockRejectedValueOnce(new Error("response lost"))
@@ -121,18 +174,18 @@ describe("Android test-device enrollments", () => {
     });
     expect(input.className).toContain("min-w-0");
     expect(input.className).toContain("w-full");
-    fireEvent.change(input, { target: { value: "install-new" } });
+    fireEvent.change(input, { target: { value: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb" } });
     fireEvent.click(screen.getByRole("button", { name: "Rebind enrollment artin-huawei-tablet" }));
 
     expect(mocks.rebindDeviceEnrollment).not.toHaveBeenCalled();
     expect(await screen.findByRole("alertdialog")).toBeTruthy();
-    expect(screen.getAllByText("install-old").length).toBeGreaterThanOrEqual(2);
-    expect(screen.getByText("install-new")).toBeTruthy();
+    expect(screen.getAllByText("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa").length).toBeGreaterThanOrEqual(2);
+    expect(screen.getByText("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb")).toBeTruthy();
     expect(screen.getByText("operation-first")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Rebind installation" }));
 
     const expectedPayload = {
-      device_id: "install-new",
+      device_id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
       expected_revision: 7,
       operation_id: "operation-first",
     };
@@ -172,7 +225,7 @@ describe("Android test-device enrollments", () => {
     expect(mocks.revokeDeviceEnrollment).not.toHaveBeenCalled();
     expect(await screen.findByText("Revoke test-device enrollment?")).toBeTruthy();
     expect(screen.getByText("current ID")).toBeTruthy();
-    expect(screen.getAllByText("install-old").length).toBeGreaterThanOrEqual(2);
+    expect(screen.getAllByText("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa").length).toBeGreaterThanOrEqual(2);
     expect(screen.getByText("operation-first")).toBeTruthy();
 
     const confirm = screen.getByRole("button", { name: "Revoke enrollment" });
@@ -201,7 +254,7 @@ describe("Android test-device enrollments", () => {
     const input = screen.getByRole("textbox", {
       name: "Replacement installation ID for artin-huawei-tablet",
     });
-    fireEvent.change(input, { target: { value: "install-new" } });
+    fireEvent.change(input, { target: { value: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb" } });
     fireEvent.click(screen.getByRole("button", { name: "Rebind enrollment artin-huawei-tablet" }));
     fireEvent.click(await screen.findByRole("button", { name: "Rebind installation" }));
 
@@ -211,7 +264,7 @@ describe("Android test-device enrollments", () => {
     expect(changed).toHaveBeenCalledTimes(1);
     expect(mocks.uuid).toHaveBeenCalledTimes(1);
 
-    fireEvent.change(input, { target: { value: "install-newer" } });
+    fireEvent.change(input, { target: { value: "cccccccc-cccc-4ccc-8ccc-cccccccccccc" } });
     fireEvent.click(screen.getByRole("button", { name: "Rebind enrollment artin-huawei-tablet" }));
     expect(await screen.findByText("operation-second")).toBeTruthy();
     expect(mocks.uuid).toHaveBeenCalledTimes(2);

@@ -1044,6 +1044,7 @@ export async function handleAgentManifest(c: Context<{ Bindings: Env }>) {
           alias: { type: "string", in: "body", required: true, description: "Stable app-scoped operator alias." },
           device_id: { type: "string", in: "body", required: true, description: "Current random per-install id." },
           label: { type: "string", in: "body", required: false, description: "Optional human-readable label." },
+          operation_id: { type: "string", in: "body", required: true, description: "Unique idempotency key for this exact create." },
         },
       },
       {

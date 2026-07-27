@@ -460,8 +460,9 @@ current id under a private, revocable alias:
 ```bash
 hands device-enrollments create raft-android \
   --alias artin-huawei-tablet \
-  --device-id <current-installation-id> \
-  --label "Artin Huawei tablet"
+  --device-id <current-installation-uuid> \
+  --label "Artin Huawei tablet" \
+  --operation-id <create-request-id>
 hands device-enrollments list raft-android
 ```
 
@@ -473,7 +474,8 @@ hands device-enrollments rebind raft-android <enrollment-id> \
   --expected-revision 1
 ```
 
-The CLI generates an idempotency operation id and prints it. Hands atomically
+The CLI generates an idempotency operation id for create/rebind/revoke when
+omitted and prints it; pass an explicit id before a response-loss retry. Hands atomically
 replaces the old id in all app device groups and feature-flag allow/deny lists;
 the response reports how many rows were migrated. Pass `--operation-id <id>`
 to replay a known request after a response loss. Revoke and remove all current

@@ -110,7 +110,8 @@ export function registerSettingsRoutes(registry: OpenApiRegistry) {
         content: json(z.object({
           alias: z.string().min(1).max(80),
           label: z.string().max(120).optional(),
-          device_id: z.string().min(1).max(256),
+          device_id: z.string().regex(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i),
+          operation_id: z.string().min(1).max(128),
         })),
         required: true,
       },
@@ -133,7 +134,7 @@ export function registerSettingsRoutes(registry: OpenApiRegistry) {
       params: AppEnrollmentParams,
       body: {
         content: json(z.object({
-          device_id: z.string().min(1).max(256),
+          device_id: z.string().regex(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i),
           expected_revision: z.number().int().min(1),
           operation_id: z.string().min(1).max(128),
         })),

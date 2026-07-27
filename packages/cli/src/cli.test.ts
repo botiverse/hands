@@ -406,12 +406,13 @@ describe("device-group rollout commands", () => {
       await run([
         "device-enrollments", "create", "raft-android",
         "--alias", "artin-huawei-tablet",
-        "--device-id", "install-old",
+        "--device-id", "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
         "--label", "Artin tablet",
+        "--operation-id", "op-create-1",
       ]);
       await run([
         "device-enrollments", "rebind", "raft-android", "enroll-1",
-        "--device-id", "install-new",
+        "--device-id", "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
         "--expected-revision", "1",
         "--operation-id", "op-rebind-1",
       ]);
@@ -426,13 +427,14 @@ describe("device-group rollout commands", () => {
       )).toMatchObject({
         body: {
           alias: "artin-huawei-tablet",
-          device_id: "install-old",
+          device_id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
           label: "Artin tablet",
+          operation_id: "op-create-1",
         },
       });
       expect(requests.find((request) => request.url.endsWith("/rebind"))).toMatchObject({
         body: {
-          device_id: "install-new",
+          device_id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
           expected_revision: 1,
           operation_id: "op-rebind-1",
         },

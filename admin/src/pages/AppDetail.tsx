@@ -454,29 +454,64 @@ export function DeviceEnrollmentsPanel({ appId }: { appId: string }) {
   const [alias, setAlias] = useState("");
   const [deviceId, setDeviceId] = useState("");
   const [label, setLabel] = useState("");
+  const [createIntent, setCreateIntent] = useState<{
+    alias: string;
+    deviceId: string;
+    label?: string;
+    operationId: string;
+  } | null>(null);
+  const [lastCreateReceipt, setLastCreateReceipt] = useState<Awaited<ReturnType<typeof createDeviceEnrollment>> | null>(null);
   const refresh = () => {
     void queryClient.invalidateQueries({ queryKey: ["device-enrollments", appId] });
     void queryClient.invalidateQueries({ queryKey: ["device-groups", appId] });
   };
   const create = useMutation({
-    mutationFn: () => createDeviceEnrollment(appId, {
-      alias: alias.trim(),
-      device_id: deviceId.trim(),
-      ...(label.trim() ? { label: label.trim() } : {}),
+    mutationFn: (intent: NonNullable<typeof createIntent>) => createDeviceEnrollment(appId, {
+      alias: intent.alias,
+      device_id: intent.deviceId,
+      ...(intent.label ? { label: intent.label } : {}),
+      operation_id: intent.operationId,
     }),
-    onSuccess: () => {
+    onSuccess: (result) => {
+      setLastCreateReceipt(result);
+      setCreateIntent(null);
       setAlias("");
       setDeviceId("");
       setLabel("");
       refresh();
-      toast.show({ kind: "success", title: "Test device enrolled" });
+      toast.show({
+        kind: "success",
+        title: "Test device enrolled",
+        description: `Operation ${result.operation.operation_id}; ${result.replayed ? "receipt replayed" : "new receipt"}.`,
+      });
     },
-    onError: (error) => toast.show({
-      kind: "error",
-      title: "Enrollment failed",
-      description: (error as Error).message,
-    }),
+    onError: (error) => {
+      const ambiguous = isAmbiguousEnrollmentMutationError(error);
+      if (!ambiguous) setCreateIntent(null);
+      refresh();
+      toast.show({
+        kind: "error",
+        title: ambiguous ? "Enrollment result is not confirmed" : "Enrollment was rejected",
+        description: ambiguous
+          ? `${(error as Error).message} Retry keeps operation ${createIntent?.operationId ?? "unknown"}.`
+          : (error as Error).message,
+      });
+    },
   });
+  const submitCreate = () => {
+    const next = {
+      alias: alias.trim(),
+      deviceId: deviceId.trim(),
+      ...(label.trim() ? { label: label.trim() } : {}),
+    };
+    if (!next.alias || !next.deviceId) return;
+    const intent = createIntent?.alias === next.alias &&
+      createIntent.deviceId === next.deviceId && createIntent.label === next.label
+      ? createIntent
+      : { ...next, operationId: crypto.randomUUID() };
+    setCreateIntent(intent);
+    create.mutate(intent);
+  };
 
   return (
     <div className="rounded-md border border-slate-200 bg-slate-50 p-3 space-y-3">
@@ -509,13 +544,21 @@ export function DeviceEnrollmentsPanel({ appId }: { appId: string }) {
         <Button
           variant="outline"
           disabled={!alias.trim() || !deviceId.trim() || create.isPending}
-          onClick={() => create.mutate()}
+          onClick={submitCreate}
         >
           Enroll
         </Button>
       </div>
       {enrollments.isLoading && <p className="text-xs text-slate-500">Loading enrollments…</p>}
       {enrollments.error && <p className="text-xs text-red-700">{(enrollments.error as Error).message}</p>}
+      {lastCreateReceipt && (
+        <div className="rounded border border-emerald-200 bg-emerald-50 p-2 font-mono text-[11px] text-emerald-900" role="status">
+          <div>created: {lastCreateReceipt.enrollment.id}</div>
+          <div>operation: {lastCreateReceipt.operation.operation_id}</div>
+          <div>revision: {lastCreateReceipt.operation.resulting_revision}</div>
+          <div>replayed: {String(lastCreateReceipt.replayed)}</div>
+        </div>
+      )}
       {(enrollments.data?.enrollments ?? []).map((enrollment) => (
         <DeviceEnrollmentRow key={enrollment.id} appId={appId} enrollment={enrollment} onChanged={refresh} />
       ))}

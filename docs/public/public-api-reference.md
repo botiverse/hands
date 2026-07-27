@@ -50,7 +50,7 @@ receives or chooses the group name. A non-member falls through to the previous
 matching active release. Device groups use installation identifiers, not IMEI,
 hardware serial numbers, or account identities.
 
-Android deliberately rotates that identifier after uninstall or clear-data.
+Android deliberately rotates that canonical random UUIDv4 identifier after uninstall or clear-data.
 For a physical QA device that must keep the same operator-managed slot, create
 an authenticated **device enrollment**. The stable alias is private to the app
 control plane; public update checks still see only the current random
@@ -59,7 +59,9 @@ device-group membership and every app feature-flag allow/deny list. It requires
 the enrollment's current `revision` plus a unique `operation_id`, returns a
 durable receipt, and is safe to retry with the same exact input. Revocation
 removes the current id from all of those targets and clears it from the active
-enrollment. These endpoints require app `publisher` authority:
+enrollment. Create also requires a caller-held `operation_id`, so a response-
+loss retry can recover the original durable receipt. These endpoints require
+app `publisher` authority and reject non-Android apps at the Worker boundary:
 
 ```text
 GET  /api/apps/:appId/device-enrollments

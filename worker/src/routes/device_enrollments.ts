@@ -64,8 +64,10 @@ function normalizeLabel(value: unknown): string | null {
 function normalizeDeviceId(value: unknown): string {
   const deviceId = String(value ?? "").trim();
   if (!deviceId) throw new Error("device_id required");
-  if (deviceId.length > 256) throw new Error("device_id too long (max 256 chars)");
-  return deviceId;
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(deviceId)) {
+    throw new Error("device_id must be a Hands random per-install UUID");
+  }
+  return deviceId.toLowerCase();
 }
 
 function normalizeOperationId(value: unknown): string {
@@ -98,6 +100,17 @@ async function getOperation(db: D1Database, appId: string, operationId: string) 
     .first<DeviceEnrollmentOperationRow>();
 }
 
+async function requireAndroidApp(c: EnrollmentContext, appId: string): Promise<Response | null> {
+  const app = await c.env.DB.prepare("SELECT platform FROM apps WHERE id = ?1")
+    .bind(appId)
+    .first<{ platform: string }>();
+  if (!app) return c.json({ error: "app not found" }, 404);
+  if (app.platform !== "android") {
+    return c.json({ error: "device enrollments are only supported for Android apps" }, 400);
+  }
+  return null;
+}
+
 function operationMatches(
   operation: DeviceEnrollmentOperationRow,
   enrollmentId: string,
@@ -109,6 +122,20 @@ function operationMatches(
     operation.kind === kind &&
     operation.expected_revision === expectedRevision &&
     operation.to_device_id === toDeviceId;
+}
+
+async function createOperationMatches(
+  db: D1Database,
+  operation: DeviceEnrollmentOperationRow,
+  alias: string,
+  label: string | null,
+  deviceId: string,
+): Promise<boolean> {
+  if (operation.kind !== "create" || operation.from_device_id !== null ||
+      operation.to_device_id !== deviceId || operation.expected_revision !== null ||
+      operation.resulting_revision !== 1) return false;
+  const enrollment = await getEnrollment(db, operation.app_id, operation.enrollment_id);
+  return enrollment?.alias === alias && enrollment.label === label;
 }
 
 async function operationResponse(
@@ -173,6 +200,8 @@ function mapMutationError(message: string): { status: 400 | 409; error: string }
 
 export async function handleListDeviceEnrollments(c: EnrollmentContext) {
   const appId = c.req.param("appId") ?? "";
+  const platformError = await requireAndroidApp(c, appId);
+  if (platformError) return platformError;
   const { results: enrollments } = await c.env.DB.prepare(
     `${ENROLLMENT_SELECT} WHERE app_id = ?1 ORDER BY lower(alias), id`,
   ).bind(appId).all<DeviceEnrollmentRow>();
@@ -181,46 +210,73 @@ export async function handleListDeviceEnrollments(c: EnrollmentContext) {
 
 export async function handleCreateDeviceEnrollment(c: EnrollmentContext) {
   const appId = c.req.param("appId") ?? "";
+  const platformError = await requireAndroidApp(c, appId);
+  if (platformError) return platformError;
   const body = await c.req.json().catch(() => ({})) as {
     alias?: unknown;
     label?: unknown;
     device_id?: unknown;
+    operation_id?: unknown;
   };
   try {
     const alias = normalizeAlias(body.alias);
     const label = normalizeLabel(body.label);
     const deviceId = normalizeDeviceId(body.device_id);
+    const operationId = normalizeOperationId(body.operation_id);
+    const replay = await getOperation(c.env.DB, appId, operationId);
+    if (replay) {
+      if (!await createOperationMatches(c.env.DB, replay, alias, label, deviceId)) {
+        return c.json({ error: "operation_id already exists with different input" }, 409);
+      }
+      return operationResponse(c, replay.enrollment_id, replay, true);
+    }
     const enrollmentId = crypto.randomUUID();
-    const operationId = crypto.randomUUID();
     const actor = currentActor(c);
     const now = Date.now();
-    await c.env.DB.batch([
-      c.env.DB.prepare(
-        `INSERT INTO device_enrollments
+    try {
+      await c.env.DB.batch([
+        c.env.DB.prepare(
+          `INSERT INTO device_enrollments
            (id, app_id, alias, label, current_device_id, status, revision,
             created_by, updated_by, created_at, updated_at)
          VALUES (?1, ?2, ?3, ?4, ?5, 'active', 1, ?6, ?6, ?7, ?7)`,
-      ).bind(enrollmentId, appId, alias, label, deviceId, actor, now),
-      c.env.DB.prepare(
-        `INSERT INTO device_enrollment_operations
+        ).bind(enrollmentId, appId, alias, label, deviceId, actor, now),
+        c.env.DB.prepare(
+          `INSERT INTO device_enrollment_operations
            (id, app_id, enrollment_id, operation_id, kind, from_device_id,
             to_device_id, expected_revision, resulting_revision,
             migrated_group_memberships, migrated_feature_flags, actor, created_at)
          VALUES (?1, ?2, ?3, ?4, 'create', NULL, ?5, NULL, 1, 0, 0, ?6, ?7)`,
-      ).bind(crypto.randomUUID(), appId, enrollmentId, operationId, deviceId, actor, now),
-      c.env.DB.prepare(
-        `INSERT INTO audit_logs (id, app_id, action, actor, payload, created_at)
+        ).bind(crypto.randomUUID(), appId, enrollmentId, operationId, deviceId, actor, now),
+        c.env.DB.prepare(
+          `INSERT INTO audit_logs (id, app_id, action, actor, payload, created_at)
          VALUES (?1, ?2, 'device_enrollment.create', ?3, ?4, ?5)`,
-      ).bind(
-        crypto.randomUUID(),
-        appId,
-        actor,
-        JSON.stringify({ enrollment_id: enrollmentId, alias, label, device_id: deviceId, operation_id: operationId }),
-        now,
-      ),
-    ]);
+        ).bind(
+          crypto.randomUUID(),
+          appId,
+          actor,
+          JSON.stringify({ enrollment_id: enrollmentId, alias, label, device_id: deviceId, operation_id: operationId }),
+          now,
+        ),
+      ]);
+    } catch (error) {
+      const concurrentReplay = await getOperation(c.env.DB, appId, operationId);
+      if (concurrentReplay && await createOperationMatches(
+        c.env.DB,
+        concurrentReplay,
+        alias,
+        label,
+        deviceId,
+      )) {
+        return operationResponse(c, concurrentReplay.enrollment_id, concurrentReplay, true);
+      }
+      throw error;
+    }
     const enrollment = await getEnrollment(c.env.DB, appId, enrollmentId);
     const operation = await getOperation(c.env.DB, appId, operationId);
+    if (!enrollment || !operation) {
+      return c.json({ error: "device enrollment create receipt missing" }, 500);
+    }
     return c.json({ enrollment, operation, replayed: false }, 201);
   } catch (error) {
     const mapped = mapMutationError(error instanceof Error ? error.message : String(error));
@@ -238,6 +294,8 @@ export async function handleRevokeDeviceEnrollment(c: EnrollmentContext) {
 
 async function mutateEnrollment(c: EnrollmentContext, kind: "rebind" | "revoke") {
   const appId = c.req.param("appId") ?? "";
+  const platformError = await requireAndroidApp(c, appId);
+  if (platformError) return platformError;
   const enrollmentId = c.req.param("enrollmentId") ?? "";
   const body = await c.req.json().catch(() => ({})) as {
     device_id?: unknown;

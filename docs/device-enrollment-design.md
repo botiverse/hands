@@ -23,10 +23,11 @@ test slot survive the expected installation-id rotation.
 installation id, `active|revoked` state, and monotonically increasing revision.
 An app has at most one live enrollment for a given current installation id.
 
-`device_enrollment_operations` is an immutable receipt ledger. Rebind and
-revoke require an app-scoped `operation_id` plus `expected_revision`. A retry
-with the same exact input returns the original receipt; reusing the operation
-id with different input fails closed.
+`device_enrollment_operations` is an immutable receipt ledger. Create, rebind,
+and revoke all require a caller-held app-scoped `operation_id`; rebind and
+revoke also require `expected_revision`. A retry with the same exact input
+returns the original receipt; reusing the operation id with different input
+fails closed.
 
 The migration adds pre-insert triggers for rebind/revoke receipts. Because D1
 provides atomic `batch()` rather than an interactive transaction, the trigger
@@ -69,7 +70,9 @@ authenticated metadata and never appear in public update responses.
 ## Authentication and authority
 
 All enrollment endpoints use the existing app `publisher` role/deploy-token
-permission. There is no anonymous enrollment token and no client-side ability
+permission and authoritatively reject non-Android apps. Create and rebind accept
+only the canonical lower-case UUIDv4 shape produced by `HandsDeviceId`; direct
+legacy group members remain compatible. There is no anonymous enrollment token and no client-side ability
 to self-select a group. The app SDK continues to submit only its current random
 installation id. An operator obtains the replacement id from an authenticated
 test workflow (for example, the app's feedback receipt), then explicitly
@@ -81,7 +84,9 @@ rebinds the alias.
 - uninstall/clear-data: the id rotates unless Android happens to restore app
   data;
 - Auto Backup/OEM restore: opportunistic only, never an identity guarantee;
-- no hardware identifier is requested, derived, or stored;
+- enrollment create/rebind rejects values outside the SDK UUIDv4 contract, so
+  serial, IMEI, `ANDROID_ID`, and arbitrary long-lived strings cannot enter the
+  enrollment/operation/audit tables through any Console, CLI, or Agent route;
 - aliases are app-scoped, revocable, and invisible to public clients;
 - normal production percentage rollout continues to hash the random
   per-installation id, not the stable test alias.

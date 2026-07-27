@@ -34,9 +34,9 @@ describe("device-enrollment migration invariants", () => {
         (id, app_id, alias, current_device_id, status, revision,
          created_by, updated_by, created_at, updated_at)
       VALUES
-        ('enroll-a', 'app-a', 'artin-tablet', 'install-old', 'active', 1,
+        ('enroll-a', 'app-a', 'artin-tablet', 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', 'active', 1,
          'tester', 'tester', 1, 1),
-        ('enroll-b', 'app-b', 'artin-tablet', 'install-old', 'active', 1,
+        ('enroll-b', 'app-b', 'artin-tablet', 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', 'active', 1,
          'tester', 'tester', 1, 1);
     `);
 
@@ -51,7 +51,7 @@ describe("device-enrollment migration invariants", () => {
       INSERT INTO device_enrollments
         (id, app_id, alias, current_device_id, status, revision,
          created_by, updated_by, created_at, updated_at)
-      VALUES ('dup-device', 'app-a', 'other-tablet', 'install-old', 'active', 1,
+      VALUES ('dup-device', 'app-a', 'other-tablet', 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', 'active', 1,
               'tester', 'tester', 1, 1)
     `).run()).toThrow();
 
@@ -65,8 +65,8 @@ describe("device-enrollment migration invariants", () => {
       "op-valid",
       "request-valid",
       "rebind",
-      "install-old",
-      "install-new",
+      "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
       1,
       2,
     )).not.toThrow();
@@ -74,8 +74,8 @@ describe("device-enrollment migration invariants", () => {
       "op-stale",
       "request-stale",
       "rebind",
-      "install-old",
-      "install-third",
+      "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
       2,
       3,
     )).toThrow("device enrollment rebind precondition failed");
@@ -83,7 +83,7 @@ describe("device-enrollment migration invariants", () => {
       "op-wrong-device",
       "request-wrong-device",
       "revoke",
-      "install-new",
+      "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
       null,
       1,
       2,

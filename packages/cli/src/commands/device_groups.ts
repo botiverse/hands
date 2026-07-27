@@ -130,18 +130,28 @@ export function registerDeviceGroupCommands(program: Command): void {
     .requiredOption("--alias <alias>", "Stable app-scoped test-device alias.")
     .requiredOption("--device-id <id>", "Current random Hands per-install id.")
     .option("--label <label>", "Human-readable device label.")
+    .option("--operation-id <id>", "Idempotency key; generated when omitted.")
     .option("--json", "Output JSON.", false)
     .action(async (
       appIdOrSlug: string,
-      opts: { alias: string; deviceId: string; label?: string; json?: boolean },
+      opts: { alias: string; deviceId: string; label?: string; operationId?: string; json?: boolean },
     ) => {
       const appId = await resolveAppId(appIdOrSlug);
+      const operationId = opts.operationId ?? randomUUID();
       const result = await apiRequest<DeviceEnrollmentResult>(`/api/apps/${appId}/device-enrollments`, {
         method: "POST",
-        body: { alias: opts.alias, device_id: opts.deviceId, label: opts.label },
+        body: {
+          alias: opts.alias,
+          device_id: opts.deviceId,
+          label: opts.label,
+          operation_id: operationId,
+        },
       });
       if (opts.json) return console.log(JSON.stringify(result, null, 2));
-      console.log(`Created device enrollment ${result.enrollment.id} (${result.enrollment.alias}) at revision 1.`);
+      console.log(
+        `Created device enrollment ${result.enrollment.id} (${result.enrollment.alias}) at revision 1` +
+        `${result.replayed ? " (idempotent replay)" : ""}; operation=${operationId}.`,
+      );
     });
 
   enrollments.command("rebind <appIdOrSlug> <enrollmentId>")

@@ -1380,7 +1380,7 @@ export const listDeviceEnrollments = (appId: string) =>
 
 export const createDeviceEnrollment = (
   appId: string,
-  input: { alias: string; device_id: string; label?: string },
+  input: { alias: string; device_id: string; label?: string; operation_id: string },
 ) => request<DeviceEnrollmentResult>(`/api/apps/${appId}/device-enrollments`, {
   method: "POST",
   admin: true,

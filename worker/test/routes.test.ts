@@ -3464,6 +3464,9 @@ describe("quiver apps — default_channel_id", () => {
 
 describe("quiver releases — draft lifecycle", () => {
   let env: MockEnv;
+  const OLD_INSTALL_ID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+  const NEW_INSTALL_ID = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+  const THIRD_INSTALL_ID = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
 
   async function seedReleaseBuild(buildId: string, versionCode: number) {
     const now = Date.now();
@@ -3561,14 +3564,14 @@ describe("quiver releases — draft lifecycle", () => {
   }
 
   function makeDeviceGroupContext(
-    params: { groupId?: string; deviceId?: string; enrollmentId?: string } = {},
+    params: { appId?: string; groupId?: string; deviceId?: string; enrollmentId?: string } = {},
     body: unknown = {},
   ) {
     return {
       env,
       req: {
         param: (name: string) => {
-          if (name === "appId") return "app-release";
+          if (name === "appId") return params.appId ?? "app-release";
           if (name === "groupId") return params.groupId ?? "";
           if (name === "deviceId") return params.deviceId ?? "";
           if (name === "enrollmentId") return params.enrollmentId ?? "";
@@ -4955,7 +4958,7 @@ describe("quiver releases — draft lifecycle", () => {
       name: "Artin test devices",
     })));
     await handleAddDeviceGroupMember(makeDeviceGroupContext({ groupId: group.id }, {
-      device_id: "install-old",
+      device_id: OLD_INSTALL_ID,
       label: "Huawei tablet",
     }));
     await env.DB.prepare(
@@ -4963,14 +4966,18 @@ describe("quiver releases — draft lifecycle", () => {
          (id, app_id, key, default_enabled, rollout_percent, allow_device_ids,
           deny_device_ids, allow_cohorts, platforms, updated_at, updated_by)
        VALUES ('ff-enrollment', 'app-release', 'delta_updates', 0, 0,
-               '["install-old","other","install-new"]',
-               '["blocked","install-old"]', '[]', '["android"]', ?1, 'tester')`,
-    ).bind(Date.now()).run();
+               ?1, ?2, '[]', '["android"]', ?3, 'tester')`,
+    ).bind(
+      JSON.stringify([OLD_INSTALL_ID, "other", NEW_INSTALL_ID]),
+      JSON.stringify(["blocked", OLD_INSTALL_ID]),
+      Date.now(),
+    ).run();
 
     const createdResponse = await handleCreateDeviceEnrollment(makeDeviceGroupContext({}, {
       alias: "artin-huawei-tablet",
       label: "Artin Huawei tablet",
-      device_id: "install-old",
+      device_id: OLD_INSTALL_ID.toUpperCase(),
+      operation_id: "create-artin-1",
     }));
     expect(createdResponse.status).toBe(201);
     const created = await responseJson<any>(createdResponse);
@@ -4978,15 +4985,47 @@ describe("quiver releases — draft lifecycle", () => {
       replayed: false,
       enrollment: {
         alias: "artin-huawei-tablet",
-        current_device_id: "install-old",
+        current_device_id: OLD_INSTALL_ID,
         status: "active",
         revision: 1,
       },
-      operation: { kind: "create", resulting_revision: 1 },
+      operation: { operation_id: "create-artin-1", kind: "create", resulting_revision: 1 },
     });
 
+    const createReplay = await handleCreateDeviceEnrollment(makeDeviceGroupContext({}, {
+      alias: "artin-huawei-tablet",
+      label: "Artin Huawei tablet",
+      device_id: OLD_INSTALL_ID,
+      operation_id: "create-artin-1",
+    }));
+    expect(createReplay.status).toBe(200);
+    await expect(responseJson<any>(createReplay)).resolves.toMatchObject({
+      replayed: true,
+      enrollment: { id: created.enrollment.id },
+      operation: { operation_id: "create-artin-1" },
+    });
+
+    const createReuse = await handleCreateDeviceEnrollment(makeDeviceGroupContext({}, {
+      alias: "different-alias",
+      device_id: THIRD_INSTALL_ID,
+      operation_id: "create-artin-1",
+    }));
+    expect(createReuse.status).toBe(409);
+    const invalidDevice = await handleCreateDeviceEnrollment(makeDeviceGroupContext({}, {
+      alias: "hardware-id",
+      device_id: "ANDROID_ID-123",
+      operation_id: "create-invalid-device",
+    }));
+    expect(invalidDevice.status).toBe(400);
+    const uppercaseDuplicate = await handleCreateDeviceEnrollment(makeDeviceGroupContext({}, {
+      alias: "duplicate-case",
+      device_id: OLD_INSTALL_ID.toUpperCase(),
+      operation_id: "create-duplicate-case",
+    }));
+    expect(uppercaseDuplicate.status).toBe(409);
+
     const rebindBody = {
-      device_id: "install-new",
+      device_id: NEW_INSTALL_ID,
       expected_revision: 1,
       operation_id: "rebind-artin-1",
     };
@@ -4998,12 +5037,12 @@ describe("quiver releases — draft lifecycle", () => {
     const rebound = await responseJson<any>(reboundResponse);
     expect(rebound).toMatchObject({
       replayed: false,
-      enrollment: { current_device_id: "install-new", status: "active", revision: 2 },
+      enrollment: { current_device_id: NEW_INSTALL_ID, status: "active", revision: 2 },
       operation: {
         operation_id: "rebind-artin-1",
         kind: "rebind",
-        from_device_id: "install-old",
-        to_device_id: "install-new",
+        from_device_id: OLD_INSTALL_ID,
+        to_device_id: NEW_INSTALL_ID,
         expected_revision: 1,
         resulting_revision: 2,
         migrated_group_memberships: 1,
@@ -5014,17 +5053,17 @@ describe("quiver releases — draft lifecycle", () => {
     const memberships = await env.DB.prepare(
       "SELECT device_id, label FROM device_group_members WHERE group_id = ?1 ORDER BY device_id",
     ).bind(group.id).all();
-    expect(memberships.results).toEqual([{ device_id: "install-new", label: "Huawei tablet" }]);
+    expect(memberships.results).toEqual([{ device_id: NEW_INSTALL_ID, label: "Huawei tablet" }]);
     const flag = await env.DB.prepare(
       "SELECT allow_device_ids, deny_device_ids, platforms FROM feature_flags WHERE id = 'ff-enrollment'",
     ).first() as any;
-    expect(JSON.parse(flag.allow_device_ids)).toEqual(["install-new", "other"]);
-    expect(JSON.parse(flag.deny_device_ids)).toEqual(["blocked", "install-new"]);
+    expect(JSON.parse(flag.allow_device_ids)).toEqual([NEW_INSTALL_ID, "other"]);
+    expect(JSON.parse(flag.deny_device_ids)).toEqual(["blocked", NEW_INSTALL_ID]);
     expect(JSON.parse(flag.platforms)).toEqual(["android"]);
 
     const groupsAfterRebind = await responseJson<any>(await handleListDeviceGroups(makeDeviceGroupContext()));
     expect(groupsAfterRebind.groups[0].members[0]).toMatchObject({
-      device_id: "install-new",
+      device_id: NEW_INSTALL_ID,
       enrollment_id: created.enrollment.id,
       enrollment_alias: "artin-huawei-tablet",
       enrollment_revision: 2,
@@ -5041,7 +5080,7 @@ describe("quiver releases — draft lifecycle", () => {
     ).first()).resolves.toEqual({ count: 1 });
     const operationReuseResponse = await handleRebindDeviceEnrollment(makeDeviceGroupContext(
       { enrollmentId: created.enrollment.id },
-      { ...rebindBody, device_id: "install-third" },
+      { ...rebindBody, device_id: THIRD_INSTALL_ID },
     ));
     expect(operationReuseResponse.status).toBe(409);
     await expect(responseJson<any>(operationReuseResponse)).resolves.toMatchObject({
@@ -5050,7 +5089,7 @@ describe("quiver releases — draft lifecycle", () => {
 
     const staleResponse = await handleRebindDeviceEnrollment(makeDeviceGroupContext(
       { enrollmentId: created.enrollment.id },
-      { device_id: "install-third", expected_revision: 1, operation_id: "rebind-stale" },
+      { device_id: THIRD_INSTALL_ID, expected_revision: 1, operation_id: "rebind-stale" },
     ));
     expect(staleResponse.status).toBe(409);
     await expect(responseJson<any>(staleResponse)).resolves.toMatchObject({
@@ -5068,7 +5107,7 @@ describe("quiver releases — draft lifecycle", () => {
       enrollment: { current_device_id: null, status: "revoked", revision: 3 },
       operation: {
         kind: "revoke",
-        from_device_id: "install-new",
+        from_device_id: NEW_INSTALL_ID,
         to_device_id: null,
         migrated_group_memberships: 1,
         migrated_feature_flags: 1,
@@ -5092,6 +5131,140 @@ describe("quiver releases — draft lifecycle", () => {
 
     const list = await responseJson<any>(await handleListDeviceEnrollments(makeDeviceGroupContext()));
     expect(list.enrollments).toMatchObject([{ alias: "artin-huawei-tablet", status: "revoked", revision: 3 }]);
+  });
+
+  it("rejects every enrollment route for non-Android apps without creating rows or targeting", async () => {
+    const {
+      handleCreateDeviceEnrollment,
+      handleListDeviceEnrollments,
+      handleRebindDeviceEnrollment,
+      handleRevokeDeviceEnrollment,
+    } = await import("../src/routes/device_enrollments");
+    await env.DB.prepare(
+      "INSERT INTO apps (id, org_id, slug, name, platform, created_at) VALUES (?1, 'default', 'ios-app', 'iOS', 'ios', ?2)",
+    ).bind("app-ios", Date.now()).run();
+    await env.DB.prepare(
+      "INSERT INTO device_groups (id, app_id, name, created_at, updated_at) VALUES ('ios-group', 'app-ios', 'iOS devices', ?1, ?1)",
+    ).bind(Date.now()).run();
+    await env.DB.prepare(
+      "INSERT INTO device_group_members (group_id, device_id, created_at) VALUES ('ios-group', ?1, ?2)",
+    ).bind(OLD_INSTALL_ID, Date.now()).run();
+    await env.DB.prepare(
+      `INSERT INTO feature_flags
+         (id, app_id, key, default_enabled, rollout_percent, allow_device_ids,
+          deny_device_ids, allow_cohorts, platforms, updated_at, updated_by)
+       VALUES ('ios-flag', 'app-ios', 'test', 0, 0, ?1, '[]', '[]', '["ios"]', ?2, 'tester')`,
+    ).bind(JSON.stringify([OLD_INSTALL_ID]), Date.now()).run();
+
+    const create = await handleCreateDeviceEnrollment(makeDeviceGroupContext({ appId: "app-ios" }, {
+      alias: "ios-device",
+      device_id: OLD_INSTALL_ID,
+      operation_id: "create-ios",
+    }));
+    const list = await handleListDeviceEnrollments(makeDeviceGroupContext({ appId: "app-ios" }));
+    const rebind = await handleRebindDeviceEnrollment(makeDeviceGroupContext({
+      appId: "app-ios",
+      enrollmentId: "missing",
+    }, {
+      device_id: NEW_INSTALL_ID,
+      expected_revision: 1,
+      operation_id: "rebind-ios",
+    }));
+    const revoke = await handleRevokeDeviceEnrollment(makeDeviceGroupContext({
+      appId: "app-ios",
+      enrollmentId: "missing",
+    }, {
+      expected_revision: 1,
+      operation_id: "revoke-ios",
+    }));
+
+    for (const response of [create, list, rebind, revoke]) {
+      expect(response.status).toBe(400);
+      await expect(responseJson<any>(response)).resolves.toMatchObject({
+        error: "device enrollments are only supported for Android apps",
+      });
+    }
+    await expect(env.DB.prepare(
+      "SELECT COUNT(*) AS count FROM device_enrollments WHERE app_id = 'app-ios'",
+    ).first()).resolves.toEqual({ count: 0 });
+    await expect(env.DB.prepare(
+      "SELECT COUNT(*) AS count FROM device_enrollment_operations WHERE app_id = 'app-ios'",
+    ).first()).resolves.toEqual({ count: 0 });
+    await expect(env.DB.prepare(
+      "SELECT COUNT(*) AS count FROM audit_logs WHERE app_id = 'app-ios' AND action LIKE 'device_enrollment.%'",
+    ).first()).resolves.toEqual({ count: 0 });
+    await expect(env.DB.prepare(
+      "SELECT device_id FROM device_group_members WHERE group_id = 'ios-group'",
+    ).all()).resolves.toMatchObject({ results: [{ device_id: OLD_INSTALL_ID }] });
+    const flag = await env.DB.prepare(
+      "SELECT allow_device_ids FROM feature_flags WHERE id = 'ios-flag'",
+    ).first() as { allow_device_ids: string } | null;
+    expect(JSON.parse(flag!.allow_device_ids)).toEqual([OLD_INSTALL_ID]);
+  });
+
+  it("rolls back operation, group, flag, enrollment and audit when the final target is already enrolled", async () => {
+    const {
+      handleCreateDeviceEnrollment,
+      handleRebindDeviceEnrollment,
+    } = await import("../src/routes/device_enrollments");
+    const {
+      handleAddDeviceGroupMember,
+      handleCreateDeviceGroup,
+    } = await import("../src/routes/device_groups");
+    const group = await responseJson<any>(await handleCreateDeviceGroup(makeDeviceGroupContext({}, {
+      name: "Rollback devices",
+    })));
+    await handleAddDeviceGroupMember(makeDeviceGroupContext({ groupId: group.id }, {
+      device_id: OLD_INSTALL_ID,
+      label: "old slot",
+    }));
+    await env.DB.prepare(
+      `INSERT INTO feature_flags
+         (id, app_id, key, default_enabled, rollout_percent, allow_device_ids,
+          deny_device_ids, allow_cohorts, platforms, updated_at, updated_by)
+       VALUES ('ff-rollback', 'app-release', 'rollback', 0, 0, ?1, '[]', '[]', '["android"]', ?2, 'tester')`,
+    ).bind(JSON.stringify([OLD_INSTALL_ID]), Date.now()).run();
+    const oldEnrollment = await responseJson<any>(await handleCreateDeviceEnrollment(makeDeviceGroupContext({}, {
+      alias: "old-slot",
+      device_id: OLD_INSTALL_ID,
+      operation_id: "create-old-slot",
+    })));
+    await handleCreateDeviceEnrollment(makeDeviceGroupContext({}, {
+      alias: "occupied-target",
+      device_id: NEW_INSTALL_ID,
+      operation_id: "create-occupied-target",
+    }));
+
+    const failed = await handleRebindDeviceEnrollment(makeDeviceGroupContext({
+      enrollmentId: oldEnrollment.enrollment.id,
+    }, {
+      device_id: NEW_INSTALL_ID,
+      expected_revision: 1,
+      operation_id: "rebind-late-unique-fail",
+    }));
+    expect(failed.status).toBe(409);
+    await expect(env.DB.prepare(
+      "SELECT current_device_id, revision, status FROM device_enrollments WHERE id = ?1",
+    ).bind(oldEnrollment.enrollment.id).first()).resolves.toEqual({
+      current_device_id: OLD_INSTALL_ID,
+      revision: 1,
+      status: "active",
+    });
+    await expect(env.DB.prepare(
+      "SELECT device_id, label FROM device_group_members WHERE group_id = ?1",
+    ).bind(group.id).all()).resolves.toMatchObject({
+      results: [{ device_id: OLD_INSTALL_ID, label: "old slot" }],
+    });
+    const flag = await env.DB.prepare(
+      "SELECT allow_device_ids FROM feature_flags WHERE id = 'ff-rollback'",
+    ).first() as { allow_device_ids: string } | null;
+    expect(JSON.parse(flag!.allow_device_ids)).toEqual([OLD_INSTALL_ID]);
+    await expect(env.DB.prepare(
+      "SELECT COUNT(*) AS count FROM device_enrollment_operations WHERE operation_id = 'rebind-late-unique-fail'",
+    ).first()).resolves.toEqual({ count: 0 });
+    await expect(env.DB.prepare(
+      "SELECT COUNT(*) AS count FROM audit_logs WHERE action = 'device_enrollment.rebind' AND payload LIKE '%rebind-late-unique-fail%'",
+    ).first()).resolves.toEqual({ count: 0 });
   });
 
   it("updates editable release metadata and replaces scopes", async () => {
