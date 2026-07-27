@@ -162,6 +162,15 @@ describe("FeedbackProvider", () => {
     expect(css).toMatch(
       /\.hands-feedback-conversation[^}]*align-content:\s*start/,
     );
+    expect(css).toMatch(
+      /\.hands-feedback-conversation article\s*\{[^}]*max-width:\s*min\(42rem, 88%\)[^}]*width:\s*fit-content/,
+    );
+    expect(css).toMatch(
+      /article\[data-author="reporter"\][^}]*justify-self:\s*end/,
+    );
+    expect(css).toMatch(
+      /article\[data-author="staff"\][^}]*justify-self:\s*start/,
+    );
     expect(css).not.toMatch(/display:\s*none[^}]*hands-feedback-conversation/);
   });
 
