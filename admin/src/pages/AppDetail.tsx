@@ -68,6 +68,7 @@ import {
   updateDeviceGroup,
   type DeviceEnrollment,
   type DeviceGroup,
+  ApiError,
 } from "../lib/api";
 import { useToast } from "../components/Toast";
 import { Operations } from "./Operations";
@@ -424,7 +425,7 @@ export function DeviceGroupsPanel({ appId, platform }: { appId: string; platform
         <div className="text-sm font-medium">Device groups</div>
         <p className="text-xs text-slate-500">
           Exact rollout groups still resolve the current random per-install id sent by the Hands update SDK.
-          Enrolled aliases above can rotate that id without changing the group slot.
+          {platform === "android" && " Enrolled aliases above can rotate that id without changing the group slot."}
         </p>
       </div>
       <div className="grid grid-cols-[1fr_1fr_auto] gap-2">
@@ -540,6 +541,10 @@ type EnrollmentActionIntent =
       fromDeviceId: string;
     };
 
+function isAmbiguousEnrollmentMutationError(error: unknown): boolean {
+  return !(error instanceof ApiError) || error.status >= 500;
+}
+
 export function DeviceEnrollmentRow({
   appId,
   enrollment,
@@ -578,11 +583,18 @@ export function DeviceEnrollmentRow({
     },
     onError: (error) => {
       confirmationSubmitted.current = false;
+      const ambiguous = isAmbiguousEnrollmentMutationError(error);
+      if (!ambiguous) {
+        setIntent(null);
+        setNextDeviceId("");
+      }
       onChanged();
       toast.show({
         kind: "error",
-        title: "Rebind result is not confirmed",
-        description: `${(error as Error).message} Refreshing receipts; Retry keeps operation ${intent?.operationId ?? "unknown"}.`,
+        title: ambiguous ? "Rebind result is not confirmed" : "Rebind was rejected",
+        description: ambiguous
+          ? `${(error as Error).message} Refreshing enrollment state; Retry keeps operation ${intent?.operationId ?? "unknown"}.`
+          : `${(error as Error).message} Refreshing enrollment state; review the new revision and confirm again.`,
       });
     },
   });
@@ -606,11 +618,15 @@ export function DeviceEnrollmentRow({
     },
     onError: (error) => {
       confirmationSubmitted.current = false;
+      const ambiguous = isAmbiguousEnrollmentMutationError(error);
+      if (!ambiguous) setIntent(null);
       onChanged();
       toast.show({
         kind: "error",
-        title: "Revoke result is not confirmed",
-        description: `${(error as Error).message} Refreshing receipts; Retry keeps operation ${intent?.operationId ?? "unknown"}.`,
+        title: ambiguous ? "Revoke result is not confirmed" : "Revoke was rejected",
+        description: ambiguous
+          ? `${(error as Error).message} Refreshing enrollment state; Retry keeps operation ${intent?.operationId ?? "unknown"}.`
+          : `${(error as Error).message} Refreshing enrollment state; review the new revision and confirm again.`,
       });
     },
   });

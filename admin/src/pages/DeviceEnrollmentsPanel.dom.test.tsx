@@ -4,7 +4,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { DeviceEnrollment, DeviceEnrollmentResult } from "../lib/api";
+import { ApiError, type DeviceEnrollment, type DeviceEnrollmentResult } from "../lib/api";
 
 const mocks = vi.hoisted(() => ({
   listDeviceGroups: vi.fn(),
@@ -12,6 +12,7 @@ const mocks = vi.hoisted(() => ({
   rebindDeviceEnrollment: vi.fn(),
   revokeDeviceEnrollment: vi.fn(),
   toast: vi.fn(),
+  uuid: vi.fn(),
 }));
 
 vi.mock("../lib/api", async (importOriginal) => ({
@@ -54,7 +55,7 @@ function result(kind: "rebind" | "revoke", replayed = false): DeviceEnrollmentRe
     },
     replayed,
     operation: {
-      operation_id: "operation-fixed",
+      operation_id: "operation-first",
       kind,
       from_device_id: "install-old",
       to_device_id: kind === "rebind" ? "install-new" : null,
@@ -84,7 +85,9 @@ beforeEach(() => {
   vi.clearAllMocks();
   mocks.listDeviceGroups.mockResolvedValue({ groups: [] });
   mocks.listDeviceEnrollments.mockResolvedValue({ enrollments: [enrollment] });
-  vi.stubGlobal("crypto", { randomUUID: vi.fn(() => "operation-fixed") });
+  mocks.uuid.mockReset();
+  mocks.uuid.mockReturnValueOnce("operation-first").mockReturnValueOnce("operation-second");
+  vi.stubGlobal("crypto", { randomUUID: mocks.uuid });
 });
 
 describe("Android test-device enrollments", () => {
@@ -92,6 +95,7 @@ describe("Android test-device enrollments", () => {
     render(wrapper(<DeviceGroupsPanel appId="app-1" platform="ios" />));
 
     expect(screen.queryByText("Test-device enrollments")).toBeNull();
+    expect(screen.queryByText(/Enrolled aliases above/)).toBeNull();
     expect(mocks.listDeviceEnrollments).not.toHaveBeenCalled();
     await waitFor(() => expect(mocks.listDeviceGroups).toHaveBeenCalledWith("app-1"));
   });
@@ -124,13 +128,13 @@ describe("Android test-device enrollments", () => {
     expect(await screen.findByRole("alertdialog")).toBeTruthy();
     expect(screen.getAllByText("install-old").length).toBeGreaterThanOrEqual(2);
     expect(screen.getByText("install-new")).toBeTruthy();
-    expect(screen.getByText("operation-fixed")).toBeTruthy();
+    expect(screen.getByText("operation-first")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Rebind installation" }));
 
     const expectedPayload = {
       device_id: "install-new",
       expected_revision: 7,
-      operation_id: "operation-fixed",
+      operation_id: "operation-first",
     };
     await waitFor(() => expect(mocks.rebindDeviceEnrollment).toHaveBeenCalledTimes(1));
     expect(mocks.rebindDeviceEnrollment).toHaveBeenLastCalledWith(
@@ -138,6 +142,7 @@ describe("Android test-device enrollments", () => {
       "enrollment-123",
       expectedPayload,
     );
+    expect(mocks.uuid).toHaveBeenCalledTimes(1);
     await waitFor(() => expect(changed).toHaveBeenCalledTimes(1));
 
     expect(screen.getByRole("alertdialog")).toBeTruthy();
@@ -148,7 +153,8 @@ describe("Android test-device enrollments", () => {
       "enrollment-123",
       expectedPayload,
     );
-    expect(await screen.findByText("operation: operation-fixed")).toBeTruthy();
+    expect(mocks.uuid).toHaveBeenCalledTimes(1);
+    expect(await screen.findByText("operation: operation-first")).toBeTruthy();
     expect(screen.getByText("revision: 8")).toBeTruthy();
     expect(screen.getByText("replayed: true")).toBeTruthy();
     expect(screen.getByText(/migrated: 2 group slot/)).toBeTruthy();
@@ -167,7 +173,7 @@ describe("Android test-device enrollments", () => {
     expect(await screen.findByText("Revoke test-device enrollment?")).toBeTruthy();
     expect(screen.getByText("current ID")).toBeTruthy();
     expect(screen.getAllByText("install-old").length).toBeGreaterThanOrEqual(2);
-    expect(screen.getByText("operation-fixed")).toBeTruthy();
+    expect(screen.getByText("operation-first")).toBeTruthy();
 
     const confirm = screen.getByRole("button", { name: "Revoke enrollment" });
     expect(confirm.className).toMatch(/danger|red/);
@@ -177,9 +183,37 @@ describe("Android test-device enrollments", () => {
       "enrollment-123",
       {
         expected_revision: 7,
-        operation_id: "operation-fixed",
+        operation_id: "operation-first",
       },
     ));
-    expect(await screen.findByText("operation: operation-fixed")).toBeTruthy();
+    expect(await screen.findByText("operation: operation-first")).toBeTruthy();
+  });
+
+  it("closes a definitive 409 intent and requires a fresh confirmation key", async () => {
+    mocks.rebindDeviceEnrollment.mockRejectedValue(
+      new ApiError(409, { error: "revision conflict" }, "revision conflict"),
+    );
+    const changed = vi.fn();
+    render(wrapper(
+      <DeviceEnrollmentRow appId="app-1" enrollment={enrollment} onChanged={changed} />,
+    ));
+
+    const input = screen.getByRole("textbox", {
+      name: "Replacement installation ID for artin-huawei-tablet",
+    });
+    fireEvent.change(input, { target: { value: "install-new" } });
+    fireEvent.click(screen.getByRole("button", { name: "Rebind enrollment artin-huawei-tablet" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Rebind installation" }));
+
+    await waitFor(() => expect(mocks.rebindDeviceEnrollment).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
+    expect(input).toHaveProperty("value", "");
+    expect(changed).toHaveBeenCalledTimes(1);
+    expect(mocks.uuid).toHaveBeenCalledTimes(1);
+
+    fireEvent.change(input, { target: { value: "install-newer" } });
+    fireEvent.click(screen.getByRole("button", { name: "Rebind enrollment artin-huawei-tablet" }));
+    expect(await screen.findByText("operation-second")).toBeTruthy();
+    expect(mocks.uuid).toHaveBeenCalledTimes(2);
   });
 });
