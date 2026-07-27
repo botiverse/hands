@@ -209,6 +209,7 @@ describe("FeedbackWorkspace browser behavior", () => {
     );
 
     await screen.findByText("Ticket open");
+    expect(screen.getByRole("button", { name: "Active" })).toBeTruthy();
     expect(
       Array.from(
         container.querySelectorAll<HTMLElement>("[data-feedback-status]"),
@@ -245,7 +246,7 @@ describe("FeedbackWorkspace browser behavior", () => {
     const row = await screen.findByRole("button", {
       name: /A reporter-visible ticket/,
     });
-    fireEvent.click(screen.getByRole("button", { name: "Open" }));
+    fireEvent.click(screen.getByRole("button", { name: "Active" }));
     const listScroll = document.querySelector<HTMLElement>(
       "[data-feedback-list-scroll]",
     )!;
@@ -256,7 +257,9 @@ describe("FeedbackWorkspace browser behavior", () => {
     await waitFor(() => expect(document.activeElement).toBe(row));
     expect(listScroll.scrollTop).toBe(91);
     expect(
-      screen.getByRole("button", { name: "Open" }).getAttribute("aria-pressed"),
+      screen
+        .getByRole("button", { name: "Active" })
+        .getAttribute("aria-pressed"),
     ).toBe("true");
     expect(row.getAttribute("data-unread")).toBeNull();
   });
