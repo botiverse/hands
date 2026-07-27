@@ -55,6 +55,7 @@ export async function authenticateReporter(
   const grantValid = token.app_id === appId
     && token.app_role === null
     && token.reporter_integration_id !== null
+    && token.reporter_integration_active === 1
     && scopes !== null
     && scopes.length > 0
     && scopes.every(isFeedbackTokenPermission)
@@ -63,21 +64,11 @@ export async function authenticateReporter(
     return { ok: false, response: c.json({ error: "invalid reporter integration grant" }, 403) };
   }
 
-  const integration = await c.env.DB.prepare(
-    `SELECT id FROM app_reporter_integrations
-     WHERE id = ?1 AND app_id = ?2 AND archived_at IS NULL`,
-  )
-    .bind(token.reporter_integration_id, appId)
-    .first<{ id: string }>();
-  if (!integration) {
-    return { ok: false, response: c.json({ error: "invalid reporter integration grant" }, 403) };
-  }
-
   return {
     ok: true,
     principal: {
       appId,
-      integrationId: integration.id,
+      integrationId: token.reporter_integration_id!,
       reporterId,
       token,
     },
@@ -92,6 +83,7 @@ export function isFeedbackOnlyToken(
   return token.app_id === appId
     && token.app_role === null
     && token.reporter_integration_id !== null
+    && token.reporter_integration_active === 1
     && token.scopes !== null
     && token.scopes.length > 0
     && token.scopes.every(isFeedbackTokenPermission)

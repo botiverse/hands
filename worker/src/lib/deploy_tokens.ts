@@ -23,6 +23,7 @@ export type AppDeployToken = {
   last_used_at: number | null;
   revoked_at: number | null;
   reporter_integration_id: string | null;
+  reporter_integration_active: number | null;
 };
 
 export function isDeployTokenRole(value: unknown): value is DeployTokenRole {
@@ -99,9 +100,20 @@ export async function loadDeployToken(
     `SELECT dt.id, dt.app_id, a.slug AS app_slug, dt.name, dt.token_prefix,
             dt.app_role, dt.scopes_json, dt.created_by, dt.created_by_actor, dt.created_at,
             dt.expires_at, dt.last_used_at, dt.revoked_at,
-            dt.reporter_integration_id
+            dt.reporter_integration_id,
+            CASE
+              WHEN dt.reporter_integration_id IS NULL THEN NULL
+              WHEN ri.id IS NOT NULL THEN 1 ELSE 0
+            END AS reporter_integration_active
      FROM app_deploy_tokens dt
      JOIN apps a ON a.id = dt.app_id
+     -- Fold reporter-integration liveness into the authoritative token lookup.
+     -- Reporter auth can reject an archived integration without a second D1
+     -- round trip, while ordinary app tokens retain the same null sentinel.
+     LEFT JOIN app_reporter_integrations ri
+       ON ri.id = dt.reporter_integration_id
+      AND ri.app_id = dt.app_id
+      AND ri.archived_at IS NULL
      WHERE dt.token_hash = ?1
        AND dt.revoked_at IS NULL
        AND (dt.expires_at IS NULL OR dt.expires_at > ?2)
