@@ -509,6 +509,7 @@ export function DeviceEnrollmentsPanel({ appId }: { appId: string }) {
       createIntent.deviceId === next.deviceId && createIntent.label === next.label
       ? createIntent
       : { ...next, operationId: crypto.randomUUID() };
+    if (intent !== createIntent) setLastCreateReceipt(null);
     setCreateIntent(intent);
     create.mutate(intent);
   };

@@ -71,6 +71,30 @@ function result(kind: "rebind" | "revoke", replayed = false): DeviceEnrollmentRe
   };
 }
 
+function createResult(id: string, replayed = false): DeviceEnrollmentResult {
+  return {
+    enrollment: {
+      ...enrollment,
+      id,
+      current_device_id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      revision: 1,
+    },
+    replayed,
+    operation: {
+      operation_id: "operation-first",
+      kind: "create",
+      from_device_id: null,
+      to_device_id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      expected_revision: null,
+      resulting_revision: 1,
+      migrated_group_memberships: 0,
+      migrated_feature_flags: 0,
+      actor: "artin",
+      created_at: 3,
+    },
+  };
+}
+
 function wrapper(children: ReactNode) {
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
@@ -110,30 +134,9 @@ describe("Android test-device enrollments", () => {
   });
 
   it("retries ambiguous create with one frozen operation key and shows replay receipt", async () => {
-    const created: DeviceEnrollmentResult = {
-      enrollment: {
-        ...enrollment,
-        id: "created-enrollment",
-        current_device_id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-        revision: 1,
-      },
-      replayed: true,
-      operation: {
-        operation_id: "operation-first",
-        kind: "create",
-        from_device_id: null,
-        to_device_id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-        expected_revision: null,
-        resulting_revision: 1,
-        migrated_group_memberships: 0,
-        migrated_feature_flags: 0,
-        actor: "artin",
-        created_at: 3,
-      },
-    };
     mocks.createDeviceEnrollment
       .mockRejectedValueOnce(new Error("response lost"))
-      .mockResolvedValueOnce(created);
+      .mockResolvedValueOnce(createResult("created-enrollment", true));
     render(wrapper(<DeviceEnrollmentsPanel appId="app-1" />));
 
     fireEvent.change(screen.getByRole("textbox", { name: "Enrollment alias" }), {
@@ -156,8 +159,58 @@ describe("Android test-device enrollments", () => {
     await waitFor(() => expect(mocks.createDeviceEnrollment).toHaveBeenCalledTimes(2));
     expect(mocks.createDeviceEnrollment).toHaveBeenLastCalledWith("app-1", payload);
     expect(mocks.uuid).toHaveBeenCalledTimes(1);
+    expect(await screen.findByText("created: created-enrollment")).toBeTruthy();
     expect(await screen.findByText("operation: operation-first")).toBeTruthy();
+    expect(screen.getByText("revision: 1")).toBeTruthy();
     expect(screen.getByText("replayed: true")).toBeTruthy();
+  });
+
+  it("clears the last confirmed create receipt when a different create starts and fails", async () => {
+    mocks.createDeviceEnrollment
+      .mockResolvedValueOnce(createResult("created-A"))
+      .mockRejectedValueOnce(new Error("B response lost"));
+    render(wrapper(<DeviceEnrollmentsPanel appId="app-1" />));
+    const alias = screen.getByRole("textbox", { name: "Enrollment alias" });
+    const device = screen.getByRole("textbox", { name: "Current Android installation ID" });
+    const submit = screen.getByRole("button", { name: "Enroll" });
+
+    fireEvent.change(alias, { target: { value: "device-A" } });
+    fireEvent.change(device, { target: { value: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" } });
+    fireEvent.click(submit);
+    expect(await screen.findByText("created: created-A")).toBeTruthy();
+
+    fireEvent.change(alias, { target: { value: "device-B" } });
+    fireEvent.change(device, { target: { value: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb" } });
+    fireEvent.click(submit);
+    await waitFor(() => expect(mocks.createDeviceEnrollment).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(screen.queryByText("created: created-A")).toBeNull());
+    expect(screen.queryByText("operation: operation-first")).toBeNull();
+  });
+
+  it("drops a definitive create 409 intent and uses a fresh operation key on resubmit", async () => {
+    mocks.createDeviceEnrollment.mockRejectedValue(
+      new ApiError(409, { error: "operation conflict" }, "operation conflict"),
+    );
+    render(wrapper(<DeviceEnrollmentsPanel appId="app-1" />));
+    fireEvent.change(screen.getByRole("textbox", { name: "Enrollment alias" }), {
+      target: { value: "artin-huawei-tablet" },
+    });
+    fireEvent.change(screen.getByRole("textbox", { name: "Current Android installation ID" }), {
+      target: { value: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" },
+    });
+    const submit = screen.getByRole("button", { name: "Enroll" });
+
+    fireEvent.click(submit);
+    await waitFor(() => expect(mocks.createDeviceEnrollment).toHaveBeenCalledTimes(1));
+    expect(mocks.createDeviceEnrollment.mock.calls[0]?.[1]).toMatchObject({
+      operation_id: "operation-first",
+    });
+    fireEvent.click(submit);
+    await waitFor(() => expect(mocks.createDeviceEnrollment).toHaveBeenCalledTimes(2));
+    expect(mocks.createDeviceEnrollment.mock.calls[1]?.[1]).toMatchObject({
+      operation_id: "operation-second",
+    });
+    expect(mocks.uuid).toHaveBeenCalledTimes(2);
   });
 
   it("confirms exact rebind impact and retries an ambiguous failure with the same receipt key", async () => {
