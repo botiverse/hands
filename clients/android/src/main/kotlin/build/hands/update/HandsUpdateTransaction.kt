@@ -173,6 +173,22 @@ internal fun performExactCleanup(
     return ExactCleanupResult(downloadAbsent, fileAbsent)
 }
 
+internal data class PendingInstallerTargetIdentity(
+    val versionCode: Long?,
+    val buildId: String?,
+    val sha256: String?,
+    val sizeBytes: Long?,
+    val filetype: String?,
+    val signature: String?,
+) {
+    fun normalized(): PendingInstallerTargetIdentity = copy(
+        buildId = buildId?.trim()?.ifEmpty { null },
+        sha256 = sha256?.trim()?.lowercase()?.ifEmpty { null },
+        filetype = filetype?.trim()?.lowercase()?.ifEmpty { null },
+        signature = signature?.trim()?.ifEmpty { null },
+    )
+}
+
 internal enum class PendingInstallerOfferAction {
     REOPEN_CURRENT,
     REPLACE_CURRENT,
@@ -180,31 +196,49 @@ internal enum class PendingInstallerOfferAction {
 }
 
 internal fun pendingInstallerOfferAction(
-    persistedTargetVersionCode: Long?,
-    offeredTargetVersionCode: Long?,
+    persistedTarget: PendingInstallerTargetIdentity,
+    offeredTarget: PendingInstallerTargetIdentity?,
 ): PendingInstallerOfferAction = when {
-    offeredTargetVersionCode == null -> PendingInstallerOfferAction.WITHDRAW_CURRENT
-    offeredTargetVersionCode == persistedTargetVersionCode ->
+    offeredTarget == null -> PendingInstallerOfferAction.WITHDRAW_CURRENT
+    offeredTarget.normalized() == persistedTarget.normalized() ->
         PendingInstallerOfferAction.REOPEN_CURRENT
     else -> PendingInstallerOfferAction.REPLACE_CURRENT
 }
 
 internal inline fun <T> reconcilePendingInstallerOffer(
-    persistedTargetVersionCode: Long?,
-    offeredTargetVersionCode: Long?,
+    persistedTarget: PendingInstallerTargetIdentity,
+    offeredTarget: PendingInstallerTargetIdentity?,
     reopenCurrent: () -> T,
     replaceCurrent: () -> T,
     withdrawCurrent: () -> T,
 ): T = when (
     pendingInstallerOfferAction(
-        persistedTargetVersionCode = persistedTargetVersionCode,
-        offeredTargetVersionCode = offeredTargetVersionCode,
+        persistedTarget = persistedTarget,
+        offeredTarget = offeredTarget,
     )
 ) {
     PendingInstallerOfferAction.REOPEN_CURRENT -> reopenCurrent()
     PendingInstallerOfferAction.REPLACE_CURRENT -> replaceCurrent()
     PendingInstallerOfferAction.WITHDRAW_CURRENT -> withdrawCurrent()
 }
+
+internal fun shouldCleanupRestartableAuthority(
+    state: HandsUpdateState,
+    downloadId: Long?,
+    localFilePath: String?,
+): Boolean = state in setOf(
+    HandsUpdateState.IDLE,
+    HandsUpdateState.FAILED,
+    HandsUpdateState.STALE,
+    HandsUpdateState.INSTALLED,
+) && (downloadId != null || localFilePath != null)
+
+internal fun installerLaunchFailureTransition() = ExactCleanupTransition(
+    state = HandsUpdateState.READY_TO_INSTALL,
+    errorCode = "installer_open_failed",
+    retryable = true,
+    clearLocalAuthority = false,
+)
 
 @Serializable
 internal data class UpdateTransactionRecord(

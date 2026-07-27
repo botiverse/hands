@@ -19,6 +19,8 @@ internal enum class DownloadState {
     SUCCESSFUL,
     FAILED,
     MISSING,
+    READ_UNAVAILABLE,
+    UNKNOWN,
 }
 
 internal data class ApkDownloadStatus(
@@ -27,6 +29,23 @@ internal data class ApkDownloadStatus(
     val downloadedBytes: Long? = null,
     val totalBytes: Long? = null,
 )
+
+internal fun downloadStateFromRawStatus(rawStatus: Int): DownloadState = when (rawStatus) {
+    DownloadManager.STATUS_PENDING -> DownloadState.PENDING
+    DownloadManager.STATUS_RUNNING -> DownloadState.RUNNING
+    DownloadManager.STATUS_PAUSED -> DownloadState.PAUSED
+    DownloadManager.STATUS_SUCCESSFUL -> DownloadState.SUCCESSFUL
+    DownloadManager.STATUS_FAILED -> DownloadState.FAILED
+    else -> DownloadState.UNKNOWN
+}
+
+internal inline fun readDownloadStatus(
+    read: () -> ApkDownloadStatus?,
+): ApkDownloadStatus = try {
+    read() ?: ApkDownloadStatus(DownloadState.READ_UNAVAILABLE)
+} catch (_: Exception) {
+    ApkDownloadStatus(DownloadState.READ_UNAVAILABLE)
+}
 
 data class EnqueuedApkDownload(
     val id: Long,
@@ -181,29 +200,25 @@ class ApkInstaller(private val context: Context) {
 
     internal fun queryDownload(downloadId: Long): ApkDownloadStatus {
         val dm = ContextCompat.getSystemService(context, DownloadManager::class.java)
-            ?: return ApkDownloadStatus(DownloadState.MISSING)
-        val cursor = try {
-            dm.query(DownloadManager.Query().setFilterById(downloadId))
-        } catch (_: Exception) {
-            return ApkDownloadStatus(DownloadState.MISSING)
-        } ?: return ApkDownloadStatus(DownloadState.MISSING)
-        cursor.use {
-            if (!it.moveToFirst()) return ApkDownloadStatus(DownloadState.MISSING)
-            val rawStatus = it.getInt(it.getColumnIndexOrThrow(DownloadManager.COLUMN_STATUS))
-            val reason = it.getInt(it.getColumnIndexOrThrow(DownloadManager.COLUMN_REASON))
-            val downloaded = it.getLong(
-                it.getColumnIndexOrThrow(DownloadManager.COLUMN_BYTES_DOWNLOADED_SO_FAR)
-            )
-            val total = it.getLong(it.getColumnIndexOrThrow(DownloadManager.COLUMN_TOTAL_SIZE_BYTES))
-            val state = when (rawStatus) {
-                DownloadManager.STATUS_PENDING -> DownloadState.PENDING
-                DownloadManager.STATUS_RUNNING -> DownloadState.RUNNING
-                DownloadManager.STATUS_PAUSED -> DownloadState.PAUSED
-                DownloadManager.STATUS_SUCCESSFUL -> DownloadState.SUCCESSFUL
-                DownloadManager.STATUS_FAILED -> DownloadState.FAILED
-                else -> DownloadState.MISSING
+            ?: return ApkDownloadStatus(DownloadState.READ_UNAVAILABLE)
+        return readDownloadStatus {
+            val cursor = dm.query(DownloadManager.Query().setFilterById(downloadId))
+                ?: return@readDownloadStatus null
+            cursor.use {
+                if (!it.moveToFirst()) return@readDownloadStatus ApkDownloadStatus(DownloadState.MISSING)
+                val rawStatus = it.getInt(it.getColumnIndexOrThrow(DownloadManager.COLUMN_STATUS))
+                val reason = it.getInt(it.getColumnIndexOrThrow(DownloadManager.COLUMN_REASON))
+                val downloaded = it.getLong(
+                    it.getColumnIndexOrThrow(DownloadManager.COLUMN_BYTES_DOWNLOADED_SO_FAR)
+                )
+                val total = it.getLong(it.getColumnIndexOrThrow(DownloadManager.COLUMN_TOTAL_SIZE_BYTES))
+                ApkDownloadStatus(
+                    downloadStateFromRawStatus(rawStatus),
+                    reason,
+                    downloaded,
+                    total,
+                )
             }
-            return ApkDownloadStatus(state, reason, downloaded, total)
         }
     }
 

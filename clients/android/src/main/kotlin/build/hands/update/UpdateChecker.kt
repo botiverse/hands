@@ -204,12 +204,19 @@ class UpdateChecker(
         try {
             installer.installDownloadedApk(requireNotNull(file))
         } catch (_: Exception) {
-            return transition(
-                record,
-                HandsUpdateState.FAILED,
-                errorCode = "installer_open_failed",
-                retryable = true,
-            ).status(installedVersionCodeNow())
+            val failure = installerLaunchFailureTransition()
+            return try {
+                transition(
+                    record,
+                    failure.state,
+                    errorCode = failure.errorCode,
+                    retryable = failure.retryable,
+                    clearLocalAuthority = failure.clearLocalAuthority,
+                ).status(installedVersionCodeNow())
+            } catch (_: Exception) {
+                // The existing READY/OPENED record remains the durable locator.
+                record.status(installedVersionCodeNow())
+            }
         }
         emit(
             "content_uri_ready",
@@ -251,7 +258,11 @@ class UpdateChecker(
     private suspend fun checkAndInstallUnlocked(languageTag: String?): UpdateCheckResponse {
         val requestedLanguage = normalizedLanguageTag(languageTag)
         var prior = transactionStore.read()
-        if (prior?.errorCode == CLEANUP_FAILED) {
+        if (prior != null && shouldCleanupRestartableAuthority(
+            state = prior.state,
+            downloadId = prior.downloadId,
+            localFilePath = prior.localFilePath,
+        )) {
             requireCleanup(prior)
             prior = transition(
                 prior,
@@ -333,8 +344,8 @@ class UpdateChecker(
                 HandsUpdateState.READY_TO_INSTALL,
                 HandsUpdateState.INSTALLER_OPENED,
                 -> reconcilePendingInstallerOffer(
-                    persistedTargetVersionCode = current.targetVersionCode,
-                    offeredTargetVersionCode = null,
+                    persistedTarget = current.pendingInstallerIdentity(),
+                    offeredTarget = null,
                     reopenCurrent = { error("withdrawn offer cannot reopen current target") },
                     replaceCurrent = { error("withdrawn offer cannot replace current target") },
                     withdrawCurrent = {
@@ -381,8 +392,15 @@ class UpdateChecker(
         val existing = transactionStore.read()
         if (existing != null) {
             reconcilePendingInstallerOffer(
-                persistedTargetVersionCode = existing.targetVersionCode,
-                offeredTargetVersionCode = latest.version_code,
+                persistedTarget = existing.pendingInstallerIdentity(),
+                offeredTarget = PendingInstallerTargetIdentity(
+                    versionCode = latest.version_code,
+                    buildId = latest.build_id,
+                    sha256 = asset.sha256 ?: response.patch?.target_sha256,
+                    sizeBytes = asset.size_bytes,
+                    filetype = asset.filetype,
+                    signature = asset.signature,
+                ),
                 reopenCurrent = {
                     when (reconcileTransaction().state) {
                         HandsUpdateState.READY_TO_INSTALL,
@@ -629,6 +647,8 @@ class UpdateChecker(
             DownloadState.PENDING,
             DownloadState.RUNNING,
             DownloadState.PAUSED,
+            DownloadState.READ_UNAVAILABLE,
+            DownloadState.UNKNOWN,
             -> record.status(installed)
 
             DownloadState.SUCCESSFUL -> {
@@ -692,6 +712,15 @@ class UpdateChecker(
         filetype = asset.filetype,
         requestedLanguageTag = requestedLanguageTag,
         resolvedLanguageTag = resolvedLanguageTag,
+    )
+
+    private fun UpdateTransactionRecord.pendingInstallerIdentity() = PendingInstallerTargetIdentity(
+        versionCode = targetVersionCode,
+        buildId = targetBuildId,
+        sha256 = assetSha256,
+        sizeBytes = assetSizeBytes,
+        filetype = filetype,
+        signature = assetSignature,
     )
 
     private fun newRecord(

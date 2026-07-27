@@ -11,6 +11,36 @@ import java.io.File
 
 class ApkInstallerTest {
     @Test
+    fun `DownloadManager read exception cannot prove absence and later active read recovers`() {
+        var reads = 0
+        val first = readDownloadStatus {
+            reads += 1
+            throw IllegalStateException("binder unavailable")
+        }
+        val second = readDownloadStatus {
+            reads += 1
+            ApkDownloadStatus(DownloadState.RUNNING, downloadedBytes = 10, totalBytes = 100)
+        }
+
+        assertEquals(DownloadState.READ_UNAVAILABLE, first.state)
+        assertEquals(DownloadState.RUNNING, second.state)
+        assertEquals(2, reads)
+    }
+
+    @Test
+    fun `null cursor and unknown status cannot prove DownloadManager absence`() {
+        assertEquals(
+            DownloadState.READ_UNAVAILABLE,
+            readDownloadStatus { null }.state,
+        )
+        assertEquals(DownloadState.UNKNOWN, downloadStateFromRawStatus(Int.MAX_VALUE))
+        assertEquals(
+            DownloadState.MISSING,
+            readDownloadStatus { ApkDownloadStatus(DownloadState.MISSING) }.state,
+        )
+    }
+
+    @Test
     fun `DownloadManager file URI converts through FileProvider before installer launch`() {
         val expectedContentUri =
             "content://build.raft.app.alpha.hands.fileprovider/hands_downloads/update.apk"

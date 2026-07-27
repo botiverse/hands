@@ -14,6 +14,22 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class HandsUpdateTransactionTest {
+    private fun target(
+        versionCode: Long = 1000011,
+        buildId: String = "build-11",
+        sha256: String = "a".repeat(64),
+        sizeBytes: Long = 42,
+        filetype: String = "apk",
+        signature: String = "signature-11",
+    ) = PendingInstallerTargetIdentity(
+        versionCode = versionCode,
+        buildId = buildId,
+        sha256 = sha256,
+        sizeBytes = sizeBytes,
+        filetype = filetype,
+        signature = signature,
+    )
+
     @Test
     fun `wire states are stable lower-case constants`() {
         assertEquals(
@@ -229,22 +245,40 @@ class HandsUpdateTransactionTest {
         assertEquals(
             PendingInstallerOfferAction.REOPEN_CURRENT,
             pendingInstallerOfferAction(
-                persistedTargetVersionCode = 1000011,
-                offeredTargetVersionCode = 1000011,
+                persistedTarget = target(sha256 = "A".repeat(64), filetype = "APK"),
+                offeredTarget = target(),
             ),
         )
         assertEquals(
             PendingInstallerOfferAction.REPLACE_CURRENT,
             pendingInstallerOfferAction(
-                persistedTargetVersionCode = 1000011,
-                offeredTargetVersionCode = 1000012,
+                persistedTarget = target(),
+                offeredTarget = target(versionCode = 1000012, buildId = "build-12"),
             ),
         )
         assertEquals(
             PendingInstallerOfferAction.WITHDRAW_CURRENT,
             pendingInstallerOfferAction(
-                persistedTargetVersionCode = 1000011,
-                offeredTargetVersionCode = null,
+                persistedTarget = target(),
+                offeredTarget = null,
+            ),
+        )
+    }
+
+    @Test
+    fun `same version with different build or SHA never reopens stale APK`() {
+        assertEquals(
+            PendingInstallerOfferAction.REPLACE_CURRENT,
+            pendingInstallerOfferAction(
+                persistedTarget = target(buildId = "build-A"),
+                offeredTarget = target(buildId = "build-B"),
+            ),
+        )
+        assertEquals(
+            PendingInstallerOfferAction.REPLACE_CURRENT,
+            pendingInstallerOfferAction(
+                persistedTarget = target(sha256 = "a".repeat(64)),
+                offeredTarget = target(sha256 = "b".repeat(64)),
             ),
         )
     }
@@ -254,8 +288,8 @@ class HandsUpdateTransactionTest {
         val effects = mutableListOf<String>()
 
         reconcilePendingInstallerOffer(
-            persistedTargetVersionCode = 1000011,
-            offeredTargetVersionCode = 1000012,
+            persistedTarget = target(),
+            offeredTarget = target(versionCode = 1000012, buildId = "build-12"),
             reopenCurrent = { effects += "reopen-A" },
             replaceCurrent = {
                 effects += "cleanup-A"
@@ -272,13 +306,50 @@ class HandsUpdateTransactionTest {
         val effects = mutableListOf<String>()
 
         reconcilePendingInstallerOffer(
-            persistedTargetVersionCode = 1000011,
-            offeredTargetVersionCode = null,
+            persistedTarget = target(),
+            offeredTarget = null,
             reopenCurrent = { effects += "reopen-A" },
             replaceCurrent = { effects += "start-other" },
             withdrawCurrent = { effects += "cleanup-A" },
         )
 
         assertEquals(listOf("cleanup-A"), effects)
+    }
+
+    @Test
+    fun `installer launch failure retains READY locator and same-offer retry reopens it`() {
+        val failure = installerLaunchFailureTransition()
+        assertEquals(HandsUpdateState.READY_TO_INSTALL, failure.state)
+        assertEquals("installer_open_failed", failure.errorCode)
+        assertTrue(failure.retryable)
+        assertTrue(!failure.clearLocalAuthority)
+        assertTrue(!shouldCleanupRestartableAuthority(
+            state = failure.state,
+            downloadId = 42,
+            localFilePath = "/owned/update.apk",
+        ))
+        assertEquals(
+            PendingInstallerOfferAction.REOPEN_CURRENT,
+            pendingInstallerOfferAction(target(), target()),
+        )
+    }
+
+    @Test
+    fun `restartable records with any locator require exact cleanup before a new check`() {
+        assertTrue(shouldCleanupRestartableAuthority(
+            state = HandsUpdateState.FAILED,
+            downloadId = 42,
+            localFilePath = null,
+        ))
+        assertTrue(shouldCleanupRestartableAuthority(
+            state = HandsUpdateState.STALE,
+            downloadId = null,
+            localFilePath = "/owned/update.apk",
+        ))
+        assertTrue(!shouldCleanupRestartableAuthority(
+            state = HandsUpdateState.FAILED,
+            downloadId = null,
+            localFilePath = null,
+        ))
     }
 }
