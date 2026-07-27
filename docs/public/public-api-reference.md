@@ -371,6 +371,36 @@ each file must be GIF, JPEG, PNG, or WebP and at most 10 MiB. Original submissio
 attachments and reporter-comment attachments are served with private/no-store,
 safe-disposition, and no-sniff headers.
 
+#### Optional short-lived server session (disabled by default)
+
+When Hands enables reporter sessions for a server integration, the trusted
+proxy can exchange its deploy token for a 30-second session:
+
+```http
+POST /api/apps/:appId/reporter-feedback/session
+Authorization: Bearer qvdt_...
+X-Hands-Reporter-Id: <stable opaque value>
+Content-Type: application/json
+
+{ "scopes": ["feedback:read", "feedback:comment"] }
+```
+
+The mint still performs the full deploy-token, app, active-integration, and
+scope checks. A successful `201` returns `session_token`, epoch-seconds
+`expires_at`, exact `reporter_integration_id`, and the canonical granted
+`scopes`. The integration id is a required component of the proxy's session
+cache key. Keep the session on the
+trusted proxy: do not persist it, log it, or return it to a browser. The same
+reporter routes accept the session as their bearer and still require the exact
+same `X-Hands-Reporter-Id`; app/reporter mismatches fail before ticket access.
+The reporter header selects a reporter under the deploy token's existing
+integration authority; it is not independent reporter authentication.
+
+Minting is fail-closed rate limited by source token, integration, and an
+audit-HMAC reporter pseudonym. Responses use `Cache-Control: private, no-store`.
+When the feature is disabled the mint route returns `404` and reporter routes
+retain their deploy-token-only behavior.
+
 Reporter comment and status webhooks carry a stable logical event id in both
 the signed JSON body and `X-Hands-Event-Id`. Each subscription delivery also
 has a stable `X-Hands-Delivery-Id`. Retries reuse the exact same body,

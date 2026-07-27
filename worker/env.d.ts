@@ -32,6 +32,12 @@ declare global {
     RAFT_ALLOWED_SERVER_SLUGS?: string;
     FEEDBACK_AUDIT_HMAC_KEY?: string;
     FEEDBACK_AUDIT_KEY_VERSION?: string;
+    /** Disabled unless exactly "true"; reporter sessions remain server-only. */
+    FEEDBACK_REPORTER_SESSION_ENABLED?: string;
+    /** Active version in FEEDBACK_REPORTER_SESSION_KEYS. */
+    FEEDBACK_REPORTER_SESSION_ACTIVE_KEY_VERSION?: string;
+    /** Secret JSON object containing one or two base64url HMAC keys by version. */
+    FEEDBACK_REPORTER_SESSION_KEYS?: string;
   }
 }
 

@@ -112,6 +112,7 @@ import {
   handleListReporterFeedback,
   cleanupReporterFeedbackData,
 } from "./routes/reporter_feedback";
+import { handleMintReporterSession } from "./routes/reporter_sessions";
 import {
   handleBindReporterRouteSubject,
   handleBindReporterWebhook,
@@ -568,6 +569,7 @@ app.post("/public/v2/apps/:slug/metrics", handleDeviceRegister);
 app.post("/public/v2/apps/:slug/sessions", handleSessionEvent);
 app.post("/public/v2/apps/:slug/feedback/presign", handlePresignFeedbackAttachments);
 app.get("/api/apps/:appId/reporter-feedback", handleListReporterFeedback);
+app.post("/api/apps/:appId/reporter-feedback/session", handleMintReporterSession);
 app.put("/api/apps/:appId/reporter-feedback/route-subject", handleBindReporterRouteSubject);
 app.get("/api/apps/:appId/reporter-feedback/:ticketId", handleGetReporterFeedback);
 app.post("/api/apps/:appId/reporter-feedback/:ticketId/comments", handleAddReporterComment);

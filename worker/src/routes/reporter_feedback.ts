@@ -28,6 +28,12 @@ function timingDuration(start: number, end: number): string {
   return Math.max(0, end - start).toFixed(1);
 }
 
+function sessionVerifyTiming(principal: ReporterPrincipal): string[] {
+  return principal.sessionVerifyDurationMs === null
+    ? []
+    : [`hands_session_verify;dur=${principal.sessionVerifyDurationMs.toFixed(1)}`];
+}
+
 const LIMITS: Record<Endpoint, { reporter: number; integration: number; windowMs: number }> = {
   list: { reporter: 60, integration: 600, windowMs: 60_000 },
   detail: { reporter: 120, integration: 1_200, windowMs: 60_000 },
@@ -354,6 +360,7 @@ export async function handleListReporterFeedback(c: ReporterContext) {
     ? encodeCursor(last.created_at, last.id)
     : null;
   c.header("Server-Timing", [
+    ...sessionVerifyTiming(authorized.principal),
     `hands_auth;dur=${timingDuration(startedAt, authorizedAt)}`,
     `hands_list;dur=${timingDuration(authorizedAt, queriedAt)}`,
   ].join(", "));
@@ -545,6 +552,7 @@ export async function handleGetReporterFeedback(c: ReporterContext) {
     : null;
   const respondedAt = performance.now();
   c.header("Server-Timing", [
+    ...sessionVerifyTiming(authorized.principal),
     `hands_auth;dur=${timingDuration(startedAt, authorizedAt)}`,
     `hands_preflight;dur=${timingDuration(authorizedAt, readAt)}`,
     `hands_commit;dur=${timingDuration(readAt, committedAt)}`,
@@ -731,6 +739,7 @@ export async function handleAddReporterComment(c: ReporterContext) {
   const setCommentTiming = (committedAt: number) => {
     const respondedAt = performance.now();
     c.header("Server-Timing", [
+      ...sessionVerifyTiming(authorized.principal),
       `hands_auth;dur=${timingDuration(startedAt, authorizedAt)}`,
       `hands_preflight;dur=${timingDuration(authorizedAt, preflightAt)}`,
       `hands_commit;dur=${timingDuration(preflightAt, committedAt)}`,
@@ -921,13 +930,16 @@ export async function handleDownloadReporterAttachment(c: ReporterContext) {
   const object = await c.env.APK_BUCKET.get(row.r2_key);
   if (!object) return ticketNotFound(c);
   const filename = safeFilename(row.filename);
+  const headers = new Headers({
+    "content-type": row.content_type ?? "application/octet-stream",
+    "content-disposition": `attachment; filename="${filename}"`,
+    "x-content-type-options": "nosniff",
+    "cache-control": "private, no-store",
+  });
+  const verifyTiming = sessionVerifyTiming(authorized.principal)[0];
+  if (verifyTiming) headers.set("Server-Timing", verifyTiming);
   return new Response(object.body, {
-    headers: {
-      "content-type": row.content_type ?? "application/octet-stream",
-      "content-disposition": `attachment; filename="${filename}"`,
-      "x-content-type-options": "nosniff",
-      "cache-control": "private, no-store",
-    },
+    headers,
   });
 }
 
@@ -965,6 +977,9 @@ export async function cleanupReporterFeedbackData(env: Env, now = Date.now()) {
   await env.DB.batch([
     env.DB.prepare(
       "DELETE FROM feedback_reporter_rate_windows WHERE updated_at < ?1",
+    ).bind(now - 24 * 60 * 60_000),
+    env.DB.prepare(
+      "DELETE FROM feedback_reporter_session_mint_rate_windows WHERE updated_at < ?1",
     ).bind(now - 24 * 60 * 60_000),
     env.DB.prepare(
       "DELETE FROM feedback_reporter_access_audits WHERE created_at < ?1",
