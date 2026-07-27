@@ -95,7 +95,7 @@ export async function loadDeployToken(
   if (!token?.startsWith(`${TOKEN_PREFIX}_`)) return null;
   const tokenHash = await hashDeployToken(token);
   const now = Date.now();
-  const row = await env.DB.prepare(
+  const lookup = env.DB.prepare(
     `SELECT dt.id, dt.app_id, a.slug AS app_slug, dt.name, dt.token_prefix,
             dt.app_role, dt.scopes_json, dt.created_by, dt.created_by_actor, dt.created_at,
             dt.expires_at, dt.last_used_at, dt.revoked_at,
@@ -107,16 +107,18 @@ export async function loadDeployToken(
        AND (dt.expires_at IS NULL OR dt.expires_at > ?2)
      LIMIT 1`,
   )
-    .bind(tokenHash, now)
-    .first<Omit<AppDeployToken, "scopes"> & { scopes_json: string | null }>();
+    .bind(tokenHash, now);
+  const touch = env.DB.prepare(
+    `UPDATE app_deploy_tokens SET last_used_at = ?1
+     WHERE token_hash = ?2 AND revoked_at IS NULL
+       AND (expires_at IS NULL OR expires_at > ?1)`,
+  ).bind(now, tokenHash);
+  const [lookupResult] = await env.DB.batch([lookup, touch]);
+  const row = lookupResult?.results[0] as
+    | (Omit<AppDeployToken, "scopes"> & { scopes_json: string | null })
+    | undefined;
 
   if (!row) return null;
-
-  await env.DB.prepare(
-    "UPDATE app_deploy_tokens SET last_used_at = ?1 WHERE id = ?2",
-  )
-    .bind(now, row.id)
-    .run();
   let scopes: AppPermission[] | null = null;
   if (row.scopes_json !== null) {
     try {

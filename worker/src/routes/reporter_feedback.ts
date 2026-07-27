@@ -24,6 +24,10 @@ type ReporterEnv = Env & {
 
 type Endpoint = "list" | "detail" | "attachment" | "comment";
 
+function timingDuration(start: number, end: number): string {
+  return Math.max(0, end - start).toFixed(1);
+}
+
 const LIMITS: Record<Endpoint, { reporter: number; integration: number; windowMs: number }> = {
   list: { reporter: 60, integration: 600, windowMs: 60_000 },
   detail: { reporter: 120, integration: 1_200, windowMs: 60_000 },
@@ -194,10 +198,20 @@ async function auditRead(
   endpoint: Endpoint,
   input?: { ticketId?: string; attachmentId?: string; everyTime?: boolean },
 ) {
+  await auditReadStatement(c, principal, pseudonym, endpoint, input).run();
+}
+
+function auditReadStatement(
+  c: ReporterContext,
+  principal: ReporterPrincipal,
+  pseudonym: { hash: string; version: string },
+  endpoint: Endpoint,
+  input?: { ticketId?: string; attachmentId?: string; everyTime?: boolean },
+) {
   const now = Date.now();
   const id = crypto.randomUUID();
   if (input?.everyTime) {
-    await c.env.DB.prepare(
+    return c.env.DB.prepare(
       `INSERT INTO feedback_reporter_access_audits
        (id, app_id, reporter_integration_id, reporter_hash, audit_key_version,
         endpoint, ticket_id, attachment_id, throttle_window_started_at, created_at)
@@ -212,11 +226,10 @@ async function auditRead(
       input.ticketId ?? null,
       input.attachmentId ?? null,
       now,
-    ).run();
-    return;
+    );
   }
   const throttleWindow = Math.floor(now / (10 * 60_000)) * (10 * 60_000);
-  await c.env.DB.prepare(
+  return c.env.DB.prepare(
     `INSERT OR IGNORE INTO feedback_reporter_access_audits
      (id, app_id, reporter_integration_id, reporter_hash, audit_key_version,
       endpoint, ticket_id, attachment_id, throttle_window_started_at, created_at)
@@ -232,7 +245,7 @@ async function auditRead(
     input?.attachmentId ?? null,
     throttleWindow,
     now,
-  ).run();
+  );
 }
 
 function ticketNotFound(c: ReporterContext) {
@@ -270,11 +283,11 @@ const unreadCountSql = `(SELECT COUNT(*) FROM feedback_comments unread_comment
       OR unread_comment.reporter_sequence > rr.read_through_sequence
     ))`;
 
-async function unreadTotal(
+function unreadTotalStatement(
   c: ReporterContext,
   principal: ReporterPrincipal,
-): Promise<number> {
-  const row = await c.env.DB.prepare(
+) {
+  return c.env.DB.prepare(
     `SELECT COUNT(*) AS unread_total FROM feedback_tickets t
      LEFT JOIN feedback_reporter_ticket_reads rr
        ON rr.app_id = t.app_id
@@ -283,20 +296,28 @@ async function unreadTotal(
       AND rr.ticket_id = t.id
      WHERE t.app_id = ?1 AND t.reporter_integration_id = ?2
        AND t.reporter_id = ?3 AND ${unreadCountSql} > 0`,
-  ).bind(principal.appId, principal.integrationId, principal.reporterId)
+  ).bind(principal.appId, principal.integrationId, principal.reporterId);
+}
+
+async function unreadTotal(
+  c: ReporterContext,
+  principal: ReporterPrincipal,
+): Promise<number> {
+  const row = await unreadTotalStatement(c, principal)
     .first<{ unread_total: number }>();
   return Math.max(0, row?.unread_total ?? 0);
 }
 
 export async function handleListReporterFeedback(c: ReporterContext) {
+  const startedAt = performance.now();
   const authorized = await authorize(c, "feedback:read", "list");
   if (!authorized.ok) return authorized.response;
+  const authorizedAt = performance.now();
   const limit = Math.min(50, Math.max(1, Number(c.req.query("limit") ?? "20") || 20));
   const decodedCursor = decodeCursor(c.req.query("cursor"));
   if (!decodedCursor) return c.json({ error: "invalid cursor" }, 400);
   const [cursorCreatedAt, cursorId] = decodedCursor;
-  const [{ results }, totalUnread] = await Promise.all([
-    c.env.DB.prepare(
+  const ticketStatement = c.env.DB.prepare(
     `SELECT t.id, t.kind, t.status, t.message, t.version_name, t.version_code,
             t.channel, t.created_at, t.updated_at,
             (SELECT COUNT(*) FROM feedback_attachments fa
@@ -323,15 +344,25 @@ export async function handleListReporterFeedback(c: ReporterContext) {
     cursorCreatedAt,
     cursorId,
     limit + 1,
-  ).all<Record<string, unknown>>(),
-    unreadTotal(c, authorized.principal),
+  );
+  const [ticketResult, unreadResult] = await c.env.DB.batch([
+    ticketStatement,
+    unreadTotalStatement(c, authorized.principal),
+    auditReadStatement(c, authorized.principal, authorized.pseudonym, "list"),
   ]);
+  const results = (ticketResult?.results ?? []) as Record<string, unknown>[];
+  const unreadRow = unreadResult?.results[0] as { unread_total?: number } | undefined;
+  const totalUnread = Math.max(0, unreadRow?.unread_total ?? 0);
+  const queriedAt = performance.now();
   const page = results.slice(0, limit);
   const last = page.at(-1);
   const nextCursor = results.length > limit && last
     ? encodeCursor(last.created_at, last.id)
     : null;
-  await auditRead(c, authorized.principal, authorized.pseudonym, "list");
+  c.header("Server-Timing", [
+    `hands_auth;dur=${timingDuration(startedAt, authorizedAt)}`,
+    `hands_list;dur=${timingDuration(authorizedAt, queriedAt)}`,
+  ].join(", "));
   return c.json({
     tickets: page.map(ticketDto),
     next_cursor: nextCursor,

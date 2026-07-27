@@ -31,6 +31,20 @@ const TICKET_STATUSES = ["open", "in_progress", "resolved", "closed"] as const;
 const TICKET_KINDS = ["feedback", "bug", "crash"] as const;
 const SUBMISSION_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
+function timingDuration(start: number, end: number): string {
+  return Math.max(0, end - start).toFixed(1);
+}
+
+function setServerTiming(
+  c: Context<{ Bindings: Env }>,
+  value: string,
+): void {
+  const header = (c as Context<{ Bindings: Env }> & {
+    header?: (name: string, value: string) => void;
+  }).header;
+  header?.call(c, "Server-Timing", value);
+}
+
 type FeedbackApp = {
   id: string;
   org_id: string | null;
@@ -108,6 +122,7 @@ export async function handlePresignFeedbackAttachments(c: Context<{ Bindings: En
 }
 
 export async function handlePublicFeedbackSubmit(c: Context<{ Bindings: Env }>) {
+  const startedAt = performance.now();
   const slug = c.req.param("slug");
   if (!slug) return c.json({ error: "slug required" }, 400);
   const app = await c.env.DB.prepare(
@@ -198,42 +213,52 @@ export async function handlePublicFeedbackSubmit(c: Context<{ Bindings: Env }>) 
       return c.json({ error: "trusted reporter identity requires feedback:write permission for this app" }, 401);
     }
     const integration = await c.env.DB.prepare(
-      `SELECT id FROM app_reporter_integrations
-       WHERE id = ?1 AND app_id = ?2 AND archived_at IS NULL`,
-    ).bind(deployToken.reporter_integration_id, app.id).first<{ id: string }>();
+      `SELECT ri.id,
+              EXISTS (
+                SELECT 1 FROM app_reporter_routes route
+                WHERE route.app_id = ri.app_id
+                  AND route.reporter_integration_id = ri.id
+                  AND route.reporter_id = ?3
+              ) AS route_exists
+       FROM app_reporter_integrations ri
+       WHERE ri.id = ?1 AND ri.app_id = ?2 AND ri.archived_at IS NULL`,
+    ).bind(deployToken.reporter_integration_id, app.id, reporterId)
+      .first<{ id: string; route_exists: number }>();
     if (!integration) {
       return c.json({ error: "trusted reporter identity requires an active reporter integration" }, 401);
     }
     reporterIntegrationId = deployToken.reporter_integration_id;
-    const route = await c.env.DB.prepare(
-      `SELECT 1 AS ok FROM app_reporter_routes
-       WHERE app_id = ?1 AND reporter_integration_id = ?2 AND reporter_id = ?3`,
-    ).bind(app.id, reporterIntegrationId, reporterId).first<{ ok: number }>();
-    if (!route) {
+    if (integration.route_exists !== 1) {
       return c.json({ error: "route_required" }, 409);
     }
     rateLimitHashInput = `feedback:${app.id}:integration:${reporterIntegrationId}:reporter:${reporterId}`;
     rateLimitPerHour = TRUSTED_REPORTER_RATE_LIMIT_PER_HOUR;
   }
+  const authorizedAt = performance.now();
   const clientIpHash = await sha256Hex(rateLimitHashInput);
   const oneHourAgo = Date.now() - 3600_000;
   // A cheap indexed lookup happens before attachment hashing/R2 HEAD work.
   // Only a known idempotency key may bypass the rate-limit count so a lost
   // response remains recoverable; a new key is rejected before expensive
   // attachment processing once the subject is over quota.
-  const existingSubmission = submissionId
-    ? await findFeedbackSubmission(c.env.DB, app.id, submissionId, reporterIntegrationId)
-    : null;
+  const existingPromise = submissionId
+    ? findFeedbackSubmission(c.env.DB, app.id, submissionId, reporterIntegrationId)
+    : Promise.resolve(null);
+  const recentPromise = c.env.DB.prepare(
+    `SELECT COUNT(*) AS count, MIN(created_at) AS oldest_created_at FROM feedback_tickets
+     WHERE app_id = ?1 AND client_ip_hash = ?2 AND created_at > ?3`,
+  )
+    .bind(app.id, clientIpHash, oneHourAgo)
+    .first<{ count: number; oldest_created_at: number | null }>();
+  const [existingSubmission, recent] = await Promise.all([
+    existingPromise,
+    recentPromise,
+  ]);
+  const preflightAt = performance.now();
   if (existingSubmission && existingSubmission.reporter_id !== (reporterId || null)) {
     return c.json({ error: "submission_id already used by a different reporter" }, 409);
   }
   if (!existingSubmission) {
-    const recent = await c.env.DB.prepare(
-      `SELECT COUNT(*) AS count, MIN(created_at) AS oldest_created_at FROM feedback_tickets
-       WHERE app_id = ?1 AND client_ip_hash = ?2 AND created_at > ?3`,
-    )
-      .bind(app.id, clientIpHash, oneHourAgo)
-      .first<{ count: number; oldest_created_at: number | null }>();
     if ((recent?.count ?? 0) >= rateLimitPerHour) {
       const retryAfter = Math.max(
         1,
@@ -546,7 +571,11 @@ export async function handlePublicFeedbackSubmit(c: Context<{ Bindings: Env }>) 
       .map((attachment) => c.env.APK_BUCKET.delete(attachment.r2Key)),
   );
   try {
-    await c.env.DB.batch(statements);
+    const results = await c.env.DB.batch(statements);
+    if ((results[0]?.meta.changes ?? 0) !== 1) {
+      await cleanupInlineUploads();
+      return c.json({ error: "route_required" }, 409);
+    }
   } catch (error) {
     if (submissionId && submissionFingerprint) {
       const existing = await findFeedbackSubmission(
@@ -569,14 +598,7 @@ export async function handlePublicFeedbackSubmit(c: Context<{ Bindings: Env }>) 
     await cleanupInlineUploads();
     throw error;
   }
-  const committedTicket = await c.env.DB.prepare(
-    "SELECT 1 AS ok FROM feedback_tickets WHERE app_id = ?1 AND id = ?2",
-  ).bind(app.id, ticketId).first<{ ok: number }>();
-  if (!committedTicket) {
-    await cleanupInlineUploads();
-    return c.json({ error: "route_required" }, 409);
-  }
-
+  const committedAt = performance.now();
   // Crash tickets: symbolicate in the background (retrace / native / OHOS / dSYM
   // lanes) and record the result on the ticket's symbolicated_stack /
   // symbolication_status fields. See dispatchSymbolication.
@@ -674,7 +696,55 @@ export async function handlePublicFeedbackSubmit(c: Context<{ Bindings: Env }>) 
     });
   }
 
-  return feedbackSubmitResponse(c, app, ticketId, 201, false);
+  const respondedAt = performance.now();
+  setServerTiming(c, [
+    `hands_auth;dur=${timingDuration(startedAt, authorizedAt)}`,
+    `hands_preflight;dur=${timingDuration(authorizedAt, preflightAt)}`,
+    `hands_commit;dur=${timingDuration(preflightAt, committedAt)}`,
+    `hands_postcommit;dur=${timingDuration(committedAt, respondedAt)}`,
+  ].join(", "));
+  return feedbackNewSubmitResponse(c, app, {
+    ticketId,
+    status: "open",
+    versionName: meta("version_name"),
+    versionCode,
+    attachmentNames: attachmentRows.map((attachment) => attachment.filename),
+  });
+}
+
+function feedbackNewSubmitResponse(
+  c: Context<{ Bindings: Env }>,
+  app: FeedbackApp,
+  input: {
+    ticketId: string;
+    status: string;
+    versionName: string | null;
+    versionCode: number | null;
+    attachmentNames: string[];
+  },
+) {
+  const versionLabel = input.versionName
+    ? input.versionCode != null
+      ? `${input.versionName} (${input.versionCode})`
+      : input.versionName
+    : input.versionCode != null
+      ? String(input.versionCode)
+      : null;
+  const referenceLine = [app.slug, versionLabel, `ticket ${input.ticketId}`]
+    .filter(Boolean)
+    .join(" · ");
+  const reference = input.attachmentNames.length
+    ? `${referenceLine}\nattachments:\n${input.attachmentNames.join("\n")}`
+    : referenceLine;
+  return c.json({
+    id: input.ticketId,
+    status: input.status,
+    attachments: input.attachmentNames.length,
+    attachment_names: input.attachmentNames,
+    reference,
+    ticket_url: `${dashboardOrigin(c.env)}/apps/${app.id}/feedback/${input.ticketId}`,
+    idempotent_replay: false,
+  }, 201);
 }
 
 async function findFeedbackSubmission(
