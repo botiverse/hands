@@ -43,6 +43,23 @@ function uuid(name) {
   return value;
 }
 
+function booleanString(name, fallback) {
+  const value = process.env[name]?.trim() || fallback;
+  if (value !== "true" && value !== "false") {
+    throw new Error(`${name} must be exactly true or false`);
+  }
+  return value;
+}
+
+function optionalKeyVersion(name) {
+  const value = process.env[name]?.trim();
+  if (!value) return null;
+  if (!/^[A-Za-z0-9._-]{1,64}$/.test(value)) {
+    throw new Error(`${name} must be a valid key version`);
+  }
+  return value;
+}
+
 const errors = [];
 const config = parse(readFileSync(sourcePath, "utf8"), errors, {
   allowTrailingComma: true,
@@ -55,6 +72,15 @@ if (errors.length > 0 || !config || typeof config !== "object") {
 
 const businessDomain = domain("HANDS_BUSINESS_DOMAIN");
 const dashboardDomain = domain("HANDS_DASHBOARD_DOMAIN");
+const reporterSessionEnabled = booleanString("HANDS_FEEDBACK_REPORTER_SESSION_ENABLED", "false");
+const reporterSessionActiveKeyVersion = optionalKeyVersion(
+  "HANDS_FEEDBACK_REPORTER_SESSION_ACTIVE_KEY_VERSION",
+);
+if (reporterSessionEnabled === "true" && !reporterSessionActiveKeyVersion) {
+  throw new Error(
+    "HANDS_FEEDBACK_REPORTER_SESSION_ACTIVE_KEY_VERSION is required when reporter sessions are enabled",
+  );
+}
 const d1 = config.d1_databases?.find((binding) => binding.binding === "DB");
 const r2 = config.r2_buckets?.find((binding) => binding.binding === "APK_BUCKET");
 if (!d1 || !r2) throw new Error("Hands DB or APK_BUCKET binding is missing from the base config");
@@ -81,7 +107,13 @@ config.vars = {
   RAFT_API_ORIGIN: required("HANDS_RAFT_API_ORIGIN"),
   RAFT_CLIENT_ID: required("HANDS_RAFT_CLIENT_ID"),
   R2_BUCKET_NAME: r2.bucket_name,
+  FEEDBACK_REPORTER_SESSION_ENABLED: reporterSessionEnabled,
 };
+if (reporterSessionActiveKeyVersion) {
+  config.vars.FEEDBACK_REPORTER_SESSION_ACTIVE_KEY_VERSION = reporterSessionActiveKeyVersion;
+} else {
+  delete config.vars.FEEDBACK_REPORTER_SESSION_ACTIVE_KEY_VERSION;
+}
 
 mkdirSync(dirname(outputPath), { recursive: true });
 writeFileSync(outputPath, `${JSON.stringify(config, null, 2)}\n`, { mode: 0o600 });
