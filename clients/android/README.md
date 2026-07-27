@@ -21,7 +21,7 @@ repositories {
 }
 
 dependencies {
-    implementation("com.github.botiverse:hands:android-sdk-v0.12.2")
+    implementation("com.github.botiverse:hands:android-sdk-v0.12.3")
 }
 ```
 
@@ -39,7 +39,7 @@ repositories {
 }
 
 dependencies {
-    implementation("build.hands:hands-android-sdk:0.12.2")
+    implementation("build.hands:hands-android-sdk:0.12.3")
 }
 ```
 
@@ -126,7 +126,7 @@ to catch that.
 
 ## Release
 
-Push a tag `android-sdk-v<version>` (e.g. `android-sdk-v0.12.2`). That publishes to
+Push a tag `android-sdk-v<version>` (e.g. `android-sdk-v0.12.3`). That publishes to
 GitHub Packages (`build.hands:hands-android-sdk:<version>`, including the
 `native-symbols` classifier) and, on the first
 request, builds the same version on JitPack
