@@ -479,6 +479,9 @@ function makeMockDb() {
     );
     CREATE UNIQUE INDEX idx_feedback_comments_reporter_sequence
       ON feedback_comments(reporter_sequence);
+    CREATE UNIQUE INDEX idx_feedback_comments_reporter_submission
+      ON feedback_comments(ticket_id, reporter_integration_id, reporter_id, submission_id)
+      WHERE author_type = 'reporter';
     CREATE TABLE feedback_comment_sequence_state (
       singleton INTEGER PRIMARY KEY,
       high_water INTEGER NOT NULL
@@ -11157,6 +11160,37 @@ describe("Hands iOS simulator QA artifacts", () => {
     expect(raceBody.ticket).toMatchObject({ unread: true, unread_count: 1 });
     expect(raceBody.unread_total).toBe(1);
     await handleGetReporterFeedback(context("detail", credentialA.token, ticketA));
+
+    const stageTicket = "abababab-1111-4111-8111-abababababab";
+    await env.DB.prepare(
+      `INSERT INTO feedback_tickets
+       (id, app_id, kind, status, message, metadata_json, reporter_id,
+        reporter_integration_id, created_at, updated_at)
+       VALUES (?1, 'app-ios', 'feedback', 'open', 'Four-stage comment', '{}',
+               ?2, ?3, ?4, ?4)`,
+    ).bind(stageTicket, reporterId, integrationA, now).run();
+    const commentBatch = env.DB.batch.bind(env.DB);
+    let commentBatchStages = 0;
+    env.DB.batch = async (statements: unknown[]) => {
+      commentBatchStages += 1;
+      return commentBatch(statements);
+    };
+    const stagedComment = await handleAddReporterComment(context(
+      "comment",
+      credentialA.token,
+      stageTicket,
+      {
+        body: "four stage comment",
+        submission_id: "abababab-abab-4bab-8bab-abababababab",
+      },
+    ));
+    env.DB.batch = commentBatch;
+    expect(stagedComment.status).toBe(201);
+    expect(commentBatchStages).toBe(4);
+    expect(stagedComment.headers.get("server-timing")).toMatch(
+      /^hands_auth;dur=\d+\.\d, hands_preflight;dur=\d+\.\d, hands_commit;dur=\d+\.\d, hands_postcommit;dur=\d+\.\d$/,
+    );
+    await env.DB.prepare("DELETE FROM feedback_tickets WHERE id = ?1").bind(stageTicket).run();
 
     const emojiSubmission = "12121212-1212-4212-8212-121212121212";
     expect((await handleAddReporterComment(context(
