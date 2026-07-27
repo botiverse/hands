@@ -38,6 +38,7 @@ data class LatestUpdate(
     val version: String,
     val version_code: Long,
     val changelog: String? = null,
+    val release_notes: Map<String, String>? = null,
     val force_update: Boolean = false,
     val released_at: Long,
 )
@@ -50,6 +51,8 @@ data class UpdateAsset(
     val filetype: String,
     val size_bytes: Long,
     val signature: String? = null,
+    /** Optional future-compatible full APK digest; absent on older servers. */
+    val sha256: String? = null,
     val download_url: String,
 )
 

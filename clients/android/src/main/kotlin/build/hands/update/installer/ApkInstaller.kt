@@ -12,6 +12,87 @@ import androidx.core.content.FileProvider
 import java.io.File
 import java.net.URI
 
+internal enum class DownloadState {
+    PENDING,
+    RUNNING,
+    PAUSED,
+    SUCCESSFUL,
+    FAILED,
+    MISSING,
+    READ_UNAVAILABLE,
+    UNKNOWN,
+}
+
+internal data class ApkDownloadStatus(
+    val state: DownloadState,
+    val reason: Int? = null,
+    val downloadedBytes: Long? = null,
+    val totalBytes: Long? = null,
+)
+
+internal fun downloadStateFromRawStatus(rawStatus: Int): DownloadState = when (rawStatus) {
+    DownloadManager.STATUS_PENDING -> DownloadState.PENDING
+    DownloadManager.STATUS_RUNNING -> DownloadState.RUNNING
+    DownloadManager.STATUS_PAUSED -> DownloadState.PAUSED
+    DownloadManager.STATUS_SUCCESSFUL -> DownloadState.SUCCESSFUL
+    DownloadManager.STATUS_FAILED -> DownloadState.FAILED
+    else -> DownloadState.UNKNOWN
+}
+
+internal inline fun readDownloadStatus(
+    read: () -> ApkDownloadStatus?,
+): ApkDownloadStatus = try {
+    read() ?: ApkDownloadStatus(DownloadState.READ_UNAVAILABLE)
+} catch (_: Exception) {
+    ApkDownloadStatus(DownloadState.READ_UNAVAILABLE)
+}
+
+internal data class DownloadDestinationScan(
+    val readable: Boolean,
+    val matchingDownloadIds: List<Long> = emptyList(),
+)
+
+internal fun localDownloadUriMatchesDestination(
+    localUri: String?,
+    destination: File,
+): Boolean {
+    val parsed = try {
+        URI(localUri ?: return false)
+    } catch (_: Exception) {
+        return false
+    }
+    if (!parsed.scheme.equals("file", ignoreCase = true)) return false
+    return try {
+        File(parsed).canonicalFile == destination.canonicalFile
+    } catch (_: Exception) {
+        false
+    }
+}
+
+internal inline fun readDownloadDestinationScan(
+    read: () -> List<Long>?,
+): DownloadDestinationScan = try {
+    val ids = read() ?: return DownloadDestinationScan(readable = false)
+    DownloadDestinationScan(readable = true, matchingDownloadIds = ids.distinct())
+} catch (_: Exception) {
+    DownloadDestinationScan(readable = false)
+}
+
+internal fun matchingDownloadIdsForDestination(
+    rows: List<Pair<Long, String?>>,
+    destination: File,
+): List<Long>? {
+    if (rows.any { (_, localUri) -> localUri == null }) return null
+    return rows.filter { (_, localUri) ->
+        localDownloadUriMatchesDestination(localUri, destination)
+    }.map { (id) -> id }
+}
+
+data class EnqueuedApkDownload(
+    val id: Long,
+    val destination: File,
+)
+
 internal enum class DownloadInstallResult {
     IGNORED,
     UNAVAILABLE_OR_UNSAFE_URI,
@@ -111,11 +192,16 @@ internal fun triggerApkInstall(ctx: Context, apkUri: Uri) {
  */
 class ApkInstaller(private val context: Context) {
 
-    fun downloadAndInstall(
+    fun enqueueDownload(
         downloadUrl: String,
         fileName: String = "quiver-update.apk",
         title: String = "App update",
-    ): Long {
+    ): EnqueuedApkDownload {
+        val destination = downloadDestination(fileName)
+        if (destination.exists() && !destination.delete()) {
+            throw IllegalStateException("unable to replace previous SDK update file")
+        }
+
         val dm = ContextCompat.getSystemService(context, DownloadManager::class.java)
             ?: throw IllegalStateException("DownloadManager not available")
 
@@ -135,7 +221,82 @@ class ApkInstaller(private val context: Context) {
             fileName,
         )
 
-        return dm.enqueue(request)
+        return EnqueuedApkDownload(dm.enqueue(request), destination)
+    }
+
+    fun downloadAndInstall(
+        downloadUrl: String,
+        fileName: String = "quiver-update.apk",
+        title: String = "App update",
+    ): Long = enqueueDownload(downloadUrl, fileName, title).id
+
+    fun downloadDestination(fileName: String): File {
+        require(fileName.matches(Regex("^[A-Za-z0-9._-]+\\.apk$"))) {
+            "unsafe APK file name"
+        }
+        val directory = context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS)
+            ?: throw IllegalStateException("app-scoped Downloads directory unavailable")
+        return File(directory, fileName)
+    }
+
+    internal fun queryDownload(downloadId: Long): ApkDownloadStatus {
+        val dm = ContextCompat.getSystemService(context, DownloadManager::class.java)
+            ?: return ApkDownloadStatus(DownloadState.READ_UNAVAILABLE)
+        return readDownloadStatus {
+            val cursor = dm.query(DownloadManager.Query().setFilterById(downloadId))
+                ?: return@readDownloadStatus null
+            cursor.use {
+                if (!it.moveToFirst()) return@readDownloadStatus ApkDownloadStatus(DownloadState.MISSING)
+                val rawStatus = it.getInt(it.getColumnIndexOrThrow(DownloadManager.COLUMN_STATUS))
+                val reason = it.getInt(it.getColumnIndexOrThrow(DownloadManager.COLUMN_REASON))
+                val downloaded = it.getLong(
+                    it.getColumnIndexOrThrow(DownloadManager.COLUMN_BYTES_DOWNLOADED_SO_FAR)
+                )
+                val total = it.getLong(it.getColumnIndexOrThrow(DownloadManager.COLUMN_TOTAL_SIZE_BYTES))
+                ApkDownloadStatus(
+                    downloadStateFromRawStatus(rawStatus),
+                    reason,
+                    downloaded,
+                    total,
+                )
+            }
+        }
+    }
+
+    internal fun scanDownloadsForDestination(destination: File): DownloadDestinationScan {
+        val dm = ContextCompat.getSystemService(context, DownloadManager::class.java)
+            ?: return DownloadDestinationScan(readable = false)
+        return readDownloadDestinationScan {
+            val cursor = dm.query(DownloadManager.Query()) ?: return@readDownloadDestinationScan null
+            cursor.use {
+                val idColumn = it.getColumnIndexOrThrow(DownloadManager.COLUMN_ID)
+                val uriColumn = it.getColumnIndexOrThrow(DownloadManager.COLUMN_LOCAL_URI)
+                val rows = mutableListOf<Pair<Long, String?>>()
+                while (it.moveToNext()) {
+                    rows += it.getLong(idColumn) to it.getString(uriColumn)
+                }
+                matchingDownloadIdsForDestination(rows, destination)
+            }
+        }
+    }
+
+    internal fun removeDownload(downloadId: Long): Boolean {
+        val dm = ContextCompat.getSystemService(context, DownloadManager::class.java)
+            ?: return queryDownload(downloadId).state == DownloadState.MISSING
+        return try {
+            dm.remove(downloadId)
+            queryDownload(downloadId).state == DownloadState.MISSING
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    /** Reopens the exact SDK-owned APK file through the SDK FileProvider. */
+    fun installDownloadedApk(file: File): String {
+        val authority = "${context.packageName}.hands.fileprovider"
+        val apkUri = FileProvider.getUriForFile(context, authority, file)
+        triggerApkInstall(context, apkUri)
+        return apkUri.toString()
     }
 
     /**
@@ -181,6 +342,27 @@ class ApkInstaller(private val context: Context) {
     }
 
     /**
+     * Completion signal for the persistent transaction controller. It does not
+     * trust or launch the returned URI; the controller reconciles and verifies
+     * the exact SDK-owned destination before opening the installer.
+     */
+    fun createDownloadCompletionReceiver(
+        downloadId: Long,
+        onComplete: () -> Unit,
+    ): BroadcastReceiver = object : BroadcastReceiver() {
+        override fun onReceive(ctx: Context?, intent: Intent?) {
+            val completedId = intent?.getLongExtra(DownloadManager.EXTRA_DOWNLOAD_ID, -1L)
+                ?: -1L
+            if (completedId != downloadId) return
+            try {
+                onComplete()
+            } catch (exception: Exception) {
+                Log.e(TAG, "Unable to reconcile the completed APK download", exception)
+            }
+        }
+    }
+
+    /**
      * Trigger the system install prompt for an APK that already lives on disk
      * (e.g. one reconstructed locally by the delta updater), rather than one
      * fetched via DownloadManager.
@@ -191,9 +373,7 @@ class ApkInstaller(private val context: Context) {
      * so no world-readable storage is needed.
      */
     fun installLocalApk(file: File) {
-        val authority = "${context.packageName}.hands.fileprovider"
-        val apkUri = FileProvider.getUriForFile(context, authority, file)
-        triggerApkInstall(context, apkUri)
+        installDownloadedApk(file)
     }
 
     private companion object {

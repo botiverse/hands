@@ -53,13 +53,45 @@ val checker = UpdateChecker(
     installedVersionCode = BuildConfig.VERSION_CODE.toLong(),
     channel = "main",
     arch = "arm64-v8a",
+    // Explicit host-selected locale; the SDK never guesses the system locale.
+    languageTag = "zh-CN",
+    eventListener = HandsUpdateEventListener { event ->
+        // Persist in the host's diagnostics/feedback log if desired.
+        hostUpdateLog.append(event)
+    },
 )
 
-val result = checker.checkAndInstall()
-if (!result.update_available) {
-    // Already current.
+// Idempotent command: starts a check only from idle/failed/stale/installed,
+// waits during active work, and reopens the same verified APK when ready.
+val status = checker.install()
+when (status.state) {
+    HandsUpdateState.DOWNLOADING -> showDownloading()
+    HandsUpdateState.READY_TO_INSTALL,
+    HandsUpdateState.INSTALLER_OPENED -> showInstallEnabled()
+    HandsUpdateState.INSTALLED -> showDone()
+    else -> render(status)
 }
 ```
+
+Call `checker.status()` whenever the update page or process resumes. It
+reconciles the persisted transaction against PackageManager, DownloadManager,
+and the SDK-owned APK file. `checker.reopenPendingInstaller()` opens the same
+verified file without another network request. Missing/unsafe files, target
+drift, exact version mismatch, hash mismatch (when the server supplied one), or
+signer/package mismatch fail closed as `stale`/`failed` with a stable
+`errorCode`.
+
+The persisted transaction is bound to package, Hands origin, app slug,
+channel, product, platform, and architecture. It stores target/build/asset
+identity, DownloadManager id, and an app-scoped path; it never stores the signed
+download URL or an auth secret. Structured `HandsUpdateEvent` records cover
+check, patch download/apply/validation/fallback, full download, content URI,
+installer open/reopen, resume state changes, failures, and cleanup so hosts can
+include the chain in Hands feedback rather than relying on Logcat alone.
+
+`languageTag` is an explicit BCP-47 tag. Valid values are sent as both
+`X-Hands-Lang` and `Accept-Language`; missing or malformed values send neither
+header, and unsupported values retain the server's English fallback.
 
 The SDK calls:
 
