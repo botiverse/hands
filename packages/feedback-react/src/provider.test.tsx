@@ -51,6 +51,8 @@ describe("FeedbackProvider", () => {
     expect(
       resolveFeedbackLocaleFromPreferences(["fr-FR", "zh-CN", "en-US"]),
     ).toBe("zh-CN");
+    expect(feedbackMessage("en", "active")).toBe("Active");
+    expect(feedbackMessage("zh-CN", "active")).toBe("活跃");
     expect(
       feedbackMessage(
         "en",
@@ -192,6 +194,12 @@ describe("FeedbackProvider", () => {
         ),
       );
     }
+    expect(css).toMatch(
+      /\.hands-feedback-unread-dot[^}]*var\(--color-brutal-pink/,
+    );
+    expect(css).not.toMatch(
+      /\.hands-feedback-unread-dot[^}]*var\(--danger/,
+    );
     expect(css).not.toMatch(/display:\s*none[^}]*hands-feedback-conversation/);
   });
 

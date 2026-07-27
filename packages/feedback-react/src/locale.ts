@@ -5,6 +5,7 @@ import type {
 } from "./types.js";
 
 export type FeedbackMessageKey =
+  | "active"
   | "all"
   | "attachmentTooLarge"
   | "attachmentTooMany"
@@ -70,6 +71,7 @@ export type FeedbackMessageValues = Record<string, string | number>;
 
 const messages: Record<FeedbackLocale, FeedbackMessages> = {
   en: {
+    active: "Active",
     all: "All",
     attachmentTooLarge: "{name} is larger than 10 MB.",
     attachmentTooMany: "Choose no more than {count} screenshots.",
@@ -132,6 +134,7 @@ const messages: Record<FeedbackLocale, FeedbackMessages> = {
     you: "You",
   },
   "zh-CN": {
+    active: "活跃",
     all: "全部",
     attachmentTooLarge: "{name} 超过 10 MB。",
     attachmentTooMany: "最多选择 {count} 张截图。",

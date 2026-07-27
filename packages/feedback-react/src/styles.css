@@ -193,7 +193,7 @@
   background-color: var(--color-brutal-lime, #a3e635) !important;
 }
 .hands-feedback-unread-dot {
-  background: var(--danger, #e11d48);
+  background: var(--color-brutal-pink, var(--primary, #ec4899));
   border: 1px solid var(--hf-border-strong);
   border-radius: 50%;
   height: 9px;

@@ -299,7 +299,7 @@ export function FeedbackInbox({
           >
             {value === "all"
               ? message("all")
-              : message(value === "open" ? "statusOpen" : "statusResolved")}
+              : message(value === "open" ? "active" : "statusResolved")}
           </Button>
         ))}
       </div>
