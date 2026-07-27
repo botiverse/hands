@@ -258,6 +258,15 @@ class UpdateChecker(
     private suspend fun checkAndInstallUnlocked(languageTag: String?): UpdateCheckResponse {
         val requestedLanguage = normalizedLanguageTag(languageTag)
         var prior = transactionStore.read()
+        if (prior?.downloadRequestId != null && prior.downloadId == null &&
+            prior.localFilePath != null) {
+            val recovered = reconcileTransaction()
+            prior = transactionStore.read()
+            if (recovered.state == HandsUpdateState.CHECKING &&
+                prior?.downloadRequestId != null && prior.downloadId == null) {
+                throw IllegalStateException("prepared download authority is not yet recoverable")
+            }
+        }
         if (prior != null && shouldCleanupRestartableAuthority(
             state = prior.state,
             downloadId = prior.downloadId,
@@ -324,7 +333,8 @@ class UpdateChecker(
                 installUpdate(response, requestedLanguage, resolvedLanguage)
             } catch (exception: Exception) {
                 transactionStore.read()?.takeIf {
-                    it.state == HandsUpdateState.CHECKING || it.state == HandsUpdateState.PATCHING
+                    (it.state == HandsUpdateState.CHECKING || it.state == HandsUpdateState.PATCHING) &&
+                        it.downloadRequestId == null
                 }?.let {
                     transition(it, HandsUpdateState.FAILED, "update_start_failed", true)
                 }
@@ -497,15 +507,25 @@ class UpdateChecker(
             )
         }
 
+        val downloadRequestId = java.util.UUID.randomUUID().toString()
+        val fileName = "hands-update-$downloadRequestId.apk"
+        val plannedDestination = installer.downloadDestination(fileName)
+        val prepared = baseRecord.copy(
+            state = HandsUpdateState.CHECKING,
+            downloadRequestId = downloadRequestId,
+            localFilePath = plannedDestination.absolutePath,
+            updatedAt = System.currentTimeMillis(),
+        )
+        transactionStore.write(prepared)
         val enqueued = installer.enqueueDownload(
             downloadUrl = asset.download_url,
-            fileName = "quiver-${appSlug}-${latest.version_code}.apk",
+            fileName = fileName,
             title = "${response.app.slug} v${latest.version}",
+            requestId = downloadRequestId,
         )
-        val downloading = baseRecord.copy(
+        val downloading = prepared.copy(
             state = HandsUpdateState.DOWNLOADING,
             downloadId = enqueued.id,
-            localFilePath = enqueued.destination.absolutePath,
             updatedAt = System.currentTimeMillis(),
         )
         try {
@@ -584,6 +604,10 @@ class UpdateChecker(
                 retryable = true,
                 installed = installed,
             )
+        }
+        if (record.downloadRequestId != null && record.downloadId == null &&
+            record.localFilePath != null) {
+            return reconcilePreparedDownload(record, installed)
         }
 
         return when (record.state) {
@@ -695,6 +719,56 @@ class UpdateChecker(
         }
     }
 
+    private fun reconcilePreparedDownload(
+        record: UpdateTransactionRecord,
+        installed: Long?,
+    ): HandsUpdateStatus {
+        val destination = record.localFilePath?.let(::File) ?: return record.status(installed)
+        val requestId = record.downloadRequestId ?: return record.status(installed)
+        val scan = installer.scanPreparedDownload(requestId, destination)
+        val recovery = preparedDownloadRecovery(scan.readable, scan.matchingDownloadIds)
+        return when (recovery.action) {
+            PreparedDownloadRecoveryAction.NO_MATCH -> cleanupTransition(
+                record,
+                HandsUpdateState.STALE,
+                errorCode = "download_not_enqueued",
+                retryable = true,
+                installed = installed,
+            )
+            PreparedDownloadRecoveryAction.RECOVER_ONE -> {
+                val recovered = record.copy(
+                    state = HandsUpdateState.DOWNLOADING,
+                    downloadId = requireNotNull(recovery.downloadId),
+                    errorCode = null,
+                    retryable = false,
+                    updatedAt = System.currentTimeMillis(),
+                )
+                transactionStore.write(recovered)
+                emit(
+                    "download_authority_recovered",
+                    recovered.state,
+                    recovered.targetVersionCode,
+                    requestedLanguageTag = recovered.requestedLanguageTag,
+                    resolvedLanguageTag = recovered.resolvedLanguageTag,
+                )
+                recovered.status(installed)
+            }
+            PreparedDownloadRecoveryAction.KEEP_UNCERTAIN -> {
+                val error = if (scan.readable) {
+                    "download_recovery_ambiguous"
+                } else {
+                    "download_recovery_unavailable"
+                }
+                val uncertain = if (record.errorCode == error && record.retryable) record else record.copy(
+                    errorCode = error,
+                    retryable = true,
+                    updatedAt = System.currentTimeMillis(),
+                ).also(transactionStore::write)
+                uncertain.status(installed)
+            }
+        }
+    }
+
     private fun recordForOffer(
         latest: LatestUpdate,
         asset: UpdateAsset,
@@ -763,6 +837,7 @@ class UpdateChecker(
     ): UpdateTransactionRecord {
         val next = record.copy(
             state = state,
+            downloadRequestId = if (clearLocalAuthority) null else record.downloadRequestId,
             downloadId = if (clearLocalAuthority) null else record.downloadId,
             localFilePath = if (clearLocalAuthority) null else record.localFilePath,
             errorCode = errorCode,

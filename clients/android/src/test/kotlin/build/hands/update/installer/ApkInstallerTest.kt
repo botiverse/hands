@@ -41,6 +41,31 @@ class ApkInstallerTest {
     }
 
     @Test
+    fun `prepared request marker and exact destination bind crash recovery`() {
+        val destination = File("/owned/hands-update-request.apk")
+        assertEquals(
+            "Hands update request request-42",
+            preparedDownloadDescription("request-42"),
+        )
+        assertTrue(localDownloadUriMatchesDestination(destination.toURI().toString(), destination))
+        assertFalse(localDownloadUriMatchesDestination(
+            File("/owned/other.apk").toURI().toString(),
+            destination,
+        ))
+        assertFalse(localDownloadUriMatchesDestination("content://downloads/42", destination))
+    }
+
+    @Test
+    fun `prepared ledger read failure remains uncertain and never becomes zero matches`() {
+        assertFalse(readDownloadDestinationScan { null }.readable)
+        assertFalse(readDownloadDestinationScan { error("binder unavailable") }.readable)
+        assertEquals(
+            DownloadDestinationScan(readable = true, matchingDownloadIds = emptyList()),
+            readDownloadDestinationScan { emptyList() },
+        )
+    }
+
+    @Test
     fun `DownloadManager file URI converts through FileProvider before installer launch`() {
         val expectedContentUri =
             "content://build.raft.app.alpha.hands.fileprovider/hands_downloads/update.apk"

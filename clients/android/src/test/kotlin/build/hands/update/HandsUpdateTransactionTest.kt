@@ -352,4 +352,27 @@ class HandsUpdateTransactionTest {
             localFilePath = null,
         ))
     }
+
+    @Test
+    fun `prepared download crash windows recover zero one and uncertain ledger states`() {
+        assertEquals(
+            PreparedDownloadRecoveryAction.NO_MATCH,
+            preparedDownloadRecovery(readable = true, matchingDownloadIds = emptyList()).action,
+        )
+        assertEquals(
+            PreparedDownloadRecovery(
+                action = PreparedDownloadRecoveryAction.RECOVER_ONE,
+                downloadId = 42,
+            ),
+            preparedDownloadRecovery(readable = true, matchingDownloadIds = listOf(42)),
+        )
+        assertEquals(
+            PreparedDownloadRecoveryAction.KEEP_UNCERTAIN,
+            preparedDownloadRecovery(readable = true, matchingDownloadIds = listOf(42, 43)).action,
+        )
+        assertEquals(
+            PreparedDownloadRecoveryAction.KEEP_UNCERTAIN,
+            preparedDownloadRecovery(readable = false, matchingDownloadIds = emptyList()).action,
+        )
+    }
 }

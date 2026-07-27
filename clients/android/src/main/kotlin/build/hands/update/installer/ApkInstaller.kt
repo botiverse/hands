@@ -47,6 +47,40 @@ internal inline fun readDownloadStatus(
     ApkDownloadStatus(DownloadState.READ_UNAVAILABLE)
 }
 
+internal data class DownloadDestinationScan(
+    val readable: Boolean,
+    val matchingDownloadIds: List<Long> = emptyList(),
+)
+
+internal fun localDownloadUriMatchesDestination(
+    localUri: String?,
+    destination: File,
+): Boolean {
+    val parsed = try {
+        URI(localUri ?: return false)
+    } catch (_: Exception) {
+        return false
+    }
+    if (!parsed.scheme.equals("file", ignoreCase = true)) return false
+    return try {
+        File(parsed).canonicalFile == destination.canonicalFile
+    } catch (_: Exception) {
+        false
+    }
+}
+
+internal inline fun readDownloadDestinationScan(
+    read: () -> List<Long>?,
+): DownloadDestinationScan = try {
+    val ids = read() ?: return DownloadDestinationScan(readable = false)
+    DownloadDestinationScan(readable = true, matchingDownloadIds = ids.distinct())
+} catch (_: Exception) {
+    DownloadDestinationScan(readable = false)
+}
+
+internal fun preparedDownloadDescription(requestId: String): String =
+    "Hands update request $requestId"
+
 data class EnqueuedApkDownload(
     val id: Long,
     val destination: File,
@@ -155,6 +189,7 @@ class ApkInstaller(private val context: Context) {
         downloadUrl: String,
         fileName: String = "quiver-update.apk",
         title: String = "App update",
+        requestId: String? = null,
     ): EnqueuedApkDownload {
         val destination = downloadDestination(fileName)
         if (destination.exists() && !destination.delete()) {
@@ -166,7 +201,7 @@ class ApkInstaller(private val context: Context) {
 
         val request = DownloadManager.Request(Uri.parse(downloadUrl))
             .setTitle(title)
-            .setDescription("Downloading latest version…")
+            .setDescription(requestId?.let(::preparedDownloadDescription) ?: "Downloading latest version…")
             .setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
             .setAllowedOverMetered(true)
             .setAllowedOverRoaming(true)
@@ -218,6 +253,33 @@ class ApkInstaller(private val context: Context) {
                     downloaded,
                     total,
                 )
+            }
+        }
+    }
+
+    internal fun scanPreparedDownload(
+        requestId: String,
+        destination: File,
+    ): DownloadDestinationScan {
+        val dm = ContextCompat.getSystemService(context, DownloadManager::class.java)
+            ?: return DownloadDestinationScan(readable = false)
+        return readDownloadDestinationScan {
+            val cursor = dm.query(DownloadManager.Query()) ?: return@readDownloadDestinationScan null
+            cursor.use {
+                val ids = mutableListOf<Long>()
+                val idColumn = it.getColumnIndexOrThrow(DownloadManager.COLUMN_ID)
+                val uriColumn = it.getColumnIndexOrThrow(DownloadManager.COLUMN_LOCAL_URI)
+                val descriptionColumn = it.getColumnIndexOrThrow(DownloadManager.COLUMN_DESCRIPTION)
+                val expectedDescription = preparedDownloadDescription(requestId)
+                while (it.moveToNext()) {
+                    if (it.getString(descriptionColumn) != expectedDescription) continue
+                    val localUri = it.getString(uriColumn)
+                    if (localUri != null && !localDownloadUriMatchesDestination(localUri, destination)) {
+                        return@readDownloadDestinationScan null
+                    }
+                    ids += it.getLong(idColumn)
+                }
+                ids
             }
         }
     }

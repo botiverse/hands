@@ -240,6 +240,30 @@ internal fun installerLaunchFailureTransition() = ExactCleanupTransition(
     clearLocalAuthority = false,
 )
 
+internal enum class PreparedDownloadRecoveryAction {
+    NO_MATCH,
+    RECOVER_ONE,
+    KEEP_UNCERTAIN,
+}
+
+internal data class PreparedDownloadRecovery(
+    val action: PreparedDownloadRecoveryAction,
+    val downloadId: Long? = null,
+)
+
+internal fun preparedDownloadRecovery(
+    readable: Boolean,
+    matchingDownloadIds: List<Long>,
+): PreparedDownloadRecovery = when {
+    !readable -> PreparedDownloadRecovery(PreparedDownloadRecoveryAction.KEEP_UNCERTAIN)
+    matchingDownloadIds.isEmpty() -> PreparedDownloadRecovery(PreparedDownloadRecoveryAction.NO_MATCH)
+    matchingDownloadIds.distinct().size == 1 -> PreparedDownloadRecovery(
+        PreparedDownloadRecoveryAction.RECOVER_ONE,
+        matchingDownloadIds.first(),
+    )
+    else -> PreparedDownloadRecovery(PreparedDownloadRecoveryAction.KEEP_UNCERTAIN)
+}
+
 @Serializable
 internal data class UpdateTransactionRecord(
     val schemaVersion: Int = TRANSACTION_SCHEMA_VERSION,
@@ -258,6 +282,7 @@ internal data class UpdateTransactionRecord(
     val assetSha256: String? = null,
     val assetSignature: String? = null,
     val filetype: String? = null,
+    val downloadRequestId: String? = null,
     val downloadId: Long? = null,
     val localFilePath: String? = null,
     val retryable: Boolean = false,
