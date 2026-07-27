@@ -25,10 +25,14 @@ const BASE_ENV = {
 function render(extraEnv: Record<string, string> = {}) {
   const directory = mkdtempSync(join(tmpdir(), "hands-production-config-"));
   const output = join(directory, "wrangler.json");
+  const inheritedEnv = { ...process.env };
+  for (const key of Object.keys(inheritedEnv)) {
+    if (key.startsWith("HANDS_FEEDBACK_REPORTER_SESSION_")) delete inheritedEnv[key];
+  }
   const result = spawnSync(process.execPath, [renderScript, "--output", output], {
     cwd: workerDir,
     encoding: "utf8",
-    env: { ...process.env, ...BASE_ENV, ...extraEnv },
+    env: { ...inheritedEnv, ...BASE_ENV, ...extraEnv },
   });
   return {
     result,

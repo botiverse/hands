@@ -170,7 +170,11 @@ describe("reporter sessions", () => {
       scopes: ["feedback:read"],
       nowSeconds: 1_000,
     });
-    const tampered = `${minted!.token.slice(0, -1)}${minted!.token.endsWith("A") ? "B" : "A"}`;
+    const parts = minted!.token.slice("hrps_v1_".length).split(".");
+    expect(parts).toHaveLength(3);
+    const [header, payload, signature] = parts as [string, string, string];
+    const tamperedSignature = `${signature.startsWith("A") ? "B" : "A"}${signature.slice(1)}`;
+    const tampered = `hrps_v1_${header}.${payload}.${tamperedSignature}`;
     await expect(verifyReporterSession(env(), tampered, 1_010)).resolves.toEqual({
       ok: false,
       reason: "invalid",
