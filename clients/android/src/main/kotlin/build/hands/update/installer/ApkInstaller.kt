@@ -207,12 +207,14 @@ class ApkInstaller(private val context: Context) {
         }
     }
 
-    internal fun removeDownload(downloadId: Long) {
-        val dm = ContextCompat.getSystemService(context, DownloadManager::class.java) ?: return
-        try {
+    internal fun removeDownload(downloadId: Long): Boolean {
+        val dm = ContextCompat.getSystemService(context, DownloadManager::class.java)
+            ?: return queryDownload(downloadId).state == DownloadState.MISSING
+        return try {
             dm.remove(downloadId)
+            queryDownload(downloadId).state == DownloadState.MISSING
         } catch (_: Exception) {
-            // Best-effort cleanup; the app-scoped file is removed separately.
+            false
         }
     }
 

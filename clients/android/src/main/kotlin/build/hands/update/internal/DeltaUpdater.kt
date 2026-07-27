@@ -9,6 +9,8 @@ import build.hands.update.installer.ApkInstaller
 import build.hands.update.models.LatestUpdate
 import build.hands.update.models.Patch
 import build.hands.update.models.UpdateAsset
+import build.hands.update.DurableInstallerLaunchResult
+import build.hands.update.launchWithDurableInstallerAuthority
 import com.google.archivepatcher.applier.FileByFileV1DeltaApplier
 import com.google.archivepatcher.shared.DefaultDeflater
 import com.google.archivepatcher.shared.IDeflater
@@ -68,7 +70,8 @@ class DeltaUpdater(
         asset: UpdateAsset,
         latest: LatestUpdate,
         appSlug: String,
-        onInstallerOpened: (apk: File, sha256: String) -> Unit = { _, _ -> },
+        persistReadyToInstall: (apk: File, sha256: String) -> Unit = { _, _ -> },
+        persistInstallerOpened: () -> Unit = {},
     ): Boolean {
         if (!deltaEnabled()) {
             emit("patch_fallback", "flag_off")
@@ -152,15 +155,29 @@ class DeltaUpdater(
             }
             emit("patch_validation_completed")
 
-            // 5. Install the verified reconstructed APK.
-            installer.installLocalApk(reconstructed)
-            installed = true
-            try {
-                onInstallerOpened(reconstructed, actualSha)
-            } catch (_: Throwable) {
-                // The installer is already open. A host/store callback failure
-                // must never start a duplicate full-APK download.
-                emit("transaction_persist_failed", "transaction_persist_failed")
+            // 5. Persist exact file authority before opening the external
+            // installer. If the post-launch OPENED commit fails, READY remains
+            // durable and the host can safely reopen the same verified APK.
+            when (launchWithDurableInstallerAuthority(
+                persistReady = { persistReadyToInstall(reconstructed, actualSha) },
+                launchInstaller = { installer.installLocalApk(reconstructed) },
+                persistOpened = persistInstallerOpened,
+            )) {
+                DurableInstallerLaunchResult.READY_PERSIST_FAILED -> {
+                    emit("transaction_persist_failed", "ready_persist_failed")
+                    return false
+                }
+                DurableInstallerLaunchResult.LAUNCH_FAILED -> {
+                    emit("patch_fallback", "installer_open_failed")
+                    return false
+                }
+                DurableInstallerLaunchResult.OPENED_WITH_READY_AUTHORITY -> {
+                    installed = true
+                    emit("transaction_persist_failed", "opened_persist_failed")
+                }
+                DurableInstallerLaunchResult.OPENED -> {
+                    installed = true
+                }
             }
             emit("installer_opened")
             log("delta_applied bytes_saved=${asset.size_bytes - patch.size_bytes}")

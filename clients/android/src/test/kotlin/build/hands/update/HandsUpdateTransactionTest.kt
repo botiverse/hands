@@ -2,6 +2,12 @@ package build.hands.update
 
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.yield
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -83,5 +89,196 @@ class HandsUpdateTransactionTest {
         assertEquals(authority("raft", "main").storageKey(), authority("raft", "main").storageKey())
         assertTrue(authority("raft", "main").storageKey() != authority("raft", "alpha").storageKey())
         assertTrue(authority("raft", "main").storageKey() != authority("other", "main").storageKey())
+    }
+
+    @Test
+    fun `installer never opens when READY authority commit fails`() {
+        var launched = false
+        var openedPersisted = false
+
+        val result = launchWithDurableInstallerAuthority(
+            persistReady = { error("disk full") },
+            launchInstaller = { launched = true },
+            persistOpened = { openedPersisted = true },
+        )
+
+        assertEquals(DurableInstallerLaunchResult.READY_PERSIST_FAILED, result)
+        assertTrue(!launched)
+        assertTrue(!openedPersisted)
+    }
+
+    @Test
+    fun `OPENED commit failure retains the durable READY authority`() {
+        val order = mutableListOf<String>()
+
+        val result = launchWithDurableInstallerAuthority(
+            persistReady = { order += "ready" },
+            launchInstaller = { order += "launch" },
+            persistOpened = {
+                order += "opened"
+                error("commit failed")
+            },
+        )
+
+        assertEquals(DurableInstallerLaunchResult.OPENED_WITH_READY_AUTHORITY, result)
+        assertEquals(listOf("ready", "launch", "opened"), order)
+    }
+
+    @Test
+    fun `same authority gate prevents stale reconcile from overtaking a command`() = runBlocking {
+        val gate = AuthorityTransactionGate(Mutex())
+        val firstEntered = CompletableDeferred<Unit>()
+        val releaseFirst = CompletableDeferred<Unit>()
+        val order = mutableListOf<String>()
+
+        val first = async {
+            gate.run {
+                order += "command-start"
+                firstEntered.complete(Unit)
+                releaseFirst.await()
+                order += "command-opened"
+            }
+        }
+        firstEntered.await()
+        val staleStatus = async {
+            gate.run { order += "status-reconcile" }
+        }
+        yield()
+        assertEquals(listOf("command-start"), order)
+        releaseFirst.complete(Unit)
+        awaitAll(first, staleStatus)
+        assertEquals(listOf("command-start", "command-opened", "status-reconcile"), order)
+    }
+
+    @Test
+    fun `cleanup delete false retains authority and a later retry proves absence`() {
+        var exists = true
+        var deleteAttempts = 0
+        val first = performExactCleanup(
+            downloadId = 42,
+            localFilePath = "/owned/update.apk",
+            removeDownload = { true },
+            isOwnedFile = { true },
+            fileExists = { exists },
+            deleteFile = {
+                deleteAttempts += 1
+                false
+            },
+        )
+        assertTrue(!first.succeeded)
+        assertTrue(exists)
+
+        val second = performExactCleanup(
+            downloadId = 42,
+            localFilePath = "/owned/update.apk",
+            removeDownload = { true },
+            isOwnedFile = { true },
+            fileExists = { exists },
+            deleteFile = {
+                deleteAttempts += 1
+                exists = false
+                true
+            },
+        )
+        assertTrue(second.succeeded)
+        assertTrue(!exists)
+        assertEquals(2, deleteAttempts)
+    }
+
+    @Test
+    fun `cleanup delete exception is a stable failure rather than false absence`() {
+        val result = performExactCleanup(
+            downloadId = null,
+            localFilePath = "/owned/update.apk",
+            removeDownload = { true },
+            isOwnedFile = { true },
+            fileExists = { true },
+            deleteFile = { error("filesystem busy") },
+        )
+
+        assertTrue(!result.succeeded)
+        assertTrue(!result.fileAbsent)
+    }
+
+    @Test
+    fun `cleanup failure transition preserves exact download and file authority`() {
+        val failed = exactCleanupTransition(
+            cleanup = ExactCleanupResult(downloadAbsent = true, fileAbsent = false),
+            successState = HandsUpdateState.STALE,
+            successErrorCode = "target_changed",
+            successRetryable = true,
+        )
+        assertEquals(HandsUpdateState.FAILED, failed.state)
+        assertEquals("cleanup_failed", failed.errorCode)
+        assertTrue(failed.retryable)
+        assertTrue(!failed.clearLocalAuthority)
+
+        val succeeded = exactCleanupTransition(
+            cleanup = ExactCleanupResult(downloadAbsent = true, fileAbsent = true),
+            successState = HandsUpdateState.STALE,
+            successErrorCode = "target_changed",
+            successRetryable = true,
+        )
+        assertEquals(HandsUpdateState.STALE, succeeded.state)
+        assertEquals("target_changed", succeeded.errorCode)
+        assertTrue(succeeded.clearLocalAuthority)
+    }
+
+    @Test
+    fun `ready target only reopens for the same fresh authoritative offer`() {
+        assertEquals(
+            PendingInstallerOfferAction.REOPEN_CURRENT,
+            pendingInstallerOfferAction(
+                persistedTargetVersionCode = 1000011,
+                offeredTargetVersionCode = 1000011,
+            ),
+        )
+        assertEquals(
+            PendingInstallerOfferAction.REPLACE_CURRENT,
+            pendingInstallerOfferAction(
+                persistedTargetVersionCode = 1000011,
+                offeredTargetVersionCode = 1000012,
+            ),
+        )
+        assertEquals(
+            PendingInstallerOfferAction.WITHDRAW_CURRENT,
+            pendingInstallerOfferAction(
+                persistedTargetVersionCode = 1000011,
+                offeredTargetVersionCode = null,
+            ),
+        )
+    }
+
+    @Test
+    fun `ready A with offer B cleans A then starts B without reopening A`() {
+        val effects = mutableListOf<String>()
+
+        reconcilePendingInstallerOffer(
+            persistedTargetVersionCode = 1000011,
+            offeredTargetVersionCode = 1000012,
+            reopenCurrent = { effects += "reopen-A" },
+            replaceCurrent = {
+                effects += "cleanup-A"
+                effects += "start-B"
+            },
+            withdrawCurrent = { effects += "withdraw-A" },
+        )
+
+        assertEquals(listOf("cleanup-A", "start-B"), effects)
+    }
+
+    @Test
+    fun `ready A with cancelled offer cleans A without reopen or replacement`() {
+        val effects = mutableListOf<String>()
+
+        reconcilePendingInstallerOffer(
+            persistedTargetVersionCode = 1000011,
+            offeredTargetVersionCode = null,
+            reopenCurrent = { effects += "reopen-A" },
+            replaceCurrent = { effects += "start-other" },
+            withdrawCurrent = { effects += "cleanup-A" },
+        )
+
+        assertEquals(listOf("cleanup-A"), effects)
     }
 }

@@ -20,7 +20,6 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.security.MessageDigest
@@ -127,7 +126,9 @@ class UpdateChecker(
         platform = platform,
         arch = arch,
     )
-    private val commandMutex = commandMutexes.computeIfAbsent(authority.storageKey()) { Mutex() }
+    private val commandGate = AuthorityTransactionGate(
+        commandMutexes.computeIfAbsent(authority.storageKey()) { Mutex() }
+    )
     private val transactionStore = UpdateTransactionStore(context, authority)
     private val effectiveDeltaUpdater: DeltaUpdater by lazy {
         deltaUpdater ?: DeltaUpdater(
@@ -143,24 +144,21 @@ class UpdateChecker(
     }
 
     /** Reconcile the persisted transaction with PackageManager, DownloadManager and disk. */
-    suspend fun status(): HandsUpdateStatus = withContext(Dispatchers.IO) {
-        reconcileTransaction()
+    suspend fun status(): HandsUpdateStatus = commandGate.run {
+        withContext(Dispatchers.IO) { reconcileTransaction() }
     }
 
     /**
      * Idempotent install command for host UIs.
      *
-     * A verified local APK is reopened, an active patch/download is left alone,
-     * and only idle/failed/stale/installed transactions start a new check.
+     * An active patch/download is left alone. A verified local APK is first
+     * reconciled against a fresh authoritative offer: only the same target is
+     * reopened, while a withdrawn or changed target is cleaned up fail-closed.
      */
     suspend fun install(languageTag: String? = this.languageTag): HandsUpdateStatus {
-        return commandMutex.withLock {
+        return commandGate.run {
             val current = withContext(Dispatchers.IO) { reconcileTransaction() }
             when (current.state) {
-                HandsUpdateState.READY_TO_INSTALL,
-                HandsUpdateState.INSTALLER_OPENED,
-                -> withContext(Dispatchers.IO) { reopenPendingInstallerUnlocked() }
-
                 HandsUpdateState.CHECKING,
                 HandsUpdateState.PATCHING,
                 HandsUpdateState.DOWNLOADING,
@@ -179,7 +177,7 @@ class UpdateChecker(
     }
 
     /** Reopen the same verified APK without checking or downloading again. */
-    suspend fun reopenPendingInstaller(): HandsUpdateStatus = commandMutex.withLock {
+    suspend fun reopenPendingInstaller(): HandsUpdateStatus = commandGate.run {
         withContext(Dispatchers.IO) { reopenPendingInstallerUnlocked() }
     }
 
@@ -195,33 +193,46 @@ class UpdateChecker(
         val file = record.localFilePath?.let(::File)
         val validationError = validateLocalApk(record, file)
         if (validationError != null) {
-            cleanup(record)
-            return transition(
+            return cleanupTransition(
                 record,
                 HandsUpdateState.STALE,
                 errorCode = validationError,
                 retryable = true,
-                clearLocalAuthority = true,
-            ).status(installedVersionCodeNow())
-        }
-        return try {
-            installer.installDownloadedApk(requireNotNull(file))
-            emit(
-                "content_uri_ready",
-                HandsUpdateState.READY_TO_INSTALL,
-                record.targetVersionCode,
-                requestedLanguageTag = record.requestedLanguageTag,
-                resolvedLanguageTag = record.resolvedLanguageTag,
+                installed = installedVersionCodeNow(),
             )
-            transition(record, HandsUpdateState.INSTALLER_OPENED)
-                .status(installedVersionCodeNow())
+        }
+        try {
+            installer.installDownloadedApk(requireNotNull(file))
         } catch (_: Exception) {
-            transition(
+            return transition(
                 record,
                 HandsUpdateState.FAILED,
                 errorCode = "installer_open_failed",
                 retryable = true,
             ).status(installedVersionCodeNow())
+        }
+        emit(
+            "content_uri_ready",
+            HandsUpdateState.READY_TO_INSTALL,
+            record.targetVersionCode,
+            requestedLanguageTag = record.requestedLanguageTag,
+            resolvedLanguageTag = record.resolvedLanguageTag,
+        )
+        return try {
+            transition(record, HandsUpdateState.INSTALLER_OPENED)
+                .status(installedVersionCodeNow())
+        } catch (_: Exception) {
+            // The external installer is already open. Preserve the last
+            // durable READY/OPENED authority instead of inventing a redownload.
+            emit(
+                "transaction_persist_failed",
+                record.state,
+                record.targetVersionCode,
+                errorCode = "opened_persist_failed",
+                requestedLanguageTag = record.requestedLanguageTag,
+                resolvedLanguageTag = record.resolvedLanguageTag,
+            )
+            record.status(installedVersionCodeNow())
         }
     }
 
@@ -235,11 +246,20 @@ class UpdateChecker(
      *         caller can display a "you are up to date" message.
      */
     suspend fun checkAndInstall(languageTag: String? = this.languageTag): UpdateCheckResponse =
-        commandMutex.withLock { checkAndInstallUnlocked(languageTag) }
+        commandGate.run { checkAndInstallUnlocked(languageTag) }
 
     private suspend fun checkAndInstallUnlocked(languageTag: String?): UpdateCheckResponse {
         val requestedLanguage = normalizedLanguageTag(languageTag)
-        val prior = transactionStore.read()
+        var prior = transactionStore.read()
+        if (prior?.errorCode == CLEANUP_FAILED) {
+            requireCleanup(prior)
+            prior = transition(
+                prior,
+                HandsUpdateState.STALE,
+                retryable = true,
+                clearLocalAuthority = true,
+            )
+        }
         if (prior == null || prior.state in RESTARTABLE_STATES) {
             transactionStore.write(
                 newRecord(
@@ -287,7 +307,8 @@ class UpdateChecker(
             requestedLanguageTag = requestedLanguage,
             resolvedLanguageTag = resolvedLanguage,
         )
-        if (response.requireUpdate() != null) {
+        val offeredUpdate = response.requireUpdate()
+        if (offeredUpdate != null) {
             try {
                 installUpdate(response, requestedLanguage, resolvedLanguage)
             } catch (exception: Exception) {
@@ -306,8 +327,30 @@ class UpdateChecker(
                 )
                 throw exception
             }
-        } else if (transactionStore.read()?.state == HandsUpdateState.CHECKING) {
-            transactionStore.clear()
+        } else {
+            val current = transactionStore.read()
+            when (current?.state) {
+                HandsUpdateState.READY_TO_INSTALL,
+                HandsUpdateState.INSTALLER_OPENED,
+                -> reconcilePendingInstallerOffer(
+                    persistedTargetVersionCode = current.targetVersionCode,
+                    offeredTargetVersionCode = null,
+                    reopenCurrent = { error("withdrawn offer cannot reopen current target") },
+                    replaceCurrent = { error("withdrawn offer cannot replace current target") },
+                    withdrawCurrent = {
+                        cleanupTransition(
+                            current,
+                            HandsUpdateState.STALE,
+                            errorCode = "offer_withdrawn",
+                            retryable = true,
+                            installed = installedVersionCodeNow(),
+                        )
+                    },
+                )
+
+                HandsUpdateState.CHECKING -> transactionStore.clear()
+                else -> Unit
+            }
         }
         return response
     }
@@ -336,29 +379,39 @@ class UpdateChecker(
     ) {
         val (latest, asset) = response.requireUpdate() ?: return
         val existing = transactionStore.read()
-        if (existing?.targetVersionCode == latest.version_code) {
-            when (reconcileTransaction().state) {
-                HandsUpdateState.READY_TO_INSTALL,
-                HandsUpdateState.INSTALLER_OPENED,
-                -> {
-                    withContext(Dispatchers.IO) { reopenPendingInstallerUnlocked() }
-                    return
-                }
+        if (existing != null) {
+            reconcilePendingInstallerOffer(
+                persistedTargetVersionCode = existing.targetVersionCode,
+                offeredTargetVersionCode = latest.version_code,
+                reopenCurrent = {
+                    when (reconcileTransaction().state) {
+                        HandsUpdateState.READY_TO_INSTALL,
+                        HandsUpdateState.INSTALLER_OPENED,
+                        -> {
+                            withContext(Dispatchers.IO) { reopenPendingInstallerUnlocked() }
+                            return
+                        }
 
-                HandsUpdateState.PATCHING,
-                HandsUpdateState.DOWNLOADING,
-                -> return
+                        HandsUpdateState.PATCHING,
+                        HandsUpdateState.DOWNLOADING,
+                        -> return
 
-                else -> cleanup(existing)
-            }
-        } else if (existing != null && existing.state != HandsUpdateState.CHECKING) {
-            cleanup(existing)
-            transition(
-                existing,
-                HandsUpdateState.STALE,
-                errorCode = "target_changed",
-                retryable = true,
-                clearLocalAuthority = true,
+                        else -> requireCleanup(existing)
+                    }
+                },
+                replaceCurrent = {
+                    if (existing.state != HandsUpdateState.CHECKING) {
+                        requireCleanup(existing)
+                        transition(
+                            existing,
+                            HandsUpdateState.STALE,
+                            errorCode = "target_changed",
+                            retryable = true,
+                            clearLocalAuthority = true,
+                        )
+                    }
+                },
+                withdrawCurrent = { error("installUpdate requires an offered target") },
             )
         }
 
@@ -384,21 +437,37 @@ class UpdateChecker(
                 requestedLanguageTag = requestedLanguageTag,
                 resolvedLanguageTag = resolvedLanguageTag,
             )
+            var durableReady: UpdateTransactionRecord? = null
             val applied = withContext(Dispatchers.IO) {
                 effectiveDeltaUpdater.tryApplyAndInstall(
                     patch,
                     asset,
                     latest,
                     appSlug,
-                ) { apk, sha256 ->
-                    val opened = baseRecord.copy(
-                        state = HandsUpdateState.INSTALLER_OPENED,
-                        assetSha256 = sha256,
-                        localFilePath = apk.absolutePath,
-                        updatedAt = System.currentTimeMillis(),
-                    )
-                    transactionStore.write(opened)
-                }
+                    persistReadyToInstall = { apk, sha256 ->
+                        val ready = baseRecord.copy(
+                            state = HandsUpdateState.READY_TO_INSTALL,
+                            assetSha256 = sha256,
+                            localFilePath = apk.absolutePath,
+                            updatedAt = System.currentTimeMillis(),
+                        )
+                        transactionStore.write(ready)
+                        durableReady = ready
+                        emit(
+                            "state_changed",
+                            HandsUpdateState.READY_TO_INSTALL,
+                            ready.targetVersionCode,
+                            requestedLanguageTag = ready.requestedLanguageTag,
+                            resolvedLanguageTag = ready.resolvedLanguageTag,
+                        )
+                    },
+                    persistInstallerOpened = {
+                        transition(
+                            requireNotNull(durableReady) { "READY authority missing" },
+                            HandsUpdateState.INSTALLER_OPENED,
+                        )
+                    },
+                )
             }
             if (applied) return
             emit(
@@ -424,11 +493,21 @@ class UpdateChecker(
         try {
             transactionStore.write(downloading)
         } catch (exception: Exception) {
-            installer.removeDownload(enqueued.id)
-            try {
-                if (enqueued.destination.exists()) enqueued.destination.delete()
-            } catch (_: Exception) {
-                // DownloadManager removal remains the primary cleanup path.
+            val cleanup = cleanup(downloading)
+            if (!cleanup.succeeded) {
+                try {
+                    transactionStore.write(
+                        downloading.copy(
+                            state = HandsUpdateState.FAILED,
+                            errorCode = CLEANUP_FAILED,
+                            retryable = true,
+                            updatedAt = System.currentTimeMillis(),
+                        )
+                    )
+                } catch (_: Exception) {
+                    // Storage is unavailable. We already attempted exact DM
+                    // removal and file deletion before allowing this to escape.
+                }
             }
             throw exception
         }
@@ -441,9 +520,11 @@ class UpdateChecker(
         )
         val receiver = installer.createDownloadCompletionReceiver(enqueued.id) {
             scope.launch {
-                val completed = status()
-                if (completed.state == HandsUpdateState.READY_TO_INSTALL) {
-                    reopenPendingInstaller()
+                commandGate.run {
+                    val completed = withContext(Dispatchers.IO) { reconcileTransaction() }
+                    if (completed.state == HandsUpdateState.READY_TO_INSTALL) {
+                        withContext(Dispatchers.IO) { reopenPendingInstallerUnlocked() }
+                    }
                 }
             }
         }
@@ -462,23 +543,29 @@ class UpdateChecker(
         if (record.state == HandsUpdateState.INSTALLED) return record.status(installed)
         val target = record.targetVersionCode
         if (target != null && installed != null && installed >= target) {
-            cleanup(record)
-            return transition(
+            return cleanupTransition(
                 record,
                 HandsUpdateState.INSTALLED,
                 retryable = false,
-                clearLocalAuthority = true,
-            ).status(installed)
+                installed = installed,
+            )
         }
         if (target != null && installed != null && installed < (record.installedVersionCodeAtStart ?: 0)) {
-            cleanup(record)
-            return transition(
+            return cleanupTransition(
                 record,
                 HandsUpdateState.STALE,
                 errorCode = "installed_version_regressed",
                 retryable = true,
-                clearLocalAuthority = true,
-            ).status(installed)
+                installed = installed,
+            )
+        }
+        if (record.errorCode == CLEANUP_FAILED) {
+            return cleanupTransition(
+                record,
+                HandsUpdateState.STALE,
+                retryable = true,
+                installed = installed,
+            )
         }
 
         return when (record.state) {
@@ -493,14 +580,13 @@ class UpdateChecker(
 
             HandsUpdateState.PATCHING -> {
                 if (isExpired(record, PATCH_TIMEOUT_MS)) {
-                    cleanup(record)
-                    transition(
+                    cleanupTransition(
                         record,
                         HandsUpdateState.STALE,
-                        "patch_interrupted",
-                        true,
-                        clearLocalAuthority = true,
-                    ).status(installed)
+                        errorCode = "patch_interrupted",
+                        retryable = true,
+                        installed = installed,
+                    )
                 } else {
                     record.status(installed)
                 }
@@ -514,14 +600,13 @@ class UpdateChecker(
                 if (error == null) {
                     record.status(installed)
                 } else {
-                    cleanup(record)
-                    transition(
+                    cleanupTransition(
                         record,
                         HandsUpdateState.STALE,
-                        error,
-                        true,
-                        clearLocalAuthority = true,
-                    ).status(installed)
+                        errorCode = error,
+                        retryable = true,
+                        installed = installed,
+                    )
                 }
             }
 
@@ -533,13 +618,13 @@ class UpdateChecker(
         record: UpdateTransactionRecord,
         installed: Long?,
     ): HandsUpdateStatus {
-        val downloadId = record.downloadId ?: return transition(
+        val downloadId = record.downloadId ?: return cleanupTransition(
             record,
             HandsUpdateState.STALE,
-            "download_id_missing",
-            true,
-            clearLocalAuthority = true,
-        ).status(installed)
+            errorCode = "download_id_missing",
+            retryable = true,
+            installed = installed,
+        )
         return when (installer.queryDownload(downloadId).state) {
             DownloadState.PENDING,
             DownloadState.RUNNING,
@@ -558,37 +643,34 @@ class UpdateChecker(
                     )
                     transition(record, HandsUpdateState.READY_TO_INSTALL).status(installed)
                 } else {
-                    cleanup(record)
-                    transition(
+                    cleanupTransition(
                         record,
                         HandsUpdateState.STALE,
-                        error,
-                        true,
-                        clearLocalAuthority = true,
-                    ).status(installed)
+                        errorCode = error,
+                        retryable = true,
+                        installed = installed,
+                    )
                 }
             }
 
             DownloadState.FAILED -> {
-                cleanup(record)
-                transition(
+                cleanupTransition(
                     record,
                     HandsUpdateState.FAILED,
-                    "download_failed",
-                    true,
-                    clearLocalAuthority = true,
-                ).status(installed)
+                    errorCode = "download_failed",
+                    retryable = true,
+                    installed = installed,
+                )
             }
 
             DownloadState.MISSING -> {
-                cleanup(record)
-                transition(
+                cleanupTransition(
                     record,
                     HandsUpdateState.STALE,
-                    "download_missing",
-                    true,
-                    clearLocalAuthority = true,
-                ).status(installed)
+                    errorCode = "download_missing",
+                    retryable = true,
+                    installed = installed,
+                )
             }
         }
     }
@@ -672,23 +754,60 @@ class UpdateChecker(
         return next
     }
 
-    private fun cleanup(record: UpdateTransactionRecord) {
-        record.downloadId?.let(installer::removeDownload)
-        val file = record.localFilePath?.let(::File)
-        if (file != null && isSdkOwnedFile(file)) {
-            try {
-                if (file.exists()) file.delete()
-            } catch (_: Exception) {
-                // Best-effort cleanup. Authority is still cleared fail-closed.
-            }
-        }
+    private fun cleanup(record: UpdateTransactionRecord): ExactCleanupResult {
+        val result = performExactCleanup(
+            downloadId = record.downloadId,
+            localFilePath = record.localFilePath,
+            removeDownload = installer::removeDownload,
+            isOwnedFile = { isSdkOwnedFile(File(it)) },
+            fileExists = { File(it).exists() },
+            deleteFile = { File(it).delete() },
+        )
         emit(
-            "cleanup",
+            if (result.succeeded) "cleanup" else CLEANUP_FAILED,
             record.state,
             record.targetVersionCode,
+            errorCode = if (result.succeeded) null else CLEANUP_FAILED,
             requestedLanguageTag = record.requestedLanguageTag,
             resolvedLanguageTag = record.resolvedLanguageTag,
         )
+        return result
+    }
+
+    private fun cleanupTransition(
+        record: UpdateTransactionRecord,
+        successState: HandsUpdateState,
+        errorCode: String? = null,
+        retryable: Boolean,
+        installed: Long?,
+    ): HandsUpdateStatus {
+        val cleanup = cleanup(record)
+        val outcome = exactCleanupTransition(
+            cleanup = cleanup,
+            successState = successState,
+            successErrorCode = errorCode,
+            successRetryable = retryable,
+        )
+        val next = transition(
+            record,
+            outcome.state,
+            errorCode = outcome.errorCode,
+            retryable = outcome.retryable,
+            clearLocalAuthority = outcome.clearLocalAuthority,
+        )
+        return next.status(installed)
+    }
+
+    private fun requireCleanup(record: UpdateTransactionRecord) {
+        if (cleanup(record).succeeded) return
+        transition(
+            record,
+            HandsUpdateState.FAILED,
+            errorCode = CLEANUP_FAILED,
+            retryable = true,
+            clearLocalAuthority = false,
+        )
+        throw IllegalStateException("unable to remove previous SDK update authority")
     }
 
     private fun validateLocalApk(record: UpdateTransactionRecord, file: File?): String? {
@@ -852,5 +971,6 @@ class UpdateChecker(
         )
         const val CHECK_TIMEOUT_MS = 2 * 60 * 1000L
         const val PATCH_TIMEOUT_MS = 30 * 60 * 1000L
+        const val CLEANUP_FAILED = "cleanup_failed"
     }
 }

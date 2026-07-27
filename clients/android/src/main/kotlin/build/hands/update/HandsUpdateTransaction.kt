@@ -4,6 +4,8 @@ import android.content.Context
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import java.security.MessageDigest
 
 /** Stable states exposed to host applications and cross-platform bridges. */
@@ -72,6 +74,136 @@ data class HandsUpdateEvent(
 /** The listener must return quickly; events are emitted on the calling thread. */
 fun interface HandsUpdateEventListener {
     fun onEvent(event: HandsUpdateEvent)
+}
+
+internal class AuthorityTransactionGate(private val mutex: Mutex) {
+    suspend fun <T> run(block: suspend () -> T): T = mutex.withLock { block() }
+}
+
+internal enum class DurableInstallerLaunchResult {
+    READY_PERSIST_FAILED,
+    LAUNCH_FAILED,
+    OPENED,
+    OPENED_WITH_READY_AUTHORITY,
+}
+
+/** Persist READY before the installer side effect; OPENED persistence is best-effort afterward. */
+internal fun launchWithDurableInstallerAuthority(
+    persistReady: () -> Unit,
+    launchInstaller: () -> Unit,
+    persistOpened: () -> Unit,
+): DurableInstallerLaunchResult {
+    try {
+        persistReady()
+    } catch (_: Throwable) {
+        return DurableInstallerLaunchResult.READY_PERSIST_FAILED
+    }
+    try {
+        launchInstaller()
+    } catch (_: Throwable) {
+        return DurableInstallerLaunchResult.LAUNCH_FAILED
+    }
+    return try {
+        persistOpened()
+        DurableInstallerLaunchResult.OPENED
+    } catch (_: Throwable) {
+        // The READY record remains the durable authority for a safe reopen.
+        DurableInstallerLaunchResult.OPENED_WITH_READY_AUTHORITY
+    }
+}
+
+internal data class ExactCleanupResult(
+    val downloadAbsent: Boolean,
+    val fileAbsent: Boolean,
+) {
+    val succeeded: Boolean get() = downloadAbsent && fileAbsent
+}
+
+internal data class ExactCleanupTransition(
+    val state: HandsUpdateState,
+    val errorCode: String?,
+    val retryable: Boolean,
+    val clearLocalAuthority: Boolean,
+)
+
+internal fun exactCleanupTransition(
+    cleanup: ExactCleanupResult,
+    successState: HandsUpdateState,
+    successErrorCode: String?,
+    successRetryable: Boolean,
+): ExactCleanupTransition = if (cleanup.succeeded) {
+    ExactCleanupTransition(
+        state = successState,
+        errorCode = successErrorCode,
+        retryable = successRetryable,
+        clearLocalAuthority = true,
+    )
+} else {
+    ExactCleanupTransition(
+        state = HandsUpdateState.FAILED,
+        errorCode = "cleanup_failed",
+        retryable = true,
+        clearLocalAuthority = false,
+    )
+}
+
+internal fun performExactCleanup(
+    downloadId: Long?,
+    localFilePath: String?,
+    removeDownload: (Long) -> Boolean,
+    isOwnedFile: (String) -> Boolean,
+    fileExists: (String) -> Boolean,
+    deleteFile: (String) -> Boolean,
+): ExactCleanupResult {
+    val downloadAbsent = downloadId == null || try {
+        removeDownload(downloadId)
+    } catch (_: Throwable) {
+        false
+    }
+    val fileAbsent = when {
+        localFilePath == null -> true
+        !isOwnedFile(localFilePath) -> false
+        !fileExists(localFilePath) -> true
+        else -> try {
+            deleteFile(localFilePath) && !fileExists(localFilePath)
+        } catch (_: Throwable) {
+            false
+        }
+    }
+    return ExactCleanupResult(downloadAbsent, fileAbsent)
+}
+
+internal enum class PendingInstallerOfferAction {
+    REOPEN_CURRENT,
+    REPLACE_CURRENT,
+    WITHDRAW_CURRENT,
+}
+
+internal fun pendingInstallerOfferAction(
+    persistedTargetVersionCode: Long?,
+    offeredTargetVersionCode: Long?,
+): PendingInstallerOfferAction = when {
+    offeredTargetVersionCode == null -> PendingInstallerOfferAction.WITHDRAW_CURRENT
+    offeredTargetVersionCode == persistedTargetVersionCode ->
+        PendingInstallerOfferAction.REOPEN_CURRENT
+    else -> PendingInstallerOfferAction.REPLACE_CURRENT
+}
+
+internal inline fun <T> reconcilePendingInstallerOffer(
+    persistedTargetVersionCode: Long?,
+    offeredTargetVersionCode: Long?,
+    reopenCurrent: () -> T,
+    replaceCurrent: () -> T,
+    withdrawCurrent: () -> T,
+): T = when (
+    pendingInstallerOfferAction(
+        persistedTargetVersionCode = persistedTargetVersionCode,
+        offeredTargetVersionCode = offeredTargetVersionCode,
+    )
+) {
+    PendingInstallerOfferAction.REOPEN_CURRENT -> reopenCurrent()
+    PendingInstallerOfferAction.REPLACE_CURRENT -> replaceCurrent()
+    PendingInstallerOfferAction.WITHDRAW_CURRENT -> withdrawCurrent()
 }
 
 @Serializable
