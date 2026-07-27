@@ -4,6 +4,10 @@ import {
   type FeedbackTokenPermission,
 } from "./app_permissions";
 import { loadDeployToken, type AppDeployToken } from "./deploy_tokens";
+import {
+  isReporterSessionToken,
+  verifyReporterSession,
+} from "./reporter_sessions";
 
 export const REPORTER_ID_PATTERN = /^[A-Za-z0-9_-]{16,200}$/;
 
@@ -11,12 +15,13 @@ export type ReporterPrincipal = {
   appId: string;
   integrationId: string;
   reporterId: string;
-  token: AppDeployToken;
+  authMode: "deploy_token" | "session";
+  sessionVerifyDurationMs: number | null;
 };
 
 type ReporterContext = Context<{ Bindings: Env }>;
 
-function bearerValue(c: ReporterContext): string | null {
+export function reporterBearerValue(c: ReporterContext): string | null {
   const authorization = c.req.header("authorization") ?? "";
   if (!authorization.startsWith("Bearer ")) return null;
   const value = authorization.slice("Bearer ".length).trim();
@@ -42,9 +47,44 @@ export async function authenticateReporter(
     };
   }
 
-  const bearer = bearerValue(c);
+  const bearer = reporterBearerValue(c);
   if (!bearer) {
     return { ok: false, response: c.json({ error: "invalid or missing bearer token" }, 401) };
+  }
+  if (isReporterSessionToken(bearer)) {
+    const verifyStartedAt = performance.now();
+    const verified = await verifyReporterSession(c.env, bearer);
+    const sessionVerifyDurationMs = Math.max(0, performance.now() - verifyStartedAt);
+    if (!verified.ok) {
+      return {
+        ok: false,
+        response: c.json(
+          { error: verified.reason === "unavailable" ? "reporter session is not configured" : "invalid or missing bearer token" },
+          verified.reason === "unavailable" ? 503 : 401,
+        ),
+      };
+    }
+    const claims = verified.claims;
+    // Bind verified claims to the route and caller header before any D1 rate,
+    // ownership, or data query. Downstream owner predicates remain defense in
+    // depth, not the primary session boundary.
+    if (
+      claims.app_id !== appId
+      || claims.reporter_id !== reporterId
+      || !claims.scopes.includes(required)
+    ) {
+      return { ok: false, response: c.json({ error: "invalid reporter session grant" }, 403) };
+    }
+    return {
+      ok: true,
+      principal: {
+        appId: claims.app_id,
+        integrationId: claims.reporter_integration_id,
+        reporterId: claims.reporter_id,
+        authMode: "session",
+        sessionVerifyDurationMs,
+      },
+    };
   }
   const token = await loadDeployToken(c.env, bearer);
   if (!token) {
@@ -70,7 +110,8 @@ export async function authenticateReporter(
       appId,
       integrationId: token.reporter_integration_id!,
       reporterId,
-      token,
+      authMode: "deploy_token",
+      sessionVerifyDurationMs: null,
     },
   };
 }

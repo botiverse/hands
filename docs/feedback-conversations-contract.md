@@ -150,9 +150,36 @@ cannot be physically deleted.
 
 ## Reporter API
 
-All routes use an explicit `Authorization: Bearer <app-token>` header and
-`X-Hands-Reporter-Id: <opaque-id>`. Cookies and role sessions never satisfy
-these routes.
+All routes use an explicit `Authorization: Bearer <app-token-or-short-session>`
+header and `X-Hands-Reporter-Id: <opaque-id>`. Cookies and role sessions never
+satisfy these routes. Short sessions are disabled by default and remain
+server-only.
+
+### Mint a short reporter session (disabled by default)
+
+```http
+POST /api/apps/{appId}/reporter-feedback/session
+Authorization: Bearer <role-free integration-bound deploy token>
+X-Hands-Reporter-Id: <opaque-id>
+Content-Type: application/json
+
+{ "scopes": ["feedback:read", "feedback:comment"] }
+```
+
+Minting performs the current authoritative token/revocation/expiry/app/
+integration/scope checks, then applies both source-token+integration and
+audit-HMAC reporter quotas. A `201` returns a fixed-format authenticated token
+with a 30-second lifetime plus the exact integration id required in the
+caller's cache key. The closed claims bind protocol, issuer, audience,
+app, integration, exact reporter id, source token id, canonical scopes,
+timestamps, nonce, and key version. The mint response is private/no-store.
+
+Reporter handlers verify the session locally before any D1 operation and assert
+the route app and reporter header match the claims. They then use the claim
+integration/reporter values as the exact existing D1 ownership inputs. Normal
+key rotation accepts only N and N-1; emergency removal rejects the removed
+version immediately. When disabled, mint returns `404`, session-looking bearer
+bytes are not treated as deploy tokens, and no session timing names are emitted.
 
 ### List tickets
 

@@ -40,6 +40,18 @@ const ReporterCommentInput = z.object({
   submission_id: z.string().uuid(),
 }).openapi("ReporterFeedbackCommentInput");
 
+const ReporterSessionInput = z.object({
+  scopes: z.array(z.enum(["feedback:read", "feedback:comment"]))
+    .min(1),
+}).strict().openapi("ReporterSessionInput");
+
+const ReporterSessionOutput = z.object({
+  session_token: z.string(),
+  expires_at: z.number().int(),
+  reporter_integration_id: z.string().uuid(),
+  scopes: z.array(z.string()),
+}).openapi("ReporterSessionOutput");
+
 const ReporterRouteInput = z.object({
   route_subject: z.string().regex(/^rfr_v1_[A-Za-z0-9_-]+$/).max(160),
 }).strict().openapi("ReporterRouteSubjectInput");
@@ -50,6 +62,29 @@ const ReporterWebhookParams = AppIdParam.extend({
 });
 
 export function registerFeedbackRoutes(registry: OpenApiRegistry) {
+  register(registry, {
+    method: "post",
+    path: "/api/apps/{appId}/reporter-feedback/session",
+    tags: ["Reporter Feedback"],
+    summary: "Mint a short-lived server-only reporter session",
+    description: "Disabled by default. Requires an active feedback-only deploy token; callers must keep the returned session on a trusted server.",
+    security: auth,
+    request: {
+      params: AppIdParam,
+      headers: ReporterHeaders,
+      body: { content: json(ReporterSessionInput), required: true },
+    },
+    responses: {
+      201: success("Short-lived reporter session; never expose it to a browser.", ReporterSessionOutput),
+      400: error("Malformed reporter id, app id, or scope set."),
+      401: error("Missing or invalid deploy token."),
+      403: error("Deploy token is not an active reporter integration grant for every requested scope."),
+      404: error("Reporter sessions are disabled."),
+      429: error("Reporter session mint rate limit exceeded."),
+      503: error("Reporter session signing or audit configuration is unavailable."),
+    },
+  });
+
   register(registry, {
     method: "put",
     path: "/api/apps/{appId}/reporter-feedback/route-subject",

@@ -103,6 +103,7 @@ describe("quiver OpenAPI document", () => {
       "/api/apps/{appId}/qa-artifacts/ios-simulator/{assetId}/download",
       "/api/apps/{appId}/releases/{releaseId}/publish",
       "/api/apps/{appId}/feedback/{ticketId}/comments",
+      "/api/apps/{appId}/reporter-feedback/session",
       "/api/app-permissions",
       "/api/apps/{appId}/client-key",
       "/api/apps/{appId}/analytics/versions",
@@ -742,6 +743,18 @@ function makeMockDb() {
       updated_at INTEGER NOT NULL,
       PRIMARY KEY (app_id, reporter_integration_id, reporter_hash,
                    audit_key_version, endpoint, window_started_at)
+    );
+    CREATE TABLE feedback_reporter_session_mint_rate_windows (
+      app_id TEXT NOT NULL,
+      reporter_integration_id TEXT NOT NULL,
+      deploy_token_id TEXT NOT NULL,
+      reporter_hash TEXT NOT NULL,
+      audit_key_version TEXT NOT NULL,
+      window_started_at INTEGER NOT NULL,
+      request_count INTEGER NOT NULL DEFAULT 0,
+      updated_at INTEGER NOT NULL,
+      PRIMARY KEY (app_id, reporter_integration_id, deploy_token_id,
+                   reporter_hash, audit_key_version, window_started_at)
     );
     CREATE TABLE feedback_reporter_access_audits (
       id TEXT PRIMARY KEY,
@@ -10749,6 +10762,201 @@ describe("Hands iOS simulator QA artifacts", () => {
     await env.DB.prepare(
       "UPDATE app_reporter_integrations SET archived_at = NULL WHERE id = ?1",
     ).bind(integrationId).run();
+  });
+
+  it("mints disabled-by-default reporter sessions and removes deploy-token D1 auth from hot routes", async () => {
+    const { env } = makeEnv() as any;
+    env.FEEDBACK_AUDIT_HMAC_KEY = "test-audit-key-with-enough-entropy";
+    env.FEEDBACK_AUDIT_KEY_VERSION = "test-v1";
+    const keyBytes = new Uint8Array(32).fill(19);
+    let keyBinary = "";
+    for (const byte of keyBytes) keyBinary += String.fromCharCode(byte);
+    const key = btoa(keyBinary).replaceAll("+", "-").replaceAll("/", "_").replaceAll("=", "");
+    const { generateDeployToken, hashDeployToken } = await import("../src/lib/deploy_tokens");
+    const { handleMintReporterSession } = await import("../src/routes/reporter_sessions");
+    const {
+      handleAddReporterComment,
+      handleGetReporterFeedback,
+      handleListReporterFeedback,
+    } = await import("../src/routes/reporter_feedback");
+    const appId = "10101010-1010-4010-8010-101010101010";
+    const integrationId = "20202020-2020-4020-8020-202020202020";
+    const tokenId = "30303030-3030-4030-8030-303030303030";
+    const ticketId = "40404040-4040-4040-8040-404040404040";
+    const reporterId = "signed_session_reporter_123456789";
+    const credential = generateDeployToken();
+    const now = Date.now();
+    await env.DB.prepare(
+      `INSERT INTO apps (id, org_id, slug, name, platform, created_at)
+       VALUES (?1, 'default', 'signed-session-app', 'Signed session app', 'web', ?2)`,
+    ).bind(appId, now).run();
+    await env.DB.prepare(
+      `INSERT INTO app_reporter_integrations
+       (id, app_id, name, created_at, updated_at)
+       VALUES (?1, ?2, 'Signed session', ?3, ?3)`,
+    ).bind(integrationId, appId, now).run();
+    await env.DB.prepare(
+      `INSERT INTO app_deploy_tokens
+       (id, app_id, name, token_prefix, token_hash, app_role, scopes_json,
+        created_by_actor, created_at, reporter_integration_id)
+       VALUES (?1, ?2, 'signed-session', ?3, ?4, NULL,
+               '["feedback:read","feedback:comment"]', 'test', ?5, ?6)`,
+    ).bind(tokenId, appId, credential.token_prefix, await hashDeployToken(credential.token), now, integrationId).run();
+    await env.DB.prepare(
+      `INSERT INTO feedback_tickets
+       (id, app_id, kind, status, message, metadata_json, reporter_id,
+        reporter_integration_id, created_at, updated_at)
+       VALUES (?1, ?2, 'feedback', 'open', 'Session ticket', '{}', ?3, ?4, ?5, ?5)`,
+    ).bind(ticketId, appId, reporterId, integrationId, now).run();
+
+    const context = (input: {
+      app?: string;
+      reporter?: string;
+      bearer?: string;
+      ticket?: string;
+      body?: unknown;
+      query?: Record<string, string>;
+    }) => {
+      const responseHeaders = new Headers();
+      return {
+        env,
+        header: (name: string, value: string) => responseHeaders.set(name, value),
+        req: {
+          param: (name: string) => name === "appId"
+            ? input.app ?? appId
+            : name === "ticketId"
+              ? input.ticket
+              : undefined,
+          header: (name: string) => name === "X-Hands-Reporter-Id"
+            ? input.reporter ?? reporterId
+            : name.toLowerCase() === "authorization" && input.bearer
+              ? `Bearer ${input.bearer}`
+              : undefined,
+          query: (name: string) => input.query?.[name],
+          json: async () => input.body,
+          text: async () => JSON.stringify(input.body),
+          formData: async () => new FormData(),
+        },
+        json: (data: unknown, status = 200) => new Response(JSON.stringify(data), {
+          status,
+          headers: responseHeaders,
+        }),
+      } as any;
+    };
+
+    const disabledMint = await handleMintReporterSession(context({
+      bearer: credential.token,
+      body: { scopes: ["feedback:read", "feedback:comment"] },
+    }));
+    expect(disabledMint.status).toBe(404);
+    expect(disabledMint.headers.get("server-timing")).toBeNull();
+
+    env.FEEDBACK_REPORTER_SESSION_ENABLED = "true";
+    env.FEEDBACK_REPORTER_SESSION_ACTIVE_KEY_VERSION = "test-n";
+    env.FEEDBACK_REPORTER_SESSION_KEYS = JSON.stringify({ "test-n": key });
+    const mint = await handleMintReporterSession(context({
+      bearer: credential.token,
+      body: { scopes: ["feedback:read", "feedback:comment"] },
+    }));
+    expect(mint.status).toBe(201);
+    expect(mint.headers.get("cache-control")).toBe("private, no-store");
+    expect(mint.headers.get("server-timing")).toMatch(/^hands_session_mint;dur=\d+\.\d$/);
+    const mintBody = await mint.json() as any;
+    expect(mintBody.reporter_integration_id).toBe(integrationId);
+    const session = mintBody.session_token as string;
+    expect(session).toMatch(/^hrps_v1_/);
+
+    const originalBatch = env.DB.batch.bind(env.DB);
+    let batchStages = 0;
+    env.DB.batch = async (statements: unknown[]) => {
+      batchStages += 1;
+      return originalBatch(statements);
+    };
+    const list = await handleListReporterFeedback(context({ bearer: session }));
+    env.DB.batch = originalBatch;
+    expect(list.status).toBe(200);
+    expect(batchStages).toBe(2);
+    expect((await list.json() as any).tickets.map((ticket: any) => ticket.id)).toEqual([ticketId]);
+    expect(list.headers.get("server-timing")).toMatch(
+      /^hands_session_verify;dur=\d+\.\d, hands_auth;dur=\d+\.\d, hands_list;dur=\d+\.\d$/,
+    );
+
+    const detail = await handleGetReporterFeedback(context({ bearer: session, ticket: ticketId }));
+    expect(detail.status).toBe(200);
+    expect((await detail.json() as any).ticket.id).toBe(ticketId);
+    const comment = await handleAddReporterComment(context({
+      bearer: session,
+      ticket: ticketId,
+      body: {
+        body: "signed session comment",
+        submission_id: "50505050-5050-4050-8050-505050505050",
+      },
+    }));
+    expect(comment.status).toBe(201);
+    expect(comment.headers.get("server-timing")).toMatch(/^hands_session_verify;/);
+
+    expect((await handleMintReporterSession(context({
+      bearer: credential.token,
+      body: { scopes: ["feedback:write"] },
+    }))).status).toBe(400);
+    expect((await handleMintReporterSession(context({
+      bearer: credential.token,
+      body: { scopes: ["feedback:read"], extra: true },
+    }))).status).toBe(400);
+    expect((await handleMintReporterSession(context({
+      bearer: credential.token,
+      body: { scopes: ["feedback:read"], padding: "x".repeat(2_000) },
+    }))).status).toBe(400);
+    // The reporter header selects an opaque reporter under the deploy token's
+    // existing integration authority; it is not separately authenticated.
+    expect((await handleMintReporterSession(context({
+      bearer: credential.token,
+      reporter: "another_reporter_header_123456789",
+      body: { scopes: ["feedback:read"] },
+    }))).status).toBe(201);
+
+    let mismatchBatches = 0;
+    env.DB.batch = async (statements: unknown[]) => {
+      mismatchBatches += 1;
+      return originalBatch(statements);
+    };
+    expect((await handleListReporterFeedback(context({
+      app: "60606060-6060-4060-8060-606060606060",
+      bearer: session,
+    }))).status).toBe(403);
+    expect((await handleListReporterFeedback(context({
+      reporter: "different_reporter_123456789",
+      bearer: session,
+    }))).status).toBe(403);
+    env.DB.batch = originalBatch;
+    expect(mismatchBatches).toBe(0);
+
+    await env.DB.prepare(
+      `UPDATE feedback_reporter_session_mint_rate_windows SET request_count = 30
+       WHERE app_id = ?1 AND reporter_integration_id = ?2
+         AND reporter_hash <> 'integration-total'`,
+    ).bind(appId, integrationId).run();
+    const limited = await handleMintReporterSession(context({
+      bearer: credential.token,
+      body: { scopes: ["feedback:read"] },
+    }));
+    expect(limited.status).toBe(429);
+    expect(Number(limited.headers.get("retry-after"))).toBeGreaterThan(0);
+
+    await env.DB.prepare("UPDATE app_deploy_tokens SET revoked_at = ?1 WHERE id = ?2")
+      .bind(Date.now(), tokenId).run();
+    expect((await handleMintReporterSession(context({
+      bearer: credential.token,
+      body: { scopes: ["feedback:read"] },
+    }))).status).toBe(401);
+    // Already-issued sessions deliberately retain bounded validity after source
+    // revocation; no D1 auth lookup is reintroduced on the hot path.
+    expect((await handleListReporterFeedback(context({ bearer: session }))).status).toBe(200);
+
+    env.FEEDBACK_REPORTER_SESSION_ENABLED = "false";
+    const disabledUse = await handleListReporterFeedback(context({ bearer: session }));
+    expect(disabledUse.status).toBe(401);
+    expect(disabledUse.headers.get("server-timing")).toBeNull();
   });
 
   it("reporter feedback bearer routes isolate integrations and converge comment replay", async () => {
