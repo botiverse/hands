@@ -812,8 +812,11 @@ function makeMockDb() {
           const info = stmt.run(...expanded);
           return { success: true, meta: { changes: info.changes } };
         };
+        const batchSync = () => stmt.reader
+          ? { results: stmt.all(...expanded), success: true }
+          : runSync();
         return {
-          _runSync: runSync,
+          _runSync: batchSync,
           run: async () => runSync(),
           all: async () => {
             const rows = stmt.all(...expanded);
@@ -9090,7 +9093,7 @@ describe("quiver public API v2 — scope resolution", () => {
       ...dbBeforeRace,
       prepare(sql: string) {
         const prepared = prepareBeforeRace(sql);
-        if (!sql.includes("SELECT 1 AS ok FROM app_reporter_routes")) return prepared;
+        if (!sql.includes("FROM app_reporter_integrations ri")) return prepared;
         return {
           ...prepared,
           bind(...params: unknown[]) {
@@ -9142,7 +9145,15 @@ describe("quiver public API v2 — scope resolution", () => {
       "SELECT COUNT(*) AS count FROM feedback_submission_events WHERE app_id = 'app-scope' AND reporter_id = ?1",
     ).bind("g".repeat(64)).first() as any).count).toBe(0);
 
-    for (let index = 0; index < 100; index += 1) expect((await submit(reporterA)).status).toBe(201);
+    for (let index = 0; index < 100; index += 1) {
+      const response = await submit(reporterA);
+      expect(response.status).toBe(201);
+      if (index === 0) {
+        expect(response.headers.get("server-timing")).toMatch(
+          /^hands_auth;dur=\d+\.\d, hands_preflight;dur=\d+\.\d, hands_commit;dur=\d+\.\d, hands_postcommit;dur=\d+\.\d$/,
+        );
+      }
+    }
     const limited = await submit(reporterA);
     expect(limited.status).toBe(429);
     expect(Number(limited.headers.get("retry-after"))).toBeGreaterThan(0);
@@ -10830,6 +10841,9 @@ describe("Hands iOS simulator QA artifacts", () => {
 
     const listA = await handleListReporterFeedback(context("list", credentialA.token));
     expect(listA.status).toBe(200);
+    expect(listA.headers.get("server-timing")).toMatch(
+      /^hands_auth;dur=\d+\.\d, hands_list;dur=\d+\.\d$/,
+    );
     const listABody = await listA.json() as any;
     expect(listABody.tickets.map((ticket: any) => ticket.id)).toEqual([ticketA]);
     expect(listABody.tickets[0]).toMatchObject({
