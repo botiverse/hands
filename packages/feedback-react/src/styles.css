@@ -147,7 +147,8 @@
   background: var(--hf-surface);
 }
 .hands-feedback-ticket-row:hover {
-  outline: none;
+  outline: 2px solid var(--color-brutal-pink, var(--hf-border-strong));
+  outline-offset: -2px;
 }
 .hands-feedback-ticket-row:focus-visible {
   outline: 2px solid var(--hf-border-strong);
@@ -180,7 +181,7 @@
   gap: 8px;
 }
 .hands-feedback-status[data-feedback-status="open"] {
-  background-color: var(--color-brutal-orange, #ffb02e) !important;
+  background-color: var(--color-brutal-cyan, #22d3ee) !important;
 }
 .hands-feedback-status[data-feedback-status="in_progress"] {
   background-color: var(--color-brutal-cyan, #22d3ee) !important;
@@ -189,10 +190,7 @@
   background-color: var(--color-brutal-lime, #a3e635) !important;
 }
 .hands-feedback-status[data-feedback-status="closed"] {
-  background-color: var(--color-brutal-stone, #d6d3d1) !important;
-}
-.hands-feedback-status {
-  color: var(--hf-text) !important;
+  background-color: var(--color-brutal-lime, #a3e635) !important;
 }
 .hands-feedback-unread-dot {
   background: var(--danger, #e11d48);

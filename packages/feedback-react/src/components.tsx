@@ -153,13 +153,9 @@ function StatusBadge({ status }: { status: FeedbackTicketSummary["status"] }) {
           : "statusOpen",
   );
   const variant =
-    status === "open"
-      ? "warning"
-      : status === "in_progress"
-        ? "information"
-        : status === "resolved"
-          ? "success"
-          : "muted";
+    status === "open" || status === "in_progress"
+      ? "information"
+      : "success";
   return (
     <Badge
       appearance="solid"
