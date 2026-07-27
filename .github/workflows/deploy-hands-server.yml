@@ -27,6 +27,7 @@ concurrency:
 
 jobs:
   deploy:
+    environment: reporter-session-production
     runs-on: ubuntu-latest
     env:
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_BOTIVERSE_ACCOUNT_ID }}
