@@ -4,7 +4,13 @@ on:
   pull_request:
     paths:
       - "clients/android/**"
+      - "scripts/verify_android_elf_alignment.py"
+      - "scripts/test_verify_android_elf_alignment.py"
+      - "scripts/package_android_native_symbols.sh"
+      - "scripts/test_android_publication_gate.sh"
       - ".github/workflows/android-sdk-check.yml"
+      - ".github/workflows/publish-android-sdk.yml"
+      - "jitpack.yml"
 
 jobs:
   assemble:
@@ -15,11 +21,16 @@ jobs:
         with:
           distribution: temurin
           java-version: "17"
+      - uses: android-actions/setup-android@v3
+      - name: Install pinned Android NDK
+        run: sdkmanager "ndk;26.3.11579264"
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: "8.10.2"
-      - name: Assemble release AAR and run unit tests
-        run: gradle -p clients/android assembleRelease testReleaseUnitTest
+      - name: Build SDK and run central publication gate
+        run: gradle -p clients/android testReleaseUnitTest verifyReleaseElfAlignment -PVERSION_NAME=0.12.4
+      - name: Verify local and remote publication task graphs
+        run: scripts/test_android_publication_gate.sh
 
   api31-instrumentation:
     runs-on: ubuntu-latest

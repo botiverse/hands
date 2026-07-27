@@ -6,7 +6,7 @@ on:
       version:
         description: "SDK version to publish, for example 0.1.0"
         required: true
-        default: "0.12.3"
+        default: "0.12.4"
   push:
     tags:
       - "android-sdk-v*"
@@ -38,15 +38,27 @@ jobs:
       - name: Resolve version
         id: version
         shell: bash
+        env:
+          INPUT_VERSION: ${{ github.event.inputs.version }}
         run: |
           if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
-            echo "value=${GITHUB_REF_NAME#android-sdk-v}" >> "$GITHUB_OUTPUT"
+            VERSION="${GITHUB_REF_NAME#android-sdk-v}"
           else
-            echo "value=${{ github.event.inputs.version }}" >> "$GITHUB_OUTPUT"
+            VERSION="${INPUT_VERSION}"
           fi
+          [[ "${VERSION}" =~ ^[0-9]+\.[0-9]+\.[0-9]+([+-][0-9A-Za-z.-]+)?$ ]] || {
+            echo "Invalid Android SDK semantic version: ${VERSION}" >&2
+            exit 1
+          }
+          echo "value=${VERSION}" >> "$GITHUB_OUTPUT"
 
-      - name: Build SDK and unstripped native symbols
-        run: gradle -p clients/android assembleRelease packageReleaseNativeSymbols -PVERSION_NAME=${{ steps.version.outputs.value }}
+      - name: Build SDK and run central publication gate
+        run: gradle -p clients/android testReleaseUnitTest verifyReleaseElfAlignment -PVERSION_NAME=${{ steps.version.outputs.value }}
+
+      - name: Verify local and remote publication task graphs
+        env:
+          HANDS_ANDROID_SDK_TEST_VERSION: ${{ steps.version.outputs.value }}
+        run: scripts/test_android_publication_gate.sh
 
       - name: Upload native symbols as workflow evidence
         uses: actions/upload-artifact@v4

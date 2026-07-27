@@ -19,7 +19,7 @@ repositories {
 }
 
 dependencies {
-    implementation("com.github.botiverse:hands:android-sdk-v0.12.3")
+    implementation("com.github.botiverse:hands:android-sdk-v0.12.4")
 }
 ```
 
@@ -37,7 +37,7 @@ repositories {
 }
 
 dependencies {
-    implementation("build.hands:hands-android-sdk:0.12.3")
+    implementation("build.hands:hands-android-sdk:0.12.4")
 }
 ```
 
@@ -95,6 +95,10 @@ is not the only telemetry path. Valid explicit BCP-47 `languageTag` values are
 sent as `X-Hands-Lang` and `Accept-Language`. Missing/malformed values send
 neither header, while unsupported languages retain the server's English
 fallback. Events/status include requested and resolved language tags.
+
+The `0.12.4` and newer AARs use 16 KB-compatible ELF `PT_LOAD` alignment for
+the 64-bit native crash library. Publication verifies the AAR and its matching
+unstripped native-symbols archive before either artifact is released.
 
 The SDK sends a stable per-install id (`X-Hands-Device-Id`, from
 `HandsDeviceId`; the server still accepts the legacy `X-Quiver-Device-Id`) so

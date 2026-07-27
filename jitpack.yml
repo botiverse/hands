@@ -13,4 +13,4 @@ before_install:
   - sdk install gradle 8.10.2 < /dev/null
   - sdk default gradle 8.10.2 < /dev/null
 install:
-  - cd clients/android && gradle --no-daemon -PVERSION_NAME=$VERSION publishToMavenLocal
+  - cd clients/android && SDK_VERSION="${VERSION#android-sdk-v}" && gradle --no-daemon -PVERSION_NAME="$SDK_VERSION" publishToMavenLocal
