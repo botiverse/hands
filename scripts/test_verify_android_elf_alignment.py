@@ -19,14 +19,22 @@ def elf64(
     congruent: bool = True,
     elf_class: int = 2,
     congruence_offset: int | None = None,
+    byte_order: int = 1,
+    elf_type: int = 3,
+    file_size: int = 128,
+    memory_size: int = 128,
+    materialize_segment: bool = True,
+    truncate_to: int | None = None,
 ) -> bytes:
-    data = bytearray(256)
-    data[:6] = b"\x7fELF" + bytes((elf_class, 1))
+    offset = 0 if congruent else (congruence_offset or 4096)
+    data_size = max(256, offset + file_size) if materialize_segment else 256
+    data = bytearray(data_size)
+    data[:6] = b"\x7fELF" + bytes((elf_class, byte_order))
+    struct.pack_into("<H", data, 16, elf_type)
     struct.pack_into("<H", data, 18, machine)
     struct.pack_into("<Q", data, 32, 64)
     struct.pack_into("<H", data, 54, 56)
     struct.pack_into("<H", data, 56, 1)
-    offset = 0 if congruent else (congruence_offset or 4096)
     struct.pack_into(
         "<IIQQQQQQ",
         data,
@@ -36,11 +44,12 @@ def elf64(
         offset,
         0,
         0,
-        128,
-        128,
+        file_size,
+        memory_size,
         alignment,
     )
-    return bytes(data)
+    encoded = bytes(data)
+    return encoded if truncate_to is None else encoded[:truncate_to]
 
 
 class VerifyAndroidElfAlignmentTest(unittest.TestCase):
@@ -144,6 +153,125 @@ class VerifyAndroidElfAlignmentTest(unittest.TestCase):
                     elf64(alignment=16 * 1024, machine=62),
                 )
             with self.assertRaisesRegex(ValueError, "does not match expected"):
+                verify_archive(archive_path)
+
+    def test_rejects_big_endian_library(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            archive_path = Path(directory) / "sdk.aar"
+            with zipfile.ZipFile(archive_path, "w") as archive:
+                archive.writestr(
+                    "jni/arm64-v8a/libhandscrash.so",
+                    elf64(
+                        alignment=16 * 1024,
+                        machine=183,
+                        byte_order=2,
+                    ),
+                )
+                archive.writestr(
+                    "jni/x86_64/libhandscrash.so",
+                    elf64(alignment=16 * 1024, machine=62),
+                )
+            with self.assertRaisesRegex(ValueError, "must be little-endian"):
+                verify_archive(archive_path)
+
+    def test_rejects_et_rel_library(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            archive_path = Path(directory) / "sdk.aar"
+            with zipfile.ZipFile(archive_path, "w") as archive:
+                archive.writestr(
+                    "jni/arm64-v8a/libhandscrash.so",
+                    elf64(alignment=16 * 1024, machine=183, elf_type=1),
+                )
+                archive.writestr(
+                    "jni/x86_64/libhandscrash.so",
+                    elf64(alignment=16 * 1024, machine=62),
+                )
+            with self.assertRaisesRegex(ValueError, "must contain ET_DYN"):
+                verify_archive(archive_path)
+
+    def test_rejects_segment_file_size_above_memory_size(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            archive_path = Path(directory) / "sdk.aar"
+            with zipfile.ZipFile(archive_path, "w") as archive:
+                archive.writestr(
+                    "jni/arm64-v8a/libhandscrash.so",
+                    elf64(
+                        alignment=16 * 1024,
+                        machine=183,
+                        file_size=256,
+                        memory_size=128,
+                    ),
+                )
+                archive.writestr(
+                    "jni/x86_64/libhandscrash.so",
+                    elf64(alignment=16 * 1024, machine=62),
+                )
+            with self.assertRaisesRegex(ValueError, "exceeds memory size"):
+                verify_archive(archive_path)
+
+    def test_rejects_segment_range_past_file_end(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            archive_path = Path(directory) / "sdk.aar"
+            with zipfile.ZipFile(archive_path, "w") as archive:
+                archive.writestr(
+                    "jni/arm64-v8a/libhandscrash.so",
+                    elf64(
+                        alignment=16 * 1024,
+                        machine=183,
+                        file_size=4096,
+                        memory_size=4096,
+                        materialize_segment=False,
+                    ),
+                )
+                archive.writestr(
+                    "jni/x86_64/libhandscrash.so",
+                    elf64(alignment=16 * 1024, machine=62),
+                )
+            with self.assertRaisesRegex(ValueError, "exceeds file bounds"):
+                verify_archive(archive_path)
+
+    def test_rejects_zero_length_segment_offset_past_file_end(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            archive_path = Path(directory) / "sdk.aar"
+            with zipfile.ZipFile(archive_path, "w") as archive:
+                archive.writestr(
+                    "jni/arm64-v8a/libhandscrash.so",
+                    elf64(
+                        alignment=16 * 1024,
+                        machine=183,
+                        congruent=False,
+                        congruence_offset=16 * 1024,
+                        file_size=0,
+                        memory_size=0,
+                        materialize_segment=False,
+                    ),
+                )
+                archive.writestr(
+                    "jni/x86_64/libhandscrash.so",
+                    elf64(alignment=16 * 1024, machine=62),
+                )
+            with self.assertRaisesRegex(ValueError, "exceeds file bounds"):
+                verify_archive(archive_path)
+
+    def test_rejects_truncated_library_with_intact_program_headers(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            archive_path = Path(directory) / "sdk.aar"
+            with zipfile.ZipFile(archive_path, "w") as archive:
+                archive.writestr(
+                    "jni/arm64-v8a/libhandscrash.so",
+                    elf64(
+                        alignment=16 * 1024,
+                        machine=183,
+                        file_size=8192,
+                        memory_size=8192,
+                        truncate_to=1024,
+                    ),
+                )
+                archive.writestr(
+                    "jni/x86_64/libhandscrash.so",
+                    elf64(alignment=16 * 1024, machine=62),
+                )
+            with self.assertRaisesRegex(ValueError, "exceeds file bounds"):
                 verify_archive(archive_path)
 
     def test_rejects_non_power_of_two_alignment(self) -> None:

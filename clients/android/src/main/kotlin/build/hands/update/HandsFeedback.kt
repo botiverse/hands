@@ -249,8 +249,7 @@ class HandsFeedback(
 
     companion object {
         /** Hands Android SDK version reported in feedback/crash metadata. */
-        @JvmField
-        val SDK_VERSION = BuildConfig.HANDS_SDK_VERSION
+        const val SDK_VERSION = BuildConfig.HANDS_SDK_VERSION
 
         /** Server-enforced: at most 9 attachments per ticket. */
         const val MAX_ATTACHMENTS = 9

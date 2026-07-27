@@ -14,6 +14,7 @@ from pathlib import Path
 
 
 PT_LOAD = 1
+ET_DYN = 3
 MIN_PAGE_ALIGNMENT = 16 * 1024
 REQUIRED_ABIS = ("arm64-v8a", "x86_64")
 EXPECTED_MACHINES = {
@@ -26,6 +27,8 @@ EXPECTED_MACHINES = {
 class LoadSegment:
     offset: int
     virtual_address: int
+    file_size: int
+    memory_size: int
     alignment: int
 
 
@@ -37,12 +40,17 @@ def load_segments(
 
     elf_class = data[4]
     byte_order = data[5]
-    endian = "<" if byte_order == 1 else ">" if byte_order == 2 else None
-    if endian is None:
-        raise ValueError(f"unsupported ELF byte order: {byte_order}")
+    if byte_order != 1:
+        raise ValueError(
+            f"64-bit Android ELF must be little-endian, got byte order {byte_order}"
+        )
+    endian = "<"
 
     if elf_class != 2:
         raise ValueError(f"64-bit ABI entry must contain ELFCLASS64, got class {elf_class}")
+    elf_type = struct.unpack_from(f"{endian}H", data, 16)[0]
+    if elf_type != ET_DYN:
+        raise ValueError(f"shared library must contain ET_DYN, got ELF type {elf_type}")
     machine = struct.unpack_from(f"{endian}H", data, 18)[0]
     if expected_machine is not None and machine != expected_machine:
         raise ValueError(
@@ -69,8 +77,17 @@ def load_segments(
         fields = struct.unpack_from(segment_format, data, start)
         if fields[0] != PT_LOAD:
             continue
-        offset, virtual_address, alignment = fields[2], fields[3], fields[7]
-        segments.append(LoadSegment(offset, virtual_address, alignment))
+        offset, virtual_address = fields[2], fields[3]
+        file_size, memory_size, alignment = fields[5], fields[6], fields[7]
+        segments.append(
+            LoadSegment(
+                offset=offset,
+                virtual_address=virtual_address,
+                file_size=file_size,
+                memory_size=memory_size,
+                alignment=alignment,
+            )
+        )
 
     if not segments:
         raise ValueError("ELF file contains no PT_LOAD segments")
@@ -105,11 +122,25 @@ def verify_archive(archive_path: Path) -> dict[str, object]:
             if abi is None:
                 raise ValueError(f"internal ABI resolution failure: {entry.filename}")
             seen_abis.add(abi)
+            elf_data = archive.read(entry)
             segments = load_segments(
-                archive.read(entry),
+                elf_data,
                 expected_machine=EXPECTED_MACHINES[abi],
             )
             for segment in segments:
+                if segment.file_size > segment.memory_size:
+                    raise ValueError(
+                        f"{entry.filename} PT_LOAD file size {segment.file_size} "
+                        f"exceeds memory size {segment.memory_size}"
+                    )
+                if segment.offset > len(elf_data) or (
+                    segment.offset + segment.file_size > len(elf_data)
+                ):
+                    raise ValueError(
+                        f"{entry.filename} PT_LOAD file range "
+                        f"[{segment.offset}, {segment.offset + segment.file_size}) "
+                        f"exceeds file bounds {len(elf_data)}"
+                    )
                 if segment.alignment == 0 or (
                     segment.alignment & (segment.alignment - 1)
                 ) != 0:
