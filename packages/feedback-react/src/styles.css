@@ -225,6 +225,7 @@
   margin-bottom: 8px;
 }
 .hands-feedback-conversation {
+  align-content: start;
   display: grid;
   flex: 1;
   gap: 10px;
@@ -236,10 +237,15 @@
 }
 .hands-feedback-conversation article[data-author="reporter"] {
   background: var(--hf-surface);
-  margin-left: min(48px, 8vw);
+  justify-self: end;
 }
 .hands-feedback-conversation article[data-author="staff"] {
-  margin-right: min(48px, 8vw);
+  justify-self: start;
+}
+.hands-feedback-conversation article {
+  max-width: min(42rem, 88%);
+  overflow-wrap: anywhere;
+  width: fit-content;
 }
 .hands-feedback-comment-meta {
   display: flex;
