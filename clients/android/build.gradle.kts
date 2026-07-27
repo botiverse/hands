@@ -1,3 +1,6 @@
+import org.gradle.api.publish.maven.tasks.PublishToMavenLocal
+import org.gradle.api.publish.maven.tasks.PublishToMavenRepository
+
 plugins {
     id("com.android.library") version "8.7.3"
     id("org.jetbrains.kotlin.android") version "2.0.21"
@@ -6,16 +9,27 @@ plugins {
 }
 
 group = "build.hands"
-version = providers.gradleProperty("VERSION_NAME").orElse("0.1.0-SNAPSHOT").get()
+val requestedVersion = providers.gradleProperty("VERSION_NAME")
+val sdkVersion = requestedVersion.orElse("0.1.0-SNAPSHOT").get()
+if (!Regex("[0-9]+\\.[0-9]+\\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?").matches(sdkVersion)) {
+    throw GradleException("VERSION_NAME must be a semantic SDK version: $sdkVersion")
+}
+version = sdkVersion
 
 val nativeSymbolsZip = layout.buildDirectory.file(
     "outputs/native-symbols/hands-android-sdk-${project.version}-native-symbols.zip"
 )
+val releaseAar = layout.buildDirectory.file(
+    "outputs/aar/hands-android-sdk-release.aar"
+)
+val verifyAndroidElfScript = rootProject.file("../../scripts/verify_android_elf_alignment.py")
+val testAndroidElfScript = rootProject.file("../../scripts/test_verify_android_elf_alignment.py")
 
 val packageReleaseNativeSymbols by tasks.registering(Exec::class) {
     dependsOn("externalNativeBuildRelease")
     inputs.file(rootProject.file("../../scripts/package_android_native_symbols.sh"))
     outputs.file(nativeSymbolsZip)
+    outputs.upToDateWhen { false }
     commandLine(
         "bash",
         rootProject.file("../../scripts/package_android_native_symbols.sh"),
@@ -38,6 +52,50 @@ val testNativeRecordIdentity by tasks.registering(Exec::class) {
     commandLine("bash", file("src/test/scripts/test_qnc2_record_identity.sh"))
 }
 
+val testAndroidElfVerifier by tasks.registering(Exec::class) {
+    group = "verification"
+    description = "Runs deterministic unit tests for the Android ELF verifier."
+    inputs.files(verifyAndroidElfScript, testAndroidElfScript)
+    environment("PYTHONDONTWRITEBYTECODE", "1")
+    commandLine("python3", testAndroidElfScript)
+}
+
+val verifyReleaseAarElfAlignment by tasks.registering(Exec::class) {
+    group = "verification"
+    description = "Verifies every 64-bit ELF packaged in the release AAR."
+    dependsOn("assembleRelease")
+    inputs.files(verifyAndroidElfScript, releaseAar)
+    commandLine("python3", verifyAndroidElfScript, "--archive", releaseAar.get().asFile)
+}
+
+val verifyReleaseNativeSymbolsElfAlignment by tasks.registering(Exec::class) {
+    group = "verification"
+    description = "Verifies every 64-bit ELF packaged in the native-symbols archive."
+    dependsOn(packageReleaseNativeSymbols)
+    inputs.files(verifyAndroidElfScript, nativeSymbolsZip)
+    commandLine("python3", verifyAndroidElfScript, "--archive", nativeSymbolsZip.get().asFile)
+}
+
+val verifyReleaseElfAlignment by tasks.registering {
+    group = "verification"
+    description = "Publication gate for release AAR and native-symbols 16 KB ELF alignment."
+    dependsOn(
+        testAndroidElfVerifier,
+        verifyReleaseAarElfAlignment,
+        verifyReleaseNativeSymbolsElfAlignment,
+    )
+}
+
+val validatePublicationVersion by tasks.registering {
+    group = "verification"
+    description = "Refuses Maven publication without one explicit SDK version source."
+    doLast {
+        if (!requestedVersion.isPresent) {
+            throw GradleException("Refusing Maven publication without -PVERSION_NAME")
+        }
+    }
+}
+
 android {
     namespace = "build.hands.update"
     compileSdk = 34
@@ -45,6 +103,7 @@ android {
     defaultConfig {
         minSdk = 24
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+        buildConfigField("String", "HANDS_SDK_VERSION", "\"$sdkVersion\"")
         consumerProguardFiles("consumer-rules.pro")
         ndk {
             abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86_64")
@@ -63,6 +122,9 @@ android {
         singleVariant("release") {
             withSourcesJar()
         }
+    }
+    buildFeatures {
+        buildConfig = true
     }
 }
 
@@ -87,6 +149,14 @@ dependencies {
 
 tasks.matching { it.name == "testReleaseUnitTest" }.configureEach {
     dependsOn(testNativeRecordIdentity)
+}
+
+tasks.withType<PublishToMavenLocal>().configureEach {
+    dependsOn(validatePublicationVersion, verifyReleaseElfAlignment)
+}
+
+tasks.withType<PublishToMavenRepository>().configureEach {
+    dependsOn(validatePublicationVersion, verifyReleaseElfAlignment)
 }
 
 afterEvaluate {

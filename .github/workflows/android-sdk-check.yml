@@ -6,7 +6,11 @@ on:
       - "clients/android/**"
       - "scripts/verify_android_elf_alignment.py"
       - "scripts/test_verify_android_elf_alignment.py"
+      - "scripts/package_android_native_symbols.sh"
+      - "scripts/test_android_publication_gate.sh"
       - ".github/workflows/android-sdk-check.yml"
+      - ".github/workflows/publish-android-sdk.yml"
+      - "jitpack.yml"
 
 jobs:
   assemble:
@@ -23,18 +27,10 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: "8.10.2"
-      - name: Assemble release AAR and run unit tests
-        run: gradle -p clients/android assembleRelease testReleaseUnitTest packageReleaseNativeSymbols
-      - name: Verify 16 KB ELF alignment
-        run: |
-          PYTHONDONTWRITEBYTECODE=1 python3 scripts/test_verify_android_elf_alignment.py
-          AAR="$(find clients/android/build/outputs/aar -type f -name '*-release.aar' -print -quit)"
-          SYMBOLS="$(find clients/android/build/outputs/native-symbols -type f -name '*-native-symbols.zip' -print -quit)"
-          test -n "${AAR}" && test -n "${SYMBOLS}"
-          python3 scripts/verify_android_elf_alignment.py \
-            --archive "${AAR}"
-          python3 scripts/verify_android_elf_alignment.py \
-            --archive "${SYMBOLS}"
+      - name: Build SDK and run central publication gate
+        run: gradle -p clients/android testReleaseUnitTest verifyReleaseElfAlignment -PVERSION_NAME=0.12.4
+      - name: Verify local and remote publication task graphs
+        run: scripts/test_android_publication_gate.sh
 
   api31-instrumentation:
     runs-on: ubuntu-latest

@@ -36,7 +36,8 @@ done
 [ -n "$BUILD_DIR" ] || die "--build-dir is required"
 [ -n "$OUTPUT" ] || die "--output is required"
 [ -n "$SDK_VERSION" ] || die "--sdk-version is required"
-[ -d "$BUILD_DIR/intermediates/cxx" ] || die "missing release CMake intermediates under $BUILD_DIR"
+RELEASE_CXX_DIR="$BUILD_DIR/intermediates/cxx/RelWithDebInfo"
+[ -d "$RELEASE_CXX_DIR" ] || die "missing release CMake intermediates under $BUILD_DIR"
 
 find_readelf() {
   local candidate
@@ -82,7 +83,7 @@ while IFS= read -r so; do
   sha="$(sha256sum "$so" | awk '{print $1}')"
   printf '%s\t%s\t%s\n' "$arch" "$build_id" "$sha" >> "$MANIFEST_ROWS"
   count=$((count + 1))
-done < <(find "$BUILD_DIR/intermediates/cxx" -type f -path '*/obj/*/libhandscrash.so' | sort)
+done < <(find "$RELEASE_CXX_DIR" -type f -path '*/obj/*/libhandscrash.so' | sort)
 
 [ "$count" -eq 3 ] || die "expected 3 SDK ABIs, found $count"
 for required_arch in arm64-v8a armeabi-v7a x86_64; do
@@ -121,6 +122,8 @@ PY
 mkdir -p "$(dirname "$OUTPUT")"
 OUTPUT="$(cd "$(dirname "$OUTPUT")" && pwd)/$(basename "$OUTPUT")"
 rm -f "$OUTPUT"
+# Keep workflow evidence and the later Maven classifier byte-identical.
+find "$STAGE" -exec touch -t 198001010000 {} +
 (
   cd "$STAGE"
   zip -X -qr "$OUTPUT" manifest.json arm64-v8a armeabi-v7a x86_64

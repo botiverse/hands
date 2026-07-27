@@ -8,6 +8,7 @@ import json
 import struct
 import sys
 import zipfile
+from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -15,6 +16,10 @@ from pathlib import Path
 PT_LOAD = 1
 MIN_PAGE_ALIGNMENT = 16 * 1024
 REQUIRED_ABIS = ("arm64-v8a", "x86_64")
+EXPECTED_MACHINES = {
+    "arm64-v8a": 183,  # EM_AARCH64
+    "x86_64": 62,  # EM_X86_64
+}
 
 
 @dataclass(frozen=True)
@@ -24,7 +29,9 @@ class LoadSegment:
     alignment: int
 
 
-def load_segments(data: bytes) -> list[LoadSegment]:
+def load_segments(
+    data: bytes, *, expected_machine: int | None = None
+) -> list[LoadSegment]:
     if len(data) < 64 or data[:4] != b"\x7fELF":
         raise ValueError("not an ELF file")
 
@@ -34,18 +41,18 @@ def load_segments(data: bytes) -> list[LoadSegment]:
     if endian is None:
         raise ValueError(f"unsupported ELF byte order: {byte_order}")
 
-    if elf_class == 1:
-        phoff_offset, phoff_format = 28, "I"
-        phentsize_offset, phnum_offset = 42, 44
-        program_header_size = 32
-        segment_format = f"{endian}IIIIIIII"
-    elif elf_class == 2:
-        phoff_offset, phoff_format = 32, "Q"
-        phentsize_offset, phnum_offset = 54, 56
-        program_header_size = 56
-        segment_format = f"{endian}IIQQQQQQ"
-    else:
-        raise ValueError(f"unsupported ELF class: {elf_class}")
+    if elf_class != 2:
+        raise ValueError(f"64-bit ABI entry must contain ELFCLASS64, got class {elf_class}")
+    machine = struct.unpack_from(f"{endian}H", data, 18)[0]
+    if expected_machine is not None and machine != expected_machine:
+        raise ValueError(
+            f"ELF machine {machine} does not match expected machine {expected_machine}"
+        )
+
+    phoff_offset, phoff_format = 32, "Q"
+    phentsize_offset, phnum_offset = 54, 56
+    program_header_size = 56
+    segment_format = f"{endian}IIQQQQQQ"
 
     phoff = struct.unpack_from(f"{endian}{phoff_format}", data, phoff_offset)[0]
     phentsize = struct.unpack_from(f"{endian}H", data, phentsize_offset)[0]
@@ -62,10 +69,7 @@ def load_segments(data: bytes) -> list[LoadSegment]:
         fields = struct.unpack_from(segment_format, data, start)
         if fields[0] != PT_LOAD:
             continue
-        if elf_class == 1:
-            offset, virtual_address, alignment = fields[1], fields[2], fields[7]
-        else:
-            offset, virtual_address, alignment = fields[2], fields[3], fields[7]
+        offset, virtual_address, alignment = fields[2], fields[3], fields[7]
         segments.append(LoadSegment(offset, virtual_address, alignment))
 
     if not segments:
@@ -77,6 +81,18 @@ def verify_archive(archive_path: Path) -> dict[str, object]:
     results: dict[str, object] = {}
     seen_abis: set[str] = set()
     with zipfile.ZipFile(archive_path) as archive:
+        duplicate_names = sorted(
+            name
+            for name, count in Counter(
+                entry.filename for entry in archive.infolist()
+            ).items()
+            if count > 1
+        )
+        if duplicate_names:
+            raise ValueError(
+                f"archive contains duplicate members: {', '.join(duplicate_names)}"
+            )
+
         entries = sorted(
             (entry for entry in archive.infolist() if archive_abi(entry.filename)),
             key=lambda entry: entry.filename,
@@ -89,20 +105,30 @@ def verify_archive(archive_path: Path) -> dict[str, object]:
             if abi is None:
                 raise ValueError(f"internal ABI resolution failure: {entry.filename}")
             seen_abis.add(abi)
-            segments = load_segments(archive.read(entry))
+            segments = load_segments(
+                archive.read(entry),
+                expected_machine=EXPECTED_MACHINES[abi],
+            )
             for segment in segments:
+                if segment.alignment == 0 or (
+                    segment.alignment & (segment.alignment - 1)
+                ) != 0:
+                    raise ValueError(
+                        f"{entry.filename} PT_LOAD alignment "
+                        f"0x{segment.alignment:x} is not a power of two"
+                    )
                 if segment.alignment < MIN_PAGE_ALIGNMENT:
                     raise ValueError(
                         f"{entry.filename} PT_LOAD alignment "
                         f"0x{segment.alignment:x} is below 0x{MIN_PAGE_ALIGNMENT:x}"
                     )
                 if (
-                    segment.offset % MIN_PAGE_ALIGNMENT
-                    != segment.virtual_address % MIN_PAGE_ALIGNMENT
+                    segment.offset % segment.alignment
+                    != segment.virtual_address % segment.alignment
                 ):
                     raise ValueError(
                         f"{entry.filename} PT_LOAD offset/vaddr are not congruent "
-                        "for 16 KB pages"
+                        f"for p_align=0x{segment.alignment:x}"
                     )
             results[entry.filename] = {
                 "load_segments": len(segments),
