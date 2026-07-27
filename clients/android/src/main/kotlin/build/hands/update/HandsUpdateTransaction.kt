@@ -178,14 +178,15 @@ internal class UpdateTransactionStore(
     @Synchronized
     fun write(record: UpdateTransactionRecord) {
         require(authority.matches(record)) { "update transaction authority mismatch" }
-        preferences.edit()
+        val committed = preferences.edit()
             .putString(key, json.encodeToString(UpdateTransactionRecord.serializer(), record))
-            .apply()
+            .commit()
+        check(committed) { "unable to durably persist update transaction" }
     }
 
     @Synchronized
     fun clear() {
-        preferences.edit().remove(key).apply()
+        preferences.edit().remove(key).commit()
     }
 }
 

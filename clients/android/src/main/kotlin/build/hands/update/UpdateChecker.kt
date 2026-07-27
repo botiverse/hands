@@ -288,7 +288,24 @@ class UpdateChecker(
             resolvedLanguageTag = resolvedLanguage,
         )
         if (response.requireUpdate() != null) {
-            installUpdate(response, requestedLanguage, resolvedLanguage)
+            try {
+                installUpdate(response, requestedLanguage, resolvedLanguage)
+            } catch (exception: Exception) {
+                transactionStore.read()?.takeIf {
+                    it.state == HandsUpdateState.CHECKING || it.state == HandsUpdateState.PATCHING
+                }?.let {
+                    transition(it, HandsUpdateState.FAILED, "update_start_failed", true)
+                }
+                emit(
+                    "update_start_failed",
+                    HandsUpdateState.FAILED,
+                    targetVersionCode = response.latest?.version_code,
+                    errorCode = "update_start_failed",
+                    requestedLanguageTag = requestedLanguage,
+                    resolvedLanguageTag = resolvedLanguage,
+                )
+                throw exception
+            }
         } else if (transactionStore.read()?.state == HandsUpdateState.CHECKING) {
             transactionStore.clear()
         }
@@ -404,7 +421,17 @@ class UpdateChecker(
             localFilePath = enqueued.destination.absolutePath,
             updatedAt = System.currentTimeMillis(),
         )
-        transactionStore.write(downloading)
+        try {
+            transactionStore.write(downloading)
+        } catch (exception: Exception) {
+            installer.removeDownload(enqueued.id)
+            try {
+                if (enqueued.destination.exists()) enqueued.destination.delete()
+            } catch (_: Exception) {
+                // DownloadManager removal remains the primary cleanup path.
+            }
+            throw exception
+        }
         emit(
             "full_download_started",
             HandsUpdateState.DOWNLOADING,
