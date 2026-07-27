@@ -419,6 +419,34 @@ describe("FeedbackWorkspace browser behavior", () => {
     expect(calls[0]![0].attachments[0]).toBe(file);
   });
 
+  it("shows a created ticket in the mounted inbox without a refresh or list refetch", async () => {
+    const adapter = transport();
+    adapter.listTickets = vi.fn(async () => ({
+      tickets: [],
+      nextCursor: null,
+      unreadTotal: 0,
+    }));
+    render(
+      <FeedbackProvider transport={adapter}>
+        <FeedbackWorkspace />
+      </FeedbackProvider>,
+    );
+
+    expect(await screen.findByText("No feedback yet")).toBeTruthy();
+    fireEvent.click(
+      screen.getAllByRole("button", { name: "New feedback" })[0]!,
+    );
+    fireEvent.change(screen.getByLabelText("What would you like us to know?"), {
+      target: { value: "A newly-created ticket" },
+    });
+    fireEvent.click(screen.getByText("Submit feedback"));
+    expect(await screen.findByText("Thanks")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Back" }));
+
+    expect(await screen.findByText(ticket.message)).toBeTruthy();
+    expect(adapter.listTickets).toHaveBeenCalledTimes(1);
+  });
+
   it("prevents duplicate create submission and lets the reporter cancel an in-flight upload", async () => {
     const adapter = transport();
     let uploadSignal: AbortSignal | undefined;

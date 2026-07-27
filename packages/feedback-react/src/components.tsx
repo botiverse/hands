@@ -177,6 +177,8 @@ export type FeedbackInboxProps = {
   pageSize?: number;
   hidden?: boolean;
   readTicketId?: string | null;
+  /** Newly-created authoritative ticket to expose without waiting for a list refetch. */
+  upsertTicket?: FeedbackTicketSummary | null;
 };
 
 export function FeedbackInbox({
@@ -185,6 +187,7 @@ export function FeedbackInbox({
   pageSize = 20,
   hidden = false,
   readTicketId,
+  upsertTicket,
 }: FeedbackInboxProps) {
   const { formatDate, message, reportUnread, transport } = useHandsFeedback();
   const safeError = useSafeError();
@@ -254,6 +257,14 @@ export function FeedbackInbox({
       ),
     );
   }, [readTicketId]);
+
+  useEffect(() => {
+    if (!upsertTicket) return;
+    setTickets((current) => [
+      upsertTicket,
+      ...current.filter((ticket) => ticket.id !== upsertTicket.id),
+    ]);
+  }, [upsertTicket]);
 
   const visibleTickets = tickets.filter(
     (ticket) =>
@@ -901,7 +912,7 @@ type PendingAttachment = {
 
 export type NewFeedbackProps = {
   onCancel(): void;
-  onCreated(ticketId: string): void;
+  onCreated(ticketId: string, detail?: FeedbackTicketDetail): void;
 };
 
 export function NewFeedback({ onCancel, onCreated }: NewFeedbackProps) {
@@ -982,7 +993,7 @@ export function NewFeedback({ onCancel, onCreated }: NewFeedbackProps) {
       reportUnread({ total: result.unreadTotal, source: "create" });
       createSubmission.current = null;
       setAnnouncement(copy("feedbackCreated"));
-      onCreated(result.ticket.id);
+      onCreated(result.ticket.id, result);
     } catch (cause) {
       if (!controller.signal.aborted) {
         const safe = safeError(cause);
@@ -1186,6 +1197,8 @@ export function FeedbackWorkspace({
   const route = controlledRoute ?? internalRoute;
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [readTicketId, setReadTicketId] = useState<string | null>(null);
+  const [createdTicket, setCreatedTicket] =
+    useState<FeedbackTicketSummary | null>(null);
   const originTicket = useRef<string | null>(initialTicketId ?? null);
   const pendingInboxFocus = useRef<string | null>(null);
   const rootRef = useRef<HTMLDivElement | null>(null);
@@ -1243,6 +1256,7 @@ export function FeedbackWorkspace({
       <FeedbackInbox
         hidden={route.view !== "inbox"}
         readTicketId={readTicketId}
+        upsertTicket={createdTicket}
         onNewFeedback={() => navigate({ view: "new" })}
         onSelectTicket={(ticketId) => {
           originTicket.current = ticketId;
@@ -1252,7 +1266,8 @@ export function FeedbackWorkspace({
       {route.view === "new" && (
         <NewFeedback
           onCancel={() => navigate({ view: "inbox" })}
-          onCreated={(ticketId) => {
+          onCreated={(ticketId, detail) => {
+            if (detail) setCreatedTicket(detail.ticket);
             originTicket.current = ticketId;
             navigate({ view: "ticket", ticketId });
           }}
