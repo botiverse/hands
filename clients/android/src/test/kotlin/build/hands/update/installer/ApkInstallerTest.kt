@@ -41,18 +41,28 @@ class ApkInstallerTest {
     }
 
     @Test
-    fun `prepared request marker and exact destination bind crash recovery`() {
+    fun `exact planned destination binds crash recovery without user-visible markers`() {
         val destination = File("/owned/hands-update-request.apk")
-        assertEquals(
-            "Hands update request request-42",
-            preparedDownloadDescription("request-42"),
-        )
         assertTrue(localDownloadUriMatchesDestination(destination.toURI().toString(), destination))
         assertFalse(localDownloadUriMatchesDestination(
             File("/owned/other.apk").toURI().toString(),
             destination,
         ))
         assertFalse(localDownloadUriMatchesDestination("content://downloads/42", destination))
+        assertEquals(
+            listOf(42L),
+            matchingDownloadIdsForDestination(
+                listOf(
+                    41L to File("/owned/other.apk").toURI().toString(),
+                    42L to destination.toURI().toString(),
+                ),
+                destination,
+            ),
+        )
+        assertNull(matchingDownloadIdsForDestination(
+            listOf(41L to null, 42L to destination.toURI().toString()),
+            destination,
+        ))
     }
 
     @Test

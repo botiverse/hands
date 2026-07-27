@@ -78,8 +78,15 @@ internal inline fun readDownloadDestinationScan(
     DownloadDestinationScan(readable = false)
 }
 
-internal fun preparedDownloadDescription(requestId: String): String =
-    "Hands update request $requestId"
+internal fun matchingDownloadIdsForDestination(
+    rows: List<Pair<Long, String?>>,
+    destination: File,
+): List<Long>? {
+    if (rows.any { (_, localUri) -> localUri == null }) return null
+    return rows.filter { (_, localUri) ->
+        localDownloadUriMatchesDestination(localUri, destination)
+    }.map { (id) -> id }
+}
 
 data class EnqueuedApkDownload(
     val id: Long,
@@ -189,7 +196,6 @@ class ApkInstaller(private val context: Context) {
         downloadUrl: String,
         fileName: String = "quiver-update.apk",
         title: String = "App update",
-        requestId: String? = null,
     ): EnqueuedApkDownload {
         val destination = downloadDestination(fileName)
         if (destination.exists() && !destination.delete()) {
@@ -201,7 +207,7 @@ class ApkInstaller(private val context: Context) {
 
         val request = DownloadManager.Request(Uri.parse(downloadUrl))
             .setTitle(title)
-            .setDescription(requestId?.let(::preparedDownloadDescription) ?: "Downloading latest version…")
+            .setDescription("Downloading latest version…")
             .setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
             .setAllowedOverMetered(true)
             .setAllowedOverRoaming(true)
@@ -257,29 +263,19 @@ class ApkInstaller(private val context: Context) {
         }
     }
 
-    internal fun scanPreparedDownload(
-        requestId: String,
-        destination: File,
-    ): DownloadDestinationScan {
+    internal fun scanDownloadsForDestination(destination: File): DownloadDestinationScan {
         val dm = ContextCompat.getSystemService(context, DownloadManager::class.java)
             ?: return DownloadDestinationScan(readable = false)
         return readDownloadDestinationScan {
             val cursor = dm.query(DownloadManager.Query()) ?: return@readDownloadDestinationScan null
             cursor.use {
-                val ids = mutableListOf<Long>()
                 val idColumn = it.getColumnIndexOrThrow(DownloadManager.COLUMN_ID)
                 val uriColumn = it.getColumnIndexOrThrow(DownloadManager.COLUMN_LOCAL_URI)
-                val descriptionColumn = it.getColumnIndexOrThrow(DownloadManager.COLUMN_DESCRIPTION)
-                val expectedDescription = preparedDownloadDescription(requestId)
+                val rows = mutableListOf<Pair<Long, String?>>()
                 while (it.moveToNext()) {
-                    if (it.getString(descriptionColumn) != expectedDescription) continue
-                    val localUri = it.getString(uriColumn)
-                    if (localUri != null && !localDownloadUriMatchesDestination(localUri, destination)) {
-                        return@readDownloadDestinationScan null
-                    }
-                    ids += it.getLong(idColumn)
+                    rows += it.getLong(idColumn) to it.getString(uriColumn)
                 }
-                ids
+                matchingDownloadIdsForDestination(rows, destination)
             }
         }
     }

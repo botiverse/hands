@@ -521,7 +521,6 @@ class UpdateChecker(
             downloadUrl = asset.download_url,
             fileName = fileName,
             title = "${response.app.slug} v${latest.version}",
-            requestId = downloadRequestId,
         )
         val downloading = prepared.copy(
             state = HandsUpdateState.DOWNLOADING,
@@ -578,6 +577,10 @@ class UpdateChecker(
     private fun reconcileTransaction(): HandsUpdateStatus {
         val installed = installedVersionCodeNow()
         val record = transactionStore.read() ?: return idleStatus(installed)
+        if (record.downloadRequestId != null && record.downloadId == null &&
+            record.localFilePath != null) {
+            return reconcilePreparedDownload(record, installed)
+        }
         if (record.state == HandsUpdateState.INSTALLED) return record.status(installed)
         val target = record.targetVersionCode
         if (target != null && installed != null && installed >= target) {
@@ -605,11 +608,6 @@ class UpdateChecker(
                 installed = installed,
             )
         }
-        if (record.downloadRequestId != null && record.downloadId == null &&
-            record.localFilePath != null) {
-            return reconcilePreparedDownload(record, installed)
-        }
-
         return when (record.state) {
             HandsUpdateState.CHECKING -> {
                 if (isExpired(record, CHECK_TIMEOUT_MS)) {
@@ -724,8 +722,7 @@ class UpdateChecker(
         installed: Long?,
     ): HandsUpdateStatus {
         val destination = record.localFilePath?.let(::File) ?: return record.status(installed)
-        val requestId = record.downloadRequestId ?: return record.status(installed)
-        val scan = installer.scanPreparedDownload(requestId, destination)
+        val scan = installer.scanDownloadsForDestination(destination)
         val recovery = preparedDownloadRecovery(scan.readable, scan.matchingDownloadIds)
         return when (recovery.action) {
             PreparedDownloadRecoveryAction.NO_MATCH -> cleanupTransition(
@@ -751,7 +748,7 @@ class UpdateChecker(
                     requestedLanguageTag = recovered.requestedLanguageTag,
                     resolvedLanguageTag = recovered.resolvedLanguageTag,
                 )
-                recovered.status(installed)
+                reconcileTransaction()
             }
             PreparedDownloadRecoveryAction.KEEP_UNCERTAIN -> {
                 val error = if (scan.readable) {
