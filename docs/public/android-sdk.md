@@ -62,11 +62,39 @@ val checker = UpdateChecker(
     installedVersionCode = BuildConfig.VERSION_CODE.toLong(),
     channel = BuildConfig.HANDS_CHANNEL,
     arch = Build.SUPPORTED_ABIS.firstOrNull(),
+    // Pass the app-selected locale; the SDK never guesses system locale.
+    languageTag = currentAppLanguageTag,
+    eventListener = HandsUpdateEventListener(updateDiagnostics::append),
 )
 
-// suspending; returns the response even when no update is available
-val response = checker.checkAndInstall()
+// Idempotent: checks only from a restartable state, waits for active work,
+// and reopens the same verified APK after returning from the system installer.
+val status = checker.install()
 ```
+
+Call `checker.status()` on update-page/lifecycle resume and map the stable
+lower-case states: `idle`, `checking`, `patching`, `downloading`,
+`ready_to_install`, `installer_opened`, `failed`, `stale`, and `installed`.
+`installed` is reached only after PackageManager observes the exact target
+version. If the user returns without accepting the system installer, the state
+remains installable; `reopenPendingInstaller()` reopens the same APK without a
+duplicate download.
+
+The SDK persists a package/origin/app/channel/product/platform/architecture
+bound transaction containing target/build/asset identity, DownloadManager id,
+and the expected app-scoped file. It deliberately does not persist signed
+download URLs or auth material. Resume reconciliation checks installed version,
+DownloadManager, path ownership, file size, SHA-256 when supplied, exact APK
+package/target version, and signing certificates. Missing, changed, or unsafe
+inputs fail closed as `stale`/`failed` with a stable `errorCode`.
+
+`HandsUpdateEventListener` receives structured check, delta download/apply/
+validation/fallback, full-download, content-URI, installer, reconciliation,
+failure, and cleanup events for inclusion in host feedback diagnostics; Logcat
+is not the only telemetry path. Valid explicit BCP-47 `languageTag` values are
+sent as `X-Hands-Lang` and `Accept-Language`. Missing/malformed values send
+neither header, while unsupported languages retain the server's English
+fallback. Events/status include requested and resolved language tags.
 
 The SDK sends a stable per-install id (`X-Hands-Device-Id`, from
 `HandsDeviceId`; the server still accepts the legacy `X-Quiver-Device-Id`) so
@@ -75,7 +103,8 @@ the server can bucket the device for **staged rollouts**
 devices, and each device keeps its bucket as you raise the percentage.
 
 To check without installing (e.g. to render your own "update available" UI),
-call `HandsClient(baseUrl).checkForUpdate(...)` and act on the result.
+call `HandsClient(baseUrl).checkForUpdate(..., languageTag = ...)` and act on
+the result.
 
 ## Feedback
 

@@ -1,5 +1,6 @@
 package build.hands.update.internal
 
+import build.hands.update.normalizedLanguageTag
 import build.hands.update.models.UpdateCheckResponse
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -37,6 +38,7 @@ class HandsClient(
         arch: String? = null,
         filetype: String = "apk",
         deviceId: String? = null,
+        languageTag: String? = null,
     ): UpdateCheckResponse = withContext(Dispatchers.IO) {
         val urlBuilder = baseUrl.trimEnd('/').toHttpUrl().newBuilder()
             .addPathSegments("public/v2/apps")
@@ -57,6 +59,12 @@ class HandsClient(
         if (!deviceId.isNullOrBlank()) {
             // Stable per-install id; the server uses it to bucket staged rollouts.
             requestBuilder.header("X-Hands-Device-Id", deviceId)
+        }
+        normalizedLanguageTag(languageTag)?.let { normalized ->
+            // Locale is explicit caller intent. The SDK never guesses the
+            // device/system locale, and malformed values are not put on wire.
+            requestBuilder.header("X-Hands-Lang", normalized)
+            requestBuilder.header("Accept-Language", normalized)
         }
         val request = requestBuilder.build()
 
