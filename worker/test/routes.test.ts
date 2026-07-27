@@ -10861,6 +10861,37 @@ describe("Hands iOS simulator QA artifacts", () => {
     expect((await handleListReporterFeedback(context("list", credentialA.token, undefined, undefined, ""))).status).toBe(400);
     expect((await handleListReporterFeedback(context("list", null))).status).toBe(401);
 
+    const rateReporter = "rate_limit_reporter_123456789";
+    const firstRateRequest = await handleListReporterFeedback(context(
+      "list",
+      credentialA.token,
+      undefined,
+      undefined,
+      rateReporter,
+    ));
+    expect(firstRateRequest.status).toBe(200);
+    const { computeReporterAuditHash: reporterAuditHash } =
+      await import("../src/lib/reporter_audit");
+    const rateReporterHash = await reporterAuditHash({
+      key: env.FEEDBACK_AUDIT_HMAC_KEY,
+      appId: "app-ios",
+      integrationId: integrationA,
+      reporterId: rateReporter,
+    });
+    await env.DB.prepare(
+      `UPDATE feedback_reporter_rate_windows SET request_count = 59
+       WHERE app_id = 'app-ios' AND reporter_integration_id = ?1
+         AND reporter_hash = ?2 AND endpoint = 'list'`,
+    ).bind(integrationA, rateReporterHash).run();
+    expect((await handleListReporterFeedback(context(
+      "list", credentialA.token, undefined, undefined, rateReporter,
+    ))).status).toBe(200);
+    const rateLimited = await handleListReporterFeedback(context(
+      "list", credentialA.token, undefined, undefined, rateReporter,
+    ));
+    expect(rateLimited.status).toBe(429);
+    expect(Number(rateLimited.headers.get("retry-after"))).toBeGreaterThan(0);
+
     const submissionId = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
     const makeComment = () => handleAddReporterComment(context(
       "comment",
@@ -10934,10 +10965,21 @@ describe("Hands iOS simulator QA artifacts", () => {
          VALUES (?1, ?2, 'system', 'system', ?1, 0, ?3)`,
       ).bind(id, ticketA, now + 100).run();
     }
+    const detailBatch = env.DB.batch.bind(env.DB);
+    let detailBatchStages = 0;
+    env.DB.batch = async (statements: unknown[]) => {
+      detailBatchStages += 1;
+      return detailBatch(statements);
+    };
     const page1 = await handleGetReporterFeedback(context(
       "detail", credentialA.token, ticketA, undefined, reporterId,
       { comment_limit: "2" },
     ));
+    env.DB.batch = detailBatch;
+    expect(detailBatchStages).toBe(4);
+    expect(page1.headers.get("server-timing")).toMatch(
+      /^hands_auth;dur=\d+\.\d, hands_preflight;dur=\d+\.\d, hands_commit;dur=\d+\.\d, hands_postcommit;dur=\d+\.\d$/,
+    );
     const page1Body = await page1.json() as any;
     expect(page1Body.ticket).toMatchObject({ unread: true, unread_count: 2 });
     expect(page1Body.unread_total).toBe(1);
@@ -11083,32 +11125,33 @@ describe("Hands iOS simulator QA artifacts", () => {
 
     const raceCommentId = "10101010-1010-4010-8010-101010101010";
     const originalPrepare = env.DB.prepare.bind(env.DB);
+    const raceOriginalBatch = env.DB.batch.bind(env.DB);
     let injectRace = true;
+    let raceReadPrepared = false;
     env.DB.prepare = (sql: string) => {
       const statement = originalPrepare(sql);
-      if (!sql.includes("SELECT id, author_type, body, created_at")) return statement;
-      const originalBind = statement.bind.bind(statement);
-      statement.bind = (...params: unknown[]) => {
-        const bound = originalBind(...params);
-        const originalAll = bound.all.bind(bound);
-        bound.all = async () => {
-          const snapshot = await originalAll();
-          if (injectRace) {
-            injectRace = false;
-            await originalPrepare(
-              `INSERT INTO feedback_comments
-               (id, ticket_id, author_actor, author_type, body, internal, created_at)
-               VALUES (?1, ?2, 'staff:test', 'staff', 'raced after snapshot', 0, ?3)`,
-            ).bind(raceCommentId, ticketA, now + 200).run();
-          }
-          return snapshot;
-        };
-        return bound;
-      };
+      if (
+        sql.includes("FROM feedback_comments fc")
+        && sql.includes("fc.reporter_sequence")
+      ) raceReadPrepared = true;
       return statement;
+    };
+    env.DB.batch = async (statements: unknown[]) => {
+      const snapshot = await raceOriginalBatch(statements);
+      if (injectRace && raceReadPrepared) {
+        injectRace = false;
+        raceReadPrepared = false;
+        await originalPrepare(
+          `INSERT INTO feedback_comments
+           (id, ticket_id, author_actor, author_type, body, internal, created_at)
+           VALUES (?1, ?2, 'staff:test', 'staff', 'raced after snapshot', 0, ?3)`,
+        ).bind(raceCommentId, ticketA, now + 200).run();
+      }
+      return snapshot;
     };
     const raceDetail = await handleGetReporterFeedback(context("detail", credentialA.token, ticketA));
     env.DB.prepare = originalPrepare;
+    env.DB.batch = raceOriginalBatch;
     const raceBody = await raceDetail.json() as any;
     expect(raceBody.comments.some((comment: any) => comment.id === raceCommentId)).toBe(false);
     expect(raceBody.ticket).toMatchObject({ unread: true, unread_count: 1 });

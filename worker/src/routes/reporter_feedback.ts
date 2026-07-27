@@ -157,7 +157,8 @@ async function consumeRateLimit(
      VALUES (?1, ?2, ?3, ?4, ?5, ?6, 1, ?7)
      ON CONFLICT(app_id, reporter_integration_id, reporter_hash,
                  audit_key_version, endpoint, window_started_at)
-     DO UPDATE SET request_count = request_count + 1, updated_at = excluded.updated_at`,
+     DO UPDATE SET request_count = request_count + 1, updated_at = excluded.updated_at
+     RETURNING request_count`,
   ).bind(
     principal.appId,
     principal.integrationId,
@@ -167,23 +168,16 @@ async function consumeRateLimit(
     windowStartedAt,
     now,
   );
-  await c.env.DB.batch([upsert(pseudonym.hash), upsert("integration-total")]);
-  const { results } = await c.env.DB.prepare(
-    `SELECT reporter_hash, request_count
-     FROM feedback_reporter_rate_windows
-     WHERE app_id = ?1 AND reporter_integration_id = ?2
-       AND reporter_hash IN (?3, 'integration-total')
-       AND audit_key_version = ?4 AND endpoint = ?5 AND window_started_at = ?6`,
-  ).bind(
-    principal.appId,
-    principal.integrationId,
-    pseudonym.hash,
-    pseudonym.version,
-    endpoint,
-    windowStartedAt,
-  ).all<{ reporter_hash: string; request_count: number }>();
-  const reporterCount = results.find((row) => row.reporter_hash === pseudonym.hash)?.request_count ?? 0;
-  const integrationCount = results.find((row) => row.reporter_hash === "integration-total")?.request_count ?? 0;
+  // RETURNING makes the atomic increment its own authoritative limit read;
+  // a separate SELECT would add latency and create another observable race.
+  const [reporterResult, integrationResult] = await c.env.DB.batch([
+    upsert(pseudonym.hash),
+    upsert("integration-total"),
+  ]);
+  const reporterCount = (reporterResult?.results[0] as { request_count?: number } | undefined)
+    ?.request_count ?? 0;
+  const integrationCount = (integrationResult?.results[0] as { request_count?: number } | undefined)
+    ?.request_count ?? 0;
   if (reporterCount > limit.reporter || integrationCount > limit.integration) {
     c.header("Retry-After", String(Math.max(1, Math.ceil((windowStartedAt + limit.windowMs - now) / 1000))));
     return { ok: false as const, response: c.json({ error: "reporter rate limit exceeded" }, 429) };
@@ -370,7 +364,11 @@ export async function handleListReporterFeedback(c: ReporterContext) {
   });
 }
 
-async function ownedTicket(c: ReporterContext, principal: ReporterPrincipal, ticketId: string) {
+function ownedTicketStatement(
+  c: ReporterContext,
+  principal: ReporterPrincipal,
+  ticketId: string,
+) {
   return c.env.DB.prepare(
     `SELECT t.id, t.kind, t.status, t.message, t.version_name, t.version_code,
             t.channel, t.created_at, t.updated_at, a.org_id,
@@ -390,19 +388,22 @@ async function ownedTicket(c: ReporterContext, principal: ReporterPrincipal, tic
       AND rr.ticket_id = t.id
      WHERE t.id = ?1 AND t.app_id = ?2
        AND t.reporter_integration_id = ?3 AND t.reporter_id = ?4`,
-  ).bind(ticketId, principal.appId, principal.integrationId, principal.reporterId)
+  ).bind(ticketId, principal.appId, principal.integrationId, principal.reporterId);
+}
+
+async function ownedTicket(c: ReporterContext, principal: ReporterPrincipal, ticketId: string) {
+  return ownedTicketStatement(c, principal, ticketId)
     .first<Record<string, unknown> & { org_id: string | null }>();
 }
 
-async function markTicketRead(
+function markTicketReadStatement(
   c: ReporterContext,
   principal: ReporterPrincipal,
   ticketId: string,
-  latest: { id: string; reporter_sequence: number } | null,
-): Promise<void> {
-  if (!latest) return;
+  latest: { id: string; reporter_sequence: number },
+) {
   const now = Date.now();
-  await c.env.DB.prepare(
+  return c.env.DB.prepare(
     `INSERT INTO feedback_reporter_ticket_reads
      (app_id, reporter_integration_id, reporter_id, ticket_id,
       read_through_sequence, read_through_comment_id, updated_at)
@@ -424,42 +425,84 @@ async function markTicketRead(
     latest.reporter_sequence,
     latest.id,
     now,
-  ).run();
+  );
 }
 
 export async function handleGetReporterFeedback(c: ReporterContext) {
+  const startedAt = performance.now();
   const authorized = await authorize(c, "feedback:read", "detail");
   if (!authorized.ok) return authorized.response;
+  const authorizedAt = performance.now();
   const ticketId = fullUuid(c.req.param("ticketId"));
   if (!ticketId) return ticketNotFound(c);
-  const ticket = await ownedTicket(c, authorized.principal, ticketId);
-  if (!ticket) return ticketNotFound(c);
   const commentLimit = Math.min(100, Math.max(1, Number(c.req.query("comment_limit") ?? "50") || 50));
   const commentCursor = decodeCommentCursor(c.req.query("comment_cursor"));
   if (!commentCursor) return c.json({ error: "invalid comment cursor" }, 400);
   const commentStatement = commentCursor.mode === "sequence"
     ? c.env.DB.prepare(
-        `SELECT id, author_type, body, created_at, reporter_sequence
-         FROM feedback_comments
-         WHERE ticket_id = ?1 AND internal = 0 AND reporter_sequence > ?2
-         ORDER BY reporter_sequence ASC LIMIT ?3`,
-      ).bind(ticketId, commentCursor.sequence, commentLimit + 1)
+        `SELECT fc.id, fc.author_type, fc.body, fc.created_at, fc.reporter_sequence
+         FROM feedback_comments fc
+         JOIN feedback_tickets t ON t.id = fc.ticket_id
+         WHERE fc.ticket_id = ?1 AND t.app_id = ?2
+           AND t.reporter_integration_id = ?3 AND t.reporter_id = ?4
+           AND fc.internal = 0 AND fc.reporter_sequence > ?5
+         ORDER BY fc.reporter_sequence ASC LIMIT ?6`,
+      ).bind(
+        ticketId,
+        authorized.principal.appId,
+        authorized.principal.integrationId,
+        authorized.principal.reporterId,
+        commentCursor.sequence,
+        commentLimit + 1,
+      )
     : c.env.DB.prepare(
-        `SELECT id, author_type, body, created_at, reporter_sequence
-         FROM feedback_comments
-         WHERE ticket_id = ?1 AND internal = 0
-           AND (created_at > ?2 OR (created_at = ?2 AND id > ?3))
-         ORDER BY created_at ASC, id ASC LIMIT ?4`,
-      ).bind(ticketId, commentCursor.createdAt, commentCursor.id, commentLimit + 1);
-  const [{ results: comments }, { results: attachments }] = await Promise.all([
-    commentStatement.all<Record<string, unknown>>(),
+        `SELECT fc.id, fc.author_type, fc.body, fc.created_at, fc.reporter_sequence
+         FROM feedback_comments fc
+         JOIN feedback_tickets t ON t.id = fc.ticket_id
+         WHERE fc.ticket_id = ?1 AND t.app_id = ?2
+           AND t.reporter_integration_id = ?3 AND t.reporter_id = ?4
+           AND fc.internal = 0
+           AND (fc.created_at > ?5 OR (fc.created_at = ?5 AND fc.id > ?6))
+         ORDER BY fc.created_at ASC, fc.id ASC LIMIT ?7`,
+      ).bind(
+        ticketId,
+        authorized.principal.appId,
+        authorized.principal.integrationId,
+        authorized.principal.reporterId,
+        commentCursor.createdAt,
+        commentCursor.id,
+        commentLimit + 1,
+      );
+  const attachmentStatement =
     c.env.DB.prepare(
-      `SELECT id, filename, content_type, size_bytes, created_at
-       FROM feedback_attachments
-       WHERE ticket_id = ?1 AND origin IN ('submission', 'reporter') AND visibility = 'reporter'
-       ORDER BY created_at, id`,
-    ).bind(ticketId).all(),
+      `SELECT fa.id, fa.filename, fa.content_type, fa.size_bytes, fa.created_at
+       FROM feedback_attachments fa
+       JOIN feedback_tickets t ON t.id = fa.ticket_id
+       WHERE fa.ticket_id = ?1 AND t.app_id = ?2
+         AND t.reporter_integration_id = ?3 AND t.reporter_id = ?4
+         AND fa.origin IN ('submission', 'reporter') AND fa.visibility = 'reporter'
+       ORDER BY fa.created_at, fa.id`,
+    ).bind(
+      ticketId,
+      authorized.principal.appId,
+      authorized.principal.integrationId,
+      authorized.principal.reporterId,
+    );
+  // One consistent, owner-constrained read phase. Comments and attachments
+  // repeat the principal predicates so even the internal batch never reads a
+  // different reporter's payload while establishing ticket ownership.
+  const [ticketResult, commentResult, attachmentResult] = await c.env.DB.batch([
+    ownedTicketStatement(c, authorized.principal, ticketId),
+    commentStatement,
+    attachmentStatement,
   ]);
+  const ticket = ticketResult?.results[0] as
+    | (Record<string, unknown> & { org_id: string | null })
+    | undefined;
+  if (!ticket) return ticketNotFound(c);
+  const comments = (commentResult?.results ?? []) as Record<string, unknown>[];
+  const attachments = (attachmentResult?.results ?? []) as Record<string, unknown>[];
+  const readAt = performance.now();
   const commentPage = comments.slice(0, commentLimit);
   // A legacy (created_at, id)-ordered page is not necessarily contiguous in
   // reporter_sequence, so a single high-water receipt cannot represent it
@@ -472,12 +515,27 @@ export async function handleGetReporterFeedback(c: ReporterContext) {
         && typeof comment.id === "string"
       ) as { id: string; reporter_sequence: number } | undefined
     : undefined;
-  await auditRead(c, authorized.principal, authorized.pseudonym, "detail", { ticketId });
-  await markTicketRead(c, authorized.principal, ticketId, readWatermark ?? null);
-  const [totalUnread, refreshedTicket] = await Promise.all([
-    unreadTotal(c, authorized.principal),
-    ownedTicket(c, authorized.principal, ticketId),
-  ]);
+  const receiptStatements = [
+    auditReadStatement(c, authorized.principal, authorized.pseudonym, "detail", { ticketId }),
+    ...(readWatermark
+      ? [markTicketReadStatement(c, authorized.principal, ticketId, readWatermark)]
+      : []),
+    unreadTotalStatement(c, authorized.principal),
+    ownedTicketStatement(c, authorized.principal, ticketId),
+  ];
+  // D1 batch ordering makes the receipt visible to the unread/refreshed-ticket
+  // reads in the same round trip. A comment committed after the page snapshot
+  // remains unread and is deliberately not advanced by this receipt.
+  const receiptResults = await c.env.DB.batch(receiptStatements);
+  const unreadIndex = readWatermark ? 2 : 1;
+  const unreadRow = receiptResults[unreadIndex]?.results[0] as
+    | { unread_total?: number }
+    | undefined;
+  const totalUnread = Math.max(0, unreadRow?.unread_total ?? 0);
+  const refreshedTicket = receiptResults[unreadIndex + 1]?.results[0] as
+    | (Record<string, unknown> & { org_id: string | null })
+    | undefined;
+  const committedAt = performance.now();
   const { org_id: _orgId, ...safeTicket } = refreshedTicket ?? ticket;
   const lastComment = commentPage.at(-1);
   const nextCommentCursor = comments.length > commentLimit && lastComment
@@ -485,6 +543,13 @@ export async function handleGetReporterFeedback(c: ReporterContext) {
       ? encodeCursor(lastComment.created_at, lastComment.id)
       : encodeCommentSequenceCursor(lastComment.reporter_sequence, lastComment.id)
     : null;
+  const respondedAt = performance.now();
+  c.header("Server-Timing", [
+    `hands_auth;dur=${timingDuration(startedAt, authorizedAt)}`,
+    `hands_preflight;dur=${timingDuration(authorizedAt, readAt)}`,
+    `hands_commit;dur=${timingDuration(readAt, committedAt)}`,
+    `hands_postcommit;dur=${timingDuration(committedAt, respondedAt)}`,
+  ].join(", "));
   return c.json({
     ticket: ticketDto(safeTicket),
     comments: commentPage.map(({ reporter_sequence: _sequence, ...comment }) => comment),
