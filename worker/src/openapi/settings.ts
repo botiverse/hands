@@ -21,6 +21,8 @@ const AppProductTypeParams = AppIdParam.merge(ProductTypeIdParam);
 const AppReleaseTypeParams = AppIdParam.merge(ReleaseTypeIdParam);
 const AppOperationParams = AppIdParam.merge(OperationIdParam);
 const AppMemberParams = AppIdParam.merge(AccountIdParam);
+const EnrollmentIdParam = z.object({ enrollmentId: z.string().min(1) });
+const AppEnrollmentParams = AppIdParam.merge(EnrollmentIdParam);
 
 function registerCollectionRoutes(
   registry: OpenApiRegistry,
@@ -83,6 +85,95 @@ function registerCollectionRoutes(
 }
 
 export function registerSettingsRoutes(registry: OpenApiRegistry) {
+  register(registry, {
+    method: "get",
+    path: "/api/apps/{appId}/device-enrollments",
+    tags: ["Device enrollments"],
+    summary: "List test-device enrollments",
+    security: auth,
+    request: { params: AppIdParam },
+    responses: {
+      200: success("Enrollment list.", GenericObject),
+      403: error("Current principal cannot view device enrollments."),
+    },
+  });
+
+  register(registry, {
+    method: "post",
+    path: "/api/apps/{appId}/device-enrollments",
+    tags: ["Device enrollments"],
+    summary: "Create a stable alias for a current per-install id",
+    security: auth,
+    request: {
+      params: AppIdParam,
+      body: {
+        content: json(z.object({
+          alias: z.string().min(1).max(80),
+          label: z.string().max(120).optional(),
+          device_id: z.string().min(1).max(256),
+        })),
+        required: true,
+      },
+    },
+    responses: {
+      201: success("Enrollment created.", GenericObject),
+      400: error("Invalid enrollment request."),
+      403: error("Current principal cannot create device enrollments."),
+      409: error("Alias or installation is already enrolled."),
+    },
+  });
+
+  register(registry, {
+    method: "post",
+    path: "/api/apps/{appId}/device-enrollments/{enrollmentId}/rebind",
+    tags: ["Device enrollments"],
+    summary: "Atomically replace a reinstalled device id in exact targeting",
+    security: auth,
+    request: {
+      params: AppEnrollmentParams,
+      body: {
+        content: json(z.object({
+          device_id: z.string().min(1).max(256),
+          expected_revision: z.number().int().min(1),
+          operation_id: z.string().min(1).max(128),
+        })),
+        required: true,
+      },
+    },
+    responses: {
+      200: success("Enrollment rebound with a durable operation receipt.", GenericObject),
+      400: error("Invalid rebind request."),
+      403: error("Current principal cannot rebind device enrollments."),
+      404: error("Enrollment was not found."),
+      409: error("Revision, status, operation id, or target installation conflicts."),
+    },
+  });
+
+  register(registry, {
+    method: "post",
+    path: "/api/apps/{appId}/device-enrollments/{enrollmentId}/revoke",
+    tags: ["Device enrollments"],
+    summary: "Revoke an enrollment and remove its exact targeting",
+    security: auth,
+    request: {
+      params: AppEnrollmentParams,
+      body: {
+        content: json(z.object({
+          expected_revision: z.number().int().min(1),
+          operation_id: z.string().min(1).max(128),
+        })),
+        required: true,
+      },
+    },
+    responses: {
+      200: success("Enrollment revoked with a durable operation receipt.", GenericObject),
+      400: error("Invalid revoke request."),
+      403: error("Current principal cannot revoke device enrollments."),
+      404: error("Enrollment was not found."),
+      409: error("Revision, status, or operation id conflicts."),
+    },
+  });
+
   registerCollectionRoutes(
     registry,
     "Channels",

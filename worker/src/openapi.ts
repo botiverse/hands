@@ -112,6 +112,11 @@ export const openApiDocument = docs.getOpenAPI31Document({
       description: "Per-app release channels.",
     },
     {
+      name: "Device enrollments",
+      description:
+        "Authenticated, revocable aliases that rebind rotating per-install ids for exact QA targeting.",
+    },
+    {
       name: "Product types",
       description: "Per-app artifact product families.",
     },

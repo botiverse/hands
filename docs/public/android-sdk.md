@@ -168,6 +168,11 @@ metadata. Pass
 - All network calls are suspend functions; call them off the main thread.
 - The device id is a random UUID in SharedPreferences, not a hardware id; it
   resets on reinstall/clear-data, which is fine for rollout cohorting.
+- Android Auto Backup may restore that preference on some devices, but Hands
+  does not treat backup scheduling or OEM restore behavior as an identity
+  guarantee. Teams that need a physical QA device to keep an exact targeting
+  slot should use the authenticated, revocable device-enrollment alias in the
+  Console or CLI and explicitly rebind the new per-install id after reinstall.
 - The client key (`qk_…`) authenticates feedback/crash submissions. It ships
   inside the APK (Sentry-DSN model — app identifier, not a user secret); get
   it from the app's Settings tab and put it in `BuildConfig`.

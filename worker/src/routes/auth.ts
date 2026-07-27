@@ -1026,6 +1026,52 @@ export async function handleAgentManifest(c: Context<{ Bindings: Env }>) {
         },
       },
       {
+        name: "list-device-enrollments",
+        description:
+          "List authenticated, revocable test-device aliases and their current per-install ids. Requires app publisher; aliases are never exposed by public update APIs.",
+        endpoint: { method: "GET", path: "/api/apps/{app_id}/device-enrollments" },
+        parameters: {
+          app_id: { type: "string", in: "path", required: true, description: "App UUID." },
+        },
+      },
+      {
+        name: "create-device-enrollment",
+        description:
+          "Adopt a current Hands per-install id under a stable operator alias. This does not change release scope or feature flags. Requires app publisher.",
+        endpoint: { method: "POST", path: "/api/apps/{app_id}/device-enrollments" },
+        parameters: {
+          app_id: { type: "string", in: "path", required: true, description: "App UUID." },
+          alias: { type: "string", in: "body", required: true, description: "Stable app-scoped operator alias." },
+          device_id: { type: "string", in: "body", required: true, description: "Current random per-install id." },
+          label: { type: "string", in: "body", required: false, description: "Optional human-readable label." },
+        },
+      },
+      {
+        name: "rebind-device-enrollment",
+        description:
+          "Atomically replace a reinstalled test device's old per-install id with a new id across every app device-group membership and feature-flag allow/deny reference. Requires exact revision and an idempotency operation id.",
+        endpoint: { method: "POST", path: "/api/apps/{app_id}/device-enrollments/{enrollment_id}/rebind" },
+        parameters: {
+          app_id: { type: "string", in: "path", required: true, description: "App UUID." },
+          enrollment_id: { type: "string", in: "path", required: true, description: "Enrollment UUID." },
+          device_id: { type: "string", in: "body", required: true, description: "New current per-install id." },
+          expected_revision: { type: "number", in: "body", required: true, description: "Current enrollment revision." },
+          operation_id: { type: "string", in: "body", required: true, description: "Unique idempotency key for this exact rebind." },
+        },
+      },
+      {
+        name: "revoke-device-enrollment",
+        description:
+          "Revoke a test-device alias and atomically remove its current per-install id from all app device groups and feature-flag allow/deny lists. Requires exact revision and an idempotency operation id.",
+        endpoint: { method: "POST", path: "/api/apps/{app_id}/device-enrollments/{enrollment_id}/revoke" },
+        parameters: {
+          app_id: { type: "string", in: "path", required: true, description: "App UUID." },
+          enrollment_id: { type: "string", in: "path", required: true, description: "Enrollment UUID." },
+          expected_revision: { type: "number", in: "body", required: true, description: "Current enrollment revision." },
+          operation_id: { type: "string", in: "body", required: true, description: "Unique idempotency key for this exact revoke." },
+        },
+      },
+      {
         name: "list-releases",
         description: "List an app's releases (id, status, channel, version, rollout). Requires app viewer.",
         endpoint: { method: "GET", path: "/api/apps/{app_id}/releases" },

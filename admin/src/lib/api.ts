@@ -246,6 +246,9 @@ export interface DeviceGroupMember {
   device_id: string;
   label: string | null;
   created_at: number;
+  enrollment_id?: string | null;
+  enrollment_alias?: string | null;
+  enrollment_revision?: number | null;
 }
 
 export interface DeviceGroup {
@@ -257,6 +260,41 @@ export interface DeviceGroup {
   members: DeviceGroupMember[];
   created_at: number;
   updated_at: number;
+}
+
+export interface DeviceEnrollment {
+  id: string;
+  app_id: string;
+  alias: string;
+  label: string | null;
+  current_device_id: string | null;
+  status: "active" | "revoked";
+  revision: number;
+  created_by: string;
+  updated_by: string;
+  created_at: number;
+  updated_at: number;
+  last_rebound_at: number | null;
+  revoked_at: number | null;
+}
+
+export interface DeviceEnrollmentOperation {
+  operation_id: string;
+  kind: "create" | "rebind" | "revoke";
+  from_device_id: string | null;
+  to_device_id: string | null;
+  expected_revision: number | null;
+  resulting_revision: number;
+  migrated_group_memberships: number;
+  migrated_feature_flags: number;
+  actor: string;
+  created_at: number;
+}
+
+export interface DeviceEnrollmentResult {
+  enrollment: DeviceEnrollment;
+  operation: DeviceEnrollmentOperation;
+  replayed: boolean;
 }
 
 export interface Channel {
@@ -1336,6 +1374,38 @@ export const removeDeviceGroupMember = (appId: string, groupId: string, deviceId
     `/api/apps/${appId}/device-groups/${groupId}/members/${encodeURIComponent(deviceId)}`,
     { method: "DELETE", admin: true },
   );
+
+export const listDeviceEnrollments = (appId: string) =>
+  request<{ enrollments: DeviceEnrollment[] }>(`/api/apps/${appId}/device-enrollments`, { admin: true });
+
+export const createDeviceEnrollment = (
+  appId: string,
+  input: { alias: string; device_id: string; label?: string },
+) => request<DeviceEnrollmentResult>(`/api/apps/${appId}/device-enrollments`, {
+  method: "POST",
+  admin: true,
+  body: JSON.stringify(input),
+});
+
+export const rebindDeviceEnrollment = (
+  appId: string,
+  enrollmentId: string,
+  input: { device_id: string; expected_revision: number; operation_id: string },
+) => request<DeviceEnrollmentResult>(`/api/apps/${appId}/device-enrollments/${enrollmentId}/rebind`, {
+  method: "POST",
+  admin: true,
+  body: JSON.stringify(input),
+});
+
+export const revokeDeviceEnrollment = (
+  appId: string,
+  enrollmentId: string,
+  input: { expected_revision: number; operation_id: string },
+) => request<DeviceEnrollmentResult>(`/api/apps/${appId}/device-enrollments/${enrollmentId}/revoke`, {
+  method: "POST",
+  admin: true,
+  body: JSON.stringify(input),
+});
 
 export interface ReleaseCheck {
   id: string;

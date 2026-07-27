@@ -59,9 +59,14 @@ import {
   addDeviceGroupMember,
   createDeviceGroup,
   deleteDeviceGroup,
+  createDeviceEnrollment,
+  listDeviceEnrollments,
+  rebindDeviceEnrollment,
+  revokeDeviceEnrollment,
   listDeviceGroups,
   removeDeviceGroupMember,
   updateDeviceGroup,
+  type DeviceEnrollment,
   type DeviceGroup,
 } from "../lib/api";
 import { useToast } from "../components/Toast";
@@ -414,10 +419,12 @@ function DeviceGroupsPanel({ appId }: { appId: string }) {
 
   return (
     <div className="border-t border-slate-100 pt-3 space-y-3">
+      <DeviceEnrollmentsPanel appId={appId} />
       <div>
         <div className="text-sm font-medium">Device groups</div>
         <p className="text-xs text-slate-500">
-          Exact rollout groups use the stable installation device id sent by the Hands update SDK.
+          Exact rollout groups still resolve the current random per-install id sent by the Hands update SDK.
+          Enrolled aliases above can rotate that id without changing the group slot.
         </p>
       </div>
       <div className="grid grid-cols-[1fr_1fr_auto] gap-2">
@@ -432,6 +439,173 @@ function DeviceGroupsPanel({ appId }: { appId: string }) {
       {(groups.data?.groups ?? []).map((group) => (
         <DeviceGroupCard key={group.id} appId={appId} group={group} />
       ))}
+    </div>
+  );
+}
+
+function DeviceEnrollmentsPanel({ appId }: { appId: string }) {
+  const queryClient = useQueryClient();
+  const toast = useToast();
+  const enrollments = useQuery({
+    queryKey: ["device-enrollments", appId],
+    queryFn: () => listDeviceEnrollments(appId),
+  });
+  const [alias, setAlias] = useState("");
+  const [deviceId, setDeviceId] = useState("");
+  const [label, setLabel] = useState("");
+  const refresh = () => {
+    void queryClient.invalidateQueries({ queryKey: ["device-enrollments", appId] });
+    void queryClient.invalidateQueries({ queryKey: ["device-groups", appId] });
+  };
+  const create = useMutation({
+    mutationFn: () => createDeviceEnrollment(appId, {
+      alias: alias.trim(),
+      device_id: deviceId.trim(),
+      ...(label.trim() ? { label: label.trim() } : {}),
+    }),
+    onSuccess: () => {
+      setAlias("");
+      setDeviceId("");
+      setLabel("");
+      refresh();
+      toast.show({ kind: "success", title: "Test device enrolled" });
+    },
+    onError: (error) => toast.show({
+      kind: "error",
+      title: "Enrollment failed",
+      description: (error as Error).message,
+    }),
+  });
+
+  return (
+    <div className="rounded-md border border-slate-200 bg-slate-50 p-3 space-y-3">
+      <div>
+        <div className="text-sm font-medium">Test-device enrollments</div>
+        <p className="text-xs text-slate-500">
+          Keep a stable, revocable operator alias while Android installation IDs rotate on uninstall or clear-data.
+          Rebind atomically replaces the old ID in this app&apos;s groups and feature flags. No hardware ID is used.
+        </p>
+      </div>
+      <div className="grid grid-cols-1 gap-2 md:grid-cols-[1fr_1.5fr_1fr_auto]">
+        <Input value={alias} onChange={(event) => setAlias(event.target.value)} placeholder="artin-huawei-tablet" />
+        <Input value={deviceId} onChange={(event) => setDeviceId(event.target.value)} placeholder="Current installation ID" />
+        <Input value={label} onChange={(event) => setLabel(event.target.value)} placeholder="Label (optional)" />
+        <Button
+          variant="outline"
+          disabled={!alias.trim() || !deviceId.trim() || create.isPending}
+          onClick={() => create.mutate()}
+        >
+          Enroll
+        </Button>
+      </div>
+      {enrollments.isLoading && <p className="text-xs text-slate-500">Loading enrollments…</p>}
+      {enrollments.error && <p className="text-xs text-red-700">{(enrollments.error as Error).message}</p>}
+      {(enrollments.data?.enrollments ?? []).map((enrollment) => (
+        <DeviceEnrollmentRow key={enrollment.id} appId={appId} enrollment={enrollment} onChanged={refresh} />
+      ))}
+      {!enrollments.isLoading && (enrollments.data?.enrollments.length ?? 0) === 0 && (
+        <p className="text-xs text-slate-500">No test-device aliases yet. Existing direct group members keep working.</p>
+      )}
+    </div>
+  );
+}
+
+function DeviceEnrollmentRow({
+  appId,
+  enrollment,
+  onChanged,
+}: {
+  appId: string;
+  enrollment: DeviceEnrollment;
+  onChanged: () => void;
+}) {
+  const toast = useToast();
+  const [nextDeviceId, setNextDeviceId] = useState("");
+  const rebind = useMutation({
+    mutationFn: () => rebindDeviceEnrollment(appId, enrollment.id, {
+      device_id: nextDeviceId.trim(),
+      expected_revision: enrollment.revision,
+      operation_id: crypto.randomUUID(),
+    }),
+    onSuccess: (result) => {
+      setNextDeviceId("");
+      onChanged();
+      toast.show({
+        kind: "success",
+        title: `${result.enrollment.alias} rebound`,
+        description:
+          `${result.operation.migrated_group_memberships} group slot(s), ` +
+          `${result.operation.migrated_feature_flags} feature flag(s) migrated.`,
+      });
+    },
+    onError: (error) => toast.show({
+      kind: "error",
+      title: "Rebind failed",
+      description: (error as Error).message,
+    }),
+  });
+  const revoke = useMutation({
+    mutationFn: () => revokeDeviceEnrollment(appId, enrollment.id, {
+      expected_revision: enrollment.revision,
+      operation_id: crypto.randomUUID(),
+    }),
+    onSuccess: () => {
+      onChanged();
+      toast.show({ kind: "success", title: `${enrollment.alias} revoked` });
+    },
+    onError: (error) => toast.show({
+      kind: "error",
+      title: "Revoke failed",
+      description: (error as Error).message,
+    }),
+  });
+
+  return (
+    <div className="rounded border border-slate-200 bg-white p-2 space-y-2 text-xs">
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <div className="font-medium">
+            {enrollment.alias}{" "}
+            <span className={enrollment.status === "active" ? "text-emerald-700" : "text-slate-500"}>
+              {enrollment.status} · rev {enrollment.revision}
+            </span>
+          </div>
+          {enrollment.label && <div className="text-slate-600">{enrollment.label}</div>}
+          <div className="font-mono text-slate-500 break-all">
+            {enrollment.current_device_id ?? "No active installation ID"}
+          </div>
+          <div className="font-mono text-[11px] text-slate-400">{enrollment.id}</div>
+        </div>
+        {enrollment.status === "active" && (
+          <Button
+            variant="outline"
+            disabled={revoke.isPending || rebind.isPending}
+            onClick={() => {
+              if (window.confirm(`Revoke '${enrollment.alias}' and remove its current ID from all exact targeting?`)) {
+                revoke.mutate();
+              }
+            }}
+          >
+            Revoke
+          </Button>
+        )}
+      </div>
+      {enrollment.status === "active" && (
+        <div className="flex gap-2">
+          <Input
+            value={nextDeviceId}
+            onChange={(event) => setNextDeviceId(event.target.value)}
+            placeholder="Replacement installation ID after reinstall"
+          />
+          <Button
+            variant="outline"
+            disabled={!nextDeviceId.trim() || rebind.isPending || revoke.isPending}
+            onClick={() => rebind.mutate()}
+          >
+            Rebind
+          </Button>
+        </div>
+      )}
     </div>
   );
 }
@@ -536,6 +710,9 @@ function DeviceGroupCard({ appId, group }: { appId: string; group: DeviceGroup }
           <div key={member.device_id} className="flex items-center justify-between gap-2 text-xs">
             <span className="min-w-0 truncate">
               <span className="font-medium">{member.label || "Device"}</span>{" "}
+              {member.enrollment_alias && (
+                <span className="text-emerald-700">[{member.enrollment_alias} · rev {member.enrollment_revision}] </span>
+              )}
               <span className="font-mono text-slate-500">{member.device_id}</span>
             </span>
             <Button variant="outline" onClick={() => remove.mutate(member.device_id)} disabled={remove.isPending}>

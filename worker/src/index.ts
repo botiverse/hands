@@ -186,6 +186,12 @@ import {
   handleRemoveDeviceGroupMember,
   handleUpdateDeviceGroup,
 } from "./routes/device_groups";
+import {
+  handleCreateDeviceEnrollment,
+  handleListDeviceEnrollments,
+  handleRebindDeviceEnrollment,
+  handleRevokeDeviceEnrollment,
+} from "./routes/device_enrollments";
 import { handleListProductTypes, handleCreateProductType, handleUpdateProductType, handleDeleteProductType } from "./routes/product_types";
 import { handleListReleaseTypes, handleCreateReleaseType, handleUpdateReleaseType, handleDeleteReleaseType } from "./routes/release_types";
 import { handleListAuditLogs, handleListUserAudit } from "./routes/audit";
@@ -894,6 +900,26 @@ admin.delete(
   "/api/apps/:appId/device-groups/:groupId/members/:deviceId",
   requireAppRole("publisher"),
   handleRemoveDeviceGroupMember,
+);
+admin.get(
+  "/api/apps/:appId/device-enrollments",
+  requireAppRole("publisher"),
+  handleListDeviceEnrollments,
+);
+admin.post(
+  "/api/apps/:appId/device-enrollments",
+  requireAppRole("publisher"),
+  handleCreateDeviceEnrollment,
+);
+admin.post(
+  "/api/apps/:appId/device-enrollments/:enrollmentId/rebind",
+  requireAppRole("publisher"),
+  handleRebindDeviceEnrollment,
+);
+admin.post(
+  "/api/apps/:appId/device-enrollments/:enrollmentId/revoke",
+  requireAppRole("publisher"),
+  handleRevokeDeviceEnrollment,
 );
 
 admin.get("/api/apps/:appId/product-types", requireAppRole("viewer"), handleListProductTypes);

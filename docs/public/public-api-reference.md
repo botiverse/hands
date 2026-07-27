@@ -45,10 +45,33 @@ active release. The Android SDK sends the header automatically.
 
 For exact QA or customer-device targeting, publishers can create an app-scoped
 device group and use a `device_group` release scope. Membership is evaluated
-server-side against the same stable installation `device_id`; the client never
+server-side against the same per-installation `device_id`; the client never
 receives or chooses the group name. A non-member falls through to the previous
 matching active release. Device groups use installation identifiers, not IMEI,
 hardware serial numbers, or account identities.
+
+Android deliberately rotates that identifier after uninstall or clear-data.
+For a physical QA device that must keep the same operator-managed slot, create
+an authenticated **device enrollment**. The stable alias is private to the app
+control plane; public update checks still see only the current random
+installation id. A guarded rebind atomically replaces the old id in every
+device-group membership and every app feature-flag allow/deny list. It requires
+the enrollment's current `revision` plus a unique `operation_id`, returns a
+durable receipt, and is safe to retry with the same exact input. Revocation
+removes the current id from all of those targets and clears it from the active
+enrollment. These endpoints require app `publisher` authority:
+
+```text
+GET  /api/apps/:appId/device-enrollments
+POST /api/apps/:appId/device-enrollments
+POST /api/apps/:appId/device-enrollments/:enrollmentId/rebind
+POST /api/apps/:appId/device-enrollments/:enrollmentId/revoke
+```
+
+This is an explicit authenticated operator workflow, not device fingerprinting:
+Hands never derives the alias from IMEI, serial, `ANDROID_ID`, or another
+permanent hardware identifier. Android backup may restore app data on some
+devices, but it is not part of the rebind contract.
 
 A single release may contain `full:all` plus one or more `device_group` scopes.
 Group members always receive that release, even when their percentage bucket is

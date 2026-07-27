@@ -105,6 +105,9 @@ describe("quiver OpenAPI document", () => {
       "/api/apps/{appId}/feedback/{ticketId}/comments",
       "/api/app-permissions",
       "/api/apps/{appId}/client-key",
+      "/api/apps/{appId}/device-enrollments",
+      "/api/apps/{appId}/device-enrollments/{enrollmentId}/rebind",
+      "/api/apps/{appId}/device-enrollments/{enrollmentId}/revoke",
       "/api/apps/{appId}/analytics/versions",
       "/api/orgs/{orgId}/invites",
       "/api/orgs/{orgId}/webhooks/{webhookId}/deliveries",
@@ -314,6 +317,58 @@ function makeMockDb() {
       created_at INTEGER NOT NULL,
       PRIMARY KEY (group_id, device_id)
     );
+    CREATE TABLE device_enrollments (
+      id TEXT PRIMARY KEY,
+      app_id TEXT NOT NULL REFERENCES apps(id) ON DELETE CASCADE,
+      alias TEXT NOT NULL,
+      label TEXT,
+      current_device_id TEXT,
+      status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'revoked')),
+      revision INTEGER NOT NULL DEFAULT 1 CHECK (revision >= 1),
+      created_by TEXT NOT NULL,
+      updated_by TEXT NOT NULL,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL,
+      last_rebound_at INTEGER,
+      revoked_at INTEGER
+    );
+    CREATE UNIQUE INDEX idx_device_enrollments_app_alias
+      ON device_enrollments(app_id, alias COLLATE NOCASE);
+    CREATE UNIQUE INDEX idx_device_enrollments_app_current_device
+      ON device_enrollments(app_id, current_device_id)
+      WHERE status = 'active' AND current_device_id IS NOT NULL;
+    CREATE TABLE device_enrollment_operations (
+      id TEXT PRIMARY KEY,
+      app_id TEXT NOT NULL REFERENCES apps(id) ON DELETE CASCADE,
+      enrollment_id TEXT NOT NULL REFERENCES device_enrollments(id) ON DELETE CASCADE,
+      operation_id TEXT NOT NULL,
+      kind TEXT NOT NULL CHECK (kind IN ('create', 'rebind', 'revoke')),
+      from_device_id TEXT,
+      to_device_id TEXT,
+      expected_revision INTEGER,
+      resulting_revision INTEGER NOT NULL,
+      migrated_group_memberships INTEGER NOT NULL DEFAULT 0,
+      migrated_feature_flags INTEGER NOT NULL DEFAULT 0,
+      actor TEXT NOT NULL,
+      created_at INTEGER NOT NULL,
+      UNIQUE (app_id, operation_id)
+    );
+    CREATE TRIGGER trg_device_enrollment_rebind_guard BEFORE INSERT ON device_enrollment_operations
+      WHEN NEW.kind = 'rebind' AND NOT EXISTS (
+        SELECT 1 FROM device_enrollments e
+        WHERE e.id = NEW.enrollment_id AND e.app_id = NEW.app_id
+          AND e.status = 'active' AND e.current_device_id = NEW.from_device_id
+          AND e.revision = NEW.expected_revision
+          AND NEW.resulting_revision = e.revision + 1
+      ) BEGIN SELECT RAISE(ABORT, 'device enrollment rebind precondition failed'); END;
+    CREATE TRIGGER trg_device_enrollment_revoke_guard BEFORE INSERT ON device_enrollment_operations
+      WHEN NEW.kind = 'revoke' AND NOT EXISTS (
+        SELECT 1 FROM device_enrollments e
+        WHERE e.id = NEW.enrollment_id AND e.app_id = NEW.app_id
+          AND e.status = 'active' AND e.current_device_id = NEW.from_device_id
+          AND e.revision = NEW.expected_revision
+          AND NEW.resulting_revision = e.revision + 1
+      ) BEGIN SELECT RAISE(ABORT, 'device enrollment revoke precondition failed'); END;
     CREATE TABLE release_metrics (
       release_id TEXT PRIMARY KEY,
       offered_count INTEGER NOT NULL DEFAULT 0,
@@ -3506,7 +3561,7 @@ describe("quiver releases — draft lifecycle", () => {
   }
 
   function makeDeviceGroupContext(
-    params: { groupId?: string; deviceId?: string } = {},
+    params: { groupId?: string; deviceId?: string; enrollmentId?: string } = {},
     body: unknown = {},
   ) {
     return {
@@ -3516,6 +3571,7 @@ describe("quiver releases — draft lifecycle", () => {
           if (name === "appId") return "app-release";
           if (name === "groupId") return params.groupId ?? "";
           if (name === "deviceId") return params.deviceId ?? "";
+          if (name === "enrollmentId") return params.enrollmentId ?? "";
           return "";
         },
         json: async () => body,
@@ -4880,6 +4936,162 @@ describe("quiver releases — draft lifecycle", () => {
     await expect(responseJson<any>(blockedDelete)).resolves.toMatchObject({
       error: "device group is used by a draft or active release",
     });
+  });
+
+  it("rebinds an enrolled test device across groups and feature flags atomically, idempotently, and revocably", async () => {
+    const {
+      handleCreateDeviceEnrollment,
+      handleListDeviceEnrollments,
+      handleRebindDeviceEnrollment,
+      handleRevokeDeviceEnrollment,
+    } = await import("../src/routes/device_enrollments");
+    const {
+      handleAddDeviceGroupMember,
+      handleCreateDeviceGroup,
+      handleListDeviceGroups,
+    } = await import("../src/routes/device_groups");
+
+    const group = await responseJson<any>(await handleCreateDeviceGroup(makeDeviceGroupContext({}, {
+      name: "Artin test devices",
+    })));
+    await handleAddDeviceGroupMember(makeDeviceGroupContext({ groupId: group.id }, {
+      device_id: "install-old",
+      label: "Huawei tablet",
+    }));
+    await env.DB.prepare(
+      `INSERT INTO feature_flags
+         (id, app_id, key, default_enabled, rollout_percent, allow_device_ids,
+          deny_device_ids, allow_cohorts, platforms, updated_at, updated_by)
+       VALUES ('ff-enrollment', 'app-release', 'delta_updates', 0, 0,
+               '["install-old","other","install-new"]',
+               '["blocked","install-old"]', '[]', '["android"]', ?1, 'tester')`,
+    ).bind(Date.now()).run();
+
+    const createdResponse = await handleCreateDeviceEnrollment(makeDeviceGroupContext({}, {
+      alias: "artin-huawei-tablet",
+      label: "Artin Huawei tablet",
+      device_id: "install-old",
+    }));
+    expect(createdResponse.status).toBe(201);
+    const created = await responseJson<any>(createdResponse);
+    expect(created).toMatchObject({
+      replayed: false,
+      enrollment: {
+        alias: "artin-huawei-tablet",
+        current_device_id: "install-old",
+        status: "active",
+        revision: 1,
+      },
+      operation: { kind: "create", resulting_revision: 1 },
+    });
+
+    const rebindBody = {
+      device_id: "install-new",
+      expected_revision: 1,
+      operation_id: "rebind-artin-1",
+    };
+    const reboundResponse = await handleRebindDeviceEnrollment(makeDeviceGroupContext(
+      { enrollmentId: created.enrollment.id },
+      rebindBody,
+    ));
+    expect(reboundResponse.status).toBe(200);
+    const rebound = await responseJson<any>(reboundResponse);
+    expect(rebound).toMatchObject({
+      replayed: false,
+      enrollment: { current_device_id: "install-new", status: "active", revision: 2 },
+      operation: {
+        operation_id: "rebind-artin-1",
+        kind: "rebind",
+        from_device_id: "install-old",
+        to_device_id: "install-new",
+        expected_revision: 1,
+        resulting_revision: 2,
+        migrated_group_memberships: 1,
+        migrated_feature_flags: 1,
+      },
+    });
+
+    const memberships = await env.DB.prepare(
+      "SELECT device_id, label FROM device_group_members WHERE group_id = ?1 ORDER BY device_id",
+    ).bind(group.id).all();
+    expect(memberships.results).toEqual([{ device_id: "install-new", label: "Huawei tablet" }]);
+    const flag = await env.DB.prepare(
+      "SELECT allow_device_ids, deny_device_ids, platforms FROM feature_flags WHERE id = 'ff-enrollment'",
+    ).first() as any;
+    expect(JSON.parse(flag.allow_device_ids)).toEqual(["install-new", "other"]);
+    expect(JSON.parse(flag.deny_device_ids)).toEqual(["blocked", "install-new"]);
+    expect(JSON.parse(flag.platforms)).toEqual(["android"]);
+
+    const groupsAfterRebind = await responseJson<any>(await handleListDeviceGroups(makeDeviceGroupContext()));
+    expect(groupsAfterRebind.groups[0].members[0]).toMatchObject({
+      device_id: "install-new",
+      enrollment_id: created.enrollment.id,
+      enrollment_alias: "artin-huawei-tablet",
+      enrollment_revision: 2,
+    });
+
+    const replayResponse = await handleRebindDeviceEnrollment(makeDeviceGroupContext(
+      { enrollmentId: created.enrollment.id },
+      rebindBody,
+    ));
+    expect(replayResponse.status).toBe(200);
+    await expect(responseJson<any>(replayResponse)).resolves.toMatchObject({ replayed: true });
+    await expect(env.DB.prepare(
+      "SELECT COUNT(*) AS count FROM device_enrollment_operations WHERE operation_id = 'rebind-artin-1'",
+    ).first()).resolves.toEqual({ count: 1 });
+    const operationReuseResponse = await handleRebindDeviceEnrollment(makeDeviceGroupContext(
+      { enrollmentId: created.enrollment.id },
+      { ...rebindBody, device_id: "install-third" },
+    ));
+    expect(operationReuseResponse.status).toBe(409);
+    await expect(responseJson<any>(operationReuseResponse)).resolves.toMatchObject({
+      error: "operation_id already exists with different input",
+    });
+
+    const staleResponse = await handleRebindDeviceEnrollment(makeDeviceGroupContext(
+      { enrollmentId: created.enrollment.id },
+      { device_id: "install-third", expected_revision: 1, operation_id: "rebind-stale" },
+    ));
+    expect(staleResponse.status).toBe(409);
+    await expect(responseJson<any>(staleResponse)).resolves.toMatchObject({
+      error: "stale expected_revision",
+      current_revision: 2,
+    });
+
+    const revokeBody = { expected_revision: 2, operation_id: "revoke-artin-2" };
+    const revokeResponse = await handleRevokeDeviceEnrollment(makeDeviceGroupContext(
+      { enrollmentId: created.enrollment.id },
+      revokeBody,
+    ));
+    expect(revokeResponse.status).toBe(200);
+    await expect(responseJson<any>(revokeResponse)).resolves.toMatchObject({
+      enrollment: { current_device_id: null, status: "revoked", revision: 3 },
+      operation: {
+        kind: "revoke",
+        from_device_id: "install-new",
+        to_device_id: null,
+        migrated_group_memberships: 1,
+        migrated_feature_flags: 1,
+      },
+    });
+    await expect(env.DB.prepare(
+      "SELECT COUNT(*) AS count FROM device_group_members WHERE group_id = ?1",
+    ).bind(group.id).first()).resolves.toEqual({ count: 0 });
+    const flagAfterRevoke = await env.DB.prepare(
+      "SELECT allow_device_ids, deny_device_ids FROM feature_flags WHERE id = 'ff-enrollment'",
+    ).first() as any;
+    expect(JSON.parse(flagAfterRevoke.allow_device_ids)).toEqual(["other"]);
+    expect(JSON.parse(flagAfterRevoke.deny_device_ids)).toEqual(["blocked"]);
+
+    const revokeReplay = await handleRevokeDeviceEnrollment(makeDeviceGroupContext(
+      { enrollmentId: created.enrollment.id },
+      revokeBody,
+    ));
+    expect(revokeReplay.status).toBe(200);
+    await expect(responseJson<any>(revokeReplay)).resolves.toMatchObject({ replayed: true });
+
+    const list = await responseJson<any>(await handleListDeviceEnrollments(makeDeviceGroupContext()));
+    expect(list.enrollments).toMatchObject([{ alias: "artin-huawei-tablet", status: "revoked", revision: 3 }]);
   });
 
   it("updates editable release metadata and replaces scopes", async () => {
@@ -10326,6 +10538,22 @@ describe("Hands iOS simulator QA artifacts", () => {
       "delete-device-group": {
         method: "DELETE",
         path: "/api/apps/{app_id}/device-groups/{group_id}",
+      },
+      "list-device-enrollments": {
+        method: "GET",
+        path: "/api/apps/{app_id}/device-enrollments",
+      },
+      "create-device-enrollment": {
+        method: "POST",
+        path: "/api/apps/{app_id}/device-enrollments",
+      },
+      "rebind-device-enrollment": {
+        method: "POST",
+        path: "/api/apps/{app_id}/device-enrollments/{enrollment_id}/rebind",
+      },
+      "revoke-device-enrollment": {
+        method: "POST",
+        path: "/api/apps/{app_id}/device-enrollments/{enrollment_id}/revoke",
       },
       "list-ios-simulator-artifacts": {
         method: "GET",

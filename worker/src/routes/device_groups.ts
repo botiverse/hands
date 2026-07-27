@@ -69,12 +69,26 @@ export async function handleListDeviceGroups(c: Context<{ Bindings: Env }>) {
      ORDER BY lower(g.name), g.id`,
   ).bind(appId).all<DeviceGroupRow>();
   const { results: members } = await c.env.DB.prepare(
-    `SELECT m.group_id, m.device_id, m.label, m.created_at
+    `SELECT m.group_id, m.device_id, m.label, m.created_at,
+            e.id AS enrollment_id, e.alias AS enrollment_alias,
+            e.revision AS enrollment_revision
      FROM device_group_members m
      JOIN device_groups g ON g.id = m.group_id
+     LEFT JOIN device_enrollments e
+       ON e.app_id = g.app_id
+      AND e.current_device_id = m.device_id
+      AND e.status = 'active'
      WHERE g.app_id = ?1
      ORDER BY m.created_at, m.device_id`,
-  ).bind(appId).all<{ group_id: string; device_id: string; label: string | null; created_at: number }>();
+  ).bind(appId).all<{
+    group_id: string;
+    device_id: string;
+    label: string | null;
+    created_at: number;
+    enrollment_id: string | null;
+    enrollment_alias: string | null;
+    enrollment_revision: number | null;
+  }>();
   return c.json({
     groups: groups.map((group) => ({
       ...group,

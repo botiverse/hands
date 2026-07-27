@@ -1,4 +1,5 @@
 import type { Command } from "commander";
+import { randomUUID } from "node:crypto";
 import { apiRequest } from "../lib/api.js";
 
 type AppRow = { id: string; slug: string };
@@ -8,6 +9,21 @@ type DeviceGroup = {
   description: string | null;
   member_count: number;
   members: Array<{ device_id: string; label: string | null }>;
+};
+
+type DeviceEnrollment = {
+  id: string;
+  alias: string;
+  label: string | null;
+  current_device_id: string | null;
+  status: "active" | "revoked";
+  revision: number;
+};
+
+type DeviceEnrollmentResult = {
+  enrollment: DeviceEnrollment;
+  operation: Record<string, unknown>;
+  replayed: boolean;
 };
 
 export function registerDeviceGroupCommands(program: Command): void {
@@ -90,6 +106,104 @@ export function registerDeviceGroupCommands(program: Command): void {
       if (opts.json) return console.log(JSON.stringify(result, null, 2));
       console.log(`Deleted device group ${groupId}.`);
     });
+
+  const enrollments = program.command("device-enrollments")
+    .description("Manage revocable test-device aliases across app reinstall/clear-data.");
+
+  enrollments.command("list <appIdOrSlug>").option("--json", "Output JSON.", false)
+    .action(async (appIdOrSlug: string, opts: { json?: boolean }) => {
+      const appId = await resolveAppId(appIdOrSlug);
+      const result = await apiRequest<{ enrollments: DeviceEnrollment[] }>(
+        `/api/apps/${appId}/device-enrollments`,
+      );
+      if (opts.json) return console.log(JSON.stringify(result, null, 2));
+      if (result.enrollments.length === 0) return console.log("No device enrollments.");
+      for (const enrollment of result.enrollments) {
+        console.log(
+          `${enrollment.id}  ${enrollment.alias}  status=${enrollment.status} revision=${enrollment.revision}` +
+          `${enrollment.current_device_id ? ` device=${enrollment.current_device_id}` : ""}`,
+        );
+      }
+    });
+
+  enrollments.command("create <appIdOrSlug>")
+    .requiredOption("--alias <alias>", "Stable app-scoped test-device alias.")
+    .requiredOption("--device-id <id>", "Current random Hands per-install id.")
+    .option("--label <label>", "Human-readable device label.")
+    .option("--json", "Output JSON.", false)
+    .action(async (
+      appIdOrSlug: string,
+      opts: { alias: string; deviceId: string; label?: string; json?: boolean },
+    ) => {
+      const appId = await resolveAppId(appIdOrSlug);
+      const result = await apiRequest<DeviceEnrollmentResult>(`/api/apps/${appId}/device-enrollments`, {
+        method: "POST",
+        body: { alias: opts.alias, device_id: opts.deviceId, label: opts.label },
+      });
+      if (opts.json) return console.log(JSON.stringify(result, null, 2));
+      console.log(`Created device enrollment ${result.enrollment.id} (${result.enrollment.alias}) at revision 1.`);
+    });
+
+  enrollments.command("rebind <appIdOrSlug> <enrollmentId>")
+    .requiredOption("--device-id <id>", "Replacement random Hands per-install id.")
+    .requiredOption("--expected-revision <n>", "Current enrollment revision.", parsePositiveInteger)
+    .option("--operation-id <id>", "Idempotency key; generated when omitted.")
+    .option("--json", "Output JSON.", false)
+    .action(async (
+      appIdOrSlug: string,
+      enrollmentId: string,
+      opts: { deviceId: string; expectedRevision: number; operationId?: string; json?: boolean },
+    ) => {
+      const appId = await resolveAppId(appIdOrSlug);
+      const operationId = opts.operationId ?? randomUUID();
+      const result = await apiRequest<DeviceEnrollmentResult>(
+        `/api/apps/${appId}/device-enrollments/${enrollmentId}/rebind`,
+        {
+          method: "POST",
+          body: {
+            device_id: opts.deviceId,
+            expected_revision: opts.expectedRevision,
+            operation_id: operationId,
+          },
+        },
+      );
+      if (opts.json) return console.log(JSON.stringify(result, null, 2));
+      console.log(
+        `Rebound ${result.enrollment.alias} to revision ${result.enrollment.revision}` +
+        `${result.replayed ? " (idempotent replay)" : ""}; operation=${operationId}.`,
+      );
+    });
+
+  enrollments.command("revoke <appIdOrSlug> <enrollmentId>")
+    .requiredOption("--expected-revision <n>", "Current enrollment revision.", parsePositiveInteger)
+    .option("--operation-id <id>", "Idempotency key; generated when omitted.")
+    .option("--json", "Output JSON.", false)
+    .action(async (
+      appIdOrSlug: string,
+      enrollmentId: string,
+      opts: { expectedRevision: number; operationId?: string; json?: boolean },
+    ) => {
+      const appId = await resolveAppId(appIdOrSlug);
+      const operationId = opts.operationId ?? randomUUID();
+      const result = await apiRequest<DeviceEnrollmentResult>(
+        `/api/apps/${appId}/device-enrollments/${enrollmentId}/revoke`,
+        {
+          method: "POST",
+          body: { expected_revision: opts.expectedRevision, operation_id: operationId },
+        },
+      );
+      if (opts.json) return console.log(JSON.stringify(result, null, 2));
+      console.log(
+        `Revoked ${result.enrollment.alias} at revision ${result.enrollment.revision}` +
+        `${result.replayed ? " (idempotent replay)" : ""}; operation=${operationId}.`,
+      );
+    });
+}
+
+function parsePositiveInteger(value: string): number {
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed < 1) throw new Error("expected revision must be a positive integer");
+  return parsed;
 }
 
 async function resolveAppId(input: string): Promise<string> {

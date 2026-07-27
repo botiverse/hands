@@ -453,6 +453,41 @@ remove members with `device-groups remove-member`. Rename or change the
 operator note with `device-groups update`. Do not use IMEI or hardware serial
 numbers.
 
+Android's SDK id is intentionally per installation, so uninstall or clear-data
+creates a new value. For a long-lived physical QA device, first adopt its
+current id under a private, revocable alias:
+
+```bash
+hands device-enrollments create raft-android \
+  --alias artin-huawei-tablet \
+  --device-id <current-installation-id> \
+  --label "Artin Huawei tablet"
+hands device-enrollments list raft-android
+```
+
+After a reinstall, use the current `revision` from `list` and rebind once:
+
+```bash
+hands device-enrollments rebind raft-android <enrollment-id> \
+  --device-id <replacement-installation-id> \
+  --expected-revision 1
+```
+
+The CLI generates an idempotency operation id and prints it. Hands atomically
+replaces the old id in all app device groups and feature-flag allow/deny lists;
+the response reports how many rows were migrated. Pass `--operation-id <id>`
+to replay a known request after a response loss. Revoke and remove all current
+exact targeting with:
+
+```bash
+hands device-enrollments revoke raft-android <enrollment-id> \
+  --expected-revision 2
+```
+
+Aliases are authenticated control-plane metadata. They never appear in public
+update responses and are not based on IMEI, serial, `ANDROID_ID`, or backup
+restoration.
+
 ### Percentage rollout with mandatory groups
 
 One release can combine a percentage-gated `full:all` scope with device groups

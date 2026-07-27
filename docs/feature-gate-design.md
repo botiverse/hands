@@ -71,6 +71,13 @@ Delta has **two** gates, deliberately separate:
 So you can keep generating patches for an app (column ON) while only *offering*
 them to your allow-listed test device (flag `allow_device_ids = [deviceId]`).
 
+If that physical test device is enrolled under a stable control-plane alias,
+`device-enrollments rebind` atomically replaces its old per-install id in both
+`allow_device_ids` and `deny_device_ids` (and in all device-group memberships)
+under an exact revision/idempotency guard. Feature evaluation remains unchanged
+and still receives only the current random per-install id; aliases are never
+accepted by the public resolver.
+
 ## Admin API
 
 - `GET /api/apps/:appId/feature-flags/:key` (viewer) — returns the flag row, or

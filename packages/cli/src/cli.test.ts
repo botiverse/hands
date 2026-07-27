@@ -348,6 +348,107 @@ describe("device-group rollout commands", () => {
     }
   });
 
+  it("creates, rebinds, and revokes a stable test-device enrollment", async () => {
+    const requests: Array<{ method: string; url: string; body?: any }> = [];
+    const server = createServer(async (req, res) => {
+      let body: any = undefined;
+      if (req.headers["content-type"]?.includes("application/json")) {
+        const chunks: Buffer[] = [];
+        for await (const chunk of req) chunks.push(Buffer.from(chunk));
+        body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+      }
+      requests.push({ method: req.method ?? "GET", url: req.url ?? "", body });
+      res.setHeader("content-type", "application/json");
+      if (req.url === "/api/apps") {
+        return res.end(JSON.stringify({ apps: [{ id: "app-1", slug: "raft-android" }] }));
+      }
+      const enrollment = {
+        id: "enroll-1",
+        alias: "artin-huawei-tablet",
+        label: "Artin tablet",
+        current_device_id: body?.device_id ?? null,
+        status: req.url?.endsWith("/revoke") ? "revoked" : "active",
+        revision: req.url?.endsWith("/rebind") ? 2 : req.url?.endsWith("/revoke") ? 3 : 1,
+      };
+      if (req.url === "/api/apps/app-1/device-enrollments" && req.method === "POST") {
+        return res.end(JSON.stringify({ enrollment, operation: { kind: "create" }, replayed: false }));
+      }
+      if (req.url === "/api/apps/app-1/device-enrollments/enroll-1/rebind" && req.method === "POST") {
+        return res.end(JSON.stringify({
+          enrollment,
+          operation: { migrated_group_memberships: 1, migrated_feature_flags: 1 },
+          replayed: false,
+        }));
+      }
+      if (req.url === "/api/apps/app-1/device-enrollments/enroll-1/revoke" && req.method === "POST") {
+        return res.end(JSON.stringify({ enrollment, operation: {}, replayed: false }));
+      }
+      res.statusCode = 404;
+      return res.end(JSON.stringify({ error: "not found" }));
+    });
+
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("bad address");
+    const originalApi = process.env.HANDS_API;
+    const originalToken = process.env.HANDS_BEARER_TOKEN;
+    process.env.HANDS_API = `http://127.0.0.1:${address.port}`;
+    process.env.HANDS_BEARER_TOKEN = "test-token";
+
+    const run = async (args: string[]) => {
+      const program = new Command();
+      const { registerDeviceGroupCommands } = await import("../src/commands/device_groups.js");
+      registerDeviceGroupCommands(program);
+      return program.parseAsync(["node", "hands", ...args]);
+    };
+
+    try {
+      await run([
+        "device-enrollments", "create", "raft-android",
+        "--alias", "artin-huawei-tablet",
+        "--device-id", "install-old",
+        "--label", "Artin tablet",
+      ]);
+      await run([
+        "device-enrollments", "rebind", "raft-android", "enroll-1",
+        "--device-id", "install-new",
+        "--expected-revision", "1",
+        "--operation-id", "op-rebind-1",
+      ]);
+      await run([
+        "device-enrollments", "revoke", "raft-android", "enroll-1",
+        "--expected-revision", "2",
+        "--operation-id", "op-revoke-2",
+      ]);
+
+      expect(requests.find((request) =>
+        request.url === "/api/apps/app-1/device-enrollments" && request.method === "POST"
+      )).toMatchObject({
+        body: {
+          alias: "artin-huawei-tablet",
+          device_id: "install-old",
+          label: "Artin tablet",
+        },
+      });
+      expect(requests.find((request) => request.url.endsWith("/rebind"))).toMatchObject({
+        body: {
+          device_id: "install-new",
+          expected_revision: 1,
+          operation_id: "op-rebind-1",
+        },
+      });
+      expect(requests.find((request) => request.url.endsWith("/revoke"))).toMatchObject({
+        body: { expected_revision: 2, operation_id: "op-revoke-2" },
+      });
+    } finally {
+      if (originalApi === undefined) delete process.env.HANDS_API;
+      else process.env.HANDS_API = originalApi;
+      if (originalToken === undefined) delete process.env.HANDS_BEARER_TOKEN;
+      else process.env.HANDS_BEARER_TOKEN = originalToken;
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
   it("updates a full percentage rollout with mandatory groups and preserves full reset semantics", async () => {
     const requests: Array<{ method: string; url: string; body?: any }> = [];
     const server = createServer(async (req, res) => {
