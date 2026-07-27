@@ -1708,10 +1708,15 @@ export const updateFeedbackTicket = (
     },
   );
 
-export const addFeedbackComment = (appId: string, ticketId: string, body: string) =>
+export const addFeedbackComment = (
+  appId: string,
+  ticketId: string,
+  body: string,
+  internal: boolean,
+) =>
   request<{ id: string }>(`/api/apps/${appId}/feedback/${ticketId}/comments`, {
     method: "POST",
-    body: JSON.stringify({ body }),
+    body: JSON.stringify({ body, internal }),
     admin: true,
   });
 

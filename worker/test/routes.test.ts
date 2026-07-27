@@ -1442,6 +1442,9 @@ describe("quiver route handlers — SQL smoke", () => {
       env as any,
     );
     expect(memberComment.status).toBe(201);
+    expect(memberComment.headers.get("server-timing")).toMatch(
+      /^hands_comment_preflight;dur=\d+\.\d, hands_comment_commit;dur=\d+\.\d$/,
+    );
 
     const ticket = (await env.DB
       .prepare("SELECT status FROM feedback_tickets WHERE id = ?")

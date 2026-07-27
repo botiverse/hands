@@ -159,6 +159,9 @@ describe("FeedbackProvider", () => {
     expect(css).toMatch(
       /\.hands-feedback-conversation[^}]*flex:\s*1[^}]*overflow-y:\s*auto/,
     );
+    expect(css).toMatch(
+      /\.hands-feedback-conversation[^}]*align-content:\s*start/,
+    );
     expect(css).not.toMatch(/display:\s*none[^}]*hands-feedback-conversation/);
   });
 

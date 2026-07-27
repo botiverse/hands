@@ -225,6 +225,7 @@
   margin-bottom: 8px;
 }
 .hands-feedback-conversation {
+  align-content: start;
   display: grid;
   flex: 1;
   gap: 10px;

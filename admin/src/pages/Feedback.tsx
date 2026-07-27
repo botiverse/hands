@@ -18,6 +18,7 @@ import {
   getFeedbackAttachmentText,
   updateFeedbackTicket,
 } from "../lib/api";
+import { feedbackMessage } from "../lib/feedbackMessages";
 import { useToast } from "../components/Toast";
 import { FeedbackTrends } from "../components/FeedbackTrends";
 import { Button, Input, Select, SelectTrigger, SelectValue, SelectIcon, SelectContent, SelectItem, Tooltip, TooltipTrigger, TooltipContent, EmptyState, EmptyStateTitle, Skeleton } from "raft-ui";
@@ -556,7 +557,8 @@ export function FeedbackTicketPage({
   });
 
   const addComment = useMutation({
-    mutationFn: () => addFeedbackComment(appId, ticketId, comment.trim()),
+    mutationFn: (internal: boolean) =>
+      addFeedbackComment(appId, ticketId, comment.trim(), internal),
     onSuccess: () => {
       setComment("");
       invalidate();
@@ -849,8 +851,13 @@ export function FeedbackTicketPage({
             <ul className="space-y-2 text-sm">
               {detail.data!.comments.map((cm) => (
                 <li key={cm.id} className="rounded-sm border border-slate-200 p-2">
-                  <div className="text-xs text-slate-500">
-                    {cm.author_actor} · {new Date(cm.created_at).toLocaleString()}
+                  <div className="flex items-center justify-between gap-2 text-xs text-slate-500">
+                    <span>{cm.author_actor} · {new Date(cm.created_at).toLocaleString()}</span>
+                    <span className="rounded-sm border border-slate-300 px-1.5 py-0.5 font-medium">
+                      {cm.internal
+                        ? feedbackMessage("internalNote")
+                        : feedbackMessage("visibleToReporter")}
+                    </span>
                   </div>
                   <div className="whitespace-pre-wrap">{cm.body}</div>
                 </li>
@@ -863,16 +870,23 @@ export function FeedbackTicketPage({
                 value={comment}
                 onChange={(e) => setComment(e.target.value)}
                 onKeyDown={(e) => {
-                  if (e.key === "Enter" && comment.trim()) addComment.mutate();
+                  if (e.key === "Enter" && comment.trim()) addComment.mutate(true);
                 }}
               />
+              <Button
+                className="text-sm"
+                disabled={addComment.isPending || !comment.trim()}
+                onClick={() => addComment.mutate(true)}
+              >
+                {feedbackMessage("addInternalNote")}
+              </Button>
               <Button
                 variant="primary"
                 className="text-sm"
                 disabled={addComment.isPending || !comment.trim()}
-                onClick={() => addComment.mutate()}
+                onClick={() => addComment.mutate(false)}
               >
-                Send
+                {feedbackMessage("sendToReporter")}
               </Button>
             </div>
           </div>

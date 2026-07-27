@@ -36,10 +36,10 @@ function timingDuration(start: number, end: number): string {
 }
 
 function setServerTiming(
-  c: Context<{ Bindings: Env }>,
+  c: unknown,
   value: string,
 ): void {
-  const header = (c as Context<{ Bindings: Env }> & {
+  const header = (c as {
     header?: (name: string, value: string) => void;
   }).header;
   header?.call(c, "Server-Timing", value);
@@ -2179,10 +2179,19 @@ async function loadFeedbackMutationSnapshot(
 }
 
 export async function handleAddFeedbackComment(c: AdminContext) {
+  const startedAt = performance.now();
   const appId = c.req.param("appId") ?? "";
-  const resolved = await resolveTicketId(c.env.DB, appId, c.req.param("ticketId"));
-  if ("error" in resolved) return ticketResolveError(c, resolved);
-  const ticketId = resolved.id;
+  const rawTicketId = (c.req.param("ticketId") ?? "").trim();
+  let ticketId: string;
+  if (UUID_RE.test(rawTicketId)) {
+    // The mutation snapshot below is the authoritative existence/ownership
+    // check, so a full UUID does not need a redundant preliminary SELECT.
+    ticketId = rawTicketId.toLowerCase();
+  } else {
+    const resolved = await resolveTicketId(c.env.DB, appId, rawTicketId);
+    if ("error" in resolved) return ticketResolveError(c, resolved);
+    ticketId = resolved.id;
+  }
   const body = (await c.req.json().catch(() => ({}))) as {
     body?: string;
     internal?: boolean;
@@ -2207,6 +2216,7 @@ export async function handleAddFeedbackComment(c: AdminContext) {
       reporter_active: number;
     }>();
   if (!ticket) return c.json({ error: "ticket not found" }, 404);
+  const preflightAt = performance.now();
   const now = Date.now();
   const id = crypto.randomUUID();
   const statements = [
@@ -2248,6 +2258,11 @@ export async function handleAddFeedbackComment(c: AdminContext) {
     }));
   }
   await c.env.DB.batch(statements);
+  const committedAt = performance.now();
+  setServerTiming(c, [
+    `hands_comment_preflight;dur=${timingDuration(startedAt, preflightAt)}`,
+    `hands_comment_commit;dur=${timingDuration(preflightAt, committedAt)}`,
+  ].join(", "));
   return c.json({ id, ticket_id: ticketId, created_at: now }, 201);
 }
 
