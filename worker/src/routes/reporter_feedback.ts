@@ -667,11 +667,18 @@ async function reconcileReporterR2Keys(env: Env, keys: string[], now: number) {
 }
 
 export async function handleAddReporterComment(c: ReporterContext) {
+  const startedAt = performance.now();
   const authorized = await authorize(c, "feedback:comment", "comment");
   if (!authorized.ok) return authorized.response;
+  const authorizedAt = performance.now();
   const ticketId = fullUuid(c.req.param("ticketId"));
   if (!ticketId) return ticketNotFound(c);
-  const ticket = await ownedTicket(c, authorized.principal, ticketId);
+  const [ticketResult] = await c.env.DB.batch([
+    ownedTicketStatement(c, authorized.principal, ticketId),
+  ]);
+  const ticket = ticketResult?.results[0] as
+    | (Record<string, unknown> & { org_id: string | null })
+    | undefined;
   if (!ticket) return ticketNotFound(c);
   const input = await parseReporterCommentInput(c);
   if (!input) return c.json({ error: "invalid reporter comment" }, 400);
@@ -694,14 +701,6 @@ export async function handleAddReporterComment(c: ReporterContext) {
        AND reporter_id = ?3 AND submission_id = ?4`,
   ).bind(ticketId, authorized.principal.integrationId, authorized.principal.reporterId, submissionId)
     .first<{ id: string; submission_fingerprint: string; created_at: number }>();
-  const prior = await existingComment();
-  if (prior) {
-    if (prior.submission_fingerprint !== fingerprint) {
-      return c.json({ error: "submission_id already used with a different body" }, 409);
-    }
-    return c.json({ id: prior.id, ticket_id: ticketId, created_at: prior.created_at, idempotent_replay: true });
-  }
-
   const now = Date.now();
   const commentId = crypto.randomUUID();
   const eventId = crypto.randomUUID();
@@ -728,6 +727,16 @@ export async function handleAddReporterComment(c: ReporterContext) {
     audit_key_version: authorized.pseudonym.version,
   });
   const uploadedKeys: string[] = [];
+  const preflightAt = performance.now();
+  const setCommentTiming = (committedAt: number) => {
+    const respondedAt = performance.now();
+    c.header("Server-Timing", [
+      `hands_auth;dur=${timingDuration(startedAt, authorizedAt)}`,
+      `hands_preflight;dur=${timingDuration(authorizedAt, preflightAt)}`,
+      `hands_commit;dur=${timingDuration(preflightAt, committedAt)}`,
+      `hands_postcommit;dur=${timingDuration(committedAt, respondedAt)}`,
+    ].join(", "));
+  };
   try {
     if (attachmentRows.length > 0) {
       await c.env.DB.batch(attachmentRows.map((attachment) => c.env.DB.prepare(
@@ -869,6 +878,8 @@ export async function handleAddReporterComment(c: ReporterContext) {
     const concurrent = await existingComment();
     await reconcileReporterR2Keys(c.env, uploadedKeys, now);
     if (concurrent) {
+      const committedAt = performance.now();
+      setCommentTiming(committedAt);
       if (concurrent.submission_fingerprint !== fingerprint) {
         return c.json({ error: "submission_id already used with a different body" }, 409);
       }
@@ -876,6 +887,8 @@ export async function handleAddReporterComment(c: ReporterContext) {
     }
     throw error;
   }
+  const committedAt = performance.now();
+  setCommentTiming(committedAt);
   return c.json({ id: commentId, ticket_id: ticketId, created_at: now, idempotent_replay: false }, 201);
 }
 
