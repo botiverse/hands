@@ -171,6 +171,27 @@ describe("FeedbackProvider", () => {
     expect(css).toMatch(
       /article\[data-author="staff"\][^}]*justify-self:\s*start/,
     );
+    expect(css).toMatch(
+      /\.hands-feedback-ticket-row:hover\s*\{[^}]*outline:\s*2px solid var\(--color-brutal-pink/,
+    );
+    expect(css).toMatch(
+      /\.hands-feedback-ticket-row:focus-visible\s*\{[^}]*outline:\s*2px solid var\(--hf-border-strong\)/,
+    );
+    expect(css).not.toMatch(
+      /\.hands-feedback-ticket-row:(?:hover|focus-visible)[^{]*\{[^}]*var\(--hf-accent\)/,
+    );
+    for (const [status, token] of [
+      ["open", "cyan"],
+      ["in_progress", "cyan"],
+      ["resolved", "lime"],
+      ["closed", "lime"],
+    ] as const) {
+      expect(css).toMatch(
+        new RegExp(
+          `\\.hands-feedback-status\\[data-feedback-status="${status}"\\][^}]*var\\(--color-brutal-${token}`,
+        ),
+      );
+    }
     expect(css).not.toMatch(/display:\s*none[^}]*hands-feedback-conversation/);
   });
 
