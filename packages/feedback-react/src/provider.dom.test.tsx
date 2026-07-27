@@ -185,6 +185,37 @@ describe("FeedbackWorkspace browser behavior", () => {
     expect(await screen.findByText(ticket.message)).toBeTruthy();
   });
 
+  it("maps every reporter ticket status to the Raft task palette", async () => {
+    const adapter = transport();
+    adapter.listTickets = vi.fn(async () => ({
+      tickets: (["open", "in_progress", "resolved", "closed"] as const).map(
+        (status, index) => ({
+          ...ticket,
+          id: `ticket-${status}`,
+          message: `Ticket ${status}`,
+          status,
+          unread: false,
+          unreadCount: 0,
+          updatedAt: index + 10,
+        }),
+      ),
+      nextCursor: null,
+      unreadTotal: 0,
+    }));
+    const { container } = render(
+      <FeedbackProvider transport={adapter} theme="brutal">
+        <FeedbackWorkspace />
+      </FeedbackProvider>,
+    );
+
+    await screen.findByText("Ticket open");
+    expect(
+      Array.from(
+        container.querySelectorAll<HTMLElement>("[data-feedback-status]"),
+      ).map((badge) => badge.dataset.feedbackStatus),
+    ).toEqual(["open", "in_progress", "resolved", "closed"]);
+  });
+
   it("does not re-notify when list and detail return the same authoritative total", async () => {
     const adapter = transport();
     adapter.getTicket = vi.fn(async () => ({

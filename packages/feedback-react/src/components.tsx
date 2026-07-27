@@ -152,20 +152,22 @@ function StatusBadge({ status }: { status: FeedbackTicketSummary["status"] }) {
           ? "statusClosed"
           : "statusOpen",
   );
-  if (status === "in_progress")
-    return (
-      <Badge variant="information" uppercase={false}>
-        {label}
-      </Badge>
-    );
-  if (status === "resolved")
-    return (
-      <Badge variant="success" uppercase={false}>
-        {label}
-      </Badge>
-    );
+  const variant =
+    status === "open"
+      ? "warning"
+      : status === "in_progress"
+        ? "information"
+        : status === "resolved"
+          ? "success"
+          : "muted";
   return (
-    <Badge appearance="outline" uppercase={false}>
+    <Badge
+      appearance="solid"
+      variant={variant}
+      uppercase={false}
+      className="hands-feedback-status"
+      data-feedback-status={status}
+    >
       {label}
     </Badge>
   );
