@@ -27,7 +27,7 @@ import {
 import { DeviceAnalytics } from "../components/DeviceAnalytics";
 import { ReleaseHealth } from "../components/ReleaseHealth";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { ConfirmActionDialog, TypedConfirmField } from "../components/ConfirmActionDialog";
 import {
   archiveApp,
@@ -394,7 +394,7 @@ function ClientKeyPanel({ appId }: { appId: string }) {
   );
 }
 
-function DeviceGroupsPanel({ appId }: { appId: string }) {
+export function DeviceGroupsPanel({ appId, platform }: { appId: string; platform: string }) {
   const queryClient = useQueryClient();
   const toast = useToast();
   const groups = useQuery({
@@ -419,7 +419,7 @@ function DeviceGroupsPanel({ appId }: { appId: string }) {
 
   return (
     <div className="border-t border-slate-100 pt-3 space-y-3">
-      <DeviceEnrollmentsPanel appId={appId} />
+      {platform === "android" && <DeviceEnrollmentsPanel appId={appId} />}
       <div>
         <div className="text-sm font-medium">Device groups</div>
         <p className="text-xs text-slate-500">
@@ -443,7 +443,7 @@ function DeviceGroupsPanel({ appId }: { appId: string }) {
   );
 }
 
-function DeviceEnrollmentsPanel({ appId }: { appId: string }) {
+export function DeviceEnrollmentsPanel({ appId }: { appId: string }) {
   const queryClient = useQueryClient();
   const toast = useToast();
   const enrollments = useQuery({
@@ -487,9 +487,24 @@ function DeviceEnrollmentsPanel({ appId }: { appId: string }) {
         </p>
       </div>
       <div className="grid grid-cols-1 gap-2 md:grid-cols-[1fr_1.5fr_1fr_auto]">
-        <Input value={alias} onChange={(event) => setAlias(event.target.value)} placeholder="artin-huawei-tablet" />
-        <Input value={deviceId} onChange={(event) => setDeviceId(event.target.value)} placeholder="Current installation ID" />
-        <Input value={label} onChange={(event) => setLabel(event.target.value)} placeholder="Label (optional)" />
+        <Input
+          aria-label="Enrollment alias"
+          value={alias}
+          onChange={(event) => setAlias(event.target.value)}
+          placeholder="artin-huawei-tablet"
+        />
+        <Input
+          aria-label="Current Android installation ID"
+          value={deviceId}
+          onChange={(event) => setDeviceId(event.target.value)}
+          placeholder="Current installation ID"
+        />
+        <Input
+          aria-label="Enrollment label"
+          value={label}
+          onChange={(event) => setLabel(event.target.value)}
+          placeholder="Label (optional)"
+        />
         <Button
           variant="outline"
           disabled={!alias.trim() || !deviceId.trim() || create.isPending}
@@ -510,7 +525,22 @@ function DeviceEnrollmentsPanel({ appId }: { appId: string }) {
   );
 }
 
-function DeviceEnrollmentRow({
+type EnrollmentActionIntent =
+  | {
+      kind: "rebind";
+      operationId: string;
+      expectedRevision: number;
+      fromDeviceId: string;
+      toDeviceId: string;
+    }
+  | {
+      kind: "revoke";
+      operationId: string;
+      expectedRevision: number;
+      fromDeviceId: string;
+    };
+
+export function DeviceEnrollmentRow({
   appId,
   enrollment,
   onChanged,
@@ -521,13 +551,19 @@ function DeviceEnrollmentRow({
 }) {
   const toast = useToast();
   const [nextDeviceId, setNextDeviceId] = useState("");
+  const [intent, setIntent] = useState<EnrollmentActionIntent | null>(null);
+  const [lastReceipt, setLastReceipt] = useState<Awaited<ReturnType<typeof rebindDeviceEnrollment>> | null>(null);
+  const confirmationSubmitted = useRef(false);
   const rebind = useMutation({
-    mutationFn: () => rebindDeviceEnrollment(appId, enrollment.id, {
-      device_id: nextDeviceId.trim(),
-      expected_revision: enrollment.revision,
-      operation_id: crypto.randomUUID(),
+    mutationFn: (action: Extract<EnrollmentActionIntent, { kind: "rebind" }>) => rebindDeviceEnrollment(appId, enrollment.id, {
+      device_id: action.toDeviceId,
+      expected_revision: action.expectedRevision,
+      operation_id: action.operationId,
     }),
     onSuccess: (result) => {
+      confirmationSubmitted.current = false;
+      setLastReceipt(result);
+      setIntent(null);
       setNextDeviceId("");
       onChanged();
       toast.show({
@@ -535,34 +571,83 @@ function DeviceEnrollmentRow({
         title: `${result.enrollment.alias} rebound`,
         description:
           `${result.operation.migrated_group_memberships} group slot(s), ` +
-          `${result.operation.migrated_feature_flags} feature flag(s) migrated.`,
+          `${result.operation.migrated_feature_flags} feature flag(s) migrated; ` +
+          `revision ${result.operation.resulting_revision}; ` +
+          `${result.replayed ? "receipt replayed" : "new receipt"}.`,
       });
     },
-    onError: (error) => toast.show({
-      kind: "error",
-      title: "Rebind failed",
-      description: (error as Error).message,
-    }),
+    onError: (error) => {
+      confirmationSubmitted.current = false;
+      onChanged();
+      toast.show({
+        kind: "error",
+        title: "Rebind result is not confirmed",
+        description: `${(error as Error).message} Refreshing receipts; Retry keeps operation ${intent?.operationId ?? "unknown"}.`,
+      });
+    },
   });
   const revoke = useMutation({
-    mutationFn: () => revokeDeviceEnrollment(appId, enrollment.id, {
-      expected_revision: enrollment.revision,
-      operation_id: crypto.randomUUID(),
+    mutationFn: (action: Extract<EnrollmentActionIntent, { kind: "revoke" }>) => revokeDeviceEnrollment(appId, enrollment.id, {
+      expected_revision: action.expectedRevision,
+      operation_id: action.operationId,
     }),
-    onSuccess: () => {
+    onSuccess: (result) => {
+      confirmationSubmitted.current = false;
+      setLastReceipt(result);
+      setIntent(null);
       onChanged();
-      toast.show({ kind: "success", title: `${enrollment.alias} revoked` });
+      toast.show({
+        kind: "success",
+        title: `${enrollment.alias} revoked`,
+        description:
+          `Operation ${result.operation.operation_id}; revision ${result.operation.resulting_revision}; ` +
+          `${result.replayed ? "receipt replayed" : "new receipt"}.`,
+      });
     },
-    onError: (error) => toast.show({
-      kind: "error",
-      title: "Revoke failed",
-      description: (error as Error).message,
-    }),
+    onError: (error) => {
+      confirmationSubmitted.current = false;
+      onChanged();
+      toast.show({
+        kind: "error",
+        title: "Revoke result is not confirmed",
+        description: `${(error as Error).message} Refreshing receipts; Retry keeps operation ${intent?.operationId ?? "unknown"}.`,
+      });
+    },
   });
+
+  const pending = rebind.isPending || revoke.isPending;
+  const openRebind = () => {
+    const toDeviceId = nextDeviceId.trim();
+    if (!toDeviceId || !enrollment.current_device_id) return;
+    setIntent({
+      kind: "rebind",
+      operationId: crypto.randomUUID(),
+      expectedRevision: enrollment.revision,
+      fromDeviceId: enrollment.current_device_id,
+      toDeviceId,
+    });
+  };
+  const openRevoke = () => {
+    if (!enrollment.current_device_id) return;
+    setIntent({
+      kind: "revoke",
+      operationId: crypto.randomUUID(),
+      expectedRevision: enrollment.revision,
+      fromDeviceId: enrollment.current_device_id,
+    });
+  };
+  const confirmIntent = () => {
+    confirmationSubmitted.current = true;
+    if (intent?.kind === "rebind") rebind.mutate(intent);
+    if (intent?.kind === "revoke") revoke.mutate(intent);
+  };
+  const cancelIntent = () => {
+    if (!pending && !confirmationSubmitted.current) setIntent(null);
+  };
 
   return (
     <div className="rounded border border-slate-200 bg-white p-2 space-y-2 text-xs">
-      <div className="flex items-start justify-between gap-3">
+      <div className="flex flex-col items-stretch gap-3 sm:flex-row sm:items-start sm:justify-between">
         <div className="min-w-0">
           <div className="font-medium">
             {enrollment.alias}{" "}
@@ -578,34 +663,83 @@ function DeviceEnrollmentRow({
         </div>
         {enrollment.status === "active" && (
           <Button
-            variant="outline"
-            disabled={revoke.isPending || rebind.isPending}
-            onClick={() => {
-              if (window.confirm(`Revoke '${enrollment.alias}' and remove its current ID from all exact targeting?`)) {
-                revoke.mutate();
-              }
-            }}
+            variant="danger"
+            className="w-full sm:w-auto"
+            aria-label={`Revoke enrollment ${enrollment.alias}`}
+            disabled={pending}
+            onClick={openRevoke}
           >
             Revoke
           </Button>
         )}
       </div>
       {enrollment.status === "active" && (
-        <div className="flex gap-2">
+        <div className="flex flex-col gap-2 sm:flex-row">
           <Input
+            aria-label={`Replacement installation ID for ${enrollment.alias}`}
+            className="min-w-0 w-full"
             value={nextDeviceId}
             onChange={(event) => setNextDeviceId(event.target.value)}
             placeholder="Replacement installation ID after reinstall"
           />
           <Button
             variant="outline"
-            disabled={!nextDeviceId.trim() || rebind.isPending || revoke.isPending}
-            onClick={() => rebind.mutate()}
+            className="w-full sm:w-auto"
+            aria-label={`Rebind enrollment ${enrollment.alias}`}
+            disabled={!nextDeviceId.trim() || pending}
+            onClick={openRebind}
           >
             Rebind
           </Button>
         </div>
       )}
+      {lastReceipt && (
+        <div className="rounded border border-emerald-200 bg-emerald-50 p-2 font-mono text-[11px] text-emerald-900" role="status">
+          <div>operation: {lastReceipt.operation.operation_id}</div>
+          <div>revision: {lastReceipt.operation.resulting_revision}</div>
+          <div>replayed: {String(lastReceipt.replayed)}</div>
+          <div>
+            migrated: {lastReceipt.operation.migrated_group_memberships} group slot(s),{" "}
+            {lastReceipt.operation.migrated_feature_flags} feature flag(s)
+          </div>
+        </div>
+      )}
+      <ConfirmActionDialog
+        open={intent?.kind === "rebind"}
+        title="Rebind test-device enrollment?"
+        objectLabel={enrollment.alias}
+        objectHint={`enrollment ${enrollment.id} · revision ${intent?.expectedRevision ?? enrollment.revision}`}
+        objectSummary={intent?.kind === "rebind" ? (
+          <div className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-1 font-mono">
+            <div className="text-slate-500">from</div><div className="break-all">{intent.fromDeviceId}</div>
+            <div className="text-slate-500">to</div><div className="break-all">{intent.toDeviceId}</div>
+            <div className="text-slate-500">operation</div><div className="break-all">{intent.operationId}</div>
+          </div>
+        ) : undefined}
+        body="This atomically replaces the old installation ID in every device-group membership and feature-flag allow/deny target for this app. The old ID immediately loses that exact targeting. A retry uses the same operation receipt."
+        confirmLabel="Rebind installation"
+        pending={rebind.isPending}
+        onConfirm={confirmIntent}
+        onCancel={cancelIntent}
+      />
+      <ConfirmActionDialog
+        open={intent?.kind === "revoke"}
+        title="Revoke test-device enrollment?"
+        objectLabel={enrollment.alias}
+        objectHint={`enrollment ${enrollment.id} · revision ${intent?.expectedRevision ?? enrollment.revision}`}
+        objectSummary={intent?.kind === "revoke" ? (
+          <div className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-1 font-mono">
+            <div className="text-slate-500">current ID</div><div className="break-all">{intent.fromDeviceId}</div>
+            <div className="text-slate-500">operation</div><div className="break-all">{intent.operationId}</div>
+          </div>
+        ) : undefined}
+        body="This removes the current installation ID from every device-group membership and feature-flag allow/deny target for this app, then permanently marks the alias revoked. A retry uses the same operation receipt."
+        confirmLabel="Revoke enrollment"
+        confirmKind="danger"
+        pending={revoke.isPending}
+        onConfirm={confirmIntent}
+        onCancel={cancelIntent}
+      />
     </div>
   );
 }
@@ -1500,7 +1634,7 @@ export function AppSettings({ appId }: { appId: string }) {
         <ClientKeyPanel appId={appId} />
 
         {/* Exact per-installation rollout groups */}
-        <DeviceGroupsPanel appId={appId} />
+        <DeviceGroupsPanel appId={appId} platform={app.platform} />
 
         {/* TestFlight upload credentials — iOS apps only */}
         {app.platform === "ios" && <TestFlightPanel appId={appId} />}
