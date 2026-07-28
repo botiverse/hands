@@ -6,6 +6,7 @@
   "compatibility_flags": ["nodejs_compat"],
   "observability": { "enabled": true },
   "upload_source_maps": true,
+  "placement": { "mode": "smart" },
   // Keep Cloudflare version preview URLs disabled so uploaded versions never
   // get a publicly browsable workers.dev URL.
   "preview_urls": false,
