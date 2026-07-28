@@ -28,7 +28,7 @@ const DIRECT_RATE_LIMIT_PER_HOUR = 10;
 const TRUSTED_REPORTER_RATE_LIMIT_PER_HOUR = 100;
 
 const TICKET_STATUSES = ["open", "in_progress", "resolved", "closed"] as const;
-const TICKET_KINDS = ["feedback", "bug", "crash"] as const;
+const TICKET_KINDS = ["feedback", "bug", "crash", "error"] as const;
 const SUBMISSION_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 function timingDuration(start: number, end: number): string {
@@ -381,10 +381,10 @@ export async function handlePublicFeedbackSubmit(c: Context<{ Bindings: Env }>) 
     return feedbackSubmitResponse(c, app, existingSubmission.id, 200, true);
   }
 
-  // Crash tickets get a grouping signature from their exception class + top
-  // app frame (populated by the SDK). Non-crash tickets have no signature.
+  // Crash and error tickets get a grouping signature from their exception
+  // class + top app frame (populated by the SDK). Other kinds have no signature.
   const signature =
-    kind === "crash" ? crashSignature(metadata) : null;
+    kind === "crash" || kind === "error" ? crashSignature(metadata) : null;
 
   const now = Date.now();
   const ticketId = crypto.randomUUID();
@@ -602,7 +602,7 @@ export async function handlePublicFeedbackSubmit(c: Context<{ Bindings: Env }>) 
   // Crash tickets: symbolicate in the background (retrace / native / OHOS / dSYM
   // lanes) and record the result on the ticket's symbolicated_stack /
   // symbolication_status fields. See dispatchSymbolication.
-  if (kind === "crash") {
+  if (kind === "crash" || kind === "error") {
     const logKey = attachmentRows.length > 0 ? attachmentRows[0]!.r2Key : null;
     const run = () =>
       dispatchSymbolication(
@@ -623,8 +623,9 @@ export async function handlePublicFeedbackSubmit(c: Context<{ Bindings: Env }>) 
   // Crash alerting: fire webhooks when a signature is first seen or when it
   // spikes (10/50/100 tickets within an hour — fires once per tier as the
   // count crosses it, so no extra state table is needed).
-  if (kind === "crash" && signature && app.org_id) {
+  if ((kind === "crash" || kind === "error") && signature && app.org_id) {
     const orgId = app.org_id;
+    const eventPrefix = kind === "crash" ? "crash" : "error";
     const alert = async () => {
       const prior = await c.env.DB.prepare(
         `SELECT COUNT(*) AS n FROM feedback_tickets
@@ -644,7 +645,7 @@ export async function handlePublicFeedbackSubmit(c: Context<{ Bindings: Env }>) 
         await emitWebhookEvent(c.env.DB, {
           orgId,
           appId: app.id,
-          event: "crash:new_group",
+          event: `${eventPrefix}:new_group`,
           body: base,
         });
         return;
@@ -660,7 +661,7 @@ export async function handlePublicFeedbackSubmit(c: Context<{ Bindings: Env }>) 
         await emitWebhookEvent(c.env.DB, {
           orgId,
           appId: app.id,
-          event: "crash:spike",
+          event: `${eventPrefix}:spike`,
           body: { ...base, count_last_hour: hourCount },
         });
       }
@@ -1795,6 +1796,11 @@ export async function dispatchSymbolication(
 
 export async function handleListCrashGroups(c: AdminContext) {
   const appId = c.req.param("appId");
+  const kindFilter = (c.req.query("kind") ?? "").trim();
+  const kindClause =
+    kindFilter === "crash" ? "AND kind = 'crash'"
+    : kindFilter === "error" ? "AND kind = 'error'"
+    : "AND kind IN ('crash', 'error')";
   const { results } = await c.env.DB.prepare(
     `SELECT
        COALESCE(signature, '(unsignatured)') AS signature,
@@ -1805,7 +1811,7 @@ export async function handleListCrashGroups(c: AdminContext) {
        GROUP_CONCAT(DISTINCT version_name) AS versions,
        SUM(CASE WHEN status IN ('open','in_progress') THEN 1 ELSE 0 END) AS open_count
      FROM feedback_tickets
-     WHERE app_id = ?1 AND kind = 'crash'
+     WHERE app_id = ?1 ${kindClause}
      GROUP BY COALESCE(signature, '(unsignatured)')
      ORDER BY count DESC, last_seen DESC
      LIMIT 200`,
@@ -1834,7 +1840,7 @@ export async function handleFeedbackStats(c: AdminContext) {
       `SELECT COALESCE(version_name, 'unknown') AS version_name,
               version_code, COUNT(*) AS n
        FROM feedback_tickets
-       WHERE app_id = ?1 AND kind = 'crash'
+       WHERE app_id = ?1 AND kind IN ('crash', 'error')
        GROUP BY COALESCE(version_name, 'unknown'), version_code
        ORDER BY COALESCE(version_code, 0) DESC
        LIMIT 12`,
@@ -1993,8 +1999,8 @@ export async function handleResymbolicateFeedback(c: AdminContext) {
     .bind(appId, ticketId)
     .first<{ id: string; kind: string; version_code: number | null; metadata_json: string }>();
   if (!ticket) return c.json({ error: "ticket not found" }, 404);
-  if (ticket.kind !== "crash") {
-    return c.json({ error: "only crash tickets can be symbolicated" }, 400);
+  if (ticket.kind !== "crash" && ticket.kind !== "error") {
+    return c.json({ error: "only crash/error tickets can be symbolicated" }, 400);
   }
   const app = await c.env.DB.prepare("SELECT id, platform FROM apps WHERE id = ?1")
     .bind(appId)

@@ -13,11 +13,12 @@ import { useQuery } from "@tanstack/react-query";
 import { Button, Tooltip, TooltipTrigger, TooltipContent, Progress, ProgressTrack, ProgressIndicator } from "raft-ui";
 import { getFeedbackStats } from "../lib/api";
 
-const KINDS = ["feedback", "bug", "crash"] as const;
+const KINDS = ["feedback", "bug", "crash", "error"] as const;
 const KIND_COLOR: Record<(typeof KINDS)[number], string> = {
   feedback: "#2a78d6",
   bug: "#1baf7a",
   crash: "#eda100",
+  error: "#e05252",
 };
 const SURFACE = "#ffffff"; // card surface — used for the 2px spacers
 

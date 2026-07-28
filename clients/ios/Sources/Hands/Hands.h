@@ -56,6 +56,28 @@ NS_ASSUME_NONNULL_BEGIN
                 extras:(nullable NSDictionary<NSString *, NSString *> *)extras
             completion:(void (^)(NSString *_Nullable ticketId, NSError *_Nullable error))completion;
 
+/// Capture a handled exception and submit it as kind "error" with structured
+/// metadata and the current breadcrumb trail. Completion runs on an arbitrary
+/// queue with the created ticket id, or an error.
++ (void)captureException:(NSException *)exception
+              completion:(nullable void (^)(NSString *_Nullable ticketId, NSError *_Nullable error))completion;
+
+/// Capture a handled NSError and submit it as kind "error".
++ (void)captureError:(NSError *)error
+          completion:(nullable void (^)(NSString *_Nullable ticketId, NSError *_Nullable error))completion;
+
+/// Record a breadcrumb (max 100, ring buffer). Breadcrumbs are attached to
+/// both captureException/captureError submissions and fatal crash reports.
++ (void)addBreadcrumbWithCategory:(NSString *)category
+                          message:(NSString *)message
+                            level:(nullable NSString *)level;
+
+/// Snapshot current breadcrumbs as a JSON string (for crash persistence).
++ (NSString *)snapshotBreadcrumbs;
+
+/// Clear all breadcrumbs (e.g. on logout / session boundary).
++ (void)clearBreadcrumbs;
+
 /// Stable per-install device id (random UUID persisted in NSUserDefaults).
 + (NSString *)deviceId;
 
