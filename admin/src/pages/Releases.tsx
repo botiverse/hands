@@ -750,8 +750,8 @@ function ReleaseRow({
         objectHint={r.id.slice(0, 8)}
         body={
           r.status === "draft"
-            ? "The draft will be marked cancelled. The build metadata and any uploaded assets stay available in storage; no live release is affected."
-            : "This release will stop being served by update checks. The build metadata and uploaded assets stay available in storage."
+            ? "The draft will be disabled. Its build, assets, and audit history stay available, while this version becomes available for a corrected upload. No live release is affected."
+            : "This release will stop being served by update checks. Its build, assets, and audit history stay available. Although the version becomes available for historical correction, devices that already received this release will not update to different bits with the same version code; publish any client update with a higher version code."
         }
         confirmLabel={r.status === "draft" ? "Delete draft" : "Cancel release"}
         confirmKind="danger"

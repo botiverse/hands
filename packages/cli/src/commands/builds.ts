@@ -15,7 +15,7 @@ import { Writable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { promisify } from "node:util";
 import { createGunzip } from "node:zlib";
-import { apiRequest, apiUploadFile } from "../lib/api.js";
+import { apiRequest, apiUploadFile, QuiverApiError } from "../lib/api.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -45,6 +45,23 @@ interface ChannelRow {
   id: string;
   slug: string;
   name: string;
+}
+
+interface ReleaseVersionRow {
+  id: string;
+  build_id: string;
+  status: string;
+  version_name: string;
+  version_code: number;
+}
+
+interface ReleaseVersionConflictBody {
+  code: "RELEASE_VERSION_ALREADY_EXISTS";
+  release_id?: string;
+  build_id?: string;
+  release_status?: string;
+  version_name?: string;
+  version_code?: number;
 }
 
 interface TestflightGroup {
@@ -156,6 +173,142 @@ async function preflightAndroidDeltaPatches(
     await assertGzipAndroidDeltaPatch(patch.patchPath);
   }
   return parsed;
+}
+
+export async function assertReleaseVersionAvailable(args: {
+  appId: string;
+  channelId: string;
+  productType: string;
+  releaseType: string;
+  versionName: string;
+  versionCode: number;
+}): Promise<void> {
+  const { releases } = await apiRequest<{ releases: ReleaseVersionRow[] }>(
+    `/api/apps/${args.appId}/releases`,
+    {
+      query: {
+        channel: args.channelId,
+        product_type: args.productType,
+        release_type: args.releaseType,
+        version_code: args.versionCode,
+      },
+    },
+  );
+  const conflict = releases.find(
+    (release) =>
+      release.version_code === args.versionCode &&
+      release.status !== "cancelled",
+  );
+  if (!conflict) return;
+  const recovery = conflict.status === "draft"
+    ? "cancel that never-published draft before uploading this version again, or choose a higher version code"
+    : "choose a higher version code; cancelling a published or superseded release cannot make installed clients update to different bits with the same version code";
+  throw new Error(
+    `release version ${args.versionName} (${args.versionCode}) is already owned by ` +
+      `${conflict.status} release ${conflict.id} (build ${conflict.build_id}); ` +
+      recovery,
+  );
+}
+
+export async function createAdmittedPublishBuild(args: {
+  appId: string;
+  channelId: string;
+  productType: string;
+  releaseType: string;
+  versionName: string;
+  versionCode: number;
+  buildBody: Record<string, unknown>;
+}): Promise<{ id: string }> {
+  await assertReleaseVersionAvailable({
+    appId: args.appId,
+    channelId: args.channelId,
+    productType: args.productType,
+    releaseType: args.releaseType,
+    versionName: args.versionName,
+    versionCode: args.versionCode,
+  });
+  return apiRequest<{ id: string }>(`/api/apps/${args.appId}/builds`, {
+    method: "POST",
+    body: {
+      ...args.buildBody,
+      channel_id: args.channelId,
+      product_type: args.productType,
+      release_type: args.releaseType,
+      version_name: args.versionName,
+      version_code: args.versionCode,
+    },
+  });
+}
+
+function releaseVersionConflict(error: unknown): ReleaseVersionConflictBody | null {
+  if (!(error instanceof QuiverApiError) || error.status !== 409) return null;
+  if (!error.body || typeof error.body !== "object" || Array.isArray(error.body)) return null;
+  const body = error.body as Partial<ReleaseVersionConflictBody>;
+  return body.code === "RELEASE_VERSION_ALREADY_EXISTS"
+    ? body as ReleaseVersionConflictBody
+    : null;
+}
+
+export async function createReleaseOrTerminalizeVersionConflict(args: {
+  appId: string;
+  buildId: string;
+  releaseBody: Record<string, unknown>;
+  provenance: Record<string, unknown>;
+}): Promise<{ id: string }> {
+  try {
+    return await apiRequest<{ id: string }>(`/api/apps/${args.appId}/releases`, {
+      method: "POST",
+      body: args.releaseBody,
+    });
+  } catch (error) {
+    const conflict = releaseVersionConflict(error);
+    if (!conflict) {
+      throw new Error(
+        `release creation did not complete for build ${args.buildId}; inspect that build before retrying: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+        { cause: error },
+      );
+    }
+
+    const terminal = {
+      state: "failed",
+      reason: "release_version_conflict",
+      at: new Date().toISOString(),
+      conflicting_release_id: conflict.release_id ?? null,
+      conflicting_build_id: conflict.build_id ?? null,
+      conflicting_release_status: conflict.release_status ?? null,
+      version_name: conflict.version_name ?? null,
+      version_code: conflict.version_code ?? null,
+    };
+    try {
+      await apiRequest(`/api/apps/${args.appId}/builds/${args.buildId}`, {
+        method: "PATCH",
+        body: {
+          status: "failed",
+          provenance_json: {
+            ...args.provenance,
+            hands_cli_terminal: terminal,
+          },
+        },
+      });
+    } catch (terminalError) {
+      throw new Error(
+        `release version conflict left build ${args.buildId} requiring manual inspection; ` +
+          `automatic failed-terminal write did not complete: ${
+            terminalError instanceof Error ? terminalError.message : String(terminalError)
+          }`,
+        { cause: error },
+      );
+    }
+
+    throw new Error(
+      `release version conflict; new build ${args.buildId} was terminalized as failed and remains ` +
+        `auditable (existing release ${conflict.release_id ?? "unknown"}, ` +
+        `build ${conflict.build_id ?? "unknown"}, status ${conflict.release_status ?? "unknown"})`,
+      { cause: error },
+    );
+  }
 }
 
 export function shouldOutputJson(program: Command, localJson?: boolean): boolean {
@@ -687,10 +840,14 @@ export function registerBuildCommands(program: Command): void {
         };
         const appId = await resolveAppId(appIdOrSlug);
         const channelId = await resolveChannelId(appId, opts.channel);
-
-        const build = await apiRequest<{ id: string }>(`/api/apps/${appId}/builds`, {
-          method: "POST",
-          body: {
+        const build = await createAdmittedPublishBuild({
+          appId,
+          channelId,
+          productType: opts.productType,
+          releaseType: opts.releaseType,
+          versionName: opts.versionName,
+          versionCode,
+          buildBody: {
             channel_id: channelId,
             product_type: opts.productType,
             release_type: opts.releaseType,
@@ -793,9 +950,11 @@ export function registerBuildCommands(program: Command): void {
           );
         }
 
-        const release = await apiRequest<{ id: string }>(`/api/apps/${appId}/releases`, {
-          method: "POST",
-          body: {
+        const release = await createReleaseOrTerminalizeVersionConflict({
+          appId,
+          buildId: build.id,
+          provenance,
+          releaseBody: {
             build_id: build.id,
             channel_id: channelId,
             product_type: opts.productType,
@@ -931,10 +1090,14 @@ export function registerBuildCommands(program: Command): void {
           ci_run_id: opts.ciRunId ?? null,
           ci_url: opts.ciUrl ?? null,
         };
-
-        const build = await apiRequest<{ id: string }>(`/api/apps/${appId}/builds`, {
-          method: "POST",
-          body: {
+        const build = await createAdmittedPublishBuild({
+          appId,
+          channelId,
+          productType: opts.productType,
+          releaseType: opts.releaseType,
+          versionName: opts.versionName,
+          versionCode,
+          buildBody: {
             channel_id: channelId,
             product_type: opts.productType,
             release_type: opts.releaseType,
@@ -986,9 +1149,11 @@ export function registerBuildCommands(program: Command): void {
           );
         }
 
-        const release = await apiRequest<{ id: string }>(`/api/apps/${appId}/releases`, {
-          method: "POST",
-          body: {
+        const release = await createReleaseOrTerminalizeVersionConflict({
+          appId,
+          buildId: build.id,
+          provenance,
+          releaseBody: {
             build_id: build.id,
             channel_id: channelId,
             product_type: opts.productType,
@@ -1371,10 +1536,14 @@ export function registerBuildCommands(program: Command): void {
           ci_run_id: opts.ciRunId ?? null,
           ci_url: opts.ciUrl ?? null,
         };
-
-        const build = await apiRequest<{ id: string }>(`/api/apps/${appId}/builds`, {
-          method: "POST",
-          body: {
+        const build = await createAdmittedPublishBuild({
+          appId,
+          channelId,
+          productType: opts.productType,
+          releaseType: opts.releaseType,
+          versionName: opts.versionName,
+          versionCode,
+          buildBody: {
             channel_id: channelId,
             product_type: opts.productType,
             release_type: opts.releaseType,
@@ -1449,9 +1618,11 @@ export function registerBuildCommands(program: Command): void {
           );
         }
 
-        const release = await apiRequest<{ id: string }>(`/api/apps/${appId}/releases`, {
-          method: "POST",
-          body: {
+        const release = await createReleaseOrTerminalizeVersionConflict({
+          appId,
+          buildId: build.id,
+          provenance,
+          releaseBody: {
             build_id: build.id,
             channel_id: channelId,
             product_type: opts.productType,
@@ -1520,9 +1691,14 @@ export function registerBuildCommands(program: Command): void {
         ? parseNonNegativeInteger(opts.versionCode, "--version-code")
         : versionCodeFromVersion(opts.versionName);
       const changelog = parseChangelogOptions(opts);
-      const build = await apiRequest<{ id: string }>(`/api/apps/${appId}/builds`, {
-        method: "POST",
-        body: {
+      const build = await createAdmittedPublishBuild({
+        appId,
+        channelId,
+        productType: "tauri-updater",
+        releaseType: opts.releaseType,
+        versionName: opts.versionName,
+        versionCode,
+        buildBody: {
           channel_id: channelId, product_type: "tauri-updater", release_type: opts.releaseType,
           version_name: opts.versionName, version_code: versionCode, changelog,
           source: "cli", status: "succeeded",
@@ -1545,9 +1721,11 @@ export function registerBuildCommands(program: Command): void {
           metadata_json: { filename: basename(bundle), tauri_target: opts.target[index] },
         }));
       }
-      const release = await apiRequest<{ id: string }>(`/api/apps/${appId}/releases`, {
-        method: "POST",
-        body: {
+      const release = await createReleaseOrTerminalizeVersionConflict({
+        appId,
+        buildId: build.id,
+        provenance: {},
+        releaseBody: {
           build_id: build.id, channel_id: channelId, product_type: "tauri-updater",
           release_type: opts.releaseType, status: opts.publish ? "active" : "draft",
           changelog, scopes: [{ scope_type: "full", scope_value: "all" }],
@@ -1665,10 +1843,14 @@ export function registerBuildCommands(program: Command): void {
             arch,
           },
         };
-
-        const build = await apiRequest<{ id: string }>(`/api/apps/${appId}/builds`, {
-          method: "POST",
-          body: {
+        const build = await createAdmittedPublishBuild({
+          appId,
+          channelId,
+          productType: opts.productType,
+          releaseType: opts.releaseType,
+          versionName: opts.versionName,
+          versionCode,
+          buildBody: {
             channel_id: channelId,
             product_type: opts.productType,
             release_type: opts.releaseType,
@@ -1735,9 +1917,11 @@ export function registerBuildCommands(program: Command): void {
           );
         }
 
-        const release = await apiRequest<{ id: string }>(`/api/apps/${appId}/releases`, {
-          method: "POST",
-          body: {
+        const release = await createReleaseOrTerminalizeVersionConflict({
+          appId,
+          buildId: build.id,
+          provenance,
+          releaseBody: {
             build_id: build.id,
             channel_id: channelId,
             product_type: opts.productType,

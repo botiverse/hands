@@ -184,11 +184,16 @@ hands releases publish raft-android <releaseId>
 hands releases share raft-android <releaseId> --password <pw>
 ```
 
-Hands keeps exactly one release lifecycle for each
-app/channel/product/release-type/version-code identity. Draft, active,
-superseded, and cancelled are states of that same release ID. A cancelled
-version remains reserved; publish corrected bytes under a higher version code
-instead of creating a second release for the old version.
+Hands keeps exactly one non-cancelled owner for each
+app/channel/product/release-type/version-code identity. Cancelling disables a
+lifecycle and frees that coordinate for a corrected upload while retaining the
+old release ID, build, assets, and audit history. The publish CLI checks the
+coordinate before build creation and asset upload. If a concurrent publisher
+wins after that check, the CLI terminalizes its new build as failed, records
+the conflict in provenance, and prints the build ID instead of leaving an
+unidentified orphan. Reusing a version is suited to replacing a never-published
+draft; if an Android build reached devices, publish corrected bytes under a
+higher version code so clients can update.
 
 For a staged full rollout with mandatory acceptance devices, configure both
 behaviors on the same draft:
@@ -214,10 +219,11 @@ release. Raising the rollout to 100% supersedes that fallback. `--full` without
 `--always-include-group` resets the scope to only `full:all`. The legacy
 `--device-group <id>` update remains an exact group-only rollout.
 
-Restoring always reuses the same release ID and never clones the build into a
-second lifecycle. A cancelled release with `activated_at = null` was never
-published: Admin shows **Restore draft**, and rollback returns it to `draft` so
-normal publish gates still apply. A superseded release or a cancelled release
-with a prior activation uses **Restore as active** and records a fresh
-activation time. Send the revision from fresh release detail; stale restore
+Restoring always reuses the same release ID and never clones the build. A
+cancelled release with `activated_at = null` was never published: Admin shows
+**Restore draft**, and rollback returns it to `draft` so normal publish gates
+still apply. A superseded release or a cancelled release with a prior
+activation uses **Restore as active** and records a fresh activation time.
+Restore fails with `RELEASE_VERSION_ALREADY_EXISTS` after a replacement owns
+that coordinate. Send the revision from fresh release detail; stale restore
 requests return `409 RELEASE_REVISION_CONFLICT` with zero side effects.

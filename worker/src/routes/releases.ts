@@ -26,9 +26,16 @@ type ReleaseVersionIdentity = {
 export class ReleaseVersionAlreadyExistsError extends Error {
   readonly code = "RELEASE_VERSION_ALREADY_EXISTS";
 
-  constructor(readonly existing: ReleaseVersionIdentity) {
+  constructor(
+    readonly existing: ReleaseVersionIdentity | null,
+    readonly attempted?: { version_name: string; version_code: number },
+  ) {
+    const versionName = existing?.version_name ?? attempted?.version_name ?? "unknown";
+    const versionCode = existing?.version_code ?? attempted?.version_code ?? "unknown";
     super(
-      `release version ${existing.version_name} (${existing.version_code}) already exists as ${existing.id}`,
+      existing
+        ? `release version ${versionName} (${versionCode}) already exists as ${existing.id}`
+        : `release version ${versionName} (${versionCode}) was claimed by another publisher`,
     );
     this.name = "ReleaseVersionAlreadyExistsError";
   }
@@ -442,6 +449,7 @@ async function findReleaseForVersionIdentity(
      JOIN builds b ON b.id = r.build_id
      WHERE r.app_id = ?1 AND r.channel_id = ?2 AND r.product_type = ?3
        AND r.release_type = ?4 AND b.version_code = ?5
+       AND r.status <> 'cancelled'
      ORDER BY CASE r.status
        WHEN 'active' THEN 0 WHEN 'draft' THEN 1 WHEN 'superseded' THEN 2 ELSE 3
      END, r.created_at ASC, r.id ASC
@@ -453,11 +461,11 @@ function releaseVersionConflictResponse(c: AdminContext, error: ReleaseVersionAl
   return c.json({
     error: error.message,
     code: error.code,
-    release_id: error.existing.id,
-    build_id: error.existing.build_id,
-    release_status: error.existing.status,
-    version_name: error.existing.version_name,
-    version_code: error.existing.version_code,
+    release_id: error.existing?.id,
+    build_id: error.existing?.build_id,
+    release_status: error.existing?.status,
+    version_name: error.existing?.version_name ?? error.attempted?.version_name,
+    version_code: error.existing?.version_code ?? error.attempted?.version_code,
   }, 409);
 }
 
@@ -577,7 +585,10 @@ export async function createRelease(
         releaseType,
         build.version_code,
       );
-      if (conflict) throw new ReleaseVersionAlreadyExistsError(conflict);
+      throw new ReleaseVersionAlreadyExistsError(conflict, {
+        version_name: build.version_name,
+        version_code: build.version_code,
+      });
     }
     throw error;
   }
@@ -783,9 +794,10 @@ export async function handleListReleases(c: Context<{ Bindings: Env }>) {
   const conditions = ["r.app_id = ?1"];
   const binds: (string | number)[] = [appId];
   const status = c.req.query("status");
-  const channel = c.req.query("channel");
+  const channel = c.req.query("channel") ?? c.req.query("channel_id");
   const productType = c.req.query("product_type");
   const releaseType = c.req.query("release_type");
+  const versionCodeRaw = c.req.query("version_code");
 
   if (status) {
     conditions.push(`r.status = ?${binds.length + 1}`);
@@ -802,6 +814,14 @@ export async function handleListReleases(c: Context<{ Bindings: Env }>) {
   if (releaseType) {
     conditions.push(`r.release_type = ?${binds.length + 1}`);
     binds.push(releaseType);
+  }
+  if (versionCodeRaw !== undefined) {
+    const versionCode = Number(versionCodeRaw);
+    if (!Number.isSafeInteger(versionCode) || versionCode < 0) {
+      return c.json({ error: "version_code must be a non-negative integer" }, 400);
+    }
+    conditions.push(`b.version_code = ?${binds.length + 1}`);
+    binds.push(versionCode);
   }
 
   const { results } = await c.env.DB.prepare(
@@ -1797,6 +1817,25 @@ export async function handleRollbackRelease(c: AdminContext) {
     return c.json({ error: "release is already active" }, 409);
   }
 
+  const existingBuild = await getBuildForApp(c.env.DB, appId, existing.build_id);
+  if (!existingBuild) {
+    return c.json({ error: "release build not found" }, 409);
+  }
+  const currentVersionOwner = await findReleaseForVersionIdentity(
+    c.env.DB,
+    appId,
+    existing.channel_id,
+    existing.product_type,
+    existing.release_type,
+    existingBuild.version_code,
+  );
+  if (currentVersionOwner && currentVersionOwner.id !== existing.id) {
+    return releaseVersionConflictResponse(
+      c,
+      new ReleaseVersionAlreadyExistsError(currentVersionOwner),
+    );
+  }
+
   const existingScopes = await releaseScopesForMutation(c.env.DB, releaseId);
   const requestedBuildId = body.build_id ?? c.req.query("build_id");
   if (requestedBuildId && requestedBuildId !== existing.build_id) {
@@ -1945,6 +1984,26 @@ export async function handleRollbackRelease(c: AdminContext) {
   } catch (e) {
     if (e instanceof ReleaseRevisionConflictError) {
       return releaseRevisionConflictResponse(c, e.expectedRevision, e.currentRevision);
+    }
+    if (e instanceof Error && e.message.includes("release version already exists")) {
+      const conflict = await findReleaseForVersionIdentity(
+        c.env.DB,
+        appId,
+        existing.channel_id,
+        existing.product_type,
+        existing.release_type,
+        existingBuild.version_code,
+      );
+      return releaseVersionConflictResponse(
+        c,
+        new ReleaseVersionAlreadyExistsError(
+          conflict?.id !== existing.id ? conflict : null,
+          {
+            version_name: existingBuild.version_name,
+            version_code: existingBuild.version_code,
+          },
+        ),
+      );
     }
     return c.json({ error: (e as Error).message }, 400);
   }

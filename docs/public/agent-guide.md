@@ -161,11 +161,17 @@ the target while other identified clients remain percentage-gated. Raise
 `PATCH /api/apps/:id/releases/:releaseId` as confidence grows. Release rows
 expose `offered_count` / `current_count` so you can watch real coverage.
 
-Each app/channel/product/release-type/version code has one durable release
-lifecycle. A duplicate create, including after cancellation, returns
-`RELEASE_VERSION_ALREADY_EXISTS`; continue with the returned release or use a
-higher version code. Restoring a superseded or cancelled version reactivates
-that same release ID instead of creating a new row.
+Each non-cancelled app/channel/product/release-type/version coordinate has one
+release owner. A duplicate create returns `RELEASE_VERSION_ALREADY_EXISTS`
+with that release/build/status. Cancelling disables the old lifecycle and
+releases the coordinate for a corrected upload without deleting its build,
+assets, or audit history. Restore reactivates the same release ID only if no
+replacement owns the version. The publish CLI checks this before creating a
+build so a known conflict cannot leave uploaded orphan assets. If another
+publisher wins the coordinate after that preflight, the CLI marks its new build
+`failed`, records the conflicting release in provenance, and reports the new
+build ID for audit or manual inspection. For an Android version that reached
+devices, use a higher version code so clients can update.
 
 For a fuller per-version view, call
 `GET /api/apps/:id/analytics/versions?window_days=30` with Agent Login or a

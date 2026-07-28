@@ -13,7 +13,7 @@ npm install -g @botiverse/hands-cli
 Or run it without a permanent install:
 
 ```bash
-npm exec --package @botiverse/hands-cli@0.5.13 -- hands --help
+npm exec --package @botiverse/hands-cli@0.5.14 -- hands --help
 ```
 
 In CI, pin a version so release scripts stay reproducible.
@@ -476,10 +476,16 @@ itself resets the scope to full only. `--rollout-percent` accepts integers from
 update form `--device-group <id>` still replaces the scope with one exact
 group-only rollout and cannot be combined with the full-rollout options.
 
-There is one release lifecycle per app/channel/product/release-type/version
-code. Cancelling does not free a version for a second release. Restoring a
-superseded or cancelled release reactivates its original ID; it does not create
-a replacement row for the same version.
+There is one non-cancelled release owner per
+app/channel/product/release-type/version code. The publish commands preflight
+that coordinate before creating a build or uploading assets. Cancelling
+disables the old release and frees the version for a corrected upload while
+preserving its build, assets, and audit history. Restore reactivates an old
+release only while no replacement owns the version. A rare conflict that wins
+after CLI preflight marks the new build `failed`, writes the conflict identity
+to provenance, and includes the build ID in the terminal error. For Android
+releases that already reached devices, publish the correction with a higher
+version code so clients can update.
 
 ## Share Links
 

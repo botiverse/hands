@@ -18,6 +18,7 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import Database from "better-sqlite3";
 import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { Hono } from "hono";
 import { authMiddleware } from "../src/middleware/auth";
 import {
@@ -49,6 +50,11 @@ import {
   handleGetIosSimulatorArtifact,
   handleListIosSimulatorArtifacts,
 } from "../src/routes/qa_artifacts";
+
+const releaseVersionReuseTriggerStatements = readFileSync(
+  new URL("../../migrations/sql/0056_cancelled_release_version_reuse.sql", import.meta.url),
+  "utf8",
+).split("\n").filter((line) => line.startsWith("CREATE TRIGGER"));
 
 // ---------- Test harness ----------
 
@@ -3461,6 +3467,13 @@ describe("quiver releases — draft lifecycle", () => {
       .run();
   }
 
+  async function installReleaseVersionReuseTriggers() {
+    expect(releaseVersionReuseTriggerStatements).toHaveLength(2);
+    for (const statement of releaseVersionReuseTriggerStatements) {
+      await env.DB.prepare(statement).run();
+    }
+  }
+
   beforeEach(async () => {
     env = makeMockEnv();
     const now = Date.now();
@@ -3578,7 +3591,7 @@ describe("quiver releases — draft lifecycle", () => {
     ]);
   });
 
-  it("returns the existing lifecycle in a structured 409 even when it is cancelled", async () => {
+  it("allows a new lifecycle after the prior version is cancelled", async () => {
     const { createRelease, handleCreateReleaseDraft } = await import("../src/routes/releases");
     await seedReleaseBuild("build-version-original", 30);
     await seedReleaseBuild("build-version-race", 30);
@@ -3594,18 +3607,293 @@ describe("quiver releases — draft lifecycle", () => {
       build_id: "build-version-race",
     }));
 
-    expect(response.status).toBe(409);
+    expect(response.status).toBe(201);
     await expect(responseJson<any>(response)).resolves.toMatchObject({
-      code: "RELEASE_VERSION_ALREADY_EXISTS",
-      release_id: "rel-version-reserved",
-      build_id: "build-version-original",
-      release_status: "cancelled",
-      version_name: "1.0.30",
-      version_code: 30,
+      build_id: "build-version-race",
+      status: "draft",
     });
     await expect(env.DB.prepare(
       "SELECT COUNT(*) AS count FROM releases WHERE build_id = 'build-version-race'",
+    ).first()).resolves.toEqual({ count: 1 });
+    await expect(env.DB.prepare(
+      "SELECT status FROM releases WHERE id = 'rel-version-reserved'",
+    ).first()).resolves.toEqual({ status: "cancelled" });
+  });
+
+  it("returns a structured conflict when create loses a trigger race to restore", async () => {
+    const {
+      createRelease,
+      handleCreateReleaseDraft,
+      handleRollbackRelease,
+    } = await import("../src/routes/releases");
+    await seedReleaseBuild("build-create-loser", 34);
+    await seedReleaseBuild("build-restore-winner", 34);
+    await createRelease(env.DB as any, "app-release", {
+      build_id: "build-restore-winner",
+      status: "draft",
+    }, "tester", "rel-restore-winner");
+    await env.DB.prepare(
+      "UPDATE releases SET status = 'cancelled', revision = 1 WHERE id = 'rel-restore-winner'",
+    ).run();
+    await installReleaseVersionReuseTriggers();
+
+    const db = env.DB as any;
+    const originalBatch = db.batch.bind(db);
+    let injected = false;
+    let winnerStatus: number | null = null;
+    db.batch = async (statements: any[]) => {
+      if (!injected) {
+        injected = true;
+        const winner = await handleRollbackRelease(makeReleaseContext(
+          "rel-restore-winner",
+          { expected_revision: 1 },
+        ));
+        winnerStatus = winner.status;
+      }
+      return originalBatch(statements);
+    };
+
+    let response: Response;
+    try {
+      response = await handleCreateReleaseDraft(makeReleaseContext("", {
+        build_id: "build-create-loser",
+      }));
+    } finally {
+      db.batch = originalBatch;
+    }
+
+    expect(winnerStatus).toBe(200);
+    expect(response.status).toBe(409);
+    await expect(responseJson<any>(response)).resolves.toMatchObject({
+      code: "RELEASE_VERSION_ALREADY_EXISTS",
+      release_id: "rel-restore-winner",
+      build_id: "build-restore-winner",
+      release_status: "draft",
+      version_code: 34,
+    });
+    await expect(env.DB.prepare(
+      "SELECT id, status, revision FROM releases ORDER BY id",
+    ).all()).resolves.toEqual({
+      results: [{ id: "rel-restore-winner", status: "draft", revision: 2 }],
+      success: true,
+    });
+    await expect(env.DB.prepare(
+      "SELECT release_id, scope_type, scope_value FROM release_scopes ORDER BY release_id",
+    ).all()).resolves.toEqual({
+      results: [{
+        release_id: "rel-restore-winner",
+        scope_type: "full",
+        scope_value: "all",
+      }],
+      success: true,
+    });
+    await expect(env.DB.prepare(
+      "SELECT action, COUNT(*) AS count FROM audit_logs GROUP BY action ORDER BY action",
+    ).all()).resolves.toEqual({
+      results: [
+        { action: "release.create", count: 1 },
+        { action: "release.rollback", count: 1 },
+      ],
+      success: true,
+    });
+  });
+
+  it("keeps restore side-effect free when create wins the trigger race", async () => {
+    const {
+      createRelease,
+      handleCreateReleaseDraft,
+      handleRollbackRelease,
+    } = await import("../src/routes/releases");
+    await seedReleaseBuild("build-restore-loser", 35);
+    await seedReleaseBuild("build-create-winner", 35);
+    await createRelease(env.DB as any, "app-release", {
+      build_id: "build-restore-loser",
+      status: "draft",
+    }, "tester", "rel-restore-loser");
+    await env.DB.prepare(
+      "UPDATE releases SET status = 'cancelled', revision = 1 WHERE id = 'rel-restore-loser'",
+    ).run();
+    await installReleaseVersionReuseTriggers();
+
+    const db = env.DB as any;
+    const originalBatch = db.batch.bind(db);
+    let injected = false;
+    let winnerId: string | undefined;
+    db.batch = async (statements: any[]) => {
+      if (!injected) {
+        injected = true;
+        const created = await handleCreateReleaseDraft(makeReleaseContext("", {
+          build_id: "build-create-winner",
+        }));
+        expect(created.status).toBe(201);
+        winnerId = (await responseJson<any>(created)).id;
+      }
+      return originalBatch(statements);
+    };
+
+    let response: Response;
+    try {
+      response = await handleRollbackRelease(makeReleaseContext(
+        "rel-restore-loser",
+        { expected_revision: 1 },
+      ));
+    } finally {
+      db.batch = originalBatch;
+    }
+
+    expect(response.status).toBe(409);
+    await expect(responseJson<any>(response)).resolves.toMatchObject({
+      code: "RELEASE_VERSION_ALREADY_EXISTS",
+      release_id: winnerId,
+      build_id: "build-create-winner",
+      release_status: "draft",
+      version_code: 35,
+    });
+    await expect(env.DB.prepare(
+      "SELECT status, revision FROM releases WHERE id = 'rel-restore-loser'",
+    ).first()).resolves.toEqual({ status: "cancelled", revision: 1 });
+    await expect(env.DB.prepare(
+      `SELECT release_id, scope_type, scope_value FROM release_scopes
+       WHERE release_id = 'rel-restore-loser'`,
+    ).all()).resolves.toEqual({
+      results: [{
+        release_id: "rel-restore-loser",
+        scope_type: "full",
+        scope_value: "all",
+      }],
+      success: true,
+    });
+    await expect(env.DB.prepare(
+      "SELECT COUNT(*) AS count FROM audit_logs WHERE action = 'release.rollback'",
     ).first()).resolves.toEqual({ count: 0 });
+    await expect(env.DB.prepare(
+      "SELECT COUNT(*) AS count FROM audit_logs WHERE action = 'release.create'",
+    ).first()).resolves.toEqual({ count: 2 });
+  });
+
+  it("keeps the trigger conflict structured if the winning owner cancels before requery", async () => {
+    const { createRelease, handleCreateReleaseDraft } = await import("../src/routes/releases");
+    await seedReleaseBuild("build-transient-loser", 36);
+    await seedReleaseBuild("build-transient-winner", 36);
+    await installReleaseVersionReuseTriggers();
+
+    const db = env.DB as any;
+    const originalBatch = db.batch.bind(db);
+    let injected = false;
+    db.batch = async (statements: any[]) => {
+      if (injected) return originalBatch(statements);
+      injected = true;
+      await createRelease(env.DB as any, "app-release", {
+        build_id: "build-transient-winner",
+        status: "draft",
+      }, "winner", "rel-transient-winner");
+      try {
+        return await originalBatch(statements);
+      } catch (error) {
+        await env.DB.prepare(
+          "UPDATE releases SET status = 'cancelled' WHERE id = 'rel-transient-winner'",
+        ).run();
+        throw error;
+      }
+    };
+
+    let response: Response;
+    try {
+      response = await handleCreateReleaseDraft(makeReleaseContext("", {
+        build_id: "build-transient-loser",
+      }));
+    } finally {
+      db.batch = originalBatch;
+    }
+
+    expect(response.status).toBe(409);
+    const body = await responseJson<any>(response);
+    expect(body).toMatchObject({
+      code: "RELEASE_VERSION_ALREADY_EXISTS",
+      version_name: "1.0.36",
+      version_code: 36,
+    });
+    expect(body).not.toHaveProperty("release_id");
+    await expect(env.DB.prepare(
+      "SELECT id, status FROM releases ORDER BY id",
+    ).all()).resolves.toEqual({
+      results: [{ id: "rel-transient-winner", status: "cancelled" }],
+      success: true,
+    });
+    await expect(env.DB.prepare(
+      "SELECT COUNT(*) AS count FROM audit_logs WHERE action = 'release.create'",
+    ).first()).resolves.toEqual({ count: 1 });
+  });
+
+  it("blocks restoring a cancelled lifecycle after a replacement owns its version", async () => {
+    const { createRelease, handleRollbackRelease } = await import("../src/routes/releases");
+    await seedReleaseBuild("build-version-old", 31);
+    await seedReleaseBuild("build-version-replacement", 31);
+    await createRelease(env.DB as any, "app-release", {
+      build_id: "build-version-old",
+      status: "draft",
+    }, "tester", "rel-version-old");
+    await env.DB.prepare(
+      "UPDATE releases SET status = 'cancelled', revision = 1 WHERE id = 'rel-version-old'",
+    ).run();
+    await createRelease(env.DB as any, "app-release", {
+      build_id: "build-version-replacement",
+      status: "draft",
+    }, "tester", "rel-version-replacement");
+
+    const response = await handleRollbackRelease(makeReleaseContext(
+      "rel-version-old",
+      { expected_revision: 1 },
+    ));
+
+    expect(response.status).toBe(409);
+    await expect(responseJson<any>(response)).resolves.toMatchObject({
+      code: "RELEASE_VERSION_ALREADY_EXISTS",
+      release_id: "rel-version-replacement",
+      build_id: "build-version-replacement",
+      release_status: "draft",
+      version_code: 31,
+    });
+    await expect(env.DB.prepare(
+      "SELECT status, revision FROM releases WHERE id = 'rel-version-old'",
+    ).first()).resolves.toEqual({ status: "cancelled", revision: 1 });
+  });
+
+  it("filters release preflights by exact lane and version code", async () => {
+    const { createRelease, handleListReleases } = await import("../src/routes/releases");
+    await seedReleaseBuild("build-version-filter", 32);
+    await seedReleaseBuild("build-version-other", 33);
+    await createRelease(env.DB as any, "app-release", {
+      build_id: "build-version-filter",
+      status: "draft",
+    }, "tester", "rel-version-filter");
+    await createRelease(env.DB as any, "app-release", {
+      build_id: "build-version-other",
+      status: "draft",
+    }, "tester", "rel-version-other");
+
+    const response = await handleListReleases(makeReleaseContext("", {}, {
+      channel: "main",
+      product_type: "android-apk",
+      release_type: "stable",
+      version_code: "32",
+    }));
+    expect(response.status).toBe(200);
+    await expect(responseJson<any>(response)).resolves.toMatchObject({
+      releases: [{
+        id: "rel-version-filter",
+        build_id: "build-version-filter",
+        version_code: 32,
+      }],
+    });
+
+    const invalid = await handleListReleases(makeReleaseContext("", {}, {
+      version_code: "-1",
+    }));
+    expect(invalid.status).toBe(400);
+    await expect(responseJson<any>(invalid)).resolves.toEqual({
+      error: "version_code must be a non-negative integer",
+    });
   });
 
   it("publishes a draft and supersedes the previous active release", async () => {

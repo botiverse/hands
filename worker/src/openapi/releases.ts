@@ -223,9 +223,12 @@ export function registerReleaseRoutes(registry: OpenApiRegistry) {
     request: {
       params: AppIdParam,
       query: z.object({
+        channel: z.string().optional(),
         channel_id: z.string().optional(),
         product_type: z.string().optional(),
+        release_type: z.string().optional(),
         status: z.string().optional(),
+        version_code: z.coerce.number().int().nonnegative().optional(),
       }),
     },
     responses: {
@@ -238,7 +241,7 @@ export function registerReleaseRoutes(registry: OpenApiRegistry) {
     method: "post",
     path: "/api/apps/{appId}/releases",
     tags: ["Releases"],
-    summary: "Create the single release lifecycle for a build version",
+    summary: "Create a release lifecycle for an unoccupied or cancelled build version",
     security: auth,
     request: {
       params: AppIdParam,
@@ -248,7 +251,7 @@ export function registerReleaseRoutes(registry: OpenApiRegistry) {
       201: success("Created release.", GenericObject),
       400: error("Invalid release payload."),
       403: error("Current principal cannot create releases."),
-      409: error("A release already exists for this app/channel/product/release-type/version."),
+      409: error("A non-cancelled release already exists for this app/channel/product/release-type/version."),
     },
   });
 
