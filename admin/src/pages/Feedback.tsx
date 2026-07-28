@@ -54,7 +54,7 @@ export function AppFeedback({ appId }: { appId: string }) {
         status: statusFilter || undefined,
         // Feedback tab = user feedback + bugs; crashes live in the Crashes
         // tab. An explicit kind/signature filter overrides this.
-        kind: kindFilter || (signatureFilter ? "crash" : "feedback,bug"),
+        kind: kindFilter || (signatureFilter ? "crash,error" : "feedback,bug"),
         deviceId: deviceFilter || undefined,
         versionCode: versionFilter ? Number(versionFilter) : undefined,
         signature: signatureFilter || undefined,
@@ -134,7 +134,7 @@ export function AppFeedback({ appId }: { appId: string }) {
             </SelectContent>
           </Select>
           <Select
-            items={{ "": "All kinds", feedback: "feedback", bug: "bug", crash: "crash" }}
+            items={{ "": "All kinds", feedback: "feedback", bug: "bug", crash: "crash", error: "error" }}
             value={kindFilter}
             onValueChange={(v) => setKindFilter(v as string)}
           >
@@ -789,7 +789,7 @@ export function FeedbackTicketPage({
             })()}
           </div>
 
-          {t.kind === "crash" &&
+          {(t.kind === "crash" || t.kind === "error") &&
             (() => {
               const log = detail.data!.attachments.find(
                 (a) => (a.content_type?.startsWith("text/") ?? false) || /\.txt$/i.test(a.filename),

@@ -30,12 +30,14 @@ const MAX_BREADCRUMBS = 100;
 const METRICS_INTERVAL_MS = 24 * 60 * 60 * 1000;
 
 let started = false;
+let initOptions: HandsElectronOptions | null = null;
 const context: CrashContext = { tags: {}, extra: {}, user: null, breadcrumbs: [] };
 
 /** Initialise crash reporting. Call once in the main process before app ready. */
 export function init(options: HandsElectronOptions): void {
   if (started) return;
   started = true;
+  initOptions = options;
 
   crashReporter.start({
     productName: options.productName ?? options.appSlug,
@@ -102,6 +104,66 @@ export function addBreadcrumb(crumb: HandsBreadcrumb): void {
   context.breadcrumbs.push({ timestamp: Date.now(), ...crumb });
   while (context.breadcrumbs.length > MAX_BREADCRUMBS) context.breadcrumbs.shift();
   crashReporter.addExtraParameter("breadcrumbs", JSON.stringify(context.breadcrumbs).slice(0, 8000));
+}
+
+/**
+ * Capture a handled exception and submit it as `kind = "error"` through the
+ * Hands feedback channel. Includes the current breadcrumb trail and structured
+ * exception metadata for server-side grouping/signature.
+ */
+export async function captureException(
+  error: Error,
+  options?: { message?: string; tags?: Record<string, string>; extra?: Record<string, unknown> },
+): Promise<string> {
+  const opts = initOptions;
+  if (!opts) throw new Error("Hands.init() must be called before captureException()");
+  const endpoint = (opts.endpoint ?? DEFAULT_HANDS_ENDPOINT).replace(/\/+$/, "");
+  const exceptionClass = error.name || "Error";
+  const exceptionMessage = error.message || exceptionClass;
+  const stacktrace = (error.stack ?? "").slice(0, 50_000);
+  const topFrame = extractTopFrame(error.stack);
+
+  const metadata: Record<string, unknown> = {
+    exception_class: exceptionClass,
+    exception_message: exceptionMessage,
+    stacktrace,
+    top_frame: topFrame,
+    handled: true,
+    platform: "electron",
+    version_name: opts.release ?? app.getVersion(),
+    breadcrumbs: context.breadcrumbs,
+    ...options?.extra,
+  };
+  if (opts.versionCode !== undefined) metadata.version_code = opts.versionCode;
+  if (options?.tags) metadata.tags = options.tags;
+
+  const form = new FormData();
+  form.append("message", (options?.message ?? `${exceptionClass}: ${exceptionMessage}`).slice(0, 10_000));
+  form.append("kind", "error");
+  form.append("metadata", JSON.stringify(metadata));
+
+  const url = `${endpoint}/public/v2/apps/${encodeURIComponent(opts.appSlug)}/feedback`;
+  const headers: Record<string, string> = { accept: "application/json" };
+  if (opts.clientKey) headers["X-Hands-Client-Key"] = opts.clientKey;
+  const response = await fetch(url, { method: "POST", headers, body: form });
+  const body = (await response.text()).slice(0, 300);
+  if (!response.ok) throw new Error(`captureException failed (HTTP ${response.status}): ${body}`);
+  const parsed = JSON.parse(body) as { id?: string };
+  if (!parsed.id) throw new Error("captureException: missing ticket id in response");
+  return parsed.id;
+}
+
+function extractTopFrame(stack: string | undefined): string | null {
+  if (!stack) return null;
+  const lines = stack.split("\n");
+  for (const line of lines) {
+    const match = line.match(/^\s+at\s+(.+?)\s+\(/);
+    if (match) {
+      const fn = match[1] ?? "";
+      if (!fn.startsWith("node:") && !fn.includes("node_modules")) return fn;
+    }
+  }
+  return null;
 }
 
 function applyContext(patch: Partial<CrashContext>): void {

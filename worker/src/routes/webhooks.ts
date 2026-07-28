@@ -30,6 +30,8 @@ type WebhookEventType =
   | "feedback:status_changed"
   | "crash:new_group"
   | "crash:spike"
+  | "error:new_group"
+  | "error:spike"
   | "release:new"
   | "release:draft_created"
   | "release:superseded"

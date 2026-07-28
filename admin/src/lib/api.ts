@@ -1618,7 +1618,7 @@ export const revokeReleaseShare = (appId: string, releaseId: string, shareId: st
 
 export interface FeedbackTicket {
   id: string;
-  kind: "feedback" | "bug" | "crash";
+  kind: "feedback" | "bug" | "crash" | "error";
   status: "open" | "in_progress" | "resolved" | "closed";
   assignee: string | null;
   message: string;

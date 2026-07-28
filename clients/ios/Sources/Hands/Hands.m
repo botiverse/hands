@@ -133,4 +133,98 @@ static HandsConfig *gHandsConfig = nil;
     return [HandsDeviceId deviceId];
 }
 
+#pragma mark - Breadcrumbs & Error Capture
+
+static NSMutableArray<NSDictionary *> *gBreadcrumbs = nil;
+static const NSUInteger kMaxBreadcrumbs = 100;
+
++ (NSMutableArray<NSDictionary *> *)breadcrumbBuffer {
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        gBreadcrumbs = [NSMutableArray array];
+    });
+    return gBreadcrumbs;
+}
+
++ (void)addBreadcrumbWithCategory:(NSString *)category
+                          message:(NSString *)message
+                            level:(NSString *)level {
+    NSMutableArray *buf = [self breadcrumbBuffer];
+    @synchronized (buf) {
+        NSMutableDictionary *crumb = [NSMutableDictionary dictionary];
+        crumb[@"timestamp"] = @((NSUInteger)([[NSDate date] timeIntervalSince1970] * 1000));
+        crumb[@"category"] = category ?: @"general";
+        crumb[@"message"] = message ?: @"";
+        crumb[@"level"] = level ?: @"info";
+        [buf addObject:crumb];
+        while (buf.count > kMaxBreadcrumbs) {
+            [buf removeObjectAtIndex:0];
+        }
+    }
+}
+
++ (NSString *)snapshotBreadcrumbs {
+    NSMutableArray *buf = [self breadcrumbBuffer];
+    @synchronized (buf) {
+        NSData *json = [NSJSONSerialization dataWithJSONObject:buf options:0 error:nil];
+        return json ? [[NSString alloc] initWithData:json encoding:NSUTF8StringEncoding] : @"[]";
+    }
+}
+
++ (void)clearBreadcrumbs {
+    NSMutableArray *buf = [self breadcrumbBuffer];
+    @synchronized (buf) {
+        [buf removeAllObjects];
+    }
+}
+
++ (void)captureException:(NSException *)exception
+              completion:(void (^)(NSString *_Nullable, NSError *_Nullable))completion {
+    NSString *exceptionClass = exception.name ?: @"NSException";
+    NSString *exceptionMessage = exception.reason ?: exceptionClass;
+    NSString *stacktrace = [exception.callStackSymbols componentsJoinedByString:@"\n"];
+    if (stacktrace.length > 50000) stacktrace = [stacktrace substringToIndex:50000];
+    NSString *topFrame = exception.callStackSymbols.firstObject ?: @"";
+
+    NSMutableDictionary *extras = [NSMutableDictionary dictionary];
+    extras[@"exception_class"] = exceptionClass;
+    extras[@"exception_message"] = exceptionMessage;
+    extras[@"stacktrace"] = stacktrace;
+    extras[@"top_frame"] = topFrame;
+    extras[@"handled"] = @"true";
+    extras[@"breadcrumbs"] = [self snapshotBreadcrumbs];
+
+    NSString *message = [NSString stringWithFormat:@"%@: %@", exceptionClass, exceptionMessage];
+    if (message.length > 10000) message = [message substringToIndex:10000];
+
+    [self submitFeedback:message
+                    kind:@"error"
+         attachmentPaths:nil
+                  extras:extras
+              completion:completion];
+}
+
++ (void)captureError:(NSError *)error
+          completion:(void (^)(NSString *_Nullable, NSError *_Nullable))completion {
+    NSString *exceptionClass = [NSString stringWithFormat:@"%@.%ld", error.domain, (long)error.code];
+    NSString *exceptionMessage = error.localizedDescription ?: exceptionClass;
+
+    NSMutableDictionary *extras = [NSMutableDictionary dictionary];
+    extras[@"exception_class"] = exceptionClass;
+    extras[@"exception_message"] = exceptionMessage;
+    extras[@"handled"] = @"true";
+    extras[@"error_domain"] = error.domain;
+    extras[@"error_code"] = [NSString stringWithFormat:@"%ld", (long)error.code];
+    extras[@"breadcrumbs"] = [self snapshotBreadcrumbs];
+
+    NSString *message = [NSString stringWithFormat:@"%@: %@", exceptionClass, exceptionMessage];
+    if (message.length > 10000) message = [message substringToIndex:10000];
+
+    [self submitFeedback:message
+                    kind:@"error"
+         attachmentPaths:nil
+                  extras:extras
+              completion:completion];
+}
+
 @end
