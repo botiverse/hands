@@ -1093,7 +1093,7 @@ export async function handleAgentManifest(c: Context<{ Bindings: Env }>) {
       },
       {
         name: "cancel-release",
-        description: "Disable one draft or active release without deleting its build, assets, or audit history. The cancelled row stops reserving its version so a corrected build may use that coordinate. Requires app publisher.",
+        description: "Disable one draft or active release without deleting its build, assets, or audit history. The cancelled row stops reserving its version so a corrected build may use that coordinate; if the release reached clients, corrected client bits still require a higher version code. Requires app publisher.",
         endpoint: { method: "DELETE", path: "/api/apps/{app_id}/releases/{release_id}" },
         parameters: {
           app_id: { type: "string", in: "path", required: true, description: "App UUID." },

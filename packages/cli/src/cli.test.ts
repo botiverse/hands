@@ -675,9 +675,20 @@ describe("Android delta patch metadata", () => {
         versionCode: 1080000,
       };
       await expect(assertReleaseVersionAvailable(args)).rejects.toThrow(
-        "cancel that release before uploading this version again",
+        "cancel that never-published draft before uploading this version again",
       );
       expect(requests[0]).toContain("version_code=1080000");
+
+      for (const publishedStatus of ["active", "superseded"]) {
+        releases = [{ ...releases[0]!, status: publishedStatus }];
+        const error = await assertReleaseVersionAvailable(args).catch((caught) => caught);
+        expect(error).toBeInstanceOf(Error);
+        expect((error as Error).message).toContain("choose a higher version code");
+        expect((error as Error).message).toContain(
+          "cannot make installed clients update to different bits with the same version code",
+        );
+        expect((error as Error).message).not.toContain("cancel that release");
+      }
 
       releases = [{ ...releases[0]!, status: "cancelled" }];
       await expect(assertReleaseVersionAvailable(args)).resolves.toBeUndefined();
@@ -900,6 +911,208 @@ describe("Android delta patch metadata", () => {
         "must be a complete gzip-compressed official PatchGen output",
       );
       expect(requests).toEqual([]);
+    } finally {
+      if (originalApi === undefined) delete process.env.HANDS_API;
+      else process.env.HANDS_API = originalApi;
+      if (originalToken === undefined) delete process.env.HANDS_BEARER_TOKEN;
+      else process.env.HANDS_BEARER_TOKEN = originalToken;
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("publish lane release-version admission", () => {
+  it("preflights and terminalizes a trigger race for every mobile and desktop lane", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "hands-publish-admission-"));
+    const files = {
+      apk: join(dir, "app.apk"),
+      ipa: join(dir, "app.ipa"),
+      app: join(dir, "app.app"),
+      hap: join(dir, "app.hap"),
+      tauri: join(dir, "App.AppImage"),
+      signature: join(dir, "App.AppImage.sig"),
+      electron: join(dir, "App-Setup.exe"),
+    };
+    for (const file of Object.values(files)) writeFileSync(file, `bytes:${file}`);
+
+    const lanes = [
+      {
+        name: "android",
+        productType: "android-apk",
+        argv: ["builds", "publish-android", "mobile", "--apk", files.apk,
+          "--version-name", "1.8.0", "--version-code", "1080000", "--draft"],
+      },
+      {
+        name: "ios",
+        productType: "ios-ipa",
+        argv: ["builds", "publish-ios", "mobile", "--ipa", files.ipa,
+          "--version-name", "1.8.0", "--version-code", "1080000", "--draft"],
+      },
+      {
+        name: "ohos",
+        productType: "ohos-app",
+        argv: ["builds", "publish-ohos", "mobile", "--app", files.app, "--hap", files.hap,
+          "--version-name", "1.8.0", "--version-code", "1080000", "--draft"],
+      },
+      {
+        name: "tauri",
+        productType: "tauri-updater",
+        argv: ["builds", "publish-tauri", "mobile", "--bundle", files.tauri,
+          "--signature", files.signature, "--target", "linux-x86_64",
+          "--version-name", "1.8.0", "--version-code", "1080000"],
+      },
+      {
+        name: "electron",
+        productType: "electron-installer",
+        argv: ["builds", "publish-electron", "mobile", "--installer", files.electron,
+          "--version-name", "1.8.0", "--version-code", "1080000", "--draft"],
+      },
+    ] as const;
+
+    const requests: Array<{
+      method: string;
+      url: string;
+      body?: Record<string, any>;
+    }> = [];
+    let mode: "occupied" | "race" = "occupied";
+    let buildCounter = 0;
+    let uploadCounter = 0;
+    const server = createServer(async (req, res) => {
+      let body: Record<string, any> | undefined;
+      if (req.headers["content-type"]?.includes("application/json")) {
+        const chunks: Buffer[] = [];
+        for await (const chunk of req) chunks.push(Buffer.from(chunk));
+        body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+      } else {
+        for await (const _chunk of req) {
+          // Drain multipart uploads before responding.
+        }
+      }
+      requests.push({ method: req.method ?? "GET", url: req.url ?? "", body });
+      res.setHeader("content-type", "application/json");
+      if (req.method === "GET" && req.url === "/api/apps") {
+        return res.end(JSON.stringify({ apps: [{ id: "app-1", slug: "mobile" }] }));
+      }
+      if (req.method === "GET" && req.url === "/api/apps/app-1/channels") {
+        return res.end(JSON.stringify({
+          channels: [{ id: "channel-1", slug: "main", name: "Main" }],
+        }));
+      }
+      if (req.method === "GET" && req.url?.startsWith("/api/apps/app-1/releases?")) {
+        return res.end(JSON.stringify({
+          releases: mode === "occupied" ? [{
+            id: "release-published",
+            build_id: "build-published",
+            status: "active",
+            version_name: "1.8.0",
+            version_code: 1080000,
+          }] : [],
+        }));
+      }
+      if (req.method === "POST" && req.url === "/api/apps/app-1/builds") {
+        buildCounter += 1;
+        return res.end(JSON.stringify({ id: `build-race-${buildCounter}` }));
+      }
+      if (req.method === "POST" && req.url === "/api/apps/app-1/upload") {
+        uploadCounter += 1;
+        return res.end(JSON.stringify({
+          file_hash: String(uploadCounter).padStart(64, "0"),
+          r2_key: `apps/app-1/upload-${uploadCounter}`,
+          size_bytes: 10 + uploadCounter,
+          original_filename: `upload-${uploadCounter}`,
+        }));
+      }
+      if (req.method === "POST" && req.url?.endsWith("/assets")) {
+        return res.end(JSON.stringify({ id: `asset-${uploadCounter}` }));
+      }
+      if (req.method === "POST" && req.url === "/api/apps/app-1/releases") {
+        res.statusCode = 409;
+        return res.end(JSON.stringify({
+          error: "release version already exists",
+          code: "RELEASE_VERSION_ALREADY_EXISTS",
+          release_id: "release-winner",
+          build_id: "build-winner",
+          release_status: "draft",
+          version_name: "1.8.0",
+          version_code: 1080000,
+        }));
+      }
+      if (req.method === "PATCH" && req.url?.startsWith("/api/apps/app-1/builds/build-race-")) {
+        return res.end(JSON.stringify({ ok: true }));
+      }
+      res.statusCode = 404;
+      return res.end(JSON.stringify({ error: "not found" }));
+    });
+
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("bad address");
+    const originalApi = process.env.HANDS_API;
+    const originalToken = process.env.HANDS_BEARER_TOKEN;
+    process.env.HANDS_API = `http://127.0.0.1:${address.port}`;
+    process.env.HANDS_BEARER_TOKEN = "test-token";
+
+    const run = async (argv: readonly string[]) => {
+      const { registerBuildCommands } = await import("../src/commands/builds.js");
+      const program = new Command().version("0.5.14").option("--json", "JSON output", false);
+      registerBuildCommands(program);
+      await program.parseAsync(["node", "hands", ...argv]);
+    };
+
+    try {
+      for (const lane of lanes) {
+        mode = "occupied";
+        requests.length = 0;
+        await expect(run(lane.argv)).rejects.toThrow("choose a higher version code");
+        const occupiedPreflight = requests.find((request) =>
+          request.method === "GET" && request.url.startsWith("/api/apps/app-1/releases?"));
+        expect(occupiedPreflight, lane.name).toBeDefined();
+        const query = new URL(occupiedPreflight!.url, "https://hands.test").searchParams;
+        expect(query.get("channel"), lane.name).toBe("channel-1");
+        expect(query.get("product_type"), lane.name).toBe(lane.productType);
+        expect(query.get("release_type"), lane.name).toBe("stable");
+        expect(query.get("version_code"), lane.name).toBe("1080000");
+        expect(requests.some((request) =>
+          request.method === "POST" && request.url === "/api/apps/app-1/builds"), lane.name,
+        ).toBe(false);
+
+        mode = "race";
+        requests.length = 0;
+        await expect(run(lane.argv)).rejects.toThrow(
+          /new build build-race-\d+ was terminalized as failed/,
+        );
+        const sequence = requests.map((request) => `${request.method} ${request.url}`);
+        const preflightIndex = sequence.findIndex((entry) =>
+          entry.startsWith("GET /api/apps/app-1/releases?"));
+        const buildIndex = sequence.indexOf("POST /api/apps/app-1/builds");
+        const releaseIndex = sequence.indexOf("POST /api/apps/app-1/releases");
+        const terminalIndex = sequence.findIndex((entry) =>
+          entry.startsWith("PATCH /api/apps/app-1/builds/build-race-"));
+        expect(preflightIndex, lane.name).toBeGreaterThanOrEqual(0);
+        expect(buildIndex, lane.name).toBeGreaterThan(preflightIndex);
+        expect(releaseIndex, lane.name).toBeGreaterThan(buildIndex);
+        expect(terminalIndex, lane.name).toBeGreaterThan(releaseIndex);
+        expect(requests[buildIndex]?.body, lane.name).toMatchObject({
+          channel_id: "channel-1",
+          product_type: lane.productType,
+          release_type: "stable",
+          version_name: "1.8.0",
+          version_code: 1080000,
+        });
+        expect(requests[terminalIndex]?.body, lane.name).toMatchObject({
+          status: "failed",
+          provenance_json: {
+            hands_cli_terminal: {
+              state: "failed",
+              reason: "release_version_conflict",
+              conflicting_release_id: "release-winner",
+              conflicting_build_id: "build-winner",
+              version_code: 1080000,
+            },
+          },
+        });
+      }
     } finally {
       if (originalApi === undefined) delete process.env.HANDS_API;
       else process.env.HANDS_API = originalApi;

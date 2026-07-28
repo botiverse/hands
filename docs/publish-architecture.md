@@ -368,7 +368,7 @@ ToDesktop runs builds on actual Win/Mac/Linux VMs, captures screenshots + auto-u
    - Build status is 'succeeded' ✓
    - Version is higher/lower than previous release ✓
    - Signing credentials valid ✓
-   - No release lifecycle with the same version_code in this lane ✓
+   - No non-cancelled release lifecycle with the same version_code in this lane ✓
 
 3. Admin picks release scope:
    - [Full release] — all users on this (channel, product_type, release_type)
@@ -384,7 +384,8 @@ ToDesktop runs builds on actual Win/Mac/Linux VMs, captures screenshots + auto-u
 6. Server:
    a. Insert the one releases row (status='draft'); return
       `409 RELEASE_VERSION_ALREADY_EXISTS` with the existing coordinates if
-      the lane/version lifecycle already exists, including if it is cancelled
+      a non-cancelled lane/version lifecycle already exists. A cancelled row
+      remains addressable history but no longer reserves that coordinate
    b. Insert release_scopes row(s)
    c. Publish only after the fresh `expected_revision` and exact
       `expected_scopes` set match atomically; set status=`active`, increment
@@ -406,6 +407,11 @@ the server clears the supersession link and refreshes `activated_at`. Neither
 path inserts a second release for the version. Every path requires the fresh
 revision. A full-coverage active restore supersedes the current active release;
 a partial active restore preserves or reactivates its fallback.
+
+Cancelling a release that already reached clients does not let those clients
+update to different bits with the same version code. Use version reuse to
+correct never-published history; ship any client correction with a higher
+version code.
 
 ## 5. Public client API
 
@@ -845,7 +851,7 @@ After push, build sits in `succeeded` state in the Builds tab. User then opens i
 ✓ Build status: succeeded
 ✓ Version is higher than previous release (1.2.3 = 42)
 ✓ Code signing credentials valid for: darwin-arm64, darwin-x64, linux-x64, win32-x64, win32-arm64
-✓ No existing release lifecycle with same version_code
+✓ No non-cancelled release lifecycle with same version_code
 
 Release scope:
 ( ) Full release           — all users on this (channel, product_type, release_type)

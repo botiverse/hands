@@ -93,7 +93,9 @@ owns its coordinate; otherwise it returns the same structured 409. A cancelled
 row whose `activated_at` is null was never published, so an eligible restore
 returns it to `draft` and must pass normal publish readiness, exact-scope,
 external-target, and revision gates. Only a previously active row returns to
-`active` with a new activation time.
+`active` with a new activation time. Reusing a coordinate does not make clients
+that already received that version install different bits; publish client
+corrections with a higher version code.
 
 ### Update Available
 

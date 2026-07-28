@@ -200,11 +200,44 @@ export async function assertReleaseVersionAvailable(args: {
       release.status !== "cancelled",
   );
   if (!conflict) return;
+  const recovery = conflict.status === "draft"
+    ? "cancel that never-published draft before uploading this version again, or choose a higher version code"
+    : "choose a higher version code; cancelling a published or superseded release cannot make installed clients update to different bits with the same version code";
   throw new Error(
     `release version ${args.versionName} (${args.versionCode}) is already owned by ` +
       `${conflict.status} release ${conflict.id} (build ${conflict.build_id}); ` +
-      "cancel that release before uploading this version again, or choose a higher version code",
+      recovery,
   );
+}
+
+export async function createAdmittedPublishBuild(args: {
+  appId: string;
+  channelId: string;
+  productType: string;
+  releaseType: string;
+  versionName: string;
+  versionCode: number;
+  buildBody: Record<string, unknown>;
+}): Promise<{ id: string }> {
+  await assertReleaseVersionAvailable({
+    appId: args.appId,
+    channelId: args.channelId,
+    productType: args.productType,
+    releaseType: args.releaseType,
+    versionName: args.versionName,
+    versionCode: args.versionCode,
+  });
+  return apiRequest<{ id: string }>(`/api/apps/${args.appId}/builds`, {
+    method: "POST",
+    body: {
+      ...args.buildBody,
+      channel_id: args.channelId,
+      product_type: args.productType,
+      release_type: args.releaseType,
+      version_name: args.versionName,
+      version_code: args.versionCode,
+    },
+  });
 }
 
 function releaseVersionConflict(error: unknown): ReleaseVersionConflictBody | null {
@@ -807,18 +840,14 @@ export function registerBuildCommands(program: Command): void {
         };
         const appId = await resolveAppId(appIdOrSlug);
         const channelId = await resolveChannelId(appId, opts.channel);
-        await assertReleaseVersionAvailable({
+        const build = await createAdmittedPublishBuild({
           appId,
           channelId,
           productType: opts.productType,
           releaseType: opts.releaseType,
           versionName: opts.versionName,
           versionCode,
-        });
-
-        const build = await apiRequest<{ id: string }>(`/api/apps/${appId}/builds`, {
-          method: "POST",
-          body: {
+          buildBody: {
             channel_id: channelId,
             product_type: opts.productType,
             release_type: opts.releaseType,
@@ -1061,18 +1090,14 @@ export function registerBuildCommands(program: Command): void {
           ci_run_id: opts.ciRunId ?? null,
           ci_url: opts.ciUrl ?? null,
         };
-        await assertReleaseVersionAvailable({
+        const build = await createAdmittedPublishBuild({
           appId,
           channelId,
           productType: opts.productType,
           releaseType: opts.releaseType,
           versionName: opts.versionName,
           versionCode,
-        });
-
-        const build = await apiRequest<{ id: string }>(`/api/apps/${appId}/builds`, {
-          method: "POST",
-          body: {
+          buildBody: {
             channel_id: channelId,
             product_type: opts.productType,
             release_type: opts.releaseType,
@@ -1511,18 +1536,14 @@ export function registerBuildCommands(program: Command): void {
           ci_run_id: opts.ciRunId ?? null,
           ci_url: opts.ciUrl ?? null,
         };
-        await assertReleaseVersionAvailable({
+        const build = await createAdmittedPublishBuild({
           appId,
           channelId,
           productType: opts.productType,
           releaseType: opts.releaseType,
           versionName: opts.versionName,
           versionCode,
-        });
-
-        const build = await apiRequest<{ id: string }>(`/api/apps/${appId}/builds`, {
-          method: "POST",
-          body: {
+          buildBody: {
             channel_id: channelId,
             product_type: opts.productType,
             release_type: opts.releaseType,
@@ -1670,17 +1691,14 @@ export function registerBuildCommands(program: Command): void {
         ? parseNonNegativeInteger(opts.versionCode, "--version-code")
         : versionCodeFromVersion(opts.versionName);
       const changelog = parseChangelogOptions(opts);
-      await assertReleaseVersionAvailable({
+      const build = await createAdmittedPublishBuild({
         appId,
         channelId,
         productType: "tauri-updater",
         releaseType: opts.releaseType,
         versionName: opts.versionName,
         versionCode,
-      });
-      const build = await apiRequest<{ id: string }>(`/api/apps/${appId}/builds`, {
-        method: "POST",
-        body: {
+        buildBody: {
           channel_id: channelId, product_type: "tauri-updater", release_type: opts.releaseType,
           version_name: opts.versionName, version_code: versionCode, changelog,
           source: "cli", status: "succeeded",
@@ -1825,18 +1843,14 @@ export function registerBuildCommands(program: Command): void {
             arch,
           },
         };
-        await assertReleaseVersionAvailable({
+        const build = await createAdmittedPublishBuild({
           appId,
           channelId,
           productType: opts.productType,
           releaseType: opts.releaseType,
           versionName: opts.versionName,
           versionCode,
-        });
-
-        const build = await apiRequest<{ id: string }>(`/api/apps/${appId}/builds`, {
-          method: "POST",
-          body: {
+          buildBody: {
             channel_id: channelId,
             product_type: opts.productType,
             release_type: opts.releaseType,

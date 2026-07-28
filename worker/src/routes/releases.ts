@@ -26,9 +26,16 @@ type ReleaseVersionIdentity = {
 export class ReleaseVersionAlreadyExistsError extends Error {
   readonly code = "RELEASE_VERSION_ALREADY_EXISTS";
 
-  constructor(readonly existing: ReleaseVersionIdentity) {
+  constructor(
+    readonly existing: ReleaseVersionIdentity | null,
+    readonly attempted?: { version_name: string; version_code: number },
+  ) {
+    const versionName = existing?.version_name ?? attempted?.version_name ?? "unknown";
+    const versionCode = existing?.version_code ?? attempted?.version_code ?? "unknown";
     super(
-      `release version ${existing.version_name} (${existing.version_code}) already exists as ${existing.id}`,
+      existing
+        ? `release version ${versionName} (${versionCode}) already exists as ${existing.id}`
+        : `release version ${versionName} (${versionCode}) was claimed by another publisher`,
     );
     this.name = "ReleaseVersionAlreadyExistsError";
   }
@@ -454,11 +461,11 @@ function releaseVersionConflictResponse(c: AdminContext, error: ReleaseVersionAl
   return c.json({
     error: error.message,
     code: error.code,
-    release_id: error.existing.id,
-    build_id: error.existing.build_id,
-    release_status: error.existing.status,
-    version_name: error.existing.version_name,
-    version_code: error.existing.version_code,
+    release_id: error.existing?.id,
+    build_id: error.existing?.build_id,
+    release_status: error.existing?.status,
+    version_name: error.existing?.version_name ?? error.attempted?.version_name,
+    version_code: error.existing?.version_code ?? error.attempted?.version_code,
   }, 409);
 }
 
@@ -578,7 +585,10 @@ export async function createRelease(
         releaseType,
         build.version_code,
       );
-      if (conflict) throw new ReleaseVersionAlreadyExistsError(conflict);
+      throw new ReleaseVersionAlreadyExistsError(conflict, {
+        version_name: build.version_name,
+        version_code: build.version_code,
+      });
     }
     throw error;
   }
@@ -1984,12 +1994,16 @@ export async function handleRollbackRelease(c: AdminContext) {
         existing.release_type,
         existingBuild.version_code,
       );
-      if (conflict && conflict.id !== existing.id) {
-        return releaseVersionConflictResponse(
-          c,
-          new ReleaseVersionAlreadyExistsError(conflict),
-        );
-      }
+      return releaseVersionConflictResponse(
+        c,
+        new ReleaseVersionAlreadyExistsError(
+          conflict?.id !== existing.id ? conflict : null,
+          {
+            version_name: existingBuild.version_name,
+            version_code: existingBuild.version_code,
+          },
+        ),
+      );
     }
     return c.json({ error: (e as Error).message }, 400);
   }
