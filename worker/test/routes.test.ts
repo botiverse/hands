@@ -3578,7 +3578,7 @@ describe("quiver releases — draft lifecycle", () => {
     ]);
   });
 
-  it("returns the existing lifecycle in a structured 409 even when it is cancelled", async () => {
+  it("allows a new lifecycle after the prior version is cancelled", async () => {
     const { createRelease, handleCreateReleaseDraft } = await import("../src/routes/releases");
     await seedReleaseBuild("build-version-original", 30);
     await seedReleaseBuild("build-version-race", 30);
@@ -3594,18 +3594,88 @@ describe("quiver releases — draft lifecycle", () => {
       build_id: "build-version-race",
     }));
 
-    expect(response.status).toBe(409);
+    expect(response.status).toBe(201);
     await expect(responseJson<any>(response)).resolves.toMatchObject({
-      code: "RELEASE_VERSION_ALREADY_EXISTS",
-      release_id: "rel-version-reserved",
-      build_id: "build-version-original",
-      release_status: "cancelled",
-      version_name: "1.0.30",
-      version_code: 30,
+      build_id: "build-version-race",
+      status: "draft",
     });
     await expect(env.DB.prepare(
       "SELECT COUNT(*) AS count FROM releases WHERE build_id = 'build-version-race'",
-    ).first()).resolves.toEqual({ count: 0 });
+    ).first()).resolves.toEqual({ count: 1 });
+    await expect(env.DB.prepare(
+      "SELECT status FROM releases WHERE id = 'rel-version-reserved'",
+    ).first()).resolves.toEqual({ status: "cancelled" });
+  });
+
+  it("blocks restoring a cancelled lifecycle after a replacement owns its version", async () => {
+    const { createRelease, handleRollbackRelease } = await import("../src/routes/releases");
+    await seedReleaseBuild("build-version-old", 31);
+    await seedReleaseBuild("build-version-replacement", 31);
+    await createRelease(env.DB as any, "app-release", {
+      build_id: "build-version-old",
+      status: "draft",
+    }, "tester", "rel-version-old");
+    await env.DB.prepare(
+      "UPDATE releases SET status = 'cancelled', revision = 1 WHERE id = 'rel-version-old'",
+    ).run();
+    await createRelease(env.DB as any, "app-release", {
+      build_id: "build-version-replacement",
+      status: "draft",
+    }, "tester", "rel-version-replacement");
+
+    const response = await handleRollbackRelease(makeReleaseContext(
+      "rel-version-old",
+      { expected_revision: 1 },
+    ));
+
+    expect(response.status).toBe(409);
+    await expect(responseJson<any>(response)).resolves.toMatchObject({
+      code: "RELEASE_VERSION_ALREADY_EXISTS",
+      release_id: "rel-version-replacement",
+      build_id: "build-version-replacement",
+      release_status: "draft",
+      version_code: 31,
+    });
+    await expect(env.DB.prepare(
+      "SELECT status, revision FROM releases WHERE id = 'rel-version-old'",
+    ).first()).resolves.toEqual({ status: "cancelled", revision: 1 });
+  });
+
+  it("filters release preflights by exact lane and version code", async () => {
+    const { createRelease, handleListReleases } = await import("../src/routes/releases");
+    await seedReleaseBuild("build-version-filter", 32);
+    await seedReleaseBuild("build-version-other", 33);
+    await createRelease(env.DB as any, "app-release", {
+      build_id: "build-version-filter",
+      status: "draft",
+    }, "tester", "rel-version-filter");
+    await createRelease(env.DB as any, "app-release", {
+      build_id: "build-version-other",
+      status: "draft",
+    }, "tester", "rel-version-other");
+
+    const response = await handleListReleases(makeReleaseContext("", {}, {
+      channel: "main",
+      product_type: "android-apk",
+      release_type: "stable",
+      version_code: "32",
+    }));
+    expect(response.status).toBe(200);
+    await expect(responseJson<any>(response)).resolves.toMatchObject({
+      releases: [{
+        id: "rel-version-filter",
+        build_id: "build-version-filter",
+        version_code: 32,
+      }],
+    });
+
+    const invalid = await handleListReleases(makeReleaseContext("", {}, {
+      version_code: "-1",
+    }));
+    expect(invalid.status).toBe(400);
+    await expect(responseJson<any>(invalid)).resolves.toEqual({
+      error: "version_code must be a non-negative integer",
+    });
   });
 
   it("publishes a draft and supersedes the previous active release", async () => {

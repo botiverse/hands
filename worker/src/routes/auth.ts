@@ -1027,10 +1027,15 @@ export async function handleAgentManifest(c: Context<{ Bindings: Env }>) {
       },
       {
         name: "list-releases",
-        description: "List an app's releases (id, status, channel, version, rollout). Requires app viewer.",
+        description: "List an app's releases (id, status, channel, version, rollout), optionally filtered to an exact release lane/version preflight. Requires app viewer.",
         endpoint: { method: "GET", path: "/api/apps/{app_id}/releases" },
         parameters: {
           app_id: { type: "string", in: "path", required: true, description: "App UUID." },
+          status: { type: "string", in: "query", required: false, description: "Optional release status filter." },
+          channel: { type: "string", in: "query", required: false, description: "Optional channel UUID or slug." },
+          product_type: { type: "string", in: "query", required: false, description: "Optional product-type filter." },
+          release_type: { type: "string", in: "query", required: false, description: "Optional release-type filter." },
+          version_code: { type: "number", in: "query", required: false, description: "Optional exact non-negative version-code filter." },
         },
       },
       {
@@ -1045,7 +1050,7 @@ export async function handleAgentManifest(c: Context<{ Bindings: Env }>) {
       {
         name: "create-release",
         description:
-          "Create the one DRAFT release lifecycle for a build version. A second release in the same app/channel/product/release-type/version lane fails with RELEASE_VERSION_ALREADY_EXISTS and returns the existing release id. Requires app publisher.",
+          "Create a DRAFT release lifecycle for a build version. A non-cancelled release in the same app/channel/product/release-type/version lane fails with RELEASE_VERSION_ALREADY_EXISTS; cancelling disables the old lifecycle and releases that version for a corrected upload while preserving its audit history. Requires app publisher.",
         endpoint: { method: "POST", path: "/api/apps/{app_id}/releases/draft" },
         parameters: {
           app_id: { type: "string", in: "path", required: true, description: "App UUID." },
@@ -1088,7 +1093,7 @@ export async function handleAgentManifest(c: Context<{ Bindings: Env }>) {
       },
       {
         name: "cancel-release",
-        description: "Cancel one draft or active release without deleting its build, assets, or audit history. Requires app publisher.",
+        description: "Disable one draft or active release without deleting its build, assets, or audit history. The cancelled row stops reserving its version so a corrected build may use that coordinate. Requires app publisher.",
         endpoint: { method: "DELETE", path: "/api/apps/{app_id}/releases/{release_id}" },
         parameters: {
           app_id: { type: "string", in: "path", required: true, description: "App UUID." },
@@ -1098,7 +1103,7 @@ export async function handleAgentManifest(c: Context<{ Bindings: Env }>) {
       },
       {
         name: "restore-release",
-        description: "Restore the same release row. A never-published cancelled draft returns to draft and must pass normal publish gates; a previously active release returns to active. Requires app publisher.",
+        description: "Restore the same release row only while no replacement owns its version. A never-published cancelled draft returns to draft and must pass normal publish gates; a previously active release returns to active. Requires app publisher.",
         endpoint: { method: "POST", path: "/api/apps/{app_id}/releases/{release_id}/rollback" },
         parameters: {
           app_id: { type: "string", in: "path", required: true, description: "App UUID." },

@@ -83,15 +83,17 @@ and force-update writes. A stale revision returns
 `409 RELEASE_REVISION_CONFLICT` without changing the release, its scopes,
 fallback releases, or audit log.
 
-The admin release API permits only one lifecycle for each
+The admin release API permits only one **non-cancelled** lifecycle for each
 app/channel/product/release-type/version code. Duplicate creation returns
-`409 RELEASE_VERSION_ALREADY_EXISTS` with the existing release/build/status
-coordinates, including after cancellation. The rollback endpoint restores a
-superseded or cancelled release in place. A cancelled row whose
-`activated_at` is null was never published, so it returns to `draft` and must
-pass normal publish readiness, exact-scope, external-target, and revision
-gates. Only a previously active row returns to `active` with a new activation
-time.
+`409 RELEASE_VERSION_ALREADY_EXISTS` with the current release/build/status
+coordinates. Cancelling disables that lifecycle and releases the version for a
+corrected build while retaining the old release, build, assets, and audit
+history. The rollback endpoint restores a cancelled row only if no replacement
+owns its coordinate; otherwise it returns the same structured 409. A cancelled
+row whose `activated_at` is null was never published, so an eligible restore
+returns it to `draft` and must pass normal publish readiness, exact-scope,
+external-target, and revision gates. Only a previously active row returns to
+`active` with a new activation time.
 
 ### Update Available
 

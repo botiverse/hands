@@ -638,6 +638,147 @@ describe("Android delta patch metadata", () => {
     }
   });
 
+  it("blocks occupied versions before build creation and ignores cancelled history", async () => {
+    let releases = [{
+      id: "release-old",
+      build_id: "build-old",
+      status: "draft",
+      version_name: "1.8.0",
+      version_code: 1080000,
+    }];
+    const requests: string[] = [];
+    const server = createServer((req, res) => {
+      requests.push(req.url ?? "");
+      res.setHeader("content-type", "application/json");
+      if (req.url?.startsWith("/api/apps/app-1/releases?")) {
+        return res.end(JSON.stringify({ releases }));
+      }
+      res.statusCode = 404;
+      return res.end(JSON.stringify({ error: "not found" }));
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("bad address");
+    const originalApi = process.env.HANDS_API;
+    const originalToken = process.env.HANDS_BEARER_TOKEN;
+    process.env.HANDS_API = `http://127.0.0.1:${address.port}`;
+    process.env.HANDS_BEARER_TOKEN = "test-token";
+
+    try {
+      const { assertReleaseVersionAvailable } = await import("../src/commands/builds.js");
+      const args = {
+        appId: "app-1",
+        channelId: "channel-main",
+        productType: "android-apk",
+        releaseType: "stable",
+        versionName: "1.8.0",
+        versionCode: 1080000,
+      };
+      await expect(assertReleaseVersionAvailable(args)).rejects.toThrow(
+        "cancel that release before uploading this version again",
+      );
+      expect(requests[0]).toContain("version_code=1080000");
+
+      releases = [{ ...releases[0]!, status: "cancelled" }];
+      await expect(assertReleaseVersionAvailable(args)).resolves.toBeUndefined();
+    } finally {
+      if (originalApi === undefined) delete process.env.HANDS_API;
+      else process.env.HANDS_API = originalApi;
+      if (originalToken === undefined) delete process.env.HANDS_BEARER_TOKEN;
+      else process.env.HANDS_BEARER_TOKEN = originalToken;
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
+  it("terminalizes a build when the release version is lost to a concurrent publisher", async () => {
+    const requests: Array<{ method: string; url: string; body: Record<string, any> }> = [];
+    let terminalWriteFails = false;
+    const server = createServer(async (req, res) => {
+      const chunks: Buffer[] = [];
+      for await (const chunk of req) chunks.push(Buffer.from(chunk));
+      const text = Buffer.concat(chunks).toString("utf8");
+      const body = text ? JSON.parse(text) as Record<string, any> : {};
+      requests.push({ method: req.method ?? "", url: req.url ?? "", body });
+      res.setHeader("content-type", "application/json");
+      if (req.method === "POST" && req.url === "/api/apps/app-1/releases") {
+        res.statusCode = 409;
+        return res.end(JSON.stringify({
+          error: "release version already exists",
+          code: "RELEASE_VERSION_ALREADY_EXISTS",
+          release_id: "release-winner",
+          build_id: "build-winner",
+          release_status: "draft",
+          version_name: "1.8.0",
+          version_code: 1080000,
+        }));
+      }
+      if (req.method === "PATCH" && req.url?.startsWith("/api/apps/app-1/builds/")) {
+        if (terminalWriteFails) {
+          res.statusCode = 500;
+          return res.end(JSON.stringify({ error: "terminal write unavailable" }));
+        }
+        return res.end(JSON.stringify({ ok: true }));
+      }
+      res.statusCode = 404;
+      return res.end(JSON.stringify({ error: "not found" }));
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("bad address");
+    const originalApi = process.env.HANDS_API;
+    const originalToken = process.env.HANDS_BEARER_TOKEN;
+    process.env.HANDS_API = `http://127.0.0.1:${address.port}`;
+    process.env.HANDS_BEARER_TOKEN = "test-token";
+
+    try {
+      const { createReleaseOrTerminalizeVersionConflict } = await import(
+        "../src/commands/builds.js"
+      );
+      await expect(createReleaseOrTerminalizeVersionConflict({
+        appId: "app-1",
+        buildId: "build-race",
+        releaseBody: { build_id: "build-race", status: "draft" },
+        provenance: { source_commit: "abc123" },
+      })).rejects.toThrow(
+        "new build build-race was terminalized as failed",
+      );
+      expect(requests.map(({ method, url }) => `${method} ${url}`)).toEqual([
+        "POST /api/apps/app-1/releases",
+        "PATCH /api/apps/app-1/builds/build-race",
+      ]);
+      expect(requests[1]?.body).toMatchObject({
+        status: "failed",
+        provenance_json: {
+          source_commit: "abc123",
+          hands_cli_terminal: {
+            state: "failed",
+            reason: "release_version_conflict",
+            conflicting_release_id: "release-winner",
+            conflicting_build_id: "build-winner",
+            version_code: 1080000,
+          },
+        },
+      });
+
+      requests.length = 0;
+      terminalWriteFails = true;
+      await expect(createReleaseOrTerminalizeVersionConflict({
+        appId: "app-1",
+        buildId: "build-needs-inspection",
+        releaseBody: { build_id: "build-needs-inspection", status: "draft" },
+        provenance: {},
+      })).rejects.toThrow(
+        "release version conflict left build build-needs-inspection requiring manual inspection",
+      );
+    } finally {
+      if (originalApi === undefined) delete process.env.HANDS_API;
+      else process.env.HANDS_API = originalApi;
+      if (originalToken === undefined) delete process.env.HANDS_BEARER_TOKEN;
+      else process.env.HANDS_BEARER_TOKEN = originalToken;
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
   it("preflights before HTTP and sends the exact gzip asset metadata", async () => {
     const dir = mkdtempSync(join(tmpdir(), "hands-android-publish-"));
     const apk = join(dir, "app.apk");
@@ -671,6 +812,9 @@ describe("Android delta patch metadata", () => {
       if (req.method === "GET" && req.url === "/api/apps/app-1/channels") {
         return res.end(JSON.stringify({ channels: [{ id: "channel-1", slug: "main", name: "Main" }] }));
       }
+      if (req.method === "GET" && req.url?.startsWith("/api/apps/app-1/releases?")) {
+        return res.end(JSON.stringify({ releases: [] }));
+      }
       if (req.method === "POST" && req.url === "/api/apps/app-1/builds") {
         return res.end(JSON.stringify({ id: "build-1" }));
       }
@@ -703,7 +847,7 @@ describe("Android delta patch metadata", () => {
 
     const runPublish = async (patchPath: string) => {
       const { registerBuildCommands } = await import("../src/commands/builds.js");
-      const program = new Command().version("0.5.13").option("--json", "JSON output", false);
+      const program = new Command().version("0.5.14").option("--json", "JSON output", false);
       registerBuildCommands(program);
       await program.parseAsync([
         "node", "hands", "builds", "publish-android", "android-app",
@@ -717,6 +861,14 @@ describe("Android delta patch metadata", () => {
 
     try {
       await runPublish(validPatch);
+      const releasePreflightIndex = requests.findIndex(
+        (request) => request.method === "GET" && request.url.startsWith("/api/apps/app-1/releases?"),
+      );
+      const buildCreateIndex = requests.findIndex(
+        (request) => request.method === "POST" && request.url === "/api/apps/app-1/builds",
+      );
+      expect(releasePreflightIndex).toBeGreaterThanOrEqual(0);
+      expect(buildCreateIndex).toBeGreaterThan(releasePreflightIndex);
       const deltaAsset = requests.find(
         (request) =>
           request.method === "POST" &&
@@ -797,6 +949,7 @@ describe("Tauri build helpers", () => {
       res.setHeader("content-type", "application/json");
       if (req.url === "/api/apps") return res.end(JSON.stringify({ apps: [{ id: "app-1", slug: "desktop" }] }));
       if (req.url === "/api/apps/app-1/channels") return res.end(JSON.stringify({ channels: [{ id: "channel-1", slug: "main", name: "Main" }] }));
+      if (req.url?.startsWith("/api/apps/app-1/releases?")) return res.end(JSON.stringify({ releases: [] }));
       if (req.url === "/api/apps/app-1/builds") return res.end(JSON.stringify({ id: "build-1" }));
       if (req.url === "/api/apps/app-1/upload") return res.end(JSON.stringify({
         file_hash: "hash-1", r2_key: "apps/app-1/App.AppImage", size_bytes: 12, original_filename: "App.AppImage",
@@ -817,7 +970,7 @@ describe("Tauri build helpers", () => {
 
     try {
       const { registerBuildCommands } = await import("../src/commands/builds.js");
-      const program = new Command().version("0.5.9").option("--json", "JSON output", false);
+      const program = new Command().version("0.5.14").option("--json", "JSON output", false);
       registerBuildCommands(program);
       await program.parseAsync([
         "node", "hands", "builds", "publish-tauri", "desktop",
