@@ -46,6 +46,7 @@ test("production config keeps reporter sessions disabled by default", () => {
   try {
     assert.equal(fixture.result.status, 0, fixture.result.stderr);
     const config = JSON.parse(readFileSync(fixture.output, "utf8"));
+    assert.deepEqual(config.placement, { mode: "smart" });
     assert.equal(config.vars.FEEDBACK_REPORTER_SESSION_ENABLED, "false");
     assert.equal("FEEDBACK_REPORTER_SESSION_ACTIVE_KEY_VERSION" in config.vars, false);
   } finally {
