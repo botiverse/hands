@@ -11,6 +11,7 @@ import {
 } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import {
+  AlertTriangle,
   Bug,
   ChevronDown,
   ChevronsUpDown,
@@ -58,6 +59,7 @@ import { Releases } from "./pages/Releases";
 import { AppShares } from "./pages/Shares";
 import { AppFeedback, FeedbackTicketPage } from "./pages/Feedback";
 import { AppCrashes } from "./pages/Crashes";
+import { AppErrors } from "./pages/Errors";
 import { isOrgSettingsTab, OrgSettings } from "./pages/OrgSettings";
 import { AcceptInvite } from "./pages/AcceptInvite";
 import { AppAccess } from "./pages/AppAccess";
@@ -653,6 +655,11 @@ function AppCrashesRoute() {
   const { appId } = useParams();
   if (!appId) return null;
   return <AppCrashes key={appId} appId={appId} />;
+}
+function AppErrorsRoute() {
+  const { appId } = useParams();
+  if (!appId) return null;
+  return <AppErrors key={appId} appId={appId} />;
 }
 
 function FeedbackTicketRoute() {
@@ -1271,6 +1278,7 @@ function AuthenticatedApp({ account }: { account: AuthAccount }) {
           <Route path="shares" element={<AppSharesRoute />} />
           <Route path="feedback" element={<AppFeedbackRoute />} />
           <Route path="crashes" element={<AppCrashesRoute />} />
+          <Route path="errors" element={<AppErrorsRoute />} />
           <Route path="feedback/:ticketId" element={<FeedbackTicketRoute />} />
           <Route path="access" element={<LegacyAccessRedirect />} />
           <Route path="audit" element={<AuditRoute />} />
@@ -1368,6 +1376,7 @@ const APP_NAV_SECTIONS: Array<{
     items: [
       { to: "feedback", label: "Feedback", icon: MessageSquare },
       { to: "crashes", label: "Crashes", icon: Bug },
+      { to: "errors", label: "Errors", icon: AlertTriangle },
       { to: "audit", label: "Audit", icon: ScrollText },
       { to: "settings", label: "Settings", icon: SettingsIcon },
     ],
@@ -1402,6 +1411,7 @@ function AppShell() {
           <Route path="shares" element={<AppSharesRoute />} />
           <Route path="feedback" element={<AppFeedbackRoute />} />
           <Route path="crashes" element={<AppCrashesRoute />} />
+          <Route path="errors" element={<AppErrorsRoute />} />
           <Route path="feedback/:ticketId" element={<FeedbackTicketRoute />} />
           <Route path="access" element={<LegacyAccessRedirect />} />
           <Route path="audit" element={<AuditRoute />} />

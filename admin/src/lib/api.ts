@@ -1930,8 +1930,11 @@ export interface FeedbackStats {
 export const getFeedbackStats = (appId: string) =>
   request<FeedbackStats>(`/api/apps/${appId}/feedback/stats`, { admin: true });
 
-export const listCrashGroups = (appId: string) =>
-  request<{ groups: CrashGroup[] }>(`/api/apps/${appId}/feedback/crash-groups`, { admin: true });
+export const listCrashGroups = (appId: string, kind?: string) =>
+  request<{ groups: CrashGroup[] }>(
+    `/api/apps/${appId}/feedback/crash-groups${kind ? `?kind=${encodeURIComponent(kind)}` : ""}`,
+    { admin: true },
+  );
 
 export const purgeApp = (appId: string, confirmSlug: string) =>
   request<{ ok: true; purged_app_id: string; r2_objects_deleted: number }>(

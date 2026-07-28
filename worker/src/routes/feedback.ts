@@ -1796,6 +1796,11 @@ export async function dispatchSymbolication(
 
 export async function handleListCrashGroups(c: AdminContext) {
   const appId = c.req.param("appId");
+  const kindFilter = (c.req.query("kind") ?? "").trim();
+  const kindClause =
+    kindFilter === "crash" ? "AND kind = 'crash'"
+    : kindFilter === "error" ? "AND kind = 'error'"
+    : "AND kind IN ('crash', 'error')";
   const { results } = await c.env.DB.prepare(
     `SELECT
        COALESCE(signature, '(unsignatured)') AS signature,
@@ -1806,7 +1811,7 @@ export async function handleListCrashGroups(c: AdminContext) {
        GROUP_CONCAT(DISTINCT version_name) AS versions,
        SUM(CASE WHEN status IN ('open','in_progress') THEN 1 ELSE 0 END) AS open_count
      FROM feedback_tickets
-     WHERE app_id = ?1 AND kind IN ('crash', 'error')
+     WHERE app_id = ?1 ${kindClause}
      GROUP BY COALESCE(signature, '(unsignatured)')
      ORDER BY count DESC, last_seen DESC
      LIMIT 200`,

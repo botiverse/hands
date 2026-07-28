@@ -715,6 +715,12 @@ export function FeedbackTicketPage({
                 .filter(
                   ([k, v]) =>
                     !k.startsWith("crash_") &&
+                    k !== "breadcrumbs" &&
+                    k !== "stacktrace" &&
+                    k !== "exception_class" &&
+                    k !== "exception_message" &&
+                    k !== "top_frame" &&
+                    k !== "handled" &&
                     v !== null &&
                     v !== undefined &&
                     v !== "",
@@ -788,6 +794,65 @@ export function FeedbackTicketPage({
               );
             })()}
           </div>
+
+          {(() => {
+            let meta: Record<string, unknown> = {};
+            try {
+              const parsed = JSON.parse(t.metadata_json || "{}");
+              if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) meta = parsed as Record<string, unknown>;
+            } catch { /* ignore */ }
+            const stacktrace = typeof meta.stacktrace === "string" ? meta.stacktrace : null;
+            const excClass = typeof meta.exception_class === "string" ? meta.exception_class : null;
+            const excMsg = typeof meta.exception_message === "string" ? meta.exception_message : null;
+            if (!stacktrace && !excClass) return null;
+            return (
+              <div className="card">
+                <h4 className="text-sm font-semibold mb-2">Exception</h4>
+                {excClass && (
+                  <p className="text-sm font-mono text-red-700 mb-2 break-all">
+                    {excClass}{excMsg ? `: ${excMsg}` : ""}
+                  </p>
+                )}
+                {stacktrace && (
+                  <pre className="text-xs bg-slate-50 rounded p-3 overflow-x-auto max-h-80 overflow-y-auto whitespace-pre-wrap break-all">
+                    {stacktrace}
+                  </pre>
+                )}
+              </div>
+            );
+          })()}
+
+          {(() => {
+            let meta: Record<string, unknown> = {};
+            try {
+              const parsed = JSON.parse(t.metadata_json || "{}");
+              if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) meta = parsed as Record<string, unknown>;
+            } catch { /* ignore */ }
+            let crumbs: Array<{ timestamp?: number; category?: string; message?: string; level?: string }> = [];
+            if (Array.isArray(meta.breadcrumbs)) crumbs = meta.breadcrumbs as typeof crumbs;
+            else if (typeof meta.breadcrumbs === "string") {
+              try { const p = JSON.parse(meta.breadcrumbs); if (Array.isArray(p)) crumbs = p; } catch { /* ignore */ }
+            }
+            if (crumbs.length === 0) return null;
+            const levelColor = (l?: string) =>
+              l === "error" ? "text-red-600" : l === "warning" ? "text-amber-600" : "text-slate-600";
+            return (
+              <div className="card">
+                <h4 className="text-sm font-semibold mb-2">Breadcrumbs ({crumbs.length})</h4>
+                <ol className="space-y-1 text-xs max-h-60 overflow-y-auto">
+                  {crumbs.map((bc, i) => (
+                    <li key={i} className="flex gap-2 items-baseline">
+                      <span className="text-slate-400 tabular-nums shrink-0">
+                        {bc.timestamp ? new Date(bc.timestamp).toLocaleTimeString() : "—"}
+                      </span>
+                      <span className="font-medium text-slate-700 shrink-0">{bc.category ?? "general"}</span>
+                      <span className={`break-all ${levelColor(bc.level)}`}>{bc.message ?? ""}</span>
+                    </li>
+                  ))}
+                </ol>
+              </div>
+            );
+          })()}
 
           {(t.kind === "crash" || t.kind === "error") &&
             (() => {

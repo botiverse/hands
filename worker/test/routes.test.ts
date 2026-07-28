@@ -8051,7 +8051,7 @@ describe("quiver public API v2 — scope resolution", () => {
 
     const groupsCtx = {
       env,
-      req: { param: (n: string) => (n === "appId" ? "app-scope" : "") },
+      req: { param: (n: string) => (n === "appId" ? "app-scope" : ""), query: () => undefined },
       json: (data: unknown, status = 200) => new Response(JSON.stringify(data), { status }),
     } as any;
     const res = await handleListCrashGroups(groupsCtx);
