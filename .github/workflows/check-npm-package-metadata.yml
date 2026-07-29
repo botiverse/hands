@@ -1,0 +1,38 @@
+name: Check npm package metadata
+
+on:
+  pull_request:
+    paths:
+      - "**/package.json"
+      - "scripts/verify-npm-author.mjs"
+      - "scripts/verify-npm-author.test.mjs"
+      - ".github/workflows/check-npm-package-metadata.yml"
+      - ".github/workflows/publish-cli.yml"
+      - ".github/workflows/publish-electron-sdk.yml"
+      - ".github/workflows/publish-node.yml"
+  push:
+    branches: [main]
+    paths:
+      - "**/package.json"
+      - "scripts/verify-npm-author.mjs"
+      - "scripts/verify-npm-author.test.mjs"
+      - ".github/workflows/check-npm-package-metadata.yml"
+      - ".github/workflows/publish-cli.yml"
+      - ".github/workflows/publish-electron-sdk.yml"
+      - ".github/workflows/publish-node.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+      - name: Test author metadata gate
+        run: node --test scripts/verify-npm-author.test.mjs
+      - name: Verify every publishable npm package
+        run: node scripts/verify-npm-author.mjs --all

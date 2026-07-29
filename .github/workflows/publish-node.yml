@@ -44,6 +44,9 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Verify publishable package author metadata
+        run: node scripts/verify-npm-author.mjs --all
+
       - name: Resolve version
         id: version
         shell: bash
@@ -68,21 +71,28 @@ jobs:
           pnpm --filter @botiverse/hands-node test
           pnpm --filter @botiverse/hands-node build
 
-      - name: Pack check
+      - name: Pack Node SDK and verify packed metadata
+        id: pack
         working-directory: packages/node
-        run: npm pack --dry-run
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$GITHUB_WORKSPACE/dist-packages"
+          npm pack --pack-destination "$GITHUB_WORKSPACE/dist-packages"
+          package_path="$(find "$GITHUB_WORKSPACE/dist-packages" -maxdepth 1 -name 'botiverse-hands-node-*.tgz' -print -quit)"
+          test -n "${package_path}"
+          node "$GITHUB_WORKSPACE/scripts/verify-npm-author.mjs" --tarball "${package_path}"
+          echo "path=${package_path}" >> "$GITHUB_OUTPUT"
 
       - name: Publish dry run
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run }}
-        working-directory: packages/node
-        run: npm publish --access public --dry-run
+        run: npm publish "${{ steps.pack.outputs.path }}" --access public --dry-run
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       - name: Publish to npm
         if: ${{ github.event_name != 'workflow_dispatch' || !inputs.dry_run }}
-        working-directory: packages/node
-        run: npm publish --access public
+        run: npm publish "${{ steps.pack.outputs.path }}" --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 

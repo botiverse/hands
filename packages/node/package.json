@@ -1,6 +1,10 @@
 {
   "name": "@botiverse/hands-node",
   "version": "0.1.0",
+  "author": {
+    "name": "jiacheng",
+    "email": "jiacheng@botiverse.dev"
+  },
   "description": "Hands logging, redaction, and policy-governed log collection for Node.js.",
   "license": "MIT",
   "repository": {

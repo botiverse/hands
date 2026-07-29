@@ -43,6 +43,9 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Verify publishable package author metadata
+        run: node scripts/verify-npm-author.mjs --all
+
       - name: Resolve version
         id: version
         shell: bash
@@ -65,22 +68,29 @@ jobs:
       - name: Build Electron SDK
         run: pnpm --filter @botiverse/hands-electron build
 
-      - name: Pack check
-        working-directory: clients/electron
-        run: npm pack --dry-run
-
-      - name: Publish dry run
-        if: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run }}
-        working-directory: clients/electron
-        run: npm publish --access public --dry-run
-
-      - name: Publish to npm
-        if: ${{ github.event_name != 'workflow_dispatch' || !inputs.dry_run }}
+      - name: Pack Electron SDK and verify packed metadata
+        id: pack
         working-directory: clients/electron
         shell: bash
         run: |
           set -euo pipefail
-          npm publish --access public
+          mkdir -p "$GITHUB_WORKSPACE/dist-packages"
+          npm pack --pack-destination "$GITHUB_WORKSPACE/dist-packages"
+          package_path="$(find "$GITHUB_WORKSPACE/dist-packages" -maxdepth 1 -name 'botiverse-hands-electron-*.tgz' -print -quit)"
+          test -n "${package_path}"
+          node "$GITHUB_WORKSPACE/scripts/verify-npm-author.mjs" --tarball "${package_path}"
+          echo "path=${package_path}" >> "$GITHUB_OUTPUT"
+
+      - name: Publish dry run
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run }}
+        run: npm publish "${{ steps.pack.outputs.path }}" --access public --dry-run
+
+      - name: Publish to npm
+        if: ${{ github.event_name != 'workflow_dispatch' || !inputs.dry_run }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm publish "${{ steps.pack.outputs.path }}" --access public
 
       - name: Summary
         shell: bash

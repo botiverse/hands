@@ -44,6 +44,9 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Verify publishable package author metadata
+        run: node scripts/verify-npm-author.mjs --all
+
       - name: Resolve version
         id: version
         shell: bash
@@ -86,6 +89,7 @@ jobs:
           pnpm pack --pack-destination "$GITHUB_WORKSPACE/dist-packages"
           package_path="$(find "$GITHUB_WORKSPACE/dist-packages" -maxdepth 1 -name 'botiverse-hands-cli-*.tgz' -print -quit)"
           test -n "${package_path}"
+          node "$GITHUB_WORKSPACE/scripts/verify-npm-author.mjs" --tarball "${package_path}"
           echo "path=${package_path}" >> "$GITHUB_OUTPUT"
 
       - name: Publish dry run
