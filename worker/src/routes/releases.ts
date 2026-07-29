@@ -449,7 +449,7 @@ async function findReleaseForVersionIdentity(
      JOIN builds b ON b.id = r.build_id
      WHERE r.app_id = ?1 AND r.channel_id = ?2 AND r.product_type = ?3
        AND r.release_type = ?4 AND b.version_code = ?5
-       AND r.status <> 'cancelled'
+       AND (r.status <> 'cancelled' OR r.activated_at IS NOT NULL)
      ORDER BY CASE r.status
        WHEN 'active' THEN 0 WHEN 'draft' THEN 1 WHEN 'superseded' THEN 2 ELSE 3
      END, r.created_at ASC, r.id ASC
@@ -504,6 +504,11 @@ export async function createRelease(
     releaseType,
     build.version_code,
   );
+  // A cancelled release that never activated does not appear in the lookup
+  // (coordinate is free). A cancelled release that DID activate keeps its
+  // coordinate permanently: restoring it means un-cancelling that release,
+  // not creating a new one. There is no same-build exemption — a build row's
+  // assets are mutable, so "same build" would not guarantee "same bytes".
   if (existingVersion) throw new ReleaseVersionAlreadyExistsError(existingVersion);
   const now = Date.now();
   const changelog = inputChangelog(input);
