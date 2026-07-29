@@ -4,7 +4,16 @@
   "main": "src/index.ts",
   "compatibility_date": "2025-10-08",
   "compatibility_flags": ["nodejs_compat"],
-  "observability": { "enabled": true },
+  "observability": {
+    "enabled": true,
+    "traces": {
+      "enabled": true,
+      // Keep production trace volume bounded while retaining enough samples
+      // to diagnose intermittent Feedback authorization and D1 latency.
+      "head_sampling_rate": 0.05,
+      "persist": true
+    }
+  },
   "upload_source_maps": true,
   "placement": { "mode": "smart" },
   // Keep Cloudflare version preview URLs disabled so uploaded versions never

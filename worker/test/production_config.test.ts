@@ -54,6 +54,11 @@ test("production config keeps reporter sessions disabled by default", () => {
         app_id: BASE_ENV.HANDS_FLAGSHIP_APP_ID,
       },
     ]);
+    assert.deepEqual(config.observability.traces, {
+      enabled: true,
+      head_sampling_rate: 0.05,
+      persist: true,
+    });
     assert.equal(config.vars.FEEDBACK_REPORTER_SESSION_ENABLED, "false");
     assert.equal("FEEDBACK_REPORTER_SESSION_ACTIVE_KEY_VERSION" in config.vars, false);
   } finally {
