@@ -4,7 +4,7 @@
   "version": "0.1.0",
   "description": "Workspace for the @botiverse/hands HarmonyOS SDK (HAR).",
   "main": "",
-  "author": "Oranix",
+  "author": "jiacheng <jiacheng@botiverse.dev>",
   "license": "MIT",
   "dependencies": {},
   "devDependencies": {}
