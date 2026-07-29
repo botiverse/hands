@@ -6,7 +6,8 @@ Hands feedback + crash reporting SDK for HarmonyOS (ArkTS).
   device metadata. Large attachments (up to the configured cap) upload directly
   to storage via presigned URLs; smaller ones go inline.
 - **Crash reporting** — store-then-send crash capture, uploaded as crash tickets
-  on the next launch.
+  on the next launch. Existing crash directories and individual malformed
+  system fault events do not block the rest of the pending batch.
 - **Device id** — a stable per-install id for rollout/analytics correlation.
 
 Configured at runtime (base URL, app slug, channel, client key are init

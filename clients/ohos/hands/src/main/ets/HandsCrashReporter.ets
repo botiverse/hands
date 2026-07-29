@@ -1,7 +1,7 @@
 import { bundleManager, common, errorManager } from '@kit.AbilityKit';
 import deviceInfo from '@ohos.deviceInfo';
-import fs from '@ohos.file.fs';
 import hilog from '@ohos.hilog';
+import { HandsCrashStorage } from './HandsCrashStorage';
 import { HandsCrashUploader } from './HandsCrashUploader';
 
 const TAG: string = 'HandsCrashReporter';
@@ -35,8 +35,7 @@ export class HandsCrashReporter {
   private static capture(context: common.UIAbilityContext, reason: string, errorText: string): void {
     try {
       const crashLog = HandsCrashReporter.buildCrashLog(context, reason, errorText).slice(0, CRASH_LOG_MAX_CHARS);
-      const crashPath = HandsCrashReporter.writeCrashLog(context, crashLog);
-      HandsCrashUploader.enforceRetention(context);
+      const crashPath = HandsCrashStorage.writeLog(context, crashLog);
       const firstLine = errorText.split('\n')[0] ?? '';
       const exceptionClass = firstLine.split(':')[0]?.trim() ?? 'OhosCrash';
       const exceptionMessage = firstLine.slice(exceptionClass.length + 1).trim();
@@ -50,6 +49,12 @@ export class HandsCrashReporter {
       });
     } catch (error) {
       hilog.error(0x0000, TAG, 'failed to write crash: %{public}s', String(error));
+      return;
+    }
+    try {
+      HandsCrashUploader.enforceRetention(context);
+    } catch (error) {
+      hilog.warn(0x0000, TAG, 'failed enforcing crash retention: %{public}s', String(error));
     }
   }
 
@@ -69,20 +74,6 @@ export class HandsCrashReporter {
       errorText,
     ];
     return lines.join('\n');
-  }
-
-  private static writeCrashLog(context: common.UIAbilityContext, crashLog: string): string {
-    const crashDir = `${context.filesDir}/crashes`;
-    fs.mkdirSync(crashDir, true);
-    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-    const crashPath = `${crashDir}/crash-${timestamp}.txt`;
-    const file = fs.openSync(crashPath, fs.OpenMode.CREATE | fs.OpenMode.TRUNC | fs.OpenMode.WRITE_ONLY);
-    try {
-      fs.writeSync(file.fd, crashLog);
-    } finally {
-      fs.closeSync(file);
-    }
-    return crashPath;
   }
 
   private static errorToText(error: Error): string {

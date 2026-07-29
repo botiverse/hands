@@ -10,7 +10,7 @@ on:
       version:
         description: "SDK version to publish. Must match clients/ohos/hands/oh-package.json5."
         required: true
-        default: "0.2.1"
+        default: "0.3.3"
       dry_run:
         description: "Build and prepublish only; skip ohpm publish."
         required: true
@@ -82,6 +82,14 @@ jobs:
           command -v hvigorw
           ohpm --version
           hvigorw --version
+
+      - name: Test crash storage contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          corepack enable
+          pnpm install --filter @botiverse/hands-ohos-contract-tests... --frozen-lockfile
+          pnpm --filter @botiverse/hands-ohos-contract-tests test
 
       - name: Build HAR
         working-directory: clients/ohos

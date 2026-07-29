@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.3.3
+
+- Add unified `addBreadcrumb` and handled-error `captureException` APIs.
+- Make crash-directory creation idempotent on HarmonyOS, where recursive
+  `mkdirSync` still throws when the leaf directory already exists.
+- Isolate system fault events so one malformed or unwritable event cannot drop
+  the rest of the `APP_CRASH` / `APP_FREEZE` batch.
+- Use collision-resistant crash filenames, keep the full five-file retention
+  window, and delete a pending crash pair only after ticket creation succeeds.
+- Align the `hands_sdk` ticket metadata with the published package version.
+
 ## 0.3.2
 
 - Native crashes now ship the full backtrace, not just a top-frame summary.

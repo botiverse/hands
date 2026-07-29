@@ -5,3 +5,4 @@ packages:
   - "migrations"
   - "packages/*"
   - "clients/electron"
+  - "clients/ohos/tests"
