@@ -86,6 +86,13 @@ const pages = [
     source: "electron-sdk.md",
   },
   {
+    slug: "feedback-react",
+    title: "React Feedback Inbox",
+    category: "SDKs & API",
+    description: "Embed a reporter-owned ticket inbox and conversation UI with a secure server-side Hands proxy.",
+    source: "feedback-react.md",
+  },
+  {
     slug: "tauri-updater",
     title: "Tauri Updater",
     category: "SDKs & API",

@@ -1048,9 +1048,10 @@ function PublicLanding({ account }: { account?: AuthAccount }) {
                 ]}
               />
               <LandingIntegrationCard
-                title="Desktop integrations"
-                body="Host updater artifacts and add native desktop crash capture."
+                title="Web & desktop integrations"
+                body="Embed feedback conversations, host updater artifacts, and add native desktop crash capture."
                 links={[
+                  { label: "React Feedback", detail: "Inbox, conversations, replies", href: "/docs/feedback-react/" },
                   { label: "Electron SDK", detail: "Crashpad crash reporting", href: "/docs/electron-sdk/" },
                   { label: "Electron Updater", detail: "Generic-provider release files", href: "/docs/cli-reference/#publish-electron-generic-provider" },
                   { label: "Tauri Updater", detail: "Signed Tauri v2 updater bundles", href: "/docs/tauri-updater/" },

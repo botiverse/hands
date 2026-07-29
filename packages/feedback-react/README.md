@@ -13,7 +13,9 @@ import {
 import "raft-ui/styles.css";
 import "@botiverse/hands-feedback-react/styles.css";
 
-const transport: HandsFeedbackTransport = createReporterTransport({
+// Implement this in your app. It calls your authenticated same-origin proxy;
+// the complete adapter is in the integration guide linked below.
+const transport: HandsFeedbackTransport = createMyAppFeedbackTransport({
   // Resolve this through your backend. Never ship an app/deploy token to the
   // renderer. The session must be short-lived and scoped to one app+reporter.
   getSession: () => fetch("/api/hands-feedback-session").then((r) => r.json()),
@@ -89,6 +91,11 @@ For a source-pinned integration before an npm release, install this package's
 Hands monorepo subdirectory with pnpm's `path:` git selector, then import the
 explicit source exports:
 
+```bash
+pnpm add "github:botiverse/hands#<full-commit-sha>&path:packages/feedback-react"
+pnpm add react react-dom raft-ui lucide-react
+```
+
 ```tsx
 import {
   FeedbackProvider,
@@ -99,3 +106,7 @@ import "@botiverse/hands-feedback-react/source/styles.css";
 
 The host bundler must support TypeScript/TSX dependencies. Published consumers
 should use the compiled root exports shown above.
+
+The complete server credential, opaque reporter identity, route binding, proxy,
+transport, webhook, and production-checklist walkthrough is in the
+[React Feedback Inbox guide](../../docs/public/feedback-react.md).

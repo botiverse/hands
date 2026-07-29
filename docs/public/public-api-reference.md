@@ -324,8 +324,9 @@ X-Hands-Reporter-Id: <stable opaque base64url value>
 
 The bearer must be a non-expired, non-revoked, role-free app token bound to an
 active reporter integration. Its non-empty scope set must contain
-`feedback:write` and may contain only `feedback:write`, `feedback:read`, and
-`feedback:comment`. Scoped tokens do not
+`feedback:write` and may contain only `feedback:write`, `feedback:read`,
+`feedback:comment`, and `feedback:route`. The trusted conversation flow binds
+an immutable route subject before its first submission. Scoped tokens do not
 inherit the legacy viewer/publisher role and cannot authenticate to Hands
 admin/read APIs unless a route explicitly requires one of their named
 permissions. The optional reporter id is an external subject identifier chosen
@@ -366,6 +367,22 @@ number of owned tickets with unread visible staff/system replies). A successful
 detail read advances a monotonic receipt through the latest visible reply in
 the returned comment page; concurrent or later replies remain unread;
 reporter comments and internal staff notes never create unread state.
+
+Before a trusted reporter creates its first ticket, bind its immutable opaque
+route subject with `feedback:route` permission:
+
+```http
+PUT /api/apps/:appId/reporter-feedback/route-subject
+Authorization: Bearer qvdt_EXAMPLE_DO_NOT_USE
+X-Hands-Reporter-Id: <stable opaque value>
+Content-Type: application/json
+
+{ "route_subject": "rfr_v1_<opaque base64url value>" }
+```
+
+A new binding returns `201`; exact replay returns `200`; a different subject
+for the same ownership tuple returns `409`. Trusted submissions without a
+binding return `409 route_required` before ticket or attachment persistence.
 
 Reporter comments require a client-generated UUID `submission_id`: new comments
 return `201`, exact replays return `200`, and reuse with different trimmed text
@@ -411,6 +428,10 @@ has a stable `X-Hands-Delivery-Id`. Retries reuse the exact same body,
 signature, event id, and delivery id; attempt timestamps and counters live only
 in the delivery ledger. Legacy delivery rows without a logical event id omit
 `X-Hands-Event-Id` while retaining the existing signature/event headers.
+
+For a complete browser → trusted backend → Hands implementation, including
+credential setup, opaque reporter coordinates, the React transport, and a
+production checklist, see [React Feedback Inbox](feedback-react.md).
 
 ## Metrics Ingest
 
