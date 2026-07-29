@@ -53,6 +53,56 @@ export async function resolveAgcAppId(auth: AgcAuth, packageName: string, fetchI
   if (!match?.value) throw new AgcApiError(404, `No AGC app found for package ${packageName}`);
   return String(match.value);
 }
+export type AgcReviewStatus = {
+  release_state: number | null;
+  audit_opinion: string | null;
+  copyright_audit_result: string | null;
+  copyright_audit_opinion: string | null;
+  copyright_code_audit_result: string | null;
+  copyright_code_audit_opinion: string | null;
+  record_audit_result: string | null;
+  record_audit_opinion: string | null;
+};
+
+/**
+ * Read-only listing-review status for an AGC app. `releaseType` selects the
+ * lifecycle AGC reports on (1 = the on-sale/listing lane; the invitation-test
+ * lane this file otherwise drives uses 6). Returns the raw provider values
+ * without interpretation: AGC's enums are provider-owned and are surfaced as
+ * received so an unexpected value is visible rather than silently remapped.
+ */
+export async function getAgcReviewStatus(
+  auth: AgcAuth,
+  appId: string,
+  releaseType = 1,
+  fetchImpl: typeof fetch = fetch,
+): Promise<AgcReviewStatus> {
+  const body = await agcJson(
+    auth,
+    `/api/publish/v2/app-info?appId=${encodeURIComponent(appId)}&releaseType=${encodeURIComponent(String(releaseType))}`,
+    {},
+    fetchImpl,
+  );
+  const appInfo = body?.appInfo ?? null;
+  const auditInfo = body?.auditInfo ?? null;
+  const text = (value: unknown): string | null => {
+    if (typeof value === "string") return value.trim() ? value : null;
+    if (typeof value === "number") return String(value);
+    return null;
+  };
+  const releaseState = Number(appInfo?.releaseState);
+  return {
+    release_state: Number.isFinite(releaseState) ? releaseState : null,
+    audit_opinion: text(auditInfo?.auditOpinion),
+    copyright_audit_result: text(auditInfo?.copyRightAuditResult),
+    copyright_audit_opinion: text(auditInfo?.copyRightAuditOpinion),
+    copyright_code_audit_result: text(auditInfo?.copyRightCodeAuditResult),
+    copyright_code_audit_opinion: text(auditInfo?.copyRightCodeAuditOpinion),
+    record_audit_result: text(auditInfo?.recordAuditResult),
+    record_audit_opinion: text(auditInfo?.recordAuditOpinion),
+  };
+}
+
 export async function createAgcInvitationVersion(auth: AgcAuth, appId: string, description: string, selfDetect: boolean, fetchImpl: typeof fetch = fetch) {
   const body = await agcJson(auth, `/api/publish/v2/test/app/version?appId=${encodeURIComponent(appId)}`, { method: "POST", body: JSON.stringify({ releaseType: 6, testType: 3, testDesc: description.slice(0, 50), onshelfSelfDetect: selfDetect ? 1 : 0 }) }, fetchImpl);
   if (!body?.versionId) throw new AgcApiError(502, "AGC did not return a test version id");
