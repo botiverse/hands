@@ -96,7 +96,10 @@ four feedback permissions:
 ```
 
 Do not add an app role or unrelated permission. Reporter-integration tokens are
-intentionally feedback-only.
+intentionally feedback-only. Keep this reporter integration dedicated to the
+interactive inbox and submit only `feedback` or `bug` tickets under its
+reporter coordinates; crash/error ingestion should use a separate integration
+or anonymous client flow.
 
 An app admin can create the integration and token through the authenticated
 Hands API. In these setup calls, `HANDS_ADMIN_BEARER` is a human or agent admin
@@ -332,8 +335,9 @@ export function FeedbackPage() {
 
 Your proxy may return the SDK's camel-case DTO directly. If it forwards Hands
 JSON unchanged, map `created_at`, `updated_at`, `attachment_count`,
-`comment_count`, `unread_count`, `next_cursor`, `next_comment_cursor`, and
-`unread_total` to the corresponding camel-case SDK fields.
+`comment_count`, `unread_count`, `author_type`, `content_type`, `size_bytes`,
+`next_cursor`, `next_comment_cursor`, and `unread_total` to the corresponding
+camel-case SDK fields.
 
 The workspace owns list pagination, focus and scroll restoration, reply drafts,
 IME-safe Enter handling, attachment progress/retry/cancel, recoverable cursor
