@@ -3647,11 +3647,12 @@ describe("quiver releases — draft lifecycle", () => {
       version_code: 41,
     });
 
-    // The identical shipped binary may re-release under the same coordinate.
+    // The same build row is rejected too: assets are mutable, so a build id
+    // does not certify identical bytes.
     const reissue = await handleCreateReleaseDraft(makeReleaseContext("", {
       build_id: "build-shipped-41",
     }));
-    expect(reissue.status).toBe(201);
+    expect(reissue.status).toBe(409);
     await env.DB.prepare("DELETE FROM releases").run();
     await env.DB.prepare(
       "DELETE FROM builds WHERE id IN ('build-shipped-41', 'build-corrected-41')",

@@ -505,12 +505,11 @@ export async function createRelease(
     build.version_code,
   );
   // A cancelled release that never activated does not appear in the lookup
-  // (coordinate is free). A cancelled release that DID activate keeps the
-  // coordinate bound to its binary: only the identical build may re-release.
-  if (
-    existingVersion
-    && !(existingVersion.status === "cancelled" && existingVersion.build_id === input.build_id)
-  ) throw new ReleaseVersionAlreadyExistsError(existingVersion);
+  // (coordinate is free). A cancelled release that DID activate keeps its
+  // coordinate permanently: restoring it means un-cancelling that release,
+  // not creating a new one. There is no same-build exemption — a build row's
+  // assets are mutable, so "same build" would not guarantee "same bytes".
+  if (existingVersion) throw new ReleaseVersionAlreadyExistsError(existingVersion);
   const now = Date.now();
   const changelog = inputChangelog(input);
 

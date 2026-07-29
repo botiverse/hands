@@ -199,11 +199,11 @@ describe("cancelled release version reuse migration", () => {
       "release-corrected", "build-corrected", "draft", null,
     )).toThrow("release version already exists");
 
-    // The identical shipped binary may re-release under the same coordinate.
+    // Even the same build row may NOT create a new release at the coordinate:
+    // build assets are mutable, so "same build" does not guarantee "same bytes".
     expect(() => insertRelease.run(
       "release-reissue", "build-shipped", "draft", null,
-    )).not.toThrow();
-    db.prepare("UPDATE releases SET status = 'cancelled' WHERE id = 'release-reissue'").run();
+    )).toThrow("release version already exists");
 
     // Reactivating a different pre-ship cancelled draft (other binary) is also
     // blocked — un-cancel is the second door into the shipped coordinate.
@@ -211,7 +211,8 @@ describe("cancelled release version reuse migration", () => {
       "UPDATE releases SET status = 'draft' WHERE id = 'release-early-draft'",
     ).run()).toThrow("release version already exists");
 
-    // Restoring the shipped release itself (same binary) stays allowed.
+    // Restoring the shipped release itself (rollback) stays allowed — that is
+    // the supported way to bring a cancelled shipped version back.
     expect(() => db.prepare(
       "UPDATE releases SET status = 'draft' WHERE id = 'release-shipped'",
     ).run()).not.toThrow();
