@@ -8,13 +8,10 @@ import display from '@ohos.display';
 import statvfs from '@ohos.file.statvfs';
 import batteryInfo from '@ohos.batteryInfo';
 import { Hands } from './Hands';
+import { HANDS_OHOS_SDK_VERSION } from './HandsCrashStoragePolicy';
 import { HandsDeviceId } from './HandsDeviceId';
 
 const TAG: string = 'HandsFeedbackClient';
-
-// Hands OHOS SDK version — reported in feedback/crash environment metadata.
-// Keep in sync with oh-package.json5 on release.
-const HANDS_SDK_VERSION: string = '0.3.1';
 
 // @ohos.batteryInfo BatteryChargeState: NONE=0, ENABLE=1, DISABLE=2, FULL=3.
 function ohBatteryStateName(status: number): string {
@@ -132,7 +129,7 @@ export class HandsFeedbackClient {
       'version_code': bundleInfo.versionCode,
       'bundle_id': bundleInfo.name,
       'platform': 'ohos',
-      'hands_sdk': HANDS_SDK_VERSION,
+      'hands_sdk': HANDS_OHOS_SDK_VERSION,
       'channel': Hands.config.channel,
       // Device
       'device_id': HandsDeviceId.get(context),

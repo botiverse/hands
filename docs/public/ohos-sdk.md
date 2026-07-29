@@ -4,9 +4,8 @@
 tickets** and **crash reporting** against a Hands server's
 public feedback endpoint. Mirrors the Android and iOS SDKs.
 
-> **Status:** the package is being published to ohpm. Until it's live,
-> consume the `@botiverse/hands@0.3.0` HAR from a local build of `clients/ohos`
-> in the [Hands repo](https://github.com/botiverse/hands).
+If the registry version lags the source release, build the exact HAR from
+`clients/ohos` in the [Hands repo](https://github.com/botiverse/hands).
 
 ## Install
 
@@ -48,19 +47,33 @@ const ticketId = await HandsFeedbackClient.submit(
   context,                    // common.UIAbilityContext
   'Feed does not refresh',    // message
   'bug',                      // 'feedback' | 'bug' | 'crash'
-  [logFilePath],              // up to 3 files, 10 MB each
+  [logFilePath],              // up to 9 files
   [],                         // extras: Array<{ key, value }>
 );
 ```
 
 Device metadata (version, model, OS, ABI, locale, per-install device id) is
-attached automatically.
+attached automatically. Files up to 10 MB use the multipart request; larger
+files use a presigned upload, with a 50 MB OHOS cap.
 
 ## Crash reporting
 
-`Hands.install(config, context)` captures uncaught ArkTS errors and uploads
-them as `kind=crash` tickets, grouped by signature in the console. Nothing
-else to wire.
+`Hands.install(config, context)` captures uncaught ArkTS errors plus system
+`APP_CRASH` / `APP_FREEZE` events, including native C/C++ faults that cannot
+reach the in-process ArkTS observer. Nothing else is required.
+
+Native faults are store-then-send: HarmonyOS retains the fault record after
+the process dies, and Hands consumes it on the next launch. Pending crash
+files are kept until ticket creation succeeds (subject to the bounded
+five-crash retention cap). One malformed system event does not block later
+events in the same batch.
+
+For handled errors and diagnostic context:
+
+```ts
+Hands.addBreadcrumb('member-detail', 'opened from thread');
+await Hands.captureException(context, error, 'Could not open member detail');
+```
 
 ## Device analytics
 

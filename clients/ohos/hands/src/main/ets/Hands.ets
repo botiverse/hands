@@ -51,7 +51,12 @@ export class Hands {
       // Device ping + pending-crash upload off the launch critical path.
       setTimeout(() => {
         HandsAnalytics.reportDevice(context).catch((): void => {});
-        HandsCrashUploader.enforceRetention(context);
+        try {
+          HandsCrashUploader.enforceRetention(context);
+        } catch (_error) {
+          // Retention is best-effort; it must never suppress upload of an
+          // already-complete pending crash pair.
+        }
         HandsCrashUploader.uploadPending(context).catch((): void => {});
       }, 3000);
     }

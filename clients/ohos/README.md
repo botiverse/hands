@@ -29,10 +29,12 @@ Hands.install({
   appSlug: 'my-app',
   channel: 'main',          // Hands release-channel routing field
   clientKey: 'qk_…',
-});
+}, this.context);
 ```
 
-Call it as early as possible (UIAbility `onCreate`).
+Call it as early as possible (UIAbility `onCreate`). Passing the context
+enables ArkTS/native crash capture, device analytics, and next-launch pending
+crash upload.
 
 ## Feedback
 
@@ -43,7 +45,7 @@ const ticketId = await HandsFeedbackClient.submit(
   context,                    // common.UIAbilityContext
   'Feed does not refresh',    // message
   'bug',                      // 'feedback' | 'bug' | 'crash'
-  [logFilePath],              // up to 3 files, 10 MB each
+  [logFilePath],              // up to 9 files; 50 MB OHOS cap
   [],                         // extras: Array<{ key, value }>
 );
 ```
@@ -52,6 +54,13 @@ Device metadata (version, model, OS, ABI, locale, per-install device id) is
 attached automatically.
 
 ## Crash reporting (store-then-send)
+
+`Hands.install(config, context)` automatically registers the ArkTS error
+observer and the system `APP_CRASH` / `APP_FREEZE` watcher. Native faults are
+retained by HarmonyOS and converted into pending crash pairs on the next
+launch; Hands deletes each pair only after its ticket is created.
+
+The lower-level uploader remains available for app-owned crash sources:
 
 At crash time (e.g. an `errorManager` observer), write the crash log and its
 signature sidecar — no network in the dying process:
