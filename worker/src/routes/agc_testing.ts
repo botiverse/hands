@@ -42,24 +42,27 @@ export async function handleAppGalleryReview(c: AdminContext) {
   if (!app) return c.json({ error: "app not found" }, 404);
   if (app.platform !== "harmony") return c.json({ platform: app.platform, applicable: false });
 
-  const credential = await getAgcCredentials(c.env.DB, c.env.AGC_CRED_ENC_KEY, appId);
-  if (!credential) return c.json({ configured: false, applicable: true });
-
-  const packageRow = await c.env.DB.prepare(
-    "SELECT bundle_id FROM channels WHERE app_id = ?1 AND slug = 'main' LIMIT 1",
-  ).bind(appId).first<{ bundle_id: string | null }>();
-  const packageName = (packageRow?.bundle_id ?? "").trim() || null;
-  if (!packageName) {
-    return c.json({
-      configured: true,
-      applicable: true,
-      package_name: null,
-      needs_package_name: true,
-      error: "No AppGallery package name is set on the main channel.",
-    });
-  }
-
+  let packageName: string | null = null;
   try {
+    // Credential load is inside the guard: decryption and key parsing can
+    // throw, and those messages must never escape to the caller either.
+    const credential = await getAgcCredentials(c.env.DB, c.env.AGC_CRED_ENC_KEY, appId);
+    if (!credential) return c.json({ configured: false, applicable: true });
+
+    const packageRow = await c.env.DB.prepare(
+      "SELECT bundle_id FROM channels WHERE app_id = ?1 AND slug = 'main' LIMIT 1",
+    ).bind(appId).first<{ bundle_id: string | null }>();
+    packageName = (packageRow?.bundle_id ?? "").trim() || null;
+    if (!packageName) {
+      return c.json({
+        configured: true,
+        applicable: true,
+        package_name: null,
+        needs_package_name: true,
+        error: "No AppGallery package name is set on the main channel.",
+      });
+    }
+
     const agcAuth = await auth(c);
     const externalAppId = await resolveAgcAppId(agcAuth, packageName);
     const review = await getAgcReviewStatus(agcAuth, externalAppId);
@@ -71,7 +74,16 @@ export async function handleAppGalleryReview(c: AdminContext) {
       review,
     });
   } catch (error) {
-    const message = error instanceof AgcApiError || error instanceof Error
+    // Only AgcApiError carries a message we construct and control (provider
+    // text plus HTTP status). Anything else — credential decryption, private
+    // key parsing — returns a fixed string so an unbounded internal message
+    // can never reach a viewer; detail stays in the server log.
+    if (!(error instanceof AgcApiError)) {
+      console.error(
+        `[appgallery-review] app ${appId}: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+    const message = error instanceof AgcApiError
       ? error.message
       : "AppGallery review status is unavailable";
     return c.json({

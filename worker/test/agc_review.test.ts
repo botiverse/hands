@@ -6,6 +6,7 @@
 
 import { describe, it, expect, vi } from "vitest";
 import { getAgcReviewStatus, AgcApiError } from "../src/lib/agc_api";
+import { handleAppGalleryReview } from "../src/routes/agc_testing";
 
 const auth = { clientId: "client-1", accessToken: "token-1" };
 
@@ -78,5 +79,57 @@ describe("getAgcReviewStatus", () => {
     await expect(
       getAgcReviewStatus(auth, "missing-app", 1, fetchMock as unknown as typeof fetch),
     ).rejects.toBeInstanceOf(AgcApiError);
+  });
+});
+
+describe("handleAppGalleryReview error disclosure", () => {
+  /** Minimal context whose credential read throws the given error. */
+  function contextThrowing(error: unknown) {
+    return {
+      env: {
+        AGC_CRED_ENC_KEY: "test-key",
+        DB: {
+          prepare(sql: string) {
+            return {
+              bind() {
+                return {
+                  async first() {
+                    if (sql.includes("FROM apps")) return { platform: "harmony" };
+                    if (sql.includes("app_agc_credentials")) throw error;
+                    if (sql.includes("FROM channels")) return { bundle_id: "com.example.app" };
+                    return null;
+                  },
+                };
+              },
+            };
+          },
+        },
+      },
+      req: { param: (name: string) => (name === "appId" ? "app-1" : "") },
+      json: (body: unknown, status = 200) =>
+        new Response(JSON.stringify(body), { status }),
+    } as never;
+  }
+
+  it("never leaks a non-AgcApiError message to the caller", async () => {
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const response = await handleAppGalleryReview(
+      contextThrowing(new Error("BEGIN PRIVATE KEY MIIEvQIBADANBg internal detail")),
+    );
+    const body = await response.json() as { review_error?: string };
+
+    expect(body.review_error).toBe("AppGallery review status is unavailable");
+    expect(JSON.stringify(body)).not.toContain("PRIVATE KEY");
+    // The detail is not lost — it goes to the server log instead.
+    expect(errorSpy).toHaveBeenCalledOnce();
+    errorSpy.mockRestore();
+  });
+
+  it("still surfaces provider-controlled AgcApiError text", async () => {
+    const response = await handleAppGalleryReview(
+      contextThrowing(new AgcApiError(404, "No AGC app found for package com.example.app")),
+    );
+    const body = await response.json() as { review_error?: string };
+    expect(body.review_error).toBe("No AGC app found for package com.example.app");
   });
 });
