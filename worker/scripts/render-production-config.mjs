@@ -86,6 +86,12 @@ const r2 = config.r2_buckets?.find((binding) => binding.binding === "APK_BUCKET"
 if (!d1 || !r2) throw new Error("Hands DB or APK_BUCKET binding is missing from the base config");
 
 config.name = required("HANDS_WORKER_NAME");
+config.flagship = [
+  {
+    binding: "FLAGS",
+    app_id: uuid("HANDS_FLAGSHIP_APP_ID"),
+  },
+];
 const configuredRoutes = new Set(
   (config.routes ?? []).filter((route) => route.custom_domain).map((route) => route.pattern),
 );
