@@ -20,6 +20,7 @@ const BASE_ENV = {
   HANDS_RAFT_ORIGIN: "https://app.raft.build",
   HANDS_RAFT_API_ORIGIN: "https://api.raft.build",
   HANDS_RAFT_CLIENT_ID: "hands-test-client",
+  HANDS_FLAGSHIP_APP_ID: "22222222-2222-4222-8222-222222222222",
 };
 
 function render(extraEnv: Record<string, string> = {}) {
@@ -47,10 +48,34 @@ test("production config keeps reporter sessions disabled by default", () => {
     assert.equal(fixture.result.status, 0, fixture.result.stderr);
     const config = JSON.parse(readFileSync(fixture.output, "utf8"));
     assert.deepEqual(config.placement, { mode: "smart" });
+    assert.deepEqual(config.flagship, [
+      {
+        binding: "FLAGS",
+        app_id: BASE_ENV.HANDS_FLAGSHIP_APP_ID,
+      },
+    ]);
     assert.equal(config.vars.FEEDBACK_REPORTER_SESSION_ENABLED, "false");
     assert.equal("FEEDBACK_REPORTER_SESSION_ACTIVE_KEY_VERSION" in config.vars, false);
   } finally {
     fixture.cleanup();
+  }
+});
+
+test("production config requires a valid Flagship app id", () => {
+  const missing = render({ HANDS_FLAGSHIP_APP_ID: "" });
+  try {
+    assert.notEqual(missing.result.status, 0);
+    assert.match(missing.result.stderr, /Missing required environment value HANDS_FLAGSHIP_APP_ID/);
+  } finally {
+    missing.cleanup();
+  }
+
+  const invalid = render({ HANDS_FLAGSHIP_APP_ID: "not-an-app-id" });
+  try {
+    assert.notEqual(invalid.result.status, 0);
+    assert.match(invalid.result.stderr, /HANDS_FLAGSHIP_APP_ID must be a UUID/);
+  } finally {
+    invalid.cleanup();
   }
 });
 
@@ -100,6 +125,10 @@ test("deploy workflow binds the keyring only through the secret store", () => {
   assert.match(
     workflow,
     /HANDS_FEEDBACK_REPORTER_SESSION_ENABLED: \$\{\{ vars\.HANDS_FEEDBACK_REPORTER_SESSION_ENABLED \}\}/,
+  );
+  assert.match(
+    workflow,
+    /HANDS_FLAGSHIP_APP_ID: \$\{\{ vars\.HANDS_FLAGSHIP_APP_ID \}\}/,
   );
   const validationIndex = workflow.indexOf("- name: Validate reporter-session rollout inputs");
   const deployIndex = workflow.indexOf("- name: Deploy Hands Worker and admin assets");
