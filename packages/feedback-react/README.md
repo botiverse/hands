@@ -15,11 +15,8 @@ import "@botiverse/hands-feedback-react/styles.css";
 
 // Implement this in your app. It calls your authenticated same-origin proxy;
 // the complete adapter is in the integration guide linked below.
-const transport: HandsFeedbackTransport = createMyAppFeedbackTransport({
-  // Resolve this through your backend. Never ship an app/deploy token to the
-  // renderer. The session must be short-lived and scoped to one app+reporter.
-  getSession: () => fetch("/api/hands-feedback-session").then((r) => r.json()),
-});
+const transport: HandsFeedbackTransport =
+  createMyAppFeedbackTransport("/api/feedback");
 
 <FeedbackProvider
   transport={transport}
