@@ -9,18 +9,23 @@ const identityMigrationPath = fileURLToPath(
 const reuseMigrationPath = fileURLToPath(
   new URL("../../migrations/sql/0056_cancelled_release_version_reuse.sql", import.meta.url),
 );
+const activatedGuardMigrationPath = fileURLToPath(
+  new URL("../../migrations/sql/0057_activated_version_reuse_guard.sql", import.meta.url),
+);
 
 describe("cancelled release version reuse migration", () => {
   it("keeps every remote-D1 trigger body on one physical line", () => {
-    const triggerLines = readFileSync(reuseMigrationPath, "utf8")
-      .split("\n")
-      .filter((line) => line.startsWith("CREATE TRIGGER"));
+    for (const path of [reuseMigrationPath, activatedGuardMigrationPath]) {
+      const triggerLines = readFileSync(path, "utf8")
+        .split("\n")
+        .filter((line) => line.startsWith("CREATE TRIGGER"));
 
-    expect(triggerLines).toHaveLength(2);
-    for (const line of triggerLines) {
-      expect(line).toContain(" BEGIN ");
-      expect(line).toMatch(/ END;$/);
-      expect(line.match(/\bEND;/g)).toHaveLength(1);
+      expect(triggerLines).toHaveLength(2);
+      for (const line of triggerLines) {
+        expect(line).toContain(" BEGIN ");
+        expect(line).toMatch(/ END;$/);
+        expect(line.match(/\bEND;/g)).toHaveLength(1);
+      }
     }
   });
 
@@ -127,5 +132,97 @@ describe("cancelled release version reuse migration", () => {
       { id: "release-new", status: "cancelled" },
       { id: "release-old", status: "draft" },
     ]);
+  });
+
+  it("binds an activated coordinate to its binary even after cancellation", () => {
+    const db = new Database(":memory:");
+    db.exec(`
+      CREATE TABLE builds (
+        id TEXT PRIMARY KEY,
+        app_id TEXT NOT NULL,
+        channel_id TEXT,
+        product_type TEXT NOT NULL,
+        release_type TEXT NOT NULL,
+        version_name TEXT NOT NULL,
+        version_code INTEGER NOT NULL
+      );
+      CREATE TABLE releases (
+        id TEXT PRIMARY KEY,
+        app_id TEXT NOT NULL,
+        build_id TEXT NOT NULL,
+        channel_id TEXT NOT NULL,
+        product_type TEXT NOT NULL,
+        release_type TEXT NOT NULL,
+        status TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
+      CREATE TABLE release_scopes (
+        id TEXT PRIMARY KEY,
+        release_id TEXT NOT NULL,
+        scope_type TEXT NOT NULL,
+        scope_value TEXT NOT NULL,
+        created_at INTEGER NOT NULL
+      );
+
+      INSERT INTO builds
+        (id, app_id, channel_id, product_type, release_type, version_name, version_code)
+      VALUES
+        ('build-shipped', 'app-a', 'main', 'android-apk', 'stable', '2.0.0', 2000000),
+        ('build-corrected', 'app-a', 'main', 'android-apk', 'stable', '2.0.0', 2000000),
+        ('build-early-draft', 'app-a', 'main', 'android-apk', 'stable', '2.0.0', 2000000),
+        ('build-unshipped', 'app-a', 'main', 'android-apk', 'stable', '2.1.0', 2100000),
+        ('build-unshipped-fix', 'app-a', 'main', 'android-apk', 'stable', '2.1.0', 2100000);
+    `);
+
+    db.exec(readFileSync(identityMigrationPath, "utf8"));
+    db.exec(readFileSync(reuseMigrationPath, "utf8"));
+    db.exec(readFileSync(activatedGuardMigrationPath, "utf8"));
+
+    const insertRelease = db.prepare(`
+      INSERT INTO releases
+        (id, app_id, build_id, channel_id, product_type, release_type, status,
+         created_at, updated_at, activated_at)
+      VALUES (?, 'app-a', ?, 'main', 'android-apk', 'stable', ?, 3, 3, ?)
+    `);
+
+    // A draft that was cancelled before anything shipped at this coordinate.
+    insertRelease.run("release-early-draft", "build-early-draft", "draft", null);
+    db.prepare("UPDATE releases SET status = 'cancelled' WHERE id = 'release-early-draft'").run();
+
+    // Ship version 2.0.0 with build-shipped, then cancel it.
+    insertRelease.run("release-shipped", "build-shipped", "active", 100);
+    db.prepare("UPDATE releases SET status = 'cancelled' WHERE id = 'release-shipped'").run();
+
+    // Different binary must NOT reuse the shipped coordinate.
+    expect(() => insertRelease.run(
+      "release-corrected", "build-corrected", "draft", null,
+    )).toThrow("release version already exists");
+
+    // The identical shipped binary may re-release under the same coordinate.
+    expect(() => insertRelease.run(
+      "release-reissue", "build-shipped", "draft", null,
+    )).not.toThrow();
+    db.prepare("UPDATE releases SET status = 'cancelled' WHERE id = 'release-reissue'").run();
+
+    // Reactivating a different pre-ship cancelled draft (other binary) is also
+    // blocked — un-cancel is the second door into the shipped coordinate.
+    expect(() => db.prepare(
+      "UPDATE releases SET status = 'draft' WHERE id = 'release-early-draft'",
+    ).run()).toThrow("release version already exists");
+
+    // Restoring the shipped release itself (same binary) stays allowed.
+    expect(() => db.prepare(
+      "UPDATE releases SET status = 'draft' WHERE id = 'release-shipped'",
+    ).run()).not.toThrow();
+    db.prepare("UPDATE releases SET status = 'cancelled' WHERE id = 'release-shipped'").run();
+
+    // 0056 intent preserved: a never-activated cancelled coordinate stays
+    // fully reusable by a different binary.
+    insertRelease.run("release-unshipped", "build-unshipped", "draft", null);
+    db.prepare("UPDATE releases SET status = 'cancelled' WHERE id = 'release-unshipped'").run();
+    expect(() => insertRelease.run(
+      "release-unshipped-fix", "build-unshipped-fix", "draft", null,
+    )).not.toThrow();
   });
 });

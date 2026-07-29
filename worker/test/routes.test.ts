@@ -52,7 +52,7 @@ import {
 } from "../src/routes/qa_artifacts";
 
 const releaseVersionReuseTriggerStatements = readFileSync(
-  new URL("../../migrations/sql/0056_cancelled_release_version_reuse.sql", import.meta.url),
+  new URL("../../migrations/sql/0057_activated_version_reuse_guard.sql", import.meta.url),
   "utf8",
 ).split("\n").filter((line) => line.startsWith("CREATE TRIGGER"));
 
@@ -3618,6 +3618,45 @@ describe("quiver releases — draft lifecycle", () => {
     await expect(env.DB.prepare(
       "SELECT status FROM releases WHERE id = 'rel-version-reserved'",
     ).first()).resolves.toEqual({ status: "cancelled" });
+  });
+
+  it("keeps an activated coordinate bound to its binary after cancellation", async () => {
+    const { handleCreateReleaseDraft } = await import("../src/routes/releases");
+    await seedReleaseBuild("build-shipped-41", 41);
+    await seedReleaseBuild("build-corrected-41", 41);
+    const shipped = await handleCreateReleaseDraft(makeReleaseContext("", {
+      build_id: "build-shipped-41",
+    }));
+    expect(shipped.status).toBe(201);
+    const shippedBody = await responseJson<any>(shipped);
+    await env.DB.prepare(
+      "UPDATE releases SET status = 'cancelled', activated_at = ?1, revision = 1 WHERE id = ?2",
+    ).bind(Date.now(), shippedBody.id).run();
+    await installReleaseVersionReuseTriggers();
+
+    // Activated-then-cancelled coordinate: a different binary is rejected by
+    // the application-layer precheck with the real blocking release surfaced.
+    const corrected = await handleCreateReleaseDraft(makeReleaseContext("", {
+      build_id: "build-corrected-41",
+    }));
+    expect(corrected.status).toBe(409);
+    await expect(responseJson<any>(corrected)).resolves.toMatchObject({
+      code: "RELEASE_VERSION_ALREADY_EXISTS",
+      release_id: shippedBody.id,
+      build_id: "build-shipped-41",
+      version_code: 41,
+    });
+
+    // The identical shipped binary may re-release under the same coordinate.
+    const reissue = await handleCreateReleaseDraft(makeReleaseContext("", {
+      build_id: "build-shipped-41",
+    }));
+    expect(reissue.status).toBe(201);
+    await env.DB.prepare("DELETE FROM releases").run();
+    await env.DB.prepare(
+      "DELETE FROM builds WHERE id IN ('build-shipped-41', 'build-corrected-41')",
+    ).run();
+
   });
 
   it("returns a structured conflict when create loses a trigger race to restore", async () => {
