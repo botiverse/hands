@@ -249,6 +249,20 @@ long-lived-token verification work on repeated read/comment calls, but remain
 backend credentials and are disabled by default. A normal integration can call
 the reporter endpoints directly with its feedback-only deploy token.
 
+Hands enforces both per-reporter and per-integration safety limits:
+
+| Operation | Per reporter | Per integration |
+|---|---:|---:|
+| List | 60/minute | 600/minute |
+| Detail | 120/minute | 1,200/minute |
+| Attachment | 120/hour | 1,200/hour |
+| Comment | 30/hour | 300/hour |
+| Trusted ticket submission | 100/hour | — |
+
+Forward `429` and `Retry-After` through your proxy. Keep the user's draft and
+retry only after that delay; do not loop immediately or change the
+`submission_id` to bypass the limit.
+
 ## Implement the React transport
 
 The package asks the host for a `HandsFeedbackTransport`. Point that transport
