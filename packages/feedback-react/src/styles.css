@@ -91,7 +91,6 @@
   align-content: start;
   padding: 2px;
 }
-.hands-feedback-filter,
 .hands-feedback-kind {
   display: flex;
   flex: none;

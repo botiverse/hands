@@ -15,6 +15,9 @@ import {
   EmptyState,
   EmptyStateTitle,
   Input,
+  SegmentedControl,
+  SegmentedControlItem,
+  SegmentedControlLabel,
   Skeleton,
 } from "raft-ui";
 import type { FeedbackMessageKey, FeedbackMessageValues } from "./locale.js";
@@ -285,24 +288,22 @@ export function FeedbackInbox({
         </div>
         <Button onClick={onNewFeedback}>{message("newFeedback")}</Button>
       </header>
-      <div
+      <SegmentedControl<"all" | "open" | "resolved">
         className="hands-feedback-filter"
-        role="group"
-        aria-label={message("statusFilter")}
+        ariaLabel={message("statusFilter")}
+        value={filter}
+        onValueChange={setFilter}
       >
         {(["all", "open", "resolved"] as const).map((value) => (
-          <Button
-            key={value}
-            variant={filter === value ? "primary" : "outline"}
-            aria-pressed={filter === value}
-            onClick={() => setFilter(value)}
-          >
-            {value === "all"
-              ? message("all")
-              : message(value === "open" ? "active" : "statusResolved")}
-          </Button>
+          <SegmentedControlItem key={value} value={value}>
+            <SegmentedControlLabel>
+              {value === "all"
+                ? message("all")
+                : message(value === "open" ? "active" : "statusResolved")}
+            </SegmentedControlLabel>
+          </SegmentedControlItem>
         ))}
-      </div>
+      </SegmentedControl>
       <div
         className="hands-feedback-middle hands-feedback-list-scroll"
         data-feedback-list-scroll
