@@ -101,6 +101,7 @@ jobs:
         shell: bash
         env:
           REQUESTED_VERSION: ${{ inputs.version }}
+          RESOLVED_VERSION: ${{ steps.version.outputs.value }}
         run: |
           set -euo pipefail
           packaged_manifest="$RUNNER_TEMP/hands-oh-package.json5"
@@ -113,8 +114,8 @@ jobs:
             "${GITHUB_REF_TYPE}" \
             "${GITHUB_REF_NAME}" \
             "${REQUESTED_VERSION:-}")"
-          if [[ "$packaged_version" != "${{ steps.version.outputs.value }}" ]]; then
-            echo "Packed HAR version $packaged_version differs from resolved version ${{ steps.version.outputs.value }}." >&2
+          if [[ "$packaged_version" != "${RESOLVED_VERSION}" ]]; then
+            echo "Packed HAR version $packaged_version differs from resolved version ${RESOLVED_VERSION}." >&2
             exit 1
           fi
 
@@ -197,6 +198,8 @@ jobs:
       - name: Summary
         if: always()
         shell: bash
+        env:
+          RESOLVED_VERSION: ${{ steps.version.outputs.value }}
         run: |
           {
             echo "### OHOS SDK"
@@ -204,6 +207,6 @@ jobs:
             echo "| Field | Value |"
             echo "|---|---|"
             echo "| Package | \`@botiverse/hands\` |"
-            echo "| Version | \`${{ steps.version.outputs.value }}\` |"
+            echo "| Version | \`${RESOLVED_VERSION}\` |"
             echo "| Dry run | \`${{ github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && inputs.dry_run) }}\` |"
           } >> "$GITHUB_STEP_SUMMARY"
