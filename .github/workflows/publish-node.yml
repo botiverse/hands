@@ -90,6 +90,8 @@ jobs:
 
       - name: Summary
         shell: bash
+        env:
+          RESOLVED_VERSION: ${{ steps.version.outputs.value }}
         run: |
           {
             echo "### Hands Node SDK publish"
@@ -97,6 +99,6 @@ jobs:
             echo "| Field | Value |"
             echo "|---|---|"
             echo "| Package | \`@botiverse/hands-node\` |"
-            echo "| Version | \`${{ steps.version.outputs.value }}\` |"
+            echo "| Version | \`${RESOLVED_VERSION}\` |"
             echo "| Dry run | \`${{ github.event_name == 'workflow_dispatch' && inputs.dry_run }}\` |"
           } >> "$GITHUB_STEP_SUMMARY"
