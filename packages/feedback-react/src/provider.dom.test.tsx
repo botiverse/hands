@@ -8,7 +8,7 @@ import {
   waitFor,
 } from "@testing-library/react";
 import { useState } from "react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { FeedbackWorkspace } from "./components.js";
 import { FeedbackProvider } from "./provider.js";
 import { FeedbackTransportError } from "./types.js";
@@ -17,6 +17,13 @@ import type {
   FeedbackTicketPage,
   HandsFeedbackTransport,
 } from "./types.js";
+
+beforeAll(() => {
+  Object.defineProperty(window, "PointerEvent", {
+    configurable: true,
+    value: MouseEvent,
+  });
+});
 
 afterEach(cleanup);
 
@@ -91,7 +98,9 @@ describe("FeedbackWorkspace browser behavior", () => {
     );
     expect(await screen.findByText(ticket.message)).toBeTruthy();
     expect(screen.getByRole("button", { name: "Create report" })).toBeTruthy();
-    expect(screen.getByRole("group", { name: "Ticket state" })).toBeTruthy();
+    expect(
+      screen.getByRole("radiogroup", { name: "Ticket state" }),
+    ).toBeTruthy();
     expect(screen.getByLabelText("2 new items")).toBeTruthy();
     expect(screen.getByText("DATE:en:2", { exact: false })).toBeTruthy();
     fireEvent.click(screen.getByText(ticket.message));
@@ -209,12 +218,35 @@ describe("FeedbackWorkspace browser behavior", () => {
     );
 
     await screen.findByText("Ticket open");
-    expect(screen.getByRole("button", { name: "Active" })).toBeTruthy();
+    expect(screen.getByRole("radio", { name: "Active" })).toBeTruthy();
     expect(
       Array.from(
         container.querySelectorAll<HTMLElement>("[data-feedback-status]"),
       ).map((badge) => badge.dataset.feedbackStatus),
     ).toEqual(["open", "in_progress", "resolved", "closed"]);
+  });
+
+  it("uses the shared segmented control with radio and keyboard semantics", async () => {
+    render(
+      <FeedbackProvider transport={transport()}>
+        <FeedbackWorkspace />
+      </FeedbackProvider>,
+    );
+
+    await screen.findByText(ticket.message);
+    const group = screen.getByRole("radiogroup", { name: "Status filter" });
+    const all = screen.getByRole("radio", { name: "All" });
+    const active = screen.getByRole("radio", { name: "Active" });
+    expect(group.getAttribute("data-slot")).toBe("segmented-control");
+    expect(all.getAttribute("data-slot")).toBe("segmented-control-item");
+    expect(all.getAttribute("aria-checked")).toBe("true");
+
+    all.focus();
+    fireEvent.keyDown(all, { key: "ArrowRight" });
+    await waitFor(() => {
+      expect(active.getAttribute("aria-checked")).toBe("true");
+      expect(document.activeElement).toBe(active);
+    });
   });
 
   it("does not re-notify when list and detail return the same authoritative total", async () => {
@@ -246,7 +278,7 @@ describe("FeedbackWorkspace browser behavior", () => {
     const row = await screen.findByRole("button", {
       name: /A reporter-visible ticket/,
     });
-    fireEvent.click(screen.getByRole("button", { name: "Active" }));
+    fireEvent.click(screen.getByRole("radio", { name: "Active" }));
     const listScroll = document.querySelector<HTMLElement>(
       "[data-feedback-list-scroll]",
     )!;
@@ -258,8 +290,8 @@ describe("FeedbackWorkspace browser behavior", () => {
     expect(listScroll.scrollTop).toBe(91);
     expect(
       screen
-        .getByRole("button", { name: "Active" })
-        .getAttribute("aria-pressed"),
+        .getByRole("radio", { name: "Active" })
+        .getAttribute("aria-checked"),
     ).toBe("true");
     expect(row.getAttribute("data-unread")).toBeNull();
   });
