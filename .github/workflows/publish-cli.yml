@@ -47,13 +47,15 @@ jobs:
       - name: Resolve version
         id: version
         shell: bash
+        env:
+          REQUESTED_VERSION: ${{ inputs.version }}
         run: |
           set -euo pipefail
           package_version="$(node -p "require('./packages/cli/package.json').version")"
           if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
             requested="${GITHUB_REF_NAME#cli-v}"
-          elif [[ -n "${{ inputs.version }}" ]]; then
-            requested="${{ inputs.version }}"
+          elif [[ -n "${REQUESTED_VERSION:-}" ]]; then
+            requested="${REQUESTED_VERSION}"
           else
             requested="${package_version}"
           fi
