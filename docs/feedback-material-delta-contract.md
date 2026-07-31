@@ -136,8 +136,7 @@ Assign a strictly larger per-app sequence for:
 - an assignee change where the stored value really changes;
 - a reporter comment;
 - an external staff comment;
-- an internal staff comment;
-- a system comment.
+- an internal staff comment.
 
 The schema, rather than only the new Worker, must classify these writes. This
 keeps the migration-before-code window and a Worker-only rollback correct:
@@ -145,14 +144,22 @@ keeps the migration-before-code window and a Worker-only rollback correct:
 - `AFTER INSERT` on `feedback_tickets` allocates once for ticket creation;
 - `AFTER UPDATE OF status, assignee` allocates once only when either stored
   value changes; changing both in the existing single CAS is one mutation;
-- `AFTER INSERT` on `feedback_comments` allocates once for every comment,
-  including `internal = 1` and every author type.
+- `AFTER INSERT` on `feedback_comments` allocates once for every comment from
+  the two current production writers: reporter and staff, with staff covered
+  separately for `internal = 0` and `internal = 1`.
 
 The comment trigger is intentionally independent of migration 0059's reporter
 trigger. One inserted visible comment advances both domains for their different
 audiences; neither high-water is copied from, compared with, or derived from the
 other. An internal comment advances material delta and leaves
 `reporter_sequence` NULL.
+
+The schema already permits and read paths understand `author_type = 'system'`,
+but the current production source has no system-comment writer. Version 1 does
+not invent one. The generic comment trigger may remain author-agnostic, but a
+direct SQL fixture is not evidence of a production system path. The first
+future change that introduces a system-comment writer must also add its real
+entry-point material RED in the same change.
 
 Internal comments count because they often represent real handling progress
 that a patrol must observe. Their content and even the frequency of their
@@ -172,10 +179,21 @@ therefore produce zero material delta. A conflicting replay, failed attachment
 batch, or any transaction that rolls back after allocation must leave both the
 ticket sequence and allocator high-water unchanged.
 
-If a future feature adds ticket hard deletion, this snapshot-only contract must
-first gain an explicit tombstone carrier. A deleted row cannot be represented
-by the current ticket-column design, so hard deletion must not be silently
-classified as supported material delta.
+### Deletion boundary
+
+The snapshot carrier has no tombstone, so a hard-deleted ticket would be a
+permanent omission. Version 1 therefore installs a ticket-delete guard:
+
+- direct `DELETE feedback_tickets` is rejected while the parent app exists;
+- deleting a reporter integration while its app exists cannot cascade-delete
+  tickets;
+- the existing full app purge remains supported and must cascade the app's
+  tickets, integrations, and allocator state successfully.
+
+This is a deliberate behavior change at the database boundary, not a claim
+that “no HTTP route currently deletes tickets” is sufficient protection. Any
+future per-ticket deletion requires a tombstone carrier and a new contract
+version before the guard can be relaxed.
 
 ## Read contract
 
@@ -296,7 +314,8 @@ app's material volume, exact consumer checkpoints, and completeness of the
 agent's delta feed. The primary threats are reporter-surface leakage, cross-app
 cursor replay, cursor confusion with reporter pagination, attacker-supplied or
 unsafe sequence values, importing another numbering domain during migration,
-and a missing production write-path hook that silently omits a material change.
+an unguarded hard delete with no tombstone, and a missing production write-path
+hook that silently omits a material change.
 
 The system fails closed on invalid cursors and allocator invariant violations.
 It does not reset an invalid cursor to zero, return a partial cross-app result,
@@ -322,8 +341,8 @@ The migration must:
 3. create one allocator row per app with tickets and set `high_water` to the
    exact maximum assigned ticket value;
 4. install the exact unique `(app_id, material_sequence)` query index;
-5. install lazy-state, `old + 1`, managed-ticket, creation, real
-   status/assignee, and all-comment triggers only after backfill is complete;
+5. install lazy-state, `old + 1`, managed-ticket, ticket-delete, creation, real
+   status/assignee, and comment triggers only after backfill is complete;
 6. leave status, assignee, comments, reporter sequences, reporter events,
    reporter cursors, receipts, and audit rows unchanged;
 7. remain compatible with the previous Worker revision throughout the normal
@@ -376,10 +395,13 @@ separate relative SQLite opcode evidence from production cost claims.
 2. Migration backfill derives dense per-app values only from tickets ordered by
    `(created_at,id)`. Injecting `reporter_sequence`, comment `rowid`,
    `updated_at`, or a foreign high-water into the seed makes a RED fail.
-3. Ticket creation and every listed comment class each commit exactly one new
-   sequence to the affected ticket. A visible comment may advance both the
-   material and reporter domains, but neither value is copied or derived from
-   the other; an internal comment advances material only.
+3. Both current ticket-creation entry points—ordinary public-v2 feedback and
+   Electron minidump—each allocate exactly once. Reporter comment and the real
+   staff route with `internal=false` and `internal=true` each allocate exactly
+   once. A visible comment may advance both material and reporter domains, but
+   neither value is copied or derived from the other; an internal comment
+   advances material only. A future system-comment writer must add its own
+   entry-point RED before shipping.
 4. A batch changing both status and assignee is one material mutation and
    assigns one new sequence, matching the existing single CAS/audit operation.
 5. Exact status/assignee replay, idempotent reporter-comment replay, lost CAS,
@@ -418,16 +440,23 @@ separate relative SQLite opcode evidence from production cost claims.
     reporter event, reporter sequence, reporter cursor, or reporter read state.
     Old-writer/new-schema, new-writer/new-schema, and Worker-rollback/new-schema
     traffic all preserve material semantics.
-15. App deletion cascades tickets and allocator state without a durability
-    trigger blocking purge. Individual ticket hard deletion remains unsupported
-    until a tombstone carrier is designed and tested.
-16. Backup/restore validation rejects missing state for a non-empty app, NULL,
-    unsafe, regressed, cross-app, duplicate, ticket-ahead-of-high-water, and
-    high-water-ahead-of-maximum state.
+15. The ticket-delete guard rejects direct ticket deletion and an integration
+    deletion that would cascade tickets while the parent app exists. The real
+    app-purge entry point still cascades tickets, integrations, and allocator
+    state; removing the guard makes both negative REDs fail.
+16. Backup/restore validation rejects the locally provable corruptions: missing
+    state for a non-empty app, NULL/non-positive/unsafe/duplicate sequence,
+    ticket-ahead-of-high-water, and `MAX(ticket sequence) != high_water`.
+    Runtime guards separately reject app-id reassignment and ticket sequence
+    regression. Detecting a complete but older self-consistent backup or an
+    externally rewritten provenance requires lineage/generation metadata and is
+    not claimed by this carrier.
 17. Removing any material trigger from a real production write entry point
     makes an entry-point test fail. Service-helper-only green tests do not count
-    as proof that ticket creation, admin CAS, reporter comments, staff comments,
-    and system comments are wired.
+    as proof. The required entry points are ordinary public-v2 ticket creation,
+    Electron minidump creation, admin status/assignee CAS, reporter comment, and
+    the staff comment route exercised separately for external and internal
+    comments.
 
 ## Explicitly deferred
 
@@ -440,6 +469,9 @@ separate relative SQLite opcode evidence from production cost claims.
 - field-level delta history;
 - an append-only triage event ledger;
 - Notion migration or backfill;
+- a production system-comment writer;
+- backup generation/provenance able to detect a complete but older
+  self-consistent restore;
 - any further opacity/signing redesign of the existing reporter comment cursor.
 
 Migration 0059 already changed future reporter numbering to ticket-local,
