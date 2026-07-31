@@ -204,6 +204,10 @@ describe("migration 0060 — feedback material delta", () => {
     app(db, "app-a");
     const intg = integration(db, "app-a");
     ticket(db, "ticket", "app-a", 1, intg);
+    staffComment(db, "visible", "ticket", 0);
+    staffComment(db, "internal", "ticket", 1);
+    expect([reporterSequence(db, "visible"), reporterSequence(db, "internal")])
+      .toEqual([1, null]);
 
     expect(() => db.prepare("DELETE FROM feedback_tickets WHERE id='ticket'").run())
       .toThrow(/requires app purge or tombstone/);
@@ -214,6 +218,7 @@ describe("migration 0060 — feedback material delta", () => {
 
     db.prepare("DELETE FROM apps WHERE id='app-a'").run();
     expect(db.prepare("SELECT id FROM feedback_tickets WHERE id='ticket'").get()).toBeUndefined();
+    expect(db.prepare("SELECT id FROM feedback_comments WHERE ticket_id='ticket'").all()).toEqual([]);
     expect(db.prepare("SELECT id FROM app_reporter_integrations WHERE id=?").get(intg)).toBeUndefined();
     expect(db.prepare(
       "SELECT app_id FROM feedback_material_sequence_state WHERE app_id='app-a'",
