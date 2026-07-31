@@ -8,6 +8,7 @@ import { authMiddleware } from "../src/middleware/auth";
 import { requireAppRole } from "../src/lib/permissions";
 import { generateDeployToken, hashDeployToken } from "../src/lib/deploy_tokens";
 import { handleAgentManifest } from "../src/routes/auth";
+import { handlePurgeApp } from "../src/routes/apps";
 import {
   handleAddFeedbackComment,
   handleListFeedbackMaterialDelta,
@@ -97,7 +98,10 @@ function environment() {
     DB,
     APK_BUCKET: {
       put: async (key: string, value: ArrayBuffer) => objects.set(key, new Uint8Array(value)),
-      delete: async (key: string) => objects.delete(key),
+      delete: async (key: string | string[]) => {
+        for (const item of Array.isArray(key) ? key : [key]) objects.delete(item);
+      },
+      list: async () => ({ objects: [], truncated: false }),
       head: async (key: string) => objects.has(key) ? { size: objects.get(key)!.byteLength } : null,
       get: async (key: string) => {
         const value = objects.get(key);
@@ -402,9 +406,59 @@ describe("feedback material delta production routes", () => {
     )).status).toBe(200);
 
     const indexSource = readFileSync(new URL("../src/index.ts", import.meta.url), "utf8");
-    expect(indexSource).toContain(
+    const materialRoute = indexSource.indexOf(
       'admin.get(\n  "/api/apps/:appId/feedback/material-delta",\n  requireAppRole("viewer"),\n  handleListFeedbackMaterialDelta,\n);',
     );
+    const ticketRoute = indexSource.indexOf(
+      'admin.get("/api/apps/:appId/feedback/:ticketId", requireAppRole("viewer"), handleGetFeedback);',
+    );
+    expect(materialRoute).toBeGreaterThan(-1);
+    expect(ticketRoute).toBeGreaterThan(materialRoute);
+  });
+
+  it("keeps the production app-purge entrypoint compatible with 0059 comments and 0060 guards", async () => {
+    const { sqlite, env } = environment();
+    const integrationId = "44444444-4444-4444-8444-444444444444";
+    const ticketId = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
+    sqlite.prepare(
+      `INSERT INTO app_reporter_integrations (id, app_id, name, created_at, updated_at)
+       VALUES (?, 'app-a', 'inbox', 1, 1)`,
+    ).run(integrationId);
+    sqlite.prepare(
+      `INSERT INTO feedback_tickets
+       (id, app_id, kind, status, message, metadata_json, reporter_id,
+        reporter_integration_id, created_at, updated_at)
+       VALUES (?, 'app-a', 'feedback', 'open', 'ticket', '{}', ?, ?, 1, 1)`,
+    ).run(ticketId, "r".repeat(32), integrationId);
+    sqlite.prepare(
+      `INSERT INTO feedback_comments
+       (id, ticket_id, author_actor, author_type, body, internal, created_at)
+       VALUES ('visible', ?, 'staff:test', 'staff', 'visible', 0, 2),
+              ('internal', ?, 'staff:test', 'staff', 'internal', 1, 3)`,
+    ).run(ticketId, ticketId);
+    expect(sqlite.prepare(
+      "SELECT id, reporter_sequence FROM feedback_comments ORDER BY id DESC",
+    ).all()).toEqual([
+      { id: "visible", reporter_sequence: 1 },
+      { id: "internal", reporter_sequence: null },
+    ]);
+    sqlite.prepare("UPDATE apps SET archived = 1 WHERE id = 'app-a'").run();
+
+    const response = await handlePurgeApp(jsonContext(
+      env,
+      { appId: "app-a" },
+      { confirm_slug: "app-a" },
+    ));
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ ok: true, purged_app_id: "app-a" });
+    expect(sqlite.prepare(
+      `SELECT
+         (SELECT COUNT(*) FROM apps WHERE id='app-a') AS apps,
+         (SELECT COUNT(*) FROM feedback_tickets WHERE app_id='app-a') AS tickets,
+         (SELECT COUNT(*) FROM feedback_comments WHERE ticket_id=?) AS comments,
+         (SELECT COUNT(*) FROM app_reporter_integrations WHERE app_id='app-a') AS integrations,
+         (SELECT COUNT(*) FROM feedback_material_sequence_state WHERE app_id='app-a') AS state`,
+    ).get(ticketId)).toEqual({ apps: 0, tickets: 0, comments: 0, integrations: 0, state: 0 });
   });
 
   it("publishes the admin route in OpenAPI and the agent action manifest", async () => {

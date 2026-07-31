@@ -227,15 +227,49 @@ describe("migration 0060 — feedback material delta", () => {
 
   it("uses the exact app-first index for the delta query", () => {
     const db = database();
-    const plan = db.prepare(
-      `EXPLAIN QUERY PLAN SELECT id, material_sequence
-       FROM feedback_tickets
-       WHERE app_id = ? AND material_sequence > ?
-       ORDER BY material_sequence ASC LIMIT ?`,
-    ).all("app-a", 0, 101).map((row) => String((row as { detail: string }).detail));
+    const plan = (withApp = true) => db.prepare(
+      withApp
+        ? `EXPLAIN QUERY PLAN SELECT id, material_sequence
+           FROM feedback_tickets
+           WHERE app_id = ? AND material_sequence > ?
+           ORDER BY material_sequence ASC LIMIT ?`
+        : `EXPLAIN QUERY PLAN SELECT id, material_sequence
+           FROM feedback_tickets
+           WHERE material_sequence > ?
+           ORDER BY material_sequence ASC LIMIT ?`,
+    ).all(...(withApp ? ["app-a", 0, 101] : [0, 101]))
+      .map((row) => String((row as { detail: string }).detail));
+    const usesExactAppFirstPlan = (details: string[]) =>
+      details.some((detail) =>
+        detail.includes("idx_feedback_tickets_app_material_sequence")
+        && /\(app_id=\? AND material_sequence>\?\)/.test(detail)
+      )
+      && details.every((detail) => !/USE TEMP B-TREE FOR ORDER BY/.test(detail));
 
-    expect(plan.some((detail) => detail.includes("idx_feedback_tickets_app_material_sequence")))
-      .toBe(true);
-    expect(plan.some((detail) => /SCAN feedback_tickets\b/.test(detail))).toBe(false);
+    expect(usesExactAppFirstPlan(plan())).toBe(true);
+
+    db.exec("DROP INDEX idx_feedback_tickets_app_material_sequence");
+    expect(usesExactAppFirstPlan(plan())).toBe(false);
+
+    db.exec(
+      `CREATE UNIQUE INDEX idx_feedback_tickets_app_material_sequence
+       ON feedback_tickets(material_sequence, app_id)`,
+    );
+    expect(usesExactAppFirstPlan(plan())).toBe(false);
+
+    db.exec("DROP INDEX idx_feedback_tickets_app_material_sequence");
+    db.exec(
+      `CREATE UNIQUE INDEX idx_feedback_tickets_app_material_sequence
+       ON feedback_tickets(material_sequence)`,
+    );
+    expect(usesExactAppFirstPlan(plan())).toBe(false);
+
+    db.exec("DROP INDEX idx_feedback_tickets_app_material_sequence");
+    db.exec(
+      `CREATE UNIQUE INDEX idx_feedback_tickets_app_material_sequence
+       ON feedback_tickets(app_id, material_sequence)`,
+    );
+    expect(usesExactAppFirstPlan(plan(false))).toBe(false);
+    expect(usesExactAppFirstPlan(plan())).toBe(true);
   });
 });
