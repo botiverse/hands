@@ -30,6 +30,38 @@ const TRUSTED_REPORTER_RATE_LIMIT_PER_HOUR = 100;
 const TICKET_STATUSES = ["open", "in_progress", "resolved", "closed"] as const;
 const TICKET_KINDS = ["feedback", "bug", "crash", "error"] as const;
 const SUBMISSION_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const MATERIAL_DELTA_DEFAULT_LIMIT = 100;
+const MATERIAL_DELTA_MAX_LIMIT = 200;
+
+function encodeMaterialCursor(appId: string, sequence: number): string {
+  return btoa(JSON.stringify(["material-v1", appId, sequence]))
+    .replaceAll("+", "-")
+    .replaceAll("/", "_")
+    .replaceAll("=", "");
+}
+
+function decodeMaterialCursor(value: string | undefined, appId: string): number | null {
+  if (value === undefined) return 0;
+  if (!value) return null;
+  try {
+    const base64 = value.replaceAll("-", "+").replaceAll("_", "/");
+    const padded = base64.padEnd(Math.ceil(base64.length / 4) * 4, "=");
+    const decoded = JSON.parse(atob(padded));
+    if (
+      !Array.isArray(decoded)
+      || decoded.length !== 3
+      || decoded[0] !== "material-v1"
+      || decoded[1] !== appId
+      || !Number.isSafeInteger(decoded[2])
+      || decoded[2] < 0
+    ) {
+      return null;
+    }
+    return decoded[2];
+  } catch {
+    return null;
+  }
+}
 
 function timingDuration(start: number, end: number): string {
   return Math.max(0, end - start).toFixed(1);
@@ -1904,6 +1936,44 @@ export async function handleListFeedback(c: AdminContext) {
     .bind(...binds)
     .all();
   return c.json({ tickets: results });
+}
+
+export async function handleListFeedbackMaterialDelta(c: AdminContext) {
+  const appId = c.req.param("appId") ?? "";
+  const cursor = decodeMaterialCursor(c.req.query("cursor"), appId);
+  if (cursor === null) return c.json({ error: "invalid cursor" }, 400);
+
+  const rawLimit = c.req.query("limit");
+  const limit = rawLimit === undefined ? MATERIAL_DELTA_DEFAULT_LIMIT : Number(rawLimit);
+  if (!Number.isInteger(limit) || limit < 1 || limit > MATERIAL_DELTA_MAX_LIMIT) {
+    return c.json({ error: `limit must be an integer between 1 and ${MATERIAL_DELTA_MAX_LIMIT}` }, 400);
+  }
+
+  const { results } = await c.env.DB.prepare(
+    `SELECT t.id, t.kind, t.status, t.assignee, t.message, t.contact, t.version_name,
+            t.version_code, t.channel, t.device_id, t.device_model, t.os_version,
+            t.created_at, t.updated_at, t.material_sequence,
+            (SELECT COUNT(*) FROM feedback_attachments fa WHERE fa.ticket_id = t.id) AS attachment_count,
+            (SELECT COUNT(*) FROM feedback_comments fc WHERE fc.ticket_id = t.id) AS comment_count
+     FROM feedback_tickets t
+     WHERE t.app_id = ?1 AND t.material_sequence > ?2
+     ORDER BY t.material_sequence ASC
+     LIMIT ?3`,
+  )
+    .bind(appId, cursor, limit + 1)
+    .all<Record<string, unknown> & { material_sequence: number }>();
+
+  const page = results.slice(0, limit);
+  const lastSequence = page.at(-1)?.material_sequence ?? cursor;
+  if (!Number.isSafeInteger(lastSequence) || lastSequence < 0) {
+    return c.json({ error: "invalid material sequence state" }, 500);
+  }
+  const tickets = page.map(({ material_sequence: _sequence, ...ticket }) => ticket);
+  return c.json({
+    tickets,
+    next_cursor: encodeMaterialCursor(appId, lastSequence),
+    has_more: results.length > limit,
+  });
 }
 
 const UUID_RE = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
