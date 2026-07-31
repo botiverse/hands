@@ -197,17 +197,51 @@ describe("migration 0059 — per-ticket reporter comment sequence", () => {
   });
 
   it("serves the assignment lookup from the ticket index", () => {
-    // The insert trigger takes MAX(reporter_sequence) for the ticket on every
-    // visible comment, so that lookup must be indexed, and by (ticket_id, …) —
-    // a (reporter_sequence, ticket_id) ordering would not narrow by ticket.
+    // Mirrors the insert trigger's own query, including `internal = 0` — the
+    // index is partial, so a lookup without that predicate cannot use it. The
+    // column order matters too: (reporter_sequence, ticket_id) would not narrow
+    // by ticket.
     const db = base(true);
     const plan = db.prepare(
       `EXPLAIN QUERY PLAN SELECT COALESCE(MAX(c.reporter_sequence), 0) + 1
-       FROM feedback_comments c WHERE c.ticket_id = 'alice'`,
+       FROM feedback_comments c WHERE c.ticket_id = 'alice' AND c.internal = 0`,
     ).all().map((r) => String((r as { detail: string }).detail)).join(" | ");
 
     expect(plan).toContain("idx_feedback_comments_ticket_reporter_sequence");
     expect(plan).not.toMatch(/SCAN c\b/);
+  });
+
+  it("does not inherit a gap from a pre-migration internal comment", () => {
+    // Internal rows created before this migration still carry numbers from the
+    // old global counter, and those numbers encode platform-wide activity.
+    // Taking MAX over all rows would hand the next visible comment a value past
+    // one of them — a new gap, created after the migration, carrying exactly the
+    // cross-tenant information the change exists to remove.
+    const db = base(false);
+    comment(db, "v1", "alice");        // visible  -> 1
+    comment(db, "int", "alice", 1);    // internal -> 2 under the old counter
+    expect(seq(db, "v1")).toBe(1);
+    expect(seq(db, "int")).toBe(2);
+
+    migrate(db);
+    comment(db, "v2", "alice");        // first visible comment after migration
+
+    // Alice sees 1 then 2. Taking the maximum over all rows would give 3.
+    expect(seq(db, "v2")).toBe(2);
+  });
+
+  it("allows a visible number equal to an internal row's retained number", () => {
+    // Consequence of the above: the internal row keeps 2 while a visible row
+    // legitimately takes 2 in the same ticket. A non-partial unique index would
+    // reject that, so the index is restricted to internal = 0.
+    const db = base(false);
+    comment(db, "v1", "alice");
+    comment(db, "int", "alice", 1);
+    migrate(db);
+    comment(db, "v2", "alice");
+
+    expect(seq(db, "int")).toBe(2);
+    expect(seq(db, "v2")).toBe(2);
   });
 
   it("assigns consecutive distinct numbers to comments inserted in one batch", () => {
