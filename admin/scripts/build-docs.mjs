@@ -37,6 +37,13 @@ const pages = [
     source: "agent-cli-feedback.md",
   },
   {
+    slug: "agent-native-state-delta",
+    title: "Designing State for Agents",
+    category: "For agents",
+    description: "How to expose changing state to an agent that polls: exact cursors instead of timestamps, material-change semantics, and what must never reach a cursor.",
+    source: "agent-native-state-delta.md",
+  },
+  {
     slug: "ios-testflight",
     source: "ios-testflight.md",
     title: "iOS Releases & TestFlight",
