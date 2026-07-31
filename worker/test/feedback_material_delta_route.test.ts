@@ -18,6 +18,7 @@ import {
 } from "../src/routes/feedback";
 import {
   handleAddReporterComment,
+  handleDownloadReporterAttachment,
   handleGetReporterFeedback,
   handleListReporterFeedback,
 } from "../src/routes/reporter_feedback";
@@ -76,17 +77,25 @@ function d1(db: Database.Database) {
   };
 }
 
-function environment() {
+function environment(includeMaterial = true) {
   const sqlite = new Database(":memory:");
   sqlite.pragma("foreign_keys = ON");
   for (const name of readdirSync(MIGRATION_DIR).sort()) {
-    if (name.endsWith(".sql")) sqlite.exec(readFileSync(`${MIGRATION_DIR}${name}`, "utf8"));
+    if (name.endsWith(".sql") && (includeMaterial || name !== "0060_feedback_material_delta.sql")) {
+      sqlite.exec(readFileSync(`${MIGRATION_DIR}${name}`, "utf8"));
+    }
   }
   const DB = d1(sqlite);
   sqlite.prepare(
     `INSERT INTO organizations
      (id, slug, name, external_provider, external_id, created_at)
      VALUES ('org', 'org', 'Org', 'raft', 'server', 1)`,
+  ).run();
+  sqlite.prepare(
+    `INSERT INTO raft_accounts
+     (id, provider_subject, server_id, principal_type, display_name, raw_profile,
+      created_at, updated_at, last_login_at)
+     VALUES ('account', 'account', 'server', 'agent', 'Account', '{}', 1, 1, 1)`,
   ).run();
   sqlite.prepare(
     `INSERT INTO apps (id, org_id, slug, name, platform, client_key, created_at)
@@ -106,7 +115,13 @@ function environment() {
       head: async (key: string) => objects.has(key) ? { size: objects.get(key)!.byteLength } : null,
       get: async (key: string) => {
         const value = objects.get(key);
-        return value ? { arrayBuffer: async () => value.buffer, text: async () => new TextDecoder().decode(value) } : null;
+        return value
+          ? {
+              body: new Response(value).body,
+              arrayBuffer: async () => value.buffer,
+              text: async () => new TextDecoder().decode(value),
+            }
+          : null;
       },
     },
     ENVIRONMENT: "production",
@@ -203,6 +218,15 @@ describe("feedback material delta production routes", () => {
     expect(material(sqlite, minidumpId)).toBe(2);
     await Promise.allSettled(pending);
     expect(material(sqlite, minidumpId)).toBe(2);
+    const appBTicket = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
+    sqlite.prepare(
+      `INSERT INTO feedback_tickets
+       (id, app_id, kind, status, message, metadata_json, created_at, updated_at)
+       VALUES (?, 'app-b', 'feedback', 'open', 'independent', '{}', 1, 1)`,
+    ).run(appBTicket);
+    expect([material(sqlite, appBTicket), sqlite.prepare(
+      "SELECT high_water FROM feedback_material_sequence_state WHERE app_id='app-b'",
+    ).get()]).toEqual([1, { high_water: 1 }]);
 
     const updateContext = (body: unknown) => jsonContext(env, { appId: "app-a", ticketId }, body);
     expect((await handleUpdateFeedback(updateContext({ status: "in_progress", assignee: "owner" }))).status)
@@ -250,72 +274,212 @@ describe("feedback material delta production routes", () => {
     sqlite.prepare(
       "UPDATE feedback_tickets SET reporter_id = ?, reporter_integration_id = ? WHERE id = ?",
     ).run(reporterId, integrationId, ticketId);
-    const reporterHeaders = new Headers();
-    const reporterResponse = await handleAddReporterComment({
-      env,
-      req: {
-        param: (name: string) => name === "appId" ? "app-a" : name === "ticketId" ? ticketId : undefined,
-        header: (name: string) => name.toLowerCase() === "authorization"
-          ? `Bearer ${credential.token}`
-          : name === "X-Hands-Reporter-Id"
-            ? reporterId
-            : undefined,
-        json: async () => ({
-          body: "reporter follow-up",
-          submission_id: "22222222-2222-4222-8222-222222222222",
-        }),
-      },
-      header: (name: string, value: string) => reporterHeaders.set(name, value),
-      json: (data: unknown, status = 200) => Response.json(data, { status, headers: reporterHeaders }),
-    } as any);
+    sqlite.prepare(
+      `INSERT INTO webhooks
+       (id, org_id, app_id, url, secret, events_json, enabled, created_by, created_at, updated_at)
+       VALUES ('reporter-hook', 'org', 'app-a', 'https://example.test/hook', 'secret',
+               '["feedback:comment_created"]', 1, 'account', 1, 1)`,
+    ).run();
+    sqlite.prepare(
+      `INSERT INTO app_reporter_webhook_subscriptions
+       (app_id, reporter_integration_id, webhook_id, created_at)
+       VALUES ('app-a', ?, 'reporter-hook', 1)`,
+    ).run(integrationId);
+    sqlite.prepare(
+      `INSERT INTO app_reporter_routes
+       (app_id, reporter_integration_id, reporter_id, route_subject, subject_version, created_at)
+       VALUES ('app-a', ?, ?, ?, 'v1', 1)`,
+    ).run(integrationId, reporterId, `rfr_v1_${"A".repeat(64)}`);
+
+    const reporterContext = (
+      input: unknown = {},
+      queries: Record<string, string> = {},
+      params: Record<string, string> = {},
+    ) => {
+      const responseHeaders = new Headers();
+      return {
+        env,
+        req: {
+          param: (name: string) => name === "appId"
+            ? "app-a"
+            : name === "ticketId"
+              ? ticketId
+              : params[name],
+          header: (name: string) => name.toLowerCase() === "authorization"
+            ? `Bearer ${credential.token}`
+            : name === "X-Hands-Reporter-Id"
+              ? reporterId
+              : name.toLowerCase() === "content-type" && input instanceof FormData
+                ? "multipart/form-data; boundary=test"
+                : undefined,
+          query: (name: string) => queries[name],
+          json: async () => input instanceof FormData ? {} : input,
+          formData: async () => input instanceof FormData ? input : new FormData(),
+        },
+        header: (name: string, value: string) => responseHeaders.set(name, value),
+        json: (data: unknown, status = 200) => Response.json(data, { status, headers: responseHeaders }),
+      } as any;
+    };
+    const reporterInput = {
+      body: "reporter follow-up",
+      submission_id: "22222222-2222-4222-8222-222222222222",
+    };
+    const reporterResponse = await handleAddReporterComment(reporterContext(reporterInput));
     expect(reporterResponse.status).toBe(201);
     expect(material(sqlite, ticketId)).toBe(7);
     expect(sqlite.prepare(
       "SELECT high_water FROM feedback_material_sequence_state WHERE app_id = 'app-a'",
     ).get()).toEqual({ high_water: 7 });
 
-    const materialCursorOnReporterRoute = await handleGetReporterFeedback({
-      env,
-      req: {
-        param: (name: string) => name === "appId" ? "app-a" : name === "ticketId" ? ticketId : undefined,
-        header: (name: string) => name.toLowerCase() === "authorization"
-          ? `Bearer ${credential.token}`
-          : name === "X-Hands-Reporter-Id"
-            ? reporterId
-            : undefined,
-        query: (name: string) => name === "comment_cursor"
-          ? cursor(["material-v1", "app-a", 7])
-          : undefined,
-      },
-      header: () => undefined,
-      json: (data: unknown, status = 200) => Response.json(data, { status }),
-    } as any);
+    const replay = await handleAddReporterComment(reporterContext(reporterInput));
+    expect(replay.status).toBe(200);
+    expect(await replay.json()).toMatchObject({ idempotent_replay: true });
+    expect(material(sqlite, ticketId)).toBe(7);
+    const conflict = await handleAddReporterComment(reporterContext({
+      ...reporterInput,
+      body: "conflicting replay",
+    }));
+    expect(conflict.status).toBe(409);
+    expect(material(sqlite, ticketId)).toBe(7);
+
+    const failedForm = new FormData();
+    failedForm.set("body", "failed attachment batch");
+    failedForm.set("submission_id", "23232323-2323-4232-8232-232323232323");
+    failedForm.append("attachments", new File(["image"], "failure.png", { type: "image/png" }));
+    const originalBatch = (env.DB as any).batch.bind(env.DB);
+    (env.DB as any).batch = async (statements: BoundStatement[]) => {
+      if (statements.length > 4) throw new Error("simulated material comment batch failure");
+      return originalBatch(statements);
+    };
+    await expect(handleAddReporterComment(reporterContext(failedForm)))
+      .rejects.toThrow("simulated material comment batch failure");
+    (env.DB as any).batch = originalBatch;
+    expect(material(sqlite, ticketId)).toBe(7);
+    expect(sqlite.prepare(
+      "SELECT high_water FROM feedback_material_sequence_state WHERE app_id='app-a'",
+    ).get()).toEqual({ high_water: 7 });
+    expect(sqlite.prepare(
+      "SELECT COUNT(*) AS count FROM feedback_comments WHERE submission_id='23232323-2323-4232-8232-232323232323'",
+    ).get()).toEqual({ count: 0 });
+
+    const materialCursorOnReporterRoute = await handleGetReporterFeedback(reporterContext(
+      {},
+      { comment_cursor: cursor(["material-v1", "app-a", 7]) },
+    ));
     expect(materialCursorOnReporterRoute.status).toBe(400);
 
-    const reporterList = await handleListReporterFeedback({
-      env,
-      req: {
-        param: (name: string) => name === "appId" ? "app-a" : undefined,
-        header: (name: string) => name.toLowerCase() === "authorization"
-          ? `Bearer ${credential.token}`
-          : name === "X-Hands-Reporter-Id"
-            ? reporterId
-            : undefined,
-        query: () => undefined,
-      },
-      header: () => undefined,
-      json: (data: unknown, status = 200) => Response.json(data, { status }),
-    } as any);
+    const reporterList = await handleListReporterFeedback(reporterContext());
     expect(reporterList.status).toBe(200);
-    expect(JSON.stringify(await reporterList.json())).not.toMatch(/material_sequence|material-v1/);
+    const listEvidence = JSON.stringify({
+      body: await reporterList.json(),
+      headers: [...reporterList.headers],
+    });
+    expect(listEvidence).not.toMatch(/material_sequence|material-v1/);
+
+    const detailPage1 = await handleGetReporterFeedback(reporterContext({}, { comment_limit: "1" }));
+    expect(detailPage1.status).toBe(200);
+    const detailPage1Body = await detailPage1.json() as any;
+    expect(detailPage1Body.comments).toHaveLength(1);
+    expect(detailPage1Body.next_comment_cursor).toBeTypeOf("string");
+    expect(JSON.stringify({ body: detailPage1Body, headers: [...detailPage1.headers] }))
+      .not.toMatch(/material_sequence|material-v1/);
+    expect(material(sqlite, ticketId)).toBe(7);
+    expect(sqlite.prepare(
+      "SELECT COUNT(*) AS count FROM feedback_reporter_ticket_reads WHERE ticket_id=?",
+    ).get(ticketId)).toEqual({ count: 1 });
+    const detailPage2 = await handleGetReporterFeedback(reporterContext(
+      {},
+      { comment_limit: "1", comment_cursor: detailPage1Body.next_comment_cursor },
+    ));
+    expect(detailPage2.status).toBe(200);
+    expect(JSON.stringify({ body: await detailPage2.json(), headers: [...detailPage2.headers] }))
+      .not.toMatch(/material_sequence|material-v1/);
+    expect(material(sqlite, ticketId)).toBe(7);
+
+    const attachmentId = "24242424-2424-4242-8242-242424242424";
+    const attachmentKey = `feedback/app-a/${ticketId}/evidence.png`;
+    sqlite.prepare(
+      `INSERT INTO feedback_attachments
+       (id, ticket_id, r2_key, filename, content_type, size_bytes, origin, visibility, created_at)
+       VALUES (?, ?, ?, 'evidence.png', 'image/png', 3, 'submission', 'reporter', 4)`,
+    ).run(attachmentId, ticketId, attachmentKey);
+    await env.APK_BUCKET.put(attachmentKey, new Uint8Array([1, 2, 3]).buffer);
+    const download = await handleDownloadReporterAttachment(reporterContext(
+      {},
+      {},
+      { attachmentId },
+    ));
+    expect(download.status).toBe(200);
+    expect(new Uint8Array(await download.arrayBuffer())).toEqual(new Uint8Array([1, 2, 3]));
+    expect(JSON.stringify([...download.headers])).not.toMatch(/material_sequence|material-v1/);
+    expect(material(sqlite, ticketId)).toBe(7);
+    expect(sqlite.prepare(
+      `SELECT COUNT(*) AS count FROM feedback_reporter_access_audits
+       WHERE ticket_id=? AND attachment_id=? AND endpoint='attachment'`,
+    ).get(ticketId, attachmentId)).toEqual({ count: 1 });
+
     const eventPayloads = sqlite.prepare(
       "SELECT payload_json FROM feedback_events WHERE ticket_id = ?",
     ).all(ticketId);
     expect(JSON.stringify(eventPayloads)).not.toMatch(/material_sequence|material-v1/);
+    const deliveryPayloads = sqlite.prepare(
+      "SELECT payload_json FROM webhook_deliveries WHERE event_type='feedback:comment_created'",
+    ).all();
+    expect(deliveryPayloads.length).toBeGreaterThan(0);
+    expect(JSON.stringify(deliveryPayloads)).not.toMatch(/material_sequence|material-v1/);
+    const reporterSchema = Object.fromEntries(Object.entries(openApiDocument.paths ?? {})
+      .filter(([path]) => path.includes("reporter-feedback")));
+    expect(JSON.stringify(reporterSchema)).not.toMatch(/material_sequence|material-v1/);
+    for (const source of ["reporter_feedback.ts", "reporter_sessions.ts"]) {
+      expect(readFileSync(new URL(`../src/routes/${source}`, import.meta.url), "utf8"))
+        .not.toMatch(/material_sequence|material-v1/);
+    }
+
+    const beforeBatch = (sqlite.prepare(
+      "SELECT high_water FROM feedback_material_sequence_state WHERE app_id='app-a'",
+    ).get() as { high_water: number }).high_water;
+    await (env.DB as any).batch([
+      env.DB.prepare(
+        `INSERT INTO feedback_comments
+         (id, ticket_id, author_actor, author_type, body, internal, created_at)
+         VALUES ('batch-one', ?1, 'staff:test', 'staff', 'one', 1, 10)`,
+      ).bind(ticketId),
+      env.DB.prepare(
+        `INSERT INTO feedback_comments
+         (id, ticket_id, author_actor, author_type, body, internal, created_at)
+         VALUES ('batch-two', ?1, 'staff:test', 'staff', 'two', 1, 10)`,
+      ).bind(minidumpId),
+    ]);
+    expect([material(sqlite, ticketId), material(sqlite, minidumpId)].sort((a, b) => a - b))
+      .toEqual([beforeBatch + 1, beforeBatch + 2]);
+
+    const beforeCompetingHandlers = beforeBatch + 2;
+    const competingHandlers = await Promise.all([
+      handleAddFeedbackComment(jsonContext(
+        env,
+        { appId: "app-a", ticketId },
+        { body: "competing-one", internal: true },
+      )),
+      handleAddFeedbackComment(jsonContext(
+        env,
+        { appId: "app-a", ticketId: minidumpId },
+        { body: "competing-two", internal: true },
+      )),
+    ]);
+    expect(competingHandlers.map((response) => response.status)).toEqual([201, 201]);
+    expect([material(sqlite, ticketId), material(sqlite, minidumpId)].sort((a, b) => a - b))
+      .toEqual([beforeCompetingHandlers + 1, beforeCompetingHandlers + 2]);
+    expect(sqlite.prepare(
+      "SELECT high_water FROM feedback_material_sequence_state WHERE app_id='app-a'",
+    ).get()).toEqual({ high_water: beforeCompetingHandlers + 2 });
+    expect(sqlite.prepare(
+      "SELECT high_water FROM feedback_material_sequence_state WHERE app_id='app-b'",
+    ).get()).toEqual({ high_water: 1 });
+    expect(material(sqlite, appBTicket)).toBe(1);
   });
 
   it("pages snapshot deltas without omission and rejects every foreign cursor family", async () => {
-    const { sqlite, env } = environment();
+    const { sqlite, env } = environment(false);
     const insert = sqlite.prepare(
       `INSERT INTO feedback_tickets
        (id, app_id, kind, status, message, metadata_json, created_at, updated_at)
@@ -326,6 +490,7 @@ describe("feedback material delta production routes", () => {
       "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
       "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
     ].entries()) insert.run(id, `ticket-${index}`, index + 1, index + 1);
+    sqlite.exec(readFileSync(`${MIGRATION_DIR}0060_feedback_material_delta.sql`, "utf8"));
 
     const firstResponse = await handleListFeedbackMaterialDelta(jsonContext(
       env,
@@ -366,21 +531,44 @@ describe("feedback material delta production routes", () => {
     expect(empty).toMatchObject({ tickets: [], next_cursor: second.next_cursor, has_more: false });
 
     for (const invalid of [
-      cursor(["material-v1", "app-b", 0]),
       cursor(["sequence-v1", 0, "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"]),
       cursor(["sequence-v2", "app-a", 0]),
       cursor([0, "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"]),
+      cursor(["material-v1", "app-a", -1]),
+      cursor(["material-v1", "app-a", 1.5]),
       cursor(["material-v1", "app-a", Number.MAX_SAFE_INTEGER + 1]),
+      cursor(["material-v1", "app-a", 0, "extra"]),
       "",
       "not-base64",
     ]) {
-      expect((await handleListFeedbackMaterialDelta(jsonContext(
+      const invalidResponse = await handleListFeedbackMaterialDelta(jsonContext(
         env,
         { appId: "app-a" },
         {},
         { cursor: invalid },
-      ))).status).toBe(400);
+      ));
+      expect(invalidResponse.status).toBe(400);
+      expect(JSON.stringify({ body: await invalidResponse.json(), headers: [...invalidResponse.headers] }))
+        .not.toMatch(/material_sequence|material-v1/);
     }
+
+    let crossAppQueries = 0;
+    const failFastEnv = {
+      ...env,
+      DB: {
+        prepare: () => {
+          crossAppQueries += 1;
+          throw new Error("cross-app cursor reached DB");
+        },
+      },
+    } as unknown as Env;
+    expect((await handleListFeedbackMaterialDelta(jsonContext(
+      failFastEnv,
+      { appId: "app-a" },
+      {},
+      { cursor: cursor(["material-v1", "app-b", 0]) },
+    ))).status).toBe(400);
+    expect(crossAppQueries).toBe(0);
   });
 
   it("wires the literal admin route and rejects a feedback:read reporter token", async () => {
