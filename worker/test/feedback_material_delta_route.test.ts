@@ -347,12 +347,30 @@ describe("feedback material delta production routes", () => {
     failedForm.set("submission_id", "23232323-2323-4232-8232-232323232323");
     failedForm.append("attachments", new File(["image"], "failure.png", { type: "image/png" }));
     const originalBatch = (env.DB as any).batch.bind(env.DB);
+    const rollbackCounts = () => sqlite.prepare(
+      `SELECT
+         (SELECT COUNT(*) FROM feedback_comments WHERE ticket_id=@ticket) AS comments,
+         (SELECT COUNT(*) FROM feedback_attachments WHERE ticket_id=@ticket) AS attachments,
+         (SELECT COUNT(*) FROM audit_logs WHERE app_id='app-a') AS audits,
+         (SELECT COUNT(*) FROM feedback_events WHERE ticket_id=@ticket) AS events,
+         (SELECT COUNT(*) FROM webhook_deliveries) AS deliveries`,
+    ).get({ ticket: ticketId });
+    const beforeFailedBatch = rollbackCounts();
     (env.DB as any).batch = async (statements: BoundStatement[]) => {
-      if (statements.length > 4) throw new Error("simulated material comment batch failure");
+      if (statements.length > 4) {
+        // Execute every production statement, including the comment insert and
+        // both 0060 allocator writes, then fail at the tail of the SAME D1
+        // transaction. A non-atomic adapter mutation makes the assertions
+        // below observe the partially committed rows and sequences.
+        return originalBatch([
+          ...statements,
+          env.DB.prepare("INSERT INTO feedback_comments (id) VALUES ('invalid-tail')") as any,
+        ]);
+      }
       return originalBatch(statements);
     };
     await expect(handleAddReporterComment(reporterContext(failedForm)))
-      .rejects.toThrow("simulated material comment batch failure");
+      .rejects.toThrow();
     (env.DB as any).batch = originalBatch;
     expect(material(sqlite, ticketId)).toBe(7);
     expect(sqlite.prepare(
@@ -360,6 +378,10 @@ describe("feedback material delta production routes", () => {
     ).get()).toEqual({ high_water: 7 });
     expect(sqlite.prepare(
       "SELECT COUNT(*) AS count FROM feedback_comments WHERE submission_id='23232323-2323-4232-8232-232323232323'",
+    ).get()).toEqual({ count: 0 });
+    expect(rollbackCounts()).toEqual(beforeFailedBatch);
+    expect(sqlite.prepare(
+      "SELECT COUNT(*) AS count FROM feedback_reporter_r2_cleanup",
     ).get()).toEqual({ count: 0 });
 
     const materialCursorOnReporterRoute = await handleGetReporterFeedback(reporterContext(

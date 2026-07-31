@@ -469,6 +469,10 @@ describe("migration 0060 — feedback material delta", () => {
       db.prepare("UPDATE feedback_tickets SET material_sequence=9007199254740992 WHERE id='one'").run();
     })).toContain("unsafe_ticket_sequence");
     expect(corrupted((db) => {
+      db.exec("DROP TRIGGER feedback_tickets_material_managed_update");
+      db.prepare("UPDATE feedback_tickets SET material_sequence=1.5 WHERE id='one'").run();
+    })).toContain("noninteger_ticket_sequence");
+    expect(corrupted((db) => {
       ticket(db, "two", "app-a", 2);
       db.exec("DROP TRIGGER feedback_tickets_material_managed_update");
       db.exec("DROP INDEX idx_feedback_tickets_app_material_sequence");
@@ -489,6 +493,12 @@ describe("migration 0060 — feedback material delta", () => {
         "UPDATE feedback_material_sequence_state SET high_water=9007199254740992 WHERE app_id='app-a'",
       ).run();
     })).toContain("unsafe_high_water");
+    expect(corrupted((db) => {
+      db.exec("DROP TRIGGER feedback_material_state_monotonic");
+      db.prepare(
+        "UPDATE feedback_material_sequence_state SET high_water=1.5 WHERE app_id='app-a'",
+      ).run();
+    })).toContain("noninteger_high_water");
   });
 
   it("reports the exact 0059 full-schema write opcode delta and carrier comparison", () => {
