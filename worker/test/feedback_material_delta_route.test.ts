@@ -18,6 +18,7 @@ import {
 } from "../src/routes/feedback";
 import {
   handleAddReporterComment,
+  handleGetReporterFeedback,
   handleListReporterFeedback,
 } from "../src/routes/reporter_feedback";
 
@@ -211,18 +212,26 @@ describe("feedback material delta production routes", () => {
     expect(await noop.json()).toMatchObject({ changed: false });
     expect(material(sqlite, ticketId)).toBe(3);
 
+    const concurrent = await Promise.all([
+      handleUpdateFeedback(updateContext({ status: "resolved", assignee: "next-owner" })),
+      handleUpdateFeedback(updateContext({ status: "resolved", assignee: "next-owner" })),
+    ]);
+    const concurrentBodies = await Promise.all(concurrent.map((response) => response.json() as Promise<any>));
+    expect(concurrentBodies.filter((body) => body.changed)).toHaveLength(1);
+    expect(material(sqlite, ticketId)).toBe(4);
+
     expect((await handleAddFeedbackComment(jsonContext(
       env,
       { appId: "app-a", ticketId },
       { body: "external", internal: false },
     ))).status).toBe(201);
-    expect(material(sqlite, ticketId)).toBe(4);
+    expect(material(sqlite, ticketId)).toBe(5);
     expect((await handleAddFeedbackComment(jsonContext(
       env,
       { appId: "app-a", ticketId },
       { body: "internal", internal: true },
     ))).status).toBe(201);
-    expect(material(sqlite, ticketId)).toBe(5);
+    expect(material(sqlite, ticketId)).toBe(6);
 
     const integrationId = "11111111-1111-4111-8111-111111111111";
     const reporterId = "r".repeat(32);
@@ -260,10 +269,28 @@ describe("feedback material delta production routes", () => {
       json: (data: unknown, status = 200) => Response.json(data, { status, headers: reporterHeaders }),
     } as any);
     expect(reporterResponse.status).toBe(201);
-    expect(material(sqlite, ticketId)).toBe(6);
+    expect(material(sqlite, ticketId)).toBe(7);
     expect(sqlite.prepare(
       "SELECT high_water FROM feedback_material_sequence_state WHERE app_id = 'app-a'",
-    ).get()).toEqual({ high_water: 6 });
+    ).get()).toEqual({ high_water: 7 });
+
+    const materialCursorOnReporterRoute = await handleGetReporterFeedback({
+      env,
+      req: {
+        param: (name: string) => name === "appId" ? "app-a" : name === "ticketId" ? ticketId : undefined,
+        header: (name: string) => name.toLowerCase() === "authorization"
+          ? `Bearer ${credential.token}`
+          : name === "X-Hands-Reporter-Id"
+            ? reporterId
+            : undefined,
+        query: (name: string) => name === "comment_cursor"
+          ? cursor(["material-v1", "app-a", 7])
+          : undefined,
+      },
+      header: () => undefined,
+      json: (data: unknown, status = 200) => Response.json(data, { status }),
+    } as any);
+    expect(materialCursorOnReporterRoute.status).toBe(400);
 
     const reporterList = await handleListReporterFeedback({
       env,
