@@ -90,9 +90,20 @@ export async function getAgcReviewStatus(
     if (typeof value === "number") return String(value);
     return null;
   };
-  const releaseState = Number(appInfo?.releaseState);
+  // Number(null) is 0 and Number("") is 0, so coercing first would report a
+  // missing state as provider enum 0 — inventing a value the provider never
+  // sent. Absent stays absent; the enum itself is passed through unmapped, and
+  // a non-numeric value is reported as absent rather than silently reshaped.
+  const enumValue = (value: unknown): number | null => {
+    if (typeof value === "number") return Number.isFinite(value) ? value : null;
+    if (typeof value === "string" && value.trim() !== "") {
+      const parsed = Number(value);
+      return Number.isFinite(parsed) ? parsed : null;
+    }
+    return null;
+  };
   return {
-    release_state: Number.isFinite(releaseState) ? releaseState : null,
+    release_state: enumValue(appInfo?.releaseState),
     audit_opinion: text(auditInfo?.auditOpinion),
     copyright_audit_result: text(auditInfo?.copyRightAuditResult),
     copyright_audit_opinion: text(auditInfo?.copyRightAuditOpinion),

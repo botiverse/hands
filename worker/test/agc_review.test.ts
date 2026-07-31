@@ -68,8 +68,26 @@ describe("getAgcReviewStatus", () => {
     );
     const status = await getAgcReviewStatus(auth, "app-42", 1, fetchMock as unknown as typeof fetch);
     expect(status.release_state).toBeNull();
+    expect(status.release_state).not.toBe(0);
     expect(status.audit_opinion).toBeNull();
     expect(status.record_audit_result).toBeNull();
+  });
+
+  it("keeps an absent release state absent instead of reporting enum 0", async () => {
+    // Number(null) and Number("") are both 0, so coercing before checking would
+    // report a state the provider never sent — and 0 is a real enum value.
+    for (const releaseState of [null, undefined, ""]) {
+      const fetchMock = vi.fn(async () =>
+        jsonResponse({ ret: { code: 0 }, appInfo: { releaseState } }),
+      );
+      const status = await getAgcReviewStatus(auth, "app-42", 1, fetchMock as unknown as typeof fetch);
+      expect(status.release_state).toBeNull();
+    }
+    // A genuine 0 from the provider is still reported as 0.
+    const zero = vi.fn(async () => jsonResponse({ ret: { code: 0 }, appInfo: { releaseState: 0 } }));
+    expect(
+      (await getAgcReviewStatus(auth, "app-42", 1, zero as unknown as typeof fetch)).release_state,
+    ).toBe(0);
   });
 
   it("surfaces a provider-level error code even on HTTP 200", async () => {
@@ -94,7 +112,7 @@ describe("handleAppGalleryReview error disclosure", () => {
               bind() {
                 return {
                   async first() {
-                    if (sql.includes("FROM apps")) return { platform: "harmony" };
+                    if (sql.includes("FROM apps")) return { platform: "ohos" };
                     if (sql.includes("app_agc_credentials")) throw error;
                     if (sql.includes("FROM channels")) return { bundle_id: "com.example.app" };
                     return null;
@@ -120,9 +138,47 @@ describe("handleAppGalleryReview error disclosure", () => {
 
     expect(body.review_error).toBe("AppGallery review status is unavailable");
     expect(JSON.stringify(body)).not.toContain("PRIVATE KEY");
-    // The detail is not lost — it goes to the server log instead.
+    // The log sink is persistent storage too: it gets the error class, never
+    // the message, because that message can embed the key material itself.
     expect(errorSpy).toHaveBeenCalledOnce();
+    const logged = errorSpy.mock.calls.flat().join(" ");
+    expect(logged).not.toContain("PRIVATE KEY");
+    expect(logged).not.toContain("MIIEvQIBADANBg");
+    expect(logged).toContain("unexpected Error");
     errorSpy.mockRestore();
+  });
+
+  it("applies to a real ohos app rather than a platform value that does not exist", async () => {
+    // "ohos" is the only canonical HarmonyOS value (lib/app_platform.ts). The
+    // previous guard compared against "harmony", so every real app fell through
+    // to applicable:false and the feature could never run in production.
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const response = await handleAppGalleryReview(
+      contextThrowing(new AgcApiError(404, "No AGC app found for package com.example.app")),
+    );
+    const body = await response.json() as { applicable?: boolean; platform?: string };
+
+    expect(body.applicable).toBe(true);
+    expect(body.platform).toBeUndefined();
+    errorSpy.mockRestore();
+  });
+
+  it("reports a non-ohos app as inapplicable", async () => {
+    const context = contextThrowing(new AgcApiError(404, "unused"));
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const ctx = context as any;
+    const originalPrepare = ctx.env.DB.prepare;
+    ctx.env.DB.prepare = (sql: string) =>
+      sql.includes("FROM apps")
+        ? { bind: () => ({ first: async () => ({ platform: "android" }) }) }
+        : originalPrepare(sql);
+
+    const body = await (await handleAppGalleryReview(context)).json() as {
+      applicable?: boolean;
+      platform?: string;
+    };
+    expect(body.applicable).toBe(false);
+    expect(body.platform).toBe("android");
   });
 
   it("still surfaces provider-controlled AgcApiError text", async () => {

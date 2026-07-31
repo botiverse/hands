@@ -40,7 +40,10 @@ export async function handleAppGalleryReview(c: AdminContext) {
     .bind(appId)
     .first<{ platform: string }>();
   if (!app) return c.json({ error: "app not found" }, 404);
-  if (app.platform !== "harmony") return c.json({ platform: app.platform, applicable: false });
+  // AppGallery is the HarmonyOS store. The canonical platform value is "ohos"
+  // (see lib/app_platform.ts); "harmony" is not one of them, so comparing
+  // against it made this route inapplicable for every real app.
+  if (app.platform !== "ohos") return c.json({ platform: app.platform, applicable: false });
 
   let packageName: string | null = null;
   try {
@@ -77,10 +80,15 @@ export async function handleAppGalleryReview(c: AdminContext) {
     // Only AgcApiError carries a message we construct and control (provider
     // text plus HTTP status). Anything else — credential decryption, private
     // key parsing — returns a fixed string so an unbounded internal message
-    // can never reach a viewer; detail stays in the server log.
+    // can never reach a viewer, and only its error class is logged.
     if (!(error instanceof AgcApiError)) {
+      // Only a stable category, never the raw message: these are credential
+      // decryption and private-key parsing failures, whose text can embed the
+      // key material itself. A log sink is persistent storage like any other.
       console.error(
-        `[appgallery-review] app ${appId}: ${error instanceof Error ? error.message : String(error)}`,
+        `[appgallery-review] app ${appId}: unexpected ${
+          error instanceof Error ? error.constructor.name : typeof error
+        }`,
       );
     }
     const message = error instanceof AgcApiError
