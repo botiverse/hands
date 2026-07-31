@@ -84,26 +84,11 @@ function decodeCursor(value: string | undefined): [number, string] | null {
 
 type CommentCursor =
   | { mode: "sequence"; sequence: number; id: string }
-  // Issued before comment sequences were renumbered per app (migration 0059).
-  // The embedded number belongs to the old global numbering and is discarded;
-  // the id is re-resolved against the caller's own comments instead.
-  | { mode: "stale-sequence"; id: string }
   | { mode: "legacy"; createdAt: number; id: string };
 
 function decodeCommentCursor(value: string | undefined): CommentCursor | null {
   if (!value) return { mode: "sequence", sequence: 0, id: "" };
   const decoded = decodeCursorValue(value);
-  if (
-    Array.isArray(decoded)
-    && decoded.length === 3
-    && decoded[0] === "sequence-v2"
-    && Number.isSafeInteger(decoded[1])
-    && decoded[1] >= 0
-    && typeof decoded[2] === "string"
-    && UUID_RE.test(decoded[2])
-  ) {
-    return { mode: "sequence", sequence: decoded[1], id: decoded[2].toLowerCase() };
-  }
   if (
     Array.isArray(decoded)
     && decoded.length === 3
@@ -113,7 +98,7 @@ function decodeCommentCursor(value: string | undefined): CommentCursor | null {
     && typeof decoded[2] === "string"
     && UUID_RE.test(decoded[2])
   ) {
-    return { mode: "stale-sequence", id: decoded[2].toLowerCase() };
+    return { mode: "sequence", sequence: decoded[1], id: decoded[2].toLowerCase() };
   }
   if (
     Array.isArray(decoded)
@@ -128,37 +113,7 @@ function decodeCommentCursor(value: string | undefined): CommentCursor | null {
 }
 
 function encodeCommentSequenceCursor(sequence: unknown, id: unknown): string {
-  return encodeCursorValue(["sequence-v2", sequence, id]);
-}
-
-/**
- * Re-resolve a pre-0059 cursor against the caller's own comments.
- *
- * The number inside a `sequence-v1` cursor is from the old global numbering and
- * is never trusted — there is deliberately no fallback to it, because trusting
- * it would reintroduce the numbering 0059 removes. The lookup is constrained to
- * the caller's app, ticket, integration, reporter and `internal = 0` in one
- * statement: resolving by comment id alone would let a forged cursor probe the
- * sequence of comments the caller cannot read, which is the same class of
- * inference leak 0059 exists to close.
- */
-async function resolveStaleCommentCursor(
-  c: ReporterContext,
-  principal: ReporterPrincipal,
-  ticketId: string,
-  commentId: string,
-): Promise<number | null> {
-  const row = await c.env.DB.prepare(
-    `SELECT fc.reporter_sequence AS sequence
-     FROM feedback_comments fc
-     JOIN feedback_tickets t ON t.id = fc.ticket_id
-     WHERE fc.id = ?1 AND fc.ticket_id = ?2 AND t.app_id = ?3
-       AND t.reporter_integration_id = ?4 AND t.reporter_id = ?5
-       AND fc.internal = 0 AND fc.reporter_sequence IS NOT NULL`,
-  )
-    .bind(commentId, ticketId, principal.appId, principal.integrationId, principal.reporterId)
-    .first<{ sequence: number }>();
-  return row?.sequence ?? null;
+  return encodeCursorValue(["sequence-v1", sequence, id]);
 }
 
 async function reporterHash(c: ReporterContext, principal: ReporterPrincipal) {
@@ -488,20 +443,8 @@ export async function handleGetReporterFeedback(c: ReporterContext) {
   const ticketId = fullUuid(c.req.param("ticketId"));
   if (!ticketId) return ticketNotFound(c);
   const commentLimit = Math.min(100, Math.max(1, Number(c.req.query("comment_limit") ?? "50") || 50));
-  const decodedCursor = decodeCommentCursor(c.req.query("comment_cursor"));
-  if (!decodedCursor) return c.json({ error: "invalid comment cursor" }, 400);
-  let commentCursor: CommentCursor = decodedCursor;
-  if (commentCursor.mode === "stale-sequence") {
-    const resolved = await resolveStaleCommentCursor(
-      c,
-      authorized.principal,
-      ticketId,
-      commentCursor.id,
-    );
-    // Not found, or found but not the caller's: reject rather than guess.
-    if (resolved === null) return c.json({ error: "invalid comment cursor" }, 400);
-    commentCursor = { mode: "sequence", sequence: resolved, id: commentCursor.id };
-  }
+  const commentCursor = decodeCommentCursor(c.req.query("comment_cursor"));
+  if (!commentCursor) return c.json({ error: "invalid comment cursor" }, 400);
   const commentStatement = commentCursor.mode === "sequence"
     ? c.env.DB.prepare(
         `SELECT fc.id, fc.author_type, fc.body, fc.created_at, fc.reporter_sequence
