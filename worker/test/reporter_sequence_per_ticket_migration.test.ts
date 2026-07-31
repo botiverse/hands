@@ -92,7 +92,9 @@ describe("migration 0059 — per-ticket reporter comment sequence", () => {
     comment(db, "b1", "bob");
     comment(db, "a2", "alice");
     // Under per-app numbering Alice saw 1 then 3 and could infer Bob's comment.
-    expect(seq(db, "a2") - seq(db, "a1")).toBe(1);
+    // Consecutive values, asserted directly: there is no gap to interpret.
+    expect(seq(db, "a1")).toBe(1);
+    expect(seq(db, "a2")).toBe(2);
   });
 
   it("numbers each ticket independently", () => {
@@ -165,13 +167,59 @@ describe("migration 0059 — per-ticket reporter comment sequence", () => {
     expect(unread()).toEqual(["a2"]);
   });
 
-  it("rejects a duplicate within one ticket but allows it across tickets", () => {
+  it("allows the same number in different tickets", () => {
     const db = base(true);
     comment(db, "a1", "alice");
     comment(db, "b1", "bob");
     expect(seq(db, "a1")).toBe(seq(db, "b1"));
-    expect(() =>
-      db.prepare("UPDATE feedback_comments SET reporter_sequence = 1 WHERE id = 'a1'").run(),
-    ).toThrow();
+  });
+
+  it("rejects a duplicate within one ticket — fail closed, not fail silent", () => {
+    // The assignment trigger cannot produce a duplicate on its own, so reaching
+    // the constraint means dropping the managed/immutable triggers first. Those
+    // guards would otherwise throw before the index is ever consulted, which is
+    // how an earlier version of this test passed while proving nothing: with
+    // the unique index deleted entirely it still went green.
+    const db = base(true);
+    comment(db, "a1", "alice");
+    db.exec("DROP TRIGGER feedback_comments_reporter_sequence_managed");
+    db.exec("DROP TRIGGER feedback_comments_reporter_sequence_immutable");
+    db.exec("DROP TRIGGER feedback_comments_reporter_sequence_insert");
+
+    const duplicate = () =>
+      db.prepare(
+        `INSERT INTO feedback_comments
+           (id, ticket_id, author_actor, author_type, body, internal, created_at, reporter_sequence)
+         VALUES ('dup','alice','staff:t','staff','body',0,1,?)`,
+      ).run(seq(db, "a1"));
+
+    expect(duplicate).toThrow(/UNIQUE constraint failed/);
+  });
+
+  it("serves the assignment lookup from the ticket index", () => {
+    // The insert trigger takes MAX(reporter_sequence) for the ticket on every
+    // visible comment, so that lookup must be indexed, and by (ticket_id, …) —
+    // a (reporter_sequence, ticket_id) ordering would not narrow by ticket.
+    const db = base(true);
+    const plan = db.prepare(
+      `EXPLAIN QUERY PLAN SELECT COALESCE(MAX(c.reporter_sequence), 0) + 1
+       FROM feedback_comments c WHERE c.ticket_id = 'alice'`,
+    ).all().map((r) => String((r as { detail: string }).detail)).join(" | ");
+
+    expect(plan).toContain("idx_feedback_comments_ticket_reporter_sequence");
+    expect(plan).not.toMatch(/SCAN c\b/);
+  });
+
+  it("assigns consecutive distinct numbers to comments inserted in one batch", () => {
+    // The Worker writes through DB.batch(); statements share a transaction, so
+    // the second insert must observe the first's assignment.
+    const db = base(true);
+    const insert = db.transaction(() => {
+      comment(db, "a1", "alice");
+      comment(db, "a2", "alice");
+    });
+    insert();
+    expect(seq(db, "a1")).toBe(1);
+    expect(seq(db, "a2")).toBe(2);
   });
 });
