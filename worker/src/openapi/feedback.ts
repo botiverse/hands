@@ -253,6 +253,34 @@ export function registerFeedbackRoutes(registry: OpenApiRegistry) {
 
   register(registry, {
     method: "get",
+    path: "/api/apps/{appId}/feedback/material-delta",
+    tags: ["Feedback"],
+    summary: "List materially changed feedback ticket snapshots",
+    description: "Returns current snapshots after an opaque per-app cursor. Process a whole page before persisting next_cursor.",
+    security: auth,
+    request: {
+      params: AppIdParam,
+      query: z.object({
+        cursor: z.string().optional(),
+        limit: z.coerce.number().int().min(1).max(200).optional(),
+      }),
+    },
+    responses: {
+      200: success(
+        "Materially changed feedback snapshots.",
+        z.object({
+          tickets: z.array(GenericObject),
+          next_cursor: z.string(),
+          has_more: z.boolean(),
+        }),
+      ),
+      400: error("Invalid material cursor or limit."),
+      403: error("Current principal cannot view feedback."),
+    },
+  });
+
+  register(registry, {
+    method: "get",
     path: "/api/apps/{appId}/feedback/stats",
     tags: ["Feedback"],
     summary: "Read feedback ticket statistics",

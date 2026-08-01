@@ -1439,6 +1439,17 @@ export async function handleAgentManifest(c: Context<{ Bindings: Env }>) {
         },
       },
       {
+        name: "list-feedback-material-delta",
+        description:
+          "List current feedback ticket snapshots that materially changed after an opaque per-app cursor. Requires app viewer. Process the whole page before persisting next_cursor.",
+        endpoint: { method: "GET", path: "/api/apps/{app_id}/feedback/material-delta" },
+        parameters: {
+          app_id: { type: "string", in: "path", required: true, description: "App UUID." },
+          cursor: { type: "string", in: "query", required: false, description: "Opaque material-v1 cursor from the previous page; omit for bootstrap." },
+          limit: { type: "number", in: "query", required: false, description: "Page size from 1 to 200; defaults to 100." },
+        },
+      },
+      {
         name: "bind-reporter-webhook",
         description:
           "Bind one active app webhook as the exact subscriber for one active reporter integration. Requires app admin and does not create or enable a webhook.",
