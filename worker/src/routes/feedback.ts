@@ -478,7 +478,8 @@ export async function handlePublicFeedbackSubmit(c: Context<{ Bindings: Env }>) 
           AND active_ri.app_id = r.app_id AND active_ri.archived_at IS NULL
          WHERE r.app_id = ?2 AND r.reporter_integration_id = ?20
            AND r.reporter_id = ?19
-       )`,
+       )
+       RETURNING id`,
     ).bind(
       ticketId,
       app.id,
@@ -604,7 +605,8 @@ export async function handlePublicFeedbackSubmit(c: Context<{ Bindings: Env }>) 
   );
   try {
     const results = await c.env.DB.batch(statements);
-    if ((results[0]?.meta.changes ?? 0) !== 1) {
+    const committedTicket = results[0]?.results[0] as { id?: unknown } | undefined;
+    if (committedTicket?.id !== ticketId) {
       await cleanupInlineUploads();
       return c.json({ error: "route_required" }, 409);
     }
