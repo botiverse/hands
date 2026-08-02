@@ -9492,6 +9492,34 @@ describe("quiver public API v2 — scope resolution", () => {
       "SELECT COUNT(*) AS count FROM feedback_submission_events WHERE app_id = 'app-scope' AND reporter_id = ?1",
     ).bind("g".repeat(64)).first() as any).count).toBe(0);
 
+    // Production D1 has returned a zero `meta.changes` for a successful
+    // INSERT ... SELECT batch. Commit authority comes from the exact row
+    // returned by the ticket insert, never from advisory batch metadata.
+    const dbBeforeCommitMetadata = env.DB as unknown as D1Database;
+    const batchBeforeCommitMetadata = dbBeforeCommitMetadata.batch.bind(dbBeforeCommitMetadata);
+    env.DB = {
+      ...dbBeforeCommitMetadata,
+      async batch(statements: D1PreparedStatement[]) {
+        const results = await batchBeforeCommitMetadata(statements);
+        return results.map((result, index) => index === 0
+          ? { ...result, meta: { ...result.meta, changes: 0 } }
+          : result);
+      },
+    } as unknown as typeof env.DB;
+    const committedWithZeroMetadata = await submit("h".repeat(64));
+    expect(committedWithZeroMetadata.status).toBe(201);
+    const committedWithZeroMetadataBody = await responseJson<any>(committedWithZeroMetadata);
+    env.DB = dbBeforeCommitMetadata as unknown as typeof env.DB;
+    expect(await env.DB.prepare(
+      `SELECT 1 AS ok FROM feedback_tickets
+       WHERE id = ?1 AND app_id = 'app-scope'
+         AND reporter_integration_id = 'integration-proxy' AND reporter_id = ?2`,
+    ).bind(committedWithZeroMetadataBody.id, "h".repeat(64)).first()).toMatchObject({ ok: 1 });
+    expect(await env.DB.prepare(
+      `SELECT 1 AS ok FROM feedback_submission_events
+       WHERE ticket_id = ?1 AND route_outcome = 'route_bound'`,
+    ).bind(committedWithZeroMetadataBody.id).first()).toMatchObject({ ok: 1 });
+
     for (let index = 0; index < 100; index += 1) {
       const response = await submit(reporterA);
       expect(response.status).toBe(201);
