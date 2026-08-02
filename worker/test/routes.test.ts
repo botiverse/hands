@@ -8685,6 +8685,78 @@ describe("quiver public API v2 — scope resolution", () => {
     expect(att.size_bytes).toBe(4);
   });
 
+  it("handlePublicMinidumpSubmit derives the product from a closed set", async () => {
+    const { handlePublicMinidumpSubmit } = await import("../src/routes/feedback");
+
+    const submit = async (product?: string, platform?: string) => {
+      const env = makeEnv();
+      const store = new Map<string, Uint8Array>();
+      env.APK_BUCKET = {
+        put: async (key: string, body: ArrayBuffer) => { store.set(key, new Uint8Array(body)); },
+        get: async () => null,
+        head: async () => null,
+      } as any;
+      const form = new FormData();
+      form.set(
+        "upload_file_minidump",
+        new File([new Uint8Array([77, 68, 77, 80])], "crash.dmp", { type: "application/x-minidump" }),
+      );
+      form.set("version_code", "1020300");
+      if (product !== undefined) form.set("product_type", product);
+      if (platform !== undefined) form.set("platform", platform);
+
+      const waited: Promise<unknown>[] = [];
+      const res = await handlePublicMinidumpSubmit({
+        env,
+        executionCtx: { waitUntil: (pr: Promise<unknown>) => waited.push(pr) },
+        req: {
+          param: (n: string) => (n === "slug" ? "scope-app" : ""),
+          header: (n: string) => (n === "X-Quiver-Client-Key" ? "qk_test" : undefined),
+          query: () => undefined,
+          formData: async () => form,
+          raw: { cf: { clientIp: "203.0.113.7" } },
+        },
+        json: (data: unknown, status = 200) => new Response(JSON.stringify(data), { status }),
+      } as any);
+      await Promise.all(waited).catch(() => {});
+      const body = await responseJson<any>(res);
+      const row = (await env.DB.prepare(
+        "SELECT message, metadata_json FROM feedback_tickets WHERE id = ?1",
+      ).bind(body.id).first()) as any;
+      return { message: row.message as string, meta: JSON.parse(row.metadata_json) };
+    };
+
+    // The shipped Electron SDK sends product_type="electron" with a real
+    // platform on every minidump (clients/electron/src/common.ts). This is the
+    // payload production actually delivers, so it is the case that has to stay
+    // byte-identical — and the only one that pins the recognised-electron
+    // branch. Without it a mutation to that branch leaves the other three green.
+    const shipped = await submit("electron", "darwin");
+    expect(shipped.meta.product_type).toBe("electron");
+    expect(shipped.meta.crash_platform).toBe("darwin");
+    expect(shipped.message).toBe("Electron crash");
+
+    // A client that sends no product annotation at all must land on the same
+    // output as the shipped one.
+    const absent = await submit();
+    expect(absent.meta.product_type).toBe("electron");
+    expect(absent.meta.crash_platform).toBe("electron");
+    expect(absent.message).toBe("Electron crash");
+
+    // A value outside the closed set is treated as absent, not echoed back into
+    // the ticket title or the platform field.
+    const unknown = await submit("flutter");
+    expect(unknown.meta.product_type).toBe("electron");
+    expect(unknown.meta.crash_platform).toBe("electron");
+    expect(unknown.message).toBe("Electron crash");
+
+    // Only a deliberate, recognised value changes the output.
+    const tauri = await submit("tauri");
+    expect(tauri.meta.product_type).toBe("tauri");
+    expect(tauri.meta.crash_platform).toBe("tauri");
+    expect(tauri.message).toBe("Tauri crash");
+  });
+
   it("handlePublicMinidumpSubmit rejects an invalid client key", async () => {
     const env = makeEnv();
     const { handlePublicMinidumpSubmit } = await import("../src/routes/feedback");
