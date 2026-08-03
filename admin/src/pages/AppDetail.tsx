@@ -1390,8 +1390,8 @@ export function AppSettings({ appId }: { appId: string }) {
             body={
               <>
                 Deletes the app and <strong>everything it owns</strong> — builds,
-                releases, share links, feedback tickets, and all stored files in
-                R2. <strong>This cannot be undone.</strong>
+                releases, share links, feedback tickets, and uploaded files.{" "}
+                <strong>This cannot be undone.</strong>
               </>
             }
             confirmLabel="Purge permanently"
@@ -1434,9 +1434,8 @@ export function AppSettings({ appId }: { appId: string }) {
                   <strong>new uploads are rejected</strong>.
                   <br />
                   <span className="text-xs text-slate-500">
-                    This is reversible: builds,
-                    releases, and assets are kept as-is. The underlying binary
-                    data in R2 is not removed.
+                    This is reversible: existing builds, releases, and assets
+                    are kept as-is. Archiving does not free up storage.
                   </span>
                 </>
               )

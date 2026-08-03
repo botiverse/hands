@@ -210,7 +210,7 @@ export function ChangelogEditor({
         </span>
       </div>
       <p className="border-t border-slate-200 bg-white px-3 py-2 text-[11px] text-slate-400">
-        Editor powered by @uiw/react-md-editor. Public preview allows paragraphs, bullets, <strong>**bold**</strong>, and <code>`code`</code>; raw HTML and unsupported elements are not rendered.
+        Public preview supports paragraphs, bullets, <strong>**bold**</strong>, and <code>`code`</code>. Raw HTML and unsupported elements are not shown.
       </p>
     </div>
   );
