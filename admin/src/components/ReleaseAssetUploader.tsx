@@ -309,11 +309,10 @@ export function ReleaseAssetUploader(props: Props) {
         }
         body={
           <>
-            Removing this asset detaches its registration from the build and
-            release. <strong>The release row and build metadata are kept.</strong>{" "}
-            The underlying R2 binary is also kept (we never auto-delete uploaded
-            blobs). Delete that object from R2 separately only if you intend to
-            reclaim its storage.
+            Removing this asset detaches it from the build and release. The
+            build and release remain available.{" "}
+            The uploaded file is also kept, so this action does not reclaim its
+            storage.
           </>
         }
         confirmLabel="Remove asset"

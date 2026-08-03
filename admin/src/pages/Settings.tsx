@@ -45,9 +45,8 @@ export function Settings() {
             }
           />
           <p className="text-xs text-slate-500 pt-3 border-t border-slate-100">
-            Login is via Login with Raft. The Worker owns the OAuth callback
-            and signed JWT. To change role, ask an org owner / admin in
-            the Org settings page.
+            Signed in with Raft. To change role, ask an organization owner or
+            admin in Organization settings.
           </p>
         </div>
       )}
@@ -55,9 +54,8 @@ export function Settings() {
       {/* Infrastructure (existing static info) */}
       <div className="card space-y-3 text-sm">
         <p className="text-slate-600">
-          Admin authentication is Login with Raft only. The Worker owns the
-          OAuth callback and bearer JWT; Cloudflare Access can be disabled
-          after the Raft client secret is configured.
+          Admin access uses Login with Raft. Access follows your Raft
+          organization membership and role.
         </p>
         <div>
           <div className="text-slate-500">Raft Callback URL</div>

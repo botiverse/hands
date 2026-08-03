@@ -1009,8 +1009,7 @@ function WebhooksTab({
         <h4 className="font-semibold mb-1">Delivery semantics</h4>
         <ul className="list-disc pl-5 space-y-1">
           <li>
-            Worker Cron Trigger (<code className="font-mono">*/5 * * * *</code>)
-            reaps pending deliveries every 5 minutes.
+            Pending deliveries are retried every 5 minutes.
           </li>
           <li>
             Retries use exponential backoff: 5m → 30m → 2h (3 attempts max),

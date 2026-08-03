@@ -21,8 +21,8 @@ export function AppErrors({ appId }: { appId: string }) {
         <div>
           <h2 className="text-lg font-semibold">Errors</h2>
           <p className="text-sm text-slate-500">
-            Captured exceptions via SDK <code>captureException</code>, grouped by
-            signature (exception class + top app frame).
+            Errors reported by this app, grouped by signature so recurring
+            problems are easier to identify.
           </p>
         </div>
       </div>
