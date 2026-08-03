@@ -317,7 +317,7 @@ describe("feedback:read alone carries no write capability", () => {
       name: "readonly", role: null, scopes: '["feedback:read"]',
     });
     const writeMethods = new Set(["POST", "PATCH", "PUT", "DELETE"]);
-    const succeeded: string[] = [];
+    const notRejected: string[] = [];
     // Hono lists one entry per handler in a chain, so the same route appears
     // several times; dedupe or every route is probed once per middleware.
     const seen = new Set<string>();
@@ -338,11 +338,16 @@ describe("feedback:read alone carries no write capability", () => {
         },
         env,
       );
-      if (response.status >= 200 && response.status < 300) {
-        succeeded.push(`${route.method} ${route.path} -> ${response.status}`);
+      // Must be rejected BY AUTH, not merely unsuccessful. "No 2xx" is also
+      // satisfied when the handler 400s on this probe's empty body — so a future
+      // write route wired with the wrong permission would pass while the token
+      // sailed through the middleware, which is the exact case this guards.
+      // Measured: all write routes answer 401/403 today, so this costs nothing.
+      if (response.status !== 401 && response.status !== 403) {
+        notRejected.push(`${route.method} ${route.path} -> ${response.status}`);
       }
     }
-    expect(succeeded).toEqual([]);
+    expect(notRejected).toEqual([]);
   });
 
   it("writes nothing to the database on any attempt", async () => {
