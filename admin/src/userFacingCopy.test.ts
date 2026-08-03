@@ -24,6 +24,7 @@ describe("admin user-facing copy", () => {
 
   it.each([
     ["./pages/Feedback.tsx", "Feedback and crash reports submitted from this app."],
+    ["./pages/Errors.tsx", "A signature combines the type of error"],
     ["./pages/Errors.tsx", "error with where it happened in your code"],
     ["./components/ChangelogMarkdown.tsx", "Public preview supports paragraphs"],
     ["./pages/OrgSettings.tsx", "Pending deliveries are retried every 5 minutes."],
@@ -32,6 +33,6 @@ describe("admin user-facing copy", () => {
     ["./pages/AppDetail.tsx", "feedback tickets, and uploaded files"],
     ["./pages/AppDetail.tsx", "Archiving does not free up storage."],
   ])("keeps the user-visible outcome %s: %s", (path, outcome) => {
-    expect(source(path)).toContain(outcome);
+    expect(source(path).replace(/\s+/g, " ")).toContain(outcome);
   });
 });
