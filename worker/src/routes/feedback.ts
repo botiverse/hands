@@ -15,6 +15,7 @@ import { generateSignedR2Url } from "./public_v2";
 import { dashboardOrigin, requestOrigin } from "../lib/origin";
 import { loadDeployToken } from "../lib/deploy_tokens";
 import { isFeedbackOnlyToken, REPORTER_ID_PATTERN } from "../lib/reporter_auth";
+import type { AppPermission } from "../lib/app_permissions";
 import { buildFeedbackCommentEvent, buildFeedbackStatusEvent } from "../lib/feedback_events";
 
 type AdminContext = Context<AdminEnv & { Bindings: Env }>;
@@ -2347,8 +2348,19 @@ export async function handleAddFeedbackComment(c: AdminContext) {
   const isInternal = body.internal === true;
   // A role-free feedback token may reply to the reporter, not write staff-only
   // notes. Checked here rather than in middleware because it depends on the body.
-  if (isInternal && c.get("feedback_scoped_token")) {
-    return c.json({ error: "internal notes require the publisher role" }, 403);
+  const tokenPermissions = c.get("feedback_token_permissions");
+  if (tokenPermissions) {
+    const needed: AppPermission = isInternal ? "feedback:triage" : "feedback:comment";
+    if (!tokenPermissions.has(needed)) {
+      return c.json(
+        {
+          error: isInternal
+            ? "internal notes require feedback:triage or the publisher role"
+            : "replying requires feedback:comment or the publisher role",
+        },
+        403,
+      );
+    }
   }
   const ticket = await c.env.DB.prepare(
     `SELECT t.id, t.reporter_integration_id, t.reporter_id, a.org_id,

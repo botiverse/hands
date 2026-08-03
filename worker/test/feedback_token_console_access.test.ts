@@ -134,7 +134,7 @@ function app() {
   );
   mini.post(
     "/api/apps/:appId/feedback/:ticketId/comments",
-    requireAppRoleOrFeedbackPermission("publisher", "feedback:comment"),
+    requireAppRoleOrFeedbackPermission("publisher", "feedback:comment", "feedback:triage"),
     handleAddFeedbackComment,
   );
   return mini;
@@ -186,6 +186,7 @@ describe("the tested wiring is the shipped wiring", () => {
     ["/api/apps/:appId/feedback/:ticketId", "feedback:read"],
     ["/api/apps/:appId/feedback/:ticketId/attachments/:attachmentId", "feedback:read"],
     ["/api/apps/:appId/feedback/:ticketId/comments", "feedback:comment"],
+    ["/api/apps/:appId/feedback/:ticketId/comments", "feedback:triage"],
   ])("registers %s so a feedback token can use it (%s)", (route, permission) => {
     expect(registrationFor(route)).toContain('"' + permission + '"');
   });
@@ -283,6 +284,44 @@ describe("the two grants are independently usable", () => {
       name: "commenter", role: null, scopes: '["feedback:comment"]',
     });
     expect((await list(app(), token, env)).status).toBe(403);
+  });
+});
+
+describe("triage and reply are separate grants, not a hierarchy", () => {
+  const triage = (sqlite: Database.Database) => issueToken(sqlite, {
+    name: "triage", role: null, scopes: '["feedback:read","feedback:triage"]',
+  });
+
+  it("lets a triage token write an internal note", async () => {
+    const { sqlite, env } = environment();
+    const response = await comment(app(), await triage(sqlite), env, {
+      body: "staff only", internal: true,
+    });
+    expect(response.status).toBe(201);
+    expect(sqlite.prepare(
+      "SELECT internal FROM feedback_comments WHERE ticket_id = ?",
+    ).get(TICKET)).toMatchObject({ internal: 1 });
+  });
+
+  it("does NOT let a triage token speak to the customer", async () => {
+    // Handling a ticket internally does not imply permission to send the user
+    // text in our name. Neither grant implies the other.
+    const { sqlite, env } = environment();
+    const response = await comment(app(), await triage(sqlite), env, { body: "hello user" });
+    expect(response.status).toBe(403);
+    expect(sqlite.prepare("SELECT COUNT(*) AS n FROM feedback_comments").get())
+      .toMatchObject({ n: 0 });
+  });
+
+  it("does NOT let a comment token write an internal note", async () => {
+    const { sqlite, env } = environment();
+    const token = await issueToken(sqlite, {
+      name: "commenter", role: null, scopes: '["feedback:comment"]',
+    });
+    const response = await comment(app(), token, env, { body: "note", internal: true });
+    expect(response.status).toBe(403);
+    expect(sqlite.prepare("SELECT COUNT(*) AS n FROM feedback_comments").get())
+      .toMatchObject({ n: 0 });
   });
 });
 

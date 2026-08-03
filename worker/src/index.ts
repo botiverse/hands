@@ -766,8 +766,13 @@ admin.get(
   handleListFeedbackMaterialDelta,
 );
 admin.get("/api/apps/:appId/feedback/:ticketId", requireAppRoleOrFeedbackPermission("viewer", "feedback:read"), handleGetFeedback);
-admin.patch("/api/apps/:appId/feedback/:ticketId", requireFeedbackTriageRole(), handleUpdateFeedback);
-admin.post("/api/apps/:appId/feedback/:ticketId/comments", requireAppRoleOrFeedbackPermission("publisher", "feedback:comment"), handleAddFeedbackComment);
+admin.patch("/api/apps/:appId/feedback/:ticketId", requireAppRoleOrFeedbackPermission("publisher", "feedback:triage"), handleUpdateFeedback);
+admin.post(
+  "/api/apps/:appId/feedback/:ticketId/comments",
+  // Both actions share this endpoint; handleAddFeedbackComment splits them on `internal`.
+  requireAppRoleOrFeedbackPermission("publisher", "feedback:comment", "feedback:triage"),
+  handleAddFeedbackComment,
+);
 admin.post("/api/apps/:appId/feedback/:ticketId/symbolicate", requireFeedbackTriageRole(), handleResymbolicateFeedback);
 admin.get(
   "/api/apps/:appId/feedback/:ticketId/attachments/:attachmentId",

@@ -403,7 +403,7 @@ export function requireAppRole(minimum: AppRole): MiddlewareHandler<RoleContext>
  */
 export function requireAppRoleOrFeedbackPermission(
   minimum: AppRole,
-  permission: AppPermission,
+  ...permissions: AppPermission[]
 ): MiddlewareHandler<RoleContext> {
   return async (c, next) => {
     const appId = c.req.param("appId");
@@ -414,9 +414,11 @@ export function requireAppRoleOrFeedbackPermission(
       && token.app_id === appId
       && token.app_role === null
       && token.reporter_integration_id === null
-      && resolveDeployTokenPermissions(token).has(permission)
+      && permissions.some((permission) => resolveDeployTokenPermissions(token).has(permission))
     ) {
-      c.set("feedback_scoped_token", true);
+      // Which permission admitted them matters downstream: the comments endpoint
+      // serves both public replies and internal notes.
+      c.set("feedback_token_permissions", resolveDeployTokenPermissions(token));
       await next();
       return;
     }
