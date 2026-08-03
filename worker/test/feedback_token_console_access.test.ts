@@ -254,6 +254,32 @@ describe("console feedback access for role-free tokens", () => {
   });
 });
 
+describe("the two grants are independently usable", () => {
+  // Asked for by a consumer splitting one combined token into a read token and
+  // a comment token, so the read path cannot hold write capability. That only
+  // works if each grant stands alone — a comment-only token must not need
+  // feedback:read to post.
+  it("lets a comment-only token reply without holding feedback:read", async () => {
+    const { sqlite, env } = environment();
+    const token = await issueToken(sqlite, {
+      name: "commenter", role: null, scopes: '["feedback:comment"]',
+    });
+    const response = await comment(app(), token, env, { body: "reply from the comment-only key" });
+    expect(response.status).toBe(201);
+    expect(sqlite.prepare(
+      "SELECT internal FROM feedback_comments WHERE ticket_id = ?",
+    ).get(TICKET)).toMatchObject({ internal: 0 });
+  });
+
+  it("does not let that comment-only token read tickets", async () => {
+    const { sqlite, env } = environment();
+    const token = await issueToken(sqlite, {
+      name: "commenter", role: null, scopes: '["feedback:comment"]',
+    });
+    expect((await list(app(), token, env)).status).toBe(403);
+  });
+});
+
 describe("feedback:read alone carries no write capability", () => {
   // Asked for directly by a consumer building a read-only patrol agent. Stated
   // as what the grant CANNOT do, so it stays true as routes are added: a new
