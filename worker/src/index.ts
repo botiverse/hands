@@ -609,7 +609,10 @@ app.use("*", async (c, next) => {
 });
 
 // Admin — protected by a Hands JWT or scoped deploy-token bearer auth.
-const admin = new Hono<{
+// Exported so tests can enumerate the real route table rather than pattern-match
+// the source: coverage should be decided by the router, not by whether a regex
+// recognises a particular registration style.
+export const admin = new Hono<{
   Bindings: Env;
   Variables: {
     admin_account?: import("./middleware/auth").AdminAccount;

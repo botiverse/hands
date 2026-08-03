@@ -14,11 +14,17 @@ import { readdirSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import Database from "better-sqlite3";
 import { Hono } from "hono";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+
+vi.mock("@cloudflare/containers", () => ({
+  Container: class {},
+  getRandom: async () => ({ fetch: async () => Response.json({ stack_text: "" }) }),
+}));
 import { authMiddleware } from "../src/middleware/auth";
 import { requireAppRoleOrFeedbackPermission } from "../src/lib/permissions";
 import { generateDeployToken, hashDeployToken } from "../src/lib/deploy_tokens";
 import { handleAddFeedbackComment, handleListFeedback } from "../src/routes/feedback";
+import { admin } from "../src/index";
 
 const MIGRATION_DIR = fileURLToPath(new URL("../../migrations/sql/", import.meta.url));
 const INTEGRATION = "33333333-3333-4333-8333-333333333333";
@@ -300,19 +306,43 @@ describe("feedback:read alone carries no write capability", () => {
     expect((await comment(app(), token, env, { body: "note", internal: true })).status).toBe(403);
   });
 
-  it("is not accepted by ANY write route, including ones added later", () => {
-    // The class, not the instances. Enumerating 403s only covers the write
-    // routes that exist today; this fails the moment someone registers a new
-    // POST/PATCH/PUT/DELETE that admits feedback:read — which is exactly when
-    // a read-only credential silently becomes a writing one.
-    const indexSource = readFileSync(new URL("../src/index.ts", import.meta.url), "utf8");
-    const offenders: string[] = [];
-    const registration = /admin\.(post|patch|put|delete)\(([\s\S]{0,400}?)\n\);|admin\.(post|patch|put|delete)\((.*?)\);/g;
-    for (const match of indexSource.matchAll(registration)) {
-      const body = match[2] ?? match[4] ?? "";
-      if (body.includes('"feedback:read"')) offenders.push(body.split("\n")[0].trim());
+  it("is not accepted by ANY write route, including ones added later", async () => {
+    // Enumerated from the real router, not from the source text. An earlier
+    // version pattern-matched index.ts and was blind to inline handlers — a POST
+    // registered with an arrow-function body passed it while writing tickets.
+    // Coverage now follows the route table, so it cannot depend on how a
+    // registration happens to be written.
+    const { sqlite, env } = environment();
+    const token = await issueToken(sqlite, {
+      name: "readonly", role: null, scopes: '["feedback:read"]',
+    });
+    const writeMethods = new Set(["POST", "PATCH", "PUT", "DELETE"]);
+    const succeeded: string[] = [];
+    // Hono lists one entry per handler in a chain, so the same route appears
+    // several times; dedupe or every route is probed once per middleware.
+    const seen = new Set<string>();
+    for (const route of admin.routes) {
+      if (!writeMethods.has(route.method)) continue;
+      const key = route.method + " " + route.path;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      const path = route.path
+        .replace(":appId", "app-a")
+        .replace(/:[A-Za-z]+/g, "11111111-1111-4111-8111-111111111111");
+      const response = await admin.request(
+        "https://hands.test" + path,
+        {
+          method: route.method,
+          headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+          body: "{}",
+        },
+        env,
+      );
+      if (response.status >= 200 && response.status < 300) {
+        succeeded.push(`${route.method} ${route.path} -> ${response.status}`);
+      }
     }
-    expect(offenders).toEqual([]);
+    expect(succeeded).toEqual([]);
   });
 
   it("writes nothing to the database on any attempt", async () => {
