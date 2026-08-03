@@ -759,7 +759,7 @@ admin.get("/api/apps/:appId/release-health", requireAppRole("viewer"), handleRel
 admin.get("/api/apps/:appId/feedback", requireAppRoleOrFeedbackPermission("viewer", "feedback:read"), handleListFeedback);
 admin.get(
   "/api/apps/:appId/feedback/material-delta",
-  requireAppRole("viewer"),
+  requireAppRoleOrFeedbackPermission("viewer", "feedback:read"),
   handleListFeedbackMaterialDelta,
 );
 admin.get("/api/apps/:appId/feedback/:ticketId", requireAppRoleOrFeedbackPermission("viewer", "feedback:read"), handleGetFeedback);

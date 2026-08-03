@@ -176,6 +176,7 @@ describe("the tested wiring is the shipped wiring", () => {
 
   it.each([
     ["/api/apps/:appId/feedback", "feedback:read"],
+    ["/api/apps/:appId/feedback/material-delta", "feedback:read"],
     ["/api/apps/:appId/feedback/:ticketId", "feedback:read"],
     ["/api/apps/:appId/feedback/:ticketId/attachments/:attachmentId", "feedback:read"],
     ["/api/apps/:appId/feedback/:ticketId/comments", "feedback:comment"],
@@ -250,6 +251,37 @@ describe("console feedback access for role-free tokens", () => {
       env,
     );
     expect(response.status).toBe(403);
+  });
+});
+
+describe("feedback:read alone carries no write capability", () => {
+  // Asked for directly by a consumer building a read-only patrol agent. Stated
+  // as what the grant CANNOT do, so it stays true as routes are added: a new
+  // write route that forgets its guard fails here rather than shipping.
+  const readOnly = (sqlite: Database.Database) => issueToken(sqlite, {
+    name: "readonly", role: null, scopes: '["feedback:read"]',
+  });
+
+  it("cannot reply to the reporter", async () => {
+    const { sqlite, env } = environment();
+    const token = await readOnly(sqlite);
+    expect((await comment(app(), token, env, { body: "hi" })).status).toBe(403);
+  });
+
+  it("cannot write an internal note", async () => {
+    const { sqlite, env } = environment();
+    const token = await readOnly(sqlite);
+    expect((await comment(app(), token, env, { body: "note", internal: true })).status).toBe(403);
+  });
+
+  it("writes nothing to the database on any attempt", async () => {
+    const { sqlite, env } = environment();
+    const token = await readOnly(sqlite);
+    await comment(app(), token, env, { body: "hi" });
+    await comment(app(), token, env, { body: "note", internal: true });
+    expect(sqlite.prepare(
+      "SELECT COUNT(*) AS n FROM feedback_comments",
+    ).get()).toMatchObject({ n: 0 });
   });
 });
 
