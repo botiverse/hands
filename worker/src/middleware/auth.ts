@@ -13,6 +13,7 @@
  */
 
 import type { Context, MiddlewareHandler } from "hono";
+import type { AppPermission } from "../lib/app_permissions";
 import { getCookie } from "hono/cookie";
 import {
   loadDeployToken,
@@ -56,9 +57,10 @@ export type AdminEnv = {
     org_id?: string;
     org_role?: "owner" | "admin" | "member" | "viewer";
     // Set when a console feedback route admitted a role-free deploy token on a
-    // feedback permission rather than a role. Such a caller may read tickets and
-    // reply to the reporter, but has no staff-side handling rights.
-    feedback_scoped_token?: true;
+    // feedback permission rather than a role. Holds that token's resolved
+    // permissions, because one endpoint serves two actions: replying to the
+    // reporter needs feedback:comment, an internal note needs feedback:triage.
+    feedback_token_permissions?: ReadonlySet<AppPermission>;
   };
 };
 

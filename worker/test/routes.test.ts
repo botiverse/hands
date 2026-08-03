@@ -2640,12 +2640,22 @@ describe("quiver Hono app — auth + dispatch", () => {
       "feedback:read",
       "feedback:comment",
       "feedback:route",
+      "feedback:triage",
     ]);
     expect(body.permissions.find((entry: any) => entry.permission === "app:read").label)
       .toBe("App read");
     expect(body.roles.find((entry: any) => entry.role === "viewer").permissions).toEqual(["app:read"]);
     expect(body.roles.find((entry: any) => entry.role === "publisher").permissions).toContain("feedback:write");
     expect(body.roles.find((entry: any) => entry.role === "admin").permissions).toContain("app:admin");
+
+    // feedback:triage must be grantable only by explicit scope. Putting it in a
+    // role bundle is the natural next edit — "admins can do everything" — and it
+    // would destroy the whole reason for the permission: that nobody holds it
+    // unless someone decided to grant it. Separating triage from publisher is
+    // undone the moment publisher carries it again.
+    for (const role of body.roles) {
+      expect(role.permissions).not.toContain("feedback:triage");
+    }
   });
 
   it("loads app-scoped deploy tokens and updates last_used_at", async () => {
