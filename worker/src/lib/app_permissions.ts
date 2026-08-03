@@ -29,8 +29,8 @@ export const APP_PERMISSION_DESCRIPTIONS: Record<AppPermission, string> = {
   "app:publish": "Create and publish builds, releases, and distribution assets.",
   "app:admin": "Manage app settings, members, credentials, and destructive operations.",
   "feedback:write": "Submit feedback tickets for this app.",
-  "feedback:read": "Read tickets owned by a reporter integration.",
-  "feedback:comment": "Comment on tickets owned by a reporter integration.",
+  "feedback:read": "Read feedback tickets. A token bound to a reporter integration sees only that integration's tickets; an unbound token sees the app's.",
+  "feedback:comment": "Post a public reply the reporter sees. Scope follows the token's binding.",
   "feedback:route": "Bind an opaque route subject to a reporter integration.",
   "feedback:triage": "Change ticket status and assignee, and write internal notes.",
 };
@@ -61,6 +61,24 @@ export const FEEDBACK_TOKEN_PERMISSIONS = [
   "feedback:comment",
   "feedback:route",
 ] as const satisfies readonly AppPermission[];
+
+/**
+ * Feedback permissions that only make sense for a reporter-integration proxy,
+ * and so require the token to be bound to one: submitting on a user's behalf,
+ * and binding a route subject.
+ *
+ * The rest — read, comment, triage — are also used by console-side service
+ * tokens, which are deliberately unbound. Scope there comes from the binding's
+ * absence, not from the permission name.
+ */
+export const REPORTER_BOUND_ONLY_PERMISSIONS = [
+  "feedback:write",
+  "feedback:route",
+] as const satisfies readonly AppPermission[];
+
+export function requiresReporterBinding(scope: AppPermission): boolean {
+  return (REPORTER_BOUND_ONLY_PERMISSIONS as readonly AppPermission[]).includes(scope);
+}
 
 export type FeedbackTokenPermission = (typeof FEEDBACK_TOKEN_PERMISSIONS)[number];
 

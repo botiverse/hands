@@ -15,6 +15,7 @@ import {
   APP_ROLE_PERMISSIONS,
   isFeedbackTokenPermission,
   isAppPermission,
+  requiresReporterBinding,
   type AppPermission,
 } from "../lib/app_permissions";
 
@@ -163,9 +164,20 @@ export async function handleCreateAppDeployToken(c: AdminContext) {
   const reporterIntegrationId = body.reporter_integration_id == null
     ? null
     : String(body.reporter_integration_id).trim();
-  const hasFeedbackScope = scopes?.some((scope) => scope.startsWith("feedback:")) ?? false;
-  if (appRole === null && hasFeedbackScope && !reporterIntegrationId) {
-    return c.json({ error: "reporter_integration_id is required for feedback scopes" }, 400);
+  // Only the proxy-side scopes require a binding. A role-free token holding
+  // read/comment/triage is a console service principal — unbound on purpose,
+  // because the console routes refuse bound tokens (they are confined to one
+  // integration's tickets and must not see the whole app).
+  //
+  // This rule predates that use: when feedback:* existed solely for reporter
+  // proxies, "role-free + feedback scope" always meant "a proxy token", so
+  // demanding a binding was right. #403 added the second use and this was not
+  // revisited, which made the console token impossible to issue.
+  const boundOnly = scopes?.filter(requiresReporterBinding) ?? [];
+  if (appRole === null && boundOnly.length > 0 && !reporterIntegrationId) {
+    return c.json({
+      error: `reporter_integration_id is required for ${boundOnly.join(", ")}`,
+    }, 400);
   }
   if (reporterIntegrationId) {
     if (appRole !== null || !scopes || !scopes.every(isFeedbackTokenPermission)) {
