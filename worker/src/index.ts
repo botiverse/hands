@@ -759,18 +759,18 @@ admin.get("/api/apps/:appId/analytics/devices", requireAppRole("viewer"), handle
 admin.get("/api/apps/:appId/analytics/versions", requireAppRole("viewer"), handleVersionAnalytics);
 admin.get("/api/apps/:appId/analytics/devices/:deviceId", requireAppRole("viewer"), handleDeviceDetail);
 admin.get("/api/apps/:appId/release-health", requireAppRole("viewer"), handleReleaseHealth);
-admin.get("/api/apps/:appId/feedback", requireAppRoleOrFeedbackPermission("viewer", "feedback:read"), handleListFeedback);
+admin.get("/api/apps/:appId/feedback", requireAppRoleOrFeedbackPermission("viewer", {}, "feedback:read"), handleListFeedback);
 admin.get(
   "/api/apps/:appId/feedback/material-delta",
-  requireAppRoleOrFeedbackPermission("viewer", "feedback:read"),
+  requireAppRoleOrFeedbackPermission("viewer", {}, "feedback:read"),
   handleListFeedbackMaterialDelta,
 );
-admin.get("/api/apps/:appId/feedback/:ticketId", requireAppRoleOrFeedbackPermission("viewer", "feedback:read"), handleGetFeedback);
-admin.patch("/api/apps/:appId/feedback/:ticketId", requireAppRoleOrFeedbackPermission("publisher", "feedback:triage"), handleUpdateFeedback);
+admin.get("/api/apps/:appId/feedback/:ticketId", requireAppRoleOrFeedbackPermission("viewer", {}, "feedback:read"), handleGetFeedback);
+admin.patch("/api/apps/:appId/feedback/:ticketId", requireAppRoleOrFeedbackPermission("publisher", { orgMinimum: "member" }, "feedback:triage"), handleUpdateFeedback);
 admin.post(
   "/api/apps/:appId/feedback/:ticketId/comments",
   // Both actions share this endpoint; handleAddFeedbackComment splits them on `internal`.
-  requireAppRoleOrFeedbackPermission("publisher", "feedback:comment", "feedback:triage"),
+  requireAppRoleOrFeedbackPermission("publisher", { orgMinimum: "member" }, "feedback:comment", "feedback:triage"),
   handleAddFeedbackComment,
 );
 admin.post("/api/apps/:appId/feedback/:ticketId/symbolicate", requireFeedbackTriageRole(), handleResymbolicateFeedback);
@@ -778,7 +778,7 @@ admin.get(
   "/api/apps/:appId/feedback/:ticketId/attachments/:attachmentId",
   // An attachment is the substance of most crash reports; reading a ticket
   // without being able to fetch its screenshot is not "read feedback".
-  requireAppRoleOrFeedbackPermission("viewer", "feedback:read"),
+  requireAppRoleOrFeedbackPermission("viewer", {}, "feedback:read"),
   handleDownloadFeedbackAttachment,
 );
 admin.get("/api/apps/:appId/releases/:releaseId/shares", requireAppRole("viewer"), handleListReleaseShares);
