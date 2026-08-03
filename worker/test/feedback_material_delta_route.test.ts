@@ -12,6 +12,7 @@ import { handlePurgeApp } from "../src/routes/apps";
 import {
   handleAddFeedbackComment,
   handleListFeedbackMaterialDelta,
+  handleListFeedbackTransitions,
   handlePublicFeedbackSubmit,
   handlePublicMinidumpSubmit,
   handleUpdateFeedback,
@@ -700,6 +701,7 @@ describe("feedback material delta production routes", () => {
 
   it("publishes the admin route in OpenAPI and the agent action manifest", async () => {
     expect(openApiDocument.paths?.["/api/apps/{appId}/feedback/material-delta"]?.get).toBeDefined();
+    expect(openApiDocument.paths?.["/api/apps/{appId}/feedback/transitions"]?.get).toBeDefined();
     const response = await handleAgentManifest({
       env: { RAFT_CLIENT_ID: "hands-test" },
       req: { url: "https://hands.test/.well-known/raft-agent-manifest.json" },
@@ -711,5 +713,198 @@ describe("feedback material delta production routes", () => {
       .toMatchObject({
         endpoint: { method: "GET", path: "/api/apps/{app_id}/feedback/material-delta" },
       });
+    expect(manifest.actions.find((action: any) => action.name === "list-feedback-transitions"))
+      .toMatchObject({
+        endpoint: { method: "GET", path: "/api/apps/{app_id}/feedback/transitions" },
+      });
+  });
+
+  it("exports a complete minimized transition stream with an explicit coverage epoch", async () => {
+    const { sqlite, env } = environment();
+    const ticketId = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
+    sqlite.prepare(
+      `INSERT INTO feedback_tickets
+       (id, app_id, kind, status, message, metadata_json, created_at, updated_at)
+       VALUES (?, 'app-a', 'feedback', 'open', 'private ticket body', '{}', 10, 10)`,
+    ).run(ticketId);
+
+    const audit = sqlite.prepare(
+      `INSERT INTO audit_logs (id, app_id, action, actor, payload, created_at)
+       VALUES (?, 'app-a', ?, 'private-actor', ?, ?)`,
+    );
+    audit.run("noop", "feedback.update", JSON.stringify({
+      ticket_id: ticketId,
+      previous_status: "open",
+      status: "open",
+      previous_assignee: null,
+      assignee: null,
+    }), 11);
+    expect(sqlite.prepare("SELECT COUNT(*) AS n FROM feedback_transitions").get())
+      .toEqual({ n: 0 });
+
+    audit.run("combined", "feedback.update", JSON.stringify({
+      ticket_id: ticketId,
+      previous_status: "open",
+      status: "in_progress",
+      previous_assignee: null,
+      assignee: "owner-account",
+    }), 12);
+    audit.run("unassign", "feedback.update", JSON.stringify({
+      ticket_id: ticketId,
+      previous_status: "in_progress",
+      status: "in_progress",
+      previous_assignee: "owner-account",
+      assignee: null,
+    }), 13);
+    audit.run("visible", "feedback.comment", JSON.stringify({
+      ticket_id: ticketId,
+      comment_id: "comment-visible",
+      internal: false,
+      extra_secret: "visible secret body",
+    }), 14);
+    audit.run("internal", "feedback.comment", JSON.stringify({
+      ticket_id: ticketId,
+      comment_id: "comment-internal",
+      internal: true,
+      extra_secret: "internal secret body",
+    }), 15);
+    audit.run("reporter", "feedback.reporter_comment", JSON.stringify({
+      ticket_id: ticketId,
+      comment_id: "comment-reporter",
+      reporter_hash: "secret-hash",
+      audit_key_version: "private-key-version",
+    }), 16);
+
+    const first = await handleListFeedbackTransitions(jsonContext(
+      env,
+      { appId: "app-a" },
+      {},
+      { limit: "2" },
+    ));
+    expect(first.status).toBe(200);
+    const firstBody = await first.json() as any;
+    expect(firstBody).toMatchObject({
+      coverage_started_at: {
+        status_changed: 11,
+        assignee_changed: 11,
+        comment_visibility: 16,
+      },
+      has_more: true,
+      transitions: [
+        {
+          ticket_id: ticketId,
+          type: "status_changed",
+          from: "open",
+          to: "in_progress",
+          occurred_at: 12,
+        },
+        {
+          ticket_id: ticketId,
+          type: "assignee_changed",
+          from: null,
+          to: "owner-account",
+          occurred_at: 12,
+        },
+      ],
+    });
+    const second = await handleListFeedbackTransitions(jsonContext(
+      env,
+      { appId: "app-a" },
+      {},
+      { cursor: firstBody.next_cursor, limit: "10" },
+    ));
+    const secondBody = await second.json() as any;
+    expect(secondBody).toMatchObject({
+      coverage_started_at: {
+        status_changed: 11,
+        assignee_changed: 11,
+        comment_visibility: 16,
+      },
+      has_more: false,
+      transitions: [
+        { type: "assignee_changed", from: "owner-account", to: null, occurred_at: 13 },
+        { type: "comment_visibility", visibility: "reporter", occurred_at: 14 },
+        { type: "comment_visibility", visibility: "internal", occurred_at: 15 },
+        { type: "comment_visibility", visibility: "reporter", occurred_at: 16 },
+      ],
+    });
+    const serialized = JSON.stringify([firstBody, secondBody]);
+    for (const forbidden of [
+      "private ticket body",
+      "visible secret body",
+      "internal secret body",
+      "secret-hash",
+      "reporter_id",
+      "reporter_integration",
+      "author_actor",
+      "comment-visible",
+      "comment-internal",
+      "comment-reporter",
+      "private-key-version",
+    ]) {
+      expect(serialized).not.toContain(forbidden);
+    }
+
+    expect((await handleListFeedbackTransitions(jsonContext(
+      env,
+      { appId: "app-b" },
+      {},
+      { cursor: firstBody.next_cursor },
+    ))).status).toBe(400);
+    expect((await handleListFeedbackTransitions(jsonContext(
+      env,
+      { appId: "app-a" },
+      {},
+      { cursor: cursor(["feedback-transitions-v1", "app-a", 999]) },
+    ))).status).toBe(400);
+  });
+
+  it("keeps feedback transitions on the app-viewer boundary", async () => {
+    const { sqlite, env } = environment();
+    const reporter = generateDeployToken();
+    const viewer = generateDeployToken();
+    const integrationId = "55555555-5555-4555-8555-555555555555";
+    sqlite.prepare(
+      `INSERT INTO app_reporter_integrations (id, app_id, name, created_at, updated_at)
+       VALUES (?, 'app-a', 'inbox', 1, 1)`,
+    ).run(integrationId);
+    sqlite.prepare(
+      `INSERT INTO app_deploy_tokens
+       (id, app_id, name, token_prefix, token_hash, app_role, scopes_json,
+        reporter_integration_id, created_by_actor, created_at)
+       VALUES ('reporter-token', 'app-a', 'reporter', ?, ?, NULL, ?, ?, 'test', 1)`,
+    ).run(
+      reporter.token_prefix,
+      await hashDeployToken(reporter.token),
+      JSON.stringify(["feedback:read", "feedback:comment"]),
+      integrationId,
+    );
+    sqlite.prepare(
+      `INSERT INTO app_deploy_tokens
+       (id, app_id, name, token_prefix, token_hash, app_role, scopes_json,
+        reporter_integration_id, created_by_actor, created_at)
+       VALUES ('viewer-token', 'app-a', 'viewer', ?, ?, 'viewer', NULL, NULL, 'test', 1)`,
+    ).run(
+      viewer.token_prefix,
+      await hashDeployToken(viewer.token),
+    );
+    const mini = new Hono<any>();
+    mini.use("*", authMiddleware);
+    mini.get(
+      "/api/apps/:appId/feedback/transitions",
+      requireAppRole("viewer"),
+      handleListFeedbackTransitions,
+    );
+    const path = "https://hands.test/api/apps/app-a/feedback/transitions";
+    expect((await mini.request(
+      path,
+      { headers: { authorization: `Bearer ${reporter.token}` } },
+      env,
+    )).status).toBe(403);
+    expect((await mini.request(
+      path,
+      { headers: { authorization: `Bearer ${viewer.token}` } },
+      env,
+    )).status).toBe(200);
   });
 });

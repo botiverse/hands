@@ -32,6 +32,8 @@ const TICKET_KINDS = ["feedback", "bug", "crash", "error"] as const;
 const SUBMISSION_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const MATERIAL_DELTA_DEFAULT_LIMIT = 100;
 const MATERIAL_DELTA_MAX_LIMIT = 200;
+const FEEDBACK_TRANSITIONS_DEFAULT_LIMIT = 100;
+const FEEDBACK_TRANSITIONS_MAX_LIMIT = 200;
 
 function encodeMaterialCursor(appId: string, sequence: number): string {
   return btoa(JSON.stringify(["material-v1", appId, sequence]))
@@ -51,6 +53,42 @@ function decodeMaterialCursor(value: string | undefined, appId: string): number 
       !Array.isArray(decoded)
       || decoded.length !== 3
       || decoded[0] !== "material-v1"
+      || decoded[1] !== appId
+      || !Number.isSafeInteger(decoded[2])
+      || decoded[2] < 0
+    ) {
+      return null;
+    }
+    return decoded[2];
+  } catch {
+    return null;
+  }
+}
+
+function encodeFeedbackTransitionsCursor(
+  appId: string,
+  sequence: number,
+): string {
+  return btoa(JSON.stringify(["feedback-transitions-v1", appId, sequence]))
+    .replaceAll("+", "-")
+    .replaceAll("/", "_")
+    .replaceAll("=", "");
+}
+
+function decodeFeedbackTransitionsCursor(
+  value: string | undefined,
+  appId: string,
+): number | null {
+  if (value === undefined) return 0;
+  if (!value) return null;
+  try {
+    const base64 = value.replaceAll("-", "+").replaceAll("_", "/");
+    const padded = base64.padEnd(Math.ceil(base64.length / 4) * 4, "=");
+    const decoded = JSON.parse(atob(padded));
+    if (
+      !Array.isArray(decoded)
+      || decoded.length !== 3
+      || decoded[0] !== "feedback-transitions-v1"
       || decoded[1] !== appId
       || !Number.isSafeInteger(decoded[2])
       || decoded[2] < 0
@@ -2029,6 +2067,127 @@ export async function handleListFeedbackMaterialDelta(c: AdminContext) {
     tickets,
     next_cursor: encodeMaterialCursor(appId, lastSequence),
     has_more: results.length > limit,
+  });
+}
+
+export async function handleListFeedbackTransitions(c: AdminContext) {
+  const appId = c.req.param("appId") ?? "";
+  const state = await c.env.DB.prepare(
+    `SELECT a.created_at AS app_created_at,
+            COALESCE((SELECT MAX(sequence) FROM feedback_transitions WHERE app_id = a.id), 0) AS high_water,
+            (SELECT MIN(created_at) FROM audit_logs
+             WHERE action = 'feedback.update' AND json_valid(payload)
+               AND json_type(payload, '$.previous_status') = 'text'
+               AND json_type(payload, '$.status') = 'text') AS status_coverage_started_at,
+            (SELECT MIN(created_at) FROM audit_logs
+             WHERE action = 'feedback.update' AND json_valid(payload)
+               AND json_type(payload, '$.previous_assignee') IN ('text', 'null')
+               AND json_type(payload, '$.assignee') IN ('text', 'null')) AS assignee_coverage_started_at,
+            (SELECT MIN(created_at) FROM audit_logs
+             WHERE action = 'feedback.comment' AND json_valid(payload)
+               AND json_type(payload, '$.internal') IN ('true', 'false')) AS staff_comment_coverage_started_at,
+            (SELECT MIN(created_at) FROM audit_logs
+             WHERE action = 'feedback.reporter_comment' AND json_valid(payload)
+               AND json_type(payload, '$.ticket_id') = 'text') AS reporter_comment_coverage_started_at
+     FROM apps a
+     WHERE a.id = ?1`,
+  ).bind(appId).first<{
+    app_created_at: number;
+    high_water: number;
+    status_coverage_started_at: number | null;
+    assignee_coverage_started_at: number | null;
+    staff_comment_coverage_started_at: number | null;
+    reporter_comment_coverage_started_at: number | null;
+  }>();
+  if (
+    !state
+    || !Number.isSafeInteger(state.high_water)
+    || state.high_water < 0
+    || !Number.isSafeInteger(state.app_created_at)
+    || state.app_created_at < 0
+  ) {
+    return c.json({ error: "feedback transition projection is unavailable" }, 500);
+  }
+
+  const cursor = decodeFeedbackTransitionsCursor(
+    c.req.query("cursor"),
+    appId,
+  );
+  if (cursor === null || cursor > state.high_water) {
+    return c.json({ error: "invalid feedback transitions cursor" }, 400);
+  }
+
+  const rawLimit = c.req.query("limit");
+  const limit = rawLimit === undefined ? FEEDBACK_TRANSITIONS_DEFAULT_LIMIT : Number(rawLimit);
+  if (!Number.isInteger(limit) || limit < 1 || limit > FEEDBACK_TRANSITIONS_MAX_LIMIT) {
+    return c.json({
+      error: `limit must be an integer between 1 and ${FEEDBACK_TRANSITIONS_MAX_LIMIT}`,
+    }, 400);
+  }
+
+  const { results } = await c.env.DB.prepare(
+    `SELECT sequence, ticket_id, transition_type, previous_value, value, occurred_at
+     FROM feedback_transitions
+     WHERE app_id = ?1 AND sequence > ?2
+     ORDER BY sequence ASC
+     LIMIT ?3`,
+  ).bind(appId, cursor, limit + 1).all<{
+    sequence: number;
+    ticket_id: string;
+    transition_type: "status_changed" | "assignee_changed" | "comment_visibility";
+    previous_value: string | null;
+    value: string | null;
+    occurred_at: number;
+  }>();
+
+  const page = results.slice(0, limit);
+  const lastSequence = page.at(-1)?.sequence ?? cursor;
+  if (!Number.isSafeInteger(lastSequence) || lastSequence < 0) {
+    return c.json({ error: "invalid feedback transition sequence state" }, 500);
+  }
+  const transitions = page.map((row) => row.transition_type === "comment_visibility"
+    ? {
+        ticket_id: row.ticket_id,
+        type: row.transition_type,
+        visibility: row.value,
+        occurred_at: row.occurred_at,
+      }
+    : {
+        ticket_id: row.ticket_id,
+        type: row.transition_type,
+        from: row.previous_value,
+        to: row.value,
+        occurred_at: row.occurred_at,
+      });
+  const statusCoverage = state.status_coverage_started_at === null
+    ? null
+    : Math.max(state.app_created_at, state.status_coverage_started_at);
+  const assigneeCoverage = state.assignee_coverage_started_at === null
+    ? null
+    : Math.max(state.app_created_at, state.assignee_coverage_started_at);
+  // Comment visibility is complete only after both staff and reporter audit
+  // sources exist. The later source is the safe coverage boundary; using the
+  // earlier one would silently describe the intervening window as zero.
+  const commentCoverage = state.staff_comment_coverage_started_at === null
+      || state.reporter_comment_coverage_started_at === null
+    ? null
+    : Math.max(
+        state.app_created_at,
+        state.staff_comment_coverage_started_at,
+        state.reporter_comment_coverage_started_at,
+      );
+  return c.json({
+    transitions,
+    next_cursor: encodeFeedbackTransitionsCursor(
+      appId,
+      lastSequence,
+    ),
+    has_more: results.length > limit,
+    coverage_started_at: {
+      status_changed: statusCoverage,
+      assignee_changed: assigneeCoverage,
+      comment_visibility: commentCoverage,
+    },
   });
 }
 

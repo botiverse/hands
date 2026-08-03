@@ -76,6 +76,7 @@ import {
   handlePublicMinidumpSubmit,
   handleListFeedback,
   handleListFeedbackMaterialDelta,
+  handleListFeedbackTransitions,
   handleGetFeedback,
   handleUpdateFeedback,
   handleAddFeedbackComment,
@@ -760,6 +761,11 @@ admin.get(
   "/api/apps/:appId/feedback/material-delta",
   requireAppRole("viewer"),
   handleListFeedbackMaterialDelta,
+);
+admin.get(
+  "/api/apps/:appId/feedback/transitions",
+  requireAppRole("viewer"),
+  handleListFeedbackTransitions,
 );
 admin.get("/api/apps/:appId/feedback/:ticketId", requireAppRole("viewer"), handleGetFeedback);
 admin.patch("/api/apps/:appId/feedback/:ticketId", requireFeedbackTriageRole(), handleUpdateFeedback);
