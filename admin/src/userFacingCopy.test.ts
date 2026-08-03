@@ -16,10 +16,10 @@ describe("admin user-facing copy", () => {
     ["./pages/Settings.tsx", "The Worker owns the OAuth callback"],
     ["./pages/Settings.tsx", "Cloudflare Access can be disabled"],
     ["./components/ReleaseAssetUploader.tsx", "underlying R2 binary"],
-    ["./pages/AppDetail.tsx", "all stored files in\n                R2"],
+    ["./pages/AppDetail.tsx", "all stored files in R2"],
     ["./pages/AppDetail.tsx", "data in R2 is not removed"],
   ])("removes implementation detail %s: %s", (path, detail) => {
-    expect(source(path)).not.toContain(detail);
+    expect(source(path).replace(/\s+/g, " ")).not.toContain(detail);
   });
 
   it.each([
