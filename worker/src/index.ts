@@ -223,6 +223,7 @@ import {
 } from "./routes/orgs";
 import {
   requireAppRole,
+  requireAppRoleOrFeedbackPermission,
   requireCurrentOrgRole,
   requireFeedbackTriageRole,
   requireOrgRole,
@@ -755,15 +756,15 @@ admin.get("/api/apps/:appId/analytics/devices", requireAppRole("viewer"), handle
 admin.get("/api/apps/:appId/analytics/versions", requireAppRole("viewer"), handleVersionAnalytics);
 admin.get("/api/apps/:appId/analytics/devices/:deviceId", requireAppRole("viewer"), handleDeviceDetail);
 admin.get("/api/apps/:appId/release-health", requireAppRole("viewer"), handleReleaseHealth);
-admin.get("/api/apps/:appId/feedback", requireAppRole("viewer"), handleListFeedback);
+admin.get("/api/apps/:appId/feedback", requireAppRoleOrFeedbackPermission("viewer", "feedback:read"), handleListFeedback);
 admin.get(
   "/api/apps/:appId/feedback/material-delta",
   requireAppRole("viewer"),
   handleListFeedbackMaterialDelta,
 );
-admin.get("/api/apps/:appId/feedback/:ticketId", requireAppRole("viewer"), handleGetFeedback);
+admin.get("/api/apps/:appId/feedback/:ticketId", requireAppRoleOrFeedbackPermission("viewer", "feedback:read"), handleGetFeedback);
 admin.patch("/api/apps/:appId/feedback/:ticketId", requireFeedbackTriageRole(), handleUpdateFeedback);
-admin.post("/api/apps/:appId/feedback/:ticketId/comments", requireFeedbackTriageRole(), handleAddFeedbackComment);
+admin.post("/api/apps/:appId/feedback/:ticketId/comments", requireAppRoleOrFeedbackPermission("publisher", "feedback:comment"), handleAddFeedbackComment);
 admin.post("/api/apps/:appId/feedback/:ticketId/symbolicate", requireFeedbackTriageRole(), handleResymbolicateFeedback);
 admin.get("/api/apps/:appId/feedback/:ticketId/attachments/:attachmentId", requireAppRole("viewer"), handleDownloadFeedbackAttachment);
 admin.get("/api/apps/:appId/releases/:releaseId/shares", requireAppRole("viewer"), handleListReleaseShares);

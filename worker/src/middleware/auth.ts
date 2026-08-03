@@ -55,6 +55,10 @@ export type AdminEnv = {
     admin_actor?: string;
     org_id?: string;
     org_role?: "owner" | "admin" | "member" | "viewer";
+    // Set when a console feedback route admitted a role-free deploy token on a
+    // feedback permission rather than a role. Such a caller may read tickets and
+    // reply to the reporter, but has no staff-side handling rights.
+    feedback_scoped_token?: true;
   };
 };
 

@@ -2330,6 +2330,26 @@ export async function handleAddFeedbackComment(c: AdminContext) {
   };
   const text = (body.body ?? "").trim();
   if (!text) return c.json({ error: "body is required" }, 400);
+  // `internal` decides whether this reaches the reporter, so it is normalised
+  // exactly once here and every later use reads `isInternal`. Three sites used
+  // to re-interpret the raw field with three different coercions (truthy /
+  // strict / falsy), which let a string "false" store an internal note while
+  // the audit recorded a public reply.
+  //
+  // Non-booleans are rejected rather than coerced. Coercing is not the safe
+  // option it looks like: under a strict reading, `"true"` and `1` — the usual
+  // way a client mis-serialises a boolean — become *public*, sending a note the
+  // author meant to keep internal straight to the customer. Guessing "internal"
+  // is an inconvenience; guessing "public" cannot be taken back.
+  if (body.internal !== undefined && typeof body.internal !== "boolean") {
+    return c.json({ error: "internal must be a boolean" }, 400);
+  }
+  const isInternal = body.internal === true;
+  // A role-free feedback token may reply to the reporter, not write staff-only
+  // notes. Checked here rather than in middleware because it depends on the body.
+  if (isInternal && c.get("feedback_scoped_token")) {
+    return c.json({ error: "internal notes require the publisher role" }, 403);
+  }
   const ticket = await c.env.DB.prepare(
     `SELECT t.id, t.reporter_integration_id, t.reporter_id, a.org_id,
             CASE WHEN ri.id IS NOT NULL AND ri.archived_at IS NULL THEN 1 ELSE 0 END AS reporter_active
@@ -2356,7 +2376,7 @@ export async function handleAddFeedbackComment(c: AdminContext) {
       `INSERT INTO feedback_comments
        (id, ticket_id, author_actor, author_type, body, internal, created_at)
        VALUES (?1, ?2, ?3, 'staff', ?4, ?5, ?6)`,
-    ).bind(id, ticketId, currentActor(c), text, body.internal ? 1 : 0, now),
+    ).bind(id, ticketId, currentActor(c), text, isInternal ? 1 : 0, now),
     c.env.DB.prepare(
       "UPDATE feedback_tickets SET updated_at = ?1 WHERE id = ?2",
     ).bind(now, ticketId),
@@ -2367,12 +2387,12 @@ export async function handleAddFeedbackComment(c: AdminContext) {
       crypto.randomUUID(),
       appId,
       currentActor(c),
-      JSON.stringify({ ticket_id: ticketId, comment_id: id, internal: body.internal === true }),
+      JSON.stringify({ ticket_id: ticketId, comment_id: id, internal: isInternal }),
       now,
     ),
   ];
   if (
-    !body.internal
+    !isInternal
     && ticket.org_id
     && ticket.reporter_integration_id
     && ticket.reporter_id

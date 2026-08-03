@@ -388,6 +388,44 @@ export function requireAppRole(minimum: AppRole): MiddlewareHandler<RoleContext>
   };
 }
 
+/**
+ * Console feedback routes: admit either the role, or a deploy token that carries
+ * the permission explicitly.
+ *
+ * The token must be role-free and, critically, **not bound to a reporter
+ * integration**. A bound token is confined by the reporter API to the tickets of
+ * that one integration; admitting it here would hand it the whole app's
+ * feedback. The binding decides scope, not the permission name — so the binding
+ * is what this checks.
+ *
+ * A bound token simply falls through to the role check and is rejected there,
+ * because `isAppAtLeast(null, …)` is false for a role-free token.
+ */
+export function requireAppRoleOrFeedbackPermission(
+  minimum: AppRole,
+  permission: AppPermission,
+): MiddlewareHandler<RoleContext> {
+  return async (c, next) => {
+    const appId = c.req.param("appId");
+    if (!appId) return c.json({ error: "missing appId" }, 400);
+    const token = currentDeployToken(c);
+    if (
+      token
+      && token.app_id === appId
+      && token.app_role === null
+      && token.reporter_integration_id === null
+      && resolveDeployTokenPermissions(token).has(permission)
+    ) {
+      c.set("feedback_scoped_token", true);
+      await next();
+      return;
+    }
+    const allowed = await ensureAppRole(c, appId, minimum);
+    if (!allowed.ok) return allowed.response;
+    await next();
+  };
+}
+
 export function requireAppPermission(permission: AppPermission): MiddlewareHandler<RoleContext> {
   return async (c, next) => {
     const appId = c.req.param("appId");
