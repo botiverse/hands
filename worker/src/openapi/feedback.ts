@@ -281,6 +281,41 @@ export function registerFeedbackRoutes(registry: OpenApiRegistry) {
 
   register(registry, {
     method: "get",
+    path: "/api/apps/{appId}/feedback/transitions",
+    tags: ["Feedback"],
+    summary: "Replay feedback status, assignee, and comment-visibility transitions",
+    description:
+      "Returns a minimized transition stream derived from append-only audit records. coverage_started_at is reported per transition type; null or a report window before that timestamp means the corresponding report section is incomplete. Process a whole page before persisting next_cursor.",
+    security: auth,
+    request: {
+      params: AppIdParam,
+      query: z.object({
+        cursor: z.string().optional(),
+        limit: z.coerce.number().int().min(1).max(200).optional(),
+      }),
+    },
+    responses: {
+      200: success(
+        "Complete app-visible feedback transitions within each declared coverage window.",
+        z.object({
+          transitions: z.array(GenericObject),
+          next_cursor: z.string(),
+          has_more: z.boolean(),
+          coverage_started_at: z.object({
+            status_changed: z.number().int().nonnegative().nullable(),
+            assignee_changed: z.number().int().nonnegative().nullable(),
+            comment_visibility: z.number().int().nonnegative().nullable(),
+          }),
+        }),
+      ),
+      400: error("Invalid feedback transitions cursor or limit."),
+      403: error("Current principal cannot view feedback."),
+      500: error("Feedback transition projection is unavailable."),
+    },
+  });
+
+  register(registry, {
+    method: "get",
     path: "/api/apps/{appId}/feedback/stats",
     tags: ["Feedback"],
     summary: "Read feedback ticket statistics",
