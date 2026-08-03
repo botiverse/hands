@@ -159,10 +159,19 @@ describe("the tested wiring is the shipped wiring", () => {
   // Route strings are matched with their quotes, so a prefix such as
   // "/api/apps/:appId/feedback/crash-groups" cannot satisfy the bare list route.
   const indexSource = readFileSync(new URL("../src/index.ts", import.meta.url), "utf8");
+  // The window must END AT THE NEXT REGISTRATION, not after N characters. With a
+  // fixed width it can spill into the neighbouring route, and since adjacent
+  // feedback routes carry the *same* permission string, the neighbour then
+  // satisfies the assertion for a route that does not have it. The earlier
+  // 300-char version only reddened under mutation by 7 characters of margin —
+  // reflowing a nearby registration would have turned it green while the route
+  // was wired wrong. A guard whose failure mode is "reports green" is worse than
+  // no guard, because it stops the next person looking.
   const registrationFor = (route: string) => {
     const at = indexSource.indexOf('"' + route + '"');
     expect(at).toBeGreaterThan(-1);
-    return indexSource.slice(at, at + 300);
+    const next = indexSource.indexOf("admin.", at);
+    return indexSource.slice(at, next === -1 ? indexSource.length : next);
   };
 
   it.each([
