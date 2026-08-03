@@ -223,6 +223,7 @@ import {
 } from "./routes/orgs";
 import {
   requireAppRole,
+  requireAppRoleOrFeedbackPermission,
   requireCurrentOrgRole,
   requireFeedbackTriageRole,
   requireOrgRole,
@@ -608,7 +609,10 @@ app.use("*", async (c, next) => {
 });
 
 // Admin — protected by a Hands JWT or scoped deploy-token bearer auth.
-const admin = new Hono<{
+// Exported so tests can enumerate the real route table rather than pattern-match
+// the source: coverage should be decided by the router, not by whether a regex
+// recognises a particular registration style.
+export const admin = new Hono<{
   Bindings: Env;
   Variables: {
     admin_account?: import("./middleware/auth").AdminAccount;
@@ -755,17 +759,23 @@ admin.get("/api/apps/:appId/analytics/devices", requireAppRole("viewer"), handle
 admin.get("/api/apps/:appId/analytics/versions", requireAppRole("viewer"), handleVersionAnalytics);
 admin.get("/api/apps/:appId/analytics/devices/:deviceId", requireAppRole("viewer"), handleDeviceDetail);
 admin.get("/api/apps/:appId/release-health", requireAppRole("viewer"), handleReleaseHealth);
-admin.get("/api/apps/:appId/feedback", requireAppRole("viewer"), handleListFeedback);
+admin.get("/api/apps/:appId/feedback", requireAppRoleOrFeedbackPermission("viewer", "feedback:read"), handleListFeedback);
 admin.get(
   "/api/apps/:appId/feedback/material-delta",
-  requireAppRole("viewer"),
+  requireAppRoleOrFeedbackPermission("viewer", "feedback:read"),
   handleListFeedbackMaterialDelta,
 );
-admin.get("/api/apps/:appId/feedback/:ticketId", requireAppRole("viewer"), handleGetFeedback);
+admin.get("/api/apps/:appId/feedback/:ticketId", requireAppRoleOrFeedbackPermission("viewer", "feedback:read"), handleGetFeedback);
 admin.patch("/api/apps/:appId/feedback/:ticketId", requireFeedbackTriageRole(), handleUpdateFeedback);
-admin.post("/api/apps/:appId/feedback/:ticketId/comments", requireFeedbackTriageRole(), handleAddFeedbackComment);
+admin.post("/api/apps/:appId/feedback/:ticketId/comments", requireAppRoleOrFeedbackPermission("publisher", "feedback:comment"), handleAddFeedbackComment);
 admin.post("/api/apps/:appId/feedback/:ticketId/symbolicate", requireFeedbackTriageRole(), handleResymbolicateFeedback);
-admin.get("/api/apps/:appId/feedback/:ticketId/attachments/:attachmentId", requireAppRole("viewer"), handleDownloadFeedbackAttachment);
+admin.get(
+  "/api/apps/:appId/feedback/:ticketId/attachments/:attachmentId",
+  // An attachment is the substance of most crash reports; reading a ticket
+  // without being able to fetch its screenshot is not "read feedback".
+  requireAppRoleOrFeedbackPermission("viewer", "feedback:read"),
+  handleDownloadFeedbackAttachment,
+);
 admin.get("/api/apps/:appId/releases/:releaseId/shares", requireAppRole("viewer"), handleListReleaseShares);
 admin.post("/api/apps/:appId/releases/:releaseId/shares", requireAppRole("publisher"), handleCreateReleaseShare);
 admin.patch("/api/apps/:appId/releases/:releaseId/shares/:shareId", requireAppRole("publisher"), handleUpdateReleaseShare);

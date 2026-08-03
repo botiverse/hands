@@ -642,14 +642,17 @@ describe("feedback material delta production routes", () => {
       env,
     )).status).toBe(200);
 
+    // Ordering is the property: `/feedback/material-delta` must be registered
+    // before `/feedback/:ticketId`, or the literal path is captured as a ticket
+    // id. Matched on the route paths alone — an earlier version pinned the whole
+    // registration line including its middleware, so changing the guard made
+    // `indexOf` return -1 and the ordering assertion passed vacuously on a
+    // missing string rather than failing loudly.
     const indexSource = readFileSync(new URL("../src/index.ts", import.meta.url), "utf8");
-    const materialRoute = indexSource.indexOf(
-      'admin.get(\n  "/api/apps/:appId/feedback/material-delta",\n  requireAppRole("viewer"),\n  handleListFeedbackMaterialDelta,\n);',
-    );
-    const ticketRoute = indexSource.indexOf(
-      'admin.get("/api/apps/:appId/feedback/:ticketId", requireAppRole("viewer"), handleGetFeedback);',
-    );
+    const materialRoute = indexSource.indexOf('"/api/apps/:appId/feedback/material-delta"');
+    const ticketRoute = indexSource.indexOf('"/api/apps/:appId/feedback/:ticketId"');
     expect(materialRoute).toBeGreaterThan(-1);
+    expect(ticketRoute).toBeGreaterThan(-1);
     expect(ticketRoute).toBeGreaterThan(materialRoute);
   });
 
