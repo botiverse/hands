@@ -15,7 +15,11 @@ import { readdirSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import Database from "better-sqlite3";
 import { describe, expect, it } from "vitest";
+import { Hono } from "hono";
 import { handleCreateAppDeployToken } from "../src/routes/deploy_tokens";
+import { authMiddleware } from "../src/middleware/auth";
+import { requireAppRoleOrFeedbackPermission } from "../src/lib/permissions";
+import { handleListFeedback } from "../src/routes/feedback";
 
 const MIGRATION_DIR = fileURLToPath(new URL("../../migrations/sql/", import.meta.url));
 const APP = "app-a";
@@ -143,5 +147,43 @@ describe("issuing a console feedback token", () => {
       name: "reporter", scopes: ["feedback:read"], reporter_integration_id: INTEGRATION,
     });
     expect(status).toBe(201);
+  });
+});
+
+describe("the seam: a token that was really issued is really accepted", () => {
+  // Both halves were green while the feature was undeliverable, because each
+  // tested its own half against an assumption about the other:
+  //
+  //   #403/#404  given such a token, the console admits it   (token fabricated)
+  //   #406       such a token can be issued                  (never used)
+  //
+  // Nothing checked that the thing issuance produces is the thing the
+  // middleware accepts. The bug lived exactly there. This mints through the
+  // real handler and spends the returned token on the real route.
+  it("mints a feedback:read token and uses it on the console list route", async () => {
+    const { sqlite, env } = environment();
+
+    const { status, body } = await issue(env, {
+      name: "seam", scopes: ["feedback:read"],
+    });
+    expect(status).toBe(201);
+    const token = body.token as string;
+
+    const app = new Hono<any>();
+    app.use("*", authMiddleware);
+    app.get(
+      "/api/apps/:appId/feedback",
+      requireAppRoleOrFeedbackPermission("viewer", {}, "feedback:read"),
+      handleListFeedback,
+    );
+    const response = await app.request(
+      `https://hands.test/api/apps/${APP}/feedback`,
+      { headers: { authorization: `Bearer ${token}` } },
+      { ...env, DASHBOARD_ORIGIN: "https://dashboard.example" } as unknown as Env,
+    );
+    expect(response.status).toBe(200);
+    expect(sqlite.prepare(
+      "SELECT app_role, reporter_integration_id FROM app_deploy_tokens WHERE name = 'seam'",
+    ).get()).toMatchObject({ app_role: null, reporter_integration_id: null });
   });
 });
