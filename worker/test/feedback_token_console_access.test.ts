@@ -274,6 +274,21 @@ describe("feedback:read alone carries no write capability", () => {
     expect((await comment(app(), token, env, { body: "note", internal: true })).status).toBe(403);
   });
 
+  it("is not accepted by ANY write route, including ones added later", () => {
+    // The class, not the instances. Enumerating 403s only covers the write
+    // routes that exist today; this fails the moment someone registers a new
+    // POST/PATCH/PUT/DELETE that admits feedback:read — which is exactly when
+    // a read-only credential silently becomes a writing one.
+    const indexSource = readFileSync(new URL("../src/index.ts", import.meta.url), "utf8");
+    const offenders: string[] = [];
+    const registration = /admin\.(post|patch|put|delete)\(([\s\S]{0,400}?)\n\);|admin\.(post|patch|put|delete)\((.*?)\);/g;
+    for (const match of indexSource.matchAll(registration)) {
+      const body = match[2] ?? match[4] ?? "";
+      if (body.includes('"feedback:read"')) offenders.push(body.split("\n")[0].trim());
+    }
+    expect(offenders).toEqual([]);
+  });
+
   it("writes nothing to the database on any attempt", async () => {
     const { sqlite, env } = environment();
     const token = await readOnly(sqlite);
