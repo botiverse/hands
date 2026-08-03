@@ -1435,7 +1435,7 @@ export function AppSettings({ appId }: { appId: string }) {
                   <br />
                   <span className="text-xs text-slate-500">
                     This is reversible: existing builds, releases, and assets
-                    are kept as-is.
+                    are kept as-is. Archiving does not free up storage.
                   </span>
                 </>
               )

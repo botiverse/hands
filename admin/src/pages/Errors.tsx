@@ -22,7 +22,8 @@ export function AppErrors({ appId }: { appId: string }) {
           <h2 className="text-lg font-semibold">Errors</h2>
           <p className="text-sm text-slate-500">
             Errors reported by this app, grouped by signature so recurring
-            problems are easier to identify.
+            problems are easier to identify. A signature combines the type of
+            error with where it happened in your code.
           </p>
         </div>
       </div>

@@ -24,13 +24,13 @@ describe("admin user-facing copy", () => {
 
   it.each([
     ["./pages/Feedback.tsx", "Feedback and crash reports submitted from this app."],
-    ["./pages/Errors.tsx", "Errors reported by this app"],
+    ["./pages/Errors.tsx", "error with where it happened in your code"],
     ["./components/ChangelogMarkdown.tsx", "Public preview supports paragraphs"],
     ["./pages/OrgSettings.tsx", "Pending deliveries are retried every 5 minutes."],
     ["./pages/Settings.tsx", "Access follows your Raft"],
     ["./components/ReleaseAssetUploader.tsx", "does not reclaim its"],
     ["./pages/AppDetail.tsx", "feedback tickets, and uploaded files"],
-    ["./pages/AppDetail.tsx", "existing builds, releases, and assets"],
+    ["./pages/AppDetail.tsx", "Archiving does not free up storage."],
   ])("keeps the user-visible outcome %s: %s", (path, outcome) => {
     expect(source(path)).toContain(outcome);
   });
