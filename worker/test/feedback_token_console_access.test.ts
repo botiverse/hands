@@ -170,6 +170,27 @@ describe("console feedback access for role-free tokens", () => {
     expect((await list(app(), token, env)).status).toBe(403);
   });
 
+  it("keeps rejecting a bound token after its integration is archived", async () => {
+    // Archiving is a downgrade, and it must not become an upgrade.
+    //
+    // `reporter_integration_active` is NULL for a non-reporter token and 0 for a
+    // bound token whose integration was archived, so a falsy test (`!active`)
+    // reads both as "unbound" and would promote an archived reporter token from
+    // its own tickets to the app's entire feedback. The binding itself
+    // (`reporter_integration_id`) is the only criterion that survives archiving.
+    //
+    // Asserted as the consequence: archiving widens nothing. Rewriting the guard
+    // in any equivalent-looking way that reintroduces the conflation reddens here.
+    const { sqlite, env } = environment();
+    const token = await issueToken(sqlite, {
+      name: "reporter", role: null, scopes: '["feedback:read"]', boundTo: INTEGRATION,
+    });
+    sqlite.prepare(
+      "UPDATE app_reporter_integrations SET archived_at = 2 WHERE id = ?",
+    ).run(INTEGRATION);
+    expect((await list(app(), token, env)).status).toBe(403);
+  });
+
   it("still admits an ordinary viewer-role token", async () => {
     const { sqlite, env } = environment();
     const token = await issueToken(sqlite, { name: "viewer", role: "viewer", scopes: null });
