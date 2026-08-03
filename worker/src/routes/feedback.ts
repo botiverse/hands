@@ -871,16 +871,39 @@ function stableJson(value: unknown): string {
 const MINIDUMP_MAX_BYTES = 64 * 1024 * 1024; // Crashpad dumps are usually < a few MB
 
 /**
- * Electron/Crashpad crash ingest. Electron's built-in crashReporter POSTs a
+ * Crashpad minidump crash ingest. Electron's built-in crashReporter POSTs a
  * multipart/form-data with the minidump under `upload_file_minidump` plus a
  * flat set of annotation fields (productName, version, and any `extra`/
  * `globalExtra` the SDK set). We store the dump as a crash-ticket attachment,
- * fold every annotation into metadata (product_type=electron), and fire the
+ * fold every annotation into metadata (product_type from the annotation, see
+ * crashProductKind), and fire the
  * minidump symbolication lane against the version's breakpad-symbols asset.
  *
  * Client-key gate: the SDK puts it in the submitURL query (`?client_key=`),
  * which Crashpad preserves, or an X-Quiver-Client-Key header.
  */
+/**
+ * Which product produced a Crashpad minidump. Closed set: anything absent or
+ * unrecognised is Electron, so clients that predate this annotation keep the
+ * exact output they had before — the only producer of a non-Electron value is a
+ * client that deliberately sends one.
+ */
+const CRASH_PRODUCT_KINDS = ["electron", "tauri"] as const;
+type CrashProductKind = (typeof CRASH_PRODUCT_KINDS)[number];
+
+function crashProductKind(annotated: string | null): CrashProductKind {
+  const value = (annotated ?? "").trim().toLowerCase();
+  return (CRASH_PRODUCT_KINDS as readonly string[]).includes(value)
+    ? (value as CrashProductKind)
+    : "electron";
+}
+
+/** Human-facing product name for a ticket title. */
+const CRASH_PRODUCT_LABEL: Record<CrashProductKind, string> = {
+  electron: "Electron",
+  tauri: "Tauri",
+};
+
 export async function handlePublicMinidumpSubmit(c: Context<{ Bindings: Env }>) {
   const slug = c.req.param("slug");
   if (!slug) return c.json({ error: "slug required" }, 400);
@@ -938,11 +961,12 @@ export async function handlePublicMinidumpSubmit(c: Context<{ Bindings: Env }>) 
   const versionCode =
     versionCodeRaw && /^\d+$/.test(versionCodeRaw) ? Math.trunc(Number(versionCodeRaw)) : null;
   const processType = pick("process_type", "ptype", "type"); // main / renderer / gpu / utility
+  const productKind = crashProductKind(pick("product_type", "product"));
   const metadata: Record<string, unknown> = {
     ...annotations,
-    product_type: "electron",
+    product_type: productKind,
     process_type: processType,
-    crash_platform: pick("platform", "os") ?? "electron",
+    crash_platform: pick("platform", "os") ?? productKind,
   };
 
   const clientIp =
@@ -968,7 +992,8 @@ export async function handlePublicMinidumpSubmit(c: Context<{ Bindings: Env }>) 
   });
 
   const reasonBits = [processType, versionName].filter(Boolean).join(" · ");
-  const message = `Electron crash${reasonBits ? ` (${reasonBits})` : ""}`;
+  const message =
+    `${CRASH_PRODUCT_LABEL[productKind]} crash${reasonBits ? ` (${reasonBits})` : ""}`;
 
   await c.env.DB.batch([
     c.env.DB.prepare(
@@ -1660,7 +1685,40 @@ export async function symbolicateDsymCrashTicket(
 }
 
 /**
- * Resolve an Electron/Crashpad minidump against the version's breakpad-symbols
+ * The Breakpad lane symbolicates any Crashpad minidump, so its output names no
+ * product. It previously said "Electron" and pointed at `publish-electron`,
+ * which told operators of every other product the wrong thing — including the
+ * wrong command to run. The product is already on the ticket as `product_type`.
+ *
+ * Extracted from the symbolicate path so the wording is assertable without a
+ * container binding: the rule "this text mentions no product" needs something
+ * that can fail.
+ */
+export const MINIDUMP_SYMBOLICATION_LABEL = "minidump";
+
+export function minidumpSymbolicationText(input: {
+  hasSymbols: boolean;
+  crashReason: string | null;
+  crashAddress: string | null;
+  versionCode: number | null;
+  stack: string;
+}): string {
+  const header =
+    `Symbolicated minidump crash (minidump-stackwalk` +
+    `${input.hasSymbols ? "" : ", no breakpad-symbols asset — module+offset only"}):` +
+    `${input.crashReason ? `\nReason: ${input.crashReason}${input.crashAddress ? ` @ ${input.crashAddress}` : ""}` : ""}`;
+  const tip =
+    !input.hasSymbols && input.versionCode !== null
+      ? `\n\nTip: upload the version's Breakpad symbols (run dump_syms, then ` +
+        `this product's "hands builds" publish command with --symbols) ` +
+        `for version_code ${input.versionCode} to get function/file:line ` +
+        `resolution instead of raw module+offset.`
+      : "";
+  return `${header}\n\n${input.stack}${tip}`.slice(0, 20_000);
+}
+
+/**
+ * Resolve a Crashpad minidump against the version's breakpad-symbols
  * asset via the container's minidump-stackwalk lane and append the result as an
  * internal comment — mirrors the native/dSYM symbolication flows. Missing
  * symbols leaves an operator-actionable comment.
@@ -1718,22 +1776,18 @@ export async function symbolicateMinidumpCrashTicket(
     const stack = (parsed.stack_text ?? "").trim();
     if (!stack) return;
 
-    const header =
-      `Symbolicated Electron crash (minidump-stackwalk` +
-      `${symBytes ? "" : ", no breakpad-symbols asset — module+offset only"}):` +
-      `${parsed.crash_reason ? `\nReason: ${parsed.crash_reason}${parsed.crash_address ? ` @ ${parsed.crash_address}` : ""}` : ""}`;
-    const tip =
-      !symBytes && versionCode !== null
-        ? `\n\nTip: upload the version's Breakpad symbols (dump_syms → hands builds ` +
-          `publish-electron --symbols) for version_code ${versionCode} to get ` +
-          `function/file:line resolution instead of raw module+offset.`
-        : "";
     await appendSymbolication(
       env,
       ticketId,
-      "electron-minidump",
+      MINIDUMP_SYMBOLICATION_LABEL,
       "symbolicated",
-      `${header}\n\n${stack}${tip}`.slice(0, 20_000),
+      minidumpSymbolicationText({
+        hasSymbols: Boolean(symBytes),
+        crashReason: parsed.crash_reason ?? null,
+        crashAddress: parsed.crash_address ?? null,
+        versionCode,
+        stack,
+      }),
     );
   } catch (err) {
     console.error(
