@@ -129,12 +129,12 @@ function app() {
   mini.use("*", authMiddleware);
   mini.get(
     "/api/apps/:appId/feedback",
-    requireAppRoleOrFeedbackPermission("viewer", "feedback:read"),
+    requireAppRoleOrFeedbackPermission("viewer", {}, "feedback:read"),
     handleListFeedback,
   );
   mini.post(
     "/api/apps/:appId/feedback/:ticketId/comments",
-    requireAppRoleOrFeedbackPermission("publisher", "feedback:comment", "feedback:triage"),
+    requireAppRoleOrFeedbackPermission("publisher", { orgMinimum: "member" }, "feedback:comment", "feedback:triage"),
     handleAddFeedbackComment,
   );
   return mini;
@@ -179,6 +179,37 @@ describe("the tested wiring is the shipped wiring", () => {
     const next = indexSource.indexOf("admin.", at);
     return indexSource.slice(at, next === -1 ? indexSource.length : next);
   };
+
+  // The routes that replaced requireFeedbackTriageRole must keep its org reach.
+  // That guard passed { orgMinimum: "member" }; the replacement dropped it and
+  // silently locked org-level members out of internal notes in production.
+  //
+  // Structural, and I want the limit on record: it asserts the option is passed,
+  // not that an org member can actually write. The behavioural version needs the
+  // human session harness these tests do not build. This catches the exact
+  // regression that shipped; it does not prove the org path end to end.
+  // Walks back from the path to its own `admin.<verb>(`, so it works whether the
+  // registration is written on one line or several — the earlier attempt assumed
+  // single-line and silently matched nothing.
+  // Scan registrations of THIS verb and take the one whose path matches. Looking
+  // up the path first is wrong: GET and PATCH share "/…/feedback/:ticketId", so
+  // indexOf lands on whichever appears first in the file.
+  const writeRegistration = (verb: string, route: string) => {
+    const marker = "admin." + verb + "(";
+    for (let at = indexSource.indexOf(marker); at !== -1; at = indexSource.indexOf(marker, at + 1)) {
+      const next = indexSource.indexOf("admin.", at + marker.length);
+      const block = indexSource.slice(at, next === -1 ? indexSource.length : next);
+      if (block.includes('"' + route + '"')) return block;
+    }
+    throw new Error(`no ${verb.toUpperCase()} registration for ${route}`);
+  };
+
+  it.each([
+    ["post", "/api/apps/:appId/feedback/:ticketId/comments"],
+    ["patch", "/api/apps/:appId/feedback/:ticketId"],
+  ])("keeps org-member reach on %s %s", (verb, route) => {
+    expect(writeRegistration(verb, route)).toContain('orgMinimum: "member"');
+  });
 
   it.each([
     ["/api/apps/:appId/feedback", "feedback:read"],
@@ -249,7 +280,7 @@ describe("console feedback access for role-free tokens", () => {
     mini.use("*", authMiddleware);
     mini.get(
       "/api/apps/:appId/releases",
-      requireAppRoleOrFeedbackPermission("publisher", "app:publish"),
+      requireAppRoleOrFeedbackPermission("publisher", {}, "app:publish"),
       (c) => c.json({ ok: true }),
     );
     const response = await mini.request(

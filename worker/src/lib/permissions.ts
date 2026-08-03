@@ -403,6 +403,7 @@ export function requireAppRole(minimum: AppRole): MiddlewareHandler<RoleContext>
  */
 export function requireAppRoleOrFeedbackPermission(
   minimum: AppRole,
+  options: { orgMinimum?: OrgRole },
   ...permissions: AppPermission[]
 ): MiddlewareHandler<RoleContext> {
   return async (c, next) => {
@@ -422,7 +423,10 @@ export function requireAppRoleOrFeedbackPermission(
       await next();
       return;
     }
-    const allowed = await ensureAppRole(c, appId, minimum);
+    // The role branch must retain exactly the reach the guard it replaced had.
+    // requireFeedbackTriageRole passed { orgMinimum: "member" }; dropping that
+    // silently removed org-level members from routes they could always use.
+    const allowed = await ensureAppRole(c, appId, minimum, options);
     if (!allowed.ok) return allowed.response;
     await next();
   };
