@@ -766,7 +766,13 @@ admin.get("/api/apps/:appId/feedback/:ticketId", requireAppRoleOrFeedbackPermiss
 admin.patch("/api/apps/:appId/feedback/:ticketId", requireFeedbackTriageRole(), handleUpdateFeedback);
 admin.post("/api/apps/:appId/feedback/:ticketId/comments", requireAppRoleOrFeedbackPermission("publisher", "feedback:comment"), handleAddFeedbackComment);
 admin.post("/api/apps/:appId/feedback/:ticketId/symbolicate", requireFeedbackTriageRole(), handleResymbolicateFeedback);
-admin.get("/api/apps/:appId/feedback/:ticketId/attachments/:attachmentId", requireAppRole("viewer"), handleDownloadFeedbackAttachment);
+admin.get(
+  "/api/apps/:appId/feedback/:ticketId/attachments/:attachmentId",
+  // An attachment is the substance of most crash reports; reading a ticket
+  // without being able to fetch its screenshot is not "read feedback".
+  requireAppRoleOrFeedbackPermission("viewer", "feedback:read"),
+  handleDownloadFeedbackAttachment,
+);
 admin.get("/api/apps/:appId/releases/:releaseId/shares", requireAppRole("viewer"), handleListReleaseShares);
 admin.post("/api/apps/:appId/releases/:releaseId/shares", requireAppRole("publisher"), handleCreateReleaseShare);
 admin.patch("/api/apps/:appId/releases/:releaseId/shares/:shareId", requireAppRole("publisher"), handleUpdateReleaseShare);

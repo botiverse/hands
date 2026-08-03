@@ -150,6 +150,31 @@ const comment = (mini: ReturnType<typeof app>, token: string, env: Env, body: un
   env,
 );
 
+describe("the tested wiring is the shipped wiring", () => {
+  // These tests build their own mini-app, so they can pass while index.ts is
+  // wired differently. That is not hypothetical: the attachment route was left
+  // on requireAppRole("viewer") in the first pass and nothing here noticed,
+  // because nothing here reads the real registrations.
+  //
+  // Route strings are matched with their quotes, so a prefix such as
+  // "/api/apps/:appId/feedback/crash-groups" cannot satisfy the bare list route.
+  const indexSource = readFileSync(new URL("../src/index.ts", import.meta.url), "utf8");
+  const registrationFor = (route: string) => {
+    const at = indexSource.indexOf('"' + route + '"');
+    expect(at).toBeGreaterThan(-1);
+    return indexSource.slice(at, at + 300);
+  };
+
+  it.each([
+    ["/api/apps/:appId/feedback", "feedback:read"],
+    ["/api/apps/:appId/feedback/:ticketId", "feedback:read"],
+    ["/api/apps/:appId/feedback/:ticketId/attachments/:attachmentId", "feedback:read"],
+    ["/api/apps/:appId/feedback/:ticketId/comments", "feedback:comment"],
+  ])("registers %s so a feedback token can use it (%s)", (route, permission) => {
+    expect(registrationFor(route)).toContain('"' + permission + '"');
+  });
+});
+
 describe("console feedback access for role-free tokens", () => {
   it("admits an unbound token holding feedback:read", async () => {
     const { sqlite, env } = environment();
