@@ -9,9 +9,22 @@ queued on-device and retried after network or process failures; set
 
 ## Coordinates
 
-Two ways to consume the SDK. **JitPack needs no token** — prefer it unless you
-already have GitHub Packages set up. (GitHub Packages' Maven registry requires a
-`read:packages` token for every request, even though the package is public.)
+The canonical `build.hands:hands-android-sdk` publication is public on Raft
+Artifacts and needs no download token. JitPack remains available as a
+source-build fallback. GitHub Packages requires a `read:packages` token for
+every request even though the package is public.
+
+### Raft Artifacts (preferred, no token)
+
+```kotlin
+repositories {
+    maven { url = uri("https://maven.artifacts.botiverse.dev") }
+}
+
+dependencies {
+    implementation("build.hands:hands-android-sdk:0.12.4")
+}
+```
 
 ### JitPack (no token)
 

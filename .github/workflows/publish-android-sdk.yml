@@ -80,12 +80,18 @@ jobs:
           RESOLVED_VERSION: ${{ steps.version.outputs.value }}
         run: gradle -p clients/android publishToMavenLocal "-PVERSION_NAME=$RESOLVED_VERSION"
 
-      - name: Publish SDK to GitHub Packages
+      - name: Publish SDK to Maven repositories
         if: ${{ github.event_name != 'workflow_dispatch' || !inputs.dry_run }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RAFT_ARTIFACTS_TOKEN: ${{ secrets.RAFT_ARTIFACTS_TOKEN }}
           RESOLVED_VERSION: ${{ steps.version.outputs.value }}
-        run: gradle -p clients/android publish "-PVERSION_NAME=$RESOLVED_VERSION"
+        run: |
+          [[ -n "${RAFT_ARTIFACTS_TOKEN}" ]] || {
+            echo "RAFT_ARTIFACTS_TOKEN is required for Android SDK publication" >&2
+            exit 1
+          }
+          gradle -p clients/android publish "-PVERSION_NAME=$RESOLVED_VERSION"
 
       - name: Summary
         shell: bash
