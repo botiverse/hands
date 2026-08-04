@@ -103,7 +103,7 @@ reached by holding the role.
 | `app:admin` | Carried by `admin`; settings, members, credentials, destructive operations | Console entry on its own; anything in another app |
 | `feedback:write` | **File a ticket on a user's behalf** from a trusted server proxy. Requires a reporter-integration binding | **Any staff-side handling. This is not a support or triage permission.** |
 | `feedback:read` | Read tickets, their detail, attachments and the material-delta feed. Scope follows the token's binding | Any write |
-| `feedback:comment` | Post a **public reply** the reporter sees | Internal notes; status or assignee |
+| `feedback:comment` | Post a **public reply** the reporter sees. A **bound** token may also **close** that reporter's own ticket | Internal notes; assignee; reopening; any other status change |
 | `feedback:triage` | Change status and assignee, write **internal notes** | Replying to the reporter |
 | `feedback:route` | Bind an opaque route subject to a reporter integration. Requires a reporter-integration binding | Reading or writing ticket content |
 
@@ -132,7 +132,8 @@ unreadable or corrupt grant fails closed.
   `feedback:write`, **bound to an active reporter integration**. Issuance refuses
   this permission on an unbound token, so the binding is not optional.
 - **A reporter integration** — no role, `feedback:read` and `feedback:comment`,
-  bound to the integration.
+  bound to the integration. **Note that `feedback:comment` also lets it close a
+  reporter's own ticket** — see the permission table.
 - **Support automation that reads and answers feedback** — no role,
   `feedback:read` + `feedback:comment`, **unbound**. It cannot publish, change
   status, or write internal notes.
