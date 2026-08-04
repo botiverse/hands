@@ -69,10 +69,15 @@ WORKDIR /app
 
 # Install Node deps. We use --include=dev because tsx (a devDependency) is used to
 # run the TypeScript source directly without a separate build step — much faster
-# iteration and smaller image than tsc → node.
-COPY package.json ./
-COPY package-lock.json* ./
-RUN npm install --include=dev --no-audit --no-fund
+# iteration and smaller image than tsc → node. So tsx and its esbuild engine are
+# this service's runtime, not build tooling: dropping --include=dev does not slim
+# the image, it stops the server from starting.
+#
+# npm ci, not npm install: install resolves the ranges afresh on every build, so
+# the same commit could produce different versions weeks apart. ci installs
+# exactly what the lockfile records.
+COPY package.json package-lock.json ./
+RUN npm ci --include=dev --no-audit --no-fund
 
 # Copy container source
 COPY src ./src
