@@ -37,6 +37,13 @@ const pages = [
     source: "agent-cli-feedback.md",
   },
   {
+    slug: "permissions",
+    title: "Roles & Permissions",
+    category: "For agents",
+    description: "What each app role and permission actually grants \u2014 including the six feedback endpoints that accept a permission instead of a role, why a token's reach comes from its binding rather than the permission name, and why permissions add to a role instead of narrowing it.",
+    source: "permissions.md",
+  },
+  {
     slug: "agent-native-state-delta",
     title: "Designing State for Agents",
     category: "For agents",
