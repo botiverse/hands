@@ -111,7 +111,7 @@ describe("CORS keeps allowHeaders non-empty (GHSA-8j4g-w8fx-2239)", () => {
     const vulnerable = registrations
       .map(({ file, args }) => {
         const match = args.match(/allowHeaders:\s*\[([^\]]*)\]/);
-        const entries = match?.[1].split(",").map((s) => s.trim()).filter(Boolean) ?? [];
+        const entries = (match?.[1] ?? "").split(",").map((s) => s.trim()).filter(Boolean);
         if (entries.length > 0) return null;
         return `${file}: allowHeaders is ${match ? "empty" : "absent"}`;
       })
@@ -137,9 +137,12 @@ describe("CORS keeps allowHeaders non-empty (GHSA-8j4g-w8fx-2239)", () => {
     const below = MANIFESTS
       .map((manifest) => ({ manifest, range: honoRange(manifest) }))
       .filter(({ range }) => {
-        const floor = range.replace(/^[^0-9]*/, "").split(".").map(Number);
-        return !(floor[0] > 4
-          || (floor[0] === 4 && (floor[1] > 12 || (floor[1] === 12 && floor[2] >= 34))));
+        const [major = 0, minor = 0, patch = 0] = range
+          .replace(/^[^0-9]*/, "")
+          .split(".")
+          .map(Number);
+        return !(major > 4
+          || (major === 4 && (minor > 12 || (minor === 12 && patch >= 34))));
       })
       .map(({ manifest, range }) => `${manifest}: hono ${range} still permits vulnerable versions`);
     expect(below).toEqual([]);
