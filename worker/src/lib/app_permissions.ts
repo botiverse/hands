@@ -30,7 +30,7 @@ export const APP_PERMISSION_DESCRIPTIONS: Record<AppPermission, string> = {
   "app:admin": "Manage app settings, members, credentials, and destructive operations.",
   "feedback:write": "Submit feedback tickets for this app.",
   "feedback:read": "Read feedback tickets. A token bound to a reporter integration sees only that integration's tickets; an unbound token sees the app's.",
-  "feedback:comment": "Post a public reply the reporter sees, and — for a token bound to a reporter integration — close that reporter's own ticket. Scope follows the token's binding.",
+  "feedback:comment": "Post a public reply the reporter sees, and — for a token bound to a reporter integration — close any ticket its integration owns. Scope follows the token's binding.",
   "feedback:route": "Bind an opaque route subject to a reporter integration.",
   "feedback:triage": "Change ticket status and assignee, and write internal notes.",
 };
