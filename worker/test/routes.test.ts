@@ -742,7 +742,8 @@ function makeMockDb() {
       reporter_integration_id TEXT NOT NULL,
       reporter_hash TEXT NOT NULL,
       audit_key_version TEXT NOT NULL,
-      endpoint TEXT NOT NULL,
+      endpoint TEXT NOT NULL
+        CHECK (endpoint IN ('list', 'detail', 'attachment', 'comment', 'close')),
       window_started_at INTEGER NOT NULL,
       request_count INTEGER NOT NULL DEFAULT 0,
       last_audited_at INTEGER,
@@ -768,7 +769,8 @@ function makeMockDb() {
       reporter_integration_id TEXT NOT NULL,
       reporter_hash TEXT NOT NULL,
       audit_key_version TEXT NOT NULL,
-      endpoint TEXT NOT NULL,
+      endpoint TEXT NOT NULL
+        CHECK (endpoint IN ('list', 'detail', 'attachment', 'comment', 'close')),
       ticket_id TEXT,
       attachment_id TEXT,
       throttle_window_started_at INTEGER,
