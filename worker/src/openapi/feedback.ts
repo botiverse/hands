@@ -214,6 +214,25 @@ export function registerFeedbackRoutes(registry: OpenApiRegistry) {
   });
 
   register(registry, {
+    method: "post",
+    path: "/api/apps/{appId}/reporter-feedback/{ticketId}/close",
+    tags: ["Reporter Feedback"],
+    summary: "Close a reporter-owned feedback ticket",
+    description: "Idempotently moves only the authenticated reporter's ticket to the closed state. This route cannot reopen tickets or change assignees.",
+    security: auth,
+    request: { params: AppTicketParams, headers: ReporterHeaders },
+    responses: {
+      200: success("Ticket closed or already closed.", GenericObject),
+      400: error("Missing or malformed reporter id."),
+      401: error("Missing or invalid bearer token."),
+      403: error("Invalid reporter integration grant."),
+      404: error("Ticket is not owned by this reporter integration."),
+      409: error("Ticket changed concurrently; retry."),
+      429: error("Reporter rate limit exceeded."),
+    },
+  });
+
+  register(registry, {
     method: "get",
     path: "/api/apps/{appId}/reporter-feedback/{ticketId}/attachments/{attachmentId}",
     tags: ["Reporter Feedback"],

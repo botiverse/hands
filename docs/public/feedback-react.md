@@ -231,6 +231,7 @@ Proxy these Hands operations behind your own authenticated, same-origin API:
 | Read ticket | `GET /api/apps/:appId/reporter-feedback/:ticketId?comment_limit=50&comment_cursor=...` |
 | Create ticket | `POST /public/v2/apps/:appSlug/feedback` as multipart, then read the returned ticket id |
 | Reply | `POST /api/apps/:appId/reporter-feedback/:ticketId/comments` as JSON or multipart |
+| Close owned ticket | `POST /api/apps/:appId/reporter-feedback/:ticketId/close` |
 | Download attachment | `GET /api/apps/:appId/reporter-feedback/:ticketId/attachments/:attachmentId` |
 
 Generate one UUID `submission_id` for each new ticket draft or reply and keep

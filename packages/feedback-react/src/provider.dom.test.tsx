@@ -66,6 +66,40 @@ function transport(): HandsFeedbackTransport {
 }
 
 describe("FeedbackWorkspace browser behavior", () => {
+  it("confirms and closes only through an available host capability", async () => {
+    const adapter = transport();
+    const closedDetail: FeedbackTicketDetail = {
+      ...detail,
+      ticket: {
+        ...detail.ticket,
+        status: "closed",
+        updatedAt: 4,
+      },
+    };
+    adapter.closeTicket = vi.fn(async () => closedDetail);
+    render(
+      <FeedbackProvider transport={adapter} locale="zh-CN">
+        <FeedbackWorkspace />
+      </FeedbackProvider>,
+    );
+
+    fireEvent.click(await screen.findByText(ticket.message));
+    fireEvent.click(await screen.findByRole("button", { name: "关闭工单" }));
+    expect(screen.getByText("确定关闭这个工单吗？")).toBeTruthy();
+    expect(adapter.closeTicket).not.toHaveBeenCalled();
+    fireEvent.click(screen.getAllByRole("button", { name: "关闭工单" }).at(-1)!);
+
+    await waitFor(() => expect(adapter.closeTicket).toHaveBeenCalledTimes(1));
+    expect(adapter.closeTicket).toHaveBeenCalledWith(expect.objectContaining({
+      ticketId: ticket.id,
+      signal: expect.any(AbortSignal),
+    }));
+    expect(await screen.findByText("该工单已关闭。如需更多信息，团队可以重新打开。")).toBeTruthy();
+    expect(screen.queryByLabelText("回复")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "返回" }));
+    await waitFor(() => expect(screen.getByText("已关闭")).toBeTruthy());
+  });
+
   it("supports host copy and date localization overrides through one provider contract", async () => {
     const adapter = transport();
     adapter.getTicket = vi.fn(async () => ({

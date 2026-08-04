@@ -2430,7 +2430,7 @@ export async function handleAddFeedbackComment(c: AdminContext) {
   return c.json({ id, ticket_id: ticketId, created_at: now }, 201);
 }
 
-function feedbackReporterEventStatements(
+export function feedbackReporterEventStatements(
   db: D1Database,
   input: {
     eventType: "feedback:comment_created" | "feedback:status_changed";

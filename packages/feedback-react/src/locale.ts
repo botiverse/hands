@@ -16,6 +16,9 @@ export type FeedbackMessageKey =
   | "attachImage"
   | "back"
   | "cancel"
+  | "closeTicket"
+  | "closeTicketConfirm"
+  | "closedDescription"
   | "conversation"
   | "emptyBody"
   | "emptyTitle"
@@ -57,6 +60,7 @@ export type FeedbackMessageKey =
   | "team"
   | "feedbackCreated"
   | "replySent"
+  | "ticketClosed"
   | "ticketUpdated"
   | "ticketHeading"
   | "unreadCount"
@@ -82,6 +86,9 @@ const messages: Record<FeedbackLocale, FeedbackMessages> = {
     attachImage: "Attach image",
     back: "Back",
     cancel: "Cancel",
+    closeTicket: "Close ticket",
+    closeTicketConfirm: "Close this ticket?",
+    closedDescription: "This ticket is closed. The team can reopen it if more information is needed.",
     conversation: "Conversation",
     emptyBody: "Send your first idea or report a problem.",
     emptyTitle: "No feedback yet",
@@ -124,6 +131,7 @@ const messages: Record<FeedbackLocale, FeedbackMessages> = {
     team: "Team",
     feedbackCreated: "Feedback created",
     replySent: "Reply sent",
+    ticketClosed: "Ticket closed",
     ticketUpdated: "Ticket updated",
     ticketHeading: "Feedback ticket",
     unreadCount: "{count} unread",
@@ -145,6 +153,9 @@ const messages: Record<FeedbackLocale, FeedbackMessages> = {
     attachImage: "添加图片",
     back: "返回",
     cancel: "取消",
+    closeTicket: "关闭工单",
+    closeTicketConfirm: "确定关闭这个工单吗？",
+    closedDescription: "该工单已关闭。如需更多信息，团队可以重新打开。",
     conversation: "对话",
     emptyBody: "提交第一个想法或问题。",
     emptyTitle: "暂无反馈",
@@ -186,6 +197,7 @@ const messages: Record<FeedbackLocale, FeedbackMessages> = {
     team: "团队",
     feedbackCreated: "反馈已创建",
     replySent: "回复已发送",
+    ticketClosed: "工单已关闭",
     ticketUpdated: "工单已更新",
     ticketHeading: "反馈工单",
     unreadCount: "{count} 条未读",
