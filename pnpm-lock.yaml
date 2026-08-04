@@ -197,7 +197,7 @@ importers:
         version: 0.0.30
       '@hono/zod-openapi':
         specifier: ^1.4.0
-        version: 1.4.0(hono@4.12.27)(zod@4.4.3)
+        version: 1.4.0(hono@4.13.0)(zod@4.4.3)
       '@noble/hashes':
         specifier: ^1.8.0
         version: 1.8.0
@@ -205,8 +205,8 @@ importers:
         specifier: 1.0.20
         version: 1.0.20
       hono:
-        specifier: ^4.11.1
-        version: 4.12.27
+        specifier: ^4.12.34
+        version: 4.13.0
       jose:
         specifier: ^5.9.6
         version: 5.10.0
@@ -2057,6 +2057,10 @@ packages:
     resolution: {integrity: sha512-1yrb/+w6HWQJrUCLkJ2IF5jNIPvvFkblV5RNOYl6bV+OA6p9GLcMpHFFGTosSvHvcAUibuUukRqhlYI4z32C7Q==}
     engines: {node: '>=16.9.0'}
 
+  hono@4.13.0:
+    resolution: {integrity: sha512-jhunvfHWxd7J5EFfSgH4xsYJzSe/lfqbUCxiyyeaQasUsXeEHXtzVid+7EOGByc5JnFa23SSFL3Y2RV/z1T+eQ==}
+    engines: {node: '>=16.9.0'}
+
   html-encoding-sniffer@4.0.0:
     resolution: {integrity: sha512-Y22oTqIU4uuPgEemfz7NDJz6OeKf12Lsu+QC+s3BVpda64lTiMYCyGwg5ki4vFxkMwQdeZDl2adZoqUgdFuTgQ==}
     engines: {node: '>=18'}
@@ -3594,17 +3598,17 @@ snapshots:
     dependencies:
       hono: 4.12.27
 
-  '@hono/zod-openapi@1.4.0(hono@4.12.27)(zod@4.4.3)':
+  '@hono/zod-openapi@1.4.0(hono@4.13.0)(zod@4.4.3)':
     dependencies:
       '@asteasolutions/zod-to-openapi': 8.5.0(zod@4.4.3)
-      '@hono/zod-validator': 0.8.0(hono@4.12.27)(zod@4.4.3)
-      hono: 4.12.27
+      '@hono/zod-validator': 0.8.0(hono@4.13.0)(zod@4.4.3)
+      hono: 4.13.0
       openapi3-ts: 4.6.0
       zod: 4.4.3
 
-  '@hono/zod-validator@0.8.0(hono@4.12.27)(zod@4.4.3)':
+  '@hono/zod-validator@0.8.0(hono@4.13.0)(zod@4.4.3)':
     dependencies:
-      hono: 4.12.27
+      hono: 4.13.0
       zod: 4.4.3
 
   '@humanfs/core@0.19.2':
@@ -4808,6 +4812,8 @@ snapshots:
       space-separated-tokens: 2.0.2
 
   hono@4.12.27: {}
+
+  hono@4.13.0: {}
 
   html-encoding-sniffer@4.0.0:
     dependencies:
