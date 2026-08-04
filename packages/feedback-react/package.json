@@ -2,6 +2,10 @@
   "name": "@botiverse/hands-feedback-react",
   "version": "0.1.0",
   "description": "Embeddable reporter-facing Hands feedback inbox components.",
+  "author": {
+    "name": "jiacheng",
+    "email": "jiacheng@botiverse.dev"
+  },
   "license": "MIT",
   "repository": {
     "type": "git",
