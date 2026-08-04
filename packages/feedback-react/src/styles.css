@@ -278,6 +278,7 @@
   gap: 8px;
   justify-content: flex-end;
   margin-top: 12px;
+  padding: 0 4px 4px 0;
 }
 .hands-feedback-composer {
   background: var(--hf-bg);

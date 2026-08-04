@@ -159,6 +159,9 @@ describe("FeedbackProvider", () => {
       /\.hands-feedback-detail \.hands-feedback-middle[^}]*overflow:\s*hidden/,
     );
     expect(css).toMatch(
+      /\.hands-feedback-close[^}]*padding:\s*0 4px 4px 0/,
+    );
+    expect(css).toMatch(
       /\.hands-feedback-conversation[^}]*flex:\s*1[^}]*overflow-y:\s*auto/,
     );
     expect(css).toMatch(
