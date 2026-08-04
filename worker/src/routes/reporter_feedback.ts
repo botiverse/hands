@@ -2,6 +2,7 @@ import type { Context } from "hono";
 import { authenticateReporter, type ReporterPrincipal } from "../lib/reporter_auth";
 import { computeReporterAuditHash } from "../lib/reporter_audit";
 import { buildFeedbackCommentEvent } from "../lib/feedback_events";
+import { feedbackReporterEventStatements } from "./feedback";
 
 type ReporterContext = Context<{ Bindings: Env }>;
 
@@ -22,7 +23,7 @@ type ReporterEnv = Env & {
   FEEDBACK_AUDIT_KEY_VERSION?: string;
 };
 
-type Endpoint = "list" | "detail" | "attachment" | "comment";
+type Endpoint = "list" | "detail" | "attachment" | "comment" | "close";
 
 function timingDuration(start: number, end: number): string {
   return Math.max(0, end - start).toFixed(1);
@@ -39,6 +40,7 @@ const LIMITS: Record<Endpoint, { reporter: number; integration: number; windowMs
   detail: { reporter: 120, integration: 1_200, windowMs: 60_000 },
   attachment: { reporter: 120, integration: 1_200, windowMs: 3_600_000 },
   comment: { reporter: 30, integration: 300, windowMs: 3_600_000 },
+  close: { reporter: 30, integration: 300, windowMs: 3_600_000 },
 };
 
 function fullUuid(value: string | undefined): string | null {
@@ -899,6 +901,106 @@ export async function handleAddReporterComment(c: ReporterContext) {
   const committedAt = performance.now();
   setCommentTiming(committedAt);
   return c.json({ id: commentId, ticket_id: ticketId, created_at: now, idempotent_replay: false }, 201);
+}
+
+/**
+ * Close one ticket owned by the authenticated reporter.
+ *
+ * This deliberately reuses feedback:comment: both operations are bounded
+ * mutations of the same reporter-owned conversation. The route cannot set an
+ * arbitrary status, change the assignee, reopen a ticket, or address another
+ * reporter's ticket.
+ */
+export async function handleCloseReporterFeedback(c: ReporterContext) {
+  const authorized = await authorize(c, "feedback:comment", "close");
+  if (!authorized.ok) return authorized.response;
+  const ticketId = fullUuid(c.req.param("ticketId"));
+  if (!ticketId) return ticketNotFound(c);
+
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    const ticket = await c.env.DB.prepare(
+      `SELECT t.status, a.org_id
+       FROM feedback_tickets t
+       JOIN apps a ON a.id = t.app_id
+       WHERE t.id = ?1 AND t.app_id = ?2
+         AND t.reporter_integration_id = ?3 AND t.reporter_id = ?4`,
+    ).bind(
+      ticketId,
+      authorized.principal.appId,
+      authorized.principal.integrationId,
+      authorized.principal.reporterId,
+    ).first<{ status: string; org_id: string | null }>();
+    if (!ticket) return ticketNotFound(c);
+    if (ticket.status === "closed") {
+      return c.json({ id: ticketId, status: "closed", updated_at: null, changed: false });
+    }
+
+    const now = Date.now();
+    const auditId = crypto.randomUUID();
+    const auditPayload = JSON.stringify({
+      ticket_id: ticketId,
+      previous_status: ticket.status,
+      status: "closed",
+      reporter_hash: authorized.pseudonym.hash,
+      audit_key_version: authorized.pseudonym.version,
+    });
+    const statements: D1PreparedStatement[] = [
+      c.env.DB.prepare(
+        `INSERT INTO audit_logs (id, app_id, action, actor, payload, created_at)
+         SELECT ?1, ?2, 'feedback.reporter_close', ?3, ?4, ?5
+         FROM feedback_tickets
+         WHERE id = ?6 AND app_id = ?2 AND reporter_integration_id = ?7
+           AND reporter_id = ?8 AND status = ?9`,
+      ).bind(
+        auditId,
+        authorized.principal.appId,
+        `reporter:${authorized.pseudonym.hash}`,
+        auditPayload,
+        now,
+        ticketId,
+        authorized.principal.integrationId,
+        authorized.principal.reporterId,
+        ticket.status,
+      ),
+      c.env.DB.prepare(
+        `UPDATE feedback_tickets
+         SET status = 'closed', updated_at = ?1
+         WHERE id = ?2 AND app_id = ?3 AND reporter_integration_id = ?4
+           AND reporter_id = ?5 AND status = ?6
+           AND EXISTS (SELECT 1 FROM audit_logs WHERE id = ?7)`,
+      ).bind(
+        now,
+        ticketId,
+        authorized.principal.appId,
+        authorized.principal.integrationId,
+        authorized.principal.reporterId,
+        ticket.status,
+        auditId,
+      ),
+    ];
+    if (ticket.org_id) {
+      statements.push(...feedbackReporterEventStatements(c.env.DB, {
+        eventType: "feedback:status_changed",
+        orgId: ticket.org_id,
+        appId: authorized.principal.appId,
+        ticketId,
+        reporterIntegrationId: authorized.principal.integrationId,
+        reporterId: authorized.principal.reporterId,
+        createdAt: now,
+        previousStatus: ticket.status,
+        status: "closed",
+        claimAuditId: auditId,
+      }));
+    }
+    await c.env.DB.batch(statements);
+    const won = await c.env.DB.prepare("SELECT id FROM audit_logs WHERE id = ?1")
+      .bind(auditId)
+      .first();
+    if (won) {
+      return c.json({ id: ticketId, status: "closed", updated_at: now, changed: true });
+    }
+  }
+  return c.json({ error: "feedback ticket changed concurrently; retry" }, 409);
 }
 
 export async function handleDownloadReporterAttachment(c: ReporterContext) {

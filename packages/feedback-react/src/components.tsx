@@ -396,6 +396,7 @@ export type FeedbackTicketProps = {
   draft?: string;
   onDraftChange?: (value: string) => void;
   onReadSuccess?: (ticketId: string) => void;
+  onTicketUpdated?: (ticket: FeedbackTicketSummary) => void;
 };
 
 export function FeedbackTicket({
@@ -405,6 +406,7 @@ export function FeedbackTicket({
   draft,
   onDraftChange,
   onReadSuccess,
+  onTicketUpdated,
 }: FeedbackTicketProps) {
   const { formatDate, formatFileSize, message, reportUnread, transport } =
     useHandsFeedback();
@@ -416,6 +418,8 @@ export function FeedbackTicket({
   const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
   const [sending, setSending] = useState(false);
+  const [closing, setClosing] = useState(false);
+  const [confirmingClose, setConfirmingClose] = useState(false);
   const [replyAttachments, setReplyAttachments] = useState<PendingAttachment[]>(
     [],
   );
@@ -444,6 +448,8 @@ export function FeedbackTicket({
     actionController.current = null;
     commentSubmission.current = null;
     setSending(false);
+    setClosing(false);
+    setConfirmingClose(false);
     setReplyAttachments([]);
   }, [ticketId, transport]);
 
@@ -594,6 +600,32 @@ export function FeedbackTicket({
       }
     } finally {
       if (!controller.signal.aborted) setSending(false);
+    }
+  };
+
+  const closeTicket = async () => {
+    if (!detail || !transport.closeTicket || closing) return;
+    setClosing(true);
+    setActionError(null);
+    actionController.current?.abort();
+    const controller = new AbortController();
+    actionController.current = controller;
+    try {
+      const result = await transport.closeTicket({ ticketId, signal: controller.signal });
+      if (controller.signal.aborted) return;
+      reportUnread({ total: result.unreadTotal, source: "close" });
+      setDetail(result);
+      setConfirmingClose(false);
+      onTicketUpdated?.(result.ticket);
+      setAnnouncement(message("ticketClosed"));
+    } catch (cause) {
+      if (!controller.signal.aborted) {
+        const safe = safeError(cause);
+        setActionError(safe);
+        setAnnouncement(safe);
+      }
+    } finally {
+      if (!controller.signal.aborted) setClosing(false);
     }
   };
 
@@ -765,10 +797,32 @@ export function FeedbackTicket({
                   : message("loadMoreReplies")}
               </Button>
             )}
+            {transport.closeTicket && detail.ticket.status !== "closed" && (
+              <div className="hands-feedback-close">
+                {confirmingClose ? (
+                  <>
+                    <span>{message("closeTicketConfirm")}</span>
+                    <Button variant="outline" disabled={closing} onClick={() => setConfirmingClose(false)}>
+                      {message("cancel")}
+                    </Button>
+                    <Button disabled={closing} onClick={() => void closeTicket()}>
+                      {message("closeTicket")}
+                    </Button>
+                  </>
+                ) : (
+                  <Button variant="outline" onClick={() => setConfirmingClose(true)}>
+                    {message("closeTicket")}
+                  </Button>
+                )}
+              </div>
+            )}
+            {detail.ticket.status === "closed" && (
+              <p className="hands-feedback-muted">{message("closedDescription")}</p>
+            )}
           </>
         )}
       </div>
-      {detail && (
+      {detail && detail.ticket.status !== "closed" && (
         <div className="hands-feedback-composer">
           <label
             className="hands-feedback-sr-only"
@@ -1280,6 +1334,7 @@ export function FeedbackWorkspace({
             setDrafts((current) => ({ ...current, [route.ticketId!]: value }))
           }
           onReadSuccess={setReadTicketId}
+          onTicketUpdated={setCreatedTicket}
           onBack={back}
           {...(onOpenAttachment ? { onOpenAttachment } : {})}
         />

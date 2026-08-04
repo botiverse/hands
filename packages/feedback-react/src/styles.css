@@ -271,6 +271,14 @@
   margin: 8px auto;
   position: sticky;
 }
+.hands-feedback-close {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+  margin-top: 12px;
+}
 .hands-feedback-composer {
   background: var(--hf-bg);
   border: 2px solid var(--hf-border-strong);

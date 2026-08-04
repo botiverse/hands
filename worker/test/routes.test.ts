@@ -11404,6 +11404,7 @@ describe("Hands iOS simulator QA artifacts", () => {
     const { generateDeployToken, hashDeployToken } = await import("../src/lib/deploy_tokens");
     const {
       handleAddReporterComment,
+      handleCloseReporterFeedback,
       cleanupReporterFeedbackData,
       handleDownloadReporterAttachment,
       handleGetReporterFeedback,
@@ -11418,23 +11419,38 @@ describe("Hands iOS simulator QA artifacts", () => {
     const ticketB = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
     const credentialA = generateDeployToken();
     const credentialB = generateDeployToken();
+    const credentialComment = generateDeployToken();
+    const credentialRead = generateDeployToken();
     await env.DB.prepare(
       `INSERT INTO app_reporter_integrations
        (id, app_id, name, created_at, updated_at)
        VALUES (?1, 'app-ios', 'A', ?3, ?3), (?2, 'app-ios', 'B', ?3, ?3)`,
     ).bind(integrationA, integrationB, now).run();
-    const insertToken = async (id: string, credential: { token: string; token_prefix: string }, integrationId: string) => {
+    const insertToken = async (
+      id: string,
+      credential: { token: string; token_prefix: string },
+      integrationId: string,
+      scopes = '["feedback:write","feedback:read","feedback:comment","feedback:route"]',
+    ) => {
       await env.DB.prepare(
         `INSERT INTO app_deploy_tokens
          (id, app_id, name, token_prefix, token_hash, app_role, scopes_json,
           created_by_actor, created_at, reporter_integration_id)
          VALUES (?1, 'app-ios', ?1, ?2, ?3, NULL,
-                 '["feedback:write","feedback:read","feedback:comment","feedback:route"]',
-                 'test', ?4, ?5)`,
-      ).bind(id, credential.token_prefix, await hashDeployToken(credential.token), now, integrationId).run();
+                 ?4, 'test', ?5, ?6)`,
+      ).bind(
+        id,
+        credential.token_prefix,
+        await hashDeployToken(credential.token),
+        scopes,
+        now,
+        integrationId,
+      ).run();
     };
     await insertToken("token-a", credentialA, integrationA);
     await insertToken("token-b", credentialB, integrationB);
+    await insertToken("token-comment", credentialComment, integrationA, '["feedback:comment"]');
+    await insertToken("token-read", credentialRead, integrationA, '["feedback:read"]');
     await env.DB.prepare(
       `INSERT INTO feedback_tickets
        (id, app_id, kind, status, message, metadata_json, reporter_id,
@@ -11460,7 +11476,7 @@ describe("Hands iOS simulator QA artifacts", () => {
     ).bind(integrationA, now).run();
 
     const context = (
-      handler: "list" | "detail" | "comment",
+      handler: "list" | "detail" | "comment" | "close",
       credential: string | null,
       ticketId?: string,
       commentBody?: { body: string; submission_id: string } | FormData,
@@ -11588,6 +11604,58 @@ describe("Hands iOS simulator QA artifacts", () => {
     expect((await env.DB.prepare(
       "SELECT COUNT(*) AS count FROM audit_logs WHERE action = 'feedback.reporter_comment'",
     ).first() as any).count).toBe(1);
+
+    // Closing is a one-way, reporter-owned conversation mutation. It uses the
+    // comment capability, preserves every other ticket field, and emits one
+    // status event/audit even under an exact concurrent retry.
+    expect((await handleCloseReporterFeedback(context(
+      "close", credentialRead.token, ticketA,
+    ))).status).toBe(403);
+    expect((await handleCloseReporterFeedback(context(
+      "close", credentialB.token, ticketA,
+    ))).status).toBe(404);
+    await env.DB.prepare("UPDATE feedback_tickets SET assignee = 'staff:test' WHERE id = ?1")
+      .bind(ticketA).run();
+    const closeResponses = await Promise.all([
+      handleCloseReporterFeedback(context("close", credentialComment.token, ticketA)),
+      handleCloseReporterFeedback(context("close", credentialComment.token, ticketA)),
+    ]);
+    const closeBodies = await Promise.all(closeResponses.map((response) => response.json() as Promise<any>));
+    expect(closeBodies.map((body) => body.changed).sort()).toEqual([false, true]);
+    expect(await env.DB.prepare(
+      "SELECT status, assignee FROM feedback_tickets WHERE id = ?1",
+    ).bind(ticketA).first()).toEqual({ status: "closed", assignee: "staff:test" });
+    expect((await env.DB.prepare(
+      "SELECT COUNT(*) AS count FROM audit_logs WHERE action = 'feedback.reporter_close'",
+    ).first() as any).count).toBe(1);
+    const closeAudit = await env.DB.prepare(
+      "SELECT actor, payload FROM audit_logs WHERE action = 'feedback.reporter_close'",
+    ).first() as { actor: string; payload: string } | null;
+    expect(closeAudit?.actor).toMatch(/^reporter:[0-9a-f]{64}$/);
+    expect(JSON.parse(closeAudit!.payload)).toMatchObject({
+      ticket_id: ticketA,
+      previous_status: "open",
+      status: "closed",
+    });
+    const closeEvents = await env.DB.prepare(
+      `SELECT payload_json FROM feedback_events
+       WHERE ticket_id = ?1 AND event_type = 'feedback:status_changed'`,
+    ).bind(ticketA).all() as any;
+    expect(closeEvents.results).toHaveLength(1);
+    expect(JSON.parse(closeEvents.results[0].payload_json).payload).toMatchObject({
+      ticket_id: ticketA,
+      previous_status: "open",
+      status: "closed",
+      reporter_integration_id: integrationA,
+      reporter_id: reporterId,
+    });
+    await env.DB.prepare(
+      "DELETE FROM feedback_events WHERE ticket_id = ?1 AND event_type = 'feedback:status_changed'",
+    ).bind(ticketA).run();
+    await env.DB.prepare("DELETE FROM audit_logs WHERE action = 'feedback.reporter_close'").run();
+    await env.DB.prepare(
+      "UPDATE feedback_tickets SET status = 'open', assignee = NULL WHERE id = ?1",
+    ).bind(ticketA).run();
 
     const { computeReporterAuditHash } = await import("../src/lib/reporter_audit");
     await expect(computeReporterAuditHash({

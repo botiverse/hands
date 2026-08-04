@@ -108,6 +108,7 @@ import {
 } from "./routes/reporter_integrations";
 import {
   handleAddReporterComment,
+  handleCloseReporterFeedback,
   handleDownloadReporterAttachment,
   handleGetReporterFeedback,
   handleListReporterFeedback,
@@ -575,6 +576,7 @@ app.post("/api/apps/:appId/reporter-feedback/session", handleMintReporterSession
 app.put("/api/apps/:appId/reporter-feedback/route-subject", handleBindReporterRouteSubject);
 app.get("/api/apps/:appId/reporter-feedback/:ticketId", handleGetReporterFeedback);
 app.post("/api/apps/:appId/reporter-feedback/:ticketId/comments", handleAddReporterComment);
+app.post("/api/apps/:appId/reporter-feedback/:ticketId/close", handleCloseReporterFeedback);
 app.get(
   "/api/apps/:appId/reporter-feedback/:ticketId/attachments/:attachmentId",
   handleDownloadReporterAttachment,

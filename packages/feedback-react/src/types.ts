@@ -91,11 +91,16 @@ export type HandsFeedbackTransport = {
   addComment(
     input: AddFeedbackCommentInput & { signal: AbortSignal },
   ): Promise<FeedbackTicketDetail>;
+  /** Optional until the host exposes the reporter-owned close endpoint. */
+  closeTicket?(input: {
+    ticketId: string;
+    signal: AbortSignal;
+  }): Promise<FeedbackTicketDetail>;
 };
 
 export type FeedbackUnreadChange = {
   total: number;
-  source: "list" | "detail" | "create" | "comment";
+  source: "list" | "detail" | "create" | "comment" | "close";
 };
 
 export type FeedbackTransportErrorCode =

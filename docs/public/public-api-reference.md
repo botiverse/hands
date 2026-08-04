@@ -351,6 +351,7 @@ Trusted server proxies can list and continue only their own reporters' tickets:
 GET  /api/apps/:appId/reporter-feedback
 GET  /api/apps/:appId/reporter-feedback/:ticketId
 POST /api/apps/:appId/reporter-feedback/:ticketId/comments
+POST /api/apps/:appId/reporter-feedback/:ticketId/close
 GET  /api/apps/:appId/reporter-feedback/:ticketId/attachments/:attachmentId
 Authorization: Bearer qvdt_...
 X-Hands-Reporter-Id: <stable opaque value>
