@@ -73,6 +73,19 @@ grep -Fq ":publishReleasePublicationToMavenLocal SKIPPED" \
   "${work_dir}/local.log"
 grep -Fq ":publishReleasePublicationToGitHubPackagesRepository SKIPPED" \
   "${work_dir}/remote.log"
+grep -Fq ":publishReleasePublicationToRaftArtifactsRepository SKIPPED" \
+  "${work_dir}/remote.log"
+
+grep -Fq 'RAFT_ARTIFACTS_TOKEN: ${{ secrets.RAFT_ARTIFACTS_TOKEN }}' \
+  "${publish_workflow}" || {
+  echo "publish workflow does not bind the Raft Artifacts credential" >&2
+  exit 1
+}
+grep -Fq 'RAFT_ARTIFACTS_TOKEN is required for Android SDK publication' \
+  "${publish_workflow}" || {
+  echo "publish workflow can silently skip a missing Raft Artifacts credential" >&2
+  exit 1
+}
 
 "${GRADLE_BIN}" -p "${ROOT_DIR}/clients/android" packageReleaseNativeSymbols \
   --no-daemon --console=plain -PVERSION_NAME="${SDK_VERSION}" \
