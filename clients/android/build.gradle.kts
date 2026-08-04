@@ -200,6 +200,18 @@ afterEvaluate {
 
         repositories {
             maven {
+                name = "RaftArtifacts"
+                url = uri("https://maven.artifacts.botiverse.dev")
+                credentials {
+                    // The registry intentionally ignores the Basic username;
+                    // keep a stable label here so build diagnostics identify
+                    // which credential class was expected without printing it.
+                    username = "hands-ci"
+                    password = System.getenv("RAFT_ARTIFACTS_TOKEN")
+                }
+            }
+
+            maven {
                 name = "GitHubPackages"
                 val repository = System.getenv("GITHUB_REPOSITORY") ?: "botiverse/hands"
                 url = uri("https://maven.pkg.github.com/$repository")
