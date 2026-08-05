@@ -38,6 +38,27 @@ grep -Fq 'VERSION="${INPUT_VERSION}"' "${publish_workflow}" || {
   exit 1
 }
 
+grep -Fq 'description: "Publish the complete SDK to the runner-local Maven repository only."' \
+  "${publish_workflow}"
+dry_run_step="$(
+  sed -n \
+    '/^[[:space:]]*- name: Publish SDK dry run$/,/^[[:space:]]*- name: Publish SDK to GitHub Packages$/p' \
+    "${publish_workflow}"
+)"
+real_publish_step="$(
+  sed -n \
+    '/^[[:space:]]*- name: Publish SDK to GitHub Packages$/,/^[[:space:]]*- name: Summary$/p' \
+    "${publish_workflow}"
+)"
+grep -Fq 'if: ${{ github.event_name == '\''workflow_dispatch'\'' && inputs.dry_run }}' \
+  <<<"${dry_run_step}"
+grep -Fq 'run: gradle -p clients/android publishToMavenLocal "-PVERSION_NAME=$RESOLVED_VERSION"' \
+  <<<"${dry_run_step}"
+grep -Fq 'if: ${{ github.event_name != '\''workflow_dispatch'\'' || !inputs.dry_run }}' \
+  <<<"${real_publish_step}"
+grep -Fq 'run: gradle -p clients/android publish "-PVERSION_NAME=$RESOLVED_VERSION"' \
+  <<<"${real_publish_step}"
+
 if "${GRADLE_BIN}" -p "${ROOT_DIR}/clients/android" validatePublicationVersion \
   --no-daemon --console=plain >"${work_dir}/missing-version.log" 2>&1; then
   echo "publication version gate accepted a missing VERSION_NAME" >&2
