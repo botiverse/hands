@@ -7,6 +7,11 @@ on:
         description: "SDK version to publish, for example 0.1.0"
         required: true
         default: "0.12.4"
+      dry_run:
+        description: "Publish the complete SDK to the runner-local Maven repository only."
+        required: true
+        type: boolean
+        default: true
   push:
     tags:
       - "android-sdk-v*"
@@ -69,8 +74,30 @@ jobs:
           path: clients/android/build/outputs/native-symbols/*-native-symbols.zip
           if-no-files-found: error
 
+      - name: Publish SDK dry run
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run }}
+        env:
+          RESOLVED_VERSION: ${{ steps.version.outputs.value }}
+        run: gradle -p clients/android publishToMavenLocal "-PVERSION_NAME=$RESOLVED_VERSION"
+
       - name: Publish SDK to GitHub Packages
+        if: ${{ github.event_name != 'workflow_dispatch' || !inputs.dry_run }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RESOLVED_VERSION: ${{ steps.version.outputs.value }}
         run: gradle -p clients/android publish "-PVERSION_NAME=$RESOLVED_VERSION"
+
+      - name: Summary
+        shell: bash
+        env:
+          RESOLVED_VERSION: ${{ steps.version.outputs.value }}
+        run: |
+          {
+            echo "### Android SDK publish"
+            echo
+            echo "| Field | Value |"
+            echo "|---|---|"
+            echo "| Package | \`build.hands:hands-android-sdk\` |"
+            echo "| Version | \`${RESOLVED_VERSION}\` |"
+            echo "| Dry run | \`${{ github.event_name == 'workflow_dispatch' && inputs.dry_run }}\` |"
+          } >> "$GITHUB_STEP_SUMMARY"
