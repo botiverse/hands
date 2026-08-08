@@ -234,6 +234,72 @@ describe("migration 0062 — build asset direct upload", () => {
         "UPDATE build_asset_ingest_seal SET sealed_at = 5, outcome = 'committed', cleanup_receipt = 'r'",
       ).run(),
     ).not.toThrow();
+    // The rule is "identity may not change", not "identity may not be named". A
+    // full-row or retried write that restates the same identity is not a rewrite,
+    // and refusing it would push callers into hand-built column lists.
+    expect(() =>
+      db.prepare(`
+        UPDATE build_asset_ingest_seal
+           SET asset_id = asset_id, attempt = attempt, lease_generation = lease_generation,
+               final_key = final_key, intent_at = intent_at, sealed_at = 6
+      `).run(),
+    ).not.toThrow();
+    expect(
+      db.prepare("SELECT final_key, sealed_at FROM build_asset_ingest_seal").get(),
+    ).toEqual({ final_key: "final-real", sealed_at: 6 });
+  });
+
+  it("cannot escape permanence by moving `outcome` off cleaned and then deleting", () => {
+    const db = database({ seedBeforeMigration: seedApps });
+    insertAsset(db, "as1", { arch: "arm64" });
+    db.exec(`
+      INSERT INTO build_asset_ingest_attempt
+        (asset_id, attempt, declared_sha256, declared_size, staging_key,
+         upload_expires_at, state, cleanup_state, created_at)
+      VALUES ('as1', 1, 'sha', 10, 's1', 99, 'failed', 'tombstoned', 1);
+      INSERT INTO build_asset_ingest_seal
+        (asset_id, attempt, lease_generation, final_key, intent_at, outcome)
+      VALUES ('as1', 1, 1, 'final-cleaned', 1, 'cleaned');
+    `);
+    // Guarding DELETE alone is not permanence: the delete guard reads `outcome`, so
+    // whoever can write `outcome` can unlock the delete in two statements.
+    for (const next of ["'superseded'", "'committed'", "NULL"]) {
+      expect(() =>
+        db.prepare(`UPDATE build_asset_ingest_seal SET outcome = ${next}`).run(),
+      ).toThrow(/cannot leave the cleaned state/);
+    }
+    expect(
+      db.prepare("SELECT outcome FROM build_asset_ingest_seal").pluck().get(),
+    ).toBe("cleaned");
+    // Terminal means no exit, not frozen: a cleanup receipt still lands afterwards,
+    // and restating the same outcome is not a transition.
+    expect(() =>
+      db.prepare(
+        "UPDATE build_asset_ingest_seal SET outcome = 'cleaned', cleanup_receipt = 'r2-tombstone-etag'",
+      ).run(),
+    ).not.toThrow();
+    // And entering cleaned from any other state stays open.
+    db.exec(`
+      INSERT INTO build_asset_ingest_attempt
+        (asset_id, attempt, declared_sha256, declared_size, staging_key,
+         upload_expires_at, state, cleanup_state, created_at)
+      VALUES ('as1', 2, 'sha', 10, 's2', 99, 'failed', 'live', 1);
+      INSERT INTO build_asset_ingest_seal
+        (asset_id, attempt, lease_generation, final_key, intent_at, outcome)
+      VALUES ('as1', 2, 1, 'final-2', 1, 'superseded');
+    `);
+    expect(() =>
+      db.prepare(
+        "UPDATE build_asset_ingest_seal SET outcome = 'cleaned' WHERE attempt = 2",
+      ).run(),
+    ).not.toThrow();
+    // The consequence: after the whole sequence the exact key of every tombstone is
+    // still discoverable, which is the only reason the ledger exists.
+    expect(() => db.prepare("DELETE FROM build_asset_ingest_seal").run())
+      .toThrow(/permanent/);
+    expect(
+      db.prepare("SELECT COUNT(*) FROM build_asset_ingest_seal").pluck().get(),
+    ).toBe(2);
   });
 
   it("keeps a tombstoned seal row permanently, while others stay reapable", () => {

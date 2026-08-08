@@ -137,8 +137,25 @@ END;
 CREATE TRIGGER build_asset_ingest_seal_identity_immutable
 BEFORE UPDATE OF asset_id, attempt, lease_generation, final_key, intent_at
   ON build_asset_ingest_seal
+-- Fires on a changed value, not on the column appearing in a SET list, so an
+-- idempotent or full-row write that leaves identity alone is not refused.
+WHEN NEW.asset_id         IS NOT OLD.asset_id
+  OR NEW.attempt          IS NOT OLD.attempt
+  OR NEW.lease_generation IS NOT OLD.lease_generation
+  OR NEW.final_key        IS NOT OLD.final_key
+  OR NEW.intent_at        IS NOT OLD.intent_at
 BEGIN
   SELECT RAISE(ABORT, 'seal ledger identity is immutable');
+END;
+
+-- Guarding DELETE alone left a two-step route out: move `outcome` off 'cleaned',
+-- then delete. `cleaned` is therefore terminal. Entering it stays allowed, and so
+-- does writing a cleanup_receipt afterwards — only leaving it is refused.
+CREATE TRIGGER build_asset_ingest_seal_cleaned_is_terminal
+BEFORE UPDATE OF outcome ON build_asset_ingest_seal
+WHEN OLD.outcome = 'cleaned' AND NEW.outcome IS NOT OLD.outcome
+BEGIN
+  SELECT RAISE(ABORT, 'a tombstoned seal ledger row cannot leave the cleaned state');
 END;
 
 -- A tombstoned generation's row records the exact key of an object that still
