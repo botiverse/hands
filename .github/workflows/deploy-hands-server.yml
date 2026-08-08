@@ -172,6 +172,20 @@ jobs:
         run: |
           set -euo pipefail
 
+          # Assert the tools exist before anything depends on them. Without this, an
+          # absent jq makes every check below exit non-zero, which is indistinguishable
+          # in the log from the database being wrong - and the more total that failure
+          # looks, the more it reads like a real finding rather than a broken probe.
+          # "Could not run" is a third outcome and has to say its own name.
+          for tool in jq node pnpm; do
+            command -v "$tool" >/dev/null || {
+              echo "CANNOT RUN: ${tool} is not on this runner." >&2
+              echo "Nothing about the database has been checked. This is not a pass" >&2
+              echo "and not a failure of the migration - the readback did not execute." >&2
+              exit 1
+            }
+          done
+
           q() {
             pnpm exec wrangler d1 execute "${HANDS_D1_DATABASE_NAME}" \
               --remote --json --config wrangler.hands.generated.jsonc --command "$1" \
@@ -401,6 +415,13 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          for tool in curl jq; do
+            command -v "$tool" >/dev/null || {
+              echo "CANNOT RUN: ${tool} is not on this runner; no runtime check happened." >&2
+              exit 1
+            }
+          done
+
           if [[ -z "${PROBE_PATH:-}" ]]; then
             echo "No runtime check: repository variable HANDS_READBACK_PROBE_PATH is unset."
             echo "It should name a public path whose handler reads build_assets, so this"
