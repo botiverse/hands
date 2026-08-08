@@ -1,0 +1,24 @@
+name: verify-pi-npm
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          registry-url: "https://registry.npmjs.org"
+      - name: View with token
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          npm view @botiverse/pi-coding-agent versions --json || true
+          npm view @botiverse/pi-coding-agent@0.83.0-botiverse.0 --json || true
+          npm access list packages 2>&1 | head -40 || true
+          # Try to get package info via registry API with auth
+          curl -s -H "Authorization: Bearer ${NODE_AUTH_TOKEN}" \
+            "https://registry.npmjs.org/@botiverse%2fpi-coding-agent" | head -c 800
+          echo
