@@ -203,6 +203,64 @@ describe("migration 0062 — build asset direct upload", () => {
     expect(db.prepare("SELECT COUNT(*) AS n FROM build_asset_ingest_seal").get()).toEqual({ n: 1 });
   });
 
+  it("freezes seal identity against UPDATE while lifecycle columns still move", () => {
+    const db = database({ seedBeforeMigration: seedApps });
+    insertAsset(db, "as1", { arch: "arm64" });
+    db.exec(`
+      INSERT INTO build_asset_ingest_attempt
+        (asset_id, attempt, declared_sha256, declared_size, staging_key,
+         upload_expires_at, state, cleanup_state, created_at)
+      VALUES ('as1', 1, 'sha', 10, 'staging-1', 99, 'verifying', 'live', 1);
+      INSERT INTO build_asset_ingest_seal
+        (asset_id, attempt, lease_generation, final_key, intent_at)
+      VALUES ('as1', 1, 1, 'final-real', 1);
+    `);
+    // "Identity is immutable" was intent, not a rule: SQLite permits UPDATE of a
+    // primary key, so a legitimate seal could be retargeted at a fictitious attempt
+    // and the exact key of a real object lost.
+    for (const set of [
+      "asset_id = 'missing'",
+      "attempt = 99",
+      "lease_generation = 7",
+      "final_key = 'arbitrary'",
+      "intent_at = 2",
+    ]) {
+      expect(() => db.prepare(`UPDATE build_asset_ingest_seal SET ${set}`).run())
+        .toThrow(/identity is immutable/);
+    }
+    // The lifecycle columns must still advance, or the ledger cannot record outcomes.
+    expect(() =>
+      db.prepare(
+        "UPDATE build_asset_ingest_seal SET sealed_at = 5, outcome = 'committed', cleanup_receipt = 'r'",
+      ).run(),
+    ).not.toThrow();
+  });
+
+  it("keeps a tombstoned seal row permanently, while others stay reapable", () => {
+    const db = database({ seedBeforeMigration: seedApps });
+    insertAsset(db, "as1", { arch: "arm64" });
+    db.exec(`
+      INSERT INTO build_asset_ingest_attempt
+        (asset_id, attempt, declared_sha256, declared_size, staging_key,
+         upload_expires_at, state, cleanup_state, created_at)
+      VALUES ('as1', 1, 'sha', 10, 's1', 99, 'failed', 'tombstoned', 1),
+             ('as1', 2, 'sha', 10, 's2', 99, 'failed', 'live', 1);
+      INSERT INTO build_asset_ingest_seal
+        (asset_id, attempt, lease_generation, final_key, intent_at, outcome)
+      VALUES ('as1', 1, 1, 'final-cleaned', 1, 'cleaned'),
+             ('as1', 2, 1, 'final-superseded', 1, 'superseded');
+    `);
+    // A cleaned row records the exact key of a tombstone that is never removed;
+    // deleting it would make a permanent object undiscoverable.
+    expect(() =>
+      db.prepare("DELETE FROM build_asset_ingest_seal WHERE outcome = 'cleaned'").run(),
+    ).toThrow(/permanent/);
+    // Retention may still reap rows that were never tombstoned.
+    expect(() =>
+      db.prepare("DELETE FROM build_asset_ingest_seal WHERE outcome = 'superseded'").run(),
+    ).not.toThrow();
+  });
+
   it("gives each attempt and each lease generation its own row", () => {
     const db = database({ seedBeforeMigration: seedApps });
     insertAsset(db, "as1", { arch: "arm64" });

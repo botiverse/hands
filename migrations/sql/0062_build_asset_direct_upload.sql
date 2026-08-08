@@ -130,6 +130,27 @@ BEGIN
   SELECT RAISE(ABORT, 'seal ledger row must name an existing attempt');
 END;
 
+-- "Identity columns are immutable" was a statement about intent, not a rule SQLite
+-- enforces: it permits UPDATE of a primary key, so a legitimate seal could be
+-- retargeted to a fictitious attempt and its exact tombstone key lost. Identity is
+-- frozen here; the lifecycle columns still move by CAS.
+CREATE TRIGGER build_asset_ingest_seal_identity_immutable
+BEFORE UPDATE OF asset_id, attempt, lease_generation, final_key, intent_at
+  ON build_asset_ingest_seal
+BEGIN
+  SELECT RAISE(ABORT, 'seal ledger identity is immutable');
+END;
+
+-- A tombstoned generation's row records the exact key of an object that still
+-- exists and is never removed. Retention may reap rows that were never tombstoned;
+-- it may not reap the ones that make a permanent object discoverable.
+CREATE TRIGGER build_asset_ingest_seal_cleaned_is_permanent
+BEFORE DELETE ON build_asset_ingest_seal
+WHEN OLD.outcome = 'cleaned'
+BEGIN
+  SELECT RAISE(ABORT, 'a tombstoned seal ledger row is permanent');
+END;
+
 -- Replay keys are request-scoped, not identity. Composite references keep a key from
 -- naming a build in another app, or an asset in another build.
 CREATE TABLE build_asset_ingest_replay (
