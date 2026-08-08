@@ -51,9 +51,13 @@ jobs:
         working-directory: worker
         run: pnpm test
 
-      # The suite covers migrations against the real chain, so a migration that cannot
-      # be applied twice, or that disagrees with the schema the files describe, fails
-      # here rather than during a production deploy.
-      - name: Type-check
-        working-directory: worker
-        run: pnpm build
+      # The type-check is deliberately not run here. `tsc` needs
+      # worker-configuration.d.ts, which `wrangler types` generates from the rendered
+      # production config, and that renderer validates its inputs against the real
+      # checked-in route -- it refuses placeholder values by design. Making it accept
+      # them to satisfy CI would weaken a production guard to buy a convenience, so
+      # the type-check stays where the real config exists: the deploy workflow runs it
+      # before every deploy.
+      #
+      # Naming the gap rather than leaving it implied: a type error can still reach
+      # main and will surface at deploy time.
