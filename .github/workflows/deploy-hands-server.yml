@@ -120,13 +120,252 @@ jobs:
           fi
 
       - name: Apply Hands D1 migrations
+        id: apply
         working-directory: worker
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_BOTIVERSE_API_TOKEN }}
         shell: bash
         run: |
           set -euo pipefail
+
+          # Whether this run changes the schema can only be known before it does, so
+          # it is recorded here rather than inferred afterwards - after the apply,
+          # "nothing pending" is what both a no-op and a successful migration look
+          # like. Later steps use it to tell "nothing changed, nothing to verify"
+          # apart from "something changed and nothing verified it".
+          before=$(pnpm exec wrangler d1 migrations list "${HANDS_D1_DATABASE_NAME}" \
+            --remote --config wrangler.hands.generated.jsonc 2>&1 || true)
+          if grep -qi "no migrations to apply" <<<"$before"; then
+            echo "changes_schema=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changes_schema=true" >> "$GITHUB_OUTPUT"
+            echo "This deploy will apply:"
+            echo "$before"
+          fi
+
           pnpm exec wrangler d1 migrations apply "${HANDS_D1_DATABASE_NAME}" --remote --config wrangler.hands.generated.jsonc
+
+      # Read the database back before the Worker goes out, not after.
+      #
+      # A failing `apply` already stops the job: no step here sets continue-on-error,
+      # so everything below it is skipped and production stays on old code with an
+      # untouched schema. What that does not cover is an apply that exits zero having
+      # left the database in a state we did not intend. Asserting here turns
+      # "the apply process succeeded" into "the apply produced what we expected", and
+      # a failure still keeps the Worker from shipping.
+      #
+      # The condition runs this whenever `apply` actually ran, including when it
+      # failed, so the no-change path is asserted rather than assumed. It deliberately
+      # does not use `always()`, which would also fire on cancellation, where the
+      # database state proves nothing.
+      - name: Read back Hands D1 after migrations
+        id: readback
+        if: ${{ !cancelled() && steps.apply.conclusion != 'skipped' }}
+        working-directory: worker
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_BOTIVERSE_API_TOKEN }}
+          APPLY_OUTCOME: ${{ steps.apply.outcome }}
+          # Bump this only together with re-measuring the failure behaviour on the new
+          # version. The number is a claim about what was tested, not a preference.
+          MEASURED_WRANGLER: "4.105.0"
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          q() {
+            pnpm exec wrangler d1 execute "${HANDS_D1_DATABASE_NAME}" \
+              --remote --json --config wrangler.hands.generated.jsonc --command "$1" \
+              | jq -r '.[0].results'
+          }
+
+          fail=0
+          check() {  # check <description> <actual> <expected>
+            if [[ "$2" == "$3" ]]; then
+              echo "  ok    $1: $2"
+            else
+              echo "  FAIL  $1: got '$2', expected '$3'" >&2
+              fail=1
+            fi
+          }
+
+          echo "apply outcome: ${APPLY_OUTCOME}"
+
+          # These hold after every apply, whatever the migration did, so they stay
+          # correct as migrations come and go. Anything specific to one migration is
+          # printed as evidence below instead of asserted here, because an assertion
+          # tied to a single migration becomes a lie the moment a later one changes it.
+          echo "invariants:"
+
+          # A guard that fires leaves its scratch table behind. On a clean path there
+          # is none, so a survivor means an apply stopped part way through.
+          strays=$(q "SELECT COUNT(*) AS n FROM sqlite_master WHERE type = 'table' AND substr(name, 1, 10) = '_preflight'" | jq -r '.[0].n')
+          check "no preflight scratch tables left behind" "$strays" "0"
+
+          # D1 refuses some statements outright - TEMP tables and BEGIN both come back
+          # SQLITE_AUTH - so this pragma was reported rather than trusted until it had
+          # been run against a real remote database. It has been: it returns an empty
+          # result set through this same pipeline, and a non-empty one propagates
+          # through check/fail to a non-zero exit, which skips every later step. Both
+          # halves were measured, so this gates now.
+          #
+          # A refusal is therefore no longer an expected outcome to tolerate; it means
+          # something changed about what D1 permits, which is worth stopping for.
+          if orphans=$(q "PRAGMA foreign_key_check" 2>/tmp/fkc.err | jq -r 'length'); then
+            check "foreign_key_check is empty" "$orphans" "0"
+          else
+            echo "  FAIL  foreign_key_check did not run. It is known to work on this" >&2
+            echo "        database, so a refusal now means the substrate changed:" >&2
+            head -c 300 /tmp/fkc.err >&2 || true
+            echo >&2
+            fail=1
+          fi
+
+          if [[ "${APPLY_OUTCOME}" == "success" ]]; then
+            # `apply` reporting success while migrations remain unapplied is exactly
+            # the mismatch this step exists to catch.
+            pending=$(pnpm exec wrangler d1 migrations list "${HANDS_D1_DATABASE_NAME}" \
+              --remote --config wrangler.hands.generated.jsonc 2>&1 || true)
+            if grep -qi "no migrations to apply" <<<"$pending"; then
+              echo "  ok    every migration file is recorded as applied"
+            else
+              echo "  FAIL  migrations still unapplied after a successful apply:" >&2
+              echo "$pending" >&2
+              fail=1
+            fi
+
+            # Bookkeeping is not schema. A row in d1_migrations says a file was
+            # run, not that the database now looks the way that file describes, and
+            # the two can disagree. Spot-checking a few objects by name does not close
+            # it either: the obvious check, comparing column counts, is blind here,
+            # because table_info hides generated columns and reports the same count
+            # before and after 0062. So compare the whole structure against what the
+            # migration files actually produce - which stays meaningful as migrations
+            # come and go, and which a database still on the previous migration
+            # cannot pass.
+            #
+            # The same SQL runs on both sides, printed by the script rather than
+            # written out twice here: two queries that merely intend to measure the
+            # same thing are a comparison between two possibly different things.
+            here=$(mktemp -d)
+            node scripts/expected-d1-schema.mjs         > "$here/expected.txt"
+            q "$(node scripts/expected-d1-schema.mjs --sql)" \
+              | jq -r '.[].line' | LC_ALL=C sort        > "$here/actual.txt"
+
+            if diff -u "$here/expected.txt" "$here/actual.txt" > "$here/structure.diff"; then
+              echo "  ok    remote structure matches the migration files ($(wc -l < "$here/expected.txt") facts)"
+            else
+              echo "  FAIL  remote structure differs from what the migration files produce." >&2
+              echo "        '-' is declared by a migration and missing remotely;" >&2
+              echo "        '+' exists remotely and is declared by no migration." >&2
+              cat "$here/structure.diff" >&2
+              fail=1
+            fi
+          else
+            # The apply failed. Wrangler 4.105.0 rolls a failed migration back whole
+            # and does not record it, but that is measured behaviour rather than a
+            # documented contract, which is the reason to check rather than trust it.
+            # This branch said it was asserting the database was left alone and then
+            # only printed a number. A comment claiming more than its code does is the
+            # exact failure this step exists to catch, so it asserts now. What can be
+            # asserted without knowing which migration failed: no scratch table
+            # survived (checked above) and the migration is not recorded as applied.
+            recorded=$(pnpm exec wrangler d1 migrations list "${HANDS_D1_DATABASE_NAME}" \
+              --remote --config wrangler.hands.generated.jsonc 2>&1 || true)
+            if grep -qi "no migrations to apply" <<<"$recorded"; then
+              echo "  FAIL  apply failed, yet nothing is pending - a failed migration" >&2
+              echo "        appears to have been recorded as applied." >&2
+              fail=1
+            else
+              echo "  ok    the failed migration is not recorded as applied"
+            fi
+            halves=$(q "SELECT COUNT(*) AS n FROM sqlite_master WHERE type = 'table' AND substr(name, -7) = '_legacy'" | jq -r '.[0].n')
+            echo "  note  tables named *_legacy: ${halves} (a rebuild may retain one deliberately)"
+          fi
+
+          # ---- Backfill contract (template, for migrations that write new rows) ----
+          #
+          # The structure comparison above proves the shape is right. It says nothing
+          # about whether rows a migration *wrote* are correct, and the defects this
+          # repository hit were all about what a value is, not how many there are: two
+          # columns mapped to the wrong positions, generated columns invisible to
+          # table_info, NULLs folding together under a new index.
+          #
+          # 0062's own copy is already covered, by the value-for-value comparison
+          # against the retained table above. An earlier version of this header said
+          # 0062 backfills nothing, which was wrong - its rebuild rewrites every row -
+          # and leaving that sentence next to the check that disproves it would invite
+          # the reading that copy-shaped migrations need no value check. They need it
+          # most.
+          #
+          # So a migration that backfills declares a predicate P describing what a
+          # correctly written row looks like, and the readback asserts that no row
+          # fails it:
+          #
+          #   rows=$(q "SELECT COUNT(*) AS n FROM <table>
+          #              WHERE <written by this migration> AND NOT (<P>)" | jq -r '.[0].n')
+          #   check "<table>: every backfilled row satisfies <P>" "$rows" "0"
+          #
+          # Two things this template cannot enforce, so they are written here instead
+          # of being left for whoever fills it in:
+          #
+          #   P is judged by source review, not by this step. The gate can only check
+          #   that P holds; whether P is the right predicate is a human judgement, and
+          #   a P that merely restates how the rows were inserted is a tautology that
+          #   passes forever. It has to separate a correct backfill from a plausible
+          #   wrong one, or it is a record rather than a contract.
+          #
+          #   Falling back to a row count is allowed only when a predicate genuinely
+          #   cannot be written, and must say so in the output - "this migration fell
+          #   back to a shape-level check". Left as a silent default, every migration
+          #   discovers it cannot write one.
+          # ------------------------------------------------------------------------
+
+          # A structural match says the shape is right. It says nothing about whether
+          # the rows a migration *wrote* are right, and 0062 wrote every one of them:
+          # its rebuild copies build_assets through INSERT...SELECT. Transposing two
+          # same-typed columns on the SELECT side leaves row counts equal, foreign keys
+          # clean, indexes correctly owned and every value wrong - measured, not
+          # imagined. The retained copy is the comparison source, so while it exists
+          # the copy is checked value by value rather than counted.
+          if [[ "${APPLY_OUTCOME}" == "success" ]]; then
+            legacy=$(q "SELECT COUNT(*) AS n FROM sqlite_master WHERE type = 'table' AND name = 'build_assets_legacy'" | jq -r '.[0].n')
+            if [[ "$legacy" == "1" ]]; then
+              # IS NOT, not <>: with a NULL operand <> yields NULL and the row would
+              # quietly fail to count as a mismatch.
+              preds=""
+              for col in id build_id platform arch variant filetype r2_key file_hash \
+                         size_bytes signature signing_credential_id metadata_json \
+                         download_count created_at artifact_kind; do
+                preds="${preds:+$preds OR }n.${col} IS NOT l.${col}"
+              done
+              bad=$(q "SELECT COUNT(*) AS n FROM build_assets n JOIN build_assets_legacy l USING (id) WHERE ${preds}" | jq -r '.[0].n')
+              check "every carried row matches the retained copy value for value" "$bad" "0"
+
+              lost=$(q "SELECT COUNT(*) AS n FROM build_assets_legacy l WHERE NOT EXISTS (SELECT 1 FROM build_assets n WHERE n.id = l.id)" | jq -r '.[0].n')
+              check "every row in the retained copy reached the rebuilt table" "$lost" "0"
+            else
+              echo "  (no build_assets_legacy; nothing to compare the copy against)"
+            fi
+          fi
+
+          # Evidence, not assertions. Whoever is watching the first apply of a given
+          # migration reads these; they are not a gate, because what they should say
+          # changes with every migration.
+          echo "evidence:"
+          echo "  applied migrations (last 5):"
+          q "SELECT name FROM d1_migrations ORDER BY id DESC LIMIT 5" | jq -r '.[] | "    " + .name'
+          echo "  row counts and index owners:"
+          q "SELECT name, tbl_name FROM sqlite_master WHERE type = 'index' AND name LIKE 'idx_build_assets%'" \
+            | jq -r '.[] | "    " + .name + " -> " + .tbl_name'
+          q "SELECT (SELECT COUNT(*) FROM build_assets) AS live" | jq -r '"    build_assets rows: " + (.[0].live|tostring)'
+          # Not evidence. Every conclusion we hold about how a failed migration
+          # behaves on this path was measured on one version of wrangler; if the
+          # lockfile has moved, those conclusions are unverified and the reasoning that
+          # narrowed the deploy hold has to be redone. That is a red, not a note.
+          got=$(pnpm exec wrangler --version 2>/dev/null | tail -1 | tr -d 'v ')
+          check "wrangler matches the version the failure behaviour was measured on" "$got" "$MEASURED_WRANGLER"
+
+          exit "$fail"
 
       # Deploy the Worker BEFORE putting secrets. `wrangler secret put` refuses
       # when the latest uploaded Worker version isn't deployed (e.g. a stray
@@ -144,6 +383,79 @@ jobs:
           pnpm exec wrangler deploy \
             --config wrangler.hands.generated.jsonc \
             --containers-rollout "${{ inputs.containers_rollout }}"
+
+      # The database being right does not prove the running Worker agrees with it.
+      # A green deploy means the upload succeeded, not that the new code is serving:
+      # an edge can answer from the previous version for a short while, which has
+      # already been observed on a sibling service.
+      #
+      # The path is a repository variable rather than a literal, because a public repo
+      # is the wrong place for a production identifier. When it is unset the step says
+      # so and fails nothing - but it says so out loud, because a check that quietly
+      # skips reads exactly like a check that passed.
+      - name: Probe the deployed Worker against the current schema
+        if: ${{ !cancelled() && steps.readback.conclusion == 'success' }}
+        env:
+          PROBE_PATH: ${{ vars.HANDS_READBACK_PROBE_PATH }}
+          MIGRATIONS_APPLIED: ${{ steps.apply.outputs.changes_schema }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -z "${PROBE_PATH:-}" ]]; then
+            echo "No runtime check: repository variable HANDS_READBACK_PROBE_PATH is unset."
+            echo "It should name a public path whose handler reads build_assets, so this"
+            echo "step can show the deployed code and the current schema agree."
+            # Skipping quietly is fine on a deploy that changed no schema. It is not
+            # fine on the run that just changed one - that is the run whose runtime
+            # behaviour someone is waiting to see, and a silent skip there reads in the
+            # log exactly like a check that passed.
+            if [[ "${MIGRATIONS_APPLIED}" == "true" ]]; then
+              echo "" >&2
+              echo "This deploy applied a migration, so a runtime check is the thing" >&2
+              echo "that was wanted and it did not happen. Failing rather than passing" >&2
+              echo "quietly: the database evidence above stands, the runtime evidence" >&2
+              echo "does not exist. Set the variable, or check by hand and re-run." >&2
+              exit 1
+            fi
+            exit 0
+          fi
+          url="https://${HANDS_BUSINESS_DOMAIN}${PROBE_PATH}"
+          echo "probing ${url}"
+          # A read is enough, and a write would be worse than useless: D1 refuses BEGIN
+          # on this path, so a probe row could not be rolled back and would simply stay
+          # in production data. Whether every write shape still works belongs to the
+          # migration tests, which can cover all of them without touching production.
+          code=$(curl -sS -o /tmp/probe.out -w '%{http_code}' --max-time 30 "$url")
+          echo "http ${code}"
+          head -c 400 /tmp/probe.out || true
+          echo
+          if [[ "$code" != "200" ]]; then
+            echo "FAIL: probe did not return 200. A handler that reads build_assets" >&2
+            echo "returning non-200 after a schema change is the mismatch this catches." >&2
+            exit 1
+          fi
+
+          # 200 is not enough. This handler queries apps, then channels, and only then
+          # build_assets, so a slug that exists but has no active release can answer
+          # 200 without the table ever being read - a probe that ran and verified
+          # nothing. Requiring a field that can only come from that query removes the
+          # need to know, when choosing the path, that its app currently has a
+          # release: if it does not, this says so instead of passing.
+          # size_bytes, not file_hash: the query selects file_hash but the handler does
+          # not serialise it, so asserting it would have failed against a perfectly
+          # healthy production. Checking where a value comes from is not the same as
+          # checking what the caller receives, and only the second one is what this
+          # step reads. size_bytes is a build_assets column and is in the payload.
+          if ! jq -e '.assets | length > 0' /tmp/probe.out >/dev/null 2>&1 \
+             || ! jq -e '.assets[0].size_bytes > 0' /tmp/probe.out >/dev/null 2>&1; then
+            echo "" >&2
+            echo "FAIL: 200, but the response carries no sized asset from build_assets." >&2
+            echo "Either the configured path does not reach that query - pick one whose" >&2
+            echo "app has an active release - or the deployed code and the schema no" >&2
+            echo "longer agree, which is what this step is for." >&2
+            exit 1
+          fi
+          echo "Response carries assets read from build_assets; deployed code agrees with the schema." 
 
       - name: Configure Hands Worker secrets
         working-directory: worker
