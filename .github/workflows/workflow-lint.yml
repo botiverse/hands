@@ -81,12 +81,26 @@ jobs:
           # stands still, whatever that file turns out to be. It never has to
           # understand the file, only notice it was not looked at.
           #
-          # The fixtures directory is excluded deliberately - it holds a file written
-          # to fail these checks - and the exclusion is printed rather than assumed,
-          # so nobody takes on trust that the gap is intentional.
+          # Anything subtracted from the denominator narrows what it means, so each
+          # exclusion is declared once, with its reason, and the same declaration both
+          # performs the filtering and prints it. Keeping the filter and the
+          # explanation in two places is how a denominator starts lying while still
+          # reading N of N: someone adds a second exclusion and the sentence beneath
+          # it stays the same.
+          exclusions=(
+            ".github/lint-fixtures/|holds a file written to fail these checks"
+          )
+          filter=""
+          for entry in "${exclusions[@]}"; do
+            filter+="${filter:+|}^${entry%%|*}"
+          done
           mapfile -t present < <(find .github -name '*.yml' -o -name '*.yaml' \
-                                   | grep -v '^\.github/lint-fixtures/' | sort)
-          echo "scanning ${#targets[@]} of ${#present[@]} YAML files under .github/ (lint-fixtures/ excluded deliberately)"
+                                   | grep -Ev "$filter" | sort)
+
+          echo "scanning ${#targets[@]} of ${#present[@]} YAML files under .github/"
+          for entry in "${exclusions[@]}"; do
+            echo "  excluded: ${entry%%|*} (${entry#*|})"
+          done
 
           if (( ${#targets[@]} < ${#present[@]} )); then
             echo "" >&2
