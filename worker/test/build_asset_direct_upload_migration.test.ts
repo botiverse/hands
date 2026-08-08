@@ -98,6 +98,9 @@ describe("migration 0062 — build asset direct upload", () => {
       size_bytes: 4242, signature: "sig-a", signing_credential_id: "cred-1",
       metadata_json: '{"kept":true}', download_count: 77, created_at: 1700000001,
       artifact_kind: "installable", slot_arch: "arm64", slot_variant: "release",
+      // No from_version_code in metadata, so the delta discriminator normalises to
+      // the sentinel and this row's slot is unchanged by its introduction.
+      slot_from_version: "-",
     });
     expect(
       db.prepare("SELECT COUNT(*) AS n FROM build_assets").get(),
@@ -154,6 +157,129 @@ describe("migration 0062 — build asset direct upload", () => {
     expect(() => insertAsset(db, "n2")).toThrow(/UNIQUE constraint failed/);
     insertAsset(db, "a1", { arch: "arm64" });
     expect(() => insertAsset(db, "a2", { arch: "arm64" })).toThrow(/UNIQUE constraint failed/);
+  });
+
+  it("gives each delta patch its own slot, keyed by the prior it patches from", () => {
+    const db = database({ seedBeforeMigration: seedApps });
+    const patch = (id: string, from: number | null) =>
+      db
+        .prepare(
+          `INSERT INTO build_assets
+             (id, build_id, platform, arch, variant, filetype, r2_key, file_hash,
+              size_bytes, artifact_kind, metadata_json, created_at)
+           VALUES (?, 'build-a', 'android', 'arm64', NULL, 'patch', ?, 'h', 1,
+                   'delta-patch', ?, 1)`,
+        )
+        .run(id, id, from === null ? "{}" : JSON.stringify({ from_version_code: from }));
+
+    // delta.ts and the CLI both write one patch per prior version, and the public
+    // download path selects on from_version_code. It is part of the identity whether
+    // or not the schema says so; a slot that omits it folds every patch for a build
+    // into one and rejects the second prior.
+    expect(() => patch("d1", 1)).not.toThrow();
+    expect(() => patch("d2", 2)).not.toThrow();
+    expect(() => patch("d3", 2)).toThrow(/UNIQUE constraint failed/);
+    expect(db.prepare("SELECT COUNT(*) FROM build_assets").pluck().get()).toBe(2);
+  });
+
+  it("agrees with the reader about which values are the same prior", () => {
+    const db = database({ seedBeforeMigration: seedApps });
+    const patch = (id: string, from: unknown) =>
+      db
+        .prepare(
+          `INSERT INTO build_assets
+             (id, build_id, platform, arch, variant, filetype, r2_key, file_hash,
+              size_bytes, artifact_kind, metadata_json, created_at)
+           VALUES (?, 'build-a', 'android', 'arm64', NULL, 'patch', ?, 'h', 1,
+                   'delta-patch', ?, 1)`,
+        )
+        .run(id, id, JSON.stringify({ from_version_code: from }));
+
+    expect(() => patch("p1", 1)).not.toThrow();
+    // public_v2.ts matches with CAST(... AS INTEGER), so these are the same prior to
+    // the reader. Keyed as text they were two rows, its query matched both, and it
+    // takes LIMIT 1 — which patch a client received would have depended on scan order.
+    expect(() => patch("p1_0", 1.0)).toThrow(/UNIQUE constraint failed/);
+    expect(() => patch("p1_str", "1")).toThrow(/UNIQUE constraint failed/);
+    expect(() => patch("p2", 2)).not.toThrow();
+
+    // The reader's own query, run verbatim: exactly one row can answer for prior 1.
+    const forPrior = (v: number) =>
+      db
+        .prepare(
+          `SELECT id FROM build_assets
+            WHERE artifact_kind = 'delta-patch'
+              AND CAST(json_extract(metadata_json, '$.from_version_code') AS INTEGER) = ?`,
+        )
+        .pluck()
+        .all(v);
+    expect(forPrior(1)).toEqual(["p1"]);
+    expect(forPrior(2)).toEqual(["p2"]);
+  });
+
+  it("keeps the discriminator's sentinel out of reach of any declared value", () => {
+    const db = database({ seedBeforeMigration: seedApps });
+    const patch = (id: string, metadata: string) =>
+      db
+        .prepare(
+          `INSERT INTO build_assets
+             (id, build_id, platform, arch, variant, filetype, r2_key, file_hash,
+              size_bytes, artifact_kind, metadata_json, created_at)
+           VALUES (?, 'build-a', 'android', 'arm64', NULL, 'patch', ?, 'h', 1,
+                   'delta-patch', ?, 1)`,
+        )
+        .run(id, id, metadata);
+
+    // arch and variant keep '-' out of their domain with a CHECK. No column
+    // constraint reaches inside metadata_json, so instead the two ranges are made
+    // disjoint: a declared value is always prefixed and the sentinel never is. The
+    // first version of this column coalesced to a bare '-' and a patch declaring '-'
+    // collided with an asset that has no discriminator at all.
+    expect(() => patch("none", "{}")).not.toThrow();
+    expect(() => patch("dash", JSON.stringify({ from_version_code: "-" }))).not.toThrow();
+    // '-' coerces to 0 like any non-numeric text, and the prefix keeps it clear of
+    // the sentinel either way. The reader coerces identically, so it agrees.
+    expect(
+      db.prepare("SELECT slot_from_version FROM build_assets ORDER BY id").pluck().all(),
+    ).toEqual(["v0", "-"]);
+
+    // The same prior written as a number and as a string is one prior, so one slot.
+    expect(() => patch("n", JSON.stringify({ from_version_code: 7 }))).not.toThrow();
+    expect(() => patch("s", JSON.stringify({ from_version_code: "7" }))).toThrow(
+      /UNIQUE constraint failed/,
+    );
+  });
+
+  it("does not let a non-delta asset buy a new slot with an irrelevant metadata key", () => {
+    const db = database({ seedBeforeMigration: seedApps });
+    const put = (id: string, metadata: string) =>
+      db
+        .prepare(
+          `INSERT INTO build_assets
+             (id, build_id, platform, arch, variant, filetype, r2_key, file_hash,
+              size_bytes, artifact_kind, metadata_json, created_at)
+           VALUES (?, 'build-a', 'android', 'arm64', 'release', 'apk', ?, 'h', 1,
+                   'installable', ?, 1)`,
+        )
+        .run(id, id, metadata);
+    // Every slot column identical, non-NULL throughout, differing only by a key that
+    // has no meaning for this kind. Scoped to every kind, the discriminator turned
+    // into an escape hatch: anyone able to write metadata_json could dodge the
+    // canonical constraint by adding a field.
+    expect(() => put("a", "{}")).not.toThrow();
+    expect(() => put("b", JSON.stringify({ from_version_code: 1 }))).toThrow(
+      /UNIQUE constraint failed/,
+    );
+  });
+
+  it("does not let the discriminator loosen assets that have none", () => {
+    const db = database({ seedBeforeMigration: seedApps });
+    // Everything except a delta patch lacks from_version_code, normalises to the same
+    // sentinel, and must stay as constrained as it was.
+    insertAsset(db, "i1", { arch: "arm64", kind: "app-icon" });
+    expect(() => insertAsset(db, "i2", { arch: "arm64", kind: "app-icon" })).toThrow(
+      /UNIQUE constraint failed/,
+    );
   });
 
   it("keeps the sentinel out of the input domain", () => {
@@ -377,5 +503,272 @@ describe("migration 0062 — build asset direct upload", () => {
          VALUES ('as1', 9, 'sha', 10, 'k', 99, 'done', 'live', 1)`,
       ).run(),
     ).toThrow(/CHECK constraint failed/);
+  });
+});
+
+
+/**
+ * The preflight guards.
+ *
+ * `wrangler d1 migrations apply --remote` posts this file to D1 as a single `/query`
+ * string, and wrangler documents rollback only for the separate `--file` import path.
+ * Rather than depend on an atomicity guarantee nobody here can read back, 0062 asserts
+ * its preconditions before the first destructive statement.
+ *
+ * `db.exec` matches the pessimistic reading — it stops at the first error and does not
+ * wrap the batch in a transaction — so whatever ran before the abort really is left
+ * behind here. That is the point: these tests assert what survives, not what threw.
+ */
+describe("migration 0062 — preflight", () => {
+  /** Prior migrations, then a seed, then 0062 — returning the database either way. */
+  function attempt(seed: Seed) {
+    const db = new Database(":memory:");
+    db.pragma("foreign_keys = ON");
+    for (const name of readdirSync(MIGRATION_DIR).sort()) {
+      if (!name.endsWith(".sql")) continue;
+      if (name === MIGRATION) break;
+      db.exec(readFileSync(`${MIGRATION_DIR}${name}`, "utf8"));
+    }
+    seed(db);
+    let error: Error | null = null;
+    try {
+      db.exec(readFileSync(`${MIGRATION_DIR}${MIGRATION}`, "utf8"));
+    } catch (e) {
+      error = e as Error;
+    }
+    return { db, error };
+  }
+
+  const tables = (db: Database.Database) =>
+    db
+      .prepare("SELECT name FROM sqlite_master WHERE type = 'table'")
+      .pluck()
+      .all() as string[];
+
+  const hasColumn = (db: Database.Database, table: string, column: string) =>
+    (db.pragma(`table_info(${table})`) as { name: string }[]).some((c) => c.name === column);
+
+  /** The consequence both guards exist for: the rebuild never started. */
+  function expectUntouched(db: Database.Database, rows: number) {
+    const names = tables(db);
+    expect(names).toContain("build_assets");
+    expect(names).not.toContain("build_assets_legacy");
+    expect(names.filter((n) => n.includes("ingest"))).toEqual([]);
+    expect(db.prepare("SELECT COUNT(*) FROM build_assets").pluck().get()).toBe(rows);
+    // The first statements of 0062 proper are `ALTER TABLE builds`; if the guards sit
+    // where they belong, even those have not run.
+    expect(hasColumn(db, "builds", "asset_ingest_protocol_version")).toBe(false);
+  }
+
+  /**
+   * Split into statements, keeping trigger bodies whole — `BEGIN ... END;` contains
+   * semicolons that do not end a statement.
+   */
+  function statements(sql: string) {
+    const out: string[] = [];
+    let buf = "";
+    let depth = 0;
+    for (const line of sql.split("\n")) {
+      if (/\bBEGIN\b/.test(line) && !/^\s*--/.test(line)) depth += 1;
+      buf += line + "\n";
+      if (/^\s*END;/.test(line)) depth -= 1;
+      if (depth === 0 && /;\s*$/.test(line) && !/^\s*--/.test(line)) {
+        if (buf.trim()) out.push(buf);
+        buf = "";
+      }
+    }
+    if (buf.trim()) out.push(buf);
+    return out;
+  }
+
+  /** An executor that carries on after a failed statement, which D1 may or may not be. */
+  function applyIgnoringErrors(db: Database.Database, sql: string) {
+    const errors: string[] = [];
+    for (const stmt of statements(sql)) {
+      try {
+        db.exec(stmt);
+      } catch (e) {
+        errors.push((e as Error).message);
+      }
+    }
+    return errors;
+  }
+
+  it("does not stop a continuing executor — the retained copy is what saves the data", () => {
+    const db = new Database(":memory:");
+    db.pragma("foreign_keys = ON");
+    for (const name of readdirSync(MIGRATION_DIR).sort()) {
+      if (!name.endsWith(".sql") || name === MIGRATION) continue;
+      db.exec(readFileSync(`${MIGRATION_DIR}${name}`, "utf8"));
+    }
+    seedApps(db);
+    insertAsset(db, "as1", { arch: "-" });
+
+    const errors = applyIgnoringErrors(db, readFileSync(`${MIGRATION_DIR}${MIGRATION}`, "utf8"));
+
+    // The guard fired and was ignored. Claiming the preflight makes the executor
+    // question moot was wrong, and this is the case that makes it wrong: the rebuild
+    // ran anyway and the replacement is empty.
+    expect(errors.join("\n")).toMatch(/0062 preflight failed/);
+    // The constraint name IS the operator-facing message, and this is the executor
+    // under which it is read. An earlier revision told them build_assets and builds
+    // were untouched; at that exact moment the rebuild was continuing behind the
+    // error. What the message says has to survive the case that produces it.
+    expect(errors.join("\n")).not.toMatch(/untouched|nothing has been changed|no changes were made/i);
+    const names = tables(db);
+    expect(names).toContain("build_assets_legacy");
+    expect(db.prepare("SELECT COUNT(*) FROM build_assets").pluck().get()).toBe(0);
+
+    // And this is what holds regardless of which executor we have. The row is still
+    // readable, so the outcome is an outage someone can undo rather than a deletion.
+    expect(db.prepare("SELECT COUNT(*) FROM build_assets_legacy").pluck().get()).toBe(1);
+    expect(db.prepare("SELECT arch FROM build_assets_legacy").pluck().get()).toBe("-");
+  });
+
+  it("stops a stop-at-first-error executor before anything is renamed", () => {
+    // The other half of the same question, kept next to it so neither reads as the
+    // general case. better-sqlite3's exec stops at the first error.
+    const { db, error } = attempt((d) => {
+      seedApps(d);
+      insertAsset(d, "as1", { arch: "-" });
+    });
+    expect(error?.message).toMatch(/0062 preflight failed/);
+    expect(tables(db)).not.toContain("build_assets_legacy");
+  });
+
+  it("refuses to start on a half-applied database, where the checks would read empty", () => {
+    const { db, error } = attempt((d) => {
+      seedApps(d);
+      insertAsset(d, "as1", { arch: "-" });
+      // Exactly the wreckage the other guards cannot see: the rename happened, the
+      // replacement is empty, and the offending row is now out of their reach. Both
+      // would count zero and pass, certifying a database that is already broken.
+      d.exec(`
+        ALTER TABLE build_assets RENAME TO build_assets_legacy;
+        CREATE TABLE build_assets (id TEXT PRIMARY KEY, build_id TEXT, platform TEXT,
+          arch TEXT, variant TEXT, filetype TEXT, artifact_kind TEXT);
+      `);
+    });
+    expect(error?.message).toMatch(/0062 preflight failed: build_assets_legacy already exists/);
+    // Not "table build_assets_legacy already exists" from the RENAME further down,
+    // which reports the symptom and leaves the operator to work out the situation.
+    expect(error?.message).not.toMatch(/^table build_assets_legacy already exists/);
+    expect(db.prepare("SELECT COUNT(*) FROM build_assets_legacy").pluck().get()).toBe(1);
+  });
+
+  it("names the half-applied state even when the data checks also have something to say", () => {
+    const { error } = attempt((d) => {
+      seedApps(d);
+      insertAsset(d, "as1", { arch: "arm64" });
+      d.exec(`
+        ALTER TABLE build_assets RENAME TO build_assets_legacy;
+        CREATE TABLE build_assets (id TEXT PRIMARY KEY, build_id TEXT, platform TEXT,
+          arch TEXT, variant TEXT, filetype TEXT, artifact_kind TEXT);
+        INSERT INTO build_assets VALUES ('as2', 'build-a', 'android', '-', NULL, 'apk', 'installable');
+      `);
+    });
+    // Here both the prior-attempt guard and the sentinel guard have something to say,
+    // so the order decides which problem the operator is told about. "Resolve those
+    // rows" is a true statement and the wrong instruction: they are a consequence of a
+    // migration that stopped half way, and fixing them would not address that.
+    expect(error?.message).toMatch(/build_assets_legacy already exists/);
+    expect(error?.message).not.toMatch(/literal '-'/);
+  });
+
+  it("refuses to start when a row already holds the literal '-' sentinel", () => {
+    const { db, error } = attempt((d) => {
+      seedApps(d);
+      insertAsset(d, "as1", { arch: "-" });
+    });
+    expect(error?.message).toMatch(/0062 preflight failed: .*literal '-'/);
+    expectUntouched(db, 1);
+  });
+
+  it("does not block a migration over legitimate multi-prior delta patches", () => {
+    const { error } = attempt((d) => {
+      seedApps(d);
+      for (const [id, from] of [["d1", 1], ["d2", 2]] as const) {
+        d.prepare(
+          `INSERT INTO build_assets
+             (id, build_id, platform, arch, variant, filetype, r2_key, file_hash,
+              size_bytes, artifact_kind, metadata_json, created_at)
+           VALUES (?, 'build-a', 'android', 'arm64', NULL, 'patch', ?, 'h', 1,
+                   'delta-patch', ?, 1)`,
+        ).run(id, id, JSON.stringify({ from_version_code: from }));
+      }
+    });
+    // A guard that groups more coarsely than the index it protects reports duplicates
+    // the index would accept, and refuses to migrate a database that is entirely
+    // correct. Mirroring the expression is the requirement; approximating it is not.
+    expect(error).toBeNull();
+  });
+
+  it("refuses to start when two rows already share a normalised slot", () => {
+    const { db, error } = attempt((d) => {
+      seedApps(d);
+      insertAsset(d, "as1", { arch: null });
+      insertAsset(d, "as2", { arch: null });
+    });
+    expect(error?.message).toMatch(/0062 preflight failed: .*canonical slot/);
+    expectUntouched(db, 2);
+  });
+
+  it("still applies once the offending data is resolved", () => {
+    const { db, error } = attempt((d) => {
+      seedApps(d);
+      insertAsset(d, "as1", { arch: "-" });
+    });
+    expect(error).not.toBeNull();
+    // A guard that fires leaves its scratch table behind — its CREATE committed, its
+    // INSERT did not. If the retry did not drop it first, the second attempt would die
+    // on "table already exists" and report a problem the operator does not have.
+    expect(tables(db).some((n) => n.startsWith("_preflight_0062"))).toBe(true);
+    db.prepare("UPDATE build_assets SET arch = NULL").run();
+    expect(() => db.exec(readFileSync(`${MIGRATION_DIR}${MIGRATION}`, "utf8"))).not.toThrow();
+    expect(tables(db)).toContain("build_asset_ingest_seal");
+  });
+
+  it("keeps the original rows recoverable after a successful rebuild", () => {
+    const db = database({
+      seedBeforeMigration: (d) => {
+        seedApps(d);
+        insertAsset(d, "as1", { arch: "arm64" });
+        insertAsset(d, "as2", { arch: "x86_64" });
+      },
+    });
+    // The preflight lowers the chance of the copy failing; this lowers the cost when
+    // it fails anyway. If D1 runs the rest of a batch after a statement fails, the
+    // assertion stops nothing — and dropping the source table in the same breath
+    // would turn a recoverable outage into a permanent loss.
+    expect(tables(db)).toContain("build_assets_legacy");
+    // "Recoverable" is a claim about content, not about a table still being listed:
+    // every column of every row must still be readable from the retained copy.
+    const columns = (t: string) =>
+      (db.pragma(`table_info(${t})`) as { name: string }[]).map((c) => c.name);
+    const carried = columns("build_assets_legacy");
+    expect(carried).toHaveLength(15);
+    expect(columns("build_assets")).toEqual(expect.arrayContaining(carried));
+    const list = carried.join(", ");
+    expect(db.prepare(`SELECT ${list} FROM build_assets_legacy ORDER BY id`).all()).toEqual(
+      db.prepare(`SELECT ${list} FROM build_assets ORDER BY id`).all(),
+    );
+    // The index names the rebuild reuses must have ended up on the new table; they
+    // travelled with the old one through the RENAME and were dropped by name.
+    const owner = (i: string) =>
+      db
+        .prepare("SELECT tbl_name FROM sqlite_master WHERE type = 'index' AND name = ?")
+        .pluck()
+        .get(i);
+    expect(owner("idx_build_assets_build")).toBe("build_assets");
+    expect(owner("idx_build_assets_signing")).toBe("build_assets");
+  });
+
+  it("leaves no scratch table behind on a clean apply", () => {
+    const { db, error } = attempt((d) => {
+      seedApps(d);
+      insertAsset(d, "as1", { arch: "arm64" });
+    });
+    expect(error).toBeNull();
+    expect(tables(db).filter((n) => n.startsWith("_preflight"))).toEqual([]);
   });
 });

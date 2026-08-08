@@ -5,6 +5,97 @@
 -- QA artifact and a release installable that share a shape, which is exactly what
 -- artifact_kind scoping is meant to allow.
 
+-- ---------------------------------------------------------------------------
+-- Preflight. Runs before anything destructive, on purpose.
+--
+-- Two properties of the existing data can make the rebuild below fail: a row whose
+-- arch or variant is already the literal '-', which the new CHECK forbids, and two
+-- rows that collide once the slot is normalised, which the new UNIQUE index forbids.
+-- Both are legal under today's schema, so neither can be assumed absent.
+--
+-- `wrangler d1 migrations apply --remote` posts this file to D1 as one `/query`
+-- string, and wrangler documents rollback only for the separate `--file` import
+-- path. What a failure half way down leaves behind therefore depends on how the
+-- executor treats a failed statement, which is not documented on this path.
+--
+-- What placing the checks first does and does not buy, stated exactly, because an
+-- earlier version of this comment claimed more than it delivers:
+--
+--   executor stops at the first error   the checks abort before the RENAME and
+--                                       nothing here has run
+--   executor rolls the batch back       the same, by a different route
+--   executor continues past errors      the checks abort nothing. The rebuild runs
+--                                       and leaves an empty replacement -- measured,
+--                                       not supposed
+--
+-- So this is a probability reduction, not a guarantee. The guarantee is further
+-- down and independent of all three: build_assets_legacy is not dropped, so the
+-- rows survive whichever executor we turn out to have.
+--
+-- A bare RAISE() is trigger-only in SQLite, so the abort is a named CHECK; SQLite
+-- puts the constraint name in the error, which is what the operator will read.
+--
+-- Each guard drops its own scratch table first. When a guard fires, its CREATE has
+-- already committed while the INSERT has not, so the table survives the abort; a
+-- second attempt would then die on "table already exists" and report the wrong
+-- problem entirely. A guard that breaks the retry is worse than no guard.
+-- Order matters here too. If an earlier attempt left a renamed table behind, the two
+-- guards below would run against the *empty* replacement, count zero violations and
+-- report green -- a clean bill of health for a database that is already broken. This
+-- one runs first so that state is named instead of measured. It also refuses a plain
+-- re-run after a successful apply, where the retained copy is expected to exist: the
+-- RENAME would fail there anyway, but with "table already exists", which describes
+-- the symptom rather than the situation.
+DROP TABLE IF EXISTS _preflight_0062_prior;
+CREATE TABLE _preflight_0062_prior (
+  prior_attempt INTEGER NOT NULL CONSTRAINT
+    "0062 preflight failed: build_assets_legacy already exists, so this database has either applied 0062 already or been left half way through an earlier attempt. The checks below would read the replacement table and pass on an empty one. Establish which case this is before re-applying."
+    CHECK (prior_attempt = 0)
+);
+INSERT INTO _preflight_0062_prior
+SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'build_assets_legacy';
+DROP TABLE _preflight_0062_prior;
+
+DROP TABLE IF EXISTS _preflight_0062_sentinel;
+CREATE TABLE _preflight_0062_sentinel (
+  offending_rows INTEGER NOT NULL CONSTRAINT
+    "0062 preflight failed: build_assets has rows whose arch or variant is the literal '-'. The rebuilt table reserves '-' as the NULL sentinel and rejects it as a value. Resolve those rows, then re-apply. This check sits ahead of the rebuild, but whether the statements after it ran depends on how your executor treats a failed statement -- read the database state back before retrying rather than assuming nothing happened."
+    CHECK (offending_rows = 0)
+);
+INSERT INTO _preflight_0062_sentinel
+SELECT COUNT(*) FROM build_assets WHERE arch = '-' OR variant = '-';
+DROP TABLE _preflight_0062_sentinel;
+
+-- Ordering matters between the two guards, not just before the DDL. This one
+-- normalises exactly as the index it protects normalises -- including the delta
+-- discriminator, because a guard that groups more coarsely than its index reports
+-- duplicates that the index would happily accept, and would block a migration over
+-- data that is entirely correct. It must mirror the expression, not approximate it.
+-- so a literal '-' and a NULL genuinely would collide there. That also means this
+-- query cannot distinguish them -- which is safe only because the guard above has
+-- already established there are no literal '-' rows left to confuse it.
+DROP TABLE IF EXISTS _preflight_0062_slot;
+CREATE TABLE _preflight_0062_slot (
+  colliding_slots INTEGER NOT NULL CONSTRAINT
+    "0062 preflight failed: build_assets already has two or more rows sharing a canonical slot (build_id, artifact_kind, platform, arch, variant, filetype) once NULL is normalised. The rebuilt table makes that slot unique. Resolve the duplicates, then re-apply. This check sits ahead of the rebuild, but whether the statements after it ran depends on how your executor treats a failed statement -- read the database state back before retrying rather than assuming nothing happened."
+    CHECK (colliding_slots = 0)
+);
+INSERT INTO _preflight_0062_slot
+SELECT COUNT(*) FROM (
+  SELECT 1
+    FROM build_assets
+   GROUP BY build_id, artifact_kind, platform,
+            COALESCE(arch, '-'), COALESCE(variant, '-'),
+            COALESCE(
+      CASE WHEN artifact_kind = 'delta-patch'
+           THEN 'v' || CAST(CAST(json_extract(metadata_json, '$.from_version_code') AS INTEGER) AS TEXT)
+      END, '-'),
+            filetype
+  HAVING COUNT(*) > 1
+);
+DROP TABLE _preflight_0062_slot;
+-- ---------------------------------------------------------------------------
+
 -- Per-build protocol selection: explicit at creation, immutable after, NULL = legacy.
 -- Not inferred from created_at, because a timestamp is not a declaration.
 ALTER TABLE builds ADD COLUMN asset_ingest_protocol_version INTEGER;
@@ -41,7 +132,33 @@ CREATE TABLE build_assets (
   -- Generated, not caller-supplied: a writer cannot set a slot value that disagrees
   -- with the column it normalizes, and existing INSERTs need no change.
   slot_arch    TEXT GENERATED ALWAYS AS (COALESCE(arch, '-')) VIRTUAL,
-  slot_variant TEXT GENERATED ALWAYS AS (COALESCE(variant, '-')) VIRTUAL
+  slot_variant TEXT GENERATED ALWAYS AS (COALESCE(variant, '-')) VIRTUAL,
+  -- A delta patch is identified by which prior version it patches from. That lives in
+  -- metadata_json, and the public download path selects on it
+  -- (public_v2.ts, `json_extract(metadata_json, '$.from_version_code')`), so it is
+  -- part of the identity whether or not the schema says so. Leaving it out folded
+  -- every patch for a build into one slot and would have rejected the second prior
+  -- that delta.ts and the CLI both write today.
+  -- Scoped to delta patches, because this describes *their* identity. Applied to
+  -- every kind it stopped being a discriminator and became a bypass: any caller able
+  -- to write metadata_json could add an irrelevant from_version_code and escape the
+  -- canonical constraint entirely.
+  --
+  -- Coerced through INTEGER because that is what the reader does. public_v2.ts
+  -- selects with `CAST(json_extract(...) AS INTEGER) = ?`, so 1 and 1.0 are one prior
+  -- to it; keyed as text they were two slots here, both matched that query, and it
+  -- takes LIMIT 1 — the client's download would have depended on scan order. The
+  -- identity of a row is whatever the query that consumes it treats as identical.
+  --
+  -- Declared values carry a prefix so none can equal the sentinel. arch and variant
+  -- keep '-' out of their domain with a CHECK; no column constraint reaches inside
+  -- metadata_json, so the ranges are made disjoint by construction instead.
+  slot_from_version TEXT GENERATED ALWAYS AS (
+    COALESCE(
+      CASE WHEN artifact_kind = 'delta-patch'
+           THEN 'v' || CAST(CAST(json_extract(metadata_json, '$.from_version_code') AS INTEGER) AS TEXT)
+      END, '-')
+  ) VIRTUAL
 );
 
 INSERT INTO build_assets (
@@ -55,7 +172,33 @@ SELECT
   artifact_kind
 FROM build_assets_legacy;
 
-DROP TABLE build_assets_legacy;
+-- build_assets_legacy is deliberately NOT dropped here.
+--
+-- The preflight above reduces the chance of the copy failing; this reduces what it
+-- costs if it fails anyway. Both are needed because they cover different things, and
+-- this one holds in a case the preflight does not: if D1 executes the rest of a batch
+-- after a statement fails, the assertion aborts nothing and the rebuild proceeds
+-- regardless. Dropping the original in the same breath would make that case
+-- unrecoverable; keeping it makes the worst outcome an empty table beside an intact
+-- copy of its rows.
+--
+-- Keeping it is not free: it is a full copy of the table including signature,
+-- signing_credential_id, r2_key and metadata_json, maintained by nothing and tracked
+-- by no later migration. The reason to keep it expires the moment the rebuild is
+-- known to have worked against production data, and what is left after that is only
+-- the copy's own risk.
+--
+-- So the removal is owned rather than hoped for: task #114, which drops it once the
+-- first production apply has succeeded and its readback is green. Deleting it is
+-- itself irreversible, so its owner gates execution on a separate authorisation and
+-- on a retained export taken first -- the export being both the way back and the only
+-- thing that could later verify the deletion value by value.
+--
+-- Its indexes came with it through the RENAME and still hold the names the new table
+-- needs, so they are dropped by name here. Dropping an index costs nothing that
+-- matters for recovery: the rows are what has to survive, and they do.
+DROP INDEX idx_build_assets_build;
+DROP INDEX idx_build_assets_signing;
 
 CREATE INDEX idx_build_assets_build ON build_assets(build_id);
 CREATE INDEX idx_build_assets_signing
@@ -64,7 +207,8 @@ CREATE INDEX idx_build_assets_signing
 -- Canonical slot: closed (no NULLs) and kind-scoped. Fails closed if duplicates
 -- already exist; the old index permitted them for its whole life.
 CREATE UNIQUE INDEX idx_build_assets_canonical_slot
-  ON build_assets(build_id, artifact_kind, platform, slot_arch, slot_variant, filetype);
+  ON build_assets(build_id, artifact_kind, platform, slot_arch, slot_variant,
+                  slot_from_version, filetype);
 
 -- Lets the replay ledger reference (build_id, asset_id) as a pair.
 CREATE UNIQUE INDEX idx_build_assets_build_scope ON build_assets(build_id, id);
