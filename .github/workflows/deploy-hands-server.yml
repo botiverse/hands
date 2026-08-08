@@ -165,8 +165,14 @@ jobs:
             echo "to ship something unrelated - you are not being asked to take it on." >&2
             echo "" >&2
             echo "Either find the owner of the pending migration and have them dispatch," >&2
-            echo "or re-dispatch saying an owner is standing by. Nothing has been" >&2
-            echo "applied and nothing has been deployed." >&2
+            echo "or re-dispatch saying an owner is standing by." >&2
+            echo "" >&2
+            echo "No migration has been applied and no Worker has been deployed." >&2
+            echo "Scoped deliberately: the bootstrap step runs before this one and" >&2
+            echo "creates the R2 bucket when it is missing, so a stopped dispatch is" >&2
+            echo "not the same as one that never happened. This is the sentence you" >&2
+            echo "are reading to work out what state you are in, so it claims only" >&2
+            echo "what this gate actually guarantees." >&2
             exit 1
           fi
 
