@@ -435,6 +435,23 @@ jobs:
             exit 1
           fi
 
+          # 200 is not enough. This handler queries apps, then channels, and only then
+          # build_assets, so a slug that exists but has no active release can answer
+          # 200 without the table ever being read - a probe that ran and verified
+          # nothing. Requiring a field that can only come from that query removes the
+          # need to know, when choosing the path, that its app currently has a
+          # release: if it does not, this says so instead of passing.
+          if ! jq -e '.assets | length > 0' /tmp/probe.out >/dev/null 2>&1 \
+             || ! jq -e '.assets[0].file_hash' /tmp/probe.out >/dev/null 2>&1; then
+            echo "" >&2
+            echo "FAIL: 200, but the response carries no asset from build_assets." >&2
+            echo "Either the configured path does not reach that query - pick one whose" >&2
+            echo "app has an active release - or the deployed code and the schema no" >&2
+            echo "longer agree, which is what this step is for." >&2
+            exit 1
+          fi
+          echo "Response carries assets read from build_assets; deployed code agrees with the schema." 
+
       - name: Configure Hands Worker secrets
         working-directory: worker
         env:
