@@ -63,17 +63,31 @@ function insertAsset(
 }
 
 describe("migration 0062 — build asset direct upload", () => {
-  it("applies over rows that already exist with a non-NULL arch", () => {
-    // Every real database has these. A revision of this migration added a defaulted
-    // column with a CHECK, which fails on exactly them.
-    expect(() =>
-      database({
-        seedBeforeMigration: (db) => {
-          seedApps(db);
-          insertAsset(db, "pre", { arch: "arm64", variant: "release" });
-        },
-      }),
-    ).not.toThrow();
+  it("applies over rows that already exist, and carries every one of them across", () => {
+    // Every real database has rows with a non-NULL arch. A revision of this migration
+    // added a defaulted column with a CHECK, which fails on exactly them.
+    //
+    // Asserting "did not throw" is not enough: build_assets is rebuilt here, and a
+    // rebuild that dropped every row would satisfy that and nothing else.
+    const db = database({
+      seedBeforeMigration: (db) => {
+        seedApps(db);
+        insertAsset(db, "pre-a", { arch: "arm64", variant: "release" });
+        insertAsset(db, "pre-b", { arch: "x86" });
+        insertAsset(db, "pre-c");
+        db.prepare("UPDATE build_assets SET metadata_json = '{\"kept\":1}', download_count = 7").run();
+      },
+    });
+    const rows = db.prepare(
+      `SELECT id, r2_key, file_hash, size_bytes, metadata_json, download_count,
+              slot_arch, slot_variant
+         FROM build_assets ORDER BY id`,
+    ).all();
+    expect(rows).toEqual([
+      { id: "pre-a", r2_key: "k", file_hash: "h", size_bytes: 1, metadata_json: '{"kept":1}', download_count: 7, slot_arch: "arm64", slot_variant: "release" },
+      { id: "pre-b", r2_key: "k", file_hash: "h", size_bytes: 1, metadata_json: '{"kept":1}', download_count: 7, slot_arch: "x86", slot_variant: "-" },
+      { id: "pre-c", r2_key: "k", file_hash: "h", size_bytes: 1, metadata_json: '{"kept":1}', download_count: 7, slot_arch: "-", slot_variant: "-" },
+    ]);
   });
 
   it("leaves existing writers alone: a legacy INSERT with no slot columns still works", () => {
