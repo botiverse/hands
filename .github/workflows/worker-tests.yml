@@ -18,6 +18,17 @@ on:
       - "migrations/**"
       - "packages/**"
       - ".github/workflows/worker-tests.yml"
+      # The root files this job actually reads, enumerated rather than guessed:
+      # pnpm/action-setup takes packageManager from the root package.json; the pnpm
+      # cache and `install --frozen-lockfile` read the lockfile, the workspace file
+      # and that same package.json; worker/tsconfig.json extends tsconfig.base.json.
+      # There is no root .npmrc, .nvmrc, .node-version, .pnpmfile.cjs or patches/, so
+      # the set is closed at these. A lockfile-only CVE bump and a strict-mode flip in
+      # tsconfig.base.json are both real changes that would otherwise skip this job.
+      - "package.json"
+      - "pnpm-lock.yaml"
+      - "pnpm-workspace.yaml"
+      - "tsconfig*.json"
   # No paths filter here, deliberately. Two lists are two things to keep in step, and
   # the first was already out of step: this file itself was missing from the push
   # list, so a change to the workflow could merge without main ever running it. The
