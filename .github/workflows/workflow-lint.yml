@@ -1,26 +1,32 @@
 name: Workflow lint
 
-# One invariant: no `${{ }}` inside a `run:` block.
+# Two things that go wrong quietly in workflow files:
 #
-# Interpolation happens before the shell sees the script, so an input's value becomes
-# part of the program rather than data given to it. Today the only two such uses were
-# safe, but only because the input they read is a `type: choice` with three literal
-# options — the safety of those lines lived in a different part of the file, with
-# nothing connecting them. Someone changing that input to `type: string` would create
-# an injection point in a step holding CLOUDFLARE_API_TOKEN, and their diff would look
-# exactly like the one that legitimately did that to another input.
+#   interpolation inside a `run:` block - the value is spliced in as program text
+#     before the shell parses the line, so an input arrives as code rather than as
+#     data. Every such line in this repository was safe, and safe for a borrowed
+#     reason: the input it read was declared `type: choice` or `type: boolean`
+#     elsewhere in the file. Nothing connected a line to the declaration protecting
+#     it, so changing that declaration would create an injection point in a step
+#     holding a deploy or publish credential.
 #
-# Passing values through `env:` makes each line safe on its own terms, and the rule is
-# a grep rather than a judgement: "is this line safe?" needs reasoning about a
-# declaration elsewhere; "is there an interpolation in a run block?" does not.
+#   a duplicate mapping key - YAML keeps the last and discards the first without
+#     complaint. Adding an `env:` to a step that already had one deletes the original;
+#     that happened here, to five steps at once, in the change that introduced this
+#     lint.
 #
-# The repository already worked this way — 32 of 34 interpolations went through `env:`
-# before this existed. This keeps the two former exceptions from coming back.
+# Neither is a syntax error, so nothing else reports them.
+#
+# The job runs the checker twice: once against a file built to fail it, and once
+# against the real workflows. A clean result is reported only if the known-bad file
+# failed first - otherwise the run proved nothing, and "no problems found" is
+# indistinguishable in the log from "the check never executed".
 
 on:
   pull_request:
     paths:
       - ".github/workflows/**"
+      - ".github/lint-fixtures/**"
   push:
     branches: [main]
 
@@ -28,86 +34,32 @@ permissions:
   contents: read
 
 jobs:
-  no-interpolation-in-run:
+  lint:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
 
-      - name: Check for interpolation inside run blocks
-        shell: bash
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install PyYAML
+        run: pip install --quiet pyyaml
+
+      - name: Self-test - the checker must fail the known-bad fixture
+        run: |
+          set -uo pipefail
+          if python3 .github/lint-fixtures/check-workflows.py \
+               .github/lint-fixtures/known-bad.yml; then
+            echo "" >&2
+            echo "CANNOT RUN: the checker passed a file written to fail it." >&2
+            echo "It is not working, so any clean result from it today is worthless." >&2
+            exit 2
+          fi
+          echo "Self-test passed: the checker reports both defects."
+
+      - name: Check the workflows
         run: |
           set -euo pipefail
-          # Built rather than written literally, so this file does not trip its own
-          # rule. An exclusion list would have been the other way, and a rule with an
-          # exception for the file that defines it is one edit from meaning nothing.
-          tok='${'"{"
-          found=0
-          for f in .github/workflows/*.yml .github/workflows/*.yaml; do
-            [[ -e "$f" ]] || continue
-            # Track whether we are inside a `run:` block by indentation: the block ends
-            # at the first non-blank line indented no further than the `run:` key.
-            awk -v file="$f" -v tok="$tok" '
-              match($0, /^[[:space:]]*run: \|/) {
-                inrun = 1
-                indent = match($0, /[^[:space:]]/) - 1
-                next
-              }
-              inrun && /[^[:space:]]/ {
-                here = match($0, /[^[:space:]]/) - 1
-                if (here <= indent) { inrun = 0 }
-              }
-              inrun && index($0, tok) {
-                printf "%s:%d: %s\n", file, NR, $0
-                bad = 1
-              }
-              END { exit bad }
-            ' "$f" || found=1
-          done
-
-          # A second `env:` in one step is not a syntax error - YAML keeps the last
-          # mapping key and drops the first, silently. That is how this very PR first
-          # removed RESOLVED_VERSION from five Summary steps while looking correct:
-          # the fix for one silent hazard introduced another, in the evidence surface,
-          # by repeating the same mechanical edit five times.
-          python3 - <<'DUPCHECK' || found=1
-          import sys, glob, yaml
-
-          class Strict(yaml.SafeLoader):
-              pass
-
-          def no_dupes(loader, node, deep=False):
-              seen, out = set(), {}
-              for k, v in node.value:
-                  key = loader.construct_object(k, deep=deep)
-                  if key in seen:
-                      print(f"duplicate key {key!r} at line {k.start_mark.line + 1}", file=sys.stderr)
-                      raise SystemExit(1)
-                  seen.add(key)
-                  out[key] = loader.construct_object(v, deep=deep)
-              return out
-
-          Strict.add_constructor(yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, no_dupes)
-          for f in sorted(glob.glob(".github/workflows/*.yml")):
-              try:
-                  yaml.load(open(f), Strict)
-              except SystemExit:
-                  print(f"  in {f}", file=sys.stderr)
-                  raise
-          DUPCHECK
-
-          if [[ "$found" == "1" ]]; then
-            echo "" >&2
-            echo "A workflow interpolates ${tok} }} inside a run block." >&2
-            echo "" >&2
-            echo "The value is spliced into the script before the shell reads it, so it" >&2
-            echo "arrives as program text rather than as data. Pass it through env:" >&2
-            echo "instead and reference it as a shell variable:" >&2
-            echo "" >&2
-            echo "    env:" >&2
-            echo "      THING: ${tok} inputs.thing }}" >&2
-            echo "    run: |" >&2
-            echo "      use \"\${THING}\"" >&2
-            echo "" >&2
-            exit 1
-          fi
-          echo "No interpolation inside run blocks."
+          python3 .github/lint-fixtures/check-workflows.py .github/workflows/*.yml
+          echo "No interpolation in run blocks, no duplicate keys."
