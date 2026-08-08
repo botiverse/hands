@@ -59,7 +59,7 @@ DROP TABLE _preflight_0062_prior;
 DROP TABLE IF EXISTS _preflight_0062_sentinel;
 CREATE TABLE _preflight_0062_sentinel (
   offending_rows INTEGER NOT NULL CONSTRAINT
-    "0062 preflight failed: build_assets has rows whose arch or variant is the literal '-'. The rebuilt table reserves '-' as the NULL sentinel and rejects it as a value. Resolve those rows, then re-apply: this aborts before the rebuild starts, so build_assets and builds are untouched."
+    "0062 preflight failed: build_assets has rows whose arch or variant is the literal '-'. The rebuilt table reserves '-' as the NULL sentinel and rejects it as a value. Resolve those rows, then re-apply. This check sits ahead of the rebuild, but whether the statements after it ran depends on how your executor treats a failed statement -- read the database state back before retrying rather than assuming nothing happened."
     CHECK (offending_rows = 0)
 );
 INSERT INTO _preflight_0062_sentinel
@@ -77,7 +77,7 @@ DROP TABLE _preflight_0062_sentinel;
 DROP TABLE IF EXISTS _preflight_0062_slot;
 CREATE TABLE _preflight_0062_slot (
   colliding_slots INTEGER NOT NULL CONSTRAINT
-    "0062 preflight failed: build_assets already has two or more rows sharing a canonical slot (build_id, artifact_kind, platform, arch, variant, filetype) once NULL is normalised. The rebuilt table makes that slot unique. Resolve the duplicates, then re-apply: this aborts before the rebuild starts, so build_assets and builds are untouched."
+    "0062 preflight failed: build_assets already has two or more rows sharing a canonical slot (build_id, artifact_kind, platform, arch, variant, filetype) once NULL is normalised. The rebuilt table makes that slot unique. Resolve the duplicates, then re-apply. This check sits ahead of the rebuild, but whether the statements after it ran depends on how your executor treats a failed statement -- read the database state back before retrying rather than assuming nothing happened."
     CHECK (colliding_slots = 0)
 );
 INSERT INTO _preflight_0062_slot
@@ -86,7 +86,10 @@ SELECT COUNT(*) FROM (
     FROM build_assets
    GROUP BY build_id, artifact_kind, platform,
             COALESCE(arch, '-'), COALESCE(variant, '-'),
-            COALESCE('v' || CAST(json_extract(metadata_json, '$.from_version_code') AS TEXT), '-'),
+            COALESCE(
+      CASE WHEN artifact_kind = 'delta-patch'
+           THEN 'v' || CAST(CAST(json_extract(metadata_json, '$.from_version_code') AS INTEGER) AS TEXT)
+      END, '-'),
             filetype
   HAVING COUNT(*) > 1
 );
@@ -136,13 +139,25 @@ CREATE TABLE build_assets (
   -- part of the identity whether or not the schema says so. Leaving it out folded
   -- every patch for a build into one slot and would have rejected the second prior
   -- that delta.ts and the CLI both write today.
-  -- Real values carry a prefix so none of them can ever equal the sentinel. arch and
-  -- variant needed a CHECK to keep '-' out of their domain; that is not available
-  -- here, because the value lives inside metadata_json where no column constraint
-  -- reaches it. Making the two ranges disjoint by construction removes the need:
-  -- a patch declaring from_version_code '-' becomes 'v-', not '-'.
+  -- Scoped to delta patches, because this describes *their* identity. Applied to
+  -- every kind it stopped being a discriminator and became a bypass: any caller able
+  -- to write metadata_json could add an irrelevant from_version_code and escape the
+  -- canonical constraint entirely.
+  --
+  -- Coerced through INTEGER because that is what the reader does. public_v2.ts
+  -- selects with `CAST(json_extract(...) AS INTEGER) = ?`, so 1 and 1.0 are one prior
+  -- to it; keyed as text they were two slots here, both matched that query, and it
+  -- takes LIMIT 1 — the client's download would have depended on scan order. The
+  -- identity of a row is whatever the query that consumes it treats as identical.
+  --
+  -- Declared values carry a prefix so none can equal the sentinel. arch and variant
+  -- keep '-' out of their domain with a CHECK; no column constraint reaches inside
+  -- metadata_json, so the ranges are made disjoint by construction instead.
   slot_from_version TEXT GENERATED ALWAYS AS (
-    COALESCE('v' || CAST(json_extract(metadata_json, '$.from_version_code') AS TEXT), '-')
+    COALESCE(
+      CASE WHEN artifact_kind = 'delta-patch'
+           THEN 'v' || CAST(CAST(json_extract(metadata_json, '$.from_version_code') AS INTEGER) AS TEXT)
+      END, '-')
   ) VIRTUAL
 );
 

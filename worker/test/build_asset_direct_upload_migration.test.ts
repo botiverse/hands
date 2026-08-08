@@ -182,6 +182,41 @@ describe("migration 0062 — build asset direct upload", () => {
     expect(db.prepare("SELECT COUNT(*) FROM build_assets").pluck().get()).toBe(2);
   });
 
+  it("agrees with the reader about which values are the same prior", () => {
+    const db = database({ seedBeforeMigration: seedApps });
+    const patch = (id: string, from: unknown) =>
+      db
+        .prepare(
+          `INSERT INTO build_assets
+             (id, build_id, platform, arch, variant, filetype, r2_key, file_hash,
+              size_bytes, artifact_kind, metadata_json, created_at)
+           VALUES (?, 'build-a', 'android', 'arm64', NULL, 'patch', ?, 'h', 1,
+                   'delta-patch', ?, 1)`,
+        )
+        .run(id, id, JSON.stringify({ from_version_code: from }));
+
+    expect(() => patch("p1", 1)).not.toThrow();
+    // public_v2.ts matches with CAST(... AS INTEGER), so these are the same prior to
+    // the reader. Keyed as text they were two rows, its query matched both, and it
+    // takes LIMIT 1 — which patch a client received would have depended on scan order.
+    expect(() => patch("p1_0", 1.0)).toThrow(/UNIQUE constraint failed/);
+    expect(() => patch("p1_str", "1")).toThrow(/UNIQUE constraint failed/);
+    expect(() => patch("p2", 2)).not.toThrow();
+
+    // The reader's own query, run verbatim: exactly one row can answer for prior 1.
+    const forPrior = (v: number) =>
+      db
+        .prepare(
+          `SELECT id FROM build_assets
+            WHERE artifact_kind = 'delta-patch'
+              AND CAST(json_extract(metadata_json, '$.from_version_code') AS INTEGER) = ?`,
+        )
+        .pluck()
+        .all(v);
+    expect(forPrior(1)).toEqual(["p1"]);
+    expect(forPrior(2)).toEqual(["p2"]);
+  });
+
   it("keeps the discriminator's sentinel out of reach of any declared value", () => {
     const db = database({ seedBeforeMigration: seedApps });
     const patch = (id: string, metadata: string) =>
@@ -202,13 +237,37 @@ describe("migration 0062 — build asset direct upload", () => {
     // collided with an asset that has no discriminator at all.
     expect(() => patch("none", "{}")).not.toThrow();
     expect(() => patch("dash", JSON.stringify({ from_version_code: "-" }))).not.toThrow();
+    // '-' coerces to 0 like any non-numeric text, and the prefix keeps it clear of
+    // the sentinel either way. The reader coerces identically, so it agrees.
     expect(
       db.prepare("SELECT slot_from_version FROM build_assets ORDER BY id").pluck().all(),
-    ).toEqual(["v-", "-"]);
+    ).toEqual(["v0", "-"]);
 
     // The same prior written as a number and as a string is one prior, so one slot.
     expect(() => patch("n", JSON.stringify({ from_version_code: 7 }))).not.toThrow();
     expect(() => patch("s", JSON.stringify({ from_version_code: "7" }))).toThrow(
+      /UNIQUE constraint failed/,
+    );
+  });
+
+  it("does not let a non-delta asset buy a new slot with an irrelevant metadata key", () => {
+    const db = database({ seedBeforeMigration: seedApps });
+    const put = (id: string, metadata: string) =>
+      db
+        .prepare(
+          `INSERT INTO build_assets
+             (id, build_id, platform, arch, variant, filetype, r2_key, file_hash,
+              size_bytes, artifact_kind, metadata_json, created_at)
+           VALUES (?, 'build-a', 'android', 'arm64', 'release', 'apk', ?, 'h', 1,
+                   'installable', ?, 1)`,
+        )
+        .run(id, id, metadata);
+    // Every slot column identical, non-NULL throughout, differing only by a key that
+    // has no meaning for this kind. Scoped to every kind, the discriminator turned
+    // into an escape hatch: anyone able to write metadata_json could dodge the
+    // canonical constraint by adding a field.
+    expect(() => put("a", "{}")).not.toThrow();
+    expect(() => put("b", JSON.stringify({ from_version_code: 1 }))).toThrow(
       /UNIQUE constraint failed/,
     );
   });
@@ -551,6 +610,11 @@ describe("migration 0062 — preflight", () => {
     // question moot was wrong, and this is the case that makes it wrong: the rebuild
     // ran anyway and the replacement is empty.
     expect(errors.join("\n")).toMatch(/0062 preflight failed/);
+    // The constraint name IS the operator-facing message, and this is the executor
+    // under which it is read. An earlier revision told them build_assets and builds
+    // were untouched; at that exact moment the rebuild was continuing behind the
+    // error. What the message says has to survive the case that produces it.
+    expect(errors.join("\n")).not.toMatch(/untouched|nothing has been changed|no changes were made/i);
     const names = tables(db);
     expect(names).toContain("build_assets_legacy");
     expect(db.prepare("SELECT COUNT(*) FROM build_assets").pluck().get()).toBe(0);
