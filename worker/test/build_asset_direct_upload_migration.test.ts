@@ -470,6 +470,77 @@ describe("migration 0062 — preflight", () => {
     expect(hasColumn(db, "builds", "asset_ingest_protocol_version")).toBe(false);
   }
 
+  /**
+   * Split into statements, keeping trigger bodies whole — `BEGIN ... END;` contains
+   * semicolons that do not end a statement.
+   */
+  function statements(sql: string) {
+    const out: string[] = [];
+    let buf = "";
+    let depth = 0;
+    for (const line of sql.split("\n")) {
+      if (/\bBEGIN\b/.test(line) && !/^\s*--/.test(line)) depth += 1;
+      buf += line + "\n";
+      if (/^\s*END;/.test(line)) depth -= 1;
+      if (depth === 0 && /;\s*$/.test(line) && !/^\s*--/.test(line)) {
+        if (buf.trim()) out.push(buf);
+        buf = "";
+      }
+    }
+    if (buf.trim()) out.push(buf);
+    return out;
+  }
+
+  /** An executor that carries on after a failed statement, which D1 may or may not be. */
+  function applyIgnoringErrors(db: Database.Database, sql: string) {
+    const errors: string[] = [];
+    for (const stmt of statements(sql)) {
+      try {
+        db.exec(stmt);
+      } catch (e) {
+        errors.push((e as Error).message);
+      }
+    }
+    return errors;
+  }
+
+  it("does not stop a continuing executor — the retained copy is what saves the data", () => {
+    const db = new Database(":memory:");
+    db.pragma("foreign_keys = ON");
+    for (const name of readdirSync(MIGRATION_DIR).sort()) {
+      if (!name.endsWith(".sql") || name === MIGRATION) continue;
+      db.exec(readFileSync(`${MIGRATION_DIR}${name}`, "utf8"));
+    }
+    seedApps(db);
+    insertAsset(db, "as1", { arch: "-" });
+
+    const errors = applyIgnoringErrors(db, readFileSync(`${MIGRATION_DIR}${MIGRATION}`, "utf8"));
+
+    // The guard fired and was ignored. Claiming the preflight makes the executor
+    // question moot was wrong, and this is the case that makes it wrong: the rebuild
+    // ran anyway and the replacement is empty.
+    expect(errors.join("\n")).toMatch(/0062 preflight failed/);
+    const names = tables(db);
+    expect(names).toContain("build_assets_legacy");
+    expect(db.prepare("SELECT COUNT(*) FROM build_assets").pluck().get()).toBe(0);
+
+    // And this is what holds regardless of which executor we have. The row is still
+    // readable, so the outcome is an outage someone can undo rather than a deletion.
+    expect(db.prepare("SELECT COUNT(*) FROM build_assets_legacy").pluck().get()).toBe(1);
+    expect(db.prepare("SELECT arch FROM build_assets_legacy").pluck().get()).toBe("-");
+  });
+
+  it("stops a stop-at-first-error executor before anything is renamed", () => {
+    // The other half of the same question, kept next to it so neither reads as the
+    // general case. better-sqlite3's exec stops at the first error.
+    const { db, error } = attempt((d) => {
+      seedApps(d);
+      insertAsset(d, "as1", { arch: "-" });
+    });
+    expect(error?.message).toMatch(/0062 preflight failed/);
+    expect(tables(db)).not.toContain("build_assets_legacy");
+  });
+
   it("refuses to start on a half-applied database, where the checks would read empty", () => {
     const { db, error } = attempt((d) => {
       seedApps(d);

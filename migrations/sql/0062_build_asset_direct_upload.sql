@@ -13,12 +13,24 @@
 -- rows that collide once the slot is normalised, which the new UNIQUE index forbids.
 -- Both are legal under today's schema, so neither can be assumed absent.
 --
--- Placement is the whole point. `wrangler d1 migrations apply --remote` posts this
--- file to D1 as one `/query` string, and wrangler documents rollback only for the
--- separate `--file` import path -- so whether a failure half way down leaves a
--- renamed old table beside an empty new one is not something this file should have
--- to know. Asserting first makes the question moot: a violation aborts before the
--- RENAME, and the database is untouched either way.
+-- `wrangler d1 migrations apply --remote` posts this file to D1 as one `/query`
+-- string, and wrangler documents rollback only for the separate `--file` import
+-- path. What a failure half way down leaves behind therefore depends on how the
+-- executor treats a failed statement, which is not documented on this path.
+--
+-- What placing the checks first does and does not buy, stated exactly, because an
+-- earlier version of this comment claimed more than it delivers:
+--
+--   executor stops at the first error   the checks abort before the RENAME and
+--                                       nothing here has run
+--   executor rolls the batch back       the same, by a different route
+--   executor continues past errors      the checks abort nothing. The rebuild runs
+--                                       and leaves an empty replacement -- measured,
+--                                       not supposed
+--
+-- So this is a probability reduction, not a guarantee. The guarantee is further
+-- down and independent of all three: build_assets_legacy is not dropped, so the
+-- rows survive whichever executor we turn out to have.
 --
 -- A bare RAISE() is trigger-only in SQLite, so the abort is a named CHECK; SQLite
 -- puts the constraint name in the error, which is what the operator will read.
@@ -150,9 +162,15 @@ FROM build_assets_legacy;
 -- unrecoverable; keeping it makes the worst outcome an empty table beside an intact
 -- copy of its rows.
 --
--- A follow-up migration drops it, once a rebuild has been observed to succeed against
--- production data. That is the point at which "it worked" is evidence rather than
--- expectation.
+-- Keeping it is not free: it is a full copy of the table including signature,
+-- signing_credential_id, r2_key and metadata_json, maintained by nothing and tracked
+-- by no later migration. The reason to keep it expires the moment the rebuild is
+-- known to have worked against production data, and what is left after that is only
+-- the copy's own risk.
+--
+-- So the removal is owned rather than hoped for: task #115, which drops it once the
+-- first production apply has succeeded and its readback is green, and which asserts
+-- the rebuilt table is no smaller before deleting the only copy.
 --
 -- Its indexes came with it through the RENAME and still hold the names the new table
 -- needs, so they are dropped by name here. Dropping an index costs nothing that
