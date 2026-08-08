@@ -49,8 +49,12 @@ jobs:
       - name: Self-test - the checker must fail the known-bad fixture
         run: |
           set -uo pipefail
+          # Declared here and re-derived in the next step from the same path, so the
+          # set excluded from the coverage count is exactly the set the self-test
+          # consumes - see the note there.
+          fixtures=(.github/lint-fixtures/known-bad.yml)
           findings=$(python3 .github/lint-fixtures/check-workflows.py \
-                       .github/lint-fixtures/known-bad.yml | wc -l)
+                       "${fixtures[@]}" | wc -l)
           # Four exactly, not "at least one". A bare non-zero would still be satisfied
           # if the fixture grew a shape the checker cannot see: the other cases would
           # keep it red and the new blind spot would pass unnoticed. That is how the
@@ -87,19 +91,23 @@ jobs:
           # explanation in two places is how a denominator starts lying while still
           # reading N of N: someone adds a second exclusion and the sentence beneath
           # it stays the same.
-          exclusions=(
-            ".github/lint-fixtures/|holds a file written to fail these checks"
-          )
+          # Excluded by file, not by directory. A directory exemption hides the
+          # second file put into it exactly as it hid the first, which is the thing
+          # the denominator exists to prevent. Naming the files instead means the
+          # exclusion set is the self-test's input set: adding another fixture makes
+          # the count drop until that fixture is fed to the self-test too, which is
+          # the order we want anyway.
+          fixtures=(.github/lint-fixtures/known-bad.yml)
           filter=""
-          for entry in "${exclusions[@]}"; do
-            filter+="${filter:+|}^${entry%%|*}"
+          for f in "${fixtures[@]}"; do
+            filter+="${filter:+|}^${f}$"
           done
           mapfile -t present < <(find .github -name '*.yml' -o -name '*.yaml' \
                                    | grep -Ev "$filter" | sort)
 
           echo "scanning ${#targets[@]} of ${#present[@]} YAML files under .github/"
-          for entry in "${exclusions[@]}"; do
-            echo "  excluded: ${entry%%|*} (${entry#*|})"
+          for f in "${fixtures[@]}"; do
+            echo "  excluded: ${f} (consumed by the self-test, written to fail)"
           done
 
           if (( ${#targets[@]} < ${#present[@]} )); then
