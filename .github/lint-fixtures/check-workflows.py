@@ -12,13 +12,21 @@ The interpolation check walks the *parsed* document rather than the lines. "|", 
 "|-", ">+" and a plain one-line scalar are serialisation details that vanish at parse
 time: each becomes the same string under a step's "run" key. Scanning lines meant
 enumerating those spellings, and the first version enumerated them wrong - it matched
-only "run: |", covering 43 of the 70 run steps in .github/workflows (61%) and never
-looking at the other 27, while reporting the tree clean.
+only "run: |", covering 41 of the 67 run steps under .github/workflows on
+origin/main@e238fba (61%) and never looking at the other 26, while reporting the tree
+clean.
 
-(Measured by counting steps whose parsed value has a "run" key, against lines its
-opener regex matched. An earlier version of this note claimed the old checker examined
-nothing at all; that was wrong, and wrong in the direction that made the rewrite look
-more necessary than it was. 61% coverage reported as a clean bill is reason enough.)
+(Counted as steps whose parsed value carries a "run" key, against the lines the old
+opener regex matched, on that ref. The ref matters: on this branch the figure is 43 of
+70, the extra three being this file's own workflow, and three people reported three
+numbers before anyone said which tree they were counting. Two earlier versions of this
+note were also wrong about the size - one claimed nothing at all was examined, another
+put coverage near 38% - and both erred in the direction that made the rewrite look more
+necessary. 61% reported as a clean bill is reason enough.
+
+On this ref, incidentally, line-scanning and parsing see exactly the same 67 steps: the
+case for parsing is that the spellings it handles need no enumerating, not that this
+repository currently contains one it would otherwise miss.)
 
 Parsing does not make that enumeration more complete; it removes it.
 
