@@ -86,7 +86,7 @@ SELECT COUNT(*) FROM (
     FROM build_assets
    GROUP BY build_id, artifact_kind, platform,
             COALESCE(arch, '-'), COALESCE(variant, '-'),
-            COALESCE(CAST(json_extract(metadata_json, '$.from_version_code') AS TEXT), '-'),
+            COALESCE('v' || CAST(json_extract(metadata_json, '$.from_version_code') AS TEXT), '-'),
             filetype
   HAVING COUNT(*) > 1
 );
@@ -136,8 +136,13 @@ CREATE TABLE build_assets (
   -- part of the identity whether or not the schema says so. Leaving it out folded
   -- every patch for a build into one slot and would have rejected the second prior
   -- that delta.ts and the CLI both write today.
+  -- Real values carry a prefix so none of them can ever equal the sentinel. arch and
+  -- variant needed a CHECK to keep '-' out of their domain; that is not available
+  -- here, because the value lives inside metadata_json where no column constraint
+  -- reaches it. Making the two ranges disjoint by construction removes the need:
+  -- a patch declaring from_version_code '-' becomes 'v-', not '-'.
   slot_from_version TEXT GENERATED ALWAYS AS (
-    COALESCE(CAST(json_extract(metadata_json, '$.from_version_code') AS TEXT), '-')
+    COALESCE('v' || CAST(json_extract(metadata_json, '$.from_version_code') AS TEXT), '-')
   ) VIRTUAL
 );
 
