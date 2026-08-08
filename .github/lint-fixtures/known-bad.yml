@@ -15,9 +15,8 @@ jobs:
         run: |
           echo "${{ inputs.anything }}"
       # 1b. the same defect on one line. A separate case because the checker first saw
-      #     only `run: |` - and this repository holds 70 single-line `run:` steps and
-      #     no block ones, so the block-only version called the tree clean and was
-      #     right purely by accident.
+      #     only `run: |`, which covered 43 of the 70 run steps in .github/workflows
+      #     and left the other 27 unexamined while reporting the tree clean.
       - name: Interpolates on a single line
         run: echo "${{ inputs.anything }}"
       # 1c. folded scalar, the third way of writing the same thing

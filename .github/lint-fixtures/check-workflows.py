@@ -12,9 +12,15 @@ The interpolation check walks the *parsed* document rather than the lines. "|", 
 "|-", ">+" and a plain one-line scalar are serialisation details that vanish at parse
 time: each becomes the same string under a step's "run" key. Scanning lines meant
 enumerating those spellings, and the first version enumerated them wrong - it matched
-only "run: |" while this repository holds 70 single-line "run:" steps and no block
-ones, so it called the tree clean without having examined one statement. Parsing does
-not make that enumeration more complete; it removes it.
+only "run: |", covering 43 of the 70 run steps in .github/workflows (61%) and never
+looking at the other 27, while reporting the tree clean.
+
+(Measured by counting steps whose parsed value has a "run" key, against lines its
+opener regex matched. An earlier version of this note claimed the old checker examined
+nothing at all; that was wrong, and wrong in the direction that made the rewrite look
+more necessary than it was. 61% coverage reported as a clean bill is reason enough.)
+
+Parsing does not make that enumeration more complete; it removes it.
 
 Kept outside .github/workflows/ so GitHub never parses the fixture beside it.
 """
