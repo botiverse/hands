@@ -182,6 +182,37 @@ describe("migration 0062 — build asset direct upload", () => {
     expect(db.prepare("SELECT COUNT(*) FROM build_assets").pluck().get()).toBe(2);
   });
 
+  it("keeps the discriminator's sentinel out of reach of any declared value", () => {
+    const db = database({ seedBeforeMigration: seedApps });
+    const patch = (id: string, metadata: string) =>
+      db
+        .prepare(
+          `INSERT INTO build_assets
+             (id, build_id, platform, arch, variant, filetype, r2_key, file_hash,
+              size_bytes, artifact_kind, metadata_json, created_at)
+           VALUES (?, 'build-a', 'android', 'arm64', NULL, 'patch', ?, 'h', 1,
+                   'delta-patch', ?, 1)`,
+        )
+        .run(id, id, metadata);
+
+    // arch and variant keep '-' out of their domain with a CHECK. No column
+    // constraint reaches inside metadata_json, so instead the two ranges are made
+    // disjoint: a declared value is always prefixed and the sentinel never is. The
+    // first version of this column coalesced to a bare '-' and a patch declaring '-'
+    // collided with an asset that has no discriminator at all.
+    expect(() => patch("none", "{}")).not.toThrow();
+    expect(() => patch("dash", JSON.stringify({ from_version_code: "-" }))).not.toThrow();
+    expect(
+      db.prepare("SELECT slot_from_version FROM build_assets ORDER BY id").pluck().all(),
+    ).toEqual(["v-", "-"]);
+
+    // The same prior written as a number and as a string is one prior, so one slot.
+    expect(() => patch("n", JSON.stringify({ from_version_code: 7 }))).not.toThrow();
+    expect(() => patch("s", JSON.stringify({ from_version_code: "7" }))).toThrow(
+      /UNIQUE constraint failed/,
+    );
+  });
+
   it("does not let the discriminator loosen assets that have none", () => {
     const db = database({ seedBeforeMigration: seedApps });
     // Everything except a delta patch lacks from_version_code, normalises to the same
