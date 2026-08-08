@@ -1,40 +1,75 @@
 -- Direct upload for release build assets: declare -> R2 staging PUT -> complete.
--- Additive only. Existing rows keep NULL ingest state and stay on the legacy gate;
--- nothing is backfilled to 'ready', because "this row existed" and "this row passed
--- the new verifier" are different claims and only the first one is true of them.
+--
+-- build_assets is rebuilt rather than altered. The UNIQUE from 0010 is a table
+-- constraint, and SQLite cannot drop one in place; leaving it would keep rejecting a
+-- QA artifact and a release installable that share a shape, which is exactly what
+-- artifact_kind scoping is meant to allow.
 
--- Per-build protocol selection. Explicit at creation, immutable after; NULL = legacy.
--- Deliberately not inferred from created_at: a timestamp is not a declaration.
+-- Per-build protocol selection: explicit at creation, immutable after, NULL = legacy.
+-- Not inferred from created_at, because a timestamp is not a declaration.
 ALTER TABLE builds ADD COLUMN asset_ingest_protocol_version INTEGER;
 
--- The required slot set the draft gate evaluates, frozen with the protocol version.
--- Kept separate from required_targets_json: external targets and asset slots are two
--- contracts, and sharing a column makes a mismatch in either look like the other.
+-- The set the draft gate evaluates. Separate from required_targets_json: external
+-- targets and asset slots are two contracts, and one column would make a mismatch in
+-- either look like a mismatch in the other.
 ALTER TABLE builds ADD COLUMN required_asset_slots_json TEXT;
 
--- Canonical slot identity. The 0010 index cannot serve: arch/variant are NULLable and
--- SQLite treats NULLs as distinct, so it never enforced one-row-per-slot for assets
--- without them; and it predates artifact_kind (0020), so a QA artifact and a release
--- installable in the same shape collide. Sentinels are outside the input domain.
--- The CHECK is what makes '-' a sentinel rather than a guess: it may only appear
--- when the underlying column is NULL, so a literal '-' input cannot masquerade as
--- "no arch" and merge two distinct slots into one.
-ALTER TABLE build_assets ADD COLUMN slot_arch TEXT NOT NULL DEFAULT '-'
-  CHECK (slot_arch <> '-' OR arch IS NULL);
-ALTER TABLE build_assets ADD COLUMN slot_variant TEXT NOT NULL DEFAULT '-'
-  CHECK (slot_variant <> '-' OR variant IS NULL);
+-- Lets the replay ledger reference (app_id, build_id) as a pair, so a key cannot be
+-- presented against a build belonging to another app.
+CREATE UNIQUE INDEX idx_builds_app_scope ON builds(app_id, id);
 
-UPDATE build_assets
-   SET slot_arch = COALESCE(arch, '-'),
-       slot_variant = COALESCE(variant, '-');
+ALTER TABLE build_assets RENAME TO build_assets_legacy;
 
--- Fails closed if duplicate slots already exist. That failure is the census: the old
--- index permitted duplicate NULL-slot rows for its entire life, so they may be real.
+CREATE TABLE build_assets (
+  id                      TEXT PRIMARY KEY,
+  build_id                TEXT NOT NULL REFERENCES builds(id) ON DELETE CASCADE,
+  platform                TEXT NOT NULL,
+  -- The sentinel is kept out of the input domain at the source, so a literal '-'
+  -- can never occupy the slot that means "no arch" and merge two distinct slots.
+  arch                    TEXT CHECK (arch IS NULL OR arch <> '-'),
+  variant                 TEXT CHECK (variant IS NULL OR variant <> '-'),
+  filetype                TEXT NOT NULL,
+  r2_key                  TEXT NOT NULL,
+  file_hash               TEXT NOT NULL,
+  size_bytes              INTEGER NOT NULL,
+  signature               TEXT,
+  signing_credential_id   TEXT REFERENCES signing_credentials(id) ON DELETE SET NULL,
+  metadata_json           TEXT NOT NULL DEFAULT '{}',
+  download_count          INTEGER NOT NULL DEFAULT 0,
+  created_at              INTEGER NOT NULL,
+  artifact_kind           TEXT NOT NULL DEFAULT 'installable',
+  -- Generated, not caller-supplied: a writer cannot set a slot value that disagrees
+  -- with the column it normalizes, and existing INSERTs need no change.
+  slot_arch    TEXT GENERATED ALWAYS AS (COALESCE(arch, '-')) VIRTUAL,
+  slot_variant TEXT GENERATED ALWAYS AS (COALESCE(variant, '-')) VIRTUAL
+);
+
+INSERT INTO build_assets (
+  id, build_id, platform, arch, variant, filetype, r2_key, file_hash, size_bytes,
+  signature, signing_credential_id, metadata_json, download_count, created_at,
+  artifact_kind
+)
+SELECT
+  id, build_id, platform, arch, variant, filetype, r2_key, file_hash, size_bytes,
+  signature, signing_credential_id, metadata_json, download_count, created_at,
+  artifact_kind
+FROM build_assets_legacy;
+
+DROP TABLE build_assets_legacy;
+
+CREATE INDEX idx_build_assets_build ON build_assets(build_id);
+CREATE INDEX idx_build_assets_signing
+  ON build_assets(signing_credential_id) WHERE signing_credential_id IS NOT NULL;
+
+-- Canonical slot: closed (no NULLs) and kind-scoped. Fails closed if duplicates
+-- already exist; the old index permitted them for its whole life.
 CREATE UNIQUE INDEX idx_build_assets_canonical_slot
   ON build_assets(build_id, artifact_kind, platform, slot_arch, slot_variant, filetype);
 
--- One row per upload attempt. Cleanup finds staging objects here by exact key; it is
--- never inferred and never prefix-scanned.
+-- Lets the replay ledger reference (build_id, asset_id) as a pair.
+CREATE UNIQUE INDEX idx_build_assets_build_scope ON build_assets(build_id, id);
+
+-- One row per upload attempt; cleanup finds staging objects here by exact key.
 CREATE TABLE build_asset_ingest_attempt (
   asset_id             TEXT    NOT NULL REFERENCES build_assets(id) ON DELETE CASCADE,
   attempt              INTEGER NOT NULL,
@@ -59,10 +94,13 @@ CREATE TABLE build_asset_ingest_attempt (
 CREATE INDEX idx_build_asset_ingest_attempt_sweep
   ON build_asset_ingest_attempt(state, upload_expires_at);
 
--- One row per (attempt, lease generation). Written BEFORE the R2 create-once write is
--- issued, so an object that exists is always discoverable by exact key even if the
--- process dies between the write and any later update. Identity columns are immutable;
--- lifecycle columns move only by named CAS.
+-- One row per (attempt, lease generation), written BEFORE the R2 create-once write is
+-- issued, so an object that exists is discoverable by exact key even if the process
+-- dies immediately after writing it.
+--
+-- Deliberately no foreign key: a tombstone is permanent, and the row that records its
+-- exact key must outlive the asset. A cascade here would delete the only record of an
+-- object that still exists.
 CREATE TABLE build_asset_ingest_seal (
   asset_id         TEXT    NOT NULL,
   attempt          INTEGER NOT NULL,
@@ -72,24 +110,24 @@ CREATE TABLE build_asset_ingest_seal (
   sealed_at        INTEGER,
   outcome          TEXT CHECK (outcome IN ('committed', 'superseded', 'cleaned')),
   cleanup_receipt  TEXT,
-  PRIMARY KEY (asset_id, attempt, lease_generation),
-  FOREIGN KEY (asset_id, attempt)
-    REFERENCES build_asset_ingest_attempt(asset_id, attempt) ON DELETE CASCADE
+  PRIMARY KEY (asset_id, attempt, lease_generation)
 );
 
 CREATE INDEX idx_build_asset_ingest_seal_open
   ON build_asset_ingest_seal(outcome, intent_at);
 
--- Replay keys are request-scoped, not identity. One asset accumulates several keys
--- when CI reruns, so a single column on build_assets cannot hold them.
+-- Replay keys are request-scoped, not identity. Composite references keep a key from
+-- naming a build in another app, or an asset in another build.
 CREATE TABLE build_asset_ingest_replay (
-  app_id          TEXT    NOT NULL REFERENCES apps(id) ON DELETE CASCADE,
-  build_id        TEXT    NOT NULL REFERENCES builds(id) ON DELETE CASCADE,
+  app_id          TEXT    NOT NULL,
+  build_id        TEXT    NOT NULL,
   idempotency_key TEXT    NOT NULL,
-  asset_id        TEXT    NOT NULL REFERENCES build_assets(id) ON DELETE CASCADE,
+  asset_id        TEXT    NOT NULL,
   request_digest  TEXT    NOT NULL,
   created_at      INTEGER NOT NULL,
-  PRIMARY KEY (app_id, build_id, idempotency_key)
+  PRIMARY KEY (app_id, build_id, idempotency_key),
+  FOREIGN KEY (app_id, build_id) REFERENCES builds(app_id, id) ON DELETE CASCADE,
+  FOREIGN KEY (build_id, asset_id) REFERENCES build_assets(build_id, id) ON DELETE CASCADE
 );
 
 CREATE INDEX idx_build_asset_ingest_replay_asset

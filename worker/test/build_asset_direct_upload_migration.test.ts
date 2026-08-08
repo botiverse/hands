@@ -1,12 +1,15 @@
 /**
  * Migration 0062 — direct upload for release build assets.
  *
- * Asserts against the real migration file, applied over the real prior migrations,
- * so what is proven is the schema production will get rather than a fixture.
+ * Applied over the real prior migrations, and — importantly — over rows that already
+ * exist. An earlier revision of this suite created the database empty and only then
+ * inserted, so a CHECK that fails on pre-existing non-NULL data passed here and would
+ * have failed on every real deployment. `seedBeforeMigration` exists so that fixture
+ * cannot be convenient again.
  *
- * The properties here are the ones the frozen design leans on. Each has a
- * counterexample that was live before this migration, and each fails if the
- * corresponding line of SQL is removed.
+ * The kind-scoping case likewise uses a NON-NULL arch. With NULLs it passed for the
+ * wrong reason: SQLite treats NULLs as distinct, so the old table constraint could
+ * never fire and the test proved nothing about artifact_kind.
  */
 
 import { readdirSync, readFileSync } from "node:fs";
@@ -17,149 +20,180 @@ import { describe, expect, it } from "vitest";
 const MIGRATION_DIR = fileURLToPath(new URL("../../migrations/sql/", import.meta.url));
 const MIGRATION = "0062_build_asset_direct_upload.sql";
 
-function database(includeMigration = true) {
+type Seed = (db: Database.Database) => void;
+
+/** Apply every migration; optionally insert rows *before* 0062 runs. */
+function database(opts: { seedBeforeMigration?: Seed; includeMigration?: boolean } = {}) {
+  const include = opts.includeMigration ?? true;
   const db = new Database(":memory:");
   db.pragma("foreign_keys = ON");
   for (const name of readdirSync(MIGRATION_DIR).sort()) {
     if (!name.endsWith(".sql")) continue;
-    if (name === MIGRATION && !includeMigration) continue;
+    if (name === MIGRATION) {
+      if (!include) continue;
+      opts.seedBeforeMigration?.(db);
+    }
     db.exec(readFileSync(`${MIGRATION_DIR}${name}`, "utf8"));
   }
-  db.prepare(
-    "INSERT INTO apps (id, slug, name, platform, created_at) VALUES ('app-i', 'app-i', 'Ingest', 'android', 1)",
-  ).run();
-  db.prepare(
-    `INSERT INTO builds (id, app_id, version_name, version_code, created_at, updated_at)
-     VALUES ('build-i', 'app-i', '1.0.0', 1, 1, 1)`,
-  ).run();
+  if (!include) opts.seedBeforeMigration?.(db);
   return db;
 }
 
-/** Insert a build asset in a given slot. Mirrors how production writes the row. */
+function seedApps(db: Database.Database) {
+  db.exec(`
+    INSERT INTO apps (id, slug, name, platform, created_at) VALUES
+      ('app-a', 'app-a', 'A', 'android', 1), ('app-b', 'app-b', 'B', 'android', 1);
+    INSERT INTO builds (id, app_id, version_name, version_code, created_at, updated_at) VALUES
+      ('build-a', 'app-a', '1.0.0', 1, 1, 1), ('build-b', 'app-b', '1.0.0', 1, 1, 1);
+  `);
+}
+
+/** A legacy-shaped INSERT: no slot columns, exactly as existing writers issue it. */
 function insertAsset(
   db: Database.Database,
   id: string,
-  opts: { arch?: string | null; variant?: string | null; kind?: string } = {},
+  o: { build?: string; arch?: string | null; variant?: string | null; kind?: string } = {},
 ) {
-  const arch = opts.arch ?? null;
-  const variant = opts.variant ?? null;
   db.prepare(
     `INSERT INTO build_assets
        (id, build_id, platform, arch, variant, filetype, r2_key, file_hash, size_bytes,
-        artifact_kind, created_at, slot_arch, slot_variant)
-     VALUES (?, 'build-i', 'android', ?, ?, 'apk', 'k', 'h', 1, ?, 1, ?, ?)`,
-  ).run(id, arch, variant, opts.kind ?? "installable", arch ?? "-", variant ?? "-");
+        artifact_kind, created_at)
+     VALUES (?, ?, 'android', ?, ?, 'apk', 'k', 'h', 1, ?, 1)`,
+  ).run(id, o.build ?? "build-a", o.arch ?? null, o.variant ?? null, o.kind ?? "installable");
 }
 
 describe("migration 0062 — build asset direct upload", () => {
-  it("replays the defect: before 0062 the slot index admits duplicate NULL slots", () => {
-    const db = database(false);
-    const insert = (id: string) =>
-      db.prepare(
-        `INSERT INTO build_assets
-           (id, build_id, platform, arch, variant, filetype, r2_key, file_hash, size_bytes,
-            artifact_kind, created_at)
-         VALUES (?, 'build-i', 'android', NULL, NULL, 'apk', 'k', 'h', 1, 'installable', 1)`,
-      ).run(id);
-    insert("dup-1");
-    // The 0010 index looks like one-row-per-slot and never was, for any asset
-    // without arch/variant: SQLite treats NULLs as distinct.
-    expect(() => insert("dup-2")).not.toThrow();
+  it("applies over rows that already exist with a non-NULL arch", () => {
+    // Every real database has these. A revision of this migration added a defaulted
+    // column with a CHECK, which fails on exactly them.
+    expect(() =>
+      database({
+        seedBeforeMigration: (db) => {
+          seedApps(db);
+          insertAsset(db, "pre", { arch: "arm64", variant: "release" });
+        },
+      }),
+    ).not.toThrow();
   });
 
-  it("closes the slot: duplicate slots are rejected once normalized", () => {
-    const db = database();
-    insertAsset(db, "a-1");
-    expect(() => insertAsset(db, "a-2")).toThrow(/UNIQUE constraint failed/);
+  it("leaves existing writers alone: a legacy INSERT with no slot columns still works", () => {
+    const db = database({ seedBeforeMigration: seedApps });
+    expect(() => insertAsset(db, "legacy", { arch: "x86", variant: "release" })).not.toThrow();
   });
 
-  it("scopes the slot by artifact_kind so QA and release do not collide", () => {
-    const db = database();
-    insertAsset(db, "rel-1");
-    // Before 0062 this was rejected: the index predated artifact_kind, so a QA
-    // artifact and a release installable fought over one slot.
-    expect(() => insertAsset(db, "qa-1", { kind: "ios-simulator-qa" })).not.toThrow();
+  it("scopes the slot by artifact_kind at a NON-NULL arch", () => {
+    const db = database({ seedBeforeMigration: seedApps });
+    insertAsset(db, "rel", { arch: "arm64", variant: "release" });
+    // Rejected before 0062: the 0010 table constraint omitted artifact_kind.
+    expect(() =>
+      insertAsset(db, "qa", { arch: "arm64", variant: "release", kind: "ios-simulator-qa" }),
+    ).not.toThrow();
+  });
+
+  it("rejects a duplicate canonical slot, including when arch and variant are NULL", () => {
+    const db = database({ seedBeforeMigration: seedApps });
+    insertAsset(db, "n1");
+    expect(() => insertAsset(db, "n2")).toThrow(/UNIQUE constraint failed/);
+    insertAsset(db, "a1", { arch: "arm64" });
+    expect(() => insertAsset(db, "a2", { arch: "arm64" })).toThrow(/UNIQUE constraint failed/);
   });
 
   it("keeps the sentinel out of the input domain", () => {
-    const db = database();
-    // A literal "-" arch must not be able to occupy the slot that means "no arch",
-    // or two distinct slots silently become one.
+    const db = database({ seedBeforeMigration: seedApps });
+    expect(() => insertAsset(db, "sent", { arch: "-" })).toThrow(/CHECK constraint failed/);
+  });
+
+  it("derives the slot columns so a writer cannot disagree with them", () => {
+    const db = database({ seedBeforeMigration: seedApps });
+    // Generated columns: a caller supplying its own slot value — which would let two
+    // rows share a raw slot while appearing distinct — is refused by SQLite itself.
     expect(() =>
       db.prepare(
         `INSERT INTO build_assets
-           (id, build_id, platform, arch, variant, filetype, r2_key, file_hash, size_bytes,
-            artifact_kind, created_at, slot_arch, slot_variant)
-         VALUES ('sentinel', 'build-i', 'android', '-', NULL, 'apk', 'k', 'h', 1,
-                 'installable', 1, '-', '-')`,
+           (id, build_id, platform, arch, variant, filetype, r2_key, file_hash,
+            size_bytes, artifact_kind, created_at, slot_arch)
+         VALUES ('forced', 'build-a', 'android', 'arm64', NULL, 'apk', 'k', 'h', 1,
+                 'installable', 1, 'x86')`,
       ).run(),
-    ).toThrow(/CHECK constraint failed/);
+    ).toThrow(/generated column/i);
   });
 
-  it("leaves existing builds on the legacy gate rather than backfilling them", () => {
-    const db = database();
+  it("does not backfill existing builds onto the new gate", () => {
+    const db = database({ seedBeforeMigration: seedApps });
     const row = db.prepare(
-      "SELECT asset_ingest_protocol_version AS v, required_asset_slots_json AS s FROM builds WHERE id = 'build-i'",
+      "SELECT asset_ingest_protocol_version AS v, required_asset_slots_json AS s FROM builds WHERE id = 'build-a'",
     ).get() as { v: number | null; s: string | null };
-    // "this build existed" and "this build's assets passed the new verifier" are
-    // different claims; a backfill would forge the second from the first.
     expect(row.v).toBeNull();
     expect(row.s).toBeNull();
   });
 
-  it("gives every attempt and every seal generation its own discoverable row", () => {
-    const db = database();
-    insertAsset(db, "a-1");
+  it("keeps the seal ledger when its asset is deleted", () => {
+    const db = database({ seedBeforeMigration: seedApps });
+    insertAsset(db, "as1", { arch: "arm64" });
+    db.exec(`
+      INSERT INTO build_asset_ingest_attempt
+        (asset_id, attempt, declared_sha256, declared_size, staging_key,
+         upload_expires_at, state, cleanup_state, created_at)
+      VALUES ('as1', 1, 'sha', 10, 'staging-1', 99, 'ready', 'tombstoned', 1);
+      INSERT INTO build_asset_ingest_seal
+        (asset_id, attempt, lease_generation, final_key, intent_at, outcome)
+      VALUES ('as1', 1, 1, 'final-as1-g1', 1, 'cleaned');
+    `);
+    db.prepare("DELETE FROM build_assets WHERE id = 'as1'").run();
+    // A tombstone is permanent, so the row recording its exact key must outlive the
+    // asset. A cascade here would delete the only record of an object that exists.
+    expect(db.prepare("SELECT COUNT(*) AS n FROM build_asset_ingest_seal").get()).toEqual({ n: 1 });
+  });
+
+  it("gives each attempt and each lease generation its own row", () => {
+    const db = database({ seedBeforeMigration: seedApps });
+    insertAsset(db, "as1", { arch: "arm64" });
     const attempt = db.prepare(
       `INSERT INTO build_asset_ingest_attempt
          (asset_id, attempt, declared_sha256, declared_size, staging_key,
           upload_expires_at, state, cleanup_state, created_at)
-       VALUES ('a-1', ?, 'sha', 10, ?, 99, 'pending', 'live', 1)`,
+       VALUES ('as1', ?, 'sha', 10, ?, 99, 'pending', 'live', 1)`,
     );
     attempt.run(1, "staging-1");
     attempt.run(2, "staging-2");
-    expect(() => attempt.run(1, "staging-1-again")).toThrow(/UNIQUE constraint failed/);
-
     const seal = db.prepare(
       `INSERT INTO build_asset_ingest_seal
          (asset_id, attempt, lease_generation, final_key, intent_at)
-       VALUES ('a-1', 1, ?, ?, 1)`,
+       VALUES ('as1', 1, ?, ?, 1)`,
     );
-    seal.run(1, "final-a1-g1");
-    // A second lease generation on the same attempt keeps its own row, so the
-    // object a superseded verifier sealed stays findable by exact key.
-    seal.run(2, "final-a1-g2");
-    expect(() => seal.run(1, "final-a1-g1-again")).toThrow(/UNIQUE constraint failed/);
-    expect(
-      db.prepare("SELECT COUNT(*) AS n FROM build_asset_ingest_seal WHERE asset_id = 'a-1'").get(),
-    ).toEqual({ n: 2 });
+    seal.run(1, "final-g1");
+    seal.run(2, "final-g2");
+    expect(() => seal.run(1, "final-g1-again")).toThrow(/UNIQUE constraint failed/);
   });
 
-  it("scopes replay keys per app and build, and lets one asset hold several", () => {
-    const db = database();
-    insertAsset(db, "a-1");
+  it("refuses a replay key that names a build or asset outside its own scope", () => {
+    const db = database({ seedBeforeMigration: seedApps });
+    insertAsset(db, "as-a", { build: "build-a", arch: "arm64" });
     const replay = db.prepare(
       `INSERT INTO build_asset_ingest_replay
          (app_id, build_id, idempotency_key, asset_id, request_digest, created_at)
-       VALUES ('app-i', 'build-i', ?, 'a-1', 'digest', 1)`,
+       VALUES (?, ?, ?, ?, 'digest', 1)`,
     );
-    replay.run("key-1");
-    // A CI rerun with a fresh key reuses the asset; a single column could not have
-    // held both keys, which is why this is a table.
-    replay.run("key-2");
-    expect(() => replay.run("key-1")).toThrow(/UNIQUE constraint failed/);
+    replay.run("app-a", "build-a", "key-1", "as-a");
+    // One asset may hold several keys — a CI rerun with a new key reuses it.
+    expect(() => replay.run("app-a", "build-a", "key-2", "as-a")).not.toThrow();
+    expect(() => replay.run("app-a", "build-a", "key-1", "as-a")).toThrow(/UNIQUE constraint/);
+    // Another app's build must not be able to name this app's asset.
+    expect(() => replay.run("app-b", "build-b", "key-x", "as-a")).toThrow(/FOREIGN KEY/);
+    // Nor may a build be claimed under the wrong app.
+    expect(() => replay.run("app-b", "build-a", "key-y", "as-a")).toThrow(/FOREIGN KEY/);
   });
 
-  it("refuses states and cleanup states outside the frozen sets", () => {
-    const db = database();
-    insertAsset(db, "a-1");
-    const withState = (state: string) =>
+  it("refuses states outside the frozen set", () => {
+    const db = database({ seedBeforeMigration: seedApps });
+    insertAsset(db, "as1", { arch: "arm64" });
+    expect(() =>
       db.prepare(
         `INSERT INTO build_asset_ingest_attempt
            (asset_id, attempt, declared_sha256, declared_size, staging_key,
             upload_expires_at, state, cleanup_state, created_at)
-         VALUES ('a-1', 99, 'sha', 10, 'k', 99, ?, 'live', 1)`,
-      ).run(state);
-    expect(() => withState("done")).toThrow(/CHECK constraint failed/);
+         VALUES ('as1', 9, 'sha', 10, 'k', 99, 'done', 'live', 1)`,
+      ).run(),
+    ).toThrow(/CHECK constraint failed/);
   });
 });
