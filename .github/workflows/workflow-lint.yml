@@ -69,16 +69,40 @@ jobs:
       - name: Check every file that carries executable text
         run: |
           set -euo pipefail
-          # Composite actions carry their own steps, so they are scanned when present.
-          # There are none today, and the glob simply contributes nothing.
           shopt -s nullglob globstar
+
           targets=(.github/workflows/*.yml .github/actions/**/action.yml)
-          echo "scanning ${#targets[@]} file(s)"
+
+          # Coverage as a denominator, rather than a list of carriers to go looking
+          # for. Asking "is there a composite action, a github-script, a reusable
+          # workflow" is an open set: the fourth kind arrives and nothing says
+          # anything. Asking "how many YAML files are under .github/, and how many did
+          # I open" is closed - a new file grows the denominator while the numerator
+          # stands still, whatever that file turns out to be. It never has to
+          # understand the file, only notice it was not looked at.
+          #
+          # The fixtures directory is excluded deliberately - it holds a file written
+          # to fail these checks - and the exclusion is printed rather than assumed,
+          # so nobody takes on trust that the gap is intentional.
+          mapfile -t present < <(find .github -name '*.yml' -o -name '*.yaml' \
+                                   | grep -v '^\.github/lint-fixtures/' | sort)
+          echo "scanning ${#targets[@]} of ${#present[@]} YAML files under .github/ (lint-fixtures/ excluded deliberately)"
+
+          if (( ${#targets[@]} < ${#present[@]} )); then
+            echo "" >&2
+            echo "CANNOT RUN (partial): files under .github/ were never opened." >&2
+            printf '%s\n' "${present[@]}" | sort > /tmp/present.txt
+            printf '%s\n' "${targets[@]}" | sort > /tmp/scanned.txt
+            comm -23 /tmp/present.txt /tmp/scanned.txt | sed 's/^/  unscanned: /' >&2
+            echo "A clean result below would cover less than it appears to." >&2
+            exit 2
+          fi
+
           python3 .github/lint-fixtures/check-workflows.py "${targets[@]}"
 
-          # The checker also reports carriers it was not given - a local reusable
-          # workflow whose steps live elsewhere - and exits 2 for that, because losing
-          # coverage is not the same as finding nothing. That check reads the parsed
-          # document: a grep for the pattern matched the comment describing it.
-          echo "No interpolation in executable text, no duplicate keys, no unscanned carriers."
-
+          # The checker also exits 2 for a carrier it was not handed - a local
+          # reusable workflow whose steps live elsewhere - because coverage lost is
+          # not the same as nothing found. It reads the parsed document: a grep for
+          # that pattern matched the comment describing it.
+          echo "No interpolation in executable text, no duplicate keys, no unscanned carriers,"
+          echo "across ${#targets[@]} of ${#present[@]} YAML files under .github/."
