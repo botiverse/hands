@@ -18,13 +18,16 @@ on:
         type: boolean
         default: true
       pending_migration_readback:
-        description: "If D1 migrations are pending, they WILL be applied to production by this deploy. Who is watching that?"
+        # A checkbox saying "someone is watching" is self-certifying: anyone can tick
+        # it and nobody can tell afterwards whether they did. Asking for the id of the
+        # owner's reply makes the same claim checkable — the readback can look it up,
+        # confirm who wrote it and confirm it predates the dispatch. It does not stop
+        # a fabricated id, but that is a traceable false statement rather than a
+        # careless click.
+        description: "If D1 migrations are pending they WILL be applied to production. Paste the message id of the owner's 'I am present' reply in #proj-hands:3308eb65, or leave as none."
         required: true
-        type: choice
-        options:
-          - "no owner - stop before applying anything"
-          - "an owner is standing by for the readback"
-        default: "no owner - stop before applying anything"
+        type: string
+        default: "none"
 
 permissions:
   contents: read
@@ -156,7 +159,11 @@ jobs:
           echo "Migrations pending, and this deploy will apply them to production:"
           echo "$pending"
 
-          if [[ "${READBACK_OWNER}" != "an owner is standing by for the readback" ]]; then
+          # Shape only: an 8-character short id or a full UUID. Whether it is really
+          # the owner's reply is for the readback to check against Raft, which this
+          # runner cannot reach — so the gate refuses what is obviously not an id and
+          # prints what it was given, rather than pretending to have verified it.
+          if [[ ! "${READBACK_OWNER}" =~ ^[0-9a-fA-F]{8}(-[0-9a-fA-F-]{27,})?$ ]]; then
             echo "" >&2
             echo "Stopping before the apply." >&2
             echo "" >&2
@@ -164,8 +171,11 @@ jobs:
             echo "said nobody is watching. That is the right answer when you came here" >&2
             echo "to ship something unrelated - you are not being asked to take it on." >&2
             echo "" >&2
-            echo "Either find the owner of the pending migration and have them dispatch," >&2
-            echo "or re-dispatch saying an owner is standing by." >&2
+            echo "Got: '${READBACK_OWNER}'" >&2
+            echo "" >&2
+            echo "Ask the migration's owner in #proj-hands:3308eb65 and wait for their" >&2
+            echo "reply, then re-dispatch with that reply's message id. Their answer is" >&2
+            echo "the handshake - naming them is not." >&2
             echo "" >&2
             echo "No migration has been applied and no Worker has been deployed." >&2
             echo "Scoped deliberately: the bootstrap step runs before this one and" >&2
@@ -176,7 +186,9 @@ jobs:
             exit 1
           fi
 
-          echo "Readback owner acknowledged at dispatch; continuing."
+          echo "Handshake reference given at dispatch: ${READBACK_OWNER}"
+          echo "The readback owner verifies this id exists, is their own reply, and"
+          echo "predates this run. This step has only checked that it is id-shaped." 
 
       - name: Apply Hands D1 migrations
         working-directory: worker
