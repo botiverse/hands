@@ -1,0 +1,164 @@
+name: Workflow lint
+
+# Two things that go wrong quietly in workflow files:
+#
+#   interpolation inside a `run:` block - the value is spliced in as program text
+#     before the shell parses the line, so an input arrives as code rather than as
+#     data. Every such line in this repository was safe, and safe for a borrowed
+#     reason: the input it read was declared `type: choice` or `type: boolean`
+#     elsewhere in the file. Nothing connected a line to the declaration protecting
+#     it, so changing that declaration would create an injection point in a step
+#     holding a deploy or publish credential.
+#
+#   a duplicate mapping key - YAML keeps the last and discards the first without
+#     complaint. Adding an `env:` to a step that already had one deletes the original;
+#     that happened here, to five steps at once, in the change that introduced this
+#     lint.
+#
+# Neither is a syntax error, so nothing else reports them.
+#
+# The job runs the checker twice: once against a file built to fail it, and once
+# against the real workflows. A clean result is reported only if the known-bad file
+# failed first - otherwise the run proved nothing, and "no problems found" is
+# indistinguishable in the log from "the check never executed".
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/**"
+      - ".github/lint-fixtures/**"
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    # Declared at job level because the two steps below are separate shells: a bash
+    # array cannot cross between them, so writing the same literal twice would be two
+    # sources that happen to agree today rather than one source. The set excluded from
+    # the coverage count has to be the set the self-test consumes - if those drift, the
+    # self-test eats a fixture the denominator still counts, and the run fails saying
+    # "a file was not scanned" when the truth is "two lists disagree".
+    env:
+      FIXTURES: .github/lint-fixtures/known-bad.yml
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install PyYAML
+        run: pip install --quiet pyyaml
+
+      - name: Self-test - the checker must fail the known-bad fixture
+        run: |
+          set -uo pipefail
+          read -r -a fixtures <<< "$FIXTURES"
+
+          # The checker is *expected* to exit non-zero here - that is what the fixture
+          # is for. GitHub invokes steps as `bash -e`, and `pipefail` hands that
+          # non-zero to the assignment, so the step died before the count was ever
+          # compared. Captured without a pipe, with the status taken deliberately
+          # instead of inherited.
+          set +e
+          output=$(python3 .github/lint-fixtures/check-workflows.py "${fixtures[@]}")
+          status=$?
+          set -e
+          findings=$(printf '%s' "$output" | grep -c . || true)
+
+          if [[ "$status" -eq 2 ]]; then
+            echo "CANNOT RUN: the checker could not execute." >&2
+            printf '%s\n' "$output" >&2
+            exit 2
+          fi
+          if [[ "$status" -eq 0 ]]; then
+            echo "" >&2
+            echo "CANNOT RUN: the checker passed a file written to fail it." >&2
+            echo "It is not working, so any clean result from it today is worthless." >&2
+            exit 2
+          fi
+          # Four exactly, not "at least one". A bare non-zero would still be satisfied
+          # if the fixture grew a shape the checker cannot see: the other cases would
+          # keep it red and the new blind spot would pass unnoticed. That is how the
+          # block-only version of this checker survived while missing every
+          # single-line run in the repository - a control agreeing with the thing it
+          # was meant to test.
+          if [[ "$findings" -lt 4 ]]; then
+            echo "" >&2
+            echo "CANNOT RUN: the checker reported ${findings} of the 4 defects planted" >&2
+            echo "in the fixtures, so it cannot see all of them and a clean result from" >&2
+            echo "it today would mean nothing." >&2
+            exit 2
+          fi
+          if [[ "$findings" -gt 4 ]]; then
+            echo "" >&2
+            echo "CANNOT RUN: ${findings} defects reported where 4 are expected." >&2
+            echo "The fixtures changed without the expectation changing. Update the" >&2
+            echo "count deliberately - it is the statement of what this self-test" >&2
+            echo "proves, and a number that drifts along with its input proves nothing." >&2
+            exit 2
+          fi
+          echo "Self-test passed: all 4 planted defects reported (3 run forms + duplicate key)."
+
+      - name: Check every file that carries executable text
+        run: |
+          set -euo pipefail
+          shopt -s nullglob globstar
+
+          targets=(.github/workflows/*.yml .github/actions/**/action.yml)
+
+          # Coverage as a denominator, rather than a list of carriers to go looking
+          # for. Asking "is there a composite action, a github-script, a reusable
+          # workflow" is an open set: the fourth kind arrives and nothing says
+          # anything. Asking "how many YAML files are under .github/, and how many did
+          # I open" is closed - a new file grows the denominator while the numerator
+          # stands still, whatever that file turns out to be. It never has to
+          # understand the file, only notice it was not looked at.
+          #
+          # Anything subtracted from the denominator narrows what it means, so each
+          # exclusion is declared once, with its reason, and the same declaration both
+          # performs the filtering and prints it. Keeping the filter and the
+          # explanation in two places is how a denominator starts lying while still
+          # reading N of N: someone adds a second exclusion and the sentence beneath
+          # it stays the same.
+          # Excluded by file, not by directory. A directory exemption hides the
+          # second file put into it exactly as it hid the first, which is the thing
+          # the denominator exists to prevent. Naming the files instead means the
+          # exclusion set is the self-test's input set: adding another fixture makes
+          # the count drop until that fixture is fed to the self-test too, which is
+          # the order we want anyway.
+          read -r -a fixtures <<< "$FIXTURES"
+          filter=""
+          for f in "${fixtures[@]}"; do
+            filter+="${filter:+|}^${f}$"
+          done
+          mapfile -t present < <(find .github -name '*.yml' -o -name '*.yaml' \
+                                   | grep -Ev "$filter" | sort)
+
+          echo "scanning ${#targets[@]} of ${#present[@]} YAML files under .github/"
+          for f in "${fixtures[@]}"; do
+            echo "  excluded: ${f} (consumed by the self-test, written to fail)"
+          done
+
+          if (( ${#targets[@]} < ${#present[@]} )); then
+            echo "" >&2
+            echo "CANNOT RUN (partial): files under .github/ were never opened." >&2
+            printf '%s\n' "${present[@]}" | sort > /tmp/present.txt
+            printf '%s\n' "${targets[@]}" | sort > /tmp/scanned.txt
+            comm -23 /tmp/present.txt /tmp/scanned.txt | sed 's/^/  unscanned: /' >&2
+            echo "A clean result below would cover less than it appears to." >&2
+            exit 2
+          fi
+
+          python3 .github/lint-fixtures/check-workflows.py "${targets[@]}"
+
+          # The checker also exits 2 for a carrier it was not handed - a local
+          # reusable workflow whose steps live elsewhere - because coverage lost is
+          # not the same as nothing found. It reads the parsed document: a grep for
+          # that pattern matched the comment describing it.
+          echo "No interpolation in executable text, no duplicate keys, no unscanned carriers,"
+          echo "across ${#targets[@]} of ${#present[@]} YAML files under .github/."

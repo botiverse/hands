@@ -1,0 +1,33 @@
+# Deliberately broken. Not a workflow — it lives outside .github/workflows/ so GitHub
+# never parses it, and the lint scans it only as a self-test.
+#
+# It carries one instance of each thing the lint claims to catch. If a run reports the
+# repository clean without first reporting these two, the lint did not execute, and a
+# check that cannot fail reads in the log exactly like a check that found nothing.
+name: known-bad fixture
+on: workflow_dispatch
+jobs:
+  bad:
+    runs-on: ubuntu-latest
+    steps:
+      # 1. interpolation inside a run block
+      - name: Interpolates into the shell
+        run: |
+          echo "${{ inputs.anything }}"
+      # 1b. the same defect on one line. A separate case because the checker first saw
+      #     only `run: |`, which covered 43 of the 70 run steps in .github/workflows
+      #     and left the other 27 unexamined while reporting the tree clean.
+      - name: Interpolates on a single line
+        run: echo "${{ inputs.anything }}"
+      # 1c. folded scalar, the third way of writing the same thing
+      - name: Interpolates in a folded block
+        run: >
+          echo "${{ inputs.anything }}"
+      # 2. a duplicate mapping key: YAML keeps the last and drops the first, silently
+      - name: Two env blocks
+        env:
+          FIRST: kept-by-nobody
+        env:
+          SECOND: wins
+        run: |
+          echo "${FIRST}"
