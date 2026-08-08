@@ -15,11 +15,9 @@ jobs:
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
-          npm access public @botiverse/pi-coding-agent
-          # confirm unauthenticated view works
-          unset NODE_AUTH_TOKEN
-          # clear auth for public check
-          npm config delete //registry.npmjs.org/:_authToken || true
-          curl -sS "https://registry.npmjs.org/@botiverse%2fpi-coding-agent" | head -c 400
+          npm access get status @botiverse/pi-coding-agent || true
+          npm access set status=public @botiverse/pi-coding-agent
+          npm access get status @botiverse/pi-coding-agent
+          # unauthenticated registry read
+          curl -sS "https://registry.npmjs.org/@botiverse%2fpi-coding-agent" | head -c 500
           echo
-          npm view @botiverse/pi-coding-agent@0.83.0-botiverse.0 version
