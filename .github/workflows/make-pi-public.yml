@@ -1,0 +1,25 @@
+name: make-pi-public
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  public:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          registry-url: "https://registry.npmjs.org"
+      - name: Set package public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          npm access public @botiverse/pi-coding-agent
+          # confirm unauthenticated view works
+          unset NODE_AUTH_TOKEN
+          # clear auth for public check
+          npm config delete //registry.npmjs.org/:_authToken || true
+          curl -sS "https://registry.npmjs.org/@botiverse%2fpi-coding-agent" | head -c 400
+          echo
+          npm view @botiverse/pi-coding-agent@0.83.0-botiverse.0 version
