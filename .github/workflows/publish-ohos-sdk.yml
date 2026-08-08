@@ -199,9 +199,8 @@ jobs:
         if: always()
         shell: bash
         env:
-          RESOLVED_VERSION: ${{ steps.version.outputs.value }}
-        env:
           DRY_RUN: ${{ github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && inputs.dry_run) }}
+          RESOLVED_VERSION: ${{ steps.version.outputs.value }}
         run: |
           {
             echo "### OHOS SDK"

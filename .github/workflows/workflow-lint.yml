@@ -64,6 +64,37 @@ jobs:
             ' "$f" || found=1
           done
 
+          # A second `env:` in one step is not a syntax error - YAML keeps the last
+          # mapping key and drops the first, silently. That is how this very PR first
+          # removed RESOLVED_VERSION from five Summary steps while looking correct:
+          # the fix for one silent hazard introduced another, in the evidence surface,
+          # by repeating the same mechanical edit five times.
+          python3 - <<'DUPCHECK' || found=1
+          import sys, glob, yaml
+
+          class Strict(yaml.SafeLoader):
+              pass
+
+          def no_dupes(loader, node, deep=False):
+              seen, out = set(), {}
+              for k, v in node.value:
+                  key = loader.construct_object(k, deep=deep)
+                  if key in seen:
+                      print(f"duplicate key {key!r} at line {k.start_mark.line + 1}", file=sys.stderr)
+                      raise SystemExit(1)
+                  seen.add(key)
+                  out[key] = loader.construct_object(v, deep=deep)
+              return out
+
+          Strict.add_constructor(yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, no_dupes)
+          for f in sorted(glob.glob(".github/workflows/*.yml")):
+              try:
+                  yaml.load(open(f), Strict)
+              except SystemExit:
+                  print(f"  in {f}", file=sys.stderr)
+                  raise
+          DUPCHECK
+
           if [[ "$found" == "1" ]]; then
             echo "" >&2
             echo "A workflow interpolates ${tok} }} inside a run block." >&2
