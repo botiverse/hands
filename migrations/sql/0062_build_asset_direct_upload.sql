@@ -27,6 +27,23 @@
 -- already committed while the INSERT has not, so the table survives the abort; a
 -- second attempt would then die on "table already exists" and report the wrong
 -- problem entirely. A guard that breaks the retry is worse than no guard.
+-- Order matters here too. If an earlier attempt left a renamed table behind, the two
+-- guards below would run against the *empty* replacement, count zero violations and
+-- report green -- a clean bill of health for a database that is already broken. This
+-- one runs first so that state is named instead of measured. It also refuses a plain
+-- re-run after a successful apply, where the retained copy is expected to exist: the
+-- RENAME would fail there anyway, but with "table already exists", which describes
+-- the symptom rather than the situation.
+DROP TABLE IF EXISTS _preflight_0062_prior;
+CREATE TABLE _preflight_0062_prior (
+  prior_attempt INTEGER NOT NULL CONSTRAINT
+    "0062 preflight failed: build_assets_legacy already exists, so this database has either applied 0062 already or been left half way through an earlier attempt. The checks below would read the replacement table and pass on an empty one. Establish which case this is before re-applying."
+    CHECK (prior_attempt = 0)
+);
+INSERT INTO _preflight_0062_prior
+SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'build_assets_legacy';
+DROP TABLE _preflight_0062_prior;
+
 DROP TABLE IF EXISTS _preflight_0062_sentinel;
 CREATE TABLE _preflight_0062_sentinel (
   offending_rows INTEGER NOT NULL CONSTRAINT

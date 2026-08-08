@@ -434,6 +434,26 @@ describe("migration 0062 — preflight", () => {
     expect(hasColumn(db, "builds", "asset_ingest_protocol_version")).toBe(false);
   }
 
+  it("refuses to start on a half-applied database, where the checks would read empty", () => {
+    const { db, error } = attempt((d) => {
+      seedApps(d);
+      insertAsset(d, "as1", { arch: "-" });
+      // Exactly the wreckage the other guards cannot see: the rename happened, the
+      // replacement is empty, and the offending row is now out of their reach. Both
+      // would count zero and pass, certifying a database that is already broken.
+      d.exec(`
+        ALTER TABLE build_assets RENAME TO build_assets_legacy;
+        CREATE TABLE build_assets (id TEXT PRIMARY KEY, build_id TEXT, platform TEXT,
+          arch TEXT, variant TEXT, filetype TEXT, artifact_kind TEXT);
+      `);
+    });
+    expect(error?.message).toMatch(/0062 preflight failed: build_assets_legacy already exists/);
+    // Not "table build_assets_legacy already exists" from the RENAME further down,
+    // which reports the symptom and leaves the operator to work out the situation.
+    expect(error?.message).not.toMatch(/^table build_assets_legacy already exists/);
+    expect(db.prepare("SELECT COUNT(*) FROM build_assets_legacy").pluck().get()).toBe(1);
+  });
+
   it("refuses to start when a row already holds the literal '-' sentinel", () => {
     const { db, error } = attempt((d) => {
       seedApps(d);
