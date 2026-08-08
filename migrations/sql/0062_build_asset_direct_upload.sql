@@ -168,9 +168,11 @@ FROM build_assets_legacy;
 -- known to have worked against production data, and what is left after that is only
 -- the copy's own risk.
 --
--- So the removal is owned rather than hoped for: task #115, which drops it once the
--- first production apply has succeeded and its readback is green, and which asserts
--- the rebuilt table is no smaller before deleting the only copy.
+-- So the removal is owned rather than hoped for: task #114, which drops it once the
+-- first production apply has succeeded and its readback is green. Deleting it is
+-- itself irreversible, so its owner gates execution on a separate authorisation and
+-- on a retained export taken first -- the export being both the way back and the only
+-- thing that could later verify the deletion value by value.
 --
 -- Its indexes came with it through the RENAME and still hold the names the new table
 -- needs, so they are dropped by name here. Dropping an index costs nothing that
