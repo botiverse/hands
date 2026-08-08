@@ -116,6 +116,20 @@ CREATE TABLE build_asset_ingest_seal (
 CREATE INDEX idx_build_asset_ingest_seal_open
   ON build_asset_ingest_seal(outcome, intent_at);
 
+-- Dropping the foreign key kept the ledger alive past its asset, but it also removed
+-- the check that a seal names a real attempt when it is written. A trigger restores
+-- that at INSERT only: a seal for an attempt that never existed is refused, while a
+-- legitimate one still outlives the asset it belonged to.
+CREATE TRIGGER build_asset_ingest_seal_requires_attempt
+BEFORE INSERT ON build_asset_ingest_seal
+WHEN NOT EXISTS (
+  SELECT 1 FROM build_asset_ingest_attempt
+   WHERE asset_id = NEW.asset_id AND attempt = NEW.attempt
+)
+BEGIN
+  SELECT RAISE(ABORT, 'seal ledger row must name an existing attempt');
+END;
+
 -- Replay keys are request-scoped, not identity. Composite references keep a key from
 -- naming a build in another app, or an asset in another build.
 CREATE TABLE build_asset_ingest_replay (

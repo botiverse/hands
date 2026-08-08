@@ -63,31 +63,75 @@ function insertAsset(
 }
 
 describe("migration 0062 — build asset direct upload", () => {
-  it("applies over rows that already exist, and carries every one of them across", () => {
-    // Every real database has rows with a non-NULL arch. A revision of this migration
-    // added a defaulted column with a CHECK, which fails on exactly them.
-    //
-    // Asserting "did not throw" is not enough: build_assets is rebuilt here, and a
-    // rebuild that dropped every row would satisfy that and nothing else.
+  it("carries every column, index and foreign key across the rebuild", () => {
+    // build_assets is rebuilt, so "did not throw" proves nothing: a copy that dropped
+    // rows, or mapped a column to the wrong position, would satisfy it. Every one of
+    // the 15 pre-existing columns is seeded with a distinct non-default value so a
+    // mis-mapping cannot hide behind a default.
     const db = database({
       seedBeforeMigration: (db) => {
         seedApps(db);
-        insertAsset(db, "pre-a", { arch: "arm64", variant: "release" });
+        db.prepare(
+          `INSERT INTO signing_credentials
+             (id, owner_type, owner_id, platform, kind, label, encrypted_blob,
+              created_at, updated_at)
+           VALUES ('cred-1', 'app', 'app-a', 'android', 'keystore', 'c', 'x', 1, 1)`,
+        ).run();
+        db.prepare(
+          `INSERT INTO build_assets
+             (id, build_id, platform, arch, variant, filetype, r2_key, file_hash,
+              size_bytes, signature, signing_credential_id, metadata_json,
+              download_count, created_at, artifact_kind)
+           VALUES ('pre-a', 'build-a', 'harmony', 'arm64', 'release', 'hap',
+                   'r2/key/a', 'sha-a', 4242, 'sig-a', 'cred-1', '{"kept":true}',
+                   77, 1700000001, 'installable')`,
+        ).run();
         insertAsset(db, "pre-b", { arch: "x86" });
-        insertAsset(db, "pre-c");
-        db.prepare("UPDATE build_assets SET metadata_json = '{\"kept\":1}', download_count = 7").run();
       },
     });
-    const rows = db.prepare(
-      `SELECT id, r2_key, file_hash, size_bytes, metadata_json, download_count,
-              slot_arch, slot_variant
-         FROM build_assets ORDER BY id`,
-    ).all();
-    expect(rows).toEqual([
-      { id: "pre-a", r2_key: "k", file_hash: "h", size_bytes: 1, metadata_json: '{"kept":1}', download_count: 7, slot_arch: "arm64", slot_variant: "release" },
-      { id: "pre-b", r2_key: "k", file_hash: "h", size_bytes: 1, metadata_json: '{"kept":1}', download_count: 7, slot_arch: "x86", slot_variant: "-" },
-      { id: "pre-c", r2_key: "k", file_hash: "h", size_bytes: 1, metadata_json: '{"kept":1}', download_count: 7, slot_arch: "-", slot_variant: "-" },
+
+    expect(
+      db.prepare("SELECT * FROM build_assets WHERE id = 'pre-a'").get(),
+    ).toEqual({
+      id: "pre-a", build_id: "build-a", platform: "harmony", arch: "arm64",
+      variant: "release", filetype: "hap", r2_key: "r2/key/a", file_hash: "sha-a",
+      size_bytes: 4242, signature: "sig-a", signing_credential_id: "cred-1",
+      metadata_json: '{"kept":true}', download_count: 77, created_at: 1700000001,
+      artifact_kind: "installable", slot_arch: "arm64", slot_variant: "release",
+    });
+    expect(
+      db.prepare("SELECT COUNT(*) AS n FROM build_assets").get(),
+    ).toEqual({ n: 2 });
+
+    // The indexes and foreign keys the old table carried must still be there.
+    const indexes = db.prepare(
+      `SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'build_assets'
+         AND name NOT LIKE 'sqlite_%' ORDER BY name`,
+    ).all().map((r) => (r as { name: string }).name);
+    expect(indexes).toContain("idx_build_assets_build");
+    expect(indexes).toContain("idx_build_assets_signing");
+    expect(
+      db.prepare("SELECT \"table\", \"from\" FROM pragma_foreign_key_list('build_assets') ORDER BY \"from\"").all(),
+    ).toEqual([
+      { table: "builds", from: "build_id" },
+      { table: "signing_credentials", from: "signing_credential_id" },
     ]);
+    expect(db.pragma("foreign_key_check")).toEqual([]);
+  });
+
+  it("refuses a seal row that names an attempt which never existed", () => {
+    const db = database({ seedBeforeMigration: seedApps });
+    insertAsset(db, "as1", { arch: "arm64" });
+    // Dropping the FK let the ledger outlive its asset; it also removed the check
+    // that a seal names something real when written. The trigger restores that at
+    // INSERT only.
+    expect(() =>
+      db.prepare(
+        `INSERT INTO build_asset_ingest_seal
+           (asset_id, attempt, lease_generation, final_key, intent_at)
+         VALUES ('no-such-asset', 99, 1, 'final-x', 1)`,
+      ).run(),
+    ).toThrow(/must name an existing attempt/);
   });
 
   it("leaves existing writers alone: a legacy INSERT with no slot columns still works", () => {
