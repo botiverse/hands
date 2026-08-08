@@ -441,10 +441,15 @@ jobs:
           # nothing. Requiring a field that can only come from that query removes the
           # need to know, when choosing the path, that its app currently has a
           # release: if it does not, this says so instead of passing.
+          # size_bytes, not file_hash: the query selects file_hash but the handler does
+          # not serialise it, so asserting it would have failed against a perfectly
+          # healthy production. Checking where a value comes from is not the same as
+          # checking what the caller receives, and only the second one is what this
+          # step reads. size_bytes is a build_assets column and is in the payload.
           if ! jq -e '.assets | length > 0' /tmp/probe.out >/dev/null 2>&1 \
-             || ! jq -e '.assets[0].file_hash' /tmp/probe.out >/dev/null 2>&1; then
+             || ! jq -e '.assets[0].size_bytes > 0' /tmp/probe.out >/dev/null 2>&1; then
             echo "" >&2
-            echo "FAIL: 200, but the response carries no asset from build_assets." >&2
+            echo "FAIL: 200, but the response carries no sized asset from build_assets." >&2
             echo "Either the configured path does not reach that query - pick one whose" >&2
             echo "app has an active release - or the deployed code and the schema no" >&2
             echo "longer agree, which is what this step is for." >&2
