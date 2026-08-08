@@ -1,0 +1,59 @@
+name: Worker tests
+
+# Nothing ran the worker test suite. Every test result quoted in a review was a
+# number someone produced locally, and a local run is evidence about whatever tree it
+# happened to be sitting on — which is not necessarily the commit under review. That
+# is not hypothetical: a migration fix was destroyed by a `git checkout --` during a
+# mutation run, the following commit captured only its test, and the suite result
+# reported against that commit had been produced minutes earlier from a working tree
+# that no longer existed. A reviewer caught it by reading the Git object.
+#
+# A run here is bound to the commit by construction, so nobody has to be trusted about
+# which tree they were on, and nobody has to remember to check.
+
+on:
+  pull_request:
+    paths:
+      - "worker/**"
+      - "migrations/**"
+      - "packages/**"
+      - ".github/workflows/worker-tests.yml"
+  push:
+    branches: [main]
+    paths:
+      - "worker/**"
+      - "migrations/**"
+      - "packages/**"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: worker-tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Run the worker test suite
+        working-directory: worker
+        run: pnpm test
+
+      # The suite covers migrations against the real chain, so a migration that cannot
+      # be applied twice, or that disagrees with the schema the files describe, fails
+      # here rather than during a production deploy.
+      - name: Type-check
+        working-directory: worker
+        run: pnpm build
