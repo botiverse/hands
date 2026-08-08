@@ -62,6 +62,26 @@ describe("deploy readback — expected schema", () => {
     expect(fingerprint(db)).not.toEqual(fingerprint(buildExpected()));
   });
 
+  it("distinguishes an index by which table it is attached to, not only by its name", () => {
+    const attached = (to: string) => {
+      const db = buildExpected();
+      db.exec(`
+        DROP INDEX idx_build_assets_build;
+        CREATE TABLE IF NOT EXISTS build_assets_legacy AS SELECT * FROM build_assets;
+        CREATE INDEX idx_build_assets_build ON ${to}(build_id);
+      `);
+      return fingerprint(db);
+    };
+    // The rebuild reuses index names, and the old table keeps them through the
+    // RENAME. Comparing names alone, an index left on the retained copy reads exactly
+    // like one on the new table — the existence-not-ownership false green this check
+    // exists to catch.
+    expect(attached("build_assets_legacy")).not.toEqual(attached("build_assets"));
+    expect(attached("build_assets_legacy")).toContain(
+      "index idx_build_assets_build build_assets_legacy",
+    );
+  });
+
   it("ignores what the substrate owns rather than what our migrations declare", () => {
     const db = buildExpected();
     // These exist on a real D1 database and in no migration file. Treating them as

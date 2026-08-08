@@ -35,7 +35,12 @@ const OURS = `substr(name, 1, 7) <> 'sqlite_'
           AND name <> 'd1_migrations'`;
 
 export const FINGERPRINT_SQL = [
-  `SELECT type || ' ' || name AS line FROM sqlite_master WHERE ${OURS}`,
+  // tbl_name is what makes this an ownership check rather than an existence check.
+  // Without it, an index attached to build_assets_legacy and the same index attached
+  // to build_assets produce the identical line and the diff passes — which is exactly
+  // the false green the criterion was written to catch. For a table, tbl_name equals
+  // its own name, so including it costs nothing there.
+  `SELECT type || ' ' || name || ' ' || coalesce(tbl_name, '') AS line FROM sqlite_master WHERE ${OURS}`,
   `UNION ALL`,
   `SELECT 'columns ' || m.name || ' ' ||`,
   `       coalesce((SELECT group_concat(x.name, ',') FROM pragma_table_xinfo(m.name) x), '')`,
