@@ -454,6 +454,25 @@ describe("migration 0062 — preflight", () => {
     expect(db.prepare("SELECT COUNT(*) FROM build_assets_legacy").pluck().get()).toBe(1);
   });
 
+  it("names the half-applied state even when the data checks also have something to say", () => {
+    const { error } = attempt((d) => {
+      seedApps(d);
+      insertAsset(d, "as1", { arch: "arm64" });
+      d.exec(`
+        ALTER TABLE build_assets RENAME TO build_assets_legacy;
+        CREATE TABLE build_assets (id TEXT PRIMARY KEY, build_id TEXT, platform TEXT,
+          arch TEXT, variant TEXT, filetype TEXT, artifact_kind TEXT);
+        INSERT INTO build_assets VALUES ('as2', 'build-a', 'android', '-', NULL, 'apk', 'installable');
+      `);
+    });
+    // Here both the prior-attempt guard and the sentinel guard have something to say,
+    // so the order decides which problem the operator is told about. "Resolve those
+    // rows" is a true statement and the wrong instruction: they are a consequence of a
+    // migration that stopped half way, and fixing them would not address that.
+    expect(error?.message).toMatch(/build_assets_legacy already exists/);
+    expect(error?.message).not.toMatch(/literal '-'/);
+  });
+
   it("refuses to start when a row already holds the literal '-' sentinel", () => {
     const { db, error } = attempt((d) => {
       seedApps(d);
