@@ -177,12 +177,23 @@ jobs:
           # in the log from the database being wrong - and the more total that failure
           # looks, the more it reads like a real finding rather than a broken probe.
           # "Could not run" is a third outcome and has to say its own name.
+          # Mapped to a failure, and the reason is written down because the reason is
+          # what expires: a missing tool here is *unexpected*, so stopping is right.
+          # Where "could not run" is an expected outcome the correct mapping is the
+          # other one - the pragma check below was reported-and-allowed until it had
+          # been measured, and became a failure only once a refusal stopped being
+          # plausible. If that changes, this mapping should be revisited, not defended.
+          #
+          # exit 2 rather than 1: CI sees only non-zero, but a human reading the log,
+          # or anything later wrapped around this, can still tell "did not run" from
+          # "ran and found something". The third state survives as a convention where
+          # it cannot survive as an exit.
           for tool in jq node pnpm; do
             command -v "$tool" >/dev/null || {
               echo "CANNOT RUN: ${tool} is not on this runner." >&2
               echo "Nothing about the database has been checked. This is not a pass" >&2
               echo "and not a failure of the migration - the readback did not execute." >&2
-              exit 1
+              exit 2
             }
           done
 
@@ -418,7 +429,7 @@ jobs:
           for tool in curl jq; do
             command -v "$tool" >/dev/null || {
               echo "CANNOT RUN: ${tool} is not on this runner; no runtime check happened." >&2
-              exit 1
+              exit 2
             }
           done
 
