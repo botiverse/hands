@@ -201,19 +201,23 @@ jobs:
           strays=$(q "SELECT COUNT(*) AS n FROM sqlite_master WHERE type = 'table' AND substr(name, 1, 10) = '_preflight'" | jq -r '.[0].n')
           check "no preflight scratch tables left behind" "$strays" "0"
 
-          # D1 refuses a number of statements outright - TEMP tables and BEGIN are
-          # both known to be rejected - and whether PRAGMA foreign_key_check is
-          # allowed has not been confirmed on a real database yet. A refusal must not
-          # read as a pass, so the two outcomes are reported differently and only a
-          # genuine result gates the deploy.
+          # D1 refuses some statements outright - TEMP tables and BEGIN both come back
+          # SQLITE_AUTH - so this pragma was reported rather than trusted until it had
+          # been run against a real remote database. It has been: it returns an empty
+          # result set through this same pipeline, and a non-empty one propagates
+          # through check/fail to a non-zero exit, which skips every later step. Both
+          # halves were measured, so this gates now.
+          #
+          # A refusal is therefore no longer an expected outcome to tolerate; it means
+          # something changed about what D1 permits, which is worth stopping for.
           if orphans=$(q "PRAGMA foreign_key_check" 2>/tmp/fkc.err | jq -r 'length'); then
             check "foreign_key_check is empty" "$orphans" "0"
           else
-            echo "  UNVERIFIED  foreign_key_check did not run - D1 may refuse this pragma:" >&2
+            echo "  FAIL  foreign_key_check did not run. It is known to work on this" >&2
+            echo "        database, so a refusal now means the substrate changed:" >&2
             head -c 300 /tmp/fkc.err >&2 || true
             echo >&2
-            echo "  This is reported rather than passed. It does not gate the deploy," >&2
-            echo "  and it should be replaced with a supported check once confirmed." >&2
+            fail=1
           fi
 
           if [[ "${APPLY_OUTCOME}" == "success" ]]; then
