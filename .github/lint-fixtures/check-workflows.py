@@ -19,7 +19,15 @@ workflow.
 import re
 import sys
 
-import yaml
+try:
+    import yaml
+except ModuleNotFoundError:
+    # Exit 2, not 1. Without this the import error becomes a non-zero exit that the
+    # caller reads as "defects found", sending someone to look for a duplicate key
+    # that does not exist - and the usual response to a red that cannot be reproduced
+    # is to relax the check. Could-not-run is a third outcome and has to name itself.
+    print("CANNOT RUN: PyYAML is not installed; no file was checked.", file=sys.stderr)
+    raise SystemExit(2)
 
 # Assembled rather than written, so this file does not match its own rule.
 INTERPOLATION = "${" + "{"
