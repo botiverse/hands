@@ -48,12 +48,13 @@ jobs:
         working-directory: pi-coding-agent
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          DRY_RUN: ${{ inputs.dry_run }}
         run: |
           if [ -z "${NODE_AUTH_TOKEN:-}" ]; then
             echo "NPM_TOKEN secret missing" >&2
             exit 1
           fi
-          if [ "${{ inputs.dry_run }}" = "true" ]; then
+          if [ "${DRY_RUN}" = "true" ]; then
             npm publish --access public --tag botiverse --dry-run
           else
             npm publish --access public --tag botiverse

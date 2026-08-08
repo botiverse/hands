@@ -1,0 +1,82 @@
+name: Workflow lint
+
+# One invariant: no `${{ }}` inside a `run:` block.
+#
+# Interpolation happens before the shell sees the script, so an input's value becomes
+# part of the program rather than data given to it. Today the only two such uses were
+# safe, but only because the input they read is a `type: choice` with three literal
+# options — the safety of those lines lived in a different part of the file, with
+# nothing connecting them. Someone changing that input to `type: string` would create
+# an injection point in a step holding CLOUDFLARE_API_TOKEN, and their diff would look
+# exactly like the one that legitimately did that to another input.
+#
+# Passing values through `env:` makes each line safe on its own terms, and the rule is
+# a grep rather than a judgement: "is this line safe?" needs reasoning about a
+# declaration elsewhere; "is there an interpolation in a run block?" does not.
+#
+# The repository already worked this way — 32 of 34 interpolations went through `env:`
+# before this existed. This keeps the two former exceptions from coming back.
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/**"
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  no-interpolation-in-run:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Check for interpolation inside run blocks
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Built rather than written literally, so this file does not trip its own
+          # rule. An exclusion list would have been the other way, and a rule with an
+          # exception for the file that defines it is one edit from meaning nothing.
+          tok='${'"{"
+          found=0
+          for f in .github/workflows/*.yml .github/workflows/*.yaml; do
+            [[ -e "$f" ]] || continue
+            # Track whether we are inside a `run:` block by indentation: the block ends
+            # at the first non-blank line indented no further than the `run:` key.
+            awk -v file="$f" -v tok="$tok" '
+              match($0, /^[[:space:]]*run: \|/) {
+                inrun = 1
+                indent = match($0, /[^[:space:]]/) - 1
+                next
+              }
+              inrun && /[^[:space:]]/ {
+                here = match($0, /[^[:space:]]/) - 1
+                if (here <= indent) { inrun = 0 }
+              }
+              inrun && index($0, tok) {
+                printf "%s:%d: %s\n", file, NR, $0
+                bad = 1
+              }
+              END { exit bad }
+            ' "$f" || found=1
+          done
+
+          if [[ "$found" == "1" ]]; then
+            echo "" >&2
+            echo "A workflow interpolates ${tok} }} inside a run block." >&2
+            echo "" >&2
+            echo "The value is spliced into the script before the shell reads it, so it" >&2
+            echo "arrives as program text rather than as data. Pass it through env:" >&2
+            echo "instead and reference it as a shell variable:" >&2
+            echo "" >&2
+            echo "    env:" >&2
+            echo "      THING: ${tok} inputs.thing }}" >&2
+            echo "    run: |" >&2
+            echo "      use \"\${THING}\"" >&2
+            echo "" >&2
+            exit 1
+          fi
+          echo "No interpolation inside run blocks."
