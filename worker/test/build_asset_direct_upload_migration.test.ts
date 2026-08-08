@@ -468,6 +468,41 @@ describe("migration 0062 — preflight", () => {
     expect(tables(db)).toContain("build_asset_ingest_seal");
   });
 
+  it("keeps the original rows recoverable after a successful rebuild", () => {
+    const db = database({
+      seedBeforeMigration: (d) => {
+        seedApps(d);
+        insertAsset(d, "as1", { arch: "arm64" });
+        insertAsset(d, "as2", { arch: "x86_64" });
+      },
+    });
+    // The preflight lowers the chance of the copy failing; this lowers the cost when
+    // it fails anyway. If D1 runs the rest of a batch after a statement fails, the
+    // assertion stops nothing — and dropping the source table in the same breath
+    // would turn a recoverable outage into a permanent loss.
+    expect(tables(db)).toContain("build_assets_legacy");
+    // "Recoverable" is a claim about content, not about a table still being listed:
+    // every column of every row must still be readable from the retained copy.
+    const columns = (t: string) =>
+      (db.pragma(`table_info(${t})`) as { name: string }[]).map((c) => c.name);
+    const carried = columns("build_assets_legacy");
+    expect(carried).toHaveLength(15);
+    expect(columns("build_assets")).toEqual(expect.arrayContaining(carried));
+    const list = carried.join(", ");
+    expect(db.prepare(`SELECT ${list} FROM build_assets_legacy ORDER BY id`).all()).toEqual(
+      db.prepare(`SELECT ${list} FROM build_assets ORDER BY id`).all(),
+    );
+    // The index names the rebuild reuses must have ended up on the new table; they
+    // travelled with the old one through the RENAME and were dropped by name.
+    const owner = (i: string) =>
+      db
+        .prepare("SELECT tbl_name FROM sqlite_master WHERE type = 'index' AND name = ?")
+        .pluck()
+        .get(i);
+    expect(owner("idx_build_assets_build")).toBe("build_assets");
+    expect(owner("idx_build_assets_signing")).toBe("build_assets");
+  });
+
   it("leaves no scratch table behind on a clean apply", () => {
     const { db, error } = attempt((d) => {
       seedApps(d);

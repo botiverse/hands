@@ -109,7 +109,25 @@ SELECT
   artifact_kind
 FROM build_assets_legacy;
 
-DROP TABLE build_assets_legacy;
+-- build_assets_legacy is deliberately NOT dropped here.
+--
+-- The preflight above reduces the chance of the copy failing; this reduces what it
+-- costs if it fails anyway. Both are needed because they cover different things, and
+-- this one holds in a case the preflight does not: if D1 executes the rest of a batch
+-- after a statement fails, the assertion aborts nothing and the rebuild proceeds
+-- regardless. Dropping the original in the same breath would make that case
+-- unrecoverable; keeping it makes the worst outcome an empty table beside an intact
+-- copy of its rows.
+--
+-- A follow-up migration drops it, once a rebuild has been observed to succeed against
+-- production data. That is the point at which "it worked" is evidence rather than
+-- expectation.
+--
+-- Its indexes came with it through the RENAME and still hold the names the new table
+-- needs, so they are dropped by name here. Dropping an index costs nothing that
+-- matters for recovery: the rows are what has to survive, and they do.
+DROP INDEX idx_build_assets_build;
+DROP INDEX idx_build_assets_signing;
 
 CREATE INDEX idx_build_assets_build ON build_assets(build_id);
 CREATE INDEX idx_build_assets_signing
