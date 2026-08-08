@@ -204,6 +204,24 @@ jobs:
             }
           done
 
+          # wrangler needs its own probe. The criterion for guarding a command is that
+          # its failure gets turned into a substantive conclusion, and wrangler meets
+          # it plainly: `migrations list ... || true` puts the error text into $pending,
+          # grep then fails to match, and the step reports "migrations still unapplied
+          # after a successful apply" when the truth is that wrangler never ran.
+          #
+          # The loop above cannot cover it. wrangler is never a bare command here - it
+          # is always `pnpm exec wrangler`, a workspace package rather than something
+          # on PATH - so `command -v wrangler` is false whether or not it works. The
+          # criterion was closed and correct; the mechanism for applying it had a blind
+          # spot, which is a different thing and worth naming as such.
+          pnpm exec wrangler --version >/dev/null 2>&1 || {
+            echo "CANNOT RUN: wrangler is not usable via pnpm exec." >&2
+            echo "Nothing about the database has been checked - every query below" >&2
+            echo "would report its own failure as a finding about the schema." >&2
+            exit 2
+          }
+
           q() {
             pnpm exec wrangler d1 execute "${HANDS_D1_DATABASE_NAME}" \
               --remote --json --config wrangler.hands.generated.jsonc --command "$1" \
