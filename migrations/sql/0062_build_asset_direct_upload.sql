@@ -5,6 +5,60 @@
 -- QA artifact and a release installable that share a shape, which is exactly what
 -- artifact_kind scoping is meant to allow.
 
+-- ---------------------------------------------------------------------------
+-- Preflight. Runs before anything destructive, on purpose.
+--
+-- Two properties of the existing data can make the rebuild below fail: a row whose
+-- arch or variant is already the literal '-', which the new CHECK forbids, and two
+-- rows that collide once the slot is normalised, which the new UNIQUE index forbids.
+-- Both are legal under today's schema, so neither can be assumed absent.
+--
+-- Placement is the whole point. `wrangler d1 migrations apply --remote` posts this
+-- file to D1 as one `/query` string, and wrangler documents rollback only for the
+-- separate `--file` import path -- so whether a failure half way down leaves a
+-- renamed old table beside an empty new one is not something this file should have
+-- to know. Asserting first makes the question moot: a violation aborts before the
+-- RENAME, and the database is untouched either way.
+--
+-- A bare RAISE() is trigger-only in SQLite, so the abort is a named CHECK; SQLite
+-- puts the constraint name in the error, which is what the operator will read.
+--
+-- Each guard drops its own scratch table first. When a guard fires, its CREATE has
+-- already committed while the INSERT has not, so the table survives the abort; a
+-- second attempt would then die on "table already exists" and report the wrong
+-- problem entirely. A guard that breaks the retry is worse than no guard.
+DROP TABLE IF EXISTS _preflight_0062_sentinel;
+CREATE TABLE _preflight_0062_sentinel (
+  offending_rows INTEGER NOT NULL CONSTRAINT
+    "0062 preflight failed: build_assets has rows whose arch or variant is the literal '-'. The rebuilt table reserves '-' as the NULL sentinel and rejects it as a value. Resolve those rows, then re-apply: this aborts before the rebuild starts, so build_assets and builds are untouched."
+    CHECK (offending_rows = 0)
+);
+INSERT INTO _preflight_0062_sentinel
+SELECT COUNT(*) FROM build_assets WHERE arch = '-' OR variant = '-';
+DROP TABLE _preflight_0062_sentinel;
+
+-- Ordering matters between the two guards, not just before the DDL. This one
+-- normalises with COALESCE because the index it protects normalises the same way,
+-- so a literal '-' and a NULL genuinely would collide there. That also means this
+-- query cannot distinguish them -- which is safe only because the guard above has
+-- already established there are no literal '-' rows left to confuse it.
+DROP TABLE IF EXISTS _preflight_0062_slot;
+CREATE TABLE _preflight_0062_slot (
+  colliding_slots INTEGER NOT NULL CONSTRAINT
+    "0062 preflight failed: build_assets already has two or more rows sharing a canonical slot (build_id, artifact_kind, platform, arch, variant, filetype) once NULL is normalised. The rebuilt table makes that slot unique. Resolve the duplicates, then re-apply: this aborts before the rebuild starts, so build_assets and builds are untouched."
+    CHECK (colliding_slots = 0)
+);
+INSERT INTO _preflight_0062_slot
+SELECT COUNT(*) FROM (
+  SELECT 1
+    FROM build_assets
+   GROUP BY build_id, artifact_kind, platform,
+            COALESCE(arch, '-'), COALESCE(variant, '-'), filetype
+  HAVING COUNT(*) > 1
+);
+DROP TABLE _preflight_0062_slot;
+-- ---------------------------------------------------------------------------
+
 -- Per-build protocol selection: explicit at creation, immutable after, NULL = legacy.
 -- Not inferred from created_at, because a timestamp is not a declaration.
 ALTER TABLE builds ADD COLUMN asset_ingest_protocol_version INTEGER;

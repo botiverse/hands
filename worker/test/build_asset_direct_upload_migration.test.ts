@@ -379,3 +379,101 @@ describe("migration 0062 — build asset direct upload", () => {
     ).toThrow(/CHECK constraint failed/);
   });
 });
+
+
+/**
+ * The preflight guards.
+ *
+ * `wrangler d1 migrations apply --remote` posts this file to D1 as a single `/query`
+ * string, and wrangler documents rollback only for the separate `--file` import path.
+ * Rather than depend on an atomicity guarantee nobody here can read back, 0062 asserts
+ * its preconditions before the first destructive statement.
+ *
+ * `db.exec` matches the pessimistic reading — it stops at the first error and does not
+ * wrap the batch in a transaction — so whatever ran before the abort really is left
+ * behind here. That is the point: these tests assert what survives, not what threw.
+ */
+describe("migration 0062 — preflight", () => {
+  /** Prior migrations, then a seed, then 0062 — returning the database either way. */
+  function attempt(seed: Seed) {
+    const db = new Database(":memory:");
+    db.pragma("foreign_keys = ON");
+    for (const name of readdirSync(MIGRATION_DIR).sort()) {
+      if (!name.endsWith(".sql")) continue;
+      if (name === MIGRATION) break;
+      db.exec(readFileSync(`${MIGRATION_DIR}${name}`, "utf8"));
+    }
+    seed(db);
+    let error: Error | null = null;
+    try {
+      db.exec(readFileSync(`${MIGRATION_DIR}${MIGRATION}`, "utf8"));
+    } catch (e) {
+      error = e as Error;
+    }
+    return { db, error };
+  }
+
+  const tables = (db: Database.Database) =>
+    db
+      .prepare("SELECT name FROM sqlite_master WHERE type = 'table'")
+      .pluck()
+      .all() as string[];
+
+  const hasColumn = (db: Database.Database, table: string, column: string) =>
+    (db.pragma(`table_info(${table})`) as { name: string }[]).some((c) => c.name === column);
+
+  /** The consequence both guards exist for: the rebuild never started. */
+  function expectUntouched(db: Database.Database, rows: number) {
+    const names = tables(db);
+    expect(names).toContain("build_assets");
+    expect(names).not.toContain("build_assets_legacy");
+    expect(names.filter((n) => n.includes("ingest"))).toEqual([]);
+    expect(db.prepare("SELECT COUNT(*) FROM build_assets").pluck().get()).toBe(rows);
+    // The first statements of 0062 proper are `ALTER TABLE builds`; if the guards sit
+    // where they belong, even those have not run.
+    expect(hasColumn(db, "builds", "asset_ingest_protocol_version")).toBe(false);
+  }
+
+  it("refuses to start when a row already holds the literal '-' sentinel", () => {
+    const { db, error } = attempt((d) => {
+      seedApps(d);
+      insertAsset(d, "as1", { arch: "-" });
+    });
+    expect(error?.message).toMatch(/0062 preflight failed: .*literal '-'/);
+    expectUntouched(db, 1);
+  });
+
+  it("refuses to start when two rows already share a normalised slot", () => {
+    const { db, error } = attempt((d) => {
+      seedApps(d);
+      insertAsset(d, "as1", { arch: null });
+      insertAsset(d, "as2", { arch: null });
+    });
+    expect(error?.message).toMatch(/0062 preflight failed: .*canonical slot/);
+    expectUntouched(db, 2);
+  });
+
+  it("still applies once the offending data is resolved", () => {
+    const { db, error } = attempt((d) => {
+      seedApps(d);
+      insertAsset(d, "as1", { arch: "-" });
+    });
+    expect(error).not.toBeNull();
+    // A guard that fires leaves its scratch table behind — its CREATE committed, its
+    // INSERT did not. If the retry did not drop it first, the second attempt would die
+    // on "table already exists" and report a problem the operator does not have.
+    expect(tables(db).some((n) => n.startsWith("_preflight_0062"))).toBe(true);
+    db.prepare("UPDATE build_assets SET arch = NULL").run();
+    expect(() => db.exec(readFileSync(`${MIGRATION_DIR}${MIGRATION}`, "utf8"))).not.toThrow();
+    expect(tables(db)).toContain("build_asset_ingest_seal");
+  });
+
+  it("leaves no scratch table behind on a clean apply", () => {
+    const { db, error } = attempt((d) => {
+      seedApps(d);
+      insertAsset(d, "as1", { arch: "arm64" });
+    });
+    expect(error).toBeNull();
+    expect(tables(db).filter((n) => n.startsWith("_preflight"))).toEqual([]);
+  });
+});
