@@ -246,6 +246,37 @@ jobs:
             echo "  note  tables named *_legacy: ${halves} (a rebuild may retain one deliberately)"
           fi
 
+          # ---- Backfill contract (template; unused by 0062, which backfills nothing) ----
+          #
+          # The structure comparison above proves the shape is right. It says nothing
+          # about whether rows a migration *wrote* are correct, and the three defects
+          # this repository hit today were all about what a value is, not how many
+          # there are: two columns mapped to the wrong positions, generated columns
+          # invisible to table_info, NULLs folding together under a new index.
+          #
+          # So a migration that backfills declares a predicate P describing what a
+          # correctly written row looks like, and the readback asserts that no row
+          # fails it:
+          #
+          #   rows=$(q "SELECT COUNT(*) AS n FROM <table>
+          #              WHERE <written by this migration> AND NOT (<P>)" | jq -r '.[0].n')
+          #   check "<table>: every backfilled row satisfies <P>" "$rows" "0"
+          #
+          # Two things this template cannot enforce, so they are written here instead
+          # of being left for whoever fills it in:
+          #
+          #   P is judged by source review, not by this step. The gate can only check
+          #   that P holds; whether P is the right predicate is a human judgement, and
+          #   a P that merely restates how the rows were inserted is a tautology that
+          #   passes forever. It has to separate a correct backfill from a plausible
+          #   wrong one, or it is a record rather than a contract.
+          #
+          #   Falling back to a row count is allowed only when a predicate genuinely
+          #   cannot be written, and must say so in the output - "this migration fell
+          #   back to a shape-level check". Left as a silent default, every migration
+          #   discovers it cannot write one.
+          # ------------------------------------------------------------------------
+
           # Evidence, not assertions. Whoever is watching the first apply of a given
           # migration reads these; they are not a gate, because what they should say
           # changes with every migration.
