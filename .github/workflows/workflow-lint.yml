@@ -66,8 +66,19 @@ jobs:
           fi
           echo "Self-test passed: all 4 planted defects reported (3 run forms + duplicate key)."
 
-      - name: Check the workflows
+      - name: Check every file that carries executable text
         run: |
           set -euo pipefail
-          python3 .github/lint-fixtures/check-workflows.py .github/workflows/*.yml
-          echo "No interpolation in run blocks, no duplicate keys."
+          # Composite actions carry their own steps, so they are scanned when present.
+          # There are none today, and the glob simply contributes nothing.
+          shopt -s nullglob globstar
+          targets=(.github/workflows/*.yml .github/actions/**/action.yml)
+          echo "scanning ${#targets[@]} file(s)"
+          python3 .github/lint-fixtures/check-workflows.py "${targets[@]}"
+
+          # The checker also reports carriers it was not given - a local reusable
+          # workflow whose steps live elsewhere - and exits 2 for that, because losing
+          # coverage is not the same as finding nothing. That check reads the parsed
+          # document: a grep for the pattern matched the comment describing it.
+          echo "No interpolation in executable text, no duplicate keys, no unscanned carriers."
+

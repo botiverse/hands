@@ -1,72 +1,37 @@
 #!/usr/bin/env python3
-"""Two checks over workflow files, plus the ability to be run against a file that
-should fail them.
+"""Checks over workflow files, and the means to run them against a file that should
+fail them.
 
-  check-workflows.py <file>...        report defects, exit 1 if any
+  check-workflows.py <file>...   exit 0 clean, 1 defects, 2 could-not-run
 
-Both defects are silent by nature, which is why they are worth a check at all:
+Three exits, not two: a tool that could not run must not be mistaken for one that
+found nothing. That happened four times in a day here - a probe refused by D1, an
+absent PyYAML twice, and an injection that never modified its target.
 
-  interpolation in a run block  the value is spliced in as program text before the
-                                shell parses the line, so it is code rather than data
-  duplicate mapping key         YAML keeps the last and discards the first without
-                                complaint, so an added `env:` can delete the one
-                                already there
+The interpolation check walks the *parsed* document rather than the lines. "|", ">",
+"|-", ">+" and a plain one-line scalar are serialisation details that vanish at parse
+time: each becomes the same string under a step's "run" key. Scanning lines meant
+enumerating those spellings, and the first version enumerated them wrong - it matched
+only "run: |" while this repository holds 70 single-line "run:" steps and no block
+ones, so it called the tree clean without having examined one statement. Parsing does
+not make that enumeration more complete; it removes it.
 
-Kept outside .github/workflows/ so GitHub never treats the fixture beside it as a
-workflow.
+Kept outside .github/workflows/ so GitHub never parses the fixture beside it.
 """
 
-import re
 import sys
 
 try:
     import yaml
 except ModuleNotFoundError:
-    # Exit 2, not 1. Without this the import error becomes a non-zero exit that the
-    # caller reads as "defects found", sending someone to look for a duplicate key
-    # that does not exist - and the usual response to a red that cannot be reproduced
-    # is to relax the check. Could-not-run is a third outcome and has to name itself.
+    # Exit 2, not 1. Otherwise the import error is a non-zero exit the caller reads as
+    # "defects found", sending someone after a duplicate key that does not exist - and
+    # the usual answer to a red nobody can reproduce is to relax the check.
     print("CANNOT RUN: PyYAML is not installed; no file was checked.", file=sys.stderr)
     raise SystemExit(2)
 
 # Assembled rather than written, so this file does not match its own rule.
 INTERPOLATION = "${" + "{"
-
-
-def interpolations_in_run_blocks(path):
-    """Interpolations in shell that a `run:` will execute, in any of its forms.
-
-    Covering only `run: |` would have missed the majority of this repository: it holds
-    70 single-line `run:` statements and no block ones. None of them interpolate today,
-    so a block-only checker would have reported the tree clean and been right by
-    accident — it could not have detected the case it was written to prevent.
-
-    Handled: `run: |`, `run: >`, and `run: <command>` on one line, each with or
-    without the `- ` list-item prefix — which is how every step in this repository
-    actually writes it, and which an earlier version of this function did not match.
-    """
-    found, in_run, indent = [], False, 0
-    for lineno, line in enumerate(open(path, encoding="utf-8"), 1):
-        line = line.rstrip("\n")
-
-        block = re.match(r"^(\s*)(?:-\s+)?run: [|>]", line)
-        if block:
-            in_run, indent = True, len(block.group(1))
-            continue
-
-        inline = re.match(r"^(\s*)(?:-\s+)?run: (?!\s*$)(.*)$", line)
-        if inline and not block:
-            in_run = False
-            if INTERPOLATION in inline.group(2):
-                found.append((lineno, line.strip()))
-            continue
-
-        if in_run and line.strip():
-            if len(line) - len(line.lstrip()) <= indent:
-                in_run = False
-            elif INTERPOLATION in line:
-                found.append((lineno, line.strip()))
-    return found
 
 
 class _Strict(yaml.SafeLoader):
@@ -89,24 +54,89 @@ def _no_duplicates(loader, node, deep=False):
 _Strict.add_constructor(yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, _no_duplicates)
 
 
+def _steps(doc):
+    """Every step, labelled so a human can find it without a line number."""
+    for job_name, job in (doc.get("jobs") or {}).items():
+        if not isinstance(job, dict):
+            continue
+        for i, step in enumerate(job.get("steps") or []):
+            if isinstance(step, dict):
+                yield f"{job_name} / {step.get('name') or 'step ' + str(i)}", step
+    for i, step in enumerate(((doc.get("runs") or {}) if isinstance(doc.get("runs"), dict) else {}).get("steps") or []):
+        if isinstance(step, dict):
+            yield f"runs / {step.get('name') or 'step ' + str(i)}", step
+
+
+def _executable_text(step):
+    """Text the step will execute. `run` is shell; github-script's `script` is
+    JavaScript, and interpolating into that is the same defect in another language."""
+    if isinstance(step.get("run"), str):
+        yield "run", step["run"]
+    uses = step.get("uses") or ""
+    with_ = step.get("with") or {}
+    if (isinstance(uses, str) and "github-script" in uses
+            and isinstance(with_, dict) and isinstance(with_.get("script"), str)):
+        yield "with.script", with_["script"]
+
+
+def interpolations(path, doc):
+    return [
+        f"{path}: {where}: interpolation inside {key}"
+        for where, step in _steps(doc)
+        for key, text in _executable_text(step)
+        if INTERPOLATION in text
+    ]
+
+
+def uncovered_carriers(path, doc):
+    """References to files holding steps this run was not given.
+
+    What can carry executable text is not a fixed set, and no rule enumerates what
+    does not exist yet — but it can notice the set changing. Checked against the
+    parsed document rather than the text: a grep for this pattern matched the comment
+    describing it, which is the same self-match the lint's own token had.
+    """
+    out = []
+    for where, step in _steps(doc):
+        uses = step.get("uses")
+        if isinstance(uses, str) and uses.startswith("./"):
+            out.append(f"{path}: {where}: uses {uses}, whose steps were not scanned")
+    for job_name, job in (doc.get("jobs") or {}).items():
+        if isinstance(job, dict) and isinstance(job.get("uses"), str) and job["uses"].startswith("./"):
+            out.append(f"{path}: {job_name}: uses {job['uses']}, whose steps were not scanned")
+    return out
+
+
 def duplicate_keys(path):
     try:
         yaml.load(open(path, encoding="utf-8"), _Strict)
     except yaml.YAMLError as exc:
-        return [str(exc)]
+        return [f"{path}: {exc}"]
     return []
 
 
 def main(paths):
-    bad = 0
+    problems, uncovered = [], []
     for path in paths:
-        for lineno, text in interpolations_in_run_blocks(path):
-            print(f"{path}:{lineno}: interpolation inside a run block: {text}")
-            bad += 1
-        for message in duplicate_keys(path):
-            print(f"{path}: {message}")
-            bad += 1
-    return 1 if bad else 0
+        problems += duplicate_keys(path)
+        try:
+            doc = yaml.safe_load(open(path, encoding="utf-8")) or {}
+        except yaml.YAMLError as exc:
+            print(f"CANNOT RUN: {path} does not parse: {exc}", file=sys.stderr)
+            return 2
+        problems += interpolations(path, doc)
+        uncovered += uncovered_carriers(path, doc)
+    for line in problems:
+        print(line)
+    if uncovered:
+        # Exit 2: this is not a defect found, it is coverage lost. Reporting it as
+        # clean would be the silent version of the same gap.
+        print("", file=sys.stderr)
+        print("CANNOT RUN (partial): steps exist in files this run did not scan.", file=sys.stderr)
+        for line in uncovered:
+            print(f"  {line}", file=sys.stderr)
+        return 2
+    return 1 if problems else 0
 
 
 if __name__ == "__main__":
