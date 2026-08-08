@@ -55,7 +55,10 @@ SELECT COUNT(*) FROM build_assets WHERE arch = '-' OR variant = '-';
 DROP TABLE _preflight_0062_sentinel;
 
 -- Ordering matters between the two guards, not just before the DDL. This one
--- normalises with COALESCE because the index it protects normalises the same way,
+-- normalises exactly as the index it protects normalises -- including the delta
+-- discriminator, because a guard that groups more coarsely than its index reports
+-- duplicates that the index would happily accept, and would block a migration over
+-- data that is entirely correct. It must mirror the expression, not approximate it.
 -- so a literal '-' and a NULL genuinely would collide there. That also means this
 -- query cannot distinguish them -- which is safe only because the guard above has
 -- already established there are no literal '-' rows left to confuse it.
@@ -70,7 +73,9 @@ SELECT COUNT(*) FROM (
   SELECT 1
     FROM build_assets
    GROUP BY build_id, artifact_kind, platform,
-            COALESCE(arch, '-'), COALESCE(variant, '-'), filetype
+            COALESCE(arch, '-'), COALESCE(variant, '-'),
+            COALESCE(CAST(json_extract(metadata_json, '$.from_version_code') AS TEXT), '-'),
+            filetype
   HAVING COUNT(*) > 1
 );
 DROP TABLE _preflight_0062_slot;
@@ -112,7 +117,16 @@ CREATE TABLE build_assets (
   -- Generated, not caller-supplied: a writer cannot set a slot value that disagrees
   -- with the column it normalizes, and existing INSERTs need no change.
   slot_arch    TEXT GENERATED ALWAYS AS (COALESCE(arch, '-')) VIRTUAL,
-  slot_variant TEXT GENERATED ALWAYS AS (COALESCE(variant, '-')) VIRTUAL
+  slot_variant TEXT GENERATED ALWAYS AS (COALESCE(variant, '-')) VIRTUAL,
+  -- A delta patch is identified by which prior version it patches from. That lives in
+  -- metadata_json, and the public download path selects on it
+  -- (public_v2.ts, `json_extract(metadata_json, '$.from_version_code')`), so it is
+  -- part of the identity whether or not the schema says so. Leaving it out folded
+  -- every patch for a build into one slot and would have rejected the second prior
+  -- that delta.ts and the CLI both write today.
+  slot_from_version TEXT GENERATED ALWAYS AS (
+    COALESCE(CAST(json_extract(metadata_json, '$.from_version_code') AS TEXT), '-')
+  ) VIRTUAL
 );
 
 INSERT INTO build_assets (
@@ -153,7 +167,8 @@ CREATE INDEX idx_build_assets_signing
 -- Canonical slot: closed (no NULLs) and kind-scoped. Fails closed if duplicates
 -- already exist; the old index permitted them for its whole life.
 CREATE UNIQUE INDEX idx_build_assets_canonical_slot
-  ON build_assets(build_id, artifact_kind, platform, slot_arch, slot_variant, filetype);
+  ON build_assets(build_id, artifact_kind, platform, slot_arch, slot_variant,
+                  slot_from_version, filetype);
 
 -- Lets the replay ledger reference (build_id, asset_id) as a pair.
 CREATE UNIQUE INDEX idx_build_assets_build_scope ON build_assets(build_id, id);

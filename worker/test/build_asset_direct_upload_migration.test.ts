@@ -98,6 +98,9 @@ describe("migration 0062 — build asset direct upload", () => {
       size_bytes: 4242, signature: "sig-a", signing_credential_id: "cred-1",
       metadata_json: '{"kept":true}', download_count: 77, created_at: 1700000001,
       artifact_kind: "installable", slot_arch: "arm64", slot_variant: "release",
+      // No from_version_code in metadata, so the delta discriminator normalises to
+      // the sentinel and this row's slot is unchanged by its introduction.
+      slot_from_version: "-",
     });
     expect(
       db.prepare("SELECT COUNT(*) AS n FROM build_assets").get(),
@@ -154,6 +157,39 @@ describe("migration 0062 — build asset direct upload", () => {
     expect(() => insertAsset(db, "n2")).toThrow(/UNIQUE constraint failed/);
     insertAsset(db, "a1", { arch: "arm64" });
     expect(() => insertAsset(db, "a2", { arch: "arm64" })).toThrow(/UNIQUE constraint failed/);
+  });
+
+  it("gives each delta patch its own slot, keyed by the prior it patches from", () => {
+    const db = database({ seedBeforeMigration: seedApps });
+    const patch = (id: string, from: number | null) =>
+      db
+        .prepare(
+          `INSERT INTO build_assets
+             (id, build_id, platform, arch, variant, filetype, r2_key, file_hash,
+              size_bytes, artifact_kind, metadata_json, created_at)
+           VALUES (?, 'build-a', 'android', 'arm64', NULL, 'patch', ?, 'h', 1,
+                   'delta-patch', ?, 1)`,
+        )
+        .run(id, id, from === null ? "{}" : JSON.stringify({ from_version_code: from }));
+
+    // delta.ts and the CLI both write one patch per prior version, and the public
+    // download path selects on from_version_code. It is part of the identity whether
+    // or not the schema says so; a slot that omits it folds every patch for a build
+    // into one and rejects the second prior.
+    expect(() => patch("d1", 1)).not.toThrow();
+    expect(() => patch("d2", 2)).not.toThrow();
+    expect(() => patch("d3", 2)).toThrow(/UNIQUE constraint failed/);
+    expect(db.prepare("SELECT COUNT(*) FROM build_assets").pluck().get()).toBe(2);
+  });
+
+  it("does not let the discriminator loosen assets that have none", () => {
+    const db = database({ seedBeforeMigration: seedApps });
+    // Everything except a delta patch lacks from_version_code, normalises to the same
+    // sentinel, and must stay as constrained as it was.
+    insertAsset(db, "i1", { arch: "arm64", kind: "app-icon" });
+    expect(() => insertAsset(db, "i2", { arch: "arm64", kind: "app-icon" })).toThrow(
+      /UNIQUE constraint failed/,
+    );
   });
 
   it("keeps the sentinel out of the input domain", () => {
@@ -480,6 +516,25 @@ describe("migration 0062 — preflight", () => {
     });
     expect(error?.message).toMatch(/0062 preflight failed: .*literal '-'/);
     expectUntouched(db, 1);
+  });
+
+  it("does not block a migration over legitimate multi-prior delta patches", () => {
+    const { error } = attempt((d) => {
+      seedApps(d);
+      for (const [id, from] of [["d1", 1], ["d2", 2]] as const) {
+        d.prepare(
+          `INSERT INTO build_assets
+             (id, build_id, platform, arch, variant, filetype, r2_key, file_hash,
+              size_bytes, artifact_kind, metadata_json, created_at)
+           VALUES (?, 'build-a', 'android', 'arm64', NULL, 'patch', ?, 'h', 1,
+                   'delta-patch', ?, 1)`,
+        ).run(id, id, JSON.stringify({ from_version_code: from }));
+      }
+    });
+    // A guard that groups more coarsely than the index it protects reports duplicates
+    // the index would accept, and refuses to migrate a database that is entirely
+    // correct. Mirroring the expression is the requirement; approximating it is not.
+    expect(error).toBeNull();
   });
 
   it("refuses to start when two rows already share a normalised slot", () => {
