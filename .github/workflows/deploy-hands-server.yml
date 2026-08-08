@@ -282,13 +282,20 @@ jobs:
             echo "  note  tables named *_legacy: ${halves} (a rebuild may retain one deliberately)"
           fi
 
-          # ---- Backfill contract (template; unused by 0062, which backfills nothing) ----
+          # ---- Backfill contract (template, for migrations that write new rows) ----
           #
           # The structure comparison above proves the shape is right. It says nothing
-          # about whether rows a migration *wrote* are correct, and the three defects
-          # this repository hit today were all about what a value is, not how many
-          # there are: two columns mapped to the wrong positions, generated columns
-          # invisible to table_info, NULLs folding together under a new index.
+          # about whether rows a migration *wrote* are correct, and the defects this
+          # repository hit were all about what a value is, not how many there are: two
+          # columns mapped to the wrong positions, generated columns invisible to
+          # table_info, NULLs folding together under a new index.
+          #
+          # 0062's own copy is already covered, by the value-for-value comparison
+          # against the retained table above. An earlier version of this header said
+          # 0062 backfills nothing, which was wrong - its rebuild rewrites every row -
+          # and leaving that sentence next to the check that disproves it would invite
+          # the reading that copy-shaped migrations need no value check. They need it
+          # most.
           #
           # So a migration that backfills declares a predicate P describing what a
           # correctly written row looks like, and the readback asserts that no row
