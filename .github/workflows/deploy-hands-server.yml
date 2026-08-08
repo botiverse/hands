@@ -127,6 +127,22 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+
+          # Whether this run changes the schema can only be known before it does, so
+          # it is recorded here rather than inferred afterwards - after the apply,
+          # "nothing pending" is what both a no-op and a successful migration look
+          # like. Later steps use it to tell "nothing changed, nothing to verify"
+          # apart from "something changed and nothing verified it".
+          before=$(pnpm exec wrangler d1 migrations list "${HANDS_D1_DATABASE_NAME}" \
+            --remote --config wrangler.hands.generated.jsonc 2>&1 || true)
+          if grep -qi "no migrations to apply" <<<"$before"; then
+            echo "changes_schema=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changes_schema=true" >> "$GITHUB_OUTPUT"
+            echo "This deploy will apply:"
+            echo "$before"
+          fi
+
           pnpm exec wrangler d1 migrations apply "${HANDS_D1_DATABASE_NAME}" --remote --config wrangler.hands.generated.jsonc
 
       # Read the database back before the Worker goes out, not after.
@@ -149,6 +165,9 @@ jobs:
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_BOTIVERSE_API_TOKEN }}
           APPLY_OUTCOME: ${{ steps.apply.outcome }}
+          # Bump this only together with re-measuring the failure behaviour on the new
+          # version. The number is a claim about what was tested, not a preference.
+          MEASURED_WRANGLER: "4.105.0"
         shell: bash
         run: |
           set -euo pipefail
@@ -241,7 +260,20 @@ jobs:
             # The apply failed. Wrangler 4.105.0 rolls a failed migration back whole
             # and does not record it, but that is measured behaviour rather than a
             # documented contract, which is the reason to check rather than trust it.
-            echo "  (apply failed - asserting the database was left alone)"
+            # This branch said it was asserting the database was left alone and then
+            # only printed a number. A comment claiming more than its code does is the
+            # exact failure this step exists to catch, so it asserts now. What can be
+            # asserted without knowing which migration failed: no scratch table
+            # survived (checked above) and the migration is not recorded as applied.
+            recorded=$(pnpm exec wrangler d1 migrations list "${HANDS_D1_DATABASE_NAME}" \
+              --remote --config wrangler.hands.generated.jsonc 2>&1 || true)
+            if grep -qi "no migrations to apply" <<<"$recorded"; then
+              echo "  FAIL  apply failed, yet nothing is pending - a failed migration" >&2
+              echo "        appears to have been recorded as applied." >&2
+              fail=1
+            else
+              echo "  ok    the failed migration is not recorded as applied"
+            fi
             halves=$(q "SELECT COUNT(*) AS n FROM sqlite_master WHERE type = 'table' AND substr(name, -7) = '_legacy'" | jq -r '.[0].n')
             echo "  note  tables named *_legacy: ${halves} (a rebuild may retain one deliberately)"
           fi
@@ -277,6 +309,34 @@ jobs:
           #   discovers it cannot write one.
           # ------------------------------------------------------------------------
 
+          # A structural match says the shape is right. It says nothing about whether
+          # the rows a migration *wrote* are right, and 0062 wrote every one of them:
+          # its rebuild copies build_assets through INSERT...SELECT. Transposing two
+          # same-typed columns on the SELECT side leaves row counts equal, foreign keys
+          # clean, indexes correctly owned and every value wrong - measured, not
+          # imagined. The retained copy is the comparison source, so while it exists
+          # the copy is checked value by value rather than counted.
+          if [[ "${APPLY_OUTCOME}" == "success" ]]; then
+            legacy=$(q "SELECT COUNT(*) AS n FROM sqlite_master WHERE type = 'table' AND name = 'build_assets_legacy'" | jq -r '.[0].n')
+            if [[ "$legacy" == "1" ]]; then
+              # IS NOT, not <>: with a NULL operand <> yields NULL and the row would
+              # quietly fail to count as a mismatch.
+              preds=""
+              for col in id build_id platform arch variant filetype r2_key file_hash \
+                         size_bytes signature signing_credential_id metadata_json \
+                         download_count created_at artifact_kind; do
+                preds="${preds:+$preds OR }n.${col} IS NOT l.${col}"
+              done
+              bad=$(q "SELECT COUNT(*) AS n FROM build_assets n JOIN build_assets_legacy l USING (id) WHERE ${preds}" | jq -r '.[0].n')
+              check "every carried row matches the retained copy value for value" "$bad" "0"
+
+              lost=$(q "SELECT COUNT(*) AS n FROM build_assets_legacy l WHERE NOT EXISTS (SELECT 1 FROM build_assets n WHERE n.id = l.id)" | jq -r '.[0].n')
+              check "every row in the retained copy reached the rebuilt table" "$lost" "0"
+            else
+              echo "  (no build_assets_legacy; nothing to compare the copy against)"
+            fi
+          fi
+
           # Evidence, not assertions. Whoever is watching the first apply of a given
           # migration reads these; they are not a gate, because what they should say
           # changes with every migration.
@@ -287,7 +347,12 @@ jobs:
           q "SELECT name, tbl_name FROM sqlite_master WHERE type = 'index' AND name LIKE 'idx_build_assets%'" \
             | jq -r '.[] | "    " + .name + " -> " + .tbl_name'
           q "SELECT (SELECT COUNT(*) FROM build_assets) AS live" | jq -r '"    build_assets rows: " + (.[0].live|tostring)'
-          echo "  wrangler: $(pnpm exec wrangler --version 2>/dev/null | tail -1)"
+          # Not evidence. Every conclusion we hold about how a failed migration
+          # behaves on this path was measured on one version of wrangler; if the
+          # lockfile has moved, those conclusions are unverified and the reasoning that
+          # narrowed the deploy hold has to be redone. That is a red, not a note.
+          got=$(pnpm exec wrangler --version 2>/dev/null | tail -1 | tr -d 'v ')
+          check "wrangler matches the version the failure behaviour was measured on" "$got" "$MEASURED_WRANGLER"
 
           exit "$fail"
 
@@ -321,15 +386,26 @@ jobs:
         if: ${{ !cancelled() && steps.readback.conclusion == 'success' }}
         env:
           PROBE_PATH: ${{ vars.HANDS_READBACK_PROBE_PATH }}
+          MIGRATIONS_APPLIED: ${{ steps.apply.outputs.changes_schema }}
         shell: bash
         run: |
           set -euo pipefail
           if [[ -z "${PROBE_PATH:-}" ]]; then
-            echo "SKIPPED: repository variable HANDS_READBACK_PROBE_PATH is not set."
-            echo "No runtime check ran. Set it to a public path whose handler reads"
-            echo "build_assets, so this step can prove the deployed code and the"
-            echo "current schema agree. Until then this deploy has database evidence"
-            echo "only."
+            echo "No runtime check: repository variable HANDS_READBACK_PROBE_PATH is unset."
+            echo "It should name a public path whose handler reads build_assets, so this"
+            echo "step can show the deployed code and the current schema agree."
+            # Skipping quietly is fine on a deploy that changed no schema. It is not
+            # fine on the run that just changed one - that is the run whose runtime
+            # behaviour someone is waiting to see, and a silent skip there reads in the
+            # log exactly like a check that passed.
+            if [[ "${MIGRATIONS_APPLIED}" == "true" ]]; then
+              echo "" >&2
+              echo "This deploy applied a migration, so a runtime check is the thing" >&2
+              echo "that was wanted and it did not happen. Failing rather than passing" >&2
+              echo "quietly: the database evidence above stands, the runtime evidence" >&2
+              echo "does not exist. Set the variable, or check by hand and re-run." >&2
+              exit 1
+            fi
             exit 0
           fi
           url="https://${HANDS_BUSINESS_DOMAIN}${PROBE_PATH}"
