@@ -14,6 +14,16 @@ jobs:
       - name: Interpolates into the shell
         run: |
           echo "${{ inputs.anything }}"
+      # 1b. the same defect on one line. A separate case because the checker first saw
+      #     only `run: |` - and this repository holds 70 single-line `run:` steps and
+      #     no block ones, so the block-only version called the tree clean and was
+      #     right purely by accident.
+      - name: Interpolates on a single line
+        run: echo "${{ inputs.anything }}"
+      # 1c. folded scalar, the third way of writing the same thing
+      - name: Interpolates in a folded block
+        run: >
+          echo "${{ inputs.anything }}"
       # 2. a duplicate mapping key: YAML keeps the last and drops the first, silently
       - name: Two env blocks
         env:

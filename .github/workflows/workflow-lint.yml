@@ -49,14 +49,22 @@ jobs:
       - name: Self-test - the checker must fail the known-bad fixture
         run: |
           set -uo pipefail
-          if python3 .github/lint-fixtures/check-workflows.py \
-               .github/lint-fixtures/known-bad.yml; then
+          findings=$(python3 .github/lint-fixtures/check-workflows.py \
+                       .github/lint-fixtures/known-bad.yml | wc -l)
+          # Four exactly, not "at least one". A bare non-zero would still be satisfied
+          # if the fixture grew a shape the checker cannot see: the other cases would
+          # keep it red and the new blind spot would pass unnoticed. That is how the
+          # block-only version of this checker survived while missing every
+          # single-line run in the repository - a control agreeing with the thing it
+          # was meant to test.
+          if [[ "$findings" -ne 4 ]]; then
             echo "" >&2
-            echo "CANNOT RUN: the checker passed a file written to fail it." >&2
-            echo "It is not working, so any clean result from it today is worthless." >&2
+            echo "CANNOT RUN: the checker reported ${findings} of the 4 defects planted" >&2
+            echo "in the known-bad fixture, so it does not see all of them. A clean" >&2
+            echo "result from it today would mean nothing." >&2
             exit 2
           fi
-          echo "Self-test passed: the checker reports both defects."
+          echo "Self-test passed: all 4 planted defects reported (3 run forms + duplicate key)."
 
       - name: Check the workflows
         run: |

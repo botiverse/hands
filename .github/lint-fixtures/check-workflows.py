@@ -34,15 +34,33 @@ INTERPOLATION = "${" + "{"
 
 
 def interpolations_in_run_blocks(path):
-    """Lines inside a `run: |` block that interpolate. Block ends at the first
-    non-blank line indented no further than the `run:` key itself."""
+    """Interpolations in shell that a `run:` will execute, in any of its forms.
+
+    Covering only `run: |` would have missed the majority of this repository: it holds
+    70 single-line `run:` statements and no block ones. None of them interpolate today,
+    so a block-only checker would have reported the tree clean and been right by
+    accident — it could not have detected the case it was written to prevent.
+
+    Handled: `run: |`, `run: >`, and `run: <command>` on one line, each with or
+    without the `- ` list-item prefix — which is how every step in this repository
+    actually writes it, and which an earlier version of this function did not match.
+    """
     found, in_run, indent = [], False, 0
     for lineno, line in enumerate(open(path, encoding="utf-8"), 1):
         line = line.rstrip("\n")
-        opener = re.match(r"^(\s*)run: \|", line)
-        if opener:
-            in_run, indent = True, len(opener.group(1))
+
+        block = re.match(r"^(\s*)(?:-\s+)?run: [|>]", line)
+        if block:
+            in_run, indent = True, len(block.group(1))
             continue
+
+        inline = re.match(r"^(\s*)(?:-\s+)?run: (?!\s*$)(.*)$", line)
+        if inline and not block:
+            in_run = False
+            if INTERPOLATION in inline.group(2):
+                found.append((lineno, line.strip()))
+            continue
+
         if in_run and line.strip():
             if len(line) - len(line.lstrip()) <= indent:
                 in_run = False
