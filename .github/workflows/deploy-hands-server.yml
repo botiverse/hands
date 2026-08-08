@@ -17,6 +17,14 @@ on:
         required: true
         type: boolean
         default: true
+      pending_migration_readback:
+        description: "If D1 migrations are pending, they WILL be applied to production by this deploy. Who is watching that?"
+        required: true
+        type: choice
+        options:
+          - "no owner - stop before applying anything"
+          - "an owner is standing by for the readback"
+        default: "no owner - stop before applying anything"
 
 permissions:
   contents: read
@@ -118,6 +126,51 @@ jobs:
           if ! pnpm exec wrangler r2 bucket info "${HANDS_R2_BUCKET_NAME}" >/dev/null 2>&1; then
             pnpm exec wrangler r2 bucket create "${HANDS_R2_BUCKET_NAME}"
           fi
+
+      # A deploy applies whatever migrations are pending, whatever the deploy was for.
+      # Somebody dispatching this to ship an admin asset has no reason to know that,
+      # and nothing in the process tells them: the obligation to watch the first apply
+      # of a migration rides on an action they started for another purpose. Until the
+      # automated readback exists, the dispatch form is the only surface that travels
+      # with the action, so the question is asked there.
+      #
+      # This stays quiet when nothing is pending, which is almost every deploy. It only
+      # speaks up in the case it is about, and it stops before the apply rather than
+      # after it.
+      - name: Check who is watching a pending migration
+        working-directory: worker
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_BOTIVERSE_API_TOKEN }}
+          READBACK_OWNER: ${{ inputs.pending_migration_readback }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          pending=$(pnpm exec wrangler d1 migrations list "${HANDS_D1_DATABASE_NAME}" \
+            --remote --config wrangler.hands.generated.jsonc 2>&1 || true)
+
+          if grep -qi "no migrations to apply" <<<"$pending"; then
+            echo "No migrations pending; this deploy changes no schema."
+            exit 0
+          fi
+
+          echo "Migrations pending, and this deploy will apply them to production:"
+          echo "$pending"
+
+          if [[ "${READBACK_OWNER}" != "an owner is standing by for the readback" ]]; then
+            echo "" >&2
+            echo "Stopping before the apply." >&2
+            echo "" >&2
+            echo "This deploy would change the production database, and the dispatch" >&2
+            echo "said nobody is watching. That is the right answer when you came here" >&2
+            echo "to ship something unrelated - you are not being asked to take it on." >&2
+            echo "" >&2
+            echo "Either find the owner of the pending migration and have them dispatch," >&2
+            echo "or re-dispatch saying an owner is standing by. Nothing has been" >&2
+            echo "applied and nothing has been deployed." >&2
+            exit 1
+          fi
+
+          echo "Readback owner acknowledged at dispatch; continuing."
 
       - name: Apply Hands D1 migrations
         working-directory: worker
