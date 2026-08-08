@@ -209,12 +209,13 @@ jobs:
         working-directory: worker
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_BOTIVERSE_API_TOKEN }}
+          ROLLOUT: ${{ inputs.containers_rollout }}
         shell: bash
         run: |
           set -euo pipefail
           pnpm exec wrangler deploy \
             --config wrangler.hands.generated.jsonc \
-            --containers-rollout "${{ inputs.containers_rollout }}"
+            --containers-rollout "${ROLLOUT}"
 
       - name: Configure Hands Worker secrets
         working-directory: worker
@@ -282,6 +283,8 @@ jobs:
 
       - name: Summary
         shell: bash
+        env:
+          ROLLOUT: ${{ inputs.containers_rollout }}
         run: |
           {
             echo "### Hands server deploy"
@@ -290,5 +293,5 @@ jobs:
             echo "|---|---|"
             echo "| Ref | \`${GITHUB_REF_NAME}\` |"
             echo "| SHA | \`${GITHUB_SHA}\` |"
-            echo "| Containers rollout | \`${{ inputs.containers_rollout }}\` |"
+            echo "| Containers rollout | \`${ROLLOUT}\` |"
           } >> "$GITHUB_STEP_SUMMARY"
