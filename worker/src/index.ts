@@ -674,6 +674,22 @@ admin.get("/api/admin/container/build", async (c) => {
     typeof parsed === "object" && parsed !== null && "build" in parsed
       ? (parsed as { build?: unknown }).build
       : undefined;
+  // How to read the response. `stamped` alone does not answer "is the old image still
+  // serving", and the shorthand is what people quote:
+  //
+  //   ok:true   status:200  stamped:false  -> the old image is serving
+  //   ok:false  status:5xx  stamped:false  -> the container answered but is unhealthy;
+  //                                           NOT MEASURED, not a statement about which
+  //                                           image is up
+  //   (unreachable container throws, so there is no `stamped` field at all)
+  //
+  // Anything other than the first line is "not measured". Separating "could not read"
+  // from "read an unstamped image" is the entire reason this endpoint exists, and the
+  // separation is undone the moment someone reads one field instead of three.
+  //
+  // `stamped:true` needs no such qualification, and deliberately does not get one for
+  // symmetry: the running image has no code that emits `build`, so a true cannot be
+  // produced by anything except a rebuilt image.
   return c.json({
     ok: res.ok,
     status: res.status,
