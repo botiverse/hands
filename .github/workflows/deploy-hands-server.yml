@@ -300,13 +300,31 @@ jobs:
           }
 
           fail=0
+          evaluated=0
+          skipped=0
+
+          # Three states, matching every other instrument here. The criteria set was the
+          # last thing in this job still running on two: a criterion whose comparison
+          # source was absent fell into an `else`, printed a parenthetical, and the run
+          # went green - which is a criterion silently not executing, the same shape
+          # `exit 2` exists to prevent everywhere else.
+          #
+          # `skip` is not a softer `check`. A permanently skipped criterion is itself the
+          # event worth seeing: it says so on every deploy instead of waiting for someone
+          # to remember that a comparison stopped happening.
           check() {  # check <description> <actual> <expected>
+            evaluated=$((evaluated + 1))
             if [[ "$2" == "$3" ]]; then
               echo "  ok    $1: $2"
             else
               echo "  FAIL  $1: got '$2', expected '$3'" >&2
               fail=1
             fi
+          }
+
+          skip() {  # skip <description> <reason>
+            skipped=$((skipped + 1))
+            echo "  SKIP  $1: $2"
           }
 
           echo "apply outcome: ${APPLY_OUTCOME}"
@@ -465,7 +483,14 @@ jobs:
               lost=$(q "SELECT COUNT(*) AS n FROM build_assets_legacy l WHERE NOT EXISTS (SELECT 1 FROM build_assets n WHERE n.id = l.id)" | jq -r '.[0].n')
               check "every row in the retained copy reached the rebuilt table" "$lost" "0"
             else
-              echo "  (no build_assets_legacy; nothing to compare the copy against)"
+              # Not a note in parentheses. These two criteria are not being evaluated,
+              # and once build_assets_legacy is dropped they never will be again - at
+              # which point this branch would have printed a reassuring sentence on
+              # every deploy forever while checking nothing. Reported as SKIP so the
+              # count below stops matching, and nobody has to remember that a deletion
+              # elsewhere retired a criterion here.
+              skip "every carried row matches the retained copy value for value" "no build_assets_legacy to compare against"
+              skip "every row in the retained copy reached the rebuilt table" "no build_assets_legacy to compare against"
             fi
           fi
 
@@ -485,6 +510,20 @@ jobs:
           # narrowed the deploy hold has to be redone. That is a red, not a note.
           got=$(pnpm exec wrangler --version 2>/dev/null | tail -1 | tr -d 'v ')
           check "wrangler matches the version the failure behaviour was measured on" "$got" "$MEASURED_WRANGLER"
+
+          # Counted, not declared. We have described this gate as "12 criteria" in
+          # writing, and a number kept in prose stays at 12 while the code drifts - the
+          # same reason the workflow lint reports "N of M YAML files" with both figures
+          # counted. A criterion falling into a skip shows up here as a smaller number on
+          # its own, with nobody remembering to edit anything.
+          echo "evaluated ${evaluated} criteria, ${skipped} skipped, $([[ "$fail" == "0" ]] && echo 0 || echo "1 or more") failed"
+          if [[ "$skipped" -gt 0 ]]; then
+            # Not a failure: a skip can be legitimate, and turning it red would make the
+            # deploy hostage to a comparison source we intend to delete. It is loud
+            # instead, and it stays loud, which is the property that "remember to fix it
+            # during the deletion" does not have.
+            echo "note: ${skipped} criterion/criteria did not execute this run - see SKIP lines above." >&2
+          fi
 
           exit "$fail"
 
