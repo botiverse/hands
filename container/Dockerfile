@@ -82,6 +82,19 @@ RUN npm ci --include=dev --no-audit --no-fund
 # Copy container source
 COPY src ./src
 
+# Build stamp, so /health can answer "which build is serving" rather than only
+# "something is serving". Supplied by `image_vars` in the Worker's container config,
+# which wrangler passes as a build arg; unset outside a real deploy, and /health then
+# reports "unknown" rather than pretending to know.
+#
+# Deliberately placed after every expensive layer. GIT_SHA changes on every deploy, and
+# an ARG invalidates the cache for everything below it - declared up with the other ARGs
+# it would rebuild the Rust minidump-stackwalk, the apt layer, the Android SDK and
+# `npm ci` on every single deploy. Here it invalidates only the two lines beneath it,
+# and `COPY src` above already changes whenever the source does.
+ARG GIT_SHA=""
+ENV BUILD_SHA=$GIT_SHA
+
 EXPOSE 8080
 
 # Run via tsx (no build step needed in container; Cloudflare Containers build with Docker)
