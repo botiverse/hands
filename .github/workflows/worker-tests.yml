@@ -49,6 +49,18 @@ on:
       #
       # "No test ran" and "every test passed" are the same green on a pull request page.
       - ".github/workflows/**"
+      # cors_allow_headers.test.ts scans container/src and container/package.json
+      # (SOURCE_DIRS, MANIFESTS) because the container has no cors() today and its own
+      # suite does not run here. Without this entry, a PR touching only container/ does
+      # not run it — and a PR introducing the first cors() call is, almost by definition,
+      # a PR touching only container/. The instrument would have been absent from exactly
+      # the change it exists to catch. Its own `registrations.length > 0` guard is
+      # correctly written and would not have helped: a denominator only means anything
+      # in a run that happens.
+      #
+      # Second instance of the same defect in one census, which is why the entries above
+      # are wildcards and why this list is not being derived again.
+      - "container/**"
   # No paths filter here, deliberately. Two lists are two things to keep in step, and
   # the first was already out of step: this file itself was missing from the push
   # list, so a change to the workflow could merge without main ever running it. The
