@@ -1,0 +1,296 @@
+# Task #108: read-only extraction of one already-published immutable Maven set.
+# This temporary workflow is intentionally pinned to one GAV and authority
+# tuple. It has no dispatcher input and no package/source/tag write permission.
+name: Task 108 Hands Android 0.12.4 authority readback
+
+on:
+  push:
+    branches:
+      - argus/task108-hands-authority-extract
+
+permissions:
+  contents: read
+  packages: read
+
+concurrency:
+  group: task108-hands-android-authority-readback
+  cancel-in-progress: false
+
+jobs:
+  readback:
+    name: Read five immutable GitHub Packages primaries
+    runs-on: ubuntu-latest
+    env:
+      AUTHORITY_REPOSITORY: botiverse/hands
+      AUTHORITY_GROUP: build.hands
+      AUTHORITY_ARTIFACT: hands-android-sdk
+      AUTHORITY_VERSION: 0.12.4
+      AUTHORITY_SOURCE_SHA: 6bc3fee74a9b1d71f8134fba0865a5bd688fa2d1
+      AUTHORITY_TAG: android-sdk-v0.12.4
+      AUTHORITY_TAG_OBJECT: d65a0c4e058311c6ced812a384efb55d05eb9b6f
+      AUTHORITY_PUBLISH_RUN: "30281525755"
+    steps:
+      - name: Admit only the frozen repository and temporary ref
+        shell: bash
+        run: |
+          set -euo pipefail
+          [ "$GITHUB_REPOSITORY" = "$AUTHORITY_REPOSITORY" ] || {
+            echo "refusing repository $GITHUB_REPOSITORY" >&2
+            exit 1
+          }
+          [ "$GITHUB_REF" = "refs/heads/argus/task108-hands-authority-extract" ] || {
+            echo "refusing ref $GITHUB_REF" >&2
+            exit 1
+          }
+
+      - name: Download and verify the exact five primaries
+        id: extract
+        shell: bash
+        env:
+          GITHUB_PACKAGES_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          fail() {
+            echo "AUTHORITY READBACK FAIL: $*" >&2
+            exit 1
+          }
+
+          origin_of() {
+            python3 - "$1" <<'PY'
+          import sys
+          from urllib.parse import urlsplit
+
+          parsed = urlsplit(sys.argv[1])
+          if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password:
+              raise SystemExit(1)
+          port = parsed.port
+          if port not in (None, 443):
+              print(f"https://{parsed.hostname}:{port}")
+          else:
+              print(f"https://{parsed.hostname}")
+          PY
+          }
+
+          resolve_location() {
+            python3 - "$1" "$2" <<'PY'
+          import sys
+          from urllib.parse import urljoin
+
+          print(urljoin(sys.argv[1], sys.argv[2]))
+          PY
+          }
+
+          last_header() {
+            local name="$1" file="$2"
+            tr -d '\r' < "$file" \
+              | grep -i "^${name}:" \
+              | tail -n 1 \
+              | sed "s/^[^:]*:[[:space:]]*//"
+          }
+
+          allowed_origin() {
+            case "$1" in
+              https://maven.pkg.github.com|https://github-registry-files.githubusercontent.com) return 0 ;;
+              *) return 1 ;;
+            esac
+          }
+
+          root="$RUNNER_TEMP/task108-authority"
+          bytes="$root/bytes/build/hands/hands-android-sdk/0.12.4"
+          manifest="$root/files.tsv"
+          mkdir -p "$bytes"
+          : > "$manifest"
+
+          base="https://maven.pkg.github.com/botiverse/hands/build/hands/hands-android-sdk/0.12.4"
+          files=(
+            hands-android-sdk-0.12.4.pom
+            hands-android-sdk-0.12.4.module
+            hands-android-sdk-0.12.4.aar
+            hands-android-sdk-0.12.4-sources.jar
+            hands-android-sdk-0.12.4-native-symbols.zip
+          )
+
+          for name in "${files[@]}"; do
+            url="$base/$name"
+            dest="$bytes/$name"
+            part="$dest.part"
+            headers="$RUNNER_TEMP/task108-headers"
+            hops=0
+
+            while :; do
+              origin="$(origin_of "$url")" || fail "unparseable or non-HTTPS URL for $name"
+              allowed_origin "$origin" || fail "disallowed redirect origin $origin for $name"
+              : > "$headers"
+              : > "$part"
+
+              if [ "$hops" -eq 0 ]; then
+                code="$(curl -sS --proto '=https' --connect-timeout 20 --max-time 300 \
+                  -D "$headers" -o "$part" -w '%{http_code}' \
+                  -u "$GITHUB_ACTOR:$GITHUB_PACKAGES_TOKEN" "$url")" \
+                  || fail "transport error on authenticated registry request for $name"
+              else
+                code="$(curl -sS --proto '=https' --connect-timeout 20 --max-time 300 \
+                  -D "$headers" -o "$part" -w '%{http_code}' "$url")" \
+                  || fail "transport error on unauthenticated object request for $name"
+              fi
+
+              case "$code" in
+                200) break ;;
+                301|302|303|307|308)
+                  hops=$((hops + 1))
+                  [ "$hops" -le 5 ] || fail "too many redirects for $name"
+                  location="$(last_header Location "$headers")"
+                  [ -n "$location" ] || fail "redirect without Location for $name"
+                  url="$(resolve_location "$url" "$location")" \
+                    || fail "invalid redirect Location for $name"
+                  ;;
+                *) fail "HTTP $code for $name" ;;
+              esac
+            done
+
+            [ -s "$part" ] || fail "empty body for $name"
+            content_type="$(last_header Content-Type "$headers" || true)"
+            case "${content_type,,}" in
+              *text/html*) fail "HTML response body for $name" ;;
+            esac
+
+            case "$name" in
+              *.pom)
+                python3 - "$part" <<'PY' || fail "invalid or wrong-GAV POM"
+          import sys
+          import xml.etree.ElementTree as ET
+
+          root = ET.parse(sys.argv[1]).getroot()
+          ns = ""
+          if root.tag.startswith("{"):
+              ns = root.tag.split("}", 1)[0] + "}"
+          values = {
+              "group": root.findtext(f"{ns}groupId"),
+              "artifact": root.findtext(f"{ns}artifactId"),
+              "version": root.findtext(f"{ns}version"),
+          }
+          expected = {"group": "build.hands", "artifact": "hands-android-sdk", "version": "0.12.4"}
+          if values != expected:
+              raise SystemExit(f"wrong POM coordinates: {values}")
+          PY
+                ;;
+              *.module)
+                python3 - "$part" <<'PY' || fail "invalid or wrong-GAV module metadata"
+          import json
+          import sys
+
+          data = json.load(open(sys.argv[1], "rb"))
+          component = data.get("component", {})
+          expected = {"group": "build.hands", "module": "hands-android-sdk", "version": "0.12.4"}
+          actual = {key: component.get(key) for key in expected}
+          if actual != expected:
+              raise SystemExit(f"wrong module coordinates: {actual}")
+          PY
+                ;;
+              *.aar|*.jar|*.zip)
+                unzip -tq "$part" >/dev/null || fail "corrupt archive for $name"
+                ;;
+            esac
+
+            size="$(stat -c '%s' "$part")"
+            sha="$(sha256sum "$part" | awk '{print $1}')"
+            if [ "$name" = "hands-android-sdk-0.12.4-native-symbols.zip" ]; then
+              [ "$size" = "94599" ] || fail "native-symbols size $size does not match frozen authority"
+              [ "$sha" = "39cae556429d4ac783bad169dff734a0755cd5a6f7ba551189f8e13791544a17" ] \
+                || fail "native-symbols digest does not match frozen authority"
+            fi
+
+            mv "$part" "$dest"
+            printf '%s\t%s\t%s\t%s\n' "$name" "$size" "$sha" "$content_type" >> "$manifest"
+            echo "verified $name size=$size sha256=$sha"
+          done
+
+          [ "$(wc -l < "$manifest")" -eq 5 ] || fail "manifest does not contain exactly five files"
+
+          python3 - "$manifest" "$root/authority-receipt.json" <<'PY'
+          import json
+          import os
+          import sys
+
+          manifest, output = sys.argv[1:]
+          files = []
+          with open(manifest, encoding="utf-8") as stream:
+              for raw in stream:
+                  name, size, sha256, content_type = raw.rstrip("\n").split("\t", 3)
+                  files.append(
+                      {
+                          "name": name,
+                          "path": f"build/hands/hands-android-sdk/0.12.4/{name}",
+                          "size": int(size),
+                          "sha256": sha256,
+                          "contentType": content_type,
+                      }
+                  )
+          files.sort(key=lambda item: item["name"])
+          expected = {
+              "hands-android-sdk-0.12.4.pom",
+              "hands-android-sdk-0.12.4.module",
+              "hands-android-sdk-0.12.4.aar",
+              "hands-android-sdk-0.12.4-sources.jar",
+              "hands-android-sdk-0.12.4-native-symbols.zip",
+          }
+          if {item["name"] for item in files} != expected or len(files) != 5:
+              raise SystemExit("authority file set is not the frozen five-primary set")
+          receipt = {
+              "status": "complete",
+              "repository": "botiverse/hands",
+              "group": "build.hands",
+              "artifact": "hands-android-sdk",
+              "version": "0.12.4",
+              "fileCount": 5,
+              "provenance": {
+                  "sourceSha": "6bc3fee74a9b1d71f8134fba0865a5bd688fa2d1",
+                  "tag": "android-sdk-v0.12.4",
+                  "tagObject": "d65a0c4e058311c6ced812a384efb55d05eb9b6f",
+                  "publishRunId": "30281525755",
+                  "readbackRunId": os.environ["GITHUB_RUN_ID"],
+                  "readbackRunAttempt": os.environ["GITHUB_RUN_ATTEMPT"],
+                  "readbackRunSha": os.environ["GITHUB_SHA"],
+                  "readbackRef": os.environ["GITHUB_REF"],
+              },
+              "files": files,
+          }
+          with open(output, "w", encoding="utf-8") as stream:
+              json.dump(receipt, stream, indent=2, sort_keys=True)
+              stream.write("\n")
+          PY
+
+          rm -f "$manifest" "$RUNNER_TEMP/task108-headers"
+          receipt_sha="$(sha256sum "$root/authority-receipt.json" | awk '{print $1}')"
+          echo "receipt_sha256=$receipt_sha" >> "$GITHUB_OUTPUT"
+          echo "authority receipt sha256=$receipt_sha"
+
+      - name: Upload immutable authority packet
+        id: upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: task108-hands-android-0.12.4-authority
+          path: ${{ runner.temp }}/task108-authority/**
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
+
+      - name: Summarize non-secret receipt
+        shell: bash
+        env:
+          RECEIPT_SHA256: ${{ steps.extract.outputs.receipt_sha256 }}
+          ARTIFACT_ID: ${{ steps.upload.outputs.artifact-id }}
+          ARTIFACT_DIGEST: ${{ steps.upload.outputs.artifact-digest }}
+        run: |
+          set -euo pipefail
+          {
+            echo "### Task 108 read-only authority packet"
+            echo
+            echo "- GAV: \`build.hands:hands-android-sdk:0.12.4\`"
+            echo "- Files: \`5\`"
+            echo "- Receipt SHA-256: \`$RECEIPT_SHA256\`"
+            echo "- Artifact ID: \`$ARTIFACT_ID\`"
+            echo "- Artifact digest: \`$ARTIFACT_DIGEST\`"
+            echo "- Package writes: \`0\`"
+          } >> "$GITHUB_STEP_SUMMARY"
