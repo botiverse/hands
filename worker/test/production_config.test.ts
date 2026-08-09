@@ -115,27 +115,41 @@ test("production config requires a closed key version before enabling reporter s
   }
 });
 
-test("deploy workflow binds the keyring only through the secret store", () => {
+// This test used to assert that the reporter-session keyring reached the Worker only
+// through the secret store. That keyring is gone - deleted from the GitHub environment,
+// from the Worker, and finally from this workflow - so every "it is wired this way"
+// assertion here now describes a thing that should not exist. Inverted rather than
+// deleted: the assertions are the record of what was removed, and a deleted test cannot
+// notice the wiring coming back.
+test("the reporter-session keyring is gone from the deploy workflow", () => {
   const workflow = readFileSync(resolve(repositoryDir, ".github/workflows/deploy-hands-server.yml"), "utf8");
-  assert.match(workflow, /jobs:\n  deploy:\n    environment: reporter-session-production\n/);
-  assert.match(
-    workflow,
-    /FEEDBACK_REPORTER_SESSION_KEYS: \$\{\{ secrets\.HANDS_FEEDBACK_REPORTER_SESSION_KEYS \}\}/,
-  );
-  assert.match(
-    workflow,
-    /wrangler secret put FEEDBACK_REPORTER_SESSION_KEYS --config/,
-  );
-  assert.doesNotMatch(workflow, /FEEDBACK_REPORTER_SESSION_KEYS: \$\{\{ vars\./);
-  assert.match(
-    workflow,
-    /HANDS_FEEDBACK_REPORTER_SESSION_ENABLED: \$\{\{ vars\.HANDS_FEEDBACK_REPORTER_SESSION_ENABLED \}\}/,
-  );
-  assert.match(
-    workflow,
-    /HANDS_FLAGSHIP_APP_ID: \$\{\{ vars\.HANDS_FLAGSHIP_APP_ID \}\}/,
-  );
-  const validationIndex = workflow.indexOf("- name: Validate reporter-session rollout inputs");
-  const deployIndex = workflow.indexOf("- name: Deploy Hands Worker and admin assets");
-  assert.ok(validationIndex >= 0 && deployIndex > validationIndex, "enabled inputs fail before Worker deploy");
+
+  assert.doesNotMatch(workflow, /HANDS_FEEDBACK_REPORTER_SESSION_KEYS/);
+  assert.doesNotMatch(workflow, /wrangler secret put FEEDBACK_REPORTER_SESSION_KEYS/);
+  assert.doesNotMatch(workflow, /vars\.HANDS_FEEDBACK_REPORTER_SESSION_/);
+  assert.doesNotMatch(workflow, /- name: Validate reporter-session rollout inputs/);
+
+  // Positive control. Every assertion above passes on an empty string, on a file that
+  // was renamed out from under this test, and on a read that silently returned nothing -
+  // "the wiring is absent" and "there is no file here" are the same result. This anchors
+  // them to a workflow that was actually read.
+  assert.match(workflow, /HANDS_FLAGSHIP_APP_ID: \$\{\{ vars\.HANDS_FLAGSHIP_APP_ID \}\}/);
+});
+
+// Split from the case above because it outlived it. The environment is named for the
+// retired feature but is not part of it: its deployment branch policy is what confines
+// this production deploy to main, and the cleanup that removed the keyring came within a
+// commit of removing this too.
+//
+// Matched on the line at job-key indentation rather than on `jobs:\n  deploy:\n
+// environment:` as before. That earlier form required the two lines to be adjacent, so
+// it broke the moment a comment was added above `environment:` to explain why it must
+// stay - a test that fails when someone documents the thing it protects will be
+// "corrected" by deleting the documentation. Anchoring to indentation keeps the property
+// (a job-level binding, not a string appearing somewhere in the file) without pinning
+// what may sit between them.
+test("the deploy job stays bound to its environment", () => {
+  const workflow = readFileSync(resolve(repositoryDir, ".github/workflows/deploy-hands-server.yml"), "utf8");
+  assert.match(workflow, /^  deploy:$/m);
+  assert.match(workflow, /^    environment: reporter-session-production$/m);
 });
