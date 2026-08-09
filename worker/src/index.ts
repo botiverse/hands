@@ -644,6 +644,46 @@ admin.onError((err, c) => {
   );
 });
 
+// Container build readback. The deploy pipeline has no container probe at all: it passes
+// --containers-rollout and prints the value, so "the workflow went green" has been the
+// only evidence that a rebuilt image is serving. This route is the instrument for the
+// container-side criterion - read it before and after a rollout.
+//
+// `build` comes from the container's own /health. On the image running today that key
+// does not exist, so *key absent* means the old image is still serving and *key present*
+// means the new one is - the old image cannot fabricate a key its code never emits, which
+// rules out "the probe passed but hit the old image".
+//
+// Admin-gated on purpose. The exact deployed commit narrows a public repository's tree to
+// one revision for anyone asking which known issues currently apply, and this readback is
+// run by operators, not by clients.
+admin.get("/api/admin/container/build", async (c) => {
+  const container = await getRandom(c.env.APK_PARSER, 1);
+  const res = await container.fetch(new Request("http://container/health"));
+  const body = await res.text();
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(body);
+  } catch {
+    // Surface the raw body rather than a parse error: a container that answers with
+    // something unparseable is a different failure from one that does not answer, and
+    // collapsing them is how "no result" starts reading like "clean result".
+    return c.json({ ok: false, status: res.status, raw: body.slice(0, 512) }, 502);
+  }
+  const build =
+    typeof parsed === "object" && parsed !== null && "build" in parsed
+      ? (parsed as { build?: unknown }).build
+      : undefined;
+  return c.json({
+    ok: res.ok,
+    status: res.status,
+    // null, not omitted: an absent key here would be indistinguishable from this route
+    // having failed to read one, which is the exact confusion the stamp exists to end.
+    build: typeof build === "string" ? build : null,
+    stamped: typeof build === "string",
+  });
+});
+
 admin.get("/api/orgs", handleListOrgs);
 admin.get("/api/orgs/:orgId/members", requireOrgRole("orgId", "viewer"), handleListOrgMembers);
 admin.patch("/api/orgs/:orgId/members/:accountId", requireOrgRole("orgId", "admin"), handleUpdateOrgMember);

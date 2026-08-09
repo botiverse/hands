@@ -83,6 +83,12 @@ jobs:
 
       - name: Render production Wrangler config
         working-directory: worker
+        # GITHUB_SHA is already present in every step, so this line changes nothing at
+        # runtime. It is here because the renderer now reads it to stamp the container
+        # image, and an ambient variable is an invisible dependency: someone reading
+        # either file alone cannot see that the stamp comes from here.
+        env:
+          GITHUB_SHA: ${{ github.sha }}
         run: node scripts/render-production-config.mjs --output wrangler.hands.generated.jsonc
 
       - name: Generate Worker types

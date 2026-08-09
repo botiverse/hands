@@ -55,7 +55,20 @@ interface MinidumpReport {
   crashing_thread?: { thread_index?: number; frames?: MinidumpFrame[] };
 }
 
-app.get("/health", (c) => c.json({ ok: true, service: "multi-parser" }));
+// `build` is the commit the image was built from, baked in as BUILD_SHA at image build
+// time (Dockerfile) rather than injected at runtime, so it identifies *which* build is
+// serving. Its usefulness here does not depend on the value: the image running in
+// production today has no code that emits this key at all, so the key appearing is
+// itself proof the image was rebuilt and is serving, and the key being absent means the
+// old image is still up - never "the probe did not reach the container". A rollout is
+// therefore its own before/after control.
+app.get("/health", (c) =>
+  c.json({
+    ok: true,
+    service: "multi-parser",
+    build: process.env.BUILD_SHA || "unknown",
+  }),
+);
 
 // Delta/differential update patch generation (task #246). JSON body with two
 // signed URLs `old_url` and `new_url` (both APKs in R2); the container fetches

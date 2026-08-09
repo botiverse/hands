@@ -121,6 +121,26 @@ if (reporterSessionActiveKeyVersion) {
   delete config.vars.FEEDBACK_REPORTER_SESSION_ACTIVE_KEY_VERSION;
 }
 
+// Build stamp for the container image, so a rollout can be verified by reading the
+// container rather than by trusting that the workflow went green. `image_vars` is
+// wrangler's build-arg channel - its own type says "available to the image at
+// build-time only" - and the Dockerfile turns GIT_SHA into BUILD_SHA, which /health
+// reports.
+//
+// Left absent when GITHUB_SHA is unset (local renders), rather than defaulting to a
+// placeholder: a stamp that always has *some* value cannot distinguish "built by a
+// deploy" from "built by hand", and this exists precisely to make that distinguishable.
+const gitSha = (process.env.GITHUB_SHA ?? "").trim();
+const containerApp = config.containers?.find(
+  (entry) => entry.class_name === "ApkParserContainer",
+);
+if (!containerApp) {
+  throw new Error("ApkParserContainer is missing from the base config");
+}
+if (gitSha) {
+  containerApp.image_vars = { ...containerApp.image_vars, GIT_SHA: gitSha };
+}
+
 mkdirSync(dirname(outputPath), { recursive: true });
 writeFileSync(outputPath, `${JSON.stringify(config, null, 2)}\n`, { mode: 0o600 });
 console.log(`Rendered production Wrangler config: ${outputPath}`);
