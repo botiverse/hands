@@ -302,6 +302,7 @@ jobs:
           fail=0
           evaluated=0
           skipped=0
+          unrunnable=0
 
           # Three states, matching every other instrument here. The criteria set was the
           # last thing in this job still running on two: a criterion whose comparison
@@ -325,6 +326,19 @@ jobs:
           skip() {  # skip <description> <reason>
             skipped=$((skipped + 1))
             echo "  SKIP  $1: $2"
+          }
+
+          # A criterion that could not execute, where not executing is itself the
+          # anomaly. Distinct from `skip` (did not run, and that is acceptable) and from
+          # `check` failing (ran, and the answer was wrong). It blocks like a failure
+          # because the policy for this one is that a refusal means the substrate
+          # changed - but it must not *say* "ran and failed", because sending someone to
+          # investigate a violation that was never measured is the same confusion this
+          # job now avoids everywhere else, pointed the other way.
+          cannot_run() {  # cannot_run <description> <reason>
+            unrunnable=$((unrunnable + 1))
+            echo "  CANNOT RUN  $1: $2" >&2
+            fail=1
           }
 
           echo "apply outcome: ${APPLY_OUTCOME}"
@@ -352,11 +366,13 @@ jobs:
           if orphans=$(q "PRAGMA foreign_key_check" 2>/tmp/fkc.err | jq -r 'length'); then
             check "foreign_key_check is empty" "$orphans" "0"
           else
-            echo "  FAIL  foreign_key_check did not run. It is known to work on this" >&2
-            echo "        database, so a refusal now means the substrate changed:" >&2
+            # Not `check ... FAIL`: nothing was measured, so there is no violation to
+            # go looking for. It still blocks - a refusal means D1 changed what it
+            # permits, and that is worth stopping for - but it is reported as what it
+            # is.
+            cannot_run "foreign_key_check is empty" "PRAGMA refused; it is known to work on this database, so the substrate changed"
             head -c 300 /tmp/fkc.err >&2 || true
             echo >&2
-            fail=1
           fi
 
           if [[ "${APPLY_OUTCOME}" == "success" ]]; then
@@ -516,7 +532,7 @@ jobs:
           # same reason the workflow lint reports "N of M YAML files" with both figures
           # counted. A criterion falling into a skip shows up here as a smaller number on
           # its own, with nobody remembering to edit anything.
-          echo "evaluated ${evaluated} criteria, ${skipped} skipped, $([[ "$fail" == "0" ]] && echo 0 || echo "1 or more") failed"
+          echo "evaluated ${evaluated} criteria, ${skipped} skipped, ${unrunnable} could not run, $([[ "$fail" == "0" ]] && echo 0 || echo "1 or more") failed"
           if [[ "$skipped" -gt 0 ]]; then
             # Not a failure: a skip can be legitimate, and turning it red would make the
             # deploy hostage to a comparison source we intend to delete. It is loud
