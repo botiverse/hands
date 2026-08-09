@@ -38,6 +38,19 @@ concurrency:
 
 jobs:
   deploy:
+    # Removing this line, or this environment, is a security change - not cleanup.
+    # The name refers to a retired feature. The function it serves does not.
+    #
+    # This job deploys production: it applies D1 migrations, writes production
+    # secrets, and publishes the Worker. The trigger is `workflow_dispatch`, and a
+    # dispatch runs the workflow file from whichever ref is selected. This
+    # environment's deployment branch policy is what confines that to main.
+    #
+    # Do not substitute a job-level `if: github.ref == 'refs/heads/main'`. It looks
+    # equivalent and is a downgrade: an `if:` lives in the workflow file on the
+    # dispatched ref, so the branch being deployed can remove it in the same commit
+    # that would exploit it. The branch policy is enforced by GitHub outside the
+    # file, where the deployed branch cannot reach it.
     environment: reporter-session-production
     runs-on: ubuntu-latest
     env:
@@ -53,8 +66,6 @@ jobs:
       HANDS_RAFT_API_ORIGIN: ${{ vars.HANDS_RAFT_API_ORIGIN }}
       HANDS_RAFT_CLIENT_ID: ${{ vars.HANDS_RAFT_CLIENT_ID }}
       HANDS_FLAGSHIP_APP_ID: ${{ vars.HANDS_FLAGSHIP_APP_ID }}
-      HANDS_FEEDBACK_REPORTER_SESSION_ENABLED: ${{ vars.HANDS_FEEDBACK_REPORTER_SESSION_ENABLED }}
-      HANDS_FEEDBACK_REPORTER_SESSION_ACTIVE_KEY_VERSION: ${{ vars.HANDS_FEEDBACK_REPORTER_SESSION_ACTIVE_KEY_VERSION }}
     steps:
       - uses: actions/checkout@v6
 
@@ -69,23 +80,6 @@ jobs:
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
-
-      - name: Validate reporter-session rollout inputs
-        env:
-          FEEDBACK_REPORTER_SESSION_KEYS: ${{ secrets.HANDS_FEEDBACK_REPORTER_SESSION_KEYS }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          if [[ "${HANDS_FEEDBACK_REPORTER_SESSION_ENABLED:-false}" == "true" ]]; then
-            if [[ -z "${HANDS_FEEDBACK_REPORTER_SESSION_ACTIVE_KEY_VERSION:-}" ]]; then
-              echo "Missing repository variable HANDS_FEEDBACK_REPORTER_SESSION_ACTIVE_KEY_VERSION." >&2
-              exit 1
-            fi
-            if [[ -z "${FEEDBACK_REPORTER_SESSION_KEYS:-}" ]]; then
-              echo "Missing GitHub secret HANDS_FEEDBACK_REPORTER_SESSION_KEYS." >&2
-              exit 1
-            fi
-          fi
 
       - name: Render production Wrangler config
         working-directory: worker
@@ -595,7 +589,6 @@ jobs:
           ASC_CRED_ENC_KEY: ${{ secrets.HANDS_ASC_CRED_ENC_KEY }}
           AGC_CRED_ENC_KEY: ${{ secrets.HANDS_AGC_CRED_ENC_KEY }}
           FEEDBACK_AUDIT_HMAC_KEY: ${{ secrets.HANDS_FEEDBACK_AUDIT_HMAC_KEY }}
-          FEEDBACK_REPORTER_SESSION_KEYS: ${{ secrets.HANDS_FEEDBACK_REPORTER_SESSION_KEYS }}
           R2_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_BOTIVERSE_ACCOUNT_ID }}
           # Optional: R2 S3-API credentials enable direct-to-R2 presigned downloads
           # (bandwidth bypasses the Worker). When unset, downloads fall back to the
@@ -635,12 +628,6 @@ jobs:
           printf '%s' "${ASC_CRED_ENC_KEY}" | pnpm exec wrangler secret put ASC_CRED_ENC_KEY --config "${config}"
           printf '%s' "${AGC_CRED_ENC_KEY}" | pnpm exec wrangler secret put AGC_CRED_ENC_KEY --config "${config}"
           printf '%s' "${FEEDBACK_AUDIT_HMAC_KEY}" | pnpm exec wrangler secret put FEEDBACK_AUDIT_HMAC_KEY --config "${config}"
-          # Provision the keyring while the feature remains disabled, then flip
-          # the repository flag in a separate deploy. This avoids an enabled
-          # Worker version ever depending on a keyring that has not been bound.
-          if [[ -n "${FEEDBACK_REPORTER_SESSION_KEYS:-}" ]]; then
-            printf '%s' "${FEEDBACK_REPORTER_SESSION_KEYS}" | pnpm exec wrangler secret put FEEDBACK_REPORTER_SESSION_KEYS --config "${config}"
-          fi
           printf '%s' "${R2_ACCOUNT_ID}" | pnpm exec wrangler secret put R2_ACCOUNT_ID --config "${config}"
           # Optional R2 S3-API credentials (only put when configured).
           if [[ -n "${R2_S3_ACCESS_KEY_ID:-}" ]]; then
