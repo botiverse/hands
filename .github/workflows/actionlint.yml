@@ -105,7 +105,20 @@ jobs:
           output=$(/tmp/actionlint -shellcheck= -pyflakes= "${BLIND_SPOT}" 2>&1)
           status=$?
           set -e
-          if [[ "${status}" -ne 0 ]]; then
+          if [[ "${status}" -eq 0 ]]; then
+            echo "Confirmed: actionlint does not cover this vector; check-workflows.py remains the only control for it."
+            exit 0
+          fi
+
+          # Non-zero is NOT automatically "the blind spot closed". Measured on
+          # 1.7.7: a moved/renamed fixture exits 3 ("could not read"); a fixture
+          # with broken YAML exits 1 with a [syntax-check] finding. Reporting
+          # either as closure would be a zero-discrimination red pointing at
+          # deleting the one control that covers this vector - the exact defect
+          # this PR documents in known-bad's red. A genuine injection finding
+          # is the only non-zero that means closure, and on this pinned version
+          # it is identified by its message: "potentially untrusted".
+          if grep -q "potentially untrusted" <<<"${output}"; then
             echo "actionlint now FLAGS the declared-input injection fixture:" >&2
             printf '%s\n' "${output}" >&2
             echo "" >&2
@@ -114,7 +127,12 @@ jobs:
             echo "before touching either tool. Do not silence this step." >&2
             exit 1
           fi
-          echo "Confirmed: actionlint does not cover this vector; check-workflows.py remains the only control for it."
+          echo "CANNOT RUN: the probe did not measure the blind spot." >&2
+          echo "actionlint exited ${status} on the fixture for a reason other" >&2
+          echo "than an injection finding (moved file? broken YAML?). Fix the" >&2
+          echo "probe; do not act on any tool based on this run." >&2
+          printf '%s\n' "${output}" >&2
+          exit 2
 
       - name: Lint the real workflows
         shell: bash
