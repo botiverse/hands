@@ -43,7 +43,16 @@ jobs:
     # self-test eats a fixture the denominator still counts, and the run fails saying
     # "a file was not scanned" when the truth is "two lists disagree".
     env:
-      FIXTURES: .github/lint-fixtures/known-bad.yml
+      # Two fixtures: known-bad.yml (4 defects) and injection-declared-input.yml
+      # (1 defect - a declared free-text input interpolated into run, which is
+      # also the documented actionlint blind spot; see actionlint.yml).
+      FIXTURES: .github/lint-fixtures/known-bad.yml .github/lint-fixtures/injection-declared-input.yml
+      # Expected findings PER FIXTURE, aligned with FIXTURES by position. Pinned
+      # individually, not as a sum: a total of 5 is also satisfied by known-bad
+      # drifting to 5 while the other fixture stops being detected at all - two
+      # different worlds under one number, which is exactly what the count is
+      # supposed to prevent.
+      FIXTURE_EXPECT: "4 1"
     steps:
       - uses: actions/checkout@v5
 
@@ -58,51 +67,57 @@ jobs:
         run: |
           set -uo pipefail
           read -r -a fixtures <<< "$FIXTURES"
+          read -r -a expect <<< "$FIXTURE_EXPECT"
 
-          # The checker is *expected* to exit non-zero here - that is what the fixture
-          # is for. GitHub invokes steps as `bash -e`, and `pipefail` hands that
-          # non-zero to the assignment, so the step died before the count was ever
-          # compared. Captured without a pipe, with the status taken deliberately
-          # instead of inherited.
-          set +e
-          output=$(python3 .github/lint-fixtures/check-workflows.py "${fixtures[@]}")
-          status=$?
-          set -e
-          findings=$(printf '%s' "$output" | grep -c . || true)
+          if [[ "${#fixtures[@]}" -ne "${#expect[@]}" ]]; then
+            echo "CANNOT RUN: ${#fixtures[@]} fixtures but ${#expect[@]} expectations." >&2
+            echo "The two lists drifted apart; align them before trusting this run." >&2
+            exit 2
+          fi
 
-          if [[ "$status" -eq 2 ]]; then
-            echo "CANNOT RUN: the checker could not execute." >&2
-            printf '%s\n' "$output" >&2
-            exit 2
-          fi
-          if [[ "$status" -eq 0 ]]; then
-            echo "" >&2
-            echo "CANNOT RUN: the checker passed a file written to fail it." >&2
-            echo "It is not working, so any clean result from it today is worthless." >&2
-            exit 2
-          fi
-          # Four exactly, not "at least one". A bare non-zero would still be satisfied
-          # if the fixture grew a shape the checker cannot see: the other cases would
-          # keep it red and the new blind spot would pass unnoticed. That is how the
-          # block-only version of this checker survived while missing every
-          # single-line run in the repository - a control agreeing with the thing it
-          # was meant to test.
-          if [[ "$findings" -lt 4 ]]; then
-            echo "" >&2
-            echo "CANNOT RUN: the checker reported ${findings} of the 4 defects planted" >&2
-            echo "in the fixtures, so it cannot see all of them and a clean result from" >&2
-            echo "it today would mean nothing." >&2
-            exit 2
-          fi
-          if [[ "$findings" -gt 4 ]]; then
-            echo "" >&2
-            echo "CANNOT RUN: ${findings} defects reported where 4 are expected." >&2
-            echo "The fixtures changed without the expectation changing. Update the" >&2
-            echo "count deliberately - it is the statement of what this self-test" >&2
-            echo "proves, and a number that drifts along with its input proves nothing." >&2
-            exit 2
-          fi
-          echo "Self-test passed: all 4 planted defects reported (3 run forms + duplicate key)."
+          # Per fixture, not in one batch. A batch total conflates the fixtures:
+          # one drifting up while another drops to zero leaves the sum intact.
+          # The checker is *expected* to exit non-zero on each - that is what a
+          # fixture is for. GitHub invokes steps as `bash -e`, and `pipefail`
+          # hands that non-zero to the assignment, so the step died before the
+          # count was ever compared. Captured without a pipe, with the status
+          # taken deliberately instead of inherited.
+          for i in "${!fixtures[@]}"; do
+            f="${fixtures[$i]}"
+            want="${expect[$i]}"
+            set +e
+            output=$(python3 .github/lint-fixtures/check-workflows.py "$f")
+            status=$?
+            set -e
+            findings=$(printf '%s' "$output" | grep -c . || true)
+
+            if [[ "$status" -eq 2 ]]; then
+              echo "CANNOT RUN: the checker could not execute on ${f}." >&2
+              printf '%s\n' "$output" >&2
+              exit 2
+            fi
+            if [[ "$status" -eq 0 ]]; then
+              echo "" >&2
+              echo "CANNOT RUN: the checker passed ${f}, a file written to fail it." >&2
+              echo "It is not working, so any clean result from it today is worthless." >&2
+              exit 2
+            fi
+            # Exact, not "at least one". A bare non-zero would still be satisfied
+            # if the fixture grew a shape the checker cannot see: the other cases
+            # would keep it red and the new blind spot would pass unnoticed.
+            if [[ "$findings" -ne "$want" ]]; then
+              echo "" >&2
+              echo "CANNOT RUN: ${f} produced ${findings} findings where exactly ${want}" >&2
+              echo "are expected. The fixture or the checker changed without this" >&2
+              echo "expectation changing. Update the count deliberately - it is the" >&2
+              echo "statement of what this self-test proves, and a number that drifts" >&2
+              echo "along with its input proves nothing." >&2
+              printf '%s\n' "$output" >&2
+              exit 2
+            fi
+            echo "  ok  ${f}: exactly ${want} finding(s)"
+          done
+          echo "Self-test passed: every fixture failed with exactly its pinned count (4 + 1)."
 
       - name: Check every file that carries executable text
         run: |
