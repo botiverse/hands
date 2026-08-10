@@ -89,14 +89,14 @@ export async function handlePublicV2Latest(c: Context<{ Bindings: Env }>) {
   // client-controlled X-Forwarded-For header.
   const clientIp = c.req.header("CF-Connecting-IP") ?? null;
 
-  if (!slug) return c.json({ error: "slug required" }, 400);
+  if (!slug) return c.json({ error: "slug required", code: "slug_required" }, 400);
 
   const app = await c.env.DB.prepare(
     "SELECT id, slug, platform FROM apps WHERE slug = ?",
   )
     .bind(slug)
     .first<{ id: string; slug: string; platform: string }>();
-  if (!app) return c.json({ error: `app '${slug}' not found` }, 404);
+  if (!app) return c.json({ error: `app '${slug}' not found`, code: "app_not_found" }, 404);
 
   // Channel lookup
   const channelRow = await c.env.DB.prepare(
@@ -106,7 +106,7 @@ export async function handlePublicV2Latest(c: Context<{ Bindings: Env }>) {
     .first<{ id: string }>();
   if (!channelRow) {
     return c.json(
-      { error: `channel '${channel}' not found for app '${slug}'` },
+      { error: `channel '${channel}' not found for app '${slug}'`, code: "channel_not_found" },
       404,
     );
   }
@@ -150,6 +150,7 @@ export async function handlePublicV2Latest(c: Context<{ Bindings: Env }>) {
     return c.json(
       {
         error: `no active release for this client on channel '${channel}'`,
+        code: "no_active_release",
         app: { slug: app.slug, platform: app.platform },
         channel,
       },
@@ -160,7 +161,7 @@ export async function handlePublicV2Latest(c: Context<{ Bindings: Env }>) {
   // Pull all scopes for those releases in one query.
   const candidateIds = allCandidates.results.map((r) => r.id);
   if (candidateIds.length === 0) {
-    return c.json({ error: "no candidates" }, 404);
+    return c.json({ error: "no candidates", code: "no_active_release" }, 404);
   }
   const placeholders = candidateIds.map(() => "?").join(",");
   const { results: scopes } = await c.env.DB.prepare(
@@ -221,6 +222,7 @@ export async function handlePublicV2Latest(c: Context<{ Bindings: Env }>) {
     return c.json(
       {
         error: "no active release matches this client",
+        code: "no_active_release",
         app: { slug: app.slug, platform: app.platform },
         channel,
         client: { platform: clientPlatform, ip: clientIp, cohort },

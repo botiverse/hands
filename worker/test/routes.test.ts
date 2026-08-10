@@ -4637,6 +4637,49 @@ describe("quiver releases — draft lifecycle", () => {
     }
   });
 
+  it("distinguishes the three public-latest 404 kinds with machine-readable codes", async () => {
+    // A consumer showing a download page must branch on WHICH 404 this is:
+    // "legitimately nothing to serve" renders as an empty state, a mistyped slug
+    // is a configuration error. The `error` prose is for humans and may be
+    // reworded, so the contract for that branch is `code`, pinned here. The 200
+    // side of this handler is exercised by the neighbouring tests, so a broken
+    // harness cannot pass this by making everything 404.
+    const { handlePublicV2Latest } = await import("../src/routes/public_v2");
+    const publicLatestContext = (slug: string, channel: string) => ({
+      env,
+      req: {
+        url: `https://hands.test/public/v2/apps/${slug}/latest`,
+        param: (name: string) => (name === "slug" ? slug : ""),
+        query: (name: string) => (name === "channel" ? channel : undefined),
+        header: () => undefined,
+        raw: { cf: {} },
+      },
+      json: (data: unknown, status = 200) =>
+        new Response(JSON.stringify(data), {
+          status,
+          headers: { "content-type": "application/json" },
+        }),
+    }) as any;
+
+    const unknownApp = await handlePublicV2Latest(publicLatestContext("codes-no-such-app", "main"));
+    expect(unknownApp.status).toBe(404);
+    await expect(responseJson<any>(unknownApp)).resolves.toMatchObject({ code: "app_not_found" });
+
+    env.DB.prepare(
+      "INSERT INTO apps (id, slug, name, platform, created_at) VALUES ('app-codes', 'codes-app', 'Codes', 'android', 1)",
+    ).run();
+    const unknownChannel = await handlePublicV2Latest(publicLatestContext("codes-app", "no-such-channel"));
+    expect(unknownChannel.status).toBe(404);
+    await expect(responseJson<any>(unknownChannel)).resolves.toMatchObject({ code: "channel_not_found" });
+
+    env.DB.prepare(
+      "INSERT INTO channels (id, app_id, slug, name, created_at) VALUES ('chan-codes', 'app-codes', 'main', 'Main', 1)",
+    ).run();
+    const legitimatelyEmpty = await handlePublicV2Latest(publicLatestContext("codes-app", "main"));
+    expect(legitimatelyEmpty.status).toBe(404);
+    await expect(responseJson<any>(legitimatelyEmpty)).resolves.toMatchObject({ code: "no_active_release" });
+  });
+
   it("lets cancel win a rollout-bump race without stale audit or fallback damage", async () => {
     const {
       createRelease,

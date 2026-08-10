@@ -147,6 +147,9 @@ export const R2KeyParam = z.object({
 export const ErrorResponse = z
   .object({
     error: z.string(),
+    // Machine-readable discriminator. The `error` prose is for humans and may be
+    // reworded; consumers branching on failure kind must branch on `code`.
+    code: z.string().optional(),
     detail: z.string().optional(),
   })
   .catchall(z.unknown())
