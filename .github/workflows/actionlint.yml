@@ -33,7 +33,11 @@ permissions:
   contents: read
 
 jobs:
-  lint:
+  # Named distinctly from workflow-lint's job on purpose: both would otherwise
+  # display as "lint" on the PR checks page, and two checks with one name is how
+  # a name-based search reads "the other one ran" as "mine ran" - measured
+  # tonight on this very repo, in the deploy-watch thread.
+  actionlint:
     runs-on: ubuntu-latest
     env:
       ACTIONLINT_VERSION: "1.7.7"
