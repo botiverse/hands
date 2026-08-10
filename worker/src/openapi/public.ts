@@ -188,7 +188,7 @@ export function registerPublicRoutes(registry: OpenApiRegistry) {
     },
     responses: {
       200: success("Resolved release and downloadable assets.", PublicLatestResponse),
-      404: error("App, channel, active release, or matching scoped release was not found."),
+      404: error("App, channel, active release, or matching scoped release was not found. `code` distinguishes the cases: `app_not_found` | `channel_not_found` | `no_active_release` (the last covers every legitimately-empty state: new channel, all releases revoked, or nothing matching this client's scopes)."),
       500: error("Matched release data is inconsistent or signing failed."),
     },
   });
@@ -207,7 +207,7 @@ export function registerPublicRoutes(registry: OpenApiRegistry) {
     },
     responses: {
       200: success("Resolved release and downloadable assets.", PublicLatestResponse),
-      404: error("No matching release was found."),
+      404: error("No matching release was found. Same `code` values as /latest: `app_not_found` | `channel_not_found` | `no_active_release` (this endpoint resolves through the same release lookup)."),
     },
   });
 

@@ -147,6 +147,12 @@ export const R2KeyParam = z.object({
 export const ErrorResponse = z
   .object({
     error: z.string(),
+    // Machine-readable discriminator, present ONLY where an endpoint's error
+    // descriptions enumerate its values (today: the latest/update-check 404s and
+    // 400). Where present, branch on `code`, never on the `error` prose - prose
+    // is for humans and may be reworded. Where absent, the endpoint has not been
+    // migrated yet; do not infer meaning from its absence.
+    code: z.string().optional(),
     detail: z.string().optional(),
   })
   .catchall(z.unknown())
