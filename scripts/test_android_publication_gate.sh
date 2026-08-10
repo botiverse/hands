@@ -42,12 +42,12 @@ grep -Fq 'description: "Publish the complete SDK to the runner-local Maven repos
   "${publish_workflow}"
 dry_run_step="$(
   sed -n \
-    '/^[[:space:]]*- name: Publish SDK dry run$/,/^[[:space:]]*- name: Publish SDK to GitHub Packages$/p' \
+    '/^[[:space:]]*- name: Publish SDK dry run$/,/^[[:space:]]*- name: Publish SDK to Maven repositories$/p' \
     "${publish_workflow}"
 )"
 real_publish_step="$(
   sed -n \
-    '/^[[:space:]]*- name: Publish SDK to GitHub Packages$/,/^[[:space:]]*- name: Summary$/p' \
+    '/^[[:space:]]*- name: Publish SDK to Maven repositories$/,/^[[:space:]]*- name: Summary$/p' \
     "${publish_workflow}"
 )"
 grep -Fq 'if: ${{ github.event_name == '\''workflow_dispatch'\'' && inputs.dry_run }}' \
@@ -56,7 +56,7 @@ grep -Fq 'run: gradle -p clients/android publishToMavenLocal "-PVERSION_NAME=$RE
   <<<"${dry_run_step}"
 grep -Fq 'if: ${{ github.event_name != '\''workflow_dispatch'\'' || !inputs.dry_run }}' \
   <<<"${real_publish_step}"
-grep -Fq 'run: gradle -p clients/android publish "-PVERSION_NAME=$RESOLVED_VERSION"' \
+grep -Fq 'gradle -p clients/android publish "-PVERSION_NAME=$RESOLVED_VERSION"' \
   <<<"${real_publish_step}"
 
 if "${GRADLE_BIN}" -p "${ROOT_DIR}/clients/android" validatePublicationVersion \
@@ -94,6 +94,19 @@ grep -Fq ":publishReleasePublicationToMavenLocal SKIPPED" \
   "${work_dir}/local.log"
 grep -Fq ":publishReleasePublicationToGitHubPackagesRepository SKIPPED" \
   "${work_dir}/remote.log"
+grep -Fq ":publishReleasePublicationToRaftArtifactsRepository SKIPPED" \
+  "${work_dir}/remote.log"
+
+grep -Fq 'RAFT_ARTIFACTS_TOKEN: ${{ secrets.RAFT_ARTIFACTS_TOKEN }}' \
+  <<<"${real_publish_step}" || {
+  echo "publish workflow does not bind the Raft Artifacts credential" >&2
+  exit 1
+}
+grep -Fq 'RAFT_ARTIFACTS_TOKEN is required for Android SDK publication' \
+  <<<"${real_publish_step}" || {
+  echo "publish workflow can silently skip a missing Raft Artifacts credential" >&2
+  exit 1
+}
 
 "${GRADLE_BIN}" -p "${ROOT_DIR}/clients/android" packageReleaseNativeSymbols \
   --no-daemon --console=plain -PVERSION_NAME="${SDK_VERSION}" \
