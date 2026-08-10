@@ -43,7 +43,10 @@ jobs:
     # self-test eats a fixture the denominator still counts, and the run fails saying
     # "a file was not scanned" when the truth is "two lists disagree".
     env:
-      FIXTURES: .github/lint-fixtures/known-bad.yml
+      # Two fixtures: known-bad.yml (4 defects) and injection-declared-input.yml
+      # (1 defect - a declared free-text input interpolated into run, which is
+      # also the documented actionlint blind spot; see actionlint.yml).
+      FIXTURES: .github/lint-fixtures/known-bad.yml .github/lint-fixtures/injection-declared-input.yml
     steps:
       - uses: actions/checkout@v5
 
@@ -87,22 +90,22 @@ jobs:
           # block-only version of this checker survived while missing every
           # single-line run in the repository - a control agreeing with the thing it
           # was meant to test.
-          if [[ "$findings" -lt 4 ]]; then
+          if [[ "$findings" -lt 5 ]]; then
             echo "" >&2
-            echo "CANNOT RUN: the checker reported ${findings} of the 4 defects planted" >&2
+            echo "CANNOT RUN: the checker reported ${findings} of the 5 defects planted" >&2
             echo "in the fixtures, so it cannot see all of them and a clean result from" >&2
             echo "it today would mean nothing." >&2
             exit 2
           fi
-          if [[ "$findings" -gt 4 ]]; then
+          if [[ "$findings" -gt 5 ]]; then
             echo "" >&2
-            echo "CANNOT RUN: ${findings} defects reported where 4 are expected." >&2
+            echo "CANNOT RUN: ${findings} defects reported where 5 are expected." >&2
             echo "The fixtures changed without the expectation changing. Update the" >&2
             echo "count deliberately - it is the statement of what this self-test" >&2
             echo "proves, and a number that drifts along with its input proves nothing." >&2
             exit 2
           fi
-          echo "Self-test passed: all 4 planted defects reported (3 run forms + duplicate key)."
+          echo "Self-test passed: all 5 planted defects reported (4 interpolation forms across 2 fixtures + duplicate key)."
 
       - name: Check every file that carries executable text
         run: |

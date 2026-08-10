@@ -1,0 +1,35 @@
+# A fixture that separates two tools' coverage. It is a REAL injection vector:
+# `anything` is declared as free text, and interpolating it into `run:` splices
+# attacker-controlled input into program text before the shell parses the line.
+#
+# check-workflows.py REDS on it - its rule is "no interpolation inside executable
+# text, full stop", precisely because a `type: choice` declaration elsewhere in a
+# file can drift without anything connecting it to the line it protects.
+#
+# actionlint (1.7.7) PASSES it - its untrusted-input rule covers a fixed list of
+# known-untrusted contexts (github.event.*.title and the like); a declared string
+# input spliced into run is not on that list. This is measured, not assumed: the
+# known-bad.yml fixture DOES go red under actionlint, but for undeclared
+# properties and a duplicate key - zero of its findings are injection detection.
+#
+# The actionlint workflow asserts this file exits 0 under actionlint. The day a
+# new actionlint version starts flagging it, that assertion goes red - and THAT
+# is the signal to reconsider retiring check-workflows.py, which until then is
+# the only control enforcing this property. Task #117 originally planned to
+# delete it once actionlint was proven red on known-bad.yml; the proof exists
+# and proves the wrong thing, so the deletion does not happen.
+#
+# Kept outside .github/workflows/ so GitHub never parses it as a live workflow.
+name: declared-input injection probe
+on:
+  workflow_dispatch:
+    inputs:
+      anything:
+        description: "free text - the declaration is the point"
+        required: true
+        type: string
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "${{ inputs.anything }}"

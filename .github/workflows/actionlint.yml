@@ -1,0 +1,123 @@
+name: actionlint
+
+# actionlint is an ADDITIONAL layer over check-workflows.py, not its replacement.
+# Task #117 planned the replacement; measurement killed it. actionlint's
+# untrusted-input rule covers a fixed list of known-untrusted contexts - a
+# declared free-text input interpolated into `run:` passes it clean (see
+# lint-fixtures/injection-declared-input.yml), and banning exactly that is why
+# check-workflows.py exists. What actionlint adds that our lint does not have:
+# expression type-checking (undeclared inputs/properties), workflow syntax
+# validation, action pinning and deprecation checks.
+#
+# Both tools self-test against a fixture built to fail before their clean result
+# is believed - "no problems found" is otherwise indistinguishable from "the
+# check never executed".
+#
+# shellcheck/pyflakes integration is disabled explicitly, not by accident: they
+# are picked up if present on the runner, they are not pinned by this workflow,
+# and the machine this was verified on does not have them - so leaving them on
+# would mean the green here and the green at verification time are different
+# claims. Enabling them is a separate, deliberate change.
+
+on:
+  pull_request:
+    paths:
+      # Wide on purpose. "Which files do these checks assert on" is a derived
+      # list that misses silently in the direction of green; the whole directory
+      # has nothing to miss. (Same reasoning, same incident, as worker-tests.)
+      - ".github/**"
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    env:
+      ACTIONLINT_VERSION: "1.7.7"
+      # Checksum of the release tarball, verified before first use on
+      # 2026-08-10. A version pin without a checksum trusts the release asset
+      # not to change under the same tag.
+      ACTIONLINT_SHA256: "023070a287cd8cccd71515fedc843f1985bf96c436b7effaecce67290e7e0757"
+      KNOWN_BAD: .github/lint-fixtures/known-bad.yml
+      BLIND_SPOT: .github/lint-fixtures/injection-declared-input.yml
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install pinned actionlint
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -sSL -o /tmp/actionlint.tgz \
+            "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          echo "${ACTIONLINT_SHA256}  /tmp/actionlint.tgz" | sha256sum -c -
+          tar -C /tmp -xzf /tmp/actionlint.tgz actionlint
+          /tmp/actionlint --version
+
+      - name: Self-test - actionlint must fail the known-bad fixture
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Expected to exit non-zero; captured without a pipe so the verdict is
+          # actionlint's, not a downstream command's.
+          set +e
+          output=$(/tmp/actionlint -shellcheck= -pyflakes= "${KNOWN_BAD}" 2>&1)
+          status=$?
+          set -e
+          findings=$(grep -cE '^[^ ]+:[0-9]+:[0-9]+:' <<<"${output}" || true)
+
+          if [[ "${status}" -eq 0 ]]; then
+            echo "CANNOT RUN: actionlint passed a file written to fail it." >&2
+            echo "A clean result from it today would be worthless." >&2
+            exit 2
+          fi
+          # Exactly 4, not "at least one": 3 expression findings + 1 duplicate
+          # key, pinned to this actionlint version. Honest scope note - these
+          # prove the binary runs and detects; they are NOT injection coverage.
+          # The 3 expression hits are "property not defined" (the fixture's
+          # inputs are deliberately undeclared). Injection coverage is what the
+          # blind-spot step below shows actionlint does NOT have.
+          if [[ "${findings}" -ne 4 ]]; then
+            echo "CANNOT RUN: expected exactly 4 findings on the fixture, got ${findings}." >&2
+            echo "The tool or the fixture changed without this expectation changing." >&2
+            printf '%s\n' "${output}" >&2
+            exit 2
+          fi
+          echo "Self-test passed: actionlint reds on the fixture (4 findings; none of them injection)."
+
+      - name: Boundary - actionlint must NOT see the declared-input injection
+        shell: bash
+        run: |
+          set -euo pipefail
+          # This asserts a BLIND SPOT, on purpose. The fixture is a real
+          # injection vector that only check-workflows.py catches. If a new
+          # actionlint version starts flagging it, this step goes red - and that
+          # red is the signal to reconsider retiring check-workflows.py, not a
+          # defect in the fixture. Update the version pin and this assertion
+          # together, deliberately.
+          set +e
+          output=$(/tmp/actionlint -shellcheck= -pyflakes= "${BLIND_SPOT}" 2>&1)
+          status=$?
+          set -e
+          if [[ "${status}" -ne 0 ]]; then
+            echo "actionlint now FLAGS the declared-input injection fixture:" >&2
+            printf '%s\n' "${output}" >&2
+            echo "" >&2
+            echo "This blind spot closing is good news with a required follow-up:" >&2
+            echo "re-evaluate whether check-workflows.py is still load-bearing" >&2
+            echo "before touching either tool. Do not silence this step." >&2
+            exit 1
+          fi
+          echo "Confirmed: actionlint does not cover this vector; check-workflows.py remains the only control for it."
+
+      - name: Lint the real workflows
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          files=(.github/workflows/*.yml .github/workflows/*.yaml)
+          echo "linting ${#files[@]} workflow files"
+          /tmp/actionlint -shellcheck= -pyflakes= "${files[@]}"
+          echo "actionlint: no findings across ${#files[@]} workflow files."
