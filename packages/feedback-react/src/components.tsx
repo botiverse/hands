@@ -23,6 +23,7 @@ import {
   MessageSquare,
   Paperclip,
   Play,
+  RotateCcw,
   Send,
   X,
 } from "lucide-react";
@@ -277,6 +278,10 @@ function feedbackStatusLabel(
           ? "statusClosed"
           : "statusOpen",
   );
+}
+
+function isEndedStatus(status: FeedbackTicketSummary["status"]): boolean {
+  return status === "resolved" || status === "closed";
 }
 
 function FeedbackKindChip({ kind }: { kind: FeedbackTicketSummary["kind"] }) {
@@ -635,10 +640,13 @@ export function FeedbackInbox({
     useState<FeedbackTicketSummary | null>(null);
   const [closingTicket, setClosingTicket] = useState(false);
   const [closeError, setCloseError] = useState<string | null>(null);
+  const [reopeningTicketId, setReopeningTicketId] = useState<string | null>(null);
+  const [statusActionError, setStatusActionError] = useState<string | null>(null);
   const [announcement, setAnnouncement] = useState("");
   const request = useRef(0);
   const controllerRef = useRef<AbortController | null>(null);
   const closeControllerRef = useRef<AbortController | null>(null);
+  const reopenControllerRef = useRef<AbortController | null>(null);
 
   const load = useCallback(
     async (nextCursor?: string, refresh = false, retry = false) => {
@@ -661,6 +669,7 @@ export function FeedbackInbox({
         );
         setCursor(page.nextCursor);
         setError(null);
+        setStatusActionError(null);
         setRetryCursor(undefined);
       } catch (cause) {
         if (!controller.signal.aborted && request.current === id) {
@@ -689,6 +698,7 @@ export function FeedbackInbox({
     return () => {
       controllerRef.current?.abort();
       closeControllerRef.current?.abort();
+      reopenControllerRef.current?.abort();
       request.current += 1;
     };
   }, [pageSize, transport]);
@@ -767,6 +777,33 @@ export function FeedbackInbox({
     }
   };
 
+  const reopenSelectedTicket = async (ticket: FeedbackTicketSummary) => {
+    if (!transport.reopenTicket || reopeningTicketId) return;
+    setReopeningTicketId(ticket.id);
+    setStatusActionError(null);
+    reopenControllerRef.current?.abort();
+    const controller = new AbortController();
+    reopenControllerRef.current = controller;
+    try {
+      const result = await transport.reopenTicket({
+        ticketId: ticket.id,
+        signal: controller.signal,
+      });
+      if (controller.signal.aborted) return;
+      reportUnread({ total: result.unreadTotal, source: "reopen" });
+      setTickets((current) =>
+        current.map((item) =>
+          item.id === result.ticket.id ? result.ticket : item,
+        ),
+      );
+      setAnnouncement(message("ticketReopened"));
+    } catch (cause) {
+      if (!controller.signal.aborted) setStatusActionError(safeError(cause));
+    } finally {
+      if (!controller.signal.aborted) setReopeningTicketId(null);
+    }
+  };
+
   return (
     <section
       className="hands-feedback-inbox"
@@ -834,6 +871,9 @@ export function FeedbackInbox({
               onRetry={() => void load(retryCursor, true, true)}
             />
           )}
+          {statusActionError && (
+            <FeedbackErrorBanner error={statusActionError} />
+          )}
           {!loading && !error && visibleTickets.length === 0 && (
             <EmptyState
               className="hands-feedback-empty"
@@ -885,12 +925,13 @@ export function FeedbackInbox({
                             <FeedbackKindChip kind={ticket.kind} />
                             <FeedbackStatusChip status={ticket.status} />
                             {transport.closeTicket &&
-                              ticket.status !== "closed" && (
+                              !isEndedStatus(ticket.status) && (
                                 <MessageReferenceChip
                                   render={<button type="button" />}
                                   className="hands-feedback-close-chip hands-feedback-reference-chip"
                                   variant="accent"
                                   onClick={() => {
+                                    setStatusActionError(null);
                                     setCloseError(null);
                                     setTicketToClose(ticket);
                                   }}
@@ -899,6 +940,25 @@ export function FeedbackInbox({
                                     <X aria-hidden="true" />
                                     <MessageReferenceLabel>
                                       {message("closeTicket")}
+                                    </MessageReferenceLabel>
+                                  </span>
+                                </MessageReferenceChip>
+                              )}
+                            {transport.reopenTicket &&
+                              isEndedStatus(ticket.status) && (
+                                <MessageReferenceChip
+                                  render={<button type="button" />}
+                                  className="hands-feedback-reopen-chip hands-feedback-reference-chip"
+                                  variant="accent"
+                                  aria-disabled={reopeningTicketId !== null}
+                                  onClick={() => void reopenSelectedTicket(ticket)}
+                                >
+                                  <span className="hands-feedback-reference-chip-content">
+                                    <RotateCcw aria-hidden="true" />
+                                    <MessageReferenceLabel>
+                                      {reopeningTicketId === ticket.id
+                                        ? message("reopeningTicket")
+                                        : message("reopenTicket")}
                                     </MessageReferenceLabel>
                                   </span>
                                 </MessageReferenceChip>
@@ -1199,6 +1259,7 @@ export function FeedbackTicket({
   const [retryingLoad, setRetryingLoad] = useState(false);
   const [sending, setSending] = useState(false);
   const [closing, setClosing] = useState(false);
+  const [reopening, setReopening] = useState(false);
   const [confirmingClose, setConfirmingClose] = useState(false);
   const [replyAttachments, setReplyAttachments] = useState<PendingAttachment[]>(
     [],
@@ -1209,6 +1270,7 @@ export function FeedbackTicket({
     refresh: boolean;
   }>({ cursor: undefined, refresh: false });
   const [actionError, setActionError] = useState<string | null>(null);
+  const [statusActionError, setStatusActionError] = useState<string | null>(null);
   const [announcement, setAnnouncement] = useState("");
   const [newReplies, setNewReplies] = useState(false);
   const loadRequest = useRef(0);
@@ -1227,6 +1289,7 @@ export function FeedbackTicket({
     commentSubmission.current = null;
     setSending(false);
     setClosing(false);
+    setReopening(false);
     setConfirmingClose(false);
     setReplyAttachments([]);
     setDetail(
@@ -1237,6 +1300,7 @@ export function FeedbackTicket({
     setLoading(true);
     setRetryingLoad(false);
     setLoadError(null);
+    setStatusActionError(null);
   }, [initialTicket, ticketId, transport]);
 
   const load = useCallback(
@@ -1292,6 +1356,7 @@ export function FeedbackTicket({
         scrollIntent.current = nearBottom ? "bottom" : "preserve";
         setAnnouncement(message("ticketUpdated"));
         setLoadError(null);
+        setStatusActionError(null);
         setRetryLoad({ cursor: undefined, refresh: false });
       } catch (cause) {
         if (!controller.signal.aborted && requestId === loadRequest.current) {
@@ -1449,6 +1514,31 @@ export function FeedbackTicket({
     }
   };
 
+  const reopenTicket = async () => {
+    if (!detail || !transport.reopenTicket || reopening || sending || closing) return;
+    setReopening(true);
+    setStatusActionError(null);
+    actionController.current?.abort();
+    const controller = new AbortController();
+    actionController.current = controller;
+    try {
+      const result = await transport.reopenTicket({ ticketId, signal: controller.signal });
+      if (controller.signal.aborted) return;
+      reportUnread({ total: result.unreadTotal, source: "reopen" });
+      setDetail(result);
+      onTicketUpdated?.(result.ticket);
+      setAnnouncement(message("ticketReopened"));
+    } catch (cause) {
+      if (!controller.signal.aborted) {
+        const safe = safeError(cause);
+        setStatusActionError(safe);
+        setAnnouncement(safe);
+      }
+    } finally {
+      if (!controller.signal.aborted) setReopening(false);
+    }
+  };
+
   const chooseReplyAttachments = (event: ChangeEvent<HTMLInputElement>) => {
     const selected = Array.from(event.currentTarget.files ?? []);
     const combined = [
@@ -1523,6 +1613,9 @@ export function FeedbackTicket({
               }
             />
           )}
+          {statusActionError && (
+            <FeedbackErrorBanner error={statusActionError} />
+          )}
           {detail && (
             <>
             <MessageList
@@ -1555,12 +1648,13 @@ export function FeedbackTicket({
                     <FeedbackKindChip kind={detail.ticket.kind} />
                     <FeedbackStatusChip status={detail.ticket.status} />
                     {transport.closeTicket &&
-                      detail.ticket.status !== "closed" && (
+                      !isEndedStatus(detail.ticket.status) && (
                         <MessageReferenceChip
                           render={<button type="button" />}
                           className="hands-feedback-close-chip hands-feedback-reference-chip"
                           variant="accent"
                           onClick={() => {
+                            setStatusActionError(null);
                             setActionError(null);
                             setConfirmingClose(true);
                           }}
@@ -1569,6 +1663,28 @@ export function FeedbackTicket({
                             <X aria-hidden="true" />
                             <MessageReferenceLabel>
                               {message("closeTicket")}
+                            </MessageReferenceLabel>
+                          </span>
+                        </MessageReferenceChip>
+                      )}
+                    {transport.reopenTicket &&
+                      isEndedStatus(detail.ticket.status) && (
+                        <MessageReferenceChip
+                          render={<button type="button" />}
+                          className="hands-feedback-reopen-chip hands-feedback-reference-chip"
+                          variant="accent"
+                          aria-disabled={reopening || sending || closing}
+                          onClick={() => {
+                            setStatusActionError(null);
+                            void reopenTicket();
+                          }}
+                        >
+                          <span className="hands-feedback-reference-chip-content">
+                            <RotateCcw aria-hidden="true" />
+                            <MessageReferenceLabel>
+                              {reopening
+                                ? message("reopeningTicket")
+                                : message("reopenTicket")}
                             </MessageReferenceLabel>
                           </span>
                         </MessageReferenceChip>

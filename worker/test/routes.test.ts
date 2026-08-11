@@ -111,6 +111,7 @@ describe("quiver OpenAPI document", () => {
       "/api/apps/{appId}/releases/{releaseId}/publish",
       "/api/apps/{appId}/feedback/{ticketId}/comments",
       "/api/apps/{appId}/reporter-feedback/session",
+      "/api/apps/{appId}/reporter-feedback/{ticketId}/reopen",
       "/api/app-permissions",
       "/api/apps/{appId}/client-key",
       "/api/apps/{appId}/analytics/versions",
@@ -11713,6 +11714,7 @@ describe("Hands iOS simulator QA artifacts", () => {
     const {
       handleAddReporterComment,
       handleCloseReporterFeedback,
+      handleReopenReporterFeedback,
       cleanupReporterFeedbackData,
       handleDownloadReporterAttachment,
       handleGetReporterFeedback,
@@ -11784,7 +11786,7 @@ describe("Hands iOS simulator QA artifacts", () => {
     ).bind(integrationA, now).run();
 
     const context = (
-      handler: "list" | "detail" | "comment" | "close",
+      handler: "list" | "detail" | "comment" | "close" | "reopen",
       credential: string | null,
       ticketId?: string,
       commentBody?: { body: string; submission_id: string } | FormData,
@@ -11957,10 +11959,55 @@ describe("Hands iOS simulator QA artifacts", () => {
       reporter_integration_id: integrationA,
       reporter_id: reporterId,
     });
+
+    // Reopening is the matching bounded mutation: it restores only `open`,
+    // preserves the assignee, and converges exact concurrent retries.
+    expect((await handleReopenReporterFeedback(context(
+      "reopen", credentialRead.token, ticketA,
+    ))).status).toBe(403);
+    expect((await handleReopenReporterFeedback(context(
+      "reopen", credentialB.token, ticketA,
+    ))).status).toBe(404);
+    const reopenResponses = await Promise.all([
+      handleReopenReporterFeedback(context("reopen", credentialComment.token, ticketA)),
+      handleReopenReporterFeedback(context("reopen", credentialComment.token, ticketA)),
+    ]);
+    const reopenBodies = await Promise.all(reopenResponses.map((response) => response.json() as Promise<any>));
+    expect(reopenBodies.map((body) => body.changed).sort()).toEqual([false, true]);
+    expect(reopenBodies.every((body) => body.status === "open")).toBe(true);
+    expect(await env.DB.prepare(
+      "SELECT status, assignee FROM feedback_tickets WHERE id = ?1",
+    ).bind(ticketA).first()).toEqual({ status: "open", assignee: "staff:test" });
+    expect((await env.DB.prepare(
+      "SELECT COUNT(*) AS count FROM audit_logs WHERE action = 'feedback.reporter_reopen'",
+    ).first() as any).count).toBe(1);
+    const reopenAudit = await env.DB.prepare(
+      "SELECT actor, payload FROM audit_logs WHERE action = 'feedback.reporter_reopen'",
+    ).first() as { actor: string; payload: string } | null;
+    expect(reopenAudit?.actor).toMatch(/^reporter:[0-9a-f]{64}$/);
+    expect(JSON.parse(reopenAudit!.payload)).toMatchObject({
+      ticket_id: ticketA,
+      previous_status: "closed",
+      status: "open",
+    });
+    const statusEvents = await env.DB.prepare(
+      `SELECT payload_json FROM feedback_events
+       WHERE ticket_id = ?1 AND event_type = 'feedback:status_changed'
+       ORDER BY created_at ASC`,
+    ).bind(ticketA).all() as any;
+    expect(statusEvents.results).toHaveLength(2);
+    expect(JSON.parse(statusEvents.results[1].payload_json).payload).toMatchObject({
+      ticket_id: ticketA,
+      previous_status: "closed",
+      status: "open",
+      reporter_integration_id: integrationA,
+      reporter_id: reporterId,
+    });
     await env.DB.prepare(
       "DELETE FROM feedback_events WHERE ticket_id = ?1 AND event_type = 'feedback:status_changed'",
     ).bind(ticketA).run();
     await env.DB.prepare("DELETE FROM audit_logs WHERE action = 'feedback.reporter_close'").run();
+    await env.DB.prepare("DELETE FROM audit_logs WHERE action = 'feedback.reporter_reopen'").run();
     await env.DB.prepare(
       "UPDATE feedback_tickets SET status = 'open', assignee = NULL WHERE id = ?1",
     ).bind(ticketA).run();

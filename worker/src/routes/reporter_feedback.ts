@@ -904,14 +904,22 @@ export async function handleAddReporterComment(c: ReporterContext) {
 }
 
 /**
- * Close one ticket owned by the authenticated reporter.
+ * Move one ticket owned by the authenticated reporter to one exact lifecycle
+ * state.
  *
  * This deliberately reuses feedback:comment: both operations are bounded
  * mutations of the same reporter-owned conversation. The route cannot set an
- * arbitrary status, change the assignee, reopen a ticket, or address another
- * reporter's ticket.
+ * arbitrary status, change the assignee, or address another reporter's
+ * ticket. Close and reopen remain separate endpoints so neither accepts a
+ * caller-selected status.
  */
-export async function handleCloseReporterFeedback(c: ReporterContext) {
+async function handleSetReporterFeedbackStatus(
+  c: ReporterContext,
+  targetStatus: "closed" | "open",
+) {
+  // Close and reopen share the existing 30/hour reporter status-mutation
+  // budget. Keeping one bucket also prevents alternating actions from doubling
+  // the write allowance.
   const authorized = await authorize(c, "feedback:comment", "close");
   if (!authorized.ok) return authorized.response;
   const ticketId = fullUuid(c.req.param("ticketId"));
@@ -931,29 +939,33 @@ export async function handleCloseReporterFeedback(c: ReporterContext) {
       authorized.principal.reporterId,
     ).first<{ status: string; org_id: string | null }>();
     if (!ticket) return ticketNotFound(c);
-    if (ticket.status === "closed") {
-      return c.json({ id: ticketId, status: "closed", updated_at: null, changed: false });
+    if (ticket.status === targetStatus) {
+      return c.json({ id: ticketId, status: targetStatus, updated_at: null, changed: false });
     }
 
     const now = Date.now();
     const auditId = crypto.randomUUID();
+    const action = targetStatus === "closed"
+      ? "feedback.reporter_close"
+      : "feedback.reporter_reopen";
     const auditPayload = JSON.stringify({
       ticket_id: ticketId,
       previous_status: ticket.status,
-      status: "closed",
+      status: targetStatus,
       reporter_hash: authorized.pseudonym.hash,
       audit_key_version: authorized.pseudonym.version,
     });
     const statements: D1PreparedStatement[] = [
       c.env.DB.prepare(
         `INSERT INTO audit_logs (id, app_id, action, actor, payload, created_at)
-         SELECT ?1, ?2, 'feedback.reporter_close', ?3, ?4, ?5
+         SELECT ?1, ?2, ?3, ?4, ?5, ?6
          FROM feedback_tickets
-         WHERE id = ?6 AND app_id = ?2 AND reporter_integration_id = ?7
-           AND reporter_id = ?8 AND status = ?9`,
+         WHERE id = ?7 AND app_id = ?2 AND reporter_integration_id = ?8
+           AND reporter_id = ?9 AND status = ?10`,
       ).bind(
         auditId,
         authorized.principal.appId,
+        action,
         `reporter:${authorized.pseudonym.hash}`,
         auditPayload,
         now,
@@ -964,11 +976,12 @@ export async function handleCloseReporterFeedback(c: ReporterContext) {
       ),
       c.env.DB.prepare(
         `UPDATE feedback_tickets
-         SET status = 'closed', updated_at = ?1
-         WHERE id = ?2 AND app_id = ?3 AND reporter_integration_id = ?4
-           AND reporter_id = ?5 AND status = ?6
-           AND EXISTS (SELECT 1 FROM audit_logs WHERE id = ?7)`,
+         SET status = ?1, updated_at = ?2
+         WHERE id = ?3 AND app_id = ?4 AND reporter_integration_id = ?5
+           AND reporter_id = ?6 AND status = ?7
+           AND EXISTS (SELECT 1 FROM audit_logs WHERE id = ?8)`,
       ).bind(
+        targetStatus,
         now,
         ticketId,
         authorized.principal.appId,
@@ -988,7 +1001,7 @@ export async function handleCloseReporterFeedback(c: ReporterContext) {
         reporterId: authorized.principal.reporterId,
         createdAt: now,
         previousStatus: ticket.status,
-        status: "closed",
+        status: targetStatus,
         claimAuditId: auditId,
       }));
     }
@@ -997,10 +1010,18 @@ export async function handleCloseReporterFeedback(c: ReporterContext) {
       .bind(auditId)
       .first();
     if (won) {
-      return c.json({ id: ticketId, status: "closed", updated_at: now, changed: true });
+      return c.json({ id: ticketId, status: targetStatus, updated_at: now, changed: true });
     }
   }
   return c.json({ error: "feedback ticket changed concurrently; retry" }, 409);
+}
+
+export async function handleCloseReporterFeedback(c: ReporterContext) {
+  return handleSetReporterFeedbackStatus(c, "closed");
+}
+
+export async function handleReopenReporterFeedback(c: ReporterContext) {
+  return handleSetReporterFeedbackStatus(c, "open");
 }
 
 export async function handleDownloadReporterAttachment(c: ReporterContext) {

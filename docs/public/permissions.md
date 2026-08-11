@@ -50,9 +50,9 @@ to.
 
 **Within its integration a bound token is not narrowed any further.** The caller
 states which reporter it is acting for, so the same token can reply on — and
-close — **any** ticket that integration owns, not one reporter's. This is a
+close or reopen — **any** ticket that integration owns, not one reporter's. This is a
 property of the binding, so it applies equally to `feedback:comment` and to the
-close it authorises.
+status actions it authorises.
 
 ## Roles
 
@@ -109,7 +109,7 @@ reached by holding the role.
 | `app:admin` | Carried by `admin`; settings, members, credentials, destructive operations | Console entry on its own; anything in another app |
 | `feedback:write` | **File a ticket on a user's behalf** from a trusted server proxy. Requires a reporter-integration binding | **Any staff-side handling. This is not a support or triage permission.** |
 | `feedback:read` | Read tickets, their detail, attachments and the material-delta feed. Scope follows the token's binding | Any write |
-| `feedback:comment` | Post a **public reply** the reporter sees. A **bound** token may also **close** a ticket its integration owns | Internal notes; assignee; reopening; any other status change |
+| `feedback:comment` | Post a **public reply** the reporter sees. A **bound** token may also **close or reopen** a ticket its integration owns | Internal notes; assignee; any other status change |
 | `feedback:triage` | Change status and assignee, write **internal notes** | Replying to the reporter |
 | `feedback:route` | Bind an opaque route subject to a reporter integration. Requires a reporter-integration binding | Reading or writing ticket content |
 

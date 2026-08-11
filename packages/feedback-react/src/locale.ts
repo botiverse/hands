@@ -54,6 +54,8 @@ export type FeedbackMessageKey =
   | "question"
   | "refresh"
   | "refreshing"
+  | "reopenTicket"
+  | "reopeningTicket"
   | "remove"
   | "reply"
   | "replyPlaceholder"
@@ -74,6 +76,7 @@ export type FeedbackMessageKey =
   | "feedbackCreated"
   | "replySent"
   | "ticketClosed"
+  | "ticketReopened"
   | "ticketUpdated"
   | "ticketHeading"
   | "unreadCount"
@@ -105,9 +108,9 @@ const messages: Record<FeedbackLocale, FeedbackMessages> = {
     closeTicket: "Close ticket",
     closeTicketConfirm: "Close this ticket?",
     closeTicketDescription:
-      "You won’t be able to add more replies after closing it. The team can reopen it if more information is needed.",
+      "You won’t be able to add more replies after closing it. You can reopen it if more information is needed.",
     closingTicket: "Closing…",
-    closedDescription: "This ticket is closed. The team can reopen it if more information is needed.",
+    closedDescription: "This ticket is closed. You can reopen it if more information is needed.",
     conversation: "Conversation",
     describePlaceholder: "Describe your idea or the problem you ran into…",
     emptyActiveBody: "Resolved or closed feedback lives under “Ended”.",
@@ -142,6 +145,8 @@ const messages: Record<FeedbackLocale, FeedbackMessages> = {
     question: "What would you like us to know?",
     refresh: "Refresh",
     refreshing: "Refreshing…",
+    reopenTicket: "Reopen ticket",
+    reopeningTicket: "Reopening…",
     remove: "Remove",
     reply: "Reply",
     replyPlaceholder: "Write a reply…",
@@ -162,6 +167,7 @@ const messages: Record<FeedbackLocale, FeedbackMessages> = {
     feedbackCreated: "Feedback created",
     replySent: "Reply sent",
     ticketClosed: "Ticket closed",
+    ticketReopened: "Ticket reopened",
     ticketUpdated: "Ticket updated",
     ticketHeading: "Feedback ticket",
     unreadCount: "{count} unread",
@@ -188,9 +194,9 @@ const messages: Record<FeedbackLocale, FeedbackMessages> = {
     cancel: "取消",
     closeTicket: "关闭工单",
     closeTicketConfirm: "确定关闭这个工单吗？",
-    closeTicketDescription: "关闭后你将不能继续回复。如需补充信息，团队可以重新打开。",
+    closeTicketDescription: "关闭后你将不能继续回复。如需补充信息，你可以重新打开。",
     closingTicket: "正在关闭…",
-    closedDescription: "该工单已关闭。如需更多信息，团队可以重新打开。",
+    closedDescription: "该工单已关闭。如需更多信息，你可以重新打开。",
     conversation: "对话",
     describePlaceholder: "描述你的想法或遇到的问题…",
     emptyActiveBody: "已解决或已关闭的反馈在「已结束」里。",
@@ -222,6 +228,8 @@ const messages: Record<FeedbackLocale, FeedbackMessages> = {
     question: "你想告诉我们什么？",
     refresh: "刷新",
     refreshing: "正在刷新…",
+    reopenTicket: "重新打开",
+    reopeningTicket: "正在重新打开…",
     remove: "移除",
     reply: "回复",
     replyPlaceholder: "写下回复…",
@@ -242,6 +250,7 @@ const messages: Record<FeedbackLocale, FeedbackMessages> = {
     feedbackCreated: "反馈已创建",
     replySent: "回复已发送",
     ticketClosed: "工单已关闭",
+    ticketReopened: "工单已重新打开",
     ticketUpdated: "工单已更新",
     ticketHeading: "反馈工单",
     unreadCount: "{count} 条未读",
