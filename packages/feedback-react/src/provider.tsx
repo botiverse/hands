@@ -7,6 +7,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { ThemeProvider } from "raft-ui";
 import type {
   FeedbackLocale,
   FeedbackTheme,
@@ -142,9 +143,11 @@ export function FeedbackProvider({
     ],
   );
   return (
-    <FeedbackContext.Provider value={value}>
-      {children}
-    </FeedbackContext.Provider>
+    <ThemeProvider theme={theme} syncDom={false}>
+      <FeedbackContext.Provider value={value}>
+        {children}
+      </FeedbackContext.Provider>
+    </ThemeProvider>
   );
 }
 

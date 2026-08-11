@@ -8,9 +8,16 @@ export type {
   FeedbackInboxProps,
   FeedbackTicketProps,
   FeedbackWorkspaceProps,
+  FeedbackWorkspaceNavigationOptions,
   FeedbackWorkspaceRoute,
   NewFeedbackProps,
 } from "./components.js";
+export { usePullToRefresh } from "./usePullToRefresh.js";
+export type {
+  PullToRefreshState,
+  UsePullToRefreshOptions,
+  UsePullToRefreshResult,
+} from "./usePullToRefresh.js";
 export { FeedbackProvider, useHandsFeedback } from "./provider.js";
 export type { FeedbackProviderProps } from "./provider.js";
 export {

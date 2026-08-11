@@ -85,6 +85,12 @@ export type HandsFeedbackTransport = {
     commentLimit: number;
     signal: AbortSignal;
   }): Promise<FeedbackTicketDetail>;
+  /** Optional authenticated attachment reader used for inline image previews. */
+  getAttachment?(input: {
+    ticketId: string;
+    attachmentId: string;
+    signal: AbortSignal;
+  }): Promise<Blob>;
   createTicket(
     input: CreateFeedbackInput & { signal: AbortSignal },
   ): Promise<FeedbackTicketDetail>;
