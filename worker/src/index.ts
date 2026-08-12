@@ -15,6 +15,7 @@ import { Hono } from "hono";
 import type { Context } from "hono";
 import { cors } from "hono/cors";
 import { publicDocAssetPaths } from "./lib/public_docs";
+export { HandsObservability } from "./observability_rpc";
 
 import { authMiddleware, currentActor } from "./middleware/auth";
 import {

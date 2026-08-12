@@ -1,0 +1,6 @@
+# Hands production observability is a separately deployed operations surface.
+/.github/CODEOWNERS @bytemain
+/admin-worker/ @bytemain
+/worker/src/observability_data.ts @bytemain
+/worker/src/observability_rpc.ts @bytemain
+/.github/workflows/deploy-hands-admin.yml @bytemain

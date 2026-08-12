@@ -1,0 +1,24 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "hands-admin",
+  "main": "src/index.ts",
+  "compatibility_date": "2025-10-08",
+  "compatibility_flags": ["nodejs_compat"],
+  "observability": { "enabled": true },
+  "preview_urls": false,
+  "services": [
+    { "binding": "HANDS_OBSERVABILITY", "service": "local-hands-worker", "entrypoint": "HandsObservability" }
+  ],
+  "d1_databases": [
+    {
+      "binding": "AUDIT_DB",
+      "database_name": "hands-admin-audit-local",
+      "database_id": "00000000-0000-0000-0000-000000000000",
+      "migrations_dir": "migrations"
+    }
+  ],
+  "vars": {
+    "RAFT_ORIGIN": "https://app.raft.build",
+    "RAFT_API_ORIGIN": "https://api.raft.build"
+  }
+}

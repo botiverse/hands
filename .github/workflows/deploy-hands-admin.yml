@@ -1,0 +1,60 @@
+name: Deploy Hands Admin
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: hands-admin-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    environment: hands-admin-production
+    runs-on: ubuntu-latest
+    env:
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_BOTIVERSE_ACCOUNT_ID }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_BOTIVERSE_API_TOKEN }}
+      HANDS_ADMIN_WORKER_NAME: ${{ vars.HANDS_ADMIN_WORKER_NAME }}
+      HANDS_ADMIN_DOMAIN: ${{ vars.HANDS_ADMIN_DOMAIN }}
+      HANDS_ADMIN_AUDIT_DB_NAME: ${{ vars.HANDS_ADMIN_AUDIT_DB_NAME }}
+      HANDS_ADMIN_AUDIT_DB_ID: ${{ vars.HANDS_ADMIN_AUDIT_DB_ID }}
+      HANDS_WORKER_NAME: ${{ vars.HANDS_WORKER_NAME }}
+      HANDS_RAFT_ORIGIN: ${{ vars.HANDS_RAFT_ORIGIN }}
+      HANDS_RAFT_API_ORIGIN: ${{ vars.HANDS_RAFT_API_ORIGIN }}
+      HANDS_ADMIN_RAFT_CLIENT_ID: ${{ vars.HANDS_ADMIN_RAFT_CLIENT_ID }}
+      HANDS_ADMIN_ALLOWED_SERVER_IDS: ${{ vars.HANDS_ADMIN_ALLOWED_SERVER_IDS }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: pnpm/action-setup@v6
+        with: { version: 9.12.0 }
+      - uses: actions/setup-node@v6
+        with: { node-version: "22", cache: "pnpm" }
+      - run: pnpm install --frozen-lockfile
+      - name: Validate
+        run: |
+          pnpm --filter @botiverse/hands-worker build
+          pnpm --filter @botiverse/hands-worker test -- observability_rpc.test.ts
+          pnpm --filter @botiverse/hands-admin-worker build
+          pnpm --filter @botiverse/hands-admin-worker test
+      - name: Render production config
+        working-directory: admin-worker
+        run: node scripts/render-production-config.mjs --output wrangler.generated.jsonc
+      - name: Apply audit migrations
+        working-directory: admin-worker
+        run: pnpm exec wrangler d1 migrations apply "${HANDS_ADMIN_AUDIT_DB_NAME}" --remote --config wrangler.generated.jsonc
+      - name: Configure secrets
+        working-directory: admin-worker
+        shell: bash
+        env:
+          RAFT_CLIENT_SECRET: ${{ secrets.HANDS_ADMIN_RAFT_CLIENT_SECRET }}
+          SESSION_SECRET: ${{ secrets.HANDS_ADMIN_SESSION_SECRET }}
+        run: |
+          set -euo pipefail
+          printf '%s' "$RAFT_CLIENT_SECRET" | pnpm exec wrangler secret put RAFT_CLIENT_SECRET --config wrangler.generated.jsonc
+          printf '%s' "$SESSION_SECRET" | pnpm exec wrangler secret put SESSION_SECRET --config wrangler.generated.jsonc
+      - name: Deploy
+        working-directory: admin-worker
+        run: pnpm exec wrangler deploy --config wrangler.generated.jsonc
