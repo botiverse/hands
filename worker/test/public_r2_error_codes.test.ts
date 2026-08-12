@@ -50,6 +50,18 @@ describe("public r2 download — code survives the real routing + middleware cha
     await expect(res.json()).resolves.toMatchObject({ code: "expires_invalid" });
   });
 
+  it("redirects an http:// request 308 before the handler — the positive control that this is the REAL chain, not a reconstruction", async () => {
+    // The two https tests above pass equally under a minimal app that mounts only
+    // the handler; only this one distinguishes real dispatch from a reconstruction.
+    // The :389 global middleware returns 308 for non-https, so the handler never
+    // runs — a minimal app (handler only) would return 400 here. If someone ever
+    // reverts to a reconstruction, or the middleware stops being attached, this
+    // reds while the others stay green. A demonstration proves then; a control
+    // proves every time.
+    const res = await worker.fetch(new Request("http://hands.test/public/r2/testkey"), env, ctx);
+    expect(res.status).toBe(308);
+  });
+
   it("keeps the human `error` string alongside the machine code (additive)", async () => {
     const res = await fetchR2();
     const body = (await res.json()) as { error?: string; code?: string };
