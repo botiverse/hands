@@ -93,7 +93,7 @@ Worker configuration:
 - `RAFT_CLIENT_SECRET` as a Worker secret (`wrangler secret put RAFT_CLIENT_SECRET`)
 - `app.hands.build` is the canonical dashboard/login origin. `hands.build` remains the business/API origin for SDKs, CLI/agents, share/download pages, release notes, and docs.
 - Product links and docs use `app.hands.build` for the dashboard and `hands.build` for business surfaces. Both hostnames continue serving compatible Worker routes during the transition; there is no forced cross-domain redirect.
-- Login starts from `app.hands.build`, uses the registered `https://hands.build/login/raft/callback`, then returns a signed Hands JWT to the dashboard in the URL fragment. The SPA stores the JWT locally and sends `Authorization: Bearer`; no browser session cookie is used.
+- Login starts from `app.hands.build`, carries a short-lived signed per-attempt `state` through Raft, uses the registered `https://hands.build/login/raft/callback`, then returns a signed Hands JWT to the dashboard in the URL fragment. The callback validates `state` before exchanging the one-time Raft code. The SPA stores the JWT locally and sends `Authorization: Bearer`; no browser session cookie is required for the browser login handoff.
 - Optional `RAFT_ALLOWED_SERVER_IDS` / `RAFT_ALLOWED_SERVER_SLUGS` can restrict admin login to specific Raft servers
 
 Do not put Raft client secrets in browser JavaScript, repository files, logs, or public channels.
