@@ -483,6 +483,15 @@ Body: `{ "files": [{ "filename": "...", "content_type": "...", "size": <bytes> }
 Returns `501` if direct upload isn't configured on the server. Total
 attachments (inline + presigned) may not exceed 9.
 
+Pure ArkTS clients that cannot send a file as a raw request body may add
+`"upload_mode": "r2_multipart_proxy"`. The response then contains
+`upload_id` and `part_size` instead of `upload_url`. Upload each sequential raw
+part to `PUT .../feedback/multipart/part`, complete with the returned part
+ETags at `POST .../feedback/multipart/complete`, and call
+`POST .../feedback/multipart/abort` on failure. The server fixes the part size
+at 5 MiB and streams each bounded part into R2 without buffering the complete
+attachment.
+
 ## Share Pages
 
 - `GET /share/:token` — public download page for one release (view/download

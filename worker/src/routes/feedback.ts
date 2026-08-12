@@ -24,6 +24,8 @@ const MAX_ATTACHMENTS = 9;
 const MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024; // inline multipart cap (through the Worker)
 const MAX_PRESIGNED_BYTES = 200 * 1024 * 1024; // direct-to-R2 cap
 const PRESIGN_TTL_SECONDS = 900;
+const MULTIPART_PART_BYTES = 5 * 1024 * 1024;
+const MAX_MULTIPART_PARTS = MAX_PRESIGNED_BYTES / MULTIPART_PART_BYTES;
 const MAX_MESSAGE_CHARS = 10_000;
 const DIRECT_RATE_LIMIT_PER_HOUR = 10;
 const TRUSTED_REPORTER_RATE_LIMIT_PER_HOUR = 100;
@@ -86,6 +88,27 @@ type FeedbackApp = {
   platform: string | null;
 };
 
+async function authorizeFeedbackUpload(c: Context<{ Bindings: Env }>) {
+  const slug = c.req.param("slug");
+  if (!slug) return { response: c.json({ error: "slug required" }, 400) };
+  const app = await c.env.DB.prepare(
+    "SELECT id, client_key FROM apps WHERE slug = ?1 AND archived = 0",
+  )
+    .bind(slug)
+    .first<{ id: string; client_key: string | null }>();
+  if (!app) return { response: c.json({ error: `app '${slug}' not found` }, 404) };
+  const presented =
+    c.req.header("X-Hands-Client-Key") ?? c.req.header("X-Quiver-Client-Key") ?? c.req.query("client_key") ?? "";
+  if (!app.client_key || presented !== app.client_key) {
+    return { response: c.json({ error: "invalid or missing client key" }, 401) };
+  }
+  return { app };
+}
+
+function validFeedbackMultipartKey(appId: string, r2Key: string): boolean {
+  return r2Key.startsWith(`feedback/${appId}/presigned/`) && r2Key.length <= 512;
+}
+
 /**
  * Presigned direct-to-R2 upload for large feedback attachments. Client-key
  * gated (same as submit). Body: { files: [{ filename, content_type, size }] }.
@@ -94,21 +117,14 @@ type FeedbackApp = {
  * r2_keys via the `presigned` form field.
  */
 export async function handlePresignFeedbackAttachments(c: Context<{ Bindings: Env }>) {
-  const slug = c.req.param("slug");
-  if (!slug) return c.json({ error: "slug required" }, 400);
-  const app = await c.env.DB.prepare(
-    "SELECT id, client_key FROM apps WHERE slug = ?1 AND archived = 0",
-  )
-    .bind(slug)
-    .first<{ id: string; client_key: string | null }>();
-  if (!app) return c.json({ error: `app '${slug}' not found` }, 404);
-  const presented =
-    c.req.header("X-Hands-Client-Key") ?? c.req.header("X-Quiver-Client-Key") ?? c.req.query("client_key") ?? "";
-  if (!app.client_key || presented !== app.client_key) {
-    return c.json({ error: "invalid or missing client key" }, 401);
-  }
+  const auth = await authorizeFeedbackUpload(c);
+  if ("response" in auth) return auth.response;
+  const { app } = auth;
 
-  let body: { files?: Array<{ filename?: string; content_type?: string; size?: number }> };
+  let body: {
+    files?: Array<{ filename?: string; content_type?: string; size?: number }>;
+    upload_mode?: string;
+  };
   try {
     body = await c.req.json();
   } catch {
@@ -118,14 +134,8 @@ export async function handlePresignFeedbackAttachments(c: Context<{ Bindings: En
   if (files.length === 0 || files.length > MAX_ATTACHMENTS) {
     return c.json({ error: `files must contain 1-${MAX_ATTACHMENTS} entries` }, 400);
   }
-
-  const now = Date.now();
-  const out: Array<{
-    attachment_id: string;
-    r2_key: string;
-    upload_url: string;
-    expires_at: number;
-  }> = [];
+  // Validate the complete batch before creating any multipart session. A bad
+  // later entry must not strand an earlier R2 multipart upload.
   for (const [index, file] of files.entries()) {
     const size = typeof file.size === "number" ? file.size : 0;
     if (size <= 0 || size > MAX_PRESIGNED_BYTES) {
@@ -134,12 +144,45 @@ export async function handlePresignFeedbackAttachments(c: Context<{ Bindings: En
         400,
       );
     }
+  }
+
+  const now = Date.now();
+  const multipart = body.upload_mode === "r2_multipart_proxy";
+  const out: Array<{
+    attachment_id: string;
+    r2_key: string;
+    upload_url?: string;
+    expires_at?: number;
+    upload_id?: string;
+    part_size?: number;
+  }> = [];
+  const startedMultipartUploads: R2MultipartUpload[] = [];
+  for (const [index, file] of files.entries()) {
     const safeName =
       String(file.filename ?? "").replace(/[^A-Za-z0-9._-]/g, "_").slice(0, 120) ||
       `attachment-${index}`;
     const contentType = String(file.content_type ?? "application/octet-stream").slice(0, 100);
     const attachmentId = crypto.randomUUID();
     const r2Key = `feedback/${app.id}/presigned/${attachmentId}-${safeName}`;
+    if (multipart) {
+      let upload: R2MultipartUpload;
+      try {
+        upload = await c.env.APK_BUCKET.createMultipartUpload(r2Key, {
+          httpMetadata: { contentType },
+        });
+      } catch {
+        await Promise.allSettled(startedMultipartUploads.map((started) => started.abort()));
+        return c.json({ error: "multipart upload is not available" }, 503);
+      }
+      startedMultipartUploads.push(upload);
+      out.push({
+        attachment_id: attachmentId,
+        r2_key: r2Key,
+        upload_id: upload.uploadId,
+        part_size: MULTIPART_PART_BYTES,
+      });
+      continue;
+    }
     const uploadUrl = await presignR2UploadUrl(c.env, r2Key, contentType, PRESIGN_TTL_SECONDS);
     if (!uploadUrl) {
       return c.json({ error: "direct upload is not configured on this server" }, 501);
@@ -152,6 +195,145 @@ export async function handlePresignFeedbackAttachments(c: Context<{ Bindings: En
     });
   }
   return c.json({ uploads: out });
+}
+
+/**
+ * Proxies one bounded raw part from pure ArkTS into an R2 multipart upload.
+ * The body is streamed through to R2; the Worker never buffers the attachment
+ * or even a complete 5 MiB part.
+ */
+export async function handleFeedbackMultipartPart(c: Context<{ Bindings: Env }>) {
+  const auth = await authorizeFeedbackUpload(c);
+  if ("response" in auth) return auth.response;
+  const r2Key = c.req.query("r2_key") ?? "";
+  const uploadId = c.req.query("upload_id") ?? "";
+  const partNumber = Number(c.req.query("part_number") ?? "0");
+  const declaredBytes = Number(c.req.header("X-Hands-Part-Bytes") ?? "0");
+  if (!validFeedbackMultipartKey(auth.app.id, r2Key)) {
+    return c.json({ error: "invalid multipart r2_key" }, 400);
+  }
+  if (uploadId.length === 0 || uploadId.length > 2048) {
+    return c.json({ error: "invalid multipart upload_id" }, 400);
+  }
+  if (!Number.isSafeInteger(partNumber) || partNumber < 1 || partNumber > MAX_MULTIPART_PARTS) {
+    return c.json({ error: `part_number must be 1-${MAX_MULTIPART_PARTS}` }, 400);
+  }
+  if (!Number.isSafeInteger(declaredBytes) || declaredBytes < 1 || declaredBytes > MULTIPART_PART_BYTES) {
+    return c.json({ error: `X-Hands-Part-Bytes must be 1-${MULTIPART_PART_BYTES}` }, 400);
+  }
+  if (!c.req.raw.body) return c.json({ error: "raw part body required" }, 400);
+
+  let receivedBytes = 0;
+  const boundedBody = c.req.raw.body.pipeThrough(new TransformStream<Uint8Array, Uint8Array>({
+    transform(chunk, controller) {
+      receivedBytes += chunk.byteLength;
+      if (receivedBytes > declaredBytes || receivedBytes > MULTIPART_PART_BYTES) {
+        throw new Error("multipart part exceeds declared size");
+      }
+      controller.enqueue(chunk);
+    },
+  }));
+  const upload = c.env.APK_BUCKET.resumeMultipartUpload(r2Key, uploadId);
+  try {
+    const part = await upload.uploadPart(partNumber, boundedBody);
+    if (receivedBytes !== declaredBytes) {
+      await upload.abort();
+      return c.json({ error: "multipart part size mismatch" }, 400);
+    }
+    return c.json({ part_number: part.partNumber, etag: part.etag, size: receivedBytes });
+  } catch (error) {
+    console.warn(JSON.stringify({
+      event: "feedback_multipart_part_failed",
+      app_id: auth.app.id,
+      part_number: partNumber,
+      error: error instanceof Error ? error.message : String(error),
+    }));
+    return c.json({ error: "multipart part upload failed" }, 502);
+  }
+}
+
+export async function handleCompleteFeedbackMultipart(c: Context<{ Bindings: Env }>) {
+  const auth = await authorizeFeedbackUpload(c);
+  if ("response" in auth) return auth.response;
+  let body: {
+    r2_key?: string;
+    upload_id?: string;
+    size?: number;
+    parts?: Array<{ part_number?: number; etag?: string }>;
+  };
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ error: "JSON body required" }, 400);
+  }
+  const r2Key = String(body.r2_key ?? "");
+  const uploadId = String(body.upload_id ?? "");
+  const size = typeof body.size === "number" ? body.size : 0;
+  const parts = Array.isArray(body.parts) ? body.parts : [];
+  if (!validFeedbackMultipartKey(auth.app.id, r2Key)) {
+    return c.json({ error: "invalid multipart r2_key" }, 400);
+  }
+  if (uploadId.length === 0 || uploadId.length > 2048) {
+    return c.json({ error: "invalid multipart upload_id" }, 400);
+  }
+  if (!Number.isSafeInteger(size) || size < 1 || size > MAX_PRESIGNED_BYTES) {
+    return c.json({ error: `size must be 1-${MAX_PRESIGNED_BYTES}` }, 400);
+  }
+  const expectedParts = Math.ceil(size / MULTIPART_PART_BYTES);
+  if (parts.length !== expectedParts || expectedParts > MAX_MULTIPART_PARTS) {
+    return c.json({ error: `parts must contain exactly ${expectedParts} entries` }, 400);
+  }
+  const uploadedParts: R2UploadedPart[] = [];
+  for (let index = 0; index < parts.length; index++) {
+    const entry = parts[index];
+    if (!entry) return c.json({ error: "missing multipart part" }, 400);
+    const partNumber = entry.part_number;
+    const etag = String(entry.etag ?? "");
+    if (partNumber !== index + 1 || etag.length === 0 || etag.length > 256) {
+      return c.json({ error: "parts must be sequential and contain valid etags" }, 400);
+    }
+    uploadedParts.push({ partNumber, etag });
+  }
+  const upload = c.env.APK_BUCKET.resumeMultipartUpload(r2Key, uploadId);
+  try {
+    const object = await upload.complete(uploadedParts);
+    if (object.size !== size) {
+      await c.env.APK_BUCKET.delete(r2Key);
+      return c.json({ error: "completed multipart upload size mismatch" }, 400);
+    }
+    return c.json({ r2_key: r2Key, size: object.size });
+  } catch (error) {
+    console.warn(JSON.stringify({
+      event: "feedback_multipart_complete_failed",
+      app_id: auth.app.id,
+      error: error instanceof Error ? error.message : String(error),
+    }));
+    return c.json({ error: "multipart completion failed" }, 502);
+  }
+}
+
+export async function handleAbortFeedbackMultipart(c: Context<{ Bindings: Env }>) {
+  const auth = await authorizeFeedbackUpload(c);
+  if ("response" in auth) return auth.response;
+  let body: { r2_key?: string; upload_id?: string };
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ error: "JSON body required" }, 400);
+  }
+  const r2Key = String(body.r2_key ?? "");
+  const uploadId = String(body.upload_id ?? "");
+  if (!validFeedbackMultipartKey(auth.app.id, r2Key) || uploadId.length === 0 || uploadId.length > 2048) {
+    return c.json({ error: "invalid multipart upload target" }, 400);
+  }
+  try {
+    await c.env.APK_BUCKET.resumeMultipartUpload(r2Key, uploadId).abort();
+    return c.json({ aborted: true });
+  } catch {
+    // Abort is idempotent from the SDK's perspective: an already-expired or
+    // already-aborted upload has no durable attachment to clean up.
+    return c.json({ aborted: true });
+  }
 }
 
 export async function handlePublicFeedbackSubmit(c: Context<{ Bindings: Env }>) {
@@ -373,6 +555,10 @@ export async function handlePublicFeedbackSubmit(c: Context<{ Bindings: Env }>) 
       if (!head) {
         return c.json({ error: `presigned upload not found: ${r2Key}` }, 400);
       }
+      const declaredSize = typeof item.size === "number" ? item.size : 0;
+      if (declaredSize <= 0 || head.size !== declaredSize) {
+        return c.json({ error: `presigned upload size mismatch: ${r2Key}` }, 400);
+      }
       const filename =
         String(item.filename ?? "").replace(/[^A-Za-z0-9._-]/g, "_").slice(0, 120) ||
         r2Key.split("/").pop() ||
@@ -382,14 +568,14 @@ export async function handlePublicFeedbackSubmit(c: Context<{ Bindings: Env }>) 
         r2Key,
         filename,
         contentType: (item.content_type ? String(item.content_type).slice(0, 100) : null),
-        sizeBytes: head.size ?? (typeof item.size === "number" ? item.size : 0),
+        sizeBytes: head.size,
         fingerprint: {
           source: "presigned",
           index: attachmentRows.length,
           r2_key: r2Key,
           filename,
           content_type: item.content_type ? String(item.content_type).slice(0, 100) : null,
-          size_bytes: head.size ?? (typeof item.size === "number" ? item.size : 0),
+          size_bytes: head.size,
           etag: head.etag,
         },
       });

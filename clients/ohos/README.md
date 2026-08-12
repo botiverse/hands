@@ -45,7 +45,7 @@ const ticketId = await HandsFeedbackClient.submit(
   context,                    // common.UIAbilityContext
   'Feed does not refresh',    // message
   'bug',                      // 'feedback' | 'bug' | 'crash'
-  [logFilePath],              // up to 9 files; 50 MB OHOS cap
+  [logFilePath],              // up to 9 files; 200 MB per file
   [],                         // extras: Array<{ key, value }>
 );
 ```

@@ -41,7 +41,7 @@ Sentry does not have at all (see "Moats").
 | Handled errors (`captureException`) | ❌ | ❌ | ❌ | ❌ | ✅ core API |
 | Sessions / release health | ❌ 24h device ping only → **crash-free rate uncomputable** | same | same | same | ✅ signature feature |
 | Performance (transactions/spans/startup/frames) | ❌ | ❌ | ❌ | ❌ | ✅ |
-| User feedback + attachments | ✅ ≤200 MB presigned | ✅ | ✅ (50 MB) | ❌ in SDK (tickets exist server-side) | ⚠️ weaker than ours |
+| User feedback + attachments | ✅ ≤200 MB presigned | ✅ | ✅ ≤200 MB, bounded ArkTS/R2 multipart | ❌ in SDK (tickets exist server-side) | ⚠️ weaker than ours |
 | Log capture | crash-time logcat tail | host-provided via diagnostics provider | ❌ | ❌ | ✅ Logs GA |
 | Session replay / profiling / crons / uptime | ❌ | ❌ | ❌ | ❌ | ✅ |
 | **In-app update distribution + staged rollout** | ✅ full (hash bucketing, force-update, installer) | ❌ | ❌ | ⚠️ CLI publishes electron-updater artifacts | ❌ **Sentry has none** |
