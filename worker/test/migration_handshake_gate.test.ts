@@ -115,6 +115,26 @@ describe("migration handshake gate — structure holds", () => {
     expect(shapeCheck).toBeGreaterThan(shortCircuit);
   });
 
+  // Gogo's rule: every behaviour runGate asserts must be pinned on the ORIGINAL
+  // workflow too, or the assertion is dangling — runGate is a reconstruction and
+  // could keep exiting 1 while the real gate stopped doing so. runGate asserts
+  // three exit behaviours; order is already pinned above, but the two exit CODES
+  // were only in the reconstruction. Pin them to the real gate here.
+  it("pins the short-circuit exit 0 on the real no-pending branch", () => {
+    const scIdx = gateStep.indexOf("no migrations to apply");
+    const exit0 = gateStep.indexOf("exit 0", scIdx);
+    const shapeCheck = gateStep.indexOf("=~");
+    expect(exit0).toBeGreaterThan(scIdx);
+    expect(exit0).toBeLessThan(shapeCheck); // the short-circuit exits before the shape check
+  });
+
+  it("pins the reject exit 1 on the real branch, after the shape check", () => {
+    const shapeCheck = gateStep.indexOf("=~");
+    const exit1 = gateStep.indexOf("exit 1", shapeCheck);
+    expect(shapeCheck).toBeGreaterThanOrEqual(0);
+    expect(exit1).toBeGreaterThan(shapeCheck); // the reject branch really exits non-zero
+  });
+
   it("places the gate BEFORE the apply step, so it can stop before apply", () => {
     const gateIdx = workflow.indexOf("Check who is watching a pending migration");
     const applyIdx = workflow.indexOf("Apply Hands D1 migrations");
