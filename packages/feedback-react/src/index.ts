@@ -8,6 +8,7 @@ export type {
   FeedbackInboxProps,
   FeedbackTicketProps,
   FeedbackWorkspaceProps,
+  FeedbackPendingAttachmentOpenInput,
   FeedbackWorkspaceNavigationOptions,
   FeedbackWorkspaceRoute,
   NewFeedbackProps,

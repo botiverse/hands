@@ -889,6 +889,50 @@ describe("FeedbackWorkspace browser behavior", () => {
     ).toEqual([]);
   });
 
+  it("renders pending image thumbnails, opens them through the host, and revokes previews on remove", async () => {
+    vi.mocked(URL.createObjectURL).mockClear();
+    vi.mocked(URL.revokeObjectURL).mockClear();
+    const adapter = transport();
+    const onOpenPendingAttachment = vi.fn();
+    render(
+      <FeedbackProvider transport={adapter}>
+        <FeedbackWorkspace
+          onOpenPendingAttachment={onOpenPendingAttachment}
+        />
+      </FeedbackProvider>,
+    );
+
+    fireEvent.click(await screen.findByText("New feedback"));
+    const attachment = new File([new Uint8Array(128)], "proof.png", {
+      type: "image/png",
+    });
+    fireEvent.change(screen.getByLabelText("Screenshots (up to 3)"), {
+      target: { files: [attachment] },
+    });
+
+    const thumbnail = await screen.findByRole("button", {
+      name: "Open attachment proof.png",
+    });
+    expect(thumbnail.getAttribute("data-slot")).toBe(
+      "composer-attachment-image",
+    );
+    expect(thumbnail.querySelector("img")?.getAttribute("src")).toBe(
+      "blob:hands-feedback-preview",
+    );
+    expect(thumbnail.getAttribute("title")).toBe("proof.png · image/png");
+    expect(thumbnail.parentElement?.querySelector("[data-slot='composer-attachment-file']"))
+      .toBeNull();
+    fireEvent.click(thumbnail);
+    expect(onOpenPendingAttachment).toHaveBeenCalledWith({ file: attachment });
+
+    fireEvent.click(screen.getByRole("button", { name: "Remove proof.png" }));
+    await waitFor(() =>
+      expect(URL.revokeObjectURL).toHaveBeenCalledWith(
+        "blob:hands-feedback-preview",
+      ),
+    );
+  });
+
   it("keeps reply attachments inside the composer and forwards upload progress", async () => {
     const adapter = transport();
     adapter.addComment = vi.fn(async (input) => {
@@ -908,7 +952,9 @@ describe("FeedbackWorkspace browser behavior", () => {
       await screen.findByTestId("hands-feedback-reply-image-input"),
       { target: { files: [attachment] } },
     );
-    expect(await screen.findByText("reply.png")).toBeTruthy();
+    expect(
+      await screen.findByTitle("reply.png · image/png"),
+    ).toBeTruthy();
     fireEvent.change(screen.getByLabelText("Reply"), {
       target: { value: "Reply with a screenshot" },
     });
@@ -917,7 +963,53 @@ describe("FeedbackWorkspace browser behavior", () => {
     await waitFor(() => expect(adapter.addComment).toHaveBeenCalledTimes(1));
     const input = vi.mocked(adapter.addComment).mock.calls[0]![0];
     expect(input.attachments).toEqual([attachment]);
-    expect(screen.queryByText("reply.png")).toBeNull();
+    expect(screen.queryByTitle("reply.png · image/png")).toBeNull();
+  });
+
+  it("shows aggregate and per-image progress while preventing duplicate submit", async () => {
+    const adapter = transport();
+    let resolveCreate: ((value: FeedbackTicketDetail) => void) | undefined;
+    adapter.createTicket = vi.fn(
+      (input) =>
+        new Promise<FeedbackTicketDetail>((resolve) => {
+          input.onAttachmentProgress?.({ index: 0, progress: 0.42 });
+          resolveCreate = resolve;
+        }),
+    );
+    const { container } = render(
+      <FeedbackProvider transport={adapter}>
+        <FeedbackWorkspace />
+      </FeedbackProvider>,
+    );
+
+    fireEvent.click(await screen.findByText("New feedback"));
+    fireEvent.change(screen.getByLabelText("What would you like us to know?"), {
+      target: { value: "Show upload progress" },
+    });
+    fireEvent.change(screen.getByLabelText("Screenshots (up to 3)"), {
+      target: {
+        files: [new File(["image"], "progress.png", { type: "image/png" })],
+      },
+    });
+    const submit = screen.getByRole("button", { name: "Submit" });
+    fireEvent.click(submit);
+    fireEvent.click(submit);
+
+    expect(adapter.createTicket).toHaveBeenCalledTimes(1);
+    expect(await screen.findByRole("status", { name: "" })).toBeTruthy();
+    expect(screen.getByText("Uploading 42%")).toBeTruthy();
+    expect(
+      container.querySelector<HTMLElement>(
+        "[data-slot='composer-attachment-upload-progress-bar-indicator']",
+      )?.style.width,
+    ).toBe("42%");
+    expect(
+      (screen.getByRole("button", { name: "Submitting…" }) as HTMLButtonElement)
+        .disabled,
+    ).toBe(true);
+
+    resolveCreate?.(detail);
+    expect(await screen.findByText("Thanks")).toBeTruthy();
   });
 
   it("renders an accepted reporter reply into the conversation immediately", async () => {
@@ -1027,7 +1119,7 @@ describe("FeedbackWorkspace browser behavior", () => {
     fireEvent.click(screen.getByText("Submit"));
     expect(await screen.findByText("Upload failed")).toBeTruthy();
     expect(editor.value).toBe("Keep this text");
-    expect(screen.getByText("proof.png")).toBeTruthy();
+    expect(screen.getByTitle("proof.png · image/png")).toBeTruthy();
     fireEvent.click(screen.getByText("Retry upload"));
     expect(await screen.findByText("Thanks")).toBeTruthy();
     const calls = vi.mocked(adapter.createTicket).mock.calls;

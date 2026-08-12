@@ -49,6 +49,7 @@ import {
   ComposerAttachmentBody,
   ComposerAttachmentFailedOverlay,
   ComposerAttachmentFile,
+  ComposerAttachmentImage,
   ComposerAttachmentMeta,
   ComposerAttachmentRemove,
   ComposerAttachments,
@@ -133,6 +134,10 @@ type PendingAttachment = {
   file: File;
   progress: number;
   state: "ready" | "uploading" | "failed";
+};
+
+export type FeedbackPendingAttachmentOpenInput = {
+  file: File;
 };
 
 export function mergeTicketPages(
@@ -442,6 +447,7 @@ type FeedbackComposerProps = {
   attachments: PendingAttachment[];
   onAttachmentsChange(event: ChangeEvent<HTMLInputElement>): void;
   onRemoveAttachment(id: string): void;
+  onOpenAttachment?: (input: FeedbackPendingAttachmentOpenInput) => void;
   busy: boolean;
   error?: string | null;
   onKeyDown?: (event: KeyboardEvent<HTMLTextAreaElement>) => void;
@@ -452,6 +458,62 @@ type FeedbackComposerProps = {
   actions: ReactNode;
 };
 
+function FeedbackPendingAttachmentImage({
+  file,
+  onOpenAttachment,
+}: {
+  file: File;
+  onOpenAttachment?: (input: FeedbackPendingAttachmentOpenInput) => void;
+}) {
+  const { message } = useHandsFeedback();
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (typeof URL.createObjectURL !== "function") return;
+    const url = URL.createObjectURL(file);
+    setPreviewUrl(url);
+    return () => {
+      if (typeof URL.revokeObjectURL === "function") URL.revokeObjectURL(url);
+    };
+  }, [file]);
+
+  if (!previewUrl) {
+    return (
+      <ComposerAttachmentFile>
+        <ImagePlus aria-hidden="true" />
+        <ComposerAttachmentBody>
+          <ComposerAttachmentTitle>{file.name}</ComposerAttachmentTitle>
+          <ComposerAttachmentMeta>
+            {file.type || message("attachments")}
+          </ComposerAttachmentMeta>
+        </ComposerAttachmentBody>
+      </ComposerAttachmentFile>
+    );
+  }
+
+  return (
+    <ComposerAttachmentImage
+      render={onOpenAttachment ? <button type="button" /> : undefined}
+      className={
+        onOpenAttachment
+          ? "hands-feedback-pending-image-button"
+          : "hands-feedback-pending-image"
+      }
+      aria-label={
+        onOpenAttachment
+          ? message("openAttachment", { name: file.name })
+          : undefined
+      }
+      title={`${file.name} · ${file.type || message("attachments")}`}
+      onClick={
+        onOpenAttachment ? () => onOpenAttachment({ file }) : undefined
+      }
+    >
+      <img alt="" src={previewUrl} />
+    </ComposerAttachmentImage>
+  );
+}
+
 function FeedbackComposer({
   id,
   label,
@@ -461,6 +523,7 @@ function FeedbackComposer({
   attachments,
   onAttachmentsChange,
   onRemoveAttachment,
+  onOpenAttachment,
   busy,
   error,
   onKeyDown,
@@ -475,6 +538,13 @@ function FeedbackComposer({
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const attachmentsDisabled =
     busy || attachments.length >= MAX_FEEDBACK_ATTACHMENTS;
+  const totalUploadProgress = attachments.length
+    ? Math.round(
+        (attachments.reduce((sum, item) => sum + item.progress, 0) /
+          attachments.length) *
+          100,
+      )
+    : 0;
 
   return (
     <ComposerRoot
@@ -509,17 +579,10 @@ function FeedbackComposer({
         <ComposerAttachments aria-label={message("attachments")}>
           {attachments.map((item) => (
             <ComposerAttachment key={item.id}>
-              <ComposerAttachmentFile>
-                <ImagePlus aria-hidden="true" />
-                <ComposerAttachmentBody>
-                  <ComposerAttachmentTitle>
-                    {item.file.name}
-                  </ComposerAttachmentTitle>
-                  <ComposerAttachmentMeta>
-                    {item.file.type || message("attachments")}
-                  </ComposerAttachmentMeta>
-                </ComposerAttachmentBody>
-              </ComposerAttachmentFile>
+              <FeedbackPendingAttachmentImage
+                file={item.file}
+                {...(onOpenAttachment ? { onOpenAttachment } : {})}
+              />
               {item.state === "uploading" && (
                 <>
                   <ComposerAttachmentUploadingOverlay>
@@ -546,6 +609,15 @@ function FeedbackComposer({
             </ComposerAttachment>
           ))}
         </ComposerAttachments>
+      )}
+      {busy && attachments.length > 0 && (
+        <div
+          className="hands-feedback-upload-summary"
+          role="status"
+          aria-live="polite"
+        >
+          {message("uploadOverall", { progress: totalUploadProgress })}
+        </div>
       )}
       {error && (
         <FeedbackErrorBanner error={error} />
@@ -979,6 +1051,9 @@ export type FeedbackTicketProps = {
   initialTicket?: FeedbackTicketSummary;
   onBack(): void;
   onOpenAttachment?: (input: FeedbackAttachmentOpenInput) => void;
+  onOpenPendingAttachment?: (
+    input: FeedbackPendingAttachmentOpenInput,
+  ) => void;
   draft?: string;
   onDraftChange?: (value: string) => void;
   onReadSuccess?: (ticketId: string) => void;
@@ -1185,6 +1260,7 @@ export function FeedbackTicket({
   initialTicket,
   onBack,
   onOpenAttachment,
+  onOpenPendingAttachment,
   draft,
   onDraftChange,
   onReadSuccess,
@@ -1635,6 +1711,9 @@ export function FeedbackTicket({
                   current.filter((item) => item.id !== id),
                 )
               }
+              {...(onOpenPendingAttachment
+                ? { onOpenAttachment: onOpenPendingAttachment }
+                : {})}
               busy={sending}
               error={actionError}
               onKeyDown={onReplyKeyDown}
@@ -1686,9 +1765,16 @@ export function FeedbackTicket({
 export type NewFeedbackProps = {
   onCancel(): void;
   onCreated(ticketId: string, detail?: FeedbackTicketDetail): void;
+  onOpenPendingAttachment?: (
+    input: FeedbackPendingAttachmentOpenInput,
+  ) => void;
 };
 
-export function NewFeedback({ onCancel, onCreated }: NewFeedbackProps) {
+export function NewFeedback({
+  onCancel,
+  onCreated,
+  onOpenPendingAttachment,
+}: NewFeedbackProps) {
   const { message: copy, reportUnread, transport } = useHandsFeedback();
   const safeError = useSafeError();
   const [kind, setKind] = useState<FeedbackKind>("feedback");
@@ -1872,6 +1958,9 @@ export function NewFeedback({ onCancel, onCreated }: NewFeedbackProps) {
               current.filter((item) => item.id !== id),
             )
           }
+          {...(onOpenPendingAttachment
+            ? { onOpenAttachment: onOpenPendingAttachment }
+            : {})}
           busy={sending}
           error={error}
           placeholder={copy("describePlaceholder")}
@@ -1935,6 +2024,7 @@ export type FeedbackWorkspaceProps = {
     options?: FeedbackWorkspaceNavigationOptions,
   ) => void;
   onOpenAttachment?: FeedbackTicketProps["onOpenAttachment"];
+  onOpenPendingAttachment?: FeedbackTicketProps["onOpenPendingAttachment"];
   /** Enables mobile pull-to-refresh for the inbox and ticket conversation. */
   enablePullToRefresh?: boolean;
 };
@@ -1944,6 +2034,7 @@ export function FeedbackWorkspace({
   route: controlledRoute,
   onRouteChange,
   onOpenAttachment,
+  onOpenPendingAttachment,
   enablePullToRefresh = false,
 }: FeedbackWorkspaceProps) {
   const { theme } = useHandsFeedback();
@@ -2040,6 +2131,7 @@ export function FeedbackWorkspace({
       />
       {route.view === "new" && (
         <NewFeedback
+          {...(onOpenPendingAttachment ? { onOpenPendingAttachment } : {})}
           onCancel={() => navigate({ view: "inbox" })}
           onCreated={(ticketId, detail) => {
             if (detail) {
@@ -2071,6 +2163,9 @@ export function FeedbackWorkspace({
           onTicketUpdated={setCreatedTicket}
           onBack={back}
           {...(onOpenAttachment ? { onOpenAttachment } : {})}
+          {...(onOpenPendingAttachment
+            ? { onOpenPendingAttachment }
+            : {})}
         />
       )}
     </div>

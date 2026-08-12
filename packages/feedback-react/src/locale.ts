@@ -81,6 +81,7 @@ export type FeedbackMessageKey =
   | "uploadCanceled"
   | "uploadFailed"
   | "uploadProgress"
+  | "uploadOverall"
   | "workspaceTitle"
   | "you";
 
@@ -169,6 +170,7 @@ const messages: Record<FeedbackLocale, FeedbackMessages> = {
     uploadCanceled: "Upload canceled",
     uploadFailed: "Upload failed",
     uploadProgress: "Upload progress for {name}",
+    uploadOverall: "Uploading {progress}%",
     workspaceTitle: "My Feedback",
     you: "You",
   },
@@ -249,6 +251,7 @@ const messages: Record<FeedbackLocale, FeedbackMessages> = {
     uploadCanceled: "上传已取消",
     uploadFailed: "上传失败",
     uploadProgress: "{name} 的上传进度",
+    uploadOverall: "正在上传 {progress}%",
     workspaceTitle: "我的反馈",
     you: "你",
   },
