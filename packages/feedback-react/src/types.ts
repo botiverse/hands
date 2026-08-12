@@ -102,16 +102,11 @@ export type HandsFeedbackTransport = {
     ticketId: string;
     signal: AbortSignal;
   }): Promise<FeedbackTicketDetail>;
-  /** Optional until the host exposes the reporter-owned reopen endpoint. */
-  reopenTicket?(input: {
-    ticketId: string;
-    signal: AbortSignal;
-  }): Promise<FeedbackTicketDetail>;
 };
 
 export type FeedbackUnreadChange = {
   total: number;
-  source: "list" | "detail" | "create" | "comment" | "close" | "reopen";
+  source: "list" | "detail" | "create" | "comment" | "close";
 };
 
 export type FeedbackTransportErrorCode =

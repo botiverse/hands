@@ -20,7 +20,7 @@ The initial registry is:
 | `app:admin` | Manage app settings, members, credentials, and destructive operations. |
 | `feedback:write` | Submit feedback tickets for the app. |
 | `feedback:read` | Token-only: read tickets owned by a reporter integration. |
-| `feedback:comment` | Token-only: comment on, close, and reopen tickets owned by a reporter integration. |
+| `feedback:comment` | Token-only: comment on, and close, tickets owned by a reporter integration. |
 | `feedback:route` | Token-only: bind an opaque immutable route subject for webhook routing. |
 
 App roles are centrally defined bundles:

@@ -396,15 +396,9 @@
   position: sticky;
 }
 
-.hands-feedback-close-chip,
-.hands-feedback-reopen-chip {
+.hands-feedback-close-chip {
   cursor: pointer;
   pointer-events: auto;
-}
-
-.hands-feedback-reopen-chip[aria-disabled="true"] {
-  cursor: wait;
-  opacity: 0.6;
 }
 
 .hands-feedback-reply-footer {

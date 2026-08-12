@@ -150,7 +150,7 @@ describe("FeedbackWorkspace browser behavior", () => {
     const dialog = await screen.findByRole("alertdialog");
     expect(within(dialog).getByText("确定关闭这个工单吗？")).toBeTruthy();
     expect(
-      within(dialog).getByText("关闭后你将不能继续回复。如需补充信息，你可以重新打开。"),
+      within(dialog).getByText("关闭后你将不能继续回复。如需补充信息，团队可以重新打开。"),
     ).toBeTruthy();
     expect(adapter.closeTicket).not.toHaveBeenCalled();
     fireEvent.click(within(dialog).getByRole("button", { name: "关闭工单" }));
@@ -181,14 +181,6 @@ describe("FeedbackWorkspace browser behavior", () => {
         ...detail.ticket,
         status: "closed",
         updatedAt: 4,
-      },
-    }));
-    adapter.reopenTicket = vi.fn(async () => ({
-      ...detail,
-      ticket: {
-        ...detail.ticket,
-        status: "open",
-        updatedAt: 5,
       },
     }));
     const { container } = render(
@@ -226,73 +218,7 @@ describe("FeedbackWorkspace browser behavior", () => {
       ).toBeTruthy(),
     );
     expect(within(card).queryByRole("button", { name: "Close ticket" })).toBeNull();
-    const reopenTicket = within(card).getByRole("button", {
-      name: "Reopen ticket",
-    });
-    fireEvent.click(reopenTicket);
-    expect(screen.queryByRole("alertdialog")).toBeNull();
-    await waitFor(() => expect(adapter.reopenTicket).toHaveBeenCalledTimes(1));
-    expect(adapter.reopenTicket).toHaveBeenCalledWith(
-      expect.objectContaining({
-        ticketId: ticket.id,
-        signal: expect.any(AbortSignal),
-      }),
-    );
-    await waitFor(() =>
-      expect(card.querySelector("[data-feedback-status='open']")).toBeTruthy(),
-    );
-    expect(within(card).getByRole("button", { name: "Close ticket" })).toBeTruthy();
     expect(container.querySelector(".hands-feedback-detail")).toBeNull();
-  });
-
-  it("reopens an ended ticket from detail without presenting the close confirmation", async () => {
-    const adapter = transport();
-    const resolvedDetail: FeedbackTicketDetail = {
-      ...detail,
-      ticket: {
-        ...detail.ticket,
-        status: "resolved",
-        updatedAt: 4,
-      },
-    };
-    adapter.listTickets = vi.fn(async () => ({
-      ...page,
-      tickets: [resolvedDetail.ticket],
-    }));
-    adapter.getTicket = vi.fn(async () => resolvedDetail);
-    adapter.closeTicket = vi.fn(async () => resolvedDetail);
-    adapter.reopenTicket = vi.fn(async () => ({
-      ...resolvedDetail,
-      ticket: {
-        ...resolvedDetail.ticket,
-        status: "open",
-        updatedAt: 5,
-      },
-    }));
-
-    const { container } = render(
-      <FeedbackProvider transport={adapter} locale="zh-CN" theme="brutal">
-        <FeedbackWorkspace />
-      </FeedbackProvider>,
-    );
-
-    fireEvent.click(
-      await screen.findByRole("button", { name: resolvedDetail.ticket.message }),
-    );
-    const reopen = await screen.findByRole("button", { name: "重新打开" });
-    expect(screen.queryByRole("button", { name: "关闭工单" })).toBeNull();
-    fireEvent.click(reopen);
-    expect(screen.queryByRole("alertdialog")).toBeNull();
-    await waitFor(() => expect(adapter.reopenTicket).toHaveBeenCalledTimes(1));
-    await waitFor(() =>
-      expect(
-        container.querySelector(
-          ".hands-feedback-detail [data-feedback-status='open']",
-        ),
-      ).toBeTruthy(),
-    );
-    expect(screen.getByRole("button", { name: "关闭工单" })).toBeTruthy();
-    expect(adapter.closeTicket).not.toHaveBeenCalled();
   });
 
   it("supports host copy and date localization overrides through one provider contract", async () => {
@@ -552,7 +478,6 @@ describe("FeedbackWorkspace browser behavior", () => {
   it("maps every reporter ticket status to the Raft task palette", async () => {
     const adapter = transport();
     adapter.closeTicket = vi.fn(async () => detail);
-    adapter.reopenTicket = vi.fn(async () => detail);
     adapter.listTickets = vi.fn(async () => ({
       tickets: (["open", "in_progress", "resolved", "closed"] as const).map(
         (status, index) => ({
@@ -628,18 +553,9 @@ describe("FeedbackWorkspace browser behavior", () => {
     const listCloseActions = screen.getAllByRole("button", {
       name: "Close ticket",
     });
-    expect(listCloseActions).toHaveLength(2);
+    expect(listCloseActions).toHaveLength(3);
     expect(
       listCloseActions.every((action) =>
-        action.closest(".hands-feedback-ticket-meta"),
-      ),
-    ).toBe(true);
-    const listReopenActions = screen.getAllByRole("button", {
-      name: "Reopen ticket",
-    });
-    expect(listReopenActions).toHaveLength(2);
-    expect(
-      listReopenActions.every((action) =>
         action.closest(".hands-feedback-ticket-meta"),
       ),
     ).toBe(true);

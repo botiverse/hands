@@ -115,7 +115,6 @@ import {
   handleDownloadReporterAttachment,
   handleGetReporterFeedback,
   handleListReporterFeedback,
-  handleReopenReporterFeedback,
   cleanupReporterFeedbackData,
 } from "./routes/reporter_feedback";
 import { handleMintReporterSession } from "./routes/reporter_sessions";
@@ -585,7 +584,6 @@ app.put("/api/apps/:appId/reporter-feedback/route-subject", handleBindReporterRo
 app.get("/api/apps/:appId/reporter-feedback/:ticketId", handleGetReporterFeedback);
 app.post("/api/apps/:appId/reporter-feedback/:ticketId/comments", handleAddReporterComment);
 app.post("/api/apps/:appId/reporter-feedback/:ticketId/close", handleCloseReporterFeedback);
-app.post("/api/apps/:appId/reporter-feedback/:ticketId/reopen", handleReopenReporterFeedback);
 app.get(
   "/api/apps/:appId/reporter-feedback/:ticketId/attachments/:attachmentId",
   handleDownloadReporterAttachment,
