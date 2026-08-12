@@ -451,6 +451,20 @@ export function registerPublicRoutes(registry: OpenApiRegistry) {
     path: "/public/r2/{key}",
     tags: ["Public downloads"],
     summary: "Download a signed public release artifact",
+    description:
+      "Serves an object whose `key` + `expires` were signed by a public resolution " +
+      "endpoint (e.g. /public/v2/apps/{slug}/latest). The signature is the authorization: " +
+      "this route accepts a matching row in either `active` or `draft` status, but no " +
+      "public endpoint ever SIGNS a URL for a non-active release, so a draft key is never " +
+      "reachable here in practice. Draft isolation is enforced by (1) resolution endpoints " +
+      "filtering to `status = 'active'` before signing and (2) the HMAC signature gating " +
+      "this route — NOT by the key path. Note: an active artifact's key is " +
+      "`apps/{appId}/pending/{hash}` — `pending/` is content-addressed storage layout that " +
+      "never moves on finalize, not a draft marker. Draft *metadata* (changelog, size) is " +
+      "separately and intentionally discoverable via /notes by exact version_code on " +
+      "public_history apps (a monotonic, unauthenticated integer — do not treat it as a " +
+      "gate); the *artifact* is not. Do not assume 'drafts are invisible' or " +
+      "'version_code protects them'.",
     request: {
       params: R2KeyParam,
       query: z.object({
@@ -461,9 +475,9 @@ export function registerPublicRoutes(registry: OpenApiRegistry) {
     responses: {
       200: { description: "Artifact stream.", content: binary() },
       302: { description: "Redirect to presigned object storage URL." },
-      400: error("Invalid signature parameters."),
-      403: error("Signature expired or invalid."),
-      404: error("Artifact is not attached to an active release."),
+      400: error("Malformed request. `code`: `key_required` | `expires_invalid`."),
+      403: error("Signature check failed. `code`: `url_expired` (re-resolve from /latest for a fresh URL) | `invalid_signature`."),
+      404: error("Object not downloadable at this key. `code`: `object_not_found` (no matching build asset / feedback attachment, or the R2 object is gone)."),
     },
   });
 

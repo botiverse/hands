@@ -950,16 +950,16 @@ export async function handlePublicR2Download(c: Context<{ Bindings: Env }>) {
   const key = c.req.param("key");
   const expires = Number(c.req.query("expires"));
   const sig = c.req.query("sig") ?? "";
-  if (!key) return c.json({ error: "key required" }, 400);
+  if (!key) return c.json({ error: "key required", code: "key_required" }, 400);
   if (!Number.isFinite(expires)) {
-    return c.json({ error: "expires must be a unix timestamp" }, 400);
+    return c.json({ error: "expires must be a unix timestamp", code: "expires_invalid" }, 400);
   }
   if (expires < Math.floor(Date.now() / 1000)) {
-    return c.json({ error: "download URL expired" }, 403);
+    return c.json({ error: "download URL expired", code: "url_expired" }, 403);
   }
   const expectedSig = await signDownloadUrl(c.env, key, expires);
   if (!sig || !constantTimeEqual(sig, expectedSig)) {
-    return c.json({ error: "invalid download signature" }, 403);
+    return c.json({ error: "invalid download signature", code: "invalid_signature" }, 403);
   }
 
   const asset = await c.env.DB.prepare(
@@ -999,9 +999,9 @@ export async function handlePublicR2Download(c: Context<{ Bindings: Env }>) {
     )
       .bind(key)
       .first<{ filename: string; content_type: string | null; size_bytes: number | null }>();
-    if (!attachment) return c.json({ error: "asset not found" }, 404);
+    if (!attachment) return c.json({ error: "asset not found", code: "object_not_found" }, 404);
     const object = await c.env.APK_BUCKET.get(key);
-    if (!object) return c.json({ error: "object not found" }, 404);
+    if (!object) return c.json({ error: "object not found", code: "object_not_found" }, 404);
     const headers = new Headers();
     object.writeHttpMetadata(headers);
     headers.set("etag", object.httpEtag);
@@ -1026,12 +1026,12 @@ export async function handlePublicR2Download(c: Context<{ Bindings: Env }>) {
   ));
   if (directUrl) {
     const objectHead = await c.env.APK_BUCKET.head(key);
-    if (!objectHead) return c.json({ error: "object not found" }, 404);
+    if (!objectHead) return c.json({ error: "object not found", code: "object_not_found" }, 404);
     return c.redirect(directUrl, 302);
   }
 
   const object = await c.env.APK_BUCKET.get(key);
-  if (!object) return c.json({ error: "object not found" }, 404);
+  if (!object) return c.json({ error: "object not found", code: "object_not_found" }, 404);
 
   const headers = new Headers();
   object.writeHttpMetadata(headers);

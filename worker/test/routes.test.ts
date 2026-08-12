@@ -7346,7 +7346,7 @@ describe("quiver public API v2 — scope resolution", () => {
     const request = () => requestUrl(url);
     const expectAssetNotFound = async (response: Response) => {
       expect(response.status).toBe(404);
-      expect(await responseJson<any>(response)).toEqual({ error: "asset not found" });
+      expect(await responseJson<any>(response)).toEqual({ error: "asset not found", code: "object_not_found" });
     };
 
     const active = await request();
