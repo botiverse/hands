@@ -468,7 +468,7 @@ function FeedbackPendingAttachmentImage({
   const { message } = useHandsFeedback();
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (typeof URL.createObjectURL !== "function") return;
     const url = URL.createObjectURL(file);
     setPreviewUrl(url);
