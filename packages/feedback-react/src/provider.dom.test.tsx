@@ -547,13 +547,19 @@ describe("FeedbackWorkspace browser behavior", () => {
     const problemChip = container.querySelector<HTMLElement>(
       "[data-feedback-kind='bug']",
     );
+    expect(problemChip?.textContent).toContain("Bug");
     expect(problemChip?.className).toContain("hands-feedback-problem-chip");
     expect(problemChip?.className).toContain("bg-brutal-stone/25");
     expect(problemChip?.className).not.toContain("bg-brutal-pink/30");
     const listCloseActions = screen.getAllByRole("button", {
       name: "Close ticket",
     });
-    expect(listCloseActions).toHaveLength(3);
+    expect(listCloseActions).toHaveLength(2);
+    const resolvedClose = screen.getByRole("button", {
+      name: "Confirm & close",
+    });
+    expect(resolvedClose.closest(".hands-feedback-ticket-meta")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Reopen ticket" })).toBeNull();
     expect(
       listCloseActions.every((action) =>
         action.closest(".hands-feedback-ticket-meta"),
@@ -564,6 +570,15 @@ describe("FeedbackWorkspace browser behavior", () => {
     expect(adapter.closeTicket).not.toHaveBeenCalled();
     fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
     expect(screen.queryByRole("alertdialog")).toBeNull();
+
+    fireEvent.click(resolvedClose);
+    const resolvedDialog = await screen.findByRole("alertdialog");
+    expect(
+      within(resolvedDialog).getByText("Confirm this ticket is resolved?"),
+    ).toBeTruthy();
+    expect(
+      within(resolvedDialog).getByRole("button", { name: "Confirm & close" }),
+    ).toBeTruthy();
   });
 
   it("uses the shared tabs with native roles, roving focus, and activation", async () => {
@@ -626,7 +641,7 @@ describe("FeedbackWorkspace browser behavior", () => {
     expect(await screen.findByText("No feedback yet")).toBeTruthy();
     expect(
       screen.getByText(
-        "Share an idea or report a problem — team replies will show up here.",
+        "Share an idea or report a bug — team replies will show up here.",
       ),
     ).toBeTruthy();
     expect(
@@ -647,7 +662,7 @@ describe("FeedbackWorkspace browser behavior", () => {
     expect(kind).toBeTruthy();
     expect(kind.getAttribute("data-slot")).toBe("segmented-control");
     expect(screen.getByRole("radio", { name: "Idea" })).toBeTruthy();
-    expect(screen.getByRole("radio", { name: "Problem" })).toBeTruthy();
+    expect(screen.getByRole("radio", { name: "Bug" })).toBeTruthy();
     expect(screen.getByRole("radio", { name: "Idea" }).className).toContain(
       "hands-feedback-kind-item",
     );
@@ -1486,7 +1501,7 @@ describe("FeedbackWorkspace browser behavior", () => {
     );
     fireEvent.click(await screen.findByText("New feedback"));
     const feedback = screen.getByRole("radio", { name: "Idea" });
-    const problem = screen.getByRole("radio", { name: "Problem" });
+    const problem = screen.getByRole("radio", { name: "Bug" });
     expect(feedback.getAttribute("aria-checked")).toBe("true");
     expect(problem.getAttribute("aria-checked")).toBe("false");
     fireEvent.click(problem);

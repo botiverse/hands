@@ -386,12 +386,14 @@ function FeedbackCloseDialog({
   onConfirm,
   onOpenChange,
   open,
+  resolved,
 }: {
   busy: boolean;
   error: string | null;
   onConfirm(): void;
   onOpenChange(open: boolean): void;
   open: boolean;
+  resolved: boolean;
 }) {
   const { message } = useHandsFeedback();
   return (
@@ -403,7 +405,9 @@ function FeedbackCloseDialog({
     >
       <AlertDialogContent>
         <AlertDialogHeader>
-          <AlertDialogTitle>{message("closeTicketConfirm")}</AlertDialogTitle>
+          <AlertDialogTitle>
+            {message(resolved ? "confirmResolvedCloseTitle" : "closeTicketConfirm")}
+          </AlertDialogTitle>
         </AlertDialogHeader>
         <AlertDialogBody>
           <AlertDialogDescription>
@@ -423,7 +427,7 @@ function FeedbackCloseDialog({
             disabled={busy}
             onClick={onConfirm}
           >
-            {message("closeTicket")}
+            {message(resolved ? "confirmResolvedClose" : "closeTicket")}
           </AlertDialogAction>
         </AlertDialogFooter>
       </AlertDialogContent>
@@ -807,6 +811,11 @@ export function FeedbackInbox({
         <div
           className="hands-feedback-middle hands-feedback-list-scroll"
           data-feedback-list-scroll
+          data-feedback-empty-scroll={
+            !loading && !error && visibleTickets.length === 0
+              ? "true"
+              : undefined
+          }
           ref={pullToRefresh.scrollRef}
           tabIndex={-1}
         >
@@ -898,7 +907,11 @@ export function FeedbackInbox({
                                   <span className="hands-feedback-reference-chip-content">
                                     <X aria-hidden="true" />
                                     <MessageReferenceLabel>
-                                      {message("closeTicket")}
+                                      {message(
+                                        ticket.status === "resolved"
+                                          ? "confirmResolvedClose"
+                                          : "closeTicket",
+                                      )}
                                     </MessageReferenceLabel>
                                   </span>
                                 </MessageReferenceChip>
@@ -952,6 +965,7 @@ export function FeedbackInbox({
       {transport.closeTicket && (
         <FeedbackCloseDialog
           open={ticketToClose !== null}
+          resolved={ticketToClose?.status === "resolved"}
           busy={closingTicket}
           error={closeError}
           onOpenChange={(open) => {
@@ -1568,7 +1582,11 @@ export function FeedbackTicket({
                           <span className="hands-feedback-reference-chip-content">
                             <X aria-hidden="true" />
                             <MessageReferenceLabel>
-                              {message("closeTicket")}
+                              {message(
+                                detail.ticket.status === "resolved"
+                                  ? "confirmResolvedClose"
+                                  : "closeTicket",
+                              )}
                             </MessageReferenceLabel>
                           </span>
                         </MessageReferenceChip>
@@ -1664,6 +1682,7 @@ export function FeedbackTicket({
       {transport.closeTicket && (
         <FeedbackCloseDialog
           open={confirmingClose}
+          resolved={detail?.ticket.status === "resolved"}
           busy={closing}
           error={confirmingClose ? actionError : null}
           onOpenChange={(open) => {

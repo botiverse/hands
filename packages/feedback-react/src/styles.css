@@ -142,6 +142,11 @@
   padding: 2px;
 }
 
+.hands-feedback-list-scroll[data-feedback-empty-scroll="true"] {
+  align-content: stretch;
+  grid-template-rows: auto minmax(0, 1fr);
+}
+
 .hands-feedback-new-fields {
   margin: 18px auto;
   max-width: var(--hf-content-width);
@@ -184,8 +189,11 @@
 }
 
 .hands-feedback-empty {
-  align-self: start;
+  align-self: stretch;
   border: 2px dashed var(--color-brutal-stone, var(--hf-border));
+  height: auto;
+  justify-content: center;
+  justify-self: stretch;
   min-height: 0;
   padding: 40px 24px 48px;
   width: 100%;

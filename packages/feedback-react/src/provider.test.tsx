@@ -62,6 +62,10 @@ describe("FeedbackProvider", () => {
     expect(feedbackMessage("en", "workspaceTitle")).toBe("My Feedback");
     expect(feedbackMessage("zh-CN", "active")).toBe("活跃");
     expect(feedbackMessage("zh-CN", "workspaceTitle")).toBe("我的反馈");
+    expect(feedbackMessage("en", "idea")).toBe("Idea");
+    expect(feedbackMessage("en", "problem")).toBe("Bug");
+    expect(feedbackMessage("zh-CN", "idea")).toBe("想法");
+    expect(feedbackMessage("zh-CN", "problem")).toBe("问题");
     expect(feedbackMessage("en", "emptyActiveTitle")).toBe(
       "Nothing in progress",
     );
@@ -175,7 +179,10 @@ describe("FeedbackProvider", () => {
       /\.hands-feedback-header h2\s*\{[^}]*font-size:\s*17px[^}]*font-weight:\s*700/,
     );
     expect(css).toMatch(
-      /\.hands-feedback-empty\s*\{[^}]*align-self:\s*start[^}]*border:\s*2px dashed[^}]*padding:\s*40px 24px 48px/,
+      /\.hands-feedback-list-scroll\[data-feedback-empty-scroll="true"\]\s*\{[^}]*align-content:\s*stretch[^}]*grid-template-rows:\s*auto minmax\(0, 1fr\)/,
+    );
+    expect(css).toMatch(
+      /\.hands-feedback-empty\s*\{[^}]*align-self:\s*stretch[^}]*border:\s*2px dashed[^}]*height:\s*auto[^}]*justify-content:\s*center[^}]*justify-self:\s*stretch[^}]*min-height:\s*0[^}]*padding:\s*40px 24px 48px/,
     );
     expect(css).toMatch(
       /\.hands-feedback-empty-icon\s*\{[^}]*border:\s*2px solid[^}]*box-shadow:\s*2px 2px 0[^}]*height:\s*44px[^}]*width:\s*44px/,
