@@ -551,33 +551,29 @@ describe("FeedbackWorkspace browser behavior", () => {
     expect(problemChip?.className).toContain("hands-feedback-problem-chip");
     expect(problemChip?.className).toContain("bg-brutal-stone/25");
     expect(problemChip?.className).not.toContain("bg-brutal-pink/30");
-    const listCloseActions = screen.getAllByRole("button", {
+    const closeActions = screen.getAllByRole("button", {
       name: "Close ticket",
     });
-    expect(listCloseActions).toHaveLength(2);
-    const resolvedClose = screen.getByRole("button", {
-      name: "Confirm & close",
-    });
-    expect(resolvedClose.closest(".hands-feedback-ticket-meta")).toBeTruthy();
+    expect(closeActions).toHaveLength(3);
     expect(screen.queryByRole("button", { name: "Reopen ticket" })).toBeNull();
     expect(
-      listCloseActions.every((action) =>
+      closeActions.every((action) =>
         action.closest(".hands-feedback-ticket-meta"),
       ),
     ).toBe(true);
-    fireEvent.click(listCloseActions[0]!);
+    fireEvent.click(closeActions[0]!);
     const dialog = await screen.findByRole("alertdialog");
     expect(adapter.closeTicket).not.toHaveBeenCalled();
     fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
     expect(screen.queryByRole("alertdialog")).toBeNull();
 
-    fireEvent.click(resolvedClose);
+    fireEvent.click(closeActions[2]!);
     const resolvedDialog = await screen.findByRole("alertdialog");
     expect(
-      within(resolvedDialog).getByText("Confirm this ticket is resolved?"),
+      within(resolvedDialog).getByText("Close this ticket?"),
     ).toBeTruthy();
     expect(
-      within(resolvedDialog).getByRole("button", { name: "Confirm & close" }),
+      within(resolvedDialog).getByRole("button", { name: "Close ticket" }),
     ).toBeTruthy();
   });
 

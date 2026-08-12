@@ -386,14 +386,12 @@ function FeedbackCloseDialog({
   onConfirm,
   onOpenChange,
   open,
-  resolved,
 }: {
   busy: boolean;
   error: string | null;
   onConfirm(): void;
   onOpenChange(open: boolean): void;
   open: boolean;
-  resolved: boolean;
 }) {
   const { message } = useHandsFeedback();
   return (
@@ -406,7 +404,7 @@ function FeedbackCloseDialog({
       <AlertDialogContent>
         <AlertDialogHeader>
           <AlertDialogTitle>
-            {message(resolved ? "confirmResolvedCloseTitle" : "closeTicketConfirm")}
+            {message("closeTicketConfirm")}
           </AlertDialogTitle>
         </AlertDialogHeader>
         <AlertDialogBody>
@@ -427,7 +425,7 @@ function FeedbackCloseDialog({
             disabled={busy}
             onClick={onConfirm}
           >
-            {message(resolved ? "confirmResolvedClose" : "closeTicket")}
+            {message("closeTicket")}
           </AlertDialogAction>
         </AlertDialogFooter>
       </AlertDialogContent>
@@ -907,11 +905,7 @@ export function FeedbackInbox({
                                   <span className="hands-feedback-reference-chip-content">
                                     <X aria-hidden="true" />
                                     <MessageReferenceLabel>
-                                      {message(
-                                        ticket.status === "resolved"
-                                          ? "confirmResolvedClose"
-                                          : "closeTicket",
-                                      )}
+                                      {message("closeTicket")}
                                     </MessageReferenceLabel>
                                   </span>
                                 </MessageReferenceChip>
@@ -965,7 +959,6 @@ export function FeedbackInbox({
       {transport.closeTicket && (
         <FeedbackCloseDialog
           open={ticketToClose !== null}
-          resolved={ticketToClose?.status === "resolved"}
           busy={closingTicket}
           error={closeError}
           onOpenChange={(open) => {
@@ -1582,11 +1575,7 @@ export function FeedbackTicket({
                           <span className="hands-feedback-reference-chip-content">
                             <X aria-hidden="true" />
                             <MessageReferenceLabel>
-                              {message(
-                                detail.ticket.status === "resolved"
-                                  ? "confirmResolvedClose"
-                                  : "closeTicket",
-                              )}
+                              {message("closeTicket")}
                             </MessageReferenceLabel>
                           </span>
                         </MessageReferenceChip>
@@ -1682,7 +1671,6 @@ export function FeedbackTicket({
       {transport.closeTicket && (
         <FeedbackCloseDialog
           open={confirmingClose}
-          resolved={detail?.ticket.status === "resolved"}
           busy={closing}
           error={confirmingClose ? actionError : null}
           onOpenChange={(open) => {

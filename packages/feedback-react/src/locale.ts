@@ -21,8 +21,6 @@ export type FeedbackMessageKey =
   | "closeTicketConfirm"
   | "closeTicketDescription"
   | "closingTicket"
-  | "confirmResolvedClose"
-  | "confirmResolvedCloseTitle"
   | "closedDescription"
   | "conversation"
   | "describePlaceholder"
@@ -109,8 +107,6 @@ const messages: Record<FeedbackLocale, FeedbackMessages> = {
     closeTicketDescription:
       "You won’t be able to add more replies after closing it. The team can reopen it if more information is needed.",
     closingTicket: "Closing…",
-    confirmResolvedClose: "Confirm & close",
-    confirmResolvedCloseTitle: "Confirm this ticket is resolved?",
     closedDescription: "This ticket is closed. The team can reopen it if more information is needed.",
     conversation: "Conversation",
     describePlaceholder: "Describe your idea or the bug you ran into…",
@@ -194,8 +190,6 @@ const messages: Record<FeedbackLocale, FeedbackMessages> = {
     closeTicketConfirm: "确定关闭这个工单吗？",
     closeTicketDescription: "关闭后你将不能继续回复。如需补充信息，团队可以重新打开。",
     closingTicket: "正在关闭…",
-    confirmResolvedClose: "确认解决并关闭",
-    confirmResolvedCloseTitle: "确认这个工单已解决吗？",
     closedDescription: "该工单已关闭。如需更多信息，团队可以重新打开。",
     conversation: "对话",
     describePlaceholder: "描述你的想法或遇到的问题…",
