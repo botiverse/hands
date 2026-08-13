@@ -20,6 +20,7 @@ const BASE_ENV = {
   HANDS_RAFT_ORIGIN: "https://app.raft.build",
   HANDS_RAFT_API_ORIGIN: "https://api.raft.build",
   HANDS_RAFT_CLIENT_ID: "hands-test-client",
+  HANDS_ADMIN_ALLOWED_SERVER_IDS: "server-test",
   HANDS_FLAGSHIP_APP_ID: "22222222-2222-4222-8222-222222222222",
 };
 
@@ -60,6 +61,7 @@ test("production config keeps reporter sessions disabled by default", () => {
       persist: true,
     });
     assert.equal(config.vars.FEEDBACK_REPORTER_SESSION_ENABLED, "false");
+    assert.equal(config.vars.HANDS_ADMIN_ALLOWED_SERVER_IDS, "server-test");
     assert.equal("FEEDBACK_REPORTER_SESSION_ACTIVE_KEY_VERSION" in config.vars, false);
   } finally {
     fixture.cleanup();

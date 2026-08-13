@@ -63,6 +63,7 @@ import { AppErrors } from "./pages/Errors";
 import { isOrgSettingsTab, OrgSettings } from "./pages/OrgSettings";
 import { AcceptInvite } from "./pages/AcceptInvite";
 import { AppAccess } from "./pages/AppAccess";
+import { HandsAdmin } from "./pages/HandsAdmin";
 import { OrgSwitcher, useClearOrgCache } from "./components/OrgSwitcher";
 import { consoleRootAuthState, dashboardHref, defaultAppResolverState } from "./lib/authNavigation";
 import {
@@ -1266,6 +1267,7 @@ function AuthenticatedApp({ account }: { account: AuthAccount }) {
         <Route path="/" element={<Navigate to="/apps" replace />} />
         <Route path="/apps" element={<AppsListWithNav />} />
         <Route path="/settings" element={<SettingsPage />} />
+        <Route path="/admin" element={<HandsAdmin />} />
         <Route path="/orgs/:orgId/:tab?" element={<OrgSettingsPage />} />
         <Route path="/invites/:token" element={<AcceptInviteRoute />} />
         <Route path="/apps/:appId" element={<AppShell />}>

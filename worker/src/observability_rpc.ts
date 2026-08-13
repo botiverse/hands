@@ -1,4 +1,3 @@
-import { WorkerEntrypoint } from "cloudflare:workers";
 import { getHandsObservabilityOverview } from "./observability_data";
 
 const OVERVIEW_CACHE_TTL_MS = 60_000;
@@ -22,12 +21,4 @@ export async function getCachedHandsObservabilityOverview(env: Env) {
 export function resetHandsObservabilityCacheForTest() {
   cachedOverview = undefined;
   pendingOverview = undefined;
-}
-
-// This service-binding entrypoint deliberately exposes one named aggregate method.
-// It does not accept SQL, object prefixes, identifiers, or arbitrary operations.
-export class HandsObservability extends WorkerEntrypoint<Env> {
-  getOverview() {
-    return getCachedHandsObservabilityOverview(this.env);
-  }
 }

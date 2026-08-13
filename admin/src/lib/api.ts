@@ -94,6 +94,20 @@ export class ApiError extends Error {
   }
 }
 
+export interface HandsAdminOverview {
+  measured_at: number;
+  summary: { users: number; organizations: number; apps: number; active_apps: number; builds: number; releases: number };
+  users_by_type: Array<{ type: string; count: number }>;
+  apps_by_platform: Array<{ type: string; count: number }>;
+  builds_by_product_type: Array<{ type: string; count: number }>;
+  releases_by_status: Array<{ status: string; count: number }>;
+  storage: {
+    r2: { object_count: number; size_bytes: number };
+    registered: { object_count: number; size_bytes: number };
+    note: string;
+  };
+}
+
 export interface App {
   id: string;
   org_id: string | null;
@@ -509,6 +523,9 @@ export const normalizeLoginReturnPath = (returnTo = window.location.pathname) =>
 
 export const loginUrl = (returnTo = window.location.pathname) =>
   `${API_BASE}/api/auth/login?return=${encodeURIComponent(normalizeLoginReturnPath(returnTo))}`;
+
+export const getHandsAdminOverview = () =>
+  request<HandsAdminOverview>(`/api/admin/observability/overview`, { admin: true });
 
 // ---------- Admin API (requires Login with Raft bearer JWT in prod) ----------
 

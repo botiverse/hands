@@ -2,7 +2,6 @@ packages:
   - "worker"
   - "container"
   - "admin"
-  - "admin-worker"
   - "migrations"
   - "packages/*"
   - "clients/electron"

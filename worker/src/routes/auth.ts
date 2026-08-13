@@ -23,6 +23,7 @@ import {
   requestOrigin,
   sharedCookieDomain,
 } from "../lib/origin";
+import { encryptAdminRaftToken } from "../lib/admin_raft_token";
 
 const LOGIN_PENDING_COOKIE = "quiver_raft_login_pending";
 const LOGIN_RETURN_COOKIE = "quiver_raft_return";
@@ -441,6 +442,7 @@ async function upsertRaftOrgMembership(
 async function createAuthToken(
   env: Env,
   accountId: string,
+  raftAccessToken: string,
 ): Promise<{ token: string; expiresAt: number }> {
   const timestamp = now();
   const ttlSeconds = 60 * 60 * 24 * 14;
@@ -448,13 +450,17 @@ async function createAuthToken(
   const sessionId = crypto.randomUUID();
   const token = await createSignedJwt(env, accountId, timestamp, expiresAt, sessionId);
   const tokenHash = await sha256Hex(token);
+  const encryptionSecret = env.SIGNED_URL_SECRET || env.RAFT_CLIENT_SECRET;
+  if (!encryptionSecret) throw new Error("SIGNED_URL_SECRET or RAFT_CLIENT_SECRET is required for admin token encryption");
+  const encryptedRaftToken = await encryptAdminRaftToken(encryptionSecret, raftAccessToken);
   await env.DB
     .prepare(
       `INSERT INTO raft_sessions
-       (id, account_id, token_hash, created_at, expires_at, last_seen_at, revoked_at)
-       VALUES (?1, ?2, ?3, ?4, ?5, ?4, NULL)`,
+       (id, account_id, token_hash, created_at, expires_at, last_seen_at, revoked_at,
+        raft_access_token_ciphertext)
+       VALUES (?1, ?2, ?3, ?4, ?5, ?4, NULL, ?6)`,
     )
-    .bind(sessionId, accountId, tokenHash, timestamp, expiresAt)
+    .bind(sessionId, accountId, tokenHash, timestamp, expiresAt, encryptedRaftToken)
     .run();
   return { token, expiresAt };
 }
@@ -486,7 +492,7 @@ async function finalizeRaftLogin(
   const membership = await upsertRaftOrgMembership(c.env.DB, account);
   account.org_id = membership.org_id;
   account.org_role = membership.org_role;
-  const authToken = await createAuthToken(c.env, account.id);
+  const authToken = await createAuthToken(c.env, account.id, token.access_token);
   return { account, authToken };
 }
 
