@@ -187,7 +187,14 @@ presence.
 ### TestFlight upload and distribution
 
 TestFlight is a separate state machine from the Hands draft and from App Store
-production publishing. The integration exposes six actions:
+production publishing. App-level invitation copy is also separate from each
+build's What to Test text. The integration exposes eight actions:
+
+- `get-testflight-beta-app-description` (viewer): read live app-level
+  `betaAppLocalizations.description` values.
+- `update-testflight-beta-app-description` (publisher): upsert only supplied
+  app-level locales and require exact Apple readback. Run this live metadata
+  mutation only with explicit authorization.
 
 - `upload-testflight-build` (app admin): stream the existing signed Hands IPA
   to Apple's Build Upload API.
@@ -208,6 +215,14 @@ production publishing. The integration exposes six actions:
 
 The `.p8` stays encrypted in Hands. No action returns it, activates a Hands
 release, or creates/submits/releases an App Store production version.
+
+```bash
+# App-level Beta App Description. This does not change What to Test or a build.
+raft integration invoke --service <hands-service> \
+  --action update-testflight-beta-app-description \
+  --param app_id=<app-uuid> \
+  --data-json '{"descriptions":{"en-US":"Private collaboration for teams.","zh-Hans":"面向团队的私密协作应用。"}}' --json
+```
 
 ```bash
 # Upload only. Optional bundle_id is an assertion when metadata exists and a

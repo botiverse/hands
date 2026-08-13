@@ -127,7 +127,55 @@ const TestflightExpireInput = TestflightBundleAssertion.extend({
   confirm_build_number: z.string().regex(/^\d+$/),
 }).strict().openapi("TestflightExpireInput");
 
+const BetaAppDescriptionInput = z.object({
+  descriptions: z
+    .record(z.string().min(1).max(64), z.string().min(1).max(4_000))
+    .refine((value) => Object.keys(value).length > 0, {
+      message: "At least one locale is required.",
+    }),
+}).strict().openapi("BetaAppDescriptionInput");
+
 export function registerBuildRoutes(registry: OpenApiRegistry) {
+  register(registry, {
+    method: "get",
+    path: "/api/apps/{appId}/testflight-beta-app-description",
+    tags: ["TestFlight"],
+    summary: "Read app-level TestFlight Beta App Description localizations",
+    description:
+      "Reads betaAppLocalizations.description for the App Store Connect app resolved from the Hands app's main-channel bundle id. This is app-level metadata and is separate from each build's What to Test text.",
+    security: auth,
+    request: { params: AppIdParam },
+    responses: {
+      200: success("Live Beta App Description localizations from Apple.", GenericObject),
+      400: error("The app, bundle id, or ASC credentials are not configured for iOS."),
+      403: error("App viewer role is required."),
+      404: error("Hands or App Store Connect app was not found."),
+      502: error("Apple rejected the metadata request."),
+    },
+  });
+
+  register(registry, {
+    method: "put",
+    path: "/api/apps/{appId}/testflight-beta-app-description",
+    tags: ["TestFlight"],
+    summary: "Upsert app-level TestFlight Beta App Description localizations",
+    description:
+      "Creates or updates only the supplied betaAppLocalizations.description values, preserves other locales, then fetches Apple again and fails unless every requested locale is byte-for-byte equal. It never changes build-level What to Test text, uploads a build, distributes testers, or publishes an App Store version.",
+    security: auth,
+    request: {
+      params: AppIdParam,
+      body: { content: json(BetaAppDescriptionInput), required: true },
+    },
+    responses: {
+      200: success("Descriptions updated with exact Apple readback.", GenericObject),
+      400: error("The input, app, bundle id, or ASC credentials are invalid."),
+      403: error("App publisher role is required."),
+      404: error("Hands or App Store Connect app was not found."),
+      409: error("Apple readback did not exactly match the request."),
+      502: error("Apple rejected the metadata update or readback."),
+    },
+  });
+
   register(registry, {
     method: "get",
     path: "/api/apps/{appId}/builds",

@@ -100,6 +100,7 @@ describe("quiver OpenAPI document", () => {
       "/api/apps/{appId}/builds/{buildId}/external-targets",
       "/api/apps/{appId}/builds/{buildId}/testflight-upload",
       "/api/apps/{appId}/testflight-uploads/{buildUploadId}",
+      "/api/apps/{appId}/testflight-beta-app-description",
       "/api/apps/{appId}/builds/{buildId}/testflight-groups",
       "/api/apps/{appId}/builds/{buildId}/testflight-expire",
       "/api/apps/{appId}/builds/{buildId}/testflight-publish",
@@ -11110,6 +11111,14 @@ describe("Hands iOS simulator QA artifacts", () => {
       "upload-testflight-build": {
         method: "POST",
         path: "/api/apps/{app_id}/builds/{build_id}/testflight-upload",
+      },
+      "get-testflight-beta-app-description": {
+        method: "GET",
+        path: "/api/apps/{app_id}/testflight-beta-app-description",
+      },
+      "update-testflight-beta-app-description": {
+        method: "PUT",
+        path: "/api/apps/{app_id}/testflight-beta-app-description",
       },
       "get-testflight-upload-status": {
         method: "GET",

@@ -805,6 +805,36 @@ export const verifyAscCredentials = (appId: string, bundleId: string) =>
     body: JSON.stringify({ bundle_id: bundleId }),
   });
 
+export interface BetaAppDescriptionLocalization {
+  id: string;
+  locale: string | null;
+  description: string | null;
+}
+
+export const getTestflightBetaAppDescription = (appId: string) =>
+  request<{
+    bundle_id: string;
+    asc_app_id: string;
+    localizations: BetaAppDescriptionLocalization[];
+  }>(`/api/apps/${appId}/testflight-beta-app-description`, { admin: true });
+
+export const updateTestflightBetaAppDescription = (
+  appId: string,
+  descriptions: Record<string, string>,
+) =>
+  request<{
+    ok: boolean;
+    bundle_id: string;
+    asc_app_id: string;
+    updated_locales: string[];
+    readback_exact: boolean;
+    localizations: BetaAppDescriptionLocalization[];
+  }>(`/api/apps/${appId}/testflight-beta-app-description`, {
+    method: "PUT",
+    admin: true,
+    body: JSON.stringify({ descriptions }),
+  });
+
 // ---------- AppGallery Connect credentials (HarmonyOS) ----------
 
 export interface AgcCredentialsMeta {

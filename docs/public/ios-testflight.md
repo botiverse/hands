@@ -162,6 +162,8 @@ hands builds testflight-status <app> <hands-build-id> --distribution internal
 
 Raft integration actions:
 
+- `get-testflight-beta-app-description`
+- `update-testflight-beta-app-description`
 - `upload-testflight-build`
 - `get-testflight-upload-status`
 - `list-testflight-groups`
@@ -171,6 +173,11 @@ Raft integration actions:
 
 Agents pass Hands app/build ids and stable beta group ids. The integration
 never returns the `.p8` credential.
+
+Beta App Description is app-level invitation copy and uses
+`betaAppLocalizations.description`. It is not the build-level What to Test
+field (`betaBuildLocalizations.whatsNew`). The dedicated update action preserves
+unsupplied locales and succeeds only after exact Apple readback.
 
 ## Apple references
 
