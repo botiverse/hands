@@ -423,29 +423,21 @@ function FeedbackCloseDialog({
       <AlertDialogContent>
         <AlertDialogHeader>
           <AlertDialogTitle>
-            {message("closeTicketConfirm")}
+            {message(
+              reason === "completed"
+                ? "closeTicketCompletedConfirm"
+                : "closeTicketNoLongerNeededConfirm",
+            )}
           </AlertDialogTitle>
         </AlertDialogHeader>
         <AlertDialogBody>
           <AlertDialogDescription>
-            {message("closeTicketDescription")}
+            {message(
+              reason === "completed"
+                ? "closeTicketCompletedDescription"
+                : "closeTicketNoLongerNeededDescription",
+            )}
           </AlertDialogDescription>
-          <div className="hands-feedback-close-reason-summary">
-            <strong>
-              {message(
-                reason === "completed"
-                  ? "closeReasonCompleted"
-                  : "closeReasonNoLongerNeeded",
-              )}
-            </strong>
-            <span>
-              {message(
-                reason === "completed"
-                  ? "closeReasonCompletedDescription"
-                  : "closeReasonNoLongerNeededDescription",
-              )}
-            </span>
-          </div>
           {open && error && <FeedbackErrorBanner error={error} />}
         </AlertDialogBody>
         <AlertDialogFooter>
@@ -484,6 +476,7 @@ function ReporterCloseSplitButton({
   status: FeedbackTicketSummary["status"];
 }) {
   const { message } = useHandsFeedback();
+  const [reasonMenuOpen, setReasonMenuOpen] = useState(false);
   const defaultReason = defaultReporterClosureReason(status);
   const options: Array<{
     description: FeedbackMessageKey;
@@ -502,34 +495,42 @@ function ReporterCloseSplitButton({
     },
   ];
   return (
-    <div className="hands-feedback-close-split">
-      <Button
-        size="sm"
+    <div
+      className="hands-feedback-close-split"
+      data-menu-open={reasonMenuOpen ? "" : undefined}
+    >
+      <MessageReferenceChip
+        render={
+          <button
+            type="button"
+            disabled={disabled}
+            onClick={() => onChoose(defaultReason)}
+          />
+        }
         variant="accent"
-        className="hands-feedback-close-main"
-        disabled={disabled}
-        onClick={() => onChoose(defaultReason)}
+        className="hands-feedback-reference-chip hands-feedback-close-main"
       >
-        {message(
-          defaultReason === "completed"
-            ? "closeReasonCompleted"
-            : "closeTicket",
-        )}
-      </Button>
-      <DropdownMenu>
+        <MessageReferenceLabel>{message("closeTicket")}</MessageReferenceLabel>
+      </MessageReferenceChip>
+      <DropdownMenu open={reasonMenuOpen} onOpenChange={setReasonMenuOpen}>
         <DropdownMenuTrigger
           render={
-            <Button
-              type="button"
-              size="sm"
+            <MessageReferenceChip
+              render={
+                <button
+                  type="button"
+                  disabled={disabled}
+                  aria-label={message("closeReasonMenu")}
+                />
+              }
               variant="accent"
-              className="hands-feedback-close-caret"
-              disabled={disabled}
-              aria-label={message("closeReasonMenu")}
+              className="hands-feedback-reference-chip hands-feedback-close-caret"
             />
           }
         >
-          <ChevronDown aria-hidden="true" />
+          <span className="hands-feedback-close-caret-content">
+            <ChevronDown aria-hidden="true" />
+          </span>
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end" className="hands-feedback-close-menu">
           {options.map((option) => (

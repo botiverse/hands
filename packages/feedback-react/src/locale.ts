@@ -18,8 +18,10 @@ export type FeedbackMessageKey =
   | "back"
   | "cancel"
   | "closeTicket"
-  | "closeTicketConfirm"
-  | "closeTicketDescription"
+  | "closeTicketCompletedConfirm"
+  | "closeTicketCompletedDescription"
+  | "closeTicketNoLongerNeededConfirm"
+  | "closeTicketNoLongerNeededDescription"
   | "closeReasonMenu"
   | "closeReasonCompleted"
   | "closeReasonCompletedDescription"
@@ -113,16 +115,20 @@ const messages: Record<FeedbackLocale, FeedbackMessages> = {
     back: "Back",
     cancel: "Cancel",
     closeTicket: "Close ticket",
-    closeTicketConfirm: "Close this ticket?",
-    closeTicketDescription:
-      "You won’t be able to add more replies after closing it. The team can reopen it if more information is needed.",
+    closeTicketCompletedConfirm: "Issue resolved — close this ticket?",
+    closeTicketCompletedDescription:
+      "You won’t be able to reply after closing. If the issue comes back, submit new feedback.",
+    closeTicketNoLongerNeededConfirm:
+      "No longer need help — close this ticket?",
+    closeTicketNoLongerNeededDescription:
+      "This will close the ticket even if the issue isn’t resolved. If you still need help, submit new feedback.",
     closeReasonMenu: "Choose a close reason",
     closeReasonCompleted: "Completed",
     closeReasonCompletedDescription:
-      "The issue is fixed; close this ticket and let the team know.",
+      "Confirm the issue is fixed, then close the ticket.",
     closeReasonNoLongerNeeded: "No longer needed",
     closeReasonNoLongerNeededDescription:
-      "Close this ticket without marking the issue as resolved.",
+      "Close the ticket even though the issue is not resolved.",
     closeReasonNotPlanned: "Not planned",
     closeReasonCannotReproduce: "Cannot reproduce",
     closeReasonDuplicate: "Duplicate",
@@ -209,13 +215,17 @@ const messages: Record<FeedbackLocale, FeedbackMessages> = {
     back: "返回",
     cancel: "取消",
     closeTicket: "关闭工单",
-    closeTicketConfirm: "确定关闭这个工单吗？",
-    closeTicketDescription: "关闭后你将不能继续回复。如需补充信息，团队可以重新打开。",
+    closeTicketCompletedConfirm: "问题已解决，关闭工单？",
+    closeTicketCompletedDescription:
+      "关闭后将无法继续回复。如果问题再次出现，可以重新提交反馈。",
+    closeTicketNoLongerNeededConfirm: "不再需要处理，关闭工单？",
+    closeTicketNoLongerNeededDescription:
+      "即使问题尚未解决，也会直接关闭工单。如果仍需帮助，可以重新提交反馈。",
     closeReasonMenu: "选择关闭原因",
     closeReasonCompleted: "问题已解决",
-    closeReasonCompletedDescription: "问题已解决，关闭工单并告知团队。",
+    closeReasonCompletedDescription: "确认问题已修好，然后关闭工单。",
     closeReasonNoLongerNeeded: "不再需要处理",
-    closeReasonNoLongerNeededDescription: "直接关闭工单，不代表问题已解决。",
+    closeReasonNoLongerNeededDescription: "即使问题未解决，也直接关闭工单。",
     closeReasonNotPlanned: "暂不处理",
     closeReasonCannotReproduce: "无法复现",
     closeReasonDuplicate: "重复工单",

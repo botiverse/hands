@@ -143,10 +143,13 @@ describe("FeedbackWorkspace browser behavior", () => {
     ).toBeNull();
     fireEvent.click(closeButton);
     const dialog = await screen.findByRole("alertdialog");
-    expect(within(dialog).getByText("确定关闭这个工单吗？")).toBeTruthy();
+    expect(within(dialog).getByText("不再需要处理，关闭工单？")).toBeTruthy();
     expect(
-      within(dialog).getByText("关闭后你将不能继续回复。如需补充信息，团队可以重新打开。"),
+      within(dialog).getByText(
+        "即使问题尚未解决，也会直接关闭工单。如果仍需帮助，可以重新提交反馈。",
+      ),
     ).toBeTruthy();
+    expect(dialog.querySelector(".hands-feedback-close-reason-summary")).toBeNull();
     expect(adapter.closeTicket).not.toHaveBeenCalled();
     fireEvent.click(within(dialog).getByRole("button", { name: "关闭工单" }));
 
@@ -552,17 +555,27 @@ describe("FeedbackWorkspace browser behavior", () => {
     const closeActions = screen.getAllByRole("button", {
       name: "Close ticket",
     });
-    const resolvedAction = screen.getByRole("button", {
-      name: "Completed",
-    });
-    expect(closeActions).toHaveLength(2);
+    expect(closeActions).toHaveLength(3);
     expect(screen.queryByRole("button", { name: "Reopen ticket" })).toBeNull();
     const reasonMenus = screen.getAllByRole("button", {
       name: "Choose a close reason",
     });
     expect(reasonMenus).toHaveLength(3);
+    expect(closeActions.every((button) =>
+      button.className.includes("hands-feedback-reference-chip")
+    )).toBe(true);
+    expect(reasonMenus.every((button) =>
+      button.className.includes("hands-feedback-reference-chip")
+    )).toBe(true);
+    expect(closeActions.every((button) =>
+      button.className.includes("hands-feedback-close-main")
+    )).toBe(true);
     expect(reasonMenus.every((button) =>
       button.className.includes("hands-feedback-close-caret")
+    )).toBe(true);
+    expect(reasonMenus.every((button) =>
+      button.querySelector(":scope > .hands-feedback-close-caret-content > svg") &&
+      !button.matches(":has(> svg)")
     )).toBe(true);
     expect(
       closeActions.every((action) =>
@@ -571,35 +584,57 @@ describe("FeedbackWorkspace browser behavior", () => {
     ).toBe(true);
     fireEvent.click(closeActions[0]!);
     const dialog = await screen.findByRole("alertdialog");
+    expect(
+      within(dialog).getByText("No longer need help — close this ticket?"),
+    ).toBeTruthy();
+    expect(
+      within(dialog).getByText(
+        "This will close the ticket even if the issue isn’t resolved. If you still need help, submit new feedback.",
+      ),
+    ).toBeTruthy();
+    expect(dialog.querySelector(".hands-feedback-close-reason-summary")).toBeNull();
     expect(adapter.closeTicket).not.toHaveBeenCalled();
     fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
     expect(screen.queryByRole("alertdialog")).toBeNull();
 
     fireEvent.click(reasonMenus[0]!);
     const reasonMenu = await screen.findByRole("menu");
+    const closeSplit = reasonMenus[0]!.closest(".hands-feedback-close-split");
+    expect(closeSplit?.getAttribute("data-menu-open")).toBe("");
+    expect(reasonMenus[0]?.getAttribute("data-popup-open")).toBe("");
     expect(within(reasonMenu).getByText("Completed")).toBeTruthy();
     expect(
       within(reasonMenu).getByText(
-        "The issue is fixed; close this ticket and let the team know.",
+        "Confirm the issue is fixed, then close the ticket.",
       ),
     ).toBeTruthy();
     expect(within(reasonMenu).getByText("No longer needed")).toBeTruthy();
     expect(
       within(reasonMenu).getByText(
-        "Close this ticket without marking the issue as resolved.",
+        "Close the ticket even though the issue is not resolved.",
       ),
     ).toBeTruthy();
     fireEvent.click(within(reasonMenu).getByText("Completed"));
     const alternateDialog = await screen.findByRole("alertdialog");
-    expect(within(alternateDialog).getByText("Completed")).toBeTruthy();
+    expect(
+      within(alternateDialog).getByText(
+        "Issue resolved — close this ticket?",
+      ),
+    ).toBeTruthy();
+    expect(
+      within(alternateDialog).getByText(
+        "You won’t be able to reply after closing. If the issue comes back, submit new feedback.",
+      ),
+    ).toBeTruthy();
+    expect(within(alternateDialog).queryByText("Completed")).toBeNull();
     fireEvent.click(
       within(alternateDialog).getByRole("button", { name: "Cancel" }),
     );
 
-    fireEvent.click(resolvedAction);
+    fireEvent.click(closeActions[2]!);
     const resolvedDialog = await screen.findByRole("alertdialog");
     expect(
-      within(resolvedDialog).getByText("Close this ticket?"),
+      within(resolvedDialog).getByText("Issue resolved — close this ticket?"),
     ).toBeTruthy();
     expect(
       within(resolvedDialog).getByRole("button", { name: "Close ticket" }),

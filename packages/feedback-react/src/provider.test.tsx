@@ -213,7 +213,25 @@ describe("FeedbackProvider", () => {
       /\.hands-feedback-ticket-content\s*\{[^}]*pointer-events:\s*auto[^}]*z-index:\s*1/,
     );
     expect(css).toMatch(
-      /@media \(max-width: 640px\)[\s\S]*\.hands-feedback-close-main,[\s\S]*\.hands-feedback-close-caret\s*\{[^}]*min-height:\s*44px/,
+      /\.hands-feedback-close-split\s*\{[^}]*height:\s*20px/,
+    );
+    expect(css).toMatch(
+      /\.hands-feedback-close-caret\s*\{[^}]*min-width:\s*20px/,
+    );
+    expect(css).toMatch(
+      /\.hands-feedback-close-split\[data-menu-open\],[\s\S]*\.hands-feedback-close-split:has\(\.hands-feedback-close-main:active\),[\s\S]*\.hands-feedback-close-split:has\(\.hands-feedback-close-caret:active\)\s*\{[^}]*box-shadow:\s*4px 4px 0 var\(--line-strong\)[^}]*translate:\s*0 -1px/,
+    );
+    expect(css).toMatch(
+      /\.hands-feedback-close-caret\[data-popup-open\]\s*\{[^}]*box-shadow:\s*none !important[^}]*translate:\s*0 !important/,
+    );
+    expect(css).toMatch(
+      /\.hands-feedback-close-main:active,[\s\S]*\.hands-feedback-close-caret:active\s*\{[^}]*box-shadow:\s*none !important[^}]*translate:\s*0 !important/,
+    );
+    expect(css).toMatch(
+      /\.hands-feedback-close-menu-item \[data-slot="dropdown-menu-item-label"\],[\s\S]*\.hands-feedback-close-menu-item \[data-slot="dropdown-menu-item-label"\] span\s*\{[^}]*overflow:\s*visible[^}]*text-overflow:\s*clip[^}]*white-space:\s*normal/,
+    );
+    expect(css).not.toMatch(
+      /@media \(max-width: 640px\)[\s\S]*\.hands-feedback-close-main,[\s\S]*\.hands-feedback-close-caret\s*\{/,
     );
     expect(css).toMatch(
       /\.hands-feedback-pull-indicator\s*\{[^}]*transition:\s*height 160ms ease-out/,
