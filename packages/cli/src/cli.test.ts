@@ -126,6 +126,62 @@ describe("apiRequest", () => {
   });
 });
 
+describe("release share commands", () => {
+  it("rebinds through the closed API with an explicit expected current release", async () => {
+    const requests: Array<{ method: string; url: string; body?: unknown }> = [];
+    const server = createServer(async (req, res) => {
+      let body: unknown;
+      if (req.headers["content-type"]?.includes("application/json")) {
+        const chunks: Buffer[] = [];
+        for await (const chunk of req) chunks.push(Buffer.from(chunk));
+        body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+      }
+      requests.push({ method: req.method ?? "GET", url: req.url ?? "", body });
+      res.setHeader("content-type", "application/json");
+      if (req.url === "/api/apps") {
+        return res.end(JSON.stringify({ apps: [{ id: "app-1", slug: "raft-android" }] }));
+      }
+      if (req.url === "/api/apps/app-1/shares/share-1/rebind" && req.method === "POST") {
+        return res.end(JSON.stringify({
+          id: "share-1",
+          previous_release_id: "release-old",
+          release_id: "release-new",
+          target: { version_name: "1.9.1", version_code: 1090101, file_hash: "target-hash" },
+        }));
+      }
+      res.statusCode = 404;
+      return res.end(JSON.stringify({ error: "not found" }));
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("bad address");
+    const originalApi = process.env.HANDS_API;
+    const originalToken = process.env.HANDS_BEARER_TOKEN;
+    process.env.HANDS_API = `http://127.0.0.1:${address.port}`;
+    process.env.HANDS_BEARER_TOKEN = "test-token";
+    try {
+      const program = new Command();
+      const { registerReleaseCommands } = await import("../src/commands/releases.js");
+      registerReleaseCommands(program);
+      await program.parseAsync([
+        "node", "hands", "releases", "rebind-share", "raft-android", "share-1",
+        "--from", "release-old", "--to", "release-new",
+      ]);
+      expect(requests.at(-1)).toEqual({
+        method: "POST",
+        url: "/api/apps/app-1/shares/share-1/rebind",
+        body: { expected_release_id: "release-old", target_release_id: "release-new" },
+      });
+    } finally {
+      if (originalApi === undefined) delete process.env.HANDS_API;
+      else process.env.HANDS_API = originalApi;
+      if (originalToken === undefined) delete process.env.HANDS_BEARER_TOKEN;
+      else process.env.HANDS_BEARER_TOKEN = originalToken;
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+});
+
 describe("app provisioning commands", () => {
   it("creates a web app and explicitly reads its client key without verbose-log leakage", async () => {
     const requests: Array<{ method: string; url: string; body?: unknown }> = [];

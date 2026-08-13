@@ -431,6 +431,37 @@ export function registerReleaseCommands(program: Command): void {
         console.log(`  revoked_at: ${new Date(res.revoked_at).toISOString()}`);
       },
     );
+
+  releases
+    .command("rebind-share <appIdOrSlug> <shareId>")
+    .description("Rebind an unrevoked public share to another active release in the same app and channel.")
+    .requiredOption("--from <releaseId>", "Expected current release UUID from a fresh share list.")
+    .requiredOption("--to <releaseId>", "Target active release UUID.")
+    .option("--json", "Output JSON.", false)
+    .action(async (
+      appIdOrSlug: string,
+      shareId: string,
+      opts: { from: string; to: string; json?: boolean },
+    ) => {
+      const appId = await resolveAppId(appIdOrSlug);
+      const result = await apiRequest<{
+        id: string;
+        previous_release_id: string;
+        release_id: string;
+        target: { version_name: string; version_code: number; file_hash: string | null };
+      }>(`/api/apps/${appId}/shares/${shareId}/rebind`, {
+        method: "POST",
+        body: { expected_release_id: opts.from, target_release_id: opts.to },
+      });
+      if (opts.json) {
+        console.log(JSON.stringify(result, null, 2));
+        return;
+      }
+      console.log(`Rebound release share ${result.id}`);
+      console.log(`  release: ${result.previous_release_id} -> ${result.release_id}`);
+      console.log(`  target:  ${result.target.version_name} (${result.target.version_code})`);
+      console.log(`  sha256:  ${result.target.file_hash ?? "unavailable"}`);
+    });
 }
 
 async function resolveAppId(slugOrId: string): Promise<string> {
