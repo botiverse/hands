@@ -29,7 +29,6 @@ import {
   removeAppServerGrant,
   revokeAppDeployToken,
   updateAppMember,
-  updateAppServerGrant,
   type AppMember,
   type AppDeployToken,
   type AppPermission,
@@ -206,25 +205,6 @@ function AppServerGrantList({
       }),
   });
 
-  const updateRole = useMutation({
-    mutationFn: ({ grant, appRole }: { grant: (typeof rows)[number]; appRole: AppMember["app_role"] }) =>
-      updateAppServerGrant(appId, grant.id, {
-        server_id: grant.server_id,
-        server_slug: grant.server_slug,
-        app_role: appRole,
-      }),
-    onSuccess: () => {
-      toast.show({ kind: "success", title: "Server access updated" });
-      qc.invalidateQueries({ queryKey: ["app-server-grants", appId] });
-    },
-    onError: (e) =>
-      toast.show({
-        kind: "error",
-        title: "Update failed",
-        description: (e as Error).message,
-      }),
-  });
-
   const visibleRowCount = rows.length + (isOwningOrg ? 1 : 0);
 
   return (
@@ -261,7 +241,6 @@ function AppServerGrantList({
           <thead>
             <tr className="text-slate-500 text-left border-b border-slate-100">
               <th className="font-normal py-1 pr-2">Server</th>
-              <th className="font-normal py-1 pr-2">Server ID</th>
               <th className="font-normal py-1 pr-2">Access</th>
               <th className="font-normal py-1 pr-2">Source</th>
               {canManage && <th className="font-normal py-1">Actions</th>}
@@ -277,12 +256,7 @@ function AppServerGrantList({
                   </div>
                 </td>
                 <td className="py-2 pr-2">
-                  <span className="font-mono text-xs text-slate-600">
-                    {currentServerId || "—"}
-                  </span>
-                </td>
-                <td className="py-2 pr-2">
-                  <span className="text-xs font-medium">Inherited</span>
+                  <span className="text-xs font-medium">Owner server</span>
                 </td>
                 <td className="py-2 pr-2 text-xs text-slate-500">
                   Owning org
@@ -307,47 +281,16 @@ function AppServerGrantList({
                   </div>
                 </td>
                 <td className="py-2 pr-2">
-                  <span className="font-mono text-xs text-slate-600">
-                    {grant.server_id || "—"}
+                  <span className="text-xs font-medium">
+                    {grant.access_model === "owner_server"
+                      ? "Owner server"
+                      : `Legacy ${grant.app_role}`}
                   </span>
                 </td>
-                <td className="py-2 pr-2">
-                  {canManage ? (
-                    <Select
-                      value={grant.app_role}
-                      onValueChange={(value) => {
-                        const appRole = value as AppMember["app_role"];
-                        if (
-                          appRole !== "viewer" &&
-                          !confirm(
-                            `Grant ${appRole} access to every Hands account from ${grant.server_slug || grant.server_id}?`,
-                          )
-                        ) {
-                          return;
-                        }
-                        updateRole.mutate({
-                          grant,
-                          appRole,
-                        });
-                      }}
-                      disabled={updateRole.isPending}
-                    >
-                      <SelectTrigger className="h-8 w-32 text-xs">
-                        <SelectValue />
-                        <SelectIcon />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="viewer">Viewer</SelectItem>
-                        <SelectItem value="publisher">Publisher</SelectItem>
-                        <SelectItem value="admin">Admin</SelectItem>
-                      </SelectContent>
-                    </Select>
-                  ) : (
-                    <span className="text-xs font-medium capitalize">{grant.app_role}</span>
-                  )}
-                </td>
                 <td className="py-2 pr-2 text-xs text-slate-500">
-                  Server visibility
+                  {grant.access_model === "owner_server"
+                    ? "Additional owner"
+                    : "Existing role preserved; remove and re-add to adopt owner-server access"}
                 </td>
                 {canManage && (
                   <td className="py-2 text-xs">
@@ -377,7 +320,7 @@ function AppServerGrantList({
       )}
       {grants.data && isOwningOrg && rows.length === 0 && (
         <p className="text-xs text-slate-500 mt-2">
-          No external server visibility grants yet. The current server has access because it owns this app.
+          No additional owner servers yet. The current server owns this app.
         </p>
       )}
     </div>
@@ -397,21 +340,18 @@ function AddAppServerGrantDialog({
   const toast = useToast();
   const [serverId, setServerId] = useState("");
   const [serverSlug, setServerSlug] = useState("");
-  const [appRole, setAppRole] = useState<AppMember["app_role"]>("viewer");
 
   const add = useMutation({
     mutationFn: () =>
       addAppServerGrant(appId, {
         server_id: serverId.trim() || null,
         server_slug: serverSlug.trim() || null,
-        app_role: appRole,
       }),
     onSuccess: () => {
       toast.show({ kind: "success", title: "Server grant added" });
       qc.invalidateQueries({ queryKey: ["app-server-grants", appId] });
       setServerId("");
       setServerSlug("");
-      setAppRole("viewer");
       onAdded();
     },
     onError: (e) =>
@@ -451,12 +391,9 @@ function AddAppServerGrantDialog({
             className="space-y-3"
             onSubmit={(e) => {
               e.preventDefault();
-              if (
-                appRole !== "viewer" &&
-                !confirm(
-                  `Grant ${appRole} access to every Hands account from ${serverSlug.trim() || serverId.trim()}?`,
-                )
-              ) {
+              if (!confirm(
+                `Make ${serverSlug.trim() || serverId.trim()} an owner server for this app? Its members receive the same role-based access as the creating server.`,
+              )) {
                 return;
               }
               add.mutate();
@@ -479,27 +416,11 @@ function AddAppServerGrantDialog({
                 placeholder="optional"
               />
             </div>
-            <div>
-              <label className="label">Access level</label>
-              <Select
-                value={appRole}
-                onValueChange={(value) => setAppRole(value as AppMember["app_role"])}
-              >
-                <SelectTrigger className="w-full">
-                  <SelectValue />
-                  <SelectIcon />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="viewer">Viewer — can view the app</SelectItem>
-                  <SelectItem value="publisher">Publisher — can manage releases</SelectItem>
-                  <SelectItem value="admin">Admin — can manage app access</SelectItem>
-                </SelectContent>
-              </Select>
-              <p className="mt-1 text-xs text-slate-500">
-                Applies to every human and Agent Hands account from this Raft server.
-                Prefer a direct app member grant when only one identity needs access.
-              </p>
-            </div>
+            <p className="text-xs text-slate-500">
+              An additional owner server uses the same role mapping as the server that created the app:
+              server owners/admins can publish releases and manage access; members keep the same
+              bounded member actions as on the creating server; viewers have read-only access.
+            </p>
           </form>
         </DialogBody>
         <DialogFooter>

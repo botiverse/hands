@@ -109,6 +109,38 @@ export async function getAppServerGrantRole(
   return row?.app_role ?? null;
 }
 
+async function getOwnerServerRole(
+  db: D1Database,
+  appId: string,
+  accountId: string,
+  serverId: string,
+  serverSlug: string | null,
+): Promise<{ org_role: OrgRole | null; legacy_app_role: AppRole | null } | null> {
+  const row = await db.prepare(
+    `SELECT om.org_role, asg.app_role, asg.access_model
+       FROM organizations o
+       JOIN org_members om ON om.org_id = o.id AND om.account_id = ?2
+       JOIN app_server_grants asg
+         ON asg.app_id = ?1
+        AND (
+          (asg.server_id IS NOT NULL AND asg.server_id = ?3)
+          OR (asg.server_slug IS NOT NULL AND asg.server_slug = ?4)
+        )
+      WHERE o.external_provider = 'raft'
+        AND o.external_id = ?3
+      LIMIT 1`,
+  ).bind(appId, accountId, serverId, serverSlug).first<{
+    org_role: OrgRole;
+    app_role: AppRole;
+    access_model: "legacy_role" | "owner_server";
+  }>();
+  if (!row) return null;
+  return {
+    org_role: row.access_model === "owner_server" ? row.org_role : null,
+    legacy_app_role: row.access_model === "legacy_role" ? row.app_role : null,
+  };
+}
+
 export async function getAppOrgId(db: D1Database, appId: string): Promise<string | null> {
   const row = await db
     .prepare("SELECT org_id FROM apps WHERE id = ?1 LIMIT 1")
@@ -121,23 +153,43 @@ export async function getEffectiveRole(
   db: D1Database,
   accountId: string,
   input: { orgId?: string | null; appId?: string | null },
-): Promise<{ org_role: OrgRole | null; app_role: AppRole | null; server_app_role: AppRole | null; org_id: string | null }> {
+): Promise<{
+  org_role: OrgRole | null;
+  app_role: AppRole | null;
+  server_app_role: AppRole | null;
+  server_org_role: OrgRole | null;
+  org_id: string | null;
+}> {
   const orgId = input.orgId ?? (input.appId ? await getAppOrgId(db, input.appId) : null);
   const account = input.appId
     ? (await db.prepare("SELECT server_id, server_slug FROM raft_accounts WHERE id = ?1 LIMIT 1")
       .bind(accountId)
       .first<{ server_id: string; server_slug: string | null }>()) ?? null
     : null;
-  const [orgRole, appRole, serverAppRole] = await Promise.all([
+  const [orgRole, appRole, ownerServerRole] = await Promise.all([
     orgId ? getOrgMemberRole(db, orgId, accountId) : Promise.resolve(null),
     input.appId ? getAppMemberRole(db, input.appId, accountId) : Promise.resolve(null),
     input.appId && account
-      ? getAppServerGrantRole(db, input.appId, account.server_id, account.server_slug)
+      ? getOwnerServerRole(
+          db,
+          input.appId,
+          accountId,
+          account.server_id,
+          account.server_slug,
+        )
       : Promise.resolve(null),
   ]);
+  const serverAppRole = ownerServerRole?.legacy_app_role ?? null;
+  const effectiveOrgRole = orgRole ?? ownerServerRole?.org_role ?? null;
   const roles = [appRole, serverAppRole].filter(Boolean) as AppRole[];
   const effectiveAppRole = strongestAppRole(roles);
-  return { org_role: orgRole, app_role: effectiveAppRole, server_app_role: serverAppRole, org_id: orgId };
+  return {
+    org_role: effectiveOrgRole,
+    app_role: effectiveAppRole,
+    server_app_role: serverAppRole,
+    server_org_role: ownerServerRole?.org_role ?? null,
+    org_id: orgId,
+  };
 }
 
 // Machine-readable 403 for insufficient role: agents/CLI can act on it
