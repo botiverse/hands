@@ -604,6 +604,7 @@ function makeMockDb() {
       server_id TEXT,
       server_slug TEXT,
       app_role TEXT NOT NULL CHECK (app_role IN ('admin', 'publisher', 'viewer')),
+      access_model TEXT NOT NULL DEFAULT 'legacy_role' CHECK (access_model IN ('legacy_role', 'owner_server')),
       granted_by TEXT REFERENCES raft_accounts(id) ON DELETE SET NULL,
       created_at INTEGER NOT NULL,
       updated_at INTEGER NOT NULL,
@@ -1805,7 +1806,7 @@ describe("quiver route handlers — SQL smoke", () => {
       .run();
     await env.DB
       .prepare("INSERT INTO org_members (id, org_id, account_id, org_role, joined_at) VALUES (?, ?, ?, ?, ?)")
-      .bind("orgmem-external", "raft_external", "external-user", "viewer", now)
+      .bind("orgmem-external", "raft_external", "external-user", "member", now)
       .run();
     await env.DB
       .prepare("INSERT INTO apps (id, org_id, slug, name, platform, created_at) VALUES (?, ?, ?, ?, ?, ?), (?, ?, ?, ?, ?, ?)")
@@ -1992,7 +1993,7 @@ describe("quiver route handlers — SQL smoke", () => {
       .run();
     await env.DB
       .prepare("INSERT INTO org_members (id, org_id, account_id, org_role, joined_at) VALUES (?, ?, ?, ?, ?)")
-      .bind("orgmem-external2", "raft_external2", "external2-user", "viewer", now)
+      .bind("orgmem-external2", "raft_external2", "external2-user", "member", now)
       .run();
     await env.DB
       .prepare("INSERT INTO apps (id, org_id, slug, name, platform, created_at) VALUES (?, ?, ?, ?, ?, ?)")
@@ -2016,6 +2017,132 @@ describe("quiver route handlers — SQL smoke", () => {
         org_role: null,
         app_role: "publisher",
         server_app_role: "publisher",
+        server_org_role: null,
+      });
+  });
+
+  it.each([
+    ["owner"],
+    ["admin"],
+    ["member"],
+    ["viewer"],
+  ] as const)("additional owner server preserves the creating-server %s org role", async (orgRole) => {
+    const now = Date.now();
+    const suffix = orgRole;
+    await env.DB.prepare(
+      `INSERT INTO organizations
+       (id, slug, name, external_provider, external_id, created_at, archived)
+       VALUES (?, ?, ?, 'raft', ?, ?, 0)`,
+    ).bind(`raft_shared_${suffix}`, `shared-${suffix}`, `Shared ${suffix}`, `shared-${suffix}`, now).run();
+    await env.DB.prepare(
+      `INSERT INTO raft_accounts
+       (id, provider, provider_subject, server_id, server_slug, principal_type,
+        server_role, username, display_name, avatar_url, raw_profile,
+        created_at, updated_at, last_login_at)
+       VALUES (?, 'raft', ?, ?, ?, 'human', ?, ?, ?, NULL, '{}', ?, ?, ?)`,
+    ).bind(
+      `shared-${suffix}-account`,
+      `shared-${suffix}-subject`,
+      `shared-${suffix}`,
+      `shared-${suffix}`,
+      orgRole,
+      `shared-${suffix}`,
+      `Shared ${suffix}`,
+      now,
+      now,
+      now,
+    ).run();
+    await env.DB.prepare(
+      "INSERT INTO org_members (id, org_id, account_id, org_role, joined_at) VALUES (?, ?, ?, ?, ?)",
+    ).bind(
+      `orgmem-shared-${suffix}`,
+      `raft_shared_${suffix}`,
+      `shared-${suffix}-account`,
+      orgRole,
+      now,
+    ).run();
+    await env.DB.prepare(
+      "INSERT INTO apps (id, org_id, slug, name, platform, created_at) VALUES (?, 'default', ?, ?, 'android', ?)",
+    ).bind(`shared-app-${suffix}`, `shared-app-${suffix}`, `Shared App ${suffix}`, now).run();
+    await env.DB.prepare(
+      `INSERT INTO app_server_grants
+       (id, app_id, server_id, server_slug, app_role, access_model, created_at, updated_at)
+       VALUES (?, ?, ?, ?, 'admin', 'owner_server', ?, ?)`,
+    ).bind(
+      `shared-grant-${suffix}`,
+      `shared-app-${suffix}`,
+      `shared-${suffix}`,
+      `shared-${suffix}`,
+      now,
+      now,
+    ).run();
+
+    const { getEffectiveRole } = await import("../src/lib/permissions");
+    await expect(getEffectiveRole(env.DB as any, `shared-${suffix}-account`, {
+      appId: `shared-app-${suffix}`,
+    })).resolves.toMatchObject({
+      org_role: orgRole,
+      app_role: null,
+      server_app_role: null,
+      server_org_role: orgRole,
+    });
+
+    const { ensureAppRole } = await import("../src/lib/permissions");
+    const ctx = {
+      env,
+      get: (key: string) => key === "admin_account"
+        ? { id: `shared-${suffix}-account` }
+        : undefined,
+      json: (body: unknown, status = 200) => new Response(JSON.stringify(body), { status }),
+      req: { url: `https://hands.test/api/apps/shared-app-${suffix}`, method: "GET" },
+    };
+    const read = await ensureAppRole(ctx as any, `shared-app-${suffix}`, "viewer");
+    expect(read.ok).toBe(true);
+    const publish = await ensureAppRole(ctx as any, `shared-app-${suffix}`, "publisher");
+    expect(publish.ok).toBe(orgRole === "owner" || orgRole === "admin");
+    const boundedMember = await ensureAppRole(
+      ctx as any,
+      `shared-app-${suffix}`,
+      "publisher",
+      { orgMinimum: "member" },
+    );
+    expect(boundedMember.ok).toBe(orgRole !== "viewer");
+  });
+
+  it("preserves a legacy viewer grant instead of silently mapping a server member to publisher", async () => {
+    const now = Date.now();
+    await env.DB.prepare(
+      `INSERT INTO organizations
+       (id, slug, name, external_provider, external_id, created_at, archived)
+       VALUES ('raft_legacy', 'legacy', 'Legacy', 'raft', 'legacy-server', ?, 0)`,
+    ).bind(now).run();
+    await env.DB.prepare(
+      `INSERT INTO raft_accounts
+       (id, provider, provider_subject, server_id, server_slug, principal_type,
+        server_role, username, display_name, avatar_url, raw_profile,
+        created_at, updated_at, last_login_at)
+       VALUES ('legacy-member', 'raft', 'legacy-sub', 'legacy-server', 'legacy',
+               'human', 'member', 'legacy-member', 'Legacy Member', NULL, '{}', ?, ?, ?)`,
+    ).bind(now, now, now).run();
+    await env.DB.prepare(
+      "INSERT INTO org_members (id, org_id, account_id, org_role, joined_at) VALUES ('legacy-orgmem', 'raft_legacy', 'legacy-member', 'member', ?)",
+    ).bind(now).run();
+    await env.DB.prepare(
+      "INSERT INTO apps (id, org_id, slug, name, platform, created_at) VALUES ('legacy-app', 'default', 'legacy-app', 'Legacy App', 'android', ?)",
+    ).bind(now).run();
+    await env.DB.prepare(
+      `INSERT INTO app_server_grants
+       (id, app_id, server_id, server_slug, app_role, access_model, created_at, updated_at)
+       VALUES ('legacy-grant', 'legacy-app', 'legacy-server', 'legacy', 'viewer', 'legacy_role', ?, ?)`,
+    ).bind(now, now).run();
+
+    const { getEffectiveRole } = await import("../src/lib/permissions");
+    await expect(getEffectiveRole(env.DB as any, "legacy-member", { appId: "legacy-app" }))
+      .resolves.toMatchObject({
+        org_role: null,
+        app_role: "viewer",
+        server_app_role: "viewer",
+        server_org_role: null,
       });
   });
 

@@ -400,6 +400,7 @@ export interface AppServerGrant {
   server_id: string | null;
   server_slug: string | null;
   app_role: "admin" | "publisher" | "viewer";
+  access_model: "legacy_role" | "owner_server";
   granted_by: string | null;
   created_at: number;
   updated_at: number;
@@ -739,7 +740,6 @@ export const addAppServerGrant = (
   input: {
     server_id?: string | null;
     server_slug?: string | null;
-    app_role: AppServerGrant["app_role"];
   },
 ) =>
   request<{ ok: boolean }>(`/api/apps/${appId}/server-grants`, {
@@ -747,24 +747,6 @@ export const addAppServerGrant = (
     admin: true,
     body: JSON.stringify(input),
   });
-
-export const updateAppServerGrant = (
-  appId: string,
-  grantKey: string,
-  input: {
-    server_id?: string | null;
-    server_slug?: string | null;
-    app_role: AppServerGrant["app_role"];
-  },
-) =>
-  request<{ ok: boolean }>(
-    `/api/apps/${appId}/server-grants/${encodeURIComponent(grantKey)}`,
-    {
-      method: "PATCH",
-      admin: true,
-      body: JSON.stringify(input),
-    },
-  );
 
 export const removeAppServerGrant = (appId: string, serverId: string) =>
   request<{ ok: boolean }>(
