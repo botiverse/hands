@@ -210,6 +210,12 @@ describe("FeedbackProvider", () => {
       /\.hands-feedback-ticket-date\s*\{[^}]*line-height:\s*1\.4[^}]*margin-top:\s*4px/,
     );
     expect(css).toMatch(
+      /\.hands-feedback-ticket-content\s*\{[^}]*pointer-events:\s*auto[^}]*z-index:\s*1/,
+    );
+    expect(css).toMatch(
+      /@media \(max-width: 640px\)[\s\S]*\.hands-feedback-close-main,[\s\S]*\.hands-feedback-close-caret\s*\{[^}]*min-height:\s*44px/,
+    );
+    expect(css).toMatch(
       /\.hands-feedback-pull-indicator\s*\{[^}]*transition:\s*height 160ms ease-out/,
     );
     expect(css).not.toMatch(

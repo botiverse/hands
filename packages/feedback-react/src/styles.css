@@ -257,8 +257,9 @@
 
 .hands-feedback-ticket-content {
   align-items: flex-start;
+  cursor: pointer;
   min-width: 0;
-  pointer-events: none;
+  pointer-events: auto;
   position: relative;
   z-index: 1;
 }
@@ -583,6 +584,11 @@
 
   .hands-feedback-empty {
     padding: 40px 16px 48px;
+  }
+
+  .hands-feedback-close-main,
+  .hands-feedback-close-caret {
+    min-height: 44px;
   }
 }
 

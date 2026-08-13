@@ -1094,7 +1094,21 @@ export function FeedbackInbox({
                         aria-label={ticketTitle}
                         onClick={() => onSelectTicket(ticket.id, ticket)}
                       />
-                      <TaskCardRow className="hands-feedback-ticket-content">
+                      <TaskCardRow
+                        className="hands-feedback-ticket-content"
+                        onClick={(event) => {
+                          const target = event.target;
+                          if (
+                            target instanceof Element &&
+                            target.closest(
+                              "button, a, input, textarea, select, [role='button'], [role='menuitem']",
+                            )
+                          ) {
+                            return;
+                          }
+                          onSelectTicket(ticket.id, ticket);
+                        }}
+                      >
                         <TaskCardBody className="hands-feedback-ticket-body">
                           <TaskCardTitle
                             className="hands-feedback-ticket-title"

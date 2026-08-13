@@ -267,7 +267,7 @@ describe("FeedbackWorkspace browser behavior", () => {
     const listDate = screen.getByText("DATE:en:2", { exact: false });
     expect(listDate.closest(".hands-feedback-ticket-date")).toBeTruthy();
     expect(listDate.closest(".hands-feedback-ticket-meta")).toBeNull();
-    fireEvent.click(screen.getByRole("button", { name: ticket.message }));
+    fireEvent.click(listTitle);
     expect(await screen.findByText("proof.png")).toBeTruthy();
     expect(screen.getByText("SIZE:en:2048")).toBeTruthy();
     expect(screen.getByLabelText("OPEN proof.png")).toBeTruthy();
