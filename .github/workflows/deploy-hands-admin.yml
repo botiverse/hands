@@ -32,6 +32,9 @@ jobs:
       - uses: actions/setup-node@v6
         with: { node-version: "22", cache: "pnpm" }
       - run: pnpm install --frozen-lockfile
+      - name: Generate Hands Worker types
+        working-directory: worker
+        run: pnpm exec wrangler types --config wrangler.hands.jsonc
       - name: Validate
         run: |
           pnpm --filter @botiverse/hands-worker build
