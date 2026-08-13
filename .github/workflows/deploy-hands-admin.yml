@@ -45,10 +45,32 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          db_id="$(pnpm exec wrangler d1 list --json | jq -r --arg name "$HANDS_ADMIN_AUDIT_DB_NAME" '.[] | select(.name == $name) | .uuid' | head -n1)"
+          api_url="https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/d1/database"
+          auth_header="Authorization: Bearer ${CLOUDFLARE_API_TOKEN}"
+          list_response="$(curl --silent --show-error --fail-with-body \
+            --get \
+            --header "$auth_header" \
+            --data-urlencode "name=${HANDS_ADMIN_AUDIT_DB_NAME}" \
+            --data-urlencode "per_page=100" \
+            "$api_url")"
+          db_id="$(jq -r --arg name "$HANDS_ADMIN_AUDIT_DB_NAME" '
+            if .success != true then error("Cloudflare D1 list failed")
+            else [.result[] | select(.name == $name) | .uuid] |
+              if length > 1 then error("Multiple audit D1 databases found") else .[0] // empty end
+            end
+          ' <<<"$list_response")"
           if [[ -z "$db_id" ]]; then
-            pnpm exec wrangler d1 create "$HANDS_ADMIN_AUDIT_DB_NAME"
-            db_id="$(pnpm exec wrangler d1 list --json | jq -r --arg name "$HANDS_ADMIN_AUDIT_DB_NAME" '.[] | select(.name == $name) | .uuid' | head -n1)"
+            create_response="$(curl --silent --show-error --fail-with-body \
+              --request POST \
+              --header "$auth_header" \
+              --header "Content-Type: application/json" \
+              --data "$(jq -cn --arg name "$HANDS_ADMIN_AUDIT_DB_NAME" '{name: $name}')" \
+              "$api_url")"
+            db_id="$(jq -er '
+              if .success == true then .result.uuid
+              else error("Cloudflare D1 create failed")
+              end
+            ' <<<"$create_response")"
           fi
           [[ "$db_id" =~ ^[0-9a-f-]{36}$ ]] || { echo "Unable to resolve audit D1 UUID" >&2; exit 1; }
           echo "HANDS_ADMIN_AUDIT_DB_ID=$db_id" >> "$GITHUB_ENV"
