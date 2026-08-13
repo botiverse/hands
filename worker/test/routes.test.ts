@@ -11043,6 +11043,10 @@ describe("Hands iOS simulator QA artifacts", () => {
         method: "GET",
         path: "/api/apps/{app_id}/client-key",
       },
+      "update-release-share": {
+        method: "PATCH",
+        path: "/api/apps/{app_id}/releases/{release_id}/shares/{share_id}",
+      },
       "list-app-members": {
         method: "GET",
         path: "/api/apps/{app_id}/members",
@@ -11146,6 +11150,13 @@ describe("Hands iOS simulator QA artifacts", () => {
     expect(byName["purge-app"].parameters).toMatchObject({
       app_id: { type: "string", in: "path", required: true },
       confirm_slug: { type: "string", in: "body", required: true },
+    });
+    expect(byName["update-release-share"].parameters).toMatchObject({
+      app_id: { type: "string", in: "path", required: true },
+      release_id: { type: "string", in: "path", required: true },
+      share_id: { type: "string", in: "path", required: true },
+      expires_at: { type: "number", in: "body", required: false, nullable: true },
+      ttl_seconds: { type: "number", in: "body", required: false },
     });
     expect(byName["bind-reporter-webhook"]).toMatchObject({
       endpoint: {
