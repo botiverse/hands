@@ -20,7 +20,6 @@ jobs:
       HANDS_ADMIN_WORKER_NAME: ${{ vars.HANDS_ADMIN_WORKER_NAME }}
       HANDS_ADMIN_DOMAIN: ${{ vars.HANDS_ADMIN_DOMAIN }}
       HANDS_ADMIN_AUDIT_DB_NAME: ${{ vars.HANDS_ADMIN_AUDIT_DB_NAME }}
-      HANDS_ADMIN_AUDIT_DB_ID: ${{ vars.HANDS_ADMIN_AUDIT_DB_ID }}
       HANDS_WORKER_NAME: ${{ vars.HANDS_WORKER_NAME }}
       HANDS_RAFT_ORIGIN: ${{ vars.HANDS_RAFT_ORIGIN }}
       HANDS_RAFT_API_ORIGIN: ${{ vars.HANDS_RAFT_API_ORIGIN }}
@@ -39,6 +38,17 @@ jobs:
           pnpm --filter @botiverse/hands-worker test -- observability_rpc.test.ts
           pnpm --filter @botiverse/hands-admin-worker build
           pnpm --filter @botiverse/hands-admin-worker test
+      - name: Resolve audit D1
+        shell: bash
+        run: |
+          set -euo pipefail
+          db_id="$(pnpm exec wrangler d1 list --json | jq -r --arg name "$HANDS_ADMIN_AUDIT_DB_NAME" '.[] | select(.name == $name) | .uuid' | head -n1)"
+          if [[ -z "$db_id" ]]; then
+            pnpm exec wrangler d1 create "$HANDS_ADMIN_AUDIT_DB_NAME"
+            db_id="$(pnpm exec wrangler d1 list --json | jq -r --arg name "$HANDS_ADMIN_AUDIT_DB_NAME" '.[] | select(.name == $name) | .uuid' | head -n1)"
+          fi
+          [[ "$db_id" =~ ^[0-9a-f-]{36}$ ]] || { echo "Unable to resolve audit D1 UUID" >&2; exit 1; }
+          echo "HANDS_ADMIN_AUDIT_DB_ID=$db_id" >> "$GITHUB_ENV"
       - name: Render production config
         working-directory: admin-worker
         run: node scripts/render-production-config.mjs --output wrangler.generated.jsonc
