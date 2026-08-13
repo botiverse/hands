@@ -1666,3 +1666,36 @@ describe("Hands logging integration", () => {
     }
   });
 });
+
+describe("hands api same-origin guard (resolveSameOriginApiUrl)", () => {
+  const BASE = "https://hands.build";
+
+  it("accepts a same-origin /api/ path and preserves query", async () => {
+    const { resolveSameOriginApiUrl } = await import("./commands/api.js");
+    const u = resolveSameOriginApiUrl("/api/apps?x=1", BASE);
+    expect(u.origin).toBe("https://hands.build");
+    expect(u.pathname).toBe("/api/apps");
+    expect(u.searchParams.get("x")).toBe("1");
+  });
+
+  it("rejects an absolute URL to another host (bearer exfil)", async () => {
+    const { resolveSameOriginApiUrl } = await import("./commands/api.js");
+    expect(() => resolveSameOriginApiUrl("https://evil.example/api/x", BASE)).toThrow();
+  });
+
+  it("rejects a //protocol-relative host", async () => {
+    const { resolveSameOriginApiUrl } = await import("./commands/api.js");
+    expect(() => resolveSameOriginApiUrl("//evil.example/api/x", BASE)).toThrow();
+  });
+
+  it("rejects a path outside /api/", async () => {
+    const { resolveSameOriginApiUrl } = await import("./commands/api.js");
+    expect(() => resolveSameOriginApiUrl("/admin/secrets", BASE)).toThrow();
+  });
+
+  it("rejects ../ traversal that escapes /api/", async () => {
+    const { resolveSameOriginApiUrl } = await import("./commands/api.js");
+    // "/api/../admin" normalizes to "/admin" -> no longer under /api/
+    expect(() => resolveSameOriginApiUrl("/api/../admin", BASE)).toThrow();
+  });
+});

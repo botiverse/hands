@@ -26,6 +26,7 @@ import { registerDeployTokenCommands } from "./commands/deploy_tokens.js";
 import { registerWhoamiCommand } from "./commands/whoami.js";
 import { registerLogsCommands } from "./commands/logs.js";
 import { registerDeviceGroupCommands } from "./commands/device_groups.js";
+import { registerApiCommand } from "./commands/api.js";
 import { getConfig } from "./lib/config.js";
 import { readEnv } from "./lib/env.js";
 import { setApiBase } from "./lib/api.js";
@@ -92,6 +93,7 @@ registerDeviceGroupCommands(program);
 registerFeedbackCommands(program);
 registerDeployTokenCommands(program);
 registerLogsCommands(program);
+registerApiCommand(program);
 
 program
   .command("version")
