@@ -42,8 +42,8 @@ describe("Hands admin access gate", () => {
   });
 
   it.each([
-    ["a non-admin role", { sub: "user-1", server_id: "server-1", server_role: "member" }],
     ["a server outside the allowlist", { sub: "user-1", server_id: "server-2", server_role: "owner" }],
+    ["a different live principal", { sub: "user-2", server_id: "server-1", server_role: "owner" }],
   ])("rejects %s before calling product RPC or audit storage", async (_name, userinfo) => {
     const getOverview = vi.fn();
     const prepare = vi.fn();
@@ -62,4 +62,47 @@ describe("Hands admin access gate", () => {
     expect(prepare).not.toHaveBeenCalled();
     vi.restoreAllMocks();
   });
+
+  it.each(["member", "viewer", "admin", "owner"])(
+    "allows an authenticated %s from an allowlisted server",
+    async (serverRole) => {
+      const overview = {
+        measured_at: 1,
+        summary: { users: 0, organizations: 0, apps: 0, active_apps: 0, builds: 0, releases: 0 },
+        users_by_type: [],
+        apps_by_platform: [],
+        builds_by_product_type: [],
+        releases_by_status: [],
+        releases_by_week: [],
+        storage: {
+          r2: { object_count: 0, size_bytes: 0 },
+          registered: { object_count: 0, size_bytes: 0 },
+          note: "test",
+        },
+      };
+      const getOverview = vi.fn().mockResolvedValue(overview);
+      const run = vi.fn().mockResolvedValue({ success: true });
+      const bind = vi.fn().mockReturnValue({ run });
+      const prepare = vi.fn().mockReturnValue({ bind });
+      vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(new Response(JSON.stringify({
+        sub: "user-1",
+        server_id: "server-1",
+        server_role: serverRole,
+      }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }));
+
+      const response = await app.request("https://admin.example/api/overview", {
+        headers: { cookie: await sessionCookie() },
+      }, env(getOverview, prepare));
+
+      expect(response.status).toBe(200);
+      expect(await response.json()).toEqual(overview);
+      expect(getOverview).toHaveBeenCalledOnce();
+      expect(prepare).toHaveBeenCalledOnce();
+      expect(run).toHaveBeenCalledOnce();
+      vi.restoreAllMocks();
+    },
+  );
 });

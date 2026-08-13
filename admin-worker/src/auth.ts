@@ -38,7 +38,7 @@ export const requireAdmin: MiddlewareHandler<{ Bindings: AdminWorkerEnv; Variabl
     const user = await response.json<Userinfo>();
     const allowed = c.env.RAFT_ALLOWED_SERVER_IDS.split(",").map((value) => value.trim()).filter(Boolean);
     const role = (user.server_role ?? "").toLowerCase();
-    if (user.sub !== session.sub || !allowed.includes(user.server_id) || !["owner", "admin"].includes(role)) {
+    if (user.sub !== session.sub || !allowed.includes(user.server_id)) {
       return c.text("Hands staff access required", 403);
     }
     c.set("session", { ...session, server_id: user.server_id, role, name: user.name ?? user.preferred_username ?? user.sub });
@@ -72,7 +72,7 @@ export async function callback(c: Context<{ Bindings: AdminWorkerEnv }>) {
   const user = await userResponse.json<Userinfo>();
   const allowed = c.env.RAFT_ALLOWED_SERVER_IDS.split(",").map((v) => v.trim()).filter(Boolean);
   const role = (user.server_role ?? "").toLowerCase();
-  if (!allowed.includes(user.server_id) || !["owner", "admin"].includes(role)) return c.text("Hands staff access required", 403);
+  if (!allowed.includes(user.server_id)) return c.text("Hands staff access required", 403);
   const token = await new EncryptJWT({ sub: user.sub, server_id: user.server_id, role, name: user.name ?? user.preferred_username ?? user.sub, access_token })
     .setProtectedHeader({ alg: "dir", enc: "A256GCM" }).setIssuedAt().setExpirationTime("8h").encrypt(key(c.env.SESSION_SECRET));
   setCookie(c, SESSION, token, { httpOnly: true, secure: true, sameSite: "Lax", maxAge: 28_800, path: "/" });
