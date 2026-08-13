@@ -6444,7 +6444,8 @@ describe("quiver public API v2 — scope resolution", () => {
 
   it("shares: rejects revoked, non-active, missing, and cross-app rebind targets", async () => {
     const env = makeEnv();
-    env.APK_BUCKET = { head: async (key: string) => ({ key }) };
+    let targetObjectExists = true;
+    env.APK_BUCKET = { head: async (key: string) => targetObjectExists ? ({ key }) : null };
     await seedRelease(env, "rel-rebind-old", "build-rebind-old", [["full", "all"]]);
     await seedAsset(env, "build-rebind-old", "asset-rebind-old");
     await seedRelease(env, "rel-rebind-target", "build-rebind-target", [["full", "all"]], { versionCode: 2 });
@@ -6473,6 +6474,18 @@ describe("quiver public API v2 — scope resolution", () => {
     expect((await call("rel-rebind-target")).status).toBe(404);
     await env.DB.prepare("UPDATE releases SET app_id = ? WHERE id = ?")
       .bind("app-scope", "rel-rebind-target").run();
+    await env.DB.prepare(
+      `INSERT INTO channels (id, app_id, slug, name, enabled_product_types_json, metadata_json, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    ).bind("ch-scope-preview", "app-scope", "preview", "Preview", "[]", "{}", 1).run();
+    await env.DB.prepare("UPDATE releases SET channel_id = ? WHERE id = ?")
+      .bind("ch-scope-preview", "rel-rebind-target").run();
+    expect((await call("rel-rebind-target")).status).toBe(409);
+    await env.DB.prepare("UPDATE releases SET channel_id = ? WHERE id = ?")
+      .bind("ch-scope-prod", "rel-rebind-target").run();
+    targetObjectExists = false;
+    expect((await call("rel-rebind-target")).status).toBe(409);
+    targetObjectExists = true;
     await handleRevokeReleaseShare(makeShareAdminContext(env, {
       appId: "app-scope", releaseId: "rel-rebind-old", shareId: created.id,
     }));
