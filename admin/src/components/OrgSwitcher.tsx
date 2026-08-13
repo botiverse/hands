@@ -60,14 +60,7 @@ export function OrgSwitcher({
                   o.external_provider === "raft" ? "#3b82f6" : "#6b7280",
               }}
             />
-            <span className="flex-1 truncate">
-              <span className="block truncate">{o.name}</span>
-              {o.slug && (
-                <span className="block truncate text-xs text-slate-500 font-mono">
-                  {o.slug}
-                </span>
-              )}
-            </span>
+            <span className="flex-1 truncate">{o.name}</span>
             {isCurrent && <Check className="h-4 w-4 text-slate-700" aria-hidden="true" />}
           </DropdownMenuItem>
         );

@@ -29,6 +29,7 @@ import {
   removeAppServerGrant,
   revokeAppDeployToken,
   updateAppMember,
+  updateAppServerGrant,
   type AppMember,
   type AppDeployToken,
   type AppPermission,
@@ -189,6 +190,7 @@ function AppServerGrantList({
     queryKey: ["app-server-grants", appId],
     queryFn: () => listAppServerGrants(appId),
   });
+  const rows = grants.data?.server_grants ?? [];
 
   const remove = useMutation({
     mutationFn: (grantKey: string) => removeAppServerGrant(appId, grantKey),
@@ -204,7 +206,25 @@ function AppServerGrantList({
       }),
   });
 
-  const rows = grants.data?.server_grants ?? [];
+  const updateRole = useMutation({
+    mutationFn: ({ grant, appRole }: { grant: (typeof rows)[number]; appRole: AppMember["app_role"] }) =>
+      updateAppServerGrant(appId, grant.id, {
+        server_id: grant.server_id,
+        server_slug: grant.server_slug,
+        app_role: appRole,
+      }),
+    onSuccess: () => {
+      toast.show({ kind: "success", title: "Server access updated" });
+      qc.invalidateQueries({ queryKey: ["app-server-grants", appId] });
+    },
+    onError: (e) =>
+      toast.show({
+        kind: "error",
+        title: "Update failed",
+        description: (e as Error).message,
+      }),
+  });
+
   const visibleRowCount = rows.length + (isOwningOrg ? 1 : 0);
 
   return (
@@ -292,7 +312,39 @@ function AppServerGrantList({
                   </span>
                 </td>
                 <td className="py-2 pr-2">
-                  <span className="text-xs font-medium">Visible</span>
+                  {canManage ? (
+                    <Select
+                      value={grant.app_role}
+                      onValueChange={(value) => {
+                        const appRole = value as AppMember["app_role"];
+                        if (
+                          appRole !== "viewer" &&
+                          !confirm(
+                            `Grant ${appRole} access to every Hands account from ${grant.server_slug || grant.server_id}?`,
+                          )
+                        ) {
+                          return;
+                        }
+                        updateRole.mutate({
+                          grant,
+                          appRole,
+                        });
+                      }}
+                      disabled={updateRole.isPending}
+                    >
+                      <SelectTrigger className="h-8 w-32 text-xs">
+                        <SelectValue />
+                        <SelectIcon />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="viewer">Viewer</SelectItem>
+                        <SelectItem value="publisher">Publisher</SelectItem>
+                        <SelectItem value="admin">Admin</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  ) : (
+                    <span className="text-xs font-medium capitalize">{grant.app_role}</span>
+                  )}
                 </td>
                 <td className="py-2 pr-2 text-xs text-slate-500">
                   Server visibility
@@ -345,19 +397,21 @@ function AddAppServerGrantDialog({
   const toast = useToast();
   const [serverId, setServerId] = useState("");
   const [serverSlug, setServerSlug] = useState("");
+  const [appRole, setAppRole] = useState<AppMember["app_role"]>("viewer");
 
   const add = useMutation({
     mutationFn: () =>
       addAppServerGrant(appId, {
         server_id: serverId.trim() || null,
         server_slug: serverSlug.trim() || null,
-        app_role: "viewer",
+        app_role: appRole,
       }),
     onSuccess: () => {
       toast.show({ kind: "success", title: "Server grant added" });
       qc.invalidateQueries({ queryKey: ["app-server-grants", appId] });
       setServerId("");
       setServerSlug("");
+      setAppRole("viewer");
       onAdded();
     },
     onError: (e) =>
@@ -397,6 +451,14 @@ function AddAppServerGrantDialog({
             className="space-y-3"
             onSubmit={(e) => {
               e.preventDefault();
+              if (
+                appRole !== "viewer" &&
+                !confirm(
+                  `Grant ${appRole} access to every Hands account from ${serverSlug.trim() || serverId.trim()}?`,
+                )
+              ) {
+                return;
+              }
               add.mutate();
             }}
           >
@@ -416,6 +478,27 @@ function AddAppServerGrantDialog({
                 onChange={(e) => setServerId(e.target.value)}
                 placeholder="optional"
               />
+            </div>
+            <div>
+              <label className="label">Access level</label>
+              <Select
+                value={appRole}
+                onValueChange={(value) => setAppRole(value as AppMember["app_role"])}
+              >
+                <SelectTrigger className="w-full">
+                  <SelectValue />
+                  <SelectIcon />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="viewer">Viewer — can view the app</SelectItem>
+                  <SelectItem value="publisher">Publisher — can manage releases</SelectItem>
+                  <SelectItem value="admin">Admin — can manage app access</SelectItem>
+                </SelectContent>
+              </Select>
+              <p className="mt-1 text-xs text-slate-500">
+                Applies to every human and Agent Hands account from this Raft server.
+                Prefer a direct app member grant when only one identity needs access.
+              </p>
             </div>
           </form>
         </DialogBody>
@@ -1189,7 +1272,7 @@ function AddAppMemberDialog({
           >
             {candidates.length > 0 ? (
               <div>
-                <label className="label">Same-organization principal</label>
+                <label className="label">Choose someone from this organization</label>
                 <Select
                   items={{
                     "": "— select —",
@@ -1222,27 +1305,28 @@ function AddAppMemberDialog({
               </div>
             ) : (
               <p className="text-xs text-slate-500">
-                No same-organization principal needs a direct grant. You can still grant an
-                existing account from another linked Raft server below.
+                Everyone in this organization already has access or is already listed as a
+                direct app member.
               </p>
             )}
-            <div>
-              <label className="label">Hands account ID</label>
+            <div className="border-t border-slate-200 pt-3">
+              <label className="label">Add one account from another Raft server</label>
               <Input
                 value={accountId}
                 onChange={(e) => {
                   setAccountId(e.target.value);
                   if (e.target.value.trim()) setSelectedAccount("");
                 }}
-                placeholder="Account UUID from the principal's Hands whoami"
+                placeholder="Paste their Hands account ID"
                 autoFocus={candidates.length === 0}
                 spellCheck={false}
                 className="font-mono"
               />
               <p className="mt-1 text-xs text-slate-500">
-                Use this for a human or agent on another Raft server. The account must have
-                logged into Hands once; the grant adds missing org viewer membership and the
-                selected app role.
+                Ask that person or Agent to open Hands once, or run the Hands Raft integration
+                <span className="font-mono"> whoami</span> action, then send you the returned
+                account ID. Cross-server accounts are not listed here because servers are an
+                identity-isolation boundary.
               </p>
             </div>
             <div>
