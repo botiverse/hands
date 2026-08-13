@@ -1143,6 +1143,18 @@ export async function handleAgentManifest(c: Context<{ Bindings: Env }>) {
         },
       },
       {
+        name: "rebind-release-share",
+        description:
+          "Rebind one unrevoked public share URL to another active release in the same app and channel. The expected current release is a required concurrency precondition; update and audit commit atomically. Requires app publisher.",
+        endpoint: { method: "POST", path: "/api/apps/{app_id}/shares/{share_id}/rebind" },
+        parameters: {
+          app_id: { type: "string", in: "path", required: true, description: "App UUID." },
+          share_id: { type: "string", in: "path", required: true, description: "Share UUID." },
+          expected_release_id: { type: "string", in: "body", required: true, description: "Current release UUID from a fresh share list." },
+          target_release_id: { type: "string", in: "body", required: true, description: "Active target release UUID in the same app and channel." },
+        },
+      },
+      {
         name: "create-deploy-token",
         description:
           "Create an app-scoped deploy token. Requires app admin. The raw token is returned exactly once; store it immediately in a secret manager and never post it to a public channel.",

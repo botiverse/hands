@@ -68,6 +68,7 @@ import {
   handlePublicReleaseShare,
   handleRevokeReleaseShare,
   handleUpdateReleaseShare,
+  handleRebindReleaseShare,
   handleListAppShares,
   handlePublicReleaseShareUnlock,
   handlePublicReleaseShareIcon,
@@ -809,6 +810,7 @@ admin.post("/api/apps/:appId/releases/:releaseId/force-update", requireAppRole("
 admin.get("/api/apps/:appId/releases/:releaseId/checks", requireAppRole("viewer"), handleListReleaseChecks);
 admin.post("/api/apps/:appId/releases/:releaseId/checks", requireAppRole("publisher"), handleUpsertReleaseCheck);
 admin.get("/api/apps/:appId/shares", requireAppRole("viewer"), handleListAppShares);
+admin.post("/api/apps/:appId/shares/:shareId/rebind", requireAppRole("publisher"), handleRebindReleaseShare);
 admin.put("/api/apps/:appId/icon", requireAppRole("publisher"), handleUploadAppIcon);
 admin.get("/api/apps/:appId/client-key", requireAppRole("admin"), handleGetClientKey);
 admin.post("/api/apps/:appId/rotate-client-key", requireAppRole("admin"), handleRotateClientKey);

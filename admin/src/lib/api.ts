@@ -225,6 +225,10 @@ export interface Release {
   created_by: string;
   created_at: number;
   updated_at: number;
+  // Flattened build/channel fields returned by the release list endpoint.
+  version_name?: string;
+  version_code?: number;
+  channel?: string;
   // release_metrics (nullable when never checked)
   offered_count?: number | null;
   current_count?: number | null;
@@ -1567,6 +1571,7 @@ export const listWebhookDeliveries = (orgId: string, webhookId: string) =>
 export interface AppShare {
   id: string;
   release_id: string;
+  channel_id: string;
   // Copyable URL; null for legacy shares created before tokens were stored.
   share_url: string | null;
   created_by: string;
@@ -1613,6 +1618,22 @@ export const revokeReleaseShare = (appId: string, releaseId: string, shareId: st
     `/api/apps/${appId}/releases/${releaseId}/shares/${shareId}`,
     { method: "DELETE", admin: true },
   );
+
+export const rebindReleaseShare = (
+  appId: string,
+  shareId: string,
+  body: { expected_release_id: string; target_release_id: string },
+) =>
+  request<{
+    id: string;
+    previous_release_id: string;
+    release_id: string;
+    target: { status: string; version_name: string; version_code: number; file_hash: string | null; size_bytes: number | null };
+  }>(`/api/apps/${appId}/shares/${shareId}/rebind`, {
+    method: "POST",
+    body: JSON.stringify(body),
+    admin: true,
+  });
 
 // ---- Feedback tickets (task #66) ----
 
