@@ -433,6 +433,7 @@
 
 .hands-feedback-close-split {
   display: inline-flex;
+  pointer-events: auto;
   position: relative;
   z-index: 2;
 }
