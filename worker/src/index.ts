@@ -138,6 +138,10 @@ import {
   handleTestflightUploadStatus,
 } from "./routes/testflight";
 import { handleAppStoreReview } from "./routes/appstore_review";
+import {
+  handleGetBetaAppDescription,
+  handleUpdateBetaAppDescription,
+} from "./routes/testflight_beta_app_description";
 import { handleGenerateDeltaPatches, handleDeltaSources } from "./routes/delta";
 import { handleUploadApk } from "./routes/upload";
 import {
@@ -1029,6 +1033,16 @@ admin.post("/api/apps/:appId/builds/:buildId/testflight-expire", requireAppRole(
 admin.post("/api/apps/:appId/builds/:buildId/testflight-publish", requireAppRole("publisher"), handleTestflightPublish);
 admin.get("/api/apps/:appId/builds/:buildId/testflight-publish", requireAppRole("viewer"), handleTestflightPublishStatus);
 admin.get("/api/apps/:appId/appstore-review", requireAppRole("viewer"), handleAppStoreReview);
+admin.get(
+  "/api/apps/:appId/testflight-beta-app-description",
+  requireAppRole("viewer"),
+  handleGetBetaAppDescription,
+);
+admin.put(
+  "/api/apps/:appId/testflight-beta-app-description",
+  requireAppRole("publisher"),
+  handleUpdateBetaAppDescription,
+);
 admin.get("/api/apps/:appId/appgallery-review", requireAppRole("viewer"), handleAppGalleryReview);
 admin.put("/api/apps/:appId/asc-credentials", requireAppRole("admin"), handleSetAscCredentials);
 admin.delete("/api/apps/:appId/asc-credentials", requireAppRole("admin"), handleDeleteAscCredentials);

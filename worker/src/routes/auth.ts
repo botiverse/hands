@@ -726,7 +726,7 @@ export async function handleAgentHelp(c: Context<{ Bindings: Env }>) {
       "3. Triage as you work: update-feedback (change status/assignee, e.g. close a fixed ticket) and comment-feedback (attribution note, internal=true for staff-only). Requires org member (or app publisher).",
       "4. Release management (app publisher): create-release from an existing build (DRAFT by default) → update-release with bilingual release_notes → after explicit human authorization, publish-release. See docs.release_guide.",
       "5. iOS simulator QA fixtures: create-ios-simulator-artifact → PUT the .app.zip to upload.url with the returned headers → complete-ios-simulator-artifact → get/presign the durable exact-byte artifact. QA artifacts can never become releases or update offers.",
-      "6. TestFlight: an app admin runs upload-testflight-build and polls get-testflight-upload-status to COMPLETE; an app viewer lists stable beta-group ids, then an app publisher runs publish-testflight-build and polls distribution status. If an exact beta build must be removed from testing, an app admin uses expire-testflight-build with the ASC build id plus version/build confirmations. These actions never activate a Hands release or submit an App Store production release.",
+      "6. TestFlight: get/update-testflight-beta-app-description manage app-level invitation copy separately from build-level What to Test. An app admin runs upload-testflight-build and polls get-testflight-upload-status to COMPLETE; an app viewer lists beta groups, then an app publisher runs publish-testflight-build and polls distribution status. These actions never activate a Hands release or submit an App Store production release.",
     ],
     auth: {
       raft_agents:
@@ -1261,6 +1261,31 @@ export async function handleAgentManifest(c: Context<{ Bindings: Env }>) {
         parameters: {
           app_id: { type: "string", in: "path", required: true, description: "OHOS app UUID." },
           submission_id: { type: "string", in: "path", required: true, description: "Hands market submission UUID." },
+        },
+      },
+      {
+        name: "get-testflight-beta-app-description",
+        description:
+          "Read live app-level Beta App Description localizations (betaAppLocalizations.description) from App Store Connect. This is separate from every build's What to Test text. Read-only; requires app viewer.",
+        endpoint: {
+          method: "GET",
+          path: "/api/apps/{app_id}/testflight-beta-app-description",
+        },
+        parameters: {
+          app_id: { type: "string", in: "path", required: true, description: "Hands iOS app UUID; its main-channel bundle id selects the ASC app." },
+        },
+      },
+      {
+        name: "update-testflight-beta-app-description",
+        description:
+          "Create or update supplied app-level Beta App Description localizations, preserve other locales, and require exact Apple readback. Does not touch build-level What to Test, upload or distribute a build, notify testers, or publish an App Store version. Requires app publisher and explicit authorization for the live metadata change.",
+        endpoint: {
+          method: "PUT",
+          path: "/api/apps/{app_id}/testflight-beta-app-description",
+        },
+        parameters: {
+          app_id: { type: "string", in: "path", required: true, description: "Hands iOS app UUID; its main-channel bundle id selects the ASC app." },
+          descriptions: { type: "object", in: "body", required: true, description: "Non-empty locale-to-description map, for example {\"en-US\":\"A private collaboration app\"}." },
         },
       },
       {
