@@ -6381,6 +6381,109 @@ describe("quiver public API v2 — scope resolution", () => {
     expect(await unknownPage.text()).not.toContain("/apps/scope-app/latest");
   });
 
+  it("shares: rebinds one live share atomically to an active release in the same app", async () => {
+    const env = makeEnv();
+    env.APK_BUCKET = { head: async (key: string) => ({ key }) };
+    await seedRelease(env, "rel-share-old", "build-share-old", [["full", "all"]], {
+      versionCode: 10,
+      versionName: "1.0.0",
+    });
+    await seedAsset(env, "build-share-old", "asset-share-old", { fileHash: "old-hash" });
+    await seedRelease(env, "rel-share-new", "build-share-new", [["full", "all"]], {
+      versionCode: 11,
+      versionName: "1.1.0",
+    });
+    await seedAsset(env, "build-share-new", "asset-share-new", {
+      fileHash: "new-hash",
+      sizeBytes: 456,
+    });
+    const { handleCreateReleaseShare, handleRebindReleaseShare } = await import("../src/routes/shares");
+    const created = await responseJson<any>(await handleCreateReleaseShare(
+      makeShareAdminContext(env, { appId: "app-scope", releaseId: "rel-share-old" }),
+    ));
+
+    const response = await handleRebindReleaseShare(makeShareAdminContext(
+      env,
+      { appId: "app-scope", shareId: created.id },
+      { expected_release_id: "rel-share-old", target_release_id: "rel-share-new" },
+    ));
+    expect(response.status).toBe(200);
+    expect(await responseJson<any>(response)).toMatchObject({
+      id: created.id,
+      previous_release_id: "rel-share-old",
+      release_id: "rel-share-new",
+      target: { status: "active", version_name: "1.1.0", version_code: 11, file_hash: "new-hash", size_bytes: 456 },
+    });
+    const rebound = await env.DB.prepare(
+      "SELECT release_id, token_hash FROM release_shares WHERE id = ?",
+    ).bind(created.id).first() as { release_id: string; token_hash: string };
+    expect(rebound.release_id).toBe("rel-share-new");
+    const audit = await env.DB.prepare(
+      "SELECT actor, payload FROM audit_logs WHERE action = 'release_share.rebind'",
+    ).first() as { actor: string; payload: string };
+    expect(audit.actor).toBe("tester");
+    expect(JSON.parse(audit.payload)).toEqual({
+      share_id: created.id,
+      token_hash: rebound.token_hash,
+      old_release_id: "rel-share-old",
+      new_release_id: "rel-share-new",
+    });
+    expect(audit.payload).not.toContain(new URL(created.share_url).pathname.replace("/share/", ""));
+
+    const staleRetry = await handleRebindReleaseShare(makeShareAdminContext(
+      env,
+      { appId: "app-scope", shareId: created.id },
+      { expected_release_id: "rel-share-old", target_release_id: "rel-share-new" },
+    ));
+    expect(staleRetry.status).toBe(409);
+    const auditCount = await env.DB.prepare(
+      "SELECT COUNT(*) AS count FROM audit_logs WHERE action = 'release_share.rebind'",
+    ).first() as { count: number };
+    expect(auditCount.count).toBe(1);
+  });
+
+  it("shares: rejects revoked, non-active, missing, and cross-app rebind targets", async () => {
+    const env = makeEnv();
+    env.APK_BUCKET = { head: async (key: string) => ({ key }) };
+    await seedRelease(env, "rel-rebind-old", "build-rebind-old", [["full", "all"]]);
+    await seedAsset(env, "build-rebind-old", "asset-rebind-old");
+    await seedRelease(env, "rel-rebind-target", "build-rebind-target", [["full", "all"]], { versionCode: 2 });
+    await seedAsset(env, "build-rebind-target", "asset-rebind-target");
+    const { handleCreateReleaseShare, handleRebindReleaseShare, handleRevokeReleaseShare } = await import("../src/routes/shares");
+    const created = await responseJson<any>(await handleCreateReleaseShare(
+      makeShareAdminContext(env, { appId: "app-scope", releaseId: "rel-rebind-old" }),
+    ));
+    const call = (targetReleaseId: string) => handleRebindReleaseShare(makeShareAdminContext(
+      env,
+      { appId: "app-scope", shareId: created.id },
+      { expected_release_id: "rel-rebind-old", target_release_id: targetReleaseId },
+    ));
+
+    expect((await call("missing-release")).status).toBe(404);
+    await env.DB.prepare("UPDATE releases SET status = 'draft' WHERE id = ?")
+      .bind("rel-rebind-target").run();
+    expect((await call("rel-rebind-target")).status).toBe(409);
+    await env.DB.prepare("UPDATE releases SET status = 'active' WHERE id = ?")
+      .bind("rel-rebind-target").run();
+    await env.DB.prepare(
+      "INSERT INTO apps (id, org_id, slug, name, platform, client_key, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+    ).bind("app-other", "default", "other", "Other", "android", "other-key", 1).run();
+    await env.DB.prepare("UPDATE releases SET app_id = ? WHERE id = ?")
+      .bind("app-other", "rel-rebind-target").run();
+    expect((await call("rel-rebind-target")).status).toBe(404);
+    await env.DB.prepare("UPDATE releases SET app_id = ? WHERE id = ?")
+      .bind("app-scope", "rel-rebind-target").run();
+    await handleRevokeReleaseShare(makeShareAdminContext(env, {
+      appId: "app-scope", releaseId: "rel-rebind-old", shareId: created.id,
+    }));
+    expect((await call("rel-rebind-target")).status).toBe(409);
+
+    const auditCount = await env.DB.prepare(
+      "SELECT COUNT(*) AS count FROM audit_logs WHERE action = 'release_share.rebind'",
+    ).first() as { count: number };
+    expect(auditCount.count).toBe(0);
+  });
+
   it("latest landing: stable app URL renders the highest active published release", async () => {
     const env = makeEnv();
     await env.DB.prepare("UPDATE apps SET public_history = 1 WHERE id = ?")
