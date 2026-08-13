@@ -18,6 +18,7 @@ import {
   CheckCircle,
   Circle,
   Clock,
+  ChevronDown,
   ImagePlus,
   Lightbulb,
   MessageSquare,
@@ -64,6 +65,11 @@ import {
   ConversationPanelBody,
   ConversationPanelContent,
   ConversationPanelFooter,
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuItemLabel,
+  DropdownMenuTrigger,
   EmptyState,
   EmptyStateContent,
   EmptyStateDescription,
@@ -114,11 +120,17 @@ import { usePullToRefresh } from "./usePullToRefresh.js";
 import { FeedbackTransportError } from "./types.js";
 import type {
   FeedbackAttachment,
+  FeedbackClosureReason,
   FeedbackComment,
   FeedbackKind,
   FeedbackTicketDetail,
   FeedbackTicketSummary,
 } from "./types.js";
+
+type ReporterClosureReason = Extract<
+  FeedbackClosureReason,
+  "completed" | "no_longer_needed"
+>;
 
 export const MAX_FEEDBACK_ATTACHMENTS = 3;
 export const MAX_FEEDBACK_ATTACHMENT_BYTES = 10 * 1024 * 1024;
@@ -388,12 +400,14 @@ function FeedbackErrorBanner({
 function FeedbackCloseDialog({
   busy,
   error,
+  reason,
   onConfirm,
   onOpenChange,
   open,
 }: {
   busy: boolean;
   error: string | null;
+  reason: ReporterClosureReason;
   onConfirm(): void;
   onOpenChange(open: boolean): void;
   open: boolean;
@@ -416,6 +430,22 @@ function FeedbackCloseDialog({
           <AlertDialogDescription>
             {message("closeTicketDescription")}
           </AlertDialogDescription>
+          <div className="hands-feedback-close-reason-summary">
+            <strong>
+              {message(
+                reason === "completed"
+                  ? "closeReasonCompleted"
+                  : "closeReasonNoLongerNeeded",
+              )}
+            </strong>
+            <span>
+              {message(
+                reason === "completed"
+                  ? "closeReasonCompletedDescription"
+                  : "closeReasonNoLongerNeededDescription",
+              )}
+            </span>
+          </div>
           {open && error && <FeedbackErrorBanner error={error} />}
         </AlertDialogBody>
         <AlertDialogFooter>
@@ -435,6 +465,118 @@ function FeedbackCloseDialog({
         </AlertDialogFooter>
       </AlertDialogContent>
     </AlertDialog>
+  );
+}
+
+function defaultReporterClosureReason(
+  status: FeedbackTicketSummary["status"],
+): ReporterClosureReason {
+  return status === "resolved" ? "completed" : "no_longer_needed";
+}
+
+function ReporterCloseSplitButton({
+  disabled = false,
+  onChoose,
+  status,
+}: {
+  disabled?: boolean;
+  onChoose(reason: ReporterClosureReason): void;
+  status: FeedbackTicketSummary["status"];
+}) {
+  const { message } = useHandsFeedback();
+  const defaultReason = defaultReporterClosureReason(status);
+  const options: Array<{
+    description: FeedbackMessageKey;
+    label: FeedbackMessageKey;
+    reason: ReporterClosureReason;
+  }> = [
+    {
+      reason: "completed",
+      label: "closeReasonCompleted",
+      description: "closeReasonCompletedDescription",
+    },
+    {
+      reason: "no_longer_needed",
+      label: "closeReasonNoLongerNeeded",
+      description: "closeReasonNoLongerNeededDescription",
+    },
+  ];
+  return (
+    <div className="hands-feedback-close-split">
+      <Button
+        size="sm"
+        variant="accent"
+        className="hands-feedback-close-main"
+        disabled={disabled}
+        onClick={() => onChoose(defaultReason)}
+      >
+        {message(
+          defaultReason === "completed"
+            ? "closeReasonCompleted"
+            : "closeTicket",
+        )}
+      </Button>
+      <DropdownMenu>
+        <DropdownMenuTrigger
+          render={
+            <Button
+              type="button"
+              size="sm"
+              variant="accent"
+              className="hands-feedback-close-caret"
+              disabled={disabled}
+              aria-label={message("closeReasonMenu")}
+            />
+          }
+        >
+          <ChevronDown aria-hidden="true" />
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="end" className="hands-feedback-close-menu">
+          {options.map((option) => (
+            <DropdownMenuItem
+              key={option.reason}
+              className="hands-feedback-close-menu-item"
+              onClick={() => onChoose(option.reason)}
+            >
+              {option.reason === defaultReason ? (
+                <Check aria-hidden="true" className="hands-feedback-close-menu-check" />
+              ) : (
+                <span className="hands-feedback-close-menu-check" aria-hidden="true" />
+              )}
+              <DropdownMenuItemLabel>
+                <strong>{message(option.label)}</strong>
+                <span>{message(option.description)}</span>
+              </DropdownMenuItemLabel>
+            </DropdownMenuItem>
+          ))}
+        </DropdownMenuContent>
+      </DropdownMenu>
+    </div>
+  );
+}
+
+function ReporterClosureReasonLabel({
+  reason,
+}: {
+  reason: FeedbackTicketSummary["closureReason"];
+}) {
+  const { message } = useHandsFeedback();
+  if (!reason) return null;
+  const reasonKey: FeedbackMessageKey = reason === "completed"
+    ? "closeReasonCompleted"
+    : reason === "no_longer_needed"
+      ? "closeReasonNoLongerNeeded"
+      : reason === "not_planned"
+        ? "closeReasonNotPlanned"
+        : reason === "cannot_reproduce"
+          ? "closeReasonCannotReproduce"
+          : "closeReasonDuplicate";
+  return (
+    <span className="hands-feedback-closure-reason">
+      {message("closedReason", {
+        reason: message(reasonKey),
+      })}
+    </span>
   );
 }
 
@@ -707,6 +849,8 @@ export function FeedbackInbox({
   const [retryCursor, setRetryCursor] = useState<string | undefined>(undefined);
   const [ticketToClose, setTicketToClose] =
     useState<FeedbackTicketSummary | null>(null);
+  const [closeReason, setCloseReason] =
+    useState<ReporterClosureReason>("no_longer_needed");
   const [closingTicket, setClosingTicket] = useState(false);
   const [closeError, setCloseError] = useState<string | null>(null);
   const [announcement, setAnnouncement] = useState("");
@@ -823,6 +967,7 @@ export function FeedbackInbox({
     try {
       const result = await transport.closeTicket({
         ticketId: ticketToClose.id,
+        reason: closeReason,
         signal: controller.signal,
       });
       if (controller.signal.aborted) return;
@@ -965,22 +1110,15 @@ export function FeedbackInbox({
                             <FeedbackStatusChip status={ticket.status} />
                             {transport.closeTicket &&
                               ticket.status !== "closed" && (
-                                <MessageReferenceChip
-                                  render={<button type="button" />}
-                                  className="hands-feedback-close-chip hands-feedback-reference-chip"
-                                  variant="accent"
-                                  onClick={() => {
+                                <ReporterCloseSplitButton
+                                  status={ticket.status}
+                                  disabled={closingTicket}
+                                  onChoose={(reason) => {
                                     setCloseError(null);
+                                    setCloseReason(reason);
                                     setTicketToClose(ticket);
                                   }}
-                                >
-                                  <span className="hands-feedback-reference-chip-content">
-                                    <X aria-hidden="true" />
-                                    <MessageReferenceLabel>
-                                      {message("closeTicket")}
-                                    </MessageReferenceLabel>
-                                  </span>
-                                </MessageReferenceChip>
+                                />
                               )}
                           </div>
                         </TaskCardBody>
@@ -1033,6 +1171,7 @@ export function FeedbackInbox({
           open={ticketToClose !== null}
           busy={closingTicket}
           error={closeError}
+          reason={closeReason}
           onOpenChange={(open) => {
             if (!open) {
               setCloseError(null);
@@ -1283,6 +1422,8 @@ export function FeedbackTicket({
   const [sending, setSending] = useState(false);
   const [closing, setClosing] = useState(false);
   const [confirmingClose, setConfirmingClose] = useState(false);
+  const [closeReason, setCloseReason] =
+    useState<ReporterClosureReason>("no_longer_needed");
   const [replyAttachments, setReplyAttachments] = useState<PendingAttachment[]>(
     [],
   );
@@ -1514,7 +1655,11 @@ export function FeedbackTicket({
     const controller = new AbortController();
     actionController.current = controller;
     try {
-      const result = await transport.closeTicket({ ticketId, signal: controller.signal });
+      const result = await transport.closeTicket({
+        ticketId,
+        reason: closeReason,
+        signal: controller.signal,
+      });
       if (controller.signal.aborted) return;
       reportUnread({ total: result.unreadTotal, source: "close" });
       setDetail(result);
@@ -1637,24 +1782,20 @@ export function FeedbackTicket({
                   <>
                     <FeedbackKindChip kind={detail.ticket.kind} />
                     <FeedbackStatusChip status={detail.ticket.status} />
+                    <ReporterClosureReasonLabel
+                      reason={detail.ticket.closureReason}
+                    />
                     {transport.closeTicket &&
                       detail.ticket.status !== "closed" && (
-                        <MessageReferenceChip
-                          render={<button type="button" />}
-                          className="hands-feedback-close-chip hands-feedback-reference-chip"
-                          variant="accent"
-                          onClick={() => {
+                        <ReporterCloseSplitButton
+                          status={detail.ticket.status}
+                          disabled={closing}
+                          onChoose={(reason) => {
                             setActionError(null);
+                            setCloseReason(reason);
                             setConfirmingClose(true);
                           }}
-                        >
-                          <span className="hands-feedback-reference-chip-content">
-                            <X aria-hidden="true" />
-                            <MessageReferenceLabel>
-                              {message("closeTicket")}
-                            </MessageReferenceLabel>
-                          </span>
-                        </MessageReferenceChip>
+                        />
                       )}
                   </>
                 }
@@ -1752,6 +1893,7 @@ export function FeedbackTicket({
           open={confirmingClose}
           busy={closing}
           error={confirmingClose ? actionError : null}
+          reason={closeReason}
           onOpenChange={(open) => {
             if (!closing) setConfirmingClose(open);
           }}

@@ -20,8 +20,17 @@ export type FeedbackMessageKey =
   | "closeTicket"
   | "closeTicketConfirm"
   | "closeTicketDescription"
+  | "closeReasonMenu"
+  | "closeReasonCompleted"
+  | "closeReasonCompletedDescription"
+  | "closeReasonNoLongerNeeded"
+  | "closeReasonNoLongerNeededDescription"
+  | "closeReasonNotPlanned"
+  | "closeReasonCannotReproduce"
+  | "closeReasonDuplicate"
   | "closingTicket"
   | "closedDescription"
+  | "closedReason"
   | "conversation"
   | "describePlaceholder"
   | "emptyActiveBody"
@@ -107,8 +116,19 @@ const messages: Record<FeedbackLocale, FeedbackMessages> = {
     closeTicketConfirm: "Close this ticket?",
     closeTicketDescription:
       "You won’t be able to add more replies after closing it. The team can reopen it if more information is needed.",
+    closeReasonMenu: "Choose a close reason",
+    closeReasonCompleted: "Completed",
+    closeReasonCompletedDescription:
+      "The issue is fixed; close this ticket and let the team know.",
+    closeReasonNoLongerNeeded: "No longer needed",
+    closeReasonNoLongerNeededDescription:
+      "Close this ticket without marking the issue as resolved.",
+    closeReasonNotPlanned: "Not planned",
+    closeReasonCannotReproduce: "Cannot reproduce",
+    closeReasonDuplicate: "Duplicate",
     closingTicket: "Closing…",
     closedDescription: "This ticket is closed. The team can reopen it if more information is needed.",
+    closedReason: "Closed as {reason}",
     conversation: "Conversation",
     describePlaceholder: "Describe your idea or the bug you ran into…",
     emptyActiveBody: "Resolved or closed feedback lives under “Ended”.",
@@ -191,8 +211,17 @@ const messages: Record<FeedbackLocale, FeedbackMessages> = {
     closeTicket: "关闭工单",
     closeTicketConfirm: "确定关闭这个工单吗？",
     closeTicketDescription: "关闭后你将不能继续回复。如需补充信息，团队可以重新打开。",
+    closeReasonMenu: "选择关闭原因",
+    closeReasonCompleted: "问题已解决",
+    closeReasonCompletedDescription: "问题已解决，关闭工单并告知团队。",
+    closeReasonNoLongerNeeded: "不再需要处理",
+    closeReasonNoLongerNeededDescription: "直接关闭工单，不代表问题已解决。",
+    closeReasonNotPlanned: "暂不处理",
+    closeReasonCannotReproduce: "无法复现",
+    closeReasonDuplicate: "重复工单",
     closingTicket: "正在关闭…",
     closedDescription: "该工单已关闭。如需更多信息，团队可以重新打开。",
+    closedReason: "关闭原因：{reason}",
     conversation: "对话",
     describePlaceholder: "描述你的想法或遇到的问题…",
     emptyActiveBody: "已解决或已关闭的反馈在「已结束」里。",

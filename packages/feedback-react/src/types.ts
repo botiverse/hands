@@ -2,11 +2,19 @@ export type FeedbackTheme = "elegant" | "brutal";
 export type FeedbackLocale = "en" | "zh-CN";
 export type FeedbackKind = "feedback" | "bug";
 export type FeedbackStatus = "open" | "in_progress" | "resolved" | "closed";
+export type FeedbackClosureReason =
+  | "completed"
+  | "no_longer_needed"
+  | "not_planned"
+  | "cannot_reproduce"
+  | "duplicate";
 
 export type FeedbackTicketSummary = {
   id: string;
   kind: FeedbackKind;
   status: FeedbackStatus;
+  closureReason: FeedbackClosureReason | null;
+  duplicateOfTicketId: string | null;
   message: string;
   createdAt: number;
   updatedAt: number;
@@ -100,6 +108,7 @@ export type HandsFeedbackTransport = {
   /** Optional until the host exposes the reporter-owned close endpoint. */
   closeTicket?(input: {
     ticketId: string;
+    reason: Extract<FeedbackClosureReason, "completed" | "no_longer_needed">;
     signal: AbortSignal;
   }): Promise<FeedbackTicketDetail>;
 };

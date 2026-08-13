@@ -21,6 +21,14 @@ const FeedbackUpdateInput = z
   .object({
     status: z.string().optional(),
     assignee: z.string().nullable().optional(),
+    closure_reason: z.enum([
+      "completed",
+      "no_longer_needed",
+      "not_planned",
+      "cannot_reproduce",
+      "duplicate",
+    ]).optional(),
+    duplicate_of_ticket_id: z.string().nullable().optional(),
   })
   .catchall(z.unknown())
   .openapi("FeedbackUpdateInput");
@@ -39,6 +47,10 @@ const ReporterCommentInput = z.object({
   body: z.string().min(1).max(10_000),
   submission_id: z.string().uuid(),
 }).openapi("ReporterFeedbackCommentInput");
+
+const ReporterCloseInput = z.object({
+  reason: z.enum(["completed", "no_longer_needed"]),
+}).strict().openapi("ReporterFeedbackCloseInput");
 
 const ReporterSessionInput = z.object({
   scopes: z.array(z.enum(["feedback:read", "feedback:comment"]))
@@ -218,12 +230,16 @@ export function registerFeedbackRoutes(registry: OpenApiRegistry) {
     path: "/api/apps/{appId}/reporter-feedback/{ticketId}/close",
     tags: ["Reporter Feedback"],
     summary: "Close a reporter-owned feedback ticket",
-    description: "Idempotently moves only the authenticated reporter's ticket to the closed state. This route cannot reopen tickets or change assignees.",
+    description: "Idempotently moves only the authenticated reporter's ticket to the closed state with a user-appropriate closure reason. This route cannot reopen tickets or change assignees.",
     security: auth,
-    request: { params: AppTicketParams, headers: ReporterHeaders },
+    request: {
+      params: AppTicketParams,
+      headers: ReporterHeaders,
+      body: { content: json(ReporterCloseInput), required: true },
+    },
     responses: {
       200: success("Ticket closed or already closed.", GenericObject),
-      400: error("Missing or malformed reporter id."),
+      400: error("Missing or malformed reporter id or closure reason."),
       401: error("Missing or invalid bearer token."),
       403: error("Invalid reporter integration grant."),
       404: error("Ticket is not owned by this reporter integration."),

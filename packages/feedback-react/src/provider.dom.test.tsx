@@ -53,6 +53,8 @@ const ticket = {
   id: "ticket-1",
   kind: "feedback" as const,
   status: "open" as const,
+  closureReason: null,
+  duplicateOfTicketId: null,
   message: "A reporter-visible ticket",
   createdAt: 1,
   updatedAt: 2,
@@ -106,6 +108,7 @@ describe("FeedbackWorkspace browser behavior", () => {
       ticket: {
         ...detail.ticket,
         status: "closed",
+        closureReason: "no_longer_needed",
         updatedAt: 4,
       },
     };
@@ -119,9 +122,8 @@ describe("FeedbackWorkspace browser behavior", () => {
     fireEvent.click(
       await screen.findByRole("button", { name: ticket.message }),
     );
-    const closeChip = await screen.findByRole("button", { name: "关闭工单" });
-    expect(closeChip.getAttribute("data-slot")).toBe("message-reference");
-    const messageFooter = closeChip.closest("[data-slot='message-item-footer']");
+    const closeButton = await screen.findByRole("button", { name: "关闭工单" });
+    const messageFooter = closeButton.closest("[data-slot='message-item-footer']");
     expect(messageFooter).toBeTruthy();
     const kindChip = messageFooter?.querySelector<HTMLElement>(
       "[data-feedback-kind='feedback']",
@@ -134,19 +136,12 @@ describe("FeedbackWorkspace browser behavior", () => {
       ),
     ).toBe(false);
     expect(messageFooter?.querySelector("[data-feedback-status='open']")).toBeTruthy();
-    expect(closeChip.className).toContain("hands-feedback-reference-chip");
-    expect(closeChip.className).toContain("bg-brutal-pink/30");
-    expect(closeChip.className).not.toContain("bg-brutal-stone/25");
+    expect(closeButton.className).toContain("hands-feedback-close-main");
     expect(
-      Array.from(closeChip.children).some(
-        (child) => child.tagName.toLowerCase() === "svg",
-      ),
-    ).toBe(false);
-    expect(
-      closeChip.closest("[data-slot='message-item']")
+      closeButton.closest("[data-slot='message-item']")
         ?.querySelector("[data-slot='message-item-header'] [data-feedback-status]"),
     ).toBeNull();
-    fireEvent.click(closeChip);
+    fireEvent.click(closeButton);
     const dialog = await screen.findByRole("alertdialog");
     expect(within(dialog).getByText("确定关闭这个工单吗？")).toBeTruthy();
     expect(
@@ -158,6 +153,7 @@ describe("FeedbackWorkspace browser behavior", () => {
     await waitFor(() => expect(adapter.closeTicket).toHaveBeenCalledTimes(1));
     expect(adapter.closeTicket).toHaveBeenCalledWith(expect.objectContaining({
       ticketId: ticket.id,
+      reason: "no_longer_needed",
       signal: expect.any(AbortSignal),
     }));
     await waitFor(() =>
@@ -180,6 +176,7 @@ describe("FeedbackWorkspace browser behavior", () => {
       ticket: {
         ...detail.ticket,
         status: "closed",
+        closureReason: "no_longer_needed",
         updatedAt: 4,
       },
     }));
@@ -209,6 +206,7 @@ describe("FeedbackWorkspace browser behavior", () => {
     expect(adapter.closeTicket).toHaveBeenCalledWith(
       expect.objectContaining({
         ticketId: ticket.id,
+        reason: "no_longer_needed",
         signal: expect.any(AbortSignal),
       }),
     );
@@ -554,8 +552,18 @@ describe("FeedbackWorkspace browser behavior", () => {
     const closeActions = screen.getAllByRole("button", {
       name: "Close ticket",
     });
-    expect(closeActions).toHaveLength(3);
+    const resolvedAction = screen.getByRole("button", {
+      name: "Completed",
+    });
+    expect(closeActions).toHaveLength(2);
     expect(screen.queryByRole("button", { name: "Reopen ticket" })).toBeNull();
+    const reasonMenus = screen.getAllByRole("button", {
+      name: "Choose a close reason",
+    });
+    expect(reasonMenus).toHaveLength(3);
+    expect(reasonMenus.every((button) =>
+      button.className.includes("hands-feedback-close-caret")
+    )).toBe(true);
     expect(
       closeActions.every((action) =>
         action.closest(".hands-feedback-ticket-meta"),
@@ -567,7 +575,28 @@ describe("FeedbackWorkspace browser behavior", () => {
     fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
     expect(screen.queryByRole("alertdialog")).toBeNull();
 
-    fireEvent.click(closeActions[2]!);
+    fireEvent.click(reasonMenus[0]!);
+    const reasonMenu = await screen.findByRole("menu");
+    expect(within(reasonMenu).getByText("Completed")).toBeTruthy();
+    expect(
+      within(reasonMenu).getByText(
+        "The issue is fixed; close this ticket and let the team know.",
+      ),
+    ).toBeTruthy();
+    expect(within(reasonMenu).getByText("No longer needed")).toBeTruthy();
+    expect(
+      within(reasonMenu).getByText(
+        "Close this ticket without marking the issue as resolved.",
+      ),
+    ).toBeTruthy();
+    fireEvent.click(within(reasonMenu).getByText("Completed"));
+    const alternateDialog = await screen.findByRole("alertdialog");
+    expect(within(alternateDialog).getByText("Completed")).toBeTruthy();
+    fireEvent.click(
+      within(alternateDialog).getByRole("button", { name: "Cancel" }),
+    );
+
+    fireEvent.click(resolvedAction);
     const resolvedDialog = await screen.findByRole("alertdialog");
     expect(
       within(resolvedDialog).getByText("Close this ticket?"),
