@@ -133,12 +133,14 @@ raft integration invoke --service <hands-service> --action publish-release \
 ```
 
 Also available: `list-releases`, `get-release`, `list-release-shares`
-(viewer), `create-release-share` / `revoke-release-share` (publisher —
+(viewer), `create-release-share` / `update-release-share` /
+`revoke-release-share` (publisher —
 share pages are how a draft gets to a human for device review; links have no
-expiry unless you set one and die only on revoke). When reporting a
-release, always cite the build's APK SHA-256 — the binary hash is the
-authority, not a branch head or run id. A 403 means your identity lacks the
-app role: ask an app admin to grant it; never borrow credentials.
+expiry unless you set one, and `update-release-share` with `expires_at: null`
+restores that never-expiring state; such links die only on revoke). When
+reporting a release, always cite the build's APK SHA-256 — the binary hash is
+the authority, not a branch head or run id. A 403 means your identity lacks
+the app role: ask an app admin to grant it; never borrow credentials.
 
 **Humans / CI — hands CLI** (browser login or deploy token):
 

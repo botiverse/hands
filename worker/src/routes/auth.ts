@@ -1139,6 +1139,19 @@ export async function handleAgentManifest(c: Context<{ Bindings: Env }>) {
         },
       },
       {
+        name: "update-release-share",
+        description:
+          "Update one unrevoked release share's expiry. Pass expires_at=null to make an existing link live until revoked, or ttl_seconds for a future expiry. Requires app publisher.",
+        endpoint: { method: "PATCH", path: "/api/apps/{app_id}/releases/{release_id}/shares/{share_id}" },
+        parameters: {
+          app_id: { type: "string", in: "path", required: true, description: "App UUID." },
+          release_id: { type: "string", in: "path", required: true, description: "Current release UUID from a fresh share list." },
+          share_id: { type: "string", in: "path", required: true, description: "Share UUID." },
+          expires_at: { type: "number", in: "body", required: false, nullable: true, description: "Unix millisecond expiry; pass null to make the share live until revoked." },
+          ttl_seconds: { type: "number", in: "body", required: false, description: "Optional future expiry relative to now." },
+        },
+      },
+      {
         name: "revoke-release-share",
         description: "Revoke a share link (the only way a no-expiry link dies). Requires app publisher.",
         endpoint: { method: "DELETE", path: "/api/apps/{app_id}/releases/{release_id}/shares/{share_id}" },
