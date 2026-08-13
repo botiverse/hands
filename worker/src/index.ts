@@ -15,9 +15,9 @@ import { Hono } from "hono";
 import type { Context } from "hono";
 import { cors } from "hono/cors";
 import { publicDocAssetPaths } from "./lib/public_docs";
-export { HandsObservability } from "./observability_rpc";
 
 import { authMiddleware, currentActor } from "./middleware/auth";
+import { requireHandsAdmin } from "./middleware/hands_admin";
 import {
   handleAgentManifest,
   handleAgentHelp,
@@ -28,6 +28,7 @@ import {
   handleAuthMe,
   handleRaftCallback,
 } from "./routes/auth";
+import { handleHandsAdminOverview } from "./routes/hands_admin";
 import {
   handleDeleteAgcCredentials,
   handleGetAgcCredentials,
@@ -627,6 +628,10 @@ export const admin = new Hono<{
   };
 }>();
 admin.use("*", authMiddleware);
+
+// Global Hands observability is server-admin scoped, not app-role scoped.
+admin.use("/api/admin/observability/*", requireHandsAdmin);
+admin.get("/api/admin/observability/overview", handleHandsAdminOverview);
 
 // Global error handler: surface unhandled exceptions as JSON instead of
 // Hono's default empty "Internal Server Error" body. This makes every
