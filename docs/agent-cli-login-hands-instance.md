@@ -40,9 +40,11 @@ never mutates state.
 
 ```
 hands login  (agent env)
+  0. CLI generates high-entropy code_verifier; code_challenge = base64url(SHA-256(verifier))
   1. raft integration invoke <hands-service> --action agent-login
-       -> one-time grant   (format/TTL/binding/errors = XX's frozen contract; see "Grant interface")
-  2. POST <hands-api>/api/auth/agent/exchange   { grant }
+       input:  { schema:request.v1, code_challenge, code_challenge_method:"S256" }
+       result: { schema:grant.v1, service:"hands", grant:<opaque single-use>, expires_at:<=300s }
+  2. POST <hands-api>/api/auth/agent/exchange  { schema:exchange.v1, grant, code_verifier }
        -> { access_token, refresh_token, access_expires_at }
   3. store at $SLOCK_HOME/agents/$SLOCK_AGENT_ID/integrations/hands/auth.json
   4. subsequent calls use access_token; auto-refresh (below)
@@ -63,10 +65,13 @@ they are never handed back to Raft/daemon and never appear in the `invoke` outpu
 ## Worker endpoints (CP2)
 
 ### `POST /api/auth/agent/exchange`
-- Body: `{ grant }`.
-- Validates the grant per the Grant interface (single-use, unexpired, bound to the
-  calling agent/server/service). On any failure → fail closed (401/400, no token).
-- On success: mint short access JWT + issue refresh token; persist refresh hash.
+- Body: `{ schema:"raft-cli-agent-login-exchange.v1", grant, code_verifier }`.
+- Consume + proof-verify per the Grant interface (atomic single-use; identity from
+  the grant binding; `SHA-256(verifier)==code_challenge`). Any failure → fail closed
+  with a stable error from the closed set (no token). `code_verifier` is never
+  logged/stored.
+- On success: mint short access JWT + issue refresh token; persist refresh hash;
+  both bound to the proven `identity`.
 - Response: `{ access_token, refresh_token, access_expires_at }`.
 
 ### `POST /api/auth/agent/refresh`
@@ -119,13 +124,43 @@ Additive/backward-compatible; index on `token_hash`. Revocation = set `revoked_a
 - `expired / reused / revoked` refresh → clear the store and require a fresh
   `hands login`.
 
-## Grant interface (depends on XX's frozen `agent-login` action contract — task #1)
+## Grant interface — FROZEN (RFC 057 / slock PR #6496, `7b0c8cdf`)
 
-Pending from XX: the one-time grant's **fields, TTL, binding (agent/server/service),
-single-use/replay guarantee, and error codes**, plus **how Hands validates/consumes
-it** (call back to Raft to consume, or verify a signed grant + Raft tracks single-use).
-CP2's `exchange` validation is written to exactly this contract; until frozen, the
-validation is an interface stub, not a guessed protocol.
+Proof-key (PKCE-style) bound grant — a bare-bearer grant is rejected: stealing the
+stdout grant alone must not allow exchange. The CLI generates a high-entropy
+`code_verifier` locally; only its S256 challenge reaches Raft; the verifier is sent
+only to the Hands exchange endpoint and **never** to Raft, logs, or the store.
+
+Action input:
+```json
+{"schema":"raft-cli-agent-login-request.v1","code_challenge":"<base64url SHA-256, 32 bytes>","code_challenge_method":"S256"}
+```
+Action result (strict):
+```json
+{"schema":"raft-cli-agent-login-grant.v1","service":"hands","grant":"<opaque single-use>","expires_at":"<future RFC3339, <=300s>"}
+```
+Hands exchange request:
+```json
+{"schema":"raft-cli-agent-login-exchange.v1","grant":"…","code_verifier":"…"}
+```
+
+Grant record (Raft-side) binds authenticated `server/agent/integration/service` +
+issued/expiry + `code_challenge` + nonce; stores the grant digest where possible;
+consume + used-transition is atomic. Server/agent id are **proven via the grant
+binding, never client-self-reported**.
+
+**Exchange error closed-set:** `invalid` / `expired` / `consumed` /
+`binding_mismatch` / `grant_proof_mismatch` / `temporarily_unavailable`. Only
+`temporarily_unavailable` is bounded-retryable; an ambiguous exchange does NOT retry
+the old grant — the CLI acquires a fresh one.
+
+**Consumption locus — PENDING @XX confirm** (my seat can't read RFC 057 directly):
+my read is Hands exchange receives `{grant, code_verifier}` → calls Raft to atomically
+consume the opaque `grant` (grant only, verifier NOT sent) → Raft returns the bound
+`{identity, code_challenge, nonce}` → Hands verifies `SHA-256(verifier) ==
+code_challenge` locally (mismatch → `grant_proof_mismatch`) → mints access+refresh
+bound to `identity`. If RFC 057 splits consume/verify differently, this section
+updates to match before CP2 code.
 
 ## Threat model (honest)
 
@@ -154,8 +189,11 @@ validation is an interface stub, not a guessed protocol.
 | All 4 daemon markers present | agent login path taken |
 | Any one marker missing / `raft` not executable | human/CI path, unchanged |
 | Human/CI (no markers) | existing login byte-for-byte identical |
-| exchange with valid grant | access + refresh issued; store written 0600, dir 0700 |
-| exchange with expired/replayed/cross-bound grant | fail closed, no token, stable code |
+| exchange with valid grant + matching verifier | access + refresh issued; store written 0600, dir 0700 |
+| exchange with wrong/absent code_verifier | `grant_proof_mismatch`, no token |
+| exchange with expired/consumed/cross-bound grant | `expired`/`consumed`/`binding_mismatch`, fail closed, no token |
+| verifier in any Raft-bound payload/log/store | never present (proof stays CLI↔Hands) |
+| `temporarily_unavailable` vs ambiguous exchange | former bounded-retry; latter acquires a fresh grant, never retries the old |
 | refresh happy path | rotates; old refresh no longer valid |
 | refresh reuse (rotated token) | fail closed + chain revoked |
 | refresh expired / revoked | store cleared, re-login required |
