@@ -1698,4 +1698,84 @@ describe("hands api same-origin guard (resolveSameOriginApiUrl)", () => {
     // "/api/../admin" normalizes to "/admin" -> no longer under /api/
     expect(() => resolveSameOriginApiUrl("/api/../admin", BASE)).toThrow();
   });
+
+  it("accepts a same-origin absolute URL under /api/", async () => {
+    const { resolveSameOriginApiUrl } = await import("./commands/api.js");
+    // Same-origin absolute is allowed (documented contract): the bearer never
+    // leaves the configured origin, so there is no exfil risk.
+    const u = resolveSameOriginApiUrl("https://hands.build/api/apps", BASE);
+    expect(u.origin).toBe("https://hands.build");
+    expect(u.pathname).toBe("/api/apps");
+  });
+});
+
+describe("hands api command path (--api / --json wiring)", () => {
+  let server: ReturnType<typeof createServer>;
+  let base: string;
+  let received: Array<{ method?: string; url?: string }>;
+  let logs: string[];
+  let errs: string[];
+  let logSpy: ReturnType<typeof vi.spyOn>;
+  let errSpy: ReturnType<typeof vi.spyOn>;
+  let origHandsApi: string | undefined;
+
+  beforeEach(async () => {
+    received = [];
+    logs = [];
+    errs = [];
+    origHandsApi = process.env.HANDS_API;
+    // If the command wrongly used resolveApiBase() instead of the --api-resolved
+    // base, it would fall back to this unreachable URL and never hit our server.
+    process.env.HANDS_API = "http://127.0.0.1:1";
+    server = createServer((req, res) => {
+      received.push({ method: req.method, url: req.url });
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ ok: true }));
+    });
+    await new Promise<void>((r) => server.listen(0, "127.0.0.1", () => r()));
+    const addr = server.address();
+    base = `http://127.0.0.1:${typeof addr === "object" && addr ? addr.port : 0}`;
+    logSpy = vi.spyOn(console, "log").mockImplementation((m?: unknown) => {
+      logs.push(String(m));
+    });
+    errSpy = vi.spyOn(console, "error").mockImplementation((m?: unknown) => {
+      errs.push(String(m));
+    });
+  });
+
+  afterEach(async () => {
+    logSpy.mockRestore();
+    errSpy.mockRestore();
+    await new Promise<void>((r) => server.close(() => r()));
+    if (origHandsApi === undefined) delete process.env.HANDS_API;
+    else process.env.HANDS_API = origHandsApi;
+  });
+
+  async function buildProgram(): Promise<Command> {
+    const { setApiBase } = await import("./lib/api.js");
+    const { registerApiCommand } = await import("./commands/api.js");
+    const program = new Command();
+    program.name("hands").option("--api <url>").option("--json", "", false);
+    // Mirror index.ts: resolve --api into the shared client base before actions.
+    program.hook("preAction", () => {
+      const opts = program.opts<{ api?: string }>();
+      const apiBase = opts.api ?? process.env.HANDS_API;
+      if (apiBase) setApiBase(apiBase);
+    });
+    registerApiCommand(program);
+    return program;
+  }
+
+  it("routes to the root --api base, not the config/env fallback", async () => {
+    const program = await buildProgram();
+    await program.parseAsync(["node", "hands", "--api", base, "api", "GET", "/api/ping"]);
+    expect(received).toEqual([{ method: "GET", url: "/api/ping" }]);
+  });
+
+  it("honors the global --json flag (body only, no status line on stderr)", async () => {
+    const program = await buildProgram();
+    await program.parseAsync(["node", "hands", "--api", base, "--json", "api", "GET", "/api/ping"]);
+    expect(logs.join("\n")).toContain('{"ok":true}');
+    expect(errs.join("\n")).not.toMatch(/\b200\b/);
+  });
 });

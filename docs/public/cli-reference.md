@@ -515,6 +515,41 @@ hands feedback update raft-android <ticket-id> --status resolved
 
 `--assignee none` unassigns. All subcommands accept `--json` for scripting.
 
+## Direct API Access (`hands api`)
+
+A power-user / scripting affordance for calling a Hands API endpoint directly,
+over the **same** server-side RBAC, audit, and per-endpoint guards a dedicated
+subcommand uses. It is not a permission bypass and not a generic-SQL escape
+hatch — every write still hits the same server route.
+
+```bash
+# GET with repeatable query params
+hands api GET /api/apps --param platform=android
+
+# POST/PATCH with an inline JSON body, or read the body from a file with @path
+hands api POST /api/apps/raft-android/releases --data '{"buildId":"build-1"}'
+hands api PATCH /api/apps/raft-android/releases/<id>/shares/<sid> --data @body.json
+
+# Binary responses: write the raw bytes to a file
+hands api GET /api/apps/raft-android/builds/<id>/download --output app.apk
+
+# Machine-readable: print only the response body (no status line)
+hands --json api GET /api/apps
+```
+
+- **Same-origin `/api/*` only.** `<path>` is resolved against the active Hands
+  API base (honoring the root `--api` flag). A relative path or a **same-origin
+  absolute URL** is accepted; cross-origin absolute URLs, `//protocol-relative`
+  hosts, and `../` traversal that escapes the origin are rejected — so the
+  Authorization bearer never leaves the Hands origin.
+- **Redirects are never followed.** A `3xx` is reported, not chased; following a
+  redirect off-origin would leak the bearer.
+- **Auth + RBAC unchanged.** Reuses your existing CLI login/token; the server
+  enforces the same role checks as any other call.
+- Flags: `--param key=value` (repeatable), `--data <json|@file>`,
+  `--output <file>` (required for binary). Both the global `--api` and `--json`
+  flags are honored.
+
 ## CI Environment Variables
 
 Every variable is read as `HANDS_<name>` first, then the legacy `QUIVER_<name>`,

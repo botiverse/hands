@@ -6,11 +6,13 @@
  * dedicated subcommand would.
  *
  * Security (reviewed with Sentinel — credential/origin boundary):
- *  - Same-origin `/api/*` only. The path is resolved against the configured
- *    Hands API base; the result must keep that exact origin AND its path must
- *    start with `/api/`. This rejects absolute URLs, `//protocol-relative`
- *    hosts, and `../` traversal that escapes the origin — any of which would
- *    otherwise carry the Authorization bearer to another host.
+ *  - Same-origin `/api/*` only. The path is resolved against the CLI's active
+ *    Hands API base (honoring the root `--api` flag). A relative path or a
+ *    same-origin absolute URL is accepted; the result must keep that exact
+ *    origin AND its path must start with `/api/`. This rejects cross-origin
+ *    absolute URLs, `//protocol-relative` hosts, and `../` traversal that
+ *    escapes the origin — any of which would otherwise carry the Authorization
+ *    bearer to another host.
  *  - `redirect: "manual"` — a 3xx is reported, never auto-followed. Following a
  *    redirect off-origin would leak the bearer to the redirect target.
  *  - Reuses the existing CLI identity/token; no scope escalation.
@@ -18,7 +20,8 @@
 
 import type { Command } from "commander";
 import { readFile, writeFile } from "node:fs/promises";
-import { resolveApiBase, resolveAuthToken } from "../lib/config.js";
+import { getApiBase } from "../lib/api.js";
+import { resolveAuthToken } from "../lib/config.js";
 
 const METHODS = new Set(["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD"]);
 
@@ -37,8 +40,8 @@ export function resolveSameOriginApiUrl(pathArg: string, apiBase: string): URL {
   }
   if (target.origin !== base.origin) {
     throw new Error(
-      `Refusing '${pathArg}': must be a relative Hands path on ${base.origin} ` +
-        "(no absolute or //protocol-relative URLs).",
+      `Refusing '${pathArg}': must stay on ${base.origin} under /api/ ` +
+        "(no cross-origin or //protocol-relative URLs).",
     );
   }
   if (!target.pathname.startsWith("/api/")) {
@@ -68,7 +71,11 @@ export function registerApiCommand(program: Command): void {
         methodArg: string,
         pathArg: string,
         opts: { param?: string[]; data?: string; output?: string; json?: boolean },
+        command: Command,
       ) => {
+        // Honor the root `--json` global as well as the subcommand flag, matching
+        // the top-level "Every command supports --json" contract.
+        const jsonOnly = opts.json || command.optsWithGlobals<{ json?: boolean }>().json;
         const method = methodArg.toUpperCase();
         if (!METHODS.has(method)) {
           fail(`Unsupported method '${methodArg}'. Use one of: ${[...METHODS].join(", ")}.`);
@@ -76,7 +83,9 @@ export function registerApiCommand(program: Command): void {
 
         let target: URL;
         try {
-          target = resolveSameOriginApiUrl(pathArg, resolveApiBase());
+          // getApiBase() reflects the root `--api` flag (set in preAction); using
+          // resolveApiBase() directly would ignore --api and could target prod.
+          target = resolveSameOriginApiUrl(pathArg, getApiBase());
         } catch (e) {
           fail(e instanceof Error ? e.message : String(e));
         }
@@ -130,7 +139,7 @@ export function registerApiCommand(program: Command): void {
         }
 
         const text = await res.text();
-        if (opts.json) {
+        if (jsonOnly) {
           if (text.length > 0) console.log(text);
         } else {
           console.error(statusLine);

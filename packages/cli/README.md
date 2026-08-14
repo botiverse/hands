@@ -68,6 +68,25 @@ This records external byte evidence; it does not upload the artifact or
 activate a release. Repeating the same declaration is idempotent. Changing an
 immutable version or target field returns a conflict.
 
+## Direct API access (`hands api`)
+
+Call any Hands endpoint directly, over the same server-side RBAC and audit a
+dedicated subcommand uses — a scripting affordance, not a permission bypass:
+
+```bash
+hands api GET /api/apps --param platform=android
+hands api POST /api/apps/raft-android/releases --data '{"buildId":"build-1"}'
+hands api PATCH /api/apps/raft-android/releases/<id>/shares/<sid> --data @body.json
+hands api GET /api/apps/raft-android/builds/<id>/download --output app.apk   # binary
+hands --json api GET /api/apps                                               # body only
+```
+
+Same-origin `/api/*` only (a relative path or a same-origin absolute URL;
+cross-origin, `//protocol-relative`, and `../`-escape are rejected). Redirects
+are never followed, so the bearer never leaves the Hands origin. Honors the
+global `--api` and `--json` flags. Full flag reference:
+`docs/public/cli-reference.md`.
+
 ## CI mode
 
 ```bash
