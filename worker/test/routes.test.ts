@@ -11791,7 +11791,7 @@ describe("Hands iOS simulator QA artifacts", () => {
       ticketId?: string,
       commentBody?:
         | { body: string; submission_id: string }
-        | { reason: "completed" | "no_longer_needed" }
+        | { reason: "completed" | "no_longer_needed" | "not_planned" }
         | FormData,
       headerReporter = reporterId,
       queries: Record<string, string> = {},
@@ -11929,6 +11929,12 @@ describe("Hands iOS simulator QA artifacts", () => {
     expect((await handleCloseReporterFeedback(context(
       "close", credentialB.token, ticketA,
     ))).status).toBe(404);
+    expect((await handleCloseReporterFeedback(context(
+      "close",
+      credentialComment.token,
+      ticketA,
+      { reason: "not_planned" },
+    ))).status).toBe(400);
     await env.DB.prepare("UPDATE feedback_tickets SET assignee = 'staff:test' WHERE id = ?1")
       .bind(ticketA).run();
     const closeResponses = await Promise.all([
@@ -12531,6 +12537,22 @@ describe("Hands iOS simulator QA artifacts", () => {
 
     const missingCloseReason = await handleUpdateFeedback(adminContext({ status: "closed" }));
     expect(missingCloseReason.status).toBe(400);
+    const crossAppTicketId = "12121212-1212-4212-8212-121212121212";
+    await env.DB.prepare(
+      `INSERT INTO apps (id, org_id, slug, name, platform, created_at)
+       VALUES ('app-other', 'default', 'app-other', 'Other App', 'ios', ?1)`,
+    ).bind(now).run();
+    await env.DB.prepare(
+      `INSERT INTO feedback_tickets
+       (id, app_id, kind, status, message, metadata_json, created_at, updated_at)
+       VALUES (?1, 'app-other', 'feedback', 'open', 'Other app ticket', '{}', ?2, ?2)`,
+    ).bind(crossAppTicketId, now).run();
+    const crossAppDuplicate = await handleUpdateFeedback(adminContext({
+      status: "closed",
+      closure_reason: "duplicate",
+      duplicate_of_ticket_id: crossAppTicketId,
+    }));
+    expect(crossAppDuplicate.status).toBe(400);
     const duplicateTicketId = ticketB;
     const duplicateClose = await handleUpdateFeedback(adminContext({
       status: "closed",

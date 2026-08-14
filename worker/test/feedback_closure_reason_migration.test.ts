@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 
 const migration = fileURLToPath(
-  new URL("../../migrations/sql/0063_feedback_closure_reason.sql", import.meta.url),
+  new URL("../../migrations/sql/0065_feedback_closure_reason.sql", import.meta.url),
 );
 const databases: string[] = [];
 
