@@ -64,6 +64,13 @@ they are never handed back to Raft/daemon and never appear in the `invoke` outpu
 
 ## Worker endpoints (CP2)
 
+### `agent-login` action (Hands manifest action; reached via `integration invoke`)
+- Input: `{ schema:"raft-cli-agent-login-request.v1", code_challenge, code_challenge_method:"S256" }`.
+- Hands reads `server/agent/integration/service` **from the authenticated Agent Login
+  context of the invoke** (never from the request body).
+- Writes a Hands-side grant record (`identity + code_challenge + nonce + issued/expiry`,
+  storing the grant digest). Returns `{ schema:"…grant.v1", service:"hands", grant, expires_at (<=300s) }`.
+
 ### `POST /api/auth/agent/exchange`
 - Body: `{ schema:"raft-cli-agent-login-exchange.v1", grant, code_verifier }`.
 - Consume + proof-verify per the Grant interface (atomic single-use; identity from
@@ -84,9 +91,29 @@ they are never handed back to Raft/daemon and never appear in the `invoke` outpu
 Both endpoints: grant/refresh values never logged; errors carry a stable `code`,
 never the secret.
 
-## Refresh-token storage (CP2 migration)
+## Server-side storage (CP2 migration)
 
-New D1 table (next migration number at CP2 time — currently main is at `0065`):
+New D1 tables (next migration number at CP2 time — main is currently at `0065`).
+
+Grant records (Hands owns the grant lifecycle — issue at `agent-login`, consume at
+`exchange`, atomically):
+
+```
+agent_login_grants(
+  grant_digest TEXT PRIMARY KEY,       -- digest only, never the raw grant
+  server_id TEXT NOT NULL,             -- all identity fields from the authenticated
+  agent_id TEXT NOT NULL,              -- Agent Login context, NOT the request body
+  integration TEXT NOT NULL,
+  service TEXT NOT NULL,
+  code_challenge TEXT NOT NULL,        -- S256; verified against verifier at exchange
+  nonce TEXT NOT NULL,
+  issued_at INTEGER NOT NULL,
+  expires_at INTEGER NOT NULL,         -- <=300s from issue
+  consumed_at INTEGER                  -- set atomically with mint; single-use
+)
+```
+
+Refresh tokens:
 
 ```
 agent_refresh_tokens(
@@ -154,13 +181,23 @@ binding, never client-self-reported**.
 `temporarily_unavailable` is bounded-retryable; an ambiguous exchange does NOT retry
 the old grant — the CLI acquires a fresh one.
 
-**Consumption locus — PENDING @XX confirm** (my seat can't read RFC 057 directly):
-my read is Hands exchange receives `{grant, code_verifier}` → calls Raft to atomically
-consume the opaque `grant` (grant only, verifier NOT sent) → Raft returns the bound
-`{identity, code_challenge, nonce}` → Hands verifies `SHA-256(verifier) ==
-code_challenge` locally (mismatch → `grant_proof_mismatch`) → mints access+refresh
-bound to `identity`. If RFC 057 splits consume/verify differently, this section
-updates to match before CP2 code.
+**Consumption locus — CONFIRMED by @XX (RFC 057): fully Hands-local, NO Raft callback
+at exchange.**
+
+1. `agent-login` **action is executed by Hands** (the invoke transports the request
+   to the Hands service). Hands reads `server/agent/integration/service` identity from
+   the authenticated Agent Login context, writes its OWN grant record
+   (`identity + code_challenge + nonce + expiry`, storing the grant digest), and
+   returns only the opaque `grant` to the CLI.
+2. CLI sends `{grant, code_verifier}` to the Hands exchange endpoint.
+3. Hands finds its own record by grant digest → checks unexpired/unconsumed/binding
+   → verifies `SHA-256(code_verifier)==code_challenge` (mismatch → `grant_proof_mismatch`)
+   → in the **same atomic transaction** marks the grant consumed and mints
+   access+refresh; session identity comes from the grant record.
+
+Raft/daemon never sees the verifier and is not called at exchange (no Raft online
+dependency, no second identity hop). `grant_proof_mismatch` originates only from
+Hands's local proof check; `server/agent` id is never client-self-reported.
 
 ## Threat model (honest)
 
