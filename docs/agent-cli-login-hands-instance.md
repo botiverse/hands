@@ -76,6 +76,13 @@ they are never handed back to Raft/daemon and never appear in the `invoke` outpu
   server/account. (Requires `principal_type=agent`.)
 - Writes a Hands-side grant record (`identity + code_challenge + nonce + issued/expiry`,
   storing the grant digest). Returns `{ schema:"…grant.v1", service:"hands", grant, expires_at (<=300s) }`.
+- **Handler teeth (Volta):**
+  1. `authenticated_account` is set ONLY on the valid Hands-session branch; the
+     deploy-token fallback must not synthesize it. Handler **fails closed** if it is absent.
+  2. Require `principal_type === "agent"` — a human session (even with a raw account)
+     cannot obtain an agent grant.
+  3. The grant's audit actor/identity derive from `authenticated_account`, NOT the
+     org-switched `admin_actor`/current actor (else the grant binds A but audit logs B).
 
 ### `POST /api/auth/agent/exchange`
 - Body: `{ schema:"raft-cli-agent-login-exchange.v1", grant, code_verifier }`.
@@ -258,6 +265,9 @@ Hands's local proof check; `server/agent` id is never client-self-reported.
 | exchange with expired/consumed/cross-bound grant | `expired`/`consumed`/`binding_mismatch`, fail closed, no token |
 | verifier in any Raft-bound payload/log/store | never present (proof stays CLI↔Hands) |
 | agent-login: agent session (server A) + `x-hands-org-id` → linked server B | grant binds A (or fail closed), never B |
+| agent-login via deploy-token (no `authenticated_account`) | fail closed, no grant |
+| agent-login with a human session | rejected (agent principal required), no grant |
+| grant audit record under an active-org header | actor/identity = authenticated account (A), never the org-switched account |
 | `temporarily_unavailable` vs ambiguous exchange | former bounded-retry; latter acquires a fresh grant, never retries the old |
 | refresh happy path | rotates; old refresh no longer valid |
 | refresh reuse (rotated token) | fail closed + chain revoked |
