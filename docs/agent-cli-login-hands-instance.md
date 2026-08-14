@@ -133,6 +133,18 @@ agent_refresh_tokens(
 Additive/backward-compatible; index on `token_hash`. Revocation = set `revoked_at`
 (and cascade the chain on reuse). Admin revoke path (revoke all for an agent).
 
+## Lifecycle revocation (Argus advisory)
+
+Hands binds every grant/refresh record to `(server, agent, integration, service)`, so
+it has the material to **revoke by identity**. As a Hands service policy:
+
+- Support revoke-all-for-`(agent[/server/service])` (admin + programmatic).
+- **On agent-lifecycle termination**, revoke that agent's refresh tokens. Trigger
+  options (coordination with @XX): (a) a daemon/Raft "agent terminated" signal if one
+  exists; (b) short refresh TTL bounds the window regardless; (c) manual/admin revoke.
+  CP2 implements the revoke-by-identity capability; the automatic trigger source is a
+  CP2 open item pending whether Raft exposes a termination hook.
+
 ## CLI auth store (CP3)
 
 - Path: **`$SLOCK_HOME/agents/$SLOCK_AGENT_ID/integrations/hands/auth.json`**.
