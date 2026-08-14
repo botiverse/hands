@@ -526,17 +526,26 @@ hatch — every write still hits the same server route.
 # GET with repeatable query params
 hands api GET /api/apps --param platform=android
 
-# POST/PATCH with an inline JSON body, or read the body from a file with @path
-hands api POST /api/apps/raft-android/releases --data '{"buildId":"build-1"}'
-hands api PATCH /api/apps/raft-android/releases/<id>/shares/<sid> --data @body.json
+# PATCH with an inline JSON body. NOTE: path params are raw — <appId> is the app
+# UUID, not a slug: `hands api` passes the path through and does not resolve slugs.
+hands api PATCH /api/apps/<appId>/releases/<releaseId>/shares/<shareId> \
+  --data '{"expires_at":null}'
 
-# Binary responses: write the raw bytes to a file
-hands api GET /api/apps/raft-android/builds/<id>/download --output app.apk
+# ...or read the same body from a file with @path
+hands api PATCH /api/apps/<appId>/releases/<releaseId>/shares/<shareId> \
+  --data @body.json
+
+# Binary / same-origin streaming response: write the raw bytes to a file
+hands api GET /api/apps/<appId>/feedback/<ticketId>/attachments/<attachmentId> \
+  --output attachment.bin
 
 # Machine-readable: print only the response body (no status line)
 hands --json api GET /api/apps
 ```
 
+- **Raw path params.** `<appId>` and the other ids are the resource UUIDs, not
+  slugs — `hands api` passes the path through verbatim and does not resolve
+  slugs the way the dedicated subcommands do.
 - **Same-origin `/api/*` only.** `<path>` is resolved against the active Hands
   API base (honoring the root `--api` flag). A relative path or a **same-origin
   absolute URL** is accepted; cross-origin absolute URLs, `//protocol-relative`
