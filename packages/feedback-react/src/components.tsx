@@ -317,11 +317,17 @@ function FeedbackKindChip({ kind }: { kind: FeedbackTicketSummary["kind"] }) {
 }
 
 function FeedbackStatusChip({
+  closureReason,
   status,
 }: {
+  closureReason: FeedbackTicketSummary["closureReason"];
   status: FeedbackTicketSummary["status"];
 }) {
   const { message } = useHandsFeedback();
+  const displayStatus =
+    status === "closed" && closureReason === "completed"
+      ? "resolved"
+      : status;
   const config = {
     open: {
       Icon: Circle,
@@ -343,7 +349,7 @@ function FeedbackStatusChip({
       backgroundColor: "var(--color-brutal-stone)",
       variant: "muted" as const,
     },
-  }[status];
+  }[displayStatus];
   const StatusIcon = config.Icon;
   return (
     <Badge
@@ -351,10 +357,11 @@ function FeedbackStatusChip({
       uppercase={false}
       variant={config.variant}
       data-feedback-status={status}
+      data-feedback-display-status={displayStatus}
       style={{ backgroundColor: config.backgroundColor }}
     >
       <StatusIcon aria-hidden="true" size={10} />
-      {feedbackStatusLabel(status, message)}
+      {feedbackStatusLabel(displayStatus, message)}
     </Badge>
   );
 }
@@ -1122,7 +1129,10 @@ export function FeedbackInbox({
                           </div>
                           <div className="hands-feedback-ticket-meta">
                             <FeedbackKindChip kind={ticket.kind} />
-                            <FeedbackStatusChip status={ticket.status} />
+                            <FeedbackStatusChip
+                              status={ticket.status}
+                              closureReason={ticket.closureReason}
+                            />
                             {transport.closeTicket &&
                               ticket.status !== "closed" && (
                                 <ReporterCloseSplitButton
@@ -1796,7 +1806,10 @@ export function FeedbackTicket({
                 footer={
                   <>
                     <FeedbackKindChip kind={detail.ticket.kind} />
-                    <FeedbackStatusChip status={detail.ticket.status} />
+                    <FeedbackStatusChip
+                      status={detail.ticket.status}
+                      closureReason={detail.ticket.closureReason}
+                    />
                     <ReporterClosureReasonLabel
                       reason={detail.ticket.closureReason}
                     />

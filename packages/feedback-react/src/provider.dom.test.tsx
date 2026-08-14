@@ -605,13 +605,13 @@ describe("FeedbackWorkspace browser behavior", () => {
     expect(within(reasonMenu).getByText("Completed")).toBeTruthy();
     expect(
       within(reasonMenu).getByText(
-        "Confirm the issue is fixed, then close the ticket.",
+        "Confirm resolved and close.",
       ),
     ).toBeTruthy();
     expect(within(reasonMenu).getByText("No longer needed")).toBeTruthy();
     expect(
       within(reasonMenu).getByText(
-        "Close the ticket even though the issue is not resolved.",
+        "Close — no further action needed.",
       ),
     ).toBeTruthy();
     fireEvent.click(within(reasonMenu).getByText("Completed"));
@@ -639,6 +639,96 @@ describe("FeedbackWorkspace browser behavior", () => {
     expect(
       within(resolvedDialog).getByRole("button", { name: "Close ticket" }),
     ).toBeTruthy();
+  });
+
+  it("presents a completed closed ticket as resolved without reopening it", async () => {
+    const adapter = transport();
+    adapter.closeTicket = vi.fn(async () => detail);
+    adapter.getTicket = vi.fn(async () => ({
+      ...detail,
+      ticket: {
+        ...detail.ticket,
+        id: "ticket-completed",
+        message: "Completed closed ticket",
+        status: "closed",
+        closureReason: "completed",
+      },
+    }));
+    adapter.listTickets = vi.fn(async () => ({
+      tickets: [
+        {
+          ...ticket,
+          id: "ticket-completed",
+          message: "Completed closed ticket",
+          status: "closed",
+          closureReason: "completed",
+          unread: false,
+          unreadCount: 0,
+        },
+        {
+          ...ticket,
+          id: "ticket-no-longer-needed",
+          message: "No longer needed ticket",
+          status: "closed",
+          closureReason: "no_longer_needed",
+          unread: false,
+          unreadCount: 0,
+        },
+      ],
+      nextCursor: null,
+      unreadTotal: 0,
+    }));
+    const { container } = render(
+      <FeedbackProvider transport={adapter} theme="brutal">
+        <FeedbackWorkspace />
+      </FeedbackProvider>,
+    );
+
+    await screen.findByText("Completed closed ticket");
+    const completedCard = screen
+      .getByRole("button", { name: "Completed closed ticket" })
+      .closest<HTMLElement>("[data-slot='task-card']")!;
+    const completedStatus = completedCard.querySelector<HTMLElement>(
+      "[data-feedback-status='closed']",
+    )!;
+    expect(completedStatus.dataset.feedbackDisplayStatus).toBe("resolved");
+    expect(completedStatus.style.backgroundColor).toBe(
+      "var(--color-brutal-lime)",
+    );
+    expect(completedStatus.textContent).toContain("Resolved");
+    expect(completedStatus.querySelector("svg")?.getAttribute("class")).toBe(
+      "lucide lucide-circle-check-big",
+    );
+    fireEvent.click(
+      screen.getByRole("button", { name: "Completed closed ticket" }),
+    );
+    await waitFor(() =>
+      expect(
+        container.querySelector(
+          ".hands-feedback-detail [data-feedback-display-status='resolved']",
+        ),
+      ).toBeTruthy(),
+    );
+    expect(screen.getByText("Closed as Completed")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Back" }));
+
+    const noLongerNeededCard = screen
+      .getByRole("button", { name: "No longer needed ticket" })
+      .closest<HTMLElement>("[data-slot='task-card']")!;
+    const noLongerNeededStatus = noLongerNeededCard.querySelector<HTMLElement>(
+      "[data-feedback-status='closed']",
+    )!;
+    expect(noLongerNeededStatus.dataset.feedbackDisplayStatus).toBe("closed");
+    expect(noLongerNeededStatus.style.backgroundColor).toBe(
+      "var(--color-brutal-stone)",
+    );
+    expect(noLongerNeededStatus.textContent).toContain("Closed");
+    expect(noLongerNeededStatus.querySelector("svg")?.getAttribute("class")).toBe(
+      "lucide lucide-ban",
+    );
+
+    expect(screen.queryByRole("button", { name: "Close ticket" })).toBeNull();
+    expect(container.querySelectorAll("[data-feedback-status='closed']")).toHaveLength(2);
   });
 
   it("uses the shared tabs with native roles, roving focus, and activation", async () => {

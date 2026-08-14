@@ -179,7 +179,16 @@ describe("FeedbackProvider", () => {
       /\.hands-feedback-header h2\s*\{[^}]*font-size:\s*17px[^}]*font-weight:\s*700/,
     );
     expect(css).toMatch(
-      /\.hands-feedback-list-scroll\[data-feedback-empty-scroll="true"\]\s*\{[^}]*align-content:\s*stretch[^}]*grid-template-rows:\s*auto minmax\(0, 1fr\)/,
+      /\.hands-feedback-list-scroll\[data-feedback-empty-scroll="true"\]\s*\{[^}]*align-content:\s*stretch[^}]*gap:\s*0[^}]*grid-template-rows:\s*auto minmax\(0, 1fr\)[^}]*padding:\s*6px 2px 0/,
+    );
+    expect(css).toMatch(
+      /\.hands-feedback-list-scroll\[data-feedback-empty-scroll="true"\][^{]*> \.hands-feedback-pull-indicator\s*\{[^}]*margin-bottom:\s*0/,
+    );
+    expect(css).toMatch(
+      /\.hands-feedback-inbox-content\s*\{[^}]*padding:\s*18px 18px calc\(18px \+ env\(safe-area-inset-bottom, 0px\)\)/,
+    );
+    expect(css).toMatch(
+      /@media \(max-width: 640px\)[\s\S]*?\.hands-feedback-inbox-content\s*\{[^}]*padding:\s*18px 16px calc\(18px \+ env\(safe-area-inset-bottom, 0px\)\)/,
     );
     expect(css).toMatch(
       /\.hands-feedback-empty\s*\{[^}]*align-self:\s*stretch[^}]*border:\s*2px dashed[^}]*height:\s*auto[^}]*justify-content:\s*center[^}]*justify-self:\s*stretch[^}]*min-height:\s*0[^}]*padding:\s*40px 24px 48px/,
@@ -229,6 +238,12 @@ describe("FeedbackProvider", () => {
     );
     expect(css).toMatch(
       /\.hands-feedback-close-menu-item \[data-slot="dropdown-menu-item-label"\],[\s\S]*\.hands-feedback-close-menu-item \[data-slot="dropdown-menu-item-label"\] span\s*\{[^}]*overflow:\s*visible[^}]*text-overflow:\s*clip[^}]*white-space:\s*normal/,
+    );
+    expect(css).toMatch(
+      /\.hands-feedback-close-menu\s*\{[^}]*max-width:\s*calc\(100vw - 24px\)[^}]*min-width:\s*max-content[^}]*width:\s*max-content/,
+    );
+    expect(css).toMatch(
+      /\.hands-feedback-close-menu-item\s*\{[^}]*width:\s*100%/,
     );
     expect(css).not.toMatch(
       /@media \(max-width: 640px\)[\s\S]*\.hands-feedback-close-main,[\s\S]*\.hands-feedback-close-caret\s*\{/,
