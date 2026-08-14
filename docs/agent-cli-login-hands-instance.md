@@ -133,17 +133,22 @@ agent_refresh_tokens(
 Additive/backward-compatible; index on `token_hash`. Revocation = set `revoked_at`
 (and cascade the chain on reuse). Admin revoke path (revoke all for an agent).
 
-## Lifecycle revocation (Argus advisory)
+## Lifecycle revocation (Argus advisory; scope confirmed by @XX census)
 
 Hands binds every grant/refresh record to `(server, agent, integration, service)`, so
-it has the material to **revoke by identity**. As a Hands service policy:
+it has the material to **revoke by identity**. Scope this version:
 
-- Support revoke-all-for-`(agent[/server/service])` (admin + programmatic).
-- **On agent-lifecycle termination**, revoke that agent's refresh tokens. Trigger
-  options (coordination with @XX): (a) a daemon/Raft "agent terminated" signal if one
-  exists; (b) short refresh TTL bounds the window regardless; (c) manual/admin revoke.
-  CP2 implements the revoke-by-identity capability; the automatic trigger source is a
-  CP2 open item pending whether Raft exposes a termination hook.
+- **CP2 implements** revoke-by-identity / revoke-all-for-`(agent[/server/service])`
+  (admin + programmatic).
+- **Automatic lifecycle trigger = NOT_AVAILABLE.** Per @XX's source census there is no
+  agent-terminated/-deleted hook an installed service may subscribe to — the internal
+  `agent:deleted` Socket.IO is browser-only (not an Agent Login action, not an app
+  webhook, not in canonical `AgentLifecycleEventType`); Hands must not connect to it.
+- Until a generic lifecycle outbound contract exists, exposure is bounded by **short
+  access TTL + refresh expiry/revocation**. Refresh must **not** re-query Raft agent
+  liveness (no hidden online dependency).
+- "Raft agent delete/terminate → auto-revoke service refresh" is a **separate platform
+  follow-up**, not a Hands CP2 prerequisite or a completed item.
 
 ## CLI auth store (CP3)
 
