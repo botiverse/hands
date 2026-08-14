@@ -36,6 +36,8 @@ export function buildFeedbackCommentEvent(input: EventBase & {
 export function buildFeedbackStatusEvent(input: EventBase & {
   previousStatus: string;
   status: string;
+  closureReason?: string | null;
+  duplicateOfTicketId?: string | null;
 }): string {
   return JSON.stringify({
     id: input.eventId,
@@ -50,6 +52,8 @@ export function buildFeedbackStatusEvent(input: EventBase & {
       reporter_id: input.reporterId,
       previous_status: input.previousStatus,
       status: input.status,
+      closure_reason: input.closureReason ?? null,
+      duplicate_of_ticket_id: input.duplicateOfTicketId ?? null,
     },
   });
 }

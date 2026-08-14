@@ -4,6 +4,7 @@
  * shareable links. Tickets carry an assignee, status flow, and comments.
  */
 import { Fragment, useEffect, useMemo, useState } from "react";
+import { Check, ChevronDown } from "lucide-react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
@@ -21,9 +22,57 @@ import {
 import { feedbackMessage } from "../lib/feedbackMessages";
 import { useToast } from "../components/Toast";
 import { FeedbackTrends } from "../components/FeedbackTrends";
-import { Button, Input, Select, SelectTrigger, SelectValue, SelectIcon, SelectContent, SelectItem, Tooltip, TooltipTrigger, TooltipContent, EmptyState, EmptyStateTitle, Skeleton } from "raft-ui";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogBody,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  Button,
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+  EmptyState,
+  EmptyStateTitle,
+  Input,
+  Select,
+  SelectContent,
+  SelectIcon,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+  Skeleton,
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "raft-ui";
+import type { FeedbackTicket } from "../lib/api";
 
-const STATUSES = ["open", "in_progress", "resolved", "closed"] as const;
+const STATUSES = ["open", "in_progress", "resolved"] as const;
+
+type TeamClosureReason = NonNullable<FeedbackTicket["closure_reason"]>;
+
+const TEAM_CLOSURE_REASONS: Array<{
+  description: string;
+  label: string;
+  reason: TeamClosureReason;
+}> = [
+  { reason: "completed", label: "Completed", description: "The fix or improvement has been delivered." },
+  { reason: "not_planned", label: "Not planned", description: "Keep the record, but do not work on it now." },
+  { reason: "cannot_reproduce", label: "Cannot reproduce", description: "The issue cannot be reproduced with the available information." },
+  { reason: "duplicate", label: "Duplicate", description: "Close as a duplicate and link the original ticket." },
+];
+
+function closureReasonLabel(reason: FeedbackTicket["closure_reason"]): string {
+  if (reason === "no_longer_needed") return "No longer needed";
+  return TEAM_CLOSURE_REASONS.find((item) => item.reason === reason)?.label
+    ?? String(reason ?? "Closed");
+}
 
 const STATUS_STYLES: Record<string, string> = {
   open: "bg-red-100 text-red-800",
@@ -533,6 +582,9 @@ export function FeedbackTicketPage({
   const queryClient = useQueryClient();
   const [comment, setComment] = useState("");
   const [assigneeDraft, setAssigneeDraft] = useState<string | null>(null);
+  const [pendingClosureReason, setPendingClosureReason] =
+    useState<TeamClosureReason | null>(null);
+  const [duplicateOfTicketId, setDuplicateOfTicketId] = useState("");
 
   const detail = useQuery({
     queryKey: ["feedback-detail", appId, ticketId],
@@ -546,7 +598,12 @@ export function FeedbackTicketPage({
   };
 
   const update = useMutation({
-    mutationFn: (body: { status?: string; assignee?: string | null }) =>
+    mutationFn: (body: {
+      status?: string;
+      assignee?: string | null;
+      closure_reason?: FeedbackTicket["closure_reason"];
+      duplicate_of_ticket_id?: string | null;
+    }) =>
       updateFeedbackTicket(appId, ticketId, body),
     onSuccess: () => {
       setAssigneeDraft(null);
@@ -582,6 +639,26 @@ export function FeedbackTicketPage({
 
   const t = detail.data?.ticket;
   const myName = me.data?.account?.display_name ?? null;
+  const pendingClosure = TEAM_CLOSURE_REASONS.find(
+    (item) => item.reason === pendingClosureReason,
+  );
+  const submitClosure = () => {
+    if (!pendingClosureReason) return;
+    update.mutate(
+      {
+        status: "closed",
+        closure_reason: pendingClosureReason,
+        duplicate_of_ticket_id:
+          pendingClosureReason === "duplicate" ? duplicateOfTicketId.trim() : null,
+      },
+      {
+        onSuccess: () => {
+          setPendingClosureReason(null);
+          setDuplicateOfTicketId("");
+        },
+      },
+    );
+  };
 
   return (
     <div className="space-y-4 max-w-3xl">
@@ -626,8 +703,72 @@ export function FeedbackTicketPage({
                   {s}
                 </Button>
               ))}
+              {t.status !== "closed" && (
+                <div className="inline-flex">
+                  <Button
+                    size="sm"
+                    variant="primary"
+                    className="rounded-r-none"
+                    disabled={update.isPending}
+                    onClick={() => setPendingClosureReason("completed")}
+                  >
+                    Completed
+                  </Button>
+                  <DropdownMenu>
+                    <DropdownMenuTrigger
+                      render={
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="primary"
+                          className="min-w-11 rounded-l-none border-l-0 px-3"
+                          disabled={update.isPending}
+                          aria-label="Choose a close reason"
+                        />
+                      }
+                    >
+                      <ChevronDown aria-hidden="true" className="size-4" />
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="end" className="w-80 max-w-[calc(100vw-24px)]">
+                      {TEAM_CLOSURE_REASONS.map((item) => (
+                        <DropdownMenuItem
+                          key={item.reason}
+                          className="items-start whitespace-normal"
+                          onClick={() => setPendingClosureReason(item.reason)}
+                        >
+                          {item.reason === "completed" ? (
+                            <Check aria-hidden="true" className="mt-0.5 size-4 shrink-0" />
+                          ) : (
+                            <span aria-hidden="true" className="size-4 shrink-0" />
+                          )}
+                          <span>
+                            <strong className="block">{item.label}</strong>
+                            <span className="mt-0.5 block text-xs text-slate-500">
+                              {item.description}
+                            </span>
+                          </span>
+                        </DropdownMenuItem>
+                      ))}
+                    </DropdownMenuContent>
+                  </DropdownMenu>
+                </div>
+              )}
             </div>
           </div>
+
+          {t.status === "closed" && t.closure_reason && (
+            <div className="card text-sm">
+              <div className="font-semibold">Closed as {closureReasonLabel(t.closure_reason)}</div>
+              {t.duplicate_of_ticket_id && (
+                <Link
+                  to={`/apps/${appId}/feedback/${t.duplicate_of_ticket_id}`}
+                  className="mt-1 inline-block font-mono text-xs text-blue-600 hover:underline"
+                >
+                  Original ticket {t.duplicate_of_ticket_id}
+                </Link>
+              )}
+            </div>
+          )}
 
           <div className="card text-sm whitespace-pre-wrap">{t.message}</div>
 
@@ -957,6 +1098,52 @@ export function FeedbackTicketPage({
           </div>
         </>
       )}
+      <AlertDialog
+        open={pendingClosureReason !== null}
+        onOpenChange={(open) => {
+          if (!open && !update.isPending) {
+            setPendingClosureReason(null);
+            setDuplicateOfTicketId("");
+          }
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Close this ticket?</AlertDialogTitle>
+          </AlertDialogHeader>
+          <AlertDialogBody className="space-y-3">
+            <AlertDialogDescription>
+              {pendingClosure?.description}
+            </AlertDialogDescription>
+            {pendingClosureReason === "duplicate" && (
+              <label className="block text-sm font-medium">
+                Original ticket ID
+                <Input
+                  className="mt-1"
+                  value={duplicateOfTicketId}
+                  onChange={(event) => setDuplicateOfTicketId(event.target.value)}
+                  placeholder="Full ID or a unique prefix"
+                  autoFocus
+                />
+              </label>
+            )}
+          </AlertDialogBody>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={update.isPending}>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              variant="primary"
+              loading={update.isPending}
+              disabled={
+                update.isPending
+                || (pendingClosureReason === "duplicate" && !duplicateOfTicketId.trim())
+              }
+              onClick={submitClosure}
+            >
+              Close ticket
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

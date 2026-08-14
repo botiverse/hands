@@ -1670,6 +1670,14 @@ export interface FeedbackTicket {
   id: string;
   kind: "feedback" | "bug" | "crash" | "error";
   status: "open" | "in_progress" | "resolved" | "closed";
+  closure_reason:
+    | "completed"
+    | "no_longer_needed"
+    | "not_planned"
+    | "cannot_reproduce"
+    | "duplicate"
+    | null;
+  duplicate_of_ticket_id: string | null;
   assignee: string | null;
   message: string;
   contact: string | null;
@@ -1747,9 +1755,20 @@ export const resymbolicateFeedback = (appId: string, ticketId: string) =>
 export const updateFeedbackTicket = (
   appId: string,
   ticketId: string,
-  body: { status?: string; assignee?: string | null },
+  body: {
+    status?: string;
+    assignee?: string | null;
+    closure_reason?: FeedbackTicket["closure_reason"];
+    duplicate_of_ticket_id?: string | null;
+  },
 ) =>
-  request<{ id: string; status: string | null; assignee: string | null }>(
+  request<{
+    id: string;
+    status: string | null;
+    assignee: string | null;
+    closure_reason: FeedbackTicket["closure_reason"];
+    duplicate_of_ticket_id: string | null;
+  }>(
     `/api/apps/${appId}/feedback/${ticketId}`,
     {
       method: "PATCH",

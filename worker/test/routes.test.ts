@@ -412,6 +412,8 @@ function makeMockDb() {
       submission_fingerprint TEXT,
       reporter_id TEXT,
       reporter_integration_id TEXT,
+      closure_reason TEXT,
+      duplicate_of_ticket_id TEXT,
       symbolication_status TEXT,
       symbolicated_stack TEXT,
       symbolicated_at INTEGER,
@@ -11787,7 +11789,10 @@ describe("Hands iOS simulator QA artifacts", () => {
       handler: "list" | "detail" | "comment" | "close",
       credential: string | null,
       ticketId?: string,
-      commentBody?: { body: string; submission_id: string } | FormData,
+      commentBody?:
+        | { body: string; submission_id: string }
+        | { reason: "completed" | "no_longer_needed" | "not_planned" }
+        | FormData,
       headerReporter = reporterId,
       queries: Record<string, string> = {},
     ) => {
@@ -11805,7 +11810,9 @@ describe("Hands iOS simulator QA artifacts", () => {
               ? `Bearer ${credential}`
               : undefined,
           query: (name: string) => queries[name] ?? (handler === "list" && name === "limit" ? "50" : undefined),
-          json: async () => commentBody instanceof FormData ? {} : commentBody ?? {},
+          json: async () => commentBody instanceof FormData
+            ? {}
+            : commentBody ?? (handler === "close" ? { reason: "completed" } : {}),
           formData: async () => commentBody instanceof FormData ? commentBody : new FormData(),
         },
         json: (data: unknown, status = 200) => new Response(JSON.stringify(data), {
@@ -11922,6 +11929,12 @@ describe("Hands iOS simulator QA artifacts", () => {
     expect((await handleCloseReporterFeedback(context(
       "close", credentialB.token, ticketA,
     ))).status).toBe(404);
+    expect((await handleCloseReporterFeedback(context(
+      "close",
+      credentialComment.token,
+      ticketA,
+      { reason: "not_planned" },
+    ))).status).toBe(400);
     await env.DB.prepare("UPDATE feedback_tickets SET assignee = 'staff:test' WHERE id = ?1")
       .bind(ticketA).run();
     const closeResponses = await Promise.all([
@@ -11931,8 +11944,12 @@ describe("Hands iOS simulator QA artifacts", () => {
     const closeBodies = await Promise.all(closeResponses.map((response) => response.json() as Promise<any>));
     expect(closeBodies.map((body) => body.changed).sort()).toEqual([false, true]);
     expect(await env.DB.prepare(
-      "SELECT status, assignee FROM feedback_tickets WHERE id = ?1",
-    ).bind(ticketA).first()).toEqual({ status: "closed", assignee: "staff:test" });
+      "SELECT status, closure_reason, assignee FROM feedback_tickets WHERE id = ?1",
+    ).bind(ticketA).first()).toEqual({
+      status: "closed",
+      closure_reason: "completed",
+      assignee: "staff:test",
+    });
     expect((await env.DB.prepare(
       "SELECT COUNT(*) AS count FROM audit_logs WHERE action = 'feedback.reporter_close'",
     ).first() as any).count).toBe(1);
@@ -11944,6 +11961,7 @@ describe("Hands iOS simulator QA artifacts", () => {
       ticket_id: ticketA,
       previous_status: "open",
       status: "closed",
+      closure_reason: "completed",
     });
     const closeEvents = await env.DB.prepare(
       `SELECT payload_json FROM feedback_events
@@ -11954,15 +11972,25 @@ describe("Hands iOS simulator QA artifacts", () => {
       ticket_id: ticketA,
       previous_status: "open",
       status: "closed",
+      closure_reason: "completed",
       reporter_integration_id: integrationA,
       reporter_id: reporterId,
     });
+    const differentCloseReason = await handleCloseReporterFeedback(context(
+      "close",
+      credentialComment.token,
+      ticketA,
+      { reason: "no_longer_needed" },
+    ));
+    expect(differentCloseReason.status).toBe(409);
     await env.DB.prepare(
       "DELETE FROM feedback_events WHERE ticket_id = ?1 AND event_type = 'feedback:status_changed'",
     ).bind(ticketA).run();
     await env.DB.prepare("DELETE FROM audit_logs WHERE action = 'feedback.reporter_close'").run();
     await env.DB.prepare(
-      "UPDATE feedback_tickets SET status = 'open', assignee = NULL WHERE id = ?1",
+      `UPDATE feedback_tickets
+       SET status = 'open', closure_reason = NULL, duplicate_of_ticket_id = NULL,
+           assignee = NULL WHERE id = ?1`,
     ).bind(ticketA).run();
 
     const { computeReporterAuditHash } = await import("../src/lib/reporter_audit");
@@ -12506,6 +12534,53 @@ describe("Hands iOS simulator QA artifacts", () => {
     expect((await env.DB.prepare(
       "SELECT COUNT(*) AS count FROM audit_logs WHERE action = 'feedback.update'",
     ).first() as any).count).toBe(auditBeforeNoop);
+
+    const missingCloseReason = await handleUpdateFeedback(adminContext({ status: "closed" }));
+    expect(missingCloseReason.status).toBe(400);
+    const crossAppTicketId = "12121212-1212-4212-8212-121212121212";
+    await env.DB.prepare(
+      `INSERT INTO apps (id, org_id, slug, name, platform, created_at)
+       VALUES ('app-other', 'default', 'app-other', 'Other App', 'ios', ?1)`,
+    ).bind(now).run();
+    await env.DB.prepare(
+      `INSERT INTO feedback_tickets
+       (id, app_id, kind, status, message, metadata_json, created_at, updated_at)
+       VALUES (?1, 'app-other', 'feedback', 'open', 'Other app ticket', '{}', ?2, ?2)`,
+    ).bind(crossAppTicketId, now).run();
+    const crossAppDuplicate = await handleUpdateFeedback(adminContext({
+      status: "closed",
+      closure_reason: "duplicate",
+      duplicate_of_ticket_id: crossAppTicketId,
+    }));
+    expect(crossAppDuplicate.status).toBe(400);
+    const duplicateTicketId = ticketB;
+    const duplicateClose = await handleUpdateFeedback(adminContext({
+      status: "closed",
+      closure_reason: "duplicate",
+      duplicate_of_ticket_id: duplicateTicketId.slice(0, 8),
+    }));
+    expect(duplicateClose.status).toBe(200);
+    expect(await duplicateClose.json()).toMatchObject({
+      status: "closed",
+      closure_reason: "duplicate",
+      duplicate_of_ticket_id: duplicateTicketId,
+      changed: true,
+    });
+    expect(JSON.parse((await env.DB.prepare(
+      `SELECT payload_json FROM feedback_events
+       WHERE ticket_id = ?1 AND event_type = 'feedback:status_changed'
+       ORDER BY rowid DESC LIMIT 1`,
+    ).bind(ticketA).first() as { payload_json: string }).payload_json).payload)
+      .toMatchObject({
+        status: "closed",
+        closure_reason: "duplicate",
+        duplicate_of_ticket_id: duplicateTicketId,
+      });
+    await env.DB.prepare(
+      `UPDATE feedback_tickets
+       SET status = 'resolved', closure_reason = NULL, duplicate_of_ticket_id = NULL
+       WHERE id = ?1`,
+    ).bind(ticketA).run();
 
     await env.DB.prepare(
       "DELETE FROM feedback_events WHERE ticket_id = ?1 AND event_type = 'feedback:status_changed'",

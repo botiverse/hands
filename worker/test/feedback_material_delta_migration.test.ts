@@ -29,6 +29,21 @@ function database(includeMaterial = true) {
   return db;
 }
 
+// The opcode test below is a frozen comparison at the 0059→0060 boundary.
+// Later migrations may legitimately add indexes or triggers to these tables;
+// they must not silently redefine the pre-0060 baseline named by that test.
+function materialBoundaryDatabase(includeMaterial: boolean) {
+  const db = new Database(":memory:");
+  db.pragma("foreign_keys = ON");
+  for (const name of readdirSync(MIGRATION_DIR).sort()) {
+    if (!name.endsWith(".sql")) continue;
+    if (name > MIGRATION) break;
+    if (name === MIGRATION && !includeMaterial) continue;
+    db.exec(readFileSync(`${MIGRATION_DIR}${name}`, "utf8"));
+  }
+  return db;
+}
+
 function app(db: Database.Database, id: string) {
   db.prepare(
     "INSERT INTO apps (id, slug, name, platform, created_at) VALUES (?,?,?,'android',1)",
@@ -513,9 +528,9 @@ describe("migration 0060 — feedback material delta", () => {
       `INSERT INTO feedback_comments
        (id, ticket_id, author_actor, author_type, body, internal, created_at)
        VALUES ('comment', 'ticket', 'staff:test', 'staff', 'message', 0, 2)`;
-    const baseline = database(false);
-    const ticketCarrier = database();
-    const appendCarrier = database(false);
+    const baseline = materialBoundaryDatabase(false);
+    const ticketCarrier = materialBoundaryDatabase(true);
+    const appendCarrier = materialBoundaryDatabase(false);
     appendCarrier.exec(
       `CREATE TABLE synthetic_material_state (
          app_id TEXT PRIMARY KEY,

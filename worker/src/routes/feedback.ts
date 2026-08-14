@@ -30,6 +30,12 @@ const TRUSTED_REPORTER_RATE_LIMIT_PER_HOUR = 100;
 
 const TICKET_STATUSES = ["open", "in_progress", "resolved", "closed"] as const;
 const TICKET_KINDS = ["feedback", "bug", "crash", "error"] as const;
+const FEEDBACK_CLOSURE_REASONS = [
+  "completed",
+  "not_planned",
+  "cannot_reproduce",
+  "duplicate",
+] as const;
 const SUBMISSION_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const MATERIAL_DELTA_DEFAULT_LIMIT = 100;
 const MATERIAL_DELTA_MAX_LIMIT = 200;
@@ -1980,7 +1986,8 @@ export async function handleListFeedback(c: AdminContext) {
     where += ` AND signature = ?${binds.length}`;
   }
   const { results } = await c.env.DB.prepare(
-    `SELECT t.id, t.kind, t.status, t.assignee, t.message, t.contact, t.version_name,
+    `SELECT t.id, t.kind, t.status, t.closure_reason, t.duplicate_of_ticket_id,
+            t.assignee, t.message, t.contact, t.version_name,
             t.version_code, t.channel, t.device_id, t.device_model, t.os_version,
             t.created_at, t.updated_at,
             (SELECT COUNT(*) FROM feedback_attachments fa WHERE fa.ticket_id = t.id) AS attachment_count,
@@ -2007,7 +2014,8 @@ export async function handleListFeedbackMaterialDelta(c: AdminContext) {
   }
 
   const { results } = await c.env.DB.prepare(
-    `SELECT t.id, t.kind, t.status, t.assignee, t.message, t.contact, t.version_name,
+    `SELECT t.id, t.kind, t.status, t.closure_reason, t.duplicate_of_ticket_id,
+            t.assignee, t.message, t.contact, t.version_name,
             t.version_code, t.channel, t.device_id, t.device_model, t.os_version,
             t.created_at, t.updated_at, t.material_sequence,
             (SELECT COUNT(*) FROM feedback_attachments fa WHERE fa.ticket_id = t.id) AS attachment_count,
@@ -2175,6 +2183,8 @@ export async function handleUpdateFeedback(c: AdminContext) {
   const body = (await c.req.json().catch(() => ({}))) as {
     status?: string;
     assignee?: string | null;
+    closure_reason?: string | null;
+    duplicate_of_ticket_id?: string | null;
   };
   if (body.status !== undefined) {
     if (!(TICKET_STATUSES as readonly string[]).includes(body.status)) {
@@ -2184,6 +2194,28 @@ export async function handleUpdateFeedback(c: AdminContext) {
   if (body.status === undefined && body.assignee === undefined) {
     return c.json({ error: "nothing to update (status or assignee required)" }, 400);
   }
+  if (body.closure_reason !== undefined) {
+    if (
+      typeof body.closure_reason !== "string"
+      || !(FEEDBACK_CLOSURE_REASONS as readonly string[]).includes(body.closure_reason)
+    ) {
+      return c.json({ error: `closure_reason must be one of ${FEEDBACK_CLOSURE_REASONS.join(", ")}` }, 400);
+    }
+    if (body.status !== "closed") {
+      return c.json({ error: "closure_reason requires status closed" }, 400);
+    }
+  }
+  const duplicateTargetInput = body.duplicate_of_ticket_id === undefined
+    ? undefined
+    : typeof body.duplicate_of_ticket_id === "string"
+      ? body.duplicate_of_ticket_id.trim()
+      : "";
+  if (body.closure_reason === "duplicate" && !duplicateTargetInput) {
+    return c.json({ error: "duplicate_of_ticket_id is required for duplicate closures" }, 400);
+  }
+  if (body.closure_reason !== "duplicate" && duplicateTargetInput) {
+    return c.json({ error: "duplicate_of_ticket_id is only valid for duplicate closures" }, 400);
+  }
   const requestedAssigneeInput = body.assignee === undefined
     ? undefined
     : (typeof body.assignee === "string" ? body.assignee.trim().slice(0, 120) : "") || null;
@@ -2191,16 +2223,45 @@ export async function handleUpdateFeedback(c: AdminContext) {
     const existing = await loadFeedbackMutationSnapshot(c.env.DB, appId, ticketId);
     if (!existing) return c.json({ error: "ticket not found" }, 404);
     const requestedStatus = body.status ?? existing.status;
+    let requestedClosureReason = requestedStatus === "closed"
+      ? body.closure_reason ?? existing.closure_reason
+      : null;
+    let requestedDuplicateOfTicketId = requestedStatus === "closed"
+      ? duplicateTargetInput ?? existing.duplicate_of_ticket_id
+      : null;
+    if (
+      existing.status !== "closed"
+      && requestedStatus === "closed"
+      && !requestedClosureReason
+    ) {
+      return c.json({ error: "closure_reason is required when closing a ticket" }, 400);
+    }
+    if (requestedClosureReason === "duplicate") {
+      const duplicate = await resolveTicketId(c.env.DB, appId, requestedDuplicateOfTicketId ?? "");
+      if ("error" in duplicate) {
+        return c.json({ error: "duplicate_of_ticket_id must identify one ticket in this app" }, 400);
+      }
+      if (duplicate.id === ticketId) {
+        return c.json({ error: "a ticket cannot be a duplicate of itself" }, 400);
+      }
+      requestedDuplicateOfTicketId = duplicate.id;
+    } else {
+      requestedDuplicateOfTicketId = null;
+    }
     const requestedAssignee = requestedAssigneeInput === undefined
       ? existing.assignee
       : requestedAssigneeInput;
     const statusChanged = requestedStatus !== existing.status;
     const assigneeChanged = requestedAssignee !== existing.assignee;
-    if (!statusChanged && !assigneeChanged) {
+    const closureChanged = requestedClosureReason !== existing.closure_reason
+      || requestedDuplicateOfTicketId !== existing.duplicate_of_ticket_id;
+    if (!statusChanged && !assigneeChanged && !closureChanged) {
       return c.json({
         id: ticketId,
         status: existing.status,
         assignee: existing.assignee,
+        closure_reason: existing.closure_reason,
+        duplicate_of_ticket_id: existing.duplicate_of_ticket_id,
         updated_at: null,
         changed: false,
       });
@@ -2214,13 +2275,18 @@ export async function handleUpdateFeedback(c: AdminContext) {
       status: requestedStatus,
       previous_assignee: existing.assignee,
       assignee: requestedAssignee,
+      previous_closure_reason: existing.closure_reason,
+      closure_reason: requestedClosureReason,
+      previous_duplicate_of_ticket_id: existing.duplicate_of_ticket_id,
+      duplicate_of_ticket_id: requestedDuplicateOfTicketId,
     });
     const statements: D1PreparedStatement[] = [
       c.env.DB.prepare(
         `INSERT INTO audit_logs (id, app_id, action, actor, payload, created_at)
          SELECT ?1, ?2, 'feedback.update', ?3, ?4, ?5
          FROM feedback_tickets
-         WHERE app_id = ?2 AND id = ?6 AND status = ?7 AND assignee IS ?8`,
+         WHERE app_id = ?2 AND id = ?6 AND status = ?7 AND assignee IS ?8
+           AND closure_reason IS ?9 AND duplicate_of_ticket_id IS ?10`,
       ).bind(
         auditId,
         appId,
@@ -2230,20 +2296,28 @@ export async function handleUpdateFeedback(c: AdminContext) {
         ticketId,
         existing.status,
         existing.assignee,
+        existing.closure_reason,
+        existing.duplicate_of_ticket_id,
       ),
       c.env.DB.prepare(
         `UPDATE feedback_tickets
-         SET status = ?1, assignee = ?2, updated_at = ?3
-         WHERE app_id = ?4 AND id = ?5 AND status = ?6 AND assignee IS ?7
-           AND EXISTS (SELECT 1 FROM audit_logs WHERE id = ?8)`,
+         SET status = ?1, assignee = ?2, closure_reason = ?3,
+             duplicate_of_ticket_id = ?4, updated_at = ?5
+         WHERE app_id = ?6 AND id = ?7 AND status = ?8 AND assignee IS ?9
+           AND closure_reason IS ?10 AND duplicate_of_ticket_id IS ?11
+           AND EXISTS (SELECT 1 FROM audit_logs WHERE id = ?12)`,
       ).bind(
         requestedStatus,
         requestedAssignee,
+        requestedClosureReason,
+        requestedDuplicateOfTicketId,
         now,
         appId,
         ticketId,
         existing.status,
         existing.assignee,
+        existing.closure_reason,
+        existing.duplicate_of_ticket_id,
         auditId,
       ),
     ];
@@ -2264,6 +2338,8 @@ export async function handleUpdateFeedback(c: AdminContext) {
         createdAt: now,
         previousStatus: existing.status,
         status: requestedStatus,
+        closureReason: requestedClosureReason,
+        duplicateOfTicketId: requestedDuplicateOfTicketId,
         claimAuditId: auditId,
       }));
     }
@@ -2276,6 +2352,8 @@ export async function handleUpdateFeedback(c: AdminContext) {
         id: ticketId,
         status: requestedStatus,
         assignee: requestedAssignee,
+        closure_reason: requestedClosureReason,
+        duplicate_of_ticket_id: requestedDuplicateOfTicketId,
         updated_at: now,
         changed: true,
       });
@@ -2288,6 +2366,8 @@ type FeedbackMutationSnapshot = {
   id: string;
   status: string;
   assignee: string | null;
+  closure_reason: string | null;
+  duplicate_of_ticket_id: string | null;
   reporter_integration_id: string | null;
   reporter_id: string | null;
   org_id: string | null;
@@ -2300,7 +2380,8 @@ async function loadFeedbackMutationSnapshot(
   ticketId: string,
 ): Promise<FeedbackMutationSnapshot | null> {
   return db.prepare(
-    `SELECT t.id, t.status, t.assignee, t.reporter_integration_id, t.reporter_id,
+    `SELECT t.id, t.status, t.assignee, t.closure_reason, t.duplicate_of_ticket_id,
+            t.reporter_integration_id, t.reporter_id,
             a.org_id,
             CASE WHEN ri.id IS NOT NULL AND ri.archived_at IS NULL THEN 1 ELSE 0 END AS reporter_active
      FROM feedback_tickets t
@@ -2443,6 +2524,8 @@ export function feedbackReporterEventStatements(
     comment?: { id: string; author_type: "staff" | "reporter" | "system"; body: string; created_at: number };
     previousStatus?: string;
     status?: string;
+    closureReason?: string | null;
+    duplicateOfTicketId?: string | null;
     claimAuditId?: string;
   },
 ): D1PreparedStatement[] {
@@ -2463,6 +2546,12 @@ export function feedbackReporterEventStatements(
         ...base,
         previousStatus: input.previousStatus!,
         status: input.status!,
+        ...(input.closureReason !== undefined
+          ? { closureReason: input.closureReason }
+          : {}),
+        ...(input.duplicateOfTicketId !== undefined
+          ? { duplicateOfTicketId: input.duplicateOfTicketId }
+          : {}),
       });
   return [
     db.prepare(
