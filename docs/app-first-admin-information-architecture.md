@@ -62,6 +62,8 @@ The implementation is acceptable only if all of these remain true.
    ```
 
    The list must not disclose an App that the corresponding `GET /api/apps/:appId` would reject, and it must not omit an App that the principal can already view after selecting one of their linked Organization contexts.
+
+   Set equality is necessary but not sufficient: multi-linked-account fixtures must also contain a positive expected-access assertion. If a direct or server grant belongs to a linked account different from the session row, that specific App must be present in the account-wide list and its detail route must succeed. A test where both sides omit the App is not a passing authorization result.
 5. **Linked identity is resolved deliberately.** Account-wide enumeration and App-route enforcement must consider the same set of linked account rows for `(provider, provider_subject, principal_type)`. A stale or absent `x-hands-org-id` must not select a weaker or stronger identity by accident.
 6. **No silent grant conversion.** Existing `legacy_role` and `owner_server` rows retain their exact behavior. Direct App members and deploy tokens are untouched. No compatibility row is converted merely because the UI stops advertising it.
 7. **No client-side authorization.** Hiding the Organization switcher or Server access UI never replaces Worker-side checks. Direct calls to every endpoint remain guarded.
@@ -221,7 +223,7 @@ Rollback must be a UI/API-routing rollback, not a data rollback.
 | Deploy token for App A | Only App A is reachable; App B remains forbidden. |
 | Stale or malicious `x-hands-org-id` | It cannot widen, narrow, or redirect an App-scoped authorization decision. |
 | Organization B ID on an Organization A-only account | Explicit Organization route fails closed. |
-| Account-wide list versus per-App viewer checks | The two result sets are equal for every fixture. |
+| Account-wide list versus per-App viewer checks | The two result sets are equal for every fixture, and multi-linked fixtures positively assert that each expected linked-row grant appears and opens. |
 
 ### Creation and governance
 
