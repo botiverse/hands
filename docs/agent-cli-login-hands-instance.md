@@ -66,8 +66,14 @@ they are never handed back to Raft/daemon and never appear in the `invoke` outpu
 
 ### `agent-login` action (Hands manifest action; reached via `integration invoke`)
 - Input: `{ schema:"raft-cli-agent-login-request.v1", code_challenge, code_challenge_method:"S256" }`.
-- Hands reads `server/agent/integration/service` **from the authenticated Agent Login
-  context of the invoke** (never from the request body).
+- Hands reads `server/agent/integration/service` from the **session-authenticated
+  account** (never from the request body). **Critical:** it must read the
+  **pre-org-switch** account, NOT `c.get("admin_account")` — `authMiddleware` runs
+  `accountForRequestedOrg()` which, given an `x-hands-org-id` header, swaps to a linked
+  account and stores *that* in `admin_account`. CP2 exposes the original as
+  `authenticated_account` (set before the swap) and this endpoint reads it while
+  **ignoring `x-hands-org-id`**, so the org header can never rebind the grant's
+  server/account. (Requires `principal_type=agent`.)
 - Writes a Hands-side grant record (`identity + code_challenge + nonce + issued/expiry`,
   storing the grant digest). Returns `{ schema:"…grant.v1", service:"hands", grant, expires_at (<=300s) }`.
 
@@ -235,6 +241,10 @@ Hands's local proof check; `server/agent` id is never client-self-reported.
 4. Refresh reuse (a rotated token used again) revokes the whole chain.
 5. No arbitrary-argv / no self-made Raft protocol — CLI calls only the frozen
    `agent-login` manifest action.
+6. **Org header cannot rebind identity.** `agent-login` binds the grant to the
+   pre-org-switch session-authenticated account and ignores `x-hands-org-id`; an
+   `x-hands-org-id` pointing at a linked account/server must never change the grant's
+   `server/agent` binding.
 
 ## Test matrix (CP2/CP3)
 
@@ -247,6 +257,7 @@ Hands's local proof check; `server/agent` id is never client-self-reported.
 | exchange with wrong/absent code_verifier | `grant_proof_mismatch`, no token |
 | exchange with expired/consumed/cross-bound grant | `expired`/`consumed`/`binding_mismatch`, fail closed, no token |
 | verifier in any Raft-bound payload/log/store | never present (proof stays CLI↔Hands) |
+| agent-login: agent session (server A) + `x-hands-org-id` → linked server B | grant binds A (or fail closed), never B |
 | `temporarily_unavailable` vs ambiguous exchange | former bounded-retry; latter acquires a fresh grant, never retries the old |
 | refresh happy path | rotates; old refresh no longer valid |
 | refresh reuse (rotated token) | fail closed + chain revoked |
