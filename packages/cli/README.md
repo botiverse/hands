@@ -68,6 +68,26 @@ This records external byte evidence; it does not upload the artifact or
 activate a release. Repeating the same declaration is idempotent. Changing an
 immutable version or target field returns a conflict.
 
+## Direct API access (`hands api`)
+
+Call any Hands endpoint directly, over the same server-side RBAC and audit a
+dedicated subcommand uses — a scripting affordance, not a permission bypass:
+
+```bash
+hands api GET /api/apps --param platform=android
+hands api PATCH /api/apps/<appId>/releases/<releaseId>/shares/<shareId> --data '{"expires_at":null}'
+hands api PATCH /api/apps/<appId>/releases/<releaseId>/shares/<shareId> --data @body.json
+hands api GET /api/apps/<appId>/feedback/<ticketId>/attachments/<attachmentId> --output attachment.bin
+hands --json api GET /api/apps                                               # body only
+```
+
+Path params are raw — `<appId>` and the other ids are resource UUIDs, not slugs
+(`hands api` does not resolve slugs). Same-origin `/api/*` only (a relative path
+or a same-origin absolute URL; cross-origin, `//protocol-relative`, and
+`../`-escape are rejected). Redirects are never followed, so the bearer never
+leaves the Hands origin. Honors the global `--api` and `--json` flags. Full flag
+reference: <https://hands.build/docs/cli-reference/>.
+
 ## CI mode
 
 ```bash
