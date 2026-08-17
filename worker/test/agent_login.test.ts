@@ -8,10 +8,10 @@ import { describe, it, expect, beforeEach } from "vitest";
 import {
   issueAgentGrant,
   exchangeAgentGrant,
-  issueAgentTokens,
   rotateAgentRefresh,
   revokeAgentTokensForIdentity,
   isValidS256Challenge,
+  isValidCodeVerifier,
   sha256Base64Url,
   sha256Hex,
   type AgentLoginIdentity,
@@ -29,13 +29,13 @@ function makeDb() {
       grant_digest TEXT PRIMARY KEY, server_id TEXT NOT NULL, agent_id TEXT NOT NULL,
       account_id TEXT NOT NULL, integration TEXT NOT NULL, service TEXT NOT NULL,
       code_challenge TEXT NOT NULL, nonce TEXT NOT NULL, issued_at INTEGER NOT NULL,
-      expires_at INTEGER NOT NULL, consumed_at INTEGER
+      expires_at INTEGER NOT NULL, consumed_at INTEGER, consumed_by TEXT
     );
     CREATE TABLE agent_refresh_tokens (
       id TEXT PRIMARY KEY, token_hash TEXT NOT NULL UNIQUE, server_id TEXT NOT NULL,
       agent_id TEXT NOT NULL, account_id TEXT NOT NULL, integration TEXT NOT NULL,
       service TEXT NOT NULL, app_scope TEXT, created_at INTEGER NOT NULL,
-      expires_at INTEGER NOT NULL, rotated_from TEXT, revoked_at INTEGER
+      expires_at INTEGER NOT NULL, rotated_from TEXT, revoked_at INTEGER, revoked_by TEXT
     );
     CREATE TABLE raft_sessions (
       id TEXT PRIMARY KEY, account_id TEXT NOT NULL, token_hash TEXT NOT NULL,
@@ -93,10 +93,24 @@ const IDENTITY: AgentLoginIdentity = {
 };
 const T0 = 1_700_000_000_000;
 
+// RFC 7636 code_verifier: 43–128 chars from the unreserved set [A-Za-z0-9-._~].
+const VERIFIER = "test-verifier-0123456789-abcdefghijklmnopqrstuvwxyz_.~"; // 54 chars, valid
+// A different but still valid-format verifier for proof-mismatch tests.
+const WRONG_VERIFIER = "wrong-verifier-0123456789-abcdefghijklmnopqrstuvwxyz_.~"; // 55 chars, valid
+
 async function pkce() {
-  const verifier = "verifier-" + Math.abs(Math.sin(T0)).toString(36) + "-highentropy-fixed";
-  const challenge = await sha256Base64Url(verifier);
-  return { verifier, challenge };
+  const challenge = await sha256Base64Url(VERIFIER);
+  return { verifier: VERIFIER, challenge };
+}
+
+// Build initial tokens through the real grant→exchange path (the non-atomic bypass
+// issueAgentTokens/mintTokens was removed — tests must not fabricate token state).
+async function mintViaExchange(env: any, identity: AgentLoginIdentity, now: number) {
+  const { verifier, challenge } = await pkce();
+  const { grant } = await issueAgentGrant(env, identity, challenge, now);
+  const res = await exchangeAgentGrant(env, grant, verifier, now);
+  if (!res.ok) throw new Error("exchange failed: " + res.code);
+  return res.tokens;
 }
 
 describe("agent_login primitives", () => {
@@ -130,7 +144,7 @@ describe("agent_login primitives", () => {
   it("rejects a wrong verifier (grant_proof_mismatch) without burning the grant or minting", async () => {
     const { verifier, challenge } = await pkce();
     const { grant } = await issueAgentGrant(env, IDENTITY, challenge, T0);
-    const bad = await exchangeAgentGrant(env, grant, "wrong-verifier", T0 + 1000);
+    const bad = await exchangeAgentGrant(env, grant, WRONG_VERIFIER, T0 + 1000);
     expect(bad).toEqual({ ok: false, code: "grant_proof_mismatch" });
     // No tokens minted on a failed proof, and the grant is not burned.
     expect(await countRows("raft_sessions")).toBe(0);
@@ -158,7 +172,7 @@ describe("agent_login primitives", () => {
   });
 
   it("mints an access token backed by a raft_sessions row, plus a refresh token", async () => {
-    const tokens = await issueAgentTokens(env, IDENTITY, T0);
+    const tokens = await mintViaExchange(env, IDENTITY, T0);
     expect(tokens.access_expires_at).toBe(T0 + 15 * 60 * 1000);
     expect(tokens.refresh_expires_at).toBe(T0 + 30 * 24 * 60 * 60 * 1000);
     // Access token resolves via a session row keyed by its hex SHA-256.
@@ -186,7 +200,7 @@ describe("agent_login primitives", () => {
   });
 
   it("rotates a refresh token, and revokes the chain on reuse of a rotated token", async () => {
-    const first = await issueAgentTokens(env, IDENTITY, T0);
+    const first = await mintViaExchange(env, IDENTITY, T0);
     const rotated = await rotateAgentRefresh(env, first.refresh_token, T0 + 1000);
     expect(rotated.ok).toBe(true);
     // Reusing the now-rotated original must fail and revoke the identity's chain.
@@ -200,11 +214,59 @@ describe("agent_login primitives", () => {
   });
 
   it("revokes all live refresh tokens for an identity", async () => {
-    await issueAgentTokens(env, IDENTITY, T0);
-    const t2 = await issueAgentTokens(env, IDENTITY, T0 + 10);
+    await mintViaExchange(env, IDENTITY, T0);
+    const t2 = await mintViaExchange(env, IDENTITY, T0 + 10);
     const n = await revokeAgentTokensForIdentity(env, IDENTITY, T0 + 20);
     expect(n).toBeGreaterThanOrEqual(2);
     expect((await rotateAgentRefresh(env, t2.refresh_token, T0 + 30)).ok).toBe(false);
+  });
+
+  it("rejects a malformed code_verifier before proof check (RFC 7636)", async () => {
+    const { challenge } = await pkce();
+    const { grant } = await issueAgentGrant(env, IDENTITY, challenge, T0);
+    // too short (< 43) — must be grant_invalid, and the grant is not burned.
+    const short = await exchangeAgentGrant(env, grant, "too-short", T0 + 1000);
+    expect(short).toEqual({ ok: false, code: "grant_invalid" });
+    expect(await countRows("agent_refresh_tokens")).toBe(0);
+    // illegal charset (space) at valid length — also grant_invalid.
+    const illegal = await exchangeAgentGrant(env, grant, "x".repeat(20) + " " + "y".repeat(30), T0 + 1000);
+    expect(illegal).toEqual({ ok: false, code: "grant_invalid" });
+    // the real verifier still works afterward (grant never burned by bad input).
+    expect((await exchangeAgentGrant(env, grant, VERIFIER, T0 + 2000)).ok).toBe(true);
+  });
+
+  it("rejects a grant bound to a different service (grant_binding_mismatch)", async () => {
+    const { verifier, challenge } = await pkce();
+    // Grant issued for a DIFFERENT client key than the current env RAFT_CLIENT_ID.
+    const otherIdentity = { ...IDENTITY, service: "hands-deadbe", integration: "hands-deadbe" };
+    const { grant } = await issueAgentGrant(env, otherIdentity, challenge, T0);
+    const res = await exchangeAgentGrant(env, grant, verifier, T0 + 1000);
+    expect(res).toEqual({ ok: false, code: "grant_binding_mismatch" });
+    expect(await countRows("agent_refresh_tokens")).toBe(0);
+  });
+
+  it("same-timestamp loser cannot mint: the consume UPDATE picks one winner", async () => {
+    // White-box guard test: the mint INSERT is gated on the unique consumed_by attempt
+    // id, NOT the timestamp — so a loser sharing the winner's exact `now` inserts nothing.
+    const { challenge } = await pkce();
+    const { grant } = await issueAgentGrant(env, IDENTITY, challenge, T0);
+    const grantDigest = await sha256Base64Url(grant);
+    const now = T0 + 1000;
+    // Winner consumes with attempt "win".
+    await env.DB
+      .prepare("UPDATE agent_login_grants SET consumed_at = ?2, consumed_by = ?3 WHERE grant_digest = ?1 AND consumed_at IS NULL")
+      .bind(grantDigest, now, "win")
+      .run();
+    // Loser, SAME now, different attempt id, runs the guarded session INSERT.
+    const loser = await env.DB
+      .prepare(
+        `INSERT INTO raft_sessions (id, account_id, token_hash, created_at, expires_at, last_seen_at, revoked_at, raft_access_token_ciphertext)
+         SELECT ?1, ?2, ?3, ?4, ?5, ?4, NULL, NULL
+          WHERE (SELECT consumed_by FROM agent_login_grants WHERE grant_digest = ?6) = ?7`,
+      )
+      .bind("loser-session", "acct-1", "hash", now, now + 1, grantDigest, "lose")
+      .run();
+    expect(loser.meta.changes).toBe(0); // guard on attempt id, not the shared timestamp
   });
 });
 
@@ -313,6 +375,15 @@ describe("RFC 057 wire — session.v1 + challenge validation", () => {
     expect(isValidS256Challenge(challenge.slice(0, 42) + "=")).toBe(false); // padding rejected
   });
 
+  it("validates the RFC 7636 code_verifier (43–128 unreserved chars)", async () => {
+    expect(isValidCodeVerifier(VERIFIER)).toBe(true);
+    expect(isValidCodeVerifier("too-short")).toBe(false); // < 43
+    expect(isValidCodeVerifier("a".repeat(129))).toBe(false); // > 128
+    expect(isValidCodeVerifier("a".repeat(20) + " " + "b".repeat(30))).toBe(false); // space
+    expect(isValidCodeVerifier("a".repeat(20) + "+" + "b".repeat(30))).toBe(false); // '+' not unreserved
+    expect(isValidCodeVerifier(123 as any)).toBe(false); // non-string
+  });
+
   it("exchange handler returns raft-cli-agent-session.v1 (Bearer + RFC3339 expiries)", async () => {
     const env = makeEnv();
     const { verifier, challenge } = await pkce();
@@ -337,7 +408,7 @@ describe("RFC 057 wire — session.v1 + challenge validation", () => {
     const { challenge } = await pkce();
     const { grant } = await issueAgentGrant(env, IDENTITY, challenge);
     const res = await handleAgentExchange(
-      fakeCtx({ env, body: { schema: "raft-cli-agent-login-exchange.v1", grant, code_verifier: "wrong-verifier" } }),
+      fakeCtx({ env, body: { schema: "raft-cli-agent-login-exchange.v1", grant, code_verifier: WRONG_VERIFIER } }),
     );
     expect(res.status).toBe(400);
     expect(((await res.json()) as any).code).toBe("grant_proof_mismatch");

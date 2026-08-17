@@ -953,22 +953,24 @@ export async function handleAgentManifest(c: Context<{ Bindings: Env }>) {
     // returning provider credentials or interpreting raw attachments.
     actions: [
       {
+        // NOTE: kept as valid raft-agent-manifest.v0 (name/description/endpoint/parameters
+        // only). The RFC 057 action semantics (authority.principal=agent_session,
+        // effect=create, idempotency=non_idempotent, readback=not_supported,
+        // rollback=not_applicable) and the response schema are documented in prose here
+        // and ENFORCED by the handler; they are NOT structured fields because the landed
+        // v0 manifest parser ignores them (and rejects a non-{type} `returns`). A full
+        // v0→v1 manifest migration is tracked separately; until then CP3 strictly
+        // validates the invoke outer success + exact service/action + grant result schema
+        // client-side rather than relying on the manifest for output enforcement.
         name: "agent-login",
         description:
-          "Agent CLI bootstrap. Send a PKCE S256 code_challenge; receive a one-time, <=5 min grant bound to your authenticated agent identity, then exchange it (with your code_verifier) at POST /api/auth/agent/exchange for a short access token + a refresh token. Requires an authenticated agent session; humans/CI keep the browser/deploy-token login.",
+          "Agent CLI bootstrap (RFC 057). Send raft-cli-agent-login-request.v1 with a PKCE S256 code_challenge; receive a one-time, <=5 min raft-cli-agent-login-grant.v1 grant bound to your authenticated agent identity, then exchange it (with your code_verifier) at POST /api/auth/agent/exchange for a raft-cli-agent-session.v1 (short access token + rotating refresh). Non-idempotent create; no readback; not rollbackable. Requires an authenticated agent session; humans/CI keep the browser/deploy-token login.",
         endpoint: { method: "POST", path: "/api/auth/agent/login" },
-        // RFC 057 manifest-action semantics (verified against slock 2cb55a4e rfcs/057).
-        authority: { principal: "agent_session" },
-        effect: "create",
-        idempotency: { mode: "non_idempotent" },
-        readback: { mode: "not_supported" },
-        rollback: { mode: "not_applicable" },
         parameters: {
           schema: { type: "string", in: "body", required: true, description: "Must be \"raft-cli-agent-login-request.v1\". Closed input: extension fields are rejected." },
           code_challenge: { type: "string", in: "body", required: true, description: "Unpadded base64url SHA-256 (S256) of a locally-generated high-entropy code_verifier; must decode to exactly 32 bytes." },
           code_challenge_method: { type: "string", in: "body", required: true, description: "Must be \"S256\"." },
         },
-        returns: { schema: "raft-cli-agent-login-grant.v1", description: "One-time grant bound to the authenticated agent identity + challenge. expires_at is RFC3339 UTC, strictly future, and <=300s after this response." },
       },
       {
         name: "help",

@@ -111,6 +111,20 @@ export function isValidS256Challenge(challenge: unknown): challenge is string {
   return base64Url(bytes) === challenge; // canonical round-trip
 }
 
+/**
+ * RFC 7636 code_verifier: 43–128 chars from the unreserved set
+ * [A-Za-z0-9-._~]. Enforced BEFORE hashing so a low-entropy / illegal / wrong-length
+ * verifier can never be exchanged even if its hash happens to match a challenge.
+ */
+export function isValidCodeVerifier(verifier: unknown): verifier is string {
+  return typeof verifier === "string" && /^[A-Za-z0-9\-._~]{43,128}$/.test(verifier);
+}
+
+/** RFC 057 service slug: `^[a-z0-9][a-z0-9._-]{0,79}$` (e.g. "hands-4cc7a2"). */
+export function isValidServiceSlug(service: unknown): service is string {
+  return typeof service === "string" && /^[a-z0-9][a-z0-9._-]{0,79}$/.test(service);
+}
+
 /** SHA-256 → base64url. Used for grant/refresh digests AND PKCE S256 challenge. */
 export async function sha256Base64Url(input: string): Promise<string> {
   const digest = await crypto.subtle.digest(
@@ -186,7 +200,9 @@ export async function exchangeAgentGrant(
   codeVerifier: string,
   now: number = Date.now(),
 ): Promise<ExchangeResult> {
-  if (!grant || !codeVerifier) return { ok: false, code: "grant_invalid" };
+  // RFC 7636 verifier format enforced BEFORE hashing (low-entropy/illegal/wrong-length
+  // verifiers can never be exchanged, even if a hash collided).
+  if (!grant || !isValidCodeVerifier(codeVerifier)) return { ok: false, code: "grant_invalid" };
   const grantDigest = await sha256Base64Url(grant);
   const row = await env.DB.prepare(
     `SELECT server_id, agent_id, account_id, integration, service,
@@ -208,6 +224,17 @@ export async function exchangeAgentGrant(
   if (!row) return { ok: false, code: "grant_invalid" };
   if (row.consumed_at !== null) return { ok: false, code: "grant_consumed" };
   if (row.expires_at <= now) return { ok: false, code: "grant_expired" };
+
+  // Binding: the grant must still be for THIS exact service (current RAFT_CLIENT_ID)
+  // and a well-formed slug. A grant issued for a different client cannot be exchanged
+  // here — keeps cross-service redemption fail-closed.
+  if (
+    !isValidServiceSlug(row.service) ||
+    !env.RAFT_CLIENT_ID ||
+    row.service !== env.RAFT_CLIENT_ID
+  ) {
+    return { ok: false, code: "grant_binding_mismatch" };
+  }
 
   // Proof check BEFORE consuming: a wrong verifier must not burn the grant (so a
   // stolen-grant attacker without the verifier can't DoS the legitimate CLI).
@@ -242,28 +269,33 @@ export async function exchangeAgentGrant(
   const refreshToken = randomOpaqueToken();
   const refreshHash = await sha256Base64Url(refreshToken);
 
+  // Unique per-attempt ownership token. The winner stamps it on the grant; the mint
+  // INSERTs guard on it. This is what makes single-use hold under same-millisecond
+  // concurrency — the timestamp is shared between racers, this id is not.
+  const attemptId = crypto.randomUUID();
   const results = await env.DB.batch([
-    // 1) single-use consume — only one exchange matches `consumed_at IS NULL`.
+    // 1) single-use consume — only one exchange matches `consumed_at IS NULL`; the
+    //    winner stamps its unique attempt id as the ownership token (NOT the timestamp).
     env.DB.prepare(
-      `UPDATE agent_login_grants SET consumed_at = ?2
+      `UPDATE agent_login_grants SET consumed_at = ?2, consumed_by = ?3
          WHERE grant_digest = ?1 AND consumed_at IS NULL AND expires_at > ?2`,
-    ).bind(grantDigest, now),
-    // 2) session — inserted only if THIS call set consumed_at = now (won the consume).
+    ).bind(grantDigest, now, attemptId),
+    // 2) session — inserted only if THIS call's attempt id won the consume.
     //    raft_sessions.account_id = Hands account_id (session subject), NOT agent_id.
     env.DB.prepare(
       `INSERT INTO raft_sessions
          (id, account_id, token_hash, created_at, expires_at, last_seen_at,
           revoked_at, raft_access_token_ciphertext)
        SELECT ?1, ?2, ?3, ?4, ?5, ?4, NULL, NULL
-        WHERE (SELECT consumed_at FROM agent_login_grants WHERE grant_digest = ?6) = ?4`,
-    ).bind(sessionId, identity.account_id, accessHash, now, accessExpiresAt, grantDigest),
-    // 3) refresh — same win-guard. Binds agent_id (provider_subject) + account_id.
+        WHERE (SELECT consumed_by FROM agent_login_grants WHERE grant_digest = ?6) = ?7`,
+    ).bind(sessionId, identity.account_id, accessHash, now, accessExpiresAt, grantDigest, attemptId),
+    // 3) refresh — same attempt-id win-guard. Binds agent_id (provider_subject) + account_id.
     env.DB.prepare(
       `INSERT INTO agent_refresh_tokens
          (id, token_hash, server_id, agent_id, account_id, integration, service, app_scope,
           created_at, expires_at, rotated_from, revoked_at)
        SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, NULL, NULL
-        WHERE (SELECT consumed_at FROM agent_login_grants WHERE grant_digest = ?11) = ?9`,
+        WHERE (SELECT consumed_by FROM agent_login_grants WHERE grant_digest = ?11) = ?12`,
     ).bind(
       refreshId,
       refreshHash,
@@ -276,12 +308,16 @@ export async function exchangeAgentGrant(
       now,
       refreshExpiresAt,
       grantDigest,
+      attemptId,
     ),
   ]);
 
-  // Session INSERT wrote 1 row ⇒ we won the atomic consume. 0 ⇒ a concurrent exchange
-  // won (the whole batch rolls back on any error, so we never burn a grant tokenlessly).
-  if ((results[1]?.meta?.changes ?? 0) !== 1) {
+  // We won iff the consume UPDATE and BOTH guarded INSERTs each changed exactly one
+  // row. Any other combination = a concurrent exchange won (even at the same ms, since
+  // ownership is the unique attempt id, not the timestamp) → mint nothing here. The
+  // batch rolls back on any error, so a grant is never burned without issuing tokens.
+  const changed = (i: number) => (results[i]?.meta?.changes ?? 0) === 1;
+  if (!changed(0) || !changed(1) || !changed(2)) {
     return { ok: false, code: "grant_consumed" };
   }
   return {
@@ -293,91 +329,6 @@ export async function exchangeAgentGrant(
       refresh_expires_at: refreshExpiresAt,
     },
   };
-}
-
-/**
- * Mint a short access token: a Hands JWT (subject = agent account row id) backed by
- * a `raft_sessions` row, so it resolves through the normal auth middleware
- * (which looks the bearer up by its hex SHA-256 in raft_sessions). Agent sessions
- * carry no encrypted Raft token (NULL) — that field is only for hands-admin.
- */
-async function mintAccessToken(
-  env: Env,
-  identity: AgentLoginIdentity,
-  now: number,
-  accessExpiresAt: number,
-): Promise<string> {
-  // One id is BOTH the JWT `jti` and the raft_sessions row id, so a session and its
-  // access token are the same principal (simpler revoke/audit correlation — Volta CP2).
-  const sessionId = crypto.randomUUID();
-  const accessToken = await createSignedJwt(
-    env,
-    identity.account_id,
-    now,
-    accessExpiresAt,
-    sessionId,
-  );
-  await env.DB.prepare(
-    `INSERT INTO raft_sessions
-       (id, account_id, token_hash, created_at, expires_at, last_seen_at,
-        revoked_at, raft_access_token_ciphertext)
-     VALUES (?1, ?2, ?3, ?4, ?5, ?4, NULL, NULL)`,
-  )
-    .bind(
-      sessionId,
-      identity.account_id,
-      await sha256Hex(accessToken),
-      now,
-      accessExpiresAt,
-    )
-    .run();
-  return accessToken;
-}
-
-async function mintTokens(
-  env: Env,
-  identity: AgentLoginIdentity,
-  now: number,
-): Promise<AgentTokens> {
-  const accessExpiresAt = now + AGENT_ACCESS_TTL_MS;
-  const refreshExpiresAt = now + AGENT_REFRESH_TTL_MS;
-  const accessToken = await mintAccessToken(env, identity, now, accessExpiresAt);
-  const refreshToken = randomOpaqueToken();
-  const refreshHash = await sha256Base64Url(refreshToken);
-  await env.DB.prepare(
-    `INSERT INTO agent_refresh_tokens
-       (id, token_hash, server_id, agent_id, account_id, integration, service, app_scope,
-        created_at, expires_at, rotated_from, revoked_at)
-     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, NULL, NULL)`,
-  )
-    .bind(
-      crypto.randomUUID(),
-      refreshHash,
-      identity.server_id,
-      identity.agent_id,
-      identity.account_id,
-      identity.integration,
-      identity.service,
-      identity.app_scope ?? null,
-      now,
-      refreshExpiresAt,
-    )
-    .run();
-  return {
-    access_token: accessToken,
-    refresh_token: refreshToken,
-    access_expires_at: accessExpiresAt,
-    refresh_expires_at: refreshExpiresAt,
-  };
-}
-
-/** exchange step 2: mint access + refresh for a proven identity. */
-export async function issueAgentTokens(
-  env: Env,
-  identity: AgentLoginIdentity,
-  now: number = Date.now(),
-): Promise<AgentTokens> {
-  return mintTokens(env, identity, now);
 }
 
 /**
@@ -454,23 +405,28 @@ export async function rotateAgentRefresh(
   // same-batch UPDATE); a concurrent second rotation of the SAME token matches 0 rows
   // on the fence and mints nothing (no double-issue). A mint failure rolls the fence
   // back too (no crash-lockout: we never revoke the old token without a successor).
+  // Unique per-attempt ownership token, stamped by the fence and required by the mint
+  // INSERTs — same-millisecond concurrent rotations can't both win (the timestamp is
+  // shared, this id is not).
+  const attemptId = crypto.randomUUID();
   const results = await env.DB.batch([
     env.DB.prepare(
-      `UPDATE agent_refresh_tokens SET revoked_at = ?2 WHERE id = ?1 AND revoked_at IS NULL`,
-    ).bind(row.id, now),
+      `UPDATE agent_refresh_tokens SET revoked_at = ?2, revoked_by = ?3
+         WHERE id = ?1 AND revoked_at IS NULL`,
+    ).bind(row.id, now, attemptId),
     env.DB.prepare(
       `INSERT INTO raft_sessions
          (id, account_id, token_hash, created_at, expires_at, last_seen_at,
           revoked_at, raft_access_token_ciphertext)
        SELECT ?1, ?2, ?3, ?4, ?5, ?4, NULL, NULL
-        WHERE (SELECT revoked_at FROM agent_refresh_tokens WHERE id = ?6) = ?4`,
-    ).bind(sessionId, identity.account_id, accessHash, now, accessExpiresAt, row.id),
+        WHERE (SELECT revoked_by FROM agent_refresh_tokens WHERE id = ?6) = ?7`,
+    ).bind(sessionId, identity.account_id, accessHash, now, accessExpiresAt, row.id, attemptId),
     env.DB.prepare(
       `INSERT INTO agent_refresh_tokens
          (id, token_hash, server_id, agent_id, account_id, integration, service, app_scope,
           created_at, expires_at, rotated_from, revoked_at)
        SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, NULL
-        WHERE (SELECT revoked_at FROM agent_refresh_tokens WHERE id = ?11) = ?9`,
+        WHERE (SELECT revoked_by FROM agent_refresh_tokens WHERE id = ?11) = ?12`,
     ).bind(
       newRefreshId,
       newRefreshHash,
@@ -483,12 +439,16 @@ export async function rotateAgentRefresh(
       now,
       refreshExpiresAt,
       row.id,
+      attemptId,
     ),
   ]);
 
-  // Session INSERT wrote 1 row ⇒ we won the fence. 0 ⇒ a concurrent rotation of the
-  // same token won; ask the client to retry (it must serialize refreshes, OAuth-style).
-  if ((results[1]?.meta?.changes ?? 0) !== 1) {
+  // Won iff fence + both mint INSERTs each changed exactly one row. Otherwise a
+  // concurrent rotation of the same token won (even at the same ms — ownership is the
+  // attempt id, not the timestamp); ask the client to retry (it must serialize
+  // refreshes and re-read the store, never overwrite a newer session with an older one).
+  const changed = (i: number) => (results[i]?.meta?.changes ?? 0) === 1;
+  if (!changed(0) || !changed(1) || !changed(2)) {
     return { ok: false, code: "temporarily_unavailable" };
   }
   return {

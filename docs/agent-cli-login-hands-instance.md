@@ -41,11 +41,11 @@ never mutates state.
 ```
 hands login  (agent env)
   0. CLI generates high-entropy code_verifier; code_challenge = base64url(SHA-256(verifier))
-  1. raft integration invoke <hands-service> --action agent-login
+  1. raft integration invoke --service hands-4cc7a2 --action agent-login
        input:  { schema:request.v1, code_challenge, code_challenge_method:"S256" }
-       result: { schema:grant.v1, service:"hands", grant:<opaque single-use>, expires_at:<=300s }
+       result: { schema:grant.v1, service:<exact RAFT_CLIENT_ID, e.g. hands-4cc7a2>, grant:<opaque single-use>, expires_at:<RFC3339, <=300s> }
   2. POST <hands-api>/api/auth/agent/exchange  { schema:exchange.v1, grant, code_verifier }
-       -> { access_token, refresh_token, access_expires_at }
+       -> raft-cli-agent-session.v1 { schema, token_type:"Bearer", access_token, access_expires_at:<RFC3339>, refresh_token, refresh_expires_at:<RFC3339|null> }
   3. store at $SLOCK_HOME/agents/$SLOCK_AGENT_ID/integrations/hands/auth.json
   4. subsequent calls use access_token; auto-refresh (below)
 ```
@@ -59,8 +59,15 @@ they are never handed back to Raft/daemon and never appear in the `invoke` outpu
   `hands-auth-jwt-v1` HMAC), but **short TTL** (proposed 15m; final TTL aligned to
   the existing human-JWT TTL — to be read from source at CP2, not guessed).
 - **refresh token** = NEW opaque high-entropy secret; only its hash is stored
-  server-side; revocable + rotated on every use; bound to `(agent_id, server_id,
+  server-side; revocable + rotated on every use; bound to `(server_id, agent_id,
   service)`.
+- **Identity (XX-frozen):** `agent_id = authenticated_account.provider_subject` (the
+  Raft agent identity — the grant/refresh binding + per-agent revoke key);
+  `account_id = authenticated_account.id` (the Hands-local account row — used as
+  `raft_sessions.account_id` and the access-JWT `sub`, so the token resolves via the
+  normal auth middleware). `service = RAFT_CLIENT_ID` (the exact installed client key,
+  e.g. `hands-4cc7a2` — NOT the brand "hands"). All derived server-side; CLI/body can
+  neither supply nor override them; any missing required value → fail closed.
 
 ## Worker endpoints (CP2)
 
@@ -75,7 +82,8 @@ they are never handed back to Raft/daemon and never appear in the `invoke` outpu
   **ignoring `x-hands-org-id`**, so the org header can never rebind the grant's
   server/account. (Requires `principal_type=agent`.)
 - Writes a Hands-side grant record (`identity + code_challenge + nonce + issued/expiry`,
-  storing the grant digest). Returns `{ schema:"…grant.v1", service:"hands", grant, expires_at (<=300s) }`.
+  storing the grant digest). Returns `{ schema:"raft-cli-agent-login-grant.v1", service:<exact RAFT_CLIENT_ID>, grant, expires_at:<RFC3339, strictly future, <=300s> }`.
+- Closed input: the request body accepts ONLY `{ schema, code_challenge, code_challenge_method }`; extension fields are rejected. `code_challenge` must be strict base64url (no padding), decode to exactly 32 bytes, and canonical round-trip.
 - **Handler teeth (Volta):**
   1. `authenticated_account` is set ONLY on the valid Hands-session branch; the
      deploy-token fallback must not synthesize it. Handler **fails closed** if it is absent.
@@ -86,27 +94,42 @@ they are never handed back to Raft/daemon and never appear in the `invoke` outpu
 
 ### `POST /api/auth/agent/exchange`
 - Body: `{ schema:"raft-cli-agent-login-exchange.v1", grant, code_verifier }`.
-- Consume + proof-verify per the Grant interface (atomic single-use; identity from
-  the grant binding; `SHA-256(verifier)==code_challenge`). Any failure → fail closed
-  with a stable error from the closed set (no token). `code_verifier` is never
-  logged/stored.
-- On success: mint short access JWT + issue refresh token; persist refresh hash;
-  both bound to the proven `identity`.
-- Response: `{ access_token, refresh_token, access_expires_at }`.
+- `code_verifier` validated per **RFC 7636** (43–128 chars, unreserved charset
+  `[A-Za-z0-9-._~]`) BEFORE hashing — a malformed verifier can never be exchanged.
+- **Binding check:** the grant's stored `service` must still equal the current
+  `RAFT_CLIENT_ID` and pass the slug regex `^[a-z0-9][a-z0-9._-]{0,79}$`, else
+  `grant_binding_mismatch` (cross-service redemption fail-closed).
+- Consume + proof-verify (atomic single-use; identity from the grant binding;
+  `SHA-256(verifier)==code_challenge`). Any failure → fail closed with a stable error
+  from the closed set (no token). `code_verifier` is never logged/stored.
+- **Atomicity/concurrency:** the consume + session INSERT + refresh INSERT run in ONE
+  D1 `batch()`. The winner is selected by the consume `UPDATE ... WHERE consumed_at IS
+  NULL` and stamps a **unique attempt id** (`consumed_by`); the mint INSERTs guard on
+  that attempt id (NOT the timestamp, which same-millisecond racers share). Success
+  requires all three statements to change exactly one row; otherwise no tokens are
+  minted here (a batch error rolls back the consume too — a grant is never burned
+  without issuing tokens).
+- On success: mint short access JWT (`sub`=account_id) backed by a `raft_sessions` row
+  + issue rotating refresh; both bound to the proven identity.
+- Response: `raft-cli-agent-session.v1` `{ schema, token_type:"Bearer", access_token,
+  access_expires_at:<RFC3339>, refresh_token, refresh_expires_at:<RFC3339|null> }`.
 
 ### `POST /api/auth/agent/refresh`
-- Body: `{ refresh_token }`.
+- Body: `{ schema:"raft-cli-agent-refresh.v1", refresh_token }`.
 - Looks up by hash; if unknown / expired / revoked / **already-rotated (reuse)** →
   fail closed AND revoke the whole rotation chain (reuse = compromise signal).
-- On success: rotate (issue new access + new refresh, mark old rotated), persist.
-- Response: `{ access_token, refresh_token, access_expires_at }`.
+- On success: rotate (fence-revoke old + mint successor in ONE D1 `batch()`, guarded on
+  a unique attempt id `revoked_by` so same-ms concurrent rotations can't double-issue;
+  a concurrent loser gets `temporarily_unavailable` and must re-read the store, never
+  overwriting a newer session with an older rotation result).
+- Response: a complete new `raft-cli-agent-session.v1` (same shape as exchange).
 
 Both endpoints: grant/refresh values never logged; errors carry a stable `code`,
 never the secret.
 
 ## Server-side storage (CP2 migration)
 
-New D1 tables (next migration number at CP2 time — main is currently at `0065`).
+New D1 tables in migration `0066` (added in-place while unreleased; main was at `0065`).
 
 Grant records (Hands owns the grant lifecycle — issue at `agent-login`, consume at
 `exchange`, atomically):
@@ -115,14 +138,18 @@ Grant records (Hands owns the grant lifecycle — issue at `agent-login`, consum
 agent_login_grants(
   grant_digest TEXT PRIMARY KEY,       -- digest only, never the raw grant
   server_id TEXT NOT NULL,             -- all identity fields from the authenticated
-  agent_id TEXT NOT NULL,              -- Agent Login context, NOT the request body
+  agent_id TEXT NOT NULL,              -- Agent Login context, NOT the request body:
+                                       --   agent_id  = authenticated_account.provider_subject
+  account_id TEXT NOT NULL,            --   account_id = authenticated_account.id
   integration TEXT NOT NULL,
-  service TEXT NOT NULL,
+  service TEXT NOT NULL,               -- exact RAFT_CLIENT_ID (e.g. hands-4cc7a2)
   code_challenge TEXT NOT NULL,        -- S256; verified against verifier at exchange
   nonce TEXT NOT NULL,
   issued_at INTEGER NOT NULL,
   expires_at INTEGER NOT NULL,         -- <=300s from issue
-  consumed_at INTEGER                  -- set atomically with mint; single-use
+  consumed_at INTEGER,                 -- set atomically with mint; single-use
+  consumed_by TEXT                     -- unique attempt id of the winning exchange
+                                       -- (ownership token; guards the mint INSERTs)
 )
 ```
 
@@ -132,14 +159,17 @@ Refresh tokens:
 agent_refresh_tokens(
   id TEXT PRIMARY KEY,
   token_hash TEXT NOT NULL UNIQUE,     -- hash only, never the raw token
-  agent_id TEXT NOT NULL,
   server_id TEXT NOT NULL,
-  service TEXT NOT NULL,
+  agent_id TEXT NOT NULL,              -- provider_subject (binding + per-agent revoke key)
+  account_id TEXT NOT NULL,            -- Hands account row (session subject on rotation)
+  integration TEXT NOT NULL,
+  service TEXT NOT NULL,               -- exact RAFT_CLIENT_ID
   app_scope TEXT,                      -- if the access is app-scoped
   created_at INTEGER NOT NULL,
   expires_at INTEGER NOT NULL,
   rotated_from TEXT,                   -- prior token id in the chain
-  revoked_at INTEGER
+  revoked_at INTEGER,
+  revoked_by TEXT                      -- unique attempt id of the rotation that fenced it
 )
 ```
 
@@ -168,7 +198,9 @@ it has the material to **revoke by identity**. Scope this version:
 - Path: **`$SLOCK_HOME/agents/$SLOCK_AGENT_ID/integrations/hands/auth.json`**.
 - Write: **atomic replace** (write temp in same dir + `rename`); file mode `0600`,
   directory mode `0700`.
-- Contents: `{ access_token, refresh_token, access_expires_at }` (+ api base).
+- Contents: the `raft-cli-agent-session.v1` fields (`access_token`, `access_expires_at`,
+  `refresh_token`, `refresh_expires_at`, `token_type`) + service slug + `updated_at`
+  (+ api base). No Raft bearer or Raft profile credential.
 - Never written to env; never logged; never printed to stdout/stderr.
 
 ## Auto-refresh (CP3)
@@ -194,11 +226,19 @@ Action input:
 ```
 Action result (strict):
 ```json
-{"schema":"raft-cli-agent-login-grant.v1","service":"hands","grant":"<opaque single-use>","expires_at":"<future RFC3339, <=300s>"}
+{"schema":"raft-cli-agent-login-grant.v1","service":"<exact RAFT_CLIENT_ID, e.g. hands-4cc7a2>","grant":"<opaque single-use>","expires_at":"<future RFC3339, <=300s>"}
 ```
 Hands exchange request:
 ```json
-{"schema":"raft-cli-agent-login-exchange.v1","grant":"…","code_verifier":"…"}
+{"schema":"raft-cli-agent-login-exchange.v1","grant":"…","code_verifier":"<RFC 7636, 43–128 unreserved chars>"}
+```
+Exchange / refresh success (raft-cli-agent-session.v1):
+```json
+{"schema":"raft-cli-agent-session.v1","token_type":"Bearer","access_token":"…","access_expires_at":"<RFC3339>","refresh_token":"…","refresh_expires_at":"<RFC3339|null>"}
+```
+Refresh request:
+```json
+{"schema":"raft-cli-agent-refresh.v1","refresh_token":"…"}
 ```
 
 Grant record (Raft-side) binds authenticated `server/agent/integration/service` +
@@ -206,8 +246,10 @@ issued/expiry + `code_challenge` + nonce; stores the grant digest where possible
 consume + used-transition is atomic. Server/agent id are **proven via the grant
 binding, never client-self-reported**.
 
-**Exchange error closed-set:** `invalid` / `expired` / `consumed` /
-`binding_mismatch` / `grant_proof_mismatch` / `temporarily_unavailable`. Only
+**Error closed-set (frozen, verified vs slock `2cb55a4e`):** exchange →
+`grant_invalid` / `grant_expired` / `grant_consumed` / `grant_binding_mismatch` /
+`grant_proof_mismatch`; refresh → `refresh_invalid` / `refresh_expired` /
+`refresh_reused` / `refresh_revoked`; shared → `temporarily_unavailable`. Only
 `temporarily_unavailable` is bounded-retryable; an ambiguous exchange does NOT retry
 the old grant — the CLI acquires a fresh one.
 
@@ -261,8 +303,9 @@ Hands's local proof check; `server/agent` id is never client-self-reported.
 | Any one marker missing / `raft` not executable | human/CI path, unchanged |
 | Human/CI (no markers) | existing login byte-for-byte identical |
 | exchange with valid grant + matching verifier | access + refresh issued; store written 0600, dir 0700 |
-| exchange with wrong/absent code_verifier | `grant_proof_mismatch`, no token |
-| exchange with expired/consumed/cross-bound grant | `expired`/`consumed`/`binding_mismatch`, fail closed, no token |
+| exchange with malformed/absent code_verifier | `grant_invalid` (RFC 7636 format), grant not burned |
+| exchange with well-formed but wrong code_verifier | `grant_proof_mismatch`, grant not burned |
+| exchange with expired/consumed/cross-bound grant | `grant_expired`/`grant_consumed`/`grant_binding_mismatch`, fail closed, no token |
 | verifier in any Raft-bound payload/log/store | never present (proof stays CLI↔Hands) |
 | agent-login: agent session (server A) + `x-hands-org-id` → linked server B | grant binds A (or fail closed), never B |
 | agent-login via deploy-token (no `authenticated_account`) | fail closed, no grant |

@@ -18,7 +18,10 @@ CREATE TABLE agent_login_grants (
   nonce          TEXT NOT NULL,
   issued_at      INTEGER NOT NULL,
   expires_at     INTEGER NOT NULL,        -- <= issued_at + 300s
-  consumed_at    INTEGER                  -- set atomically with mint; enforces single-use
+  consumed_at    INTEGER,                 -- set atomically with mint; enforces single-use
+  consumed_by    TEXT                     -- unique attempt id of the winning exchange; the
+                                          -- ownership token the mint INSERTs guard on (NOT the
+                                          -- timestamp — same-ms concurrent losers would collide)
 );
 
 CREATE INDEX idx_agent_login_grants_identity
@@ -39,7 +42,10 @@ CREATE TABLE agent_refresh_tokens (
   created_at   INTEGER NOT NULL,
   expires_at   INTEGER NOT NULL,
   rotated_from TEXT REFERENCES agent_refresh_tokens(id) ON DELETE SET NULL,
-  revoked_at   INTEGER
+  revoked_at   INTEGER,
+  revoked_by   TEXT                        -- unique attempt id of the rotation that fenced this
+                                           -- token; the ownership token the successor mint guards
+                                           -- on (NOT the timestamp). NULL for chain/admin revokes.
 );
 
 -- Revoke-by-identity (agent lifecycle / admin) and expiry sweeps.
