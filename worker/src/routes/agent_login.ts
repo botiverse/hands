@@ -13,9 +13,8 @@
 import type { Context } from "hono";
 import type { AdminContext } from "../lib/permissions";
 import {
-  consumeAgentGrant,
+  exchangeAgentGrant,
   issueAgentGrant,
-  issueAgentTokens,
   rotateAgentRefresh,
   type AgentLoginErrorCode,
   type AgentLoginIdentity,
@@ -67,8 +66,9 @@ export async function handleAgentLoginAction(c: AdminContext): Promise<Response>
   if (body.code_challenge_method !== "S256") {
     return c.json({ error: "code_challenge_method must be S256", code: "invalid_challenge_method" }, 400);
   }
-  if (typeof body.code_challenge !== "string" || body.code_challenge.length < 43) {
-    return c.json({ error: "code_challenge must be a base64url SHA-256", code: "invalid_challenge" }, 400);
+  // S256 challenge = SHA-256 (32 bytes) → unpadded base64url = exactly 43 chars.
+  if (typeof body.code_challenge !== "string" || !/^[A-Za-z0-9_-]{43}$/.test(body.code_challenge)) {
+    return c.json({ error: "code_challenge must be an unpadded base64url SHA-256 (43 chars)", code: "invalid_challenge" }, 400);
   }
 
   // Tooth 3: identity (incl. audit actor) derives from the authenticated account,
@@ -101,12 +101,12 @@ export async function handleAgentExchange(
   if (typeof body.grant !== "string" || typeof body.code_verifier !== "string") {
     return c.json({ error: "grant and code_verifier are required", code: "invalid" }, 400);
   }
-  const result = await consumeAgentGrant(c.env, body.grant, body.code_verifier);
+  // Atomic consume+mint: never burns a grant without issuing tokens.
+  const result = await exchangeAgentGrant(c.env, body.grant, body.code_verifier);
   if (!result.ok) {
     return c.json({ error: result.code, code: result.code }, statusFor(result.code));
   }
-  const tokens = await issueAgentTokens(c.env, result.identity);
-  return c.json(tokens);
+  return c.json(result.tokens);
 }
 
 /** Public refresh: `{ refresh_token }` → rotated access + refresh. */

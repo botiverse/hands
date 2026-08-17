@@ -7,7 +7,7 @@ import Database from "better-sqlite3";
 import { describe, it, expect, beforeEach } from "vitest";
 import {
   issueAgentGrant,
-  consumeAgentGrant,
+  exchangeAgentGrant,
   issueAgentTokens,
   rotateAgentRefresh,
   revokeAgentTokensForIdentity,
@@ -51,12 +51,20 @@ function makeDb() {
         const expanded =
           indexSequence.length > 0 ? indexSequence.map((n) => params[n - 1]) : params;
         return {
+          // __exec is the synchronous run used inside batch()'s transaction.
+          __exec: () => ({ meta: { changes: stmt.run(...expanded).changes } }),
           run: async () => ({ success: true, meta: { changes: stmt.run(...expanded).changes } }),
           all: async () => ({ results: stmt.all(...expanded), success: true }),
           first: async () => (stmt.all(...expanded)[0] ?? null),
         };
       };
       return { bind, run: () => bind().run(), all: () => bind().all(), first: () => bind().first() };
+    },
+    // D1 batch: run all statements in one transaction, rolling back on any error
+    // (better-sqlite3 transaction()). Returns per-statement { meta: { changes } }.
+    batch(stmts: any[]) {
+      const txn = sqlite.transaction((ss: any[]) => ss.map((s) => s.__exec()));
+      return Promise.resolve(txn(stmts));
     },
   };
 }
@@ -85,49 +93,73 @@ describe("agent_login primitives", () => {
     env = makeEnv();
   });
 
-  it("issues a grant and consumes it with the matching verifier", async () => {
+  async function countRows(table: string): Promise<number> {
+    const r = await env.DB.prepare(`SELECT COUNT(*) AS n FROM ${table}`).first();
+    return Number(r.n);
+  }
+
+  it("exchanges a grant atomically: matching verifier → access + refresh + rows", async () => {
     const { verifier, challenge } = await pkce();
     const { grant, expires_at } = await issueAgentGrant(env, IDENTITY, challenge, T0);
     expect(expires_at).toBe(T0 + 5 * 60 * 1000);
-    const res = await consumeAgentGrant(env, grant, verifier, T0 + 1000);
+    const res = await exchangeAgentGrant(env, grant, verifier, T0 + 1000);
     expect(res.ok).toBe(true);
-    if (res.ok) expect(res.identity).toMatchObject({ server_id: "srv-A", agent_id: "acct-1", service: "hands" });
+    if (res.ok) {
+      expect(res.tokens.access_token).toBeTruthy();
+      expect(res.tokens.refresh_token).toBeTruthy();
+      expect(res.tokens.access_expires_at).toBe(T0 + 1000 + 15 * 60 * 1000);
+      expect(res.tokens.refresh_expires_at).toBe(T0 + 1000 + 30 * 24 * 60 * 60 * 1000);
+    }
+    // Atomic mint: exactly one session and one refresh row were created together.
+    expect(await countRows("raft_sessions")).toBe(1);
+    expect(await countRows("agent_refresh_tokens")).toBe(1);
   });
 
-  it("rejects a wrong verifier (grant_proof_mismatch) without burning the grant", async () => {
+  it("rejects a wrong verifier (grant_proof_mismatch) without burning the grant or minting", async () => {
     const { verifier, challenge } = await pkce();
     const { grant } = await issueAgentGrant(env, IDENTITY, challenge, T0);
-    const bad = await consumeAgentGrant(env, grant, "wrong-verifier", T0 + 1000);
+    const bad = await exchangeAgentGrant(env, grant, "wrong-verifier", T0 + 1000);
     expect(bad).toEqual({ ok: false, code: "grant_proof_mismatch" });
-    // Not burned: the legitimate verifier still works afterward.
-    const good = await consumeAgentGrant(env, grant, verifier, T0 + 2000);
+    // No tokens minted on a failed proof, and the grant is not burned.
+    expect(await countRows("raft_sessions")).toBe(0);
+    expect(await countRows("agent_refresh_tokens")).toBe(0);
+    const good = await exchangeAgentGrant(env, grant, verifier, T0 + 2000);
     expect(good.ok).toBe(true);
   });
 
   it("rejects an expired grant", async () => {
     const { verifier, challenge } = await pkce();
     const { grant } = await issueAgentGrant(env, IDENTITY, challenge, T0);
-    const res = await consumeAgentGrant(env, grant, verifier, T0 + 6 * 60 * 1000);
+    const res = await exchangeAgentGrant(env, grant, verifier, T0 + 6 * 60 * 1000);
     expect(res).toEqual({ ok: false, code: "expired" });
+    expect(await countRows("raft_sessions")).toBe(0);
   });
 
-  it("is single-use: a second consume returns consumed", async () => {
+  it("is single-use: a second exchange returns consumed and mints nothing extra", async () => {
     const { verifier, challenge } = await pkce();
     const { grant } = await issueAgentGrant(env, IDENTITY, challenge, T0);
-    expect((await consumeAgentGrant(env, grant, verifier, T0 + 1000)).ok).toBe(true);
-    const again = await consumeAgentGrant(env, grant, verifier, T0 + 2000);
+    expect((await exchangeAgentGrant(env, grant, verifier, T0 + 1000)).ok).toBe(true);
+    const again = await exchangeAgentGrant(env, grant, verifier, T0 + 2000);
     expect(again).toEqual({ ok: false, code: "consumed" });
+    expect(await countRows("raft_sessions")).toBe(1);
+    expect(await countRows("agent_refresh_tokens")).toBe(1);
   });
 
   it("mints an access token backed by a raft_sessions row, plus a refresh token", async () => {
     const tokens = await issueAgentTokens(env, IDENTITY, T0);
     expect(tokens.access_expires_at).toBe(T0 + 15 * 60 * 1000);
+    expect(tokens.refresh_expires_at).toBe(T0 + 30 * 24 * 60 * 60 * 1000);
     // Access token resolves via a session row keyed by its hex SHA-256.
     const session = await env.DB
-      .prepare("SELECT account_id, expires_at FROM raft_sessions WHERE token_hash = ?1")
+      .prepare("SELECT id, account_id, expires_at FROM raft_sessions WHERE token_hash = ?1")
       .bind(await sha256Hex(tokens.access_token))
       .first();
     expect(session).toMatchObject({ account_id: "acct-1", expires_at: T0 + 15 * 60 * 1000 });
+    // jti unification: the JWT `jti` equals the raft_sessions row id (session ≡ token).
+    const jti = JSON.parse(
+      Buffer.from(tokens.access_token.split(".")[1] ?? "", "base64url").toString("utf8"),
+    ).jti;
+    expect(jti).toBe(session.id);
     const refreshRow = await env.DB
       .prepare("SELECT agent_id FROM agent_refresh_tokens WHERE token_hash = ?1")
       .bind(await sha256Base64Url(tokens.refresh_token))

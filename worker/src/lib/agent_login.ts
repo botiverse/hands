@@ -53,10 +53,11 @@ export interface AgentTokens {
   access_token: string;
   refresh_token: string;
   access_expires_at: number;
+  refresh_expires_at: number;
 }
 
-type ConsumeResult =
-  | { ok: true; identity: AgentLoginIdentity }
+type ExchangeResult =
+  | { ok: true; tokens: AgentTokens }
   | { ok: false; code: AgentLoginErrorCode };
 
 type RotateResult =
@@ -132,16 +133,22 @@ export async function issueAgentGrant(
 }
 
 /**
- * exchange step 1: verify the proof and atomically consume the grant (single-use).
- * Returns the bound identity on success, or a typed closed-set error.
- * The verifier is checked here and never stored/logged.
+ * exchange: verify the proof, then ATOMICALLY consume the grant (single-use) and mint
+ * the access session + refresh token in ONE transaction (D1 batch). Either all three
+ * happen or none do — fixes the CP2 non-atomic exchange (a burned grant with no
+ * tokens on a mid-exchange failure). The verifier is checked here, never stored/logged.
+ *
+ * Concurrency: the session/refresh INSERTs are guarded on "this call won the consume"
+ * (grant.consumed_at == now, set by the same-batch UPDATE). A concurrent loser's
+ * UPDATE matches 0 rows, so its guarded INSERTs write nothing; we detect the win via
+ * the session INSERT's changes count.
  */
-export async function consumeAgentGrant(
+export async function exchangeAgentGrant(
   env: Env,
   grant: string,
   codeVerifier: string,
   now: number = Date.now(),
-): Promise<ConsumeResult> {
+): Promise<ExchangeResult> {
   if (!grant || !codeVerifier) return { ok: false, code: "invalid" };
   const grantDigest = await sha256Base64Url(grant);
   const row = await env.DB.prepare(
@@ -171,22 +178,78 @@ export async function consumeAgentGrant(
     return { ok: false, code: "grant_proof_mismatch" };
   }
 
-  // Atomic single-use consume: only one exchange wins the WHERE consumed_at IS NULL.
-  const consumed = await env.DB.prepare(
-    `UPDATE agent_login_grants SET consumed_at = ?2
-       WHERE grant_digest = ?1 AND consumed_at IS NULL AND expires_at > ?3`,
-  )
-    .bind(grantDigest, now, now)
-    .run();
-  if (consumed.meta.changes !== 1) return { ok: false, code: "consumed" };
+  const identity: AgentLoginIdentity = {
+    server_id: row.server_id,
+    agent_id: row.agent_id,
+    integration: row.integration,
+    service: row.service,
+    // Grants carry no app scope (login-time); refresh tokens default to null and can
+    // be scoped later once the RFC 057 binding (#5) lands. TODO(XX): app_scope source.
+    app_scope: null,
+  };
+  const accessExpiresAt = now + AGENT_ACCESS_TTL_MS;
+  const refreshExpiresAt = now + AGENT_REFRESH_TTL_MS;
+  // One id is BOTH the JWT `jti` and the raft_sessions row id (session ≡ token).
+  const sessionId = crypto.randomUUID();
+  const accessToken = await createSignedJwt(
+    env,
+    identity.agent_id,
+    now,
+    accessExpiresAt,
+    sessionId,
+  );
+  const accessHash = await sha256Hex(accessToken);
+  const refreshId = crypto.randomUUID();
+  const refreshToken = randomOpaqueToken();
+  const refreshHash = await sha256Base64Url(refreshToken);
 
+  const results = await env.DB.batch([
+    // 1) single-use consume — only one exchange matches `consumed_at IS NULL`.
+    env.DB.prepare(
+      `UPDATE agent_login_grants SET consumed_at = ?2
+         WHERE grant_digest = ?1 AND consumed_at IS NULL AND expires_at > ?2`,
+    ).bind(grantDigest, now),
+    // 2) session — inserted only if THIS call set consumed_at = now (won the consume).
+    env.DB.prepare(
+      `INSERT INTO raft_sessions
+         (id, account_id, token_hash, created_at, expires_at, last_seen_at,
+          revoked_at, raft_access_token_ciphertext)
+       SELECT ?1, ?2, ?3, ?4, ?5, ?4, NULL, NULL
+        WHERE (SELECT consumed_at FROM agent_login_grants WHERE grant_digest = ?6) = ?4`,
+    ).bind(sessionId, identity.agent_id, accessHash, now, accessExpiresAt, grantDigest),
+    // 3) refresh — same win-guard.
+    env.DB.prepare(
+      `INSERT INTO agent_refresh_tokens
+         (id, token_hash, server_id, agent_id, integration, service, app_scope,
+          created_at, expires_at, rotated_from, revoked_at)
+       SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, NULL, NULL
+        WHERE (SELECT consumed_at FROM agent_login_grants WHERE grant_digest = ?10) = ?8`,
+    ).bind(
+      refreshId,
+      refreshHash,
+      identity.server_id,
+      identity.agent_id,
+      identity.integration,
+      identity.service,
+      identity.app_scope ?? null,
+      now,
+      refreshExpiresAt,
+      grantDigest,
+    ),
+  ]);
+
+  // Session INSERT wrote 1 row ⇒ we won the atomic consume. 0 ⇒ a concurrent exchange
+  // won (the whole batch rolls back on any error, so we never burn a grant tokenlessly).
+  if ((results[1]?.meta?.changes ?? 0) !== 1) {
+    return { ok: false, code: "consumed" };
+  }
   return {
     ok: true,
-    identity: {
-      server_id: row.server_id,
-      agent_id: row.agent_id,
-      integration: row.integration,
-      service: row.service,
+    tokens: {
+      access_token: accessToken,
+      refresh_token: refreshToken,
+      access_expires_at: accessExpiresAt,
+      refresh_expires_at: refreshExpiresAt,
     },
   };
 }
@@ -203,12 +266,15 @@ async function mintAccessToken(
   now: number,
   accessExpiresAt: number,
 ): Promise<string> {
+  // One id is BOTH the JWT `jti` and the raft_sessions row id, so a session and its
+  // access token are the same principal (simpler revoke/audit correlation — Volta CP2).
+  const sessionId = crypto.randomUUID();
   const accessToken = await createSignedJwt(
     env,
     identity.agent_id,
     now,
     accessExpiresAt,
-    crypto.randomUUID(),
+    sessionId,
   );
   await env.DB.prepare(
     `INSERT INTO raft_sessions
@@ -217,7 +283,7 @@ async function mintAccessToken(
      VALUES (?1, ?2, ?3, ?4, ?5, ?4, NULL, NULL)`,
   )
     .bind(
-      crypto.randomUUID(),
+      sessionId,
       identity.agent_id,
       await sha256Hex(accessToken),
       now,
@@ -233,6 +299,7 @@ async function mintTokens(
   now: number,
 ): Promise<AgentTokens> {
   const accessExpiresAt = now + AGENT_ACCESS_TTL_MS;
+  const refreshExpiresAt = now + AGENT_REFRESH_TTL_MS;
   const accessToken = await mintAccessToken(env, identity, now, accessExpiresAt);
   const refreshToken = randomOpaqueToken();
   const refreshHash = await sha256Base64Url(refreshToken);
@@ -251,13 +318,14 @@ async function mintTokens(
       identity.service,
       identity.app_scope ?? null,
       now,
-      now + AGENT_REFRESH_TTL_MS,
+      refreshExpiresAt,
     )
     .run();
   return {
     access_token: accessToken,
     refresh_token: refreshToken,
     access_expires_at: accessExpiresAt,
+    refresh_expires_at: refreshExpiresAt,
   };
 }
 
@@ -315,55 +383,77 @@ export async function rotateAgentRefresh(
   if (row.revoked_at !== null) return { ok: false, code: "consumed" };
   if (row.expires_at <= now) return { ok: false, code: "expired" };
 
-  // Mark old rotated, then mint the successor bound to rotated_from.
-  await env.DB.prepare(
-    `UPDATE agent_refresh_tokens SET revoked_at = ?2 WHERE id = ?1 AND revoked_at IS NULL`,
-  )
-    .bind(row.id, now)
-    .run();
-  const tokens = await mintTokensRotated(env, {
+  const identity: AgentLoginIdentity = {
     server_id: row.server_id,
     agent_id: row.agent_id,
     integration: row.integration,
     service: row.service,
     app_scope: row.app_scope,
-  }, row.id, now);
-  return { ok: true, tokens };
-}
-
-async function mintTokensRotated(
-  env: Env,
-  identity: AgentLoginIdentity,
-  rotatedFrom: string,
-  now: number,
-): Promise<AgentTokens> {
+  };
   const accessExpiresAt = now + AGENT_ACCESS_TTL_MS;
-  const accessToken = await mintAccessToken(env, identity, now, accessExpiresAt);
-  const refreshToken = randomOpaqueToken();
-  const refreshHash = await sha256Base64Url(refreshToken);
-  await env.DB.prepare(
-    `INSERT INTO agent_refresh_tokens
-       (id, token_hash, server_id, agent_id, integration, service, app_scope,
-        created_at, expires_at, rotated_from, revoked_at)
-     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, NULL)`,
-  )
-    .bind(
-      crypto.randomUUID(),
-      refreshHash,
+  const refreshExpiresAt = now + AGENT_REFRESH_TTL_MS;
+  const sessionId = crypto.randomUUID();
+  const accessToken = await createSignedJwt(
+    env,
+    identity.agent_id,
+    now,
+    accessExpiresAt,
+    sessionId,
+  );
+  const accessHash = await sha256Hex(accessToken);
+  const newRefreshId = crypto.randomUUID();
+  const newRefreshToken = randomOpaqueToken();
+  const newRefreshHash = await sha256Base64Url(newRefreshToken);
+
+  // Atomic rotation: fence (revoke old) + mint successor in ONE transaction. The mint
+  // INSERTs are guarded on winning the fence (old.revoked_at == now, set by the
+  // same-batch UPDATE); a concurrent second rotation of the SAME token matches 0 rows
+  // on the fence and mints nothing (no double-issue). A mint failure rolls the fence
+  // back too (no crash-lockout: we never revoke the old token without a successor).
+  const results = await env.DB.batch([
+    env.DB.prepare(
+      `UPDATE agent_refresh_tokens SET revoked_at = ?2 WHERE id = ?1 AND revoked_at IS NULL`,
+    ).bind(row.id, now),
+    env.DB.prepare(
+      `INSERT INTO raft_sessions
+         (id, account_id, token_hash, created_at, expires_at, last_seen_at,
+          revoked_at, raft_access_token_ciphertext)
+       SELECT ?1, ?2, ?3, ?4, ?5, ?4, NULL, NULL
+        WHERE (SELECT revoked_at FROM agent_refresh_tokens WHERE id = ?6) = ?4`,
+    ).bind(sessionId, identity.agent_id, accessHash, now, accessExpiresAt, row.id),
+    env.DB.prepare(
+      `INSERT INTO agent_refresh_tokens
+         (id, token_hash, server_id, agent_id, integration, service, app_scope,
+          created_at, expires_at, rotated_from, revoked_at)
+       SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, NULL
+        WHERE (SELECT revoked_at FROM agent_refresh_tokens WHERE id = ?10) = ?8`,
+    ).bind(
+      newRefreshId,
+      newRefreshHash,
       identity.server_id,
       identity.agent_id,
       identity.integration,
       identity.service,
       identity.app_scope ?? null,
       now,
-      now + AGENT_REFRESH_TTL_MS,
-      rotatedFrom,
-    )
-    .run();
+      refreshExpiresAt,
+      row.id,
+    ),
+  ]);
+
+  // Session INSERT wrote 1 row ⇒ we won the fence. 0 ⇒ a concurrent rotation of the
+  // same token won; ask the client to retry (it must serialize refreshes, OAuth-style).
+  if ((results[1]?.meta?.changes ?? 0) !== 1) {
+    return { ok: false, code: "temporarily_unavailable" };
+  }
   return {
-    access_token: accessToken,
-    refresh_token: refreshToken,
-    access_expires_at: accessExpiresAt,
+    ok: true,
+    tokens: {
+      access_token: accessToken,
+      refresh_token: newRefreshToken,
+      access_expires_at: accessExpiresAt,
+      refresh_expires_at: refreshExpiresAt,
+    },
   };
 }
 
