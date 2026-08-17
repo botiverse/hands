@@ -27,15 +27,15 @@ function makeDb() {
   sqlite.exec(`
     CREATE TABLE agent_login_grants (
       grant_digest TEXT PRIMARY KEY, server_id TEXT NOT NULL, agent_id TEXT NOT NULL,
-      integration TEXT NOT NULL, service TEXT NOT NULL, code_challenge TEXT NOT NULL,
-      nonce TEXT NOT NULL, issued_at INTEGER NOT NULL, expires_at INTEGER NOT NULL,
-      consumed_at INTEGER
+      account_id TEXT NOT NULL, integration TEXT NOT NULL, service TEXT NOT NULL,
+      code_challenge TEXT NOT NULL, nonce TEXT NOT NULL, issued_at INTEGER NOT NULL,
+      expires_at INTEGER NOT NULL, consumed_at INTEGER
     );
     CREATE TABLE agent_refresh_tokens (
       id TEXT PRIMARY KEY, token_hash TEXT NOT NULL UNIQUE, server_id TEXT NOT NULL,
-      agent_id TEXT NOT NULL, integration TEXT NOT NULL, service TEXT NOT NULL,
-      app_scope TEXT, created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL,
-      rotated_from TEXT, revoked_at INTEGER
+      agent_id TEXT NOT NULL, account_id TEXT NOT NULL, integration TEXT NOT NULL,
+      service TEXT NOT NULL, app_scope TEXT, created_at INTEGER NOT NULL,
+      expires_at INTEGER NOT NULL, rotated_from TEXT, revoked_at INTEGER
     );
     CREATE TABLE raft_sessions (
       id TEXT PRIMARY KEY, account_id TEXT NOT NULL, token_hash TEXT NOT NULL,
@@ -86,9 +86,10 @@ function makeEnv() {
 
 const IDENTITY: AgentLoginIdentity = {
   server_id: "srv-A",
-  agent_id: "acct-1",
-  integration: "hands",
-  service: "hands",
+  agent_id: "raft-agent-1", // provider_subject (binding key)
+  account_id: "acct-1", // Hands account row (session subject)
+  integration: "hands-4cc7a2",
+  service: "hands-4cc7a2",
 };
 const T0 = 1_700_000_000_000;
 
@@ -166,16 +167,22 @@ describe("agent_login primitives", () => {
       .bind(await sha256Hex(tokens.access_token))
       .first();
     expect(session).toMatchObject({ account_id: "acct-1", expires_at: T0 + 15 * 60 * 1000 });
+    // Session subject is the Hands account_id, and the JWT `sub` matches it.
+    const sub = JSON.parse(
+      Buffer.from(tokens.access_token.split(".")[1] ?? "", "base64url").toString("utf8"),
+    ).sub;
+    expect(sub).toBe("acct-1");
     // jti unification: the JWT `jti` equals the raft_sessions row id (session ≡ token).
     const jti = JSON.parse(
       Buffer.from(tokens.access_token.split(".")[1] ?? "", "base64url").toString("utf8"),
     ).jti;
     expect(jti).toBe(session.id);
+    // Refresh binds to the Raft agent identity (provider_subject), not the account id.
     const refreshRow = await env.DB
-      .prepare("SELECT agent_id FROM agent_refresh_tokens WHERE token_hash = ?1")
+      .prepare("SELECT agent_id, account_id FROM agent_refresh_tokens WHERE token_hash = ?1")
       .bind(await sha256Base64Url(tokens.refresh_token))
       .first();
-    expect(refreshRow).toMatchObject({ agent_id: "acct-1" });
+    expect(refreshRow).toMatchObject({ agent_id: "raft-agent-1", account_id: "acct-1" });
   });
 
   it("rotates a refresh token, and revokes the chain on reuse of a rotated token", async () => {
@@ -223,16 +230,18 @@ describe("agent-login action — identity-binding teeth", () => {
         body: { schema: "raft-cli-agent-login-request.v1", code_challenge: challenge, code_challenge_method: "S256" },
         vars: {
           // Server A authenticated; an x-hands-org-id switched admin_account to server B.
-          authenticated_account: { id: "acct-A", server_id: "srv-A", principal_type: "agent" },
-          admin_account: { id: "acct-B", server_id: "srv-B", principal_type: "agent" },
+          authenticated_account: { id: "acct-A", provider_subject: "raft-agent-A", server_id: "srv-A", principal_type: "agent" },
+          admin_account: { id: "acct-B", provider_subject: "raft-agent-B", server_id: "srv-B", principal_type: "agent" },
         },
       }),
     );
     expect(res.status).toBe(200);
     const row = await env.DB
-      .prepare("SELECT server_id, agent_id, service, integration FROM agent_login_grants LIMIT 1")
+      .prepare("SELECT server_id, agent_id, account_id, service, integration FROM agent_login_grants LIMIT 1")
       .first();
-    expect(row).toMatchObject({ server_id: "srv-A", agent_id: "acct-A" }); // NEVER srv-B/acct-B
+    // XX-frozen split, bound to the PRE-org-switch account (never srv-B/acct-B):
+    //   agent_id = provider_subject, account_id = account row id.
+    expect(row).toMatchObject({ server_id: "srv-A", agent_id: "raft-agent-A", account_id: "acct-A" });
     // Grant binds to the exact installed client key, not the brand "hands".
     expect(row).toMatchObject({ service: "hands-4cc7a2", integration: "hands-4cc7a2" });
   });
@@ -245,7 +254,7 @@ describe("agent-login action — identity-binding teeth", () => {
       fakeCtx({
         env,
         body: { schema: "raft-cli-agent-login-request.v1", code_challenge: challenge, code_challenge_method: "S256" },
-        vars: { authenticated_account: { id: "a", server_id: "s", principal_type: "agent" } },
+        vars: { authenticated_account: { id: "a", provider_subject: "raft-agent-a", server_id: "s", principal_type: "agent" } },
       }),
     );
     expect(res.status).toBe(503);
@@ -340,5 +349,50 @@ describe("RFC 057 wire — session.v1 + challenge validation", () => {
     );
     expect(res.status).toBe(400);
     expect(((await res.json()) as any).code).toBe("invalid_schema");
+  });
+});
+
+describe("agent-login end-to-end (real handlers, XX-frozen identity split)", () => {
+  it("login → exchange → refresh: session subject = account_id, binding = provider_subject", async () => {
+    const env = makeEnv();
+    const { verifier, challenge } = await pkce();
+    const authed = { id: "acct-A", provider_subject: "raft-agent-A", server_id: "srv-A", principal_type: "agent" };
+
+    // 1) agent-login action issues a grant bound to the authed identity.
+    const loginRes = await handleAgentLoginAction(
+      fakeCtx({
+        env,
+        body: { schema: "raft-cli-agent-login-request.v1", code_challenge: challenge, code_challenge_method: "S256" },
+        vars: { authenticated_account: authed },
+      }),
+    );
+    expect(loginRes.status).toBe(200);
+    const grant = ((await loginRes.json()) as any).grant;
+    expect(typeof grant).toBe("string");
+
+    // 2) exchange → session.v1
+    const exRes = await handleAgentExchange(
+      fakeCtx({ env, body: { schema: "raft-cli-agent-login-exchange.v1", grant, code_verifier: verifier } }),
+    );
+    expect(exRes.status).toBe(200);
+    const session1 = (await exRes.json()) as any;
+    expect(session1.schema).toBe("raft-cli-agent-session.v1");
+
+    // 3) refresh → new session.v1, rotated refresh token
+    const rfRes = await handleAgentRefresh(
+      fakeCtx({ env, body: { schema: "raft-cli-agent-refresh.v1", refresh_token: session1.refresh_token } }),
+    );
+    expect(rfRes.status).toBe(200);
+    const session2 = (await rfRes.json()) as any;
+    expect(session2.schema).toBe("raft-cli-agent-session.v1");
+    expect(session2.refresh_token).not.toBe(session1.refresh_token);
+
+    // Identity split persisted across the whole chain:
+    //  - every access session's account_id = Hands account (acct-A)
+    //  - every refresh binds to the Raft agent identity (raft-agent-A)
+    const sessions = await env.DB.prepare("SELECT DISTINCT account_id FROM raft_sessions").all();
+    expect(sessions.results.map((r: any) => r.account_id)).toEqual(["acct-A"]);
+    const refreshes = await env.DB.prepare("SELECT DISTINCT agent_id, account_id FROM agent_refresh_tokens").all();
+    expect(refreshes.results).toEqual([{ agent_id: "raft-agent-A", account_id: "acct-A" }]);
   });
 });

@@ -31,12 +31,15 @@ export const AGENT_REFRESH_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 /** Authenticated identity a grant/refresh binds to (from `authenticated_account`). */
 export interface AgentLoginIdentity {
   server_id: string;
-  // The `raft_accounts.id` of the authenticated agent account. Used as the access
-  // JWT `sub` and the `raft_sessions.account_id`, so the minted access token
-  // resolves through the normal auth middleware. Also the binding/revoke key.
+  // Raft agent identity = authenticated_account.provider_subject. The grant/refresh
+  // BINDING and per-agent revoke key. NOT the session account. (XX-frozen mapping.)
   agent_id: string;
+  // Hands-local account row = authenticated_account.id. Used as the access JWT `sub`
+  // and raft_sessions.account_id so the minted access token resolves through normal
+  // auth middleware. Stored on the session, never as the binding/revoke key.
+  account_id: string;
   integration: string;
-  service: string; // "hands"
+  service: string; // exact installed client key, e.g. "hands-4cc7a2"
   app_scope?: string | null;
 }
 
@@ -146,14 +149,15 @@ export async function issueAgentGrant(
   const expiresAt = now + AGENT_GRANT_TTL_MS;
   await env.DB.prepare(
     `INSERT INTO agent_login_grants
-       (grant_digest, server_id, agent_id, integration, service,
+       (grant_digest, server_id, agent_id, account_id, integration, service,
         code_challenge, nonce, issued_at, expires_at, consumed_at)
-     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, NULL)`,
+     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, NULL)`,
   )
     .bind(
       grantDigest,
       identity.server_id,
       identity.agent_id,
+      identity.account_id,
       identity.integration,
       identity.service,
       codeChallenge,
@@ -185,7 +189,7 @@ export async function exchangeAgentGrant(
   if (!grant || !codeVerifier) return { ok: false, code: "grant_invalid" };
   const grantDigest = await sha256Base64Url(grant);
   const row = await env.DB.prepare(
-    `SELECT server_id, agent_id, integration, service,
+    `SELECT server_id, agent_id, account_id, integration, service,
             code_challenge, expires_at, consumed_at
        FROM agent_login_grants WHERE grant_digest = ?1`,
   )
@@ -193,6 +197,7 @@ export async function exchangeAgentGrant(
     .first<{
       server_id: string;
       agent_id: string;
+      account_id: string;
       integration: string;
       service: string;
       code_challenge: string;
@@ -213,20 +218,21 @@ export async function exchangeAgentGrant(
 
   const identity: AgentLoginIdentity = {
     server_id: row.server_id,
-    agent_id: row.agent_id,
+    agent_id: row.agent_id, // Raft provider_subject (binding key)
+    account_id: row.account_id, // Hands account row (session subject)
     integration: row.integration,
     service: row.service,
-    // Grants carry no app scope (login-time); refresh tokens default to null and can
-    // be scoped later once the RFC 057 binding (#5) lands. TODO(XX): app_scope source.
+    // Grants carry no app scope (login-time); refresh defaults to null.
     app_scope: null,
   };
   const accessExpiresAt = now + AGENT_ACCESS_TTL_MS;
   const refreshExpiresAt = now + AGENT_REFRESH_TTL_MS;
   // One id is BOTH the JWT `jti` and the raft_sessions row id (session ≡ token).
   const sessionId = crypto.randomUUID();
+  // Access token subject = Hands account_id, so it resolves via the normal middleware.
   const accessToken = await createSignedJwt(
     env,
-    identity.agent_id,
+    identity.account_id,
     now,
     accessExpiresAt,
     sessionId,
@@ -243,25 +249,27 @@ export async function exchangeAgentGrant(
          WHERE grant_digest = ?1 AND consumed_at IS NULL AND expires_at > ?2`,
     ).bind(grantDigest, now),
     // 2) session — inserted only if THIS call set consumed_at = now (won the consume).
+    //    raft_sessions.account_id = Hands account_id (session subject), NOT agent_id.
     env.DB.prepare(
       `INSERT INTO raft_sessions
          (id, account_id, token_hash, created_at, expires_at, last_seen_at,
           revoked_at, raft_access_token_ciphertext)
        SELECT ?1, ?2, ?3, ?4, ?5, ?4, NULL, NULL
         WHERE (SELECT consumed_at FROM agent_login_grants WHERE grant_digest = ?6) = ?4`,
-    ).bind(sessionId, identity.agent_id, accessHash, now, accessExpiresAt, grantDigest),
-    // 3) refresh — same win-guard.
+    ).bind(sessionId, identity.account_id, accessHash, now, accessExpiresAt, grantDigest),
+    // 3) refresh — same win-guard. Binds agent_id (provider_subject) + account_id.
     env.DB.prepare(
       `INSERT INTO agent_refresh_tokens
-         (id, token_hash, server_id, agent_id, integration, service, app_scope,
+         (id, token_hash, server_id, agent_id, account_id, integration, service, app_scope,
           created_at, expires_at, rotated_from, revoked_at)
-       SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, NULL, NULL
-        WHERE (SELECT consumed_at FROM agent_login_grants WHERE grant_digest = ?10) = ?8`,
+       SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, NULL, NULL
+        WHERE (SELECT consumed_at FROM agent_login_grants WHERE grant_digest = ?11) = ?9`,
     ).bind(
       refreshId,
       refreshHash,
       identity.server_id,
       identity.agent_id,
+      identity.account_id,
       identity.integration,
       identity.service,
       identity.app_scope ?? null,
@@ -304,7 +312,7 @@ async function mintAccessToken(
   const sessionId = crypto.randomUUID();
   const accessToken = await createSignedJwt(
     env,
-    identity.agent_id,
+    identity.account_id,
     now,
     accessExpiresAt,
     sessionId,
@@ -317,7 +325,7 @@ async function mintAccessToken(
   )
     .bind(
       sessionId,
-      identity.agent_id,
+      identity.account_id,
       await sha256Hex(accessToken),
       now,
       accessExpiresAt,
@@ -338,15 +346,16 @@ async function mintTokens(
   const refreshHash = await sha256Base64Url(refreshToken);
   await env.DB.prepare(
     `INSERT INTO agent_refresh_tokens
-       (id, token_hash, server_id, agent_id, integration, service, app_scope,
+       (id, token_hash, server_id, agent_id, account_id, integration, service, app_scope,
         created_at, expires_at, rotated_from, revoked_at)
-     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, NULL, NULL)`,
+     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, NULL, NULL)`,
   )
     .bind(
       crypto.randomUUID(),
       refreshHash,
       identity.server_id,
       identity.agent_id,
+      identity.account_id,
       identity.integration,
       identity.service,
       identity.app_scope ?? null,
@@ -383,7 +392,7 @@ export async function rotateAgentRefresh(
   if (!refreshToken) return { ok: false, code: "refresh_invalid" };
   const refreshHash = await sha256Base64Url(refreshToken);
   const row = await env.DB.prepare(
-    `SELECT id, server_id, agent_id, integration, service, app_scope,
+    `SELECT id, server_id, agent_id, account_id, integration, service, app_scope,
             expires_at, revoked_at,
             (SELECT COUNT(*) FROM agent_refresh_tokens c WHERE c.rotated_from = agent_refresh_tokens.id) AS children
        FROM agent_refresh_tokens WHERE token_hash = ?1`,
@@ -393,6 +402,7 @@ export async function rotateAgentRefresh(
       id: string;
       server_id: string;
       agent_id: string;
+      account_id: string;
       integration: string;
       service: string;
       app_scope: string | null;
@@ -418,7 +428,8 @@ export async function rotateAgentRefresh(
 
   const identity: AgentLoginIdentity = {
     server_id: row.server_id,
-    agent_id: row.agent_id,
+    agent_id: row.agent_id, // Raft provider_subject (binding key), carried forward
+    account_id: row.account_id, // Hands account row (session subject), carried forward
     integration: row.integration,
     service: row.service,
     app_scope: row.app_scope,
@@ -428,7 +439,7 @@ export async function rotateAgentRefresh(
   const sessionId = crypto.randomUUID();
   const accessToken = await createSignedJwt(
     env,
-    identity.agent_id,
+    identity.account_id,
     now,
     accessExpiresAt,
     sessionId,
@@ -453,18 +464,19 @@ export async function rotateAgentRefresh(
           revoked_at, raft_access_token_ciphertext)
        SELECT ?1, ?2, ?3, ?4, ?5, ?4, NULL, NULL
         WHERE (SELECT revoked_at FROM agent_refresh_tokens WHERE id = ?6) = ?4`,
-    ).bind(sessionId, identity.agent_id, accessHash, now, accessExpiresAt, row.id),
+    ).bind(sessionId, identity.account_id, accessHash, now, accessExpiresAt, row.id),
     env.DB.prepare(
       `INSERT INTO agent_refresh_tokens
-         (id, token_hash, server_id, agent_id, integration, service, app_scope,
+         (id, token_hash, server_id, agent_id, account_id, integration, service, app_scope,
           created_at, expires_at, rotated_from, revoked_at)
-       SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, NULL
-        WHERE (SELECT revoked_at FROM agent_refresh_tokens WHERE id = ?10) = ?8`,
+       SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, NULL
+        WHERE (SELECT revoked_at FROM agent_refresh_tokens WHERE id = ?11) = ?9`,
     ).bind(
       newRefreshId,
       newRefreshHash,
       identity.server_id,
       identity.agent_id,
+      identity.account_id,
       identity.integration,
       identity.service,
       identity.app_scope ?? null,

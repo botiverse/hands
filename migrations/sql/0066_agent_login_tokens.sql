@@ -9,7 +9,9 @@
 CREATE TABLE agent_login_grants (
   grant_digest   TEXT PRIMARY KEY,        -- digest of the opaque grant; raw never stored
   server_id      TEXT NOT NULL,           -- identity fields come from the authenticated
-  agent_id       TEXT NOT NULL,           -- Agent Login invoke context, never the request body
+  agent_id       TEXT NOT NULL,           -- Agent Login invoke context, never the request body:
+                                          --   agent_id  = authenticated_account.provider_subject (Raft agent identity)
+  account_id     TEXT NOT NULL,           --   account_id = authenticated_account.id (Hands-local account row)
   integration    TEXT NOT NULL,
   service        TEXT NOT NULL,
   code_challenge TEXT NOT NULL,           -- S256; verified against the exchange verifier
@@ -29,7 +31,8 @@ CREATE TABLE agent_refresh_tokens (
   id           TEXT PRIMARY KEY,
   token_hash   TEXT NOT NULL UNIQUE,      -- hash of the refresh token; raw never stored
   server_id    TEXT NOT NULL,
-  agent_id     TEXT NOT NULL,
+  agent_id     TEXT NOT NULL,             -- authenticated_account.provider_subject (Raft agent identity)
+  account_id   TEXT NOT NULL,             -- authenticated_account.id (Hands-local account row)
   integration  TEXT NOT NULL,
   service      TEXT NOT NULL,
   app_scope    TEXT,                       -- present when the access is app-scoped

@@ -94,18 +94,24 @@ export async function handleAgentLoginAction(c: AdminContext): Promise<Response>
 
   // The exact installed Raft client key (e.g. "hands-4cc7a2"), NOT the brand "hands".
   // Same value the manifest advertises (RAFT_CLIENT_ID); the CLI selects the service
-  // by this exact key, so the grant must bind to it. Fail closed if unset — never
-  // fall back to a brand, since revoke/audit/cross-service fail-closed depend on it.
+  // by this exact key, so the grant must bind to it.
   const service = c.env.RAFT_CLIENT_ID;
-  if (!service) {
-    return c.json({ error: "service identity unavailable", code: "temporarily_unavailable" }, 503);
+  // Fail closed if ANY required server-side identity value is missing (XX-frozen
+  // mapping): identity is derived only here, never supplied/overridable by CLI/body,
+  // and revoke/audit/cross-service fail-closed all depend on these being exact.
+  if (!service || !authed.server_id || !authed.provider_subject || !authed.id) {
+    return c.json({ error: "service or agent identity unavailable", code: "temporarily_unavailable" }, 503);
   }
-  // Tooth 3: identity (incl. audit actor) derives from the authenticated account,
-  // NOT the org-switched admin_account/admin_actor. `integration` mirrors the exact
-  // client key as a non-binding label (binding is server_id + agent_id + service).
+  // Tooth 3: identity derives from the pre-org-switch authenticated account, NOT the
+  // org-switchable admin_account. XX-frozen split:
+  //   agent_id   = provider_subject (Raft agent identity) → grant/refresh binding key
+  //   account_id = account row id (Hands local)           → raft_sessions.account_id / JWT sub
+  // `integration` mirrors the exact client key (non-binding label; binding is
+  // server_id + agent_id + service).
   const identity: AgentLoginIdentity = {
     server_id: authed.server_id,
-    agent_id: authed.id,
+    agent_id: authed.provider_subject,
+    account_id: authed.id,
     integration: service,
     service,
   };
