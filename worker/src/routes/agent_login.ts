@@ -22,8 +22,6 @@ import {
   type AgentTokens,
 } from "../lib/agent_login";
 
-const SERVICE = "hands";
-
 /** Build the frozen RFC 057 `raft-cli-agent-session.v1` wire response. Expiry
  *  timestamps are RFC3339 UTC (authoritative service facts). */
 function sessionResponse(tokens: AgentTokens) {
@@ -39,10 +37,6 @@ function sessionResponse(tokens: AgentTokens) {
         : new Date(tokens.refresh_expires_at).toISOString(),
   };
 }
-// The recorded integration attribute. Not part of the security binding (which is
-// server_id + agent_id + service); an audit/label field. TODO(confirm w/ XX):
-// whether this should carry the exact Raft integration slug instead of the service.
-const INTEGRATION = "hands";
 
 // Map a closed-set error to an HTTP status. temporarily_unavailable is the only
 // retryable one; everything else is a terminal client-side failure.
@@ -98,18 +92,27 @@ export async function handleAgentLoginAction(c: AdminContext): Promise<Response>
     return c.json({ error: "code_challenge must be an unpadded base64url SHA-256 decoding to 32 bytes", code: "invalid_challenge" }, 400);
   }
 
+  // The exact installed Raft client key (e.g. "hands-4cc7a2"), NOT the brand "hands".
+  // Same value the manifest advertises (RAFT_CLIENT_ID); the CLI selects the service
+  // by this exact key, so the grant must bind to it. Fail closed if unset — never
+  // fall back to a brand, since revoke/audit/cross-service fail-closed depend on it.
+  const service = c.env.RAFT_CLIENT_ID;
+  if (!service) {
+    return c.json({ error: "service identity unavailable", code: "temporarily_unavailable" }, 503);
+  }
   // Tooth 3: identity (incl. audit actor) derives from the authenticated account,
-  // NOT the org-switched admin_account/admin_actor.
+  // NOT the org-switched admin_account/admin_actor. `integration` mirrors the exact
+  // client key as a non-binding label (binding is server_id + agent_id + service).
   const identity: AgentLoginIdentity = {
     server_id: authed.server_id,
     agent_id: authed.id,
-    integration: INTEGRATION,
-    service: SERVICE,
+    integration: service,
+    service,
   };
   const { grant, expires_at } = await issueAgentGrant(c.env, identity, body.code_challenge);
   return c.json({
     schema: "raft-cli-agent-login-grant.v1",
-    service: SERVICE,
+    service,
     grant,
     expires_at: new Date(expires_at).toISOString(),
   });

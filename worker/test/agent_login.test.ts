@@ -75,7 +75,13 @@ function makeDb() {
 }
 
 function makeEnv() {
-  return { DB: makeDb() as any, SIGNED_URL_SECRET: "test-secret", ENVIRONMENT: "development" } as any;
+  return {
+    DB: makeDb() as any,
+    SIGNED_URL_SECRET: "test-secret",
+    ENVIRONMENT: "development",
+    // The exact installed Raft client key (Argus live probe: hands-4cc7a2), NOT "hands".
+    RAFT_CLIENT_ID: "hands-4cc7a2",
+  } as any;
 }
 
 const IDENTITY: AgentLoginIdentity = {
@@ -224,9 +230,25 @@ describe("agent-login action — identity-binding teeth", () => {
     );
     expect(res.status).toBe(200);
     const row = await env.DB
-      .prepare("SELECT server_id, agent_id FROM agent_login_grants LIMIT 1")
+      .prepare("SELECT server_id, agent_id, service, integration FROM agent_login_grants LIMIT 1")
       .first();
     expect(row).toMatchObject({ server_id: "srv-A", agent_id: "acct-A" }); // NEVER srv-B/acct-B
+    // Grant binds to the exact installed client key, not the brand "hands".
+    expect(row).toMatchObject({ service: "hands-4cc7a2", integration: "hands-4cc7a2" });
+  });
+
+  it("fails closed (503) when RAFT_CLIENT_ID (exact service key) is unset", async () => {
+    const env = makeEnv();
+    delete (env as any).RAFT_CLIENT_ID;
+    const { challenge } = await pkce();
+    const res = await handleAgentLoginAction(
+      fakeCtx({
+        env,
+        body: { schema: "raft-cli-agent-login-request.v1", code_challenge: challenge, code_challenge_method: "S256" },
+        vars: { authenticated_account: { id: "a", server_id: "s", principal_type: "agent" } },
+      }),
+    );
+    expect(res.status).toBe(503);
   });
 
   it("rejects a human session (agent principal required)", async () => {
