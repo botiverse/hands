@@ -953,6 +953,16 @@ export async function handleAgentManifest(c: Context<{ Bindings: Env }>) {
     // returning provider credentials or interpreting raw attachments.
     actions: [
       {
+        name: "agent-login",
+        description:
+          "Agent CLI bootstrap. Send a PKCE S256 code_challenge; receive a one-time, <=5 min grant bound to your authenticated agent identity, then exchange it (with your code_verifier) at POST /api/auth/agent/exchange for a short access token + a refresh token. Requires an authenticated agent session; humans/CI keep the browser/deploy-token login.",
+        endpoint: { method: "POST", path: "/api/auth/agent/login" },
+        parameters: {
+          code_challenge: { type: "string", in: "body", required: true, description: "base64url SHA-256 of a locally-generated high-entropy code_verifier." },
+          code_challenge_method: { type: "string", in: "body", required: true, description: "Must be \"S256\"." },
+        },
+      },
+      {
         name: "help",
         description:
           "Start here — how to authenticate, what each action does, common crash/feedback flows, and docs links.",

@@ -31,7 +31,10 @@ export const AGENT_REFRESH_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 /** Authenticated identity a grant/refresh binds to (from `authenticated_account`). */
 export interface AgentLoginIdentity {
   server_id: string;
-  agent_id: string; // the Raft principal subject (agent), not the DB row id
+  // The `raft_accounts.id` of the authenticated agent account. Used as the access
+  // JWT `sub` and the `raft_sessions.account_id`, so the minted access token
+  // resolves through the normal auth middleware. Also the binding/revoke key.
+  agent_id: string;
   integration: string;
   service: string; // "hands"
   app_scope?: string | null;
@@ -78,6 +81,20 @@ export async function sha256Base64Url(input: string): Promise<string> {
     new TextEncoder().encode(input),
   );
   return base64Url(new Uint8Array(digest));
+}
+
+/**
+ * SHA-256 → lowercase hex. MUST match the auth middleware's session lookup format
+ * (it hashes the bearer as hex), so the minted access token resolves to its session.
+ */
+export async function sha256Hex(input: string): Promise<string> {
+  const digest = await crypto.subtle.digest(
+    "SHA-256",
+    new TextEncoder().encode(input),
+  );
+  return [...new Uint8Array(digest)]
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
 }
 
 /**
@@ -174,15 +191,18 @@ export async function consumeAgentGrant(
   };
 }
 
-async function mintTokens(
+/**
+ * Mint a short access token: a Hands JWT (subject = agent account row id) backed by
+ * a `raft_sessions` row, so it resolves through the normal auth middleware
+ * (which looks the bearer up by its hex SHA-256 in raft_sessions). Agent sessions
+ * carry no encrypted Raft token (NULL) — that field is only for hands-admin.
+ */
+async function mintAccessToken(
   env: Env,
   identity: AgentLoginIdentity,
   now: number,
-): Promise<AgentTokens> {
-  const accessExpiresAt = now + AGENT_ACCESS_TTL_MS;
-  // Reuse the existing Hands JWT signer; the access token's subject is the agent
-  // account. NOTE: handler passes the account row id as agent_id when it needs the
-  // JWT `sub` to match `raft_accounts.id` — see handler wiring (CP2 checkpoint 2).
+  accessExpiresAt: number,
+): Promise<string> {
   const accessToken = await createSignedJwt(
     env,
     identity.agent_id,
@@ -190,6 +210,30 @@ async function mintTokens(
     accessExpiresAt,
     crypto.randomUUID(),
   );
+  await env.DB.prepare(
+    `INSERT INTO raft_sessions
+       (id, account_id, token_hash, created_at, expires_at, last_seen_at,
+        revoked_at, raft_access_token_ciphertext)
+     VALUES (?1, ?2, ?3, ?4, ?5, ?4, NULL, NULL)`,
+  )
+    .bind(
+      crypto.randomUUID(),
+      identity.agent_id,
+      await sha256Hex(accessToken),
+      now,
+      accessExpiresAt,
+    )
+    .run();
+  return accessToken;
+}
+
+async function mintTokens(
+  env: Env,
+  identity: AgentLoginIdentity,
+  now: number,
+): Promise<AgentTokens> {
+  const accessExpiresAt = now + AGENT_ACCESS_TTL_MS;
+  const accessToken = await mintAccessToken(env, identity, now, accessExpiresAt);
   const refreshToken = randomOpaqueToken();
   const refreshHash = await sha256Base64Url(refreshToken);
   await env.DB.prepare(
@@ -257,10 +301,10 @@ export async function rotateAgentRefresh(
     }>();
 
   if (!row) return { ok: false, code: "invalid" };
-  if (row.revoked_at !== null) return { ok: false, code: "consumed" };
-  if (row.expires_at <= now) return { ok: false, code: "expired" };
+  // Reuse detection FIRST: a normal rotation marks the old token revoked AND gives it
+  // a child, so the revoked_at check would otherwise shadow reuse. Presenting an
+  // already-rotated token again is a compromise signal → revoke the identity's chain.
   if (row.children > 0) {
-    // Reuse of an already-rotated token: revoke the whole identity's chain.
     await revokeAgentTokensForIdentity(env, {
       server_id: row.server_id,
       agent_id: row.agent_id,
@@ -268,6 +312,8 @@ export async function rotateAgentRefresh(
     }, now);
     return { ok: false, code: "consumed" };
   }
+  if (row.revoked_at !== null) return { ok: false, code: "consumed" };
+  if (row.expires_at <= now) return { ok: false, code: "expired" };
 
   // Mark old rotated, then mint the successor bound to rotated_from.
   await env.DB.prepare(
@@ -292,13 +338,7 @@ async function mintTokensRotated(
   now: number,
 ): Promise<AgentTokens> {
   const accessExpiresAt = now + AGENT_ACCESS_TTL_MS;
-  const accessToken = await createSignedJwt(
-    env,
-    identity.agent_id,
-    now,
-    accessExpiresAt,
-    crypto.randomUUID(),
-  );
+  const accessToken = await mintAccessToken(env, identity, now, accessExpiresAt);
   const refreshToken = randomOpaqueToken();
   const refreshHash = await sha256Base64Url(refreshToken);
   await env.DB.prepare(
