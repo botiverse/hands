@@ -87,6 +87,9 @@ import {
   handleListCrashGroups,
   handleFeedbackStats,
   handlePresignFeedbackAttachments,
+  handleFeedbackMultipartPart,
+  handleCompleteFeedbackMultipart,
+  handleAbortFeedbackMultipart,
 } from "./routes/feedback";
 import { handleDeviceRegister, handleDeviceAnalytics, handleDeviceDetail, handleVersionAnalytics } from "./routes/analytics";
 import { handleSessionEvent, handleReleaseHealth } from "./routes/sessions";
@@ -578,6 +581,9 @@ app.post("/public/v2/apps/:slug/devices", handleDeviceRegister);
 app.post("/public/v2/apps/:slug/metrics", handleDeviceRegister);
 app.post("/public/v2/apps/:slug/sessions", handleSessionEvent);
 app.post("/public/v2/apps/:slug/feedback/presign", handlePresignFeedbackAttachments);
+app.put("/public/v2/apps/:slug/feedback/multipart/part", handleFeedbackMultipartPart);
+app.post("/public/v2/apps/:slug/feedback/multipart/complete", handleCompleteFeedbackMultipart);
+app.post("/public/v2/apps/:slug/feedback/multipart/abort", handleAbortFeedbackMultipart);
 app.get("/api/apps/:appId/reporter-feedback", handleListReporterFeedback);
 app.post("/api/apps/:appId/reporter-feedback/session", handleMintReporterSession);
 app.put("/api/apps/:appId/reporter-feedback/route-subject", handleBindReporterRouteSubject);

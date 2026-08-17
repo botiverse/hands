@@ -54,7 +54,9 @@ const ticketId = await HandsFeedbackClient.submit(
 
 Device metadata (version, model, OS, ABI, locale, per-install device id) is
 attached automatically. Files up to 10 MB use the multipart request; larger
-files use a presigned upload, with a 50 MB OHOS cap.
+files are read as bounded 5 MiB parts and uploaded through an R2 multipart
+session, with the same 200 MB per-file cap as Android and iOS. The complete
+file is never allocated as one ArkTS `ArrayBuffer`.
 
 ## Crash reporting
 

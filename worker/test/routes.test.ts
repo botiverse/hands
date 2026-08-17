@@ -9499,9 +9499,13 @@ describe("quiver public API v2 — scope resolution", () => {
     expect((await submit([{ r2_key: "feedback/other-app/presigned/x.bin" }])).status).toBe(400);
     // missing object -> 400
     expect((await submit([{ r2_key: "feedback/app-scope/presigned/missing.bin" }])).status).toBe(400);
-    // valid presigned object -> 201, recorded with the real size from head
-    const ok = await submit([
+    // declared and stored size mismatch -> 400 (detects truncated/framed uploads)
+    expect((await submit([
       { r2_key: "feedback/app-scope/presigned/good-file.bin", filename: "good-file.bin", content_type: "application/octet-stream", size: 999 },
+    ])).status).toBe(400);
+    // valid presigned object -> 201, recorded with the exact size from head
+    const ok = await submit([
+      { r2_key: "feedback/app-scope/presigned/good-file.bin", filename: "good-file.bin", content_type: "application/octet-stream", size: 1024 },
     ]);
     expect(ok.status).toBe(201);
     const body = await responseJson<any>(ok);
