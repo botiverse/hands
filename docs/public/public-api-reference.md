@@ -302,10 +302,24 @@ find and rotate the key in the app's Settings tab or via
 
 Returns `201` for a new ticket. An exact `submission_id` replay returns `200`
 with the same ticket and `idempotent_replay: true`. Both responses include the
-full ticket UUID in `id`, plus a copyable `reference` and `ticket_url`, for
-example `{ "id": "<ticket UUID>", "status": "open",
-"reference": "raft-android · 1.0.4 (1000400) · ticket <ticket UUID>",
-"ticket_url": "https://app.hands.build/apps/<appId>/feedback/<ticket UUID>" }`.
+full ticket UUID in `id`, plus a copyable `reference` and `ticket_url`.
+`attachment_refs` exposes each attachment's stable Hands UUID and filename;
+the legacy `attachment_names` list remains available. New submissions and
+idempotent replays return the same attachment references, for example:
+
+```json
+{
+  "id": "<ticket UUID>",
+  "status": "open",
+  "attachment_names": ["diagnostics.zip"],
+  "attachment_refs": [
+    { "id": "<attachment UUID>", "filename": "diagnostics.zip" }
+  ],
+  "reference": "raft-android · 1.0.4 (1000400) · ticket <ticket UUID>\nattachments:\n<attachment UUID> · diagnostics.zip",
+  "ticket_url": "https://app.hands.build/apps/<appId>/feedback/<ticket UUID>"
+}
+```
+
 Rate limit: 10 submissions per hour per app + client IP. Tickets appear in
 the admin Feedback tab; a `feedback:new` webhook fires for subscribed
 endpoints (crash tickets can additionally trigger `crash:new_group` /

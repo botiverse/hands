@@ -936,19 +936,22 @@ export async function handlePublicFeedbackSubmit(c: Context<{ Bindings: Env }>) 
     status: "open",
     versionName: meta("version_name"),
     versionCode,
-    attachmentNames: attachmentRows.map((attachment) => attachment.filename),
+    attachmentRefs: attachmentRows.map(({ id, filename }) => ({ id, filename })),
   });
 }
 
-function feedbackNewSubmitResponse(
-  c: Context<{ Bindings: Env }>,
+type FeedbackAttachmentRef = {
+  id: string;
+  filename: string;
+};
+
+function feedbackReference(
   app: FeedbackApp,
   input: {
     ticketId: string;
-    status: string;
     versionName: string | null;
     versionCode: number | null;
-    attachmentNames: string[];
+    attachmentRefs: FeedbackAttachmentRef[];
   },
 ) {
   const versionLabel = input.versionName
@@ -961,15 +964,32 @@ function feedbackNewSubmitResponse(
   const referenceLine = [app.slug, versionLabel, `ticket ${input.ticketId}`]
     .filter(Boolean)
     .join(" · ");
-  const reference = input.attachmentNames.length
-    ? `${referenceLine}\nattachments:\n${input.attachmentNames.join("\n")}`
+  return input.attachmentRefs.length
+    ? `${referenceLine}\nattachments:\n${input.attachmentRefs
+      .map(({ id, filename }) => `${id} · ${filename}`)
+      .join("\n")}`
     : referenceLine;
+}
+
+function feedbackNewSubmitResponse(
+  c: Context<{ Bindings: Env }>,
+  app: FeedbackApp,
+  input: {
+    ticketId: string;
+    status: string;
+    versionName: string | null;
+    versionCode: number | null;
+    attachmentRefs: FeedbackAttachmentRef[];
+  },
+) {
+  const attachmentNames = input.attachmentRefs.map(({ filename }) => filename);
   return c.json({
     id: input.ticketId,
     status: input.status,
-    attachments: input.attachmentNames.length,
-    attachment_names: input.attachmentNames,
-    reference,
+    attachments: input.attachmentRefs.length,
+    attachment_names: attachmentNames,
+    attachment_refs: input.attachmentRefs,
+    reference: feedbackReference(app, input),
     ticket_url: `${dashboardOrigin(c.env)}/apps/${app.id}/feedback/${input.ticketId}`,
     idempotent_replay: false,
   }, 201);
@@ -1012,27 +1032,15 @@ async function feedbackSubmitResponse(
   if (!ticket) return c.json({ error: "feedback ticket not found" }, 500);
 
   const attachments = await c.env.DB.prepare(
-    `SELECT filename
+    `SELECT id, filename
      FROM feedback_attachments
      WHERE ticket_id = ?1
      ORDER BY created_at, id`,
   )
     .bind(ticketId)
-    .all<{ filename: string }>();
-  const attachmentNames = attachments.results.map((attachment) => attachment.filename).filter(Boolean);
-  const versionLabel = ticket.version_name
-    ? ticket.version_code != null
-      ? `${ticket.version_name} (${ticket.version_code})`
-      : ticket.version_name
-    : ticket.version_code != null
-      ? String(ticket.version_code)
-      : null;
-  const referenceLine = [app.slug, versionLabel, `ticket ${ticketId}`]
-    .filter(Boolean)
-    .join(" · ");
-  const reference = attachmentNames.length
-    ? `${referenceLine}\nattachments:\n${attachmentNames.join("\n")}`
-    : referenceLine;
+    .all<FeedbackAttachmentRef>();
+  const attachmentRefs = attachments.results.filter(({ id, filename }) => id && filename);
+  const attachmentNames = attachmentRefs.map(({ filename }) => filename);
 
   return c.json(
     {
@@ -1040,7 +1048,13 @@ async function feedbackSubmitResponse(
       status: ticket.status,
       attachments: attachmentNames.length,
       attachment_names: attachmentNames,
-      reference,
+      attachment_refs: attachmentRefs,
+      reference: feedbackReference(app, {
+        ticketId,
+        versionName: ticket.version_name,
+        versionCode: ticket.version_code,
+        attachmentRefs,
+      }),
       ticket_url: `${dashboardOrigin(c.env)}/apps/${app.id}/feedback/${ticketId}`,
       idempotent_replay: idempotentReplay,
     },

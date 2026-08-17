@@ -9567,6 +9567,7 @@ describe("quiver public API v2 — scope resolution", () => {
     const replayBody = await responseJson<any>(replay);
     expect(replayBody.id).toBe(firstBody.id);
     expect(replayBody.reference).toBe(firstBody.reference);
+    expect(replayBody.attachment_refs).toEqual(firstBody.attachment_refs);
     expect(replayBody.idempotent_replay).toBe(true);
     expect(putCalls).toHaveLength(1);
 
@@ -10137,9 +10138,14 @@ describe("quiver public API v2 — scope resolution", () => {
     expect(submittedBody.attachments).toBe(1);
     expect(submittedBody.id).toMatch(/^[0-9a-f-]{36}$/);
     expect(submittedBody.reference).toContain(`ticket ${submittedBody.id}`);
-    // The copyable reference lists attachment filenames, one per line, so a
-    // reading agent knows the ticket carries files and will fetch them.
-    expect(submittedBody.reference).toContain("attachments:\nlogcat.txt");
+    expect(submittedBody.attachment_refs).toEqual([
+      { id: expect.stringMatching(/^[0-9a-f-]{36}$/), filename: "logcat.txt" },
+    ]);
+    // Keep the copyable reference actionable without a second ticket-detail
+    // lookup: every attachment line carries its stable Hands UUID and name.
+    expect(submittedBody.reference).toContain(
+      `attachments:\n${submittedBody.attachment_refs[0].id} · logcat.txt`,
+    );
     expect(submittedBody.attachment_names).toEqual(["logcat.txt"]);
     expect(submittedBody.ticket_url).toBe(
       `https://dashboard.example/apps/app-scope/feedback/${submittedBody.id}`,
