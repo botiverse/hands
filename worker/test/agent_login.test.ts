@@ -11,11 +11,16 @@ import {
   issueAgentTokens,
   rotateAgentRefresh,
   revokeAgentTokensForIdentity,
+  isValidS256Challenge,
   sha256Base64Url,
   sha256Hex,
   type AgentLoginIdentity,
 } from "../src/lib/agent_login";
-import { handleAgentLoginAction } from "../src/routes/agent_login";
+import {
+  handleAgentLoginAction,
+  handleAgentExchange,
+  handleAgentRefresh,
+} from "../src/routes/agent_login";
 
 function makeDb() {
   const sqlite = new Database(":memory:");
@@ -131,7 +136,7 @@ describe("agent_login primitives", () => {
     const { verifier, challenge } = await pkce();
     const { grant } = await issueAgentGrant(env, IDENTITY, challenge, T0);
     const res = await exchangeAgentGrant(env, grant, verifier, T0 + 6 * 60 * 1000);
-    expect(res).toEqual({ ok: false, code: "expired" });
+    expect(res).toEqual({ ok: false, code: "grant_expired" });
     expect(await countRows("raft_sessions")).toBe(0);
   });
 
@@ -140,7 +145,7 @@ describe("agent_login primitives", () => {
     const { grant } = await issueAgentGrant(env, IDENTITY, challenge, T0);
     expect((await exchangeAgentGrant(env, grant, verifier, T0 + 1000)).ok).toBe(true);
     const again = await exchangeAgentGrant(env, grant, verifier, T0 + 2000);
-    expect(again).toEqual({ ok: false, code: "consumed" });
+    expect(again).toEqual({ ok: false, code: "grant_consumed" });
     expect(await countRows("raft_sessions")).toBe(1);
     expect(await countRows("agent_refresh_tokens")).toBe(1);
   });
@@ -173,7 +178,7 @@ describe("agent_login primitives", () => {
     expect(rotated.ok).toBe(true);
     // Reusing the now-rotated original must fail and revoke the identity's chain.
     const reuse = await rotateAgentRefresh(env, first.refresh_token, T0 + 2000);
-    expect(reuse).toEqual({ ok: false, code: "consumed" });
+    expect(reuse).toEqual({ ok: false, code: "refresh_reused" });
     // The successor is revoked too (chain revoke).
     if (rotated.ok) {
       const successor = await rotateAgentRefresh(env, rotated.tokens.refresh_token, T0 + 3000);
@@ -246,5 +251,72 @@ describe("agent-login action — identity-binding teeth", () => {
       }),
     );
     expect(res.status).toBe(401);
+  });
+
+  it("rejects extension fields on the login request (closed input)", async () => {
+    const { challenge } = await pkce();
+    const res = await handleAgentLoginAction(
+      fakeCtx({
+        env: makeEnv(),
+        body: {
+          schema: "raft-cli-agent-login-request.v1",
+          code_challenge: challenge,
+          code_challenge_method: "S256",
+          extra: "nope",
+        },
+        vars: { authenticated_account: { id: "a", server_id: "s", principal_type: "agent" } },
+      }),
+    );
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as any).code).toBe("invalid_schema");
+  });
+});
+
+describe("RFC 057 wire — session.v1 + challenge validation", () => {
+  it("validates the S256 challenge: canonical 32-byte base64url only", async () => {
+    const { challenge } = await pkce();
+    expect(isValidS256Challenge(challenge)).toBe(true); // 43-char canonical
+    expect(isValidS256Challenge("short")).toBe(false); // decodes to < 32 bytes
+    expect(isValidS256Challenge(challenge + "A")).toBe(false); // 33 bytes → wrong length
+    expect(isValidS256Challenge("****" + challenge.slice(4))).toBe(false); // bad charset
+    expect(isValidS256Challenge(challenge.slice(0, 42) + "=")).toBe(false); // padding rejected
+  });
+
+  it("exchange handler returns raft-cli-agent-session.v1 (Bearer + RFC3339 expiries)", async () => {
+    const env = makeEnv();
+    const { verifier, challenge } = await pkce();
+    // Handler uses real Date.now(); issue the grant at real time so it isn't expired.
+    const { grant } = await issueAgentGrant(env, IDENTITY, challenge);
+    const res = await handleAgentExchange(
+      fakeCtx({ env, body: { schema: "raft-cli-agent-login-exchange.v1", grant, code_verifier: verifier } }),
+    );
+    expect(res.status).toBe(200);
+    const json = (await res.json()) as any;
+    expect(json.schema).toBe("raft-cli-agent-session.v1");
+    expect(json.token_type).toBe("Bearer");
+    expect(typeof json.access_token).toBe("string");
+    expect(typeof json.refresh_token).toBe("string");
+    // RFC3339 UTC timestamps, not epoch milliseconds.
+    expect(json.access_expires_at).toMatch(/^\d{4}-\d\d-\d\dT.*Z$/);
+    expect(json.refresh_expires_at).toMatch(/^\d{4}-\d\d-\d\dT.*Z$/);
+  });
+
+  it("exchange handler maps a bad verifier to grant_proof_mismatch (400)", async () => {
+    const env = makeEnv();
+    const { challenge } = await pkce();
+    const { grant } = await issueAgentGrant(env, IDENTITY, challenge);
+    const res = await handleAgentExchange(
+      fakeCtx({ env, body: { schema: "raft-cli-agent-login-exchange.v1", grant, code_verifier: "wrong-verifier" } }),
+    );
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as any).code).toBe("grant_proof_mismatch");
+  });
+
+  it("refresh handler requires the raft-cli-agent-refresh.v1 schema", async () => {
+    const res = await handleAgentRefresh(
+      fakeCtx({ env: makeEnv(), body: { refresh_token: "whatever" } }), // missing schema
+    );
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as any).code).toBe("invalid_schema");
   });
 });

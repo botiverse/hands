@@ -40,13 +40,22 @@ export interface AgentLoginIdentity {
   app_scope?: string | null;
 }
 
-/** Closed error set (mirrors RFC 057 exchange errors). */
+/**
+ * Closed error set — the frozen RFC 057 codes (verified against slock commit
+ * 2cb55a4e, rfcs/057-...). Exchange failures use the `grant_*` codes; refresh
+ * failures use the `refresh_*` codes; `temporarily_unavailable` is the only
+ * retryable one (a concurrent rotation loser).
+ */
 export type AgentLoginErrorCode =
-  | "invalid"
-  | "expired"
-  | "consumed"
-  | "binding_mismatch"
+  | "grant_invalid"
+  | "grant_expired"
+  | "grant_consumed"
+  | "grant_binding_mismatch"
   | "grant_proof_mismatch"
+  | "refresh_invalid"
+  | "refresh_expired"
+  | "refresh_reused"
+  | "refresh_revoked"
   | "temporarily_unavailable";
 
 export interface AgentTokens {
@@ -73,6 +82,30 @@ function base64Url(bytes: Uint8Array): string {
 /** High-entropy opaque token (32 bytes → base64url). */
 export function randomOpaqueToken(): string {
   return base64Url(crypto.getRandomValues(new Uint8Array(32)));
+}
+
+/**
+ * RFC 057 S256 challenge validation (verified against slock 2cb55a4e rfcs/057):
+ * strict base64url charset with NO padding, decodes to EXACTLY 32 bytes, and
+ * canonical round-trip (re-encoding the decoded bytes yields the same string —
+ * this rejects non-canonical trailing bits that a length check alone would miss).
+ * The caller separately enforces `code_challenge_method === "S256"`.
+ */
+export function isValidS256Challenge(challenge: unknown): challenge is string {
+  if (typeof challenge !== "string" || !/^[A-Za-z0-9_-]+$/.test(challenge)) {
+    return false;
+  }
+  let bytes: Uint8Array;
+  try {
+    const b64 = challenge.replace(/-/g, "+").replace(/_/g, "/");
+    const padded = b64 + "=".repeat((4 - (b64.length % 4)) % 4);
+    const binary = atob(padded);
+    bytes = Uint8Array.from(binary, (ch) => ch.charCodeAt(0));
+  } catch {
+    return false;
+  }
+  if (bytes.length !== 32) return false;
+  return base64Url(bytes) === challenge; // canonical round-trip
 }
 
 /** SHA-256 → base64url. Used for grant/refresh digests AND PKCE S256 challenge. */
@@ -149,7 +182,7 @@ export async function exchangeAgentGrant(
   codeVerifier: string,
   now: number = Date.now(),
 ): Promise<ExchangeResult> {
-  if (!grant || !codeVerifier) return { ok: false, code: "invalid" };
+  if (!grant || !codeVerifier) return { ok: false, code: "grant_invalid" };
   const grantDigest = await sha256Base64Url(grant);
   const row = await env.DB.prepare(
     `SELECT server_id, agent_id, integration, service,
@@ -167,9 +200,9 @@ export async function exchangeAgentGrant(
       consumed_at: number | null;
     }>();
 
-  if (!row) return { ok: false, code: "invalid" };
-  if (row.consumed_at !== null) return { ok: false, code: "consumed" };
-  if (row.expires_at <= now) return { ok: false, code: "expired" };
+  if (!row) return { ok: false, code: "grant_invalid" };
+  if (row.consumed_at !== null) return { ok: false, code: "grant_consumed" };
+  if (row.expires_at <= now) return { ok: false, code: "grant_expired" };
 
   // Proof check BEFORE consuming: a wrong verifier must not burn the grant (so a
   // stolen-grant attacker without the verifier can't DoS the legitimate CLI).
@@ -241,7 +274,7 @@ export async function exchangeAgentGrant(
   // Session INSERT wrote 1 row ⇒ we won the atomic consume. 0 ⇒ a concurrent exchange
   // won (the whole batch rolls back on any error, so we never burn a grant tokenlessly).
   if ((results[1]?.meta?.changes ?? 0) !== 1) {
-    return { ok: false, code: "consumed" };
+    return { ok: false, code: "grant_consumed" };
   }
   return {
     ok: true,
@@ -347,7 +380,7 @@ export async function rotateAgentRefresh(
   refreshToken: string,
   now: number = Date.now(),
 ): Promise<RotateResult> {
-  if (!refreshToken) return { ok: false, code: "invalid" };
+  if (!refreshToken) return { ok: false, code: "refresh_invalid" };
   const refreshHash = await sha256Base64Url(refreshToken);
   const row = await env.DB.prepare(
     `SELECT id, server_id, agent_id, integration, service, app_scope,
@@ -368,7 +401,7 @@ export async function rotateAgentRefresh(
       children: number;
     }>();
 
-  if (!row) return { ok: false, code: "invalid" };
+  if (!row) return { ok: false, code: "refresh_invalid" };
   // Reuse detection FIRST: a normal rotation marks the old token revoked AND gives it
   // a child, so the revoked_at check would otherwise shadow reuse. Presenting an
   // already-rotated token again is a compromise signal → revoke the identity's chain.
@@ -378,10 +411,10 @@ export async function rotateAgentRefresh(
       agent_id: row.agent_id,
       service: row.service,
     }, now);
-    return { ok: false, code: "consumed" };
+    return { ok: false, code: "refresh_reused" };
   }
-  if (row.revoked_at !== null) return { ok: false, code: "consumed" };
-  if (row.expires_at <= now) return { ok: false, code: "expired" };
+  if (row.revoked_at !== null) return { ok: false, code: "refresh_revoked" };
+  if (row.expires_at <= now) return { ok: false, code: "refresh_expired" };
 
   const identity: AgentLoginIdentity = {
     server_id: row.server_id,

@@ -957,10 +957,18 @@ export async function handleAgentManifest(c: Context<{ Bindings: Env }>) {
         description:
           "Agent CLI bootstrap. Send a PKCE S256 code_challenge; receive a one-time, <=5 min grant bound to your authenticated agent identity, then exchange it (with your code_verifier) at POST /api/auth/agent/exchange for a short access token + a refresh token. Requires an authenticated agent session; humans/CI keep the browser/deploy-token login.",
         endpoint: { method: "POST", path: "/api/auth/agent/login" },
+        // RFC 057 manifest-action semantics (verified against slock 2cb55a4e rfcs/057).
+        authority: { principal: "agent_session" },
+        effect: "create",
+        idempotency: { mode: "non_idempotent" },
+        readback: { mode: "not_supported" },
+        rollback: { mode: "not_applicable" },
         parameters: {
-          code_challenge: { type: "string", in: "body", required: true, description: "base64url SHA-256 of a locally-generated high-entropy code_verifier." },
+          schema: { type: "string", in: "body", required: true, description: "Must be \"raft-cli-agent-login-request.v1\". Closed input: extension fields are rejected." },
+          code_challenge: { type: "string", in: "body", required: true, description: "Unpadded base64url SHA-256 (S256) of a locally-generated high-entropy code_verifier; must decode to exactly 32 bytes." },
           code_challenge_method: { type: "string", in: "body", required: true, description: "Must be \"S256\"." },
         },
+        returns: { schema: "raft-cli-agent-login-grant.v1", description: "One-time grant bound to the authenticated agent identity + challenge. expires_at is RFC3339 UTC, strictly future, and <=300s after this response." },
       },
       {
         name: "help",
