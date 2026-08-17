@@ -139,6 +139,10 @@ const FeedbackSubmitResponse = z
     status: z.string(),
     attachments: z.number().int().optional(),
     attachment_names: z.array(z.string()).optional(),
+    attachment_refs: z.array(z.object({
+      id: z.string().uuid(),
+      filename: z.string(),
+    })).optional(),
     reference: z.string().optional(),
     ticket_url: z.string().nullable().optional(),
     idempotent_replay: z.boolean().optional(),
