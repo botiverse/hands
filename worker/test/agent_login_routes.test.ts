@@ -14,6 +14,7 @@ import { describe, expect, it } from "vitest";
 import { Hono } from "hono";
 import { authMiddleware } from "../src/middleware/auth";
 import { handleAgentLoginAction } from "../src/routes/agent_login";
+import { handleAgentManifest, handleAgentMigrationHelp } from "../src/routes/auth";
 import { handleCreateAppDeployToken } from "../src/routes/deploy_tokens";
 import { sha256Base64Url, sha256Hex } from "../src/lib/agent_login";
 
@@ -211,5 +212,34 @@ describe("agent-login route (real authMiddleware)", () => {
     // the deploy-token path can never mint an agent grant.
     expect([401, 403]).toContain(res.status);
     expect((sqlite.prepare("SELECT COUNT(*) AS n FROM agent_login_grants").get() as any).n).toBe(0);
+  });
+});
+
+describe("manifest: actions retained + deprecated, migration-help added", () => {
+  it("keeps existing actions, adds agent-login + migration-help, prefixes old actions", async () => {
+    const app = new Hono();
+    app.get("/.well-known/raft-agent-manifest.json", handleAgentManifest as any);
+    const res = await app.request("/.well-known/raft-agent-manifest.json", {}, { RAFT_CLIENT_ID: "hands-4cc7a2" } as any);
+    const body = (await res.json()) as any;
+    const names = body.actions.map((a: any) => a.name);
+    // existing actions retained + the two new ones present
+    for (const n of ["help", "whoami", "list-apps", "agent-login", "migration-help"]) expect(names).toContain(n);
+    const prefix = "Deprecated — run raft integration invoke --service hands-4cc7a2 --action migration-help";
+    // every OLD action is prefixed; the two NEW actions are not
+    expect(body.actions.find((a: any) => a.name === "help").description.startsWith(prefix)).toBe(true);
+    expect(body.actions.find((a: any) => a.name === "whoami").description.startsWith(prefix)).toBe(true);
+    expect(body.actions.find((a: any) => a.name === "agent-login").description.startsWith("Deprecated")).toBe(false);
+    expect(body.actions.find((a: any) => a.name === "migration-help").description.startsWith("Deprecated")).toBe(false);
+    // machine contract unchanged: help still GET /api/agent/help
+    expect(body.actions.find((a: any) => a.name === "help").endpoint).toEqual({ method: "GET", path: "/api/agent/help" });
+  });
+
+  it("migration-help endpoint returns install + login guidance", async () => {
+    const app = new Hono();
+    app.get("/api/agent/migration-help", handleAgentMigrationHelp as any);
+    const res = await app.request("/api/agent/migration-help", {}, {} as any);
+    const body = (await res.json()) as any;
+    expect(JSON.stringify(body.install)).toContain("@botiverse/hands-cli");
+    expect(body.login.agents).toMatch(/hands login/);
   });
 });

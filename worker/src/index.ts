@@ -26,6 +26,7 @@ import {
 import {
   handleAgentManifest,
   handleAgentHelp,
+  handleAgentMigrationHelp,
   handleAuthConfig,
   handleDashboardRedirect,
   handleAuthLogin,
@@ -559,6 +560,7 @@ app.get("/api/auth/login", handleAuthLogin);
 app.get("/login/raft/callback", handleRaftCallback);
 app.get("/api/auth/me", handleAuthMe);
 app.get("/api/agent/help", handleAgentHelp);
+app.get("/api/agent/migration-help", handleAgentMigrationHelp);
 app.post("/api/auth/logout", handleAuthLogout);
 // Agent CLI login token endpoints (RFC 057) — PUBLIC: the grant+verifier / refresh
 // token is itself the credential (OAuth-token-endpoint style), so no prior session.
