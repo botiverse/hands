@@ -54,6 +54,14 @@ ENV PATH=$PATH:/opt/android-sdk/cmdline-tools/latest/bin:/opt/android-sdk/build-
 RUN yes | sdkmanager --licenses >/dev/null 2>&1 || true && \
     sdkmanager "build-tools;${ANDROID_SDK_VERSION}" >/dev/null 2>&1
 
+# Compile a narrow wrapper around Google's apksig library. Unlike parsing
+# `apksigner --print-certs`, this preserves verified v3/v3.1 proof-of-rotation
+# order and supports multiple independent signers without guessing from text.
+COPY apkinspect/ApkInspect.java /opt/apkinspect/ApkInspect.java
+RUN javac -encoding UTF-8 \
+    -cp "/opt/android-sdk/build-tools/${ANDROID_SDK_VERSION}/lib/apksigner.jar" \
+    -d /opt/apkinspect /opt/apkinspect/ApkInspect.java
+
 # archive-patcher (delta/differential update generation) — com.eidu fork of
 # Google's Play-Store engine: a single self-contained jar (no transitive deps).
 # Compile the thin PatchGen wrapper against it so the container can generate

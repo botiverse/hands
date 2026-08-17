@@ -106,7 +106,7 @@ describe("migration 0067 — installer consumer", () => {
       .toThrow(/CHECK/);
   });
 
-  it("binds inspected metadata to the exact installable asset bytes and build identity", () => {
+  it("binds inspected metadata to exact asset bytes while allowing inspection before opt-in", () => {
     const db = migratedDatabase();
     seedIdentity(db);
     db.exec(`
@@ -123,9 +123,10 @@ describe("migration 0067 — installer consumer", () => {
               10, 1, 'installable');
       INSERT INTO installer_asset_metadata
         (asset_id, platform, filetype, package_id, version_code,
-         signer_fingerprint, inspected_file_hash, inspector_version, inspected_at)
+         signer_lineages_json, inspected_file_hash, inspector_version, inspected_at)
       VALUES ('asset-1', 'android', 'apk', 'dev.hands.app', 100,
-              'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+              '[["bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                 "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"]]',
               'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
               'inspector-v1', 2);
     `);
@@ -140,6 +141,50 @@ describe("migration 0067 — installer consumer", () => {
     `)).toThrow(/must match exact installable asset/);
     expect(() => db.exec(`
       UPDATE installer_asset_metadata SET package_id='dev.other' WHERE asset_id='asset-1';
-    `)).toThrow(/must match exact installable asset/);
+    `)).not.toThrow();
+  });
+
+  it("enforces bounded canonical unique ordered signer lineages", () => {
+    const db = migratedDatabase();
+    seedIdentity(db);
+    db.exec(`
+      INSERT INTO builds
+        (id, app_id, channel_id, product_type, release_type, version_name,
+         version_code, source, status, created_at, updated_at)
+      VALUES ('build-1', 'app-1', 'channel-1', 'android-apk', 'stable', '1.0.0',
+              100, 'ci', 'succeeded', 1, 1);
+      INSERT INTO build_assets
+        (id, build_id, platform, filetype, r2_key, file_hash, size_bytes,
+         created_at, artifact_kind)
+      VALUES ('asset-1', 'build-1', 'android', 'apk', 'artifact.apk',
+              'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+              10, 1, 'installable');
+      INSERT INTO installer_asset_metadata
+        (asset_id, platform, filetype, package_id, version_code,
+         signer_lineages_json, inspected_file_hash, inspector_version, inspected_at)
+      VALUES ('asset-1', 'android', 'apk', 'dev.hands.app', 100,
+              '[["bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                 "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"]]',
+              'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+              'inspector-v1', 2);
+    `);
+    const update = db.prepare(
+      "UPDATE installer_asset_metadata SET signer_lineages_json=? WHERE asset_id='asset-1'",
+    );
+    expect(() => update.run("[]")).toThrow(/CHECK/);
+    expect(() => update.run(JSON.stringify([
+      ["b".repeat(64), "b".repeat(64)],
+    ]))).toThrow(/bounded, ordered canonical/);
+    expect(() => update.run(JSON.stringify([["B".repeat(64)]])))
+      .toThrow(/bounded, ordered canonical/);
+    expect(() => update.run(JSON.stringify(Array.from(
+      { length: 9 }, (_, index) => [(index + 1).toString(16).padStart(64, "0")],
+    )))).toThrow(/CHECK/);
+    expect(() => update.run(JSON.stringify([Array.from(
+      { length: 17 }, (_, index) => (index + 1).toString(16).padStart(64, "0"),
+    )]))).toThrow(/bounded, ordered canonical/);
+    expect(JSON.parse(db.prepare(
+      "SELECT signer_lineages_json FROM installer_asset_metadata WHERE asset_id='asset-1'",
+    ).pluck().get() as string)).toEqual([["b".repeat(64), "c".repeat(64)]]);
   });
 });

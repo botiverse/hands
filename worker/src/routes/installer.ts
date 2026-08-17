@@ -29,7 +29,11 @@ type InstallerAsset = {
   size_bytes: number;
   package_id: string;
   version_code: number;
-  signer_fingerprint: string;
+  signer_lineages: string[][];
+};
+
+type InstallerAssetRow = Omit<InstallerAsset, "signer_lineages"> & {
+  signer_lineages_json: string;
 };
 
 type InstallOffer = {
@@ -58,6 +62,30 @@ function pageLimit(c: InstallerContext): number | null {
 
 function timestamp(value: number): string {
   return new Date(value).toISOString();
+}
+
+function parseSignerLineages(value: string): string[][] | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(value);
+  } catch {
+    return null;
+  }
+  if (!Array.isArray(parsed) || parsed.length < 1 || parsed.length > 8) return null;
+  const seen = new Set<string>();
+  const lineages: string[][] = [];
+  for (const entry of parsed) {
+    if (!Array.isArray(entry) || entry.length < 1 || entry.length > 16) return null;
+    const lineage: string[] = [];
+    for (const fingerprint of entry) {
+      if (typeof fingerprint !== "string" || !/^[0-9a-f]{64}$/.test(fingerprint)) return null;
+      if (seen.has(fingerprint)) return null;
+      seen.add(fingerprint);
+      lineage.push(fingerprint);
+    }
+    lineages.push(lineage);
+  }
+  return lineages;
 }
 
 async function visibleApp(db: D1Database, appId: string): Promise<VisibleApp | null> {
@@ -102,16 +130,23 @@ async function resolveOffer(
     if (!build) continue;
     const assets = await db.prepare(
       `SELECT ba.id, ba.platform, ba.arch, ba.filetype, ba.r2_key, ba.file_hash,
-              ba.size_bytes, m.package_id, m.version_code, m.signer_fingerprint
+              ba.size_bytes, m.package_id, m.version_code, m.signer_lineages_json
        FROM build_assets ba
        JOIN installer_asset_metadata m ON m.asset_id=ba.id
        WHERE ba.build_id=?1 AND ba.artifact_kind='installable'
          AND ba.file_hash=m.inspected_file_hash
          AND m.package_id=?2 AND m.version_code=?3`,
     ).bind(candidate.build_id, app.installer_package_id, build.version_code)
-      .all<InstallerAsset>();
+      .all<InstallerAssetRow>();
+    const verifiedAssets: InstallerAsset[] = [];
+    for (const row of assets.results) {
+      const signerLineages = parseSignerLineages(row.signer_lineages_json);
+      if (!signerLineages) continue;
+      const { signer_lineages_json: _storedLineages, ...asset } = row;
+      verifiedAssets.push({ ...asset, signer_lineages: signerLineages });
+    }
     const filetype = app.platform === "android" ? "apk" : "hap";
-    const asset = selectBestAsset(assets.results, { platform: app.platform, arch: null, filetype });
+    const asset = selectBestAsset(verifiedAssets, { platform: app.platform, arch: null, filetype });
     if (!asset || asset.platform !== app.platform || asset.filetype !== filetype) continue;
     return {
       releaseId: candidate.id,
@@ -341,7 +376,7 @@ export async function handleInstallerManifest(c: InstallerContext) {
       filetype: offer.asset.filetype,
       size_bytes: offer.asset.size_bytes,
       sha256: offer.asset.file_hash,
-      signer_fingerprint: offer.asset.signer_fingerprint,
+      signer_lineages: offer.asset.signer_lineages,
       download_url: downloadUrl,
       expires_at: new Date(expiresAt).toISOString(),
     },

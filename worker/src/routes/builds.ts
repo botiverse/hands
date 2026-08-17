@@ -107,6 +107,57 @@ interface BuildAssetDownloadRow {
   version_code: number;
 }
 
+interface InstallerAssetIngestionRow {
+  id: string;
+  file_hash: string;
+  size_bytes: number;
+  version_code: number;
+}
+
+const APK_INSPECTOR_VERSION = "android-apksig-34.0.0-v1";
+
+function verifiedApkMetadata(metadata: Record<string, unknown>, asset: InstallerAssetIngestionRow) {
+  const raw = metadata.raw;
+  const lineages = raw && typeof raw === "object"
+    ? (raw as Record<string, unknown>).signer_lineages
+    : null;
+  if (
+    metadata.parser_kind !== "apk-aapt" ||
+    metadata.platform !== "android" ||
+    typeof metadata.package_id !== "string" ||
+    metadata.package_id.length < 1 ||
+    metadata.package_id.length > 255 ||
+    !Number.isInteger(metadata.version_code) ||
+    (metadata.version_code as number) < 0 ||
+    metadata.version_code !== asset.version_code ||
+    metadata.file_hash_sha256 !== asset.file_hash ||
+    metadata.size_bytes !== asset.size_bytes ||
+    !Array.isArray(lineages) ||
+    lineages.length < 1 ||
+    lineages.length > 8
+  ) return null;
+
+  const seen = new Set<string>();
+  const signerLineages: string[][] = [];
+  for (const entry of lineages) {
+    if (!Array.isArray(entry) || entry.length < 1 || entry.length > 16) return null;
+    const lineage: string[] = [];
+    for (const fingerprint of entry) {
+      if (typeof fingerprint !== "string" || !/^[0-9a-f]{64}$/.test(fingerprint)) return null;
+      if (seen.has(fingerprint)) return null;
+      seen.add(fingerprint);
+      lineage.push(fingerprint);
+    }
+    signerLineages.push(lineage);
+  }
+  return {
+    packageId: metadata.package_id,
+    versionCode: metadata.version_code as number,
+    fileHash: metadata.file_hash_sha256 as string,
+    signerLineages,
+  };
+}
+
 function jsonString(value: unknown, fallback: JsonRecord = {}): string {
   if (typeof value === "string") return value;
   return JSON.stringify(value ?? fallback);
@@ -913,11 +964,49 @@ export async function autoParseInstallableAsset(
       icon_content_type?: string | null;
     };
     const { icon_base64, icon_content_type, ...parsed } = metadata;
-    await env.DB.prepare(
+    const now = Date.now();
+    const statements = [env.DB.prepare(
       "UPDATE builds SET parsed_metadata_json = ?1, updated_at = ?2 WHERE id = ?3",
-    )
-      .bind(JSON.stringify(parsed), Date.now(), buildId)
-      .run();
+    ).bind(JSON.stringify(parsed), now, buildId)];
+
+    if (parserKind === "apk-aapt") {
+      const asset = await env.DB.prepare(
+        `SELECT ba.id, ba.file_hash, ba.size_bytes, b.version_code
+         FROM build_assets ba
+         JOIN builds b ON b.id=ba.build_id
+         WHERE ba.build_id=?1 AND b.app_id=?2 AND ba.r2_key=?3
+           AND ba.artifact_kind='installable'
+           AND ba.platform='android' AND ba.filetype='apk'
+         LIMIT 1`,
+      ).bind(buildId, appId, r2Key).first<InstallerAssetIngestionRow>();
+      if (!asset) throw new Error("exact APK asset row not found");
+      const verified = verifiedApkMetadata(metadata, asset);
+      if (!verified) throw new Error("APK inspector metadata does not match exact asset bytes");
+      statements.push(env.DB.prepare(
+        `INSERT INTO installer_asset_metadata
+          (asset_id, platform, filetype, package_id, version_code,
+           signer_lineages_json, inspected_file_hash, inspector_version, inspected_at)
+         VALUES (?1, 'android', 'apk', ?2, ?3, ?4, ?5, ?6, ?7)
+         ON CONFLICT(asset_id) DO UPDATE SET
+           platform=excluded.platform,
+           filetype=excluded.filetype,
+           package_id=excluded.package_id,
+           version_code=excluded.version_code,
+           signer_lineages_json=excluded.signer_lineages_json,
+           inspected_file_hash=excluded.inspected_file_hash,
+           inspector_version=excluded.inspector_version,
+           inspected_at=excluded.inspected_at`,
+      ).bind(
+        asset.id,
+        verified.packageId,
+        verified.versionCode,
+        JSON.stringify(verified.signerLineages),
+        verified.fileHash,
+        APK_INSPECTOR_VERSION,
+        now,
+      ));
+    }
+    await env.DB.batch(statements);
 
     if (icon_base64) {
       const iconBytes = Uint8Array.from(atob(icon_base64), (ch) => ch.charCodeAt(0));
@@ -930,7 +1019,6 @@ export async function autoParseInstallableAsset(
       const hash = Array.from(new Uint8Array(digest))
         .map((b) => b.toString(16).padStart(2, "0"))
         .join("");
-      const now = Date.now();
       await env.DB.batch([
         env.DB.prepare(
           "DELETE FROM build_assets WHERE build_id = ?1 AND artifact_kind = 'app-icon'",

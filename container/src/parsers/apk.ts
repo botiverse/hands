@@ -17,6 +17,8 @@ const execFileAsync = promisify(execFile);
 
 const AAPT_BIN = "/opt/android-sdk/build-tools/34.0.0/aapt";
 const APKSIGNER_BIN = "/opt/android-sdk/build-tools/34.0.0/apksigner";
+const APKSIGNER_JAR = "/opt/android-sdk/build-tools/34.0.0/lib/apksigner.jar";
+const APK_INSPECT_CLASSES = "/opt/apkinspect";
 
 export async function parseApk(
   bytes: Uint8Array,
@@ -89,14 +91,40 @@ export async function parseApk(
       }
     }
 
-    const { stdout: certsOut } = await execFileAsync(
+    // First retain the canonical apksigner verification gate used by existing
+    // Hands ingestion.
+    await execFileAsync(
       APKSIGNER_BIN,
-      ["verify", "--print-certs", apkPath],
+      ["verify", apkPath],
       { maxBuffer: 1024 * 1024 },
     );
-    const sha256Match = certsOut.match(/SHA-256 digest:\s*([0-9a-fA-F:]+)/);
-    const signatureSha256 =
-      sha256Match?.[1]?.replace(/:/g, "").toLowerCase() ?? "";
+
+    // Then ask the apksig library for its already-verified signer lineage.
+    // One output line represents one independent signer; fingerprints inside
+    // a line are oldest -> current proof-of-rotation order.
+    const { stdout: lineageOut } = await execFileAsync(
+      "java",
+      ["-cp", `${APKSIGNER_JAR}:${APK_INSPECT_CLASSES}`, "ApkInspect", apkPath],
+      { maxBuffer: 1024 * 1024 },
+    );
+    const signerLineages = [...lineageOut.matchAll(/^lineage=([0-9a-f,]+)$/gm)].map(
+      (match) => match[1]!.split(","),
+    );
+    const uniqueFingerprints = new Set(signerLineages.flat());
+    if (
+      signerLineages.length === 0 ||
+      signerLineages.length > 8 ||
+      signerLineages.some(
+        (lineage) =>
+          lineage.length === 0 ||
+          lineage.length > 16 ||
+          lineage.some((fingerprint) => !/^[0-9a-f]{64}$/.test(fingerprint)),
+      ) ||
+      uniqueFingerprints.size !== signerLineages.flat().length
+    ) {
+      throw new Error("apksig returned an invalid signer lineage");
+    }
+    const signatureSha256 = signerLineages[0]![0]!;
 
     return {
       parser_kind: "apk-aapt",
@@ -114,6 +142,7 @@ export async function parseApk(
         min_sdk: minSdk,
         target_sdk: targetSdk,
         signature_sha256: signatureSha256,
+        signer_lineages: signerLineages,
       },
     };
   } finally {

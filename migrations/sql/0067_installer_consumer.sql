@@ -141,7 +141,10 @@ CREATE TABLE installer_asset_metadata (
   filetype             TEXT NOT NULL,
   package_id           TEXT NOT NULL,
   version_code         INTEGER NOT NULL CHECK (version_code >= 0),
-  signer_fingerprint   TEXT NOT NULL,
+  -- JSON array of independent signer lineages. Each lineage is an array of
+  -- lowercase SHA-256 certificate fingerprints ordered oldest -> current.
+  -- Bounds are enforced by the guards below (8 signers, 16 certs each).
+  signer_lineages_json TEXT NOT NULL,
   inspected_file_hash  TEXT NOT NULL,
   inspector_version    TEXT NOT NULL,
   inspected_at         INTEGER NOT NULL,
@@ -149,8 +152,10 @@ CREATE TABLE installer_asset_metadata (
     (platform = 'android' AND filetype = 'apk') OR
     (platform = 'ohos' AND filetype = 'hap')
   ),
-  CHECK (length(signer_fingerprint) = 64 AND signer_fingerprint = lower(signer_fingerprint)
-    AND signer_fingerprint NOT GLOB '*[^0-9a-f]*'),
+  CHECK (length(signer_lineages_json) <= 10000),
+  CHECK (json_valid(signer_lineages_json)
+    AND json_type(signer_lineages_json) = 'array'
+    AND json_array_length(signer_lineages_json) BETWEEN 1 AND 8),
   CHECK (length(inspected_file_hash) = 64 AND inspected_file_hash = lower(inspected_file_hash)
     AND inspected_file_hash NOT GLOB '*[^0-9a-f]*'),
   CHECK (trim(package_id) != ''),
@@ -160,27 +165,74 @@ CREATE TABLE installer_asset_metadata (
 CREATE INDEX idx_installer_asset_metadata_identity
   ON installer_asset_metadata(platform, filetype, package_id, version_code);
 
+-- SQLite CHECK constraints cannot conveniently validate every nested JSON
+-- element. Reject non-array lineages, empty/unbounded lineages, non-canonical
+-- fingerprints, and duplicates anywhere in the signer set.
+CREATE TRIGGER installer_asset_metadata_lineages_insert_guard
+BEFORE INSERT ON installer_asset_metadata
+WHEN EXISTS (
+  SELECT 1 FROM json_each(NEW.signer_lineages_json) AS lineage
+  WHERE lineage.type != 'array'
+     OR json_array_length(lineage.value) NOT BETWEEN 1 AND 16
+) OR EXISTS (
+  SELECT 1
+  FROM json_each(NEW.signer_lineages_json) AS lineage,
+       json_each(lineage.value) AS certificate
+  WHERE certificate.type != 'text'
+     OR length(certificate.value) != 64
+     OR certificate.value != lower(certificate.value)
+     OR certificate.value GLOB '*[^0-9a-f]*'
+) OR (
+  SELECT count(*) FROM json_tree(NEW.signer_lineages_json) WHERE type = 'text'
+) != (
+  SELECT count(DISTINCT atom) FROM json_tree(NEW.signer_lineages_json) WHERE type = 'text'
+)
+BEGIN
+  SELECT RAISE(ABORT, 'installer signer lineages must be bounded, ordered canonical fingerprints');
+END;
+
+CREATE TRIGGER installer_asset_metadata_lineages_update_guard
+BEFORE UPDATE OF signer_lineages_json ON installer_asset_metadata
+WHEN EXISTS (
+  SELECT 1 FROM json_each(NEW.signer_lineages_json) AS lineage
+  WHERE lineage.type != 'array'
+     OR json_array_length(lineage.value) NOT BETWEEN 1 AND 16
+) OR EXISTS (
+  SELECT 1
+  FROM json_each(NEW.signer_lineages_json) AS lineage,
+       json_each(lineage.value) AS certificate
+  WHERE certificate.type != 'text'
+     OR length(certificate.value) != 64
+     OR certificate.value != lower(certificate.value)
+     OR certificate.value GLOB '*[^0-9a-f]*'
+) OR (
+  SELECT count(*) FROM json_tree(NEW.signer_lineages_json) WHERE type = 'text'
+) != (
+  SELECT count(DISTINCT atom) FROM json_tree(NEW.signer_lineages_json) WHERE type = 'text'
+)
+BEGIN
+  SELECT RAISE(ABORT, 'installer signer lineages must be bounded, ordered canonical fingerprints');
+END;
+
 -- Cross-table admission cannot be expressed as a CHECK. Seal the inspector row
--- to the exact immutable artifact bytes and to the app/build identity before it
--- can satisfy an installer manifest query.
+-- to the exact immutable artifact bytes and build version before it can satisfy
+-- an installer manifest query. App package opt-in is checked later at admission,
+-- so inspection can safely happen before a publisher opts into the catalog.
 CREATE TRIGGER installer_asset_metadata_insert_guard
 BEFORE INSERT ON installer_asset_metadata
 WHEN NOT EXISTS (
   SELECT 1
   FROM build_assets ba
   JOIN builds b ON b.id = ba.build_id
-  JOIN apps a ON a.id = b.app_id
   WHERE ba.id = NEW.asset_id
     AND ba.artifact_kind = 'installable'
     AND ba.platform = NEW.platform
     AND ba.filetype = NEW.filetype
     AND ba.file_hash = NEW.inspected_file_hash
     AND b.version_code = NEW.version_code
-    AND a.platform = NEW.platform
-    AND a.installer_package_id = NEW.package_id
 )
 BEGIN
-  SELECT RAISE(ABORT, 'installer metadata must match exact installable asset, build, and app identity');
+  SELECT RAISE(ABORT, 'installer metadata must match exact installable asset and build identity');
 END;
 
 CREATE TRIGGER installer_asset_metadata_update_guard
@@ -189,16 +241,13 @@ WHEN NOT EXISTS (
   SELECT 1
   FROM build_assets ba
   JOIN builds b ON b.id = ba.build_id
-  JOIN apps a ON a.id = b.app_id
   WHERE ba.id = NEW.asset_id
     AND ba.artifact_kind = 'installable'
     AND ba.platform = NEW.platform
     AND ba.filetype = NEW.filetype
     AND ba.file_hash = NEW.inspected_file_hash
     AND b.version_code = NEW.version_code
-    AND a.platform = NEW.platform
-    AND a.installer_package_id = NEW.package_id
 )
 BEGIN
-  SELECT RAISE(ABORT, 'installer metadata must match exact installable asset, build, and app identity');
+  SELECT RAISE(ABORT, 'installer metadata must match exact installable asset and build identity');
 END;

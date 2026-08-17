@@ -2,7 +2,7 @@ import { readdirSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import Database from "better-sqlite3";
 import { Hono } from "hono";
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   installerAuthMiddleware,
   pkceChallenge,
@@ -16,6 +16,29 @@ import {
   handleInstallerManifest,
   handlePutInstallerSubscription,
 } from "../src/routes/installer";
+import { autoParseInstallableAsset } from "../src/routes/builds";
+
+vi.mock("@cloudflare/containers", () => ({
+  getRandom: async () => ({
+    fetch: async () => Response.json({
+      parser_kind: "apk-aapt",
+      platform: "android",
+      arch: null,
+      version: "1.2.3",
+      version_code: 10203,
+      package_id: "dev.hands.app",
+      app_label: "App One",
+      size_bytes: 0,
+      file_hash_sha256: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      raw: {
+        signer_lineages: [[
+          "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        ]],
+      },
+    }),
+  }),
+}));
 
 const migrationDir = fileURLToPath(new URL("../../migrations/sql/", import.meta.url));
 
@@ -159,10 +182,11 @@ function seedOffer(sqlite: Database.Database, overrides: { optedIn?: boolean; re
   `);
   if (optedIn) sqlite.exec(`
     INSERT INTO installer_asset_metadata
-      (asset_id, platform, filetype, package_id, version_code, signer_fingerprint,
+      (asset_id, platform, filetype, package_id, version_code, signer_lineages_json,
        inspected_file_hash, inspector_version, inspected_at)
     VALUES ('asset-1', 'android', 'apk', 'dev.hands.app', 10203,
-            'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+            '[["bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+               "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"]]',
             'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
             'inspector-v1', 2);
   `);
@@ -262,8 +286,108 @@ describe("Hands Installer routes", () => {
     expect(await manifest.json()).toMatchObject({
       schema: "hands-installer-manifest.v1",
       release: { id: "release-1", version: "1.2.3", version_code: 10203 },
-      asset: { id: "asset-1", platform: "android", filetype: "apk" },
+      asset: {
+        id: "asset-1",
+        platform: "android",
+        filetype: "apk",
+        signer_lineages: [[
+          "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        ]],
+      },
     });
+  });
+
+  it("persists verified APK inspection against the exact asset before catalog opt-in", async () => {
+    sqlite.exec(`
+      INSERT INTO apps (id, slug, name, platform, created_at)
+      VALUES ('app-1', 'app-one', 'App One', 'android', 1);
+      INSERT INTO channels (id, app_id, slug, name, created_at)
+      VALUES ('channel-1', 'app-1', 'main', 'Main', 1);
+      INSERT INTO builds
+        (id, app_id, channel_id, product_type, release_type, version_name,
+         version_code, source, status, created_at, updated_at)
+      VALUES ('build-1', 'app-1', 'channel-1', 'android-apk', 'stable',
+              '1.2.3', 10203, 'ci', 'succeeded', 1, 1);
+      INSERT INTO build_assets
+        (id, build_id, platform, filetype, r2_key, file_hash, size_bytes,
+         created_at, artifact_kind)
+      VALUES ('asset-1', 'build-1', 'android', 'apk', 'artifact.apk',
+              'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855',
+              0, 1, 'installable');
+    `);
+    env.APK_BUCKET = {
+      get: async () => ({ arrayBuffer: async () => new ArrayBuffer(0) }),
+    } as unknown as R2Bucket;
+    env.APK_PARSER = {} as never;
+    await autoParseInstallableAsset(env, "app-1", "build-1", "artifact.apk", "apk-aapt");
+    const row = sqlite.prepare(
+      `SELECT package_id, version_code, signer_lineages_json, inspected_file_hash,
+              inspector_version
+       FROM installer_asset_metadata WHERE asset_id='asset-1'`,
+    ).get() as Record<string, unknown>;
+    expect(row).toMatchObject({
+      package_id: "dev.hands.app",
+      version_code: 10203,
+      inspected_file_hash: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      inspector_version: "android-apksig-34.0.0-v1",
+    });
+    expect(JSON.parse(row.signer_lineages_json as string)).toEqual([[
+      "b".repeat(64), "c".repeat(64),
+    ]]);
+    expect(sqlite.prepare(
+      "SELECT installer_catalog_public FROM apps WHERE id='app-1'",
+    ).pluck().get()).toBe(0);
+  });
+
+  it("does not offer or sign an asset whose stored signer lineages fail closed validation", async () => {
+    const session = await issueConsumerSession(sqlite, env);
+    seedOffer(sqlite);
+    sqlite.exec(`
+      DROP TRIGGER installer_asset_metadata_lineages_update_guard;
+      PRAGMA ignore_check_constraints = ON;
+      UPDATE installer_asset_metadata
+      SET signer_lineages_json='[["not-a-fingerprint"]]'
+      WHERE asset_id='asset-1';
+    `);
+    const response = await fetchWorker(
+      env,
+      "/api/installer/v1/apps/app-1/channels/main/manifest",
+      { headers: { authorization: `Bearer ${session.access_token}` } },
+    );
+    expect(response.status).toBe(404);
+    expect(await response.json()).toEqual({ error: "app not found", code: "app_not_found" });
+  });
+
+  it("does not ingest parser metadata when the inspected bytes mismatch the asset hash", async () => {
+    sqlite.exec(`
+      INSERT INTO apps (id, slug, name, platform, created_at)
+      VALUES ('app-1', 'app-one', 'App One', 'android', 1);
+      INSERT INTO channels (id, app_id, slug, name, created_at)
+      VALUES ('channel-1', 'app-1', 'main', 'Main', 1);
+      INSERT INTO builds
+        (id, app_id, channel_id, product_type, release_type, version_name,
+         version_code, source, status, created_at, updated_at)
+      VALUES ('build-1', 'app-1', 'channel-1', 'android-apk', 'stable',
+              '1.2.3', 10203, 'ci', 'succeeded', 1, 1);
+      INSERT INTO build_assets
+        (id, build_id, platform, filetype, r2_key, file_hash, size_bytes,
+         created_at, artifact_kind)
+      VALUES ('asset-1', 'build-1', 'android', 'apk', 'artifact.apk',
+              'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+              0, 1, 'installable');
+    `);
+    env.APK_BUCKET = {
+      get: async () => ({ arrayBuffer: async () => new ArrayBuffer(0) }),
+    } as unknown as R2Bucket;
+    env.APK_PARSER = {} as never;
+    const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    await autoParseInstallableAsset(env, "app-1", "build-1", "artifact.apk", "apk-aapt");
+    error.mockRestore();
+    expect(sqlite.prepare("SELECT count(*) FROM installer_asset_metadata").pluck().get()).toBe(0);
+    expect(sqlite.prepare(
+      "SELECT parsed_metadata_json FROM builds WHERE id='build-1'",
+    ).pluck().get()).toBe("{}");
   });
 
   it("does not enumerate non-opted-in apps or QA releases", async () => {
