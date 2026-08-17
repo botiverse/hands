@@ -13,6 +13,7 @@
 
 import { mkdirSync, readFileSync, writeFileSync, existsSync } from "node:fs";
 import { readEnv } from "./env.js";
+import { detectAgentEnv, readAgentAccessToken } from "./agent_env.js";
 import { dirname, join } from "node:path";
 import { homedir } from "node:os";
 
@@ -72,9 +73,16 @@ export function resolveApiBase(): string {
 }
 
 export function resolveAuthToken(): string | undefined {
-  // CI mode wins over file config (env vars are explicit).
+  // CI mode wins over everything (env vars are explicit).
   const env = readEnv("AUTH_TOKEN") ?? readEnv("BEARER_TOKEN") ?? readEnv("SESSION_COOKIE");
   if (env) return env;
+  // In a managed agent, use the per-agent Hands token stored under $SLOCK_HOME by
+  // `hands login` (never the human config file). CP3 checkpoint-2 adds auto-refresh.
+  const agent = detectAgentEnv();
+  if (agent) {
+    const stored = readAgentAccessToken(agent);
+    if (stored) return stored;
+  }
   const config = getConfig();
   return config.authToken ?? config.sessionCookie;
 }

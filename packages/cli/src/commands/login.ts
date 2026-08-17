@@ -17,8 +17,10 @@
 import { createInterface } from "node:readline/promises";
 import { stdin, stdout } from "node:process";
 import type { Command } from "commander";
-import { apiRequest, getApiBase, QuiverApiError } from "../lib/api.js";
+import { apiRequest, getApiBase, setApiBase, QuiverApiError } from "../lib/api.js";
 import { clearConfig, saveConfig, getConfig } from "../lib/config.js";
+import { detectAgentEnv, HANDS_SERVICE } from "../lib/agent_env.js";
+import { runAgentLogin } from "../lib/agent_auth.js";
 
 async function promptSecret(message: string): Promise<string> {
   // Use a raw-mode readline so we can mask input with '*'.
@@ -73,6 +75,30 @@ export function registerLoginCommands(program: Command): void {
         printUrl?: boolean;
       }) => {
         const apiBase = opts.api ?? getApiBase();
+
+        // Managed-agent path (RFC 057): no browser, no paste. Detected via the
+        // daemon-injected env; runs agent-login → exchange → store under $SLOCK_HOME.
+        // An explicit --token forces the human paste path even inside an agent.
+        const agentEnv = detectAgentEnv();
+        if (agentEnv && !opts.token) {
+          if (opts.printUrl) {
+            console.log("(agent environment) `hands login` runs the non-interactive agent-login flow — no URL to open.");
+            return;
+          }
+          setApiBase(apiBase); // exchange must target this API base
+          try {
+            const session = await runAgentLogin(agentEnv);
+            console.log(`✔ Agent login complete (service ${HANDS_SERVICE}).`);
+            console.log(`  Stored under $SLOCK_HOME/agents/$SLOCK_AGENT_ID/integrations/${HANDS_SERVICE}/auth.json`);
+            console.log(`  access token expires ${session.access_expires_at}; refresh rotates automatically.`);
+            console.log("  Subsequent `hands` commands use the stored Hands token directly.");
+          } catch (e) {
+            console.error(`✘ Agent login failed: ${e instanceof Error ? e.message : String(e)}`);
+            process.exit(1);
+          }
+          return;
+        }
+
         const loginUrl = `${apiBase}/api/auth/login?return_to=${encodeURIComponent("/cli/callback")}`;
 
         if (opts.printUrl) {
