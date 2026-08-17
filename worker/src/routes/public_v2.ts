@@ -23,6 +23,15 @@ import { requestOrigin } from "../lib/origin";
 import { presignR2DownloadUrl } from "../lib/r2_presign";
 import { parseReleaseNotes, resolveReleaseNote, type ReleaseNotes } from "../lib/release_notes";
 import { isFeatureEnabled } from "../lib/feature_flags";
+import {
+  fnv1a32,
+  loadActiveReleaseCandidates,
+  rolloutBucket,
+  rolloutIncludes,
+  selectBestAsset,
+} from "../lib/release_resolver";
+
+export { fnv1a32, rolloutBucket, rolloutIncludes, selectBestAsset };
 
 interface ScopedResolution {
   release_id: string;
@@ -113,38 +122,11 @@ export async function handlePublicV2Latest(c: Context<{ Bindings: Env }>) {
 
   // Candidates: active releases on (channel, [product_type]). No time window:
   // an active release must stay resolvable no matter how old it is.
-  const candidateSql = productType
-    ? `SELECT r.id, r.build_id, r.created_at,
-              COALESCE(r.activated_at, r.created_at) AS activated_at,
-              r.product_type, r.rollout_cohort_count, r.changelog
-       FROM releases r
-       JOIN builds b ON b.id = r.build_id
-       WHERE r.app_id = ?1 AND r.channel_id = ?2 AND r.product_type = ?3
-         AND r.status = 'active'
-         AND b.product_type != 'ios-simulator-qa' AND b.release_type != 'qa'
-       ORDER BY COALESCE(r.activated_at, r.created_at) DESC`
-    : `SELECT r.id, r.build_id, r.created_at,
-              COALESCE(r.activated_at, r.created_at) AS activated_at,
-              r.product_type, r.rollout_cohort_count, r.changelog
-       FROM releases r
-       JOIN builds b ON b.id = r.build_id
-       WHERE r.app_id = ?1 AND r.channel_id = ?2
-         AND r.status = 'active'
-         AND b.product_type != 'ios-simulator-qa' AND b.release_type != 'qa'
-       ORDER BY COALESCE(r.activated_at, r.created_at) DESC`;
-  const candidateStmt = c.env.DB.prepare(candidateSql);
-  const allCandidates = await (productType
-    ? candidateStmt.bind(app.id, channelRow.id, productType)
-    : candidateStmt.bind(app.id, channelRow.id)
-  ).all<{
-    id: string;
-    build_id: string;
-    created_at: number;
-    activated_at: number;
-    product_type: string;
-    rollout_cohort_count: number | null;
-    changelog: string | null;
-  }>();
+  const allCandidates = { results: await loadActiveReleaseCandidates(c.env.DB, {
+    appId: app.id,
+    channelId: channelRow.id,
+    productType,
+  }) };
 
   if (allCandidates.results.length === 0) {
     return c.json(
@@ -599,68 +581,6 @@ async function findDeltaPatch(
     size_bytes: row.size_bytes,
     target_sha256: row.target_sha256,
   };
-}
-
-export function selectBestAsset(
-  assets: PublicAssetResponse[],
-  requested: {
-    platform: string | null;
-    arch: string | null;
-    filetype: string;
-  },
-): PublicAssetResponse | null {
-  const filetypeMatches = assets.filter((a) => a.filetype === requested.filetype);
-  if (filetypeMatches.length === 0) return null;
-  const pool = filetypeMatches;
-  const parsed = splitPlatformArch(requested.platform);
-  const platform = parsed.platform;
-  const arch = requested.arch ?? parsed.arch;
-  const platformMatches = platform
-    ? pool.filter((a) => a.platform === platform)
-    : pool;
-  const candidates = platformMatches.length > 0 ? platformMatches : pool;
-  if (arch) {
-    const archMatch = candidates.find((a) => a.arch === arch);
-    if (archMatch) return archMatch;
-  }
-  return candidates.find((a) => a.arch === null) ?? candidates[0] ?? null;
-}
-
-/**
- * Stable 32-bit FNV-1a hash. Deterministic across runtimes so a device keeps
- * the same bucket for a given release while the rollout percentage climbs.
- */
-export function fnv1a32(input: string): number {
-  let hash = 0x811c9dc5;
-  for (let i = 0; i < input.length; i++) {
-    hash ^= input.charCodeAt(i);
-    hash = Math.imul(hash, 0x01000193);
-  }
-  return hash >>> 0;
-}
-
-/** Bucket in [0, 100). Salted by release id so cohorts reshuffle per release. */
-export function rolloutBucket(releaseId: string, deviceId: string): number {
-  return fnv1a32(`${releaseId}:${deviceId}`) % 100;
-}
-
-/**
- * true when the release should be served to this client.
- * - null / >=100 cohort count: fully rolled out, everyone matches.
- * - gated release + no device id: excluded (legacy clients only get full
- *   releases; they fall through to the previous active release).
- * - gated release + device id: stable bucket must fall under the percentage.
- */
-export function rolloutIncludes(
-  releaseId: string,
-  cohortCount: number | null,
-  deviceId: string | null,
-): boolean {
-  if (cohortCount === null || cohortCount === undefined) return true;
-  if (cohortCount >= 100) return true;
-  if (cohortCount <= 0) return false;
-  if (!deviceId) return false;
-  return rolloutBucket(releaseId, deviceId) < cohortCount;
 }
 
 /**
