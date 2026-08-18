@@ -31,13 +31,21 @@ import { getConfig } from "./lib/config.js";
 import { readEnv } from "./lib/env.js";
 import { setApiBase } from "./lib/api.js";
 import { recordCliEvent } from "./lib/logging.js";
+import { createRequire } from "node:module";
+
+// Single source of truth for the CLI version: read it from package.json at runtime so
+// `--version` can never drift from the published package version. (Previously the string
+// was hardcoded here and had to be bumped in lockstep with package.json by hand.)
+const { version: CLI_VERSION } = createRequire(import.meta.url)(
+  "../package.json",
+) as { version: string };
 
 const program = new Command();
 
 program
   .name("hands")
   .description("Hands CLI — manage apps, builds, releases from the terminal.")
-  .version("0.5.15")
+  .version(CLI_VERSION)
   .option(
     "--api <url>",
     "Hands business API URL (default: https://hands.build or $HANDS_API)",
