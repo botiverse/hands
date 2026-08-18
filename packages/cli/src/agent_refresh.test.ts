@@ -9,7 +9,7 @@ import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { agentAuthPath, HANDS_SERVICE, readAgentAccessToken, type AgentEnv } from "./lib/agent_env.js";
 import { writeAgentSession, type AgentSession } from "./lib/agent_auth.js";
-import { getFreshAgentAccessToken, forceRefreshAgentToken } from "./lib/agent_refresh.js";
+import { getFreshAgentAccessToken, forceRefreshAgentToken, releaseOwnLock } from "./lib/agent_refresh.js";
 
 const T0 = 1_700_000_000_000;
 const DAY = 24 * 60 * 60 * 1000;
@@ -131,5 +131,40 @@ describe("single-flight", () => {
     expect(tok).toBe("acc-new");
     expect(calls.n).toBe(1); // broke the stale lock and refreshed
     expect(existsSync(lock)).toBe(false); // released after
+  });
+
+  // Finding #2: a fresh (unexpired) token that the server 401'd must NOT be re-handed by
+  // a concurrent loser — it would just 401 again. The loser waits for the winner's
+  // strictly-newer session (changed refresh token), and never rotates itself.
+  it("forced loser with a fresh-but-401 token waits for the winner's newer session (slow live holder, lock intact)", async () => {
+    store(a, session()); // acc-old is comfortably unexpired (T0+10min), ref-old
+    const lock = join(dirname(agentAuthPath(a)), ".auth.refresh.lock");
+    writeFileSync(lock, "live-owner"); // fresh mtime ⇒ a live (slow) holder
+    const calls = { n: 0 };
+    let polls = 0;
+    const sleepImpl = async () => { polls++; if (polls === 2) store(a, NEW_SESSION); };
+    const tok = await forceRefreshAgentToken(a, { now: T0, fetchImpl: mockFetch(NEW_SESSION, 200, calls), sleepImpl });
+    expect(tok).toBe("acc-new"); // the winner's rotated session, not the 401'd token
+    expect(calls.n).toBe(0); // loser never rotated
+    expect(existsSync(lock)).toBe(true); // never broke the live holder's lock
+  });
+
+  it("forced loser fails (never re-hands the old 401'd token) when no newer session arrives", async () => {
+    store(a, session()); // fresh token, but forced (post-401)
+    const lock = join(dirname(agentAuthPath(a)), ".auth.refresh.lock");
+    writeFileSync(lock, "live-owner");
+    await expect(
+      forceRefreshAgentToken(a, { now: T0, fetchImpl: mockFetch(NEW_SESSION, 200), sleepImpl: noSleep }),
+    ).rejects.toThrow(/timed out/);
+  });
+
+  // Finding #3: release must never delete a lock that a foreign holder now owns.
+  it("releaseOwnLock deletes only our own lock, never a foreign holder's", () => {
+    const lock = join(dir, ".auth.refresh.lock");
+    writeFileSync(lock, "owner-A");
+    releaseOwnLock(lock, "owner-B"); // foreign id ⇒ leave it
+    expect(existsSync(lock)).toBe(true);
+    releaseOwnLock(lock, "owner-A"); // our id ⇒ delete it
+    expect(existsSync(lock)).toBe(false);
   });
 });

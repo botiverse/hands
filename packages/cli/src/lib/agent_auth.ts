@@ -22,7 +22,7 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import { randomBytes, createHash } from "node:crypto";
-import { apiRequest, getApiBase } from "./api.js";
+import { getApiBase } from "./api.js";
 import { agentAuthPath, HANDS_SERVICE, type AgentEnv } from "./agent_env.js";
 
 function base64url(buf: Buffer): string {
@@ -69,9 +69,17 @@ export function parseAgentLoginInvoke(
     throw new Error("agent-login: `raft integration invoke` did not return JSON");
   }
   if (!outer || typeof outer !== "object") throw new Error("agent-login: invoke output is not an object");
+  // Check success first: a failed invoke may legitimately carry a different shape
+  // (e.g. {ok:false, error}); only the success wrapper is the closed {ok, data}.
   if (outer.ok !== true) throw new Error("agent-login: invoke did not succeed");
+  // Closed envelope: an unexpected extra field means the wire drifted from the
+  // checkpoint contract; fail rather than ignore.
+  if (!hasExactKeys(outer, ["ok", "data"])) throw new Error("agent-login: invoke envelope has unexpected fields");
   const data = outer.data;
   if (!data || typeof data !== "object") throw new Error("agent-login: invoke result is missing data");
+  if (!hasExactKeys(data, ["service", "action", "status", "result"])) {
+    throw new Error("agent-login: invoke data has unexpected fields");
+  }
   if (data.service !== service) throw new Error("agent-login: invoke service does not match the requested service");
   if (data.action !== "agent-login") throw new Error("agent-login: invoke action is not agent-login");
   if (data.status !== 200) throw new Error("agent-login: agent-login action did not return HTTP 200");
@@ -99,8 +107,13 @@ export interface AgentSession {
   refresh_expires_at: string | null; // RFC3339 | null
 }
 
-/** Strictly validate the exchange/refresh success body (closed keys + RFC3339). */
-export function parseAgentSession(body: any): AgentSession {
+/**
+ * Strictly validate the exchange/refresh success body (closed keys + RFC3339).
+ * `now` is injected so validation is deterministic: a freshly issued session MUST
+ * have a strictly-future access expiry (and refresh expiry, when present) — otherwise
+ * we would persist an already-dead session that the very next request must refresh.
+ */
+export function parseAgentSession(body: any, now: number): AgentSession {
   if (!body || typeof body !== "object") throw new Error("agent-login: exchange response is not an object");
   if (!hasExactKeys(body, ["schema", "token_type", "access_token", "access_expires_at", "refresh_token", "refresh_expires_at"])) {
     throw new Error("agent-login: session has unexpected fields");
@@ -110,9 +123,13 @@ export function parseAgentSession(body: any): AgentSession {
   for (const k of ["access_token", "refresh_token"] as const) {
     if (typeof body[k] !== "string" || body[k].length === 0) throw new Error(`agent-login: session missing ${k}`);
   }
-  if (parseRfc3339(body.access_expires_at) === null) throw new Error("agent-login: session access_expires_at is not RFC3339");
-  if (body.refresh_expires_at !== null && parseRfc3339(body.refresh_expires_at) === null) {
-    throw new Error("agent-login: session refresh_expires_at must be RFC3339 or null");
+  const accessExp = parseRfc3339(body.access_expires_at);
+  if (accessExp === null) throw new Error("agent-login: session access_expires_at is not RFC3339");
+  if (accessExp <= now) throw new Error("agent-login: session access token is already expired");
+  if (body.refresh_expires_at !== null) {
+    const refreshExp = parseRfc3339(body.refresh_expires_at);
+    if (refreshExp === null) throw new Error("agent-login: session refresh_expires_at must be RFC3339 or null");
+    if (refreshExp <= now) throw new Error("agent-login: session refresh token is already expired");
   }
   return body as AgentSession;
 }
@@ -178,6 +195,8 @@ export interface AgentLoginOptions {
   now?: number; // injectable clock (ms) for tests
   /** Injectable invoke runner for tests; defaults to spawning the pinned wrapper. */
   invoke?: (args: string[]) => { status: number | null; stdout: string; stderr: string };
+  /** Injectable fetch for the exchange; defaults to global fetch. */
+  fetchImpl?: typeof fetch;
 }
 
 function defaultInvoke(raftBin: string, args: string[]) {
@@ -216,12 +235,29 @@ export async function runAgentLogin(a: AgentEnv, opts: AgentLoginOptions = {}): 
   }
   const { grant } = parseAgentLoginInvoke(res.stdout, service, now);
 
+  // Independent token request: NO stored Bearer, NO auto-refresh. `hands login` is the
+  // recovery path when the stored refresh has reached a terminal state
+  // (expired/reused/revoked); routing this exchange through the api client would first
+  // try to refresh that dead token and throw before the fresh grant is ever spent.
   const apiBase = getApiBase();
-  const body = await apiRequest("/api/auth/agent/exchange", {
+  const fetchImpl = opts.fetchImpl ?? fetch;
+  const exchangeRes = await fetchImpl(new URL("/api/auth/agent/exchange", apiBase).toString(), {
     method: "POST",
-    body: { schema: "raft-cli-agent-login-exchange.v1", grant, code_verifier: verifier },
+    headers: { "content-type": "application/json", accept: "application/json" },
+    body: JSON.stringify({ schema: "raft-cli-agent-login-exchange.v1", grant, code_verifier: verifier }),
   });
-  const session = parseAgentSession(body);
+  const exchangeText = await exchangeRes.text();
+  if (!exchangeRes.ok) {
+    // Stable reason only; never echo the response body (may carry token material).
+    throw new Error(`agent-login: grant exchange failed (HTTP ${exchangeRes.status})`);
+  }
+  let exchangeBody: unknown;
+  try {
+    exchangeBody = JSON.parse(exchangeText);
+  } catch {
+    throw new Error("agent-login: exchange response was not JSON");
+  }
+  const session = parseAgentSession(exchangeBody, now);
   writeAgentSession(a, service, session, apiBase);
   return session;
 }

@@ -20,8 +20,7 @@
 
 import type { Command } from "commander";
 import { readFile, writeFile } from "node:fs/promises";
-import { getApiBase } from "../lib/api.js";
-import { resolveAuthToken } from "../lib/config.js";
+import { getApiBase, agentAwareFetch } from "../lib/api.js";
 
 const METHODS = new Set(["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD"]);
 
@@ -103,18 +102,20 @@ export function registerApiCommand(program: Command): void {
             : opts.data;
         }
 
-        const headers: Record<string, string> = { accept: "application/json" };
-        const token = resolveAuthToken();
-        if (token) headers.authorization = `Bearer ${token}`;
-        if (body !== undefined) headers["content-type"] = "application/json";
-
-        const res = await fetch(target.toString(), {
-          method,
-          headers,
-          ...(body !== undefined ? { body } : {}),
-          // Never auto-follow a 3xx: a redirect off the API origin would carry
-          // the bearer token to the redirect target.
-          redirect: "manual",
+        // Agent-aware: proactive refresh + one guarded 401 retry in agent mode, same as
+        // every other CLI HTTP path. The request is rebuilt per attempt with the bearer.
+        const res = await agentAwareFetch((bearer) => {
+          const headers: Record<string, string> = { accept: "application/json" };
+          if (bearer) headers.authorization = `Bearer ${bearer}`;
+          if (body !== undefined) headers["content-type"] = "application/json";
+          return fetch(target.toString(), {
+            method,
+            headers,
+            ...(body !== undefined ? { body } : {}),
+            // Never auto-follow a 3xx: a redirect off the API origin would carry
+            // the bearer token to the redirect target.
+            redirect: "manual",
+          });
         });
 
         const requestId = res.headers.get("x-request-id") ?? res.headers.get("cf-ray");

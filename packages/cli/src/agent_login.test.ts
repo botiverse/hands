@@ -134,6 +134,12 @@ describe("V4 strict, non-leaking invoke parse", () => {
   it("closed-key: rejects extension fields in the grant result", () => {
     expect(() => parseAgentLoginInvoke(invokeEnvelope({}, { extra: "x" }), HANDS_SERVICE, T0)).toThrow(/unexpected fields/);
   });
+  it("closed-envelope: rejects extension fields in the outer wrapper and data", () => {
+    const withOuterExtra = JSON.stringify({ ...JSON.parse(invokeEnvelope()), extra: "x" });
+    expect(() => parseAgentLoginInvoke(withOuterExtra, HANDS_SERVICE, T0)).toThrow(/envelope has unexpected fields/);
+    // invokeEnvelope(over) spreads `over` into `data`, so this adds a 5th data key.
+    expect(() => parseAgentLoginInvoke(invokeEnvelope({ extra: "x" }), HANDS_SERVICE, T0)).toThrow(/data has unexpected fields/);
+  });
   it("validates expires_at: RFC3339, strictly future, <=300s", () => {
     expect(() => parseAgentLoginInvoke(invokeEnvelope({}, { expires_at: "nope" }), HANDS_SERVICE, T0)).toThrow(/RFC3339/);
     expect(() => parseAgentLoginInvoke(invokeEnvelope({}, { expires_at: new Date(T0 - 1000).toISOString() }), HANDS_SERVICE, T0)).toThrow(/already expired/);
@@ -151,14 +157,23 @@ describe("V4 strict, non-leaking invoke parse", () => {
 });
 
 describe("V4 strict session parse", () => {
+  const BEFORE = Date.parse(SESSION.access_expires_at) - 1000; // clock before both expiries
   it("accepts a valid session and null refresh expiry", () => {
-    expect(parseAgentSession(SESSION)).toEqual(SESSION);
-    expect(parseAgentSession({ ...SESSION, refresh_expires_at: null }).refresh_expires_at).toBeNull();
+    expect(parseAgentSession(SESSION, BEFORE)).toEqual(SESSION);
+    expect(parseAgentSession({ ...SESSION, refresh_expires_at: null }, BEFORE).refresh_expires_at).toBeNull();
   });
   it("rejects extension fields, bad schema/token_type/expiry", () => {
-    expect(() => parseAgentSession({ ...SESSION, extra: 1 })).toThrow(/unexpected fields/);
-    expect(() => parseAgentSession({ ...SESSION, token_type: "Basic" })).toThrow(/token_type/);
-    expect(() => parseAgentSession({ ...SESSION, access_expires_at: "nope" })).toThrow(/RFC3339/);
+    expect(() => parseAgentSession({ ...SESSION, extra: 1 }, BEFORE)).toThrow(/unexpected fields/);
+    expect(() => parseAgentSession({ ...SESSION, token_type: "Basic" }, BEFORE)).toThrow(/token_type/);
+    expect(() => parseAgentSession({ ...SESSION, access_expires_at: "nope" }, BEFORE)).toThrow(/RFC3339/);
+  });
+  it("strict-future: rejects an access/refresh token already expired at `now`", () => {
+    const afterAccess = Date.parse(SESSION.access_expires_at) + 1;
+    expect(() => parseAgentSession(SESSION, afterAccess)).toThrow(/access token is already expired/);
+    // access still future, but refresh already expired at `now`.
+    const afterRefresh = Date.parse(SESSION.refresh_expires_at!) + 1;
+    const futureAccess = { ...SESSION, access_expires_at: new Date(afterRefresh + 1000).toISOString() };
+    expect(() => parseAgentSession(futureAccess, afterRefresh)).toThrow(/refresh token is already expired/);
   });
 });
 
@@ -193,15 +208,27 @@ describe("runAgentLogin (full flow via pinned wrapper)", () => {
   let server: Server;
   let base: string;
   let exchangeBody: any;
+  let exchangeAuth: string | undefined;
+  let refreshHits: number;
 
   beforeEach(async () => {
     dir = mkdtempSync(join(tmpdir(), "flow-"));
+    exchangeAuth = undefined;
+    refreshHits = 0;
     server = createServer((req, res) => {
       let raw = "";
       req.on("data", (c) => (raw += c));
       req.on("end", () => {
-        exchangeBody = JSON.parse(raw || "{}");
+        // A terminal refresh (reused/revoked) — must never be reached during a fresh login.
+        if (req.url === "/api/auth/agent/refresh") {
+          refreshHits += 1;
+          res.writeHead(409, { "content-type": "application/json" });
+          res.end(JSON.stringify({ error: "refresh_reused" }));
+          return;
+        }
         if (req.url === "/api/auth/agent/exchange" && req.method === "POST") {
+          exchangeBody = JSON.parse(raw || "{}");
+          exchangeAuth = req.headers["authorization"] as string | undefined;
           res.writeHead(200, { "content-type": "application/json" });
           res.end(JSON.stringify(SESSION));
         } else { res.writeHead(404); res.end("{}"); }
@@ -238,6 +265,22 @@ describe("runAgentLogin (full flow via pinned wrapper)", () => {
     await expect(runAgentLogin(a, { now: T0, invoke: () => ({ status: 1, stdout: invokeEnvelope(), stderr: "boom" }) }))
       .rejects.toThrow(/non-zero status/);
     expect(existsSync(agentAuthPath(a))).toBe(false);
+  });
+
+  it("a terminal old refresh does NOT block a fresh login (independent exchange, no old Bearer)", async () => {
+    const a = agentEnvAt(dir, "/t");
+    // Pre-seed a store whose refresh is terminal (would 409) and whose access is expired.
+    // The recovery path (`hands login`) must spend the fresh grant WITHOUT touching it.
+    writeAgentSession(
+      a, HANDS_SERVICE,
+      { ...SESSION, access_token: "old-acc", refresh_token: "old-ref", access_expires_at: new Date(T0 - 1000).toISOString() },
+      base, () => new Date(T0).toISOString(),
+    );
+    const session = await runAgentLogin(a, { now: T0, invoke: () => ({ status: 0, stdout: invokeEnvelope(), stderr: "" }) });
+    expect(session.access_token).toBe("acc-123");        // exchange succeeded
+    expect(readAgentAccessToken(a)).toBe("acc-123");     // store replaced with the new session
+    expect(refreshHits).toBe(0);                          // the bad refresh was never attempted
+    expect(exchangeAuth).toBeUndefined();                // exchange carried NO stored Bearer
   });
 });
 

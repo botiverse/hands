@@ -30,6 +30,29 @@ async function resolveBearer(): Promise<string | undefined> {
   return resolveAuthToken();
 }
 
+/**
+ * Run a bearer-parameterized request with agent-aware auth, shared by every CLI HTTP
+ * path (`apiRequest`, `apiUploadFile`, and `hands api`): resolve the bearer (proactive
+ * refresh in agent mode), and on a 401 in agent mode force ONE refresh and retry once.
+ * `doFetch` MUST build a fresh request each call — a request body stream cannot be reused
+ * across attempts, so callers that send a body rebuild it inside the thunk.
+ */
+export async function agentAwareFetch(
+  doFetch: (bearer: string | undefined) => Promise<Response>,
+): Promise<Response> {
+  let res = await doFetch(await resolveBearer());
+  // The proactive refresh in resolveBearer covers near-expiry; this covers a token
+  // rejected despite looking unexpired (server-side revocation, clock skew).
+  if (res.status === 401) {
+    const admission = admitAgent();
+    if (admission.kind === "agent") {
+      const refreshed = await forceRefreshAgentToken(admission.env);
+      if (refreshed) res = await doFetch(refreshed);
+    }
+  }
+  return res;
+}
+
 export class QuiverApiError extends Error {
   readonly status: number;
   readonly body: unknown;
@@ -88,17 +111,7 @@ export async function apiRequest<T = unknown>(
       ...(opts.signal ? { signal: opts.signal } : {}),
     });
   };
-  let res = await doFetch(await resolveBearer());
-  // Agent mode: one guarded refresh + single retry after a 401 (the proactive refresh
-  // in resolveBearer covers near-expiry; this covers a token rejected despite looking
-  // unexpired, e.g. server-side revocation or clock skew).
-  if (res.status === 401) {
-    const admission = admitAgent();
-    if (admission.kind === "agent") {
-      const refreshed = await forceRefreshAgentToken(admission.env);
-      if (refreshed) res = await doFetch(refreshed);
-    }
-  }
+  const res = await agentAwareFetch(doFetch);
   if (readEnv("VERBOSE") === "1") {
     console.error(`> ${opts.method ?? "GET"} ${url}`);
     console.error(`< ${res.status}`);
@@ -129,23 +142,17 @@ export async function apiUploadFile<T = unknown>(
   fieldName = "apk",
 ): Promise<T> {
   const url = new URL(path.startsWith("/") ? path : `/${path}`, getApiBase());
-  const form = new FormData();
   const bytes = await readFile(filePath);
-  form.append(fieldName, new Blob([bytes]), basename(filePath));
-
-  const headers: Record<string, string> = {
-    accept: "application/json",
-  };
-  // Proactively-refreshed bearer in agent mode. No auto-retry here: re-streaming a
-  // large upload on a 401 is expensive; the proactive refresh covers near-expiry, and
-  // a genuine 401 surfaces to the caller to re-invoke.
-  const bearer = await resolveBearer();
-  if (bearer) headers.authorization = `Bearer ${bearer}`;
-
-  const res = await fetch(url.toString(), {
-    method: "POST",
-    headers,
-    body: form,
+  const name = basename(filePath);
+  // Upload is a primary product path, so it uses the SAME agent-aware request + one-401
+  // as every other call. The multipart body is rebuilt per attempt: a body stream can't
+  // be reused, and agent mode may retry once after a 401.
+  const res = await agentAwareFetch((bearer) => {
+    const form = new FormData();
+    form.append(fieldName, new Blob([bytes]), name);
+    const headers: Record<string, string> = { accept: "application/json" };
+    if (bearer) headers.authorization = `Bearer ${bearer}`;
+    return fetch(url.toString(), { method: "POST", headers, body: form });
   });
   if (readEnv("VERBOSE") === "1") {
     console.error(`> POST ${url}`);
