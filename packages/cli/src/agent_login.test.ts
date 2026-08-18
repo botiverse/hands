@@ -140,10 +140,22 @@ describe("V4 strict, non-leaking invoke parse", () => {
     // invokeEnvelope(over) spreads `over` into `data`, so this adds a 5th data key.
     expect(() => parseAgentLoginInvoke(invokeEnvelope({ extra: "x" }), HANDS_SERVICE, T0)).toThrow(/data has unexpected fields/);
   });
-  it("validates expires_at: RFC3339, strictly future, <=300s", () => {
+  it("validates expires_at: RFC3339, strictly future, within the skew-tolerant ceiling", () => {
     expect(() => parseAgentLoginInvoke(invokeEnvelope({}, { expires_at: "nope" }), HANDS_SERVICE, T0)).toThrow(/RFC3339/);
+    // Non-canonical shapes a lenient Date.parse would accept are still rejected by the strict parser:
+    expect(() => parseAgentLoginInvoke(invokeEnvelope({}, { expires_at: new Date(T0 + 200_000).toISOString().replace("T", " ") }), HANDS_SERVICE, T0)).toThrow(/RFC3339/); // space instead of "T"
+    expect(() => parseAgentLoginInvoke(invokeEnvelope({}, { expires_at: new Date(T0 + 200_000).toISOString().replace(/(\.\d+)?Z$/, "") }), HANDS_SERVICE, T0)).toThrow(/RFC3339/); // no timezone
     expect(() => parseAgentLoginInvoke(invokeEnvelope({}, { expires_at: new Date(T0 - 1000).toISOString() }), HANDS_SERVICE, T0)).toThrow(/already expired/);
-    expect(() => parseAgentLoginInvoke(invokeEnvelope({}, { expires_at: new Date(T0 + 400_000).toISOString() }), HANDS_SERVICE, T0)).toThrow(/300s/);
+    // A server-issued 300s grant parsed with the server clock slightly ahead (real skew)
+    // is ACCEPTED — no zero-tolerance flake at the exact boundary (the login bug this fixes).
+    expect(
+      parseAgentLoginInvoke(invokeEnvelope({}, { expires_at: new Date(T0 + 300_000 + 5_000).toISOString() }), HANDS_SERVICE, T0).expires_at,
+    ).toBeTruthy();
+    // Boundary is locked: exactly 300s + 120s skew is accepted, one ms over is rejected.
+    expect(
+      parseAgentLoginInvoke(invokeEnvelope({}, { expires_at: new Date(T0 + 420_000).toISOString() }), HANDS_SERVICE, T0).expires_at,
+    ).toBeTruthy();
+    expect(() => parseAgentLoginInvoke(invokeEnvelope({}, { expires_at: new Date(T0 + 420_001).toISOString() }), HANDS_SERVICE, T0)).toThrow(/ceiling/);
   });
   it("NEVER echoes raw stdout in error messages (no credential leak)", () => {
     const secret = "SECRET-grant-payload-should-not-appear";
