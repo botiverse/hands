@@ -100,6 +100,7 @@ type SharePageRow = {
   package_id: string | null;
   share_id: string;
   expires_at: number | null;
+  app_id: string;
   app_slug: string;
   app_name: string;
   channel_slug: string;
@@ -591,15 +592,53 @@ export async function handlePublicReleaseShareDownload(c: Context<{ Bindings: En
     return c.redirect(`/share/${token}`, 302);
   }
 
+  // The bound asset may have been deleted from R2 (e.g. its release was pruned/superseded).
+  // Rather than 302 → a signed URL that 404s, fall back to the app's latest active
+  // installable when one still exists; only if nothing downloadable remains show an error.
+  let r2Key: string | null = row.r2_key;
+  if (!(await c.env.APK_BUCKET.head(row.r2_key))) {
+    r2Key = await findLatestActiveInstallableKey(c.env, row.app_id);
+  }
+  if (!r2Key) {
+    const latestSlug = await findLatestLandingSlugForInactiveShare(c.env.DB, token);
+    return htmlResponse(renderErrorPage(t, t.errUnavailable, latestSlug), 404);
+  }
+
   await recordShareEvent(c, row.share_id, "download");
   const ttl = Number(c.env.SIGNED_URL_TTL_SECONDS ?? "3600");
   const signedUrl = await generateSignedR2Url(
     c.env,
-    row.r2_key,
+    r2Key,
     ttl,
     publicRequestOrigin(c),
   );
   return c.redirect(signedUrl, 302);
+}
+
+/**
+ * The r2_key of the app's most recent active, non-hidden installable that still exists in
+ * R2, or null. Fetches a few candidates newest-first and head-checks each, so a single
+ * pruned object does not defeat the fallback. Used when a share's own bound asset is gone.
+ */
+async function findLatestActiveInstallableKey(env: Env, appId: string): Promise<string | null> {
+  const rows = await env.DB.prepare(
+    `SELECT ba.r2_key AS r2_key
+     FROM releases r
+     JOIN builds b ON b.id = r.build_id
+     JOIN build_assets ba ON ba.build_id = b.id
+     WHERE r.app_id = ?1
+       AND r.status = 'active'
+       AND r.hidden = 0
+       AND ba.artifact_kind = 'installable'
+     ORDER BY r.created_at DESC, ba.filetype = 'apk' DESC, ba.created_at ASC
+     LIMIT 5`,
+  )
+    .bind(appId)
+    .all<{ r2_key: string }>();
+  for (const row of rows.results ?? []) {
+    if (row.r2_key && (await env.APK_BUCKET.head(row.r2_key))) return row.r2_key;
+  }
+  return null;
 }
 
 export async function handlePublicReleaseShareIcon(c: Context<{ Bindings: Env }>) {
@@ -706,6 +745,7 @@ async function findActiveShare(db: D1Database, token: string): Promise<SharePage
        rs.id AS share_id,
        rs.expires_at AS expires_at,
        rs.password_hash AS password_hash,
+       a.id AS app_id,
        a.slug AS app_slug,
        a.name AS app_name,
        COALESCE(

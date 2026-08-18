@@ -8820,8 +8820,47 @@ describe("quiver public API v2 — scope resolution", () => {
     expect(events.results).toEqual([{ event_type: "view", count: 1 }]);
   });
 
+  it("share download falls back to the app's latest active version when the bound object is gone (#442)", async () => {
+    const env = makeEnv();
+    const { handleCreateReleaseShare, handlePublicReleaseShareDownload } = await import("../src/routes/shares");
+    // The shared (older) release + its asset — this object will be "deleted" from R2.
+    await seedRelease(env, "rel-old", "build-old", [["full", "all"]], { versionCode: 5, versionName: "1.0.5", createdAt: 1000 });
+    await seedAsset(env, "build-old", "asset-old", { arch: "arm64-v8a" }); // r2_key apps/app-scope/asset-old.apk
+    const created = await responseJson<any>(
+      await handleCreateReleaseShare(makeShareAdminContext(env, { appId: "app-scope", releaseId: "rel-old" }, { ttl_seconds: 600 })),
+    );
+    const token = new URL(created.share_url).pathname.replace("/share/", "");
+    // A newer active release exists for the same app, with a present object.
+    await seedRelease(env, "rel-new", "build-new", [["full", "all"]], { versionCode: 9, versionName: "1.0.9", createdAt: 2000 });
+    await seedAsset(env, "build-new", "asset-new", { arch: "arm64-v8a" }); // r2_key apps/app-scope/asset-new.apk
+
+    // R2: the shared (old) object is gone; only the latest active (new) object exists.
+    env.APK_BUCKET = { head: async (key: string) => (key === "apps/app-scope/asset-new.apk" ? { key } : null) } as any;
+
+    const res = await handlePublicReleaseShareDownload(makeSharePublicContext(env, token));
+    expect(res.status).toBe(302); // fell back rather than 302→404
+    const loc = res.headers.get("location") ?? "";
+    expect(loc).toContain("asset-new.apk"); // serves the latest active version
+    expect(loc).not.toContain("asset-old.apk"); // not the deleted bound one
+  });
+
+  it("share download 404s only when neither the bound object nor any active version remains (#442)", async () => {
+    const env = makeEnv();
+    const { handleCreateReleaseShare, handlePublicReleaseShareDownload } = await import("../src/routes/shares");
+    await seedRelease(env, "rel-only", "build-only", [["full", "all"]], { versionCode: 3, versionName: "1.0.3" });
+    await seedAsset(env, "build-only", "asset-only", { arch: "arm64-v8a" });
+    const created = await responseJson<any>(
+      await handleCreateReleaseShare(makeShareAdminContext(env, { appId: "app-scope", releaseId: "rel-only" }, { ttl_seconds: 600 })),
+    );
+    const token = new URL(created.share_url).pathname.replace("/share/", "");
+    env.APK_BUCKET = { head: async () => null } as any; // everything is gone from R2
+    const res = await handlePublicReleaseShareDownload(makeSharePublicContext(env, token));
+    expect(res.status).toBe(404);
+  });
+
   it("password-protected share gates page and download until unlocked", async () => {
     const env = makeEnv();
+    env.APK_BUCKET = { head: async (key: string) => ({ key }) } as any; // bound object exists
     const {
       handleCreateReleaseShare,
       handlePublicReleaseShare,
@@ -10520,6 +10559,7 @@ describe("quiver public API v2 — scope resolution", () => {
 
   it("share download redirects to signed R2 and records download stats", async () => {
     const env = makeEnv();
+    env.APK_BUCKET = { head: async (key: string) => ({ key }) } as any; // bound object exists
     const {
       handleCreateReleaseShare,
       handleListReleaseShares,
