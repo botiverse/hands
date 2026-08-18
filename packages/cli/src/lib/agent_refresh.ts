@@ -54,10 +54,6 @@ function newOwnerId(): string {
   return `${process.pid}:${randomBytes(12).toString("hex")}`;
 }
 
-function safeRead(path: string): string {
-  try { return readFileSync(path, "utf8"); } catch { return ""; }
-}
-
 function readStore(a: AgentEnv, service: string): StoredAgentAuth | null {
   let path: string;
   try {
@@ -263,22 +259,24 @@ export function acquireIfDeadOwner(lock: string, ownerId: string): boolean {
   }
 }
 
-/** Acquire the exclusive reaper fence, recovering only a fence whose reaper PID is dead. */
+/**
+ * Acquire the exclusive reaper fence via a single O_EXCL create. On EEXIST — a reaper is
+ * active, OR one crashed and left the fence — we ALWAYS fail closed (return null → loser).
+ * We deliberately do NOT auto-recover a leftover fence: reading its pid and unlinking it
+ * would recurse the very reap race the fence exists to prevent (two recoverers both unlink
+ * + recreate, then each deletes the other's live fence). A crashed reaper — the fence is
+ * held only across synchronous fs calls, never I/O — leaves a diagnosable fence for manual
+ * cleanup, the agreed "prefer fail-closed on reaper residue" over a second grabbable lock.
+ * Kernel O_EXCL is the sole mutual exclusion; nothing here reads-pid-then-unlinks.
+ */
 function acquireReaperFence(fence: string): number | null {
-  for (let attempt = 0; attempt < 2; attempt += 1) {
-    try {
-      const fd = openSync(fence, "wx");
-      // Stamp with our pid so that, if WE die, another recoverer can prove-dead and reap us.
-      try { writeSync(fd, newOwnerId()); } catch { try { closeSync(fd); } catch { /* */ } return null; }
-      return fd;
-    } catch (e) {
-      if ((e as NodeJS.ErrnoException)?.code !== "EEXIST") return null; // cannot create → fail closed
-      const fpid = ownerPid(safeRead(fence));
-      if (fpid === null || ownerAlive(fpid)) return null; // live reaper / uncertain → loser
-      try { unlinkSync(fence); } catch { /* gone / replaced → one retry */ }
-    }
+  try {
+    const fd = openSync(fence, "wx");
+    try { writeSync(fd, newOwnerId()); } catch { /* diagnostic marker only; ignore */ }
+    return fd;
+  } catch {
+    return null; // EEXIST or any error → fail closed (loser); never recover a leftover fence
   }
-  return null;
 }
 
 function ownerPid(owner: string): number | null {

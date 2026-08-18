@@ -10,6 +10,8 @@ import { join, dirname } from "node:path";
 import { agentAuthPath, HANDS_SERVICE, readAgentAccessToken, type AgentEnv } from "./lib/agent_env.js";
 import { writeAgentSession, type AgentSession } from "./lib/agent_auth.js";
 import { createServer, type Server } from "node:http";
+import { spawn } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import { getFreshAgentAccessToken, forceRefreshAgentToken, releaseOwnLock, acquireIfDeadOwner } from "./lib/agent_refresh.js";
 
 const DEAD_PID = 2_147_483_646; // beyond any real pid_max ⇒ process.kill(pid,0) → ESRCH
@@ -181,12 +183,19 @@ describe("single-flight", () => {
     expect(readFileSync(lock, "utf8")).toBe("me:winner"); // we now hold it
     expect(existsSync(`${lock}.reap`)).toBe(false); // fence released
   });
-  it("acquireIfDeadOwner: a live reaper fence blocks a second recoverer (fail closed)", () => {
+  it("acquireIfDeadOwner: ANY existing reaper fence blocks a second recoverer (no auto-recovery)", () => {
     const lock = join(dir, ".auth.refresh.lock");
     writeFileSync(lock, `${DEAD_PID}:abandoned`);
-    writeFileSync(`${lock}.reap`, `${process.pid}:live-reaper`); // a live reaper holds the fence
-    expect(acquireIfDeadOwner(lock, "me:1")).toBe(false); // second recoverer → loser
-    expect(readFileSync(lock, "utf8")).toBe(`${DEAD_PID}:abandoned`); // dead lock left for the live reaper
+    // A live reaper's fence blocks, as expected.
+    writeFileSync(`${lock}.reap`, `${process.pid}:live-reaper`);
+    expect(acquireIfDeadOwner(lock, "me:1")).toBe(false);
+    expect(readFileSync(lock, "utf8")).toBe(`${DEAD_PID}:abandoned`);
+    // A LEFTOVER fence whose reaper pid is DEAD also blocks — we never auto-recover it
+    // (that would recurse the reap race). Fail closed; leave it for manual cleanup.
+    writeFileSync(`${lock}.reap`, `${DEAD_PID}:crashed-reaper`);
+    expect(acquireIfDeadOwner(lock, "me:1")).toBe(false);
+    expect(existsSync(`${lock}.reap`)).toBe(true); // NOT auto-removed
+    expect(readFileSync(lock, "utf8")).toBe(`${DEAD_PID}:abandoned`);
   });
 
   // Finding #3: release must never delete a lock that a foreign holder now owns.
@@ -199,23 +208,54 @@ describe("single-flight", () => {
     expect(existsSync(lock)).toBe(false);
   });
 
-  // Finding #3 (round 3): two concurrent recoverers of the SAME dead lock must produce
-  // exactly ONE refresh — the reaper fence + O_EXCL re-acquire serialize the recovery.
-  it("two concurrent recoverers of a dead lock produce exactly one refresh", async () => {
-    store(a, session({ access_expires_at: new Date(T0 - 1000).toISOString() }));
+  // Finding #3 (round 3): TWO REAL PROCESSES recovering the SAME dead lock must produce
+  // exactly ONE refresh. Single-event-loop Promise.all cannot exercise this (acquireIfDeadOwner
+  // is all-synchronous, so the first finishes before the second starts) — so we fork two tsx
+  // workers, park both at a file barrier, release together, and count server-side refreshes.
+  it("two REAL concurrent processes recovering a dead lock produce exactly one refresh", async () => {
+    let hits = 0;
+    const server = createServer((_req, res) => {
+      hits += 1;
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify(NEW_SESSION));
+    });
+    await new Promise<void>((r) => server.listen(0, r));
+    const base = `http://127.0.0.1:${(server.address() as any).port}`;
+    writeAgentSession(
+      a, HANDS_SERVICE,
+      session({ access_expires_at: new Date(T0 - 1000).toISOString() }),
+      base, () => new Date(T0).toISOString(),
+    );
     const lock = join(dirname(agentAuthPath(a)), ".auth.refresh.lock");
     writeFileSync(lock, `${DEAD_PID}:abandoned`);
-    const calls = { n: 0 };
-    const fetchImpl = mockFetch(NEW_SESSION, 200, calls);
-    const [t1, t2] = await Promise.all([
-      forceRefreshAgentToken(a, { now: T0, fetchImpl, sleepImpl: noSleep }),
-      forceRefreshAgentToken(a, { now: T0, fetchImpl, sleepImpl: noSleep }),
-    ]);
-    expect(calls.n).toBe(1); // exactly one rotate across both recoverers
-    expect([t1, t2].sort()).toEqual(["acc-new", "acc-new"]); // both end up with the winner's session
-    expect(existsSync(lock)).toBe(false); // released after
+
+    const tsxBin = fileURLToPath(new URL("../node_modules/.bin/tsx", import.meta.url));
+    const worker = fileURLToPath(new URL("./refresh_race_worker.mts", import.meta.url));
+    const goFile = join(dir, "go");
+    const spawnWorker = (i: number) => {
+      const ready = join(dir, `ready-${i}`);
+      const p = spawn(tsxBin, [worker, dir, "/t", "agent-1", ready, goFile, String(T0)], { stdio: ["ignore", "pipe", "pipe"] });
+      let out = "";
+      p.stdout.on("data", (d) => { out += String(d); });
+      const done = new Promise<string>((res) => p.on("close", () => res(out)));
+      return { ready, done };
+    };
+    const w1 = spawnWorker(1);
+    const w2 = spawnWorker(2);
+
+    const started = Date.now();
+    while (!(existsSync(w1.ready) && existsSync(w2.ready))) {
+      if (Date.now() - started > 20_000) throw new Error("race workers never became ready");
+      await new Promise((r) => setTimeout(r, 20));
+    }
+    writeFileSync(goFile, "go"); // release both together
+    const [o1, o2] = await Promise.all([w1.done, w2.done]);
+    await new Promise<void>((r) => server.close(() => r()));
+
+    expect(hits).toBe(1); // exactly one refresh across the two real processes
+    expect([o1, o2]).toEqual(["acc-new", "acc-new"]); // both end up with the winner's rotated token
     expect(existsSync(`${lock}.reap`)).toBe(false); // fence released
-  });
+  }, 30_000);
 });
 
 // Round 2: secret-bearing token endpoints must refuse redirects and bound the body.
