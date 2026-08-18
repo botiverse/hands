@@ -1,6 +1,6 @@
 {
   "name": "@botiverse/hands-cli",
-  "version": "0.5.16",
+  "version": "0.5.17",
   "description": "Hands CLI \u2014 manage apps, builds, releases from the terminal.",
   "author": {
     "name": "jiacheng",
