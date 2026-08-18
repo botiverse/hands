@@ -23,7 +23,7 @@
  * echoes response bodies in errors.
  */
 import {
-  openSync, closeSync, writeSync, readFileSync, existsSync, statSync, unlinkSync,
+  openSync, closeSync, writeSync, readFileSync, existsSync, unlinkSync,
 } from "node:fs";
 import { dirname, join } from "node:path";
 import { randomBytes } from "node:crypto";
@@ -31,13 +31,16 @@ import {
   agentAuthPath, HANDS_SERVICE, type AgentEnv,
 } from "./agent_env.js";
 import {
-  parseAgentSession, writeAgentSession, type AgentSession, type StoredAgentAuth,
+  parseAgentSession, writeAgentSession, readBoundedText,
+  type AgentSession, type StoredAgentAuth,
 } from "./agent_auth.js";
 
 // Refresh when the access token expires within this window (or is already expired).
 export const REFRESH_SKEW_MS = 60_000;
-const LOCK_STALE_MS = 30_000; // lease: a lock older than this cannot belong to a live holder
-const REFRESH_DEADLINE_MS = 20_000; // refresh fetch hard-aborts STRICTLY before the lease
+// The whole refresh op (fetch + bounded body read + parse + persist) is aborted at this
+// deadline, so a live holder cannot hold the lock indefinitely. Breaking a lock is NOT
+// time-based, though: a lock is broken only when its owner process is provably dead.
+const REFRESH_DEADLINE_MS = 20_000;
 const LOCK_WAIT_MS = 25_000; // how long a loser waits for the winner's strictly-newer session
 const LOCK_POLL_MS = 100;
 
@@ -86,31 +89,33 @@ async function rotate(
 ): Promise<AgentSession> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), REFRESH_DEADLINE_MS);
-  let res: Response;
   try {
-    res = await fetchImpl(new URL("/api/auth/agent/refresh", store.api_base).toString(), {
+    const res = await fetchImpl(new URL("/api/auth/agent/refresh", store.api_base).toString(), {
       method: "POST",
       headers: { "content-type": "application/json", accept: "application/json" },
       body: JSON.stringify({ schema: "raft-cli-agent-refresh.v1", refresh_token: store.refresh_token }),
       signal: controller.signal,
+      // Never follow a redirect: a 307/308 would forward the refresh_token body to the target.
+      redirect: "manual",
     });
+    if (!res.ok) {
+      // Stable reason only; never echo the body. `manual` leaves a 3xx as a non-ok status.
+      throw new Error(`agent-login: token refresh failed (HTTP ${res.status})`);
+    }
+    const text = await readBoundedText(res, controller);
+    let body: unknown;
+    try {
+      body = JSON.parse(text);
+    } catch {
+      throw new Error("agent-login: refresh response was not JSON");
+    }
+    const session = parseAgentSession(body, now);
+    writeAgentSession(a, service, session, store.api_base, () => new Date(now).toISOString());
+    return session;
   } finally {
+    // Deadline stays armed across fetch + bounded read + parse + persist.
     clearTimeout(timer);
   }
-  const text = await res.text();
-  if (!res.ok) {
-    // Stable reason only; never echo the response body.
-    throw new Error(`agent-login: token refresh failed (HTTP ${res.status})`);
-  }
-  let body: unknown;
-  try {
-    body = JSON.parse(text);
-  } catch {
-    throw new Error("agent-login: refresh response was not JSON");
-  }
-  const session = parseAgentSession(body, now);
-  writeAgentSession(a, service, session, store.api_base, () => new Date(now).toISOString());
-  return session;
 }
 
 export interface RefreshOptions {
@@ -170,19 +175,10 @@ async function singleFlightRefresh(
       fd = openSync(lock, "wx"); // O_CREAT | O_EXCL | O_WRONLY
     } catch (e) {
       if ((e as NodeJS.ErrnoException)?.code !== "EEXIST") throw e;
-      // A live holder finishes or aborts within REFRESH_DEADLINE_MS (strictly < the
-      // lease), so a lock older than the lease cannot belong to a live holder.
-      let broke = false;
-      try {
-        if (Date.now() - statSync(lock).mtimeMs > LOCK_STALE_MS) {
-          unlinkSync(lock);
-          broke = true;
-        }
-      } catch {
-        broke = true; // lock vanished under us; retry acquire
-      }
-      if (broke) continue;
-      // Another live process holds it: wait for its strictly-newer session (loser path).
+      // Break the lock ONLY if its owner process is provably dead (never on elapsed time
+      // alone: a suspended / stalled live holder keeps its pid). Uncertain → fail closed.
+      if (breakIfDeadOwner(lock)) continue;
+      // A live process holds it: wait for its strictly-newer session (loser path).
       return waitForNewerSession(a, service, baseline, now, force, sleepImpl);
     }
     // Winner: stamp ownership so release can prove the lock is still ours, then refresh.
@@ -210,6 +206,57 @@ export function releaseOwnLock(lock: string, ownerId: string): void {
     if (readFileSync(lock, "utf8") === ownerId) unlinkSync(lock);
   } catch {
     // already gone, unreadable, or replaced by another owner — leave it be.
+  }
+}
+
+/**
+ * Break the lock ONLY if its owner process is provably dead, with a stable-owner compare
+ * to avoid a TOCTOU delete of a replacement owner. A LIVE owner — including one that is
+ * suspended / stalled (its pid still exists) — is NEVER broken. An unparseable owner or
+ * any uncertainty fails closed (do not break; the caller waits as a loser). Returns true
+ * iff the lock was broken (or had vanished) and the caller should retry acquiring it.
+ * `readOwner` is injectable for tests.
+ */
+export function breakIfDeadOwner(
+  lock: string,
+  readOwner: () => string = () => readFileSync(lock, "utf8"),
+): boolean {
+  let owner: string;
+  try {
+    owner = readOwner();
+  } catch {
+    return true; // vanished between EEXIST and read → retry acquire
+  }
+  const pid = ownerPid(owner);
+  if (pid === null || ownerAlive(pid)) return false; // uncertain or live → never steal
+  // Dead owner: confirm it has not been replaced under us before unlinking (TOCTOU guard).
+  let current: string;
+  try {
+    current = readOwner();
+  } catch {
+    return true; // vanished → retry acquire
+  }
+  if (current !== owner) return false; // replaced by a new owner → let it run
+  try {
+    unlinkSync(lock);
+  } catch { /* already gone/replaced — fine */ }
+  return true;
+}
+
+function ownerPid(owner: string): number | null {
+  const m = /^(\d+):/.exec(owner);
+  if (!m) return null;
+  const pid = Number(m[1]);
+  return Number.isInteger(pid) && pid > 0 ? pid : null;
+}
+
+function ownerAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0); // signal 0: liveness probe, delivers nothing
+    return true;
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException)?.code === "ESRCH") return false; // no such process → dead
+    return true; // EPERM (exists) or anything unexpected → fail closed = treat as alive
   }
 }
 

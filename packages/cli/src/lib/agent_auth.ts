@@ -190,6 +190,49 @@ export function writeAgentSession(
   return path;
 }
 
+// Token responses are small JSON; cap the read so a hostile/broken endpoint cannot
+// stream an unbounded body. Shared by the exchange and refresh token requests.
+export const MAX_TOKEN_RESPONSE_BYTES = 64 * 1024;
+
+/**
+ * Read a response body with a hard byte cap. If an AbortController is supplied it is
+ * aborted when the cap is exceeded (so a still-open connection is torn down, and — in
+ * `rotate` — the same controller's deadline keeps covering this read). Falls back to
+ * `.text()` for response doubles that expose no stream (still cap-checked).
+ */
+export async function readBoundedText(res: Response, controller?: AbortController): Promise<string> {
+  const declared = Number(res.headers?.get?.("content-length"));
+  if (Number.isFinite(declared) && declared > MAX_TOKEN_RESPONSE_BYTES) {
+    controller?.abort();
+    throw new Error("agent-login: token response exceeds the size limit");
+  }
+  const reader = (res.body as ReadableStream<Uint8Array> | null | undefined)?.getReader?.();
+  if (!reader) {
+    const t = await res.text();
+    if (t.length > MAX_TOKEN_RESPONSE_BYTES) throw new Error("agent-login: token response exceeds the size limit");
+    return t;
+  }
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    if (value) {
+      total += value.byteLength;
+      if (total > MAX_TOKEN_RESPONSE_BYTES) {
+        controller?.abort();
+        try { await reader.cancel(); } catch { /* ignore */ }
+        throw new Error("agent-login: token response exceeds the size limit");
+      }
+      chunks.push(value);
+    }
+  }
+  const out = new Uint8Array(total);
+  let off = 0;
+  for (const c of chunks) { out.set(c, off); off += c.byteLength; }
+  return new TextDecoder().decode(out);
+}
+
 export interface AgentLoginOptions {
   service?: string; // default HANDS_SERVICE (compiled-fixed exact client key)
   now?: number; // injectable clock (ms) for tests
@@ -245,12 +288,15 @@ export async function runAgentLogin(a: AgentEnv, opts: AgentLoginOptions = {}): 
     method: "POST",
     headers: { "content-type": "application/json", accept: "application/json" },
     body: JSON.stringify({ schema: "raft-cli-agent-login-exchange.v1", grant, code_verifier: verifier }),
+    // Never follow a redirect: a 307/308 would forward the grant + code_verifier body
+    // to the redirect target. `manual` leaves a 3xx as a non-ok status we reject below.
+    redirect: "manual",
   });
-  const exchangeText = await exchangeRes.text();
   if (!exchangeRes.ok) {
     // Stable reason only; never echo the response body (may carry token material).
     throw new Error(`agent-login: grant exchange failed (HTTP ${exchangeRes.status})`);
   }
+  const exchangeText = await readBoundedText(exchangeRes);
   let exchangeBody: unknown;
   try {
     exchangeBody = JSON.parse(exchangeText);

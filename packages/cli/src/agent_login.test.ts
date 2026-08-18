@@ -349,3 +349,55 @@ describe("B quiver→hands config migration (human path)", () => {
     expect(getConfig().authToken).toBe("legacy"); // old credentials still usable
   });
 });
+
+// Round 2: the exchange is secret-bearing (grant + code_verifier) — refuse redirects, bound body.
+describe("exchange endpoint hardening (real server)", () => {
+  let dir: string;
+  let primary: Server;
+  let secondary: Server;
+  let secondHits: number;
+  let mode: "redirect" | "huge";
+
+  beforeEach(async () => {
+    dir = mkdtempSync(join(tmpdir(), "xchg-"));
+    secondHits = 0;
+    mode = "redirect";
+    secondary = createServer((_req, res) => {
+      secondHits += 1;
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify(SESSION));
+    });
+    await new Promise<void>((r) => secondary.listen(0, r));
+    const secondBase = `http://127.0.0.1:${(secondary.address() as any).port}`;
+    primary = createServer((req, res) => {
+      if (req.url === "/api/auth/agent/exchange") {
+        if (mode === "redirect") { res.writeHead(307, { location: `${secondBase}/api/auth/agent/exchange` }); res.end(); return; }
+        res.writeHead(200, { "content-type": "application/json" }); res.end("x".repeat(70 * 1024)); return;
+      }
+      res.writeHead(404); res.end("{}");
+    });
+    await new Promise<void>((r) => primary.listen(0, r));
+    process.env.HANDS_API = `http://127.0.0.1:${(primary.address() as any).port}`;
+  });
+  afterEach(async () => {
+    rmSync(dir, { recursive: true, force: true });
+    delete process.env.HANDS_API;
+    await new Promise<void>((r) => primary.close(() => r()));
+    await new Promise<void>((r) => secondary.close(() => r()));
+  });
+
+  it("refuses to follow a 307 (never forwards grant + code_verifier to the redirect target)", async () => {
+    mode = "redirect";
+    const a = agentEnvAt(dir, "/t");
+    await expect(runAgentLogin(a, { now: T0, invoke: () => ({ status: 0, stdout: invokeEnvelope(), stderr: "" }) }))
+      .rejects.toThrow(/HTTP 307/);
+    expect(secondHits).toBe(0);
+  });
+
+  it("rejects an oversized exchange response body", async () => {
+    mode = "huge";
+    const a = agentEnvAt(dir, "/t");
+    await expect(runAgentLogin(a, { now: T0, invoke: () => ({ status: 0, stdout: invokeEnvelope(), stderr: "" }) }))
+      .rejects.toThrow(/size limit/);
+  });
+});
