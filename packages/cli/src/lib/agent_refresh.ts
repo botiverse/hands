@@ -7,20 +7,25 @@
  *     and REACTIVELY once after a 401 (driven by api.ts);
  *   - serializes refresh across concurrent `hands` processes sharing one $SLOCK_HOME
  *     via an O_EXCL lock. A concurrent loser re-reads the store and returns ONLY the
- *     strictly-newer session the winner persisted (detected by a changed refresh
- *     token vs the token it started with); it NEVER rotates in parallel and never
- *     hands back the same token it came in with (a double-rotate would trip the
- *     server's refresh-reuse detection and chain-revoke the family — locking the
- *     agent out; re-handing the just-401'd token would simply 401 again).
+ *     strictly-newer session the winner persisted (a changed refresh token vs the one
+ *     it started with); it NEVER rotates in parallel and never re-hands the token it
+ *     came in with (a double-rotate trips the server's refresh-reuse detection and
+ *     chain-revokes the family; re-handing a just-401'd token would 401 again).
  *
- * Lock safety without a heartbeat: the refresh fetch is hard-aborted at a deadline
- * strictly smaller than the stale-lock lease, so a live holder always releases before
- * its lock can be considered stale. Breaking a lock older than the lease is therefore
- * provably safe, and release only ever deletes a lock that still carries our own owner
- * id (never a foreign holder's).
+ * Lock safety:
+ *   - the refresh op (fetch + bounded body read + parse + persist) is hard-aborted at a
+ *     deadline, so a live holder cannot hold the lock forever;
+ *   - a lock is broken ONLY when its owner process is provably DEAD (`process.kill(pid,0)`
+ *     → ESRCH) — never on elapsed time, so a suspended / stalled but live holder is never
+ *     stolen;
+ *   - dead-lock recovery is serialized by an exclusive reaper fence and the main lock is
+ *     re-acquired WHILE the fence is held, so two concurrent recoverers can never both
+ *     reap-and-rebuild (→ never double-rotate);
+ *   - any uncertainty (unparseable owner, non-ENOENT read error, contended/live fence)
+ *     fails closed: the caller becomes a loser rather than risk an unsafe break.
  *
- * It does its own fetch (not the api client) to avoid an import cycle, and never
- * echoes response bodies in errors.
+ * It does its own fetch (not the api client) to avoid an import cycle, and never echoes
+ * response bodies in errors.
  */
 import {
   openSync, closeSync, writeSync, readFileSync, existsSync, unlinkSync,
@@ -37,14 +42,21 @@ import {
 
 // Refresh when the access token expires within this window (or is already expired).
 export const REFRESH_SKEW_MS = 60_000;
-// The whole refresh op (fetch + bounded body read + parse + persist) is aborted at this
-// deadline, so a live holder cannot hold the lock indefinitely. Breaking a lock is NOT
-// time-based, though: a lock is broken only when its owner process is provably dead.
+// The whole refresh op (fetch + bounded read + parse + persist) is aborted at this
+// deadline. Breaking a lock is NOT time-based, though — only a provably-dead owner is.
 const REFRESH_DEADLINE_MS = 20_000;
 const LOCK_WAIT_MS = 25_000; // how long a loser waits for the winner's strictly-newer session
 const LOCK_POLL_MS = 100;
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+
+function newOwnerId(): string {
+  return `${process.pid}:${randomBytes(12).toString("hex")}`;
+}
+
+function safeRead(path: string): string {
+  try { return readFileSync(path, "utf8"); } catch { return ""; }
+}
 
 function readStore(a: AgentEnv, service: string): StoredAgentAuth | null {
   let path: string;
@@ -77,8 +89,9 @@ function lockPath(a: AgentEnv, service: string): string {
 
 /**
  * POST the refresh token, validate the session, atomically persist it. Own fetch,
- * hard-aborted at REFRESH_DEADLINE_MS so the holder always releases before its lock
- * can be seen as stale. Never echoes the response body.
+ * hard-aborted at `deadlineMs` across the WHOLE operation (fetch + bounded body read +
+ * parse + persist), never following a redirect (a 307/308 would forward the refresh
+ * token), and never echoing the body.
  */
 async function rotate(
   a: AgentEnv,
@@ -86,20 +99,20 @@ async function rotate(
   store: StoredAgentAuth,
   now: number,
   fetchImpl: typeof fetch,
+  deadlineMs: number,
 ): Promise<AgentSession> {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), REFRESH_DEADLINE_MS);
+  const timer = setTimeout(() => controller.abort(), deadlineMs);
   try {
     const res = await fetchImpl(new URL("/api/auth/agent/refresh", store.api_base).toString(), {
       method: "POST",
       headers: { "content-type": "application/json", accept: "application/json" },
       body: JSON.stringify({ schema: "raft-cli-agent-refresh.v1", refresh_token: store.refresh_token }),
       signal: controller.signal,
-      // Never follow a redirect: a 307/308 would forward the refresh_token body to the target.
       redirect: "manual",
     });
     if (!res.ok) {
-      // Stable reason only; never echo the body. `manual` leaves a 3xx as a non-ok status.
+      // `manual` leaves a 3xx as a non-ok status. Stable reason only; never echo the body.
       throw new Error(`agent-login: token refresh failed (HTTP ${res.status})`);
     }
     const text = await readBoundedText(res, controller);
@@ -124,6 +137,8 @@ export interface RefreshOptions {
   fetchImpl?: typeof fetch;
   /** Injectable sleep for tests (defaults to real setTimeout). */
   sleepImpl?: (ms: number) => Promise<void>;
+  /** Injectable refresh deadline for tests (defaults to REFRESH_DEADLINE_MS). */
+  deadlineMs?: number;
 }
 
 /**
@@ -135,12 +150,13 @@ export async function getFreshAgentAccessToken(a: AgentEnv, opts: RefreshOptions
   const now = opts.now ?? Date.now();
   const fetchImpl = opts.fetchImpl ?? fetch;
   const sleepImpl = opts.sleepImpl ?? sleep;
+  const deadlineMs = opts.deadlineMs ?? REFRESH_DEADLINE_MS;
 
   const store = readStore(a, service);
   if (!store) return null;
   if (!accessExpiresWithinSkew(store, now)) return store.access_token; // still fresh
 
-  return singleFlightRefresh(a, service, store, now, fetchImpl, sleepImpl, /*force*/ false);
+  return singleFlightRefresh(a, service, store, now, fetchImpl, sleepImpl, /*force*/ false, deadlineMs);
 }
 
 /**
@@ -152,9 +168,10 @@ export async function forceRefreshAgentToken(a: AgentEnv, opts: RefreshOptions =
   const now = opts.now ?? Date.now();
   const fetchImpl = opts.fetchImpl ?? fetch;
   const sleepImpl = opts.sleepImpl ?? sleep;
+  const deadlineMs = opts.deadlineMs ?? REFRESH_DEADLINE_MS;
   const store = readStore(a, service);
   if (!store) return null;
-  return singleFlightRefresh(a, service, store, now, fetchImpl, sleepImpl, /*force*/ true);
+  return singleFlightRefresh(a, service, store, now, fetchImpl, sleepImpl, /*force*/ true, deadlineMs);
 }
 
 async function singleFlightRefresh(
@@ -165,38 +182,34 @@ async function singleFlightRefresh(
   fetchImpl: typeof fetch,
   sleepImpl: (ms: number) => Promise<void>,
   force: boolean,
+  deadlineMs: number,
 ): Promise<string | null> {
   const lock = lockPath(a, service);
-  const ownerId = `${process.pid}:${randomBytes(12).toString("hex")}`;
+  const ownerId = newOwnerId();
 
-  for (;;) {
-    let fd: number;
-    try {
-      fd = openSync(lock, "wx"); // O_CREAT | O_EXCL | O_WRONLY
-    } catch (e) {
-      if ((e as NodeJS.ErrnoException)?.code !== "EEXIST") throw e;
-      // Break the lock ONLY if its owner process is provably dead (never on elapsed time
-      // alone: a suspended / stalled live holder keeps its pid). Uncertain → fail closed.
-      if (breakIfDeadOwner(lock)) continue;
-      // A live process holds it: wait for its strictly-newer session (loser path).
-      return waitForNewerSession(a, service, baseline, now, force, sleepImpl);
-    }
-    // Winner: stamp ownership so release can prove the lock is still ours, then refresh.
-    try {
-      writeSync(fd, ownerId);
-    } finally {
-      try { closeSync(fd); } catch { /* ignore */ }
-    }
-    try {
-      const fresh = readStore(a, service);
-      if (!fresh) return null;
-      // A prior holder may have refreshed while we blocked; only rotate if still needed.
-      if (!force && !accessExpiresWithinSkew(fresh, now)) return fresh.access_token;
-      const session = await rotate(a, service, fresh, now, fetchImpl);
-      return session.access_token;
-    } finally {
-      releaseOwnLock(lock, ownerId);
-    }
+  let acquired: boolean;
+  try {
+    const fd = openSync(lock, "wx"); // fast path: no lock present
+    try { writeSync(fd, ownerId); } finally { try { closeSync(fd); } catch { /* ignore */ } }
+    acquired = true;
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException)?.code !== "EEXIST") throw e;
+    // A lock exists: recover it only if its owner is provably dead, under an exclusive
+    // fence, re-acquiring the main lock while the fence is held. Anything else → loser.
+    acquired = acquireIfDeadOwner(lock, ownerId);
+    if (!acquired) return waitForNewerSession(a, service, baseline, now, force, sleepImpl);
+  }
+
+  // Winner: we hold `lock` carrying ownerId.
+  try {
+    const fresh = readStore(a, service);
+    if (!fresh) return null;
+    // A prior holder may have refreshed while we blocked; only rotate if still needed.
+    if (!force && !accessExpiresWithinSkew(fresh, now)) return fresh.access_token;
+    const session = await rotate(a, service, fresh, now, fetchImpl, deadlineMs);
+    return session.access_token;
+  } finally {
+    releaseOwnLock(lock, ownerId);
   }
 }
 
@@ -210,37 +223,62 @@ export function releaseOwnLock(lock: string, ownerId: string): void {
 }
 
 /**
- * Break the lock ONLY if its owner process is provably dead, with a stable-owner compare
- * to avoid a TOCTOU delete of a replacement owner. A LIVE owner — including one that is
- * suspended / stalled (its pid still exists) — is NEVER broken. An unparseable owner or
- * any uncertainty fails closed (do not break; the caller waits as a loser). Returns true
- * iff the lock was broken (or had vanished) and the caller should retry acquiring it.
- * `readOwner` is injectable for tests.
+ * Recover a lock whose owner process is provably dead and acquire it, serialized by an
+ * exclusive reaper fence. Judge-dead → unlink → re-acquire all happen WHILE the fence is
+ * held, so at most one recoverer reaps-and-rebuilds — two concurrent recoverers can never
+ * both re-acquire (→ never double-rotate). A LIVE owner (incl. suspended/stalled — pid
+ * still exists) is never touched. Any uncertainty fails closed. Returns true iff WE now
+ * hold the main lock carrying `ownerId`; false → the caller is a loser.
  */
-export function breakIfDeadOwner(
-  lock: string,
-  readOwner: () => string = () => readFileSync(lock, "utf8"),
-): boolean {
-  let owner: string;
+export function acquireIfDeadOwner(lock: string, ownerId: string): boolean {
+  const ffd = acquireReaperFence(`${lock}.reap`);
+  if (ffd === null) return false; // live/contended/uncertain fence → loser
   try {
-    owner = readOwner();
-  } catch {
-    return true; // vanished between EEXIST and read → retry acquire
+    let owner = "";
+    try {
+      owner = readFileSync(lock, "utf8");
+    } catch (e) {
+      // Only "already gone" is safe to proceed on; any other error is uncertain → loser.
+      if ((e as NodeJS.ErrnoException)?.code !== "ENOENT") return false;
+    }
+    if (owner) {
+      const pid = ownerPid(owner);
+      if (pid === null || ownerAlive(pid)) return false; // live / uncertain owner → loser
+      try { unlinkSync(lock); } catch { /* vanished / already handled */ }
+    }
+    // Re-acquire the main lock while STILL holding the fence, so no other recoverer can
+    // rebuild it underneath us.
+    let fd: number;
+    try {
+      fd = openSync(lock, "wx");
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException)?.code === "EEXIST") return false; // lost the race → loser
+      throw e;
+    }
+    try { writeSync(fd, ownerId); } finally { try { closeSync(fd); } catch { /* ignore */ } }
+    return true;
+  } finally {
+    try { closeSync(ffd); } catch { /* ignore */ }
+    try { unlinkSync(`${lock}.reap`); } catch { /* ignore */ }
   }
-  const pid = ownerPid(owner);
-  if (pid === null || ownerAlive(pid)) return false; // uncertain or live → never steal
-  // Dead owner: confirm it has not been replaced under us before unlinking (TOCTOU guard).
-  let current: string;
-  try {
-    current = readOwner();
-  } catch {
-    return true; // vanished → retry acquire
+}
+
+/** Acquire the exclusive reaper fence, recovering only a fence whose reaper PID is dead. */
+function acquireReaperFence(fence: string): number | null {
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      const fd = openSync(fence, "wx");
+      // Stamp with our pid so that, if WE die, another recoverer can prove-dead and reap us.
+      try { writeSync(fd, newOwnerId()); } catch { try { closeSync(fd); } catch { /* */ } return null; }
+      return fd;
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException)?.code !== "EEXIST") return null; // cannot create → fail closed
+      const fpid = ownerPid(safeRead(fence));
+      if (fpid === null || ownerAlive(fpid)) return null; // live reaper / uncertain → loser
+      try { unlinkSync(fence); } catch { /* gone / replaced → one retry */ }
+    }
   }
-  if (current !== owner) return false; // replaced by a new owner → let it run
-  try {
-    unlinkSync(lock);
-  } catch { /* already gone/replaced — fine */ }
-  return true;
+  return null;
 }
 
 function ownerPid(owner: string): number | null {
@@ -263,10 +301,9 @@ function ownerAlive(pid: number): boolean {
 /**
  * Loser path: poll the store for the winner's strictly-newer session, identified by a
  * refresh token that differs from the one we started with (`baseline`). Never rotates
- * here (that would double-use the refresh token). On timeout it FAILS rather than hand
- * back the token we came in with; a proactive caller may still use a genuinely-unexpired
- * current token, but a forced (post-401) caller always fails — re-handing a 401'd token
- * would just 401 again.
+ * here. On timeout it FAILS rather than hand back the token we came in with; a proactive
+ * caller may still use a genuinely-unexpired current token, but a forced (post-401)
+ * caller always fails — re-handing a 401'd token would just 401 again.
  */
 async function waitForNewerSession(
   a: AgentEnv,
@@ -276,8 +313,8 @@ async function waitForNewerSession(
   force: boolean,
   sleepImpl: (ms: number) => Promise<void>,
 ): Promise<string | null> {
-  // Bound the wait by poll count (not wall-clock) so it is deterministic under an
-  // injected sleep in tests, while keeping the same real-time budget in production.
+  // Bound by poll count (not wall-clock) so it is deterministic under an injected sleep in
+  // tests, while keeping the same real-time budget in production.
   const maxPolls = Math.ceil(LOCK_WAIT_MS / LOCK_POLL_MS);
   for (let i = 0; i < maxPolls; i += 1) {
     await sleepImpl(LOCK_POLL_MS);

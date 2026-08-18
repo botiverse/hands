@@ -4,13 +4,13 @@
  * testable, but winner/loser/stale-break/no-overwrite paths are).
  */
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { mkdtempSync, rmSync, writeFileSync, existsSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync, existsSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { agentAuthPath, HANDS_SERVICE, readAgentAccessToken, type AgentEnv } from "./lib/agent_env.js";
 import { writeAgentSession, type AgentSession } from "./lib/agent_auth.js";
 import { createServer, type Server } from "node:http";
-import { getFreshAgentAccessToken, forceRefreshAgentToken, releaseOwnLock, breakIfDeadOwner } from "./lib/agent_refresh.js";
+import { getFreshAgentAccessToken, forceRefreshAgentToken, releaseOwnLock, acquireIfDeadOwner } from "./lib/agent_refresh.js";
 
 const DEAD_PID = 2_147_483_646; // beyond any real pid_max ⇒ process.kill(pid,0) → ESRCH
 
@@ -159,34 +159,34 @@ describe("single-flight", () => {
     ).rejects.toThrow(/timed out/);
   });
 
-  // Finding #3 (round 2): a live owner (incl. suspended/stalled — pid still exists) is
-  // NEVER broken; only a provably-dead owner is; a replacement owner is not TOCTOU-deleted.
-  it("breakIfDeadOwner: live owner (real pid) is never broken", () => {
+  // Finding #3: a live owner (incl. suspended/stalled — pid still exists) is NEVER stolen;
+  // only a provably-dead owner is reaped (and then the main lock is re-acquired under fence).
+  it("acquireIfDeadOwner: live owner (real pid) is never stolen", () => {
     const lock = join(dir, ".auth.refresh.lock");
     writeFileSync(lock, `${process.pid}:live`);
-    expect(breakIfDeadOwner(lock)).toBe(false);
-    expect(existsSync(lock)).toBe(true);
+    expect(acquireIfDeadOwner(lock, "me:1")).toBe(false); // loser
+    expect(readFileSync(lock, "utf8")).toBe(`${process.pid}:live`); // untouched
+    expect(existsSync(`${lock}.reap`)).toBe(false); // fence released
   });
-  it("breakIfDeadOwner: unparseable owner fails closed (not broken)", () => {
+  it("acquireIfDeadOwner: unparseable owner fails closed (loser)", () => {
     const lock = join(dir, ".auth.refresh.lock");
     writeFileSync(lock, "no-pid-here");
-    expect(breakIfDeadOwner(lock)).toBe(false);
-    expect(existsSync(lock)).toBe(true);
+    expect(acquireIfDeadOwner(lock, "me:1")).toBe(false);
+    expect(readFileSync(lock, "utf8")).toBe("no-pid-here");
   });
-  it("breakIfDeadOwner: dead owner is broken", () => {
+  it("acquireIfDeadOwner: dead owner is reaped and re-acquired under the fence", () => {
     const lock = join(dir, ".auth.refresh.lock");
     writeFileSync(lock, `${DEAD_PID}:abandoned`);
-    expect(breakIfDeadOwner(lock)).toBe(true);
-    expect(existsSync(lock)).toBe(false);
+    expect(acquireIfDeadOwner(lock, "me:winner")).toBe(true);
+    expect(readFileSync(lock, "utf8")).toBe("me:winner"); // we now hold it
+    expect(existsSync(`${lock}.reap`)).toBe(false); // fence released
   });
-  it("breakIfDeadOwner: dead owner replaced between reads is NOT deleted (TOCTOU guard)", () => {
+  it("acquireIfDeadOwner: a live reaper fence blocks a second recoverer (fail closed)", () => {
     const lock = join(dir, ".auth.refresh.lock");
-    writeFileSync(lock, `${process.pid}:replacement`); // the file now holds a LIVE new owner
-    // Injected reader: first read = the dead owner we saw, second read = the replacement.
-    let n = 0;
-    const readOwner = () => { n += 1; return n === 1 ? `${DEAD_PID}:gone` : `${process.pid}:replacement`; };
-    expect(breakIfDeadOwner(lock, readOwner)).toBe(false); // replaced under us ⇒ leave it
-    expect(existsSync(lock)).toBe(true);
+    writeFileSync(lock, `${DEAD_PID}:abandoned`);
+    writeFileSync(`${lock}.reap`, `${process.pid}:live-reaper`); // a live reaper holds the fence
+    expect(acquireIfDeadOwner(lock, "me:1")).toBe(false); // second recoverer → loser
+    expect(readFileSync(lock, "utf8")).toBe(`${DEAD_PID}:abandoned`); // dead lock left for the live reaper
   });
 
   // Finding #3: release must never delete a lock that a foreign holder now owns.
@@ -198,6 +198,24 @@ describe("single-flight", () => {
     releaseOwnLock(lock, "owner-A"); // our id ⇒ delete it
     expect(existsSync(lock)).toBe(false);
   });
+
+  // Finding #3 (round 3): two concurrent recoverers of the SAME dead lock must produce
+  // exactly ONE refresh — the reaper fence + O_EXCL re-acquire serialize the recovery.
+  it("two concurrent recoverers of a dead lock produce exactly one refresh", async () => {
+    store(a, session({ access_expires_at: new Date(T0 - 1000).toISOString() }));
+    const lock = join(dirname(agentAuthPath(a)), ".auth.refresh.lock");
+    writeFileSync(lock, `${DEAD_PID}:abandoned`);
+    const calls = { n: 0 };
+    const fetchImpl = mockFetch(NEW_SESSION, 200, calls);
+    const [t1, t2] = await Promise.all([
+      forceRefreshAgentToken(a, { now: T0, fetchImpl, sleepImpl: noSleep }),
+      forceRefreshAgentToken(a, { now: T0, fetchImpl, sleepImpl: noSleep }),
+    ]);
+    expect(calls.n).toBe(1); // exactly one rotate across both recoverers
+    expect([t1, t2].sort()).toEqual(["acc-new", "acc-new"]); // both end up with the winner's session
+    expect(existsSync(lock)).toBe(false); // released after
+    expect(existsSync(`${lock}.reap`)).toBe(false); // fence released
+  });
 });
 
 // Round 2: secret-bearing token endpoints must refuse redirects and bound the body.
@@ -208,7 +226,7 @@ describe("refresh token endpoint hardening (real server)", () => {
   let secondary: Server;
   let base: string;
   let secondHits: number;
-  let mode: "redirect" | "huge";
+  let mode: "redirect" | "huge" | "hang";
 
   beforeEach(async () => {
     dir = mkdtempSync(join(tmpdir(), "sf-net-"));
@@ -225,6 +243,7 @@ describe("refresh token endpoint hardening (real server)", () => {
     primary = createServer((req, res) => {
       if (req.url === "/api/auth/agent/refresh") {
         if (mode === "redirect") { res.writeHead(307, { location: `${secondBase}/api/auth/agent/refresh` }); res.end(); return; }
+        if (mode === "hang") { res.writeHead(200, { "content-type": "application/json" }); res.write("{"); return; } // headers flushed, body never ends
         res.writeHead(200, { "content-type": "application/json" }); res.end("x".repeat(70 * 1024)); return; // "huge"
       }
       res.writeHead(404); res.end("{}");
@@ -234,6 +253,8 @@ describe("refresh token endpoint hardening (real server)", () => {
   });
   afterEach(async () => {
     rmSync(dir, { recursive: true, force: true });
+    primary.closeAllConnections?.(); // drop any hanging (slow-body) connection
+    secondary.closeAllConnections?.();
     await new Promise<void>((r) => primary.close(() => r()));
     await new Promise<void>((r) => secondary.close(() => r()));
   });
@@ -257,5 +278,17 @@ describe("refresh token endpoint hardening (real server)", () => {
     mode = "huge";
     storeAt(base);
     await expect(forceRefreshAgentToken(a, { now: T0, sleepImpl: noSleep })).rejects.toThrow(/size limit/);
+  });
+
+  // Finding #3 (round 3): headers flush fast but the body never completes — the deadline
+  // must cover the body read, aborting it AND releasing the lock (not just headers).
+  it("aborts a fast-headers/never-ending body at the deadline and releases the lock", async () => {
+    mode = "hang";
+    storeAt(base);
+    await expect(
+      forceRefreshAgentToken(a, { now: T0, sleepImpl: noSleep, deadlineMs: 50 }),
+    ).rejects.toThrow();
+    const lock = join(dirname(agentAuthPath(a)), ".auth.refresh.lock");
+    expect(existsSync(lock)).toBe(false); // lock released after the aborted refresh
   });
 });
