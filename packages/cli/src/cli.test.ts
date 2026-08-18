@@ -30,6 +30,11 @@ describe("config round-trip", () => {
     process.env.XDG_CONFIG_HOME = dir;
     delete process.env.HANDS_API;
     delete process.env.QUIVER_API;
+    // These tests exercise the HUMAN config path; clear any inherited agent markers
+    // (the test runner may itself be a managed agent) so admission is `human`.
+    delete process.env.SLOCK_CLI_TRANSPORT_DIR;
+    delete process.env.SLOCK_HOME;
+    delete process.env.SLOCK_AGENT_ID;
   });
 
   afterEach(() => {
@@ -51,7 +56,7 @@ describe("config round-trip", () => {
   it("saveConfig persists to the XDG path", async () => {
     const { saveConfig, getConfig } = await import("../src/lib/config.js");
     saveConfig({ apiBase: "https://example.test", sessionCookie: "tok123" });
-    const path = join(dir, "quiver", "auth.json");
+    const path = join(dir, "hands", "auth.json");
     expect(existsSync(path)).toBe(true);
     const raw = JSON.parse(readFileSync(path, "utf8"));
     expect(raw.apiBase).toBe("https://example.test");
@@ -67,6 +72,10 @@ describe("apiRequest", () => {
   let lastAuthorization: string | null = null;
 
   beforeEach(async () => {
+    // Human/CI auth path: clear inherited agent markers so admission is `human`.
+    delete process.env.SLOCK_CLI_TRANSPORT_DIR;
+    delete process.env.SLOCK_HOME;
+    delete process.env.SLOCK_AGENT_ID;
     server = createServer((req, res) => {
       lastCookie = req.headers.cookie ?? null;
       lastAuthorization = req.headers.authorization ?? null;

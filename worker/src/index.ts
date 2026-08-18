@@ -19,8 +19,14 @@ import { publicDocAssetPaths } from "./lib/public_docs";
 import { authMiddleware, currentActor } from "./middleware/auth";
 import { requireHandsAdmin } from "./middleware/hands_admin";
 import {
+  handleAgentLoginAction,
+  handleAgentExchange,
+  handleAgentRefresh,
+} from "./routes/agent_login";
+import {
   handleAgentManifest,
   handleAgentHelp,
+  handleAgentMigrationHelp,
   handleAuthConfig,
   handleDashboardRedirect,
   handleAuthLogin,
@@ -568,7 +574,13 @@ app.get("/api/auth/login", handleAuthLogin);
 app.get("/login/raft/callback", handleRaftCallback);
 app.get("/api/auth/me", handleAuthMe);
 app.get("/api/agent/help", handleAgentHelp);
+app.get("/api/agent/migration-help", handleAgentMigrationHelp);
 app.post("/api/auth/logout", handleAuthLogout);
+// Agent CLI login token endpoints (RFC 057) — PUBLIC: the grant+verifier / refresh
+// token is itself the credential (OAuth-token-endpoint style), so no prior session.
+app.post("/api/auth/agent/exchange", handleAgentExchange);
+app.post("/api/auth/agent/refresh", handleAgentRefresh);
+
 app.get("/api/installer/v1/auth/login", handleInstallerLogin);
 app.get("/login/raft/installer/callback", handleInstallerRaftCallback);
 app.post("/api/installer/v1/auth/token", handleInstallerToken);
@@ -666,6 +678,10 @@ export const admin = new Hono<{
   };
 }>();
 admin.use("*", authMiddleware);
+
+// Agent CLI login (RFC 057) action — needs the authenticated agent session so it
+// binds the grant to the pre-org-switch identity. Exchange/refresh are public.
+admin.post("/api/auth/agent/login", handleAgentLoginAction);
 
 // Global Hands observability is server-admin scoped, not app-role scoped.
 admin.use("/api/admin/observability/*", requireHandsAdmin);

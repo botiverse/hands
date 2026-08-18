@@ -41,7 +41,13 @@ import {
 } from "../src/lib/origin";
 import { openApiDocument } from "../src/openapi";
 import { handleCreateApp, handleListApps, handleUpdateFeatureFlag } from "../src/routes/apps";
-import { createSignedJwt, handleAuthLogin, handleAuthMe, handleDashboardRedirect } from "../src/routes/auth";
+import {
+  createSignedJwt,
+  handleAuthLogin,
+  handleAuthMe,
+  handleDashboardRedirect,
+  handleRaftCallback,
+} from "../src/routes/auth";
 import { handleListOrgs } from "../src/routes/orgs";
 import {
   handleCompleteIosSimulatorArtifact,
@@ -571,6 +577,7 @@ function makeMockDb() {
       expires_at INTEGER NOT NULL,
       last_seen_at INTEGER NOT NULL,
       revoked_at INTEGER,
+      raft_access_token_ciphertext TEXT,
       FOREIGN KEY (account_id) REFERENCES raft_accounts(id) ON DELETE CASCADE
     );
     CREATE TABLE organizations (
@@ -865,7 +872,9 @@ function makeMockDb() {
 function makeMockEnv(): MockEnv {
   return {
     DB: makeMockDb() as any,
-    APK_BUCKET: null,
+    // Default: R2 objects exist (head resolves). Tests exercising a missing/pruned object
+    // override APK_BUCKET explicitly (e.g. the #442 share-download fallback tests).
+    APK_BUCKET: { head: async (key: string) => ({ key }) },
     ENVIRONMENT: "development",
     ADMIN_API_TOKEN: "test-token-123",
     RAFT_CLIENT_ID: "quiver-test",
@@ -1233,7 +1242,7 @@ describe("quiver route handlers — SQL smoke", () => {
   });
 
   it("dispatchSymbolication selects lanes by app platform, never by content alone", async () => {
-    env.APK_BUCKET = { put: async () => undefined, get: async () => null };
+    env.APK_BUCKET = { put: async () => undefined, get: async () => null, head: async (key: string) => ({ key }) };
     const now = Date.now();
     const mkTicket = async (id: string) => {
       await env.DB.prepare(
@@ -2269,6 +2278,43 @@ describe("quiver route handlers — SQL smoke", () => {
 });
 
 describe("auth origin handling", () => {
+  function browserProofCookie(response: Response): string {
+    const match = (response.headers.get("set-cookie") ?? "").match(
+      /(quiver_raft_login_proof_[a-f0-9]{32})=([a-f0-9]{64})/,
+    );
+    expect(match).not.toBeNull();
+    return `${match![1]}=${match![2]}`;
+  }
+
+  function mockRaftLoginFetch(principalType: "human" | "agent" = "human") {
+    return vi.fn(async (input: string | URL | Request) => {
+      const url = String(input);
+      if (url.endsWith("/api/oauth/token")) {
+        return Response.json({
+          access_token: "raft-access-token",
+          token_type: "Bearer",
+          expires_in: 600,
+          scope: "openid profile",
+        });
+      }
+      if (url.endsWith("/api/oauth/userinfo")) {
+        return Response.json({
+          sub: `${principalType}-1`,
+          type: principalType,
+          scope: "openid profile",
+          client_id: "test-client",
+          client_name: "Hands",
+          server_id: "server-1",
+          server_slug: "sandbox",
+          server_role: principalType === "human" ? "owner" : undefined,
+          preferred_username: `${principalType}-one`,
+          name: `${principalType === "human" ? "Human" : "Agent"} One`,
+        });
+      }
+      throw new Error(`Unexpected fetch: ${url}`);
+    });
+  }
+
   it("opens the configured dashboard origin without restarting OAuth", async () => {
     const env = makeMockEnv();
     const app = new Hono<{ Bindings: MockEnv }>();
@@ -2334,9 +2380,10 @@ describe("auth origin handling", () => {
     expect(location.searchParams.get("return_to")).toBe(
       "https://business.example/login/raft/callback",
     );
+    expect(location.searchParams.get("state")).toMatch(/^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/);
   });
 
-  it("shares browser login state across the dashboard and registered callback hosts", async () => {
+  it("carries signed browser login state across dashboard and callback hosts", async () => {
     const env = makeMockEnv();
     env.RAFT_CLIENT_ID = "test-client";
     const app = new Hono<{ Bindings: MockEnv }>();
@@ -2353,7 +2400,15 @@ describe("auth origin handling", () => {
     expect(location.searchParams.get("return_to")).toBe(
       "https://business.example/login/raft/callback",
     );
-    expect(res.headers.get("set-cookie")?.toLowerCase()).toContain("domain=business.example");
+    expect(location.searchParams.get("state")).toMatch(/^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/);
+    const setCookie = res.headers.get("set-cookie")?.toLowerCase() ?? "";
+    expect(browserProofCookie(res)).toMatch(
+      /^quiver_raft_login_proof_[a-f0-9]{32}=[a-f0-9]{64}$/,
+    );
+    expect(setCookie).toContain("httponly");
+    expect(setCookie).toContain("max-age=600");
+    expect(setCookie).toContain("path=/login/raft/callback");
+    expect(setCookie).toContain("domain=business.example");
   });
 
   it("keeps localhost auth callbacks and cookies host-local", async () => {
@@ -2372,7 +2427,275 @@ describe("auth origin handling", () => {
     expect(location.searchParams.get("return_to")).toBe(
       "http://localhost:8787/login/raft/callback",
     );
+    expect(location.searchParams.get("state")).toMatch(/^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/);
+    expect(browserProofCookie(res)).toMatch(
+      /^quiver_raft_login_proof_[a-f0-9]{32}=[a-f0-9]{64}$/,
+    );
     expect(res.headers.get("set-cookie")?.toLowerCase()).not.toContain("domain=");
+  });
+
+  it("completes a delayed install-and-continue browser callback with its matching proof", async () => {
+    const env = makeMockEnv();
+    env.RAFT_CLIENT_ID = "test-client";
+    const app = new Hono<{ Bindings: MockEnv }>();
+    app.get("/api/auth/login", handleAuthLogin);
+    app.get("/login/raft/callback", handleRaftCallback);
+    const originalFetch = globalThis.fetch;
+    const start = 1_700_000_000_000;
+    const nowSpy = vi.spyOn(Date, "now").mockReturnValue(start);
+
+    try {
+      const login = await app.request(
+        "https://dashboard.example/api/auth/login?return=%2Fapps%2Fapp-1%2Fsettings",
+        {},
+        env as any,
+      );
+      const setup = new URL(login.headers.get("location") ?? "");
+      const state = setup.searchParams.get("state");
+      expect(state).toBeTruthy();
+      const proofCookie = browserProofCookie(login);
+
+      nowSpy.mockReturnValue(start + 6 * 60 * 1000);
+      globalThis.fetch = mockRaftLoginFetch() as typeof fetch;
+
+      const callback = await app.request(
+        `https://business.example/login/raft/callback?code=install-code&state=${encodeURIComponent(state!)}`,
+        { headers: { cookie: proofCookie } },
+        env as any,
+      );
+
+      expect(callback.status).toBe(302);
+      const destination = new URL(callback.headers.get("location") ?? "");
+      expect(`${destination.origin}${destination.pathname}`).toBe(
+        "https://dashboard.example/apps/app-1/settings",
+      );
+      expect(destination.hash).toContain("access_token=");
+      expect(globalThis.fetch).toHaveBeenCalledTimes(2);
+      expect(callback.headers.get("set-cookie")).toContain(
+        `${proofCookie.split("=")[0]}=`,
+      );
+    } finally {
+      globalThis.fetch = originalFetch;
+      nowSpy.mockRestore();
+    }
+  });
+
+  it("keeps concurrent browser login return paths isolated in signed state", async () => {
+    const env = makeMockEnv();
+    const app = new Hono<{ Bindings: MockEnv }>();
+    app.get("/api/auth/login", handleAuthLogin);
+    app.get("/login/raft/callback", handleRaftCallback);
+    const firstLogin = await app.request(
+      "https://dashboard.example/api/auth/login?return=%2Fapps%2Ffirst",
+      {},
+      env as any,
+    );
+    const secondLogin = await app.request(
+      "https://dashboard.example/api/auth/login?return=%2Fapps%2Fsecond",
+      {},
+      env as any,
+    );
+    const firstState = new URL(firstLogin.headers.get("location") ?? "").searchParams.get("state")!;
+    const secondState = new URL(secondLogin.headers.get("location") ?? "").searchParams.get("state")!;
+    const firstProofCookie = browserProofCookie(firstLogin);
+    const secondProofCookie = browserProofCookie(secondLogin);
+    expect(firstState).not.toBe(secondState);
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = mockRaftLoginFetch() as typeof fetch;
+
+    try {
+      const secondCallback = await app.request(
+        `https://business.example/login/raft/callback?code=second-code&state=${encodeURIComponent(secondState)}`,
+        { headers: { cookie: secondProofCookie } },
+        env as any,
+      );
+      const firstCallback = await app.request(
+        `https://business.example/login/raft/callback?code=first-code&state=${encodeURIComponent(firstState)}`,
+        { headers: { cookie: firstProofCookie } },
+        env as any,
+      );
+      expect(new URL(secondCallback.headers.get("location") ?? "").pathname).toBe("/apps/second");
+      expect(new URL(firstCallback.headers.get("location") ?? "").pathname).toBe("/apps/first");
+      expect(globalThis.fetch).toHaveBeenCalledTimes(4);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("preserves stateless Raft Agent Login callbacks", async () => {
+    const env = makeMockEnv();
+    const app = new Hono<{ Bindings: MockEnv }>();
+    app.get("/login/raft/callback", handleRaftCallback);
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = mockRaftLoginFetch("agent") as typeof fetch;
+
+    try {
+      const callback = await app.request(
+        "https://business.example/login/raft/callback?code=agent-code",
+        {},
+        env as any,
+      );
+      expect(callback.status).toBe(200);
+      await expect(callback.json()).resolves.toMatchObject({
+        ok: true,
+        account: { principal_type: "agent" },
+      });
+      expect(callback.headers.get("set-cookie")).toContain("hands_session=");
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("rejects an attacker-owned browser state and code without the victim proof", async () => {
+    const env = makeMockEnv();
+    const app = new Hono<{ Bindings: MockEnv }>();
+    app.get("/api/auth/login", handleAuthLogin);
+    app.get("/login/raft/callback", handleRaftCallback);
+    const attackerLogin = await app.request(
+      "https://business.example/api/auth/login?return=%2Fapps",
+      {},
+      env as any,
+    );
+    const attackerState = new URL(attackerLogin.headers.get("location") ?? "").searchParams.get(
+      "state",
+    )!;
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = mockRaftLoginFetch() as typeof fetch;
+
+    try {
+      const victimCallback = await app.request(
+        `https://business.example/login/raft/callback?code=attacker-code&state=${encodeURIComponent(attackerState)}`,
+        {},
+        env as any,
+      );
+      expect(victimCallback.status).toBe(400);
+      expect(await victimCallback.text()).toContain("Missing or invalid browser login proof");
+      expect(globalThis.fetch).not.toHaveBeenCalled();
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("rejects a signed browser state paired with another attempt's proof", async () => {
+    const env = makeMockEnv();
+    const app = new Hono<{ Bindings: MockEnv }>();
+    app.get("/api/auth/login", handleAuthLogin);
+    app.get("/login/raft/callback", handleRaftCallback);
+    const attackerLogin = await app.request(
+      "https://business.example/api/auth/login?return=%2Fapps%2Fattacker",
+      {},
+      env as any,
+    );
+    const victimLogin = await app.request(
+      "https://business.example/api/auth/login?return=%2Fapps%2Fvictim",
+      {},
+      env as any,
+    );
+    const attackerState = new URL(attackerLogin.headers.get("location") ?? "").searchParams.get(
+      "state",
+    )!;
+    const [attackerProofName] = browserProofCookie(attackerLogin).split("=");
+    const [, victimProof] = browserProofCookie(victimLogin).split("=");
+    const mismatchedProofCookie = `${attackerProofName}=${victimProof}`;
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = mockRaftLoginFetch() as typeof fetch;
+
+    try {
+      const victimCallback = await app.request(
+        `https://business.example/login/raft/callback?code=attacker-code&state=${encodeURIComponent(attackerState)}`,
+        { headers: { cookie: mismatchedProofCookie } },
+        env as any,
+      );
+      expect(victimCallback.status).toBe(400);
+      expect(await victimCallback.text()).toContain("Missing or invalid browser login proof");
+      expect(globalThis.fetch).not.toHaveBeenCalled();
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("does not revive browser login from the legacy pending cookie", async () => {
+    const env = makeMockEnv();
+    const app = new Hono<{ Bindings: MockEnv }>();
+    app.get("/login/raft/callback", handleRaftCallback);
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = mockRaftLoginFetch() as typeof fetch;
+
+    try {
+      const callback = await app.request(
+        "https://business.example/login/raft/callback?code=human-code",
+        { headers: { cookie: "quiver_raft_login_pending=legacy" } },
+        env as any,
+      );
+      expect(callback.status).toBe(400);
+      expect(await callback.text()).toContain("Missing local login state");
+      expect(globalThis.fetch).toHaveBeenCalledTimes(2);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("rejects tampered browser state before exchanging the one-time code", async () => {
+    const env = makeMockEnv();
+    const app = new Hono<{ Bindings: MockEnv }>();
+    app.get("/api/auth/login", handleAuthLogin);
+    app.get("/login/raft/callback", handleRaftCallback);
+    const login = await app.request(
+      "https://business.example/api/auth/login?return=%2Fapps",
+      {},
+      env as any,
+    );
+    const setup = new URL(login.headers.get("location") ?? "");
+    const state = setup.searchParams.get("state")!;
+    const tampered = `${state.startsWith("A") ? "B" : "A"}${state.slice(1)}`;
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = vi.fn() as typeof fetch;
+
+    try {
+      const callback = await app.request(
+        `https://business.example/login/raft/callback?code=one-time-code&state=${encodeURIComponent(tampered)}`,
+        {},
+        env as any,
+      );
+      expect(callback.status).toBe(400);
+      expect(await callback.text()).toContain("Invalid or expired local login state");
+      expect(globalThis.fetch).not.toHaveBeenCalled();
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("rejects expired browser state before exchanging the one-time code", async () => {
+    const env = makeMockEnv();
+    const app = new Hono<{ Bindings: MockEnv }>();
+    app.get("/api/auth/login", handleAuthLogin);
+    app.get("/login/raft/callback", handleRaftCallback);
+    const originalFetch = globalThis.fetch;
+    const start = 1_700_000_000_000;
+    const nowSpy = vi.spyOn(Date, "now").mockReturnValue(start);
+
+    try {
+      const login = await app.request(
+        "https://business.example/api/auth/login?return=%2Fapps",
+        {},
+        env as any,
+      );
+      const setup = new URL(login.headers.get("location") ?? "");
+      const state = setup.searchParams.get("state")!;
+      nowSpy.mockReturnValue(start + 10 * 60 * 1000 + 1000);
+      globalThis.fetch = vi.fn() as typeof fetch;
+
+      const callback = await app.request(
+        `https://business.example/login/raft/callback?code=one-time-code&state=${encodeURIComponent(state)}`,
+        {},
+        env as any,
+      );
+      expect(callback.status).toBe(400);
+      expect(globalThis.fetch).not.toHaveBeenCalled();
+    } finally {
+      globalThis.fetch = originalFetch;
+      nowSpy.mockRestore();
+    }
   });
 
   it("canonicalizes public http custom-domain requests to https", () => {
@@ -5822,6 +6145,7 @@ describe("quiver public API v2 — scope resolution", () => {
     env.APK_BUCKET = {
       put: async () => undefined,
       get: async () => null,
+      head: async (key: string) => ({ key }),
     };
 
     const {
@@ -8499,8 +8823,66 @@ describe("quiver public API v2 — scope resolution", () => {
     expect(events.results).toEqual([{ event_type: "view", count: 1 }]);
   });
 
+  it("share download falls back to the app's latest active version when the bound object is gone (#442)", async () => {
+    const env = makeEnv();
+    const { handleCreateReleaseShare, handlePublicReleaseShareDownload } = await import("../src/routes/shares");
+    // The shared (older) release + its asset — this object will be "deleted" from R2.
+    await seedRelease(env, "rel-old", "build-old", [["full", "all"]], { versionCode: 5, versionName: "1.0.5", createdAt: 1000 });
+    await seedAsset(env, "build-old", "asset-old", { arch: "arm64-v8a" }); // r2_key apps/app-scope/asset-old.apk
+    const created = await responseJson<any>(
+      await handleCreateReleaseShare(makeShareAdminContext(env, { appId: "app-scope", releaseId: "rel-old" }, { ttl_seconds: 600 })),
+    );
+    const token = new URL(created.share_url).pathname.replace("/share/", "");
+    // A newer active release exists for the same app, with a present object.
+    await seedRelease(env, "rel-new", "build-new", [["full", "all"]], { versionCode: 9, versionName: "1.0.9", createdAt: 2000 });
+    await seedAsset(env, "build-new", "asset-new", { arch: "arm64-v8a" }); // r2_key apps/app-scope/asset-new.apk
+
+    // R2: the shared (old) object is gone; only the latest active (new) object exists.
+    env.APK_BUCKET = { head: async (key: string) => (key === "apps/app-scope/asset-new.apk" ? { key } : null) } as any;
+
+    const res = await handlePublicReleaseShareDownload(makeSharePublicContext(env, token));
+    expect(res.status).toBe(302); // fell back rather than 302→404
+    const loc = res.headers.get("location") ?? "";
+    expect(loc).toContain("asset-new.apk"); // serves the latest active version
+    expect(loc).not.toContain("asset-old.apk"); // not the deleted bound one
+  });
+
+  it("share download 404s only when neither the bound object nor any active version remains (#442)", async () => {
+    const env = makeEnv();
+    const { handleCreateReleaseShare, handlePublicReleaseShareDownload } = await import("../src/routes/shares");
+    await seedRelease(env, "rel-only", "build-only", [["full", "all"]], { versionCode: 3, versionName: "1.0.3" });
+    await seedAsset(env, "build-only", "asset-only", { arch: "arm64-v8a" });
+    const created = await responseJson<any>(
+      await handleCreateReleaseShare(makeShareAdminContext(env, { appId: "app-scope", releaseId: "rel-only" }, { ttl_seconds: 600 })),
+    );
+    const token = new URL(created.share_url).pathname.replace("/share/", "");
+    env.APK_BUCKET = { head: async () => null } as any; // everything is gone from R2
+    const res = await handlePublicReleaseShareDownload(makeSharePublicContext(env, token));
+    expect(res.status).toBe(404);
+  });
+
+  it("share PAGE redirects to the app's latest version when the bound object is gone (#442)", async () => {
+    const env = makeEnv();
+    const { handleCreateReleaseShare, handlePublicReleaseShare } = await import("../src/routes/shares");
+    await seedRelease(env, "rel-pold", "build-pold", [["full", "all"]], { versionCode: 5, versionName: "1.0.5", createdAt: 1000 });
+    await seedAsset(env, "build-pold", "asset-pold", { arch: "arm64-v8a" });
+    const created = await responseJson<any>(
+      await handleCreateReleaseShare(makeShareAdminContext(env, { appId: "app-scope", releaseId: "rel-pold" }, { ttl_seconds: 600 })),
+    );
+    const token = new URL(created.share_url).pathname.replace("/share/", "");
+    await seedRelease(env, "rel-pnew", "build-pnew", [["full", "all"]], { versionCode: 9, versionName: "1.0.9", createdAt: 2000 });
+    await seedAsset(env, "build-pnew", "asset-pnew", { arch: "arm64-v8a" });
+    // Bound (old) object gone; latest active (new) object exists.
+    env.APK_BUCKET = { head: async (key: string) => (key === "apps/app-scope/asset-pnew.apk" ? { key } : null) } as any;
+
+    const res = await handlePublicReleaseShare(makeSharePublicContext(env, token));
+    expect(res.status).toBe(302);
+    expect(res.headers.get("location")).toBe("/apps/scope-app/latest"); // jumps to latest version
+  });
+
   it("password-protected share gates page and download until unlocked", async () => {
     const env = makeEnv();
+    env.APK_BUCKET = { head: async (key: string) => ({ key }) } as any; // bound object exists
     const {
       handleCreateReleaseShare,
       handlePublicReleaseShare,
@@ -9567,6 +9949,7 @@ describe("quiver public API v2 — scope resolution", () => {
     const replayBody = await responseJson<any>(replay);
     expect(replayBody.id).toBe(firstBody.id);
     expect(replayBody.reference).toBe(firstBody.reference);
+    expect(replayBody.attachment_refs).toEqual(firstBody.attachment_refs);
     expect(replayBody.idempotent_replay).toBe(true);
     expect(putCalls).toHaveLength(1);
 
@@ -10137,9 +10520,14 @@ describe("quiver public API v2 — scope resolution", () => {
     expect(submittedBody.attachments).toBe(1);
     expect(submittedBody.id).toMatch(/^[0-9a-f-]{36}$/);
     expect(submittedBody.reference).toContain(`ticket ${submittedBody.id}`);
-    // The copyable reference lists attachment filenames, one per line, so a
-    // reading agent knows the ticket carries files and will fetch them.
-    expect(submittedBody.reference).toContain("attachments:\nlogcat.txt");
+    expect(submittedBody.attachment_refs).toEqual([
+      { id: expect.stringMatching(/^[0-9a-f-]{36}$/), filename: "logcat.txt" },
+    ]);
+    // Keep the copyable reference actionable without a second ticket-detail
+    // lookup: every attachment line carries its stable Hands UUID and name.
+    expect(submittedBody.reference).toContain(
+      `attachments:\n${submittedBody.attachment_refs[0].id} · logcat.txt`,
+    );
     expect(submittedBody.attachment_names).toEqual(["logcat.txt"]);
     expect(submittedBody.ticket_url).toBe(
       `https://dashboard.example/apps/app-scope/feedback/${submittedBody.id}`,
@@ -10193,6 +10581,7 @@ describe("quiver public API v2 — scope resolution", () => {
 
   it("share download redirects to signed R2 and records download stats", async () => {
     const env = makeEnv();
+    env.APK_BUCKET = { head: async (key: string) => ({ key }) } as any; // bound object exists
     const {
       handleCreateReleaseShare,
       handleListReleaseShares,

@@ -27,6 +27,18 @@ import { encryptAdminRaftToken } from "../lib/admin_raft_token";
 
 const LOGIN_PENDING_COOKIE = "quiver_raft_login_pending";
 const LOGIN_RETURN_COOKIE = "quiver_raft_return";
+const BROWSER_LOGIN_PROOF_COOKIE_PREFIX = "quiver_raft_login_proof_";
+const BROWSER_LOGIN_STATE_TTL_MS = 10 * 60 * 1000;
+
+type BrowserLoginState = {
+  v: 2;
+  purpose: "hands-browser-login";
+  nonce: string;
+  browser_proof_sha256: string;
+  return_path: string;
+  iat: number;
+  exp: number;
+};
 
 export type RaftTokenResponse = {
   access_token: string;
@@ -169,6 +181,116 @@ function base64UrlBytes(bytes: Uint8Array): string {
     .replace(/\+/g, "-")
     .replace(/\//g, "_")
     .replace(/=+$/g, "");
+}
+
+function base64UrlToBytes(input: string): Uint8Array | null {
+  if (!/^[A-Za-z0-9_-]+$/.test(input)) return null;
+  const padded = input.replace(/-/g, "+").replace(/_/g, "/").padEnd(
+    input.length + ((4 - (input.length % 4)) % 4),
+    "=",
+  );
+  try {
+    const binary = atob(padded);
+    return Uint8Array.from(binary, (character) => character.charCodeAt(0));
+  } catch {
+    return null;
+  }
+}
+
+async function browserLoginStateKey(clientSecret: string) {
+  return crypto.subtle.importKey(
+    "raw",
+    new TextEncoder().encode(`hands-browser-login-state-v2:${clientSecret}`),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign", "verify"],
+  );
+}
+
+async function createBrowserLoginState(
+  clientSecret: string,
+  returnPath: string,
+  nonce: string,
+  browserProofSha256: string,
+): Promise<string> {
+  const issuedAt = now();
+  const payload: BrowserLoginState = {
+    v: 2,
+    purpose: "hands-browser-login",
+    nonce,
+    browser_proof_sha256: browserProofSha256,
+    return_path: returnPath,
+    iat: Math.floor(issuedAt / 1000),
+    exp: Math.floor((issuedAt + BROWSER_LOGIN_STATE_TTL_MS) / 1000),
+  };
+  const encodedPayload = base64UrlUtf8(JSON.stringify(payload));
+  const signature = await crypto.subtle.sign(
+    "HMAC",
+    await browserLoginStateKey(clientSecret),
+    new TextEncoder().encode(encodedPayload),
+  );
+  return `${encodedPayload}.${base64UrlBytes(new Uint8Array(signature))}`;
+}
+
+async function verifyBrowserLoginState(
+  clientSecret: string,
+  state: string,
+): Promise<BrowserLoginState | null> {
+  const [encodedPayload, encodedSignature, ...extra] = state.split(".");
+  if (!encodedPayload || !encodedSignature || extra.length > 0) return null;
+  const signature = base64UrlToBytes(encodedSignature);
+  const payloadBytes = base64UrlToBytes(encodedPayload);
+  if (!signature || !payloadBytes) return null;
+  const validSignature = await crypto.subtle.verify(
+    "HMAC",
+    await browserLoginStateKey(clientSecret),
+    signature,
+    new TextEncoder().encode(encodedPayload),
+  );
+  if (!validSignature) return null;
+
+  try {
+    const payload = JSON.parse(new TextDecoder().decode(payloadBytes)) as Partial<BrowserLoginState>;
+    const currentTime = Math.floor(now() / 1000);
+    if (
+      payload.v !== 2 ||
+      payload.purpose !== "hands-browser-login" ||
+      typeof payload.nonce !== "string" ||
+      !/^[a-f0-9]{32}$/.test(payload.nonce) ||
+      typeof payload.browser_proof_sha256 !== "string" ||
+      !/^[a-f0-9]{64}$/.test(payload.browser_proof_sha256) ||
+      typeof payload.return_path !== "string" ||
+      normalizeReturnPath(payload.return_path) !== payload.return_path ||
+      typeof payload.iat !== "number" ||
+      typeof payload.exp !== "number" ||
+      payload.iat > currentTime + 60 ||
+      payload.exp <= currentTime ||
+      payload.exp - payload.iat !== BROWSER_LOGIN_STATE_TTL_MS / 1000
+    ) {
+      return null;
+    }
+    return payload as BrowserLoginState;
+  } catch {
+    return null;
+  }
+}
+
+function browserLoginProofCookieName(nonce: string): string {
+  return `${BROWSER_LOGIN_PROOF_COOKIE_PREFIX}${nonce}`;
+}
+
+function timingSafeEqualText(left: string, right: string): boolean {
+  const leftBytes = new TextEncoder().encode(left);
+  const rightBytes = new TextEncoder().encode(right);
+  if (leftBytes.byteLength !== rightBytes.byteLength) return false;
+  if (typeof crypto.subtle.timingSafeEqual === "function") {
+    return crypto.subtle.timingSafeEqual(leftBytes, rightBytes);
+  }
+  let difference = 0;
+  for (let index = 0; index < leftBytes.byteLength; index += 1) {
+    difference |= leftBytes[index]! ^ rightBytes[index]!;
+  }
+  return difference === 0;
 }
 
 export async function createSignedJwt(
@@ -589,29 +711,40 @@ export async function handleAuthLogin(c: Context<{ Bindings: Env }>) {
   const config = requireRaftConfig(c);
   if (!config.ok) return config.response;
 
-  const pending = randomToken(16);
   const returnPath = normalizeReturnPath(c.req.query("return") ?? c.req.query("return_to"));
-  setCookie(c, LOGIN_PENDING_COOKIE, pending, {
-    httpOnly: true,
-    secure: secureCookie(c),
-    sameSite: "Lax",
+  const nonce = randomToken(16);
+  const browserProof = randomToken(32);
+  const state = await createBrowserLoginState(
+    config.clientSecret,
+    returnPath,
+    nonce,
+    await sha256Hex(browserProof),
+  );
+  // Clear pre-state-flow cookies so a stripped state cannot be mistaken for a
+  // browser callback. Legacy callbacks intentionally restart: accepting a
+  // pending-cookie-only callback would restore the login-CSRF gap.
+  deleteCookie(c, LOGIN_PENDING_COOKIE, {
     ...sharedCookieDomainOption(c),
     path: "/",
-    maxAge: 10 * 60,
   });
-  setCookie(c, LOGIN_RETURN_COOKIE, returnPath, {
+  deleteCookie(c, LOGIN_RETURN_COOKIE, {
+    ...sharedCookieDomainOption(c),
+    path: "/",
+  });
+  setCookie(c, browserLoginProofCookieName(nonce), browserProof, {
     httpOnly: true,
     secure: secureCookie(c),
     sameSite: "Lax",
     ...sharedCookieDomainOption(c),
-    path: "/",
-    maxAge: 10 * 60,
+    path: "/login/raft/callback",
+    maxAge: BROWSER_LOGIN_STATE_TTL_MS / 1000,
   });
 
   const setup = new URL("/login-with-raft/setup", config.raftOrigin);
   setup.searchParams.set("client_id", config.clientId);
   setup.searchParams.set("return_to", callbackUrl(c));
   setup.searchParams.set("scope", "openid profile");
+  setup.searchParams.set("state", state);
   const setupUrl = setup.toString();
   const accept = c.req.header("accept") || "";
   if (accept.includes("text/html")) {
@@ -643,11 +776,31 @@ export async function handleRaftCallback(c: Context<{ Bindings: Env }>) {
   if (!code) return c.text("Missing Raft callback code", 400);
 
   try {
-    const hasPendingBrowserLogin = Boolean(getCookie(c, LOGIN_PENDING_COOKIE));
+    const state = c.req.query("state");
+    let browserReturnPath: string | null = null;
+    let browserProofCookie: string | null = null;
+    if (state) {
+      const verifiedState = await verifyBrowserLoginState(config.clientSecret, state);
+      if (!verifiedState) {
+        return c.text("Invalid or expired local login state. Start again from /api/auth/login.", 400);
+      }
+      browserProofCookie = browserLoginProofCookieName(verifiedState.nonce);
+      const browserProof = getCookie(c, browserProofCookie);
+      const browserProofSha256 = browserProof ? await sha256Hex(browserProof) : "";
+      if (
+        !browserProof ||
+        !/^[a-f0-9]{64}$/.test(browserProof) ||
+        !timingSafeEqualText(browserProofSha256, verifiedState.browser_proof_sha256)
+      ) {
+        return c.text("Missing or invalid browser login proof. Start again from /api/auth/login.", 400);
+      }
+      browserReturnPath = verifiedState.return_path;
+    }
+
     const result = await finalizeRaftLogin(c, config, code);
     if (result instanceof Response) return result;
 
-    if (!hasPendingBrowserLogin) {
+    if (browserReturnPath === null) {
       if (result.account.principal_type !== "agent") {
         return c.text("Missing local login state. Start again from /api/auth/login.", 400);
       }
@@ -670,12 +823,17 @@ export async function handleRaftCallback(c: Context<{ Bindings: Env }>) {
       ...sharedCookieDomainOption(c),
       path: "/",
     });
-    const returnPath = normalizeReturnPath(getCookie(c, LOGIN_RETURN_COOKIE));
     deleteCookie(c, LOGIN_RETURN_COOKIE, {
       ...sharedCookieDomainOption(c),
       path: "/",
     });
-    const destination = new URL(browserReturnUrl(c, returnPath), requestOrigin(c));
+    if (browserProofCookie) {
+      deleteCookie(c, browserProofCookie, {
+        ...sharedCookieDomainOption(c),
+        path: "/login/raft/callback",
+      });
+    }
+    const destination = new URL(browserReturnUrl(c, browserReturnPath), requestOrigin(c));
     destination.hash = new URLSearchParams({
       access_token: result.authToken.token,
       expires_at: String(result.authToken.expiresAt),
@@ -772,11 +930,53 @@ export async function handleAgentHelp(c: Context<{ Bindings: Env }>) {
   });
 }
 
+/**
+ * `migration-help` action target. English guidance for agents/humans still calling
+ * the deprecated `raft integration invoke` actions: how to install the Hands CLI,
+ * authenticate once with `hands login`, and map each old action to its native command.
+ */
+export async function handleAgentMigrationHelp(c: Context<{ Bindings: Env }>) {
+  const origin = appOrigin(c);
+  c.header("Cache-Control", "no-store");
+  return c.json({
+    service: "hands",
+    summary:
+      "These `raft integration invoke` actions are deprecated. Install the Hands CLI and use its native commands; you authenticate once and subsequent commands use the Hands token directly.",
+    install: [
+      "npm install -g @botiverse/hands-cli",
+      "Then run `hands --help` for the full command list, or see the CLI reference below.",
+    ],
+    login: {
+      agents:
+        "Inside a managed Raft agent, run `hands login` — it detects the agent environment, exchanges a one-time grant via the `agent-login` action, stores a Hands token under $SLOCK_HOME, and auto-refreshes for later commands. No browser, no paste.",
+      humans:
+        "Run `hands login` (browser flow). The Hands token is stored at ~/.config/hands/auth.json (a legacy ~/.config/quiver/auth.json is migrated automatically on first use).",
+      ci: "Set HANDS_AUTH_TOKEN=<deploy token> and call `hands` directly.",
+    },
+    migration: [
+      "Replace `raft integration invoke --service hands-4cc7a2 --action <name>` with the matching `hands` command.",
+      "e.g. whoami → `hands whoami`; list-apps → `hands apps list`; list-feedback → `hands feedback list <app>`. Run `hands --help` for the complete mapping.",
+    ],
+    docs: {
+      cli_reference: `${origin}/docs/cli-reference`,
+      agent_guide: `${origin}/docs/agent-guide/`,
+    },
+  });
+}
+
 export async function handleAgentManifest(c: Context<{ Bindings: Env }>) {
   const origin = appOrigin(c);
   // Never edge-cache the manifest — the integration daemon must always see the
   // current action list (a stale cached copy makes schema changes invisible).
   c.header("Cache-Control", "no-store");
+  // Deprecation notice prepended to every EXISTING action (all but the two new ones):
+  // keep the machine contract unchanged, just point callers at `migration-help`.
+  const service = c.env.RAFT_CLIENT_ID || "hands-4cc7a2";
+  const DEPRECATION_PREFIX = `Deprecated — run raft integration invoke --service ${service} --action migration-help for Hands CLI installation and migration guidance. `;
+  const NEW_ACTIONS = new Set(["agent-login", "migration-help"]);
+  const applyDeprecation = (
+    list: Array<{ name: string; description: string; [k: string]: unknown }>,
+  ) => list.map((a) => (NEW_ACTIONS.has(a.name) ? a : { ...a, description: DEPRECATION_PREFIX + a.description }));
   return c.json({
     schema: "raft-agent-manifest.v0",
     service: c.env.RAFT_CLIENT_ID || "quiver",
@@ -793,7 +993,30 @@ export async function handleAgentManifest(c: Context<{ Bindings: Env }>) {
     // Paths are relative to execution.base_url. Actions cover release,
     // TestFlight/AppGallery, exact QA artifacts, and feedback triage without
     // returning provider credentials or interpreting raw attachments.
-    actions: [
+    // All EXISTING actions are retained with unchanged machine contracts; their
+    // descriptions are prefixed `Deprecated — … migration-help …` (see applyDeprecation).
+    // Only `agent-login` and `migration-help` are new and un-prefixed.
+    actions: applyDeprecation([
+      {
+        // NOTE: kept as valid raft-agent-manifest.v0 (name/description/endpoint/parameters
+        // only). The RFC 057 action semantics (authority.principal=agent_session,
+        // effect=create, idempotency=non_idempotent, readback=not_supported,
+        // rollback=not_applicable) and the response schema are documented in prose here
+        // and ENFORCED by the handler; they are NOT structured fields because the landed
+        // v0 manifest parser ignores them (and rejects a non-{type} `returns`). A full
+        // v0→v1 manifest migration is tracked separately; until then CP3 strictly
+        // validates the invoke outer success + exact service/action + grant result schema
+        // client-side rather than relying on the manifest for output enforcement.
+        name: "agent-login",
+        description:
+          "Agent CLI bootstrap (RFC 057). Send raft-cli-agent-login-request.v1 with a PKCE S256 code_challenge; receive a one-time, <=5 min raft-cli-agent-login-grant.v1 grant bound to your authenticated agent identity, then exchange it (with your code_verifier) at POST /api/auth/agent/exchange for a raft-cli-agent-session.v1 (short access token + rotating refresh). Non-idempotent create; no readback; not rollbackable. Requires an authenticated agent session; humans/CI keep the browser/deploy-token login.",
+        endpoint: { method: "POST", path: "/api/auth/agent/login" },
+        parameters: {
+          schema: { type: "string", in: "body", required: true, description: "Must be \"raft-cli-agent-login-request.v1\". Closed input: extension fields are rejected." },
+          code_challenge: { type: "string", in: "body", required: true, description: "Unpadded base64url SHA-256 (S256) of a locally-generated high-entropy code_verifier; must decode to exactly 32 bytes." },
+          code_challenge_method: { type: "string", in: "body", required: true, description: "Must be \"S256\"." },
+        },
+      },
       {
         name: "help",
         description:
@@ -1642,6 +1865,13 @@ export async function handleAgentManifest(c: Context<{ Bindings: Env }>) {
           internal: { type: "boolean", in: "body", required: false, description: "true = staff-only internal note; omitted/false = visible to the reporter." },
         },
       },
-    ],
+      {
+        // New (un-prefixed): where deprecated actions point for CLI install + migration.
+        name: "migration-help",
+        description:
+          "How to install the Hands CLI, authenticate once (`hands login`), and migrate each deprecated action to its native `hands` command. Read this if you are still calling actions via `raft integration invoke`.",
+        endpoint: { method: "GET", path: "/api/agent/migration-help" },
+      },
+    ]),
   });
 }

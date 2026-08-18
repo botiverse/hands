@@ -52,6 +52,11 @@ export type AdminAccount = {
 export type AdminEnv = {
   Variables: {
     admin_account?: AdminAccount;
+    // The session-authenticated account BEFORE any x-hands-org-id org-switch.
+    // Set only on the valid Hands-session branch (never for the deploy-token
+    // fallback). Endpoints that must bind to "who authenticated" (e.g. agent-login
+    // grant issuance) read this, NOT the org-switchable admin_account.
+    authenticated_account?: AdminAccount;
     admin_deploy_token?: AppDeployToken;
     admin_actor?: string;
     org_id?: string;
@@ -181,6 +186,10 @@ export const authMiddleware: MiddlewareHandler<AdminEnv & { Bindings: Env }> =
       sessionToken,
     );
     if (sessionAccount) {
+      // Expose the pre-org-switch authenticated identity for endpoints that must
+      // bind to who actually authenticated (agent-login), independent of the
+      // client-controlled x-hands-org-id header.
+      c.set("authenticated_account", sessionAccount);
       const account = await accountForRequestedOrg(
         c.env,
         sessionAccount,
