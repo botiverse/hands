@@ -133,8 +133,9 @@ const AppServerGrant = z
     server_slug: z.string().nullable(),
     app_role: AppRole.openapi({
       description:
-        "Backend compatibility role. The admin UI currently presents server grants as visibility grants.",
+        "Deprecated compatibility field. Additional owner-server enforcement derives the caller's app role from their role in that Raft server.",
     }),
+    access_model: z.enum(["legacy_role", "owner_server"]),
     granted_by: z.string().nullable(),
     created_at: z.number().int(),
     updated_at: z.number().int(),
@@ -145,7 +146,6 @@ const UpsertAppServerGrantRequest = z
   .object({
     server_id: z.string().optional(),
     server_slug: z.string().optional(),
-    app_role: AppRole.default("viewer"),
   })
   .openapi("UpsertAppServerGrantRequest");
 
@@ -388,10 +388,10 @@ export function registerReleaseRoutes(registry: OpenApiRegistry) {
 
 function registerAccessRoutes(registry: OpenApiRegistry) {
   for (const [method, path, summary] of [
-    ["get", "/api/apps/{appId}/server-grants", "List Raft server grants for an app"],
-    ["post", "/api/apps/{appId}/server-grants", "Add or update a Raft server visibility grant"],
-    ["patch", "/api/apps/{appId}/server-grants/{serverId}", "Update a Raft server visibility grant"],
-    ["delete", "/api/apps/{appId}/server-grants/{serverId}", "Remove a Raft server visibility grant"],
+    ["get", "/api/apps/{appId}/server-grants", "List additional owner servers for an app"],
+    ["post", "/api/apps/{appId}/server-grants", "Add an owner server to an app"],
+    ["patch", "/api/apps/{appId}/server-grants/{serverId}", "Reject legacy role changes for an owner server"],
+    ["delete", "/api/apps/{appId}/server-grants/{serverId}", "Remove an additional owner server"],
   ] as const) {
     const hasServerId = path.includes("{serverId}");
     const needsBody = method === "post" || method === "patch";

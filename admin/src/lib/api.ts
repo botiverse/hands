@@ -94,6 +94,20 @@ export class ApiError extends Error {
   }
 }
 
+export interface HandsAdminOverview {
+  measured_at: number;
+  summary: { users: number; organizations: number; apps: number; active_apps: number; builds: number; releases: number };
+  users_by_type: Array<{ type: string; count: number }>;
+  apps_by_platform: Array<{ type: string; count: number }>;
+  builds_by_product_type: Array<{ type: string; count: number }>;
+  releases_by_status: Array<{ status: string; count: number }>;
+  storage: {
+    r2: { object_count: number; size_bytes: number };
+    registered: { object_count: number; size_bytes: number };
+    note: string;
+  };
+}
+
 export interface App {
   id: string;
   org_id: string | null;
@@ -225,6 +239,10 @@ export interface Release {
   created_by: string;
   created_at: number;
   updated_at: number;
+  // Flattened build/channel fields returned by the release list endpoint.
+  version_name?: string;
+  version_code?: number;
+  channel?: string;
   // release_metrics (nullable when never checked)
   offered_count?: number | null;
   current_count?: number | null;
@@ -382,6 +400,7 @@ export interface AppServerGrant {
   server_id: string | null;
   server_slug: string | null;
   app_role: "admin" | "publisher" | "viewer";
+  access_model: "legacy_role" | "owner_server";
   granted_by: string | null;
   created_at: number;
   updated_at: number;
@@ -505,6 +524,9 @@ export const normalizeLoginReturnPath = (returnTo = window.location.pathname) =>
 
 export const loginUrl = (returnTo = window.location.pathname) =>
   `${API_BASE}/api/auth/login?return=${encodeURIComponent(normalizeLoginReturnPath(returnTo))}`;
+
+export const getHandsAdminOverview = () =>
+  request<HandsAdminOverview>(`/api/admin/observability/overview`, { admin: true });
 
 // ---------- Admin API (requires Login with Raft bearer JWT in prod) ----------
 
@@ -718,7 +740,6 @@ export const addAppServerGrant = (
   input: {
     server_id?: string | null;
     server_slug?: string | null;
-    app_role: AppServerGrant["app_role"];
   },
 ) =>
   request<{ ok: boolean }>(`/api/apps/${appId}/server-grants`, {
@@ -726,24 +747,6 @@ export const addAppServerGrant = (
     admin: true,
     body: JSON.stringify(input),
   });
-
-export const updateAppServerGrant = (
-  appId: string,
-  grantKey: string,
-  input: {
-    server_id?: string | null;
-    server_slug?: string | null;
-    app_role: AppServerGrant["app_role"];
-  },
-) =>
-  request<{ ok: boolean }>(
-    `/api/apps/${appId}/server-grants/${encodeURIComponent(grantKey)}`,
-    {
-      method: "PATCH",
-      admin: true,
-      body: JSON.stringify(input),
-    },
-  );
 
 export const removeAppServerGrant = (appId: string, serverId: string) =>
   request<{ ok: boolean }>(
@@ -800,6 +803,36 @@ export const verifyAscCredentials = (appId: string, bundleId: string) =>
     method: "POST",
     admin: true,
     body: JSON.stringify({ bundle_id: bundleId }),
+  });
+
+export interface BetaAppDescriptionLocalization {
+  id: string;
+  locale: string | null;
+  description: string | null;
+}
+
+export const getTestflightBetaAppDescription = (appId: string) =>
+  request<{
+    bundle_id: string;
+    asc_app_id: string;
+    localizations: BetaAppDescriptionLocalization[];
+  }>(`/api/apps/${appId}/testflight-beta-app-description`, { admin: true });
+
+export const updateTestflightBetaAppDescription = (
+  appId: string,
+  descriptions: Record<string, string>,
+) =>
+  request<{
+    ok: boolean;
+    bundle_id: string;
+    asc_app_id: string;
+    updated_locales: string[];
+    readback_exact: boolean;
+    localizations: BetaAppDescriptionLocalization[];
+  }>(`/api/apps/${appId}/testflight-beta-app-description`, {
+    method: "PUT",
+    admin: true,
+    body: JSON.stringify({ descriptions }),
   });
 
 // ---------- AppGallery Connect credentials (HarmonyOS) ----------
@@ -1567,6 +1600,7 @@ export const listWebhookDeliveries = (orgId: string, webhookId: string) =>
 export interface AppShare {
   id: string;
   release_id: string;
+  channel_id: string;
   // Copyable URL; null for legacy shares created before tokens were stored.
   share_url: string | null;
   created_by: string;
@@ -1614,12 +1648,36 @@ export const revokeReleaseShare = (appId: string, releaseId: string, shareId: st
     { method: "DELETE", admin: true },
   );
 
+export const rebindReleaseShare = (
+  appId: string,
+  shareId: string,
+  body: { expected_release_id: string; target_release_id: string },
+) =>
+  request<{
+    id: string;
+    previous_release_id: string;
+    release_id: string;
+    target: { status: string; version_name: string; version_code: number; file_hash: string | null; size_bytes: number | null };
+  }>(`/api/apps/${appId}/shares/${shareId}/rebind`, {
+    method: "POST",
+    body: JSON.stringify(body),
+    admin: true,
+  });
+
 // ---- Feedback tickets (task #66) ----
 
 export interface FeedbackTicket {
   id: string;
   kind: "feedback" | "bug" | "crash" | "error";
   status: "open" | "in_progress" | "resolved" | "closed";
+  closure_reason:
+    | "completed"
+    | "no_longer_needed"
+    | "not_planned"
+    | "cannot_reproduce"
+    | "duplicate"
+    | null;
+  duplicate_of_ticket_id: string | null;
   assignee: string | null;
   message: string;
   contact: string | null;
@@ -1697,9 +1755,20 @@ export const resymbolicateFeedback = (appId: string, ticketId: string) =>
 export const updateFeedbackTicket = (
   appId: string,
   ticketId: string,
-  body: { status?: string; assignee?: string | null },
+  body: {
+    status?: string;
+    assignee?: string | null;
+    closure_reason?: FeedbackTicket["closure_reason"];
+    duplicate_of_ticket_id?: string | null;
+  },
 ) =>
-  request<{ id: string; status: string | null; assignee: string | null }>(
+  request<{
+    id: string;
+    status: string | null;
+    assignee: string | null;
+    closure_reason: FeedbackTicket["closure_reason"];
+    duplicate_of_ticket_id: string | null;
+  }>(
     `/api/apps/${appId}/feedback/${ticketId}`,
     {
       method: "PATCH",

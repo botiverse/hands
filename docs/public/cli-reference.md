@@ -13,7 +13,7 @@ npm install -g @botiverse/hands-cli
 Or run it without a permanent install:
 
 ```bash
-npm exec --package @botiverse/hands-cli@0.5.14 -- hands --help
+npm exec --package @botiverse/hands-cli@0.5.15 -- hands --help
 ```
 
 In CI, pin a version so release scripts stay reproducible.
@@ -514,6 +514,50 @@ hands feedback update raft-android <ticket-id> --status resolved
 ```
 
 `--assignee none` unassigns. All subcommands accept `--json` for scripting.
+
+## Direct API Access (`hands api`)
+
+A power-user / scripting affordance for calling a Hands API endpoint directly,
+over the **same** server-side RBAC, audit, and per-endpoint guards a dedicated
+subcommand uses. It is not a permission bypass and not a generic-SQL escape
+hatch — every write still hits the same server route.
+
+```bash
+# GET with repeatable query params
+hands api GET /api/apps --param platform=android
+
+# PATCH with an inline JSON body. NOTE: path params are raw — <appId> is the app
+# UUID, not a slug: `hands api` passes the path through and does not resolve slugs.
+hands api PATCH /api/apps/<appId>/releases/<releaseId>/shares/<shareId> \
+  --data '{"expires_at":null}'
+
+# ...or read the same body from a file with @path
+hands api PATCH /api/apps/<appId>/releases/<releaseId>/shares/<shareId> \
+  --data @body.json
+
+# Binary / same-origin streaming response: write the raw bytes to a file
+hands api GET /api/apps/<appId>/feedback/<ticketId>/attachments/<attachmentId> \
+  --output attachment.bin
+
+# Machine-readable: print only the response body (no status line)
+hands --json api GET /api/apps
+```
+
+- **Raw path params.** `<appId>` and the other ids are the resource UUIDs, not
+  slugs — `hands api` passes the path through verbatim and does not resolve
+  slugs the way the dedicated subcommands do.
+- **Same-origin `/api/*` only.** `<path>` is resolved against the active Hands
+  API base (honoring the root `--api` flag). A relative path or a **same-origin
+  absolute URL** is accepted; cross-origin absolute URLs, `//protocol-relative`
+  hosts, and `../` traversal that escapes the origin are rejected — so the
+  Authorization bearer never leaves the Hands origin.
+- **Redirects are never followed.** A `3xx` is reported, not chased; following a
+  redirect off-origin would leak the bearer.
+- **Auth + RBAC unchanged.** Reuses your existing CLI login/token; the server
+  enforces the same role checks as any other call.
+- Flags: `--param key=value` (repeatable), `--data <json|@file>`,
+  `--output <file>` (required for binary). Both the global `--api` and `--json`
+  flags are honored.
 
 ## CI Environment Variables
 

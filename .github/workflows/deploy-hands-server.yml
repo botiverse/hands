@@ -65,6 +65,7 @@ jobs:
       HANDS_RAFT_ORIGIN: ${{ vars.HANDS_RAFT_ORIGIN }}
       HANDS_RAFT_API_ORIGIN: ${{ vars.HANDS_RAFT_API_ORIGIN }}
       HANDS_RAFT_CLIENT_ID: ${{ vars.HANDS_RAFT_CLIENT_ID }}
+      HANDS_ADMIN_ALLOWED_SERVER_IDS: ${{ vars.HANDS_ADMIN_ALLOWED_SERVER_IDS }}
       HANDS_FLAGSHIP_APP_ID: ${{ vars.HANDS_FLAGSHIP_APP_ID }}
     steps:
       - uses: actions/checkout@v6

@@ -239,6 +239,7 @@ export async function handleListAppShares(c: AdminContext) {
     `SELECT
        rs.id,
        rs.release_id,
+       r.channel_id,
        rs.token,
        rs.created_by,
        rs.created_at,
@@ -393,6 +394,159 @@ export async function handleUpdateReleaseShare(c: AdminContext) {
     release_id: releaseId,
     expires_at: expiresAt,
     revoked_at: null,
+  });
+}
+
+export async function handleRebindReleaseShare(c: AdminContext) {
+  const appId = c.req.param("appId");
+  const shareId = c.req.param("shareId");
+  const body = await c.req.json().catch(() => ({})) as {
+    expected_release_id?: string;
+    target_release_id?: string;
+  };
+  const expectedReleaseId = typeof body.expected_release_id === "string"
+    ? body.expected_release_id.trim()
+    : "";
+  const targetReleaseId = typeof body.target_release_id === "string"
+    ? body.target_release_id.trim()
+    : "";
+  if (!expectedReleaseId || !targetReleaseId) {
+    return c.json({ error: "expected_release_id and target_release_id are required" }, 400);
+  }
+  if (expectedReleaseId === targetReleaseId) {
+    return c.json({ error: "target release must differ from the current release" }, 400);
+  }
+
+  const existing = await c.env.DB.prepare(
+    `SELECT rs.release_id, rs.revoked_at, r.channel_id
+     FROM release_shares rs
+     JOIN releases r ON r.id = rs.release_id
+     WHERE rs.id = ?1 AND r.app_id = ?2`,
+  ).bind(shareId, appId).first<{
+    release_id: string;
+    revoked_at: number | null;
+    channel_id: string;
+  }>();
+  if (!existing) return c.json({ error: "share not found" }, 404);
+  if (existing.revoked_at != null) return c.json({ error: "cannot rebind revoked share" }, 409);
+  if (existing.release_id !== expectedReleaseId) {
+    return c.json({ error: "share release changed", code: "share_rebind_conflict" }, 409);
+  }
+
+  const target = await c.env.DB.prepare(
+    `SELECT r.id, r.status, r.channel_id, b.version_name, b.version_code,
+            ba.file_hash, ba.size_bytes, ba.r2_key
+     FROM releases r
+     JOIN builds b ON b.id = r.build_id
+     LEFT JOIN build_assets ba ON ba.id = (
+       SELECT candidate.id FROM build_assets candidate
+       WHERE candidate.build_id = r.build_id
+         AND candidate.artifact_kind = 'installable'
+       ORDER BY candidate.created_at ASC, candidate.id ASC LIMIT 1
+     )
+     WHERE r.app_id = ?1 AND r.id = ?2`,
+  ).bind(appId, targetReleaseId).first<{
+    id: string;
+    status: string;
+    channel_id: string;
+    version_name: string;
+    version_code: number;
+    file_hash: string | null;
+    size_bytes: number | null;
+    r2_key: string | null;
+  }>();
+  if (!target) return c.json({ error: "target release not found" }, 404);
+  if (target.status !== "active") {
+    return c.json({ error: "target release must be active" }, 409);
+  }
+  if (target.channel_id !== existing.channel_id) {
+    return c.json({ error: "target release must use the share's current channel" }, 409);
+  }
+  if (!target.r2_key || !(await c.env.APK_BUCKET.head(target.r2_key))) {
+    return c.json({ error: "target release installable is unavailable" }, 409);
+  }
+
+  const now = Date.now();
+  const auditId = crypto.randomUUID();
+  const actor = currentActor(c);
+  let results;
+  try {
+    results = await c.env.DB.batch([
+      c.env.DB.prepare(
+        `UPDATE release_shares
+         SET release_id = ?1
+         WHERE id = ?2
+           AND release_id = ?3
+           AND revoked_at IS NULL
+           AND EXISTS (
+             SELECT 1 FROM releases current_release
+             WHERE current_release.id = release_shares.release_id
+               AND current_release.app_id = ?4
+           )
+           AND EXISTS (
+             SELECT 1 FROM releases target_release
+             WHERE target_release.id = ?1
+               AND target_release.app_id = ?4
+               AND target_release.status = 'active'
+               AND target_release.channel_id = (
+                 SELECT current_release.channel_id FROM releases current_release
+                 WHERE current_release.id = release_shares.release_id
+               )
+           )`,
+      ).bind(targetReleaseId, shareId, expectedReleaseId, appId),
+      c.env.DB.prepare(
+        `INSERT INTO audit_logs (id, app_id, action, actor, payload, created_at)
+         SELECT ?1, ?2, 'release_share.rebind', ?3,
+                json_object(
+                  'share_id', rs.id,
+                  'token_hash', rs.token_hash,
+                  'old_release_id', ?4,
+                  'new_release_id', ?5
+                ),
+                ?6
+         FROM release_shares rs
+         WHERE rs.id = ?7
+           AND rs.release_id = ?5
+           AND changes() = 1`,
+      ).bind(
+        auditId,
+        appId,
+        actor,
+        expectedReleaseId,
+        targetReleaseId,
+        now,
+        shareId,
+      ),
+      // D1 batch rolls back on a statement error, not on a zero-row result.
+      // Force a NOT NULL violation when the preceding audit insert did not
+      // affect exactly one row, so a stale/revoked race cannot commit the
+      // rebind without its audit record.
+      c.env.DB.prepare(
+        `INSERT INTO audit_logs (id, app_id, action, actor, payload, created_at)
+         SELECT ?1, NULL, 'release_share.rebind.assert', ?2, '{}', ?3
+         WHERE changes() <> 1`,
+      ).bind(crypto.randomUUID(), actor, now),
+    ]);
+  } catch {
+    return c.json({ error: "share changed, was revoked, or was not found", code: "share_rebind_conflict" }, 409);
+  }
+  const updateChanges = Number(results[0]?.meta?.changes ?? 0);
+  const auditChanges = Number(results[1]?.meta?.changes ?? 0);
+  if (auditChanges !== 1 || updateChanges !== 1) {
+    return c.json({ error: "share changed, was revoked, or was not found", code: "share_rebind_conflict" }, 409);
+  }
+
+  return c.json({
+    id: shareId,
+    previous_release_id: expectedReleaseId,
+    release_id: targetReleaseId,
+    target: {
+      status: target.status,
+      version_name: target.version_name,
+      version_code: target.version_code,
+      file_hash: target.file_hash,
+      size_bytes: target.size_bytes,
+    },
   });
 }
 

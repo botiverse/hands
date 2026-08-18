@@ -332,6 +332,14 @@ export interface BetaBuildLocalizationResource {
   };
 }
 
+export interface BetaAppLocalizationResource {
+  id: string;
+  attributes: {
+    locale: string | null;
+    description: string | null;
+  };
+}
+
 export interface BetaAppReviewSubmissionResource {
   id: string;
   attributes: {
@@ -556,6 +564,116 @@ export async function upsertBetaBuildLocalizations(
         await updateBetaBuildLocalization(creds, {
           localizationId: current.id,
           whatsNew,
+        }),
+      );
+    } else {
+      results.push(current);
+    }
+  }
+  return results;
+}
+
+export async function getBetaAppLocalizations(
+  creds: AscApiCredentials,
+  ascAppId: string,
+): Promise<BetaAppLocalizationResource[]> {
+  const res = await ascRequest<{ data: BetaAppLocalizationResource[] }>(
+    creds,
+    "GET",
+    `/v1/apps/${encodeURIComponent(ascAppId)}/betaAppLocalizations?limit=200`,
+  );
+  return res.data ?? [];
+}
+
+export async function createBetaAppLocalization(
+  creds: AscApiCredentials,
+  args: { ascAppId: string; locale: string; description: string },
+): Promise<BetaAppLocalizationResource> {
+  const res = await ascRequest<{ data: BetaAppLocalizationResource }>(
+    creds,
+    "POST",
+    "/v1/betaAppLocalizations",
+    {
+      data: {
+        type: "betaAppLocalizations",
+        attributes: {
+          locale: args.locale,
+          description: args.description,
+        },
+        relationships: {
+          app: { data: { type: "apps", id: args.ascAppId } },
+        },
+      },
+    },
+  );
+  return res.data;
+}
+
+export async function updateBetaAppLocalization(
+  creds: AscApiCredentials,
+  args: { localizationId: string; description: string },
+): Promise<BetaAppLocalizationResource> {
+  const res = await ascRequest<{ data: BetaAppLocalizationResource }>(
+    creds,
+    "PATCH",
+    `/v1/betaAppLocalizations/${encodeURIComponent(args.localizationId)}`,
+    {
+      data: {
+        type: "betaAppLocalizations",
+        id: args.localizationId,
+        attributes: { description: args.description },
+      },
+    },
+  );
+  return res.data;
+}
+
+/** Create or update supplied app-level descriptions without touching other locales. */
+export async function upsertBetaAppLocalizations(
+  creds: AscApiCredentials,
+  ascAppId: string,
+  descriptions: Record<string, string>,
+): Promise<BetaAppLocalizationResource[]> {
+  const requested = Object.entries(descriptions);
+  if (requested.length === 0) return [];
+  const existing = await getBetaAppLocalizations(creds, ascAppId);
+  const byLocale = new Map(
+    existing
+      .filter((item) => item.attributes.locale)
+      .map((item) => [item.attributes.locale!, item]),
+  );
+  const results: BetaAppLocalizationResource[] = [];
+  for (const [locale, description] of requested) {
+    const current = byLocale.get(locale);
+    if (!current) {
+      try {
+        results.push(
+          await createBetaAppLocalization(creds, {
+            ascAppId,
+            locale,
+            description,
+          }),
+        );
+      } catch (error) {
+        if (!(error instanceof AscApiError) || error.status !== 409) throw error;
+        const raced = (await getBetaAppLocalizations(creds, ascAppId)).find(
+          (item) => item.attributes.locale === locale,
+        );
+        if (!raced) throw error;
+        results.push(
+          raced.attributes.description === description
+            ? raced
+            : await updateBetaAppLocalization(creds, {
+                localizationId: raced.id,
+                description,
+              }),
+        );
+      }
+    } else if (current.attributes.description !== description) {
+      results.push(
+        await updateBetaAppLocalization(creds, {
+          localizationId: current.id,
+          description,
         }),
       );
     } else {

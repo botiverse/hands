@@ -106,6 +106,7 @@ describe("quiver OpenAPI document", () => {
       "/api/apps/{appId}/builds/{buildId}/external-targets",
       "/api/apps/{appId}/builds/{buildId}/testflight-upload",
       "/api/apps/{appId}/testflight-uploads/{buildUploadId}",
+      "/api/apps/{appId}/testflight-beta-app-description",
       "/api/apps/{appId}/builds/{buildId}/testflight-groups",
       "/api/apps/{appId}/builds/{buildId}/testflight-expire",
       "/api/apps/{appId}/builds/{buildId}/testflight-publish",
@@ -417,6 +418,8 @@ function makeMockDb() {
       submission_fingerprint TEXT,
       reporter_id TEXT,
       reporter_integration_id TEXT,
+      closure_reason TEXT,
+      duplicate_of_ticket_id TEXT,
       symbolication_status TEXT,
       symbolicated_stack TEXT,
       symbolicated_at INTEGER,
@@ -610,6 +613,7 @@ function makeMockDb() {
       server_id TEXT,
       server_slug TEXT,
       app_role TEXT NOT NULL CHECK (app_role IN ('admin', 'publisher', 'viewer')),
+      access_model TEXT NOT NULL DEFAULT 'legacy_role' CHECK (access_model IN ('legacy_role', 'owner_server')),
       granted_by TEXT REFERENCES raft_accounts(id) ON DELETE SET NULL,
       created_at INTEGER NOT NULL,
       updated_at INTEGER NOT NULL,
@@ -1811,7 +1815,7 @@ describe("quiver route handlers — SQL smoke", () => {
       .run();
     await env.DB
       .prepare("INSERT INTO org_members (id, org_id, account_id, org_role, joined_at) VALUES (?, ?, ?, ?, ?)")
-      .bind("orgmem-external", "raft_external", "external-user", "viewer", now)
+      .bind("orgmem-external", "raft_external", "external-user", "member", now)
       .run();
     await env.DB
       .prepare("INSERT INTO apps (id, org_id, slug, name, platform, created_at) VALUES (?, ?, ?, ?, ?, ?), (?, ?, ?, ?, ?, ?)")
@@ -1998,7 +2002,7 @@ describe("quiver route handlers — SQL smoke", () => {
       .run();
     await env.DB
       .prepare("INSERT INTO org_members (id, org_id, account_id, org_role, joined_at) VALUES (?, ?, ?, ?, ?)")
-      .bind("orgmem-external2", "raft_external2", "external2-user", "viewer", now)
+      .bind("orgmem-external2", "raft_external2", "external2-user", "member", now)
       .run();
     await env.DB
       .prepare("INSERT INTO apps (id, org_id, slug, name, platform, created_at) VALUES (?, ?, ?, ?, ?, ?)")
@@ -2022,6 +2026,132 @@ describe("quiver route handlers — SQL smoke", () => {
         org_role: null,
         app_role: "publisher",
         server_app_role: "publisher",
+        server_org_role: null,
+      });
+  });
+
+  it.each([
+    ["owner"],
+    ["admin"],
+    ["member"],
+    ["viewer"],
+  ] as const)("additional owner server preserves the creating-server %s org role", async (orgRole) => {
+    const now = Date.now();
+    const suffix = orgRole;
+    await env.DB.prepare(
+      `INSERT INTO organizations
+       (id, slug, name, external_provider, external_id, created_at, archived)
+       VALUES (?, ?, ?, 'raft', ?, ?, 0)`,
+    ).bind(`raft_shared_${suffix}`, `shared-${suffix}`, `Shared ${suffix}`, `shared-${suffix}`, now).run();
+    await env.DB.prepare(
+      `INSERT INTO raft_accounts
+       (id, provider, provider_subject, server_id, server_slug, principal_type,
+        server_role, username, display_name, avatar_url, raw_profile,
+        created_at, updated_at, last_login_at)
+       VALUES (?, 'raft', ?, ?, ?, 'human', ?, ?, ?, NULL, '{}', ?, ?, ?)`,
+    ).bind(
+      `shared-${suffix}-account`,
+      `shared-${suffix}-subject`,
+      `shared-${suffix}`,
+      `shared-${suffix}`,
+      orgRole,
+      `shared-${suffix}`,
+      `Shared ${suffix}`,
+      now,
+      now,
+      now,
+    ).run();
+    await env.DB.prepare(
+      "INSERT INTO org_members (id, org_id, account_id, org_role, joined_at) VALUES (?, ?, ?, ?, ?)",
+    ).bind(
+      `orgmem-shared-${suffix}`,
+      `raft_shared_${suffix}`,
+      `shared-${suffix}-account`,
+      orgRole,
+      now,
+    ).run();
+    await env.DB.prepare(
+      "INSERT INTO apps (id, org_id, slug, name, platform, created_at) VALUES (?, 'default', ?, ?, 'android', ?)",
+    ).bind(`shared-app-${suffix}`, `shared-app-${suffix}`, `Shared App ${suffix}`, now).run();
+    await env.DB.prepare(
+      `INSERT INTO app_server_grants
+       (id, app_id, server_id, server_slug, app_role, access_model, created_at, updated_at)
+       VALUES (?, ?, ?, ?, 'admin', 'owner_server', ?, ?)`,
+    ).bind(
+      `shared-grant-${suffix}`,
+      `shared-app-${suffix}`,
+      `shared-${suffix}`,
+      `shared-${suffix}`,
+      now,
+      now,
+    ).run();
+
+    const { getEffectiveRole } = await import("../src/lib/permissions");
+    await expect(getEffectiveRole(env.DB as any, `shared-${suffix}-account`, {
+      appId: `shared-app-${suffix}`,
+    })).resolves.toMatchObject({
+      org_role: orgRole,
+      app_role: null,
+      server_app_role: null,
+      server_org_role: orgRole,
+    });
+
+    const { ensureAppRole } = await import("../src/lib/permissions");
+    const ctx = {
+      env,
+      get: (key: string) => key === "admin_account"
+        ? { id: `shared-${suffix}-account` }
+        : undefined,
+      json: (body: unknown, status = 200) => new Response(JSON.stringify(body), { status }),
+      req: { url: `https://hands.test/api/apps/shared-app-${suffix}`, method: "GET" },
+    };
+    const read = await ensureAppRole(ctx as any, `shared-app-${suffix}`, "viewer");
+    expect(read.ok).toBe(true);
+    const publish = await ensureAppRole(ctx as any, `shared-app-${suffix}`, "publisher");
+    expect(publish.ok).toBe(orgRole === "owner" || orgRole === "admin");
+    const boundedMember = await ensureAppRole(
+      ctx as any,
+      `shared-app-${suffix}`,
+      "publisher",
+      { orgMinimum: "member" },
+    );
+    expect(boundedMember.ok).toBe(orgRole !== "viewer");
+  });
+
+  it("preserves a legacy viewer grant instead of silently mapping a server member to publisher", async () => {
+    const now = Date.now();
+    await env.DB.prepare(
+      `INSERT INTO organizations
+       (id, slug, name, external_provider, external_id, created_at, archived)
+       VALUES ('raft_legacy', 'legacy', 'Legacy', 'raft', 'legacy-server', ?, 0)`,
+    ).bind(now).run();
+    await env.DB.prepare(
+      `INSERT INTO raft_accounts
+       (id, provider, provider_subject, server_id, server_slug, principal_type,
+        server_role, username, display_name, avatar_url, raw_profile,
+        created_at, updated_at, last_login_at)
+       VALUES ('legacy-member', 'raft', 'legacy-sub', 'legacy-server', 'legacy',
+               'human', 'member', 'legacy-member', 'Legacy Member', NULL, '{}', ?, ?, ?)`,
+    ).bind(now, now, now).run();
+    await env.DB.prepare(
+      "INSERT INTO org_members (id, org_id, account_id, org_role, joined_at) VALUES ('legacy-orgmem', 'raft_legacy', 'legacy-member', 'member', ?)",
+    ).bind(now).run();
+    await env.DB.prepare(
+      "INSERT INTO apps (id, org_id, slug, name, platform, created_at) VALUES ('legacy-app', 'default', 'legacy-app', 'Legacy App', 'android', ?)",
+    ).bind(now).run();
+    await env.DB.prepare(
+      `INSERT INTO app_server_grants
+       (id, app_id, server_id, server_slug, app_role, access_model, created_at, updated_at)
+       VALUES ('legacy-grant', 'legacy-app', 'legacy-server', 'legacy', 'viewer', 'legacy_role', ?, ?)`,
+    ).bind(now, now).run();
+
+    const { getEffectiveRole } = await import("../src/lib/permissions");
+    await expect(getEffectiveRole(env.DB as any, "legacy-member", { appId: "legacy-app" }))
+      .resolves.toMatchObject({
+        org_role: null,
+        app_role: "viewer",
+        server_app_role: "viewer",
+        server_org_role: null,
       });
   });
 
@@ -6588,6 +6718,122 @@ describe("quiver public API v2 — scope resolution", () => {
     expect(await unknownPage.text()).not.toContain("/apps/scope-app/latest");
   });
 
+  it("shares: rebinds one live share atomically to an active release in the same app", async () => {
+    const env = makeEnv();
+    env.APK_BUCKET = { head: async (key: string) => ({ key }) };
+    await seedRelease(env, "rel-share-old", "build-share-old", [["full", "all"]], {
+      versionCode: 10,
+      versionName: "1.0.0",
+    });
+    await seedAsset(env, "build-share-old", "asset-share-old", { fileHash: "old-hash" });
+    await seedRelease(env, "rel-share-new", "build-share-new", [["full", "all"]], {
+      versionCode: 11,
+      versionName: "1.1.0",
+    });
+    await seedAsset(env, "build-share-new", "asset-share-new", {
+      fileHash: "new-hash",
+      sizeBytes: 456,
+    });
+    const { handleCreateReleaseShare, handleRebindReleaseShare } = await import("../src/routes/shares");
+    const created = await responseJson<any>(await handleCreateReleaseShare(
+      makeShareAdminContext(env, { appId: "app-scope", releaseId: "rel-share-old" }),
+    ));
+
+    const response = await handleRebindReleaseShare(makeShareAdminContext(
+      env,
+      { appId: "app-scope", shareId: created.id },
+      { expected_release_id: "rel-share-old", target_release_id: "rel-share-new" },
+    ));
+    expect(response.status).toBe(200);
+    expect(await responseJson<any>(response)).toMatchObject({
+      id: created.id,
+      previous_release_id: "rel-share-old",
+      release_id: "rel-share-new",
+      target: { status: "active", version_name: "1.1.0", version_code: 11, file_hash: "new-hash", size_bytes: 456 },
+    });
+    const rebound = await env.DB.prepare(
+      "SELECT release_id, token_hash FROM release_shares WHERE id = ?",
+    ).bind(created.id).first() as { release_id: string; token_hash: string };
+    expect(rebound.release_id).toBe("rel-share-new");
+    const audit = await env.DB.prepare(
+      "SELECT actor, payload FROM audit_logs WHERE action = 'release_share.rebind'",
+    ).first() as { actor: string; payload: string };
+    expect(audit.actor).toBe("tester");
+    expect(JSON.parse(audit.payload)).toEqual({
+      share_id: created.id,
+      token_hash: rebound.token_hash,
+      old_release_id: "rel-share-old",
+      new_release_id: "rel-share-new",
+    });
+    expect(audit.payload).not.toContain(new URL(created.share_url).pathname.replace("/share/", ""));
+
+    const staleRetry = await handleRebindReleaseShare(makeShareAdminContext(
+      env,
+      { appId: "app-scope", shareId: created.id },
+      { expected_release_id: "rel-share-old", target_release_id: "rel-share-new" },
+    ));
+    expect(staleRetry.status).toBe(409);
+    const auditCount = await env.DB.prepare(
+      "SELECT COUNT(*) AS count FROM audit_logs WHERE action = 'release_share.rebind'",
+    ).first() as { count: number };
+    expect(auditCount.count).toBe(1);
+  });
+
+  it("shares: rejects revoked, non-active, missing, and cross-app rebind targets", async () => {
+    const env = makeEnv();
+    let targetObjectExists = true;
+    env.APK_BUCKET = { head: async (key: string) => targetObjectExists ? ({ key }) : null };
+    await seedRelease(env, "rel-rebind-old", "build-rebind-old", [["full", "all"]]);
+    await seedAsset(env, "build-rebind-old", "asset-rebind-old");
+    await seedRelease(env, "rel-rebind-target", "build-rebind-target", [["full", "all"]], { versionCode: 2 });
+    await seedAsset(env, "build-rebind-target", "asset-rebind-target");
+    const { handleCreateReleaseShare, handleRebindReleaseShare, handleRevokeReleaseShare } = await import("../src/routes/shares");
+    const created = await responseJson<any>(await handleCreateReleaseShare(
+      makeShareAdminContext(env, { appId: "app-scope", releaseId: "rel-rebind-old" }),
+    ));
+    const call = (targetReleaseId: string) => handleRebindReleaseShare(makeShareAdminContext(
+      env,
+      { appId: "app-scope", shareId: created.id },
+      { expected_release_id: "rel-rebind-old", target_release_id: targetReleaseId },
+    ));
+
+    expect((await call("missing-release")).status).toBe(404);
+    await env.DB.prepare("UPDATE releases SET status = 'draft' WHERE id = ?")
+      .bind("rel-rebind-target").run();
+    expect((await call("rel-rebind-target")).status).toBe(409);
+    await env.DB.prepare("UPDATE releases SET status = 'active' WHERE id = ?")
+      .bind("rel-rebind-target").run();
+    await env.DB.prepare(
+      "INSERT INTO apps (id, org_id, slug, name, platform, client_key, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+    ).bind("app-other", "default", "other", "Other", "android", "other-key", 1).run();
+    await env.DB.prepare("UPDATE releases SET app_id = ? WHERE id = ?")
+      .bind("app-other", "rel-rebind-target").run();
+    expect((await call("rel-rebind-target")).status).toBe(404);
+    await env.DB.prepare("UPDATE releases SET app_id = ? WHERE id = ?")
+      .bind("app-scope", "rel-rebind-target").run();
+    await env.DB.prepare(
+      `INSERT INTO channels (id, app_id, slug, name, enabled_product_types_json, metadata_json, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    ).bind("ch-scope-preview", "app-scope", "preview", "Preview", "[]", "{}", 1).run();
+    await env.DB.prepare("UPDATE releases SET channel_id = ? WHERE id = ?")
+      .bind("ch-scope-preview", "rel-rebind-target").run();
+    expect((await call("rel-rebind-target")).status).toBe(409);
+    await env.DB.prepare("UPDATE releases SET channel_id = ? WHERE id = ?")
+      .bind("ch-scope-prod", "rel-rebind-target").run();
+    targetObjectExists = false;
+    expect((await call("rel-rebind-target")).status).toBe(409);
+    targetObjectExists = true;
+    await handleRevokeReleaseShare(makeShareAdminContext(env, {
+      appId: "app-scope", releaseId: "rel-rebind-old", shareId: created.id,
+    }));
+    expect((await call("rel-rebind-target")).status).toBe(409);
+
+    const auditCount = await env.DB.prepare(
+      "SELECT COUNT(*) AS count FROM audit_logs WHERE action = 'release_share.rebind'",
+    ).first() as { count: number };
+    expect(auditCount.count).toBe(0);
+  });
+
   it("latest landing: stable app URL renders the highest active published release", async () => {
     const env = makeEnv();
     await env.DB.prepare("UPDATE apps SET public_history = 1 WHERE id = ?")
@@ -9460,9 +9706,13 @@ describe("quiver public API v2 — scope resolution", () => {
     expect((await submit([{ r2_key: "feedback/other-app/presigned/x.bin" }])).status).toBe(400);
     // missing object -> 400
     expect((await submit([{ r2_key: "feedback/app-scope/presigned/missing.bin" }])).status).toBe(400);
-    // valid presigned object -> 201, recorded with the real size from head
-    const ok = await submit([
+    // declared and stored size mismatch -> 400 (detects truncated/framed uploads)
+    expect((await submit([
       { r2_key: "feedback/app-scope/presigned/good-file.bin", filename: "good-file.bin", content_type: "application/octet-stream", size: 999 },
+    ])).status).toBe(400);
+    // valid presigned object -> 201, recorded with the exact size from head
+    const ok = await submit([
+      { r2_key: "feedback/app-scope/presigned/good-file.bin", filename: "good-file.bin", content_type: "application/octet-stream", size: 1024 },
     ]);
     expect(ok.status).toBe(201);
     const body = await responseJson<any>(ok);
@@ -9524,6 +9774,7 @@ describe("quiver public API v2 — scope resolution", () => {
     const replayBody = await responseJson<any>(replay);
     expect(replayBody.id).toBe(firstBody.id);
     expect(replayBody.reference).toBe(firstBody.reference);
+    expect(replayBody.attachment_refs).toEqual(firstBody.attachment_refs);
     expect(replayBody.idempotent_replay).toBe(true);
     expect(putCalls).toHaveLength(1);
 
@@ -10094,9 +10345,14 @@ describe("quiver public API v2 — scope resolution", () => {
     expect(submittedBody.attachments).toBe(1);
     expect(submittedBody.id).toMatch(/^[0-9a-f-]{36}$/);
     expect(submittedBody.reference).toContain(`ticket ${submittedBody.id}`);
-    // The copyable reference lists attachment filenames, one per line, so a
-    // reading agent knows the ticket carries files and will fetch them.
-    expect(submittedBody.reference).toContain("attachments:\nlogcat.txt");
+    expect(submittedBody.attachment_refs).toEqual([
+      { id: expect.stringMatching(/^[0-9a-f-]{36}$/), filename: "logcat.txt" },
+    ]);
+    // Keep the copyable reference actionable without a second ticket-detail
+    // lookup: every attachment line carries its stable Hands UUID and name.
+    expect(submittedBody.reference).toContain(
+      `attachments:\n${submittedBody.attachment_refs[0].id} · logcat.txt`,
+    );
     expect(submittedBody.attachment_names).toEqual(["logcat.txt"]);
     expect(submittedBody.ticket_url).toBe(
       `https://dashboard.example/apps/app-scope/feedback/${submittedBody.id}`,
@@ -11007,6 +11263,10 @@ describe("Hands iOS simulator QA artifacts", () => {
         method: "GET",
         path: "/api/apps/{app_id}/client-key",
       },
+      "update-release-share": {
+        method: "PATCH",
+        path: "/api/apps/{app_id}/releases/{release_id}/shares/{share_id}",
+      },
       "list-app-members": {
         method: "GET",
         path: "/api/apps/{app_id}/members",
@@ -11071,6 +11331,14 @@ describe("Hands iOS simulator QA artifacts", () => {
         method: "POST",
         path: "/api/apps/{app_id}/builds/{build_id}/testflight-upload",
       },
+      "get-testflight-beta-app-description": {
+        method: "GET",
+        path: "/api/apps/{app_id}/testflight-beta-app-description",
+      },
+      "update-testflight-beta-app-description": {
+        method: "PUT",
+        path: "/api/apps/{app_id}/testflight-beta-app-description",
+      },
       "get-testflight-upload-status": {
         method: "GET",
         path: "/api/apps/{app_id}/testflight-uploads/{build_upload_id}",
@@ -11110,6 +11378,13 @@ describe("Hands iOS simulator QA artifacts", () => {
     expect(byName["purge-app"].parameters).toMatchObject({
       app_id: { type: "string", in: "path", required: true },
       confirm_slug: { type: "string", in: "body", required: true },
+    });
+    expect(byName["update-release-share"].parameters).toMatchObject({
+      app_id: { type: "string", in: "path", required: true },
+      release_id: { type: "string", in: "path", required: true },
+      share_id: { type: "string", in: "path", required: true },
+      expires_at: { type: "number", in: "body", required: false, nullable: true },
+      ttl_seconds: { type: "number", in: "body", required: false },
     });
     expect(byName["bind-reporter-webhook"]).toMatchObject({
       endpoint: {
@@ -11731,7 +12006,10 @@ describe("Hands iOS simulator QA artifacts", () => {
       handler: "list" | "detail" | "comment" | "close",
       credential: string | null,
       ticketId?: string,
-      commentBody?: { body: string; submission_id: string } | FormData,
+      commentBody?:
+        | { body: string; submission_id: string }
+        | { reason: "completed" | "no_longer_needed" | "not_planned" }
+        | FormData,
       headerReporter = reporterId,
       queries: Record<string, string> = {},
     ) => {
@@ -11749,7 +12027,9 @@ describe("Hands iOS simulator QA artifacts", () => {
               ? `Bearer ${credential}`
               : undefined,
           query: (name: string) => queries[name] ?? (handler === "list" && name === "limit" ? "50" : undefined),
-          json: async () => commentBody instanceof FormData ? {} : commentBody ?? {},
+          json: async () => commentBody instanceof FormData
+            ? {}
+            : commentBody ?? (handler === "close" ? { reason: "completed" } : {}),
           formData: async () => commentBody instanceof FormData ? commentBody : new FormData(),
         },
         json: (data: unknown, status = 200) => new Response(JSON.stringify(data), {
@@ -11866,6 +12146,12 @@ describe("Hands iOS simulator QA artifacts", () => {
     expect((await handleCloseReporterFeedback(context(
       "close", credentialB.token, ticketA,
     ))).status).toBe(404);
+    expect((await handleCloseReporterFeedback(context(
+      "close",
+      credentialComment.token,
+      ticketA,
+      { reason: "not_planned" },
+    ))).status).toBe(400);
     await env.DB.prepare("UPDATE feedback_tickets SET assignee = 'staff:test' WHERE id = ?1")
       .bind(ticketA).run();
     const closeResponses = await Promise.all([
@@ -11875,8 +12161,12 @@ describe("Hands iOS simulator QA artifacts", () => {
     const closeBodies = await Promise.all(closeResponses.map((response) => response.json() as Promise<any>));
     expect(closeBodies.map((body) => body.changed).sort()).toEqual([false, true]);
     expect(await env.DB.prepare(
-      "SELECT status, assignee FROM feedback_tickets WHERE id = ?1",
-    ).bind(ticketA).first()).toEqual({ status: "closed", assignee: "staff:test" });
+      "SELECT status, closure_reason, assignee FROM feedback_tickets WHERE id = ?1",
+    ).bind(ticketA).first()).toEqual({
+      status: "closed",
+      closure_reason: "completed",
+      assignee: "staff:test",
+    });
     expect((await env.DB.prepare(
       "SELECT COUNT(*) AS count FROM audit_logs WHERE action = 'feedback.reporter_close'",
     ).first() as any).count).toBe(1);
@@ -11888,6 +12178,7 @@ describe("Hands iOS simulator QA artifacts", () => {
       ticket_id: ticketA,
       previous_status: "open",
       status: "closed",
+      closure_reason: "completed",
     });
     const closeEvents = await env.DB.prepare(
       `SELECT payload_json FROM feedback_events
@@ -11898,15 +12189,25 @@ describe("Hands iOS simulator QA artifacts", () => {
       ticket_id: ticketA,
       previous_status: "open",
       status: "closed",
+      closure_reason: "completed",
       reporter_integration_id: integrationA,
       reporter_id: reporterId,
     });
+    const differentCloseReason = await handleCloseReporterFeedback(context(
+      "close",
+      credentialComment.token,
+      ticketA,
+      { reason: "no_longer_needed" },
+    ));
+    expect(differentCloseReason.status).toBe(409);
     await env.DB.prepare(
       "DELETE FROM feedback_events WHERE ticket_id = ?1 AND event_type = 'feedback:status_changed'",
     ).bind(ticketA).run();
     await env.DB.prepare("DELETE FROM audit_logs WHERE action = 'feedback.reporter_close'").run();
     await env.DB.prepare(
-      "UPDATE feedback_tickets SET status = 'open', assignee = NULL WHERE id = ?1",
+      `UPDATE feedback_tickets
+       SET status = 'open', closure_reason = NULL, duplicate_of_ticket_id = NULL,
+           assignee = NULL WHERE id = ?1`,
     ).bind(ticketA).run();
 
     const { computeReporterAuditHash } = await import("../src/lib/reporter_audit");
@@ -12450,6 +12751,53 @@ describe("Hands iOS simulator QA artifacts", () => {
     expect((await env.DB.prepare(
       "SELECT COUNT(*) AS count FROM audit_logs WHERE action = 'feedback.update'",
     ).first() as any).count).toBe(auditBeforeNoop);
+
+    const missingCloseReason = await handleUpdateFeedback(adminContext({ status: "closed" }));
+    expect(missingCloseReason.status).toBe(400);
+    const crossAppTicketId = "12121212-1212-4212-8212-121212121212";
+    await env.DB.prepare(
+      `INSERT INTO apps (id, org_id, slug, name, platform, created_at)
+       VALUES ('app-other', 'default', 'app-other', 'Other App', 'ios', ?1)`,
+    ).bind(now).run();
+    await env.DB.prepare(
+      `INSERT INTO feedback_tickets
+       (id, app_id, kind, status, message, metadata_json, created_at, updated_at)
+       VALUES (?1, 'app-other', 'feedback', 'open', 'Other app ticket', '{}', ?2, ?2)`,
+    ).bind(crossAppTicketId, now).run();
+    const crossAppDuplicate = await handleUpdateFeedback(adminContext({
+      status: "closed",
+      closure_reason: "duplicate",
+      duplicate_of_ticket_id: crossAppTicketId,
+    }));
+    expect(crossAppDuplicate.status).toBe(400);
+    const duplicateTicketId = ticketB;
+    const duplicateClose = await handleUpdateFeedback(adminContext({
+      status: "closed",
+      closure_reason: "duplicate",
+      duplicate_of_ticket_id: duplicateTicketId.slice(0, 8),
+    }));
+    expect(duplicateClose.status).toBe(200);
+    expect(await duplicateClose.json()).toMatchObject({
+      status: "closed",
+      closure_reason: "duplicate",
+      duplicate_of_ticket_id: duplicateTicketId,
+      changed: true,
+    });
+    expect(JSON.parse((await env.DB.prepare(
+      `SELECT payload_json FROM feedback_events
+       WHERE ticket_id = ?1 AND event_type = 'feedback:status_changed'
+       ORDER BY rowid DESC LIMIT 1`,
+    ).bind(ticketA).first() as { payload_json: string }).payload_json).payload)
+      .toMatchObject({
+        status: "closed",
+        closure_reason: "duplicate",
+        duplicate_of_ticket_id: duplicateTicketId,
+      });
+    await env.DB.prepare(
+      `UPDATE feedback_tickets
+       SET status = 'resolved', closure_reason = NULL, duplicate_of_ticket_id = NULL
+       WHERE id = ?1`,
+    ).bind(ticketA).run();
 
     await env.DB.prepare(
       "DELETE FROM feedback_events WHERE ticket_id = ?1 AND event_type = 'feedback:status_changed'",

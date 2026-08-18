@@ -17,6 +17,7 @@ import { cors } from "hono/cors";
 import { publicDocAssetPaths } from "./lib/public_docs";
 
 import { authMiddleware, currentActor } from "./middleware/auth";
+import { requireHandsAdmin } from "./middleware/hands_admin";
 import {
   handleAgentManifest,
   handleAgentHelp,
@@ -27,6 +28,7 @@ import {
   handleAuthMe,
   handleRaftCallback,
 } from "./routes/auth";
+import { handleHandsAdminOverview } from "./routes/hands_admin";
 import {
   handleDeleteAgcCredentials,
   handleGetAgcCredentials,
@@ -67,6 +69,7 @@ import {
   handlePublicReleaseShare,
   handleRevokeReleaseShare,
   handleUpdateReleaseShare,
+  handleRebindReleaseShare,
   handleListAppShares,
   handlePublicReleaseShareUnlock,
   handlePublicReleaseShareIcon,
@@ -84,6 +87,9 @@ import {
   handleListCrashGroups,
   handleFeedbackStats,
   handlePresignFeedbackAttachments,
+  handleFeedbackMultipartPart,
+  handleCompleteFeedbackMultipart,
+  handleAbortFeedbackMultipart,
 } from "./routes/feedback";
 import { handleDeviceRegister, handleDeviceAnalytics, handleDeviceDetail, handleVersionAnalytics } from "./routes/analytics";
 import { handleSessionEvent, handleReleaseHealth } from "./routes/sessions";
@@ -135,6 +141,10 @@ import {
   handleTestflightUploadStatus,
 } from "./routes/testflight";
 import { handleAppStoreReview } from "./routes/appstore_review";
+import {
+  handleGetBetaAppDescription,
+  handleUpdateBetaAppDescription,
+} from "./routes/testflight_beta_app_description";
 import { handleGenerateDeltaPatches, handleDeltaSources } from "./routes/delta";
 import { handleUploadApk } from "./routes/upload";
 import {
@@ -571,6 +581,9 @@ app.post("/public/v2/apps/:slug/devices", handleDeviceRegister);
 app.post("/public/v2/apps/:slug/metrics", handleDeviceRegister);
 app.post("/public/v2/apps/:slug/sessions", handleSessionEvent);
 app.post("/public/v2/apps/:slug/feedback/presign", handlePresignFeedbackAttachments);
+app.put("/public/v2/apps/:slug/feedback/multipart/part", handleFeedbackMultipartPart);
+app.post("/public/v2/apps/:slug/feedback/multipart/complete", handleCompleteFeedbackMultipart);
+app.post("/public/v2/apps/:slug/feedback/multipart/abort", handleAbortFeedbackMultipart);
 app.get("/api/apps/:appId/reporter-feedback", handleListReporterFeedback);
 app.post("/api/apps/:appId/reporter-feedback/session", handleMintReporterSession);
 app.put("/api/apps/:appId/reporter-feedback/route-subject", handleBindReporterRouteSubject);
@@ -625,6 +638,10 @@ export const admin = new Hono<{
   };
 }>();
 admin.use("*", authMiddleware);
+
+// Global Hands observability is server-admin scoped, not app-role scoped.
+admin.use("/api/admin/observability/*", requireHandsAdmin);
+admin.get("/api/admin/observability/overview", handleHandsAdminOverview);
 
 // Global error handler: surface unhandled exceptions as JSON instead of
 // Hono's default empty "Internal Server Error" body. This makes every
@@ -808,6 +825,7 @@ admin.post("/api/apps/:appId/releases/:releaseId/force-update", requireAppRole("
 admin.get("/api/apps/:appId/releases/:releaseId/checks", requireAppRole("viewer"), handleListReleaseChecks);
 admin.post("/api/apps/:appId/releases/:releaseId/checks", requireAppRole("publisher"), handleUpsertReleaseCheck);
 admin.get("/api/apps/:appId/shares", requireAppRole("viewer"), handleListAppShares);
+admin.post("/api/apps/:appId/shares/:shareId/rebind", requireAppRole("publisher"), handleRebindReleaseShare);
 admin.put("/api/apps/:appId/icon", requireAppRole("publisher"), handleUploadAppIcon);
 admin.get("/api/apps/:appId/client-key", requireAppRole("admin"), handleGetClientKey);
 admin.post("/api/apps/:appId/rotate-client-key", requireAppRole("admin"), handleRotateClientKey);
@@ -1021,6 +1039,16 @@ admin.post("/api/apps/:appId/builds/:buildId/testflight-expire", requireAppRole(
 admin.post("/api/apps/:appId/builds/:buildId/testflight-publish", requireAppRole("publisher"), handleTestflightPublish);
 admin.get("/api/apps/:appId/builds/:buildId/testflight-publish", requireAppRole("viewer"), handleTestflightPublishStatus);
 admin.get("/api/apps/:appId/appstore-review", requireAppRole("viewer"), handleAppStoreReview);
+admin.get(
+  "/api/apps/:appId/testflight-beta-app-description",
+  requireAppRole("viewer"),
+  handleGetBetaAppDescription,
+);
+admin.put(
+  "/api/apps/:appId/testflight-beta-app-description",
+  requireAppRole("publisher"),
+  handleUpdateBetaAppDescription,
+);
 admin.get("/api/apps/:appId/appgallery-review", requireAppRole("viewer"), handleAppGalleryReview);
 admin.put("/api/apps/:appId/asc-credentials", requireAppRole("admin"), handleSetAscCredentials);
 admin.delete("/api/apps/:appId/asc-credentials", requireAppRole("admin"), handleDeleteAscCredentials);

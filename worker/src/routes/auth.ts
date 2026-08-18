@@ -23,6 +23,7 @@ import {
   requestOrigin,
   sharedCookieDomain,
 } from "../lib/origin";
+import { encryptAdminRaftToken } from "../lib/admin_raft_token";
 
 const LOGIN_PENDING_COOKIE = "quiver_raft_login_pending";
 const LOGIN_RETURN_COOKIE = "quiver_raft_return";
@@ -538,6 +539,7 @@ async function upsertRaftOrgMembership(
 async function createAuthToken(
   env: Env,
   accountId: string,
+  raftAccessToken: string,
 ): Promise<{ token: string; expiresAt: number }> {
   const timestamp = now();
   const ttlSeconds = 60 * 60 * 24 * 14;
@@ -545,13 +547,17 @@ async function createAuthToken(
   const sessionId = crypto.randomUUID();
   const token = await createSignedJwt(env, accountId, timestamp, expiresAt, sessionId);
   const tokenHash = await sha256Hex(token);
+  const encryptionSecret = env.SIGNED_URL_SECRET || env.RAFT_CLIENT_SECRET;
+  if (!encryptionSecret) throw new Error("SIGNED_URL_SECRET or RAFT_CLIENT_SECRET is required for admin token encryption");
+  const encryptedRaftToken = await encryptAdminRaftToken(encryptionSecret, raftAccessToken);
   await env.DB
     .prepare(
       `INSERT INTO raft_sessions
-       (id, account_id, token_hash, created_at, expires_at, last_seen_at, revoked_at)
-       VALUES (?1, ?2, ?3, ?4, ?5, ?4, NULL)`,
+       (id, account_id, token_hash, created_at, expires_at, last_seen_at, revoked_at,
+        raft_access_token_ciphertext)
+       VALUES (?1, ?2, ?3, ?4, ?5, ?4, NULL, ?6)`,
     )
-    .bind(sessionId, accountId, tokenHash, timestamp, expiresAt)
+    .bind(sessionId, accountId, tokenHash, timestamp, expiresAt, encryptedRaftToken)
     .run();
   return { token, expiresAt };
 }
@@ -583,7 +589,7 @@ async function finalizeRaftLogin(
   const membership = await upsertRaftOrgMembership(c.env.DB, account);
   account.org_id = membership.org_id;
   account.org_role = membership.org_role;
-  const authToken = await createAuthToken(c.env, account.id);
+  const authToken = await createAuthToken(c.env, account.id, token.access_token);
   return { account, authToken };
 }
 
@@ -824,7 +830,7 @@ export async function handleAgentHelp(c: Context<{ Bindings: Env }>) {
       "3. Triage as you work: update-feedback (change status/assignee, e.g. close a fixed ticket) and comment-feedback (attribution note, internal=true for staff-only). Requires org member (or app publisher).",
       "4. Release management (app publisher): create-release from an existing build (DRAFT by default) → update-release with bilingual release_notes → after explicit human authorization, publish-release. See docs.release_guide.",
       "5. iOS simulator QA fixtures: create-ios-simulator-artifact → PUT the .app.zip to upload.url with the returned headers → complete-ios-simulator-artifact → get/presign the durable exact-byte artifact. QA artifacts can never become releases or update offers.",
-      "6. TestFlight: an app admin runs upload-testflight-build and polls get-testflight-upload-status to COMPLETE; an app viewer lists stable beta-group ids, then an app publisher runs publish-testflight-build and polls distribution status. If an exact beta build must be removed from testing, an app admin uses expire-testflight-build with the ASC build id plus version/build confirmations. These actions never activate a Hands release or submit an App Store production release.",
+      "6. TestFlight: get/update-testflight-beta-app-description manage app-level invitation copy separately from build-level What to Test. An app admin runs upload-testflight-build and polls get-testflight-upload-status to COMPLETE; an app viewer lists beta groups, then an app publisher runs publish-testflight-build and polls distribution status. These actions never activate a Hands release or submit an App Store production release.",
     ],
     auth: {
       raft_agents:
@@ -1237,6 +1243,19 @@ export async function handleAgentManifest(c: Context<{ Bindings: Env }>) {
         },
       },
       {
+        name: "update-release-share",
+        description:
+          "Update one unrevoked release share's expiry. Pass expires_at=null to make an existing link live until revoked, or ttl_seconds for a future expiry. Requires app publisher.",
+        endpoint: { method: "PATCH", path: "/api/apps/{app_id}/releases/{release_id}/shares/{share_id}" },
+        parameters: {
+          app_id: { type: "string", in: "path", required: true, description: "App UUID." },
+          release_id: { type: "string", in: "path", required: true, description: "Current release UUID from a fresh share list." },
+          share_id: { type: "string", in: "path", required: true, description: "Share UUID." },
+          expires_at: { type: "number", in: "body", required: false, nullable: true, description: "Unix millisecond expiry; pass null to make the share live until revoked." },
+          ttl_seconds: { type: "number", in: "body", required: false, description: "Optional future expiry relative to now." },
+        },
+      },
+      {
         name: "revoke-release-share",
         description: "Revoke a share link (the only way a no-expiry link dies). Requires app publisher.",
         endpoint: { method: "DELETE", path: "/api/apps/{app_id}/releases/{release_id}/shares/{share_id}" },
@@ -1244,6 +1263,18 @@ export async function handleAgentManifest(c: Context<{ Bindings: Env }>) {
           app_id: { type: "string", in: "path", required: true, description: "App UUID." },
           release_id: { type: "string", in: "path", required: true, description: "Release UUID." },
           share_id: { type: "string", in: "path", required: true, description: "Share UUID." },
+        },
+      },
+      {
+        name: "rebind-release-share",
+        description:
+          "Rebind one unrevoked public share URL to another active release in the same app and channel. The expected current release is a required concurrency precondition; update and audit commit atomically. Requires app publisher.",
+        endpoint: { method: "POST", path: "/api/apps/{app_id}/shares/{share_id}/rebind" },
+        parameters: {
+          app_id: { type: "string", in: "path", required: true, description: "App UUID." },
+          share_id: { type: "string", in: "path", required: true, description: "Share UUID." },
+          expected_release_id: { type: "string", in: "body", required: true, description: "Current release UUID from a fresh share list." },
+          target_release_id: { type: "string", in: "body", required: true, description: "Active target release UUID in the same app and channel." },
         },
       },
       {
@@ -1334,6 +1365,31 @@ export async function handleAgentManifest(c: Context<{ Bindings: Env }>) {
         parameters: {
           app_id: { type: "string", in: "path", required: true, description: "OHOS app UUID." },
           submission_id: { type: "string", in: "path", required: true, description: "Hands market submission UUID." },
+        },
+      },
+      {
+        name: "get-testflight-beta-app-description",
+        description:
+          "Read live app-level Beta App Description localizations (betaAppLocalizations.description) from App Store Connect. This is separate from every build's What to Test text. Read-only; requires app viewer.",
+        endpoint: {
+          method: "GET",
+          path: "/api/apps/{app_id}/testflight-beta-app-description",
+        },
+        parameters: {
+          app_id: { type: "string", in: "path", required: true, description: "Hands iOS app UUID; its main-channel bundle id selects the ASC app." },
+        },
+      },
+      {
+        name: "update-testflight-beta-app-description",
+        description:
+          "Create or update supplied app-level Beta App Description localizations, preserve other locales, and require exact Apple readback. Does not touch build-level What to Test, upload or distribute a build, notify testers, or publish an App Store version. Requires app publisher and explicit authorization for the live metadata change.",
+        endpoint: {
+          method: "PUT",
+          path: "/api/apps/{app_id}/testflight-beta-app-description",
+        },
+        parameters: {
+          app_id: { type: "string", in: "path", required: true, description: "Hands iOS app UUID; its main-channel bundle id selects the ASC app." },
+          descriptions: { type: "object", in: "body", required: true, description: "Non-empty locale-to-description map, for example {\"en-US\":\"A private collaboration app\"}." },
         },
       },
       {

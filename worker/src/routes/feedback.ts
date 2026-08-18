@@ -24,12 +24,20 @@ const MAX_ATTACHMENTS = 9;
 const MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024; // inline multipart cap (through the Worker)
 const MAX_PRESIGNED_BYTES = 200 * 1024 * 1024; // direct-to-R2 cap
 const PRESIGN_TTL_SECONDS = 900;
+const MULTIPART_PART_BYTES = 5 * 1024 * 1024;
+const MAX_MULTIPART_PARTS = MAX_PRESIGNED_BYTES / MULTIPART_PART_BYTES;
 const MAX_MESSAGE_CHARS = 10_000;
 const DIRECT_RATE_LIMIT_PER_HOUR = 10;
 const TRUSTED_REPORTER_RATE_LIMIT_PER_HOUR = 100;
 
 const TICKET_STATUSES = ["open", "in_progress", "resolved", "closed"] as const;
 const TICKET_KINDS = ["feedback", "bug", "crash", "error"] as const;
+const FEEDBACK_CLOSURE_REASONS = [
+  "completed",
+  "not_planned",
+  "cannot_reproduce",
+  "duplicate",
+] as const;
 const SUBMISSION_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const MATERIAL_DELTA_DEFAULT_LIMIT = 100;
 const MATERIAL_DELTA_MAX_LIMIT = 200;
@@ -86,6 +94,27 @@ type FeedbackApp = {
   platform: string | null;
 };
 
+async function authorizeFeedbackUpload(c: Context<{ Bindings: Env }>) {
+  const slug = c.req.param("slug");
+  if (!slug) return { response: c.json({ error: "slug required" }, 400) };
+  const app = await c.env.DB.prepare(
+    "SELECT id, client_key FROM apps WHERE slug = ?1 AND archived = 0",
+  )
+    .bind(slug)
+    .first<{ id: string; client_key: string | null }>();
+  if (!app) return { response: c.json({ error: `app '${slug}' not found` }, 404) };
+  const presented =
+    c.req.header("X-Hands-Client-Key") ?? c.req.header("X-Quiver-Client-Key") ?? c.req.query("client_key") ?? "";
+  if (!app.client_key || presented !== app.client_key) {
+    return { response: c.json({ error: "invalid or missing client key" }, 401) };
+  }
+  return { app };
+}
+
+function validFeedbackMultipartKey(appId: string, r2Key: string): boolean {
+  return r2Key.startsWith(`feedback/${appId}/presigned/`) && r2Key.length <= 512;
+}
+
 /**
  * Presigned direct-to-R2 upload for large feedback attachments. Client-key
  * gated (same as submit). Body: { files: [{ filename, content_type, size }] }.
@@ -94,21 +123,14 @@ type FeedbackApp = {
  * r2_keys via the `presigned` form field.
  */
 export async function handlePresignFeedbackAttachments(c: Context<{ Bindings: Env }>) {
-  const slug = c.req.param("slug");
-  if (!slug) return c.json({ error: "slug required" }, 400);
-  const app = await c.env.DB.prepare(
-    "SELECT id, client_key FROM apps WHERE slug = ?1 AND archived = 0",
-  )
-    .bind(slug)
-    .first<{ id: string; client_key: string | null }>();
-  if (!app) return c.json({ error: `app '${slug}' not found` }, 404);
-  const presented =
-    c.req.header("X-Hands-Client-Key") ?? c.req.header("X-Quiver-Client-Key") ?? c.req.query("client_key") ?? "";
-  if (!app.client_key || presented !== app.client_key) {
-    return c.json({ error: "invalid or missing client key" }, 401);
-  }
+  const auth = await authorizeFeedbackUpload(c);
+  if ("response" in auth) return auth.response;
+  const { app } = auth;
 
-  let body: { files?: Array<{ filename?: string; content_type?: string; size?: number }> };
+  let body: {
+    files?: Array<{ filename?: string; content_type?: string; size?: number }>;
+    upload_mode?: string;
+  };
   try {
     body = await c.req.json();
   } catch {
@@ -118,14 +140,8 @@ export async function handlePresignFeedbackAttachments(c: Context<{ Bindings: En
   if (files.length === 0 || files.length > MAX_ATTACHMENTS) {
     return c.json({ error: `files must contain 1-${MAX_ATTACHMENTS} entries` }, 400);
   }
-
-  const now = Date.now();
-  const out: Array<{
-    attachment_id: string;
-    r2_key: string;
-    upload_url: string;
-    expires_at: number;
-  }> = [];
+  // Validate the complete batch before creating any multipart session. A bad
+  // later entry must not strand an earlier R2 multipart upload.
   for (const [index, file] of files.entries()) {
     const size = typeof file.size === "number" ? file.size : 0;
     if (size <= 0 || size > MAX_PRESIGNED_BYTES) {
@@ -134,12 +150,45 @@ export async function handlePresignFeedbackAttachments(c: Context<{ Bindings: En
         400,
       );
     }
+  }
+
+  const now = Date.now();
+  const multipart = body.upload_mode === "r2_multipart_proxy";
+  const out: Array<{
+    attachment_id: string;
+    r2_key: string;
+    upload_url?: string;
+    expires_at?: number;
+    upload_id?: string;
+    part_size?: number;
+  }> = [];
+  const startedMultipartUploads: R2MultipartUpload[] = [];
+  for (const [index, file] of files.entries()) {
     const safeName =
       String(file.filename ?? "").replace(/[^A-Za-z0-9._-]/g, "_").slice(0, 120) ||
       `attachment-${index}`;
     const contentType = String(file.content_type ?? "application/octet-stream").slice(0, 100);
     const attachmentId = crypto.randomUUID();
     const r2Key = `feedback/${app.id}/presigned/${attachmentId}-${safeName}`;
+    if (multipart) {
+      let upload: R2MultipartUpload;
+      try {
+        upload = await c.env.APK_BUCKET.createMultipartUpload(r2Key, {
+          httpMetadata: { contentType },
+        });
+      } catch {
+        await Promise.allSettled(startedMultipartUploads.map((started) => started.abort()));
+        return c.json({ error: "multipart upload is not available" }, 503);
+      }
+      startedMultipartUploads.push(upload);
+      out.push({
+        attachment_id: attachmentId,
+        r2_key: r2Key,
+        upload_id: upload.uploadId,
+        part_size: MULTIPART_PART_BYTES,
+      });
+      continue;
+    }
     const uploadUrl = await presignR2UploadUrl(c.env, r2Key, contentType, PRESIGN_TTL_SECONDS);
     if (!uploadUrl) {
       return c.json({ error: "direct upload is not configured on this server" }, 501);
@@ -152,6 +201,145 @@ export async function handlePresignFeedbackAttachments(c: Context<{ Bindings: En
     });
   }
   return c.json({ uploads: out });
+}
+
+/**
+ * Proxies one bounded raw part from pure ArkTS into an R2 multipart upload.
+ * The body is streamed through to R2; the Worker never buffers the attachment
+ * or even a complete 5 MiB part.
+ */
+export async function handleFeedbackMultipartPart(c: Context<{ Bindings: Env }>) {
+  const auth = await authorizeFeedbackUpload(c);
+  if ("response" in auth) return auth.response;
+  const r2Key = c.req.query("r2_key") ?? "";
+  const uploadId = c.req.query("upload_id") ?? "";
+  const partNumber = Number(c.req.query("part_number") ?? "0");
+  const declaredBytes = Number(c.req.header("X-Hands-Part-Bytes") ?? "0");
+  if (!validFeedbackMultipartKey(auth.app.id, r2Key)) {
+    return c.json({ error: "invalid multipart r2_key" }, 400);
+  }
+  if (uploadId.length === 0 || uploadId.length > 2048) {
+    return c.json({ error: "invalid multipart upload_id" }, 400);
+  }
+  if (!Number.isSafeInteger(partNumber) || partNumber < 1 || partNumber > MAX_MULTIPART_PARTS) {
+    return c.json({ error: `part_number must be 1-${MAX_MULTIPART_PARTS}` }, 400);
+  }
+  if (!Number.isSafeInteger(declaredBytes) || declaredBytes < 1 || declaredBytes > MULTIPART_PART_BYTES) {
+    return c.json({ error: `X-Hands-Part-Bytes must be 1-${MULTIPART_PART_BYTES}` }, 400);
+  }
+  if (!c.req.raw.body) return c.json({ error: "raw part body required" }, 400);
+
+  let receivedBytes = 0;
+  const boundedBody = c.req.raw.body.pipeThrough(new TransformStream<Uint8Array, Uint8Array>({
+    transform(chunk, controller) {
+      receivedBytes += chunk.byteLength;
+      if (receivedBytes > declaredBytes || receivedBytes > MULTIPART_PART_BYTES) {
+        throw new Error("multipart part exceeds declared size");
+      }
+      controller.enqueue(chunk);
+    },
+  }));
+  const upload = c.env.APK_BUCKET.resumeMultipartUpload(r2Key, uploadId);
+  try {
+    const part = await upload.uploadPart(partNumber, boundedBody);
+    if (receivedBytes !== declaredBytes) {
+      await upload.abort();
+      return c.json({ error: "multipart part size mismatch" }, 400);
+    }
+    return c.json({ part_number: part.partNumber, etag: part.etag, size: receivedBytes });
+  } catch (error) {
+    console.warn(JSON.stringify({
+      event: "feedback_multipart_part_failed",
+      app_id: auth.app.id,
+      part_number: partNumber,
+      error: error instanceof Error ? error.message : String(error),
+    }));
+    return c.json({ error: "multipart part upload failed" }, 502);
+  }
+}
+
+export async function handleCompleteFeedbackMultipart(c: Context<{ Bindings: Env }>) {
+  const auth = await authorizeFeedbackUpload(c);
+  if ("response" in auth) return auth.response;
+  let body: {
+    r2_key?: string;
+    upload_id?: string;
+    size?: number;
+    parts?: Array<{ part_number?: number; etag?: string }>;
+  };
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ error: "JSON body required" }, 400);
+  }
+  const r2Key = String(body.r2_key ?? "");
+  const uploadId = String(body.upload_id ?? "");
+  const size = typeof body.size === "number" ? body.size : 0;
+  const parts = Array.isArray(body.parts) ? body.parts : [];
+  if (!validFeedbackMultipartKey(auth.app.id, r2Key)) {
+    return c.json({ error: "invalid multipart r2_key" }, 400);
+  }
+  if (uploadId.length === 0 || uploadId.length > 2048) {
+    return c.json({ error: "invalid multipart upload_id" }, 400);
+  }
+  if (!Number.isSafeInteger(size) || size < 1 || size > MAX_PRESIGNED_BYTES) {
+    return c.json({ error: `size must be 1-${MAX_PRESIGNED_BYTES}` }, 400);
+  }
+  const expectedParts = Math.ceil(size / MULTIPART_PART_BYTES);
+  if (parts.length !== expectedParts || expectedParts > MAX_MULTIPART_PARTS) {
+    return c.json({ error: `parts must contain exactly ${expectedParts} entries` }, 400);
+  }
+  const uploadedParts: R2UploadedPart[] = [];
+  for (let index = 0; index < parts.length; index++) {
+    const entry = parts[index];
+    if (!entry) return c.json({ error: "missing multipart part" }, 400);
+    const partNumber = entry.part_number;
+    const etag = String(entry.etag ?? "");
+    if (partNumber !== index + 1 || etag.length === 0 || etag.length > 256) {
+      return c.json({ error: "parts must be sequential and contain valid etags" }, 400);
+    }
+    uploadedParts.push({ partNumber, etag });
+  }
+  const upload = c.env.APK_BUCKET.resumeMultipartUpload(r2Key, uploadId);
+  try {
+    const object = await upload.complete(uploadedParts);
+    if (object.size !== size) {
+      await c.env.APK_BUCKET.delete(r2Key);
+      return c.json({ error: "completed multipart upload size mismatch" }, 400);
+    }
+    return c.json({ r2_key: r2Key, size: object.size });
+  } catch (error) {
+    console.warn(JSON.stringify({
+      event: "feedback_multipart_complete_failed",
+      app_id: auth.app.id,
+      error: error instanceof Error ? error.message : String(error),
+    }));
+    return c.json({ error: "multipart completion failed" }, 502);
+  }
+}
+
+export async function handleAbortFeedbackMultipart(c: Context<{ Bindings: Env }>) {
+  const auth = await authorizeFeedbackUpload(c);
+  if ("response" in auth) return auth.response;
+  let body: { r2_key?: string; upload_id?: string };
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ error: "JSON body required" }, 400);
+  }
+  const r2Key = String(body.r2_key ?? "");
+  const uploadId = String(body.upload_id ?? "");
+  if (!validFeedbackMultipartKey(auth.app.id, r2Key) || uploadId.length === 0 || uploadId.length > 2048) {
+    return c.json({ error: "invalid multipart upload target" }, 400);
+  }
+  try {
+    await c.env.APK_BUCKET.resumeMultipartUpload(r2Key, uploadId).abort();
+    return c.json({ aborted: true });
+  } catch {
+    // Abort is idempotent from the SDK's perspective: an already-expired or
+    // already-aborted upload has no durable attachment to clean up.
+    return c.json({ aborted: true });
+  }
 }
 
 export async function handlePublicFeedbackSubmit(c: Context<{ Bindings: Env }>) {
@@ -373,6 +561,10 @@ export async function handlePublicFeedbackSubmit(c: Context<{ Bindings: Env }>) 
       if (!head) {
         return c.json({ error: `presigned upload not found: ${r2Key}` }, 400);
       }
+      const declaredSize = typeof item.size === "number" ? item.size : 0;
+      if (declaredSize <= 0 || head.size !== declaredSize) {
+        return c.json({ error: `presigned upload size mismatch: ${r2Key}` }, 400);
+      }
       const filename =
         String(item.filename ?? "").replace(/[^A-Za-z0-9._-]/g, "_").slice(0, 120) ||
         r2Key.split("/").pop() ||
@@ -382,14 +574,14 @@ export async function handlePublicFeedbackSubmit(c: Context<{ Bindings: Env }>) 
         r2Key,
         filename,
         contentType: (item.content_type ? String(item.content_type).slice(0, 100) : null),
-        sizeBytes: head.size ?? (typeof item.size === "number" ? item.size : 0),
+        sizeBytes: head.size,
         fingerprint: {
           source: "presigned",
           index: attachmentRows.length,
           r2_key: r2Key,
           filename,
           content_type: item.content_type ? String(item.content_type).slice(0, 100) : null,
-          size_bytes: head.size ?? (typeof item.size === "number" ? item.size : 0),
+          size_bytes: head.size,
           etag: head.etag,
         },
       });
@@ -744,19 +936,22 @@ export async function handlePublicFeedbackSubmit(c: Context<{ Bindings: Env }>) 
     status: "open",
     versionName: meta("version_name"),
     versionCode,
-    attachmentNames: attachmentRows.map((attachment) => attachment.filename),
+    attachmentRefs: attachmentRows.map(({ id, filename }) => ({ id, filename })),
   });
 }
 
-function feedbackNewSubmitResponse(
-  c: Context<{ Bindings: Env }>,
+type FeedbackAttachmentRef = {
+  id: string;
+  filename: string;
+};
+
+function feedbackReference(
   app: FeedbackApp,
   input: {
     ticketId: string;
-    status: string;
     versionName: string | null;
     versionCode: number | null;
-    attachmentNames: string[];
+    attachmentRefs: FeedbackAttachmentRef[];
   },
 ) {
   const versionLabel = input.versionName
@@ -769,15 +964,32 @@ function feedbackNewSubmitResponse(
   const referenceLine = [app.slug, versionLabel, `ticket ${input.ticketId}`]
     .filter(Boolean)
     .join(" · ");
-  const reference = input.attachmentNames.length
-    ? `${referenceLine}\nattachments:\n${input.attachmentNames.join("\n")}`
+  return input.attachmentRefs.length
+    ? `${referenceLine}\nattachments:\n${input.attachmentRefs
+      .map(({ id, filename }) => `${id} · ${filename}`)
+      .join("\n")}`
     : referenceLine;
+}
+
+function feedbackNewSubmitResponse(
+  c: Context<{ Bindings: Env }>,
+  app: FeedbackApp,
+  input: {
+    ticketId: string;
+    status: string;
+    versionName: string | null;
+    versionCode: number | null;
+    attachmentRefs: FeedbackAttachmentRef[];
+  },
+) {
+  const attachmentNames = input.attachmentRefs.map(({ filename }) => filename);
   return c.json({
     id: input.ticketId,
     status: input.status,
-    attachments: input.attachmentNames.length,
-    attachment_names: input.attachmentNames,
-    reference,
+    attachments: input.attachmentRefs.length,
+    attachment_names: attachmentNames,
+    attachment_refs: input.attachmentRefs,
+    reference: feedbackReference(app, input),
     ticket_url: `${dashboardOrigin(c.env)}/apps/${app.id}/feedback/${input.ticketId}`,
     idempotent_replay: false,
   }, 201);
@@ -820,27 +1032,15 @@ async function feedbackSubmitResponse(
   if (!ticket) return c.json({ error: "feedback ticket not found" }, 500);
 
   const attachments = await c.env.DB.prepare(
-    `SELECT filename
+    `SELECT id, filename
      FROM feedback_attachments
      WHERE ticket_id = ?1
      ORDER BY created_at, id`,
   )
     .bind(ticketId)
-    .all<{ filename: string }>();
-  const attachmentNames = attachments.results.map((attachment) => attachment.filename).filter(Boolean);
-  const versionLabel = ticket.version_name
-    ? ticket.version_code != null
-      ? `${ticket.version_name} (${ticket.version_code})`
-      : ticket.version_name
-    : ticket.version_code != null
-      ? String(ticket.version_code)
-      : null;
-  const referenceLine = [app.slug, versionLabel, `ticket ${ticketId}`]
-    .filter(Boolean)
-    .join(" · ");
-  const reference = attachmentNames.length
-    ? `${referenceLine}\nattachments:\n${attachmentNames.join("\n")}`
-    : referenceLine;
+    .all<FeedbackAttachmentRef>();
+  const attachmentRefs = attachments.results.filter(({ id, filename }) => id && filename);
+  const attachmentNames = attachmentRefs.map(({ filename }) => filename);
 
   return c.json(
     {
@@ -848,7 +1048,13 @@ async function feedbackSubmitResponse(
       status: ticket.status,
       attachments: attachmentNames.length,
       attachment_names: attachmentNames,
-      reference,
+      attachment_refs: attachmentRefs,
+      reference: feedbackReference(app, {
+        ticketId,
+        versionName: ticket.version_name,
+        versionCode: ticket.version_code,
+        attachmentRefs,
+      }),
       ticket_url: `${dashboardOrigin(c.env)}/apps/${app.id}/feedback/${ticketId}`,
       idempotent_replay: idempotentReplay,
     },
@@ -1980,7 +2186,8 @@ export async function handleListFeedback(c: AdminContext) {
     where += ` AND signature = ?${binds.length}`;
   }
   const { results } = await c.env.DB.prepare(
-    `SELECT t.id, t.kind, t.status, t.assignee, t.message, t.contact, t.version_name,
+    `SELECT t.id, t.kind, t.status, t.closure_reason, t.duplicate_of_ticket_id,
+            t.assignee, t.message, t.contact, t.version_name,
             t.version_code, t.channel, t.device_id, t.device_model, t.os_version,
             t.created_at, t.updated_at,
             (SELECT COUNT(*) FROM feedback_attachments fa WHERE fa.ticket_id = t.id) AS attachment_count,
@@ -2007,7 +2214,8 @@ export async function handleListFeedbackMaterialDelta(c: AdminContext) {
   }
 
   const { results } = await c.env.DB.prepare(
-    `SELECT t.id, t.kind, t.status, t.assignee, t.message, t.contact, t.version_name,
+    `SELECT t.id, t.kind, t.status, t.closure_reason, t.duplicate_of_ticket_id,
+            t.assignee, t.message, t.contact, t.version_name,
             t.version_code, t.channel, t.device_id, t.device_model, t.os_version,
             t.created_at, t.updated_at, t.material_sequence,
             (SELECT COUNT(*) FROM feedback_attachments fa WHERE fa.ticket_id = t.id) AS attachment_count,
@@ -2175,6 +2383,8 @@ export async function handleUpdateFeedback(c: AdminContext) {
   const body = (await c.req.json().catch(() => ({}))) as {
     status?: string;
     assignee?: string | null;
+    closure_reason?: string | null;
+    duplicate_of_ticket_id?: string | null;
   };
   if (body.status !== undefined) {
     if (!(TICKET_STATUSES as readonly string[]).includes(body.status)) {
@@ -2184,6 +2394,28 @@ export async function handleUpdateFeedback(c: AdminContext) {
   if (body.status === undefined && body.assignee === undefined) {
     return c.json({ error: "nothing to update (status or assignee required)" }, 400);
   }
+  if (body.closure_reason !== undefined) {
+    if (
+      typeof body.closure_reason !== "string"
+      || !(FEEDBACK_CLOSURE_REASONS as readonly string[]).includes(body.closure_reason)
+    ) {
+      return c.json({ error: `closure_reason must be one of ${FEEDBACK_CLOSURE_REASONS.join(", ")}` }, 400);
+    }
+    if (body.status !== "closed") {
+      return c.json({ error: "closure_reason requires status closed" }, 400);
+    }
+  }
+  const duplicateTargetInput = body.duplicate_of_ticket_id === undefined
+    ? undefined
+    : typeof body.duplicate_of_ticket_id === "string"
+      ? body.duplicate_of_ticket_id.trim()
+      : "";
+  if (body.closure_reason === "duplicate" && !duplicateTargetInput) {
+    return c.json({ error: "duplicate_of_ticket_id is required for duplicate closures" }, 400);
+  }
+  if (body.closure_reason !== "duplicate" && duplicateTargetInput) {
+    return c.json({ error: "duplicate_of_ticket_id is only valid for duplicate closures" }, 400);
+  }
   const requestedAssigneeInput = body.assignee === undefined
     ? undefined
     : (typeof body.assignee === "string" ? body.assignee.trim().slice(0, 120) : "") || null;
@@ -2191,16 +2423,45 @@ export async function handleUpdateFeedback(c: AdminContext) {
     const existing = await loadFeedbackMutationSnapshot(c.env.DB, appId, ticketId);
     if (!existing) return c.json({ error: "ticket not found" }, 404);
     const requestedStatus = body.status ?? existing.status;
+    let requestedClosureReason = requestedStatus === "closed"
+      ? body.closure_reason ?? existing.closure_reason
+      : null;
+    let requestedDuplicateOfTicketId = requestedStatus === "closed"
+      ? duplicateTargetInput ?? existing.duplicate_of_ticket_id
+      : null;
+    if (
+      existing.status !== "closed"
+      && requestedStatus === "closed"
+      && !requestedClosureReason
+    ) {
+      return c.json({ error: "closure_reason is required when closing a ticket" }, 400);
+    }
+    if (requestedClosureReason === "duplicate") {
+      const duplicate = await resolveTicketId(c.env.DB, appId, requestedDuplicateOfTicketId ?? "");
+      if ("error" in duplicate) {
+        return c.json({ error: "duplicate_of_ticket_id must identify one ticket in this app" }, 400);
+      }
+      if (duplicate.id === ticketId) {
+        return c.json({ error: "a ticket cannot be a duplicate of itself" }, 400);
+      }
+      requestedDuplicateOfTicketId = duplicate.id;
+    } else {
+      requestedDuplicateOfTicketId = null;
+    }
     const requestedAssignee = requestedAssigneeInput === undefined
       ? existing.assignee
       : requestedAssigneeInput;
     const statusChanged = requestedStatus !== existing.status;
     const assigneeChanged = requestedAssignee !== existing.assignee;
-    if (!statusChanged && !assigneeChanged) {
+    const closureChanged = requestedClosureReason !== existing.closure_reason
+      || requestedDuplicateOfTicketId !== existing.duplicate_of_ticket_id;
+    if (!statusChanged && !assigneeChanged && !closureChanged) {
       return c.json({
         id: ticketId,
         status: existing.status,
         assignee: existing.assignee,
+        closure_reason: existing.closure_reason,
+        duplicate_of_ticket_id: existing.duplicate_of_ticket_id,
         updated_at: null,
         changed: false,
       });
@@ -2214,13 +2475,18 @@ export async function handleUpdateFeedback(c: AdminContext) {
       status: requestedStatus,
       previous_assignee: existing.assignee,
       assignee: requestedAssignee,
+      previous_closure_reason: existing.closure_reason,
+      closure_reason: requestedClosureReason,
+      previous_duplicate_of_ticket_id: existing.duplicate_of_ticket_id,
+      duplicate_of_ticket_id: requestedDuplicateOfTicketId,
     });
     const statements: D1PreparedStatement[] = [
       c.env.DB.prepare(
         `INSERT INTO audit_logs (id, app_id, action, actor, payload, created_at)
          SELECT ?1, ?2, 'feedback.update', ?3, ?4, ?5
          FROM feedback_tickets
-         WHERE app_id = ?2 AND id = ?6 AND status = ?7 AND assignee IS ?8`,
+         WHERE app_id = ?2 AND id = ?6 AND status = ?7 AND assignee IS ?8
+           AND closure_reason IS ?9 AND duplicate_of_ticket_id IS ?10`,
       ).bind(
         auditId,
         appId,
@@ -2230,20 +2496,28 @@ export async function handleUpdateFeedback(c: AdminContext) {
         ticketId,
         existing.status,
         existing.assignee,
+        existing.closure_reason,
+        existing.duplicate_of_ticket_id,
       ),
       c.env.DB.prepare(
         `UPDATE feedback_tickets
-         SET status = ?1, assignee = ?2, updated_at = ?3
-         WHERE app_id = ?4 AND id = ?5 AND status = ?6 AND assignee IS ?7
-           AND EXISTS (SELECT 1 FROM audit_logs WHERE id = ?8)`,
+         SET status = ?1, assignee = ?2, closure_reason = ?3,
+             duplicate_of_ticket_id = ?4, updated_at = ?5
+         WHERE app_id = ?6 AND id = ?7 AND status = ?8 AND assignee IS ?9
+           AND closure_reason IS ?10 AND duplicate_of_ticket_id IS ?11
+           AND EXISTS (SELECT 1 FROM audit_logs WHERE id = ?12)`,
       ).bind(
         requestedStatus,
         requestedAssignee,
+        requestedClosureReason,
+        requestedDuplicateOfTicketId,
         now,
         appId,
         ticketId,
         existing.status,
         existing.assignee,
+        existing.closure_reason,
+        existing.duplicate_of_ticket_id,
         auditId,
       ),
     ];
@@ -2264,6 +2538,8 @@ export async function handleUpdateFeedback(c: AdminContext) {
         createdAt: now,
         previousStatus: existing.status,
         status: requestedStatus,
+        closureReason: requestedClosureReason,
+        duplicateOfTicketId: requestedDuplicateOfTicketId,
         claimAuditId: auditId,
       }));
     }
@@ -2276,6 +2552,8 @@ export async function handleUpdateFeedback(c: AdminContext) {
         id: ticketId,
         status: requestedStatus,
         assignee: requestedAssignee,
+        closure_reason: requestedClosureReason,
+        duplicate_of_ticket_id: requestedDuplicateOfTicketId,
         updated_at: now,
         changed: true,
       });
@@ -2288,6 +2566,8 @@ type FeedbackMutationSnapshot = {
   id: string;
   status: string;
   assignee: string | null;
+  closure_reason: string | null;
+  duplicate_of_ticket_id: string | null;
   reporter_integration_id: string | null;
   reporter_id: string | null;
   org_id: string | null;
@@ -2300,7 +2580,8 @@ async function loadFeedbackMutationSnapshot(
   ticketId: string,
 ): Promise<FeedbackMutationSnapshot | null> {
   return db.prepare(
-    `SELECT t.id, t.status, t.assignee, t.reporter_integration_id, t.reporter_id,
+    `SELECT t.id, t.status, t.assignee, t.closure_reason, t.duplicate_of_ticket_id,
+            t.reporter_integration_id, t.reporter_id,
             a.org_id,
             CASE WHEN ri.id IS NOT NULL AND ri.archived_at IS NULL THEN 1 ELSE 0 END AS reporter_active
      FROM feedback_tickets t
@@ -2443,6 +2724,8 @@ export function feedbackReporterEventStatements(
     comment?: { id: string; author_type: "staff" | "reporter" | "system"; body: string; created_at: number };
     previousStatus?: string;
     status?: string;
+    closureReason?: string | null;
+    duplicateOfTicketId?: string | null;
     claimAuditId?: string;
   },
 ): D1PreparedStatement[] {
@@ -2463,6 +2746,12 @@ export function feedbackReporterEventStatements(
         ...base,
         previousStatus: input.previousStatus!,
         status: input.status!,
+        ...(input.closureReason !== undefined
+          ? { closureReason: input.closureReason }
+          : {}),
+        ...(input.duplicateOfTicketId !== undefined
+          ? { duplicateOfTicketId: input.duplicateOfTicketId }
+          : {}),
       });
   return [
     db.prepare(

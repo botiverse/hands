@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.3.4
+
+- Upload large feedback attachments through bounded 5 MiB ArkTS reads and an
+  R2 multipart session instead of allocating the whole file in ArkTS.
+- Restore the shared Android/iOS/OHOS 200 MB per-file ceiling, with bounded
+  progress, one retry per part, timeout cancellation, and multipart cleanup.
+
 ## 0.3.3
 
 - Add unified `addBreadcrumb` and handled-error `captureException` APIs.

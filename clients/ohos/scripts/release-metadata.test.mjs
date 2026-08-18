@@ -19,7 +19,7 @@ test('published HAR manifest carries the authorized OHPM author identity', () =>
     refType: 'branch',
     refName: 'codex/task215-ohpm-author-retry',
   });
-  assert.equal(metadata.version, '0.3.3');
+  assert.equal(metadata.version, '0.3.4');
   assert.deepEqual(metadata.author, EXPECTED_OHPM_AUTHOR);
 });
 
@@ -35,7 +35,7 @@ test('missing and malformed author fixtures fail before HAR publication', () => 
 
   for (const author of invalidAuthors) {
     assert.throws(
-      () => validatePackageManifest({ version: '0.3.3', author }),
+      () => validatePackageManifest({ version: '0.3.4', author }),
       /OHPM author/,
       `fixture should be rejected: ${String(author)}`,
     );
@@ -44,30 +44,30 @@ test('missing and malformed author fixtures fail before HAR publication', () => 
 
 test('canonical and numbered recovery tags resolve to the same package version', () => {
   const context = {
-    packageVersion: '0.3.3',
+    packageVersion: '0.3.4',
     eventName: 'push',
     refType: 'tag',
   };
   assert.equal(
-    resolveReleaseVersion({ ...context, refName: 'ohos-sdk-v0.3.3' }),
-    '0.3.3',
+    resolveReleaseVersion({ ...context, refName: 'ohos-sdk-v0.3.4' }),
+    '0.3.4',
   );
   assert.equal(
-    resolveReleaseVersion({ ...context, refName: 'ohos-sdk-v0.3.3-retry.1' }),
-    '0.3.3',
+    resolveReleaseVersion({ ...context, refName: 'ohos-sdk-v0.3.4-retry.1' }),
+    '0.3.4',
   );
 });
 
 test('stale or malformed recovery tags fail closed', () => {
   const context = {
-    packageVersion: '0.3.3',
+    packageVersion: '0.3.4',
     eventName: 'push',
     refType: 'tag',
   };
   for (const refName of [
     'ohos-sdk-v0.3.2',
-    'ohos-sdk-v0.3.3-retry.0',
-    'ohos-sdk-v0.3.3-retry.latest',
+    'ohos-sdk-v0.3.4-retry.0',
+    'ohos-sdk-v0.3.4-retry.latest',
   ]) {
     assert.throws(
       () => resolveReleaseVersion({ ...context, refName }),
@@ -79,7 +79,7 @@ test('stale or malformed recovery tags fail closed', () => {
 test('manual release input must still match the package version', () => {
   assert.throws(
     () => resolveReleaseVersion({
-      packageVersion: '0.3.3',
+      packageVersion: '0.3.4',
       eventName: 'workflow_dispatch',
       refType: 'branch',
       refName: 'main',

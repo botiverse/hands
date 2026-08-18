@@ -1,5 +1,5 @@
 /** Runtime/package version reported with OHOS feedback and crash tickets. */
-export const HANDS_OHOS_SDK_VERSION: string = '0.3.3';
+export const HANDS_OHOS_SDK_VERSION: string = '0.3.4';
 
 /**
  * Creates a directory exactly once without treating an already-created

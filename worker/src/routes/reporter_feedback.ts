@@ -262,6 +262,10 @@ function ticketDto(row: Record<string, unknown>) {
     id: row.id,
     kind: row.kind,
     status: row.status,
+    closure_reason: row.closure_reason ?? null,
+    // A team may deduplicate across reporters. The original ticket id is an
+    // admin/audit fact, not reporter-visible routing data.
+    duplicate_of_ticket_id: null,
     message: row.message,
     version_name: row.version_name,
     version_code: row.version_code,
@@ -320,7 +324,8 @@ export async function handleListReporterFeedback(c: ReporterContext) {
   if (!decodedCursor) return c.json({ error: "invalid cursor" }, 400);
   const [cursorCreatedAt, cursorId] = decodedCursor;
   const ticketStatement = c.env.DB.prepare(
-    `SELECT t.id, t.kind, t.status, t.message, t.version_name, t.version_code,
+    `SELECT t.id, t.kind, t.status, t.closure_reason, t.duplicate_of_ticket_id,
+            t.message, t.version_name, t.version_code,
             t.channel, t.created_at, t.updated_at,
             (SELECT COUNT(*) FROM feedback_attachments fa
              WHERE fa.ticket_id = t.id AND fa.origin IN ('submission', 'reporter')
@@ -379,7 +384,8 @@ function ownedTicketStatement(
   ticketId: string,
 ) {
   return c.env.DB.prepare(
-    `SELECT t.id, t.kind, t.status, t.message, t.version_name, t.version_code,
+    `SELECT t.id, t.kind, t.status, t.closure_reason, t.duplicate_of_ticket_id,
+            t.message, t.version_name, t.version_code,
             t.channel, t.created_at, t.updated_at, a.org_id,
             (SELECT COUNT(*) FROM feedback_attachments fa
              WHERE fa.ticket_id = t.id AND fa.origin IN ('submission', 'reporter')
@@ -916,10 +922,15 @@ export async function handleCloseReporterFeedback(c: ReporterContext) {
   if (!authorized.ok) return authorized.response;
   const ticketId = fullUuid(c.req.param("ticketId"));
   if (!ticketId) return ticketNotFound(c);
+  const body = (await c.req.json().catch(() => null)) as { reason?: unknown } | null;
+  const reason = body?.reason;
+  if (reason !== "completed" && reason !== "no_longer_needed") {
+    return c.json({ error: "reason must be completed or no_longer_needed" }, 400);
+  }
 
   for (let attempt = 0; attempt < 5; attempt += 1) {
     const ticket = await c.env.DB.prepare(
-      `SELECT t.status, a.org_id
+      `SELECT t.status, t.closure_reason, a.org_id
        FROM feedback_tickets t
        JOIN apps a ON a.id = t.app_id
        WHERE t.id = ?1 AND t.app_id = ?2
@@ -929,10 +940,20 @@ export async function handleCloseReporterFeedback(c: ReporterContext) {
       authorized.principal.appId,
       authorized.principal.integrationId,
       authorized.principal.reporterId,
-    ).first<{ status: string; org_id: string | null }>();
+    ).first<{ status: string; closure_reason: string | null; org_id: string | null }>();
     if (!ticket) return ticketNotFound(c);
     if (ticket.status === "closed") {
-      return c.json({ id: ticketId, status: "closed", updated_at: null, changed: false });
+      if (ticket.closure_reason !== reason) {
+        return c.json({ error: "ticket is already closed with a different reason" }, 409);
+      }
+      return c.json({
+        id: ticketId,
+        status: "closed",
+        closure_reason: reason,
+        duplicate_of_ticket_id: null,
+        updated_at: null,
+        changed: false,
+      });
     }
 
     const now = Date.now();
@@ -941,6 +962,7 @@ export async function handleCloseReporterFeedback(c: ReporterContext) {
       ticket_id: ticketId,
       previous_status: ticket.status,
       status: "closed",
+      closure_reason: reason,
       reporter_hash: authorized.pseudonym.hash,
       audit_key_version: authorized.pseudonym.version,
     });
@@ -950,7 +972,7 @@ export async function handleCloseReporterFeedback(c: ReporterContext) {
          SELECT ?1, ?2, 'feedback.reporter_close', ?3, ?4, ?5
          FROM feedback_tickets
          WHERE id = ?6 AND app_id = ?2 AND reporter_integration_id = ?7
-           AND reporter_id = ?8 AND status = ?9`,
+           AND reporter_id = ?8 AND status = ?9 AND closure_reason IS NULL`,
       ).bind(
         auditId,
         authorized.principal.appId,
@@ -964,11 +986,13 @@ export async function handleCloseReporterFeedback(c: ReporterContext) {
       ),
       c.env.DB.prepare(
         `UPDATE feedback_tickets
-         SET status = 'closed', updated_at = ?1
-         WHERE id = ?2 AND app_id = ?3 AND reporter_integration_id = ?4
-           AND reporter_id = ?5 AND status = ?6
-           AND EXISTS (SELECT 1 FROM audit_logs WHERE id = ?7)`,
+         SET status = 'closed', closure_reason = ?1,
+             duplicate_of_ticket_id = NULL, updated_at = ?2
+         WHERE id = ?3 AND app_id = ?4 AND reporter_integration_id = ?5
+           AND reporter_id = ?6 AND status = ?7 AND closure_reason IS NULL
+           AND EXISTS (SELECT 1 FROM audit_logs WHERE id = ?8)`,
       ).bind(
+        reason,
         now,
         ticketId,
         authorized.principal.appId,
@@ -989,6 +1013,8 @@ export async function handleCloseReporterFeedback(c: ReporterContext) {
         createdAt: now,
         previousStatus: ticket.status,
         status: "closed",
+        closureReason: reason,
+        duplicateOfTicketId: null,
         claimAuditId: auditId,
       }));
     }
@@ -997,7 +1023,14 @@ export async function handleCloseReporterFeedback(c: ReporterContext) {
       .bind(auditId)
       .first();
     if (won) {
-      return c.json({ id: ticketId, status: "closed", updated_at: now, changed: true });
+      return c.json({
+        id: ticketId,
+        status: "closed",
+        closure_reason: reason,
+        duplicate_of_ticket_id: null,
+        updated_at: now,
+        changed: true,
+      });
     }
   }
   return c.json({ error: "feedback ticket changed concurrently; retry" }, 409);

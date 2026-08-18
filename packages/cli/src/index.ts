@@ -26,6 +26,7 @@ import { registerDeployTokenCommands } from "./commands/deploy_tokens.js";
 import { registerWhoamiCommand } from "./commands/whoami.js";
 import { registerLogsCommands } from "./commands/logs.js";
 import { registerDeviceGroupCommands } from "./commands/device_groups.js";
+import { registerApiCommand } from "./commands/api.js";
 import { getConfig } from "./lib/config.js";
 import { readEnv } from "./lib/env.js";
 import { setApiBase } from "./lib/api.js";
@@ -36,7 +37,7 @@ const program = new Command();
 program
   .name("hands")
   .description("Hands CLI — manage apps, builds, releases from the terminal.")
-  .version("0.5.14")
+  .version("0.5.15")
   .option(
     "--api <url>",
     "Hands business API URL (default: https://hands.build or $HANDS_API)",
@@ -92,6 +93,7 @@ registerDeviceGroupCommands(program);
 registerFeedbackCommands(program);
 registerDeployTokenCommands(program);
 registerLogsCommands(program);
+registerApiCommand(program);
 
 program
   .command("version")

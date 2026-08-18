@@ -37,6 +37,27 @@ following. Hosts should not duplicate that state machine. They provide only
 the reporter-scoped transport, route notifications, and (optionally) an
 attachment opener.
 
+On mobile, hosts can bind those workspace notifications to real browser URLs
+and enable the package's touch-only pull-to-refresh behavior:
+
+```tsx
+<FeedbackWorkspace
+  route={routeFromLocation(location)}
+  onRouteChange={(nextRoute, options) =>
+    navigate(pathForRoute(nextRoute), { replace: options?.replace })
+  }
+  enablePullToRefresh={isMobile}
+/>
+```
+
+`inbox`, `new`, and `ticket` are the supported workspace routes. The SDK marks
+the create-success transition from `new` to `ticket` with `replace: true`, so
+Back does not reopen a submitted form. Pull-to-refresh is attached only to the
+list and conversation scroll viewports, starts only at scroll-top, ignores
+editable controls, and preserves existing content while authoritative data is
+reloaded. The generic `usePullToRefresh` hook is also exported for other host
+scroll surfaces.
+
 All visible copy, closed error copy, dates, and accessibility labels share the
 SDK locale. Supported locales are `en` and `zh-CN`; an explicit provider
 `locale` takes precedence over browser language detection.

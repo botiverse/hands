@@ -15,6 +15,8 @@ import {
   createReleaseShare,
   listAppShares,
   listReleases,
+  getRelease,
+  rebindReleaseShare,
   renewReleaseShare,
   revokeReleaseShare,
 } from "../lib/api";
@@ -24,6 +26,7 @@ export function AppShares({ appId }: { appId: string }) {
   const toast = useToast();
   const queryClient = useQueryClient();
   const [showCreate, setShowCreate] = useState(false);
+  const [rebindShare, setRebindShare] = useState<AppShare | null>(null);
   const [createdUrl, setCreatedUrl] = useState<string | null>(null);
 
   const shares = useQuery({
@@ -193,6 +196,7 @@ export function AppShares({ appId }: { appId: string }) {
                     setExpiry.mutate({ share, ttlDays: days });
                   }}
                   onRevoke={() => revoke.mutate(share)}
+                  onRebind={() => setRebindShare(share)}
                   onSetPassword={() => {
                     const next = window.prompt(
                       share.has_password
@@ -224,6 +228,17 @@ export function AppShares({ appId }: { appId: string }) {
           }}
         />
       )}
+      {rebindShare && (
+        <RebindShareModal
+          appId={appId}
+          share={rebindShare}
+          onClose={() => setRebindShare(null)}
+          onRebound={() => {
+            setRebindShare(null);
+            invalidate();
+          }}
+        />
+      )}
     </div>
   );
 }
@@ -242,6 +257,7 @@ function ShareRow({
   onCopyUrl,
   onSetExpiry,
   onRevoke,
+  onRebind,
   onSetPassword,
   busy,
 }: {
@@ -249,6 +265,7 @@ function ShareRow({
   onCopyUrl: () => void;
   onSetExpiry: () => void;
   onRevoke: () => void;
+  onRebind: () => void;
   onSetPassword: () => void;
   busy: boolean;
 }) {
@@ -309,6 +326,9 @@ function ShareRow({
             <Button variant="link" size="sm" className="mr-2" onClick={onSetPassword} disabled={busy}>
               {share.has_password ? "Password…" : "Set password"}
             </Button>
+            <Button variant="link" size="sm" className="mr-2" onClick={onRebind} disabled={busy}>
+              Rebind release…
+            </Button>
             <Button variant="link" size="sm" className="text-red-600" onClick={onRevoke} disabled={busy}>
               Revoke
             </Button>
@@ -316,6 +336,116 @@ function ShareRow({
         )}
       </td>
     </tr>
+  );
+}
+
+function RebindShareModal({
+  appId,
+  share,
+  onClose,
+  onRebound,
+}: {
+  appId: string;
+  share: AppShare;
+  onClose: () => void;
+  onRebound: () => void;
+}) {
+  const toast = useToast();
+  const [targetReleaseId, setTargetReleaseId] = useState("");
+  const releases = useQuery({
+    queryKey: ["releases", appId],
+    queryFn: () => listReleases(appId),
+  });
+  const options = useMemo(
+    () => (releases.data?.releases ?? [])
+      .filter((release) => release.status === "active"
+        && release.id !== share.release_id
+        && release.channel_id === share.channel_id),
+    [releases.data, share.channel_id, share.release_id],
+  );
+  const target = useQuery({
+    queryKey: ["release", appId, targetReleaseId],
+    queryFn: () => getRelease(appId, targetReleaseId),
+    enabled: Boolean(targetReleaseId),
+  });
+  const installable = target.data?.assets.find((asset) => asset.artifact_kind === "installable");
+  const rebind = useMutation({
+    mutationFn: () => rebindReleaseShare(appId, share.id, {
+      expected_release_id: share.release_id,
+      target_release_id: targetReleaseId,
+    }),
+    onSuccess: (data) => {
+      toast.show({
+        kind: "success",
+        title: `Share now points to ${data.target.version_name} (${data.target.version_code})`,
+      });
+      onRebound();
+    },
+    onError: (error) => toast.show({
+      kind: "error",
+      title: "Release rebind failed",
+      description: (error as Error).message,
+    }),
+  });
+
+  return (
+    <Dialog open onOpenChange={(open) => { if (!open) onClose(); }}>
+      <DialogContent className="max-w-md">
+        <DialogHeader><DialogTitle>Rebind share to another release</DialogTitle></DialogHeader>
+        <DialogBody className="space-y-3">
+          <p className="text-sm text-slate-600">
+            The public URL stays the same. Its version, build, download, and checksum will all point to the selected release.
+          </p>
+          <div className="rounded-md border border-slate-200 p-3 text-sm">
+            <div className="text-xs text-slate-500">Current release</div>
+            <strong>{share.version_name} ({share.version_code})</strong>
+            <span className="ml-2 text-xs text-slate-500">{share.channel_slug}</span>
+          </div>
+          <label className="block text-xs text-slate-600">
+            Target active release
+            <Select
+              items={{
+                "": "Select an active release…",
+                ...Object.fromEntries(options.map((release) => [
+                  release.id,
+                  `${release.version_name ?? release.id.slice(0, 8)} (${release.version_code ?? "—"})`,
+                ])),
+              }}
+              value={targetReleaseId}
+              onValueChange={(value) => setTargetReleaseId(value as string)}
+            >
+              <SelectTrigger className="mt-1 py-1.5!"><SelectValue /><SelectIcon /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="">Select an active release…</SelectItem>
+                {options.map((release) => (
+                  <SelectItem key={release.id} value={release.id}>
+                    {release.version_name ?? release.id.slice(0, 8)} ({release.version_code ?? "—"})
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </label>
+          {target.isLoading && <Skeleton className="h-20 w-full" />}
+          {target.data && (
+            <div className="rounded-md border border-amber-200 bg-amber-50 p-3 text-sm">
+              <div><strong>{target.data.build.version_name}</strong> ({target.data.build.version_code})</div>
+              <div className="mt-1 text-xs text-slate-600">Build: <code>{target.data.build.id}</code></div>
+              <div className="mt-1 break-all text-xs text-slate-600">Checksum: <code>{installable?.file_hash ?? "No installable asset"}</code></div>
+            </div>
+          )}
+        </DialogBody>
+        <DialogFooter>
+          <Button variant="outline" onClick={onClose}>Cancel</Button>
+          <Button
+            variant="primary"
+            disabled={!targetReleaseId || !installable || rebind.isPending}
+            onClick={() => rebind.mutate()}
+          >
+            {rebind.isPending ? "Rebinding…" : "Rebind release"}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
 

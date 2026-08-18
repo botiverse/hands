@@ -189,6 +189,7 @@ function AppServerGrantList({
     queryKey: ["app-server-grants", appId],
     queryFn: () => listAppServerGrants(appId),
   });
+  const rows = grants.data?.server_grants ?? [];
 
   const remove = useMutation({
     mutationFn: (grantKey: string) => removeAppServerGrant(appId, grantKey),
@@ -204,7 +205,6 @@ function AppServerGrantList({
       }),
   });
 
-  const rows = grants.data?.server_grants ?? [];
   const visibleRowCount = rows.length + (isOwningOrg ? 1 : 0);
 
   return (
@@ -241,7 +241,6 @@ function AppServerGrantList({
           <thead>
             <tr className="text-slate-500 text-left border-b border-slate-100">
               <th className="font-normal py-1 pr-2">Server</th>
-              <th className="font-normal py-1 pr-2">Server ID</th>
               <th className="font-normal py-1 pr-2">Access</th>
               <th className="font-normal py-1 pr-2">Source</th>
               {canManage && <th className="font-normal py-1">Actions</th>}
@@ -257,12 +256,7 @@ function AppServerGrantList({
                   </div>
                 </td>
                 <td className="py-2 pr-2">
-                  <span className="font-mono text-xs text-slate-600">
-                    {currentServerId || "—"}
-                  </span>
-                </td>
-                <td className="py-2 pr-2">
-                  <span className="text-xs font-medium">Inherited</span>
+                  <span className="text-xs font-medium">Owner server</span>
                 </td>
                 <td className="py-2 pr-2 text-xs text-slate-500">
                   Owning org
@@ -287,15 +281,16 @@ function AppServerGrantList({
                   </div>
                 </td>
                 <td className="py-2 pr-2">
-                  <span className="font-mono text-xs text-slate-600">
-                    {grant.server_id || "—"}
+                  <span className="text-xs font-medium">
+                    {grant.access_model === "owner_server"
+                      ? "Owner server"
+                      : `Legacy ${grant.app_role}`}
                   </span>
                 </td>
-                <td className="py-2 pr-2">
-                  <span className="text-xs font-medium">Visible</span>
-                </td>
                 <td className="py-2 pr-2 text-xs text-slate-500">
-                  Server visibility
+                  {grant.access_model === "owner_server"
+                    ? "Additional owner"
+                    : "Existing role preserved; remove and re-add to adopt owner-server access"}
                 </td>
                 {canManage && (
                   <td className="py-2 text-xs">
@@ -325,7 +320,7 @@ function AppServerGrantList({
       )}
       {grants.data && isOwningOrg && rows.length === 0 && (
         <p className="text-xs text-slate-500 mt-2">
-          No external server visibility grants yet. The current server has access because it owns this app.
+          No additional owner servers yet. The current server owns this app.
         </p>
       )}
     </div>
@@ -351,7 +346,6 @@ function AddAppServerGrantDialog({
       addAppServerGrant(appId, {
         server_id: serverId.trim() || null,
         server_slug: serverSlug.trim() || null,
-        app_role: "viewer",
       }),
     onSuccess: () => {
       toast.show({ kind: "success", title: "Server grant added" });
@@ -397,6 +391,11 @@ function AddAppServerGrantDialog({
             className="space-y-3"
             onSubmit={(e) => {
               e.preventDefault();
+              if (!confirm(
+                `Make ${serverSlug.trim() || serverId.trim()} an owner server for this app? Its members receive the same role-based access as the creating server.`,
+              )) {
+                return;
+              }
               add.mutate();
             }}
           >
@@ -417,6 +416,11 @@ function AddAppServerGrantDialog({
                 placeholder="optional"
               />
             </div>
+            <p className="text-xs text-slate-500">
+              An additional owner server uses the same role mapping as the server that created the app:
+              server owners/admins can publish releases and manage access; members keep the same
+              bounded member actions as on the creating server; viewers have read-only access.
+            </p>
           </form>
         </DialogBody>
         <DialogFooter>
@@ -1189,7 +1193,7 @@ function AddAppMemberDialog({
           >
             {candidates.length > 0 ? (
               <div>
-                <label className="label">Same-organization principal</label>
+                <label className="label">Choose someone from this organization</label>
                 <Select
                   items={{
                     "": "— select —",
@@ -1222,27 +1226,28 @@ function AddAppMemberDialog({
               </div>
             ) : (
               <p className="text-xs text-slate-500">
-                No same-organization principal needs a direct grant. You can still grant an
-                existing account from another linked Raft server below.
+                Everyone in this organization already has access or is already listed as a
+                direct app member.
               </p>
             )}
-            <div>
-              <label className="label">Hands account ID</label>
+            <div className="border-t border-slate-200 pt-3">
+              <label className="label">Add one account from another Raft server</label>
               <Input
                 value={accountId}
                 onChange={(e) => {
                   setAccountId(e.target.value);
                   if (e.target.value.trim()) setSelectedAccount("");
                 }}
-                placeholder="Account UUID from the principal's Hands whoami"
+                placeholder="Paste their Hands account ID"
                 autoFocus={candidates.length === 0}
                 spellCheck={false}
                 className="font-mono"
               />
               <p className="mt-1 text-xs text-slate-500">
-                Use this for a human or agent on another Raft server. The account must have
-                logged into Hands once; the grant adds missing org viewer membership and the
-                selected app role.
+                Ask that person or Agent to open Hands once, or run the Hands Raft integration
+                <span className="font-mono"> whoami</span> action, then send you the returned
+                account ID. Cross-server accounts are not listed here because servers are an
+                identity-isolation boundary.
               </p>
             </div>
             <div>
