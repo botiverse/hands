@@ -17,8 +17,11 @@
 import { createInterface } from "node:readline/promises";
 import { stdin, stdout } from "node:process";
 import type { Command } from "commander";
-import { apiRequest, getApiBase, QuiverApiError } from "../lib/api.js";
-import { clearConfig, saveConfig, getConfig } from "../lib/config.js";
+import { rmSync } from "node:fs";
+import { apiRequest, getApiBase, setApiBase, QuiverApiError } from "../lib/api.js";
+import { clearConfig, saveConfig, getConfig, configPath } from "../lib/config.js";
+import { admitAgent, agentAuthPath, HANDS_SERVICE } from "../lib/agent_env.js";
+import { runAgentLogin } from "../lib/agent_auth.js";
 
 async function promptSecret(message: string): Promise<string> {
   // Use a raw-mode readline so we can mask input with '*'.
@@ -73,6 +76,39 @@ export function registerLoginCommands(program: Command): void {
         printUrl?: boolean;
       }) => {
         const apiBase = opts.api ?? getApiBase();
+        const admission = admitAgent();
+
+        // Managed-agent path (RFC 057): no browser, no paste. Runs agent-login →
+        // exchange → store under $SLOCK_HOME. Isolated from the human config.
+        if (admission.kind === "agent") {
+          if (opts.token) {
+            // Never let --token write the human config from inside an agent.
+            console.error("✘ In a managed agent environment, run `hands login` without --token (agent-login is used instead).");
+            process.exit(1);
+          }
+          if (opts.printUrl) {
+            console.log("(agent environment) `hands login` runs the non-interactive agent-login flow — no URL to open.");
+            return;
+          }
+          setApiBase(apiBase); // exchange must target this API base
+          try {
+            const session = await runAgentLogin(admission.env);
+            console.log(`✔ Agent login complete (service ${HANDS_SERVICE}).`);
+            console.log(`  Stored under $SLOCK_HOME/agents/$SLOCK_AGENT_ID/integrations/${HANDS_SERVICE}/auth.json`);
+            console.log(`  access token expires ${session.access_expires_at}; refresh rotates automatically.`);
+            console.log("  Subsequent `hands` commands use the stored Hands token directly.");
+          } catch (e) {
+            console.error(`✘ Agent login failed: ${e instanceof Error ? e.message : String(e)}`);
+            process.exit(1);
+          }
+          return;
+        }
+        if (admission.kind === "fail_closed") {
+          // Partial/invalid agent markers must never silently use human credentials.
+          console.error(`✘ Agent environment is incomplete or invalid (${admission.reason}); refusing to fall back to human login. Fix the agent environment and retry.`);
+          process.exit(1);
+        }
+
         const loginUrl = `${apiBase}/api/auth/login?return_to=${encodeURIComponent("/cli/callback")}`;
 
         if (opts.printUrl) {
@@ -103,7 +139,7 @@ export function registerLoginCommands(program: Command): void {
         // Persist the token + apiBase to config file.
         clearConfig();
         saveConfig({ apiBase, authToken: token });
-        console.log(`✔ Saved to ${configDisplayPath()}`);
+        console.log(`✔ Saved to ${configPath()}`);
         console.log(`  API base: ${apiBase}`);
 
         // Verify the token works by calling /api/auth/me.
@@ -132,23 +168,33 @@ export function registerLoginCommands(program: Command): void {
 
   program
     .command("logout")
-    .description("Clear the saved Hands JWT.")
+    .description("Clear the saved Hands token (agent store in an agent, else human config).")
     .action(() => {
+      const admission = admitAgent();
+      if (admission.kind === "agent") {
+        // Clear the per-agent store only; never touch the human config.
+        const path = agentAuthPath(admission.env);
+        try {
+          rmSync(path, { force: true });
+          console.log(`✔ Agent Hands token cleared (${path}).`);
+        } catch (e) {
+          console.error(`✘ Failed to clear agent token: ${e instanceof Error ? e.message : String(e)}`);
+          process.exit(1);
+        }
+        return;
+      }
+      if (admission.kind === "fail_closed") {
+        console.error(`✘ Agent environment is incomplete or invalid (${admission.reason}).`);
+        process.exit(1);
+      }
       const cfg = getConfig();
       if (!cfg.authToken && !cfg.sessionCookie) {
-        console.log("Not logged in (no saved Hands JWT).");
+        console.log("Not logged in (no saved Hands token).");
         return;
       }
       clearConfig();
-      console.log(`✔ Logged out (token cleared from ${configDisplayPath()}).`);
+      console.log(`✔ Logged out (token cleared from ${configPath()}).`);
     });
-}
-
-function configDisplayPath(): string {
-  // Mirror getConfig's path resolution for display only.
-  const xdg = process.env.XDG_CONFIG_HOME;
-  const dir = xdg && xdg.length > 0 ? xdg : `${process.env.HOME ?? "~"}/.config`;
-  return `${dir}/quiver/auth.json`;
 }
 
 // Keep the command module side-effect free when imported by tests.

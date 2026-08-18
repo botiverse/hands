@@ -930,11 +930,53 @@ export async function handleAgentHelp(c: Context<{ Bindings: Env }>) {
   });
 }
 
+/**
+ * `migration-help` action target. English guidance for agents/humans still calling
+ * the deprecated `raft integration invoke` actions: how to install the Hands CLI,
+ * authenticate once with `hands login`, and map each old action to its native command.
+ */
+export async function handleAgentMigrationHelp(c: Context<{ Bindings: Env }>) {
+  const origin = appOrigin(c);
+  c.header("Cache-Control", "no-store");
+  return c.json({
+    service: "hands",
+    summary:
+      "These `raft integration invoke` actions are deprecated. Install the Hands CLI and use its native commands; you authenticate once and subsequent commands use the Hands token directly.",
+    install: [
+      "npm install -g @botiverse/hands-cli",
+      "Then run `hands --help` for the full command list, or see the CLI reference below.",
+    ],
+    login: {
+      agents:
+        "Inside a managed Raft agent, run `hands login` — it detects the agent environment, exchanges a one-time grant via the `agent-login` action, stores a Hands token under $SLOCK_HOME, and auto-refreshes for later commands. No browser, no paste.",
+      humans:
+        "Run `hands login` (browser flow). The Hands token is stored at ~/.config/hands/auth.json (a legacy ~/.config/quiver/auth.json is migrated automatically on first use).",
+      ci: "Set HANDS_AUTH_TOKEN=<deploy token> and call `hands` directly.",
+    },
+    migration: [
+      "Replace `raft integration invoke --service hands-4cc7a2 --action <name>` with the matching `hands` command.",
+      "e.g. whoami → `hands whoami`; list-apps → `hands apps list`; list-feedback → `hands feedback list <app>`. Run `hands --help` for the complete mapping.",
+    ],
+    docs: {
+      cli_reference: `${origin}/docs/cli-reference`,
+      agent_guide: `${origin}/docs/agent-guide/`,
+    },
+  });
+}
+
 export async function handleAgentManifest(c: Context<{ Bindings: Env }>) {
   const origin = appOrigin(c);
   // Never edge-cache the manifest — the integration daemon must always see the
   // current action list (a stale cached copy makes schema changes invisible).
   c.header("Cache-Control", "no-store");
+  // Deprecation notice prepended to every EXISTING action (all but the two new ones):
+  // keep the machine contract unchanged, just point callers at `migration-help`.
+  const service = c.env.RAFT_CLIENT_ID || "hands-4cc7a2";
+  const DEPRECATION_PREFIX = `Deprecated — run raft integration invoke --service ${service} --action migration-help for Hands CLI installation and migration guidance. `;
+  const NEW_ACTIONS = new Set(["agent-login", "migration-help"]);
+  const applyDeprecation = (
+    list: Array<{ name: string; description: string; [k: string]: unknown }>,
+  ) => list.map((a) => (NEW_ACTIONS.has(a.name) ? a : { ...a, description: DEPRECATION_PREFIX + a.description }));
   return c.json({
     schema: "raft-agent-manifest.v0",
     service: c.env.RAFT_CLIENT_ID || "quiver",
@@ -951,7 +993,30 @@ export async function handleAgentManifest(c: Context<{ Bindings: Env }>) {
     // Paths are relative to execution.base_url. Actions cover release,
     // TestFlight/AppGallery, exact QA artifacts, and feedback triage without
     // returning provider credentials or interpreting raw attachments.
-    actions: [
+    // All EXISTING actions are retained with unchanged machine contracts; their
+    // descriptions are prefixed `Deprecated — … migration-help …` (see applyDeprecation).
+    // Only `agent-login` and `migration-help` are new and un-prefixed.
+    actions: applyDeprecation([
+      {
+        // NOTE: kept as valid raft-agent-manifest.v0 (name/description/endpoint/parameters
+        // only). The RFC 057 action semantics (authority.principal=agent_session,
+        // effect=create, idempotency=non_idempotent, readback=not_supported,
+        // rollback=not_applicable) and the response schema are documented in prose here
+        // and ENFORCED by the handler; they are NOT structured fields because the landed
+        // v0 manifest parser ignores them (and rejects a non-{type} `returns`). A full
+        // v0→v1 manifest migration is tracked separately; until then CP3 strictly
+        // validates the invoke outer success + exact service/action + grant result schema
+        // client-side rather than relying on the manifest for output enforcement.
+        name: "agent-login",
+        description:
+          "Agent CLI bootstrap (RFC 057). Send raft-cli-agent-login-request.v1 with a PKCE S256 code_challenge; receive a one-time, <=5 min raft-cli-agent-login-grant.v1 grant bound to your authenticated agent identity, then exchange it (with your code_verifier) at POST /api/auth/agent/exchange for a raft-cli-agent-session.v1 (short access token + rotating refresh). Non-idempotent create; no readback; not rollbackable. Requires an authenticated agent session; humans/CI keep the browser/deploy-token login.",
+        endpoint: { method: "POST", path: "/api/auth/agent/login" },
+        parameters: {
+          schema: { type: "string", in: "body", required: true, description: "Must be \"raft-cli-agent-login-request.v1\". Closed input: extension fields are rejected." },
+          code_challenge: { type: "string", in: "body", required: true, description: "Unpadded base64url SHA-256 (S256) of a locally-generated high-entropy code_verifier; must decode to exactly 32 bytes." },
+          code_challenge_method: { type: "string", in: "body", required: true, description: "Must be \"S256\"." },
+        },
+      },
       {
         name: "help",
         description:
@@ -1800,6 +1865,13 @@ export async function handleAgentManifest(c: Context<{ Bindings: Env }>) {
           internal: { type: "boolean", in: "body", required: false, description: "true = staff-only internal note; omitted/false = visible to the reporter." },
         },
       },
-    ],
+      {
+        // New (un-prefixed): where deprecated actions point for CLI install + migration.
+        name: "migration-help",
+        description:
+          "How to install the Hands CLI, authenticate once (`hands login`), and migrate each deprecated action to its native `hands` command. Read this if you are still calling actions via `raft integration invoke`.",
+        endpoint: { method: "GET", path: "/api/agent/migration-help" },
+      },
+    ]),
   });
 }
