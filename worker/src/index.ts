@@ -34,6 +34,20 @@ import {
   handleAuthMe,
   handleRaftCallback,
 } from "./routes/auth";
+import {
+  handleInstallerLogin,
+  handleInstallerLogout,
+  handleInstallerRaftCallback,
+  handleInstallerToken,
+} from "./routes/installer_auth";
+import { installerAuthMiddleware, type InstallerVariables } from "./lib/installer_auth";
+import {
+  handleDeleteInstallerSubscription,
+  handleInstallerCatalog,
+  handleInstallerManifest,
+  handleInstallerSubscriptions,
+  handlePutInstallerSubscription,
+} from "./routes/installer";
 import { handleHandsAdminOverview } from "./routes/hands_admin";
 import {
   handleDeleteAgcCredentials,
@@ -567,6 +581,20 @@ app.post("/api/auth/logout", handleAuthLogout);
 app.post("/api/auth/agent/exchange", handleAgentExchange);
 app.post("/api/auth/agent/refresh", handleAgentRefresh);
 
+app.get("/api/installer/v1/auth/login", handleInstallerLogin);
+app.get("/login/raft/installer/callback", handleInstallerRaftCallback);
+app.post("/api/installer/v1/auth/token", handleInstallerToken);
+app.post("/api/installer/v1/auth/logout", handleInstallerLogout);
+
+const installer = new Hono<{ Bindings: Env; Variables: InstallerVariables }>();
+installer.use("/api/installer/v1/*", installerAuthMiddleware);
+installer.get("/api/installer/v1/catalog", handleInstallerCatalog);
+installer.get("/api/installer/v1/subscriptions", handleInstallerSubscriptions);
+installer.put("/api/installer/v1/subscriptions/:appId/:channel", handlePutInstallerSubscription);
+installer.delete("/api/installer/v1/subscriptions/:appId/:channel", handleDeleteInstallerSubscription);
+installer.get("/api/installer/v1/apps/:appId/channels/:channel/manifest", handleInstallerManifest);
+app.route("/", installer);
+
 app.get("/public/apps/:slug/latest", handlePublicV2Latest);
 app.get("/public/apps/:slug/channels", handlePublicListChannels);
 
@@ -619,6 +647,7 @@ function isWorkerRoute(pathname: string): boolean {
     pathname === "/api-docs" ||
     pathname === "/docs" ||
     pathname === "/login/raft/callback" ||
+    pathname === "/login/raft/installer/callback" ||
     pathname.startsWith("/api/") ||
     pathname.startsWith("/electron/") ||
     pathname.startsWith("/public/") ||

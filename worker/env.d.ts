@@ -30,6 +30,8 @@ declare global {
     AGC_CRED_ENC_KEY?: string;
     RAFT_ALLOWED_SERVER_IDS?: string;
     RAFT_ALLOWED_SERVER_SLUGS?: string;
+    /** Exact HTTPS app-link callbacks registered for Hands Installer. */
+    INSTALLER_REDIRECT_URIS?: string;
     HANDS_ADMIN_ALLOWED_SERVER_IDS?: string;
     FEEDBACK_AUDIT_HMAC_KEY?: string;
     FEEDBACK_AUDIT_KEY_VERSION?: string;

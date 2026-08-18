@@ -40,14 +40,14 @@ type BrowserLoginState = {
   exp: number;
 };
 
-type RaftTokenResponse = {
+export type RaftTokenResponse = {
   access_token: string;
   token_type: "Bearer";
   expires_in: number;
   scope: string;
 };
 
-type RaftUserinfo = {
+export type RaftUserinfo = {
   sub: string;
   type: "human" | "agent";
   scope: string;
@@ -108,7 +108,7 @@ function browserReturnUrl(
     : returnPath;
 }
 
-function requireRaftConfig(c: Context<{ Bindings: Env }>) {
+export function requireRaftConfig(c: Context<{ Bindings: Env }>) {
   const clientId = c.env.RAFT_CLIENT_ID;
   const clientSecret = c.env.RAFT_CLIENT_SECRET;
   const raftOrigin = c.env.RAFT_ORIGIN;
@@ -356,7 +356,7 @@ function slugifyOrgPart(value: string): string {
   );
 }
 
-function isUserAllowed(env: Env, userinfo: RaftUserinfo): boolean {
+export function isUserAllowed(env: Env, userinfo: RaftUserinfo): boolean {
   const serverIds = (env.RAFT_ALLOWED_SERVER_IDS || "")
     .split(",")
     .map((v) => v.trim())
@@ -372,7 +372,7 @@ function isUserAllowed(env: Env, userinfo: RaftUserinfo): boolean {
   );
 }
 
-async function exchangeRaftCode(
+export async function exchangeRaftCode(
   apiOrigin: string,
   clientId: string,
   clientSecret: string,
@@ -397,7 +397,7 @@ async function exchangeRaftCode(
   return response.json() as Promise<RaftTokenResponse>;
 }
 
-async function fetchRaftUserinfo(
+export async function fetchRaftUserinfo(
   apiOrigin: string,
   accessToken: string,
 ): Promise<RaftUserinfo> {
@@ -413,7 +413,7 @@ async function fetchRaftUserinfo(
   return response.json() as Promise<RaftUserinfo>;
 }
 
-async function upsertRaftAccount(
+export async function upsertRaftAccount(
   db: D1Database,
   userinfo: RaftUserinfo,
 ): Promise<AdminAccount> {
