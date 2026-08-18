@@ -569,6 +569,16 @@ export async function handlePublicReleaseShare(c: Context<{ Bindings: Env }>) {
   }
 
   await recordShareEvent(c, row.share_id, "view");
+  // If the bound asset has been deleted from R2 but the app still has a newer active
+  // version, send the visitor to the app's latest-version landing instead of a share
+  // page whose only download 404s. Only when nothing downloadable remains show an error.
+  if (!(await c.env.APK_BUCKET.head(row.r2_key))) {
+    const fallbackKey = await findLatestActiveInstallableKey(c.env, row.app_id);
+    if (fallbackKey) {
+      return c.redirect(`/apps/${encodeURIComponent(row.app_slug)}/latest`, 302);
+    }
+    return htmlResponse(renderErrorPage(t, t.errUnavailable), 404);
+  }
   const origin = publicRequestOrigin(c);
   const downloadUrl = new URL(`/share/${token}/download`, origin).toString();
   const shareUrl = new URL(`/share/${token}`, origin).toString();
