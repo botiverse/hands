@@ -27,12 +27,14 @@ import { encryptAdminRaftToken } from "../lib/admin_raft_token";
 
 const LOGIN_PENDING_COOKIE = "quiver_raft_login_pending";
 const LOGIN_RETURN_COOKIE = "quiver_raft_return";
+const BROWSER_LOGIN_PROOF_COOKIE_PREFIX = "quiver_raft_login_proof_";
 const BROWSER_LOGIN_STATE_TTL_MS = 10 * 60 * 1000;
 
 type BrowserLoginState = {
-  v: 1;
+  v: 2;
   purpose: "hands-browser-login";
   nonce: string;
+  browser_proof_sha256: string;
   return_path: string;
   iat: number;
   exp: number;
@@ -198,7 +200,7 @@ function base64UrlToBytes(input: string): Uint8Array | null {
 async function browserLoginStateKey(clientSecret: string) {
   return crypto.subtle.importKey(
     "raw",
-    new TextEncoder().encode(`hands-browser-login-state-v1:${clientSecret}`),
+    new TextEncoder().encode(`hands-browser-login-state-v2:${clientSecret}`),
     { name: "HMAC", hash: "SHA-256" },
     false,
     ["sign", "verify"],
@@ -208,12 +210,15 @@ async function browserLoginStateKey(clientSecret: string) {
 async function createBrowserLoginState(
   clientSecret: string,
   returnPath: string,
+  nonce: string,
+  browserProofSha256: string,
 ): Promise<string> {
   const issuedAt = now();
   const payload: BrowserLoginState = {
-    v: 1,
+    v: 2,
     purpose: "hands-browser-login",
-    nonce: randomToken(16),
+    nonce,
+    browser_proof_sha256: browserProofSha256,
     return_path: returnPath,
     iat: Math.floor(issuedAt / 1000),
     exp: Math.floor((issuedAt + BROWSER_LOGIN_STATE_TTL_MS) / 1000),
@@ -248,10 +253,12 @@ async function verifyBrowserLoginState(
     const payload = JSON.parse(new TextDecoder().decode(payloadBytes)) as Partial<BrowserLoginState>;
     const currentTime = Math.floor(now() / 1000);
     if (
-      payload.v !== 1 ||
+      payload.v !== 2 ||
       payload.purpose !== "hands-browser-login" ||
       typeof payload.nonce !== "string" ||
       !/^[a-f0-9]{32}$/.test(payload.nonce) ||
+      typeof payload.browser_proof_sha256 !== "string" ||
+      !/^[a-f0-9]{64}$/.test(payload.browser_proof_sha256) ||
       typeof payload.return_path !== "string" ||
       normalizeReturnPath(payload.return_path) !== payload.return_path ||
       typeof payload.iat !== "number" ||
@@ -266,6 +273,24 @@ async function verifyBrowserLoginState(
   } catch {
     return null;
   }
+}
+
+function browserLoginProofCookieName(nonce: string): string {
+  return `${BROWSER_LOGIN_PROOF_COOKIE_PREFIX}${nonce}`;
+}
+
+function timingSafeEqualText(left: string, right: string): boolean {
+  const leftBytes = new TextEncoder().encode(left);
+  const rightBytes = new TextEncoder().encode(right);
+  if (leftBytes.byteLength !== rightBytes.byteLength) return false;
+  if (typeof crypto.subtle.timingSafeEqual === "function") {
+    return crypto.subtle.timingSafeEqual(leftBytes, rightBytes);
+  }
+  let difference = 0;
+  for (let index = 0; index < leftBytes.byteLength; index += 1) {
+    difference |= leftBytes[index]! ^ rightBytes[index]!;
+  }
+  return difference === 0;
 }
 
 export async function createSignedJwt(
@@ -687,10 +712,17 @@ export async function handleAuthLogin(c: Context<{ Bindings: Env }>) {
   if (!config.ok) return config.response;
 
   const returnPath = normalizeReturnPath(c.req.query("return") ?? c.req.query("return_to"));
-  const state = await createBrowserLoginState(config.clientSecret, returnPath);
+  const nonce = randomToken(16);
+  const browserProof = randomToken(32);
+  const state = await createBrowserLoginState(
+    config.clientSecret,
+    returnPath,
+    nonce,
+    await sha256Hex(browserProof),
+  );
   // Clear pre-state-flow cookies so a stripped state cannot be mistaken for a
-  // legacy browser callback. Old callbacks already in flight still work until
-  // a new login attempt explicitly supersedes them.
+  // browser callback. Legacy callbacks intentionally restart: accepting a
+  // pending-cookie-only callback would restore the login-CSRF gap.
   deleteCookie(c, LOGIN_PENDING_COOKIE, {
     ...sharedCookieDomainOption(c),
     path: "/",
@@ -698,6 +730,14 @@ export async function handleAuthLogin(c: Context<{ Bindings: Env }>) {
   deleteCookie(c, LOGIN_RETURN_COOKIE, {
     ...sharedCookieDomainOption(c),
     path: "/",
+  });
+  setCookie(c, browserLoginProofCookieName(nonce), browserProof, {
+    httpOnly: true,
+    secure: secureCookie(c),
+    sameSite: "Lax",
+    ...sharedCookieDomainOption(c),
+    path: "/login/raft/callback",
+    maxAge: BROWSER_LOGIN_STATE_TTL_MS / 1000,
   });
 
   const setup = new URL("/login-with-raft/setup", config.raftOrigin);
@@ -738,15 +778,23 @@ export async function handleRaftCallback(c: Context<{ Bindings: Env }>) {
   try {
     const state = c.req.query("state");
     let browserReturnPath: string | null = null;
+    let browserProofCookie: string | null = null;
     if (state) {
       const verifiedState = await verifyBrowserLoginState(config.clientSecret, state);
       if (!verifiedState) {
         return c.text("Invalid or expired local login state. Start again from /api/auth/login.", 400);
       }
+      browserProofCookie = browserLoginProofCookieName(verifiedState.nonce);
+      const browserProof = getCookie(c, browserProofCookie);
+      const browserProofSha256 = browserProof ? await sha256Hex(browserProof) : "";
+      if (
+        !browserProof ||
+        !/^[a-f0-9]{64}$/.test(browserProof) ||
+        !timingSafeEqualText(browserProofSha256, verifiedState.browser_proof_sha256)
+      ) {
+        return c.text("Missing or invalid browser login proof. Start again from /api/auth/login.", 400);
+      }
       browserReturnPath = verifiedState.return_path;
-    } else if (getCookie(c, LOGIN_PENDING_COOKIE)) {
-      // Compatibility for browser logins started before signed state shipped.
-      browserReturnPath = normalizeReturnPath(getCookie(c, LOGIN_RETURN_COOKIE));
     }
 
     const result = await finalizeRaftLogin(c, config, code);
@@ -779,6 +827,12 @@ export async function handleRaftCallback(c: Context<{ Bindings: Env }>) {
       ...sharedCookieDomainOption(c),
       path: "/",
     });
+    if (browserProofCookie) {
+      deleteCookie(c, browserProofCookie, {
+        ...sharedCookieDomainOption(c),
+        path: "/login/raft/callback",
+      });
+    }
     const destination = new URL(browserReturnUrl(c, browserReturnPath), requestOrigin(c));
     destination.hash = new URLSearchParams({
       access_token: result.authToken.token,

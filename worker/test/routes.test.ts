@@ -2276,6 +2276,14 @@ describe("quiver route handlers — SQL smoke", () => {
 });
 
 describe("auth origin handling", () => {
+  function browserProofCookie(response: Response): string {
+    const match = (response.headers.get("set-cookie") ?? "").match(
+      /(quiver_raft_login_proof_[a-f0-9]{32})=([a-f0-9]{64})/,
+    );
+    expect(match).not.toBeNull();
+    return `${match![1]}=${match![2]}`;
+  }
+
   function mockRaftLoginFetch(principalType: "human" | "agent" = "human") {
     return vi.fn(async (input: string | URL | Request) => {
       const url = String(input);
@@ -2391,7 +2399,14 @@ describe("auth origin handling", () => {
       "https://business.example/login/raft/callback",
     );
     expect(location.searchParams.get("state")).toMatch(/^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/);
-    expect(res.headers.get("set-cookie")?.toLowerCase()).not.toContain("max-age=600");
+    const setCookie = res.headers.get("set-cookie")?.toLowerCase() ?? "";
+    expect(browserProofCookie(res)).toMatch(
+      /^quiver_raft_login_proof_[a-f0-9]{32}=[a-f0-9]{64}$/,
+    );
+    expect(setCookie).toContain("httponly");
+    expect(setCookie).toContain("max-age=600");
+    expect(setCookie).toContain("path=/login/raft/callback");
+    expect(setCookie).toContain("domain=business.example");
   });
 
   it("keeps localhost auth callbacks and cookies host-local", async () => {
@@ -2411,10 +2426,13 @@ describe("auth origin handling", () => {
       "http://localhost:8787/login/raft/callback",
     );
     expect(location.searchParams.get("state")).toMatch(/^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/);
+    expect(browserProofCookie(res)).toMatch(
+      /^quiver_raft_login_proof_[a-f0-9]{32}=[a-f0-9]{64}$/,
+    );
     expect(res.headers.get("set-cookie")?.toLowerCase()).not.toContain("domain=");
   });
 
-  it("completes a delayed install-and-continue browser callback without local cookies", async () => {
+  it("completes a delayed install-and-continue browser callback with its matching proof", async () => {
     const env = makeMockEnv();
     env.RAFT_CLIENT_ID = "test-client";
     const app = new Hono<{ Bindings: MockEnv }>();
@@ -2433,13 +2451,14 @@ describe("auth origin handling", () => {
       const setup = new URL(login.headers.get("location") ?? "");
       const state = setup.searchParams.get("state");
       expect(state).toBeTruthy();
+      const proofCookie = browserProofCookie(login);
 
       nowSpy.mockReturnValue(start + 6 * 60 * 1000);
       globalThis.fetch = mockRaftLoginFetch() as typeof fetch;
 
       const callback = await app.request(
         `https://business.example/login/raft/callback?code=install-code&state=${encodeURIComponent(state!)}`,
-        {},
+        { headers: { cookie: proofCookie } },
         env as any,
       );
 
@@ -2450,6 +2469,9 @@ describe("auth origin handling", () => {
       );
       expect(destination.hash).toContain("access_token=");
       expect(globalThis.fetch).toHaveBeenCalledTimes(2);
+      expect(callback.headers.get("set-cookie")).toContain(
+        `${proofCookie.split("=")[0]}=`,
+      );
     } finally {
       globalThis.fetch = originalFetch;
       nowSpy.mockRestore();
@@ -2473,6 +2495,8 @@ describe("auth origin handling", () => {
     );
     const firstState = new URL(firstLogin.headers.get("location") ?? "").searchParams.get("state")!;
     const secondState = new URL(secondLogin.headers.get("location") ?? "").searchParams.get("state")!;
+    const firstProofCookie = browserProofCookie(firstLogin);
+    const secondProofCookie = browserProofCookie(secondLogin);
     expect(firstState).not.toBe(secondState);
     const originalFetch = globalThis.fetch;
     globalThis.fetch = mockRaftLoginFetch() as typeof fetch;
@@ -2480,12 +2504,12 @@ describe("auth origin handling", () => {
     try {
       const secondCallback = await app.request(
         `https://business.example/login/raft/callback?code=second-code&state=${encodeURIComponent(secondState)}`,
-        {},
+        { headers: { cookie: secondProofCookie } },
         env as any,
       );
       const firstCallback = await app.request(
         `https://business.example/login/raft/callback?code=first-code&state=${encodeURIComponent(firstState)}`,
-        {},
+        { headers: { cookie: firstProofCookie } },
         env as any,
       );
       expect(new URL(secondCallback.headers.get("location") ?? "").pathname).toBe("/apps/second");
@@ -2520,6 +2544,95 @@ describe("auth origin handling", () => {
     }
   });
 
+  it("rejects an attacker-owned browser state and code without the victim proof", async () => {
+    const env = makeMockEnv();
+    const app = new Hono<{ Bindings: MockEnv }>();
+    app.get("/api/auth/login", handleAuthLogin);
+    app.get("/login/raft/callback", handleRaftCallback);
+    const attackerLogin = await app.request(
+      "https://business.example/api/auth/login?return=%2Fapps",
+      {},
+      env as any,
+    );
+    const attackerState = new URL(attackerLogin.headers.get("location") ?? "").searchParams.get(
+      "state",
+    )!;
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = mockRaftLoginFetch() as typeof fetch;
+
+    try {
+      const victimCallback = await app.request(
+        `https://business.example/login/raft/callback?code=attacker-code&state=${encodeURIComponent(attackerState)}`,
+        {},
+        env as any,
+      );
+      expect(victimCallback.status).toBe(400);
+      expect(await victimCallback.text()).toContain("Missing or invalid browser login proof");
+      expect(globalThis.fetch).not.toHaveBeenCalled();
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("rejects a signed browser state paired with another attempt's proof", async () => {
+    const env = makeMockEnv();
+    const app = new Hono<{ Bindings: MockEnv }>();
+    app.get("/api/auth/login", handleAuthLogin);
+    app.get("/login/raft/callback", handleRaftCallback);
+    const attackerLogin = await app.request(
+      "https://business.example/api/auth/login?return=%2Fapps%2Fattacker",
+      {},
+      env as any,
+    );
+    const victimLogin = await app.request(
+      "https://business.example/api/auth/login?return=%2Fapps%2Fvictim",
+      {},
+      env as any,
+    );
+    const attackerState = new URL(attackerLogin.headers.get("location") ?? "").searchParams.get(
+      "state",
+    )!;
+    const [attackerProofName] = browserProofCookie(attackerLogin).split("=");
+    const [, victimProof] = browserProofCookie(victimLogin).split("=");
+    const mismatchedProofCookie = `${attackerProofName}=${victimProof}`;
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = mockRaftLoginFetch() as typeof fetch;
+
+    try {
+      const victimCallback = await app.request(
+        `https://business.example/login/raft/callback?code=attacker-code&state=${encodeURIComponent(attackerState)}`,
+        { headers: { cookie: mismatchedProofCookie } },
+        env as any,
+      );
+      expect(victimCallback.status).toBe(400);
+      expect(await victimCallback.text()).toContain("Missing or invalid browser login proof");
+      expect(globalThis.fetch).not.toHaveBeenCalled();
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("does not revive browser login from the legacy pending cookie", async () => {
+    const env = makeMockEnv();
+    const app = new Hono<{ Bindings: MockEnv }>();
+    app.get("/login/raft/callback", handleRaftCallback);
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = mockRaftLoginFetch() as typeof fetch;
+
+    try {
+      const callback = await app.request(
+        "https://business.example/login/raft/callback?code=human-code",
+        { headers: { cookie: "quiver_raft_login_pending=legacy" } },
+        env as any,
+      );
+      expect(callback.status).toBe(400);
+      expect(await callback.text()).toContain("Missing local login state");
+      expect(globalThis.fetch).toHaveBeenCalledTimes(2);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   it("rejects tampered browser state before exchanging the one-time code", async () => {
     const env = makeMockEnv();
     const app = new Hono<{ Bindings: MockEnv }>();
@@ -2532,7 +2645,7 @@ describe("auth origin handling", () => {
     );
     const setup = new URL(login.headers.get("location") ?? "");
     const state = setup.searchParams.get("state")!;
-    const tampered = `${state.slice(0, -1)}${state.endsWith("A") ? "B" : "A"}`;
+    const tampered = `${state.startsWith("A") ? "B" : "A"}${state.slice(1)}`;
     const originalFetch = globalThis.fetch;
     globalThis.fetch = vi.fn() as typeof fetch;
 
