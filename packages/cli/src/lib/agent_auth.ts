@@ -6,7 +6,10 @@
  *   2. Run the EXACT wrapper `$SLOCK_CLI_TRANSPORT_DIR/raft integration invoke
  *      --action agent-login --json` (never PATH `raft`); require exit 0; STRICTLY
  *      validate the result (outer success + exact service/action/status + closed grant
- *      result schema + RFC3339/future/<=300s expiry). Errors carry only stable reasons
+ *      result schema + RFC3339/future expiry within a bounded client sanity window). The
+ *      server issues a 300s TTL (RFC 057) and enforces the real expiry; the client accepts
+ *      up to 300s + clock-skew headroom so a boundary grant is not rejected under skew.
+ *      Errors carry only stable reasons
  *      — never the raw stdout/stderr/body (which could contain grant/action payload).
  *   3. Exchange { grant, code_verifier } at the Hands PUBLIC endpoint for a
  *      raft-cli-agent-session.v1; strictly validate it (closed keys + RFC3339 expiries).
@@ -49,6 +52,12 @@ function parseRfc3339(s: unknown): number | null {
   const t = Date.parse(s);
   return Number.isFinite(t) ? t : null;
 }
+
+// Client-side sanity ceiling on the grant lifetime: the server issues expiry =
+// server_now + 300s (RFC 057). We allow generous clock-skew headroom above that so a
+// legitimate grant is never rejected at the exact boundary; the server enforces the
+// real, shorter expiry, so this bound only rejects an absurdly long-lived grant.
+const AGENT_GRANT_TTL_CEILING_MS = 300_000 + 120_000; // 300s + 120s skew
 
 /**
  * Strictly validate a `raft integration invoke --action agent-login --json` result.
@@ -94,7 +103,10 @@ export function parseAgentLoginInvoke(
   const exp = parseRfc3339(result.expires_at);
   if (exp === null) throw new Error("agent-login: grant expires_at is not an RFC3339 timestamp");
   if (exp <= now) throw new Error("agent-login: grant is already expired");
-  if (exp > now + 300_000) throw new Error("agent-login: grant expiry exceeds the 300s ceiling");
+  // The server issues expiry = server_now + 300s (RFC 057). The client parses it later and
+  // its clock may differ, so a zero-tolerance ceiling flakes at the exact boundary. This is
+  // a sanity bound (the server enforces the real expiry), so allow clock-skew headroom.
+  if (exp > now + AGENT_GRANT_TTL_CEILING_MS) throw new Error("agent-login: grant expiry exceeds the ceiling");
   return { grant: result.grant, expires_at: result.expires_at };
 }
 
