@@ -41,7 +41,13 @@ import {
 } from "../src/lib/origin";
 import { openApiDocument } from "../src/openapi";
 import { handleCreateApp, handleListApps, handleUpdateFeatureFlag } from "../src/routes/apps";
-import { createSignedJwt, handleAuthLogin, handleAuthMe, handleDashboardRedirect } from "../src/routes/auth";
+import {
+  createSignedJwt,
+  handleAuthLogin,
+  handleAuthMe,
+  handleDashboardRedirect,
+  handleRaftCallback,
+} from "../src/routes/auth";
 import { handleListOrgs } from "../src/routes/orgs";
 import {
   handleCompleteIosSimulatorArtifact,
@@ -571,6 +577,7 @@ function makeMockDb() {
       expires_at INTEGER NOT NULL,
       last_seen_at INTEGER NOT NULL,
       revoked_at INTEGER,
+      raft_access_token_ciphertext TEXT,
       FOREIGN KEY (account_id) REFERENCES raft_accounts(id) ON DELETE CASCADE
     );
     CREATE TABLE organizations (
@@ -2269,6 +2276,35 @@ describe("quiver route handlers — SQL smoke", () => {
 });
 
 describe("auth origin handling", () => {
+  function mockRaftLoginFetch(principalType: "human" | "agent" = "human") {
+    return vi.fn(async (input: string | URL | Request) => {
+      const url = String(input);
+      if (url.endsWith("/api/oauth/token")) {
+        return Response.json({
+          access_token: "raft-access-token",
+          token_type: "Bearer",
+          expires_in: 600,
+          scope: "openid profile",
+        });
+      }
+      if (url.endsWith("/api/oauth/userinfo")) {
+        return Response.json({
+          sub: `${principalType}-1`,
+          type: principalType,
+          scope: "openid profile",
+          client_id: "test-client",
+          client_name: "Hands",
+          server_id: "server-1",
+          server_slug: "sandbox",
+          server_role: principalType === "human" ? "owner" : undefined,
+          preferred_username: `${principalType}-one`,
+          name: `${principalType === "human" ? "Human" : "Agent"} One`,
+        });
+      }
+      throw new Error(`Unexpected fetch: ${url}`);
+    });
+  }
+
   it("opens the configured dashboard origin without restarting OAuth", async () => {
     const env = makeMockEnv();
     const app = new Hono<{ Bindings: MockEnv }>();
@@ -2334,9 +2370,10 @@ describe("auth origin handling", () => {
     expect(location.searchParams.get("return_to")).toBe(
       "https://business.example/login/raft/callback",
     );
+    expect(location.searchParams.get("state")).toMatch(/^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/);
   });
 
-  it("shares browser login state across the dashboard and registered callback hosts", async () => {
+  it("carries signed browser login state across dashboard and callback hosts", async () => {
     const env = makeMockEnv();
     env.RAFT_CLIENT_ID = "test-client";
     const app = new Hono<{ Bindings: MockEnv }>();
@@ -2353,7 +2390,8 @@ describe("auth origin handling", () => {
     expect(location.searchParams.get("return_to")).toBe(
       "https://business.example/login/raft/callback",
     );
-    expect(res.headers.get("set-cookie")?.toLowerCase()).toContain("domain=business.example");
+    expect(location.searchParams.get("state")).toMatch(/^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/);
+    expect(res.headers.get("set-cookie")?.toLowerCase()).not.toContain("max-age=600");
   });
 
   it("keeps localhost auth callbacks and cookies host-local", async () => {
@@ -2372,7 +2410,177 @@ describe("auth origin handling", () => {
     expect(location.searchParams.get("return_to")).toBe(
       "http://localhost:8787/login/raft/callback",
     );
+    expect(location.searchParams.get("state")).toMatch(/^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/);
     expect(res.headers.get("set-cookie")?.toLowerCase()).not.toContain("domain=");
+  });
+
+  it("completes a delayed install-and-continue browser callback without local cookies", async () => {
+    const env = makeMockEnv();
+    env.RAFT_CLIENT_ID = "test-client";
+    const app = new Hono<{ Bindings: MockEnv }>();
+    app.get("/api/auth/login", handleAuthLogin);
+    app.get("/login/raft/callback", handleRaftCallback);
+    const originalFetch = globalThis.fetch;
+    const start = 1_700_000_000_000;
+    const nowSpy = vi.spyOn(Date, "now").mockReturnValue(start);
+
+    try {
+      const login = await app.request(
+        "https://dashboard.example/api/auth/login?return=%2Fapps%2Fapp-1%2Fsettings",
+        {},
+        env as any,
+      );
+      const setup = new URL(login.headers.get("location") ?? "");
+      const state = setup.searchParams.get("state");
+      expect(state).toBeTruthy();
+
+      nowSpy.mockReturnValue(start + 6 * 60 * 1000);
+      globalThis.fetch = mockRaftLoginFetch() as typeof fetch;
+
+      const callback = await app.request(
+        `https://business.example/login/raft/callback?code=install-code&state=${encodeURIComponent(state!)}`,
+        {},
+        env as any,
+      );
+
+      expect(callback.status).toBe(302);
+      const destination = new URL(callback.headers.get("location") ?? "");
+      expect(`${destination.origin}${destination.pathname}`).toBe(
+        "https://dashboard.example/apps/app-1/settings",
+      );
+      expect(destination.hash).toContain("access_token=");
+      expect(globalThis.fetch).toHaveBeenCalledTimes(2);
+    } finally {
+      globalThis.fetch = originalFetch;
+      nowSpy.mockRestore();
+    }
+  });
+
+  it("keeps concurrent browser login return paths isolated in signed state", async () => {
+    const env = makeMockEnv();
+    const app = new Hono<{ Bindings: MockEnv }>();
+    app.get("/api/auth/login", handleAuthLogin);
+    app.get("/login/raft/callback", handleRaftCallback);
+    const firstLogin = await app.request(
+      "https://dashboard.example/api/auth/login?return=%2Fapps%2Ffirst",
+      {},
+      env as any,
+    );
+    const secondLogin = await app.request(
+      "https://dashboard.example/api/auth/login?return=%2Fapps%2Fsecond",
+      {},
+      env as any,
+    );
+    const firstState = new URL(firstLogin.headers.get("location") ?? "").searchParams.get("state")!;
+    const secondState = new URL(secondLogin.headers.get("location") ?? "").searchParams.get("state")!;
+    expect(firstState).not.toBe(secondState);
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = mockRaftLoginFetch() as typeof fetch;
+
+    try {
+      const secondCallback = await app.request(
+        `https://business.example/login/raft/callback?code=second-code&state=${encodeURIComponent(secondState)}`,
+        {},
+        env as any,
+      );
+      const firstCallback = await app.request(
+        `https://business.example/login/raft/callback?code=first-code&state=${encodeURIComponent(firstState)}`,
+        {},
+        env as any,
+      );
+      expect(new URL(secondCallback.headers.get("location") ?? "").pathname).toBe("/apps/second");
+      expect(new URL(firstCallback.headers.get("location") ?? "").pathname).toBe("/apps/first");
+      expect(globalThis.fetch).toHaveBeenCalledTimes(4);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("preserves stateless Raft Agent Login callbacks", async () => {
+    const env = makeMockEnv();
+    const app = new Hono<{ Bindings: MockEnv }>();
+    app.get("/login/raft/callback", handleRaftCallback);
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = mockRaftLoginFetch("agent") as typeof fetch;
+
+    try {
+      const callback = await app.request(
+        "https://business.example/login/raft/callback?code=agent-code",
+        {},
+        env as any,
+      );
+      expect(callback.status).toBe(200);
+      await expect(callback.json()).resolves.toMatchObject({
+        ok: true,
+        account: { principal_type: "agent" },
+      });
+      expect(callback.headers.get("set-cookie")).toContain("hands_session=");
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("rejects tampered browser state before exchanging the one-time code", async () => {
+    const env = makeMockEnv();
+    const app = new Hono<{ Bindings: MockEnv }>();
+    app.get("/api/auth/login", handleAuthLogin);
+    app.get("/login/raft/callback", handleRaftCallback);
+    const login = await app.request(
+      "https://business.example/api/auth/login?return=%2Fapps",
+      {},
+      env as any,
+    );
+    const setup = new URL(login.headers.get("location") ?? "");
+    const state = setup.searchParams.get("state")!;
+    const tampered = `${state.slice(0, -1)}${state.endsWith("A") ? "B" : "A"}`;
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = vi.fn() as typeof fetch;
+
+    try {
+      const callback = await app.request(
+        `https://business.example/login/raft/callback?code=one-time-code&state=${encodeURIComponent(tampered)}`,
+        {},
+        env as any,
+      );
+      expect(callback.status).toBe(400);
+      expect(await callback.text()).toContain("Invalid or expired local login state");
+      expect(globalThis.fetch).not.toHaveBeenCalled();
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("rejects expired browser state before exchanging the one-time code", async () => {
+    const env = makeMockEnv();
+    const app = new Hono<{ Bindings: MockEnv }>();
+    app.get("/api/auth/login", handleAuthLogin);
+    app.get("/login/raft/callback", handleRaftCallback);
+    const originalFetch = globalThis.fetch;
+    const start = 1_700_000_000_000;
+    const nowSpy = vi.spyOn(Date, "now").mockReturnValue(start);
+
+    try {
+      const login = await app.request(
+        "https://business.example/api/auth/login?return=%2Fapps",
+        {},
+        env as any,
+      );
+      const setup = new URL(login.headers.get("location") ?? "");
+      const state = setup.searchParams.get("state")!;
+      nowSpy.mockReturnValue(start + 10 * 60 * 1000 + 1000);
+      globalThis.fetch = vi.fn() as typeof fetch;
+
+      const callback = await app.request(
+        `https://business.example/login/raft/callback?code=one-time-code&state=${encodeURIComponent(state)}`,
+        {},
+        env as any,
+      );
+      expect(callback.status).toBe(400);
+      expect(globalThis.fetch).not.toHaveBeenCalled();
+    } finally {
+      globalThis.fetch = originalFetch;
+      nowSpy.mockRestore();
+    }
   });
 
   it("canonicalizes public http custom-domain requests to https", () => {

@@ -27,6 +27,16 @@ import { encryptAdminRaftToken } from "../lib/admin_raft_token";
 
 const LOGIN_PENDING_COOKIE = "quiver_raft_login_pending";
 const LOGIN_RETURN_COOKIE = "quiver_raft_return";
+const BROWSER_LOGIN_STATE_TTL_MS = 10 * 60 * 1000;
+
+type BrowserLoginState = {
+  v: 1;
+  purpose: "hands-browser-login";
+  nonce: string;
+  return_path: string;
+  iat: number;
+  exp: number;
+};
 
 type RaftTokenResponse = {
   access_token: string;
@@ -169,6 +179,93 @@ function base64UrlBytes(bytes: Uint8Array): string {
     .replace(/\+/g, "-")
     .replace(/\//g, "_")
     .replace(/=+$/g, "");
+}
+
+function base64UrlToBytes(input: string): Uint8Array | null {
+  if (!/^[A-Za-z0-9_-]+$/.test(input)) return null;
+  const padded = input.replace(/-/g, "+").replace(/_/g, "/").padEnd(
+    input.length + ((4 - (input.length % 4)) % 4),
+    "=",
+  );
+  try {
+    const binary = atob(padded);
+    return Uint8Array.from(binary, (character) => character.charCodeAt(0));
+  } catch {
+    return null;
+  }
+}
+
+async function browserLoginStateKey(clientSecret: string) {
+  return crypto.subtle.importKey(
+    "raw",
+    new TextEncoder().encode(`hands-browser-login-state-v1:${clientSecret}`),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign", "verify"],
+  );
+}
+
+async function createBrowserLoginState(
+  clientSecret: string,
+  returnPath: string,
+): Promise<string> {
+  const issuedAt = now();
+  const payload: BrowserLoginState = {
+    v: 1,
+    purpose: "hands-browser-login",
+    nonce: randomToken(16),
+    return_path: returnPath,
+    iat: Math.floor(issuedAt / 1000),
+    exp: Math.floor((issuedAt + BROWSER_LOGIN_STATE_TTL_MS) / 1000),
+  };
+  const encodedPayload = base64UrlUtf8(JSON.stringify(payload));
+  const signature = await crypto.subtle.sign(
+    "HMAC",
+    await browserLoginStateKey(clientSecret),
+    new TextEncoder().encode(encodedPayload),
+  );
+  return `${encodedPayload}.${base64UrlBytes(new Uint8Array(signature))}`;
+}
+
+async function verifyBrowserLoginState(
+  clientSecret: string,
+  state: string,
+): Promise<BrowserLoginState | null> {
+  const [encodedPayload, encodedSignature, ...extra] = state.split(".");
+  if (!encodedPayload || !encodedSignature || extra.length > 0) return null;
+  const signature = base64UrlToBytes(encodedSignature);
+  const payloadBytes = base64UrlToBytes(encodedPayload);
+  if (!signature || !payloadBytes) return null;
+  const validSignature = await crypto.subtle.verify(
+    "HMAC",
+    await browserLoginStateKey(clientSecret),
+    signature,
+    new TextEncoder().encode(encodedPayload),
+  );
+  if (!validSignature) return null;
+
+  try {
+    const payload = JSON.parse(new TextDecoder().decode(payloadBytes)) as Partial<BrowserLoginState>;
+    const currentTime = Math.floor(now() / 1000);
+    if (
+      payload.v !== 1 ||
+      payload.purpose !== "hands-browser-login" ||
+      typeof payload.nonce !== "string" ||
+      !/^[a-f0-9]{32}$/.test(payload.nonce) ||
+      typeof payload.return_path !== "string" ||
+      normalizeReturnPath(payload.return_path) !== payload.return_path ||
+      typeof payload.iat !== "number" ||
+      typeof payload.exp !== "number" ||
+      payload.iat > currentTime + 60 ||
+      payload.exp <= currentTime ||
+      payload.exp - payload.iat !== BROWSER_LOGIN_STATE_TTL_MS / 1000
+    ) {
+      return null;
+    }
+    return payload as BrowserLoginState;
+  } catch {
+    return null;
+  }
 }
 
 export async function createSignedJwt(
@@ -589,29 +686,25 @@ export async function handleAuthLogin(c: Context<{ Bindings: Env }>) {
   const config = requireRaftConfig(c);
   if (!config.ok) return config.response;
 
-  const pending = randomToken(16);
   const returnPath = normalizeReturnPath(c.req.query("return") ?? c.req.query("return_to"));
-  setCookie(c, LOGIN_PENDING_COOKIE, pending, {
-    httpOnly: true,
-    secure: secureCookie(c),
-    sameSite: "Lax",
+  const state = await createBrowserLoginState(config.clientSecret, returnPath);
+  // Clear pre-state-flow cookies so a stripped state cannot be mistaken for a
+  // legacy browser callback. Old callbacks already in flight still work until
+  // a new login attempt explicitly supersedes them.
+  deleteCookie(c, LOGIN_PENDING_COOKIE, {
     ...sharedCookieDomainOption(c),
     path: "/",
-    maxAge: 10 * 60,
   });
-  setCookie(c, LOGIN_RETURN_COOKIE, returnPath, {
-    httpOnly: true,
-    secure: secureCookie(c),
-    sameSite: "Lax",
+  deleteCookie(c, LOGIN_RETURN_COOKIE, {
     ...sharedCookieDomainOption(c),
     path: "/",
-    maxAge: 10 * 60,
   });
 
   const setup = new URL("/login-with-raft/setup", config.raftOrigin);
   setup.searchParams.set("client_id", config.clientId);
   setup.searchParams.set("return_to", callbackUrl(c));
   setup.searchParams.set("scope", "openid profile");
+  setup.searchParams.set("state", state);
   const setupUrl = setup.toString();
   const accept = c.req.header("accept") || "";
   if (accept.includes("text/html")) {
@@ -643,11 +736,23 @@ export async function handleRaftCallback(c: Context<{ Bindings: Env }>) {
   if (!code) return c.text("Missing Raft callback code", 400);
 
   try {
-    const hasPendingBrowserLogin = Boolean(getCookie(c, LOGIN_PENDING_COOKIE));
+    const state = c.req.query("state");
+    let browserReturnPath: string | null = null;
+    if (state) {
+      const verifiedState = await verifyBrowserLoginState(config.clientSecret, state);
+      if (!verifiedState) {
+        return c.text("Invalid or expired local login state. Start again from /api/auth/login.", 400);
+      }
+      browserReturnPath = verifiedState.return_path;
+    } else if (getCookie(c, LOGIN_PENDING_COOKIE)) {
+      // Compatibility for browser logins started before signed state shipped.
+      browserReturnPath = normalizeReturnPath(getCookie(c, LOGIN_RETURN_COOKIE));
+    }
+
     const result = await finalizeRaftLogin(c, config, code);
     if (result instanceof Response) return result;
 
-    if (!hasPendingBrowserLogin) {
+    if (browserReturnPath === null) {
       if (result.account.principal_type !== "agent") {
         return c.text("Missing local login state. Start again from /api/auth/login.", 400);
       }
@@ -670,12 +775,11 @@ export async function handleRaftCallback(c: Context<{ Bindings: Env }>) {
       ...sharedCookieDomainOption(c),
       path: "/",
     });
-    const returnPath = normalizeReturnPath(getCookie(c, LOGIN_RETURN_COOKIE));
     deleteCookie(c, LOGIN_RETURN_COOKIE, {
       ...sharedCookieDomainOption(c),
       path: "/",
     });
-    const destination = new URL(browserReturnUrl(c, returnPath), requestOrigin(c));
+    const destination = new URL(browserReturnUrl(c, browserReturnPath), requestOrigin(c));
     destination.hash = new URLSearchParams({
       access_token: result.authToken.token,
       expires_at: String(result.authToken.expiresAt),
