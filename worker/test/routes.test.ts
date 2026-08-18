@@ -577,6 +577,7 @@ function makeMockDb() {
       expires_at INTEGER NOT NULL,
       last_seen_at INTEGER NOT NULL,
       revoked_at INTEGER,
+      raft_access_token_ciphertext TEXT,
       FOREIGN KEY (account_id) REFERENCES raft_accounts(id) ON DELETE CASCADE
     );
     CREATE TABLE organizations (
