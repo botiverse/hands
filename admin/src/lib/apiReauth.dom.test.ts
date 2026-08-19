@@ -81,6 +81,13 @@ describe("SESSION_REAUTH_REQUIRED renewal (shared request layer)", () => {
     expect(hrefLog.length).toBe(0);
   });
 
+  it("does NOT redirect on 503 ADMIN_VERIFICATION_UNAVAILABLE (transient Raft outage — retry, not re-login)", async () => {
+    const api = await loadApi();
+    mockJson(503, { error: "unavailable", code: "ADMIN_VERIFICATION_UNAVAILABLE" });
+    await expect(api.getHandsAdminOverview()).rejects.toMatchObject({ status: 503 });
+    expect(hrefLog.length).toBe(0);
+  });
+
   it("does NOT redirect on the legacy ADMIN_RELOGIN_REQUIRED (agent/no-credential — never browser-renew)", async () => {
     const api = await loadApi();
     mockJson(401, { error: "unauthorized", code: "ADMIN_RELOGIN_REQUIRED" });

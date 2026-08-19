@@ -14,8 +14,9 @@ type LiveRaftUser = {
   server_role?: string;
 };
 
-function deny(c: Context, status: 401 | 403, code: string) {
-  return c.json({ error: status === 401 ? "unauthorized" : "forbidden", code }, status);
+function deny(c: Context, status: 401 | 403 | 503, code: string) {
+  const error = status === 401 ? "unauthorized" : status === 403 ? "forbidden" : "unavailable";
+  return c.json({ error, code }, status);
 }
 
 export const requireHandsAdmin: MiddlewareHandler<AdminEnv & { Bindings: Env }> = async (c, next) => {
@@ -64,12 +65,21 @@ export const requireHandsAdmin: MiddlewareHandler<AdminEnv & { Bindings: Env }> 
   const response = await fetch(new URL("/api/oauth/userinfo", c.env.RAFT_API_ORIGIN), {
     headers: { authorization: `Bearer ${accessToken}` },
   });
-  // Raft rejects an expired token (the ~1h access token) — and also a user removed
-  // from the server. Both are recoverable by a browser session renewal: a valid user
-  // gets a fresh token and continues; a removed user gets a fresh token whose userinfo
-  // still fails, so the frontend's loop guard falls back to the manual page (still
-  // denied — role revocation stays immediate).
-  if (!response.ok) return deny(c, 401, "SESSION_REAUTH_REQUIRED");
+  // Distinguish WHY Raft refused — three different world states must not collapse into
+  // one reading, or transient outages and permission denials drag normal users into
+  // repeated logins:
+  //   401 — token invalid/expired (or the user was removed): recoverable by a browser
+  //         session renewal (a valid user continues; a removed user's renewed token
+  //         still fails userinfo, so the frontend loop guard falls back to the manual
+  //         page — still denied, role revocation stays immediate).
+  //   403 — a permission decision: not a login problem, do not renew.
+  //   429 / 5xx / anything else — a transient Raft outage: re-login would not help and
+  //         retrying worsens rate-limiting, so surface "temporarily unavailable".
+  if (!response.ok) {
+    if (response.status === 401) return deny(c, 401, "SESSION_REAUTH_REQUIRED");
+    if (response.status === 403) return deny(c, 403, "HANDS_ADMIN_REQUIRED");
+    return deny(c, 503, "ADMIN_VERIFICATION_UNAVAILABLE");
+  }
 
   const live = await response.json<LiveRaftUser>();
   const allowedServers = (c.env.HANDS_ADMIN_ALLOWED_SERVER_IDS || "")

@@ -21,16 +21,17 @@ async function request(
   role: string,
   serverId = "server-allowed",
   ciphertext?: string | null,
-  opts: { userinfoOk?: boolean; secret?: string | null; principalType?: "human" | "agent" } = {},
+  opts: { userinfoOk?: boolean; userinfoStatus?: number; secret?: string | null; principalType?: "human" | "agent" } = {},
 ) {
   const secret = "test-secret";
   const encrypted = ciphertext === undefined ? await encryptAdminRaftToken(secret, "raft-token") : ciphertext;
-  const userinfoOk = opts.userinfoOk !== false;
+  const userinfoStatus = opts.userinfoStatus ?? (opts.userinfoOk === false ? 401 : 200);
+  const userinfoOk = userinfoStatus >= 200 && userinfoStatus < 300;
   vi.stubGlobal("fetch", vi.fn(async () => new Response(
     userinfoOk
       ? JSON.stringify({ sub: account.provider_subject, server_id: serverId, server_role: role })
-      : "unauthorized",
-    { status: userinfoOk ? 200 : 401, headers: { "content-type": "application/json" } },
+      : "error",
+    { status: userinfoStatus, headers: { "content-type": "application/json" } },
   )));
   const app = new Hono<any>();
   app.use("*", async (c, next) => {
@@ -74,6 +75,16 @@ describe("requireHandsAdmin", () => {
     const res = await request("admin", "server-allowed", undefined, { userinfoOk: false });
     expect(res.status).toBe(401);
     expect(await res.json()).toEqual({ error: "unauthorized", code: "SESSION_REAUTH_REQUIRED" });
+  });
+  it("does NOT renew on a Raft 403 (permission decision, not a login problem) — maps to admin-required", async () => {
+    const res = await request("admin", "server-allowed", undefined, { userinfoStatus: 403 });
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: "forbidden", code: "HANDS_ADMIN_REQUIRED" });
+  });
+  it.each([429, 500, 502, 503])("does NOT renew on a transient Raft %i — surfaces verification-unavailable, not re-login", async (status) => {
+    const res = await request("admin", "server-allowed", undefined, { userinfoStatus: status });
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: "unavailable", code: "ADMIN_VERIFICATION_UNAVAILABLE" });
   });
   it("reports config-unavailable (not a re-login) when the admin secret is missing", async () => {
     const res = await request("admin", "server-allowed", "irrelevant-ciphertext", { secret: null });
