@@ -471,6 +471,33 @@ export interface Invite {
   invite_url?: string;
 }
 
+// When the Worker reports SESSION_REAUTH_REQUIRED, the browser session's Raft
+// re-check credential rotted or expired (the ~1h Raft access token, or a key
+// change). Renew the whole browser session with one full-page Login-with-Raft:
+// if the user's Raft session is still alive this returns without interaction and
+// replaces the Hands session atomically; if it isn't, a real login is shown.
+const REAUTH_AT_KEY = "hands:admin-reauth-at";
+const REAUTH_MIN_INTERVAL_MS = 30_000;
+
+function triggerSessionReauth(): Promise<never> | null {
+  // Loop guard / single-flight: if we renewed moments ago and are still being told
+  // to, the renewal did not fix it (user removed from the server, or Raft not logged
+  // in so the redirect bounced straight back). Fall through to the normal error so
+  // the manual "Sign in again" page shows instead of redirect-looping.
+  try {
+    const last = Number(window.sessionStorage.getItem(REAUTH_AT_KEY) || 0);
+    if (Date.now() - last < REAUTH_MIN_INTERVAL_MS) return null;
+    window.sessionStorage.setItem(REAUTH_AT_KEY, String(Date.now()));
+  } catch {
+    return null; // no sessionStorage → don't risk a loop; show the manual page
+  }
+  clearAuthToken();
+  const back = window.location.pathname + window.location.search;
+  window.location.href = `/api/auth/login?return=${encodeURIComponent(back)}`;
+  // Navigation is underway; never resolve so callers don't flash an error first.
+  return new Promise<never>(() => {});
+}
+
 async function request<T>(
   path: string,
   init: RequestInit & { admin?: boolean } = {},
@@ -492,6 +519,15 @@ async function request<T>(
     // non-JSON body; leave as text
   }
   if (!res.ok) {
+    if (
+      res.status === 401 &&
+      typeof body === "object" &&
+      body &&
+      (body as any).code === "SESSION_REAUTH_REQUIRED"
+    ) {
+      const reauth = triggerSessionReauth();
+      if (reauth) return reauth as unknown as Promise<T>;
+    }
     const msg =
       typeof body === "object" && body && "error" in body
         ? String((body as any).error)

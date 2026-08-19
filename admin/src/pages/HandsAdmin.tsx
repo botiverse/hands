@@ -26,7 +26,16 @@ export function HandsAdmin() {
   const overview = useQuery({ queryKey: ["hands-admin", "overview"], queryFn: getHandsAdminOverview, retry: false });
   if (overview.isPending) return <main className="p-8 text-sm text-slate-500">Loading observability…</main>;
   if (overview.error instanceof ApiError && overview.error.status === 401) {
-    return <main className="p-8"><h1 className="text-xl font-semibold">Sign in again</h1><p className="mt-2 text-sm text-slate-600">A fresh Raft session is required for live administrator verification.</p><a className="mt-4 inline-block text-sky-700" href="/api/auth/login?return=%2Fadmin">Continue with Raft</a></main>;
+    const code = (overview.error.body as { code?: string } | null)?.code;
+    if (code === "ADMIN_AUTH_UNAVAILABLE") {
+      // Server-side configuration problem (missing secret / Raft origin). Re-login
+      // cannot fix it — do not send the operator into a login loop.
+      return <main className="p-8"><h1 className="text-xl font-semibold">Admin verification unavailable</h1><p className="mt-2 text-sm text-slate-600">Live administrator verification is temporarily unavailable because of a server configuration issue. This is not a login problem — please contact an operator.</p></main>;
+    }
+    // SESSION_REAUTH_REQUIRED is normally renewed in the API layer before it reaches
+    // here; this manual page is the fallback when the loop guard tripped (Raft not
+    // logged in, or the user is no longer a member of the server).
+    return <main className="p-8"><h1 className="text-xl font-semibold">Sign in again</h1><p className="mt-2 text-sm text-slate-600">Your administrator session needs a fresh Raft sign-in.</p><a className="mt-4 inline-block text-sky-700" href="/api/auth/login?return=%2Fadmin">Continue with Raft</a></main>;
   }
   if (overview.error instanceof ApiError && overview.error.status === 403) {
     return <main className="p-8"><h1 className="text-xl font-semibold">Administrator access required</h1><p className="mt-2 text-sm text-slate-600">This page is limited to administrators of an approved Raft server.</p></main>;

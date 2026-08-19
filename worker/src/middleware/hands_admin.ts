@@ -43,12 +43,22 @@ export const requireHandsAdmin: MiddlewareHandler<AdminEnv & { Bindings: Env }> 
   try {
     accessToken = await decryptAdminRaftToken(secret, session.raft_access_token_ciphertext);
   } catch {
-    return deny(c, 401, "ADMIN_RELOGIN_REQUIRED");
+    // A non-NULL ciphertext that won't decrypt is a browser session whose Raft
+    // credential rotted (e.g. the encryption key changed). It is recoverable by
+    // renewing the browser session (a fresh Login-with-Raft re-encrypts with the
+    // current key) — signal that, not the generic relogin. Agent/API sessions hit
+    // the NULL-ciphertext branch above and are never told to re-auth.
+    return deny(c, 401, "SESSION_REAUTH_REQUIRED");
   }
   const response = await fetch(new URL("/api/oauth/userinfo", c.env.RAFT_API_ORIGIN), {
     headers: { authorization: `Bearer ${accessToken}` },
   });
-  if (!response.ok) return deny(c, 401, "AUTH_EXPIRED");
+  // Raft rejects an expired token (the ~1h access token) — and also a user removed
+  // from the server. Both are recoverable by a browser session renewal: a valid user
+  // gets a fresh token and continues; a removed user gets a fresh token whose userinfo
+  // still fails, so the frontend's loop guard falls back to the manual page (still
+  // denied — role revocation stays immediate).
+  if (!response.ok) return deny(c, 401, "SESSION_REAUTH_REQUIRED");
 
   const live = await response.json<LiveRaftUser>();
   const allowedServers = (c.env.HANDS_ADMIN_ALLOWED_SERVER_IDS || "")
