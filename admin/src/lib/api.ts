@@ -473,9 +473,11 @@ export interface Invite {
 
 // When the Worker reports SESSION_REAUTH_REQUIRED, the browser session's Raft
 // re-check credential rotted or expired (the ~1h Raft access token, or a key
-// change). Renew the whole browser session with one full-page Login-with-Raft:
-// if the user's Raft session is still alive this returns without interaction and
-// replaces the Hands session atomically; if it isn't, a real login is shown.
+// change). Renew it with one full-page Login-with-Raft: if the user's Raft session
+// is still alive this returns without interaction and the browser switches to the
+// new Hands session (the callback stores a fresh token); if it isn't, a real login
+// is shown. This is a client-side switch to a new session — it does not revoke the
+// old D1 session server-side (that row simply expires).
 const REAUTH_AT_KEY = "hands:admin-reauth-at";
 const REAUTH_MIN_INTERVAL_MS = 30_000;
 

@@ -21,7 +21,7 @@ async function request(
   role: string,
   serverId = "server-allowed",
   ciphertext?: string | null,
-  opts: { userinfoOk?: boolean; secret?: string | null } = {},
+  opts: { userinfoOk?: boolean; secret?: string | null; principalType?: "human" | "agent" } = {},
 ) {
   const secret = "test-secret";
   const encrypted = ciphertext === undefined ? await encryptAdminRaftToken(secret, "raft-token") : ciphertext;
@@ -33,7 +33,10 @@ async function request(
     { status: userinfoOk ? 200 : 401, headers: { "content-type": "application/json" } },
   )));
   const app = new Hono<any>();
-  app.use("*", async (c, next) => { c.set("admin_account", account); await next(); });
+  app.use("*", async (c, next) => {
+    c.set("admin_account", { ...account, principal_type: opts.principalType ?? account.principal_type });
+    await next();
+  });
   app.use("/admin/*", requireHandsAdmin);
   app.get("/admin/overview", (c) => c.json({ ok: true }));
   const env = {
@@ -51,8 +54,14 @@ describe("requireHandsAdmin", () => {
   it.each(["member", "viewer"])("denies live server role %s before the handler", async (role) => expect((await request(role)).status).toBe(403));
   it("denies another Raft server", async () => expect((await request("admin", "other-server")).status).toBe(403));
   it("requires a fresh login for sessions without a live Raft credential", async () => expect((await request("admin", "server-allowed", null)).status).toBe(401));
-  it("does NOT tell a no-credential session to re-auth (agent-safe: NULL ciphertext is legitimate for agent sessions)", async () => {
-    const res = await request("admin", "server-allowed", null);
+  it("renews a HUMAN browser session with no stored credential (legacy/missing-ciphertext — the current lock-out shape)", async () => {
+    const res = await request("admin", "server-allowed", null, { principalType: "human" });
+    expect(res.status).toBe(401);
+    expect(await res.json()).toEqual({ error: "unauthorized", code: "SESSION_REAUTH_REQUIRED" });
+  });
+  it("does NOT tell an AGENT/CLI session to re-auth (NULL ciphertext is legitimate for agents — never browser-renew)", async () => {
+    const res = await request("admin", "server-allowed", null, { principalType: "agent" });
+    expect(res.status).toBe(401);
     expect(await res.json()).toEqual({ error: "unauthorized", code: "ADMIN_RELOGIN_REQUIRED" });
   });
   it("renews the browser session when the stored credential can't be decrypted (key rotated)", async () => {

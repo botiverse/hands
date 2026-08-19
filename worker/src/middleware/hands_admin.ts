@@ -34,7 +34,18 @@ export const requireHandsAdmin: MiddlewareHandler<AdminEnv & { Bindings: Env }> 
       LIMIT 1`,
   ).bind(await sha256Hex(sessionToken), account.id, Date.now())
     .first<{ raft_access_token_ciphertext: string | null }>();
-  if (!session?.raft_access_token_ciphertext) return deny(c, 401, "ADMIN_RELOGIN_REQUIRED");
+  if (!session?.raft_access_token_ciphertext) {
+    // A human browser session with no stored Raft credential (a legacy session, or
+    // one from before the credential was captured) is recoverable by renewing the
+    // browser session — a fresh Login-with-Raft stores one. An agent/CLI session
+    // legitimately never has this credential and must NOT be sent through a browser
+    // re-auth; it just cannot use the admin console.
+    return deny(
+      c,
+      401,
+      account.principal_type === "agent" ? "ADMIN_RELOGIN_REQUIRED" : "SESSION_REAUTH_REQUIRED",
+    );
+  }
 
   const secret = c.env.SIGNED_URL_SECRET || c.env.RAFT_CLIENT_SECRET;
   if (!secret || !c.env.RAFT_API_ORIGIN) return deny(c, 401, "ADMIN_AUTH_UNAVAILABLE");
