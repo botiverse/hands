@@ -43,6 +43,16 @@ while the percentage climbs. Clients that send no device id only ever see
 fully rolled-out releases; gated-out clients fall through to the previous
 active release. The Android SDK sends the header automatically.
 
+To freeze a published release without revoking its existing share links, set
+its stable full-scope rollout to `0` in the admin release controls. This is a
+distribution-pointer mutation, not a release deletion or share revocation:
+existing `/share/...` URLs and their artifact downloads remain available, while
+the public latest/update resolver skips the zero-rollout release and resolves
+the previous eligible active release. Fresh-read both resolver responses and
+the existing share after the mutation. Record the release revision and the
+previous eligible release in the receipt. Do not claim that rollout `0`
+retroactively removes an already-installed build.
+
 ### Update Available
 
 ```json
