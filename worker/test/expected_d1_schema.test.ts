@@ -39,7 +39,10 @@ describe("deploy readback — expected schema", () => {
 
   it("fails a database left on the previous migration", () => {
     const current = fingerprint(buildExpected());
-    const stale = fingerprint(chainWithout(/^0062/));
+    // Model a database frozen before 0062. 0068 drops build_assets_legacy, the table
+    // 0062 creates, so it depends on 0062 having run — skip the pair together, or 0068
+    // aborts on a chain that never made the table.
+    const stale = fingerprint(chainWithout(/^(0062|0068)_/));
     expect(stale).not.toEqual(current);
     // Specifically the columns `table_info` cannot see, which is why a count is not
     // enough on its own.
@@ -53,7 +56,8 @@ describe("deploy readback — expected schema", () => {
     const count = (db: Database.Database) =>
       db.prepare("SELECT COUNT(*) FROM pragma_table_info('build_assets')").pluck().get();
     // Not a property worth keeping; a record of why the weaker check was dropped.
-    expect(count(chainWithout(/^0062/))).toBe(count(buildExpected()));
+    // (Skip 0062 with its dependent 0068 — see the note in the test above.)
+    expect(count(chainWithout(/^(0062|0068)_/))).toBe(count(buildExpected()));
   });
 
   it("notices a single missing index, not only a whole missing migration", () => {
