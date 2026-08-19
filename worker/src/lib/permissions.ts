@@ -50,13 +50,15 @@ function devTokenBypass(c: AdminContext) {
 // explicit "use the full app id", instead of falling through to the role check
 // and returning a misleading INSUFFICIENT_APP_ROLE.
 //
-// This is a SHAPE check only: it rejects an id built solely from UUID characters
-// (hex + dashes) that is not a complete UUID — i.e. a truncated UUID. A
-// well-formed UUID that simply does not exist (or that the caller may not access)
-// is NOT rejected here; it continues to the normal indistinguishable role error,
-// so this never becomes an app-existence oracle. Anything containing a non-UUID
-// character (the synthetic slug-like ids used in tests, future schemes) is left
-// untouched.
+// This is a SHAPE check only and adds no existence signal of its own: it rejects
+// an id built solely from UUID characters (hex + dashes) that is not a complete
+// UUID — i.e. a truncated UUID. A well-formed UUID that simply does not exist (or
+// that the caller may not access) is NOT rejected here; it continues to the
+// normal role path exactly as before. Anything containing a non-UUID character
+// (the synthetic slug-like ids used in tests, future schemes) is left untouched.
+// (Note: whether the role path itself distinguishes existing vs absent apps — via
+// the org_id echoed in the forbidden response — is a separate pre-existing concern
+// this gate neither introduces nor fixes.)
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 function appIdShapeError(c: AdminContext, appId: string) {
   if (UUID_RE.test(appId)) return null;
