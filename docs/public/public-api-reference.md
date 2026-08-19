@@ -53,6 +53,16 @@ the existing share after the mutation. Record the release revision and the
 previous eligible release in the receipt. Do not claim that rollout `0`
 retroactively removes an already-installed build.
 
+To resume distribution, do not infer a target from the frozen release or
+blindly restore `100`. The release owner must explicitly select the target
+version/release (and rollout percentage), taking into account any newer
+eligible release created while the pointer was frozen. Fresh-read the target
+release revision before changing it, apply the chosen rollout, then fresh-read
+the release, public latest/update responses, and the intended share URL again.
+Record the owner-selected target, resulting revision/rollout, and resolver
+and share readbacks in the receipt. Restoring rollout is not, by itself, proof
+that the public pointer resumed to the correct version.
+
 ### Update Available
 
 ```json
