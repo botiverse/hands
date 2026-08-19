@@ -102,7 +102,7 @@ export function registerAppCommands(program: Command): void {
             a.platform,
             a.archived ? "yes" : "no",
             a.default_channel_slug ?? "—",
-            a.id.slice(0, 8),
+            a.id,
           ].join("\t"),
         );
       }

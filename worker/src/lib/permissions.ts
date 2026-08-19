@@ -44,6 +44,36 @@ function devTokenBypass(c: AdminContext) {
   return c.get("admin_actor") === "dev-token";
 }
 
+// App ids are UUIDs. A caller that passes a truncated/partial id (e.g. the
+// 8-char short id `hands apps list` used to print) must fail as a client error
+// AT THE RESOLUTION BOUNDARY — before any DB lookup or role check — with an
+// explicit "use the full app id", instead of falling through to the role check
+// and returning a misleading INSUFFICIENT_APP_ROLE.
+//
+// This is a SHAPE check only: it rejects an id built solely from UUID characters
+// (hex + dashes) that is not a complete UUID — i.e. a truncated UUID. A
+// well-formed UUID that simply does not exist (or that the caller may not access)
+// is NOT rejected here; it continues to the normal indistinguishable role error,
+// so this never becomes an app-existence oracle. Anything containing a non-UUID
+// character (the synthetic slug-like ids used in tests, future schemes) is left
+// untouched.
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+function appIdShapeError(c: AdminContext, appId: string) {
+  if (UUID_RE.test(appId)) return null;
+  if (!/^[0-9a-f-]+$/i.test(appId)) return null;
+  return c.json(
+    {
+      error: "invalid_app_id",
+      code: "EXACT_APP_ID_REQUIRED",
+      next_action:
+        `'${appId}' is not a complete app id. Pass the full app UUID ` +
+        `(the ID column of \`hands apps list\`), not a shortened or partial id.`,
+      app_id: appId,
+    },
+    400,
+  );
+}
+
 export function currentAccount(c: AdminContext): AdminAccount | null {
   return c.get("admin_account") ?? null;
 }
@@ -292,6 +322,8 @@ export async function ensureAppRole(
   opts?: { orgMinimum?: OrgRole },
 ) {
   if (devTokenBypass(c)) return { ok: true as const, app_role: "admin" as AppRole, org_role: "owner" as OrgRole };
+  const shapeError = appIdShapeError(c, appId);
+  if (shapeError) return { ok: false as const, response: shapeError };
   const deployToken = currentDeployToken(c);
   if (deployToken) {
     if (
@@ -370,6 +402,8 @@ export async function ensureAppPermission(
   opts?: { orgMinimum?: OrgRole },
 ) {
   if (devTokenBypass(c)) return { ok: true as const, app_permission: permission };
+  const shapeError = appIdShapeError(c, appId);
+  if (shapeError) return { ok: false as const, response: shapeError };
   const deployToken = currentDeployToken(c);
   if (deployToken) {
     if (deployToken.app_id !== appId || !hasDeployTokenPermission(deployToken, permission)) {
