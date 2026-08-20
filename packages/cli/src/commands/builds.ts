@@ -594,7 +594,7 @@ export function registerBuildCommands(program: Command): void {
         for (const b of res.builds) {
           const flag = b.should_force_update ? "  [force]" : "";
           console.log(
-            `${b.version_name} (${b.version_code})  ${b.product_type}/${b.release_type}  status=${b.status}${flag}  id=${b.id.slice(0, 8)}`,
+            `${b.version_name} (${b.version_code})  ${b.product_type}/${b.release_type}  status=${b.status}${flag}  id=${b.id}`,
           );
         }
       },
