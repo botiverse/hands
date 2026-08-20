@@ -14,8 +14,9 @@ type LiveRaftUser = {
   server_role?: string;
 };
 
-function deny(c: Context, status: 401 | 403, code: string) {
-  return c.json({ error: status === 401 ? "unauthorized" : "forbidden", code }, status);
+function deny(c: Context, status: 401 | 403 | 503, code: string) {
+  const error = status === 401 ? "unauthorized" : status === 403 ? "forbidden" : "unavailable";
+  return c.json({ error, code }, status);
 }
 
 export const requireHandsAdmin: MiddlewareHandler<AdminEnv & { Bindings: Env }> = async (c, next) => {
@@ -34,7 +35,18 @@ export const requireHandsAdmin: MiddlewareHandler<AdminEnv & { Bindings: Env }> 
       LIMIT 1`,
   ).bind(await sha256Hex(sessionToken), account.id, Date.now())
     .first<{ raft_access_token_ciphertext: string | null }>();
-  if (!session?.raft_access_token_ciphertext) return deny(c, 401, "ADMIN_RELOGIN_REQUIRED");
+  if (!session?.raft_access_token_ciphertext) {
+    // A human browser session with no stored Raft credential (a legacy session, or
+    // one from before the credential was captured) is recoverable by renewing the
+    // browser session — a fresh Login-with-Raft stores one. An agent/CLI session
+    // legitimately never has this credential and must NOT be sent through a browser
+    // re-auth; it just cannot use the admin console.
+    return deny(
+      c,
+      401,
+      account.principal_type === "agent" ? "ADMIN_RELOGIN_REQUIRED" : "SESSION_REAUTH_REQUIRED",
+    );
+  }
 
   const secret = c.env.SIGNED_URL_SECRET || c.env.RAFT_CLIENT_SECRET;
   if (!secret || !c.env.RAFT_API_ORIGIN) return deny(c, 401, "ADMIN_AUTH_UNAVAILABLE");
@@ -43,12 +55,31 @@ export const requireHandsAdmin: MiddlewareHandler<AdminEnv & { Bindings: Env }> 
   try {
     accessToken = await decryptAdminRaftToken(secret, session.raft_access_token_ciphertext);
   } catch {
-    return deny(c, 401, "ADMIN_RELOGIN_REQUIRED");
+    // A non-NULL ciphertext that won't decrypt is a browser session whose Raft
+    // credential rotted (e.g. the encryption key changed). It is recoverable by
+    // renewing the browser session (a fresh Login-with-Raft re-encrypts with the
+    // current key) — signal that, not the generic relogin. Agent/API sessions hit
+    // the NULL-ciphertext branch above and are never told to re-auth.
+    return deny(c, 401, "SESSION_REAUTH_REQUIRED");
   }
   const response = await fetch(new URL("/api/oauth/userinfo", c.env.RAFT_API_ORIGIN), {
     headers: { authorization: `Bearer ${accessToken}` },
   });
-  if (!response.ok) return deny(c, 401, "AUTH_EXPIRED");
+  // Distinguish WHY Raft refused — three different world states must not collapse into
+  // one reading, or transient outages and permission denials drag normal users into
+  // repeated logins:
+  //   401 — token invalid/expired (or the user was removed): recoverable by a browser
+  //         session renewal (a valid user continues; a removed user's renewed token
+  //         still fails userinfo, so the frontend loop guard falls back to the manual
+  //         page — still denied, role revocation stays immediate).
+  //   403 — a permission decision: not a login problem, do not renew.
+  //   429 / 5xx / anything else — a transient Raft outage: re-login would not help and
+  //         retrying worsens rate-limiting, so surface "temporarily unavailable".
+  if (!response.ok) {
+    if (response.status === 401) return deny(c, 401, "SESSION_REAUTH_REQUIRED");
+    if (response.status === 403) return deny(c, 403, "HANDS_ADMIN_REQUIRED");
+    return deny(c, 503, "ADMIN_VERIFICATION_UNAVAILABLE");
+  }
 
   const live = await response.json<LiveRaftUser>();
   const allowedServers = (c.env.HANDS_ADMIN_ALLOWED_SERVER_IDS || "")

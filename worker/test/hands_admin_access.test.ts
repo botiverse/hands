@@ -17,18 +17,33 @@ function database(ciphertext: string | null) {
   } as unknown as D1Database;
 }
 
-async function request(role: string, serverId = "server-allowed", ciphertext?: string | null) {
+async function request(
+  role: string,
+  serverId = "server-allowed",
+  ciphertext?: string | null,
+  opts: { userinfoOk?: boolean; userinfoStatus?: number; secret?: string | null; principalType?: "human" | "agent" } = {},
+) {
   const secret = "test-secret";
   const encrypted = ciphertext === undefined ? await encryptAdminRaftToken(secret, "raft-token") : ciphertext;
-  vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({
-    sub: account.provider_subject, server_id: serverId, server_role: role,
-  }), { headers: { "content-type": "application/json" } })));
+  const userinfoStatus = opts.userinfoStatus ?? (opts.userinfoOk === false ? 401 : 200);
+  const userinfoOk = userinfoStatus >= 200 && userinfoStatus < 300;
+  vi.stubGlobal("fetch", vi.fn(async () => new Response(
+    userinfoOk
+      ? JSON.stringify({ sub: account.provider_subject, server_id: serverId, server_role: role })
+      : "error",
+    { status: userinfoStatus, headers: { "content-type": "application/json" } },
+  )));
   const app = new Hono<any>();
-  app.use("*", async (c, next) => { c.set("admin_account", account); await next(); });
+  app.use("*", async (c, next) => {
+    c.set("admin_account", { ...account, principal_type: opts.principalType ?? account.principal_type });
+    await next();
+  });
   app.use("/admin/*", requireHandsAdmin);
   app.get("/admin/overview", (c) => c.json({ ok: true }));
   const env = {
-    DB: database(encrypted), SIGNED_URL_SECRET: secret, RAFT_API_ORIGIN: "https://api.raft.build",
+    DB: database(encrypted),
+    SIGNED_URL_SECRET: opts.secret === undefined ? secret : (opts.secret ?? undefined),
+    RAFT_API_ORIGIN: "https://api.raft.build",
     HANDS_ADMIN_ALLOWED_SERVER_IDS: "server-allowed",
   } as unknown as Env;
   return app.request("https://app.hands.build/admin/overview", { headers: { authorization: "Bearer hands-session" } }, env);
@@ -40,6 +55,42 @@ describe("requireHandsAdmin", () => {
   it.each(["member", "viewer"])("denies live server role %s before the handler", async (role) => expect((await request(role)).status).toBe(403));
   it("denies another Raft server", async () => expect((await request("admin", "other-server")).status).toBe(403));
   it("requires a fresh login for sessions without a live Raft credential", async () => expect((await request("admin", "server-allowed", null)).status).toBe(401));
+  it("renews a HUMAN browser session with no stored credential (legacy/missing-ciphertext — the current lock-out shape)", async () => {
+    const res = await request("admin", "server-allowed", null, { principalType: "human" });
+    expect(res.status).toBe(401);
+    expect(await res.json()).toEqual({ error: "unauthorized", code: "SESSION_REAUTH_REQUIRED" });
+  });
+  it("does NOT tell an AGENT/CLI session to re-auth (NULL ciphertext is legitimate for agents — never browser-renew)", async () => {
+    const res = await request("admin", "server-allowed", null, { principalType: "agent" });
+    expect(res.status).toBe(401);
+    expect(await res.json()).toEqual({ error: "unauthorized", code: "ADMIN_RELOGIN_REQUIRED" });
+  });
+  it("renews the browser session when the stored credential can't be decrypted (key rotated)", async () => {
+    const wrongKey = await encryptAdminRaftToken("rotated-secret", "raft-token");
+    const res = await request("admin", "server-allowed", wrongKey);
+    expect(res.status).toBe(401);
+    expect(await res.json()).toEqual({ error: "unauthorized", code: "SESSION_REAUTH_REQUIRED" });
+  });
+  it("renews the browser session when Raft rejects the token (expired, or member removed)", async () => {
+    const res = await request("admin", "server-allowed", undefined, { userinfoOk: false });
+    expect(res.status).toBe(401);
+    expect(await res.json()).toEqual({ error: "unauthorized", code: "SESSION_REAUTH_REQUIRED" });
+  });
+  it("does NOT renew on a Raft 403 (permission decision, not a login problem) — maps to admin-required", async () => {
+    const res = await request("admin", "server-allowed", undefined, { userinfoStatus: 403 });
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: "forbidden", code: "HANDS_ADMIN_REQUIRED" });
+  });
+  it.each([429, 500, 502, 503])("does NOT renew on a transient Raft %i — surfaces verification-unavailable, not re-login", async (status) => {
+    const res = await request("admin", "server-allowed", undefined, { userinfoStatus: status });
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: "unavailable", code: "ADMIN_VERIFICATION_UNAVAILABLE" });
+  });
+  it("reports config-unavailable (not a re-login) when the admin secret is missing", async () => {
+    const res = await request("admin", "server-allowed", "irrelevant-ciphertext", { secret: null });
+    expect(res.status).toBe(401);
+    expect(await res.json()).toEqual({ error: "unauthorized", code: "ADMIN_AUTH_UNAVAILABLE" });
+  });
   it("does not confuse app admin role with Raft server admin role", async () => {
     // The stored account is an org/app admin, but live Raft says only member.
     const response = await request("member");
