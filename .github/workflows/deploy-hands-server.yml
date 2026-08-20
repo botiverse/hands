@@ -191,6 +191,82 @@ jobs:
           echo "The readback owner verifies this id exists, is their own reply, and"
           echo "predates this run. This step has only checked that it is id-shaped." 
 
+      # Pre-apply census for the 0068 build_assets_legacy DROP. The migration guards
+      # itself with an in-file CHECK that aborts before the DROP if any legacy row's
+      # credential columns are not preserved in live build_assets — but whether a failed
+      # statement aborts the rest of a same-file multi-statement submission on D1 --remote
+      # is undetermined (public docs are silent; wrangler only guarantees it stops BETWEEN
+      # files). So rather than rely on the abort, this proves there is nothing to abort:
+      # it exercises the guard's EXACT per-column predicate as a read-only count right
+      # before the apply. Zero => the guard would never trip => abort reliability is
+      # irrelevant. Non-zero => do not apply (exactly when the abort is both most needed
+      # and least certain).
+      #
+      # Existence-conditional, so it is a permanent no-op once the legacy table is gone:
+      # it runs before every future apply and only bites while the table exists.
+      # Locator-free (COUNT only) — no credential column reaches the log. Fails closed:
+      # any query/parse error stops before the apply rather than passing unproven.
+      - name: Pre-apply census — build_assets_legacy credential preservation (0068 guard)
+        working-directory: worker
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_BOTIVERSE_API_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          pnpm exec wrangler --version >/dev/null 2>&1 || {
+            echo "CANNOT RUN: wrangler is not usable via pnpm exec — the census did not" >&2
+            echo "execute, so nothing has been proven. Stopping before the apply." >&2
+            exit 2
+          }
+
+          n() {  # n <sql selecting a single column `n`> -> prints the scalar
+            pnpm exec wrangler d1 execute "${HANDS_D1_DATABASE_NAME}" \
+              --remote --json --config wrangler.hands.generated.jsonc --command "$1" \
+              | jq -r '.[0].results[0].n'
+          }
+
+          # Three-state, no "everything else passes". Only an explicit 0 means the table
+          # is gone (no-op); any other value (null / empty / anomalous) is CANNOT RUN, not
+          # a pass — otherwise an unreadable probe would fail OPEN and skip the census, the
+          # same "can't read it => treated as fine" shape 0068 itself guards against.
+          exists=$(n "SELECT count(*) AS n FROM sqlite_master WHERE type='table' AND name='build_assets_legacy';")
+          case "$exists" in
+            1) : ;;  # table present -> run the census below
+            0) echo "build_assets_legacy is absent — the 0068 drop is already applied or a"
+               echo "no-op; nothing to census."
+               exit 0 ;;
+            *) echo "CANNOT RUN: the existence probe returned '${exists}' (expected 0 or 1) —" >&2
+               echo "the census did not execute, so nothing has been proven. Stopping before" >&2
+               echo "the apply." >&2
+               exit 2 ;;
+          esac
+
+          # EXACT guard predicate from migrations/sql/0068_drop_build_assets_legacy.sql:
+          # a legacy row is preserved iff a live row shares its id AND all four credential
+          # columns (IFNULL-normalised). metadata_json is intentionally excluded there and
+          # here — it is live-mutable and would false-abort. COUNT only: no credential
+          # value is selected, so none reaches the log.
+          orphans=$(n "SELECT count(*) AS n FROM build_assets_legacy l WHERE NOT EXISTS (SELECT 1 FROM build_assets b WHERE b.id = l.id AND IFNULL(b.r2_key,'') = IFNULL(l.r2_key,'') AND IFNULL(b.file_hash,'') = IFNULL(l.file_hash,'') AND IFNULL(b.signature,'') = IFNULL(l.signature,'') AND IFNULL(b.signing_credential_id,'') = IFNULL(l.signing_credential_id,''));")
+
+          # Print the exercised count unconditionally — 'ran and returned 0', not merely
+          # 'no error'.
+          echo "0068 pre-apply census: build_assets_legacy rows NOT preserved (per-column) in live build_assets = ${orphans}"
+
+          if [[ "$orphans" != "0" ]]; then
+            echo "" >&2
+            echo "Stopping before the apply. The census exercised the 0068 guard predicate" >&2
+            echo "and found ${orphans} legacy row(s) whose credential columns are NOT" >&2
+            echo "preserved in live build_assets. Dropping build_assets_legacy now would lose" >&2
+            echo "signing material. Do NOT apply — escalate to the 0068 owner in" >&2
+            echo "#proj-hands:3308eb65 and list offenders with the locator-only query in the" >&2
+            echo "migration header. No migration has been applied and no Worker deployed." >&2
+            exit 1
+          fi
+
+          echo "Census exercised and returned 0 — every legacy row's credential columns are"
+          echo "preserved in live build_assets; the 0068 drop is provably lossless."
+
       - name: Apply Hands D1 migrations
         id: apply
         working-directory: worker
