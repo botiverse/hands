@@ -26,7 +26,7 @@ export function HandsAdmin() {
   const overview = useQuery({ queryKey: ["hands-admin", "overview"], queryFn: getHandsAdminOverview, retry: false });
   if (overview.isPending) return <main className="p-8 text-sm text-slate-500">Loading observability…</main>;
   if (overview.error instanceof ApiError && overview.error.status === 401) {
-    return <main className="p-8"><h1 className="text-xl font-semibold">Sign in again</h1><p className="mt-2 text-sm text-slate-600">A fresh Raft session is required for live administrator verification.</p><a className="mt-4 inline-block text-sky-700" href="/api/auth/login?return=%2Fadmin">Continue with Raft</a></main>;
+    return <main className="p-8"><h1 className="text-xl font-semibold">Sign in again</h1><p className="mt-2 text-sm text-slate-600">Your session has expired or you're signed out. Sign in to continue.</p><a className="mt-4 inline-block text-sky-700" href="/api/auth/login?return=%2Fadmin">Continue with Raft</a></main>;
   }
   if (overview.error instanceof ApiError && overview.error.status === 403) {
     return <main className="p-8"><h1 className="text-xl font-semibold">Administrator access required</h1><p className="mt-2 text-sm text-slate-600">This page is limited to administrators of an approved Raft server.</p></main>;
