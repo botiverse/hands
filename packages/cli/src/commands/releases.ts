@@ -17,7 +17,7 @@ interface ReleaseShare {
   release_id: string;
   share_url?: string;
   created_at?: number;
-  expires_at: number;
+  expires_at: number | null;
   revoked_at: number | null;
 }
 
@@ -27,8 +27,6 @@ interface ReleaseScope {
 }
 
 const RELEASE_SCOPE_TYPES = new Set(["full", "platform", "user_cohort", "ip_range", "device_group"]);
-
-const DEFAULT_SHARE_TTL_SECONDS = "604800";
 
 function collectRepeated(value: string, previous: string[] = []): string[] {
   return [...previous, value];
@@ -307,8 +305,8 @@ export function registerReleaseCommands(program: Command): void {
 
   releases
     .command("share <appIdOrSlug> <releaseId>")
-    .description("Create a revocable public share page for a release.")
-    .option("--ttl-seconds <seconds>", "Share lifetime in seconds.", DEFAULT_SHARE_TTL_SECONDS)
+    .description("Create a revocable public share page for a release (permanent until revoked by default).")
+    .option("--ttl-seconds <seconds>", "Optional share lifetime in seconds.")
     .option("--expires-at <millis>", "Absolute expiration as Unix milliseconds.")
     .option(
       "--password <password>",
@@ -325,8 +323,8 @@ export function registerReleaseCommands(program: Command): void {
         const body: { ttl_seconds?: number; expires_at?: number; password?: string } = {};
         if (opts.expiresAt) {
           body.expires_at = parsePositiveNumber(opts.expiresAt, "--expires-at");
-        } else {
-          body.ttl_seconds = parsePositiveNumber(opts.ttlSeconds ?? DEFAULT_SHARE_TTL_SECONDS, "--ttl-seconds");
+        } else if (opts.ttlSeconds !== undefined) {
+          body.ttl_seconds = parsePositiveNumber(opts.ttlSeconds, "--ttl-seconds");
         }
         const password = opts.password ?? readEnv("SHARE_PASSWORD");
         if (password) body.password = password;
@@ -340,7 +338,7 @@ export function registerReleaseCommands(program: Command): void {
         }
         console.log(`Created release share ${share.id}`);
         console.log(`  url:        ${share.share_url ?? ""}`);
-        console.log(`  expires_at: ${new Date(share.expires_at).toISOString()}`);
+        console.log(`  expires_at: ${share.expires_at === null ? "never" : new Date(share.expires_at).toISOString()}`);
         if (body.password) console.log("  password:   protected");
       },
     );
@@ -368,31 +366,43 @@ export function registerReleaseCommands(program: Command): void {
           return;
         }
         for (const share of res.shares) {
-          const state = share.revoked_at ? "revoked" : Date.now() >= share.expires_at ? "expired" : "active";
-          console.log(`${share.id}  ${state}  expires=${new Date(share.expires_at).toISOString()}`);
+          const state = share.revoked_at
+            ? "revoked"
+            : share.expires_at !== null && Date.now() >= share.expires_at
+              ? "expired"
+              : "active";
+          console.log(`${share.id}  ${state}  expires=${share.expires_at === null ? "never" : new Date(share.expires_at).toISOString()}`);
         }
       },
     );
 
   releases
     .command("update-share <appIdOrSlug> <releaseId> <shareId>")
-    .description("Renew or change a public release share expiration.")
-    .option("--ttl-seconds <seconds>", "New lifetime in seconds from now.", DEFAULT_SHARE_TTL_SECONDS)
+    .description("Renew or change a public release share expiration; omit expiry to leave it unchanged.")
+    .option("--ttl-seconds <seconds>", "New lifetime in seconds from now.")
     .option("--expires-at <millis>", "Absolute expiration as Unix milliseconds.")
+    .option("--never-expires", "Make the share permanent until revoked.", false)
     .option("--json", "Output JSON.", false)
     .action(
       async (
         appIdOrSlug: string,
         releaseId: string,
         shareId: string,
-        opts: { ttlSeconds?: string; expiresAt?: string; json?: boolean },
+        opts: { ttlSeconds?: string; expiresAt?: string; neverExpires?: boolean; json?: boolean },
       ) => {
         const appId = await resolveAppId(appIdOrSlug);
-        const body: { ttl_seconds?: number; expires_at?: number } = {};
+        const body: { ttl_seconds?: number; expires_at?: number | null } = {};
+        if (opts.neverExpires && (opts.expiresAt !== undefined || opts.ttlSeconds !== undefined)) {
+          throw new Error("--never-expires cannot be combined with --expires-at or --ttl-seconds");
+        }
         if (opts.expiresAt) {
           body.expires_at = parsePositiveNumber(opts.expiresAt, "--expires-at");
+        } else if (opts.neverExpires) {
+          body.expires_at = null;
+        } else if (opts.ttlSeconds !== undefined) {
+          body.ttl_seconds = parsePositiveNumber(opts.ttlSeconds, "--ttl-seconds");
         } else {
-          body.ttl_seconds = parsePositiveNumber(opts.ttlSeconds ?? DEFAULT_SHARE_TTL_SECONDS, "--ttl-seconds");
+          throw new Error("nothing to update: pass --ttl-seconds, --expires-at, or --never-expires");
         }
         const share = await apiRequest<ReleaseShare>(
           `/api/apps/${appId}/releases/${releaseId}/shares/${shareId}`,
@@ -403,7 +413,7 @@ export function registerReleaseCommands(program: Command): void {
           return;
         }
         console.log(`Updated release share ${share.id}`);
-        console.log(`  expires_at: ${new Date(share.expires_at).toISOString()}`);
+        console.log(`  expires_at: ${share.expires_at === null ? "never" : new Date(share.expires_at).toISOString()}`);
       },
     );
 

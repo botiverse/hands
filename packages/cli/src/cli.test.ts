@@ -136,6 +136,67 @@ describe("apiRequest", () => {
 });
 
 describe("release share commands", () => {
+  it("creates permanent shares by default and sends expiry only when explicitly requested", async () => {
+    const requests: Array<{ method: string; url: string; body?: unknown }> = [];
+    const server = createServer(async (req, res) => {
+      let body: unknown;
+      if (req.headers["content-type"]?.includes("application/json")) {
+        const chunks: Buffer[] = [];
+        for await (const chunk of req) chunks.push(Buffer.from(chunk));
+        body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+      }
+      requests.push({ method: req.method ?? "GET", url: req.url ?? "", body });
+      res.setHeader("content-type", "application/json");
+      if (req.url === "/api/apps") {
+        return res.end(JSON.stringify({ apps: [{ id: "app-1", slug: "raft-android" }] }));
+      }
+      if (req.url?.startsWith("/api/apps/app-1/releases/release-1/shares")) {
+        return res.end(JSON.stringify({
+          id: "share-1",
+          release_id: "release-1",
+          expires_at: body && typeof body === "object" && "ttl_seconds" in body
+            ? Date.now() + Number((body as { ttl_seconds: number }).ttl_seconds) * 1000
+            : null,
+          revoked_at: null,
+        }));
+      }
+      res.statusCode = 404;
+      return res.end(JSON.stringify({ error: "not found" }));
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("bad address");
+    const originalApi = process.env.HANDS_API;
+    const originalToken = process.env.HANDS_BEARER_TOKEN;
+    process.env.HANDS_API = `http://127.0.0.1:${address.port}`;
+    process.env.HANDS_BEARER_TOKEN = "test-token";
+    try {
+      const { registerReleaseCommands } = await import("../src/commands/releases.js");
+      const run = async (...args: string[]) => {
+        const program = new Command();
+        registerReleaseCommands(program);
+        await program.parseAsync(["node", "hands", "releases", ...args]);
+      };
+
+      await run("share", "raft-android", "release-1");
+      await run("share", "raft-android", "release-1", "--ttl-seconds", "3600");
+      await run("update-share", "raft-android", "release-1", "share-1", "--never-expires");
+
+      const mutations = requests.filter((request) => request.method === "POST" || request.method === "PATCH");
+      expect(mutations).toEqual([
+        { method: "POST", url: "/api/apps/app-1/releases/release-1/shares", body: {} },
+        { method: "POST", url: "/api/apps/app-1/releases/release-1/shares", body: { ttl_seconds: 3600 } },
+        { method: "PATCH", url: "/api/apps/app-1/releases/release-1/shares/share-1", body: { expires_at: null } },
+      ]);
+    } finally {
+      if (originalApi === undefined) delete process.env.HANDS_API;
+      else process.env.HANDS_API = originalApi;
+      if (originalToken === undefined) delete process.env.HANDS_BEARER_TOKEN;
+      else process.env.HANDS_BEARER_TOKEN = originalToken;
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
   it("rebinds through the closed API with an explicit expected current release", async () => {
     const requests: Array<{ method: string; url: string; body?: unknown }> = [];
     const server = createServer(async (req, res) => {
