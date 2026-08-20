@@ -77,4 +77,10 @@ describe("requireHandsAdmin (unified — session identity's login-time role, no 
 
   it("does not touch the DB, decrypt, or call Raft — a valid admin passes with none of them in env", async () =>
     expect((await request(withRole("owner"))).status).toBe(200));
+
+  // Contract (artin 2026-08-20): admin access is NOT restricted by principal_type — an
+  // owner/admin AGENT identity is admitted, same as a human. This test locks that
+  // decision: adding a human-only gate would fail here loudly.
+  it.each(["owner", "admin"])("admits an %s AGENT identity (human/agent not distinguished)", async (role) =>
+    expect((await request({ ...withRole(role), principal_type: "agent" })).status).toBe(200));
 });
