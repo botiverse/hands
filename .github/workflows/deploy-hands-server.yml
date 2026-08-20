@@ -226,12 +226,21 @@ jobs:
               | jq -r '.[0].results[0].n'
           }
 
+          # Three-state, no "everything else passes". Only an explicit 0 means the table
+          # is gone (no-op); any other value (null / empty / anomalous) is CANNOT RUN, not
+          # a pass — otherwise an unreadable probe would fail OPEN and skip the census, the
+          # same "can't read it => treated as fine" shape 0068 itself guards against.
           exists=$(n "SELECT count(*) AS n FROM sqlite_master WHERE type='table' AND name='build_assets_legacy';")
-          if [[ "$exists" != "1" ]]; then
-            echo "build_assets_legacy is absent — the 0068 drop is already applied or a no-op;"
-            echo "nothing to census. (exists=${exists})"
-            exit 0
-          fi
+          case "$exists" in
+            1) : ;;  # table present -> run the census below
+            0) echo "build_assets_legacy is absent — the 0068 drop is already applied or a"
+               echo "no-op; nothing to census."
+               exit 0 ;;
+            *) echo "CANNOT RUN: the existence probe returned '${exists}' (expected 0 or 1) —" >&2
+               echo "the census did not execute, so nothing has been proven. Stopping before" >&2
+               echo "the apply." >&2
+               exit 2 ;;
+          esac
 
           # EXACT guard predicate from migrations/sql/0068_drop_build_assets_legacy.sql:
           # a legacy row is preserved iff a live row shares its id AND all four credential
