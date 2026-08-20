@@ -8,11 +8,15 @@ function deny(c: Context, status: 401 | 403, code: string) {
 // Unified admin auth: the admin console reuses the SAME Hands session as the rest of
 // the app — one layer, not two.
 //
-// authMiddleware sets `admin_account` ONLY for a session that is present, not revoked,
-// and not expired (loadAccountFromAuthToken filters `revoked_at IS NULL AND expires_at
-// > now`). So a resolved admin_account here already IS a valid session, and the account
-// row carries the server role captured at Login-with-Raft. Admin access is therefore a
-// valid session + that login-time role being owner/admin on an allowed server.
+// This gates on `authenticated_account` — the identity established by the session
+// itself — NOT `admin_account`. authMiddleware sets `authenticated_account` from the
+// session token ONLY for a session that is present, not revoked, and not expired
+// (loadAccountFromAuthToken filters `revoked_at IS NULL AND expires_at > now`), and it
+// carries the server role captured at Login-with-Raft. `admin_account` is DERIVED from
+// it via the client-supplied `x-hands-org-id` header (org switching), so it must never
+// drive an authorization decision — that would let a client influence its own admin
+// check. Admin access is therefore: a valid session + that session identity's login-time
+// role being owner/admin on an allowed server.
 //
 // This deliberately drops the previous SECOND layer — a per-session Raft access token,
 // stored encrypted on the session row, decrypted and re-checked against Raft
@@ -27,7 +31,7 @@ function deny(c: Context, status: 401 | 403, code: string) {
 // path) or by a shorter session lifetime, because both feed the same authMiddleware
 // check above.
 export const requireHandsAdmin: MiddlewareHandler<AdminEnv & { Bindings: Env }> = async (c, next) => {
-  const account = c.get("admin_account") as AdminAccount | undefined;
+  const account = c.get("authenticated_account") as AdminAccount | undefined;
   if (!account) return deny(c, 401, "AUTH_REQUIRED");
 
   const allowedServers = (c.env.HANDS_ADMIN_ALLOWED_SERVER_IDS || "")
