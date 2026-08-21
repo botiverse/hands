@@ -433,6 +433,40 @@ async function readTestflightSnapshot(
   };
 }
 
+/**
+ * Has this build ever been uploaded to Apple?
+ *
+ * WHY THIS EXISTS: when App Store Connect returns no build record, that single
+ * observation covers two OPPOSITE situations — nobody ever uploaded, or the
+ * upload succeeded and Apple has not surfaced it yet. Reporting both as
+ * `waiting_for_processing` told an operator to wait for something that would
+ * never happen, and the CLI's poll loop treats non-terminal states as "keep
+ * waiting", so the wrong one waits forever.
+ *
+ * The two are distinguishable from data we already keep: a successful upload
+ * writes an `operation_logs` row with kind `testflight-upload` whose input
+ * names the build. Absence of that row is what makes "not uploaded" a FACT
+ * rather than a guess.
+ */
+async function hasSucceededTestflightUpload(
+  db: D1Database,
+  appId: string,
+  buildId: string,
+): Promise<boolean> {
+  const row = await db
+    .prepare(
+      `SELECT id FROM operation_logs
+        WHERE app_id = ?1
+          AND kind = 'testflight-upload'
+          AND status = 'success'
+          AND json_extract(input, '$.build_id') = ?2
+        LIMIT 1`,
+    )
+    .bind(appId, buildId)
+    .first<{ id: string }>();
+  return row !== null && row !== undefined;
+}
+
 function publishState(
   build: AscBuildResource,
   snapshot: TestflightSnapshot | null,
@@ -881,6 +915,14 @@ export async function handleTestflightPublishStatus(c: AdminContext) {
       buildNumber: String(build.version_code),
     });
     if (!ascBuild) {
+      // Apple has no record of this build. That is NOT the same as "processing":
+      // it is only worth waiting for if we actually uploaded. Decide from the
+      // upload operation, not from the absence of the ASC record.
+      const uploaded = await hasSucceededTestflightUpload(
+        c.env.DB,
+        appId,
+        build.id,
+      );
       return c.json({
         hands_build_id: build.id,
         bundle_id: bundleId,
@@ -888,7 +930,11 @@ export async function handleTestflightPublishStatus(c: AdminContext) {
         asc_build_id: null,
         version: build.version_name,
         build_number: String(build.version_code),
-        state: "waiting_for_processing",
+        state: uploaded ? "waiting_for_processing" : "not_uploaded",
+        detail: uploaded
+          ? "uploaded to Apple; the build has not appeared in App Store Connect yet"
+          : "this build has never been uploaded to Apple — run testflight-upload; "
+            + "waiting will not change this",
         distribution: distribution ?? null,
       });
     }
@@ -1355,14 +1401,24 @@ export async function handleTestflightPublish(c: AdminContext) {
       buildNumber: String(build.version_code),
     });
     if (!ascBuild) {
+      // Same distinction as the status endpoint: "never uploaded" and "uploaded,
+      // Apple still processing" need different actions, so the detail must not
+      // claim processing when nothing was ever sent.
+      const uploaded = await hasSucceededTestflightUpload(
+        c.env.DB,
+        appId,
+        build.id,
+      );
       throw new TestflightPublishError(
         409,
-        "ASC_BUILD_NOT_AVAILABLE",
-        "the exact App Store Connect build is not available yet; upload it and wait for processing",
+        uploaded ? "ASC_BUILD_NOT_AVAILABLE" : "ASC_BUILD_NOT_UPLOADED",
+        uploaded
+          ? "the exact App Store Connect build is not available yet; wait for Apple to finish processing"
+          : "this build has never been uploaded to Apple — run testflight-upload first",
         {
           version: build.version_name,
           build_number: String(build.version_code),
-          state: "waiting_for_processing",
+          state: uploaded ? "waiting_for_processing" : "not_uploaded",
         },
       );
     }
