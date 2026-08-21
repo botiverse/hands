@@ -34,6 +34,12 @@ export const requireHandsAdmin: MiddlewareHandler<AdminEnv & { Bindings: Env }> 
   const account = c.get("authenticated_account") as AdminAccount | undefined;
   if (!account) return deny(c, 401, "AUTH_REQUIRED");
 
+  // Intentionally NOT restricted by principal_type: BOTH human and agent identities
+  // qualify if they are owner/admin on an allowed server (artin's decision 2026-08-20).
+  // The guarded endpoint is read-only, global-aggregate observability (not user content),
+  // and every access is recorded in hands_admin_access_audit (actor id + type). Do not
+  // add a human-only gate here without an explicit decision to reverse that — the test
+  // suite asserts an owner/admin agent is admitted, so such a change fails loudly.
   const allowedServers = (c.env.HANDS_ADMIN_ALLOWED_SERVER_IDS || "")
     .split(",").map((value) => value.trim()).filter(Boolean);
   const role = (account.server_role || "").toLowerCase();
