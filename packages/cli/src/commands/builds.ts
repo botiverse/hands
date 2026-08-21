@@ -435,6 +435,15 @@ async function getTestflightPublishStatus(
 }
 
 function assertTestflightStatusHealthy(status: TestflightPublishStatus): void {
+  // `not_uploaded` means Apple has no record of this build AND no upload ever
+  // succeeded. Polling cannot resolve it — only an upload can — so it must stop
+  // the wait loop instead of looking like one more slow round.
+  if (status.state === "not_uploaded") {
+    throw new Error(
+      "TestFlight build was never uploaded to Apple — run `hands builds testflight-upload` first; "
+        + "waiting will not change this",
+    );
+  }
   if (
     status.state === "processing_failed" ||
     status.state === "expired" ||
