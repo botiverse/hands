@@ -74,7 +74,7 @@ export function registerDeployTokenCommands(program: Command): void {
             t.token_prefix,
             t.expires_at ? new Date(t.expires_at).toISOString() : "never",
             t.revoked_at ? "yes" : "no",
-            t.id.slice(0, 8),
+            t.id,
           ].join("\t"),
         );
       }
