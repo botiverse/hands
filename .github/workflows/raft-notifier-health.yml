@@ -62,15 +62,9 @@ jobs:
             "run_id: ${GITHUB_RUN_ID}" \
             "head_sha: ${GITHUB_SHA}"
           cli="$RUNNER_TEMP/raft-cli/node_modules/.bin/raft"
-          if ! output=$("$cli" message send --target "#proj-hands" <<<"$body" 2>&1); then
+          if ! output=$("$cli" message send --anyway --target "#proj-hands" <<<"$body" 2>&1); then
             printf '%s\n' "$output" >&2
             exit 1
-          fi
-          if grep -q "saved as a draft" <<<"$output"; then
-            if ! output=$("$cli" message send --send-draft --target "#proj-hands" 2>&1); then
-              printf '%s\n' "$output" >&2
-              exit 1
-            fi
           fi
           grep -Eq "Message (sent|queued)" <<<"$output" || {
             printf 'Notifier delivery was not accepted:\n%s\n' "$output" >&2
