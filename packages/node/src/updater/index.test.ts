@@ -3,7 +3,9 @@ import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { HandsUpdateError, createHandsUpdater } from "./index.js";
+import { HandsUpdateError, HANDS_NODE_SDK_VERSION, createHandsUpdater } from "./index.js";
+import { createRequire } from "node:module";
+const packageJson = createRequire(import.meta.url)("../../package.json") as { version: string };
 
 const directories: string[] = [];
 afterEach(async () => {
@@ -24,6 +26,9 @@ function fixture(bytes = Buffer.from("verified computer binary")) {
 }
 
 describe("Hands updater", () => {
+  it("keeps package and runtime SDK version carriers identical", () => {
+    expect(HANDS_NODE_SDK_VERSION).toBe(packageJson.version);
+  });
   it.each(["main", "alpha", "pinned:1.0.19"] as const)(
     "sends the exact device id for %s selection without changing channel semantics",
     async (channel) => {
