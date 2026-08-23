@@ -69,8 +69,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          dependency="$(node -p "require('./packages/cli/package.json').dependencies['@botiverse/hands-node']")"
-          version="${dependency#workspace:^}"
+          version="$(node scripts/resolve-workspace-dependency-version.mjs \
+            packages/cli/package.json @botiverse/hands-node packages/node/package.json)"
           npm view "@botiverse/hands-node@${version}" version
 
       - name: Build Node SDK and CLI

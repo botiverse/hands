@@ -180,3 +180,6 @@ jobs:
 
       - name: Check workflow failure notification contract
         run: python3 .github/lint-fixtures/test-notification-workflow.py
+
+      - name: Check CLI publish dependency contract
+        run: python3 .github/lint-fixtures/test-publish-cli-workflow.py
