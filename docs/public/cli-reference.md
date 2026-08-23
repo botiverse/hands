@@ -230,22 +230,39 @@ hands builds testflight-publish raft-ios <hands-build-id> \
   --group-id aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee \
   --what-to-test-file en-US=./testflight.en.txt \
   --what-to-test-file zh-Hans=./testflight.zh.txt \
-  --notify-testers
+  --notify-testers \
+  --json > testflight-publish-receipt.json
 ```
 
-External review can take longer than a normal CLI session. Omit `--wait` to
-submit and return immediately, then inspect the live state later:
+Preserve that mutation response: `notification=sent` or `already_sent` is the
+notification operation receipt. Do not add `--wait` to this receipt-producing
+call. With `--wait --json`, the CLI prints the later polled GET status instead
+of the original POST response, so `notification` and `operation_id` are not
+preserved.
+
+External review can take longer than a normal CLI session. Inspect the live
+state separately:
 
 ```bash
 hands builds testflight-status raft-ios <hands-build-id> \
-  --distribution external
+  --distribution external \
+  --json
 ```
 
-When `--wait` is useful, tune its bounded poll contract with
+When `--wait` is useful and the POST operation receipt is not part of the
+acceptance contract, tune its bounded poll contract with
 `--poll-interval-seconds` and `--timeout-seconds` (defaults: 15 and 3600).
 Terminal failure/rejection/expiry states fail the command. External mode
 requires an existing or supplied What to Test localization; selected group ids
 must all match the requested internal/external mode.
+
+Notification values are `not_requested`, `scheduled`, `sent`, and
+`already_sent`. Only `sent`/`already_sent`, paired with a fresh exact-build
+`external_build_state=IN_BETA_TESTING`, prove notification completion. If the
+first response is `scheduled`, wait for that exact testing state, replay the
+same publish without `--wait` to preserve `already_sent`, then fresh-read the
+status again. `VALID`, group assignment, `BETA_APPROVED`, and
+`auto_notify_enabled=false` are not notification receipts.
 
 Hands follows Apple's role boundary: uploading the IPA requires Hands app
 admin; TestFlight group distribution requires Hands app publisher. The stored

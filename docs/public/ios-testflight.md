@@ -110,6 +110,50 @@ These endpoints and the matching CLI/integration actions are TestFlight-only.
 They never activate a Hands release and never create, submit, or release an
 App Store production version.
 
+## Publication receipts and common pitfalls
+
+Treat upload, review, tester notification, and App Store production as four
+different boundaries:
+
+- Build Upload `COMPLETE` and ASC build `VALID` prove only that Apple accepted
+  and processed the binary.
+- Group assignment, What to Test, `BETA_APPROVED`, or
+  `approved_not_notified` prove eligibility, not tester notification.
+- `auto_notify_enabled` is a scheduling-policy field, not an event log.
+  `false` can appear before or after a manual notification and cannot prove
+  that notification did not happen.
+- TestFlight tester notification never activates a Hands release and never
+  publishes an App Store production version.
+
+For an external publish that must notify testers, preserve two independent
+receipts:
+
+1. The mutation response from `testflight-publish` must have
+   `notification=sent` or `notification=already_sent`.
+2. A fresh, separate `testflight-status` read must show
+   `external_build_state=IN_BETA_TESTING` for the exact ASC build.
+
+Do not add `--wait` to the receipt-producing CLI call. The current
+`testflight-publish --wait --json` implementation prints the final polled GET
+status instead of the original POST response; GET status does not contain the
+POST `notification` or `operation_id`. Use the publish command without
+`--wait`, save its JSON, and poll separately with `testflight-status`.
+
+The `notification` enum is deliberate:
+
+| Value | Meaning | Notification complete? |
+| --- | --- | --- |
+| `not_requested` | No notification requested | No |
+| `scheduled` | Auto-notify is pending review/testing | No |
+| `sent` | Manual notification operation succeeded | Yes, with fresh `IN_BETA_TESTING` |
+| `already_sent` | Idempotent replay found notification already complete | Yes, with fresh `IN_BETA_TESTING` |
+
+When the first mutation returns `scheduled`, wait until the exact build reaches
+`IN_BETA_TESTING`, then replay the same publish without `--wait`. Preserve the
+expected `already_sent` receipt and fresh-read the exact status once more. If
+either receipt is missing after a bounded recheck, report notification as
+unverified rather than calling the build published or sent.
+
 ## One-time setup (app admin)
 
 Store the App Store Connect API credential in Hands: console → App →
@@ -153,11 +197,14 @@ CLI:
 ```sh
 hands builds testflight-groups <app> <hands-build-id>
 hands builds testflight-publish <app> <hands-build-id> \
-  --distribution internal \
+  --distribution external \
   --group-id <asc-beta-group-id> \
   --what-to-test en-US="Verify the release candidate." \
-  --wait
-hands builds testflight-status <app> <hands-build-id> --distribution internal
+  --notify-testers \
+  --json > testflight-publish-receipt.json
+hands builds testflight-status <app> <hands-build-id> \
+  --distribution external \
+  --json
 ```
 
 Raft integration actions:
