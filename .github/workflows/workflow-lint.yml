@@ -177,3 +177,6 @@ jobs:
           # that pattern matched the comment describing it.
           echo "No interpolation in executable text, no duplicate keys, no unscanned carriers,"
           echo "across ${#targets[@]} of ${#present[@]} YAML files under .github/."
+
+      - name: Check workflow failure notification contract
+        run: python3 .github/lint-fixtures/test-notification-workflow.py
