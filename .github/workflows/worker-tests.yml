@@ -174,3 +174,16 @@ jobs:
         run: |
           pnpm --filter @botiverse/hands-cli... build
           pnpm --filter @botiverse/hands-admin build
+
+      - name: Pack and verify installed CLI device JSON commands
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/hands-cli-pack"
+          pnpm --dir packages/node pack --pack-destination "$RUNNER_TEMP/hands-cli-pack"
+          pnpm --dir packages/cli pack --pack-destination "$RUNNER_TEMP/hands-cli-pack"
+          cli_path="$(find "$RUNNER_TEMP/hands-cli-pack" -maxdepth 1 -name 'botiverse-hands-cli-*.tgz' -print -quit)"
+          node_path="$(find "$RUNNER_TEMP/hands-cli-pack" -maxdepth 1 -name 'botiverse-hands-node-*.tgz' -print -quit)"
+          test -n "${cli_path}"
+          test -n "${node_path}"
+          node packages/cli/test/installed-device-json.mjs "${cli_path}" "${node_path}"

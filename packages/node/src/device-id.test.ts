@@ -13,6 +13,17 @@ describe("Hands device id", () => {
     expect(handsDeviceIdLocation({ platform: "linux", homeDir: "/u", env: { XDG_STATE_HOME: "/state" } })).toBe("/state/hands.build/deviceid");
   });
 
+  it("uses process XDG_STATE_HOME for the real runtime default", () => {
+    const previous = process.env.XDG_STATE_HOME;
+    process.env.XDG_STATE_HOME = "/runtime-state";
+    try {
+      expect(handsDeviceIdLocation({ platform: "linux", homeDir: "/u" })).toBe("/runtime-state/hands.build/deviceid");
+    } finally {
+      if (previous === undefined) delete process.env.XDG_STATE_HOME;
+      else process.env.XDG_STATE_HOME = previous;
+    }
+  });
+
   it("atomically reuses, resets, and rejects malformed state", async () => {
     const home = await mkdtemp(join(tmpdir(), "hands-device-"));
     try {

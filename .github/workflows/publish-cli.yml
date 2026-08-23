@@ -90,6 +90,11 @@ jobs:
           test -n "${package_path}"
           echo "path=${package_path}" >> "$GITHUB_OUTPUT"
 
+      - name: Verify installed device JSON commands
+        run: node packages/cli/test/installed-device-json.mjs "$PACKAGE_PATH"
+        env:
+          PACKAGE_PATH: ${{ steps.pack.outputs.path }}
+
       - name: Publish dry run
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run }}
         run: npm publish "$PACKAGE_PATH" --access public --dry-run
