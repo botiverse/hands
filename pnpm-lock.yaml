@@ -123,7 +123,7 @@ importers:
   packages/cli:
     dependencies:
       '@botiverse/hands-node':
-        specifier: workspace:^0.1.0
+        specifier: workspace:*
         version: link:../node
       commander:
         specifier: ^12.1.0
