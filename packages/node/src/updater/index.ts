@@ -4,7 +4,7 @@ import { basename, resolve } from "node:path";
 
 export type UpdateChannel = "main" | "alpha" | `pinned:${string}`;
 export interface RuntimeTarget { platform: NodeJS.Platform; arch: string }
-export interface UpdateCheckInput { currentVersion: string; channel: UpdateChannel; target: RuntimeTarget; signal?: AbortSignal }
+export interface UpdateCheckInput { currentVersion: string; channel: UpdateChannel; target: RuntimeTarget; deviceId?: string; signal?: AbortSignal }
 
 export interface UpdateCandidate {
   appId: string;
@@ -85,7 +85,7 @@ export interface HandsUpdater {
 
 const SEMVER = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/u;
 const SHA256 = /^[a-f0-9]{64}$/u;
-export const HANDS_NODE_SDK_VERSION = "0.3.0";
+export const HANDS_NODE_SDK_VERSION = "0.4.0";
 
 function record(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new HandsUpdateError("UPDATE_RESPONSE_INVALID", "update response must be an object");
@@ -143,6 +143,9 @@ export function createHandsUpdater(options: HandsUpdaterOptions): HandsUpdater {
 
   async function checkUpdate(input: UpdateCheckInput): Promise<UpdateCheckResult> {
     if (!SEMVER.test(input.currentVersion)) throw new HandsUpdateError("UPDATE_RESPONSE_INVALID", "currentVersion must be semver");
+    if (input.deviceId !== undefined && !/^[\x21-\x7e]{1,256}$/u.test(input.deviceId)) {
+      throw new HandsUpdateError("UPDATE_RESPONSE_INVALID", "deviceId must be 1-256 printable ASCII characters");
+    }
     const pinned = input.channel.startsWith("pinned:") ? input.channel.slice(7) : null;
     if (pinned && !SEMVER.test(pinned)) throw new HandsUpdateError("UPDATE_CHANNEL_UNSUPPORTED", "pinned channel requires semver");
     const channel = pinned ? "main" : input.channel;
@@ -161,7 +164,10 @@ export function createHandsUpdater(options: HandsUpdaterOptions): HandsUpdater {
     try {
       const token = await options.credentialProvider?.();
       const requestInit: RequestInit = { signal: controller.signal };
-      if (token) requestInit.headers = { authorization: `Bearer ${token}` };
+      requestInit.headers = {
+        ...(token ? { authorization: `Bearer ${token}` } : {}),
+        ...(input.deviceId !== undefined ? { "X-Hands-Device-Id": input.deviceId } : {}),
+      };
       const response = await fetchImpl(url, requestInit);
       const body = await response.json().catch(() => null) as unknown;
       if (!response.ok) {

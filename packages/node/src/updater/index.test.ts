@@ -24,6 +24,56 @@ function fixture(bytes = Buffer.from("verified computer binary")) {
 }
 
 describe("Hands updater", () => {
+  it.each(["main", "alpha", "pinned:1.0.19"] as const)(
+    "sends the exact device id for %s selection without changing channel semantics",
+    async (channel) => {
+      const { response } = fixture();
+      const fetch = vi.fn<typeof globalThis.fetch>(async (input, init) => {
+        const url = new URL(String(input));
+        expect(new Headers(init?.headers).get("X-Hands-Device-Id")).toBe("machine-stable-1");
+        expect(url.searchParams.get("channel")).toBe(channel.startsWith("pinned:") ? "main" : channel);
+        expect(url.searchParams.get("version")).toBe(channel.startsWith("pinned:") ? "1.0.19" : null);
+        return Response.json(response);
+      });
+      const updater = createHandsUpdater({ appSlug: "raft-computer", apiOrigin: "https://hands.example", fetch });
+      await updater.checkUpdate({
+        currentVersion: "1.0.18",
+        channel,
+        target: { platform: "linux", arch: "x64" },
+        deviceId: "machine-stable-1",
+      });
+    },
+  );
+
+  it("omits the device header when deviceId is absent and rejects malformed ids before network", async () => {
+    const { response } = fixture();
+    const fetch = vi.fn<typeof globalThis.fetch>(async (_input, init) => {
+      expect(new Headers(init?.headers).has("X-Hands-Device-Id")).toBe(false);
+      return Response.json(response);
+    });
+    const updater = createHandsUpdater({ appSlug: "raft-computer", apiOrigin: "https://hands.example", fetch });
+    const input = { currentVersion: "1.0.18", channel: "main" as const, target: { platform: "linux" as const, arch: "x64" } };
+    await updater.checkUpdate(input);
+    for (const deviceId of ["", " ", "contains space", "\0", "\x01", "\x7f", "x".repeat(257)]) {
+      await expect(updater.checkUpdate({ ...input, deviceId }))
+        .rejects.toEqual(expect.objectContaining<Partial<HandsUpdateError>>({ code: "UPDATE_RESPONSE_INVALID" }));
+    }
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    ["unpublished release", (response: ReturnType<typeof fixture>["response"]) => { response.release.published_at = null as never; }],
+    ["malformed artifact", (response: ReturnType<typeof fixture>["response"]) => { response.artifact.sha256 = "not-a-sha256"; }],
+  ])("keeps %s response validation when a device id is present", async (_name, mutate) => {
+    const { response } = fixture();
+    mutate(response);
+    const fetch = vi.fn<typeof globalThis.fetch>(async () => Response.json(response));
+    const updater = createHandsUpdater({ appSlug: "raft-computer", apiOrigin: "https://hands.example", fetch });
+    await expect(updater.checkUpdate({
+      currentVersion: "1.0.18", channel: "main", target: { platform: "linux", arch: "x64" }, deviceId: "machine-stable-1",
+    })).rejects.toEqual(expect.objectContaining<Partial<HandsUpdateError>>({ code: "UPDATE_RESPONSE_INVALID" }));
+  });
+
   it("checks and atomically stages a size/SHA-256 verified candidate", async () => {
     const { bytes, response } = fixture();
     const fetch = vi.fn<typeof globalThis.fetch>(async (input) =>
