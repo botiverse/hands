@@ -74,4 +74,24 @@ jobs:
             "run: ${RUN_URL}" \
             "run_id: ${RUN_ID}" \
             "head_sha: ${RUN_HEAD_SHA}"
-          "$RUNNER_TEMP/raft-cli/node_modules/.bin/raft" message send --target "#proj-hands" <<<"$body"
+          cli="$RUNNER_TEMP/raft-cli/node_modules/.bin/raft"
+          "$cli" message check >/dev/null
+          set +e
+          output=$("$cli" message send --target "#proj-hands" <<<"$body" 2>&1)
+          send_status=$?
+          set -e
+          if grep -q "saved as a draft" <<<"$output"; then
+            set +e
+            output=$("$cli" message send --send-draft --anyway --target "#proj-hands" 2>&1)
+            send_status=$?
+            set -e
+          fi
+          if (( send_status != 0 )); then
+            printf '%s\n' "$output" >&2
+            exit 1
+          fi
+          grep -Eq "Message (sent|queued)" <<<"$output" || {
+            printf 'Notifier delivery was not accepted:\n%s\n' "$output" >&2
+            exit 1
+          }
+          printf '%s\n' "$output"

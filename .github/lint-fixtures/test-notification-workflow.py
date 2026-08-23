@@ -64,7 +64,10 @@ def main() -> None:
         "RAFT_CREDENTIAL_JSON": "${{ secrets.RAFT_NOTIFY_CREDENTIAL_JSON }}"
     }
     post = next(step for step in steps if step.get("name") == "Post structured failure alert")
+    assert 'message check' in post["run"]
     assert 'message send --target "#proj-hands"' in post["run"]
+    assert 'message send --send-draft --anyway --target "#proj-hands"' in post["run"]
+    assert 'Message (sent|queued)' in post["run"]
     assert "$RAFT_PROFILE_DIR/credential.json" in materialize["run"]
 
     health = load(HEALTH)
@@ -83,7 +86,10 @@ def main() -> None:
         step for step in health_steps if step.get("name") == "Send synthetic notifier alert"
     )
     assert "inputs.send_synthetic_alert" in synthetic_post["if"]
+    assert 'message check' in synthetic_post["run"]
     assert 'message send --target "#proj-hands"' in synthetic_post["run"]
+    assert 'message send --send-draft --anyway --target "#proj-hands"' in synthetic_post["run"]
+    assert 'Message (sent|queued)' in synthetic_post["run"]
     assert "$RAFT_PROFILE_DIR/credential.json" in next(
         step for step in health_steps if step.get("name") == "Materialize isolated profile"
     )["run"]
