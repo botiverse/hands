@@ -31,7 +31,6 @@ GET /public/v2/apps/{slug}/updates/check?channel=main&product_type=android-apk&c
       "variant":      null,
       "filetype":     "apk",
       "size_bytes":   12345678,
-      "signature":    "abcd…",
       "download_url": "https://r2…/apps/…/binary.apk?…"
     },
     "expires_in":    3600

@@ -80,7 +80,6 @@ import {
   handlePublicV2UpdateCheck,
 } from "./routes/public_v2";
 import { handleElectronGenericAsset } from "./routes/electron";
-import { handleTauriArtifact, handleTauriUpdate } from "./routes/tauri";
 import { handleExternalLatestDl, handleExternalReleaseDl } from "./routes/external_dl";
 import {
   handleCreateReleaseShare,
@@ -210,11 +209,6 @@ import {
   handleUpsertReleaseCheck,
   handleListReleaseChecks,
 } from "./routes/releases";
-import {
-  handlePrepareUpdateAttestation,
-  handleRegisterUpdateAttestationKey,
-  handleSubmitUpdateAttestation,
-} from "./routes/update_attestations";
 import { handleListChannels, handleCreateChannel, handleUpdateChannel, handleDeleteChannel } from "./routes/channels";
 import {
   handleAddDeviceGroupMember,
@@ -611,10 +605,8 @@ app.get("/public/r2/:key", handlePublicR2Download);
 // Internal signed R2 fetch (delta-patch container pulls source APKs by key).
 app.get("/internal/r2/:key", handleInternalR2Download);
 app.get("/electron/:slug/:channel/:file", handleElectronGenericAsset);
-app.get("/tauri/:slug/:channel/artifacts/:releaseId/:target/:arch/:file", handleTauriArtifact);
 app.get("/dl/:slug/releases/:releaseId/:file", handleExternalReleaseDl);
 app.get("/dl/:slug/:channel/:file", handleExternalLatestDl);
-app.get("/tauri/:slug/:channel/:target/:arch/:currentVersion", handleTauriUpdate);
 app.get("/share/:token/download", handlePublicReleaseShareDownload);
 app.get("/share/:token", handlePublicReleaseShare);
 app.post("/share/:token/unlock", handlePublicReleaseShareUnlock);
@@ -873,9 +865,6 @@ admin.post("/api/apps/:appId/releases/:releaseId/bump-rollout", requireAppRole("
 admin.post("/api/apps/:appId/releases/:releaseId/force-update", requireAppRole("publisher"), handleForceUpdate);
 admin.get("/api/apps/:appId/releases/:releaseId/checks", requireAppRole("viewer"), handleListReleaseChecks);
 admin.post("/api/apps/:appId/releases/:releaseId/checks", requireAppRole("publisher"), handleUpsertReleaseCheck);
-admin.post("/api/apps/:appId/update-attestation-keys", requireAppRole("admin"), handleRegisterUpdateAttestationKey);
-admin.post("/api/apps/:appId/releases/:releaseId/attestations/prepare", requireAppRole("publisher"), handlePrepareUpdateAttestation);
-admin.post("/api/apps/:appId/releases/:releaseId/attestations", requireAppRole("publisher"), handleSubmitUpdateAttestation);
 admin.get("/api/apps/:appId/shares", requireAppRole("viewer"), handleListAppShares);
 admin.post("/api/apps/:appId/shares/:shareId/rebind", requireAppRole("publisher"), handleRebindReleaseShare);
 admin.put("/api/apps/:appId/icon", requireAppRole("publisher"), handleUploadAppIcon);

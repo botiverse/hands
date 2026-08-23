@@ -34,7 +34,6 @@ export interface BuildAssetInput {
   r2_key: string;
   file_hash: string;
   size_bytes: number;
-  signature?: string | null;
   signing_credential_id?: string | null;
   metadata_json?: unknown;
 }
@@ -423,9 +422,9 @@ export async function createBuildAsset(
     .prepare(
       `INSERT INTO build_assets
        (id, build_id, artifact_kind, platform, arch, variant, filetype, r2_key, file_hash,
-        size_bytes, signature, signing_credential_id, metadata_json,
+        size_bytes, signing_credential_id, metadata_json,
         download_count, created_at)
-       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, 0, ?14)`,
+       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, 0, ?13)`,
     )
     .bind(
       id,
@@ -438,7 +437,6 @@ export async function createBuildAsset(
       input.r2_key,
       input.file_hash,
       Number(input.size_bytes),
-      input.signature ?? null,
       input.signing_credential_id ?? null,
       jsonString(input.metadata_json),
       now,
@@ -886,7 +884,7 @@ export async function handleListBuildAssets(c: Context<{ Bindings: Env }>) {
   if (!build) return c.json({ error: "build not found" }, 404);
   const { results } = await c.env.DB.prepare(
     `SELECT id, build_id, artifact_kind, platform, arch, variant, filetype, r2_key,
-            file_hash, size_bytes, signature, signing_credential_id,
+            file_hash, size_bytes, signing_credential_id,
             metadata_json, download_count, created_at
      FROM build_assets
      WHERE build_id = ?1
@@ -1026,8 +1024,8 @@ export async function autoParseInstallableAsset(
         env.DB.prepare(
           `INSERT INTO build_assets
            (id, build_id, artifact_kind, platform, arch, variant, filetype, r2_key,
-            file_hash, size_bytes, signature, metadata_json, created_at)
-           VALUES (?1, ?2, 'app-icon', 'android', NULL, NULL, ?3, ?4, ?5, ?6, NULL, '{}', ?7)`,
+            file_hash, size_bytes, metadata_json, created_at)
+           VALUES (?1, ?2, 'app-icon', 'android', NULL, NULL, ?3, ?4, ?5, ?6, '{}', ?7)`,
         ).bind(crypto.randomUUID(), buildId, ext, iconKey, hash, iconBytes.length, now),
       ]);
     }

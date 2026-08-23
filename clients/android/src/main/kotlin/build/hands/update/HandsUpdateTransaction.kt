@@ -179,13 +179,11 @@ internal data class PendingInstallerTargetIdentity(
     val sha256: String?,
     val sizeBytes: Long?,
     val filetype: String?,
-    val signature: String?,
 ) {
     fun normalized(): PendingInstallerTargetIdentity = copy(
         buildId = buildId?.trim()?.ifEmpty { null },
         sha256 = sha256?.trim()?.lowercase()?.ifEmpty { null },
         filetype = filetype?.trim()?.lowercase()?.ifEmpty { null },
-        signature = signature?.trim()?.ifEmpty { null },
     )
 }
 
@@ -280,7 +278,6 @@ internal data class UpdateTransactionRecord(
     val targetBuildId: String? = null,
     val assetSizeBytes: Long? = null,
     val assetSha256: String? = null,
-    val assetSignature: String? = null,
     val filetype: String? = null,
     val downloadRequestId: String? = null,
     val downloadId: Long? = null,

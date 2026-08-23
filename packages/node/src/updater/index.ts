@@ -1,12 +1,6 @@
 import { createHash } from "node:crypto";
 import { chmod, mkdir, open, rename, rm } from "node:fs/promises";
 import { basename, resolve } from "node:path";
-import {
-  canonicalizeUpdateAttestationPayload,
-  verifyUpdateArtifactAttestation,
-  type UpdateArtifactAttestationEnvelope,
-  type UpdateTrustRoot,
-} from "./attestation.js";
 
 export type UpdateChannel = "main" | "alpha" | `pinned:${string}`;
 export interface RuntimeTarget { platform: NodeJS.Platform; arch: string }
@@ -30,7 +24,6 @@ export interface UpdateCandidate {
     url: string;
     size: number;
     sha256: string;
-    attestation: UpdateArtifactAttestationEnvelope;
   };
   candidateDigest: string;
 }
@@ -49,13 +42,11 @@ export interface UpdateVerificationReceipt {
   version: string;
   target: RuntimeTarget;
   artifactId: string;
-  sourceCommit: string | null;
   candidateDigest: string;
   expectedSize: number;
   actualSize: number;
   expectedSha256: string;
   actualSha256: string;
-  signature: { algorithm: string; keyId: string; verified: true; signedPayloadDigest: string };
   preparedAt: string;
 }
 
@@ -67,9 +58,7 @@ export type HandsUpdateErrorCode =
   | "UPDATE_APP_NOT_FOUND" | "UPDATE_APP_FORBIDDEN" | "UPDATE_CHANNEL_UNSUPPORTED"
   | "UPDATE_RELEASE_NOT_READY" | "UPDATE_NO_COMPATIBLE_ARTIFACT"
   | "UPDATE_RESPONSE_INVALID" | "UPDATE_IDENTITY_DRIFT" | "UPDATE_IDENTITY_CONFLICT" | "UPDATE_DOWNLOAD_FAILED"
-  | "UPDATE_SIZE_MISMATCH" | "UPDATE_SHA256_MISMATCH" | "UPDATE_SIGNATURE_MISSING"
-  | "UPDATE_SIGNATURE_UNSUPPORTED" | "UPDATE_SIGNATURE_KEY_UNKNOWN"
-  | "UPDATE_SIGNATURE_INVALID" | "UPDATE_STAGING_FAILED";
+  | "UPDATE_SIZE_MISMATCH" | "UPDATE_SHA256_MISMATCH" | "UPDATE_STAGING_FAILED";
 
 export class HandsUpdateError extends Error {
   constructor(readonly code: HandsUpdateErrorCode, message: string, readonly retryable = false, readonly status?: number) {
@@ -81,7 +70,6 @@ export class HandsUpdateError extends Error {
 export interface HandsUpdaterOptions {
   appSlug: string;
   apiOrigin: string;
-  trustRoot: UpdateTrustRoot;
   credentialProvider?: () => string | undefined | Promise<string | undefined>;
   fetch?: typeof globalThis.fetch;
   timeoutMs?: number;
@@ -97,7 +85,7 @@ export interface HandsUpdater {
 
 const SEMVER = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/u;
 const SHA256 = /^[a-f0-9]{64}$/u;
-export const HANDS_NODE_SDK_VERSION = "0.2.0";
+export const HANDS_NODE_SDK_VERSION = "0.3.0";
 
 function record(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new HandsUpdateError("UPDATE_RESPONSE_INVALID", "update response must be an object");
@@ -142,7 +130,6 @@ function candidateIdentity(candidate: Omit<UpdateCandidate, "candidateDigest">) 
       artifactId: candidate.artifact.artifactId,
       size: candidate.artifact.size,
       sha256: candidate.artifact.sha256,
-      attestation: candidate.artifact.attestation,
     },
   };
 }
@@ -187,22 +174,9 @@ export function createHandsUpdater(options: HandsUpdaterOptions): HandsUpdater {
       const root = record(body);
       if (root.update_available === false) return { kind: "up_to_date", currentVersion: input.currentVersion, checkedAt: new Date(now()).toISOString() };
       if (root.update_available !== true) throw new HandsUpdateError("UPDATE_RESPONSE_INVALID", "update_available invalid");
-      const app = record(root.app); const release = record(root.release); const artifact = record(root.artifact); const att = record(artifact.attestation);
+      const app = record(root.app); const release = record(root.release); const artifact = record(root.artifact);
       const sha256 = string(artifact.sha256, "artifact.sha256").toLowerCase();
       if (!SHA256.test(sha256)) throw new HandsUpdateError("UPDATE_RESPONSE_INVALID", "artifact.sha256 invalid");
-      const envelope: UpdateArtifactAttestationEnvelope = {
-        algorithm: string(att.algorithm, "attestation.algorithm") as "Ed25519",
-        keyId: string(att.key_id, "attestation.key_id"),
-        payload: string(att.payload, "attestation.payload"),
-        schemaVersion: integer(att.schema_version, "attestation.schema_version") as 1,
-        signature: string(att.signature, "attestation.signature"),
-      };
-      let payload;
-      try { payload = verifyUpdateArtifactAttestation(envelope, options.trustRoot); }
-      catch (error) {
-        const code = error && typeof error === "object" && "code" in error ? String(error.code) as HandsUpdateErrorCode : "UPDATE_SIGNATURE_INVALID";
-        throw new HandsUpdateError(code, "artifact attestation rejected");
-      }
       const plain: Omit<UpdateCandidate, "candidateDigest"> = {
         appId: string(app.id, "app.id"), appSlug: string(app.slug, "app.slug"),
         releaseId: string(release.id, "release.id"), releaseRevision: integer(release.revision, "release.revision"),
@@ -210,22 +184,9 @@ export function createHandsUpdater(options: HandsUpdaterOptions): HandsUpdater {
         version: string(release.version, "release.version"), versionCode: integer(release.version_code, "release.version_code"),
         versionRelation: string(release.version_relation, "release.version_relation") as UpdateCandidate["versionRelation"],
         publishedAt: integer(release.published_at, "release.published_at"), target: input.target,
-        artifact: { artifactId: string(artifact.id, "artifact.id"), url: string(artifact.download_url, "artifact.download_url"), size: integer(artifact.size_bytes, "artifact.size_bytes"), sha256, attestation: envelope },
+        artifact: { artifactId: string(artifact.id, "artifact.id"), url: string(artifact.download_url, "artifact.download_url"), size: integer(artifact.size_bytes, "artifact.size_bytes"), sha256 },
       };
       if (pinned && plain.version !== pinned) throw new HandsUpdateError("UPDATE_IDENTITY_DRIFT", "pinned version was not selected");
-      const expectedPayload = {
-        appId: plain.appId, releaseId: plain.releaseId, buildId: payload.buildId,
-        channelId: plain.channelId, version: plain.version, versionCode: plain.versionCode,
-        artifactId: plain.artifact.artifactId, platform: plain.target.platform,
-        arch: plain.target.arch, size: plain.artifact.size, sha256: plain.artifact.sha256,
-      };
-      const actualPayload = {
-        appId: payload.appId, releaseId: payload.releaseId, buildId: payload.buildId,
-        channelId: payload.channelId, version: payload.version, versionCode: payload.versionCode,
-        artifactId: payload.artifact.id, platform: payload.artifact.platform,
-        arch: payload.artifact.arch, size: payload.artifact.sizeBytes, sha256: payload.artifact.sha256,
-      };
-      if (canonical(expectedPayload) !== canonical(actualPayload)) throw new HandsUpdateError("UPDATE_IDENTITY_DRIFT", "candidate does not match signed payload");
       const candidate: UpdateCandidate = { ...plain, candidateDigest: digest(candidateIdentity(plain)) };
       return { kind: "update", candidate };
     } catch (error) { throw abortError(error); }
@@ -235,10 +196,6 @@ export function createHandsUpdater(options: HandsUpdaterOptions): HandsUpdater {
   async function prepareUpdate(input: PrepareUpdateInput): Promise<PreparedUpdate> {
     const candidate = input.candidate;
     if (digest(candidateIdentity(candidate)) !== candidate.candidateDigest) throw new HandsUpdateError("UPDATE_IDENTITY_DRIFT", "candidate digest changed");
-    let payload;
-    try { payload = verifyUpdateArtifactAttestation(candidate.artifact.attestation, options.trustRoot); }
-    catch (error) { throw abortError(error); }
-    if (payload.artifact.sha256 !== candidate.artifact.sha256 || payload.artifact.sizeBytes !== candidate.artifact.size || payload.artifact.id !== candidate.artifact.artifactId) throw new HandsUpdateError("UPDATE_IDENTITY_DRIFT", "candidate no longer matches attestation");
     await mkdir(input.stagingDir, { recursive: true });
     const safeName = `${candidate.version}-${candidate.artifact.sha256}.ready`;
     const finalPath = resolve(input.stagingDir, safeName);
@@ -280,12 +237,9 @@ export function createHandsUpdater(options: HandsUpdaterOptions): HandsUpdater {
           releaseRevision: candidate.releaseRevision, channel: candidate.channel,
           selectedChannel: candidate.selectedChannel,
           version: candidate.version, target: candidate.target, artifactId: candidate.artifact.artifactId,
-          sourceCommit: payload.sourceCommit,
           candidateDigest: candidate.candidateDigest, expectedSize: candidate.artifact.size,
           actualSize: downloaded, expectedSha256: candidate.artifact.sha256,
-          actualSha256, signature: { algorithm: candidate.artifact.attestation.algorithm,
-            keyId: candidate.artifact.attestation.keyId, verified: true,
-            signedPayloadDigest: `sha256:${createHash("sha256").update(Buffer.from(canonicalizeUpdateAttestationPayload(payload))).digest("hex")}` },
+          actualSha256,
           preparedAt: new Date(now()).toISOString(),
         };
         return { stagedBinaryPath: finalPath, version: candidate.version, sha256: actualSha256, size: downloaded, receipt };
