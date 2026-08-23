@@ -61,6 +61,15 @@ on:
       # Second instance of the same defect in one census, which is why the entries above
       # are wildcards and why this list is not being derived again.
       - "container/**"
+      # The build job below runs the admin build, whose first step
+      # (scripts/build-docs.mjs) resolves every docs-manifest entry to a file under
+      # docs/public/. Both sides of that reference have to trigger the job that
+      # checks the reference: a PR can break it by editing the manifest or by
+      # deleting a doc it names. A deploy dispatch of 0069 died on exactly the
+      # second case — the manifest still named a deleted doc, no PR check had ever
+      # executed build-docs, and its first run anywhere was on the deploy runner.
+      - "admin/**"
+      - "docs/**"
   # No paths filter here, deliberately. Two lists are two things to keep in step, and
   # the first was already out of step: this file itself was missing from the push
   # list, so a change to the workflow could merge without main ever running it. The
@@ -94,6 +103,12 @@ jobs:
 
       - name: Run the worker test suite
         working-directory: worker
+        # One migration suite shells out to /usr/bin/sqlite3
+        # (feedback_closure_reason_migration.test.ts); a machine without the CLI at
+        # that path fails it with spawn ENOENT. That is a fact about the machine,
+        # not the commit — this runner has sqlite3, so a local ENOENT red and a
+        # green here are not in conflict, and the run bound to the commit is this
+        # one.
         run: pnpm test
 
       # The type-check is deliberately not run here. `tsc` needs
@@ -106,3 +121,42 @@ jobs:
       #
       # Naming the gap rather than leaving it implied: a type error can still reach
       # main and will surface at deploy time.
+
+  # The deploy workflow's "Run checks" step builds the CLI (with its workspace
+  # dependencies) and the admin app before touching production. Until this job
+  # existed, deploy time was also the first time either build ran anywhere: PRs
+  # ran only the worker suite above, and local green was evidence about a warm
+  # node_modules, not about the commit. That bit twice in one day, from one
+  # commit. A stale symlink kept `workspace:^0.1.0` resolving locally after the
+  # range had stopped matching hands-node 0.3.0, so every local build was green
+  # while a fresh `--frozen-lockfile` install — which is what the deploy runner
+  # does — could not link the dependency at all; the next dispatch then found the
+  # admin docs manifest naming a deleted file. This job is those same builds, same
+  # filters, same order, on a fresh runner, at pull-request time.
+  #
+  # Deliberately absent: the worker build (`tsc --noEmit`). It needs
+  # worker-configuration.d.ts generated from the rendered production config, and
+  # the renderer refuses placeholder values by design — the note above this job
+  # explains why that stays at deploy time. The gap this job closes is the
+  # package builds; the type-check gap remains, and remains named.
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Build what the deploy builds
+        # "..." builds workspace deps first (hands-cli depends on hands-node) —
+        # mirrors deploy-hands-server.yml "Run checks" exactly, minus the worker
+        # build explained above.
+        run: |
+          pnpm --filter @botiverse/hands-cli... build
+          pnpm --filter @botiverse/hands-admin build
