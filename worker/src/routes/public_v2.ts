@@ -385,6 +385,9 @@ function bumpReleaseMetric(
 }
 
 export async function handlePublicV2UpdateCheck(c: Context<{ Bindings: Env }>) {
+  if (c.req.query("product_type") === "cli-binary" || c.req.query("current_version")) {
+    return handlePublicCliBinaryUpdateCheck(c);
+  }
   const currentVersionCodeRaw =
     c.req.query("current_version_code") ??
     c.req.query("currentVersionCode") ??
@@ -499,6 +502,110 @@ export async function handlePublicV2UpdateCheck(c: Context<{ Bindings: Env }>) {
     ...(patch ? { patch } : {}),
     scoped: latest.scoped,
     expires_in: latest.expires_in,
+  });
+}
+
+function parseStrictSemver(value: string): [number, number, number, string | null] | null {
+  const match = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?$/u.exec(value);
+  if (!match) return null;
+  const parts = [Number(match[1]), Number(match[2]), Number(match[3])] as const;
+  if (parts.some((part) => !Number.isSafeInteger(part))) return null;
+  return [parts[0], parts[1], parts[2], match[4] ?? null];
+}
+
+function compareStrictSemver(left: string, right: string): number | null {
+  const a = parseStrictSemver(left);
+  const b = parseStrictSemver(right);
+  if (!a || !b) return null;
+  for (let index = 0; index < 3; index += 1) {
+    if (a[index] !== b[index]) return a[index]! < b[index]! ? -1 : 1;
+  }
+  if (a[3] === b[3]) return 0;
+  if (a[3] === null) return 1;
+  if (b[3] === null) return -1;
+  return a[3].localeCompare(b[3]);
+}
+
+async function handlePublicCliBinaryUpdateCheck(c: Context<{ Bindings: Env }>) {
+  const slug = c.req.param("slug") ?? "";
+  const channel = c.req.query("channel") ?? "main";
+  const currentVersion = c.req.query("current_version") ?? "";
+  const platform = c.req.query("platform") ?? "";
+  const arch = c.req.query("arch") ?? "";
+  const target = `${platform}-${arch}`;
+  const deviceId = c.req.query("device_id") ?? c.req.header("X-Hands-Device-Id") ?? null;
+  if (!parseStrictSemver(currentVersion) || !/^[a-z0-9]+$/u.test(platform) || !/^[a-z0-9_]+$/u.test(arch)) {
+    return c.json({ error: "current_version semver, platform, and arch are required", code: "UPDATE_RESPONSE_INVALID" }, 400);
+  }
+  const row = await c.env.DB.prepare(
+    `SELECT a.id AS app_id, a.slug, a.update_attestation_required,
+            r.id AS release_id, r.revision, r.rollout_cohort_count,
+            r.activated_at, r.channel_id, b.id AS build_id,
+            b.version_name, b.version_code,
+            e.id AS artifact_id, e.raw_sha256, e.raw_size_bytes,
+            t.schema_version, t.algorithm, t.key_id, t.payload_b64url,
+            t.signature_b64url, k.status AS key_status
+     FROM apps a
+     JOIN channels ch ON ch.app_id = a.id AND ch.slug = ?2
+     JOIN releases r ON r.app_id = a.id AND r.channel_id = ch.id
+       AND r.product_type = 'cli-binary' AND r.status = 'active' AND r.hidden = 0
+     JOIN release_scopes s ON s.release_id = r.id
+       AND s.scope_type = 'full' AND s.scope_value = 'all'
+     JOIN builds b ON b.id = r.build_id AND b.status = 'succeeded'
+     JOIN external_build_targets e ON e.build_id = b.id AND e.target = ?3
+     JOIN release_artifact_attestations t ON t.app_id = a.id
+       AND t.release_id = r.id AND t.build_id = b.id
+       AND t.artifact_kind = 'external_build_target' AND t.artifact_id = e.id
+     JOIN update_attestation_keys k ON k.key_id = t.key_id AND k.app_id = a.id
+       AND k.status IN ('active', 'retired')
+     WHERE a.slug = ?1 AND a.update_attestation_required = 1
+       AND (r.availability_at IS NULL OR r.availability_at <= ?4)
+     ORDER BY r.activated_at DESC, r.id ASC LIMIT 1`,
+  ).bind(slug, channel, target, Date.now()).first<{
+    app_id: string; slug: string; update_attestation_required: number;
+    release_id: string; revision: number; rollout_cohort_count: number | null;
+    activated_at: number; channel_id: string; build_id: string;
+    version_name: string; version_code: number; artifact_id: string;
+    raw_sha256: string; raw_size_bytes: number; schema_version: number;
+    algorithm: string; key_id: string; payload_b64url: string;
+    signature_b64url: string; key_status: string;
+  }>();
+  if (!row) return c.json({ error: "no active attested release for target", code: "UPDATE_NO_COMPATIBLE_ARTIFACT" }, 404);
+  if (!rolloutIncludes(row.release_id, row.rollout_cohort_count, deviceId)) {
+    return c.json({ update_available: false, current_version: currentVersion, checked_at: Date.now() });
+  }
+  const relation = compareStrictSemver(row.version_name, currentVersion);
+  if (relation === null) return c.json({ error: "published version is not semver", code: "UPDATE_RESPONSE_INVALID" }, 500);
+  if (relation === 0) return c.json({ update_available: false, current_version: currentVersion, latest_version: row.version_name, checked_at: Date.now() });
+  const origin = requestOrigin(c);
+  return c.json({
+    update_available: true,
+    app: { id: row.app_id, slug: row.slug },
+    release: {
+      id: row.release_id,
+      revision: row.revision,
+      channel,
+      channel_id: row.channel_id,
+      version: row.version_name,
+      version_code: row.version_code,
+      version_relation: relation > 0 ? "upgrade" : "downgrade",
+      published_at: row.activated_at,
+    },
+    artifact: {
+      id: row.artifact_id,
+      platform,
+      arch,
+      size_bytes: row.raw_size_bytes,
+      sha256: row.raw_sha256,
+      download_url: `${origin}/dl/${encodeURIComponent(slug)}/releases/${encodeURIComponent(row.release_id)}/${encodeURIComponent(target)}`,
+      attestation: {
+        schema_version: row.schema_version,
+        algorithm: row.algorithm,
+        key_id: row.key_id,
+        payload: row.payload_b64url,
+        signature: row.signature_b64url,
+      },
+    },
   });
 }
 
