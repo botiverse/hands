@@ -58,6 +58,7 @@ describe("public attested cli-binary selection", () => {
       CREATE TABLE release_artifact_attestations (id TEXT PRIMARY KEY, app_id TEXT, release_id TEXT, build_id TEXT, artifact_kind TEXT, artifact_id TEXT, schema_version INTEGER, algorithm TEXT, key_id TEXT, payload_b64url TEXT, signature_b64url TEXT);
       INSERT INTO apps VALUES ('app', 'computer', 'desktop', 1);
       INSERT INTO channels VALUES ('channel-main', 'app', 'main');
+      INSERT INTO channels VALUES ('channel-alpha', 'app', 'alpha');
     `);
     const pair = await crypto.subtle.generateKey({ name: "Ed25519" }, true, ["sign", "verify"]) as CryptoKeyPair;
     privateKey = pair.privateKey;
@@ -70,20 +71,22 @@ describe("public attested cli-binary selection", () => {
     app.get("/public/v2/apps/:slug/updates/check", handlePublicCliBinaryUpdateCheck as never);
   });
 
-  async function seedRelease(id: string, version: string, status: string, activatedAt: number) {
-    const buildId = `build-${id}`;
-    const artifactId = `artifact-${id}`;
-    const sha256 = createHash("sha256").update(id).digest("hex");
-    sqlite.prepare("INSERT INTO builds VALUES (?, 'app', 'succeeded', ?, ?)").run(buildId, version, activatedAt);
-    sqlite.prepare("INSERT INTO releases VALUES (?, 'app', ?, 'channel-main', 'cli-binary', 'stable', ?, 0, 1, NULL, ?, NULL)").run(id, buildId, status, activatedAt);
+  async function seedRelease(id: string, version: string, status: string, activatedAt: number, options: { channel?: "main" | "alpha"; sha256?: string; sourceCommit?: string | null; reuseArtifactFrom?: string } = {}) {
+    const buildId = `build-${options.reuseArtifactFrom ?? id}`;
+    const artifactId = `artifact-${options.reuseArtifactFrom ?? id}`;
+    const sha256 = options.sha256 ?? createHash("sha256").update(id).digest("hex");
+    const channel = options.channel ?? "main";
+    const channelId = `channel-${channel}`;
+    if (!options.reuseArtifactFrom) sqlite.prepare("INSERT INTO builds VALUES (?, 'app', 'succeeded', ?, ?)").run(buildId, version, activatedAt);
+    sqlite.prepare("INSERT INTO releases VALUES (?, 'app', ?, ?, 'cli-binary', 'stable', ?, 0, 1, NULL, ?, NULL)").run(id, buildId, channelId, status, activatedAt);
     sqlite.prepare("INSERT INTO release_scopes VALUES (?, ?, 'full', 'all')").run(`scope-${id}`, id);
-    sqlite.prepare("INSERT INTO external_build_targets VALUES (?, ?, 'linux-x64', ?, 8)").run(artifactId, buildId, sha256);
+    if (!options.reuseArtifactFrom) sqlite.prepare("INSERT INTO external_build_targets VALUES (?, ?, 'linux-x64', ?, 8)").run(artifactId, buildId, sha256);
     const payload: UpdateArtifactAttestationPayload = {
       algorithm: UPDATE_ATTESTATION_ALGORITHM,
       appId: "app",
       artifact: { arch: "x64", id: artifactId, kind: "external_build_target", platform: "linux", sha256, sizeBytes: 8, type: "sea" },
       buildId,
-      channelId: "channel-main",
+      channelId,
       domain: UPDATE_ATTESTATION_DOMAIN,
       issuedAt: 1,
       keyId,
@@ -91,7 +94,7 @@ describe("public attested cli-binary selection", () => {
       releaseId: id,
       releaseType: "stable",
       schemaVersion: 1,
-      sourceCommit: null,
+      sourceCommit: options.sourceCommit ?? null,
       version,
       versionCode: activatedAt,
     };
@@ -126,5 +129,29 @@ describe("public attested cli-binary selection", () => {
     const response = await check();
     expect(response.status).toBe(409);
     await expect(response.json()).resolves.toMatchObject({ code: "UPDATE_IDENTITY_DRIFT" });
+  });
+
+  it("allows an exact pin that exists only as an active alpha release", async () => {
+    await seedRelease("alpha-only", "4.0.0", "active", 400, { channel: "alpha" });
+    const response = await check("&version=4.0.0");
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({ release: { id: "alpha-only", channel: "alpha" } });
+  });
+
+  it("deterministically prefers main when cross-channel signed identity is equal", async () => {
+    const sha256 = "b".repeat(64);
+    await seedRelease("alpha-same", "5.0.0", "active", 500, { channel: "alpha", sha256, sourceCommit: "commit" });
+    await seedRelease("main-same", "5.0.0", "active", 500, { channel: "main", sha256, sourceCommit: "commit", reuseArtifactFrom: "alpha-same" });
+    const response = await check("&version=5.0.0");
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({ release: { id: "main-same", channel: "main" } });
+  });
+
+  it("fails closed when cross-channel pinned signed identities diverge", async () => {
+    await seedRelease("alpha-divergent", "6.0.0", "active", 600, { channel: "alpha", sha256: "c".repeat(64), sourceCommit: "commit" });
+    await seedRelease("main-divergent", "6.0.0", "active", 601, { channel: "main", sha256: "d".repeat(64), sourceCommit: "commit" });
+    const response = await check("&version=6.0.0");
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toMatchObject({ code: "UPDATE_IDENTITY_CONFLICT" });
   });
 });

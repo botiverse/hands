@@ -18,6 +18,7 @@ export interface UpdateCandidate {
   releaseId: string;
   releaseRevision: number;
   channel: UpdateChannel;
+  selectedChannel: string;
   channelId: string;
   version: string;
   versionCode: number;
@@ -44,6 +45,7 @@ export interface UpdateVerificationReceipt {
   releaseId: string;
   releaseRevision: number;
   channel: UpdateChannel;
+  selectedChannel: string;
   version: string;
   target: RuntimeTarget;
   artifactId: string;
@@ -64,7 +66,7 @@ export type HandsUpdateErrorCode =
   | "UPDATE_ABORTED" | "UPDATE_NETWORK_FAILED" | "UPDATE_AUTH_FAILED"
   | "UPDATE_APP_NOT_FOUND" | "UPDATE_APP_FORBIDDEN" | "UPDATE_CHANNEL_UNSUPPORTED"
   | "UPDATE_RELEASE_NOT_READY" | "UPDATE_NO_COMPATIBLE_ARTIFACT"
-  | "UPDATE_RESPONSE_INVALID" | "UPDATE_IDENTITY_DRIFT" | "UPDATE_DOWNLOAD_FAILED"
+  | "UPDATE_RESPONSE_INVALID" | "UPDATE_IDENTITY_DRIFT" | "UPDATE_IDENTITY_CONFLICT" | "UPDATE_DOWNLOAD_FAILED"
   | "UPDATE_SIZE_MISMATCH" | "UPDATE_SHA256_MISMATCH" | "UPDATE_SIGNATURE_MISSING"
   | "UPDATE_SIGNATURE_UNSUPPORTED" | "UPDATE_SIGNATURE_KEY_UNKNOWN"
   | "UPDATE_SIGNATURE_INVALID" | "UPDATE_STAGING_FAILED";
@@ -130,6 +132,7 @@ function candidateIdentity(candidate: Omit<UpdateCandidate, "candidateDigest">) 
     releaseId: candidate.releaseId,
     releaseRevision: candidate.releaseRevision,
     channel: candidate.channel,
+    selectedChannel: candidate.selectedChannel,
     channelId: candidate.channelId,
     version: candidate.version,
     versionCode: candidate.versionCode,
@@ -175,7 +178,10 @@ export function createHandsUpdater(options: HandsUpdaterOptions): HandsUpdater {
       const response = await fetchImpl(url, requestInit);
       const body = await response.json().catch(() => null) as unknown;
       if (!response.ok) {
-        const code = response.status === 401 ? "UPDATE_AUTH_FAILED" : response.status === 403 ? "UPDATE_APP_FORBIDDEN" : response.status === 404 ? "UPDATE_NO_COMPATIBLE_ARTIFACT" : "UPDATE_NETWORK_FAILED";
+        const serverCode = body && typeof body === "object" && "code" in body ? String((body as { code: unknown }).code) : "";
+        const code: HandsUpdateErrorCode = serverCode === "UPDATE_IDENTITY_CONFLICT" || serverCode === "UPDATE_IDENTITY_DRIFT"
+          ? serverCode
+          : response.status === 401 ? "UPDATE_AUTH_FAILED" : response.status === 403 ? "UPDATE_APP_FORBIDDEN" : response.status === 404 ? "UPDATE_NO_COMPATIBLE_ARTIFACT" : "UPDATE_NETWORK_FAILED";
         throw new HandsUpdateError(code, "Hands did not return an update candidate", response.status >= 500, response.status);
       }
       const root = record(body);
@@ -200,7 +206,7 @@ export function createHandsUpdater(options: HandsUpdaterOptions): HandsUpdater {
       const plain: Omit<UpdateCandidate, "candidateDigest"> = {
         appId: string(app.id, "app.id"), appSlug: string(app.slug, "app.slug"),
         releaseId: string(release.id, "release.id"), releaseRevision: integer(release.revision, "release.revision"),
-        channel: input.channel, channelId: string(release.channel_id, "release.channel_id"),
+        channel: input.channel, selectedChannel: string(release.channel, "release.channel"), channelId: string(release.channel_id, "release.channel_id"),
         version: string(release.version, "release.version"), versionCode: integer(release.version_code, "release.version_code"),
         versionRelation: string(release.version_relation, "release.version_relation") as UpdateCandidate["versionRelation"],
         publishedAt: integer(release.published_at, "release.published_at"), target: input.target,
@@ -272,6 +278,7 @@ export function createHandsUpdater(options: HandsUpdaterOptions): HandsUpdater {
         const receipt: UpdateVerificationReceipt = {
           schemaVersion: 1, appId: candidate.appId, releaseId: candidate.releaseId,
           releaseRevision: candidate.releaseRevision, channel: candidate.channel,
+          selectedChannel: candidate.selectedChannel,
           version: candidate.version, target: candidate.target, artifactId: candidate.artifact.artifactId,
           sourceCommit: payload.sourceCommit,
           candidateDigest: candidate.candidateDigest, expectedSize: candidate.artifact.size,

@@ -539,8 +539,9 @@ export async function handlePublicCliBinaryUpdateCheck(c: Context<{ Bindings: En
   if (!parseStrictSemver(currentVersion) || !/^[a-z0-9]+$/u.test(platform) || !/^[a-z0-9_]+$/u.test(arch)) {
     return c.json({ error: "current_version semver, platform, and arch are required", code: "UPDATE_RESPONSE_INVALID" }, 400);
   }
-  const row = await c.env.DB.prepare(
+  const { results: rows } = await c.env.DB.prepare(
     `SELECT a.id AS app_id, a.slug, a.update_attestation_required,
+            ch.slug AS channel,
             r.id AS release_id, r.revision, r.rollout_cohort_count,
             r.activated_at, r.channel_id, r.product_type, r.release_type,
             b.id AS build_id,
@@ -550,7 +551,7 @@ export async function handlePublicCliBinaryUpdateCheck(c: Context<{ Bindings: En
             t.signature_b64url, k.status AS key_status,
             k.public_key_spki_b64url
      FROM apps a
-     JOIN channels ch ON ch.app_id = a.id AND ch.slug = ?2
+     JOIN channels ch ON ch.app_id = a.id
      JOIN releases r ON r.app_id = a.id AND r.channel_id = ch.id
        AND r.product_type = 'cli-binary' AND r.status = 'active' AND r.hidden = 0
      JOIN release_scopes s ON s.release_id = r.id
@@ -564,10 +565,13 @@ export async function handlePublicCliBinaryUpdateCheck(c: Context<{ Bindings: En
        AND k.status IN ('active', 'retired')
      WHERE a.slug = ?1 AND a.update_attestation_required = 1
        AND (r.availability_at IS NULL OR r.availability_at <= ?4)
+       AND ((?5 IS NULL AND ch.slug = ?2) OR ?5 IS NOT NULL)
        AND (?5 IS NULL OR b.version_name = ?5)
-     ORDER BY r.activated_at DESC, r.id ASC LIMIT 1`,
-  ).bind(slug, channel, target, Date.now(), requestedVersion).first<{
+     ORDER BY CASE WHEN ch.slug = 'main' THEN 0 ELSE 1 END,
+              r.activated_at DESC, r.id ASC`,
+  ).bind(slug, channel, target, Date.now(), requestedVersion).all<{
     app_id: string; slug: string; update_attestation_required: number;
+    channel: string;
     release_id: string; revision: number; rollout_cohort_count: number | null;
     activated_at: number; channel_id: string; product_type: string;
     release_type: string; build_id: string;
@@ -576,23 +580,36 @@ export async function handlePublicCliBinaryUpdateCheck(c: Context<{ Bindings: En
     algorithm: string; key_id: string; payload_b64url: string;
     signature_b64url: string; key_status: string; public_key_spki_b64url: string;
   }>();
-  if (!row) return c.json({ error: "no active attested release for target", code: "UPDATE_NO_COMPATIBLE_ARTIFACT" }, 404);
-  try {
-    const payload = await verifyUpdateArtifactAttestation(
-      { algorithm: row.algorithm, keyId: row.key_id, payload: row.payload_b64url, schemaVersion: row.schema_version, signature: row.signature_b64url },
-      { [row.key_id]: row.public_key_spki_b64url },
-    );
-    const exact = payload.appId === row.app_id && payload.releaseId === row.release_id &&
-      payload.channelId === row.channel_id && payload.buildId === row.build_id &&
-      payload.productType === row.product_type && payload.releaseType === row.release_type &&
-      payload.version === row.version_name && payload.versionCode === row.version_code &&
-      payload.artifact.id === row.artifact_id && payload.artifact.kind === "external_build_target" &&
-      payload.artifact.platform === platform && payload.artifact.arch === arch &&
-      payload.artifact.sha256 === row.raw_sha256 && payload.artifact.sizeBytes === row.raw_size_bytes;
-    if (!exact) throw new Error("signed payload differs from ledger");
-  } catch {
-    return c.json({ error: "active artifact attestation failed verification", code: "UPDATE_IDENTITY_DRIFT" }, 409);
+  if (rows.length === 0) return c.json({ error: "no active attested release for target", code: "UPDATE_NO_COMPATIBLE_ARTIFACT" }, 404);
+  const verified: Array<{ row: typeof rows[number]; sourceCommit: string | null }> = [];
+  for (const row of rows) {
+    try {
+      const payload = await verifyUpdateArtifactAttestation(
+        { algorithm: row.algorithm, keyId: row.key_id, payload: row.payload_b64url, schemaVersion: row.schema_version, signature: row.signature_b64url },
+        { [row.key_id]: row.public_key_spki_b64url },
+      );
+      const exact = payload.appId === row.app_id && payload.releaseId === row.release_id &&
+        payload.channelId === row.channel_id && payload.buildId === row.build_id &&
+        payload.productType === row.product_type && payload.releaseType === row.release_type &&
+        payload.version === row.version_name && payload.versionCode === row.version_code &&
+        payload.artifact.id === row.artifact_id && payload.artifact.kind === "external_build_target" &&
+        payload.artifact.platform === platform && payload.artifact.arch === arch &&
+        payload.artifact.sha256 === row.raw_sha256 && payload.artifact.sizeBytes === row.raw_size_bytes;
+      if (!exact) throw new Error("signed payload differs from ledger");
+      verified.push({ row, sourceCommit: payload.sourceCommit });
+    } catch {
+      return c.json({ error: "active artifact attestation failed verification", code: "UPDATE_IDENTITY_DRIFT" }, 409);
+    }
   }
+  if (requestedVersion && verified.length > 1) {
+    const identities = new Set(verified.map(({ row, sourceCommit }) =>
+      `${row.artifact_id}:${row.version_name}:${platform}:${arch}:${row.raw_size_bytes}:${row.raw_sha256}:${sourceCommit ?? ""}`
+    ));
+    if (identities.size > 1) {
+      return c.json({ error: "pinned version has divergent signed identities across channels", code: "UPDATE_IDENTITY_CONFLICT" }, 409);
+    }
+  }
+  const row = verified[0]!.row;
   if (!rolloutIncludes(row.release_id, row.rollout_cohort_count, deviceId)) {
     return c.json({ update_available: false, current_version: currentVersion, checked_at: Date.now() });
   }
@@ -606,7 +623,7 @@ export async function handlePublicCliBinaryUpdateCheck(c: Context<{ Bindings: En
     release: {
       id: row.release_id,
       revision: row.revision,
-      channel,
+      channel: row.channel,
       channel_id: row.channel_id,
       version: row.version_name,
       version_code: row.version_code,

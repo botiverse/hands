@@ -45,7 +45,7 @@ function fixture(bytes = Buffer.from("verified computer binary")) {
   const response = {
     update_available: true,
     app: { id: payload.appId, slug: "raft-computer" },
-    release: { id: payload.releaseId, revision: 7, channel_id: payload.channelId, version: payload.version, version_code: payload.versionCode, version_relation: "upgrade", published_at: 1_787_460_000_000 },
+    release: { id: payload.releaseId, revision: 7, channel: "main", channel_id: payload.channelId, version: payload.version, version_code: payload.versionCode, version_relation: "upgrade", published_at: 1_787_460_000_000 },
     artifact: { id: payload.artifact.id, platform: "linux", arch: "x64", size_bytes: bytes.length, sha256, download_url: "https://downloads.example/computer", attestation: envelope },
   };
   return { bytes, response, trustRoot: { [keyId]: spki.toString("base64url") } };
