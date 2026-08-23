@@ -9,6 +9,7 @@ import { generateSignedR2Url } from "./public_v2";
 
 type AdminContext = Context<AdminEnv & { Bindings: Env }>;
 import { getBuildForApp } from "./builds";
+import { validateReleaseArtifactsAttested } from "./update_attestations";
 
 type ReleaseScopeInput = {
   scope_type: string;
@@ -1506,6 +1507,15 @@ export async function handlePublishRelease(c: AdminContext) {
   if (existing.status !== "draft" && existing.status !== "active") {
     return c.json({ error: `cannot publish ${existing.status} release` }, 409);
   }
+
+  const attestationGate = await validateReleaseArtifactsAttested(
+    c.env.DB,
+    appId,
+    releaseId,
+    existing.build_id,
+    existing.product_type,
+  );
+  if (!attestationGate.ok) return c.json(attestationGate, 409);
 
   const targetGateResult = await prepareExternalTargetGate(
     c,

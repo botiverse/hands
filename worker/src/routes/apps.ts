@@ -347,6 +347,7 @@ export async function handleUpdateApp(c: AdminContext) {
     default_channel_id?: string | null;
     public_history?: boolean;
     delta_updates_enabled?: boolean;
+    update_attestation_required?: boolean;
   };
   // Confirm app exists.
   const existing = await c.env.DB.prepare(
@@ -374,6 +375,10 @@ export async function handleUpdateApp(c: AdminContext) {
   if (body.delta_updates_enabled !== undefined) {
     updates.push("delta_updates_enabled = ?");
     binds.push(body.delta_updates_enabled ? 1 : 0);
+  }
+  if (body.update_attestation_required !== undefined) {
+    updates.push("update_attestation_required = ?");
+    binds.push(body.update_attestation_required ? 1 : 0);
   }
   if (body.default_channel_id !== undefined) {
     if (body.default_channel_id === null) {
