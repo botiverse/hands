@@ -65,6 +65,7 @@ def main() -> None:
     }
     post = next(step for step in steps if step.get("name") == "Post structured failure alert")
     assert 'message send --target "#proj-hands"' in post["run"]
+    assert 'saved as a draft' in post["run"] and 'Message (sent|queued)' in post["run"]
     assert "$RAFT_PROFILE_DIR/credential.json" in materialize["run"]
 
     health = load(HEALTH)
@@ -84,6 +85,7 @@ def main() -> None:
     )
     assert "inputs.send_synthetic_alert" in synthetic_post["if"]
     assert 'message send --target "#proj-hands"' in synthetic_post["run"]
+    assert 'saved as a draft' in synthetic_post["run"] and 'Message (sent|queued)' in synthetic_post["run"]
     assert "$RAFT_PROFILE_DIR/credential.json" in next(
         step for step in health_steps if step.get("name") == "Materialize isolated profile"
     )["run"]
