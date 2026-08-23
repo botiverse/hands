@@ -9,6 +9,7 @@ describe("Hands device id", () => {
     expect(handsDeviceIdLocation({ platform: "win32", homeDir: "C:\\Users\\u" })).toBe("HKCU\\Software\\hands.build\\deviceid");
     expect(handsDeviceIdLocation({ platform: "darwin", homeDir: "/u" })).toBe("/u/Library/Application Support/hands.build/deviceid");
     expect(handsDeviceIdLocation({ platform: "linux", homeDir: "/u", env: {} })).toBe("/u/.local/state/hands.build/deviceid");
+    expect(handsDeviceIdLocation({ platform: "linux", homeDir: "/u", env: { XDG_STATE_HOME: "" } })).toBe("/u/.local/state/hands.build/deviceid");
     expect(handsDeviceIdLocation({ platform: "linux", homeDir: "/u", env: { XDG_STATE_HOME: "/state" } })).toBe("/state/hands.build/deviceid");
   });
 

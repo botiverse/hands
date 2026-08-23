@@ -65,6 +65,7 @@ export function registerWhoamiCommand(program: Command): void {
         console.log(`  api:     ${getApiBase()}`);
         console.log(`  device_id: ${deviceId}`);
         console.log("  device_scope: os_user");
+        console.log("  device_namespace: hands.build");
       } catch (e) {
         if (e instanceof QuiverApiError && e.status === 401) {
           console.error(NO_AUTH_HELP);
