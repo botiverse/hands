@@ -9,6 +9,7 @@ import yaml
 ROOT = Path(__file__).resolve().parents[2]
 WORKFLOWS = ROOT / ".github" / "workflows"
 NOTIFIER = WORKFLOWS / "notify-hands-workflow-failures.yml"
+HEALTH = WORKFLOWS / "raft-notifier-health.yml"
 
 
 class _Yaml12SafeLoader(yaml.SafeLoader):
@@ -64,9 +65,26 @@ def main() -> None:
     post = next(step for step in steps if step.get("name") == "Post structured failure alert")
     assert 'message send --target "#proj-hands"' in post["run"]
 
+    health = load(HEALTH)
+    assert health["on"]["schedule"] == [{"cron": "17 3 * * *"}]
+    synthetic = health["on"]["workflow_dispatch"]["inputs"]["send_synthetic_alert"]
+    assert synthetic["type"] == "boolean" and synthetic["default"] == "false"
+    health_job = health["jobs"]["health"]
+    assert health_job["environment"] == "raft-workflow-notifications"
+    assert health_job["env"]["RAFT_CREDENTIAL_JSON"] == "${{ secrets.RAFT_NOTIFY_CREDENTIAL_JSON }}"
+    health_steps = health_job["steps"]
+    verify = next(step for step in health_steps if step.get("name") == "Verify notifier credential")
+    assert "agent login status" in verify["run"]
+    synthetic_post = next(
+        step for step in health_steps if step.get("name") == "Send synthetic notifier alert"
+    )
+    assert "inputs.send_synthetic_alert" in synthetic_post["if"]
+    assert 'message send --target "#proj-hands"' in synthetic_post["run"]
+
     print(
         "Notification contract clean: "
-        f"{len(watched_names)} Publish/Deploy workflows, isolated credential, pinned CLI."
+        f"{len(watched_names)} Publish/Deploy workflows, isolated credential, pinned CLI, "
+        "daily health + explicit synthetic alert."
     )
 
 
