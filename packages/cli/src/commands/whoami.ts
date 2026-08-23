@@ -7,7 +7,7 @@ import { apiRequest, QuiverApiError, getApiBase } from "../lib/api.js";
 import { resolveAuthToken } from "../lib/config.js";
 import { readEnv } from "../lib/env.js";
 import { getHandsDeviceId } from "@botiverse/hands-node";
-import { deviceJson } from "./device_id.js";
+import { deviceJson, jsonRequested } from "./device_id.js";
 
 const NO_AUTH_HELP =
   "Not authenticated. Choose one:\n" +
@@ -39,7 +39,7 @@ export function registerWhoamiCommand(program: Command): void {
     .command("whoami")
     .description("Print the currently authenticated account + roles.")
     .option("--json", "Output machine-readable JSON.", false)
-    .action(async (opts: { json?: boolean }) => {
+    .action(async (opts: { json?: boolean }, command: Command) => {
       const bearer = readEnv("AUTH_TOKEN") ?? readEnv("BEARER_TOKEN");
       if (!bearer && !resolveAuthToken()) {
         console.error(NO_AUTH_HELP);
@@ -51,7 +51,7 @@ export function registerWhoamiCommand(program: Command): void {
           console.error("Server returned no account info.");
           process.exit(1);
         }
-        if (opts.json) {
+        if (jsonRequested(command, opts)) {
           console.log(JSON.stringify({ ...me, ...deviceJson(await getHandsDeviceId()) }, null, 2));
           return;
         }

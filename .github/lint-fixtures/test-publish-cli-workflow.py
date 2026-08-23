@@ -14,5 +14,8 @@ version = subprocess.check_output([
     "node", "scripts/resolve-workspace-dependency-version.mjs",
     "packages/cli/package.json", "@botiverse/hands-node", "packages/node/package.json",
 ], cwd=ROOT, text=True)
-assert version == "0.5.0"
+assert version == "0.5.1"
+installed_json = next(step for step in steps if step.get("name") == "Verify installed device JSON commands")
+assert 'node packages/cli/test/installed-device-json.mjs "$PACKAGE_PATH"' in installed_json["run"]
+assert installed_json["env"]["PACKAGE_PATH"] == "${{ steps.pack.outputs.path }}"
 print("Publish CLI dependency contract clean: workspace:* resolves to exact published Node package version.")

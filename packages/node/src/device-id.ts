@@ -20,7 +20,8 @@ export function handsDeviceIdLocation(options: DeviceIdOptions = {}): string {
   const home = options.homeDir ?? homedir();
   if (os === "win32") return `${WINDOWS_KEY}\\deviceid`;
   if (os === "darwin") return join(home, "Library", "Application Support", "hands.build", "deviceid");
-  return join(options.env?.XDG_STATE_HOME || join(home, ".local", "state"), "hands.build", "deviceid");
+  const env = options.env ?? process.env;
+  return join(env.XDG_STATE_HOME || join(home, ".local", "state"), "hands.build", "deviceid");
 }
 
 async function readWindows(): Promise<string | undefined> {
