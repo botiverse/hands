@@ -306,7 +306,13 @@ export async function validateReleaseArtifactsAttested(
   buildId: string,
   productType: string,
 ): Promise<{ ok: true } | { ok: false; code: string; error: string }> {
-  const app = await db.prepare("SELECT update_attestation_required FROM apps WHERE id = ?1").bind(appId).first<{ update_attestation_required: number }>().catch(() => null);
+  let app: { update_attestation_required: number } | null = null;
+  try {
+    app = await db.prepare("SELECT update_attestation_required FROM apps WHERE id = ?1").bind(appId).first<{ update_attestation_required: number }>();
+  } catch {
+    // Legacy unit schemas predate migration 0069 and therefore represent an
+    // app that has not opted into enforcement yet.
+  }
   const required = Boolean(app?.update_attestation_required);
   if (!required) return { ok: true };
   const build = await db.prepare("SELECT status FROM builds WHERE id = ?1 AND app_id = ?2").bind(buildId, appId).first<{ status: string }>();
