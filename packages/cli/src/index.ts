@@ -24,6 +24,7 @@ import { registerReleaseCommands } from "./commands/releases.js";
 import { registerFeedbackCommands } from "./commands/feedback.js";
 import { registerDeployTokenCommands } from "./commands/deploy_tokens.js";
 import { registerWhoamiCommand } from "./commands/whoami.js";
+import { registerDeviceIdCommand } from "./commands/device_id.js";
 import { registerLogsCommands } from "./commands/logs.js";
 import { registerDeviceGroupCommands } from "./commands/device_groups.js";
 import { registerApiCommand } from "./commands/api.js";
@@ -32,6 +33,7 @@ import { readEnv } from "./lib/env.js";
 import { setApiBase } from "./lib/api.js";
 import { recordCliEvent } from "./lib/logging.js";
 import { createRequire } from "node:module";
+import { DeviceIdError } from "@botiverse/hands-node";
 
 // Single source of truth for the CLI version: read it from package.json at runtime so
 // `--version` can never drift from the published package version. (Previously the string
@@ -94,6 +96,7 @@ program.hook("postAction", (_rootCommand, actionCommand) => {
 // --- Subcommand groups ---
 registerLoginCommands(program);
 registerWhoamiCommand(program);
+registerDeviceIdCommand(program);
 registerAppCommands(program);
 registerBuildCommands(program);
 registerReleaseCommands(program);
@@ -132,6 +135,11 @@ program.parseAsync(process.argv).catch((err) => {
     if (readEnv("VERBOSE") === "1" && err.stack) {
       console.error(err.stack);
     }
+    process.exit(1);
+  }
+  if (err instanceof DeviceIdError) {
+    console.error(`Error: ${err.message}`);
+    console.error(`Code: ${err.code}`);
     process.exit(1);
   }
   console.error(err instanceof Error ? err.message : String(err));

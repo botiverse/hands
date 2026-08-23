@@ -10,6 +10,7 @@ ROOT = Path(__file__).resolve().parents[2]
 WORKFLOWS = ROOT / ".github" / "workflows"
 NOTIFIER = WORKFLOWS / "notify-hands-workflow-failures.yml"
 HEALTH = WORKFLOWS / "raft-notifier-health.yml"
+WORKER_TESTS = WORKFLOWS / "worker-tests.yml"
 
 
 class _Yaml12SafeLoader(yaml.SafeLoader):
@@ -30,6 +31,14 @@ def load(path: Path):
 
 
 def main() -> None:
+    worker_tests = load(WORKER_TESTS)
+    windows_device_id = worker_tests["jobs"]["windows-device-id"]
+    assert windows_device_id["runs-on"] == "windows-latest"
+    windows_runs = "\n".join(
+        step.get("run", "") for step in windows_device_id["steps"]
+    )
+    assert "node packages/node/test/windows-device-id.mjs" in windows_runs
+
     publish_and_deploy = sorted(
         [*WORKFLOWS.glob("publish-*.yml"), *WORKFLOWS.glob("deploy-*.yml")]
     )

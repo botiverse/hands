@@ -6,6 +6,8 @@ import type { Command } from "commander";
 import { apiRequest, QuiverApiError, getApiBase } from "../lib/api.js";
 import { resolveAuthToken } from "../lib/config.js";
 import { readEnv } from "../lib/env.js";
+import { getHandsDeviceId } from "@botiverse/hands-node";
+import { deviceJson } from "./device_id.js";
 
 const NO_AUTH_HELP =
   "Not authenticated. Choose one:\n" +
@@ -50,16 +52,20 @@ export function registerWhoamiCommand(program: Command): void {
           process.exit(1);
         }
         if (opts.json) {
-          console.log(JSON.stringify(me, null, 2));
+          console.log(JSON.stringify({ ...me, ...deviceJson(await getHandsDeviceId()) }, null, 2));
           return;
         }
         const a = me.account;
+        const deviceId = await getHandsDeviceId();
         console.log(`${a.display_name}  (${a.principal_type})`);
         console.log(`  server:  ${a.server_slug ?? a.server_id}`);
         console.log(`  username: @${a.username ?? "(none)"}`);
         console.log(`  org_id:  ${a.org_id ?? "(none)"}`);
         console.log(`  org_role: ${a.org_role ?? "(none)"}`);
         console.log(`  api:     ${getApiBase()}`);
+        console.log(`  device_id: ${deviceId}`);
+        console.log("  device_scope: os_user");
+        console.log("  device_namespace: hands.build");
       } catch (e) {
         if (e instanceof QuiverApiError && e.status === 401) {
           console.error(NO_AUTH_HELP);
