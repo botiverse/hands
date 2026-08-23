@@ -24,6 +24,7 @@ import { registerReleaseCommands } from "./commands/releases.js";
 import { registerFeedbackCommands } from "./commands/feedback.js";
 import { registerDeployTokenCommands } from "./commands/deploy_tokens.js";
 import { registerWhoamiCommand } from "./commands/whoami.js";
+import { registerDeviceIdCommand } from "./commands/device_id.js";
 import { registerLogsCommands } from "./commands/logs.js";
 import { registerDeviceGroupCommands } from "./commands/device_groups.js";
 import { registerApiCommand } from "./commands/api.js";
@@ -94,6 +95,7 @@ program.hook("postAction", (_rootCommand, actionCommand) => {
 // --- Subcommand groups ---
 registerLoginCommands(program);
 registerWhoamiCommand(program);
+registerDeviceIdCommand(program);
 registerAppCommands(program);
 registerBuildCommands(program);
 registerReleaseCommands(program);
