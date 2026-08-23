@@ -230,8 +230,8 @@ export async function runDeltaGeneration(
       await env.DB.prepare(
         `INSERT INTO build_assets
          (id, build_id, artifact_kind, platform, arch, variant, filetype, r2_key, file_hash,
-          size_bytes, signature, signing_credential_id, metadata_json, download_count, created_at)
-         VALUES (?1, ?2, 'delta-patch', 'android', ?3, NULL, 'patch', ?4, ?5, ?6, NULL, NULL, ?7, 0, ?8)`,
+         size_bytes, signing_credential_id, metadata_json, download_count, created_at)
+         VALUES (?1, ?2, 'delta-patch', 'android', ?3, NULL, 'patch', ?4, ?5, ?6, NULL, ?7, 0, ?8)`,
       )
         .bind(
           crypto.randomUUID(),

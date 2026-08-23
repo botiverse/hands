@@ -1,6 +1,6 @@
 {
   "name": "@botiverse/hands-node",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Hands logging, redaction, and policy-governed log collection for Node.js.",
   "author": {
     "name": "jiacheng",
@@ -22,10 +22,6 @@
     "./logs/schema": {
       "types": "./dist/logs/schema.d.ts",
       "import": "./dist/logs/schema.js"
-    },
-    "./updater/attestation": {
-      "types": "./dist/updater/attestation.d.ts",
-      "import": "./dist/updater/attestation.js"
     },
     "./updater": {
       "types": "./dist/updater/index.d.ts",

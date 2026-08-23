@@ -95,7 +95,7 @@ describe("migration 0062 — build asset direct upload", () => {
     ).toEqual({
       id: "pre-a", build_id: "build-a", platform: "harmony", arch: "arm64",
       variant: "release", filetype: "hap", r2_key: "r2/key/a", file_hash: "sha-a",
-      size_bytes: 4242, signature: "sig-a", signing_credential_id: "cred-1",
+      size_bytes: 4242, signing_credential_id: "cred-1",
       metadata_json: '{"kept":true}', download_count: 77, created_at: 1700000001,
       artifact_kind: "installable", slot_arch: "arm64", slot_variant: "release",
       // No from_version_code in metadata, so the delta discriminator normalises to

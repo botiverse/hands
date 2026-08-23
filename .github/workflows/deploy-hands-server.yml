@@ -267,6 +267,38 @@ jobs:
           echo "Census exercised and returned 0 — every legacy row's credential columns are"
           echo "preserved in live build_assets; the 0068 drop is provably lossless."
 
+      - name: Pre-apply census — unused build_assets.signature removal (0069 guard)
+        working-directory: worker
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_BOTIVERSE_API_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          n() {
+            pnpm exec wrangler d1 execute "${HANDS_D1_DATABASE_NAME}" \
+              --remote --json --config wrangler.hands.generated.jsonc --command "$1" \
+              | jq -r '.[0].results[0].n'
+          }
+
+          has_column=$(n "SELECT count(*) AS n FROM pragma_table_info('build_assets') WHERE name='signature';")
+          case "$has_column" in
+            0) echo "build_assets.signature is absent — 0069 is already applied; no-op."; exit 0 ;;
+            1) : ;;
+            *) echo "CANNOT RUN: signature column probe returned '${has_column}' (expected 0 or 1)." >&2; exit 2 ;;
+          esac
+
+          census=$(pnpm exec wrangler d1 execute "${HANDS_D1_DATABASE_NAME}" \
+            --remote --json --config wrangler.hands.generated.jsonc --command \
+            "SELECT COUNT(*) AS total, SUM(CASE WHEN signature IS NOT NULL AND trim(signature) <> '' THEN 1 ELSE 0 END) AS non_empty FROM build_assets;" \
+            | jq -r '.[0].results[0] | "\(.total) \(.non_empty // 0)"')
+          read -r total populated <<<"${census}"
+          echo "0069 pre-apply census: total=${total}, non-empty signature rows=${populated}"
+          if [[ "${populated}" != "0" ]]; then
+            echo "Stopping before 0069: live generic signature data exists and has not been migrated." >&2
+            exit 1
+          fi
+
       - name: Apply Hands D1 migrations
         id: apply
         working-directory: worker
@@ -566,7 +598,7 @@ jobs:
               # quietly fail to count as a mismatch.
               preds=""
               for col in id build_id platform arch variant filetype r2_key file_hash \
-                         size_bytes signature signing_credential_id metadata_json \
+                         size_bytes signing_credential_id metadata_json \
                          download_count created_at artifact_kind; do
                 preds="${preds:+$preds OR }n.${col} IS NOT l.${col}"
               done

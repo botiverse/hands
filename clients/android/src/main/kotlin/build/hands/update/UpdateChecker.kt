@@ -409,7 +409,6 @@ class UpdateChecker(
                     sha256 = asset.sha256 ?: response.patch?.target_sha256,
                     sizeBytes = asset.size_bytes,
                     filetype = asset.filetype,
-                    signature = asset.signature,
                 ),
                 reopenCurrent = {
                     when (reconcileTransaction().state) {
@@ -779,7 +778,6 @@ class UpdateChecker(
         targetBuildId = latest.build_id,
         assetSizeBytes = asset.size_bytes,
         assetSha256 = asset.sha256 ?: patch?.target_sha256,
-        assetSignature = asset.signature,
         filetype = asset.filetype,
         requestedLanguageTag = requestedLanguageTag,
         resolvedLanguageTag = resolvedLanguageTag,
@@ -791,7 +789,6 @@ class UpdateChecker(
         sha256 = assetSha256,
         sizeBytes = assetSizeBytes,
         filetype = filetype,
-        signature = assetSignature,
     )
 
     private fun newRecord(
@@ -801,7 +798,6 @@ class UpdateChecker(
         targetBuildId: String? = null,
         assetSizeBytes: Long? = null,
         assetSha256: String? = null,
-        assetSignature: String? = null,
         filetype: String? = null,
         requestedLanguageTag: String? = null,
         resolvedLanguageTag: String? = null,
@@ -819,7 +815,6 @@ class UpdateChecker(
         targetBuildId = targetBuildId,
         assetSizeBytes = assetSizeBytes,
         assetSha256 = assetSha256,
-        assetSignature = assetSignature,
         filetype = filetype,
         requestedLanguageTag = requestedLanguageTag,
         resolvedLanguageTag = resolvedLanguageTag,

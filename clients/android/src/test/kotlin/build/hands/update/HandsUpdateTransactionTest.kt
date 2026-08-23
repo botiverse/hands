@@ -20,14 +20,12 @@ class HandsUpdateTransactionTest {
         sha256: String = "a".repeat(64),
         sizeBytes: Long = 42,
         filetype: String = "apk",
-        signature: String = "signature-11",
     ) = PendingInstallerTargetIdentity(
         versionCode = versionCode,
         buildId = buildId,
         sha256 = sha256,
         sizeBytes = sizeBytes,
         filetype = filetype,
-        signature = signature,
     )
 
     @Test

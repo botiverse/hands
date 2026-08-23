@@ -50,7 +50,6 @@ data class UpdateAsset(
     val variant: String? = null,
     val filetype: String,
     val size_bytes: Long,
-    val signature: String? = null,
     /** Optional future-compatible full APK digest; absent on older servers. */
     val sha256: String? = null,
     val download_url: String,

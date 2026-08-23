@@ -6,8 +6,8 @@ Status: **alpha**. The npm package is public as `@botiverse/hands-cli`; v1 ships
 `login`, `logout`, `whoami`, `apps create/list/get/client-key`, `builds list/get`, and
 `builds publish-version`, `builds publish-android`, `builds publish-ios`,
 `builds testflight-groups`, `builds testflight-publish`,
-`builds testflight-status`, `builds publish-ohos`, `builds publish-electron`,
-and `builds publish-tauri`. Other commands listed in
+`builds testflight-status`, `builds publish-ohos`, and `builds publish-electron`.
+Other commands listed in
 `docs/cli-reference.md` land incrementally as backend endpoints become available.
 
 ## Install

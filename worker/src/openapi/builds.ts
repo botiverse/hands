@@ -53,7 +53,6 @@ const BuildAssetInput = z
     r2_key: z.string().optional(),
     file_hash: z.string().optional(),
     size_bytes: z.number().int().optional(),
-    signature: z.string().nullable().optional(),
     metadata_json: z.record(z.string(), z.unknown()).optional(),
   })
   .catchall(z.unknown())
