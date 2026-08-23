@@ -31,7 +31,7 @@
     "lint:fix": "eslint --fix src/"
   },
   "dependencies": {
-    "@botiverse/hands-node": "workspace:^0.1.0",
+    "@botiverse/hands-node": "workspace:*",
     "commander": "^12.1.0"
   },
   "devDependencies": {
