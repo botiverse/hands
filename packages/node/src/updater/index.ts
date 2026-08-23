@@ -47,6 +47,7 @@ export interface UpdateVerificationReceipt {
   version: string;
   target: RuntimeTarget;
   artifactId: string;
+  sourceCommit: string | null;
   candidateDigest: string;
   expectedSize: number;
   actualSize: number;
@@ -82,6 +83,7 @@ export interface HandsUpdaterOptions {
   credentialProvider?: () => string | undefined | Promise<string | undefined>;
   fetch?: typeof globalThis.fetch;
   timeoutMs?: number;
+  sdkVersion?: string;
   now?: () => number;
   allowInsecureHttpForTests?: boolean;
 }
@@ -93,6 +95,7 @@ export interface HandsUpdater {
 
 const SEMVER = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/u;
 const SHA256 = /^[a-f0-9]{64}$/u;
+export const HANDS_NODE_SDK_VERSION = "0.1.0";
 
 function record(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new HandsUpdateError("UPDATE_RESPONSE_INVALID", "update response must be an object");
@@ -159,7 +162,7 @@ export function createHandsUpdater(options: HandsUpdaterOptions): HandsUpdater {
     url.searchParams.set("channel", channel);
     url.searchParams.set("platform", input.target.platform);
     url.searchParams.set("arch", input.target.arch);
-    url.searchParams.set("sdk_version", "0.1.0");
+    url.searchParams.set("sdk_version", options.sdkVersion ?? HANDS_NODE_SDK_VERSION);
     if (pinned) url.searchParams.set("version", pinned);
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), timeoutMs);
@@ -270,6 +273,7 @@ export function createHandsUpdater(options: HandsUpdaterOptions): HandsUpdater {
           schemaVersion: 1, appId: candidate.appId, releaseId: candidate.releaseId,
           releaseRevision: candidate.releaseRevision, channel: candidate.channel,
           version: candidate.version, target: candidate.target, artifactId: candidate.artifact.artifactId,
+          sourceCommit: payload.sourceCommit,
           candidateDigest: candidate.candidateDigest, expectedSize: candidate.artifact.size,
           actualSize: downloaded, expectedSha256: candidate.artifact.sha256,
           actualSha256, signature: { algorithm: candidate.artifact.attestation.algorithm,

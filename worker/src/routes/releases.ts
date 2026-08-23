@@ -257,6 +257,28 @@ function releaseStatus(inputStatus: ReleaseInput["status"] | undefined): "draft"
   return inputStatus;
 }
 
+async function validateSupersededVictimsAttested(
+  db: D1Database,
+  appId: string,
+  supersededByReleaseId: string,
+): Promise<{ ok: true } | { ok: false; code: string; error: string }> {
+  const { results } = await db.prepare(
+    `SELECT id, build_id, product_type FROM releases
+     WHERE app_id = ?1 AND superseded_by_release_id = ?2 AND status = 'superseded'`,
+  ).bind(appId, supersededByReleaseId).all<{ id: string; build_id: string; product_type: string }>();
+  for (const release of results) {
+    const gate = await validateReleaseArtifactsAttested(
+      db,
+      appId,
+      release.id,
+      release.build_id,
+      release.product_type,
+    );
+    if (!gate.ok) return gate;
+  }
+  return { ok: true };
+}
+
 function inputChangelog(input: {
   changelog?: string | null;
   release_notes?: ReleaseNotes | null;
@@ -769,6 +791,8 @@ async function updateReleaseFields(
         ),
       );
     } else {
+      const victimGate = await validateSupersededVictimsAttested(db, appId, release.id);
+      if (!victimGate.ok) throw new Error(`${victimGate.code}: ${victimGate.error}`);
       // A full release may already have superseded the fallback releases when
       // it was activated. If operators narrow that active release later, put
       // only its direct victims back into the active candidate set so clients
@@ -1231,6 +1255,17 @@ export async function handleCreateRelease(c: AdminContext) {
   const appId = c.req.param("appId") ?? "";
   const body = (await c.req.json()) as ReleaseInput;
   try {
+    if (releaseStatus(body.status) === "active") {
+      const app = await c.env.DB.prepare(
+        "SELECT update_attestation_required FROM apps WHERE id = ?1",
+      ).bind(appId).first<{ update_attestation_required?: number }>();
+      if (app?.update_attestation_required === 1) {
+        return c.json({
+          error: "attestation-required apps must create a draft and publish it after artifact attestation",
+          code: "UPDATE_ATTESTATION_DRAFT_REQUIRED",
+        }, 409);
+      }
+    }
     const id = await createRelease(c.env.DB, appId, body, currentActor(c));
     const status = releaseStatus(body.status);
     // release:new fires only when the release is actually live; drafts get
@@ -1770,6 +1805,8 @@ export async function handleDeleteRelease(c: AdminContext) {
       .bind(now, releaseId, appId, expectedRevision, existing.status, auditId),
   ];
   if (existing.status === "active") {
+    const victimGate = await validateSupersededVictimsAttested(c.env.DB, appId, releaseId);
+    if (!victimGate.ok) return c.json(victimGate, 409);
     statements.push(
       c.env.DB.prepare(
         `UPDATE releases
@@ -1883,6 +1920,16 @@ export async function handleRollbackRelease(c: AdminContext) {
     const now = Date.now();
     const restoresDraft = existing.status === "cancelled" && existing.activated_at === null;
     const nextStatus = restoresDraft ? "draft" : "active";
+    if (nextStatus === "active") {
+      const attestationGate = await validateReleaseArtifactsAttested(
+        c.env.DB,
+        appId,
+        releaseId,
+        existing.build_id,
+        existing.product_type,
+      );
+      if (!attestationGate.ok) return c.json(attestationGate, 409);
+    }
     const auditId = crypto.randomUUID();
     const statements: D1PreparedStatement[] = [
       conditionalReleaseAuditStatement(c.env.DB, {
@@ -1947,6 +1994,8 @@ export async function handleRollbackRelease(c: AdminContext) {
         auditId,
       ));
     } else if (!restoresDraft) {
+      const victimGate = await validateSupersededVictimsAttested(c.env.DB, appId, releaseId);
+      if (!victimGate.ok) return c.json(victimGate, 409);
       statements.push(c.env.DB.prepare(
         `UPDATE releases
          SET status = 'active', superseded_by_release_id = NULL,
@@ -2102,6 +2151,8 @@ export async function handleBumpRollout(c: AdminContext) {
         auditId,
       ));
     } else {
+      const victimGate = await validateSupersededVictimsAttested(c.env.DB, appId, releaseId);
+      if (!victimGate.ok) return c.json(victimGate, 409);
       statements.push(c.env.DB.prepare(
         `UPDATE releases
          SET status = 'active', superseded_by_release_id = NULL,

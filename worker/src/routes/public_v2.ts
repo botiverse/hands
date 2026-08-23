@@ -527,12 +527,13 @@ function compareStrictSemver(left: string, right: string): number | null {
   return a[3].localeCompare(b[3]);
 }
 
-async function handlePublicCliBinaryUpdateCheck(c: Context<{ Bindings: Env }>) {
+export async function handlePublicCliBinaryUpdateCheck(c: Context<{ Bindings: Env }>) {
   const slug = c.req.param("slug") ?? "";
   const channel = c.req.query("channel") ?? "main";
   const currentVersion = c.req.query("current_version") ?? "";
   const platform = c.req.query("platform") ?? "";
   const arch = c.req.query("arch") ?? "";
+  const requestedVersion = c.req.query("version") ?? null;
   const target = `${platform}-${arch}`;
   const deviceId = c.req.query("device_id") ?? c.req.header("X-Hands-Device-Id") ?? null;
   if (!parseStrictSemver(currentVersion) || !/^[a-z0-9]+$/u.test(platform) || !/^[a-z0-9_]+$/u.test(arch)) {
@@ -563,8 +564,9 @@ async function handlePublicCliBinaryUpdateCheck(c: Context<{ Bindings: Env }>) {
        AND k.status IN ('active', 'retired')
      WHERE a.slug = ?1 AND a.update_attestation_required = 1
        AND (r.availability_at IS NULL OR r.availability_at <= ?4)
+       AND (?5 IS NULL OR b.version_name = ?5)
      ORDER BY r.activated_at DESC, r.id ASC LIMIT 1`,
-  ).bind(slug, channel, target, Date.now()).first<{
+  ).bind(slug, channel, target, Date.now(), requestedVersion).first<{
     app_id: string; slug: string; update_attestation_required: number;
     release_id: string; revision: number; rollout_cohort_count: number | null;
     activated_at: number; channel_id: string; product_type: string;

@@ -38,6 +38,33 @@ function canonical(value: unknown): string {
   return `{${Object.keys(record).sort().map((key) => `${JSON.stringify(key)}:${canonical(record[key])}`).join(",")}}`;
 }
 
+function exactKeys(value: Record<string, unknown>, expected: readonly string[], path: string): void {
+  const actual = Object.keys(value).sort();
+  const wanted = [...expected].sort();
+  if (actual.length !== wanted.length || actual.some((key, index) => key !== wanted[index])) {
+    throw new UpdateAttestationError("UPDATE_RESPONSE_INVALID", `${path} fields are invalid`);
+  }
+}
+
+function parsePayload(value: unknown): UpdateArtifactAttestationPayload {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new UpdateAttestationError("UPDATE_RESPONSE_INVALID", "attestation payload must be an object");
+  const payload = value as Record<string, unknown>;
+  exactKeys(payload, ["algorithm", "appId", "artifact", "buildId", "channelId", "domain", "issuedAt", "keyId", "productType", "releaseId", "releaseType", "schemaVersion", "sourceCommit", "version", "versionCode"], "attestation payload");
+  if (!payload.artifact || typeof payload.artifact !== "object" || Array.isArray(payload.artifact)) throw new UpdateAttestationError("UPDATE_RESPONSE_INVALID", "artifact must be an object");
+  const artifact = payload.artifact as Record<string, unknown>;
+  exactKeys(artifact, ["arch", "id", "kind", "platform", "sha256", "sizeBytes", "type"], "artifact");
+  const nonEmpty = (candidate: unknown) => typeof candidate === "string" && candidate.length > 0;
+  if (payload.algorithm !== UPDATE_ATTESTATION_ALGORITHM || payload.domain !== UPDATE_ATTESTATION_DOMAIN || payload.schemaVersion !== UPDATE_ATTESTATION_SCHEMA_VERSION || !nonEmpty(payload.keyId) ||
+      !nonEmpty(payload.appId) || !nonEmpty(payload.buildId) || !nonEmpty(payload.channelId) || !nonEmpty(payload.productType) || !nonEmpty(payload.releaseId) || !nonEmpty(payload.releaseType) || !nonEmpty(payload.version) ||
+      !Number.isSafeInteger(payload.issuedAt) || !Number.isSafeInteger(payload.versionCode) ||
+      (payload.sourceCommit !== null && !nonEmpty(payload.sourceCommit)) ||
+      (artifact.kind !== "build_asset" && artifact.kind !== "external_build_target") || !nonEmpty(artifact.id) || !nonEmpty(artifact.platform) || !nonEmpty(artifact.type) ||
+      (artifact.arch !== null && !nonEmpty(artifact.arch)) || !nonEmpty(artifact.sha256) || !/^[a-f0-9]{64}$/u.test(String(artifact.sha256)) || !Number.isSafeInteger(artifact.sizeBytes)) {
+    throw new UpdateAttestationError("UPDATE_RESPONSE_INVALID", "attestation payload fields are invalid");
+  }
+  return payload as unknown as UpdateArtifactAttestationPayload;
+}
+
 export function canonicalizeUpdateAttestationPayload(payload: UpdateArtifactAttestationPayload): string {
   return canonical(payload);
 }
@@ -62,8 +89,8 @@ export async function verifyUpdateArtifactAttestation(envelope: UpdateAttestatio
   const payloadBytes = decode(envelope.payload, "attestation payload");
   let parsed: unknown;
   try { parsed = JSON.parse(new TextDecoder().decode(payloadBytes)); } catch { throw new UpdateAttestationError("UPDATE_RESPONSE_INVALID", "attestation payload is not JSON"); }
-  const payload = parsed as UpdateArtifactAttestationPayload;
-  if (payload.algorithm !== UPDATE_ATTESTATION_ALGORITHM || payload.domain !== UPDATE_ATTESTATION_DOMAIN || payload.schemaVersion !== UPDATE_ATTESTATION_SCHEMA_VERSION || payload.keyId !== envelope.keyId) throw new UpdateAttestationError("UPDATE_RESPONSE_INVALID", "attestation payload fields are invalid");
+  const payload = parsePayload(parsed);
+  if (payload.keyId !== envelope.keyId) throw new UpdateAttestationError("UPDATE_RESPONSE_INVALID", "attestation key identity differs from envelope");
   if (canonical(payload) !== new TextDecoder().decode(payloadBytes)) throw new UpdateAttestationError("UPDATE_RESPONSE_INVALID", "attestation payload is not canonical JSON");
   const signature = decode(envelope.signature, "attestation signature");
   let key: CryptoKey;
