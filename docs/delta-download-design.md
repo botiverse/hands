@@ -41,10 +41,10 @@ versions** to the new one, per arch (matching how we already split assets by
 (covers the vast majority of active installs; anyone older falls back to full).
 
 - New CLI step (or `publish-android` extension): for each `(prev_apk,
-  new_apk)` pair the generator emits `patch-<from_vc>-to-<to_vc>-<arch>.patch`.
+  new_apk)` pair the generator emits `patch-<from_vc>-to-<to_vc>-<arch>.patch.gz`.
 - Upload as build assets with `artifact_kind = 'delta-patch'` and
   `metadata_json = {from_version_code, to_version_code, algorithm:
-  "archive-patcher-v1"}`; store `file_hash` (patch sha256) and the **target
+  "archive-patcher-v1+gzip"}`; store `file_hash` (patch sha256) and the **target
   APK sha256** so the client can verify the reconstructed file.
 
 ### 2. Server (`/updates/check`)
@@ -55,7 +55,7 @@ stays the fallback, always present). When the client sends `current_version_code
 ```jsonc
 "patch": {
   "from_version_code": 1020100,
-  "algorithm": "archive-patcher-v1",
+  "algorithm": "archive-patcher-v1+gzip",
   "download_url": "<signed R2 url>",
   "size_bytes": 3145728,
   "target_sha256": "<sha256 of the reconstructed APK>"
@@ -71,7 +71,8 @@ old SDKs (they ignore the new field).
 1. Locate the installed base APK: `context.applicationInfo.sourceDir` (the
    currently-running APK — this *is* the `from_version_code` artifact).
 2. Download the patch (signed URL) to app storage.
-3. `FileByFileV1DeltaApplier().applyDelta(oldApk, patchStream, newApkOut)`.
+3. Gunzip the patch, then call
+   `FileByFileV1DeltaApplier().applyDelta(oldApk, patchStream, newApkOut)`.
 4. **Verify** the reconstructed APK: sha256 == `target_sha256` **and** its
    signing certificate matches the running app's (reject on mismatch — a delta
    must never install a differently-signed APK). PackageManager also rejects a
@@ -84,6 +85,10 @@ old SDKs (they ignore the new field).
 ## Security
 
 - Patch served over a signed, expiring R2 URL (same as full APK today).
+- The public download proxy serves a patch only when the exact R2 object is a
+  `delta-patch`/`patch` asset on a non-QA build with an active or draft release;
+  unrelated build assets and cancelled releases stay inaccessible even if a
+  caller has a syntactically valid URL signature.
 - The reconstructed APK is verified by **sha256 against the server's recorded
   target hash** (integrity) **and signer-cert equality** (authenticity) before
   install. A corrupted/tampered patch can only produce a hash mismatch → full
@@ -114,13 +119,20 @@ let the client take the full download. This keeps delta a strict win.
   target_sha256}` when a matching `delta-patch` asset exists and is
   < `DELTA_MAX_SIZE_RATIO` (0.7) of the full APK. Full asset stays the
   fallback; old SDKs ignore the field.
+- **P1a public download authorization — FIXED**: signed patch URLs now resolve
+  through the public proxy only for release-bound `delta-patch` assets. The
+  previous proxy allowlist accepted only `installable`, causing every canonical
+  patch URL to return 404 even when `/updates/check` offered it.
 - **P1b storage — DONE (free)**: the existing build-asset API already accepts
   any `artifact_kind` + `metadata_json`, so no server change was needed to
   store `delta-patch` assets.
 - **P1b upload outlet — DONE** (CLI 0.5.3, PR #209): `hands builds
   publish-android --delta-patch <from_version_code>=<path>` (repeatable)
-  uploads each patch as a `delta-patch` asset, stamping
-  `target_sha256` = the new APK's hash.
+  uploads official PatchGen `.patch.gz` output as a `delta-patch` asset,
+  stamping `algorithm = archive-patcher-v1+gzip` and `target_sha256` = the new
+  APK's hash. Before any API or upload request, the CLI decompresses the entire
+  stream, verifies gzip integrity and the archive-patcher v1 identifier, and
+  rejects raw or truncated input so bytes and metadata cannot disagree.
 - **P1b generation — NEXT**: an `android-release` CI step that, after building
   the new APK, downloads the last N (=3) published raft-android APKs, runs
   `FileByFileV1DeltaGenerator().generateDelta(old, new, out)`

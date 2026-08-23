@@ -1,4 +1,5 @@
 .gradle/
+/.cxx/
 # Anchored so this only ignores the Gradle output dir, NOT the `build/hands`
 # Java package directory under src/main/kotlin.
 /build/
@@ -6,4 +7,5 @@
 # directory under src. Re-include it so the repo-root `build/` ignore rule
 # does not silently drop SDK source files (e.g. update/internal/*).
 !src/main/kotlin/build/
+!src/test/kotlin/build/
 local.properties

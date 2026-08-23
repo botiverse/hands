@@ -62,6 +62,9 @@ object HandsCrash {
         val appContext = context.applicationContext
         val defaultHandler = Thread.getDefaultUncaughtExceptionHandler()
         Thread.setDefaultUncaughtExceptionHandler { thread, throwable ->
+            // Persist the release-health crash marker before doing any heavier
+            // crash-log work. It is flushed on the next launch.
+            runCatching { HandsSessions.markCurrentCrashed() }
             val crashLog =
                 runCatching { buildCrashLog(appContext, thread, throwable, extraContext) }
                     .getOrElse { buildFallbackCrashLog(thread, throwable, it) }
@@ -173,6 +176,7 @@ object HandsCrash {
                                     "crash_thread" to meta.optString("thread", ""),
                                     "crash_at" to meta.optLong("crash_at", 0L),
                                     "crash_process_uptime_ms" to meta.optLong("process_uptime_ms", -1L),
+                                    "breadcrumbs" to meta.optString("breadcrumbs", "[]"),
                                 ),
                         )
                     }
@@ -225,6 +229,7 @@ object HandsCrash {
                 .put("thread", thread.name)
                 .put("crash_at", System.currentTimeMillis())
                 .put("process_uptime_ms", System.currentTimeMillis() - processStartMs)
+        runCatching { meta.put("breadcrumbs", HandsCapture.snapshotBreadcrumbs()) }
         File("${base.absolutePath}.meta.json").writeText(meta.toString())
         Log.e(TAG, "Crash log written to: ${base.absolutePath}.txt")
     }

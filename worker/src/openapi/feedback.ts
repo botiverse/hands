@@ -8,6 +8,7 @@ import {
   binary,
   error,
   json,
+  multipart,
   register,
   success,
   type OpenApiRegistry,
@@ -20,6 +21,14 @@ const FeedbackUpdateInput = z
   .object({
     status: z.string().optional(),
     assignee: z.string().nullable().optional(),
+    closure_reason: z.enum([
+      "completed",
+      "no_longer_needed",
+      "not_planned",
+      "cannot_reproduce",
+      "duplicate",
+    ]).optional(),
+    duplicate_of_ticket_id: z.string().nullable().optional(),
   })
   .catchall(z.unknown())
   .openapi("FeedbackUpdateInput");
@@ -30,7 +39,232 @@ const FeedbackCommentInput = z
   })
   .openapi("FeedbackCommentInput");
 
+const ReporterHeaders = z.object({
+  "X-Hands-Reporter-Id": z.string().min(16).max(200),
+});
+
+const ReporterCommentInput = z.object({
+  body: z.string().min(1).max(10_000),
+  submission_id: z.string().uuid(),
+}).openapi("ReporterFeedbackCommentInput");
+
+const ReporterCloseInput = z.object({
+  reason: z.enum(["completed", "no_longer_needed"]),
+}).strict().openapi("ReporterFeedbackCloseInput");
+
+const ReporterSessionInput = z.object({
+  scopes: z.array(z.enum(["feedback:read", "feedback:comment"]))
+    .min(1),
+}).strict().openapi("ReporterSessionInput");
+
+const ReporterSessionOutput = z.object({
+  session_token: z.string(),
+  expires_at: z.number().int(),
+  reporter_integration_id: z.string().uuid(),
+  scopes: z.array(z.string()),
+}).openapi("ReporterSessionOutput");
+
+const ReporterRouteInput = z.object({
+  route_subject: z.string().regex(/^rfr_v1_[A-Za-z0-9_-]+$/).max(160),
+}).strict().openapi("ReporterRouteSubjectInput");
+
+const ReporterWebhookParams = AppIdParam.extend({
+  integrationId: z.string().min(1),
+  webhookId: z.string().min(1),
+});
+
 export function registerFeedbackRoutes(registry: OpenApiRegistry) {
+  register(registry, {
+    method: "post",
+    path: "/api/apps/{appId}/reporter-feedback/session",
+    tags: ["Reporter Feedback"],
+    summary: "Mint a short-lived server-only reporter session",
+    description: "Disabled by default. Requires an active feedback-only deploy token; callers must keep the returned session on a trusted server.",
+    security: auth,
+    request: {
+      params: AppIdParam,
+      headers: ReporterHeaders,
+      body: { content: json(ReporterSessionInput), required: true },
+    },
+    responses: {
+      201: success("Short-lived reporter session; never expose it to a browser.", ReporterSessionOutput),
+      400: error("Malformed reporter id, app id, or scope set."),
+      401: error("Missing or invalid deploy token."),
+      403: error("Deploy token is not an active reporter integration grant for every requested scope."),
+      404: error("Reporter sessions are disabled."),
+      429: error("Reporter session mint rate limit exceeded."),
+      503: error("Reporter session signing or audit configuration is unavailable."),
+    },
+  });
+
+  register(registry, {
+    method: "put",
+    path: "/api/apps/{appId}/reporter-feedback/route-subject",
+    tags: ["Reporter Feedback"],
+    summary: "Bind an immutable opaque v1 reporter route subject",
+    security: auth,
+    request: {
+      params: AppIdParam,
+      headers: ReporterHeaders,
+      body: { content: json(ReporterRouteInput), required: true },
+    },
+    responses: {
+      200: success("Exact idempotent replay; subject is not returned.", GenericObject),
+      201: success("Route binding created; subject is not returned.", GenericObject),
+      400: error("Malformed route subject."),
+      401: error("Missing or invalid bearer token."),
+      403: error("Invalid reporter integration grant."),
+      409: error("A different immutable v1 subject already exists."),
+    },
+  });
+
+  register(registry, {
+    method: "put",
+    path: "/api/apps/{appId}/reporter-integrations/{integrationId}/webhooks/{webhookId}",
+    tags: ["Reporter Feedback"],
+    summary: "Bind one active webhook as the exact reporter-integration subscriber",
+    security: auth,
+    request: { params: ReporterWebhookParams },
+    responses: {
+      200: success("Exact idempotent replay.", GenericObject),
+      201: success("Dedicated reporter webhook subscription created.", GenericObject),
+      403: error("Current principal cannot administer this app."),
+      409: error("App, integration, or webhook is inactive or mismatched."),
+    },
+  });
+
+  register(registry, {
+    method: "get",
+    path: "/api/apps/{appId}/reporter-feedback-metadata",
+    tags: ["Reporter Feedback"],
+    summary: "Read safe route, grant, audit, and delivery metadata",
+    security: auth,
+    request: {
+      params: AppIdParam,
+      query: z.object({
+        reporter_integration_id: z.string().min(1),
+        reporter_id: z.string().min(16).max(200),
+        token_id: z.string().min(1),
+      }),
+    },
+    responses: {
+      200: success("Safe metadata; never returns route subject, reporter id, body, or token secret.", GenericObject),
+      400: error("Required coordinate or token id is missing."),
+      403: error("Current principal cannot view this app."),
+      503: error("Reporter audit metadata is not configured."),
+    },
+  });
+
+  register(registry, {
+    method: "get",
+    path: "/api/apps/{appId}/reporter-feedback",
+    tags: ["Reporter Feedback"],
+    summary: "List feedback owned by the reporter integration",
+    security: auth,
+    request: {
+      params: AppIdParam,
+      headers: ReporterHeaders,
+      query: z.object({ limit: z.coerce.number().int().min(1).max(50).default(20), cursor: z.string().optional() }),
+    },
+    responses: {
+      200: success("Reporter-owned feedback list with authoritative unread totals.", GenericObject),
+      400: error("Missing or malformed reporter id or cursor."),
+      401: error("Missing or invalid bearer token."),
+      403: error("Bearer grant is not an active reporter integration grant."),
+      429: error("Reporter rate limit exceeded."),
+    },
+  });
+
+  register(registry, {
+    method: "get",
+    path: "/api/apps/{appId}/reporter-feedback/{ticketId}",
+    tags: ["Reporter Feedback"],
+    summary: "Get reporter-owned feedback details",
+    security: auth,
+    request: {
+      params: AppTicketParams,
+      headers: ReporterHeaders,
+      query: z.object({
+        comment_limit: z.coerce.number().int().min(1).max(100).default(50),
+        comment_cursor: z.string().optional(),
+      }),
+    },
+    responses: {
+      200: success("Reporter-owned feedback details; successful reads advance the authoritative receipt.", GenericObject),
+      400: error("Missing or malformed reporter id."),
+      401: error("Missing or invalid bearer token."),
+      403: error("Invalid reporter integration grant."),
+      404: error("Ticket is not owned by this reporter integration."),
+      429: error("Reporter rate limit exceeded."),
+    },
+  });
+
+  register(registry, {
+    method: "post",
+    path: "/api/apps/{appId}/reporter-feedback/{ticketId}/comments",
+    tags: ["Reporter Feedback"],
+    summary: "Add an idempotent reporter comment with optional image attachments",
+    security: auth,
+    request: {
+      params: AppTicketParams,
+      headers: ReporterHeaders,
+      body: {
+        content: { ...json(ReporterCommentInput), ...multipart() },
+        required: true,
+      },
+    },
+    responses: {
+      200: success("Exact idempotent replay.", GenericObject),
+      201: success("Reporter comment created.", GenericObject),
+      400: error("Invalid reporter id, body, submission id, or attachment."),
+      401: error("Missing or invalid bearer token."),
+      403: error("Invalid reporter integration grant."),
+      404: error("Ticket is not owned by this reporter integration."),
+      409: error("Submission id was already used with a different body or attachment set."),
+      429: error("Reporter rate limit exceeded."),
+    },
+  });
+
+  register(registry, {
+    method: "post",
+    path: "/api/apps/{appId}/reporter-feedback/{ticketId}/close",
+    tags: ["Reporter Feedback"],
+    summary: "Close a reporter-owned feedback ticket",
+    description: "Idempotently moves only the authenticated reporter's ticket to the closed state with a user-appropriate closure reason. This route cannot reopen tickets or change assignees.",
+    security: auth,
+    request: {
+      params: AppTicketParams,
+      headers: ReporterHeaders,
+      body: { content: json(ReporterCloseInput), required: true },
+    },
+    responses: {
+      200: success("Ticket closed or already closed.", GenericObject),
+      400: error("Missing or malformed reporter id or closure reason."),
+      401: error("Missing or invalid bearer token."),
+      403: error("Invalid reporter integration grant."),
+      404: error("Ticket is not owned by this reporter integration."),
+      409: error("Ticket changed concurrently; retry."),
+      429: error("Reporter rate limit exceeded."),
+    },
+  });
+
+  register(registry, {
+    method: "get",
+    path: "/api/apps/{appId}/reporter-feedback/{ticketId}/attachments/{attachmentId}",
+    tags: ["Reporter Feedback"],
+    summary: "Download a reporter-visible submission or reporter-comment attachment",
+    security: auth,
+    request: { params: AttachmentParams, headers: ReporterHeaders },
+    responses: {
+      200: { description: "Attachment stream.", content: binary() },
+      400: error("Missing or malformed reporter id."),
+      401: error("Missing or invalid bearer token."),
+      403: error("Invalid reporter integration grant."),
+      404: error("Attachment is not reporter-visible or not owned."),
+      429: error("Reporter rate limit exceeded."),
+    },
+  });
+
   register(registry, {
     method: "get",
     path: "/api/apps/{appId}/feedback",
@@ -48,6 +282,34 @@ export function registerFeedbackRoutes(registry: OpenApiRegistry) {
     },
     responses: {
       200: success("Feedback ticket list.", z.object({ tickets: z.array(GenericObject) }).catchall(z.unknown())),
+      403: error("Current principal cannot view feedback."),
+    },
+  });
+
+  register(registry, {
+    method: "get",
+    path: "/api/apps/{appId}/feedback/material-delta",
+    tags: ["Feedback"],
+    summary: "List materially changed feedback ticket snapshots",
+    description: "Returns current snapshots after an opaque per-app cursor. Process a whole page before persisting next_cursor.",
+    security: auth,
+    request: {
+      params: AppIdParam,
+      query: z.object({
+        cursor: z.string().optional(),
+        limit: z.coerce.number().int().min(1).max(200).optional(),
+      }),
+    },
+    responses: {
+      200: success(
+        "Materially changed feedback snapshots.",
+        z.object({
+          tickets: z.array(GenericObject),
+          next_cursor: z.string(),
+          has_more: z.boolean(),
+        }),
+      ),
+      400: error("Invalid material cursor or limit."),
       403: error("Current principal cannot view feedback."),
     },
   });
@@ -148,4 +410,3 @@ export function registerFeedbackRoutes(registry: OpenApiRegistry) {
     },
   });
 }
-

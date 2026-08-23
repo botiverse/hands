@@ -9,10 +9,49 @@
  */
 
 import { resolveApiBase, resolveAuthToken } from "./config.js";
+import { admitAgent } from "./agent_env.js";
+import { getFreshAgentAccessToken, forceRefreshAgentToken } from "./agent_refresh.js";
 import { readEnv } from "./env.js";
 import { Blob } from "node:buffer";
 import { readFile } from "node:fs/promises";
 import { basename } from "node:path";
+
+/**
+ * Resolve the bearer for a request. In a managed agent this proactively refreshes the
+ * stored Hands token when it is near expiry (single-flight); a broken agent env yields
+ * no token (fail closed). Human/CI use the ordinary resolver.
+ */
+async function resolveBearer(): Promise<string | undefined> {
+  const admission = admitAgent();
+  if (admission.kind === "agent") {
+    return (await getFreshAgentAccessToken(admission.env)) ?? undefined;
+  }
+  if (admission.kind === "fail_closed") return undefined;
+  return resolveAuthToken();
+}
+
+/**
+ * Run a bearer-parameterized request with agent-aware auth, shared by every CLI HTTP
+ * path (`apiRequest`, `apiUploadFile`, and `hands api`): resolve the bearer (proactive
+ * refresh in agent mode), and on a 401 in agent mode force ONE refresh and retry once.
+ * `doFetch` MUST build a fresh request each call — a request body stream cannot be reused
+ * across attempts, so callers that send a body rebuild it inside the thunk.
+ */
+export async function agentAwareFetch(
+  doFetch: (bearer: string | undefined) => Promise<Response>,
+): Promise<Response> {
+  let res = await doFetch(await resolveBearer());
+  // The proactive refresh in resolveBearer covers near-expiry; this covers a token
+  // rejected despite looking unexpired (server-side revocation, clock skew).
+  if (res.status === 401) {
+    const admission = admitAgent();
+    if (admission.kind === "agent") {
+      const refreshed = await forceRefreshAgentToken(admission.env);
+      if (refreshed) res = await doFetch(refreshed);
+    }
+  }
+  return res;
+}
 
 export class QuiverApiError extends Error {
   readonly status: number;
@@ -40,6 +79,7 @@ export interface ApiRequestOptions {
   body?: unknown;
   query?: Record<string, string | number | boolean | null | undefined>;
   raw?: boolean; // when true, return Response instead of parsed JSON
+  signal?: AbortSignal;
 }
 
 export async function apiRequest<T = unknown>(
@@ -53,21 +93,25 @@ export async function apiRequest<T = unknown>(
       url.searchParams.set(k, String(v));
     }
   }
-  const headers: Record<string, string> = {
+  const baseHeaders: Record<string, string> = {
     accept: "application/json",
   };
-  const bearer = resolveAuthToken();
-  if (bearer) headers.authorization = `Bearer ${bearer}`;
   let body: string | undefined;
   if (opts.body !== undefined) {
-    headers["content-type"] = "application/json";
+    baseHeaders["content-type"] = "application/json";
     body = JSON.stringify(opts.body);
   }
-  const res = await fetch(url.toString(), {
-    method: opts.method ?? "GET",
-    headers,
-    ...(body !== undefined ? { body } : {}),
-  });
+  const doFetch = (bearer: string | undefined) => {
+    const headers = { ...baseHeaders };
+    if (bearer) headers.authorization = `Bearer ${bearer}`;
+    return fetch(url.toString(), {
+      method: opts.method ?? "GET",
+      headers,
+      ...(body !== undefined ? { body } : {}),
+      ...(opts.signal ? { signal: opts.signal } : {}),
+    });
+  };
+  const res = await agentAwareFetch(doFetch);
   if (readEnv("VERBOSE") === "1") {
     console.error(`> ${opts.method ?? "GET"} ${url}`);
     console.error(`< ${res.status}`);
@@ -98,20 +142,17 @@ export async function apiUploadFile<T = unknown>(
   fieldName = "apk",
 ): Promise<T> {
   const url = new URL(path.startsWith("/") ? path : `/${path}`, getApiBase());
-  const form = new FormData();
   const bytes = await readFile(filePath);
-  form.append(fieldName, new Blob([bytes]), basename(filePath));
-
-  const headers: Record<string, string> = {
-    accept: "application/json",
-  };
-  const bearer = resolveAuthToken();
-  if (bearer) headers.authorization = `Bearer ${bearer}`;
-
-  const res = await fetch(url.toString(), {
-    method: "POST",
-    headers,
-    body: form,
+  const name = basename(filePath);
+  // Upload is a primary product path, so it uses the SAME agent-aware request + one-401
+  // as every other call. The multipart body is rebuilt per attempt: a body stream can't
+  // be reused, and agent mode may retry once after a 401.
+  const res = await agentAwareFetch((bearer) => {
+    const form = new FormData();
+    form.append(fieldName, new Blob([bytes]), name);
+    const headers: Record<string, string> = { accept: "application/json" };
+    if (bearer) headers.authorization = `Bearer ${bearer}`;
+    return fetch(url.toString(), { method: "POST", headers, body: form });
   });
   if (readEnv("VERBOSE") === "1") {
     console.error(`> POST ${url}`);

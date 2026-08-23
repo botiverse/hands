@@ -9,12 +9,19 @@ const outRoot = path.join(repoRoot, "admin/public/docs");
 
 // Docs are grouped by audience; CATEGORY_ORDER controls section order in the
 // sidebar and on the index. Hands is agent-native, so "For agents" leads.
-const CATEGORY_ORDER = ["For agents", "Console", "SDKs & API"];
+const CATEGORY_ORDER = ["Start here", "For agents", "Console", "SDKs & API"];
 
 // Lucide "external-link" (24x24), used for the OpenAPI explorer nav entry.
 const EXTERNAL_ICON = ` <svg class="ext-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 3h6v6"/><path d="M10 14 21 3"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/></svg>`;
 
 const pages = [
+  {
+    slug: "getting-started",
+    source: "getting-started.md",
+    title: "Getting Started",
+    category: "Start here",
+    description: "Connect Hands to your Raft server from the Marketplace — one install enables human and agent sign-in.",
+  },
   {
     slug: "agent-guide",
     title: "Agent Guide",
@@ -28,6 +35,27 @@ const pages = [
     category: "For agents",
     description: "Read and triage feedback/crash tickets from the command line with @botiverse/hands-cli.",
     source: "agent-cli-feedback.md",
+  },
+  {
+    slug: "permissions",
+    title: "Roles & Permissions",
+    category: "For agents",
+    description: "What each app role and permission actually grants \u2014 including the six feedback endpoints that accept a permission instead of a role, why a token's reach comes from its binding rather than the permission name, and why permissions add to a role instead of narrowing it.",
+    source: "permissions.md",
+  },
+  {
+    slug: "agent-native-state-delta",
+    title: "Designing State for Agents",
+    category: "For agents",
+    description: "How to expose changing state to an agent that polls: exact cursors instead of timestamps, material-change semantics, and what must never reach a cursor.",
+    source: "agent-native-state-delta.md",
+  },
+  {
+    slug: "ios-testflight",
+    source: "ios-testflight.md",
+    title: "iOS Releases & TestFlight",
+    category: "For agents",
+    description: "How iOS builds reach TestFlight: Hands uploads server-side with the stored ASC credential.",
   },
   {
     slug: "admin-user-guide",
@@ -70,6 +98,20 @@ const pages = [
     category: "SDKs & API",
     description: "Crashpad minidump crash reporting for Electron apps (main + renderer) via @botiverse/hands-electron.",
     source: "electron-sdk.md",
+  },
+  {
+    slug: "feedback-react",
+    title: "React Feedback Inbox",
+    category: "SDKs & API",
+    description: "Embed a reporter-owned ticket inbox and conversation UI with a secure server-side Hands proxy.",
+    source: "feedback-react.md",
+  },
+  {
+    slug: "tauri-updater",
+    title: "Tauri Updater",
+    category: "SDKs & API",
+    description: "Publish signed Tauri v2 updater bundles and serve channel-specific dynamic update endpoints.",
+    source: "tauri-updater.md",
   },
   {
     slug: "public-api-reference",

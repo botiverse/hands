@@ -37,12 +37,17 @@ import {
 } from "../lib/api";
 import { useToast } from "./Toast";
 import { ConfirmActionDialog } from "./ConfirmActionDialog";
+import { BuildAssetIdentitySummary } from "./BuildAssetIdentitySummary";
 import {
   KNOWN_FILETYPES,
   KNOWN_PLATFORMS,
   pendingFileFromFile,
   type PendingFile,
 } from "../lib/releaseFileDetect";
+import {
+  buildAssetFilename,
+  formatBuildAssetSize,
+} from "../lib/buildAssetDisplay";
 
 interface BaseProps {
   appId: string;
@@ -184,44 +189,64 @@ export function ReleaseAssetUploader(props: Props) {
       {props.variant === "panel" && existing.length > 0 && (
         <div className="mb-3 text-xs text-slate-500">
           {existing.length} asset{existing.length === 1 ? "" : "s"} ·{" "}
-          {(totalBytes / 1024 / 1024).toFixed(2)} MB total
+          {formatBuildAssetSize(totalBytes)} total
         </div>
       )}
 
       {props.variant === "panel" && existing.length > 0 && (
-        <table className="w-full text-xs mb-3">
-          <thead>
-            <tr className="text-slate-500 text-left border-b border-slate-100">
-              <th className="font-normal pr-2 py-1">Platform</th>
-              <th className="font-normal pr-2 py-1">Arch</th>
-              <th className="font-normal pr-2 py-1">Filetype</th>
-              <th className="font-normal pr-2 py-1">Size</th>
-              <th className="font-normal pr-2 py-1"></th>
-            </tr>
-          </thead>
-          <tbody>
-            {existing.map((a: BuildAsset) => (
-              <tr key={a.id} className="border-b border-slate-50">
-                <td className="pr-2 py-1 font-mono">{a.platform}</td>
-                <td className="pr-2 py-1 font-mono">{a.arch ?? "—"}</td>
-                <td className="pr-2 py-1 font-mono">{a.filetype}</td>
-                <td className="pr-2 py-1 font-mono">
-                  {(a.size_bytes / 1024 / 1024).toFixed(2)} MB
-                </td>
-                <td className="pr-2 py-1">
-                  <Button
-                    variant="outline"
-                    className="text-[10px]"
-                    onClick={() => setRemoveTarget(a)}
-                    disabled={remove.isPending}
-                  >
-                    Remove
-                  </Button>
-                </td>
+        <div className="mb-3 overflow-x-auto">
+          <table className="w-full min-w-[760px] text-xs">
+            <thead>
+              <tr className="border-b border-slate-100 text-left text-slate-500">
+                <th className="py-1 pr-3 font-normal">Asset</th>
+                <th className="py-1 pr-3 font-normal">Kind</th>
+                <th className="py-1 pr-3 font-normal">Platform</th>
+                <th className="py-1 pr-3 font-normal">Arch</th>
+                <th className="py-1 pr-3 font-normal">Size</th>
+                <th className="py-1 pr-2 font-normal"></th>
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {existing.map((a: BuildAsset) => {
+                const filename = buildAssetFilename(a);
+                return (
+                  <tr key={a.id} className="border-b border-slate-50 align-top">
+                    <td className="min-w-[16rem] py-2 pr-3">
+                      <div className="break-all font-mono text-slate-800">
+                        {filename}
+                      </div>
+                      <div className="mt-0.5 break-all font-mono text-[10px] text-slate-400">
+                        {a.id}
+                      </div>
+                    </td>
+                    <td className="py-2 pr-3 font-mono">
+                      <div>{a.artifact_kind}</div>
+                      <div className="text-[10px] text-slate-400">
+                        {a.filetype}
+                      </div>
+                    </td>
+                    <td className="py-2 pr-3 font-mono">{a.platform}</td>
+                    <td className="py-2 pr-3 font-mono">{a.arch ?? "—"}</td>
+                    <td className="py-2 pr-3 font-mono whitespace-nowrap">
+                      {formatBuildAssetSize(a.size_bytes)}
+                    </td>
+                    <td className="py-2 pr-2 text-right">
+                      <Button
+                        variant="outline"
+                        className="text-[10px]"
+                        aria-label={`Remove ${filename}`}
+                        onClick={() => setRemoveTarget(a)}
+                        disabled={remove.isPending}
+                      >
+                        Remove
+                      </Button>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
       )}
 
       {/* Drop zone */}
@@ -275,39 +300,31 @@ export function ReleaseAssetUploader(props: Props) {
 
       <ConfirmActionDialog
         open={removeTarget !== null}
-        title="Remove asset from this release?"
-        objectLabel={`${removeTarget?.platform ?? ""}${
-          removeTarget?.arch ? `/${removeTarget.arch}` : ""
-        } ${removeTarget?.filetype ?? ""}`}
+        title="Remove asset registration?"
+        objectLabel={removeTarget ? buildAssetFilename(removeTarget) : ""}
         objectSummary={
           removeTarget ? (
-            <div className="grid grid-cols-2 gap-x-3 gap-y-1 font-mono">
-              <div className="text-slate-500">platform</div>
-              <div>{removeTarget.platform}</div>
-              <div className="text-slate-500">arch</div>
-              <div>{removeTarget.arch ?? "—"}</div>
-              <div className="text-slate-500">filetype</div>
-              <div>{removeTarget.filetype}</div>
-              <div className="text-slate-500">r2_key</div>
-              <div className="truncate">{removeTarget.r2_key}</div>
-            </div>
+            <BuildAssetIdentitySummary asset={removeTarget} />
           ) : undefined
         }
         body={
           <>
-            Removing this asset detaches the registration from the release.{" "}
-            <strong>The release row and build metadata are kept.</strong> The
-            underlying R2 binary is also kept (we never auto-delete uploaded
-            blobs); if you want to reclaim the storage, delete it from R2
-            separately after removing this row.
+            Removing this asset detaches it from the build and release. The
+            build and release remain available.{" "}
+            The uploaded file is also kept, so this action does not reclaim its
+            storage.
           </>
         }
         confirmLabel="Remove asset"
         confirmKind="danger"
         pending={remove.isPending}
-        {...(removeTarget?.size_bytes != null && removeTarget?.r2_key
+        {...(removeTarget
           ? {
-              objectHint: `${(removeTarget.size_bytes / 1024 / 1024).toFixed(2)} MB · ${removeTarget.r2_key.slice(0, 24)}${removeTarget.r2_key.length > 24 ? "…" : ""}`,
+              objectHint: `${removeTarget.artifact_kind} · ${removeTarget.platform}${
+                removeTarget.arch ? `/${removeTarget.arch}` : ""
+              } · ${removeTarget.filetype} · ${formatBuildAssetSize(
+                removeTarget.size_bytes,
+              )}`,
             }
           : {})}
         onConfirm={() => {

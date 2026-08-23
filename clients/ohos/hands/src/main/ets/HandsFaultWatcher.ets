@@ -2,6 +2,8 @@ import { common } from '@kit.AbilityKit';
 import { hiAppEvent } from '@kit.PerformanceAnalysisKit';
 import fs from '@ohos.file.fs';
 import hilog from '@ohos.hilog';
+import { HandsCrashStorage } from './HandsCrashStorage';
+import { runIsolatedCrashCapture } from './HandsCrashStoragePolicy';
 import { HandsCrashUploader } from './HandsCrashUploader';
 
 const TAG: string = 'HandsFaultWatcher';
@@ -57,19 +59,36 @@ export class HandsFaultWatcher {
     domain: string,
     appEventGroups: Array<hiAppEvent.AppEventGroup>,
   ): void {
-    try {
-      for (const group of appEventGroups) {
-        for (const eventInfo of group.appEventInfos) {
-          HandsFaultWatcher.captureFault(context, group.name, eventInfo);
-        }
+    for (const group of appEventGroups) {
+      for (const eventInfo of group.appEventInfos) {
+        runIsolatedCrashCapture(
+          (): void => {
+            HandsFaultWatcher.captureFault(context, group.name, eventInfo);
+          },
+          (error: Object): void => {
+            hilog.error(
+              0x0000,
+              TAG,
+              'failed capturing %{public}s fault event: %{public}s',
+              group.name,
+              String(error),
+            );
+          },
+        );
       }
-      // Fault events arrive while the app is alive (freeze) or on the launch
-      // after a crash — either way an immediate upload attempt is safe.
-      HandsCrashUploader.enforceRetention(context);
-      HandsCrashUploader.uploadPending(context).catch((): void => {});
-    } catch (error) {
-      hilog.error(0x0000, TAG, 'failed handling fault events: %{public}s', String(error));
     }
+    // Fault events arrive while the app is alive (freeze) or on the launch
+    // after a crash — either way an immediate upload attempt is safe. Keep
+    // retention and upload independent so one maintenance failure does not
+    // suppress the other.
+    try {
+      HandsCrashUploader.enforceRetention(context);
+    } catch (error) {
+      hilog.error(0x0000, TAG, 'failed enforcing crash retention: %{public}s', String(error));
+    }
+    HandsCrashUploader.uploadPending(context).catch((error: Object): void => {
+      hilog.warn(0x0000, TAG, 'failed scheduling pending crash upload: %{public}s', String(error));
+    });
   }
 
   private static captureFault(
@@ -100,11 +119,13 @@ export class HandsFaultWatcher {
     // Read those file contents so the crash ticket actually ships the stack.
     const externalFileContents = HandsFaultWatcher.readFaultFiles(params['external_log']);
 
+    const rawFaultTime = Number(params['time'] ?? Date.now());
+    const faultTime = Number.isFinite(rawFaultTime) ? rawFaultTime : Date.now();
     const lines: string[] = [
       'Hands OHOS fault log (hiAppEvent)',
       `Event: ${eventName}`,
       `Fault kind: ${kind}`,
-      `Fault time: ${new Date(Number(params['time'] ?? Date.now())).toString()}`,
+      `Fault time: ${new Date(faultTime).toString()}`,
       `Foreground: ${String(params['foreground'] ?? 'unknown')}`,
       `Bundle version: ${String(params['bundle_version'] ?? '')}`,
       `Pid/Uid: ${String(params['pid'] ?? '')}/${String(params['uid'] ?? '')}`,
@@ -126,14 +147,14 @@ export class HandsFaultWatcher {
     }
     const crashLog = lines.join('\n').slice(0, FAULT_LOG_MAX_CHARS);
 
-    const crashPath = HandsFaultWatcher.writeFaultLog(context, crashLog);
+    const crashPath = HandsCrashStorage.writeLog(context, crashLog, 'fault', faultTime);
     const summary = HandsFaultWatcher.exceptionSummary(exception, kind);
     HandsCrashUploader.writeMeta(crashPath, {
       exception_class: summary.cls,
       exception_message: summary.message,
       top_frame: summary.topFrame,
       reason: eventName === hiAppEvent.event.APP_FREEZE ? 'appFreeze' : 'nativeCrash',
-      crash_at: Number(params['time'] ?? Date.now()),
+      crash_at: faultTime,
     });
     hilog.info(0x0000, TAG, 'captured %{public}s fault', kind);
   }
@@ -240,20 +261,6 @@ export class HandsFaultWatcher {
       }
     }
     return blocks.join('\n\n');
-  }
-
-  private static writeFaultLog(context: common.UIAbilityContext, crashLog: string): string {
-    const crashDir = `${context.filesDir}/crashes`;
-    fs.mkdirSync(crashDir, true);
-    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-    const crashPath = `${crashDir}/crash-${timestamp}-fault.txt`;
-    const file = fs.openSync(crashPath, fs.OpenMode.CREATE | fs.OpenMode.TRUNC | fs.OpenMode.WRITE_ONLY);
-    try {
-      fs.writeSync(file.fd, crashLog);
-    } finally {
-      fs.closeSync(file);
-    }
-    return crashPath;
   }
 }
 

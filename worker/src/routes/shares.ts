@@ -17,12 +17,6 @@ type ShareStrings = {
   artifactLabel: string;
   platformLabel: string;
   checksumLabel: string;
-  expiresLabel: string;
-  statsLabel: string;
-  visitors: string;
-  views: string;
-  downloaders: string;
-  downloads: string;
   downloadApk: string;
   scanHint: string;
   passwordRequired: string; // password page title + heading
@@ -33,6 +27,7 @@ type ShareStrings = {
   shareUnavailable: string; // error page title + heading
   errMissingToken: string;
   errUnavailable: string;
+  goToLatest: string;
 };
 
 const SHARE_I18N: { en: ShareStrings; zh: ShareStrings } = {
@@ -45,12 +40,6 @@ const SHARE_I18N: { en: ShareStrings; zh: ShareStrings } = {
     artifactLabel: "Artifact",
     platformLabel: "Platform",
     checksumLabel: "Checksum",
-    expiresLabel: "Expires",
-    statsLabel: "Stats",
-    visitors: "visitors",
-    views: "views",
-    downloaders: "downloaders",
-    downloads: "downloads",
     downloadApk: "Download APK",
     scanHint: "Scan to open on your phone",
     passwordRequired: "Password required",
@@ -61,6 +50,7 @@ const SHARE_I18N: { en: ShareStrings; zh: ShareStrings } = {
     shareUnavailable: "Share unavailable",
     errMissingToken: "Missing share token",
     errUnavailable: "This share link is expired, revoked, or unavailable.",
+    goToLatest: "Open the latest release",
   },
   zh: {
     htmlLang: "zh",
@@ -71,12 +61,6 @@ const SHARE_I18N: { en: ShareStrings; zh: ShareStrings } = {
     artifactLabel: "安装包",
     platformLabel: "平台",
     checksumLabel: "校验和",
-    expiresLabel: "过期时间",
-    statsLabel: "统计",
-    visitors: "访客数",
-    views: "浏览次数",
-    downloaders: "下载人数",
-    downloads: "下载次数",
     downloadApk: "下载 APK",
     scanHint: "扫码在手机上打开",
     passwordRequired: "需要密码",
@@ -87,6 +71,7 @@ const SHARE_I18N: { en: ShareStrings; zh: ShareStrings } = {
     shareUnavailable: "分享不可用",
     errMissingToken: "缺少分享令牌",
     errUnavailable: "此分享链接已过期、被撤销或不可用。",
+    goToLatest: "打开最新版本",
   },
 };
 
@@ -101,7 +86,7 @@ type ShareRow = {
   id: string;
   token_hash: string;
   created_at: number;
-  expires_at: number;
+  expires_at: number | null;
   revoked_at: number | null;
   view_count: number;
   unique_view_count: number;
@@ -114,7 +99,8 @@ type SharePageRow = {
   icon_r2_key: string | null;
   package_id: string | null;
   share_id: string;
-  expires_at: number;
+  expires_at: number | null;
+  app_id: string;
   app_slug: string;
   app_name: string;
   channel_slug: string;
@@ -133,15 +119,9 @@ type SharePageRow = {
   file_hash: string;
 };
 
-type ShareStats = {
-  view_count: number;
-  unique_view_count: number;
-  download_count: number;
-  unique_download_count: number;
-};
-
-const DEFAULT_SHARE_TTL_SECONDS = 7 * 24 * 60 * 60;
-const MAX_SHARE_TTL_SECONDS = 30 * 24 * 60 * 60;
+// Shares have no default expiry: a share without an explicit ttl_seconds /
+// expires_at lives until revoked (expires_at NULL). Old-version links handed
+// out in chats must not silently die.
 
 export async function handleCreateReleaseShare(c: AdminContext) {
   const appId = c.req.param("appId");
@@ -167,10 +147,9 @@ export async function handleCreateReleaseShare(c: AdminContext) {
   }
 
   const now = Date.now();
-  let expiresAt: number;
+  let expiresAt: number | null;
   try {
-    const ttlSeconds = normalizeShareTtl(body.ttl_seconds);
-    expiresAt = normalizeExpiresAt(body.expires_at, now, ttlSeconds);
+    expiresAt = resolveExpiry(body.ttl_seconds, body.expires_at, now);
   } catch (err) {
     return c.json({ error: err instanceof Error ? err.message : String(err) }, 400);
   }
@@ -182,9 +161,9 @@ export async function handleCreateReleaseShare(c: AdminContext) {
   await c.env.DB.batch([
     c.env.DB.prepare(
       `INSERT INTO release_shares
-       (id, release_id, token_hash, created_by, created_at, expires_at, revoked_at, password_hash)
-       VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL, ?7)`,
-    ).bind(id, releaseId, tokenHash, currentActor(c), now, expiresAt, passwordHash),
+       (id, release_id, token, token_hash, created_by, created_at, expires_at, revoked_at, password_hash)
+       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, NULL, ?8)`,
+    ).bind(id, releaseId, token, tokenHash, currentActor(c), now, expiresAt, passwordHash),
     c.env.DB.prepare(
       `INSERT INTO audit_logs (id, app_id, action, actor, payload, created_at)
        VALUES (?1, ?2, ?3, ?4, ?5, ?6)`,
@@ -222,7 +201,7 @@ export async function handleListReleaseShares(c: AdminContext) {
   const { results } = await c.env.DB.prepare(
     `SELECT
        rs.id,
-       rs.token_hash,
+       rs.token,
        rs.created_at,
        rs.expires_at,
        rs.revoked_at,
@@ -238,8 +217,21 @@ export async function handleListReleaseShares(c: AdminContext) {
      ORDER BY rs.created_at DESC`,
   )
     .bind(releaseId)
-    .all<ShareRow>();
-  return c.json({ shares: results });
+    .all<ShareRow & { token: string | null }>();
+  return c.json({ shares: (results ?? []).map((row) => withShareUrl(c, row)) });
+}
+
+/** Replace the stored token with a copyable share_url. Legacy rows (created
+ *  before tokens were stored) have no token, so their URL is unrecoverable. */
+function withShareUrl<T extends { token?: string | null }>(
+  c: AdminContext,
+  row: T,
+): Omit<T, "token"> & { share_url: string | null } {
+  const { token, ...rest } = row;
+  return {
+    ...rest,
+    share_url: token ? new URL(`/share/${token}`, publicRequestOrigin(c)).toString() : null,
+  };
 }
 
 export async function handleListAppShares(c: AdminContext) {
@@ -248,6 +240,8 @@ export async function handleListAppShares(c: AdminContext) {
     `SELECT
        rs.id,
        rs.release_id,
+       r.channel_id,
+       rs.token,
        rs.created_by,
        rs.created_at,
        rs.expires_at,
@@ -272,8 +266,8 @@ export async function handleListAppShares(c: AdminContext) {
      LIMIT 500`,
   )
     .bind(appId)
-    .all();
-  return c.json({ shares: results });
+    .all<{ token: string | null }>();
+  return c.json({ shares: (results ?? []).map((row) => withShareUrl(c, row)) });
 }
 
 export async function handleRevokeReleaseShare(c: AdminContext) {
@@ -319,8 +313,8 @@ export async function handleUpdateReleaseShare(c: AdminContext) {
   const releaseId = c.req.param("releaseId");
   const shareId = c.req.param("shareId");
   const body = await c.req.json().catch(() => ({})) as {
-    ttl_seconds?: number;
-    expires_at?: number;
+    ttl_seconds?: number | null;
+    expires_at?: number | null;
     password?: string | null;
   };
   const now = Date.now();
@@ -332,16 +326,21 @@ export async function handleUpdateReleaseShare(c: AdminContext) {
      WHERE r.app_id = ?1 AND r.id = ?2 AND rs.id = ?3`,
   )
     .bind(appId, releaseId, shareId)
-    .first<{ id: string; expires_at: number; revoked_at: number | null }>();
+    .first<{ id: string; expires_at: number | null; revoked_at: number | null }>();
   if (!existing) return c.json({ error: "share not found" }, 404);
   if (existing.revoked_at) {
     return c.json({ error: "cannot update revoked share" }, 409);
   }
 
-  let expiresAt: number;
+  // Expiry semantics mirror the password field: both keys absent = leave
+  // unchanged; explicit null (either key) = clear, the share never expires;
+  // a value = set.
+  let expiresAt: number | null;
   try {
-    const ttlSeconds = normalizeShareTtl(body.ttl_seconds);
-    expiresAt = normalizeExpiresAt(body.expires_at, now, ttlSeconds);
+    expiresAt =
+      body.ttl_seconds === undefined && body.expires_at === undefined
+        ? existing.expires_at
+        : resolveExpiry(body.ttl_seconds, body.expires_at, now);
   } catch (err) {
     return c.json({ error: err instanceof Error ? err.message : String(err) }, 400);
   }
@@ -399,6 +398,159 @@ export async function handleUpdateReleaseShare(c: AdminContext) {
   });
 }
 
+export async function handleRebindReleaseShare(c: AdminContext) {
+  const appId = c.req.param("appId");
+  const shareId = c.req.param("shareId");
+  const body = await c.req.json().catch(() => ({})) as {
+    expected_release_id?: string;
+    target_release_id?: string;
+  };
+  const expectedReleaseId = typeof body.expected_release_id === "string"
+    ? body.expected_release_id.trim()
+    : "";
+  const targetReleaseId = typeof body.target_release_id === "string"
+    ? body.target_release_id.trim()
+    : "";
+  if (!expectedReleaseId || !targetReleaseId) {
+    return c.json({ error: "expected_release_id and target_release_id are required" }, 400);
+  }
+  if (expectedReleaseId === targetReleaseId) {
+    return c.json({ error: "target release must differ from the current release" }, 400);
+  }
+
+  const existing = await c.env.DB.prepare(
+    `SELECT rs.release_id, rs.revoked_at, r.channel_id
+     FROM release_shares rs
+     JOIN releases r ON r.id = rs.release_id
+     WHERE rs.id = ?1 AND r.app_id = ?2`,
+  ).bind(shareId, appId).first<{
+    release_id: string;
+    revoked_at: number | null;
+    channel_id: string;
+  }>();
+  if (!existing) return c.json({ error: "share not found" }, 404);
+  if (existing.revoked_at != null) return c.json({ error: "cannot rebind revoked share" }, 409);
+  if (existing.release_id !== expectedReleaseId) {
+    return c.json({ error: "share release changed", code: "share_rebind_conflict" }, 409);
+  }
+
+  const target = await c.env.DB.prepare(
+    `SELECT r.id, r.status, r.channel_id, b.version_name, b.version_code,
+            ba.file_hash, ba.size_bytes, ba.r2_key
+     FROM releases r
+     JOIN builds b ON b.id = r.build_id
+     LEFT JOIN build_assets ba ON ba.id = (
+       SELECT candidate.id FROM build_assets candidate
+       WHERE candidate.build_id = r.build_id
+         AND candidate.artifact_kind = 'installable'
+       ORDER BY candidate.created_at ASC, candidate.id ASC LIMIT 1
+     )
+     WHERE r.app_id = ?1 AND r.id = ?2`,
+  ).bind(appId, targetReleaseId).first<{
+    id: string;
+    status: string;
+    channel_id: string;
+    version_name: string;
+    version_code: number;
+    file_hash: string | null;
+    size_bytes: number | null;
+    r2_key: string | null;
+  }>();
+  if (!target) return c.json({ error: "target release not found" }, 404);
+  if (target.status !== "active") {
+    return c.json({ error: "target release must be active" }, 409);
+  }
+  if (target.channel_id !== existing.channel_id) {
+    return c.json({ error: "target release must use the share's current channel" }, 409);
+  }
+  if (!target.r2_key || !(await c.env.APK_BUCKET.head(target.r2_key))) {
+    return c.json({ error: "target release installable is unavailable" }, 409);
+  }
+
+  const now = Date.now();
+  const auditId = crypto.randomUUID();
+  const actor = currentActor(c);
+  let results;
+  try {
+    results = await c.env.DB.batch([
+      c.env.DB.prepare(
+        `UPDATE release_shares
+         SET release_id = ?1
+         WHERE id = ?2
+           AND release_id = ?3
+           AND revoked_at IS NULL
+           AND EXISTS (
+             SELECT 1 FROM releases current_release
+             WHERE current_release.id = release_shares.release_id
+               AND current_release.app_id = ?4
+           )
+           AND EXISTS (
+             SELECT 1 FROM releases target_release
+             WHERE target_release.id = ?1
+               AND target_release.app_id = ?4
+               AND target_release.status = 'active'
+               AND target_release.channel_id = (
+                 SELECT current_release.channel_id FROM releases current_release
+                 WHERE current_release.id = release_shares.release_id
+               )
+           )`,
+      ).bind(targetReleaseId, shareId, expectedReleaseId, appId),
+      c.env.DB.prepare(
+        `INSERT INTO audit_logs (id, app_id, action, actor, payload, created_at)
+         SELECT ?1, ?2, 'release_share.rebind', ?3,
+                json_object(
+                  'share_id', rs.id,
+                  'token_hash', rs.token_hash,
+                  'old_release_id', ?4,
+                  'new_release_id', ?5
+                ),
+                ?6
+         FROM release_shares rs
+         WHERE rs.id = ?7
+           AND rs.release_id = ?5
+           AND changes() = 1`,
+      ).bind(
+        auditId,
+        appId,
+        actor,
+        expectedReleaseId,
+        targetReleaseId,
+        now,
+        shareId,
+      ),
+      // D1 batch rolls back on a statement error, not on a zero-row result.
+      // Force a NOT NULL violation when the preceding audit insert did not
+      // affect exactly one row, so a stale/revoked race cannot commit the
+      // rebind without its audit record.
+      c.env.DB.prepare(
+        `INSERT INTO audit_logs (id, app_id, action, actor, payload, created_at)
+         SELECT ?1, NULL, 'release_share.rebind.assert', ?2, '{}', ?3
+         WHERE changes() <> 1`,
+      ).bind(crypto.randomUUID(), actor, now),
+    ]);
+  } catch {
+    return c.json({ error: "share changed, was revoked, or was not found", code: "share_rebind_conflict" }, 409);
+  }
+  const updateChanges = Number(results[0]?.meta?.changes ?? 0);
+  const auditChanges = Number(results[1]?.meta?.changes ?? 0);
+  if (auditChanges !== 1 || updateChanges !== 1) {
+    return c.json({ error: "share changed, was revoked, or was not found", code: "share_rebind_conflict" }, 409);
+  }
+
+  return c.json({
+    id: shareId,
+    previous_release_id: expectedReleaseId,
+    release_id: targetReleaseId,
+    target: {
+      status: target.status,
+      version_name: target.version_name,
+      version_code: target.version_code,
+      file_hash: target.file_hash,
+      size_bytes: target.size_bytes,
+    },
+  });
+}
+
 export async function handlePublicReleaseShare(c: Context<{ Bindings: Env }>) {
   const t = shareStrings(c);
   const token = c.req.param("token");
@@ -407,7 +559,8 @@ export async function handlePublicReleaseShare(c: Context<{ Bindings: Env }>) {
   const row = await findActiveShare(c.env.DB, token);
 
   if (!row) {
-    return htmlResponse(renderErrorPage(t, t.errUnavailable), 404);
+    const latestSlug = await findLatestLandingSlugForInactiveShare(c.env.DB, token);
+    return htmlResponse(renderErrorPage(t, t.errUnavailable, latestSlug), 404);
   }
 
   if (row.password_hash && !(await hasValidUnlockCookie(c, row))) {
@@ -416,13 +569,22 @@ export async function handlePublicReleaseShare(c: Context<{ Bindings: Env }>) {
   }
 
   await recordShareEvent(c, row.share_id, "view");
-  const stats = await loadShareStats(c.env.DB, row.share_id);
+  // If the bound asset has been deleted from R2 but the app still has a newer active
+  // version, send the visitor to the app's latest-version landing instead of a share
+  // page whose only download 404s. Only when nothing downloadable remains show an error.
+  if (!(await c.env.APK_BUCKET.head(row.r2_key))) {
+    const fallbackKey = await findLatestActiveInstallableKey(c.env, row.app_id);
+    if (fallbackKey) {
+      return c.redirect(`/apps/${encodeURIComponent(row.app_slug)}/latest`, 302);
+    }
+    return htmlResponse(renderErrorPage(t, t.errUnavailable), 404);
+  }
   const origin = publicRequestOrigin(c);
   const downloadUrl = new URL(`/share/${token}/download`, origin).toString();
   const shareUrl = new URL(`/share/${token}`, origin).toString();
   const lang = (c.req.header("accept-language") ?? "").split(",")[0]?.trim().split(";")[0] ?? null;
   const localized = { ...row, changelog: resolveChangelog(row.changelog, lang) };
-  return htmlResponse(renderSharePage(t, localized, stats, downloadUrl, shareUrl, token));
+  return htmlResponse(renderSharePage(t, localized, downloadUrl, shareUrl, token));
 }
 
 export async function handlePublicReleaseShareDownload(c: Context<{ Bindings: Env }>) {
@@ -432,22 +594,61 @@ export async function handlePublicReleaseShareDownload(c: Context<{ Bindings: En
 
   const row = await findActiveShare(c.env.DB, token);
   if (!row) {
-    return htmlResponse(renderErrorPage(t, t.errUnavailable), 404);
+    const latestSlug = await findLatestLandingSlugForInactiveShare(c.env.DB, token);
+    return htmlResponse(renderErrorPage(t, t.errUnavailable, latestSlug), 404);
   }
 
   if (row.password_hash && !(await hasValidUnlockCookie(c, row))) {
     return c.redirect(`/share/${token}`, 302);
   }
 
+  // The bound asset may have been deleted from R2 (e.g. its release was pruned/superseded).
+  // Rather than 302 → a signed URL that 404s, fall back to the app's latest active
+  // installable when one still exists; only if nothing downloadable remains show an error.
+  let r2Key: string | null = row.r2_key;
+  if (!(await c.env.APK_BUCKET.head(row.r2_key))) {
+    r2Key = await findLatestActiveInstallableKey(c.env, row.app_id);
+  }
+  if (!r2Key) {
+    const latestSlug = await findLatestLandingSlugForInactiveShare(c.env.DB, token);
+    return htmlResponse(renderErrorPage(t, t.errUnavailable, latestSlug), 404);
+  }
+
   await recordShareEvent(c, row.share_id, "download");
   const ttl = Number(c.env.SIGNED_URL_TTL_SECONDS ?? "3600");
   const signedUrl = await generateSignedR2Url(
     c.env,
-    row.r2_key,
+    r2Key,
     ttl,
     publicRequestOrigin(c),
   );
   return c.redirect(signedUrl, 302);
+}
+
+/**
+ * The r2_key of the app's most recent active, non-hidden installable that still exists in
+ * R2, or null. Fetches a few candidates newest-first and head-checks each, so a single
+ * pruned object does not defeat the fallback. Used when a share's own bound asset is gone.
+ */
+async function findLatestActiveInstallableKey(env: Env, appId: string): Promise<string | null> {
+  const rows = await env.DB.prepare(
+    `SELECT ba.r2_key AS r2_key
+     FROM releases r
+     JOIN builds b ON b.id = r.build_id
+     JOIN build_assets ba ON ba.build_id = b.id
+     WHERE r.app_id = ?1
+       AND r.status = 'active'
+       AND r.hidden = 0
+       AND ba.artifact_kind = 'installable'
+     ORDER BY r.created_at DESC, ba.filetype = 'apk' DESC, ba.created_at ASC
+     LIMIT 5`,
+  )
+    .bind(appId)
+    .all<{ r2_key: string }>();
+  for (const row of rows.results ?? []) {
+    if (row.r2_key && (await env.APK_BUCKET.head(row.r2_key))) return row.r2_key;
+  }
+  return null;
 }
 
 export async function handlePublicReleaseShareIcon(c: Context<{ Bindings: Env }>) {
@@ -468,7 +669,8 @@ export async function handlePublicReleaseShareUnlock(c: Context<{ Bindings: Env 
   if (!token) return htmlResponse(renderErrorPage(t, t.errMissingToken), 400);
   const row = await findActiveShare(c.env.DB, token);
   if (!row) {
-    return htmlResponse(renderErrorPage(t, t.errUnavailable), 404);
+    const latestSlug = await findLatestLandingSlugForInactiveShare(c.env.DB, token);
+    return htmlResponse(renderErrorPage(t, t.errUnavailable, latestSlug), 404);
   }
   if (!row.password_hash) return c.redirect(`/share/${token}`, 302);
 
@@ -553,6 +755,7 @@ async function findActiveShare(db: D1Database, token: string): Promise<SharePage
        rs.id AS share_id,
        rs.expires_at AS expires_at,
        rs.password_hash AS password_hash,
+       a.id AS app_id,
        a.slug AS app_slug,
        a.name AS app_name,
        COALESCE(
@@ -590,16 +793,47 @@ async function findActiveShare(db: D1Database, token: string): Promise<SharePage
      JOIN build_assets ba ON ba.build_id = b.id
      WHERE rs.token_hash = ?1
        AND rs.revoked_at IS NULL
-       AND rs.expires_at > ?2
-       -- Serve active AND draft releases: draft-first testing needs a
-       -- shareable download before publish. Cancelled/superseded stay blocked.
-       AND r.status IN ('active', 'draft')
+       AND (rs.expires_at IS NULL OR rs.expires_at > ?2)
+       -- Release status does not gate a share: a link the user actively
+       -- created serves until the user revokes it (or its optional expiry
+       -- passes), even after the release is superseded or cancelled.
        AND ba.artifact_kind = 'installable'
      ORDER BY ba.filetype = 'apk' DESC, ba.created_at ASC
      LIMIT 1`,
   )
     .bind(tokenHash, Date.now())
     .first<SharePageRow>();
+}
+
+/** Resolve only known inactive tokens to a public app that currently has an
+ * active installable. Random tokens must not disclose app identity. */
+async function findLatestLandingSlugForInactiveShare(
+  db: D1Database,
+  token: string,
+): Promise<string | null> {
+  const tokenHash = await sha256Hex(token);
+  const row = await db.prepare(
+    `SELECT a.slug
+     FROM release_shares rs
+     JOIN releases seed ON seed.id = rs.release_id
+     JOIN apps a ON a.id = seed.app_id
+     WHERE rs.token_hash = ?1
+       AND (rs.revoked_at IS NOT NULL OR (rs.expires_at IS NOT NULL AND rs.expires_at <= ?2))
+       AND a.archived = 0
+       AND a.public_history = 1
+       AND EXISTS (
+         SELECT 1 FROM releases latest
+         JOIN build_assets ba ON ba.build_id = latest.build_id
+         WHERE latest.app_id = a.id
+           AND latest.status = 'active'
+           AND latest.hidden = 0
+           AND ba.artifact_kind = 'installable'
+       )
+     LIMIT 1`,
+  )
+    .bind(tokenHash, Date.now())
+    .first<{ slug: string }>();
+  return row?.slug ?? null;
 }
 
 async function recordShareEvent(
@@ -616,46 +850,26 @@ async function recordShareEvent(
     .run();
 }
 
-async function loadShareStats(db: D1Database, shareId: string): Promise<ShareStats> {
-  const row = await db.prepare(
-    `SELECT
-       COALESCE(SUM(CASE WHEN event_type = 'view' THEN 1 ELSE 0 END), 0) AS view_count,
-       COALESCE(COUNT(DISTINCT CASE WHEN event_type = 'view' THEN visitor_hash END), 0) AS unique_view_count,
-       COALESCE(SUM(CASE WHEN event_type = 'download' THEN 1 ELSE 0 END), 0) AS download_count,
-       COALESCE(COUNT(DISTINCT CASE WHEN event_type = 'download' THEN visitor_hash END), 0) AS unique_download_count
-     FROM release_share_events
-     WHERE share_id = ?1`,
-  )
-    .bind(shareId)
-    .first<ShareStats>();
-  return {
-    view_count: Number(row?.view_count ?? 0),
-    unique_view_count: Number(row?.unique_view_count ?? 0),
-    download_count: Number(row?.download_count ?? 0),
-    unique_download_count: Number(row?.unique_download_count ?? 0),
-  };
-}
-
-function normalizeShareTtl(ttl: number | undefined): number {
-  if (ttl === undefined || ttl === null) return DEFAULT_SHARE_TTL_SECONDS;
-  if (!Number.isFinite(ttl) || ttl <= 0) {
-    throw new Error("ttl_seconds must be positive");
-  }
-  return Math.min(Math.floor(ttl), MAX_SHARE_TTL_SECONDS);
-}
-
-function normalizeExpiresAt(
-  expiresAt: number | undefined,
+/** Resolve an optional expiry: no ttl_seconds/expires_at (or explicit null)
+ *  means the share never expires. expires_at wins over ttl_seconds. */
+function resolveExpiry(
+  ttlSeconds: number | null | undefined,
+  expiresAt: number | null | undefined,
   now: number,
-  ttlSeconds: number,
-): number {
-  if (expiresAt === undefined || expiresAt === null) {
-    return now + ttlSeconds * 1000;
+): number | null {
+  if (expiresAt !== undefined && expiresAt !== null) {
+    if (!Number.isFinite(expiresAt) || expiresAt <= now) {
+      throw new Error("expires_at must be a future unix millisecond timestamp");
+    }
+    return Math.floor(expiresAt);
   }
-  if (!Number.isFinite(expiresAt) || expiresAt <= now) {
-    throw new Error("expires_at must be a future unix millisecond timestamp");
+  if (ttlSeconds !== undefined && ttlSeconds !== null) {
+    if (!Number.isFinite(ttlSeconds) || ttlSeconds <= 0) {
+      throw new Error("ttl_seconds must be positive");
+    }
+    return now + Math.floor(ttlSeconds) * 1000;
   }
-  return Math.min(Math.floor(expiresAt), now + MAX_SHARE_TTL_SECONDS * 1000);
+  return null;
 }
 
 function randomToken(): string {
@@ -714,13 +928,11 @@ function htmlResponse(html: string, status = 200): Response {
 function renderSharePage(
   t: ShareStrings,
   row: SharePageRow,
-  stats: ShareStats,
   downloadUrl: string,
   shareUrl: string,
   shareToken: string,
 ): string {
   const title = `${row.app_slug} ${row.version_name} (${row.version_code})`;
-  const expiresIso = new Date(row.expires_at).toISOString();
   const qrSvg = renderShareQrSvg(shareUrl);
   return `<!doctype html>
 <html lang="${t.htmlLang}">
@@ -751,15 +963,10 @@ function renderSharePage(
     .notes li { margin: 4px 0; }
     .notes p { margin: 8px 0; }
     .notes code { background: rgba(125,125,125,0.15); border-radius: 4px; padding: 1px 4px; font-size: 0.92em; }
-    .stats { display: flex; flex-wrap: wrap; gap: 8px 16px; }
-    .stat strong { display: block; color: #1e1f22; font-size: 18px; }
-    .stat span { display: block; color: #707782; font-size: 12px; font-weight: 500; }
     @media (prefers-color-scheme: dark) {
       body { background: #17191c; color: #f5f5f2; }
       p, dt { color: #aeb5bf; }
       .notes { color: #d2d6dc; }
-      .stat strong { color: #f5f5f2; }
-      .stat span { color: #aeb5bf; }
     }
   </style>
 </head>
@@ -782,14 +989,6 @@ function renderSharePage(
       <dt>${t.artifactLabel}</dt><dd>${escapeHtml(row.filetype.toUpperCase())} · ${formatBytes(row.size_bytes)}</dd>
       <dt>${t.platformLabel}</dt><dd>${escapeHtml([row.platform, row.arch, row.variant].filter(Boolean).join(" / "))}</dd>
       <dt>${t.checksumLabel}</dt><dd>${escapeHtml(row.file_hash)}</dd>
-      <dt>${t.expiresLabel}</dt><dd><time id="expires-at" datetime="${escapeAttribute(expiresIso)}" data-expires-at="${row.expires_at}">${escapeHtml(expiresIso)}</time></dd>
-      <dt>${t.statsLabel}</dt>
-      <dd class="stats">
-        <span class="stat"><strong>${stats.unique_view_count}</strong><span>${t.visitors}</span></span>
-        <span class="stat"><strong>${stats.view_count}</strong><span>${t.views}</span></span>
-        <span class="stat"><strong>${stats.unique_download_count}</strong><span>${t.downloaders}</span></span>
-        <span class="stat"><strong>${stats.download_count}</strong><span>${t.downloads}</span></span>
-      </dd>
     </dl>
     <div class="get-it">
       <a class="download" href="${escapeAttribute(downloadUrl)}">${t.downloadApk}</a>
@@ -797,22 +996,6 @@ function renderSharePage(
     </div>
     ${row.changelog ? `<div class="notes">${changelogToHtml(row.changelog)}</div>` : ""}
   </main>
-  <script>
-    (() => {
-      const el = document.getElementById("expires-at");
-      const ms = Number(el?.dataset.expiresAt);
-      if (!el || !Number.isFinite(ms)) return;
-      try {
-        el.textContent = new Intl.DateTimeFormat(undefined, {
-          dateStyle: "medium",
-          timeStyle: "short",
-          timeZoneName: "short",
-        }).format(new Date(ms));
-      } catch {
-        el.textContent = new Date(ms).toLocaleString();
-      }
-    })();
-  </script>
 </body>
 </html>`;
 }
@@ -861,7 +1044,7 @@ function renderPasswordPage(t: ShareStrings, token: string, failed: boolean): st
 </html>`;
 }
 
-function renderErrorPage(t: ShareStrings, message: string): string {
+function renderErrorPage(t: ShareStrings, message: string, latestSlug: string | null = null): string {
   return `<!doctype html>
 <html lang="${t.htmlLang}">
 <head>
@@ -875,6 +1058,7 @@ function renderErrorPage(t: ShareStrings, message: string): string {
     .badge { width: 44px; height: 44px; margin: 0 auto 16px; border-radius: 12px; display: grid; place-items: center; background: rgba(125,125,125,0.12); font-size: 22px; }
     h1 { margin: 0 0 8px; font-size: 22px; line-height: 1.2; }
     p { margin: 0; color: #5b616e; line-height: 1.5; }
+    a { display: inline-block; margin-top: 16px; color: #176f5d; font-weight: 700; }
     @media (prefers-color-scheme: dark) {
       body { background: #17191c; color: #f5f5f2; }
       p { color: #aeb5bf; }
@@ -886,6 +1070,7 @@ function renderErrorPage(t: ShareStrings, message: string): string {
     <div class="badge" aria-hidden="true">🔗</div>
     <h1>${t.shareUnavailable}</h1>
     <p>${escapeHtml(message)}</p>
+    ${latestSlug ? `<a href="/apps/${escapeAttribute(encodeURIComponent(latestSlug))}/latest">${t.goToLatest}</a>` : ""}
   </main>
 </body>
 </html>`;

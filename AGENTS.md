@@ -130,6 +130,9 @@ docker build -t apk-parser container/
   the parser service rather than duplicating `aapt` / signing parsing logic.
 - D1 migrations are append-only once shared. Do not edit applied migration
   files without explicit owner approval.
+- Cloudflare Flagship is for product behavior only. Security, credential,
+  authorization, audit, rate-limit, and destructive-data controls remain
+  deploy-reviewed configuration. See `docs/flagship-policy.md`.
 
 ## Release Automation
 

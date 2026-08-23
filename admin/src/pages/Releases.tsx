@@ -16,6 +16,7 @@ import {
   getRelease,
   listApps,
   listChannels,
+  listDeviceGroups,
   listProductTypes,
   listReleases,
   publishRelease,
@@ -55,11 +56,68 @@ import { useToast } from "../components/Toast";
 import { ConfirmActionDialog } from "../components/ConfirmActionDialog";
 import { ReleaseAssetsPanel } from "../components/ReleaseAssetsPanel";
 import { ReleaseAssetUploader } from "../components/ReleaseAssetUploader";
+import { ChangelogEditor, ChangelogViewer } from "../components/ChangelogMarkdown";
 import { createBuildAsset, uploadApk } from "../lib/api";
 import type { PendingFile } from "../lib/releaseFileDetect";
 
 
 const ROLLOUT_PRESETS = [5, 25, 50, 100];
+
+type EditableScopeType = "full" | "platform" | "user_cohort" | "ip_range" | "device_group";
+type ScopeInput = { scope_type: string; scope_value: string };
+
+function buildReleaseScopes(
+  scopeType: EditableScopeType,
+  scopeValue: string,
+  alwaysIncludedGroupIds: string[],
+): ScopeInput[] {
+  if (scopeType !== "full") {
+    return [{ scope_type: scopeType, scope_value: scopeValue.trim() }];
+  }
+  return [
+    { scope_type: "full", scope_value: "all" },
+    ...[...new Set(alwaysIncludedGroupIds)].sort().map((groupId) => ({
+      scope_type: "device_group",
+      scope_value: groupId,
+    })),
+  ];
+}
+
+function AlwaysIncludedDeviceGroups({
+  groups,
+  selectedIds,
+  onChange,
+}: {
+  groups: { id: string; name: string; member_count: number }[];
+  selectedIds: string[];
+  onChange: (next: string[]) => void;
+}) {
+  if (groups.length === 0) {
+    return <p className="text-xs text-slate-500">No device groups available.</p>;
+  }
+  return (
+    <div className="max-h-36 overflow-y-auto rounded-sm border border-slate-200 divide-y divide-slate-100">
+      {groups.map((group) => {
+        const checked = selectedIds.includes(group.id);
+        return (
+          <label key={group.id} className="flex items-center gap-2 px-2 py-1.5 text-xs">
+            <Checkbox
+              checked={checked}
+              onCheckedChange={(value) => {
+                const next = Boolean(value)
+                  ? [...selectedIds, group.id]
+                  : selectedIds.filter((id) => id !== group.id);
+                onChange([...new Set(next)].sort());
+              }}
+            />
+            <span className="min-w-0 flex-1 truncate">{group.name}</span>
+            <span className="font-mono text-slate-500">{group.member_count}</span>
+          </label>
+        );
+      })}
+    </div>
+  );
+}
 
 function RolloutPercentInput({
   value,
@@ -129,6 +187,9 @@ function productTypeMatchesPlatform(productType: ProductType, appPlatform?: stri
   }
   if (platform === "electron") {
     return productType.name.includes("electron") || productType.parser_kind === "electron-asar";
+  }
+  if (platform === "node") {
+    return productType.name === "cli-binary" || productType.parser_kind === "external";
   }
   if (platform === "rn" || platform === "react-native") {
     return productType.name.includes("rn") || productType.parser_kind === "rn-bundle";
@@ -335,9 +396,22 @@ function ReleaseRow({
     queryKey: ["release-detail", r.id],
     queryFn: () => getRelease(appId, r.id),
   });
+  const currentRevision = detail.data?.release.revision ?? r.revision;
 
   const publish = useMutation({
-    mutationFn: () => publishRelease(appId, r.id),
+    mutationFn: () => {
+      const scopes = detail.data?.scopes ?? [];
+      if (scopes.length === 0) throw new Error("Release has no scope to publish");
+      return publishRelease(
+        appId,
+        r.id,
+        scopes.map((scope) => ({
+          scope_type: scope.scope_type,
+          scope_value: scope.scope_value,
+        })),
+        currentRevision,
+      );
+    },
     onSuccess: () => {
       toast.show({ kind: "success", title: `Published ${channelSlug}` });
       onAction();
@@ -351,9 +425,16 @@ function ReleaseRow({
   });
 
   const rollback = useMutation({
-    mutationFn: () => rollbackRelease(appId, r.id, {}),
-    onSuccess: () => {
-      toast.show({ kind: "success", title: `Rolled back ${channelSlug}` });
+    mutationFn: () => rollbackRelease(appId, r.id, {
+      expected_revision: currentRevision,
+    }),
+    onSuccess: (data) => {
+      toast.show({
+        kind: "success",
+        title: data.restored_to_draft
+          ? `Restored ${channelSlug} draft`
+          : `Restored ${channelSlug} as active`,
+      });
       onAction();
     },
     onError: (e) =>
@@ -365,7 +446,10 @@ function ReleaseRow({
   });
 
   const bump = useMutation({
-    mutationFn: (target: number) => bumpRollout(appId, r.id, { to: target }),
+    mutationFn: (target: number) => bumpRollout(appId, r.id, {
+      to: target,
+      expected_revision: currentRevision,
+    }),
     onSuccess: (data) => {
       toast.show({
         kind: "success",
@@ -383,7 +467,10 @@ function ReleaseRow({
   });
 
   const toggleForce = useMutation({
-    mutationFn: () => forceUpdate(appId, r.id, { enabled: !r.should_force_update }),
+    mutationFn: () => forceUpdate(appId, r.id, {
+      enabled: !r.should_force_update,
+      expected_revision: currentRevision,
+    }),
     onSuccess: (data) => {
       toast.show({
         kind: "success",
@@ -402,7 +489,7 @@ function ReleaseRow({
   });
 
   const cancel = useMutation({
-    mutationFn: () => deleteRelease(appId, r.id),
+    mutationFn: () => deleteRelease(appId, r.id, currentRevision),
     onSuccess: () => {
       toast.show({
         kind: "success",
@@ -445,27 +532,31 @@ function ReleaseRow({
       <div className="text-xs text-slate-500 font-mono mt-1 truncate">
         {r.id} (build {r.build_id.slice(0, 8)}…)
       </div>
-      {(r.offered_count || r.current_count) ? (
+      {(r.offered_count || r.current_count || r.offered_uv || r.current_uv) ? (
         <div className="mt-1 flex items-center gap-3 text-xs text-slate-500">
           <Tooltip>
             <TooltipTrigger
               render={
                 <span>
-                  <strong className="text-slate-700">{r.current_count ?? 0}</strong> on this version
+                  <strong className="text-slate-700">{r.current_uv ?? 0}</strong> on this version
                 </span>
               }
             />
-            <TooltipContent>Devices already on this version at update check</TooltipContent>
+            <TooltipContent>
+              {r.current_count ?? 0} update checks (PV)
+            </TooltipContent>
           </Tooltip>
           <Tooltip>
             <TooltipTrigger
               render={
                 <span>
-                  <strong className="text-slate-700">{r.offered_count ?? 0}</strong> offered
+                  <strong className="text-slate-700">{r.offered_uv ?? 0}</strong> offered
                 </span>
               }
             />
-            <TooltipContent>Update-check responses offering this version to older clients</TooltipContent>
+            <TooltipContent>
+              {r.offered_count ?? 0} update offers (PV)
+            </TooltipContent>
           </Tooltip>
           {r.last_checked_at ? (
             <span className="text-slate-400">
@@ -475,9 +566,9 @@ function ReleaseRow({
         </div>
       ) : null}
       {r.changelog && (
-        <pre className="mt-2 pl-2 border-l-2 border-slate-100 font-mono whitespace-pre-wrap text-xs text-slate-600 max-h-32 overflow-y-auto">
-          {r.changelog}
-        </pre>
+        <div className="mt-3 border-l-2 border-slate-100 pl-3">
+          <ChangelogViewer value={r.changelog} compact />
+        </div>
       )}
       <div className="flex flex-wrap gap-2 mt-2">
         {r.status === "draft" && (
@@ -485,9 +576,9 @@ function ReleaseRow({
             variant="primary"
             className="text-xs"
             onClick={() => publish.mutate()}
-            disabled={publish.isPending}
+            disabled={publish.isPending || !detail.data}
           >
-            {publish.isPending ? "Publishing..." : "Publish"}
+            {publish.isPending ? "Publishing..." : !detail.data ? "Loading scope..." : "Publish"}
           </Button>
         )}
         {(r.status === "draft" || r.status === "active") && (
@@ -499,36 +590,38 @@ function ReleaseRow({
             Edit
           </Button>
         )}
-        {(r.status === "active" || r.status === "superseded" || r.status === "cancelled") && (
+        {r.status === "active" && (
           <>
-            {r.status === "active" && (
-              <>
-                <Button
-                  variant="outline"
-                  className="text-xs"
-                  onClick={() => setShowRollout(!showRollout)}
-                >
-                  Bump rollout
-                </Button>
-                <Button
-                  variant="outline"
-                  className="text-xs"
-                  onClick={() => toggleForce.mutate()}
-                  disabled={toggleForce.isPending}
-                >
-                  {r.should_force_update ? "Unforce" : "Force"}
-                </Button>
-              </>
+            {Boolean(r.is_full) && (
+              <Button
+                variant="outline"
+                className="text-xs"
+                onClick={() => setShowRollout(!showRollout)}
+              >
+                Bump rollout
+              </Button>
             )}
             <Button
               variant="outline"
               className="text-xs"
-              onClick={() => rollback.mutate()}
-              disabled={rollback.isPending}
+              onClick={() => toggleForce.mutate()}
+              disabled={toggleForce.isPending}
             >
-              {r.status === "active" ? "Roll back" : "Restore as active"}
+              {r.should_force_update ? "Unforce" : "Force"}
             </Button>
           </>
+        )}
+        {(r.status === "superseded" || r.status === "cancelled") && (
+          <Button
+            variant="outline"
+            className="text-xs"
+            onClick={() => rollback.mutate()}
+            disabled={rollback.isPending}
+          >
+            {r.status === "cancelled" && r.activated_at == null
+              ? "Restore draft"
+              : "Restore as active"}
+          </Button>
         )}
         {(r.status === "draft" || r.status === "active") && (
           <Button
@@ -583,6 +676,47 @@ function ReleaseRow({
               </tbody>
             </table>
           )}
+          {(detail.data.checks ?? []).length > 0 && (
+            <div className="mt-2">
+              <div className="text-slate-500 mb-1">Checks (advisory)</div>
+              {detail.data.checks.map((chk) => (
+                <div key={chk.id} className="flex items-center gap-2 mb-0.5">
+                  <span
+                    className={
+                      chk.verdict === "passed"
+                        ? "text-emerald-600 font-medium"
+                        : chk.verdict === "failed"
+                          ? "text-red-600 font-medium"
+                          : "text-amber-600 font-medium"
+                    }
+                  >
+                    {chk.verdict}
+                  </span>
+                  <span className="font-mono">{chk.source}</span>
+                  {chk.cases_total !== null && (
+                    <span className="text-slate-500">
+                      {chk.cases_passed ?? 0}/{chk.cases_total} cases
+                    </span>
+                  )}
+                  {chk.run_url && (
+                    <a
+                      href={chk.run_url}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="text-blue-600 hover:underline"
+                    >
+                      run
+                    </a>
+                  )}
+                  {chk.summary && (
+                    <span className="text-slate-500 truncate" title={chk.summary}>
+                      {chk.summary}
+                    </span>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       )}
 
@@ -616,8 +750,8 @@ function ReleaseRow({
         objectHint={r.id.slice(0, 8)}
         body={
           r.status === "draft"
-            ? "The draft will be marked cancelled. The build metadata and any uploaded assets stay available in storage; no live release is affected."
-            : "This release will stop being served by update checks. The build metadata and uploaded assets stay available in storage."
+            ? "The draft will be disabled. Its build, assets, and audit history stay available, while this version becomes available for a corrected upload. No live release is affected."
+            : "This release will stop being served by update checks. Its build, assets, and audit history stay available. Although the version becomes available for historical correction, devices that already received this release will not update to different bits with the same version code; publish any client update with a higher version code."
         }
         confirmLabel={r.status === "draft" ? "Delete draft" : "Cancel release"}
         confirmKind="danger"
@@ -662,39 +796,55 @@ function EditReleaseDialog({
 }) {
   const toast = useToast();
   const [changelog, setChangelog] = useState(release.changelog ?? "");
-  const [scopeType, setScopeType] = useState<"full" | "platform" | "user_cohort" | "ip_range">("full");
+  const deviceGroups = useQuery({
+    queryKey: ["device-groups", appId],
+    queryFn: () => listDeviceGroups(appId),
+  });
+  const [scopeType, setScopeType] = useState<EditableScopeType>("full");
   const [scopeValue, setScopeValue] = useState("all");
+  const [alwaysIncludedGroupIds, setAlwaysIncludedGroupIds] = useState<string[]>([]);
   const [shouldForceUpdate, setShouldForceUpdate] = useState(Boolean(release.should_force_update));
   const [rolloutPercent, setRolloutPercent] = useState<number>(release.rollout_cohort_count ?? 100);
 
   useEffect(() => {
     if (!detail) return;
+    const fullScope = detail.scopes.find((scope) => scope.scope_type === "full" && scope.scope_value === "all");
     const firstScope = detail.scopes[0];
     setChangelog(detail.release.changelog ?? "");
     setShouldForceUpdate(Boolean(detail.release.should_force_update));
     setRolloutPercent(detail.release.rollout_cohort_count ?? 100);
-    if (
+    if (fullScope) {
+      setScopeType("full");
+      setScopeValue("all");
+      setAlwaysIncludedGroupIds(
+        detail.scopes
+          .filter((scope) => scope.scope_type === "device_group")
+          .map((scope) => scope.scope_value)
+          .sort(),
+      );
+    } else if (
       firstScope &&
       (firstScope.scope_type === "full" ||
         firstScope.scope_type === "platform" ||
         firstScope.scope_type === "user_cohort" ||
-        firstScope.scope_type === "ip_range")
+        firstScope.scope_type === "ip_range" ||
+        firstScope.scope_type === "device_group")
     ) {
       setScopeType(firstScope.scope_type);
       setScopeValue(firstScope.scope_value);
+      setAlwaysIncludedGroupIds([]);
     }
   }, [detail]);
 
   const save = useMutation({
     mutationFn: () =>
       updateRelease(appId, release.id, {
+        expected_revision: detail?.release.revision ?? release.revision,
         changelog: changelog.trim() || null,
         should_force_update: shouldForceUpdate,
-        rollout_cohort_count: rolloutPercent < 100 ? rolloutPercent : null,
-        scopes:
-          scopeType === "full"
-            ? [{ scope_type: "full", scope_value: "all" }]
-            : [{ scope_type: scopeType, scope_value: scopeValue.trim() }],
+        rollout_cohort_count:
+          scopeType === "full" && rolloutPercent < 100 ? rolloutPercent : null,
+        scopes: buildReleaseScopes(scopeType, scopeValue, alwaysIncludedGroupIds),
       }),
     onSuccess: () => {
       toast.show({ kind: "success", title: "Release updated" });
@@ -712,7 +862,7 @@ function EditReleaseDialog({
 
   return (
     <Dialog open onOpenChange={(open) => { if (!open) onClose(); }}>
-      <DialogContent className="max-w-lg">
+      <DialogContent className="w-[calc(100vw-2rem)] max-w-3xl">
         <DialogHeader>
           <div>
             <DialogTitle>Edit release</DialogTitle>
@@ -725,11 +875,7 @@ function EditReleaseDialog({
           <div className="space-y-3">
           <div>
             <label className="label">Release notes</label>
-            <textarea
-              className="input text-xs min-h-[120px]"
-              value={changelog}
-              onChange={(e) => setChangelog(e.target.value)}
-            />
+            <ChangelogEditor value={changelog} onChange={setChangelog} />
           </div>
           <div className="grid grid-cols-2 gap-3">
             <div>
@@ -740,6 +886,7 @@ function EditReleaseDialog({
                   platform: "Platform",
                   user_cohort: "User cohort",
                   ip_range: "IP range",
+                  device_group: "Device group",
                 }}
                 value={scopeType}
                 onValueChange={(v) => {
@@ -757,19 +904,45 @@ function EditReleaseDialog({
                   <SelectItem value="platform">Platform</SelectItem>
                   <SelectItem value="user_cohort">User cohort</SelectItem>
                   <SelectItem value="ip_range">IP range</SelectItem>
+                  <SelectItem value="device_group">Device group</SelectItem>
                 </SelectContent>
               </Select>
             </div>
             <div>
               <label className="label">Scope value</label>
-              <Input
-                value={scopeValue}
-                disabled={scopeType === "full"}
-                onChange={(e) => setScopeValue(e.target.value)}
-                placeholder={scopeType === "full" ? "all" : "android-arm64-v8a"}
-              />
+              {scopeType === "device_group" ? (
+                <Select
+                  items={Object.fromEntries((deviceGroups.data?.groups ?? []).map((group) => [group.id, group.name]))}
+                  value={scopeValue}
+                  onValueChange={(value) => setScopeValue(value as string)}
+                >
+                  <SelectTrigger><SelectValue placeholder="Choose group" /><SelectIcon /></SelectTrigger>
+                  <SelectContent>
+                    {(deviceGroups.data?.groups ?? []).map((group) => (
+                      <SelectItem key={group.id} value={group.id}>{group.name} ({group.member_count})</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              ) : (
+                <Input
+                  value={scopeValue}
+                  disabled={scopeType === "full"}
+                  onChange={(e) => setScopeValue(e.target.value)}
+                  placeholder={scopeType === "full" ? "all" : "android-arm64-v8a"}
+                />
+              )}
             </div>
           </div>
+          {scopeType === "full" && (
+            <div>
+              <label className="label">Always included device groups</label>
+              <AlwaysIncludedDeviceGroups
+                groups={deviceGroups.data?.groups ?? []}
+                selectedIds={alwaysIncludedGroupIds}
+                onChange={setAlwaysIncludedGroupIds}
+              />
+            </div>
+          )}
           <label className="flex items-center gap-2 text-xs">
             <Checkbox
               checked={shouldForceUpdate}
@@ -777,10 +950,12 @@ function EditReleaseDialog({
             />
             Force update
           </label>
-          <div className="flex items-center gap-2 text-xs">
-            <label className="flex-1">Rollout cohort %</label>
-            <RolloutPercentInput value={rolloutPercent} onChange={setRolloutPercent} />
-          </div>
+          {scopeType === "full" && (
+            <div className="flex items-center gap-2 text-xs">
+              <label className="flex-1">Rollout cohort %</label>
+              <RolloutPercentInput value={rolloutPercent} onChange={setRolloutPercent} />
+            </div>
+          )}
           </div>
         </DialogBody>
         <DialogFooter>
@@ -822,6 +997,10 @@ function NewReleaseDialog({
     queryKey: ["product-types", appId],
     queryFn: () => listProductTypes(appId),
   });
+  const deviceGroups = useQuery({
+    queryKey: ["device-groups", appId],
+    queryFn: () => listDeviceGroups(appId),
+  });
 
   // Pre-fill the channel with the app's default release channel (set in
   // AppDetail Settings). Falls back to first channel if no default.
@@ -844,10 +1023,9 @@ function NewReleaseDialog({
   const [versionName, setVersionName] = useState<string>("");
   const [versionCode, setVersionCode] = useState<string>("");
   const [changelog, setChangelog] = useState<string>("");
-  const [scopeType, setScopeType] = useState<"full" | "platform" | "user_cohort" | "ip_range">(
-    "full",
-  );
+  const [scopeType, setScopeType] = useState<EditableScopeType>("full");
   const [scopeValue, setScopeValue] = useState<string>("all");
+  const [alwaysIncludedGroupIds, setAlwaysIncludedGroupIds] = useState<string[]>([]);
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [shouldForceUpdate, setShouldForceUpdate] = useState(false);
   const [rolloutPercent, setRolloutPercent] = useState(100);
@@ -919,16 +1097,14 @@ function NewReleaseDialog({
       });
       // 2. create draft release. Publishing is an explicit lifecycle step,
       //    which keeps the release editable while assets are queued.
-      const scopes =
-        scopeType === "full"
-          ? [{ scope_type: "full", scope_value: "all" }]
-          : [{ scope_type: scopeType, scope_value: scopeValue.trim() }];
+      const scopes = buildReleaseScopes(scopeType, scopeValue, alwaysIncludedGroupIds);
       const release = await createRelease(appId, {
         build_id: build.id,
         status: "draft",
         scopes,
         should_force_update: shouldForceUpdate || undefined,
-        rollout_cohort_count: rolloutPercent < 100 ? rolloutPercent : undefined,
+        rollout_cohort_count:
+          scopeType === "full" && rolloutPercent < 100 ? rolloutPercent : undefined,
       });
       createdReleaseIdRef.current = release.id;
       // 3. upload + register each pending file. Failures do NOT abort — the
@@ -951,7 +1127,12 @@ function NewReleaseDialog({
         }
       }
       if (mode === "publish") {
-        const published = await publishRelease(appId, release.id);
+        const published = await publishRelease(
+          appId,
+          release.id,
+          scopes,
+          release.revision,
+        );
         return { release: published, assetFailures, mode };
       }
       return { release, assetFailures, mode };
@@ -1137,11 +1318,10 @@ function NewReleaseDialog({
               </div>
               <div>
                 <label className="label">Release notes</label>
-                <textarea
-                  className="input text-xs min-h-[120px]"
+                <ChangelogEditor
                   value={changelog}
-                  onChange={(e) => setChangelog(e.target.value)}
-                  placeholder={"## What's new\n- Fix X\n- Add Y"}
+                  onChange={setChangelog}
+                  minHeight={220}
                 />
               </div>
             </div>
@@ -1184,7 +1364,11 @@ function NewReleaseDialog({
                   k="Scope"
                   v={
                     scopeType === "full"
-                      ? "full (all users)"
+                      ? `full (${rolloutPercent}%)${alwaysIncludedGroupIds.length > 0
+                        ? `; always ${alwaysIncludedGroupIds.map((groupId) =>
+                          deviceGroups.data?.groups.find((group) => group.id === groupId)?.name ?? groupId
+                        ).join(", ")}`
+                        : ""}`
                       : `${scopeType}: ${scopeValue || "?"}`
                   }
                 />
@@ -1194,9 +1378,9 @@ function NewReleaseDialog({
                     <summary className="cursor-pointer text-xs text-slate-500">
                       Release notes
                     </summary>
-                    <pre className="mt-1 p-2 bg-slate-50 rounded-sm text-xs whitespace-pre-wrap">
-                      {changelog}
-                    </pre>
+                    <div className="mt-2 rounded-md bg-slate-50 p-3">
+                      <ChangelogViewer value={changelog} />
+                    </div>
                   </details>
                 )}
               </div>
@@ -1209,10 +1393,67 @@ function NewReleaseDialog({
                     setShowAdvanced((v) => !v);
                   }}
                 >
-                  {showAdvanced ? "▾" : "▸"} Advanced options (force update, rollout %)
+                  {showAdvanced ? "▾" : "▸"} Advanced options (scope, force update, rollout %)
                 </summary>
                 {showAdvanced && (
                   <div className="mt-2 p-3 border border-slate-200 rounded-sm space-y-2">
+                    <div className="grid grid-cols-2 gap-2">
+                      <div>
+                        <label className="label">Release scope</label>
+                        <Select
+                          items={{ full: "Full", platform: "Platform", user_cohort: "User cohort", ip_range: "IP range", device_group: "Device group" }}
+                          value={scopeType}
+                          onValueChange={(value) => {
+                            const next = value as typeof scopeType;
+                            setScopeType(next);
+                            setScopeValue(next === "full" ? "all" : "");
+                          }}
+                        >
+                          <SelectTrigger><SelectValue /><SelectIcon /></SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="full">Full</SelectItem>
+                            <SelectItem value="platform">Platform</SelectItem>
+                            <SelectItem value="user_cohort">User cohort</SelectItem>
+                            <SelectItem value="ip_range">IP range</SelectItem>
+                            <SelectItem value="device_group">Device group</SelectItem>
+                          </SelectContent>
+                        </Select>
+                      </div>
+                      <div>
+                        <label className="label">Scope value</label>
+                        {scopeType === "device_group" ? (
+                          <Select
+                            items={Object.fromEntries((deviceGroups.data?.groups ?? []).map((group) => [group.id, group.name]))}
+                            value={scopeValue}
+                            onValueChange={(value) => setScopeValue(value as string)}
+                          >
+                            <SelectTrigger><SelectValue placeholder="Choose group" /><SelectIcon /></SelectTrigger>
+                            <SelectContent>
+                              {(deviceGroups.data?.groups ?? []).map((group) => (
+                                <SelectItem key={group.id} value={group.id}>{group.name} ({group.member_count})</SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                        ) : (
+                          <Input
+                            value={scopeValue}
+                            disabled={scopeType === "full"}
+                            onChange={(event) => setScopeValue(event.target.value)}
+                            placeholder={scopeType === "full" ? "all" : "android-arm64-v8a"}
+                          />
+                        )}
+                      </div>
+                    </div>
+                    {scopeType === "full" && (
+                      <div>
+                        <label className="label">Always included device groups</label>
+                        <AlwaysIncludedDeviceGroups
+                          groups={deviceGroups.data?.groups ?? []}
+                          selectedIds={alwaysIncludedGroupIds}
+                          onChange={setAlwaysIncludedGroupIds}
+                        />
+                      </div>
+                    )}
                     <label className="flex items-center gap-2 text-xs">
                       <Checkbox
                         checked={shouldForceUpdate}
@@ -1220,15 +1461,15 @@ function NewReleaseDialog({
                       />
                       Force update — clients must upgrade on next launch
                     </label>
-                    <div className="flex items-center gap-2 text-xs">
-                      <label className="flex-1">
-                        Rollout cohort % (default 100)
-                      </label>
-                      <RolloutPercentInput
-                        value={rolloutPercent}
-                        onChange={setRolloutPercent}
-                      />
-                    </div>
+                    {scopeType === "full" && (
+                      <div className="flex items-center gap-2 text-xs">
+                        <label className="flex-1">Rollout cohort %</label>
+                        <RolloutPercentInput
+                          value={rolloutPercent}
+                          onChange={setRolloutPercent}
+                        />
+                      </div>
+                    )}
                   </div>
                 )}
               </details>

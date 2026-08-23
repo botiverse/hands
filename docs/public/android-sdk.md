@@ -19,7 +19,7 @@ repositories {
 }
 
 dependencies {
-    implementation("com.github.botiverse:hands:android-sdk-v0.11.0")
+    implementation("com.github.botiverse:hands:android-sdk-v0.12.4")
 }
 ```
 
@@ -37,7 +37,7 @@ repositories {
 }
 
 dependencies {
-    implementation("build.hands:hands-android-sdk:0.11.0")
+    implementation("build.hands:hands-android-sdk:0.12.4")
 }
 ```
 
@@ -62,11 +62,43 @@ val checker = UpdateChecker(
     installedVersionCode = BuildConfig.VERSION_CODE.toLong(),
     channel = BuildConfig.HANDS_CHANNEL,
     arch = Build.SUPPORTED_ABIS.firstOrNull(),
+    // Pass the app-selected locale; the SDK never guesses system locale.
+    languageTag = currentAppLanguageTag,
+    eventListener = HandsUpdateEventListener(updateDiagnostics::append),
 )
 
-// suspending; returns the response even when no update is available
-val response = checker.checkAndInstall()
+// Idempotent: checks only from a restartable state, waits for active work,
+// and reopens the same verified APK after returning from the system installer.
+val status = checker.install()
 ```
+
+Call `checker.status()` on update-page/lifecycle resume and map the stable
+lower-case states: `idle`, `checking`, `patching`, `downloading`,
+`ready_to_install`, `installer_opened`, `failed`, `stale`, and `installed`.
+`installed` is reached only after PackageManager observes the exact target
+version. If the user returns without accepting the system installer, the state
+remains installable; `reopenPendingInstaller()` reopens the same APK without a
+duplicate download.
+
+The SDK persists a package/origin/app/channel/product/platform/architecture
+bound transaction containing target/build/asset identity, DownloadManager id,
+and the expected app-scoped file. It deliberately does not persist signed
+download URLs or auth material. Resume reconciliation checks installed version,
+DownloadManager, path ownership, file size, SHA-256 when supplied, exact APK
+package/target version, and signing certificates. Missing, changed, or unsafe
+inputs fail closed as `stale`/`failed` with a stable `errorCode`.
+
+`HandsUpdateEventListener` receives structured check, delta download/apply/
+validation/fallback, full-download, content-URI, installer, reconciliation,
+failure, and cleanup events for inclusion in host feedback diagnostics; Logcat
+is not the only telemetry path. Valid explicit BCP-47 `languageTag` values are
+sent as `X-Hands-Lang` and `Accept-Language`. Missing/malformed values send
+neither header, while unsupported languages retain the server's English
+fallback. Events/status include requested and resolved language tags.
+
+The `0.12.4` and newer AARs use 16 KB-compatible ELF `PT_LOAD` alignment for
+the 64-bit native crash library. Publication verifies the AAR and its matching
+unstripped native-symbols archive before either artifact is released.
 
 The SDK sends a stable per-install id (`X-Hands-Device-Id`, from
 `HandsDeviceId`; the server still accepts the legacy `X-Quiver-Device-Id`) so
@@ -75,7 +107,8 @@ the server can bucket the device for **staged rollouts**
 devices, and each device keeps its bucket as you raise the percentage.
 
 To check without installing (e.g. to render your own "update available" UI),
-call `HandsClient(baseUrl).checkForUpdate(...)` and act on the result.
+call `HandsClient(baseUrl).checkForUpdate(..., languageTag = ...)` and act on
+the result.
 
 ## Feedback
 
@@ -130,7 +163,29 @@ class App : Application() {
 To get readable (deobfuscated) stacks in the console, publish the release
 with its R8/ProGuard `mapping.txt` (and, for NDK crashes, the unstripped
 `.so` archive) — Hands symbolicates crash reports for that `versionCode`
-automatically.
+automatically. QNC2 native reports preserve the crashing thread's PC/LR/SP,
+registers, thread identity, and loaded-image ELF BuildIds. Symbolication is
+strictly fail-closed: the crash frame's BuildId must exactly match an ELF in
+the uploaded archive; Hands never guesses by version or filename. On Android
+11+ the SDK also attaches the matching `ApplicationExitInfo` trace and exit
+description when the OS retained them, providing the sanctioned
+tombstone/abort-message equivalent without reading `/data/tombstones`. The
+match requires the recorded process id, native-crash reason, and a narrow
+timestamp window; retained evidence is assigned one-to-one and persisted for
+deterministic retry rather than guessed from the nearest package exit.
+
+## Release health
+
+`Hands.install(...)` tracks foreground sessions automatically. A session ends
+after the app has remained in the background for 30 seconds; a quick activity
+or configuration transition stays within the same session. Start/end/crash
+events are committed on-device before delivery and retried after a network or
+process failure.
+
+The app overview uses these events to show crash-free sessions and crash-free
+devices by version and channel. Pass `trackSessions = false` to
+`Hands.install` only when the host app intentionally opts out of release-health
+telemetry.
 
 ## Device analytics
 

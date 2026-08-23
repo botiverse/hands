@@ -12,8 +12,8 @@ const NO_AUTH_HELP =
   "  • Agents / CI: set HANDS_BEARER_TOKEN to a deploy token\n" +
   "      (console → App → Settings → Deploy Tokens; publisher role to release).\n" +
   "  • Humans: run `hands login` and paste the browser callback JWT.\n" +
-  "  • Raft agents: run `raft integration login --service <hands-service>` and use\n" +
-  "      the integration session through `raft integration invoke`.";
+  "  • Raft agents: run `hands login` — it auto-detects the managed agent and completes\n" +
+  "      the agent-login handshake via your Raft integration session (no URL to open).";
 
 interface MeResponse {
   account?: {

@@ -1,10 +1,24 @@
 import type { Context, MiddlewareHandler } from "hono";
 import { currentActorInfo, type AdminAccount, type AdminEnv } from "../middleware/auth";
-import type { AppDeployToken } from "./deploy_tokens";
+import {
+  hasDeployTokenPermission,
+  resolveDeployTokenPermissions,
+  type AppDeployToken,
+} from "./deploy_tokens";
+import {
+  APP_PERMISSION_MINIMUM_ROLE,
+  isAppAtLeast,
+  isAppRole,
+  strongestAppRole,
+  type AppRole,
+  type AppPermission,
+} from "./app_permissions";
 import { dashboardOrigin } from "./origin";
 
+export { isAppAtLeast, isAppRole } from "./app_permissions";
+export type { AppRole, AppPermission } from "./app_permissions";
+
 export type OrgRole = "owner" | "admin" | "member" | "viewer";
-export type AppRole = "admin" | "publisher" | "viewer";
 export type EffectiveRole = OrgRole | AppRole;
 
 type RoleContext = AdminEnv & { Bindings: Env };
@@ -17,18 +31,8 @@ const orgRank: Record<OrgRole, number> = {
   owner: 4,
 };
 
-const appRank: Record<AppRole, number> = {
-  viewer: 1,
-  publisher: 2,
-  admin: 3,
-};
-
 export function isOrgRole(value: unknown): value is OrgRole {
   return value === "owner" || value === "admin" || value === "member" || value === "viewer";
-}
-
-export function isAppRole(value: unknown): value is AppRole {
-  return value === "admin" || value === "publisher" || value === "viewer";
 }
 
 export function isOrgAtLeast(role: OrgRole | null | undefined, minimum: OrgRole) {
@@ -36,13 +40,40 @@ export function isOrgAtLeast(role: OrgRole | null | undefined, minimum: OrgRole)
   return orgRank[role] >= orgRank[minimum];
 }
 
-export function isAppAtLeast(role: AppRole | null | undefined, minimum: AppRole) {
-  if (!role) return false;
-  return appRank[role] >= appRank[minimum];
-}
-
 function devTokenBypass(c: AdminContext) {
   return c.get("admin_actor") === "dev-token";
+}
+
+// App ids are UUIDs. A caller that passes a truncated/partial id (e.g. the
+// 8-char short id `hands apps list` used to print) must fail as a client error
+// AT THE RESOLUTION BOUNDARY — before any DB lookup or role check — with an
+// explicit "use the full app id", instead of falling through to the role check
+// and returning a misleading INSUFFICIENT_APP_ROLE.
+//
+// This is a SHAPE check only and adds no existence signal of its own: it rejects
+// an id built solely from UUID characters (hex + dashes) that is not a complete
+// UUID — i.e. a truncated UUID. A well-formed UUID that simply does not exist (or
+// that the caller may not access) is NOT rejected here; it continues to the
+// normal role path exactly as before. Anything containing a non-UUID character
+// (the synthetic slug-like ids used in tests, future schemes) is left untouched.
+// (Note: whether the role path itself distinguishes existing vs absent apps — via
+// the org_id echoed in the forbidden response — is a separate pre-existing concern
+// this gate neither introduces nor fixes.)
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+function appIdShapeError(c: AdminContext, appId: string) {
+  if (UUID_RE.test(appId)) return null;
+  if (!/^[0-9a-f-]+$/i.test(appId)) return null;
+  return c.json(
+    {
+      error: "invalid_app_id",
+      code: "EXACT_APP_ID_REQUIRED",
+      next_action:
+        `'${appId}' is not a complete app id. Pass the full app UUID ` +
+        `(the ID column of \`hands apps list\`), not a shortened or partial id.`,
+      app_id: appId,
+    },
+    400,
+  );
 }
 
 export function currentAccount(c: AdminContext): AdminAccount | null {
@@ -110,6 +141,38 @@ export async function getAppServerGrantRole(
   return row?.app_role ?? null;
 }
 
+async function getOwnerServerRole(
+  db: D1Database,
+  appId: string,
+  accountId: string,
+  serverId: string,
+  serverSlug: string | null,
+): Promise<{ org_role: OrgRole | null; legacy_app_role: AppRole | null } | null> {
+  const row = await db.prepare(
+    `SELECT om.org_role, asg.app_role, asg.access_model
+       FROM organizations o
+       JOIN org_members om ON om.org_id = o.id AND om.account_id = ?2
+       JOIN app_server_grants asg
+         ON asg.app_id = ?1
+        AND (
+          (asg.server_id IS NOT NULL AND asg.server_id = ?3)
+          OR (asg.server_slug IS NOT NULL AND asg.server_slug = ?4)
+        )
+      WHERE o.external_provider = 'raft'
+        AND o.external_id = ?3
+      LIMIT 1`,
+  ).bind(appId, accountId, serverId, serverSlug).first<{
+    org_role: OrgRole;
+    app_role: AppRole;
+    access_model: "legacy_role" | "owner_server";
+  }>();
+  if (!row) return null;
+  return {
+    org_role: row.access_model === "owner_server" ? row.org_role : null,
+    legacy_app_role: row.access_model === "legacy_role" ? row.app_role : null,
+  };
+}
+
 export async function getAppOrgId(db: D1Database, appId: string): Promise<string | null> {
   const row = await db
     .prepare("SELECT org_id FROM apps WHERE id = ?1 LIMIT 1")
@@ -122,23 +185,43 @@ export async function getEffectiveRole(
   db: D1Database,
   accountId: string,
   input: { orgId?: string | null; appId?: string | null },
-): Promise<{ org_role: OrgRole | null; app_role: AppRole | null; server_app_role: AppRole | null; org_id: string | null }> {
+): Promise<{
+  org_role: OrgRole | null;
+  app_role: AppRole | null;
+  server_app_role: AppRole | null;
+  server_org_role: OrgRole | null;
+  org_id: string | null;
+}> {
   const orgId = input.orgId ?? (input.appId ? await getAppOrgId(db, input.appId) : null);
   const account = input.appId
     ? (await db.prepare("SELECT server_id, server_slug FROM raft_accounts WHERE id = ?1 LIMIT 1")
       .bind(accountId)
       .first<{ server_id: string; server_slug: string | null }>()) ?? null
     : null;
-  const [orgRole, appRole, serverAppRole] = await Promise.all([
+  const [orgRole, appRole, ownerServerRole] = await Promise.all([
     orgId ? getOrgMemberRole(db, orgId, accountId) : Promise.resolve(null),
     input.appId ? getAppMemberRole(db, input.appId, accountId) : Promise.resolve(null),
     input.appId && account
-      ? getAppServerGrantRole(db, input.appId, account.server_id, account.server_slug)
+      ? getOwnerServerRole(
+          db,
+          input.appId,
+          accountId,
+          account.server_id,
+          account.server_slug,
+        )
       : Promise.resolve(null),
   ]);
+  const serverAppRole = ownerServerRole?.legacy_app_role ?? null;
+  const effectiveOrgRole = orgRole ?? ownerServerRole?.org_role ?? null;
   const roles = [appRole, serverAppRole].filter(Boolean) as AppRole[];
-  const effectiveAppRole = roles.sort((a, b) => appRank[b] - appRank[a])[0] ?? null;
-  return { org_role: orgRole, app_role: effectiveAppRole, server_app_role: serverAppRole, org_id: orgId };
+  const effectiveAppRole = strongestAppRole(roles);
+  return {
+    org_role: effectiveOrgRole,
+    app_role: effectiveAppRole,
+    server_app_role: serverAppRole,
+    server_org_role: ownerServerRole?.org_role ?? null,
+    org_id: orgId,
+  };
 }
 
 // Machine-readable 403 for insufficient role: agents/CLI can act on it
@@ -150,7 +233,11 @@ function forbiddenRole(
   scope: "org" | "app",
   requiredRole: string,
   currentRole: string | null,
-  ids: { org_id?: string | null; app_id?: string | null },
+  ids: {
+    org_id?: string | null;
+    app_id?: string | null;
+    current_permissions?: AppPermission[];
+  },
 ) {
   let resource = "";
   try {
@@ -186,8 +273,29 @@ function forbiddenRole(
       resource,
       org_id: ids.org_id ?? null,
       app_id: ids.app_id ?? null,
+      ...(ids.current_permissions
+        ? { current_permissions: ids.current_permissions }
+        : {}),
       manage_url: manageUrl,
       ...(scope === "org" ? { org_role: currentRole } : { app_role: currentRole }),
+    },
+    403,
+  );
+}
+
+function forbiddenAppPermission(
+  c: AdminContext,
+  appId: string,
+  permission: AppPermission,
+  deployToken: AppDeployToken,
+) {
+  return c.json(
+    {
+      error: "insufficient_app_permission",
+      code: "INSUFFICIENT_APP_PERMISSION",
+      required_permission: permission,
+      current_permissions: [...resolveDeployTokenPermissions(deployToken)],
+      app_id: appId,
     },
     403,
   );
@@ -216,9 +324,15 @@ export async function ensureAppRole(
   opts?: { orgMinimum?: OrgRole },
 ) {
   if (devTokenBypass(c)) return { ok: true as const, app_role: "admin" as AppRole, org_role: "owner" as OrgRole };
+  const shapeError = appIdShapeError(c, appId);
+  if (shapeError) return { ok: false as const, response: shapeError };
   const deployToken = currentDeployToken(c);
   if (deployToken) {
-    if (deployToken.app_id !== appId || !isAppAtLeast(deployToken.app_role, minimum)) {
+    if (
+      deployToken.app_id !== appId
+      || resolveDeployTokenPermissions(deployToken).size === 0
+      || !isAppAtLeast(deployToken.app_role, minimum)
+    ) {
       return {
         ok: false as const,
         response: forbiddenRole(
@@ -226,7 +340,10 @@ export async function ensureAppRole(
           "app",
           minimum,
           deployToken.app_id === appId ? deployToken.app_role : null,
-          { app_id: appId },
+          {
+            app_id: appId,
+            current_permissions: [...resolveDeployTokenPermissions(deployToken)],
+          },
         ),
       };
     }
@@ -280,6 +397,44 @@ export async function ensureAppRole(
   return { ok: true as const, ...role };
 }
 
+export async function ensureAppPermission(
+  c: AdminContext,
+  appId: string,
+  permission: AppPermission,
+  opts?: { orgMinimum?: OrgRole },
+) {
+  if (devTokenBypass(c)) return { ok: true as const, app_permission: permission };
+  const shapeError = appIdShapeError(c, appId);
+  if (shapeError) return { ok: false as const, response: shapeError };
+  const deployToken = currentDeployToken(c);
+  if (deployToken) {
+    if (deployToken.app_id !== appId || !hasDeployTokenPermission(deployToken, permission)) {
+      return {
+        ok: false as const,
+        response: forbiddenAppPermission(c, appId, permission, deployToken),
+      };
+    }
+    return { ok: true as const, app_permission: permission };
+  }
+  const minimumRole = APP_PERMISSION_MINIMUM_ROLE[permission];
+  if (!minimumRole) {
+    return {
+      ok: false as const,
+      response: c.json(
+        {
+          error: "insufficient_app_permission",
+          code: "INSUFFICIENT_APP_PERMISSION",
+          required_permission: permission,
+          current_permissions: [],
+          app_id: appId,
+        },
+        403,
+      ),
+    };
+  }
+  return ensureAppRole(c, appId, minimumRole, opts);
+}
+
 export function requireOrgRole(paramName: string, minimum: OrgRole): MiddlewareHandler<RoleContext> {
   return async (c, next) => {
     const orgId = c.req.param(paramName);
@@ -299,7 +454,7 @@ export function requireCurrentOrgRole(minimum: OrgRole): MiddlewareHandler<RoleC
         return;
       }
       const deployToken = c.get("admin_deploy_token");
-      if (deployToken && minimum === "viewer") {
+      if (deployToken && deployToken.scopes === null && minimum === "viewer") {
         await next();
         return;
       }
@@ -316,6 +471,60 @@ export function requireAppRole(minimum: AppRole): MiddlewareHandler<RoleContext>
     const appId = c.req.param("appId");
     if (!appId) return c.json({ error: "missing appId" }, 400);
     const allowed = await ensureAppRole(c, appId, minimum);
+    if (!allowed.ok) return allowed.response;
+    await next();
+  };
+}
+
+/**
+ * Console feedback routes: admit either the role, or a deploy token that carries
+ * the permission explicitly.
+ *
+ * The token must be role-free and, critically, **not bound to a reporter
+ * integration**. A bound token is confined by the reporter API to the tickets of
+ * that one integration; admitting it here would hand it the whole app's
+ * feedback. The binding decides scope, not the permission name — so the binding
+ * is what this checks.
+ *
+ * A bound token simply falls through to the role check and is rejected there,
+ * because `isAppAtLeast(null, …)` is false for a role-free token.
+ */
+export function requireAppRoleOrFeedbackPermission(
+  minimum: AppRole,
+  options: { orgMinimum?: OrgRole },
+  ...permissions: AppPermission[]
+): MiddlewareHandler<RoleContext> {
+  return async (c, next) => {
+    const appId = c.req.param("appId");
+    if (!appId) return c.json({ error: "missing appId" }, 400);
+    const token = currentDeployToken(c);
+    if (
+      token
+      && token.app_id === appId
+      && token.app_role === null
+      && token.reporter_integration_id === null
+      && permissions.some((permission) => resolveDeployTokenPermissions(token).has(permission))
+    ) {
+      // Which permission admitted them matters downstream: the comments endpoint
+      // serves both public replies and internal notes.
+      c.set("feedback_token_permissions", resolveDeployTokenPermissions(token));
+      await next();
+      return;
+    }
+    // The role branch must retain exactly the reach the guard it replaced had.
+    // requireFeedbackTriageRole passed { orgMinimum: "member" }; dropping that
+    // silently removed org-level members from routes they could always use.
+    const allowed = await ensureAppRole(c, appId, minimum, options);
+    if (!allowed.ok) return allowed.response;
+    await next();
+  };
+}
+
+export function requireAppPermission(permission: AppPermission): MiddlewareHandler<RoleContext> {
+  return async (c, next) => {
+    const appId = c.req.param("appId");
+    if (!appId) return c.json({ error: "missing appId" }, 400);
+    const allowed = await ensureAppPermission(c, appId, permission);
     if (!allowed.ok) return allowed.response;
     await next();
   };

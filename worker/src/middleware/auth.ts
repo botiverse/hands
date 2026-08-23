@@ -13,8 +13,14 @@
  */
 
 import type { Context, MiddlewareHandler } from "hono";
+import type { AppPermission } from "../lib/app_permissions";
 import { getCookie } from "hono/cookie";
-import { loadDeployToken, sha256Hex, type AppDeployToken } from "../lib/deploy_tokens";
+import {
+  loadDeployToken,
+  resolveDeployTokenPermissions,
+  sha256Hex,
+  type AppDeployToken,
+} from "../lib/deploy_tokens";
 
 // Session cookie carrying the Hands auth token. Set on the stateless agent-login
 // callback (routes/auth) so the raft CLI's Agent Login — which stores/replays a
@@ -46,10 +52,20 @@ export type AdminAccount = {
 export type AdminEnv = {
   Variables: {
     admin_account?: AdminAccount;
+    // The session-authenticated account BEFORE any x-hands-org-id org-switch.
+    // Set only on the valid Hands-session branch (never for the deploy-token
+    // fallback). Endpoints that must bind to "who authenticated" (e.g. agent-login
+    // grant issuance) read this, NOT the org-switchable admin_account.
+    authenticated_account?: AdminAccount;
     admin_deploy_token?: AppDeployToken;
     admin_actor?: string;
     org_id?: string;
     org_role?: "owner" | "admin" | "member" | "viewer";
+    // Set when a console feedback route admitted a role-free deploy token on a
+    // feedback permission rather than a role. Holds that token's resolved
+    // permissions, because one endpoint serves two actions: replying to the
+    // reporter needs feedback:comment, an internal note needs feedback:triage.
+    feedback_token_permissions?: ReadonlySet<AppPermission>;
   };
 };
 
@@ -170,6 +186,10 @@ export const authMiddleware: MiddlewareHandler<AdminEnv & { Bindings: Env }> =
       sessionToken,
     );
     if (sessionAccount) {
+      // Expose the pre-org-switch authenticated identity for endpoints that must
+      // bind to who actually authenticated (agent-login), independent of the
+      // client-controlled x-hands-org-id header.
+      c.set("authenticated_account", sessionAccount);
       const account = await accountForRequestedOrg(
         c.env,
         sessionAccount,
@@ -186,6 +206,31 @@ export const authMiddleware: MiddlewareHandler<AdminEnv & { Bindings: Env }> =
     if (bearerToken) {
       const deployToken = await loadDeployToken(c.env, bearerToken);
       if (deployToken) {
+        const effectivePermissions = resolveDeployTokenPermissions(deployToken);
+        if (effectivePermissions.size === 0) {
+          return c.json(
+            {
+              error: "invalid_deploy_token_grant",
+              code: "INVALID_DEPLOY_TOKEN_GRANT",
+              current_permissions: [],
+              app_id: deployToken.app_id,
+            },
+            403,
+          );
+        }
+        if (deployToken.scopes !== null) {
+          const pathname = new URL(c.req.url).pathname;
+          const appRoot = `/api/apps/${deployToken.app_id}`;
+          if (pathname !== appRoot && !pathname.startsWith(`${appRoot}/`)) {
+            return c.json(
+              {
+                error: "scoped_token_app_boundary",
+                app_id: deployToken.app_id,
+              },
+              403,
+            );
+          }
+        }
         c.set("admin_deploy_token", deployToken);
         c.set("admin_actor", `deploy-token:${deployToken.name}@${deployToken.app_slug}`);
         await next();

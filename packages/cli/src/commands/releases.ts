@@ -17,11 +17,78 @@ interface ReleaseShare {
   release_id: string;
   share_url?: string;
   created_at?: number;
-  expires_at: number;
+  expires_at: number | null;
   revoked_at: number | null;
 }
 
-const DEFAULT_SHARE_TTL_SECONDS = "604800";
+interface ReleaseScope {
+  scope_type: string;
+  scope_value: string;
+}
+
+const RELEASE_SCOPE_TYPES = new Set(["full", "platform", "user_cohort", "ip_range", "device_group"]);
+
+function collectRepeated(value: string, previous: string[] = []): string[] {
+  return [...previous, value];
+}
+
+function normalizeDeviceGroupIds(values: string[] | undefined, flag: string): string[] {
+  const normalized = (values ?? []).map((value) => value.trim());
+  if (normalized.some((value) => !value)) {
+    throw new Error(`${flag} requires a non-empty group id`);
+  }
+  const unique = [...new Set(normalized)];
+  if (unique.length !== normalized.length) {
+    throw new Error(`${flag} may not repeat the same group id`);
+  }
+  return unique.sort();
+}
+
+function normalizeStoredScopes(raw: unknown): ReleaseScope[] {
+  if (!Array.isArray(raw) || raw.length === 0) {
+    throw new Error("publish requires a non-empty stored release scope set; refusing publish");
+  }
+  const scopes = raw.map((entry, index) => {
+    const scope = entry as Partial<ReleaseScope> | null;
+    const scopeType = typeof scope?.scope_type === "string" ? scope.scope_type.trim() : "";
+    const scopeValue = typeof scope?.scope_value === "string" ? scope.scope_value.trim() : "";
+    if (!scopeType || !scopeValue || !RELEASE_SCOPE_TYPES.has(scopeType)) {
+      throw new Error(`stored release scope at index ${index} is empty or unsupported; refusing publish`);
+    }
+    if (scopeType === "full" && scopeValue !== "all") {
+      throw new Error("stored full release scope must be exactly full:all; refusing publish");
+    }
+    return { scope_type: scopeType, scope_value: scopeValue };
+  });
+  const keys = scopes.map((scope) => `${scope.scope_type}\u0000${scope.scope_value}`);
+  if (new Set(keys).size !== keys.length) {
+    throw new Error("stored release scope set contains duplicates; refusing publish");
+  }
+  const hasFull = scopes.some((scope) => scope.scope_type === "full");
+  if (hasFull && scopes.some((scope) => scope.scope_type !== "full" && scope.scope_type !== "device_group")) {
+    throw new Error("stored full release scope may be combined only with device groups; refusing publish");
+  }
+  return scopes.sort((left, right) => {
+    const leftRank = left.scope_type === "full" ? 0 : left.scope_type === "device_group" ? 1 : 2;
+    const rightRank = right.scope_type === "full" ? 0 : right.scope_type === "device_group" ? 1 : 2;
+    return leftRank - rightRank || left.scope_type.localeCompare(right.scope_type) || left.scope_value.localeCompare(right.scope_value);
+  });
+}
+
+function parseRolloutPercent(value: string): number {
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed < 0 || parsed > 100) {
+    throw new Error("--rollout-percent must be an integer from 0 to 100");
+  }
+  return parsed;
+}
+
+function releaseRevision(raw: unknown): number {
+  if (!Number.isInteger(raw) || Number(raw) < 0) {
+    throw new Error("release detail is missing a valid revision; refusing mutation");
+  }
+  return Number(raw);
+}
 
 export function registerReleaseCommands(program: Command): void {
   const releases = program
@@ -46,9 +113,11 @@ export function registerReleaseCommands(program: Command): void {
         status: string;
         changelog: string | null;
         rollout_cohort_count: number | null;
+        revision: number;
       };
       console.log(`Release ${r.id}`);
       console.log(`  status:  ${r.status}`);
+      console.log(`  revision: ${r.revision}`);
       console.log(`  rollout: ${r.rollout_cohort_count ?? 100}%`);
       console.log(`  changelog:`);
       console.log((r.changelog ?? "(none)").split("\n").map((l) => "    " + l).join("\n"));
@@ -67,6 +136,14 @@ export function registerReleaseCommands(program: Command): void {
       "Changelog file. Repeatable with lang=path, e.g. --changelog-file zh=zh.md --changelog-file en=en.md.",
       (value: string, prev: string[] = []) => [...prev, value],
     )
+    .option("--device-group <groupId>", "Replace release scope with one exact-rollout device group UUID.")
+    .option("--full", "Reset release scope to full:all.", false)
+    .option(
+      "--always-include-group <groupId>",
+      "Always include a device group alongside the full percentage rollout. Repeatable.",
+      collectRepeated,
+    )
+    .option("--rollout-percent <percent>", "Set the stable full-scope rollout percentage (0-100).")
     .option("--json", "Output JSON.", false)
     .action(
       async (
@@ -75,6 +152,10 @@ export function registerReleaseCommands(program: Command): void {
         opts: {
           changelog?: string[];
           changelogFile?: string[];
+          deviceGroup?: string;
+          full?: boolean;
+          alwaysIncludeGroup?: string[];
+          rolloutPercent?: string;
           json?: boolean;
         },
       ) => {
@@ -108,46 +189,124 @@ export function registerReleaseCommands(program: Command): void {
         } else if (plain !== undefined) {
           changelog = plain;
         }
-        if (changelog === undefined) {
+        const alwaysIncludeGroups = normalizeDeviceGroupIds(
+          opts.alwaysIncludeGroup,
+          "--always-include-group",
+        );
+        if (opts.deviceGroup && (opts.full || alwaysIncludeGroups.length > 0)) {
+          throw new Error("--device-group cannot be combined with --full or --always-include-group");
+        }
+        const rolloutPercent = opts.rolloutPercent === undefined
+          ? undefined
+          : parseRolloutPercent(opts.rolloutPercent);
+        if (
+          changelog === undefined &&
+          !opts.deviceGroup &&
+          !opts.full &&
+          alwaysIncludeGroups.length === 0 &&
+          rolloutPercent === undefined
+        ) {
           throw new Error(
-            "nothing to update: pass --changelog(-file) [lang=]value, e.g. --changelog-file zh=zh.md --changelog-file en=en.md",
+            "nothing to update: pass --changelog(-file), a scope option, or --rollout-percent",
           );
         }
+        const body: Record<string, unknown> = {};
+        if (changelog !== undefined) body.changelog = changelog;
+        if (opts.deviceGroup) {
+          body.scopes = [{ scope_type: "device_group", scope_value: opts.deviceGroup }];
+        } else if (opts.full || alwaysIncludeGroups.length > 0) {
+          body.scopes = [
+            { scope_type: "full", scope_value: "all" },
+            ...alwaysIncludeGroups.map((groupId) => ({
+              scope_type: "device_group",
+              scope_value: groupId,
+            })),
+          ];
+        }
+        if (rolloutPercent !== undefined) body.rollout_cohort_count = rolloutPercent === 100 ? null : rolloutPercent;
+        const detail = await apiRequest<{ release?: { revision?: unknown } }>(
+          `/api/apps/${appId}/releases/${releaseId}`,
+        );
+        body.expected_revision = releaseRevision(detail.release?.revision);
         const updated = await apiRequest<Record<string, unknown>>(
           `/api/apps/${appId}/releases/${releaseId}`,
-          { method: "PATCH", body: { changelog } },
+          { method: "PATCH", body },
         );
         if (opts.json) {
           console.log(JSON.stringify(updated, null, 2));
           return;
         }
-        console.log(
-          `Updated release ${releaseId} changelog${langs.length ? ` (${langs.join(", ")})` : ""}.`,
-        );
+        const updates = [
+          changelog !== undefined ? `changelog${langs.length ? ` (${langs.join(", ")})` : ""}` : "",
+          opts.deviceGroup ? `scope=device_group:${opts.deviceGroup}` : "",
+          opts.full || alwaysIncludeGroups.length > 0
+            ? `scope=full:all${alwaysIncludeGroups.map((groupId) => `+device_group:${groupId}`).join("")}`
+            : "",
+          rolloutPercent !== undefined ? `rollout=${rolloutPercent}%` : "",
+        ].filter(Boolean);
+        console.log(`Updated release ${releaseId} ${updates.join(" ")}.`);
       },
     );
 
   releases
     .command("publish <appIdOrSlug> <releaseId>")
     .description("Publish a draft release (the explicit human/agent step after changelog review).")
+    .option(
+      "--device-group <groupId>",
+      "Assert the exact stored device-group set before activation. Repeatable.",
+      collectRepeated,
+    )
     .option("--json", "Output JSON.", false)
-    .action(async (appIdOrSlug: string, releaseId: string, opts: { json?: boolean }) => {
+    .action(async (
+      appIdOrSlug: string,
+      releaseId: string,
+      opts: { deviceGroup?: string[]; json?: boolean },
+    ) => {
       const appId = await resolveAppId(appIdOrSlug);
+      const detail = await apiRequest<{
+        release?: { revision?: unknown };
+        scopes?: unknown;
+      }>(
+        `/api/apps/${appId}/releases/${releaseId}`,
+      );
+      const scopes = normalizeStoredScopes(detail.scopes);
+      const expectedRevision = releaseRevision(detail.release?.revision);
+      const assertedGroups = normalizeDeviceGroupIds(opts.deviceGroup, "--device-group");
+      if (opts.deviceGroup !== undefined) {
+        const storedGroups = scopes
+          .filter((scope) => scope.scope_type === "device_group")
+          .map((scope) => scope.scope_value)
+          .sort();
+        if (
+          assertedGroups.length !== storedGroups.length ||
+          assertedGroups.some((groupId, index) => groupId !== storedGroups[index])
+        ) {
+          throw new Error(
+            `--device-group assertions [${assertedGroups.join(", ")}] do not match stored [${storedGroups.join(", ")}]`,
+          );
+        }
+      }
       const result = await apiRequest<Record<string, unknown>>(
         `/api/apps/${appId}/releases/${releaseId}/publish`,
-        { method: "POST", body: {} },
+        {
+          method: "POST",
+          body: {
+            expected_scopes: scopes,
+            expected_revision: expectedRevision,
+          },
+        },
       );
       if (opts.json) {
         console.log(JSON.stringify(result, null, 2));
         return;
       }
-      console.log(`Published release ${releaseId}.`);
+      console.log(`Published release ${releaseId} with ${scopes.length} exact scope${scopes.length === 1 ? "" : "s"}.`);
     });
 
   releases
     .command("share <appIdOrSlug> <releaseId>")
-    .description("Create a revocable public share page for a release.")
-    .option("--ttl-seconds <seconds>", "Share lifetime in seconds.", DEFAULT_SHARE_TTL_SECONDS)
+    .description("Create a revocable public share page for a release (permanent until revoked by default).")
+    .option("--ttl-seconds <seconds>", "Optional share lifetime in seconds.")
     .option("--expires-at <millis>", "Absolute expiration as Unix milliseconds.")
     .option(
       "--password <password>",
@@ -164,8 +323,8 @@ export function registerReleaseCommands(program: Command): void {
         const body: { ttl_seconds?: number; expires_at?: number; password?: string } = {};
         if (opts.expiresAt) {
           body.expires_at = parsePositiveNumber(opts.expiresAt, "--expires-at");
-        } else {
-          body.ttl_seconds = parsePositiveNumber(opts.ttlSeconds ?? DEFAULT_SHARE_TTL_SECONDS, "--ttl-seconds");
+        } else if (opts.ttlSeconds !== undefined) {
+          body.ttl_seconds = parsePositiveNumber(opts.ttlSeconds, "--ttl-seconds");
         }
         const password = opts.password ?? readEnv("SHARE_PASSWORD");
         if (password) body.password = password;
@@ -179,7 +338,7 @@ export function registerReleaseCommands(program: Command): void {
         }
         console.log(`Created release share ${share.id}`);
         console.log(`  url:        ${share.share_url ?? ""}`);
-        console.log(`  expires_at: ${new Date(share.expires_at).toISOString()}`);
+        console.log(`  expires_at: ${share.expires_at === null ? "never" : new Date(share.expires_at).toISOString()}`);
         if (body.password) console.log("  password:   protected");
       },
     );
@@ -207,31 +366,43 @@ export function registerReleaseCommands(program: Command): void {
           return;
         }
         for (const share of res.shares) {
-          const state = share.revoked_at ? "revoked" : Date.now() >= share.expires_at ? "expired" : "active";
-          console.log(`${share.id}  ${state}  expires=${new Date(share.expires_at).toISOString()}`);
+          const state = share.revoked_at
+            ? "revoked"
+            : share.expires_at !== null && Date.now() >= share.expires_at
+              ? "expired"
+              : "active";
+          console.log(`${share.id}  ${state}  expires=${share.expires_at === null ? "never" : new Date(share.expires_at).toISOString()}`);
         }
       },
     );
 
   releases
     .command("update-share <appIdOrSlug> <releaseId> <shareId>")
-    .description("Renew or change a public release share expiration.")
-    .option("--ttl-seconds <seconds>", "New lifetime in seconds from now.", DEFAULT_SHARE_TTL_SECONDS)
+    .description("Renew or change a public release share expiration; omit expiry to leave it unchanged.")
+    .option("--ttl-seconds <seconds>", "New lifetime in seconds from now.")
     .option("--expires-at <millis>", "Absolute expiration as Unix milliseconds.")
+    .option("--never-expires", "Make the share permanent until revoked.", false)
     .option("--json", "Output JSON.", false)
     .action(
       async (
         appIdOrSlug: string,
         releaseId: string,
         shareId: string,
-        opts: { ttlSeconds?: string; expiresAt?: string; json?: boolean },
+        opts: { ttlSeconds?: string; expiresAt?: string; neverExpires?: boolean; json?: boolean },
       ) => {
         const appId = await resolveAppId(appIdOrSlug);
-        const body: { ttl_seconds?: number; expires_at?: number } = {};
+        const body: { ttl_seconds?: number; expires_at?: number | null } = {};
+        if (opts.neverExpires && (opts.expiresAt !== undefined || opts.ttlSeconds !== undefined)) {
+          throw new Error("--never-expires cannot be combined with --expires-at or --ttl-seconds");
+        }
         if (opts.expiresAt) {
           body.expires_at = parsePositiveNumber(opts.expiresAt, "--expires-at");
+        } else if (opts.neverExpires) {
+          body.expires_at = null;
+        } else if (opts.ttlSeconds !== undefined) {
+          body.ttl_seconds = parsePositiveNumber(opts.ttlSeconds, "--ttl-seconds");
         } else {
-          body.ttl_seconds = parsePositiveNumber(opts.ttlSeconds ?? DEFAULT_SHARE_TTL_SECONDS, "--ttl-seconds");
+          throw new Error("nothing to update: pass --ttl-seconds, --expires-at, or --never-expires");
         }
         const share = await apiRequest<ReleaseShare>(
           `/api/apps/${appId}/releases/${releaseId}/shares/${shareId}`,
@@ -242,7 +413,7 @@ export function registerReleaseCommands(program: Command): void {
           return;
         }
         console.log(`Updated release share ${share.id}`);
-        console.log(`  expires_at: ${new Date(share.expires_at).toISOString()}`);
+        console.log(`  expires_at: ${share.expires_at === null ? "never" : new Date(share.expires_at).toISOString()}`);
       },
     );
 
@@ -270,6 +441,37 @@ export function registerReleaseCommands(program: Command): void {
         console.log(`  revoked_at: ${new Date(res.revoked_at).toISOString()}`);
       },
     );
+
+  releases
+    .command("rebind-share <appIdOrSlug> <shareId>")
+    .description("Rebind an unrevoked public share to another active release in the same app and channel.")
+    .requiredOption("--from <releaseId>", "Expected current release UUID from a fresh share list.")
+    .requiredOption("--to <releaseId>", "Target active release UUID.")
+    .option("--json", "Output JSON.", false)
+    .action(async (
+      appIdOrSlug: string,
+      shareId: string,
+      opts: { from: string; to: string; json?: boolean },
+    ) => {
+      const appId = await resolveAppId(appIdOrSlug);
+      const result = await apiRequest<{
+        id: string;
+        previous_release_id: string;
+        release_id: string;
+        target: { version_name: string; version_code: number; file_hash: string | null };
+      }>(`/api/apps/${appId}/shares/${shareId}/rebind`, {
+        method: "POST",
+        body: { expected_release_id: opts.from, target_release_id: opts.to },
+      });
+      if (opts.json) {
+        console.log(JSON.stringify(result, null, 2));
+        return;
+      }
+      console.log(`Rebound release share ${result.id}`);
+      console.log(`  release: ${result.previous_release_id} -> ${result.release_id}`);
+      console.log(`  target:  ${result.target.version_name} (${result.target.version_code})`);
+      console.log(`  sha256:  ${result.target.file_hash ?? "unavailable"}`);
+    });
 }
 
 async function resolveAppId(slugOrId: string): Promise<string> {

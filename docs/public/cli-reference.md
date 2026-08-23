@@ -13,7 +13,7 @@ npm install -g @botiverse/hands-cli
 Or run it without a permanent install:
 
 ```bash
-npm exec --package @botiverse/hands-cli@0.3.2 -- hands --help
+npm exec --package @botiverse/hands-cli@0.5.15 -- hands --help
 ```
 
 In CI, pin a version so release scripts stay reproducible.
@@ -72,10 +72,27 @@ Show the installed version:
 hands version
 ```
 
+Create an app in the current Hands organization (requires org member or higher):
+
+```bash
+hands apps create \
+  --slug hands-example-web \
+  --name "Hands Example Web" \
+  --platform web \
+  --description "Hands web app example"
+```
+
 List apps visible to the current token:
 
 ```bash
 hands apps list
+```
+
+Read the app's public SDK client key explicitly (requires app admin; this does
+not rotate the key or return any deploy token):
+
+```bash
+hands apps client-key hands-example-web
 ```
 
 List builds for an app:
@@ -83,6 +100,28 @@ List builds for an app:
 ```bash
 hands builds list raft-android
 ```
+
+## Register External Node / CLI Bytes
+
+For an app created with platform `node`, `builds publish-version` records one
+externally hosted target without copying it into Hands storage:
+
+```bash
+hands builds publish-version raft-computer \
+  --version-name 0.72.13 \
+  --target linux-x64 \
+  --source-url https://cdn.raft.build/computer/0.72.13/linux-x64 \
+  --raw-sha256 "$RAW_SHA256" --raw-size "$RAW_SIZE" \
+  --gzip-sha256 "$GZIP_SHA256" --gzip-size "$GZIP_SIZE" \
+  --node-version 22.23.1 \
+  --source-commit "$GIT_COMMIT"
+```
+
+Run the command once per target. Hands stores the URL, raw/gzip hashes and
+sizes, Node version, and provenance under one app/version build. An identical
+declaration replays successfully; changing version-level or target-level
+immutable fields returns a conflict. This command does not upload bytes or
+activate a release/channel pointer.
 
 ## Publish Android
 
@@ -121,8 +160,10 @@ Public update checks only use the installable artifact. Mapping files, native sy
 ## Publish iOS / TestFlight
 
 CI should upload the **signed IPA** exported by macOS/Xcode, not an unsigned
-intermediate IPA. Hands stores and parses the IPA, but Apple signing material
-stays in the CI secret boundary.
+intermediate IPA. Hands stores the IPA and dSYM; Apple signing certificates,
+profiles, and passwords stay in the CI secret boundary. The separate App Store
+Connect API key used for server-side upload/distribution stays encrypted in
+Hands and is never copied to CI or an agent.
 
 Use `builds publish-ios` after `xcodebuild archive` and
 `xcodebuild -exportArchive`:
@@ -150,12 +191,92 @@ hands builds publish-ios raft-ios \
 dSYM. The `--dsym` file is a `.dSYM.zip` of the archive's `*.dSYM` bundles;
 without it, iOS crashes for that version show only raw frames.
 `--export-method`, `--appstore-build-number`, and `--testflight-status` are
-recorded as build metadata.
+recorded as build metadata. `publish-ios` creates the Hands build/release; it
+does not itself upload to Apple or activate TestFlight testing.
 
-The same signed IPA should then be uploaded to App Store Connect/TestFlight
-from the macOS CI job using Apple-supported tooling such as Transporter or
-fastlane `pilot`. Hands does not sign IPA files and should not receive Apple
-`.p8`, `.p12`, provisioning profiles, or passwords.
+An app admin then starts the **server-side upload** through the Hands console,
+API, or Raft integration action `upload-testflight-build`. Poll the returned
+Apple Build Upload id with `get-testflight-upload-status` until `COMPLETE` or
+`FAILED` (`response.state.state`; Apple errors/warnings/infos remain alongside
+it). This stage only uploads and processes the binary: it never assigns a beta
+group, notifies testers, activates the Hands release, or submits an App Store
+production release.
+
+After Apple exposes the exact build as `VALID`, list stable beta group ids:
+
+```bash
+hands builds testflight-groups raft-ios <hands-build-id>
+```
+
+Distribute to internal testers:
+
+```bash
+hands builds testflight-publish raft-ios <hands-build-id> \
+  --distribution internal \
+  --group-id 11111111-2222-3333-4444-555555555555 \
+  --what-to-test en-US="Verify login and Activity." \
+  --what-to-test zh-Hans="验证登录和活动页。" \
+  --wait
+```
+
+External distribution uses the same processed build, but submits TestFlight
+Beta App Review. `--notify-testers` enables Apple's automatic notification
+after approval; for an already-approved build without auto-notify pending,
+Hands sends the official build beta notification immediately.
+
+```bash
+hands builds testflight-publish raft-ios <hands-build-id> \
+  --distribution external \
+  --group-id aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee \
+  --what-to-test-file en-US=./testflight.en.txt \
+  --what-to-test-file zh-Hans=./testflight.zh.txt \
+  --notify-testers \
+  --json > testflight-publish-receipt.json
+```
+
+Preserve that mutation response: `notification=sent` or `already_sent` is the
+notification operation receipt. Do not add `--wait` to this receipt-producing
+call. With `--wait --json`, the CLI prints the later polled GET status instead
+of the original POST response, so `notification` and `operation_id` are not
+preserved.
+
+External review can take longer than a normal CLI session. Inspect the live
+state separately:
+
+```bash
+hands builds testflight-status raft-ios <hands-build-id> \
+  --distribution external \
+  --json
+```
+
+When `--wait` is useful and the POST operation receipt is not part of the
+acceptance contract, tune its bounded poll contract with
+`--poll-interval-seconds` and `--timeout-seconds` (defaults: 15 and 3600).
+Terminal failure/rejection/expiry states fail the command. External mode
+requires an existing or supplied What to Test localization; selected group ids
+must all match the requested internal/external mode.
+
+Notification values are `not_requested`, `scheduled`, `sent`, and
+`already_sent`. Only `sent`/`already_sent`, paired with a fresh exact-build
+`external_build_state=IN_BETA_TESTING`, prove notification completion. If the
+first response is `scheduled`, wait for that exact testing state, replay the
+same publish without `--wait` to preserve `already_sent`, then fresh-read the
+status again. `VALID`, group assignment, `BETA_APPROVED`, and
+`auto_notify_enabled=false` are not notification receipts.
+
+Hands follows Apple's role boundary: uploading the IPA requires Hands app
+admin; TestFlight group distribution requires Hands app publisher. The stored
+App Store Connect key must have an Apple role permitted for the requested
+operation (external testing: Account Holder, Admin, or App Manager; internal
+testing also permits Developer or Marketing). Apple limits beta builds to 90
+days and permits at most one build of a version in Beta App Review at a time.
+
+Official Apple references:
+
+- [Prerelease Versions and Beta Testers](https://developer.apple.com/documentation/appstoreconnectapi/prerelease-versions-and-beta-testers)
+- [Add internal testers](https://developer.apple.com/help/app-store-connect/test-a-beta-version/add-internal-testers/)
+- [Invite external testers](https://developer.apple.com/help/app-store-connect/test-a-beta-version/invite-external-testers/)
+- [TestFlight overview](https://developer.apple.com/help/app-store-connect/test-a-beta-version/testflight-overview/)
 
 For raw CI drafts, a single `--changelog-file ./changelog.txt` is still valid.
 For reviewed notes, prefer repeatable `lang=file` entries such as
@@ -249,6 +370,55 @@ release, then a human or agent reviews release notes and explicitly publishes.
 macOS update artifacts must be signed before upload; Hands hosts the signed
 files but does not sign Electron applications.
 
+## Publish Tauri updater artifacts
+
+For a complete setup, target matrix, release behavior, and signing boundary,
+start with the [Tauri Updater guide](tauri-updater.md). Tauri v2 applications
+can use a Hands channel as a dynamic updater endpoint:
+
+```json
+{
+  "bundle": { "createUpdaterArtifacts": true },
+  "plugins": {
+    "updater": {
+      "pubkey": "CONTENT FROM PUBLICKEY.PEM",
+      "endpoints": [
+        "https://hands.build/tauri/my-app/main/{{target}}/{{arch}}/{{current_version}}"
+      ]
+    }
+  }
+}
+```
+
+Publish the updater bundles and their Tauri-generated signatures together:
+
+```bash
+hands builds publish-tauri my-app \
+  --version-name 1.2.3 \
+  --channel main \
+  --bundle target/release/bundle/macos/MyApp.app.tar.gz \
+  --signature target/release/bundle/macos/MyApp.app.tar.gz.sig \
+  --target darwin-aarch64
+```
+
+Repeat `--bundle`, `--signature`, and `--target` in matching order for a
+multi-platform release. Supported updater bundles are macOS `.app.tar.gz`,
+Linux `.AppImage` or compatibility `.tar.gz`, and Windows `.exe` / `.msi`
+(or v1-compatible `.nsis.zip` / `.msi.zip`). Targets use Tauri's own names, such as `darwin-aarch64`,
+`linux-x86_64`, and `windows-x86_64`.
+
+The command creates a draft by default. Review it and publish explicitly; use
+`--publish` only in an already-authorized automation lane. The Tauri signing private key remains in
+CI; Hands stores only the signed bundle and the detached signature required by
+the updater response. Use separate `main`, `preview`, and `nightly` endpoints
+when applications follow different release channels.
+
+The Tauri lane currently serves full-scope releases only. Non-full scopes are
+ignored because Tauri does not send a stable client identifier for device-group
+or cohort resolution. Percentage rollout is not evaluated by the Tauri
+endpoint: keep it at 100% (or unset), and use separate channels such as
+`preview` and `main` for staged desktop delivery.
+
 ## Review and Publish (draft flow)
 
 CI creates drafts; publishing is an explicit step after changelog review:
@@ -269,6 +439,70 @@ hands releases publish raft-android <release-id>
 Bilingual changelogs are stored per language; clients receive the language
 matching their locale (`zh` normalizes to `zh-CN`; plain single-value
 changelogs are served as-is).
+
+### Exact device-group rollout
+
+Create a named group, add stable installation ids reported by the Hands update
+SDK, then bind a draft release to that group:
+
+```bash
+hands device-groups create raft-android --name "Artin test devices"
+hands device-groups add-member raft-android <group-id> \
+  --device-id <installation-device-id> --label "Huawei test tablet"
+hands device-groups update raft-android <group-id> \
+  --name "Artin test tablets" --description "Physical acceptance devices"
+hands releases update raft-android <release-id> --device-group <group-id>
+hands releases publish raft-android <release-id> --device-group <group-id>
+```
+
+The final publish remains an explicit authorization step. The CLI first reads
+release detail, canonicalizes every stored scope, and sends the complete set as
+`expected_scopes` together with that detail's `expected_revision`. The update
+command also fresh-reads and sends the revision before PATCH. Empty, duplicate,
+malformed, or unsupported scope state is
+rejected locally without a publish request. A repeatable `--device-group`
+asserts the exact stored device-group subset. Activation returns `409` if any
+scope or revision drifts between the detail read and the guarded server
+transition.
+Only exact group members receive the release; other devices fall back to the
+prior active release. List groups with `hands device-groups list <app>` and
+remove members with `device-groups remove-member`. Rename or change the
+operator note with `device-groups update`. Do not use IMEI or hardware serial
+numbers.
+
+### Percentage rollout with mandatory groups
+
+One release can combine a percentage-gated `full:all` scope with device groups
+whose members are always included:
+
+```bash
+hands releases update raft-android <release-id> \
+  --full \
+  --rollout-percent 25 \
+  --always-include-group <acceptance-group-id> \
+  --always-include-group <qa-group-id>
+
+hands releases publish raft-android <release-id> \
+  --device-group <acceptance-group-id> \
+  --device-group <qa-group-id>
+```
+
+`--always-include-group` is repeatable and implies `full:all`; `--full` by
+itself resets the scope to full only. `--rollout-percent` accepts integers from
+0 through 100, with 100 stored as an unrestricted full rollout. The legacy
+update form `--device-group <id>` still replaces the scope with one exact
+group-only rollout and cannot be combined with the full-rollout options.
+
+There is one non-cancelled release owner per
+app/channel/product/release-type/version code. The publish commands preflight
+that coordinate before creating a build or uploading assets. Cancelling
+disables the old release and frees the version for a corrected upload while
+preserving its build, assets, and audit history. Restore reactivates an old
+release only while no replacement owns the version. A rare conflict that wins
+after CLI preflight marks the new build `failed`, writes the conflict identity
+to provenance, and includes the build ID in the terminal error. For Android
+releases that already reached devices, publish the correction with a higher
+version code so clients can update.
 
 ## Share Links
 
@@ -298,6 +532,50 @@ hands feedback update raft-android <ticket-id> --status resolved
 
 `--assignee none` unassigns. All subcommands accept `--json` for scripting.
 
+## Direct API Access (`hands api`)
+
+A power-user / scripting affordance for calling a Hands API endpoint directly,
+over the **same** server-side RBAC, audit, and per-endpoint guards a dedicated
+subcommand uses. It is not a permission bypass and not a generic-SQL escape
+hatch — every write still hits the same server route.
+
+```bash
+# GET with repeatable query params
+hands api GET /api/apps --param platform=android
+
+# PATCH with an inline JSON body. NOTE: path params are raw — <appId> is the app
+# UUID, not a slug: `hands api` passes the path through and does not resolve slugs.
+hands api PATCH /api/apps/<appId>/releases/<releaseId>/shares/<shareId> \
+  --data '{"expires_at":null}'
+
+# ...or read the same body from a file with @path
+hands api PATCH /api/apps/<appId>/releases/<releaseId>/shares/<shareId> \
+  --data @body.json
+
+# Binary / same-origin streaming response: write the raw bytes to a file
+hands api GET /api/apps/<appId>/feedback/<ticketId>/attachments/<attachmentId> \
+  --output attachment.bin
+
+# Machine-readable: print only the response body (no status line)
+hands --json api GET /api/apps
+```
+
+- **Raw path params.** `<appId>` and the other ids are the resource UUIDs, not
+  slugs — `hands api` passes the path through verbatim and does not resolve
+  slugs the way the dedicated subcommands do.
+- **Same-origin `/api/*` only.** `<path>` is resolved against the active Hands
+  API base (honoring the root `--api` flag). A relative path or a **same-origin
+  absolute URL** is accepted; cross-origin absolute URLs, `//protocol-relative`
+  hosts, and `../` traversal that escapes the origin are rejected — so the
+  Authorization bearer never leaves the Hands origin.
+- **Redirects are never followed.** A `3xx` is reported, not chased; following a
+  redirect off-origin would leak the bearer.
+- **Auth + RBAC unchanged.** Reuses your existing CLI login/token; the server
+  enforces the same role checks as any other call.
+- Flags: `--param key=value` (repeatable), `--data <json|@file>`,
+  `--output <file>` (required for binary). Both the global `--api` and `--json`
+  flags are honored.
+
 ## CI Environment Variables
 
 Every variable is read as `HANDS_<name>` first, then the legacy `QUIVER_<name>`,
@@ -311,6 +589,17 @@ so existing CI keeps working unchanged.
 
 Legacy equivalents `QUIVER_API`, `QUIVER_BEARER_TOKEN`, `QUIVER_AUTH_TOKEN` are
 still accepted.
+
+## CI Examples
+
+Copy-ready pipelines built on these commands live in
+[botiverse/hands-examples](https://github.com/botiverse/hands-examples):
+
+- A reusable GitHub Action: `uses: botiverse/hands-examples/publish-android@v1`.
+- Complete GitHub Actions and GitLab CI workflows for Android, iOS
+  (publish + server-side [TestFlight upload](ios-testflight.md)), and
+  Electron (per-platform channels for the generic provider).
+- Plain-bash scripts for Jenkins, Buildkite, or any runner with bash and npm.
 
 ## Versioning Guidance
 

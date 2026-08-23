@@ -1,6 +1,11 @@
 import { common } from '@kit.AbilityKit';
 import fs from '@ohos.file.fs';
 import hilog from '@ohos.hilog';
+import { HandsCrashStorage } from './HandsCrashStorage';
+import {
+  crashLogsBeyondRetention,
+  uploadCrashThenDelete,
+} from './HandsCrashStoragePolicy';
 import { HandsFeedbackClient, HandsFeedbackExtras } from './HandsFeedbackClient';
 
 const TAG: string = 'HandsCrashUploader';
@@ -24,7 +29,7 @@ export interface CrashMeta {
  */
 export class HandsCrashUploader {
   static crashDir(context: common.UIAbilityContext): string {
-    return `${context.filesDir}/crashes`;
+    return HandsCrashStorage.crashDir(context);
   }
 
   /** Write the signature sidecar next to a crash log. */
@@ -46,10 +51,8 @@ export class HandsCrashUploader {
     }
     const logs = fs
       .listFileSync(dir)
-      .filter((name: string): boolean => name.startsWith('crash-') && name.endsWith('.txt'))
-      .sort()
-      .reverse();
-    for (const name of logs.slice(MAX_STORED_CRASHES - 1)) {
+      .filter((name: string): boolean => name.startsWith('crash-') && name.endsWith('.txt'));
+    for (const name of crashLogsBeyondRetention(logs, MAX_STORED_CRASHES)) {
       HandsCrashUploader.deletePair(`${dir}/${name}`);
     }
   }
@@ -94,8 +97,10 @@ export class HandsCrashUploader {
         { key: 'crash_at', value: String(meta.crash_at ?? 0) },
       ];
       try {
-        const ticketId = await HandsFeedbackClient.submit(context, message, 'crash', [logPath], extras);
-        HandsCrashUploader.deletePair(logPath);
+        const ticketId = await uploadCrashThenDelete(
+          (): Promise<string> => HandsFeedbackClient.submit(context, message, 'crash', [logPath], extras),
+          (): void => HandsCrashUploader.deletePair(logPath),
+        );
         hilog.info(0x0000, TAG, 'uploaded crash %{public}s as %{public}s', sidecarName, ticketId.slice(0, 8));
       } catch (error) {
         hilog.warn(0x0000, TAG, 'crash upload failed for %{public}s: %{public}s', sidecarName, String(error));

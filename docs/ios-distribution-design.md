@@ -1,12 +1,16 @@
 # iOS distribution and TestFlight spec
 
-Status: draft spec for review
+Status: implemented baseline; follow-up design remains below
 Owner: Codex-Android-DevOPS
-Updated: 2026-07-09
+Updated: 2026-07-21
 
 Official references:
 
 - Apple App Store Connect Help: [Upload builds](https://developer.apple.com/help/app-store-connect/manage-builds/upload-builds/)
+- Apple App Store Connect API: [Prerelease Versions and Beta Testers](https://developer.apple.com/documentation/appstoreconnectapi/prerelease-versions-and-beta-testers)
+- Apple Help: [Add internal testers](https://developer.apple.com/help/app-store-connect/test-a-beta-version/add-internal-testers/)
+- Apple Help: [Invite external testers](https://developer.apple.com/help/app-store-connect/test-a-beta-version/invite-external-testers/)
+- Apple Help: [TestFlight overview](https://developer.apple.com/help/app-store-connect/test-a-beta-version/testflight-overview/)
 
 Hands should treat iOS as a first-class product type. The platform should know
 when an app ships iOS artifacts, collect the right release assets, track
@@ -18,9 +22,11 @@ The recommended lane is:
 1. macOS CI builds and signs the app.
 2. CI uploads `.ipa`, `.dSYM.zip`, and build metadata to Hands as an immutable
    build record.
-3. CI uploads the same signed `.ipa` to App Store Connect / TestFlight.
-4. CI or a poller writes TestFlight processing/distribution status back to
-   Hands.
+3. Hands streams that same immutable `.ipa` to Apple's Build Upload API using
+   the app's encrypted server-side ASC credential.
+4. Hands resolves the processed build, assigns selected beta groups, writes
+   localized What to Test text, submits external Beta App Review when needed,
+   and synchronizes Apple state.
 5. Hands remains the release system of record; Apple remains the iOS
    distribution system.
 
@@ -31,9 +37,10 @@ The recommended lane is:
   model.
 - Manage TestFlight distribution configuration in Hands without exposing raw
   Apple secrets.
-- Support automated internal TestFlight uploads from CI.
-- Leave room for external TestFlight review, ad-hoc OTA, and enterprise OTA
-  without forcing those into the first implementation.
+- Support internal and external TestFlight distribution without exporting ASC
+  credentials to CI or agents.
+- Leave room for ad-hoc OTA and enterprise OTA without conflating either with
+  TestFlight or App Store production publishing.
 
 ## Non-goals
 
@@ -188,13 +195,14 @@ Inputs:
 
 Required CI secrets depend on signing mode. For the manual-secrets mode:
 
-- `ASC_KEY_ID`
-- `ASC_ISSUER_ID`
-- `ASC_PRIVATE_KEY_P8`
 - `IOS_DIST_CERT_P12`
 - `IOS_DIST_CERT_PASSWORD`
 - `IOS_PROVISIONING_PROFILE`
 - `HANDS_BEARER_TOKEN` or app deploy token
+
+The App Store Connect Key ID, Issuer ID, and `.p8` are configured once in
+Hands App Settings. Hands encrypts them server-side; CI and Raft agents never
+receive the key.
 
 Workflow:
 
@@ -210,13 +218,18 @@ Workflow:
    ```sh
    hands builds publish-ios --ipa build/App.ipa --dsym build/App.dSYM.zip --draft
    ```
-9. Upload `.ipa` to App Store Connect with Apple-supported upload tooling:
-   Xcode Organizer, `altool`, or Transporter. In CI, prefer Transporter with
-   App Store Connect API authentication, or fastlane `pilot` as a maintained
-   wrapper around the Apple upload path.
-10. Poll App Store Connect until processing is complete or times out.
-11. Add selected internal tester groups.
-12. Write TestFlight state back to Hands.
+9. An authorized app admin invokes Hands `testflight-upload`; the Worker
+   streams the exact stored IPA to Apple's official Build Upload API.
+10. Poll the returned Build Upload id to
+    `state.state=COMPLETE|FAILED`, then resolve the exact app/version/build
+    tuple until the ASC build is `VALID`.
+11. List stable beta group ids and invoke `testflight-publish` with an explicit
+    `internal|external` mode, selected group ids, localized What to Test text,
+    and an opt-in notification flag.
+12. For external groups, submit Beta App Review and track
+    `WAITING_FOR_REVIEW|IN_REVIEW|APPROVED|REJECTED`; notify automatically after
+    approval or send the official build notification for an already-approved
+    build.
 13. Leave final public release/publish decision under the same draft-first
     release governance as other platforms.
 
@@ -226,22 +239,20 @@ require beta review and should be represented as `waiting_for_review`,
 
 ## API surface
 
-Minimal API additions:
+Current TestFlight API:
 
 ```text
-GET    /api/apps/:appId/ios/distribution-profiles
-POST   /api/apps/:appId/ios/distribution-profiles
-PATCH  /api/apps/:appId/ios/distribution-profiles/:profileId
-DELETE /api/apps/:appId/ios/distribution-profiles/:profileId
-
-POST   /api/apps/:appId/builds/:buildId/testflight
-GET    /api/apps/:appId/builds/:buildId/testflight
-PATCH  /api/apps/:appId/builds/:buildId/testflight
+POST   /api/apps/:appId/builds/:buildId/testflight-upload
+GET    /api/apps/:appId/testflight-uploads/:buildUploadId
+GET    /api/apps/:appId/builds/:buildId/testflight-groups
+POST   /api/apps/:appId/builds/:buildId/testflight-publish
+GET    /api/apps/:appId/builds/:buildId/testflight-publish
 ```
 
-`POST /testflight` should not upload to Apple directly from the Worker. It
-should create a requested operation or accept CI-reported state. The actual
-upload runs in CI where Xcode and Apple credentials are available.
+The Worker is the upload/distribution boundary because it already owns the
+encrypted ASC API credential and immutable Hands IPA. CI owns signing, but it
+does not need upload credentials. Every mutation writes an operation/audit
+record with provider ids and states, never credential material.
 
 Suggested TestFlight state:
 
@@ -252,10 +263,14 @@ Suggested TestFlight state:
   "app_store_connect_build_id": "abcdef",
   "version": "1.2.3",
   "build_number": "456",
-  "processing_status": "processing|processed|failed|timeout",
-  "internal_distribution_status": "not_started|distributed|failed",
-  "external_review_status": "not_submitted|waiting_for_review|in_review|approved|rejected",
-  "groups": ["Internal QA"],
+  "processing_state": "PROCESSING|VALID|FAILED|INVALID",
+  "internal_build_state": "READY_FOR_BETA_TESTING|IN_BETA_TESTING|...",
+  "external_build_state": "READY_FOR_BETA_SUBMISSION|WAITING_FOR_BETA_REVIEW|IN_BETA_REVIEW|BETA_APPROVED|IN_BETA_TESTING|...",
+  "external_review_status": "WAITING_FOR_REVIEW|IN_REVIEW|APPROVED|REJECTED",
+  "groups": [{"id":"...","name":"Internal QA","is_internal":true}],
+  "localizations": [{"locale":"en-US","whats_new":"Verify login"}],
+  "auto_notify_enabled": false,
+  "expiration_date": "2026-10-19T00:00:00Z",
   "build_url": "https://appstoreconnect.apple.com/...",
   "updated_at": "2026-07-09T00:00:00Z"
 }
@@ -276,8 +291,9 @@ Suggested TestFlight state:
 
 ## Security requirements
 
-- Never store Apple private keys, `.p8`, `.p12`, profile content, or passwords
-  in D1.
+- Store the App Store Connect `.p8` only as authenticated encrypted ciphertext;
+  never return plaintext after the write request. Keep signing `.p12`, profile
+  content, and passwords outside Hands in the CI signing boundary.
 - Never log secret values or raw `ExportOptions.plist` with embedded sensitive
   paths/tokens.
 - Redact secret-shaped values in CI logs.
@@ -289,28 +305,24 @@ Suggested TestFlight state:
 
 ## Phasing
 
-### Phase 1: TestFlight bookkeeping and spec-visible UI
+### Implemented: Hands build, upload, and TestFlight distribution
 
-- Seed/support `ios-ipa`.
-- Add iOS distribution profile model with secret references.
-- Add admin UI for profile references.
-- Add TestFlight state fields on builds/releases.
-- Add CI adapter docs and a sample GitHub Actions workflow.
+- `ios-ipa` build plus private dSYM support asset.
+- Encrypted per-app ASC credential with verify/rotate/delete controls.
+- Official server-side Build Upload API and processing polling.
+- Stable internal/external beta group discovery.
+- Localized What to Test upsert, group assignment, external Beta App Review,
+  automatic/manual tester notification, and live state synchronization.
+- CLI and Raft integration actions that accept Hands build/group ids without
+  exposing Apple credentials.
 
-### Phase 2: CI upload adapter
-
-- Add `hands builds publish-ios-testflight` or equivalent CI command.
-- Upload IPA/dSYM to Hands.
-- Upload to TestFlight from macOS CI.
-- Write App Store Connect state back to Hands.
-
-### Phase 3: IPA parsing and dSYM symbolication integration
+### Follow-up: IPA parsing and dSYM symbolication integration
 
 - Implement `ipa-info` parser.
 - Connect dSYM uploads to the symbolication matrix.
 - Show iOS build metadata and crash symbolication readiness in admin UI.
 
-### Phase 4: Ad-hoc / enterprise OTA, if needed
+### Follow-up: Ad-hoc / enterprise OTA, if needed
 
 For machines and smoke devices, ad-hoc OTA may still be useful:
 
@@ -325,11 +337,6 @@ Developer Enterprise Program. Do not design the default flow around it.
 
 ## Open questions
 
-- Which GitHub Environment should hold iOS release secrets?
-- Do we require fastlane for the first adapter, or do we implement a pure
-  Xcode/Transporter path first?
 - Should Hands create GitHub workflow dispatches, or should mobile repos call
   Hands after their own build completes?
-- Should TestFlight external groups be platform-managed, or should Hands only
-  track their state?
 - How long should IPA archive retention be for TestFlight-only releases?

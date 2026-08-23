@@ -2,7 +2,7 @@ import type { Context } from "hono";
 import { currentActor, type AdminEnv } from "../middleware/auth";
 import { insertAuditLog } from "../lib/permissions";
 import { agcCredentialKind, getAgcCredentials, type AgcApiClientCredential, type AgcServiceAccountCredential } from "../lib/agc_credentials";
-import { addAgcTestPackage, bindAgcTestPackage, createAgcInvitationVersion, createAgcServiceAccountJwt, exchangeAgcApiClientToken, getAgcCompileStatus, requestAgcUpload, resolveAgcAppId, submitAgcTestVersion, uploadAgcObject } from "../lib/agc_api";
+import { addAgcTestPackage, AgcApiError, bindAgcTestPackage, createAgcInvitationVersion, createAgcServiceAccountJwt, exchangeAgcApiClientToken, getAgcCompileStatus, getAgcReviewStatus, requestAgcUpload, resolveAgcAppId, submitAgcTestVersion, uploadAgcObject } from "../lib/agc_api";
 
 type AdminContext = Context<AdminEnv & { Bindings: Env }>;
 type Submission = { id: string; app_id: string; build_id: string; state: string; external_app_id: string; external_version_id: string; external_package_id: string; provider_state_json: string; error_message: string | null; created_at: number; updated_at: number };
@@ -27,6 +27,83 @@ async function event(db: D1Database, submissionId: string, state: string, detail
     db.prepare("INSERT INTO market_submission_events (id, submission_id, state, detail_json, created_at) VALUES (?1,?2,?3,?4,?5)").bind(crypto.randomUUID(), submissionId, state, JSON.stringify(detail), now),
   ]);
 }
+/**
+ * Read-only AppGallery listing-review status. Mirrors the App Store review
+ * panel: no submission is performed and nothing is written — the credential is
+ * used strictly to read. Provider enum values are passed through unmapped so an
+ * unrecognised state is visible instead of being silently relabelled.
+ */
+export async function handleAppGalleryReview(c: AdminContext) {
+  const appId = c.req.param("appId") ?? "";
+  if (!c.env.AGC_CRED_ENC_KEY) return c.json({ error: "server is missing AGC_CRED_ENC_KEY" }, 500);
+  const app = await c.env.DB.prepare("SELECT platform FROM apps WHERE id = ?1")
+    .bind(appId)
+    .first<{ platform: string }>();
+  if (!app) return c.json({ error: "app not found" }, 404);
+  // AppGallery is the HarmonyOS store. The canonical platform value is "ohos"
+  // (see lib/app_platform.ts); "harmony" is not one of them, so comparing
+  // against it made this route inapplicable for every real app.
+  if (app.platform !== "ohos") return c.json({ platform: app.platform, applicable: false });
+
+  let packageName: string | null = null;
+  try {
+    // Credential load is inside the guard: decryption and key parsing can
+    // throw, and those messages must never escape to the caller either.
+    const credential = await getAgcCredentials(c.env.DB, c.env.AGC_CRED_ENC_KEY, appId);
+    if (!credential) return c.json({ configured: false, applicable: true });
+
+    const packageRow = await c.env.DB.prepare(
+      "SELECT bundle_id FROM channels WHERE app_id = ?1 AND slug = 'main' LIMIT 1",
+    ).bind(appId).first<{ bundle_id: string | null }>();
+    packageName = (packageRow?.bundle_id ?? "").trim() || null;
+    if (!packageName) {
+      return c.json({
+        configured: true,
+        applicable: true,
+        package_name: null,
+        needs_package_name: true,
+        error: "No AppGallery package name is set on the main channel.",
+      });
+    }
+
+    const agcAuth = await auth(c);
+    const externalAppId = await resolveAgcAppId(agcAuth, packageName);
+    const review = await getAgcReviewStatus(agcAuth, externalAppId);
+    return c.json({
+      configured: true,
+      applicable: true,
+      package_name: packageName,
+      agc_app_id: externalAppId,
+      review,
+    });
+  } catch (error) {
+    // Only AgcApiError carries a message we construct and control (provider
+    // text plus HTTP status). Anything else — credential decryption, private
+    // key parsing — returns a fixed string so an unbounded internal message
+    // can never reach a viewer, and only its error class is logged.
+    if (!(error instanceof AgcApiError)) {
+      // Only a stable category, never the raw message: these are credential
+      // decryption and private-key parsing failures, whose text can embed the
+      // key material itself. A log sink is persistent storage like any other.
+      console.error(
+        `[appgallery-review] app ${appId}: unexpected ${
+          error instanceof Error ? error.constructor.name : typeof error
+        }`,
+      );
+    }
+    const message = error instanceof AgcApiError
+      ? error.message
+      : "AppGallery review status is unavailable";
+    return c.json({
+      configured: true,
+      applicable: true,
+      package_name: packageName,
+      review: null,
+      review_error: message,
+    });
+  }
+}
+
 export async function handleStartAgcInvitationTest(c: AdminContext) {
   const appId = c.req.param("appId") ?? ""; const buildId = c.req.param("buildId") ?? "";
   const body = await c.req.json().catch(() => ({})) as { package_name?: unknown; test_desc?: unknown; onshelf_self_detect?: unknown };

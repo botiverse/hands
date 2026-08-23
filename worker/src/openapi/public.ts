@@ -25,7 +25,7 @@ const PublicApp = z
 
 const PublicScope = z
   .object({
-    scope_type: z.enum(["full", "platform", "user_cohort", "ip_range"]),
+    scope_type: z.enum(["full", "platform", "user_cohort", "ip_range", "device_group"]),
     scope_value: z.string(),
     release_id: z.string(),
     rollout_cohort_count: z.number().int().nullable().optional(),
@@ -138,8 +138,14 @@ const FeedbackSubmitResponse = z
     id: z.string(),
     status: z.string(),
     attachments: z.number().int().optional(),
+    attachment_names: z.array(z.string()).optional(),
+    attachment_refs: z.array(z.object({
+      id: z.string().uuid(),
+      filename: z.string(),
+    })).optional(),
     reference: z.string().optional(),
     ticket_url: z.string().nullable().optional(),
+    idempotent_replay: z.boolean().optional(),
   })
   .openapi("FeedbackSubmitResponse");
 
@@ -186,7 +192,7 @@ export function registerPublicRoutes(registry: OpenApiRegistry) {
     },
     responses: {
       200: success("Resolved release and downloadable assets.", PublicLatestResponse),
-      404: error("App, channel, active release, or matching scoped release was not found."),
+      404: error("App, channel, active release, or matching scoped release was not found. `code` distinguishes the cases: `app_not_found` | `channel_not_found` | `no_active_release` (the last covers every legitimately-empty state: new channel, all releases revoked, or nothing matching this client's scopes)."),
       500: error("Matched release data is inconsistent or signing failed."),
     },
   });
@@ -205,7 +211,7 @@ export function registerPublicRoutes(registry: OpenApiRegistry) {
     },
     responses: {
       200: success("Resolved release and downloadable assets.", PublicLatestResponse),
-      404: error("No matching release was found."),
+      404: error("No matching release was found. Same `code` values as /latest: `app_not_found` | `channel_not_found` | `no_active_release` (this endpoint resolves through the same release lookup)."),
     },
   });
 
@@ -333,20 +339,26 @@ export function registerPublicRoutes(registry: OpenApiRegistry) {
     tags: ["Public feedback"],
     summary: "Submit feedback or crash report",
     description:
-      "Accepts SDK/client feedback, bug reports, and crash reports. Requires the app client key in X-Hands-Client-Key or client_key.",
+      "Accepts SDK/client feedback, bug reports, and crash reports. Requires the app client key in X-Hands-Client-Key or client_key. An optional multipart submission_id UUID makes retries idempotent: an exact replay returns the existing ticket, while reusing the UUID for a different payload returns 409. Trusted server proxies may send an optional opaque, integration-scoped X-Hands-Reporter-Id together with an app-scoped bearer token granted feedback:write; Hands persists the external subject as the pseudonymous ticket owner and rate-limits by reporter instead of the proxy's shared IP.",
     request: {
       params: SlugParam,
       query: z.object({ client_key: z.string().optional() }),
-      headers: z.object({ "X-Hands-Client-Key": z.string().optional() }),
+      headers: z.object({
+        "X-Hands-Client-Key": z.string().optional(),
+        "X-Hands-Reporter-Id": z.string().optional(),
+        Authorization: z.string().optional(),
+      }),
       body: {
         content: multipart(),
         required: true,
       },
     },
     responses: {
+      200: success("Returned an existing ticket for an idempotent replay.", FeedbackSubmitResponse),
       201: success("Created feedback ticket.", FeedbackSubmitResponse),
       400: error("Invalid feedback payload."),
       401: error("Missing or invalid client key."),
+      409: error("Submission id was already used for a different payload."),
       413: error("Attachment is too large."),
       429: error("Rate limit exceeded."),
     },
@@ -392,9 +404,71 @@ export function registerPublicRoutes(registry: OpenApiRegistry) {
 
   register(registry, {
     method: "get",
+    path: "/tauri/{slug}/{channel}/{target}/{arch}/{currentVersion}",
+    tags: ["Public update"],
+    summary: "Check for a signed Tauri update",
+    description:
+      "Returns the Tauri v2 dynamic updater response for the active tauri-updater release, or 204 when the channel has no newer compatible version.",
+    request: {
+      params: z.object({
+        slug: z.string().openapi({ param: { name: "slug", in: "path" } }),
+        channel: z.string().openapi({ param: { name: "channel", in: "path" } }),
+        target: z.enum(["darwin", "windows", "linux"]).openapi({ param: { name: "target", in: "path" } }),
+        arch: z.enum(["x86_64", "aarch64", "i686", "armv7"]).openapi({ param: { name: "arch", in: "path" } }),
+        currentVersion: z.string().openapi({ param: { name: "currentVersion", in: "path" }, example: "1.2.3" }),
+      }),
+    },
+    responses: {
+      200: success("Signed Tauri update manifest.", z.object({
+        version: z.string(), url: z.string().url(), signature: z.string(),
+        notes: z.string().optional(), pub_date: z.string().optional(),
+      })),
+      204: { description: "No newer update is available." },
+      400: error("Updater parameters are invalid."),
+      404: error("The active release lacks a matching signed artifact."),
+    },
+  });
+
+  register(registry, {
+    method: "get",
+    path: "/tauri/{slug}/{channel}/artifacts/{releaseId}/{target}/{arch}/{file}",
+    tags: ["Public update"],
+    summary: "Download an active Tauri updater artifact",
+    request: {
+      params: z.object({
+        slug: z.string().openapi({ param: { name: "slug", in: "path" } }),
+        channel: z.string().openapi({ param: { name: "channel", in: "path" } }),
+        releaseId: z.string().openapi({ param: { name: "releaseId", in: "path" } }),
+        target: z.enum(["darwin", "windows", "linux"]).openapi({ param: { name: "target", in: "path" } }),
+        arch: z.enum(["x86_64", "aarch64", "i686", "armv7"]).openapi({ param: { name: "arch", in: "path" } }),
+        file: z.string().openapi({ param: { name: "file", in: "path" } }),
+      }),
+    },
+    responses: {
+      200: { description: "Immutable signed Tauri updater bundle.", content: binary() },
+      404: error("The active release or matching artifact was not found."),
+    },
+  });
+
+  register(registry, {
+    method: "get",
     path: "/public/r2/{key}",
     tags: ["Public downloads"],
     summary: "Download a signed public release artifact",
+    description:
+      "Serves an object whose `key` + `expires` were signed by a public resolution " +
+      "endpoint (e.g. /public/v2/apps/{slug}/latest). The signature is the authorization: " +
+      "this route accepts a matching row in either `active` or `draft` status, but no " +
+      "public endpoint ever SIGNS a URL for a non-active release, so a draft key is never " +
+      "reachable here in practice. Draft isolation is enforced by (1) resolution endpoints " +
+      "filtering to `status = 'active'` before signing and (2) the HMAC signature gating " +
+      "this route — NOT by the key path. Note: an active artifact's key is " +
+      "`apps/{appId}/pending/{hash}` — `pending/` is content-addressed storage layout that " +
+      "never moves on finalize, not a draft marker. Draft *metadata* (changelog, size) is " +
+      "separately and intentionally discoverable via /notes by exact version_code on " +
+      "public_history apps (a monotonic, unauthenticated integer — do not treat it as a " +
+      "gate); the *artifact* is not. Do not assume 'drafts are invisible' or " +
+      "'version_code protects them'.",
     request: {
       params: R2KeyParam,
       query: z.object({
@@ -405,9 +479,9 @@ export function registerPublicRoutes(registry: OpenApiRegistry) {
     responses: {
       200: { description: "Artifact stream.", content: binary() },
       302: { description: "Redirect to presigned object storage URL." },
-      400: error("Invalid signature parameters."),
-      403: error("Signature expired or invalid."),
-      404: error("Artifact is not attached to an active release."),
+      400: error("Malformed request. `code`: `key_required` | `expires_invalid`."),
+      403: error("Signature check failed. `code`: `url_expired` (re-resolve from /latest for a fresh URL) | `invalid_signature`."),
+      404: error("Object not downloadable at this key. `code`: `object_not_found` (no matching build asset / feedback attachment, or the R2 object is gone)."),
     },
   });
 
@@ -468,6 +542,36 @@ export function registerPublicRoutes(registry: OpenApiRegistry) {
     responses: {
       200: { description: "Icon image.", content: binary() },
       404: error("Share or icon was not found."),
+    },
+  });
+
+  register(registry, {
+    method: "get",
+    path: "/apps/{slug}/latest",
+    tags: ["Public pages"],
+    summary: "Render the latest active release landing page",
+    request: {
+      params: SlugParam,
+      query: z.object({ channel: z.string().optional(), lang: z.string().optional() }),
+    },
+    responses: {
+      200: { description: "Latest release landing page HTML.", content: html() },
+      404: error("App history is private or no active release exists."),
+    },
+  });
+
+  register(registry, {
+    method: "get",
+    path: "/apps/{slug}/latest/download",
+    tags: ["Public downloads"],
+    summary: "Download the latest active release artifact",
+    request: {
+      params: SlugParam,
+      query: z.object({ channel: z.string().optional() }),
+    },
+    responses: {
+      302: { description: "Redirects to a signed latest-release artifact URL." },
+      404: error("App history is private or no active release exists."),
     },
   });
 

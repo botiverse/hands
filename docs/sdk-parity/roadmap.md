@@ -7,20 +7,25 @@ value-per-effort. Each P0/P1 item lists the concrete change per layer
 ## P0 — small effort, large value
 
 ### P0.1 Session events → crash-free rate (release health)
-The single most persuasive Sentry metric. Today all four SDKs send only a
-24-hour-throttled device ping, so there is no session denominator and
-crash-free rate cannot be computed.
+The single most persuasive Sentry metric.
 
-- **Server**: `POST /public/v2/apps/:slug/sessions` accepting
+**Status (2026-07-19):** server ingest/rollup and the admin Release Health
+panel are complete. Android now tracks process sessions with the same 30-second
+background threshold as Sentry, persists events before delivery, and marks a
+fatal session crashed for next-launch upload. iOS, OHOS, and Electron lifecycle
+hooks remain.
+
+- **Server**: ✅ `POST /public/v2/apps/:slug/sessions` accepting
   `{device_id, session_id, event: "start"|"end", version_code, version_name,
-  channel, os, model, duration_ms?, crashed?}`; D1 table `app_sessions`
-  (rollup-friendly: daily aggregates per version). Crash reports carry
-  `session_id` so a session is marked crashed even when `end` never arrives.
-- **SDKs**: emit `start` on install/foreground, `end` on background (Android
+  channel, platform, os_version, device_model, duration_ms?, crashed?}`; D1
+  table `app_sessions`. Crash markers are sticky, and `end`/`crash` can create
+  a stub when an earlier `start` was lost.
+- **SDKs**: Android ✅; iOS/OHOS/Electron pending. Emit `start` on
+  install/foreground and `end` after backgrounding (Android
   `ProcessLifecycleOwner` / iOS `UIApplication` notifications / OHOS ability
-  lifecycle / Electron `app` events). Store-and-forward like crashes; batch
-  on next launch if offline.
-- **Admin**: Release Health panel — crash-free sessions %, crash-free
+  lifecycle / Electron `app` events). Persist before delivery and retry queued
+  events on the next launch when offline.
+- **Admin**: ✅ Release Health panel — crash-free sessions %, crash-free
   devices %, per release/channel; adoption curve already exists via device
   pings.
 
@@ -44,20 +49,27 @@ its own rolling JSONL log to fill this hole — demand is proven.
 
 ## P1 — crash-capture depth + symbolication completion + hygiene
 
-1. **Android ANR detection** — main-thread watchdog (5s heartbeat) +
+1. **Android native crash context (source complete; runtime gate open)** —
+   QNC2 captures crash-thread PC/LR/SP + registers/ucontext, pid/tid/name,
+   siginfo, loaded-image ELF BuildIds, and API 30+ `ApplicationExitInfo`
+   tombstone-equivalent evidence. Server/container require exact per-frame
+   BuildId and fail closed. Closure still requires a successor SDK/runtime
+   reproduction or same-device causal-fix soak; merge or absence alone is not
+   sufficient.
+2. **Android ANR detection** — main-thread watchdog (5s heartbeat) +
    `ApplicationExitInfo` (REASON_ANR) harvest on next launch.
-2. **iOS depth** — Mach exception handler, watchdog/hang detection,
+3. **iOS depth** — Mach exception handler, watchdog/hang detection,
    all-threads dump (documented v1 gaps in `HandsCrashReporter`).
-3. **OHOS native crashes** — wire `hiAppEvent`/`faultLogger` so native
+4. **OHOS native crashes** — wire `hiAppEvent`/`faultLogger` so native
    faults are captured, not just ArkTS errors.
-4. **Electron JS layer** — main-process `uncaughtException`/
+5. **Electron JS layer** — main-process `uncaughtException`/
    `unhandledRejection` + renderer error capture (renderer.init is currently
    a no-op); renderer sourcemap support; feedback submit API.
-5. **iOS dSYM server resolver** — client already ships
+6. **iOS dSYM server resolver** — client already ships
    `crash_binary_images` (UUID/slide/ranges); implement the server-side
    dSYM lookup + frame resolution (dSYMs already uploaded via
    `hands builds publish-ios --dsym`).
-6. **SDK hygiene** — single source of truth for versions (Android reports
+7. **SDK hygiene** — single source of truth for versions (Android reports
    0.1.0-SNAPSHOT/0.4.0/0.9.0 depending on where you look; OHOS package
    0.2.0 reports 0.1.0; iOS podspec 0.1.4 vs constant 0.1.5); finish the
    Quiver→Hands rename (mobile iOS app still consumes the old `Quiver` pod

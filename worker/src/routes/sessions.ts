@@ -132,20 +132,21 @@ export async function handleReleaseHealth(c: AdminContext) {
   const since = Date.now() - windowDays * 24 * 60 * 60 * 1000;
 
   const { results } = await c.env.DB.prepare(
-    `SELECT version_code, version_name,
+    `SELECT version_code, version_name, channel,
             COUNT(*) AS sessions,
             SUM(crashed) AS crashed_sessions,
             COUNT(DISTINCT device_id) AS devices,
             COUNT(DISTINCT CASE WHEN crashed = 1 THEN device_id END) AS crashed_devices
      FROM app_sessions
      WHERE app_id = ?1 AND started_at >= ?2
-     GROUP BY version_code, version_name
+     GROUP BY version_code, version_name, channel
      ORDER BY version_code DESC`,
   )
     .bind(appId, since)
     .all<{
       version_code: number | null;
       version_name: string | null;
+      channel: string | null;
       sessions: number;
       crashed_sessions: number | null;
       devices: number;
@@ -158,6 +159,7 @@ export async function handleReleaseHealth(c: AdminContext) {
     return {
       version_code: r.version_code,
       version_name: r.version_name,
+      channel: r.channel,
       sessions: r.sessions,
       crashed_sessions: crashedSessions,
       crash_free_sessions_pct:
@@ -169,24 +171,41 @@ export async function handleReleaseHealth(c: AdminContext) {
     };
   });
 
-  const totals = versions.reduce(
-    (acc, v) => {
-      acc.sessions += v.sessions;
-      acc.crashed_sessions += v.crashed_sessions;
-      return acc;
-    },
-    { sessions: 0, crashed_sessions: 0 },
-  );
+  const totals = await c.env.DB.prepare(
+    `SELECT COUNT(*) AS sessions,
+            SUM(crashed) AS crashed_sessions,
+            COUNT(DISTINCT device_id) AS devices,
+            COUNT(DISTINCT CASE WHEN crashed = 1 THEN device_id END) AS crashed_devices
+     FROM app_sessions
+     WHERE app_id = ?1 AND started_at >= ?2`,
+  )
+    .bind(appId, since)
+    .first<{
+      sessions: number;
+      crashed_sessions: number | null;
+      devices: number;
+      crashed_devices: number;
+    }>();
+  const totalSessions = totals?.sessions ?? 0;
+  const totalCrashedSessions = totals?.crashed_sessions ?? 0;
+  const totalDevices = totals?.devices ?? 0;
+  const totalCrashedDevices = totals?.crashed_devices ?? 0;
 
   return c.json({
     window_days: windowDays,
     since,
     totals: {
-      sessions: totals.sessions,
-      crashed_sessions: totals.crashed_sessions,
+      sessions: totalSessions,
+      crashed_sessions: totalCrashedSessions,
       crash_free_sessions_pct:
-        totals.sessions > 0
-          ? Math.round((1 - totals.crashed_sessions / totals.sessions) * 10000) / 100
+        totalSessions > 0
+          ? Math.round((1 - totalCrashedSessions / totalSessions) * 10000) / 100
+          : null,
+      devices: totalDevices,
+      crashed_devices: totalCrashedDevices,
+      crash_free_devices_pct:
+        totalDevices > 0
+          ? Math.round((1 - totalCrashedDevices / totalDevices) * 10000) / 100
           : null,
     },
     versions,

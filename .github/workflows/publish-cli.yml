@@ -47,13 +47,15 @@ jobs:
       - name: Resolve version
         id: version
         shell: bash
+        env:
+          REQUESTED_VERSION: ${{ inputs.version }}
         run: |
           set -euo pipefail
           package_version="$(node -p "require('./packages/cli/package.json').version")"
           if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
             requested="${GITHUB_REF_NAME#cli-v}"
-          elif [[ -n "${{ inputs.version }}" ]]; then
-            requested="${{ inputs.version }}"
+          elif [[ -n "${REQUESTED_VERSION:-}" ]]; then
+            requested="${REQUESTED_VERSION}"
           else
             requested="${package_version}"
           fi
@@ -90,18 +92,23 @@ jobs:
 
       - name: Publish dry run
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run }}
-        run: npm publish "${{ steps.pack.outputs.path }}" --access public --dry-run
+        run: npm publish "$PACKAGE_PATH" --access public --dry-run
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          PACKAGE_PATH: ${{ steps.pack.outputs.path }}
 
       - name: Publish to npm
         if: ${{ github.event_name != 'workflow_dispatch' || !inputs.dry_run }}
-        run: npm publish "${{ steps.pack.outputs.path }}" --access public
+        run: npm publish "$PACKAGE_PATH" --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          PACKAGE_PATH: ${{ steps.pack.outputs.path }}
 
       - name: Summary
         shell: bash
+        env:
+          DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run }}
+          RESOLVED_VERSION: ${{ steps.version.outputs.value }}
         run: |
           {
             echo "### CLI publish"
@@ -109,6 +116,6 @@ jobs:
             echo "| Field | Value |"
             echo "|---|---|"
             echo "| Package | \`@botiverse/hands-cli\` |"
-            echo "| Version | \`${{ steps.version.outputs.value }}\` |"
-            echo "| Dry run | \`${{ github.event_name == 'workflow_dispatch' && inputs.dry_run }}\` |"
+            echo "| Version | \`${RESOLVED_VERSION}\` |"
+            echo "| Dry run | \`${DRY_RUN}\` |"
           } >> "$GITHUB_STEP_SUMMARY"

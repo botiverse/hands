@@ -10,7 +10,7 @@ on:
       version:
         description: "SDK version to publish. Must match clients/ohos/hands/oh-package.json5."
         required: true
-        default: "0.2.1"
+        default: "0.3.4"
       dry_run:
         description: "Build and prepublish only; skip ohpm publish."
         required: true
@@ -54,23 +54,19 @@ jobs:
             echo "$required_path" >> "$GITHUB_PATH"
           done
 
-      - name: Resolve version
+      - name: Resolve and validate release metadata
         id: version
         shell: bash
+        env:
+          REQUESTED_VERSION: ${{ inputs.version }}
         run: |
           set -euo pipefail
-          package_version="$(node -e "const fs=require('fs'); const text=fs.readFileSync('clients/ohos/hands/oh-package.json5','utf8'); const m=text.match(/\"version\"\\s*:\\s*\"([^\"]+)\"/); if (!m) process.exit(1); process.stdout.write(m[1]);")"
-          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
-            requested="${GITHUB_REF_NAME#ohos-sdk-v}"
-          elif [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
-            requested="${{ inputs.version }}"
-          else
-            requested="${package_version}"
-          fi
-          if [[ "${requested}" != "${package_version}" ]]; then
-            echo "Requested version ${requested} does not match clients/ohos/hands/oh-package.json5 ${package_version}" >&2
-            exit 1
-          fi
+          package_version="$(node clients/ohos/scripts/release-metadata.mjs \
+            clients/ohos/hands/oh-package.json5 \
+            "${GITHUB_EVENT_NAME}" \
+            "${GITHUB_REF_TYPE}" \
+            "${GITHUB_REF_NAME}" \
+            "${REQUESTED_VERSION:-}")"
           echo "value=${package_version}" >> "$GITHUB_OUTPUT"
 
       - name: Print tool versions
@@ -83,6 +79,14 @@ jobs:
           ohpm --version
           hvigorw --version
 
+      - name: Test crash storage contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          corepack enable
+          pnpm install --filter @botiverse/hands-ohos-contract-tests... --frozen-lockfile
+          pnpm --filter @botiverse/hands-ohos-contract-tests test
+
       - name: Build HAR
         working-directory: clients/ohos
         shell: bash
@@ -92,6 +96,28 @@ jobs:
           hvigorw --sync --analyze=normal --parallel
           hvigorw clean --analyze=normal
           hvigorw --mode module -p module=hands@default assembleHar --analyze=normal --parallel
+
+      - name: Validate packaged release metadata
+        shell: bash
+        env:
+          REQUESTED_VERSION: ${{ inputs.version }}
+          RESOLVED_VERSION: ${{ steps.version.outputs.value }}
+        run: |
+          set -euo pipefail
+          packaged_manifest="$RUNNER_TEMP/hands-oh-package.json5"
+          tar -xOzf \
+            clients/ohos/hands/build/default/outputs/default/hands.har \
+            package/oh-package.json5 > "$packaged_manifest"
+          packaged_version="$(node clients/ohos/scripts/release-metadata.mjs \
+            "$packaged_manifest" \
+            "${GITHUB_EVENT_NAME}" \
+            "${GITHUB_REF_TYPE}" \
+            "${GITHUB_REF_NAME}" \
+            "${REQUESTED_VERSION:-}")"
+          if [[ "$packaged_version" != "${RESOLVED_VERSION}" ]]; then
+            echo "Packed HAR version $packaged_version differs from resolved version ${RESOLVED_VERSION}." >&2
+            exit 1
+          fi
 
       - name: Prepublish check
         working-directory: clients/ohos
@@ -172,6 +198,9 @@ jobs:
       - name: Summary
         if: always()
         shell: bash
+        env:
+          DRY_RUN: ${{ github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && inputs.dry_run) }}
+          RESOLVED_VERSION: ${{ steps.version.outputs.value }}
         run: |
           {
             echo "### OHOS SDK"
@@ -179,6 +208,6 @@ jobs:
             echo "| Field | Value |"
             echo "|---|---|"
             echo "| Package | \`@botiverse/hands\` |"
-            echo "| Version | \`${{ steps.version.outputs.value }}\` |"
-            echo "| Dry run | \`${{ github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && inputs.dry_run) }}\` |"
+            echo "| Version | \`${RESOLVED_VERSION}\` |"
+            echo "| Dry run | \`${DRY_RUN}\` |"
           } >> "$GITHUB_STEP_SUMMARY"

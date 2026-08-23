@@ -1,0 +1,108 @@
+name: Worker tests
+
+# Nothing ran the worker test suite. Every test result quoted in a review was a
+# number someone produced locally, and a local run is evidence about whatever tree it
+# happened to be sitting on — which is not necessarily the commit under review. That
+# is not hypothetical: a migration fix was destroyed by a `git checkout --` during a
+# mutation run, the following commit captured only its test, and the suite result
+# reported against that commit had been produced minutes earlier from a working tree
+# that no longer existed. A reviewer caught it by reading the Git object.
+#
+# A run here is bound to the commit by construction, so nobody has to be trusted about
+# which tree they were on, and nobody has to remember to check.
+
+on:
+  pull_request:
+    paths:
+      - "worker/**"
+      - "migrations/**"
+      - "packages/**"
+      - ".github/workflows/worker-tests.yml"
+      # The root files this job actually reads, enumerated rather than guessed:
+      # pnpm/action-setup takes packageManager from the root package.json; the pnpm
+      # cache and `install --frozen-lockfile` read the lockfile, the workspace file
+      # and that same package.json; worker/tsconfig.json extends tsconfig.base.json.
+      # There is no root .npmrc, .nvmrc, .node-version, .pnpmfile.cjs or patches/, so
+      # the set is closed at these. A lockfile-only CVE bump and a strict-mode flip in
+      # tsconfig.base.json are both real changes that would otherwise skip this job.
+      - "package.json"
+      - "pnpm-lock.yaml"
+      - "pnpm-workspace.yaml"
+      - "tsconfig*.json"
+      # Files the suite *asserts on* — a different set from the files the job reads in
+      # order to run, and the one this list originally missed. production_config.test.ts
+      # opens the deploy workflow and makes claims about it; that path matched nothing
+      # above, so a PR touching only it ran no tests. That happened: the reporter-session
+      # cleanup deleted the wiring this suite asserted, every check on the PR was green
+      # because this suite was not among them, and main went red on the merge commit.
+      #
+      # The whole directory, not the one file that broke. Listing the asserted files
+      # means deriving that list, and a derivation that misses one is silent in the
+      # direction of green — the same failure this entry exists to fix, one level up.
+      # A wildcard has nothing to miss.
+      #
+      # The cost of erring wide is measured, not assumed: the last eight runs of this
+      # job took 28-42s, median 35. Thirty-five seconds on an unrelated workflow edit is
+      # affordable waste; a guard that silently does not run is an unobservable failure.
+      # `paths` is a performance optimisation and was being used as a correctness
+      # boundary.
+      #
+      # "No test ran" and "every test passed" are the same green on a pull request page.
+      - ".github/workflows/**"
+      # cors_allow_headers.test.ts scans container/src and container/package.json
+      # (SOURCE_DIRS, MANIFESTS) because the container has no cors() today and its own
+      # suite does not run here. Without this entry, a PR touching only container/ does
+      # not run it — and a PR introducing the first cors() call is, almost by definition,
+      # a PR touching only container/. The instrument would have been absent from exactly
+      # the change it exists to catch. Its own `registrations.length > 0` guard is
+      # correctly written and would not have helped: a denominator only means anything
+      # in a run that happens.
+      #
+      # Second instance of the same defect in one census, which is why the entries above
+      # are wildcards and why this list is not being derived again.
+      - "container/**"
+  # No paths filter here, deliberately. Two lists are two things to keep in step, and
+  # the first was already out of step: this file itself was missing from the push
+  # list, so a change to the workflow could merge without main ever running it. The
+  # distinction a paths filter encodes — which changes are worth testing — is not one
+  # the property here cares about, which is only that the tree on main was tested.
+  # Pushes to main are essentially merges, so the extra runs are few and cheap.
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: worker-tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Run the worker test suite
+        working-directory: worker
+        run: pnpm test
+
+      # The type-check is deliberately not run here. `tsc` needs
+      # worker-configuration.d.ts, which `wrangler types` generates from the rendered
+      # production config, and that renderer validates its inputs against the real
+      # checked-in route -- it refuses placeholder values by design. Making it accept
+      # them to satisfy CI would weaken a production guard to buy a convenience, so
+      # the type-check stays where the real config exists: the deploy workflow runs it
+      # before every deploy.
+      #
+      # Naming the gap rather than leaving it implied: a type error can still reach
+      # main and will surface at deploy time.

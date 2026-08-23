@@ -12,6 +12,8 @@ import {
   createBuildUpload,
   createBuildUploadFile,
   commitBuildUploadFile,
+  expireAscBuild,
+  resolveAscBuild,
   resolveAscAppId,
   AscApiError,
   type AscApiCredentials,
@@ -139,7 +141,17 @@ describe("build upload resource shapes", () => {
       });
       return new Response(
         JSON.stringify({
-          data: { id: "bu-1", attributes: { state: "AWAITING_UPLOAD" } },
+          data: {
+            id: "bu-1",
+            attributes: {
+              state: {
+                state: "AWAITING_UPLOAD",
+                errors: [],
+                warnings: [],
+                infos: [],
+              },
+            },
+          },
         }),
         { status: 201 },
       );
@@ -152,6 +164,7 @@ describe("build upload resource shapes", () => {
       buildNumber: "1020000",
     });
     expect(bu.id).toBe("bu-1");
+    expect(bu.attributes.state?.state).toBe("AWAITING_UPLOAD");
     expect(String(fetchMock.mock.calls[0]![0])).toContain("/v1/buildUploads");
   });
 
@@ -213,6 +226,75 @@ describe("build upload resource shapes", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     await commitBuildUploadFile(creds, { fileId: "file-1", sha256: "abc123" });
+    expect(fetchMock).toHaveBeenCalledOnce();
+  });
+});
+
+describe("TestFlight build resolution", () => {
+  it("matches the exact app, marketing version, build number, and platform", async () => {
+    const { creds } = await generateTestCreds();
+    const fetchMock = vi.fn(async (url: unknown) => {
+      const parsed = new URL(String(url));
+      expect(parsed.pathname).toBe("/v1/builds");
+      expect(parsed.searchParams.get("filter[app]")).toBe("app-1");
+      expect(parsed.searchParams.get("filter[version]")).toBe("1000005");
+      expect(parsed.searchParams.get("filter[preReleaseVersion.version]")).toBe(
+        "1.0.0",
+      );
+      expect(parsed.searchParams.get("filter[preReleaseVersion.platform]")).toBe(
+        "IOS",
+      );
+      return Response.json({
+        data: [
+          {
+            id: "build-1",
+            attributes: {
+              version: "1000005",
+              processingState: "VALID",
+              expired: false,
+            },
+          },
+        ],
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const build = await resolveAscBuild(creds, {
+      ascAppId: "app-1",
+      version: "1.0.0",
+      buildNumber: "1000005",
+    });
+    expect(build?.id).toBe("build-1");
+  });
+
+  it("expires only the exact ASC Build resource with the documented PATCH shape", async () => {
+    const { creds } = await generateTestCreds();
+    const fetchMock = vi.fn(async (url: unknown, init?: RequestInit) => {
+      expect(new URL(String(url)).pathname).toBe("/v1/builds/build-1");
+      expect(init?.method).toBe("PATCH");
+      expect(JSON.parse(String(init?.body))).toEqual({
+        data: {
+          type: "builds",
+          id: "build-1",
+          attributes: { expired: true },
+        },
+      });
+      return Response.json({
+        data: {
+          id: "build-1",
+          attributes: {
+            version: "1000005",
+            processingState: "VALID",
+            expired: true,
+          },
+        },
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const build = await expireAscBuild(creds, "build-1");
+    expect(build.id).toBe("build-1");
+    expect(build.attributes.expired).toBe(true);
     expect(fetchMock).toHaveBeenCalledOnce();
   });
 });

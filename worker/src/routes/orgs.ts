@@ -432,7 +432,7 @@ export async function handleListAppServerGrants(c: AdminContext) {
   const allowed = await ensureAppRole(c, appId, "viewer");
   if (!allowed.ok) return allowed.response;
   const { results } = await c.env.DB.prepare(
-    `SELECT id, app_id, server_id, server_slug, app_role, granted_by, created_at, updated_at
+    `SELECT id, app_id, server_id, server_slug, app_role, access_model, granted_by, created_at, updated_at
      FROM app_server_grants
      WHERE app_id = ?1
      ORDER BY lower(COALESCE(server_slug, server_id)) ASC`,
@@ -448,14 +448,12 @@ export async function handleAddAppServerGrant(c: AdminContext) {
   const body = (await c.req.json().catch(() => ({}))) as {
     server_id?: unknown;
     server_slug?: unknown;
-    app_role?: unknown;
   };
   const serverId = String(body.server_id ?? "").trim() || null;
   const serverSlug = body.server_slug === undefined || body.server_slug === null
     ? null
     : String(body.server_slug).trim() || null;
   if (!serverId && !serverSlug) return c.json({ error: "server_id or server_slug required" }, 400);
-  if (!isAppRole(body.app_role)) return c.json({ error: "app_role must be admin/publisher/viewer" }, 400);
   const timestamp = now();
   const existing = await c.env.DB.prepare(
     `SELECT id
@@ -470,20 +468,20 @@ export async function handleAddAppServerGrant(c: AdminContext) {
   if (existing) {
     await c.env.DB.prepare(
       `UPDATE app_server_grants
-       SET server_id = ?1, server_slug = ?2, app_role = ?3, granted_by = ?4, updated_at = ?5
-       WHERE id = ?6`,
-    ).bind(serverId, serverSlug, body.app_role, actor.id, timestamp, existing.id).run();
+       SET server_id = ?1, server_slug = ?2, app_role = 'admin', access_model = 'owner_server', granted_by = ?3, updated_at = ?4
+       WHERE id = ?5`,
+    ).bind(serverId, serverSlug, actor.id, timestamp, existing.id).run();
   } else {
     await c.env.DB.prepare(
       `INSERT INTO app_server_grants
-       (id, app_id, server_id, server_slug, app_role, granted_by, created_at, updated_at)
-       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7)`,
+       (id, app_id, server_id, server_slug, app_role, access_model, granted_by, created_at, updated_at)
+       VALUES (?1, ?2, ?3, ?4, ?5, 'owner_server', ?6, ?7, ?7)`,
     ).bind(
       crypto.randomUUID(),
       appId,
       serverId,
       serverSlug,
-      body.app_role,
+      "admin",
       actor.id,
       timestamp,
     ).run();
@@ -491,10 +489,10 @@ export async function handleAddAppServerGrant(c: AdminContext) {
   await insertAuditLog(c.env.DB, c, {
     app_id: appId,
     action: "app_server_grant.upsert",
-    payload: { server_id: serverId, server_slug: serverSlug, app_role: body.app_role },
+    payload: { server_id: serverId, server_slug: serverSlug, access_model: "owner_server" },
     created_at: timestamp,
   });
-  return c.json({ ok: true, app_id: appId, server_id: serverId, server_slug: serverSlug, app_role: body.app_role }, 201);
+  return c.json({ ok: true, app_id: appId, server_id: serverId, server_slug: serverSlug, access_model: "owner_server" }, 201);
 }
 
 export async function handleUpdateAppServerGrant(c: AdminContext) {
@@ -502,31 +500,12 @@ export async function handleUpdateAppServerGrant(c: AdminContext) {
   const serverKey = c.req.param("serverId") ?? "";
   const allowed = await ensureAppRole(c, appId, "admin");
   if (!allowed.ok) return allowed.response;
-  const body = (await c.req.json().catch(() => ({}))) as {
-    server_id?: unknown;
-    server_slug?: unknown;
-    app_role?: unknown;
-  };
-  if (!isAppRole(body.app_role)) return c.json({ error: "app_role must be admin/publisher/viewer" }, 400);
-  const serverId = body.server_id === undefined || body.server_id === null
-    ? null
-    : String(body.server_id).trim() || null;
-  const serverSlug = body.server_slug === undefined || body.server_slug === null
-    ? null
-    : String(body.server_slug).trim() || null;
-  if (!serverId && !serverSlug) return c.json({ error: "server_id or server_slug required" }, 400);
-  await c.env.DB.prepare(
-    `UPDATE app_server_grants
-     SET server_id = ?1, server_slug = ?2, app_role = ?3, updated_at = ?4
-     WHERE app_id = ?5
-       AND (id = ?6 OR server_id = ?7 OR server_slug = ?8)`,
-  ).bind(serverId, serverSlug, body.app_role, now(), appId, serverKey, serverKey, serverKey).run();
-  await insertAuditLog(c.env.DB, c, {
+  return c.json({
+    error: "owner server access has no configurable role",
+    code: "OWNER_SERVER_ROLE_NOT_CONFIGURABLE",
     app_id: appId,
-    action: "app_server_grant.role_changed",
-    payload: { server_id: serverId, server_slug: serverSlug, app_role: body.app_role },
-  });
-  return c.json({ ok: true, app_id: appId, server_id: serverId, server_slug: serverSlug, app_role: body.app_role });
+    server_key: serverKey,
+  }, 409);
 }
 
 export async function handleRemoveAppServerGrant(c: AdminContext) {

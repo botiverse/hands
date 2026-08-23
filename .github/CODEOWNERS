@@ -1,0 +1,8 @@
+# Hands production observability is protected by a dedicated server-admin gate.
+/.github/CODEOWNERS @bytemain
+/worker/src/observability_data.ts @bytemain
+/worker/src/observability_rpc.ts @bytemain
+/worker/src/middleware/hands_admin.ts @bytemain
+/worker/src/routes/hands_admin.ts @bytemain
+/worker/src/lib/admin_raft_token.ts @bytemain
+/migrations/sql/0063_integrated_hands_admin.sql @bytemain

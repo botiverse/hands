@@ -31,6 +31,7 @@ import * as Hands from "@botiverse/hands-electron/main";
 Hands.init({
   appSlug: "my-desktop-app",     // your Hands app slug
   clientKey: "qk_live_...",      // public client key (safe to ship)
+  endpoint: "https://hands.build", // explicit during Quiver -> Hands migration
   release: app.getVersion(),     // version_name (defaults to app.getVersion())
   versionCode: 1020300,          // Hands version_code → picks the symbol set
   environment: "stable",         // channel

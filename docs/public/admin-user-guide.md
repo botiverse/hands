@@ -38,13 +38,29 @@ The standard flow follows the draft-first policy: CI creates a **draft** release
 
 For Android, Hands selects updates by `version_code`. A device receives an update only when the published release has a higher `version_code` than the client reports.
 
+A draft, active, or superseded release reserves its app, channel, product type,
+release type, and version-code coordinate. Cancelling disables that lifecycle
+and releases the coordinate for a corrected upload while preserving the old
+release ID, build, assets, and audit history. An old cancelled release can be
+restored only until a replacement owns the version; after that, operate on the
+replacement release instead. For Android builds that were already distributed,
+use a higher version code so installed clients can receive the correction.
+
 ### Staged rollouts
 
-Set a rollout percentage when creating or editing a release (number input with 5/25/50/100 presets), and raise it with **Bump rollout**. Devices are bucketed by their stable device id, keep their bucket while the percentage climbs, and gated-out devices receive the previous active release. Clients without a device id (older SDKs) only receive fully rolled-out releases.
+Set a rollout percentage when creating or editing a full release (number input
+with 5/25/50/100 presets), and raise it with **Bump rollout**. Select any number
+of **Always included device groups** on that same release for acceptance or QA
+devices. Group members receive the target regardless of their bucket; other
+devices keep a stable bucket while the percentage climbs. Gated-out and
+anonymous clients receive the previous eligible full release until rollout
+reaches 100%.
 
-Each release row shows update-check analytics: how many devices are already
-**on this version** and how many were **offered** it (update checks from older
-clients), so you can see real rollout coverage as the percentage climbs.
+Each release row shows unique per-install devices (UV): how many devices have
+checked while already **on this version** and how many unique older devices
+were **offered** it. Hover either number to see the all-time update-check event
+count (PV). UV collection requires a stable device id and starts at the metric
+upgrade; historical PV aggregates cannot be converted into exact historical UV.
 
 The app overview also exposes version-level metrics from
 `GET /api/apps/:id/analytics/versions`: devices that reported in the selected
@@ -120,6 +136,12 @@ The Access page controls who can see or publish an app.
 | Direct app member | Give one user or agent a role on this app. |
 | Raft server visibility | Make the app visible to accounts from another Raft server. |
 | Deploy token | Give CI or an agent scoped API access to this app. |
+
+For a principal on another linked Raft server, ask them to run the Hands
+`whoami` Agent Login action and send the non-secret Hands account id. In
+**Add direct app member**, paste that id instead of selecting a same-org
+principal. The account must have logged into Hands at least once. Hands adds
+missing org `viewer` membership and the selected app-scoped role atomically.
 
 Deploy tokens are app-scoped bearer tokens. Create them for automation instead of reusing a human browser session. Copy the token when it is created; Hands only shows the raw token once. Each token records who created it, and actions performed with it are attributed as `deploy-token:<name>@<app>` in audit logs and release provenance.
 

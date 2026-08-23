@@ -1,7 +1,11 @@
 {
   "name": "@botiverse/hands-node",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Hands logging, redaction, and policy-governed log collection for Node.js.",
+  "author": {
+    "name": "jiacheng",
+    "email": "jiacheng@botiverse.dev"
+  },
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -18,6 +22,14 @@
     "./logs/schema": {
       "types": "./dist/logs/schema.d.ts",
       "import": "./dist/logs/schema.js"
+    },
+    "./updater/attestation": {
+      "types": "./dist/updater/attestation.d.ts",
+      "import": "./dist/updater/attestation.js"
+    },
+    "./updater": {
+      "types": "./dist/updater/index.d.ts",
+      "import": "./dist/updater/index.js"
     }
   },
   "files": [

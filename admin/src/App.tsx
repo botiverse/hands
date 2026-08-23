@@ -11,6 +11,7 @@ import {
 } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import {
+  AlertTriangle,
   Bug,
   ChevronDown,
   ChevronsUpDown,
@@ -58,12 +59,15 @@ import { Releases } from "./pages/Releases";
 import { AppShares } from "./pages/Shares";
 import { AppFeedback, FeedbackTicketPage } from "./pages/Feedback";
 import { AppCrashes } from "./pages/Crashes";
+import { AppErrors } from "./pages/Errors";
 import { isOrgSettingsTab, OrgSettings } from "./pages/OrgSettings";
 import { AcceptInvite } from "./pages/AcceptInvite";
 import { AppAccess } from "./pages/AppAccess";
+import { HandsAdmin } from "./pages/HandsAdmin";
 import { OrgSwitcher, useClearOrgCache } from "./components/OrgSwitcher";
-import { dashboardHref } from "./lib/authNavigation";
+import { consoleRootAuthState, dashboardHref, defaultAppResolverState } from "./lib/authNavigation";
 import {
+  ApiError,
   clearActiveOrgId,
   getAuthToken,
   getAuthMe,
@@ -199,25 +203,6 @@ function Header({ account }: { account: AuthAccount }) {
         )}
       </div>
       <nav className="flex min-h-0 w-full flex-1 flex-col items-stretch gap-1 px-2">
-        {!appId &&
-          (collapsed ? (
-            <Tooltip>
-              <TooltipTrigger
-                render={
-                  <NavLink to="/apps" end className={railItem}>
-                    <LayoutGrid className="h-4 w-4" aria-hidden="true" />
-                    {!collapsed && <span className="hidden md:inline">Apps</span>}
-                  </NavLink>
-                }
-              />
-              <TooltipContent side="right">Apps</TooltipContent>
-            </Tooltip>
-          ) : (
-            <NavLink to="/apps" end className={railItem}>
-              <LayoutGrid className="h-4 w-4" aria-hidden="true" />
-              {!collapsed && <span className="hidden md:inline">Apps</span>}
-            </NavLink>
-          ))}
         <div className="relative w-full">
           <DropdownMenu>
             <DropdownMenuTrigger
@@ -632,12 +617,7 @@ function MobileTopNav({ account }: { account: AuthAccount }) {
               </NavLink>
             );
           })
-        ) : (
-          <NavLink to="/apps" end className={chip}>
-            <LayoutGrid className="h-4 w-4 flex-none" aria-hidden="true" />
-            <span className="whitespace-nowrap">Apps</span>
-          </NavLink>
-        )}
+        ) : null}
       </nav>
     </header>
   );
@@ -676,6 +656,11 @@ function AppCrashesRoute() {
   const { appId } = useParams();
   if (!appId) return null;
   return <AppCrashes key={appId} appId={appId} />;
+}
+function AppErrorsRoute() {
+  const { appId } = useParams();
+  if (!appId) return null;
+  return <AppErrors key={appId} appId={appId} />;
 }
 
 function FeedbackTicketRoute() {
@@ -854,6 +839,20 @@ function AuthGate() {
     );
   }
 
+  const consoleState = consoleRootAuthState({
+    location: window.location,
+    account: me.data?.account,
+    isPending: me.isLoading,
+    errorStatus: me.error instanceof ApiError ? me.error.status : undefined,
+  });
+  if (consoleState.kind === "redirect") {
+    if (consoleState.href.startsWith("/api/")) return <BrowserReplace to={consoleState.href} />;
+    return <Navigate to={consoleState.href} replace />;
+  }
+  if (consoleState.kind === "error") {
+    return <AuthError onRetry={() => void me.refetch()} />;
+  }
+
   if (me.isError || !me.data?.authenticated) {
     return <PublicLanding />;
   }
@@ -867,6 +866,31 @@ function AuthGate() {
   }
 
   return <AuthenticatedApp account={me.data.account} />;
+}
+
+function AuthError({ onRetry }: { onRetry: () => void }) {
+  return (
+    <main className="min-h-screen flex items-center justify-center bg-slate-50 px-4">
+      <section role="alert" className="w-full max-w-md rounded-md border border-red-200 bg-white p-6 shadow-xs">
+        <h1 className="text-lg font-semibold text-slate-950">Unable to check your Raft session</h1>
+        <p className="mt-2 text-sm text-slate-600">
+          Hands could not reach the authentication service. Check your connection and try again.
+        </p>
+        <Button className="mt-4" onClick={onRetry}>Retry</Button>
+      </section>
+    </main>
+  );
+}
+
+function BrowserReplace({ to }: { to: string }) {
+  useEffect(() => {
+    window.location.replace(to);
+  }, [to]);
+  return (
+    <div className="min-h-screen flex items-center justify-center bg-slate-50">
+      <div className="text-sm text-slate-500">Opening Hands console...</div>
+    </div>
+  );
 }
 
 function CliCallback({ token }: { token: string }) {
@@ -947,9 +971,9 @@ function PublicLanding({ account }: { account?: AuthAccount }) {
               </p>
               <div className="mt-6 flex flex-wrap items-center gap-2">
                 <span className="text-xs font-medium text-slate-500">
-                  Client platforms:
+                  Client stacks:
                 </span>
-                {["Android", "iOS", "HarmonyOS", "Electron"].map((p) => (
+                {["Android", "iOS", "HarmonyOS", "Electron", "Tauri"].map((p) => (
                   <span
                     key={p}
                     className="inline-flex items-center rounded-full border border-slate-200 bg-white px-3 py-1 text-sm font-medium text-slate-600"
@@ -1006,53 +1030,43 @@ function PublicLanding({ account }: { account?: AuthAccount }) {
         </section>
 
         <section className="border-t border-slate-200 bg-white">
-          <div className="mx-auto flex max-w-6xl flex-col gap-4 px-4 py-8 sm:flex-row sm:items-center sm:justify-between">
-            <div>
-              <h2 className="text-lg font-semibold">Integrate an SDK, build from CI.</h2>
-              <p className="mt-1 text-sm text-slate-600">
-                SDKs for Android, iOS, HarmonyOS, and Electron add feedback and
-                crash reporting (plus in-app update checks and staged rollouts
-                on Android); the public npm CLI publishes releases and share
-                links from CI or Raft agents.
+          <div className="mx-auto max-w-6xl px-4 py-10">
+            <div className="max-w-2xl">
+              <h2 className="text-xl font-semibold">Choose an integration path.</h2>
+              <p className="mt-2 text-sm leading-6 text-slate-600">
+                Start with the stack you ship, then use the CLI and Console
+                guides to automate draft-first delivery and operate releases.
               </p>
             </div>
-            <div className="flex flex-none flex-col gap-2 sm:flex-row">
-              <a
-                className="inline-flex h-10 items-center justify-center whitespace-nowrap rounded-md border border-slate-300 bg-white px-4 text-sm font-medium text-slate-800 hover:bg-slate-100"
-                href="/docs/android-sdk/"
-              >
-                Android SDK
-              </a>
-              <a
-                className="inline-flex h-10 items-center justify-center whitespace-nowrap rounded-md border border-slate-300 bg-white px-4 text-sm font-medium text-slate-800 hover:bg-slate-100"
-                href="/docs/ios-sdk/"
-              >
-                iOS SDK
-              </a>
-              <a
-                className="inline-flex h-10 items-center justify-center whitespace-nowrap rounded-md border border-slate-300 bg-white px-4 text-sm font-medium text-slate-800 hover:bg-slate-100"
-                href="/docs/ohos-sdk/"
-              >
-                HarmonyOS SDK
-              </a>
-              <a
-                className="inline-flex h-10 items-center justify-center whitespace-nowrap rounded-md border border-slate-300 bg-white px-4 text-sm font-medium text-slate-800 hover:bg-slate-100"
-                href="/docs/electron-sdk/"
-              >
-                Electron SDK
-              </a>
-              <a
-                className="inline-flex h-10 items-center justify-center whitespace-nowrap rounded-md border border-slate-300 bg-white px-4 text-sm font-medium text-slate-800 hover:bg-slate-100"
-                href="/docs/cli-reference/"
-              >
-                CLI reference
-              </a>
-              <a
-                className="inline-flex h-10 items-center justify-center whitespace-nowrap rounded-md border border-slate-300 bg-white px-4 text-sm font-medium text-slate-800 hover:bg-slate-100"
-                href="/docs/admin-user-guide/"
-              >
-                Admin guide
-              </a>
+            <div className="mt-6 grid gap-4 md:grid-cols-3">
+              <LandingIntegrationCard
+                title="Native mobile SDKs"
+                body="Updates, feedback, crash capture, and device context inside mobile apps."
+                links={[
+                  { label: "Android", detail: "Updates, rollout, feedback, crashes", href: "/docs/android-sdk/" },
+                  { label: "iOS", detail: "Feedback and crash reporting", href: "/docs/ios-sdk/" },
+                  { label: "HarmonyOS", detail: "Feedback and crash reporting", href: "/docs/ohos-sdk/" },
+                ]}
+              />
+              <LandingIntegrationCard
+                title="Web & desktop integrations"
+                body="Embed feedback conversations, host updater artifacts, and add native desktop crash capture."
+                links={[
+                  { label: "React Feedback", detail: "Inbox, conversations, replies", href: "/docs/feedback-react/" },
+                  { label: "Electron SDK", detail: "Crashpad crash reporting", href: "/docs/electron-sdk/" },
+                  { label: "Electron Updater", detail: "Generic-provider release files", href: "/docs/cli-reference/#publish-electron-generic-provider" },
+                  { label: "Tauri Updater", detail: "Signed Tauri v2 updater bundles", href: "/docs/tauri-updater/" },
+                ]}
+              />
+              <LandingIntegrationCard
+                title="Publishing & operations"
+                body="Build release automation and inspect every public contract."
+                links={[
+                  { label: "CLI Reference", detail: "Publish from CI or Raft agents", href: "/docs/cli-reference/" },
+                  { label: "Admin Guide", detail: "Operate apps and releases", href: "/docs/admin-user-guide/" },
+                  { label: "API Explorer", detail: "Try the HTTP API", href: "/api-docs" },
+                ]}
+              />
             </div>
           </div>
         </section>
@@ -1202,6 +1216,47 @@ function LandingFeature({ title, body }: { title: string; body: string }) {
   );
 }
 
+function LandingIntegrationCard({
+  title,
+  body,
+  links,
+}: {
+  title: string;
+  body: string;
+  links: Array<{ label: string; detail: string; href: string }>;
+}) {
+  return (
+    <div className="rounded-xl border border-slate-200 bg-slate-50 p-5">
+      <h3 className="text-sm font-semibold text-slate-950">{title}</h3>
+      <p className="mt-2 min-h-12 text-sm leading-6 text-slate-600">{body}</p>
+      <div className="mt-4 divide-y divide-slate-200 border-y border-slate-200">
+        {links.map((link) => (
+          <a
+            key={link.href}
+            className="group flex items-center justify-between gap-3 py-3 text-sm hover:text-sky-700"
+            href={link.href}
+          >
+            <span className="min-w-0">
+              <span className="block font-medium text-slate-900 group-hover:text-sky-700">
+                {link.label}
+              </span>
+              <span className="mt-0.5 block text-xs leading-5 text-slate-500">
+                {link.detail}
+              </span>
+            </span>
+            <span
+              aria-hidden="true"
+              className="flex-none text-base text-slate-400 transition-transform group-hover:translate-x-0.5 group-hover:text-sky-600"
+            >
+              →
+            </span>
+          </a>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function AuthenticatedApp({ account }: { account: AuthAccount }) {
   return (
     <div className="min-h-screen flex">
@@ -1212,6 +1267,7 @@ function AuthenticatedApp({ account }: { account: AuthAccount }) {
         <Route path="/" element={<Navigate to="/apps" replace />} />
         <Route path="/apps" element={<AppsListWithNav />} />
         <Route path="/settings" element={<SettingsPage />} />
+        <Route path="/admin" element={<HandsAdmin />} />
         <Route path="/orgs/:orgId/:tab?" element={<OrgSettingsPage />} />
         <Route path="/invites/:token" element={<AcceptInviteRoute />} />
         <Route path="/apps/:appId" element={<AppShell />}>
@@ -1225,6 +1281,7 @@ function AuthenticatedApp({ account }: { account: AuthAccount }) {
           <Route path="shares" element={<AppSharesRoute />} />
           <Route path="feedback" element={<AppFeedbackRoute />} />
           <Route path="crashes" element={<AppCrashesRoute />} />
+          <Route path="errors" element={<AppErrorsRoute />} />
           <Route path="feedback/:ticketId" element={<FeedbackTicketRoute />} />
           <Route path="access" element={<LegacyAccessRedirect />} />
           <Route path="audit" element={<AuditRoute />} />
@@ -1252,22 +1309,36 @@ function AppsListWithNav() {
   const openNew = params.get("new") === "1";
   const apps = useQuery({ queryKey: ["apps"], queryFn: listApps });
 
-  // Default behavior per artin: /apps drops you into the first app; the
-  // full list is reachable via ?all=1 (sidebar "All apps"), and with zero
-  // apps we go straight to the creation wizard.
-  if (!showAll && !openNew && apps.data) {
-    const active = apps.data.apps.filter((a) => !a.archived);
-    if (active.length > 0) {
-      // Remember the last app the operator was in; fall back to the first
-      // active app when there's no stored choice or it no longer exists.
-      let target = active[0]!.id;
-      try {
-        const last = window.localStorage.getItem(LAST_APP_KEY);
-        if (last && active.some((a) => a.id === last)) target = last;
-      } catch {
-        // storage disabled — use the default
-      }
-      return <Navigate to={`/apps/${target}`} replace />;
+  // The default route is a resolver, not an Apps landing page. Keep the
+  // shell empty while the app list loads so the removed nav/page does not
+  // flash before the last (or first) active app is known.
+  if (!showAll && !openNew) {
+    let last: string | null = null;
+    try {
+      last = window.localStorage.getItem(LAST_APP_KEY);
+    } catch {
+      // storage disabled — use the first active app
+    }
+    const resolver = defaultAppResolverState({
+      apps: apps.data?.apps,
+      lastAppId: last,
+      isPending: apps.isPending,
+      isError: apps.isError,
+    });
+    if (resolver.kind === "loading") return null;
+    if (resolver.kind === "redirect") return <Navigate to={resolver.href} replace />;
+    if (resolver.kind === "error") {
+      return (
+        <StandardPageShell>
+          <div role="alert" className="rounded-md border border-red-200 bg-red-50 p-4 text-sm text-red-800">
+            <p className="font-medium">Could not load apps</p>
+            <p className="mt-1 text-red-700">Check your connection and try again.</p>
+            <Button className="mt-3" variant="outline" onClick={() => void apps.refetch()}>
+              Retry
+            </Button>
+          </div>
+        </StandardPageShell>
+      );
     }
   }
   const zeroApps = apps.data ? apps.data.apps.filter((a) => !a.archived).length === 0 : false;
@@ -1308,6 +1379,7 @@ const APP_NAV_SECTIONS: Array<{
     items: [
       { to: "feedback", label: "Feedback", icon: MessageSquare },
       { to: "crashes", label: "Crashes", icon: Bug },
+      { to: "errors", label: "Errors", icon: AlertTriangle },
       { to: "audit", label: "Audit", icon: ScrollText },
       { to: "settings", label: "Settings", icon: SettingsIcon },
     ],
@@ -1342,6 +1414,7 @@ function AppShell() {
           <Route path="shares" element={<AppSharesRoute />} />
           <Route path="feedback" element={<AppFeedbackRoute />} />
           <Route path="crashes" element={<AppCrashesRoute />} />
+          <Route path="errors" element={<AppErrorsRoute />} />
           <Route path="feedback/:ticketId" element={<FeedbackTicketRoute />} />
           <Route path="access" element={<LegacyAccessRedirect />} />
           <Route path="audit" element={<AuditRoute />} />

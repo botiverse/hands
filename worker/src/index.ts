@@ -14,11 +14,19 @@ import { Container, getRandom } from "@cloudflare/containers";
 import { Hono } from "hono";
 import type { Context } from "hono";
 import { cors } from "hono/cors";
+import { publicDocAssetPaths } from "./lib/public_docs";
 
 import { authMiddleware, currentActor } from "./middleware/auth";
+import { requireHandsAdmin } from "./middleware/hands_admin";
+import {
+  handleAgentLoginAction,
+  handleAgentExchange,
+  handleAgentRefresh,
+} from "./routes/agent_login";
 import {
   handleAgentManifest,
   handleAgentHelp,
+  handleAgentMigrationHelp,
   handleAuthConfig,
   handleDashboardRedirect,
   handleAuthLogin,
@@ -27,12 +35,27 @@ import {
   handleRaftCallback,
 } from "./routes/auth";
 import {
+  handleInstallerLogin,
+  handleInstallerLogout,
+  handleInstallerRaftCallback,
+  handleInstallerToken,
+} from "./routes/installer_auth";
+import { installerAuthMiddleware, type InstallerVariables } from "./lib/installer_auth";
+import {
+  handleDeleteInstallerSubscription,
+  handleInstallerCatalog,
+  handleInstallerManifest,
+  handleInstallerSubscriptions,
+  handlePutInstallerSubscription,
+} from "./routes/installer";
+import { handleHandsAdminOverview } from "./routes/hands_admin";
+import {
   handleDeleteAgcCredentials,
   handleGetAgcCredentials,
   handleSetAgcCredentials,
   handleVerifyAgcCredentials,
 } from "./routes/agc_credentials";
-import { handleGetAgcBuildSubmission, handleGetAgcSubmission, handleStartAgcInvitationTest, handleSubmitAgcInvitationTest } from "./routes/agc_testing";
+import { handleAppGalleryReview, handleGetAgcBuildSubmission, handleGetAgcSubmission, handleStartAgcInvitationTest, handleSubmitAgcInvitationTest } from "./routes/agc_testing";
 import {
   handleListApps,
   handleCreateApp,
@@ -57,6 +80,8 @@ import {
   handlePublicV2UpdateCheck,
 } from "./routes/public_v2";
 import { handleElectronGenericAsset } from "./routes/electron";
+import { handleTauriArtifact, handleTauriUpdate } from "./routes/tauri";
+import { handleExternalLatestDl, handleExternalReleaseDl } from "./routes/external_dl";
 import {
   handleCreateReleaseShare,
   handleListReleaseShares,
@@ -64,6 +89,7 @@ import {
   handlePublicReleaseShare,
   handleRevokeReleaseShare,
   handleUpdateReleaseShare,
+  handleRebindReleaseShare,
   handleListAppShares,
   handlePublicReleaseShareUnlock,
   handlePublicReleaseShareIcon,
@@ -72,6 +98,7 @@ import {
   handlePublicFeedbackSubmit,
   handlePublicMinidumpSubmit,
   handleListFeedback,
+  handleListFeedbackMaterialDelta,
   handleGetFeedback,
   handleUpdateFeedback,
   handleAddFeedbackComment,
@@ -80,20 +107,45 @@ import {
   handleListCrashGroups,
   handleFeedbackStats,
   handlePresignFeedbackAttachments,
+  handleFeedbackMultipartPart,
+  handleCompleteFeedbackMultipart,
+  handleAbortFeedbackMultipart,
 } from "./routes/feedback";
 import { handleDeviceRegister, handleDeviceAnalytics, handleDeviceDetail, handleVersionAnalytics } from "./routes/analytics";
 import { handleSessionEvent, handleReleaseHealth } from "./routes/sessions";
 import {
   handlePublicAppHistory,
   handlePublicAppHistoryDownload,
+  handlePublicLatestReleaseDownload,
+  handlePublicLatestReleaseLanding,
   handlePublicReleaseNotes,
   handlePublicReleaseNotesJson,
 } from "./routes/history";
 import {
   handleCreateAppDeployToken,
+  handleGetAppPermissionModel,
   handleListAppDeployTokens,
   handleRevokeAppDeployToken,
 } from "./routes/deploy_tokens";
+import {
+  handleCreateReporterIntegration,
+  handleListReporterIntegrations,
+  handleUpdateReporterIntegration,
+} from "./routes/reporter_integrations";
+import {
+  handleAddReporterComment,
+  handleCloseReporterFeedback,
+  handleDownloadReporterAttachment,
+  handleGetReporterFeedback,
+  handleListReporterFeedback,
+  cleanupReporterFeedbackData,
+} from "./routes/reporter_feedback";
+import { handleMintReporterSession } from "./routes/reporter_sessions";
+import {
+  handleBindReporterRouteSubject,
+  handleBindReporterWebhook,
+  handleGetReporterRouteMetadata,
+} from "./routes/reporter_routes";
 import {
   handleGetAscCredentials,
   handleSetAscCredentials,
@@ -101,10 +153,18 @@ import {
   handleVerifyAscCredentials,
 } from "./routes/asc_credentials";
 import {
+  handleListTestflightGroups,
+  handleTestflightExpire,
+  handleTestflightPublish,
+  handleTestflightPublishStatus,
   handleTestflightUpload,
   handleTestflightUploadStatus,
 } from "./routes/testflight";
 import { handleAppStoreReview } from "./routes/appstore_review";
+import {
+  handleGetBetaAppDescription,
+  handleUpdateBetaAppDescription,
+} from "./routes/testflight_beta_app_description";
 import { handleGenerateDeltaPatches, handleDeltaSources } from "./routes/delta";
 import { handleUploadApk } from "./routes/upload";
 import {
@@ -123,13 +183,23 @@ import {
   handleDeleteBuildAsset,
   handleDownloadBuildAsset,
   handleGetBuild,
+  handleListExternalBuildTargets,
   handleListBuildAssets,
   handleListBuilds,
+  handlePublishExternalBuildVersion,
   handleUpdateBuild,
 } from "./routes/builds";
 import {
+  handleCompleteIosSimulatorArtifact,
+  handleCreateIosSimulatorArtifact,
+  handleDownloadIosSimulatorArtifact,
+  handleGetIosSimulatorArtifact,
+  handleListIosSimulatorArtifacts,
+} from "./routes/qa_artifacts";
+import {
   handleBumpRollout,
   handleCreateRelease,
+  handleCreateReleaseDraft,
   handleDeleteRelease,
   handleForceUpdate,
   handleGetRelease,
@@ -137,8 +207,23 @@ import {
   handlePublishRelease,
   handleRollbackRelease,
   handleUpdateRelease,
+  handleUpsertReleaseCheck,
+  handleListReleaseChecks,
 } from "./routes/releases";
+import {
+  handlePrepareUpdateAttestation,
+  handleRegisterUpdateAttestationKey,
+  handleSubmitUpdateAttestation,
+} from "./routes/update_attestations";
 import { handleListChannels, handleCreateChannel, handleUpdateChannel, handleDeleteChannel } from "./routes/channels";
+import {
+  handleAddDeviceGroupMember,
+  handleCreateDeviceGroup,
+  handleDeleteDeviceGroup,
+  handleListDeviceGroups,
+  handleRemoveDeviceGroupMember,
+  handleUpdateDeviceGroup,
+} from "./routes/device_groups";
 import { handleListProductTypes, handleCreateProductType, handleUpdateProductType, handleDeleteProductType } from "./routes/product_types";
 import { handleListReleaseTypes, handleCreateReleaseType, handleUpdateReleaseType, handleDeleteReleaseType } from "./routes/release_types";
 import { handleListAuditLogs, handleListUserAudit } from "./routes/audit";
@@ -147,7 +232,7 @@ import {
   handleDeleteWebhook,
   handleListDeliveries,
   handleListWebhooks,
-  handleReapDeliveries,
+  reapWebhookDeliveries,
   handleUpdateWebhook,
 } from "./routes/webhooks";
 import { handleHealth } from "./routes/health";
@@ -174,6 +259,7 @@ import {
 } from "./routes/orgs";
 import {
   requireAppRole,
+  requireAppRoleOrFeedbackPermission,
   requireCurrentOrgRole,
   requireFeedbackTriageRole,
   requireOrgRole,
@@ -445,19 +531,6 @@ app.get("/api-docs", (c) => c.html(`<!doctype html>
     </script>
   </body>
 </html>`));
-const publicDocs = new Set([
-  "/docs/",
-  "/docs/agent-guide/",
-  "/docs/admin-user-guide/",
-  "/docs/android-sdk/",
-  "/docs/ios-sdk/",
-  "/docs/ohos-sdk/",
-  "/docs/electron-sdk/",
-  "/docs/cli-reference/",
-  "/docs/agent-cli-feedback/",
-  "/docs/public-api-reference/",
-]);
-
 async function handlePublicDocs(c: Context<{ Bindings: Env }>) {
   const path = new URL(c.req.url).pathname;
   // Raw-markdown twins: /docs.md (machine index) and /docs/<slug>.md. The build
@@ -477,11 +550,23 @@ async function handlePublicDocs(c: Context<{ Bindings: Env }>) {
     headers.set("content-type", "text/markdown; charset=utf-8");
     return new Response(asset.body, { status: asset.status, headers });
   }
-  const normalizedPath = path.endsWith("/") ? path : `${path}/`;
-  if (!publicDocs.has(normalizedPath)) {
-    return c.text("Not found", 404);
+  const assetPaths = publicDocAssetPaths(path);
+  if (!assetPaths) return c.text("Not found", 404);
+
+  // Cloudflare Assets uses SPA fallback for the admin app, so an unknown docs
+  // URL would otherwise return the root index.html with status 200. Generated
+  // articles always have a Markdown twin; use that file as the automatic docs
+  // manifest before serving the article HTML.
+  if (assetPaths.markdownTwinPath) {
+    const twin = await c.env.ASSETS.fetch(
+      new Request(new URL(assetPaths.markdownTwinPath, c.req.url), c.req.raw),
+    );
+    const twinType = twin.headers.get("content-type") ?? "";
+    if (twin.status === 404 || twinType.includes("text/html")) {
+      return c.text("Not found", 404);
+    }
   }
-  return c.env.ASSETS.fetch(new Request(new URL(normalizedPath, c.req.url), c.req.raw));
+  return c.env.ASSETS.fetch(new Request(new URL(assetPaths.htmlPath, c.req.url), c.req.raw));
 }
 
 app.get("/docs", handlePublicDocs);
@@ -494,7 +579,26 @@ app.get("/api/auth/login", handleAuthLogin);
 app.get("/login/raft/callback", handleRaftCallback);
 app.get("/api/auth/me", handleAuthMe);
 app.get("/api/agent/help", handleAgentHelp);
+app.get("/api/agent/migration-help", handleAgentMigrationHelp);
 app.post("/api/auth/logout", handleAuthLogout);
+// Agent CLI login token endpoints (RFC 057) — PUBLIC: the grant+verifier / refresh
+// token is itself the credential (OAuth-token-endpoint style), so no prior session.
+app.post("/api/auth/agent/exchange", handleAgentExchange);
+app.post("/api/auth/agent/refresh", handleAgentRefresh);
+
+app.get("/api/installer/v1/auth/login", handleInstallerLogin);
+app.get("/login/raft/installer/callback", handleInstallerRaftCallback);
+app.post("/api/installer/v1/auth/token", handleInstallerToken);
+app.post("/api/installer/v1/auth/logout", handleInstallerLogout);
+
+const installer = new Hono<{ Bindings: Env; Variables: InstallerVariables }>();
+installer.use("/api/installer/v1/*", installerAuthMiddleware);
+installer.get("/api/installer/v1/catalog", handleInstallerCatalog);
+installer.get("/api/installer/v1/subscriptions", handleInstallerSubscriptions);
+installer.put("/api/installer/v1/subscriptions/:appId/:channel", handlePutInstallerSubscription);
+installer.delete("/api/installer/v1/subscriptions/:appId/:channel", handleDeleteInstallerSubscription);
+installer.get("/api/installer/v1/apps/:appId/channels/:channel/manifest", handleInstallerManifest);
+app.route("/", installer);
 
 app.get("/public/apps/:slug/latest", handlePublicV2Latest);
 app.get("/public/apps/:slug/channels", handlePublicListChannels);
@@ -507,6 +611,10 @@ app.get("/public/r2/:key", handlePublicR2Download);
 // Internal signed R2 fetch (delta-patch container pulls source APKs by key).
 app.get("/internal/r2/:key", handleInternalR2Download);
 app.get("/electron/:slug/:channel/:file", handleElectronGenericAsset);
+app.get("/tauri/:slug/:channel/artifacts/:releaseId/:target/:arch/:file", handleTauriArtifact);
+app.get("/dl/:slug/releases/:releaseId/:file", handleExternalReleaseDl);
+app.get("/dl/:slug/:channel/:file", handleExternalLatestDl);
+app.get("/tauri/:slug/:channel/:target/:arch/:currentVersion", handleTauriUpdate);
 app.get("/share/:token/download", handlePublicReleaseShareDownload);
 app.get("/share/:token", handlePublicReleaseShare);
 app.post("/share/:token/unlock", handlePublicReleaseShareUnlock);
@@ -517,9 +625,24 @@ app.post("/public/v2/apps/:slug/devices", handleDeviceRegister);
 app.post("/public/v2/apps/:slug/metrics", handleDeviceRegister);
 app.post("/public/v2/apps/:slug/sessions", handleSessionEvent);
 app.post("/public/v2/apps/:slug/feedback/presign", handlePresignFeedbackAttachments);
+app.put("/public/v2/apps/:slug/feedback/multipart/part", handleFeedbackMultipartPart);
+app.post("/public/v2/apps/:slug/feedback/multipart/complete", handleCompleteFeedbackMultipart);
+app.post("/public/v2/apps/:slug/feedback/multipart/abort", handleAbortFeedbackMultipart);
+app.get("/api/apps/:appId/reporter-feedback", handleListReporterFeedback);
+app.post("/api/apps/:appId/reporter-feedback/session", handleMintReporterSession);
+app.put("/api/apps/:appId/reporter-feedback/route-subject", handleBindReporterRouteSubject);
+app.get("/api/apps/:appId/reporter-feedback/:ticketId", handleGetReporterFeedback);
+app.post("/api/apps/:appId/reporter-feedback/:ticketId/comments", handleAddReporterComment);
+app.post("/api/apps/:appId/reporter-feedback/:ticketId/close", handleCloseReporterFeedback);
+app.get(
+  "/api/apps/:appId/reporter-feedback/:ticketId/attachments/:attachmentId",
+  handleDownloadReporterAttachment,
+);
 app.get("/public/apps/:slug/icon", handlePublicAppIcon);
 app.get("/apps/:slug/history", handlePublicAppHistory);
 app.get("/apps/:slug/history/:releaseId/download", handlePublicAppHistoryDownload);
+app.get("/apps/:slug/latest", handlePublicLatestReleaseLanding);
+app.get("/apps/:slug/latest/download", handlePublicLatestReleaseDownload);
 app.get("/notes/:slug", handlePublicReleaseNotes);
 app.get("/api/invites/:token", handleGetInvite);
 
@@ -529,6 +652,7 @@ function isWorkerRoute(pathname: string): boolean {
     pathname === "/api-docs" ||
     pathname === "/docs" ||
     pathname === "/login/raft/callback" ||
+    pathname === "/login/raft/installer/callback" ||
     pathname.startsWith("/api/") ||
     pathname.startsWith("/electron/") ||
     pathname.startsWith("/public/") ||
@@ -545,7 +669,10 @@ app.use("*", async (c, next) => {
 });
 
 // Admin — protected by a Hands JWT or scoped deploy-token bearer auth.
-const admin = new Hono<{
+// Exported so tests can enumerate the real route table rather than pattern-match
+// the source: coverage should be decided by the router, not by whether a regex
+// recognises a particular registration style.
+export const admin = new Hono<{
   Bindings: Env;
   Variables: {
     admin_account?: import("./middleware/auth").AdminAccount;
@@ -556,6 +683,14 @@ const admin = new Hono<{
   };
 }>();
 admin.use("*", authMiddleware);
+
+// Agent CLI login (RFC 057) action — needs the authenticated agent session so it
+// binds the grant to the pre-org-switch identity. Exchange/refresh are public.
+admin.post("/api/auth/agent/login", handleAgentLoginAction);
+
+// Global Hands observability is server-admin scoped, not app-role scoped.
+admin.use("/api/admin/observability/*", requireHandsAdmin);
+admin.get("/api/admin/observability/overview", handleHandsAdminOverview);
 
 // Global error handler: surface unhandled exceptions as JSON instead of
 // Hono's default empty "Internal Server Error" body. This makes every
@@ -573,6 +708,62 @@ admin.onError((err, c) => {
     },
     500,
   );
+});
+
+// Container build readback. The deploy pipeline has no container probe at all: it passes
+// --containers-rollout and prints the value, so "the workflow went green" has been the
+// only evidence that a rebuilt image is serving. This route is the instrument for the
+// container-side criterion - read it before and after a rollout.
+//
+// `build` comes from the container's own /health. On the image running today that key
+// does not exist, so *key absent* means the old image is still serving and *key present*
+// means the new one is - the old image cannot fabricate a key its code never emits, which
+// rules out "the probe passed but hit the old image".
+//
+// Admin-gated on purpose. The exact deployed commit narrows a public repository's tree to
+// one revision for anyone asking which known issues currently apply, and this readback is
+// run by operators, not by clients.
+admin.get("/api/admin/container/build", async (c) => {
+  const container = await getRandom(c.env.APK_PARSER, 1);
+  const res = await container.fetch(new Request("http://container/health"));
+  const body = await res.text();
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(body);
+  } catch {
+    // Surface the raw body rather than a parse error: a container that answers with
+    // something unparseable is a different failure from one that does not answer, and
+    // collapsing them is how "no result" starts reading like "clean result".
+    return c.json({ ok: false, status: res.status, raw: body.slice(0, 512) }, 502);
+  }
+  const build =
+    typeof parsed === "object" && parsed !== null && "build" in parsed
+      ? (parsed as { build?: unknown }).build
+      : undefined;
+  // How to read the response. `stamped` alone does not answer "is the old image still
+  // serving", and the shorthand is what people quote:
+  //
+  //   ok:true   status:200  stamped:false  -> the old image is serving
+  //   ok:false  status:5xx  stamped:false  -> the container answered but is unhealthy;
+  //                                           NOT MEASURED, not a statement about which
+  //                                           image is up
+  //   (unreachable container throws, so there is no `stamped` field at all)
+  //
+  // Anything other than the first line is "not measured". Separating "could not read"
+  // from "read an unstamped image" is the entire reason this endpoint exists, and the
+  // separation is undone the moment someone reads one field instead of three.
+  //
+  // `stamped:true` needs no such qualification, and deliberately does not get one for
+  // symmetry: the running image has no code that emits `build`, so a true cannot be
+  // produced by anything except a rebuilt image.
+  return c.json({
+    ok: res.ok,
+    status: res.status,
+    // null, not omitted: an absent key here would be indistinguishable from this route
+    // having failed to read one, which is the exact confusion the stamp exists to end.
+    build: typeof build === "string" ? build : null,
+    stamped: typeof build === "string",
+  });
 });
 
 admin.get("/api/orgs", handleListOrgs);
@@ -604,16 +795,32 @@ admin.patch("/api/apps/:appId", requireAppRole("admin"), handleUpdateApp);
 admin.post("/api/apps/:appId/archive", requireAppRole("admin"), handleArchiveApp);
 admin.post("/api/apps/:appId/purge", requireAppRole("admin"), handlePurgeApp);
 admin.get("/api/apps/:appId/feature-flags/:key", requireAppRole("viewer"), handleGetFeatureFlag);
+admin.get("/api/apps/:appId/reporter-feedback-metadata", requireAppRole("viewer"), handleGetReporterRouteMetadata);
+admin.put(
+  "/api/apps/:appId/reporter-integrations/:integrationId/webhooks/:webhookId",
+  requireAppRole("admin"),
+  handleBindReporterWebhook,
+);
 // Feature flags are rollout controls (like bump-rollout / force-update), so they
 // sit at the publisher (ship) tier rather than admin.
 admin.put("/api/apps/:appId/feature-flags/:key", requireAppRole("publisher"), handleUpdateFeatureFlag);
 
 admin.get("/api/apps/:appId/builds", requireAppRole("viewer"), handleListBuilds);
 admin.post("/api/apps/:appId/builds", requireAppRole("publisher"), handleCreateBuild);
+admin.post(
+  "/api/apps/:appId/builds/publish-version",
+  requireAppRole("publisher"),
+  handlePublishExternalBuildVersion,
+);
 admin.get("/api/apps/:appId/builds/:buildId", requireAppRole("viewer"), handleGetBuild);
 admin.patch("/api/apps/:appId/builds/:buildId", requireAppRole("publisher"), handleUpdateBuild);
 admin.delete("/api/apps/:appId/builds/:buildId", requireAppRole("admin"), handleDeleteBuild);
 admin.get("/api/apps/:appId/builds/:buildId/assets", requireAppRole("viewer"), handleListBuildAssets);
+admin.get(
+  "/api/apps/:appId/builds/:buildId/external-targets",
+  requireAppRole("viewer"),
+  handleListExternalBuildTargets,
+);
 admin.post("/api/apps/:appId/builds/:buildId/assets", requireAppRole("publisher"), handleCreateBuildAsset);
 admin.get(
   "/api/apps/:appId/builds/:buildId/assets/:assetId/download",
@@ -626,8 +833,37 @@ admin.delete(
   handleDeleteBuildAsset,
 );
 
+// QA-only iOS simulator artifacts. These are immutable exact-byte fixtures
+// for agent/device validation and are deliberately outside the release model.
+admin.get(
+  "/api/apps/:appId/qa-artifacts/ios-simulator",
+  requireAppRole("viewer"),
+  handleListIosSimulatorArtifacts,
+);
+admin.post(
+  "/api/apps/:appId/qa-artifacts/ios-simulator",
+  requireAppRole("publisher"),
+  handleCreateIosSimulatorArtifact,
+);
+admin.get(
+  "/api/apps/:appId/qa-artifacts/ios-simulator/:assetId",
+  requireAppRole("viewer"),
+  handleGetIosSimulatorArtifact,
+);
+admin.post(
+  "/api/apps/:appId/qa-artifacts/ios-simulator/:assetId/complete",
+  requireAppRole("publisher"),
+  handleCompleteIosSimulatorArtifact,
+);
+admin.get(
+  "/api/apps/:appId/qa-artifacts/ios-simulator/:assetId/download",
+  requireAppRole("viewer"),
+  handleDownloadIosSimulatorArtifact,
+);
+
 admin.get("/api/apps/:appId/releases", requireAppRole("viewer"), handleListReleases);
 admin.post("/api/apps/:appId/releases", requireAppRole("publisher"), handleCreateRelease);
+admin.post("/api/apps/:appId/releases/draft", requireAppRole("publisher"), handleCreateReleaseDraft);
 admin.get("/api/apps/:appId/releases/:releaseId", requireAppRole("viewer"), handleGetRelease);
 admin.patch("/api/apps/:appId/releases/:releaseId", requireAppRole("publisher"), handleUpdateRelease);
 admin.post("/api/apps/:appId/releases/:releaseId/publish", requireAppRole("publisher"), handlePublishRelease);
@@ -635,7 +871,13 @@ admin.delete("/api/apps/:appId/releases/:releaseId", requireAppRole("publisher")
 admin.post("/api/apps/:appId/releases/:releaseId/rollback", requireAppRole("publisher"), handleRollbackRelease);
 admin.post("/api/apps/:appId/releases/:releaseId/bump-rollout", requireAppRole("publisher"), handleBumpRollout);
 admin.post("/api/apps/:appId/releases/:releaseId/force-update", requireAppRole("publisher"), handleForceUpdate);
+admin.get("/api/apps/:appId/releases/:releaseId/checks", requireAppRole("viewer"), handleListReleaseChecks);
+admin.post("/api/apps/:appId/releases/:releaseId/checks", requireAppRole("publisher"), handleUpsertReleaseCheck);
+admin.post("/api/apps/:appId/update-attestation-keys", requireAppRole("admin"), handleRegisterUpdateAttestationKey);
+admin.post("/api/apps/:appId/releases/:releaseId/attestations/prepare", requireAppRole("publisher"), handlePrepareUpdateAttestation);
+admin.post("/api/apps/:appId/releases/:releaseId/attestations", requireAppRole("publisher"), handleSubmitUpdateAttestation);
 admin.get("/api/apps/:appId/shares", requireAppRole("viewer"), handleListAppShares);
+admin.post("/api/apps/:appId/shares/:shareId/rebind", requireAppRole("publisher"), handleRebindReleaseShare);
 admin.put("/api/apps/:appId/icon", requireAppRole("publisher"), handleUploadAppIcon);
 admin.get("/api/apps/:appId/client-key", requireAppRole("admin"), handleGetClientKey);
 admin.post("/api/apps/:appId/rotate-client-key", requireAppRole("admin"), handleRotateClientKey);
@@ -645,12 +887,28 @@ admin.get("/api/apps/:appId/analytics/devices", requireAppRole("viewer"), handle
 admin.get("/api/apps/:appId/analytics/versions", requireAppRole("viewer"), handleVersionAnalytics);
 admin.get("/api/apps/:appId/analytics/devices/:deviceId", requireAppRole("viewer"), handleDeviceDetail);
 admin.get("/api/apps/:appId/release-health", requireAppRole("viewer"), handleReleaseHealth);
-admin.get("/api/apps/:appId/feedback", requireAppRole("viewer"), handleListFeedback);
-admin.get("/api/apps/:appId/feedback/:ticketId", requireAppRole("viewer"), handleGetFeedback);
-admin.patch("/api/apps/:appId/feedback/:ticketId", requireFeedbackTriageRole(), handleUpdateFeedback);
-admin.post("/api/apps/:appId/feedback/:ticketId/comments", requireFeedbackTriageRole(), handleAddFeedbackComment);
+admin.get("/api/apps/:appId/feedback", requireAppRoleOrFeedbackPermission("viewer", {}, "feedback:read"), handleListFeedback);
+admin.get(
+  "/api/apps/:appId/feedback/material-delta",
+  requireAppRoleOrFeedbackPermission("viewer", {}, "feedback:read"),
+  handleListFeedbackMaterialDelta,
+);
+admin.get("/api/apps/:appId/feedback/:ticketId", requireAppRoleOrFeedbackPermission("viewer", {}, "feedback:read"), handleGetFeedback);
+admin.patch("/api/apps/:appId/feedback/:ticketId", requireAppRoleOrFeedbackPermission("publisher", { orgMinimum: "member" }, "feedback:triage"), handleUpdateFeedback);
+admin.post(
+  "/api/apps/:appId/feedback/:ticketId/comments",
+  // Both actions share this endpoint; handleAddFeedbackComment splits them on `internal`.
+  requireAppRoleOrFeedbackPermission("publisher", { orgMinimum: "member" }, "feedback:comment", "feedback:triage"),
+  handleAddFeedbackComment,
+);
 admin.post("/api/apps/:appId/feedback/:ticketId/symbolicate", requireFeedbackTriageRole(), handleResymbolicateFeedback);
-admin.get("/api/apps/:appId/feedback/:ticketId/attachments/:attachmentId", requireAppRole("viewer"), handleDownloadFeedbackAttachment);
+admin.get(
+  "/api/apps/:appId/feedback/:ticketId/attachments/:attachmentId",
+  // An attachment is the substance of most crash reports; reading a ticket
+  // without being able to fetch its screenshot is not "read feedback".
+  requireAppRoleOrFeedbackPermission("viewer", {}, "feedback:read"),
+  handleDownloadFeedbackAttachment,
+);
 admin.get("/api/apps/:appId/releases/:releaseId/shares", requireAppRole("viewer"), handleListReleaseShares);
 admin.post("/api/apps/:appId/releases/:releaseId/shares", requireAppRole("publisher"), handleCreateReleaseShare);
 admin.patch("/api/apps/:appId/releases/:releaseId/shares/:shareId", requireAppRole("publisher"), handleUpdateReleaseShare);
@@ -774,6 +1032,21 @@ admin.post("/api/apps/:appId/channels", requireAppRole("admin"), handleCreateCha
 admin.patch("/api/apps/:appId/channels/:channelId", requireAppRole("admin"), handleUpdateChannel);
 admin.delete("/api/apps/:appId/channels/:channelId", requireAppRole("admin"), handleDeleteChannel);
 
+admin.get("/api/apps/:appId/device-groups", requireAppRole("publisher"), handleListDeviceGroups);
+admin.post("/api/apps/:appId/device-groups", requireAppRole("publisher"), handleCreateDeviceGroup);
+admin.patch("/api/apps/:appId/device-groups/:groupId", requireAppRole("publisher"), handleUpdateDeviceGroup);
+admin.delete("/api/apps/:appId/device-groups/:groupId", requireAppRole("publisher"), handleDeleteDeviceGroup);
+admin.post(
+  "/api/apps/:appId/device-groups/:groupId/members",
+  requireAppRole("publisher"),
+  handleAddDeviceGroupMember,
+);
+admin.delete(
+  "/api/apps/:appId/device-groups/:groupId/members/:deviceId",
+  requireAppRole("publisher"),
+  handleRemoveDeviceGroupMember,
+);
+
 admin.get("/api/apps/:appId/product-types", requireAppRole("viewer"), handleListProductTypes);
 admin.post("/api/apps/:appId/product-types", requireAppRole("admin"), handleCreateProductType);
 admin.patch("/api/apps/:appId/product-types/:ptId", requireAppRole("admin"), handleUpdateProductType);
@@ -797,15 +1070,38 @@ admin.post("/api/apps/:appId/server-grants", requireAppRole("admin"), handleAddA
 admin.patch("/api/apps/:appId/server-grants/:serverId", requireAppRole("admin"), handleUpdateAppServerGrant);
 admin.delete("/api/apps/:appId/server-grants/:serverId", requireAppRole("admin"), handleRemoveAppServerGrant);
 admin.get("/api/apps/:appId/deploy-tokens", requireAppRole("admin"), handleListAppDeployTokens);
+admin.get("/api/app-permissions", handleGetAppPermissionModel);
 admin.post("/api/apps/:appId/deploy-tokens", requireAppRole("admin"), handleCreateAppDeployToken);
 admin.delete("/api/apps/:appId/deploy-tokens/:tokenId", requireAppRole("admin"), handleRevokeAppDeployToken);
+admin.get("/api/apps/:appId/reporter-integrations", requireAppRole("admin"), handleListReporterIntegrations);
+admin.post("/api/apps/:appId/reporter-integrations", requireAppRole("admin"), handleCreateReporterIntegration);
+admin.patch(
+  "/api/apps/:appId/reporter-integrations/:integrationId",
+  requireAppRole("admin"),
+  handleUpdateReporterIntegration,
+);
 
 // App Store Connect API credentials (for Hands-orchestrated TestFlight uploads).
 admin.get("/api/apps/:appId/asc-credentials", requireAppRole("admin"), handleGetAscCredentials);
 admin.post("/api/apps/:appId/asc-credentials/verify", requireAppRole("admin"), handleVerifyAscCredentials);
 admin.post("/api/apps/:appId/builds/:buildId/testflight-upload", requireAppRole("admin"), handleTestflightUpload);
 admin.get("/api/apps/:appId/testflight-uploads/:buildUploadId", requireAppRole("viewer"), handleTestflightUploadStatus);
+admin.get("/api/apps/:appId/builds/:buildId/testflight-groups", requireAppRole("viewer"), handleListTestflightGroups);
+admin.post("/api/apps/:appId/builds/:buildId/testflight-expire", requireAppRole("admin"), handleTestflightExpire);
+admin.post("/api/apps/:appId/builds/:buildId/testflight-publish", requireAppRole("publisher"), handleTestflightPublish);
+admin.get("/api/apps/:appId/builds/:buildId/testflight-publish", requireAppRole("viewer"), handleTestflightPublishStatus);
 admin.get("/api/apps/:appId/appstore-review", requireAppRole("viewer"), handleAppStoreReview);
+admin.get(
+  "/api/apps/:appId/testflight-beta-app-description",
+  requireAppRole("viewer"),
+  handleGetBetaAppDescription,
+);
+admin.put(
+  "/api/apps/:appId/testflight-beta-app-description",
+  requireAppRole("publisher"),
+  handleUpdateBetaAppDescription,
+);
+admin.get("/api/apps/:appId/appgallery-review", requireAppRole("viewer"), handleAppGalleryReview);
 admin.put("/api/apps/:appId/asc-credentials", requireAppRole("admin"), handleSetAscCredentials);
 admin.delete("/api/apps/:appId/asc-credentials", requireAppRole("admin"), handleDeleteAscCredentials);
 // AppGallery Connect Service Account and legacy API client credentials for OHOS publishing.
@@ -838,20 +1134,39 @@ export interface ScheduledController {
 }
 
 export async function scheduled(
-  _controller: ScheduledController,
+  controller: ScheduledController,
   env: Env,
   ctx: ExecutionContext,
 ): Promise<void> {
-  // Build a minimal Hono context for the reaper handler.
-  const fakeC = {
-    env,
-    req: { param: () => ({}) },
-    json: (data: unknown, status = 200) => new Response(JSON.stringify(data), {
-      status,
-      headers: { "content-type": "application/json" },
-    }),
-  } as unknown as Parameters<typeof handleReapDeliveries>[0];
-  ctx.waitUntil(handleReapDeliveries(fakeC));
+  const reaperStartedAt = Date.now();
+  const reaper = reapWebhookDeliveries(env, {
+    scheduledTime: controller.scheduledTime,
+  }).then((summary) => {
+    // Deliberately metadata-only: never log a subscriber URL, request body,
+    // response body, signing secret, event id, or delivery id.
+    console.info("hands_webhook_reaper_summary", JSON.stringify(summary));
+  }).catch((error) => {
+    console.error("hands_webhook_reaper_summary", JSON.stringify({
+      scheduledTime: controller.scheduledTime,
+      selected: 0,
+      succeeded: 0,
+      retried: 0,
+      terminalized: 0,
+      durationMs: Math.max(0, Date.now() - reaperStartedAt),
+      errorCodes: { reaper_unhandled: 1 },
+    }));
+    throw error;
+  });
+  ctx.waitUntil(Promise.all([
+    reaper,
+    cleanupReporterFeedbackData(env),
+  ]).then(() => undefined));
 }
 
-export default app;
+// The Workers runtime only looks at the default export for handlers: a bare
+// Hono app provides fetch but silently drops the cron trigger (`scheduled`
+// as a named export is never invoked). Export both explicitly.
+export default {
+  fetch: app.fetch,
+  scheduled,
+};

@@ -4,9 +4,12 @@ Source: `clients/android` (all Kotlin read 2026-07-09). minSdk 24, hand-rolled
 (okhttp 4.12, kotlinx-serialization/coroutines) — no third-party crash SDK.
 Native lib `handscrash` (CMake, arm64-v8a/armeabi-v7a/x86_64).
 
-**Version drift (P1.6):** Gradle `0.1.0-SNAPSHOT` default vs README `0.4.0`
-vs `HandsFeedback.SDK_VERSION = 0.9.0` (the value actually reported in
-ticket metadata).
+**Version contract:** release publication requires one explicit
+`-PVERSION_NAME`. The Maven coordinate, native-symbols filename/manifest, and
+`HandsFeedback` runtime metadata all consume that same Gradle value through
+`BuildConfig.HANDS_SDK_VERSION`. Android SDK 0.12.4 adds a central Gradle gate
+that verifies both the AAR and native-symbols archive before any local, JitPack,
+or GitHub Packages publication task may write.
 
 ## Present
 

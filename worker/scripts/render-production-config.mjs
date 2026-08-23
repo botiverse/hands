@@ -3,6 +3,13 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parse, printParseErrorCode } from "jsonc-parser";
 
+// Preview lanes were removed; fail loudly instead of silently rendering a
+// production config for a caller that still expects preview behavior.
+if (process.argv.includes("--preview")) {
+  console.error("Preview lanes were removed; --preview is no longer supported.");
+  process.exit(1);
+}
+
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const workerDir = resolve(scriptDir, "..");
 const sourcePath = resolve(workerDir, "wrangler.hands.jsonc");
@@ -36,6 +43,23 @@ function uuid(name) {
   return value;
 }
 
+function booleanString(name, fallback) {
+  const value = process.env[name]?.trim() || fallback;
+  if (value !== "true" && value !== "false") {
+    throw new Error(`${name} must be exactly true or false`);
+  }
+  return value;
+}
+
+function optionalKeyVersion(name) {
+  const value = process.env[name]?.trim();
+  if (!value) return null;
+  if (!/^[A-Za-z0-9._-]{1,64}$/.test(value)) {
+    throw new Error(`${name} must be a valid key version`);
+  }
+  return value;
+}
+
 const errors = [];
 const config = parse(readFileSync(sourcePath, "utf8"), errors, {
   allowTrailingComma: true,
@@ -48,11 +72,26 @@ if (errors.length > 0 || !config || typeof config !== "object") {
 
 const businessDomain = domain("HANDS_BUSINESS_DOMAIN");
 const dashboardDomain = domain("HANDS_DASHBOARD_DOMAIN");
+const reporterSessionEnabled = booleanString("HANDS_FEEDBACK_REPORTER_SESSION_ENABLED", "false");
+const reporterSessionActiveKeyVersion = optionalKeyVersion(
+  "HANDS_FEEDBACK_REPORTER_SESSION_ACTIVE_KEY_VERSION",
+);
+if (reporterSessionEnabled === "true" && !reporterSessionActiveKeyVersion) {
+  throw new Error(
+    "HANDS_FEEDBACK_REPORTER_SESSION_ACTIVE_KEY_VERSION is required when reporter sessions are enabled",
+  );
+}
 const d1 = config.d1_databases?.find((binding) => binding.binding === "DB");
 const r2 = config.r2_buckets?.find((binding) => binding.binding === "APK_BUCKET");
 if (!d1 || !r2) throw new Error("Hands DB or APK_BUCKET binding is missing from the base config");
 
 config.name = required("HANDS_WORKER_NAME");
+config.flagship = [
+  {
+    binding: "FLAGS",
+    app_id: uuid("HANDS_FLAGSHIP_APP_ID"),
+  },
+];
 const configuredRoutes = new Set(
   (config.routes ?? []).filter((route) => route.custom_domain).map((route) => route.pattern),
 );
@@ -73,26 +112,34 @@ config.vars = {
   RAFT_ORIGIN: required("HANDS_RAFT_ORIGIN"),
   RAFT_API_ORIGIN: required("HANDS_RAFT_API_ORIGIN"),
   RAFT_CLIENT_ID: required("HANDS_RAFT_CLIENT_ID"),
+  HANDS_ADMIN_ALLOWED_SERVER_IDS: required("HANDS_ADMIN_ALLOWED_SERVER_IDS"),
   R2_BUCKET_NAME: r2.bucket_name,
+  FEEDBACK_REPORTER_SESSION_ENABLED: reporterSessionEnabled,
 };
+if (reporterSessionActiveKeyVersion) {
+  config.vars.FEEDBACK_REPORTER_SESSION_ACTIVE_KEY_VERSION = reporterSessionActiveKeyVersion;
+} else {
+  delete config.vars.FEEDBACK_REPORTER_SESSION_ACTIVE_KEY_VERSION;
+}
 
-// Preview mode: a throwaway `hands-worker-preview` on a single fixed host
-// preview.<business> for UI review (one branch previewed at a time — Raft apps
-// allow only one callback, so a fixed host keeps a single registered callback).
-// Reuses production D1/R2 (read-only review) + the same container/DO bindings,
-// and points origins at the preview host so Login-with-Raft resolves there. Uses
-// a dedicated preview Raft app (HANDS_PREVIEW_RAFT_CLIENT_ID + its secret) so the
-// production hands-4cc7a2 app's single callback is untouched.
-if (process.argv.includes("--preview")) {
-  const previewHost = `preview.${businessDomain}`;
-  config.name = "hands-worker-preview";
-  config.routes = [{ pattern: previewHost, custom_domain: true }];
-  config.vars.ENVIRONMENT = "preview";
-  config.vars.BUSINESS_ORIGIN = `https://${previewHost}`;
-  config.vars.DASHBOARD_ORIGIN = `https://${previewHost}`;
-  config.vars.CORS_ALLOWED_ORIGINS = `https://${previewHost},http://localhost:5173`;
-  config.vars.RAFT_CLIENT_ID = required("HANDS_PREVIEW_RAFT_CLIENT_ID");
-  console.log(`Preview config: ${config.name} on https://${previewHost}`);
+// Build stamp for the container image, so a rollout can be verified by reading the
+// container rather than by trusting that the workflow went green. `image_vars` is
+// wrangler's build-arg channel - its own type says "available to the image at
+// build-time only" - and the Dockerfile turns GIT_SHA into BUILD_SHA, which /health
+// reports.
+//
+// Left absent when GITHUB_SHA is unset (local renders), rather than defaulting to a
+// placeholder: a stamp that always has *some* value cannot distinguish "built by a
+// deploy" from "built by hand", and this exists precisely to make that distinguishable.
+const gitSha = (process.env.GITHUB_SHA ?? "").trim();
+const containerApp = config.containers?.find(
+  (entry) => entry.class_name === "ApkParserContainer",
+);
+if (!containerApp) {
+  throw new Error("ApkParserContainer is missing from the base config");
+}
+if (gitSha) {
+  containerApp.image_vars = { ...containerApp.image_vars, GIT_SHA: gitSha };
 }
 
 mkdirSync(dirname(outputPath), { recursive: true });

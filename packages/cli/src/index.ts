@@ -25,17 +25,27 @@ import { registerFeedbackCommands } from "./commands/feedback.js";
 import { registerDeployTokenCommands } from "./commands/deploy_tokens.js";
 import { registerWhoamiCommand } from "./commands/whoami.js";
 import { registerLogsCommands } from "./commands/logs.js";
+import { registerDeviceGroupCommands } from "./commands/device_groups.js";
+import { registerApiCommand } from "./commands/api.js";
 import { getConfig } from "./lib/config.js";
 import { readEnv } from "./lib/env.js";
 import { setApiBase } from "./lib/api.js";
 import { recordCliEvent } from "./lib/logging.js";
+import { createRequire } from "node:module";
+
+// Single source of truth for the CLI version: read it from package.json at runtime so
+// `--version` can never drift from the published package version. (Previously the string
+// was hardcoded here and had to be bumped in lockstep with package.json by hand.)
+const { version: CLI_VERSION } = createRequire(import.meta.url)(
+  "../package.json",
+) as { version: string };
 
 const program = new Command();
 
 program
   .name("hands")
   .description("Hands CLI — manage apps, builds, releases from the terminal.")
-  .version("0.5.6")
+  .version(CLI_VERSION)
   .option(
     "--api <url>",
     "Hands business API URL (default: https://hands.build or $HANDS_API)",
@@ -47,11 +57,15 @@ program
     `
 Common recipes:
   hands whoami                                        Who am I / is my auth valid?
+  hands apps create --slug <s> --name <n> --platform web
+                                                       Create an app in my current org
   hands apps list                                     Apps I can access
+  hands apps client-key <app>                         Read public SDK client key (admin)
   hands feedback list <app> --kind crash              Newest crash tickets
   hands feedback show <app> <ticketId>                One ticket: device context + attachments
   hands feedback download-attachment <app> <t> <a>    Pull a crash log / screenshot
   hands releases list <app>                           Release history
+  hands builds testflight-status <app> <build>        Apple processing / beta review state
   hands logs collect                                  Bundle local CLI logs for a bug report
 
 Every command supports --json for scripts/agents. Full docs:
@@ -83,9 +97,11 @@ registerWhoamiCommand(program);
 registerAppCommands(program);
 registerBuildCommands(program);
 registerReleaseCommands(program);
+registerDeviceGroupCommands(program);
 registerFeedbackCommands(program);
 registerDeployTokenCommands(program);
 registerLogsCommands(program);
+registerApiCommand(program);
 
 program
   .command("version")

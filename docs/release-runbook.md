@@ -58,8 +58,10 @@ should remain `draft` until changelog review is complete.
 
 For iOS/TestFlight, the CI boundary is different: macOS CI signs the app, and
 Hands receives the signed output. Do not upload unsigned IPA intermediates to
-Hands as the release artifact, and do not move Apple signing credentials into
-Hands.
+Hands as the release artifact. Apple distribution certificates, provisioning
+profiles, and their passwords remain in CI; the App Store Connect API key is a
+separate credential encrypted server-side in Hands and never exported to CI or
+agents.
 
 ```sh
 # after xcodebuild archive + xcodebuild -exportArchive
@@ -75,15 +77,44 @@ hands builds publish-ios raft-ios \
   --ci-run-id "$GITHUB_RUN_ID" \
   --ci-url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
   --draft
-
-# then upload that same signed IPA to App Store Connect/TestFlight
-# with Transporter or fastlane pilot in the same macOS CI job.
 ```
 
 Hands stores the signed `.ipa` as the installable artifact and `.dSYM.zip` as a
-support artifact for symbolication. TestFlight processing status can be written
-back through metadata/status follow-ups, but the release should still remain
-`draft` until changelog review is complete.
+support artifact for symbolication. An app admin then invokes the server-side
+`upload-testflight-build` Raft action (or the matching API/console action) with
+the Hands build id. Poll `get-testflight-upload-status` to Apple
+`state.state=COMPLETE|FAILED`, then wait until
+`hands builds testflight-status` reports the exact ASC build `VALID`.
+
+After the binary is valid, keep TestFlight distribution separate from Hands
+release activation:
+
+```sh
+# discover stable ASC group ids
+hands builds testflight-groups raft-ios <hands-build-id>
+
+# internal testing
+hands builds testflight-publish raft-ios <hands-build-id> \
+  --distribution internal \
+  --group-id <asc-internal-group-id> \
+  --what-to-test-file en-US=./testflight.en.txt \
+  --what-to-test-file zh-Hans=./testflight.zh.txt \
+  --wait
+
+# external testing: submits Beta App Review; notification is opt-in
+hands builds testflight-publish raft-ios <hands-build-id> \
+  --distribution external \
+  --group-id <asc-external-group-id> \
+  --what-to-test-file en-US=./testflight.en.txt \
+  --notify-testers
+```
+
+External review can take hours. Without `--wait`, the command returns after
+submission; use `hands builds testflight-status ... --distribution external`
+later. TestFlight assignment/review/notification never activates the Hands
+draft and never submits or releases an App Store production version. The human
+still reviews the bilingual Hands changelog and publishes the Hands release
+through the explicit flow below.
 
 For HarmonyOS/OHOS, CI signs the HAPs inside the App Pack, verifies each HAP,
 and exports both the signed `.app` and a standalone signed `.hap`. Publish both
@@ -153,6 +184,46 @@ hands releases publish raft-android <releaseId>
 hands releases share raft-android <releaseId> --password <pw>
 ```
 
-Publishing supersedes the previous active release on the same
-app/channel/product/release-type; staged rollout percentage can be set before
-or after publish (`rollout_cohort_count`, bump via admin or API).
+Hands keeps exactly one non-cancelled owner for each
+app/channel/product/release-type/version-code identity. Cancelling disables a
+lifecycle and frees that coordinate for a corrected upload while retaining the
+old release ID, build, assets, and audit history. The publish CLI checks the
+coordinate before build creation and asset upload. If a concurrent publisher
+wins after that check, the CLI terminalizes its new build as failed, records
+the conflict in provenance, and prints the build ID instead of leaving an
+unidentified orphan. Reusing a version is suited to replacing a never-published
+draft; if an Android build reached devices, publish corrected bytes under a
+higher version code so clients can update.
+
+For a staged full rollout with mandatory acceptance devices, configure both
+behaviors on the same draft:
+
+```sh
+hands releases update raft-android <releaseId> \
+  --full \
+  --rollout-percent 25 \
+  --always-include-group <artin-group-id> \
+  --always-include-group <qa-group-id>
+
+# Optional repeated assertions make the operator intent visible. The CLI also
+# sends the complete stored scope set as the atomic publish precondition.
+hands releases publish raft-android <releaseId> \
+  --device-group <artin-group-id> \
+  --device-group <qa-group-id>
+```
+
+Members of the listed groups always receive the target release. Other clients
+with a stable device ID are gated by `rollout_cohort_count`; clients outside
+the percentage and anonymous clients fall back to the prior eligible full
+release. Raising the rollout to 100% supersedes that fallback. `--full` without
+`--always-include-group` resets the scope to only `full:all`. The legacy
+`--device-group <id>` update remains an exact group-only rollout.
+
+Restoring always reuses the same release ID and never clones the build. A
+cancelled release with `activated_at = null` was never published: Admin shows
+**Restore draft**, and rollback returns it to `draft` so normal publish gates
+still apply. A superseded release or a cancelled release with a prior
+activation uses **Restore as active** and records a fresh activation time.
+Restore fails with `RELEASE_VERSION_ALREADY_EXISTS` after a replacement owns
+that coordinate. Send the revision from fresh release detail; stale restore
+requests return `409 RELEASE_REVISION_CONFLICT` with zero side effects.

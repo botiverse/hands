@@ -6,11 +6,12 @@
         <!--
           Grants the system package installer read access to a locally
           reconstructed (delta-applied) APK sitting in the host app's cacheDir.
-          Authority is namespaced with `.hands.` so it never collides with a
-          host app that already declares its own FileProvider.
+          The provider is our own HandsFileProvider subclass: manifest merger
+          keys providers on android:name, so reusing the androidx class would
+          collide with a host app's own FileProvider regardless of authority.
         -->
         <provider
-            android:name="androidx.core.content.FileProvider"
+            android:name="build.hands.update.HandsFileProvider"
             android:authorities="${applicationId}.hands.fileprovider"
             android:exported="false"
             android:grantUriPermissions="true">

@@ -4,12 +4,21 @@
   "main": "src/index.ts",
   "compatibility_date": "2025-10-08",
   "compatibility_flags": ["nodejs_compat"],
-  "observability": { "enabled": true },
+  "observability": {
+    "enabled": true,
+    "traces": {
+      "enabled": true,
+      // Keep production trace volume bounded while retaining enough samples
+      // to diagnose intermittent Feedback authorization and D1 latency.
+      "head_sampling_rate": 0.05,
+      "persist": true
+    }
+  },
   "upload_source_maps": true,
-  // Enable Cloudflare version preview URLs so `wrangler versions upload` yields a
-  // browsable <version>-<worker>.<subdomain>.workers.dev URL (Preview workflow).
-  // Harmless in production — preview versions carry no traffic.
-  "preview_urls": true,
+  "placement": { "mode": "smart" },
+  // Keep Cloudflare version preview URLs disabled so uploaded versions never
+  // get a publicly browsable workers.dev URL.
+  "preview_urls": false,
 
   // Custom-domain routes must remain literal Wrangler bindings. Other
   // production identifiers are rendered from repository Variables.
@@ -69,7 +78,8 @@
     "ENVIRONMENT": "development",
     "MAX_APK_SIZE_MB": "200",
     "SIGNED_URL_TTL_SECONDS": "3600",
-    "R2_PRESIGNED_DOWNLOAD_TTL_SECONDS": "3600"
+    "R2_PRESIGNED_DOWNLOAD_TTL_SECONDS": "3600",
+    "FEEDBACK_AUDIT_KEY_VERSION": "v1"
   },
 
   "assets": {

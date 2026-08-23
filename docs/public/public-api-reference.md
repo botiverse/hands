@@ -43,6 +43,60 @@ while the percentage climbs. Clients that send no device id only ever see
 fully rolled-out releases; gated-out clients fall through to the previous
 active release. The Android SDK sends the header automatically.
 
+For exact QA or customer-device targeting, publishers can create an app-scoped
+device group and use a `device_group` release scope. Membership is evaluated
+server-side against the same stable installation `device_id`; the client never
+receives or chooses the group name. A non-member falls through to the previous
+matching active release. Device groups use installation identifiers, not IMEI,
+hardware serial numbers, or account identities.
+
+A single release may contain `full:all` plus one or more `device_group` scopes.
+Group members always receive that release, even when their percentage bucket is
+outside `rollout_cohort_count`. Non-members remain percentage-gated, and
+anonymous clients use the prior eligible full release until rollout reaches
+100%. Do not model these two audiences as separate releases of the same version.
+
+Scope writes are fail-closed: omitting `scopes` when creating a generic
+release defaults to `full:all`, but explicitly supplying `scopes` requires a
+non-empty array whose every entry has a non-empty `scope_type` and
+`scope_value`; duplicate entries are rejected. `full:all` may be combined only
+with `device_group` entries. Publish with the complete canonical set, for
+example:
+
+```json
+{
+  "expected_revision": 4,
+  "expected_scopes": [
+    { "scope_type": "full", "scope_value": "all" },
+    { "scope_type": "device_group", "scope_value": "<group UUID>" }
+  ]
+}
+```
+
+Hands rechecks the exact set inside the guarded activation operation and
+returns `409 RELEASE_SCOPE_PRECONDITION_FAILED` on missing, malformed,
+duplicate, unexpected, or drifted scope state. `expected_scope` remains a
+legacy single-scope compatibility field; new callers should always send
+`expected_scopes`. Release detail also exposes an integer `revision`; send that
+value as `expected_revision` on PATCH, publish, cancel, restore, rollout-bump,
+and force-update writes. A stale revision returns
+`409 RELEASE_REVISION_CONFLICT` without changing the release, its scopes,
+fallback releases, or audit log.
+
+The admin release API permits only one **non-cancelled** lifecycle for each
+app/channel/product/release-type/version code. Duplicate creation returns
+`409 RELEASE_VERSION_ALREADY_EXISTS` with the current release/build/status
+coordinates. Cancelling disables that lifecycle and releases the version for a
+corrected build while retaining the old release, build, assets, and audit
+history. The rollback endpoint restores a cancelled row only if no replacement
+owns its coordinate; otherwise it returns the same structured 409. A cancelled
+row whose `activated_at` is null was never published, so an eligible restore
+returns it to `draft` and must pass normal publish readiness, exact-scope,
+external-target, and revision gates. Only a previously active row returns to
+`active` with a new activation time. Reusing a coordinate does not make clients
+that already received that version install different bits; publish client
+corrections with a higher version code.
+
 To freeze a published release without revoking its existing share links, set
 its stable full-scope rollout to `0` in the admin release controls. This is a
 distribution-pointer mutation, not a release deletion or share revocation:
@@ -219,6 +273,34 @@ Example asset conventions:
 | `Raft Setup 1.2.3.exe` | `win32` | `x64` | `exe` | `installable` |
 | `Raft Setup 1.2.3.exe.blockmap` | `win32` | `x64` | `blockmap` | `electron-blockmap` |
 
+### Tauri updater
+
+See the [Tauri Updater guide](tauri-updater.md) for application configuration,
+CLI publishing examples, supported bundles, and the signing boundary. Tauri v2
+applications can configure this dynamic updater endpoint:
+
+```text
+GET /tauri/:appSlug/:channel/:target/:arch/:currentVersion
+```
+
+`target` is `darwin`, `windows`, or `linux`; `arch` follows Tauri's updater
+values such as `aarch64` and `x86_64`. The endpoint returns `204 No Content`
+when the active `tauri-updater` release is not newer. Otherwise it returns the
+Tauri updater JSON fields `version`, `url`, `signature`, and optional release
+notes/date. The immutable artifact URL includes the concrete release ID plus
+target and architecture, so an activation change cannot switch the bytes after
+an update check. Signature verification is performed by Tauri using the public key
+embedded in the application; Hands never receives the signing private key.
+
+Only full-scope active releases are eligible. Non-full scopes are ignored
+because the default updater request has no stable installation identifier.
+Percentage rollout is not evaluated for Tauri requests, so publishers must keep
+it at 100% (or unset) and use separate channels for staged delivery. Once an
+active release is superseded, its release-ID artifact URL remains downloadable
+so clients that already received the update response can finish. This
+immutable-cache contract assumes published build assets are never overwritten;
+publish a new build/release for changed bytes.
+
 macOS updates still require signed app artifacts. Hands only hosts the
 already-built and signed files; it does not sign Electron applications.
 
@@ -240,21 +322,160 @@ find and rotate the key in the app's Settings tab or via
 | Field | Required | Description |
 |---|---|---|
 | `message` | Yes | Feedback text (max 10,000 chars). |
+| `submission_id` | No | Client-generated UUID for idempotent retries. Keep it fixed for one draft. An exact replay returns the original ticket; reusing it with different content returns `409`. |
 | `kind` | No | `feedback` (default), `bug`, or `crash`. |
 | `contact` | No | Reply-to handle (email, Raft name, …). |
-| `metadata` | No | JSON string: `version_name`, `version_code`, `channel`, `device_id`, `device_model`, `os_version`, `arch`, `locale`, plus custom keys. Crash tickets add `crash_exception_class` / `crash_top_frame` (grouping signature) and, for native crashes, `crash_native_frames` — an array of `{ index, offset, soname, build_id }` that the server symbolicates against the build's `native-symbols` asset. |
+| `metadata` | No | JSON string: `version_name`, `version_code`, `channel`, `device_id`, `device_model`, `os_version`, `arch`, `locale`, plus custom keys. Crash tickets add `crash_exception_class` / `crash_top_frame` (grouping signature). QNC2 Android native reports add `crash_native_frames` (`{ index, offset, soname, build_id, source }`), `crash_registers`, crash thread fields, and `crash_native_images`; server symbolication requires an exact per-frame BuildId match against the build's `native-symbols` asset. API 30+ reports may also include `crash_exit_*` metadata and a retained system trace attachment. |
 | `attachments` | No | Inline files (multipart), up to 10 MB each, ≤9 total. |
 | `presigned` | No | JSON array of `{ r2_key, filename, content_type, size }` for files already uploaded via the presign flow (below). |
 
-Returns `201` with the full ticket UUID in `id`, plus a copyable `reference`
-and `ticket_url`, for example `{ "id": "<ticket UUID>", "status": "open",
-"reference": "raft-android · 1.0.4 (1000400) · ticket <ticket UUID>",
-"ticket_url": "https://app.hands.build/apps/<appId>/feedback/<ticket UUID>" }`.
+Returns `201` for a new ticket. An exact `submission_id` replay returns `200`
+with the same ticket and `idempotent_replay: true`. Both responses include the
+full ticket UUID in `id`, plus a copyable `reference` and `ticket_url`.
+`attachment_refs` exposes each attachment's stable Hands UUID and filename;
+the legacy `attachment_names` list remains available. New submissions and
+idempotent replays return the same attachment references, for example:
+
+```json
+{
+  "id": "<ticket UUID>",
+  "status": "open",
+  "attachment_names": ["diagnostics.zip"],
+  "attachment_refs": [
+    { "id": "<attachment UUID>", "filename": "diagnostics.zip" }
+  ],
+  "reference": "raft-android · 1.0.4 (1000400) · ticket <ticket UUID>\nattachments:\n<attachment UUID> · diagnostics.zip",
+  "ticket_url": "https://app.hands.build/apps/<appId>/feedback/<ticket UUID>"
+}
+```
+
 Rate limit: 10 submissions per hour per app + client IP. Tickets appear in
 the admin Feedback tab; a `feedback:new` webhook fires for subscribed
 endpoints (crash tickets can additionally trigger `crash:new_group` /
 `crash:spike`). The Android SDK's `HandsFeedback.submit(...)` wraps this
 endpoint and attaches device metadata automatically.
+
+### Trusted server-proxy rate identity
+
+A server that proxies many signed-in users through one egress IP can avoid a
+shared global bucket by sending both:
+
+```http
+Authorization: Bearer qvdt_...  # granted feedback:write
+X-Hands-Reporter-Id: <stable opaque base64url value>
+```
+
+The bearer must be a non-expired, non-revoked, role-free app token bound to an
+active reporter integration. Its non-empty scope set must contain
+`feedback:write` and may contain only `feedback:write`, `feedback:read`,
+`feedback:comment`, and `feedback:route`. The trusted conversation flow binds
+an immutable route subject before its first submission. Scoped tokens do not
+inherit the legacy viewer/publisher role and cannot authenticate to Hands
+admin/read APIs unless a route explicitly requires one of their named
+permissions. The optional reporter id is an external subject identifier chosen
+by the integrator. It should be stable, opaque, and app/integration scoped — for
+example a random id stored in the integrator's account table or a keyed
+pseudonym — never a raw email, username, or internal database id. Hands stores
+it as the pseudonymous ticket owner and returns it through authenticated ticket
+and webhook contracts; the integrator decides whether to keep a reverse mapping
+for two-way support. Omitting the id yields anonymous, non-addressable tickets.
+Hands applies the 100/hour
+safety limit to the app + reporter id; the trusted proxy can enforce its own
+lower product limit. Supplying the reporter header without a matching app
+deploy token returns `401`; ordinary SDK submissions that omit it continue to
+use the 10/hour app + client-IP bucket. Rate-limit responses include a dynamic
+`Retry-After` header.
+
+### Reporter-owned conversation API
+
+Trusted server proxies can list and continue only their own reporters' tickets:
+
+```http
+GET  /api/apps/:appId/reporter-feedback
+GET  /api/apps/:appId/reporter-feedback/:ticketId
+POST /api/apps/:appId/reporter-feedback/:ticketId/comments
+POST /api/apps/:appId/reporter-feedback/:ticketId/close
+GET  /api/apps/:appId/reporter-feedback/:ticketId/attachments/:attachmentId
+Authorization: Bearer qvdt_...
+X-Hands-Reporter-Id: <stable opaque value>
+```
+
+The token must be role-free, bound to an active reporter integration, contain
+the route's `feedback:read` or `feedback:comment` scope, and contain no
+non-feedback scope. Ownership is the exact tuple `(app, reporter integration,
+reporter id)`. Lists return only owned tickets; targeted ownership misses and
+malformed ticket UUIDs return `404` without revealing another reporter's data.
+List and detail responses include Hands-authoritative unread state: each ticket
+has `unread` and `unread_count`, while the response has `unread_total` (the
+number of owned tickets with unread visible staff/system replies). A successful
+detail read advances a monotonic receipt through the latest visible reply in
+the returned comment page; concurrent or later replies remain unread;
+reporter comments and internal staff notes never create unread state.
+
+Before a trusted reporter creates its first ticket, bind its immutable opaque
+route subject with `feedback:route` permission:
+
+```http
+PUT /api/apps/:appId/reporter-feedback/route-subject
+Authorization: Bearer qvdt_EXAMPLE_DO_NOT_USE
+X-Hands-Reporter-Id: <stable opaque value>
+Content-Type: application/json
+
+{ "route_subject": "rfr_v1_<opaque base64url value>" }
+```
+
+A new binding returns `201`; exact replay returns `200`; a different subject
+for the same ownership tuple returns `409`. Trusted submissions without a
+binding return `409 route_required` before ticket or attachment persistence.
+
+Reporter comments require a client-generated UUID `submission_id`: new comments
+return `201`, exact replays return `200`, and reuse with different trimmed text
+or attachment bytes returns `409`. JSON remains supported for text-only replies.
+Multipart replies use `body`, `submission_id`, and up to three `attachments`;
+each file must be GIF, JPEG, PNG, or WebP and at most 10 MiB. Original submission
+attachments and reporter-comment attachments are served with private/no-store,
+safe-disposition, and no-sniff headers.
+
+#### Optional short-lived server session (disabled by default)
+
+When Hands enables reporter sessions for a server integration, the trusted
+proxy can exchange its deploy token for a 30-second session:
+
+```http
+POST /api/apps/:appId/reporter-feedback/session
+Authorization: Bearer qvdt_...
+X-Hands-Reporter-Id: <stable opaque value>
+Content-Type: application/json
+
+{ "scopes": ["feedback:read", "feedback:comment"] }
+```
+
+The mint still performs the full deploy-token, app, active-integration, and
+scope checks. A successful `201` returns `session_token`, epoch-seconds
+`expires_at`, exact `reporter_integration_id`, and the canonical granted
+`scopes`. The integration id is a required component of the proxy's session
+cache key. Keep the session on the
+trusted proxy: do not persist it, log it, or return it to a browser. The same
+reporter routes accept the session as their bearer and still require the exact
+same `X-Hands-Reporter-Id`; app/reporter mismatches fail before ticket access.
+The reporter header selects a reporter under the deploy token's existing
+integration authority; it is not independent reporter authentication.
+
+Minting is fail-closed rate limited by source token, integration, and an
+audit-HMAC reporter pseudonym. Responses use `Cache-Control: private, no-store`.
+When the feature is disabled the mint route returns `404` and reporter routes
+retain their deploy-token-only behavior.
+
+Reporter comment and status webhooks carry a stable logical event id in both
+the signed JSON body and `X-Hands-Event-Id`. Each subscription delivery also
+has a stable `X-Hands-Delivery-Id`. Retries reuse the exact same body,
+signature, event id, and delivery id; attempt timestamps and counters live only
+in the delivery ledger. Legacy delivery rows without a logical event id omit
+`X-Hands-Event-Id` while retaining the existing signature/event headers.
+
+For a complete browser → trusted backend → Hands implementation, including
+credential setup, opaque reporter coordinates, the React transport, and a
+production checklist, see [React Feedback Inbox](feedback-react.md).
 
 ## Metrics Ingest
 
@@ -304,6 +525,15 @@ Body: `{ "files": [{ "filename": "...", "content_type": "...", "size": <bytes> }
 
 Returns `501` if direct upload isn't configured on the server. Total
 attachments (inline + presigned) may not exceed 9.
+
+Pure ArkTS clients that cannot send a file as a raw request body may add
+`"upload_mode": "r2_multipart_proxy"`. The response then contains
+`upload_id` and `part_size` instead of `upload_url`. Upload each sequential raw
+part to `PUT .../feedback/multipart/part`, complete with the returned part
+ETags at `POST .../feedback/multipart/complete`, and call
+`POST .../feedback/multipart/abort` on failure. The server fixes the part size
+at 5 MiB and streams each bounded part into R2 without buffering the complete
+attachment.
 
 ## Share Pages
 

@@ -18,6 +18,7 @@ import {
   addAppServerGrant,
   createOrgInvite,
   createAppDeployToken,
+  getAppPermissionModel,
   getAuthMe,
   listApps,
   listAppMembers,
@@ -30,9 +31,14 @@ import {
   updateAppMember,
   type AppMember,
   type AppDeployToken,
+  type AppPermission,
   type App,
 } from "../lib/api";
 import { useToast } from "../components/Toast";
+import {
+  buildTokenGrantDisplay,
+  resolveGrantPreview,
+} from "../lib/appPermissionDisplay";
 import {
   Button,
   Input,
@@ -54,6 +60,7 @@ import {
   DialogClose,
   EmptyState,
   EmptyStateTitle,
+  Checkbox,
   Skeleton,
 } from "raft-ui";
 
@@ -182,6 +189,7 @@ function AppServerGrantList({
     queryKey: ["app-server-grants", appId],
     queryFn: () => listAppServerGrants(appId),
   });
+  const rows = grants.data?.server_grants ?? [];
 
   const remove = useMutation({
     mutationFn: (grantKey: string) => removeAppServerGrant(appId, grantKey),
@@ -197,7 +205,6 @@ function AppServerGrantList({
       }),
   });
 
-  const rows = grants.data?.server_grants ?? [];
   const visibleRowCount = rows.length + (isOwningOrg ? 1 : 0);
 
   return (
@@ -234,7 +241,6 @@ function AppServerGrantList({
           <thead>
             <tr className="text-slate-500 text-left border-b border-slate-100">
               <th className="font-normal py-1 pr-2">Server</th>
-              <th className="font-normal py-1 pr-2">Server ID</th>
               <th className="font-normal py-1 pr-2">Access</th>
               <th className="font-normal py-1 pr-2">Source</th>
               {canManage && <th className="font-normal py-1">Actions</th>}
@@ -250,12 +256,7 @@ function AppServerGrantList({
                   </div>
                 </td>
                 <td className="py-2 pr-2">
-                  <span className="font-mono text-xs text-slate-600">
-                    {currentServerId || "—"}
-                  </span>
-                </td>
-                <td className="py-2 pr-2">
-                  <span className="text-xs font-medium">Inherited</span>
+                  <span className="text-xs font-medium">Owner server</span>
                 </td>
                 <td className="py-2 pr-2 text-xs text-slate-500">
                   Owning org
@@ -280,15 +281,16 @@ function AppServerGrantList({
                   </div>
                 </td>
                 <td className="py-2 pr-2">
-                  <span className="font-mono text-xs text-slate-600">
-                    {grant.server_id || "—"}
+                  <span className="text-xs font-medium">
+                    {grant.access_model === "owner_server"
+                      ? "Owner server"
+                      : `Legacy ${grant.app_role}`}
                   </span>
                 </td>
-                <td className="py-2 pr-2">
-                  <span className="text-xs font-medium">Visible</span>
-                </td>
                 <td className="py-2 pr-2 text-xs text-slate-500">
-                  Server visibility
+                  {grant.access_model === "owner_server"
+                    ? "Additional owner"
+                    : "Existing role preserved; remove and re-add to adopt owner-server access"}
                 </td>
                 {canManage && (
                   <td className="py-2 text-xs">
@@ -318,7 +320,7 @@ function AppServerGrantList({
       )}
       {grants.data && isOwningOrg && rows.length === 0 && (
         <p className="text-xs text-slate-500 mt-2">
-          No external server visibility grants yet. The current server has access because it owns this app.
+          No additional owner servers yet. The current server owns this app.
         </p>
       )}
     </div>
@@ -344,7 +346,6 @@ function AddAppServerGrantDialog({
       addAppServerGrant(appId, {
         server_id: serverId.trim() || null,
         server_slug: serverSlug.trim() || null,
-        app_role: "viewer",
       }),
     onSuccess: () => {
       toast.show({ kind: "success", title: "Server grant added" });
@@ -390,6 +391,11 @@ function AddAppServerGrantDialog({
             className="space-y-3"
             onSubmit={(e) => {
               e.preventDefault();
+              if (!confirm(
+                `Make ${serverSlug.trim() || serverId.trim()} an owner server for this app? Its members receive the same role-based access as the creating server.`,
+              )) {
+                return;
+              }
               add.mutate();
             }}
           >
@@ -410,6 +416,11 @@ function AddAppServerGrantDialog({
                 placeholder="optional"
               />
             </div>
+            <p className="text-xs text-slate-500">
+              An additional owner server uses the same role mapping as the server that created the app:
+              server owners/admins can publish releases and manage access; members keep the same
+              bounded member actions as on the creating server; viewers have read-only access.
+            </p>
           </form>
         </DialogBody>
         <DialogFooter>
@@ -667,6 +678,10 @@ function AppDeployTokenList({
     queryKey: ["app-deploy-tokens", appId],
     queryFn: () => listAppDeployTokens(appId),
   });
+  const permissionModel = useQuery({
+    queryKey: ["app-permissions"],
+    queryFn: getAppPermissionModel,
+  });
   const revoke = useMutation({
     mutationFn: (tokenId: string) => revokeAppDeployToken(appId, tokenId),
     onSuccess: () => {
@@ -715,18 +730,21 @@ function AppDeployTokenList({
             <tr className="text-slate-500 text-left border-b border-slate-100">
               <th className="font-normal py-1 pr-2">Name</th>
               <th className="font-normal py-1 pr-2">Prefix</th>
-              <th className="font-normal py-1 pr-2">Role</th>
+              <th className="font-normal py-1 pr-2">Grant</th>
               <th className="font-normal py-1 pr-2">Expires</th>
               <th className="font-normal py-1 pr-2">Last used</th>
               <th className="font-normal py-1">Actions</th>
             </tr>
           </thead>
           <tbody>
-            {rows.map((token) => (
-              <tr
-                key={token.id}
-                className="border-b border-slate-50 hover:bg-slate-50"
-              >
+            {rows.map((token) => {
+              const display = buildTokenGrantDisplay(token, permissionModel.data);
+              const shownPermissions = display.permissions.slice(0, 4);
+              return (
+                <tr
+                  key={token.id}
+                  className="border-b border-slate-50 hover:bg-slate-50"
+                >
                 <td className="py-2 pr-2">
                   <div className="font-medium">{token.name}</div>
                   <div className="text-xs text-slate-500">
@@ -739,7 +757,36 @@ function AppDeployTokenList({
                   </span>
                 </td>
                 <td className="py-2 pr-2">
-                  <span className="text-xs font-medium">{token.app_role}</span>
+                  <div className="max-w-sm space-y-1">
+                    <div className="flex flex-wrap gap-1 text-xs">
+                      <span className="rounded bg-slate-900 px-1.5 py-0.5 font-medium text-white">
+                        {display.roleLabel}
+                      </span>
+                      {!display.valid && (
+                        <span className="rounded bg-red-100 px-1.5 py-0.5 font-medium text-red-700">
+                          Invalid grant
+                        </span>
+                      )}
+                    </div>
+                    <div className="flex flex-wrap gap-1 text-xs">
+                      {shownPermissions.map(({ permission, label, extra }) => (
+                        <span
+                          key={permission}
+                          title={permission}
+                          className={extra
+                            ? "rounded border border-amber-300 bg-amber-50 px-1.5 py-0.5 text-amber-800"
+                            : "rounded border border-slate-200 bg-slate-50 px-1.5 py-0.5 text-slate-600"}
+                        >
+                          {label}{extra ? " · Extra" : ""}
+                        </span>
+                      ))}
+                      {display.permissions.length > shownPermissions.length && (
+                        <span className="rounded border border-slate-200 px-1.5 py-0.5 text-slate-500">
+                          +{display.permissions.length - shownPermissions.length}
+                        </span>
+                      )}
+                    </div>
+                  </div>
                 </td>
                 <td className="py-2 pr-2 text-xs text-slate-500">
                   {token.expires_at
@@ -766,8 +813,9 @@ function AppDeployTokenList({
                     Revoke
                   </Button>
                 </td>
-              </tr>
-            ))}
+                </tr>
+              );
+            })}
           </tbody>
         </table>
       )}
@@ -790,10 +838,17 @@ function AddAppDeployTokenDialog({
 }) {
   const qc = useQueryClient();
   const toast = useToast();
+  const permissionModel = useQuery({
+    queryKey: ["app-permissions"],
+    queryFn: getAppPermissionModel,
+  });
   const [name, setName] = useState("");
-  const [role, setRole] = useState<AppDeployToken["app_role"]>("publisher");
+  const [role, setRole] = useState<"publisher" | "viewer" | "none">("publisher");
+  const [scopes, setScopes] = useState<AppPermission[]>([]);
   const [expiry, setExpiry] = useState<"30d" | "90d" | "365d" | "never">("365d");
   const [createdToken, setCreatedToken] = useState<string | null>(null);
+  const selectedRole = role === "none" ? null : role;
+  const grantPreview = resolveGrantPreview(permissionModel.data, selectedRole, scopes);
 
   const expiresAt = () => {
     if (expiry === "never") return null;
@@ -805,7 +860,8 @@ function AddAppDeployTokenDialog({
     mutationFn: () =>
       createAppDeployToken(appId, {
         name: name.trim(),
-        app_role: role,
+        ...(role === "none" ? {} : { app_role: role }),
+        ...(scopes.length > 0 ? { scopes } : {}),
         expires_at: expiresAt(),
       }),
     onSuccess: (data) => {
@@ -903,13 +959,22 @@ function AddAppDeployTokenDialog({
                 </div>
                 <div className="grid grid-cols-2 gap-3">
                   <div>
-                    <label className="label">Role</label>
+                    <label className="label">Role bundle</label>
                     <Select
-                      items={{ publisher: "publisher", viewer: "viewer" }}
+                      items={{ publisher: "publisher", viewer: "viewer", none: "No role" }}
                       value={role}
-                      onValueChange={(v) =>
-                        setRole(v as AppDeployToken["app_role"])
-                      }
+                      onValueChange={(v) => {
+                        const nextRole = v as typeof role;
+                        const nextPreview = resolveGrantPreview(
+                          permissionModel.data,
+                          nextRole === "none" ? null : nextRole,
+                          [],
+                        );
+                        setRole(nextRole);
+                        setScopes((current) => current.filter(
+                          (permission) => !nextPreview.bundled.includes(permission),
+                        ));
+                      }}
                     >
                       <SelectTrigger>
                         <SelectValue />
@@ -918,6 +983,7 @@ function AddAppDeployTokenDialog({
                       <SelectContent>
                         <SelectItem value="publisher">publisher</SelectItem>
                         <SelectItem value="viewer">viewer</SelectItem>
+                        <SelectItem value="none">No role (custom only)</SelectItem>
                       </SelectContent>
                     </Select>
                   </div>
@@ -943,9 +1009,61 @@ function AddAppDeployTokenDialog({
                     </Select>
                   </div>
                 </div>
+                <div className="space-y-2 rounded-md border border-slate-200 p-3">
+                  <div className="text-xs font-medium text-slate-700">Additional permissions</div>
+                  {permissionModel.isPending && (
+                    <p className="text-xs text-slate-500">Loading permission registry…</p>
+                  )}
+                  {permissionModel.isError && (
+                    <p className="text-xs text-red-600">
+                      Permission registry could not be loaded. Try again before creating a token.
+                    </p>
+                  )}
+                  {(permissionModel.data?.permissions ?? []).map((permission) => (
+                    <label key={permission.permission} className="flex items-center gap-2 text-sm text-slate-700">
+                      <Checkbox
+                        checked={grantPreview.bundled.includes(permission.permission)
+                          || scopes.includes(permission.permission)}
+                        disabled={grantPreview.bundled.includes(permission.permission)}
+                        onCheckedChange={(checked) => {
+                          setScopes((current) => checked
+                            ? [...new Set([...current, permission.permission])]
+                            : current.filter((value) => value !== permission.permission));
+                        }}
+                      />
+                      <span>{permission.description}</span>
+                      <code className="text-xs text-slate-400">{permission.permission}</code>
+                      {grantPreview.bundled.includes(permission.permission) && (
+                        <span className="text-xs text-slate-400">Included by role</span>
+                      )}
+                    </label>
+                  ))}
+                </div>
+                <div className="space-y-2 rounded-md bg-slate-50 p-3">
+                  <div className="text-xs font-medium text-slate-700">Effective permissions</div>
+                  <div className="flex flex-wrap gap-1 text-xs">
+                    {grantPreview.effective.map((permission) => {
+                      const definition = permissionModel.data?.permissions.find(
+                        (entry) => entry.permission === permission,
+                      );
+                      const extra = grantPreview.extras.includes(permission);
+                      return (
+                        <span
+                          key={permission}
+                          title={permission}
+                          className={extra
+                            ? "rounded border border-amber-300 bg-amber-50 px-1.5 py-0.5 text-amber-800"
+                            : "rounded border border-slate-200 bg-white px-1.5 py-0.5 text-slate-600"}
+                        >
+                          {definition?.label ?? permission}{extra ? " · Extra" : ""}
+                        </span>
+                      );
+                    })}
+                  </div>
+                </div>
                 <p className="text-xs text-slate-500">
-                  Publisher tokens can upload builds, create releases, and create
-                  share pages for this app only.
+                  The role expands to its permission bundle. Additional permissions
+                  are unioned into the token's effective permissions.
                 </p>
               </form>
             </DialogBody>
@@ -957,7 +1075,13 @@ function AddAppDeployTokenDialog({
                 type="submit"
                 form="add-app-deploy-token-form"
                 variant="primary"
-                disabled={!name.trim() || create.isPending}
+                disabled={
+                  !name.trim()
+                  || (role === "none" && scopes.length === 0)
+                  || permissionModel.isPending
+                  || permissionModel.isError
+                  || create.isPending
+                }
               >
                 {create.isPending ? "Creating…" : "Create"}
               </Button>
@@ -996,18 +1120,21 @@ function AddAppMemberDialog({
   });
 
   const [selectedAccount, setSelectedAccount] = useState<string>("");
+  const [accountId, setAccountId] = useState("");
   const [role, setRole] = useState<AppMember["app_role"]>("viewer");
+  const targetAccountId = accountId.trim() || selectedAccount;
 
   const add = useMutation({
     mutationFn: () =>
       addAppMember(appId, {
-        account_id: selectedAccount,
+        account_id: targetAccountId,
         app_role: role,
       }),
     onSuccess: () => {
       toast.show({ kind: "success", title: "App member added" });
       qc.invalidateQueries({ queryKey: ["app-members", appId] });
       setSelectedAccount("");
+      setAccountId("");
       onAdded();
     },
     onError: (e) =>
@@ -1031,45 +1158,6 @@ function AddAppMemberDialog({
       m.org_role !== "admin",
     ) ??
     [];
-
-  if (candidates.length === 0) {
-    return (
-      <Dialog
-        open
-        onOpenChange={(open) => {
-          if (!open) onClose();
-        }}
-      >
-        <DialogContent className="max-w-md text-sm">
-          <DialogClose
-            render={
-              <Button
-                variant="ghost"
-                size="icon-sm"
-                aria-label="Close"
-                className="absolute top-3 right-3 text-slate-400 hover:text-slate-700"
-              />
-            }
-          >
-            ×
-          </DialogClose>
-          <DialogHeader>
-            <DialogTitle>Add direct app member</DialogTitle>
-          </DialogHeader>
-          <DialogBody>
-            <p className="text-slate-500">
-              No eligible org members need a direct app grant.
-            </p>
-          </DialogBody>
-          <DialogFooter>
-            <Button variant="outline" type="button" onClick={onClose}>
-              Close
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-    );
-  }
 
   return (
     <Dialog
@@ -1103,34 +1191,64 @@ function AddAppMemberDialog({
               add.mutate();
             }}
           >
-            <div>
-              <label className="label">Principal</label>
-              <Select
-                items={{
-                  "": "— select —",
-                  ...Object.fromEntries(
-                    candidates.map((m) => [
-                      m.account_id,
-                      `${m.display_name} (${m.username ?? m.provider_subject.slice(0, 8)})`,
-                    ]),
-                  ),
+            {candidates.length > 0 ? (
+              <div>
+                <label className="label">Choose someone from this organization</label>
+                <Select
+                  items={{
+                    "": "— select —",
+                    ...Object.fromEntries(
+                      candidates.map((m) => [
+                        m.account_id,
+                        `${m.display_name} (${m.username ?? m.provider_subject.slice(0, 8)})`,
+                      ]),
+                    ),
+                  }}
+                  value={selectedAccount}
+                  onValueChange={(v) => {
+                    setSelectedAccount(v as string);
+                    if (v) setAccountId("");
+                  }}
+                >
+                  <SelectTrigger autoFocus>
+                    <SelectValue />
+                    <SelectIcon />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="">— select —</SelectItem>
+                    {candidates.map((m) => (
+                      <SelectItem key={m.account_id} value={m.account_id}>
+                        {m.display_name} ({m.username ?? m.provider_subject.slice(0, 8)})
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            ) : (
+              <p className="text-xs text-slate-500">
+                Everyone in this organization already has access or is already listed as a
+                direct app member.
+              </p>
+            )}
+            <div className="border-t border-slate-200 pt-3">
+              <label className="label">Add one account from another Raft server</label>
+              <Input
+                value={accountId}
+                onChange={(e) => {
+                  setAccountId(e.target.value);
+                  if (e.target.value.trim()) setSelectedAccount("");
                 }}
-                value={selectedAccount}
-                onValueChange={(v) => setSelectedAccount(v as string)}
-              >
-                <SelectTrigger autoFocus>
-                  <SelectValue />
-                  <SelectIcon />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="">— select —</SelectItem>
-                  {candidates.map((m) => (
-                    <SelectItem key={m.account_id} value={m.account_id}>
-                      {m.display_name} ({m.username ?? m.provider_subject.slice(0, 8)})
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+                placeholder="Paste their Hands account ID"
+                autoFocus={candidates.length === 0}
+                spellCheck={false}
+                className="font-mono"
+              />
+              <p className="mt-1 text-xs text-slate-500">
+                Ask that person or Agent to open Hands once, or run the Hands Raft integration
+                <span className="font-mono"> whoami</span> action, then send you the returned
+                account ID. Cross-server accounts are not listed here because servers are an
+                identity-isolation boundary.
+              </p>
             </div>
             <div>
               <label className="label">Role</label>
@@ -1151,8 +1269,8 @@ function AddAppMemberDialog({
               </Select>
             </div>
             <p className="text-xs text-slate-500">
-              Direct app members are for org members who need app-scoped access.
-              Owners and org admins already inherit app administration.
+              Direct app members receive access only to this app. Owners and org admins already
+              inherit app administration.
             </p>
           </form>
         </DialogBody>
@@ -1164,7 +1282,7 @@ function AddAppMemberDialog({
             type="submit"
             form="add-app-member-form"
             variant="primary"
-            disabled={!selectedAccount || add.isPending}
+            disabled={!targetAccountId || add.isPending}
           >
             {add.isPending ? "Adding…" : "Add"}
           </Button>

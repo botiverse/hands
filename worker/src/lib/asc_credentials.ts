@@ -1,11 +1,11 @@
 /**
  * Per-app App Store Connect (ASC) API credentials, stored in Hands so the
- * "Upload to TestFlight" action runs server-side (Container + iTMSTransporter)
- * instead of the app's CI holding the ASC key.
+ * TestFlight upload/distribution actions run against Apple's official App
+ * Store Connect API instead of the app's CI holding the ASC key.
  *
  * The .p8 private key is stored ENCRYPTED with AES-GCM (unlike deploy tokens,
- * which are hashed — this must be reversible because iTMSTransporter needs the
- * real key). The AES key is derived from the ASC_CRED_ENC_KEY worker secret;
+ * which are hashed — this must be reversible because Hands signs short-lived
+ * ASC JWTs). The AES key is derived from the ASC_CRED_ENC_KEY worker secret;
  * key_id / issuer_id are non-secret identifiers stored in plaintext.
  */
 

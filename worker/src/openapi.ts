@@ -75,6 +75,15 @@ export const openApiDocument = docs.getOpenAPI31Document({
       description: "Create, inspect, and download build artifacts.",
     },
     {
+      name: "TestFlight",
+      description:
+        "Server-side App Store Connect upload, beta group distribution, review, and status synchronization.",
+    },
+    {
+      name: "QA artifacts",
+      description: "Exact-byte, non-release artifacts used by agents and device test lanes.",
+    },
+    {
       name: "Releases",
       description: "Draft, publish, scope, and operate releases.",
     },

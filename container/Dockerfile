@@ -54,6 +54,14 @@ ENV PATH=$PATH:/opt/android-sdk/cmdline-tools/latest/bin:/opt/android-sdk/build-
 RUN yes | sdkmanager --licenses >/dev/null 2>&1 || true && \
     sdkmanager "build-tools;${ANDROID_SDK_VERSION}" >/dev/null 2>&1
 
+# Compile a narrow wrapper around Google's apksig library. Unlike parsing
+# `apksigner --print-certs`, this preserves verified v3/v3.1 proof-of-rotation
+# order and supports multiple independent signers without guessing from text.
+COPY apkinspect/ApkInspect.java /opt/apkinspect/ApkInspect.java
+RUN javac -encoding UTF-8 \
+    -cp "/opt/android-sdk/build-tools/${ANDROID_SDK_VERSION}/lib/apksigner.jar" \
+    -d /opt/apkinspect /opt/apkinspect/ApkInspect.java
+
 # archive-patcher (delta/differential update generation) — com.eidu fork of
 # Google's Play-Store engine: a single self-contained jar (no transitive deps).
 # Compile the thin PatchGen wrapper against it so the container can generate
@@ -69,13 +77,31 @@ WORKDIR /app
 
 # Install Node deps. We use --include=dev because tsx (a devDependency) is used to
 # run the TypeScript source directly without a separate build step — much faster
-# iteration and smaller image than tsc → node.
-COPY package.json ./
-COPY package-lock.json* ./
-RUN npm install --include=dev --no-audit --no-fund
+# iteration and smaller image than tsc → node. So tsx and its esbuild engine are
+# this service's runtime, not build tooling: dropping --include=dev does not slim
+# the image, it stops the server from starting.
+#
+# npm ci, not npm install: install resolves the ranges afresh on every build, so
+# the same commit could produce different versions weeks apart. ci installs
+# exactly what the lockfile records.
+COPY package.json package-lock.json ./
+RUN npm ci --include=dev --no-audit --no-fund
 
 # Copy container source
 COPY src ./src
+
+# Build stamp, so /health can answer "which build is serving" rather than only
+# "something is serving". Supplied by `image_vars` in the Worker's container config,
+# which wrangler passes as a build arg; unset outside a real deploy, and /health then
+# reports "unknown" rather than pretending to know.
+#
+# Deliberately placed after every expensive layer. GIT_SHA changes on every deploy, and
+# an ARG invalidates the cache for everything below it - declared up with the other ARGs
+# it would rebuild the Rust minidump-stackwalk, the apt layer, the Android SDK and
+# `npm ci` on every single deploy. Here it invalidates only the two lines beneath it,
+# and `COPY src` above already changes whenever the source does.
+ARG GIT_SHA=""
+ENV BUILD_SHA=$GIT_SHA
 
 EXPOSE 8080
 

@@ -9,6 +9,8 @@ import build.hands.update.installer.ApkInstaller
 import build.hands.update.models.LatestUpdate
 import build.hands.update.models.Patch
 import build.hands.update.models.UpdateAsset
+import build.hands.update.DurableInstallerLaunchResult
+import build.hands.update.launchWithDurableInstallerAuthority
 import com.google.archivepatcher.applier.FileByFileV1DeltaApplier
 import com.google.archivepatcher.shared.DefaultDeflater
 import com.google.archivepatcher.shared.IDeflater
@@ -52,6 +54,7 @@ class DeltaUpdater(
     private val httpClient: OkHttpClient,
     private val installer: ApkInstaller,
     private val deltaApplyEnabled: Boolean = true,
+    private val eventSink: (name: String, errorCode: String?) -> Unit = { _, _ -> },
 ) {
 
     /**
@@ -67,12 +70,16 @@ class DeltaUpdater(
         asset: UpdateAsset,
         latest: LatestUpdate,
         appSlug: String,
+        persistReadyToInstall: (apk: File, sha256: String) -> Unit = { _, _ -> },
+        persistInstallerOpened: () -> Unit = {},
     ): Boolean {
         if (!deltaEnabled()) {
+            emit("patch_fallback", "flag_off")
             log("delta_fallback reason=flag_off")
             return false
         }
         if (!validateOffer(patch)) {
+            emit("patch_fallback", "offer_invalid")
             log("delta_fallback reason=validate")
             return false
         }
@@ -93,8 +100,11 @@ class DeltaUpdater(
         try {
             // 1. Download the patch bytes into a private temp file.
             try {
+                emit("patch_download_started")
                 downloadTo(patch.download_url, patchFile)
+                emit("patch_download_completed")
             } catch (e: Throwable) {
+                emit("patch_fallback", "patch_download_failed")
                 log("delta_fallback reason=download err=${e.message}")
                 return false
             }
@@ -104,6 +114,7 @@ class DeltaUpdater(
             val deltaStream: InputStream = try {
                 openDeltaStream(patchFile, isGzipped(patch.algorithm))
             } catch (e: Throwable) {
+                emit("patch_fallback", "patch_gunzip_failed")
                 log("delta_fallback reason=gunzip err=${e.message}")
                 return false
             }
@@ -111,6 +122,7 @@ class DeltaUpdater(
             // 3. Apply the patch onto the base APK. A mid-stream gunzip fault or
             //    any patch error surfaces here as `apply`.
             try {
+                emit("patch_apply_started")
                 deltaStream.use { stream ->
                     reconstructed.outputStream().buffered().use { out ->
                         // Use cacheDir as the applier's scratch dir explicitly
@@ -119,7 +131,9 @@ class DeltaUpdater(
                             .applyDelta(baseFile, stream, out)
                     }
                 }
+                emit("patch_apply_completed")
             } catch (e: Throwable) {
+                emit("patch_fallback", "patch_apply_failed")
                 log("delta_fallback reason=apply err=${e.message}")
                 return false
             }
@@ -127,6 +141,7 @@ class DeltaUpdater(
             // 4a. Content integrity: sha256 must equal the offered target.
             val actualSha = sha256Hex(reconstructed)
             if (!constantTimeEquals(actualSha, expectedSha.lowercase())) {
+                emit("patch_fallback", "sha256_mismatch")
                 log("delta_fallback reason=sha_mismatch")
                 return false
             }
@@ -134,17 +149,42 @@ class DeltaUpdater(
             // 4b/4c. Package identity, version, and signer-cert equality.
             val reason = verifyReconstructedApk(reconstructed)
             if (reason != null) {
+                emit("patch_fallback", reason)
                 log("delta_fallback reason=$reason")
                 return false
             }
+            emit("patch_validation_completed")
 
-            // 5. Install the verified reconstructed APK.
-            installer.installLocalApk(reconstructed)
-            installed = true
+            // 5. Persist exact file authority before opening the external
+            // installer. If the post-launch OPENED commit fails, READY remains
+            // durable and the host can safely reopen the same verified APK.
+            when (launchWithDurableInstallerAuthority(
+                persistReady = { persistReadyToInstall(reconstructed, actualSha) },
+                launchInstaller = { installer.installLocalApk(reconstructed) },
+                persistOpened = persistInstallerOpened,
+            )) {
+                DurableInstallerLaunchResult.READY_PERSIST_FAILED -> {
+                    emit("transaction_persist_failed", "ready_persist_failed")
+                    return false
+                }
+                DurableInstallerLaunchResult.LAUNCH_FAILED -> {
+                    emit("patch_fallback", "installer_open_failed")
+                    return false
+                }
+                DurableInstallerLaunchResult.OPENED_WITH_READY_AUTHORITY -> {
+                    installed = true
+                    emit("transaction_persist_failed", "opened_persist_failed")
+                }
+                DurableInstallerLaunchResult.OPENED -> {
+                    installed = true
+                }
+            }
+            emit("installer_opened")
             log("delta_applied bytes_saved=${asset.size_bytes - patch.size_bytes}")
             return true
         } catch (e: Throwable) {
             // Belt-and-suspenders: nothing above should escape, but never throw.
+            emit("patch_fallback", "patch_apply_failed")
             log("delta_fallback reason=apply err=${e.message}")
             return false
         } finally {
@@ -288,6 +328,14 @@ class DeltaUpdater(
 
     private fun log(message: String) {
         Log.i(TAG, message)
+    }
+
+    private fun emit(name: String, errorCode: String? = null) {
+        try {
+            eventSink(name, errorCode)
+        } catch (_: Throwable) {
+            // Host diagnostics must never break update delivery.
+        }
     }
 
     companion object {

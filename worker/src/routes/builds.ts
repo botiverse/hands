@@ -39,6 +39,39 @@ export interface BuildAssetInput {
   metadata_json?: unknown;
 }
 
+export interface ExternalBuildVersionInput {
+  channel_id: string;
+  version_name: string;
+  version_code: number;
+  target: string;
+  source_url: string;
+  raw_sha256: string;
+  raw_size_bytes: number;
+  gzip_sha256?: string | null;
+  gzip_size_bytes?: number | null;
+  gzip_source_url?: string | null;
+  node_version?: string | null;
+  product_type?: string;
+  release_type?: string;
+  metadata_json?: unknown;
+  provenance_json?: unknown;
+}
+
+interface ExternalBuildTargetRow {
+  id: string;
+  app_id: string;
+  build_id: string;
+  version_name: string;
+  target: string;
+  source_url: string;
+  raw_sha256: string;
+  raw_size_bytes: number;
+  gzip_sha256: string | null;
+  gzip_size_bytes: number | null;
+  node_version: string | null;
+  metadata_json: string;
+}
+
 interface BuildRow {
   id: string;
   app_id: string;
@@ -74,9 +107,208 @@ interface BuildAssetDownloadRow {
   version_code: number;
 }
 
+interface InstallerAssetIngestionRow {
+  id: string;
+  file_hash: string;
+  size_bytes: number;
+  version_code: number;
+}
+
+const APK_INSPECTOR_VERSION = "android-apksig-34.0.0-v1";
+
+function verifiedApkMetadata(metadata: Record<string, unknown>, asset: InstallerAssetIngestionRow) {
+  const raw = metadata.raw;
+  const lineages = raw && typeof raw === "object"
+    ? (raw as Record<string, unknown>).signer_lineages
+    : null;
+  if (
+    metadata.parser_kind !== "apk-aapt" ||
+    metadata.platform !== "android" ||
+    typeof metadata.package_id !== "string" ||
+    metadata.package_id.length < 1 ||
+    metadata.package_id.length > 255 ||
+    !Number.isInteger(metadata.version_code) ||
+    (metadata.version_code as number) < 0 ||
+    metadata.version_code !== asset.version_code ||
+    metadata.file_hash_sha256 !== asset.file_hash ||
+    metadata.size_bytes !== asset.size_bytes ||
+    !Array.isArray(lineages) ||
+    lineages.length < 1 ||
+    lineages.length > 8
+  ) return null;
+
+  const seen = new Set<string>();
+  const signerLineages: string[][] = [];
+  for (const entry of lineages) {
+    if (!Array.isArray(entry) || entry.length < 1 || entry.length > 16) return null;
+    const lineage: string[] = [];
+    for (const fingerprint of entry) {
+      if (typeof fingerprint !== "string" || !/^[0-9a-f]{64}$/.test(fingerprint)) return null;
+      if (seen.has(fingerprint)) return null;
+      seen.add(fingerprint);
+      lineage.push(fingerprint);
+    }
+    signerLineages.push(lineage);
+  }
+  return {
+    packageId: metadata.package_id,
+    versionCode: metadata.version_code as number,
+    fileHash: metadata.file_hash_sha256 as string,
+    signerLineages,
+  };
+}
+
 function jsonString(value: unknown, fallback: JsonRecord = {}): string {
   if (typeof value === "string") return value;
   return JSON.stringify(value ?? fallback);
+}
+
+function canonicalJson(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(canonicalJson);
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value as JsonRecord)
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([key, entry]) => [key, canonicalJson(entry)]),
+    );
+  }
+  return value;
+}
+
+function externalJsonString(value: unknown): string {
+  if (typeof value === "string") {
+    try {
+      return JSON.stringify(canonicalJson(JSON.parse(value)));
+    } catch {
+      return value;
+    }
+  }
+  return JSON.stringify(canonicalJson(value ?? {}));
+}
+
+const BUILD_TARGET_PATTERN = /^(darwin|linux|win32)-(arm64|x64)$/;
+const SHA256_PATTERN = /^[a-f0-9]{64}$/i;
+
+export function splitBuildTarget(target: string): { platform: string; arch: string } {
+  const match = BUILD_TARGET_PATTERN.exec(target);
+  if (!match) {
+    throw new Error(
+      "target must be darwin-arm64, darwin-x64, linux-arm64, linux-x64, win32-arm64, or win32-x64",
+    );
+  }
+  return { platform: match[1]!, arch: match[2]! };
+}
+
+function normalizeSha256(value: string, field: string): string {
+  if (!SHA256_PATTERN.test(value)) throw new Error(`${field} must be a 64-character SHA-256 hex digest`);
+  return value.toLowerCase();
+}
+
+function normalizeExternalBuildInput(input: ExternalBuildVersionInput): ExternalBuildVersionInput {
+  if (!input.channel_id || !input.version_name || !input.target || !input.source_url) {
+    throw new Error("channel_id, version_name, target, source_url required");
+  }
+  splitBuildTarget(input.target);
+  const source = new URL(input.source_url);
+  if (source.protocol !== "https:") throw new Error("source_url must use https");
+  if (source.username || source.password) {
+    throw new Error("source_url must not contain embedded credentials");
+  }
+  if (!Number.isSafeInteger(Number(input.version_code)) || Number(input.version_code) < 0) {
+    throw new Error("version_code must be a non-negative integer");
+  }
+  if (!Number.isSafeInteger(Number(input.raw_size_bytes)) || Number(input.raw_size_bytes) < 0) {
+    throw new Error("raw_size_bytes must be a non-negative integer");
+  }
+  const hasGzipHash = input.gzip_sha256 !== undefined && input.gzip_sha256 !== null;
+  const hasGzipSize = input.gzip_size_bytes !== undefined && input.gzip_size_bytes !== null;
+  if (hasGzipHash !== hasGzipSize) {
+    throw new Error("gzip_sha256 and gzip_size_bytes must be provided together");
+  }
+  if (hasGzipSize && (!Number.isSafeInteger(Number(input.gzip_size_bytes)) || Number(input.gzip_size_bytes) < 0)) {
+    throw new Error("gzip_size_bytes must be a non-negative integer");
+  }
+  return {
+    ...input,
+    version_code: Number(input.version_code),
+    raw_sha256: normalizeSha256(input.raw_sha256, "raw_sha256"),
+    raw_size_bytes: Number(input.raw_size_bytes),
+    gzip_sha256: hasGzipHash ? normalizeSha256(input.gzip_sha256 as string, "gzip_sha256") : null,
+    gzip_size_bytes: hasGzipSize ? Number(input.gzip_size_bytes) : null,
+    node_version: input.node_version?.trim() || null,
+    product_type: input.product_type ?? "cli-binary",
+    release_type: input.release_type ?? "stable",
+  };
+}
+
+function externalDeclarationMatches(
+  existing: ExternalBuildTargetRow,
+  input: ExternalBuildVersionInput,
+): boolean {
+  return (
+    existing.source_url === input.source_url &&
+    existing.raw_sha256 === input.raw_sha256 &&
+    existing.raw_size_bytes === input.raw_size_bytes &&
+    existing.gzip_sha256 === (input.gzip_sha256 ?? null) &&
+    existing.gzip_size_bytes === (input.gzip_size_bytes ?? null) &&
+    existing.node_version === (input.node_version ?? null) &&
+    existing.metadata_json === externalJsonString(input.metadata_json)
+  );
+}
+
+interface ExternalBuildRow {
+  id: string;
+  channel_id: string;
+  product_type: string;
+  release_type: string;
+  version_code: number;
+  provenance_json: string;
+}
+
+function externalVersionMatches(
+  existing: ExternalBuildRow,
+  input: ExternalBuildVersionInput,
+): boolean {
+  return (
+    existing.channel_id === input.channel_id &&
+    existing.product_type === input.product_type &&
+    existing.release_type === input.release_type &&
+    existing.version_code === input.version_code &&
+    existing.provenance_json === externalJsonString(input.provenance_json)
+  );
+}
+
+async function getExternalBuild(
+  db: D1Database,
+  appId: string,
+  versionName: string,
+): Promise<ExternalBuildRow | null> {
+  return await db
+    .prepare(
+      `SELECT id, channel_id, product_type, release_type, version_code, provenance_json
+       FROM builds
+       WHERE app_id = ?1 AND version_name = ?2 AND source = 'external'`,
+    )
+    .bind(appId, versionName)
+    .first<ExternalBuildRow>();
+}
+
+async function getExternalTarget(
+  db: D1Database,
+  appId: string,
+  versionName: string,
+  target: string,
+): Promise<ExternalBuildTargetRow | null> {
+  return await db
+    .prepare(
+      `SELECT id, app_id, build_id, version_name, target, source_url,
+              raw_sha256, raw_size_bytes, gzip_sha256, gzip_size_bytes,
+              node_version, metadata_json
+       FROM external_build_targets
+       WHERE app_id = ?1 AND version_name = ?2 AND target = ?3`,
+    )
+    .bind(appId, versionName, target)
+    .first<ExternalBuildTargetRow>();
 }
 
 async function insertAuditLog(
@@ -287,6 +519,278 @@ export async function handleGetBuild(c: Context<{ Bindings: Env }>) {
   return c.json(row);
 }
 
+export async function handlePublishExternalBuildVersion(c: AdminContext) {
+  const appId = c.req.param("appId") ?? "";
+  let input: ExternalBuildVersionInput;
+  try {
+    input = normalizeExternalBuildInput((await c.req.json()) as ExternalBuildVersionInput);
+  } catch (error) {
+    return c.json({ error: (error as Error).message, code: "INVALID_EXTERNAL_BUILD" }, 400);
+  }
+
+  const app = await c.env.DB.prepare("SELECT id, platform FROM apps WHERE id = ?1")
+    .bind(appId)
+    .first<{ id: string; platform: string }>();
+  if (!app) return c.json({ error: "app not found" }, 404);
+  if (app.platform !== "node") {
+    return c.json(
+      {
+        error: "external Node build publishing requires app platform 'node'",
+        code: "APP_PLATFORM_MISMATCH",
+        app_platform: app.platform,
+      },
+      409,
+    );
+  }
+
+  const channel = await c.env.DB
+    .prepare("SELECT id FROM channels WHERE app_id = ?1 AND id = ?2")
+    .bind(appId, input.channel_id)
+    .first<{ id: string }>();
+  if (!channel) return c.json({ error: "channel_id not found for app" }, 400);
+
+  let build = await getExternalBuild(c.env.DB, appId, input.version_name);
+
+  if (build) {
+    if (!externalVersionMatches(build, input)) {
+      return c.json(
+        {
+          error: "external version metadata conflicts with the existing immutable version",
+          code: "EXTERNAL_VERSION_CONFLICT",
+          build_id: build.id,
+        },
+        409,
+      );
+    }
+  }
+
+  const replay = await getExternalTarget(c.env.DB, appId, input.version_name, input.target);
+  if (replay) {
+    if (!externalDeclarationMatches(replay, input)) {
+      return c.json(
+        {
+          error: "external build declaration conflicts with the existing immutable target",
+          code: "EXTERNAL_BUILD_CONFLICT",
+          build_id: replay.build_id,
+          target_id: replay.id,
+          target: replay.target,
+        },
+        409,
+      );
+    }
+    const { platform, arch } = splitBuildTarget(input.target);
+    return c.json({
+      app_id: appId,
+      build_id: replay.build_id,
+      target_id: replay.id,
+      version: input.version_name,
+      target: input.target,
+      platform,
+      arch,
+      replayed: true,
+    });
+  }
+
+  if (!build) {
+    const buildId = crypto.randomUUID();
+    try {
+      await createBuild(
+        c.env.DB,
+        appId,
+        {
+          channel_id: input.channel_id,
+          product_type: input.product_type!,
+          release_type: input.release_type!,
+          version_name: input.version_name,
+          version_code: input.version_code,
+          source: "external",
+          status: "succeeded",
+          build_metadata_json: { external_source: true },
+          provenance_json: externalJsonString(input.provenance_json),
+        },
+        currentActor(c),
+        buildId,
+      );
+      build = {
+        id: buildId,
+        channel_id: input.channel_id,
+        product_type: input.product_type!,
+        release_type: input.release_type!,
+        version_code: input.version_code,
+        provenance_json: externalJsonString(input.provenance_json),
+      };
+    } catch (error) {
+      build = await getExternalBuild(c.env.DB, appId, input.version_name);
+      if (!build) throw error;
+      if (!externalVersionMatches(build, input)) {
+        return c.json(
+          {
+            error: "external version metadata conflicts with the existing immutable version",
+            code: "EXTERNAL_VERSION_CONFLICT",
+            build_id: build.id,
+          },
+          409,
+        );
+      }
+    }
+  }
+
+  const targetId = crypto.randomUUID();
+  const now = Date.now();
+  // gzip transport must be explicitly addressable (never consumer-guessed):
+  // caller may pass gzip_source_url; when a gzip digest exists without one,
+  // the server normalizes to source_url + ".gz" and stores the explicit URL.
+  const gzipSourceUrl =
+    typeof input.gzip_source_url === "string" && input.gzip_source_url
+      ? input.gzip_source_url
+      : input.gzip_sha256
+        ? `${input.source_url}.gz`
+        : null;
+  try {
+    const inserted = await c.env.DB
+      .prepare(
+        `INSERT INTO external_build_targets
+         (id, app_id, build_id, version_name, target, source_url,
+          raw_sha256, raw_size_bytes, gzip_sha256, gzip_size_bytes,
+          node_version, metadata_json, created_at, updated_at, gzip_source_url)
+         SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15
+         WHERE (SELECT targets_frozen_at FROM builds WHERE id = ?16) IS NULL`,
+      )
+      .bind(
+        targetId,
+        appId,
+        build.id,
+        input.version_name,
+        input.target,
+        input.source_url,
+        input.raw_sha256,
+        input.raw_size_bytes,
+        input.gzip_sha256 ?? null,
+        input.gzip_size_bytes ?? null,
+        input.node_version ?? null,
+        externalJsonString(input.metadata_json),
+        now,
+        now,
+        gzipSourceUrl,
+        build.id,
+      )
+      .run();
+    if ((inserted.meta?.changes ?? 0) === 0) {
+      // Conditional insert refused: the build's target set is frozen by a
+      // published release. Exact replays of an existing declaration stay
+      // idempotent (CI re-runs must not fail post-publish); a mismatched
+      // redeclaration is a conflict; a genuinely new target is frozen out.
+      const frozenExisting = await getExternalTarget(c.env.DB, appId, input.version_name, input.target);
+      if (frozenExisting) {
+        if (!externalDeclarationMatches(frozenExisting, input)) {
+          return c.json(
+            {
+              error: "external build declaration conflicts with the existing immutable target",
+              code: "EXTERNAL_BUILD_CONFLICT",
+              build_id: frozenExisting.build_id,
+              target_id: frozenExisting.id,
+              target: frozenExisting.target,
+            },
+            409,
+          );
+        }
+        const { platform, arch } = splitBuildTarget(input.target);
+        return c.json({
+          app_id: appId,
+          build_id: frozenExisting.build_id,
+          target_id: frozenExisting.id,
+          version: input.version_name,
+          target: input.target,
+          platform,
+          arch,
+          replayed: true,
+        });
+      }
+      return c.json(
+        {
+          error: "this build's target set is frozen by a published release; no new targets may be declared",
+          code: "EXTERNAL_TARGETS_FROZEN",
+          build_id: build.id,
+        },
+        409,
+      );
+    }
+  } catch (error) {
+    const concurrent = await getExternalTarget(c.env.DB, appId, input.version_name, input.target);
+    if (!concurrent) throw error;
+    if (!externalDeclarationMatches(concurrent, input)) {
+      return c.json(
+        {
+          error: "external build declaration conflicts with the existing immutable target",
+          code: "EXTERNAL_BUILD_CONFLICT",
+          build_id: concurrent.build_id,
+          target_id: concurrent.id,
+          target: concurrent.target,
+        },
+        409,
+      );
+    }
+    const { platform, arch } = splitBuildTarget(input.target);
+    return c.json({
+      app_id: appId,
+      build_id: concurrent.build_id,
+      target_id: concurrent.id,
+      version: input.version_name,
+      target: input.target,
+      platform,
+      arch,
+      replayed: true,
+    });
+  }
+
+  await insertAuditLog(c.env.DB, appId, "external_build.publish", currentActor(c), {
+    buildId: build.id,
+    targetId,
+    version: input.version_name,
+    target: input.target,
+    source_url: input.source_url,
+    raw_sha256: input.raw_sha256,
+    raw_size_bytes: input.raw_size_bytes,
+    gzip_sha256: input.gzip_sha256 ?? null,
+    gzip_size_bytes: input.gzip_size_bytes ?? null,
+    node_version: input.node_version ?? null,
+  });
+
+  const { platform, arch } = splitBuildTarget(input.target);
+  return c.json(
+    {
+      app_id: appId,
+      build_id: build.id,
+      target_id: targetId,
+      version: input.version_name,
+      target: input.target,
+      platform,
+      arch,
+      replayed: false,
+    },
+    201,
+  );
+}
+
+export async function handleListExternalBuildTargets(c: Context<{ Bindings: Env }>) {
+  const appId = c.req.param("appId") ?? "";
+  const buildId = c.req.param("buildId") ?? "";
+  const build = await getBuildForApp(c.env.DB, appId, buildId);
+  if (!build) return c.json({ error: "build not found" }, 404);
+  const { results } = await c.env.DB
+    .prepare(
+      `SELECT id, build_id, version_name, target, source_url,
+              raw_sha256, raw_size_bytes, gzip_sha256, gzip_size_bytes,
+              node_version, metadata_json, created_at, updated_at
+       FROM external_build_targets
+       WHERE app_id = ?1 AND build_id = ?2
+       ORDER BY target ASC`,
+    )
+    .bind(appId, buildId)
+    .all();
+  return c.json({ targets: results });
+}
+
 export async function handleCreateBuild(c: AdminContext) {
   const appId = c.req.param("appId") ?? "";
   const body = (await c.req.json()) as BuildInput;
@@ -460,11 +964,49 @@ export async function autoParseInstallableAsset(
       icon_content_type?: string | null;
     };
     const { icon_base64, icon_content_type, ...parsed } = metadata;
-    await env.DB.prepare(
+    const now = Date.now();
+    const statements = [env.DB.prepare(
       "UPDATE builds SET parsed_metadata_json = ?1, updated_at = ?2 WHERE id = ?3",
-    )
-      .bind(JSON.stringify(parsed), Date.now(), buildId)
-      .run();
+    ).bind(JSON.stringify(parsed), now, buildId)];
+
+    if (parserKind === "apk-aapt") {
+      const asset = await env.DB.prepare(
+        `SELECT ba.id, ba.file_hash, ba.size_bytes, b.version_code
+         FROM build_assets ba
+         JOIN builds b ON b.id=ba.build_id
+         WHERE ba.build_id=?1 AND b.app_id=?2 AND ba.r2_key=?3
+           AND ba.artifact_kind='installable'
+           AND ba.platform='android' AND ba.filetype='apk'
+         LIMIT 1`,
+      ).bind(buildId, appId, r2Key).first<InstallerAssetIngestionRow>();
+      if (!asset) throw new Error("exact APK asset row not found");
+      const verified = verifiedApkMetadata(metadata, asset);
+      if (!verified) throw new Error("APK inspector metadata does not match exact asset bytes");
+      statements.push(env.DB.prepare(
+        `INSERT INTO installer_asset_metadata
+          (asset_id, platform, filetype, package_id, version_code,
+           signer_lineages_json, inspected_file_hash, inspector_version, inspected_at)
+         VALUES (?1, 'android', 'apk', ?2, ?3, ?4, ?5, ?6, ?7)
+         ON CONFLICT(asset_id) DO UPDATE SET
+           platform=excluded.platform,
+           filetype=excluded.filetype,
+           package_id=excluded.package_id,
+           version_code=excluded.version_code,
+           signer_lineages_json=excluded.signer_lineages_json,
+           inspected_file_hash=excluded.inspected_file_hash,
+           inspector_version=excluded.inspector_version,
+           inspected_at=excluded.inspected_at`,
+      ).bind(
+        asset.id,
+        verified.packageId,
+        verified.versionCode,
+        JSON.stringify(verified.signerLineages),
+        verified.fileHash,
+        APK_INSPECTOR_VERSION,
+        now,
+      ));
+    }
+    await env.DB.batch(statements);
 
     if (icon_base64) {
       const iconBytes = Uint8Array.from(atob(icon_base64), (ch) => ch.charCodeAt(0));
@@ -477,7 +1019,6 @@ export async function autoParseInstallableAsset(
       const hash = Array.from(new Uint8Array(digest))
         .map((b) => b.toString(16).padStart(2, "0"))
         .join("");
-      const now = Date.now();
       await env.DB.batch([
         env.DB.prepare(
           "DELETE FROM build_assets WHERE build_id = ?1 AND artifact_kind = 'app-icon'",
@@ -572,20 +1113,309 @@ export async function handleDeleteBuildAsset(c: Context<{ Bindings: Env }>) {
   const appId = c.req.param("appId") ?? "";
   const buildId = c.req.param("buildId") ?? "";
   const assetId = c.req.param("assetId") ?? "";
+  const expectedFileHash = c.req.query("expected_file_hash")?.trim().toLowerCase() ?? null;
+  const expectedSizeRaw = c.req.query("expected_size_bytes")?.trim() ?? null;
+  const guardedAgentDelete = expectedFileHash !== null || expectedSizeRaw !== null;
+
+  if (guardedAgentDelete) {
+    if (!expectedFileHash || expectedSizeRaw === null) {
+      return c.json(
+        {
+          error: "expected_file_hash and expected_size_bytes are required together",
+          code: "ASSET_DELETE_PRECONDITION_REQUIRED",
+        },
+        400,
+      );
+    }
+    if (!/^[a-f0-9]{64}$/.test(expectedFileHash)) {
+      return c.json({ error: "expected_file_hash must be a SHA-256 hex digest" }, 400);
+    }
+    if (!/^\d+$/.test(expectedSizeRaw) || !Number.isSafeInteger(Number(expectedSizeRaw))) {
+      return c.json({ error: "expected_size_bytes must be a non-negative safe integer" }, 400);
+    }
+  }
+
   const build = await getBuildForApp(c.env.DB, appId, buildId);
   if (!build) return c.json({ error: "build not found" }, 404);
   const asset = await c.env.DB.prepare(
-    "SELECT id FROM build_assets WHERE id = ?1 AND build_id = ?2",
+    `SELECT id, artifact_kind, r2_key, file_hash, size_bytes
+     FROM build_assets
+     WHERE id = ?1 AND build_id = ?2`,
   )
     .bind(assetId, buildId)
-    .first<{ id: string }>();
-  if (!asset) return c.json({ error: "asset not found" }, 404);
+    .first<{
+      id: string;
+      artifact_kind: string;
+      r2_key: string;
+      file_hash: string;
+      size_bytes: number;
+    }>();
+  if (!asset) {
+    if (guardedAgentDelete) {
+      const prior = await c.env.DB.prepare(
+        `SELECT id, payload
+         FROM audit_logs
+         WHERE app_id = ?1 AND action = 'build_asset.delete'
+           AND json_extract(payload, '$.buildId') = ?2
+           AND json_extract(payload, '$.assetId') = ?3
+           AND lower(json_extract(payload, '$.fileHash')) = ?4
+           AND CAST(json_extract(payload, '$.sizeBytes') AS INTEGER) = ?5
+           AND json_extract(payload, '$.r2Preserved') = 1
+         ORDER BY created_at DESC
+         LIMIT 1`,
+      )
+        .bind(appId, buildId, assetId, expectedFileHash, Number(expectedSizeRaw))
+        .first<{ id: string; payload: string }>();
+      if (!prior) {
+        return c.json(
+          {
+            error: "asset metadata is absent without a matching successful delete audit",
+            code: "ASSET_DELETE_PROVENANCE_NOT_FOUND",
+            metadata_absent: true,
+            r2_preserved: null,
+          },
+          404,
+        );
+      }
+      let payload: {
+        r2Key?: unknown;
+        fileHash?: unknown;
+        sizeBytes?: unknown;
+      };
+      try {
+        payload = JSON.parse(prior.payload) as typeof payload;
+      } catch {
+        return c.json(
+          { error: "matching delete audit is malformed", code: "ASSET_DELETE_AUDIT_INVALID" },
+          500,
+        );
+      }
+      if (
+        typeof payload.r2Key !== "string" ||
+        payload.fileHash !== expectedFileHash ||
+        payload.sizeBytes !== Number(expectedSizeRaw)
+      ) {
+        return c.json(
+          { error: "matching delete audit is incomplete", code: "ASSET_DELETE_AUDIT_INVALID" },
+          500,
+        );
+      }
+      let object: R2Object | null;
+      try {
+        object = await c.env.APK_BUCKET.head(payload.r2Key);
+      } catch {
+        return c.json(
+          {
+            error: "stored object readback is temporarily unavailable",
+            code: "ASSET_OBJECT_READBACK_FAILED",
+            metadata_absent: true,
+            r2_preserved: null,
+            audit_id: prior.id,
+          },
+          503,
+        );
+      }
+      if (!object || object.size !== payload.sizeBytes) {
+        return c.json(
+          {
+            error: "stored object from the successful delete audit is missing or changed",
+            code: "ASSET_OBJECT_PRECONDITION_FAILED",
+            metadata_absent: true,
+            r2_preserved: false,
+          },
+          409,
+        );
+      }
+      return c.json({
+        ok: true,
+        deleted: false,
+        idempotent_replay: true,
+        asset_id: assetId,
+        build_id: buildId,
+        metadata_absent: true,
+        r2_preserved: true,
+        r2_key: payload.r2Key,
+        file_hash: payload.fileHash,
+        size_bytes: payload.sizeBytes,
+        audit_id: prior.id,
+      });
+    }
+    return c.json({ error: "asset not found" }, 404);
+  }
 
-  await c.env.DB.prepare("DELETE FROM build_assets WHERE id = ?1 AND build_id = ?2")
-    .bind(assetId, buildId)
-    .run();
-  await insertAuditLog(c.env.DB, appId, "build_asset.delete", currentActor(c), { buildId, assetId });
-  return c.json({ ok: true });
+  if (guardedAgentDelete) {
+    const expectedSize = Number(expectedSizeRaw);
+    if (asset.artifact_kind === "installable") {
+      return c.json(
+        {
+          error: "guarded Agent deletion does not allow installable assets",
+          code: "INSTALLABLE_ASSET_DELETE_FORBIDDEN",
+        },
+        409,
+      );
+    }
+    if (asset.file_hash.toLowerCase() !== expectedFileHash || asset.size_bytes !== expectedSize) {
+      return c.json(
+        {
+          error: "build asset no longer matches the expected immutable bytes",
+          code: "ASSET_DELETE_PRECONDITION_FAILED",
+        },
+        409,
+      );
+    }
+    let object: R2Object | null;
+    try {
+      object = await c.env.APK_BUCKET.head(asset.r2_key);
+    } catch {
+      return c.json(
+        {
+          error: "stored object preflight is temporarily unavailable",
+          code: "ASSET_OBJECT_READBACK_FAILED",
+          r2_preserved: null,
+        },
+        503,
+      );
+    }
+    if (!object || object.size !== asset.size_bytes) {
+      return c.json(
+        {
+          error: "stored object is missing or its size no longer matches the asset metadata",
+          code: "ASSET_OBJECT_PRECONDITION_FAILED",
+        },
+        409,
+      );
+    }
+  }
+
+  const auditId = crypto.randomUUID();
+  const auditPayload = JSON.stringify({
+    buildId,
+    assetId,
+    artifactKind: asset.artifact_kind,
+    r2Key: asset.r2_key,
+    fileHash: asset.file_hash.toLowerCase(),
+    sizeBytes: asset.size_bytes,
+    r2Preserved: true,
+    guarded: guardedAgentDelete,
+  });
+  const now = Date.now();
+  const actor = currentActor(c);
+  const auditStatement = guardedAgentDelete
+    ? c.env.DB.prepare(
+      `INSERT INTO audit_logs (id, app_id, action, actor, payload, created_at)
+       SELECT ?1, ?2, 'build_asset.delete', ?3, ?4, ?5
+       FROM build_assets
+       WHERE id = ?6 AND build_id = ?7 AND artifact_kind <> 'installable'
+         AND lower(file_hash) = ?8 AND size_bytes = ?9
+         AND artifact_kind = ?10 AND r2_key = ?11`,
+    ).bind(
+      auditId,
+      appId,
+      actor,
+      auditPayload,
+      now,
+      assetId,
+      buildId,
+      expectedFileHash,
+      Number(expectedSizeRaw),
+      asset.artifact_kind,
+      asset.r2_key,
+    )
+    : c.env.DB.prepare(
+      `INSERT INTO audit_logs (id, app_id, action, actor, payload, created_at)
+       SELECT ?1, ?2, 'build_asset.delete', ?3, ?4, ?5
+       FROM build_assets
+       WHERE id = ?6 AND build_id = ?7 AND artifact_kind = ?8 AND r2_key = ?9`,
+    ).bind(
+      auditId,
+      appId,
+      actor,
+      auditPayload,
+      now,
+      assetId,
+      buildId,
+      asset.artifact_kind,
+      asset.r2_key,
+    );
+  const deleteStatement = guardedAgentDelete
+    ? c.env.DB.prepare(
+      `DELETE FROM build_assets
+       WHERE id = ?1 AND build_id = ?2 AND artifact_kind <> 'installable'
+         AND lower(file_hash) = ?3 AND size_bytes = ?4
+         AND artifact_kind = ?5 AND r2_key = ?6`,
+    ).bind(
+      assetId,
+      buildId,
+      expectedFileHash,
+      Number(expectedSizeRaw),
+      asset.artifact_kind,
+      asset.r2_key,
+    )
+    : c.env.DB.prepare(
+      `DELETE FROM build_assets
+       WHERE id = ?1 AND build_id = ?2 AND artifact_kind = ?3 AND r2_key = ?4`,
+    ).bind(assetId, buildId, asset.artifact_kind, asset.r2_key);
+  const results = await c.env.DB.batch([auditStatement, deleteStatement]);
+  const auditWrite = results[0];
+  const deletion = results[1];
+  if (!auditWrite || !deletion) {
+    throw new Error("atomic build-asset audit/delete batch returned an incomplete result");
+  }
+  const audited = Number(auditWrite.meta?.changes ?? 0) === 1;
+  const deleted = Number(deletion.meta?.changes ?? 0) === 1;
+  if (audited !== deleted) {
+    throw new Error("atomic build-asset audit/delete result mismatch");
+  }
+  if (!deleted) {
+    return c.json(
+      {
+        error: "build asset changed before the guarded delete committed",
+        code: "ASSET_DELETE_PRECONDITION_FAILED",
+      },
+      409,
+    );
+  }
+  if (guardedAgentDelete) {
+    let object: R2Object | null;
+    try {
+      object = await c.env.APK_BUCKET.head(asset.r2_key);
+    } catch {
+      return c.json(
+        {
+          error: "metadata was deleted and audited, but preserved object readback is temporarily unavailable",
+          code: "ASSET_OBJECT_READBACK_FAILED",
+          metadata_absent: true,
+          r2_preserved: null,
+          audit_id: auditId,
+        },
+        503,
+      );
+    }
+    if (!object || object.size !== asset.size_bytes) {
+      return c.json(
+        {
+          error: "metadata was deleted and audited, but the preserved object readback failed",
+          code: "ASSET_OBJECT_READBACK_FAILED",
+          metadata_absent: true,
+          r2_preserved: false,
+          audit_id: auditId,
+        },
+        503,
+      );
+    }
+  }
+  return c.json({
+    ok: true,
+    deleted,
+    asset_id: assetId,
+    build_id: buildId,
+    metadata_absent: true,
+    r2_preserved: true,
+    r2_key: asset.r2_key,
+    file_hash: asset.file_hash,
+    size_bytes: asset.size_bytes,
+    audit_id: auditId,
+  });
 }
 
 export async function handleDeleteBuild(c: Context<{ Bindings: Env }>) {

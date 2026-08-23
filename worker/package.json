@@ -20,8 +20,9 @@
   "dependencies": {
     "@cloudflare/containers": "^0.0.30",
     "@hono/zod-openapi": "^1.4.0",
+    "@noble/hashes": "^1.8.0",
     "aws4fetch": "1.0.20",
-    "hono": "^4.11.1",
+    "hono": "^4.12.34",
     "jose": "^5.9.6",
     "qrcode-generator": "^2.0.4",
     "zod": "^4.4.3"

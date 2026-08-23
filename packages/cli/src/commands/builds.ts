@@ -5,14 +5,17 @@
  */
 
 import type { Command } from "commander";
-import { existsSync, readFileSync } from "node:fs";
+import { createReadStream, existsSync, readFileSync } from "node:fs";
 import { mkdtemp, writeFile, rm } from "node:fs/promises";
 import { basename, extname, join } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { execFile } from "node:child_process";
+import { Writable } from "node:stream";
+import { pipeline } from "node:stream/promises";
 import { promisify } from "node:util";
-import { apiRequest, apiUploadFile } from "../lib/api.js";
+import { createGunzip } from "node:zlib";
+import { apiRequest, apiUploadFile, QuiverApiError } from "../lib/api.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -44,8 +47,268 @@ interface ChannelRow {
   name: string;
 }
 
-function collect(value: string, previous: string[]): string[] {
+interface ReleaseVersionRow {
+  id: string;
+  build_id: string;
+  status: string;
+  version_name: string;
+  version_code: number;
+}
+
+interface ReleaseVersionConflictBody {
+  code: "RELEASE_VERSION_ALREADY_EXISTS";
+  release_id?: string;
+  build_id?: string;
+  release_status?: string;
+  version_name?: string;
+  version_code?: number;
+}
+
+interface TestflightGroup {
+  id: string;
+  name: string | null;
+  is_internal: boolean | null;
+  has_access_to_all_builds: boolean | null;
+  public_link_enabled: boolean | null;
+}
+
+interface TestflightPublishStatus {
+  hands_build_id: string;
+  bundle_id: string;
+  asc_app_id: string;
+  asc_build_id: string | null;
+  version: string;
+  build_number: string;
+  state: string;
+  distribution: "internal" | "external" | null;
+  processing_state?: string | null;
+  expired?: boolean | null;
+  assigned_groups?: TestflightGroup[];
+  beta_review?: {
+    id: string;
+    state: string | null;
+    submitted_at: string | null;
+  } | null;
+  beta_detail?: {
+    auto_notify_enabled: boolean | null;
+    internal_build_state: string | null;
+    external_build_state: string | null;
+  } | null;
+  notification?: string;
+  operation_id?: string;
+}
+
+function collect(value: string, previous: string[] = []): string[] {
   return previous.concat(value);
+}
+
+export const ANDROID_DELTA_PATCH_ALGORITHM = "archive-patcher-v1+gzip";
+const ANDROID_DELTA_PATCH_MAGIC = Buffer.from("GFbFv1_0", "ascii");
+
+interface AndroidDeltaPatchSpec {
+  fromVersionCode: number;
+  patchPath: string;
+}
+
+export function androidDeltaPatchMetadata(args: {
+  fromVersionCode: number;
+  toVersionCode: number;
+  targetSha256: string;
+}): Record<string, unknown> {
+  return {
+    from_version_code: args.fromVersionCode,
+    to_version_code: args.toVersionCode,
+    algorithm: ANDROID_DELTA_PATCH_ALGORITHM,
+    target_sha256: args.targetSha256,
+  };
+}
+
+export async function assertGzipAndroidDeltaPatch(filePath: string): Promise<void> {
+  let prefix = Buffer.alloc(0);
+  try {
+    await pipeline(
+      createReadStream(filePath),
+      createGunzip(),
+      new Writable({
+        write(chunk: Buffer, _encoding, callback) {
+          if (prefix.length < ANDROID_DELTA_PATCH_MAGIC.length) {
+            prefix = Buffer.concat([prefix, chunk]).subarray(
+              0,
+              ANDROID_DELTA_PATCH_MAGIC.length,
+            );
+          }
+          callback();
+        },
+      }),
+    );
+  } catch {
+    throw new Error(
+      `--delta-patch must be a complete gzip-compressed official PatchGen output (.patch.gz): ${filePath}`,
+    );
+  }
+  if (!prefix.equals(ANDROID_DELTA_PATCH_MAGIC)) {
+    throw new Error(
+      `--delta-patch does not contain an archive-patcher v1 stream: ${filePath}`,
+    );
+  }
+}
+
+async function preflightAndroidDeltaPatches(
+  specs: string[] = [],
+): Promise<AndroidDeltaPatchSpec[]> {
+  const parsed = specs.map((spec) => {
+    const eq = spec.indexOf("=");
+    if (eq <= 0) {
+      throw new Error(`--delta-patch must be <from_version_code>=<path>, got: ${spec}`);
+    }
+    const fromVersionCode = Number(spec.slice(0, eq).trim());
+    const patchPath = spec.slice(eq + 1).trim();
+    if (!Number.isFinite(fromVersionCode)) {
+      throw new Error(`bad from_version_code in --delta-patch: ${spec}`);
+    }
+    if (!existsSync(patchPath)) throw new Error(`missing delta patch file: ${patchPath}`);
+    return { fromVersionCode, patchPath };
+  });
+  for (const patch of parsed) {
+    await assertGzipAndroidDeltaPatch(patch.patchPath);
+  }
+  return parsed;
+}
+
+export async function assertReleaseVersionAvailable(args: {
+  appId: string;
+  channelId: string;
+  productType: string;
+  releaseType: string;
+  versionName: string;
+  versionCode: number;
+}): Promise<void> {
+  const { releases } = await apiRequest<{ releases: ReleaseVersionRow[] }>(
+    `/api/apps/${args.appId}/releases`,
+    {
+      query: {
+        channel: args.channelId,
+        product_type: args.productType,
+        release_type: args.releaseType,
+        version_code: args.versionCode,
+      },
+    },
+  );
+  const conflict = releases.find(
+    (release) =>
+      release.version_code === args.versionCode &&
+      release.status !== "cancelled",
+  );
+  if (!conflict) return;
+  const recovery = conflict.status === "draft"
+    ? "cancel that never-published draft before uploading this version again, or choose a higher version code"
+    : "choose a higher version code; cancelling a published or superseded release cannot make installed clients update to different bits with the same version code";
+  throw new Error(
+    `release version ${args.versionName} (${args.versionCode}) is already owned by ` +
+      `${conflict.status} release ${conflict.id} (build ${conflict.build_id}); ` +
+      recovery,
+  );
+}
+
+export async function createAdmittedPublishBuild(args: {
+  appId: string;
+  channelId: string;
+  productType: string;
+  releaseType: string;
+  versionName: string;
+  versionCode: number;
+  buildBody: Record<string, unknown>;
+}): Promise<{ id: string }> {
+  await assertReleaseVersionAvailable({
+    appId: args.appId,
+    channelId: args.channelId,
+    productType: args.productType,
+    releaseType: args.releaseType,
+    versionName: args.versionName,
+    versionCode: args.versionCode,
+  });
+  return apiRequest<{ id: string }>(`/api/apps/${args.appId}/builds`, {
+    method: "POST",
+    body: {
+      ...args.buildBody,
+      channel_id: args.channelId,
+      product_type: args.productType,
+      release_type: args.releaseType,
+      version_name: args.versionName,
+      version_code: args.versionCode,
+    },
+  });
+}
+
+function releaseVersionConflict(error: unknown): ReleaseVersionConflictBody | null {
+  if (!(error instanceof QuiverApiError) || error.status !== 409) return null;
+  if (!error.body || typeof error.body !== "object" || Array.isArray(error.body)) return null;
+  const body = error.body as Partial<ReleaseVersionConflictBody>;
+  return body.code === "RELEASE_VERSION_ALREADY_EXISTS"
+    ? body as ReleaseVersionConflictBody
+    : null;
+}
+
+export async function createReleaseOrTerminalizeVersionConflict(args: {
+  appId: string;
+  buildId: string;
+  releaseBody: Record<string, unknown>;
+  provenance: Record<string, unknown>;
+}): Promise<{ id: string }> {
+  try {
+    return await apiRequest<{ id: string }>(`/api/apps/${args.appId}/releases`, {
+      method: "POST",
+      body: args.releaseBody,
+    });
+  } catch (error) {
+    const conflict = releaseVersionConflict(error);
+    if (!conflict) {
+      throw new Error(
+        `release creation did not complete for build ${args.buildId}; inspect that build before retrying: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+        { cause: error },
+      );
+    }
+
+    const terminal = {
+      state: "failed",
+      reason: "release_version_conflict",
+      at: new Date().toISOString(),
+      conflicting_release_id: conflict.release_id ?? null,
+      conflicting_build_id: conflict.build_id ?? null,
+      conflicting_release_status: conflict.release_status ?? null,
+      version_name: conflict.version_name ?? null,
+      version_code: conflict.version_code ?? null,
+    };
+    try {
+      await apiRequest(`/api/apps/${args.appId}/builds/${args.buildId}`, {
+        method: "PATCH",
+        body: {
+          status: "failed",
+          provenance_json: {
+            ...args.provenance,
+            hands_cli_terminal: terminal,
+          },
+        },
+      });
+    } catch (terminalError) {
+      throw new Error(
+        `release version conflict left build ${args.buildId} requiring manual inspection; ` +
+          `automatic failed-terminal write did not complete: ${
+            terminalError instanceof Error ? terminalError.message : String(terminalError)
+          }`,
+        { cause: error },
+      );
+    }
+
+    throw new Error(
+      `release version conflict; new build ${args.buildId} was terminalized as failed and remains ` +
+        `auditable (existing release ${conflict.release_id ?? "unknown"}, ` +
+        `build ${conflict.build_id ?? "unknown"}, status ${conflict.release_status ?? "unknown"})`,
+      { cause: error },
+    );
+  }
 }
 
 export function shouldOutputJson(program: Command, localJson?: boolean): boolean {
@@ -87,6 +350,227 @@ export function parseChangelogOptions(opts: {
   return plain ?? null;
 }
 
+export function parseWhatToTestOptions(opts: {
+  whatToTest?: string | string[];
+  whatToTestFile?: string | string[];
+}): Record<string, string> {
+  const result: Record<string, string> = {};
+  const values = (value?: string | string[]): string[] => {
+    if (value === undefined) return [];
+    return Array.isArray(value) ? value : [value];
+  };
+  const consume = (entry: string, fromFile: boolean) => {
+    const eq = entry.indexOf("=");
+    if (eq <= 0) {
+      throw new Error(
+        `${fromFile ? "--what-to-test-file" : "--what-to-test"} must use locale=${fromFile ? "path" : "text"}`,
+      );
+    }
+    const locale = entry.slice(0, eq).trim();
+    const value = entry.slice(eq + 1);
+    const text = (
+      fromFile ? readFileSync(value.trim(), "utf8") : value
+    ).trim();
+    if (!locale || !text) {
+      throw new Error("What to Test locale and text must be non-empty");
+    }
+    if (Object.prototype.hasOwnProperty.call(result, locale)) {
+      throw new Error(`duplicate What to Test locale: ${locale}`);
+    }
+    result[locale] = text;
+  };
+  for (const entry of values(opts.whatToTest)) consume(entry, false);
+  for (const entry of values(opts.whatToTestFile)) consume(entry, true);
+  return result;
+}
+
+function positiveSeconds(value: string, option: string): number {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    throw new Error(`${option} must be a positive number`);
+  }
+  return parsed;
+}
+
+function sleep(milliseconds: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
+async function withTimeoutMessage<T>(
+  message: string,
+  request: () => Promise<T>,
+): Promise<T> {
+  try {
+    return await request();
+  } catch (error) {
+    if (
+      error instanceof Error &&
+      (error.name === "TimeoutError" || error.name === "AbortError")
+    ) {
+      throw new Error(message);
+    }
+    throw error;
+  }
+}
+
+async function getTestflightPublishStatus(
+  appId: string,
+  buildId: string,
+  options: {
+    distribution?: string;
+    bundleId?: string;
+    signal?: AbortSignal;
+  },
+): Promise<TestflightPublishStatus> {
+  return apiRequest<TestflightPublishStatus>(
+    `/api/apps/${appId}/builds/${buildId}/testflight-publish`,
+    {
+      query: {
+        distribution: options.distribution,
+        bundle_id: options.bundleId,
+      },
+      ...(options.signal ? { signal: options.signal } : {}),
+    },
+  );
+}
+
+function assertTestflightStatusHealthy(status: TestflightPublishStatus): void {
+  // `not_uploaded` means Apple has no record of this build AND no upload ever
+  // succeeded. Polling cannot resolve it — only an upload can — so it must stop
+  // the wait loop instead of looking like one more slow round.
+  if (status.state === "not_uploaded") {
+    throw new Error(
+      "TestFlight build was never uploaded to Apple — run `hands builds testflight-upload` first; "
+        + "waiting will not change this",
+    );
+  }
+  if (
+    status.state === "processing_failed" ||
+    status.state === "expired" ||
+    status.state === "rejected" ||
+    status.state === "blocked_export_compliance" ||
+    status.state === "not_applicable"
+  ) {
+    const appleState =
+      status.distribution === "external"
+        ? status.beta_review?.state ??
+          status.beta_detail?.external_build_state ??
+          status.processing_state
+        : status.beta_detail?.internal_build_state ?? status.processing_state;
+    throw new Error(
+      `TestFlight reached terminal state ${status.state}${appleState ? ` (Apple: ${appleState})` : ""}`,
+    );
+  }
+}
+
+async function waitForAscBuild(
+  appId: string,
+  buildId: string,
+  options: {
+    distribution: "internal" | "external";
+    bundleId?: string;
+    intervalSeconds: number;
+    timeoutSeconds: number;
+    quiet: boolean;
+  },
+): Promise<TestflightPublishStatus> {
+  const deadline = Date.now() + options.timeoutSeconds * 1000;
+  const timeoutMessage =
+    `timed out after ${options.timeoutSeconds}s waiting for ` +
+    "App Store Connect processing";
+  while (true) {
+    const remainingMilliseconds = deadline - Date.now();
+    if (remainingMilliseconds <= 0) {
+      throw new Error(timeoutMessage);
+    }
+    const status = await withTimeoutMessage(timeoutMessage, () =>
+      getTestflightPublishStatus(appId, buildId, {
+        ...options,
+        signal: AbortSignal.timeout(
+          Math.max(1, Math.ceil(remainingMilliseconds)),
+        ),
+      }),
+    );
+    assertTestflightStatusHealthy(status);
+    if (status.asc_build_id && status.processing_state === "VALID") return status;
+    if (Date.now() >= deadline) {
+      throw new Error(timeoutMessage);
+    }
+    if (!options.quiet) {
+      console.error(
+        `TestFlight ${status.version} (${status.build_number}): ` +
+          `${status.state}; polling again in ${options.intervalSeconds}s`,
+      );
+    }
+    await sleep(
+      Math.min(
+        options.intervalSeconds * 1000,
+        Math.max(0, deadline - Date.now()),
+      ),
+    );
+  }
+}
+
+async function waitForTestflightDistribution(
+  appId: string,
+  buildId: string,
+  options: {
+    distribution: "internal" | "external";
+    notifyTesters: boolean;
+    bundleId?: string;
+    intervalSeconds: number;
+    timeoutSeconds: number;
+    quiet: boolean;
+  },
+): Promise<TestflightPublishStatus> {
+  const deadline = Date.now() + options.timeoutSeconds * 1000;
+  const timeoutMessage =
+    `timed out after ${options.timeoutSeconds}s waiting for ` +
+    `TestFlight ${options.distribution} distribution`;
+  while (true) {
+    const remainingMilliseconds = deadline - Date.now();
+    if (remainingMilliseconds <= 0) {
+      throw new Error(timeoutMessage);
+    }
+    const status = await withTimeoutMessage(timeoutMessage, () =>
+      getTestflightPublishStatus(appId, buildId, {
+        ...options,
+        signal: AbortSignal.timeout(
+          Math.max(1, Math.ceil(remainingMilliseconds)),
+        ),
+      }),
+    );
+    assertTestflightStatusHealthy(status);
+    const complete =
+      options.distribution === "internal"
+        ? status.state === "testing"
+        : options.notifyTesters
+          ? status.state === "testing"
+          : status.state === "approved_not_notified" ||
+            status.state === "approved" ||
+            status.state === "testing";
+    if (complete) return status;
+    if (Date.now() >= deadline) {
+      throw new Error(timeoutMessage);
+    }
+    if (!options.quiet) {
+      const review = status.beta_review?.state
+        ? ` review=${status.beta_review.state}`
+        : "";
+      console.error(
+        `TestFlight ${status.version} (${status.build_number}): ` +
+          `${status.state}${review}; polling again in ${options.intervalSeconds}s`,
+      );
+    }
+    await sleep(
+      Math.min(
+        options.intervalSeconds * 1000,
+        Math.max(0, deadline - Date.now()),
+      ),
+    );
+  }
+}
+
 export function registerBuildCommands(program: Command): void {
   const builds = program
     .command("builds")
@@ -119,7 +603,7 @@ export function registerBuildCommands(program: Command): void {
         for (const b of res.builds) {
           const flag = b.should_force_update ? "  [force]" : "";
           console.log(
-            `${b.version_name} (${b.version_code})  ${b.product_type}/${b.release_type}  status=${b.status}${flag}  id=${b.id.slice(0, 8)}`,
+            `${b.version_name} (${b.version_code})  ${b.product_type}/${b.release_type}  status=${b.status}${flag}  id=${b.id}`,
           );
         }
       },
@@ -159,6 +643,116 @@ export function registerBuildCommands(program: Command): void {
     );
 
   builds
+    .command("publish-version <appIdOrSlug>")
+    .description("Register an immutable externally hosted Node/CLI build target.")
+    .requiredOption("--version-name <version>", "Release version name.")
+    .option(
+      "--version-code <code>",
+      "Hands ordering code. Defaults to a numeric dotted-version encoding.",
+    )
+    .requiredOption(
+      "--target <target>",
+      "Artifact target, for example darwin-arm64 or linux-x64.",
+    )
+    .requiredOption("--source-url <url>", "Authoritative external HTTPS artifact URL.")
+    .requiredOption("--raw-sha256 <sha256>", "SHA-256 of the uncompressed artifact bytes.")
+    .requiredOption("--raw-size <bytes>", "Uncompressed artifact size in bytes.")
+    .option("--gzip-sha256 <sha256>", "SHA-256 of the gzip transport bytes.")
+    .option("--gzip-size <bytes>", "Gzip transport size in bytes.")
+    .option("--node-version <version>", "Node runtime version embedded in the artifact.")
+    .option("--channel <slug>", "Hands channel slug.", "main")
+    .option("--product-type <type>", "Hands product type.", "cli-binary")
+    .option("--release-type <type>", "Hands release type.", "stable")
+    .option("--source-commit <sha>", "Source commit SHA.")
+    .option("--ci-provider <name>", "CI provider name.")
+    .option("--ci-run-id <id>", "CI run id.")
+    .option("--ci-url <url>", "CI run URL.")
+    .option("--json", "Output JSON.", false)
+    .action(
+      async (
+        appIdOrSlug: string,
+        opts: {
+          versionName: string;
+          versionCode?: string;
+          target: string;
+          sourceUrl: string;
+          rawSha256: string;
+          rawSize: string;
+          gzipSha256?: string;
+          gzipSize?: string;
+          nodeVersion?: string;
+          channel: string;
+          productType: string;
+          releaseType: string;
+          sourceCommit?: string;
+          ciProvider?: string;
+          ciRunId?: string;
+          ciUrl?: string;
+          json?: boolean;
+        },
+      ) => {
+        splitBuildTarget(opts.target);
+        const versionCode = opts.versionCode
+          ? parseNonNegativeInteger(opts.versionCode, "--version-code")
+          : versionCodeFromVersion(opts.versionName);
+        const rawSize = parseNonNegativeInteger(opts.rawSize, "--raw-size");
+        const hasGzipHash = opts.gzipSha256 !== undefined;
+        const hasGzipSize = opts.gzipSize !== undefined;
+        if (hasGzipHash !== hasGzipSize) {
+          throw new Error("--gzip-sha256 and --gzip-size must be provided together");
+        }
+
+        const appId = await resolveAppId(appIdOrSlug);
+        const channelId = await resolveChannelId(appId, opts.channel);
+        const result = await apiRequest<{
+          app_id: string;
+          build_id: string;
+          target_id: string;
+          version: string;
+          target: string;
+          platform: string;
+          arch: string;
+          replayed: boolean;
+        }>(`/api/apps/${appId}/builds/publish-version`, {
+          method: "POST",
+          body: {
+            channel_id: channelId,
+            version_name: opts.versionName,
+            version_code: versionCode,
+            target: opts.target,
+            source_url: opts.sourceUrl,
+            raw_sha256: opts.rawSha256,
+            raw_size_bytes: rawSize,
+            gzip_sha256: opts.gzipSha256 ?? null,
+            gzip_size_bytes: hasGzipSize
+              ? parseNonNegativeInteger(opts.gzipSize as string, "--gzip-size")
+              : null,
+            node_version: opts.nodeVersion ?? null,
+            product_type: opts.productType,
+            release_type: opts.releaseType,
+            provenance_json: {
+              source_commit: opts.sourceCommit ?? null,
+              ci_provider: opts.ciProvider ?? null,
+              ci_run_id: opts.ciRunId ?? null,
+              ci_url: opts.ciUrl ?? null,
+            },
+          },
+        });
+
+        if (shouldOutputJson(program, opts.json)) {
+          console.log(JSON.stringify(result, null, 2));
+          return;
+        }
+        console.log(
+          `${result.replayed ? "Verified" : "Registered"} ${result.version} ${result.target}`,
+        );
+        console.log(`  build:  ${result.build_id}`);
+        console.log(`  target: ${result.target_id}`);
+        console.log(`  source: ${opts.sourceUrl}`);
+      },
+    );
+
+  builds
     .command("publish-android <appIdOrSlug>")
     .description("Create an Android build/release and upload APK plus support artifacts.")
     .requiredOption("--apk <path>", "Installable APK path.")
@@ -174,7 +768,7 @@ export function registerBuildCommands(program: Command): void {
     .option("--metadata <path>", "Build metadata JSON support artifact.")
     .option(
       "--delta-patch <spec>",
-      "Delta patch as <from_version_code>=<path> (archive-patcher). Repeatable — clients on that version get offered this patch instead of the full APK.",
+      "Complete gzipped delta patch as <from_version_code>=<path> (official PatchGen .patch.gz output). Repeatable — clients on that version get offered this patch instead of the full APK.",
       collect,
       [],
     )
@@ -233,8 +827,6 @@ export function registerBuildCommands(program: Command): void {
           json?: boolean;
         },
       ) => {
-        const appId = await resolveAppId(appIdOrSlug);
-        const channelId = await resolveChannelId(appId, opts.channel);
         const versionCode = Number(opts.versionCode);
         if (!Number.isFinite(versionCode) || versionCode < 0) {
           throw new Error("--version-code must be a non-negative number");
@@ -246,6 +838,7 @@ export function registerBuildCommands(program: Command): void {
         const metadataJson = opts.metadata
           ? JSON.parse(readFileSync(opts.metadata, "utf8"))
           : {};
+        const deltaPatches = await preflightAndroidDeltaPatches(opts.deltaPatch);
         const provenance = {
           source_commit: opts.sourceCommit ?? null,
           source_branch: opts.sourceBranch ?? null,
@@ -254,10 +847,16 @@ export function registerBuildCommands(program: Command): void {
           ci_run_id: opts.ciRunId ?? null,
           ci_url: opts.ciUrl ?? null,
         };
-
-        const build = await apiRequest<{ id: string }>(`/api/apps/${appId}/builds`, {
-          method: "POST",
-          body: {
+        const appId = await resolveAppId(appIdOrSlug);
+        const channelId = await resolveChannelId(appId, opts.channel);
+        const build = await createAdmittedPublishBuild({
+          appId,
+          channelId,
+          productType: opts.productType,
+          releaseType: opts.releaseType,
+          versionName: opts.versionName,
+          versionCode,
+          buildBody: {
             channel_id: channelId,
             product_type: opts.productType,
             release_type: opts.releaseType,
@@ -280,28 +879,22 @@ export function registerBuildCommands(program: Command): void {
           filetype: "apk",
         });
         assets.push(installable);
-        // Delta patches: <from_version_code>=<path>. target_sha256 is the new
-        // APK's hash so the client can verify the reconstructed file. The
-        // server offers a patch only when it beats the full APK size.
-        for (const spec of opts.deltaPatch ?? []) {
-          const eq = spec.indexOf("=");
-          if (eq <= 0) throw new Error(`--delta-patch must be <from_version_code>=<path>, got: ${spec}`);
-          const fromVersionCode = Number(spec.slice(0, eq).trim());
-          const patchPath = spec.slice(eq + 1).trim();
-          if (!Number.isFinite(fromVersionCode)) throw new Error(`bad from_version_code in --delta-patch: ${spec}`);
-          if (!existsSync(patchPath)) throw new Error(`missing delta patch file: ${patchPath}`);
+        // Delta inputs were fully preflighted before any remote mutation.
+        // target_sha256 is the new APK's hash so the client can verify the
+        // reconstructed file. The server offers a patch only when it beats
+        // the full APK size.
+        for (const { fromVersionCode, patchPath } of deltaPatches) {
           assets.push(
             await uploadAndRegisterAsset(appId, build.id, patchPath, {
               artifact_kind: "delta-patch",
               platform: "android",
               arch: opts.arch,
               filetype: "patch",
-              metadata_json: {
-                from_version_code: fromVersionCode,
-                to_version_code: versionCode,
-                algorithm: "archive-patcher-v1",
-                target_sha256: installable.file_hash,
-              },
+              metadata_json: androidDeltaPatchMetadata({
+                fromVersionCode,
+                toVersionCode: versionCode,
+                targetSha256: installable.file_hash,
+              }),
             }),
           );
         }
@@ -366,9 +959,11 @@ export function registerBuildCommands(program: Command): void {
           );
         }
 
-        const release = await apiRequest<{ id: string }>(`/api/apps/${appId}/releases`, {
-          method: "POST",
-          body: {
+        const release = await createReleaseOrTerminalizeVersionConflict({
+          appId,
+          buildId: build.id,
+          provenance,
+          releaseBody: {
             build_id: build.id,
             channel_id: channelId,
             product_type: opts.productType,
@@ -504,10 +1099,14 @@ export function registerBuildCommands(program: Command): void {
           ci_run_id: opts.ciRunId ?? null,
           ci_url: opts.ciUrl ?? null,
         };
-
-        const build = await apiRequest<{ id: string }>(`/api/apps/${appId}/builds`, {
-          method: "POST",
-          body: {
+        const build = await createAdmittedPublishBuild({
+          appId,
+          channelId,
+          productType: opts.productType,
+          releaseType: opts.releaseType,
+          versionName: opts.versionName,
+          versionCode,
+          buildBody: {
             channel_id: channelId,
             product_type: opts.productType,
             release_type: opts.releaseType,
@@ -559,9 +1158,11 @@ export function registerBuildCommands(program: Command): void {
           );
         }
 
-        const release = await apiRequest<{ id: string }>(`/api/apps/${appId}/releases`, {
-          method: "POST",
-          body: {
+        const release = await createReleaseOrTerminalizeVersionConflict({
+          appId,
+          buildId: build.id,
+          provenance,
+          releaseBody: {
             build_id: build.id,
             channel_id: channelId,
             product_type: opts.productType,
@@ -597,7 +1198,261 @@ export function registerBuildCommands(program: Command): void {
             "warning: no --dsym uploaded; iOS crashes for this version_code won't symbolicate.",
           );
         }
-        console.log("  note:    upload the same signed IPA to TestFlight from macOS CI.");
+        console.log(
+          "  note:    upload this Hands build with the server-side upload-testflight-build action.",
+        );
+      },
+    );
+
+  builds
+    .command("testflight-groups <appIdOrSlug> <buildId>")
+    .description(
+      "List App Store Connect internal/external beta groups for an existing Hands iOS build.",
+    )
+    .option(
+      "--bundle-id <id>",
+      "Bundle-id assertion; must match immutable build metadata, or acts as fallback when metadata is absent.",
+    )
+    .option("--json", "Output JSON.", false)
+    .action(
+      async (
+        appIdOrSlug: string,
+        buildId: string,
+        opts: { bundleId?: string; json?: boolean },
+      ) => {
+        const appId = await resolveAppId(appIdOrSlug);
+        const result = await apiRequest<{
+          hands_build_id: string;
+          bundle_id: string;
+          asc_app_id: string;
+          groups: TestflightGroup[];
+        }>(`/api/apps/${appId}/builds/${buildId}/testflight-groups`, {
+          query: { bundle_id: opts.bundleId },
+        });
+        if (shouldOutputJson(program, opts.json)) {
+          console.log(JSON.stringify(result, null, 2));
+          return;
+        }
+        if (result.groups.length === 0) {
+          console.log("No TestFlight beta groups found.");
+          return;
+        }
+        for (const group of result.groups) {
+          const kind = group.is_internal ? "internal" : "external";
+          const automatic = group.has_access_to_all_builds ? " auto-all-builds" : "";
+          console.log(`${group.id}  ${kind.padEnd(8)}  ${group.name ?? "(unnamed)"}${automatic}`);
+        }
+      },
+    );
+
+  builds
+    .command("testflight-status <appIdOrSlug> <buildId>")
+    .description(
+      "Refresh live TestFlight processing, group assignment, beta review, auto-notify, and expiry state.",
+    )
+    .option("--distribution <mode>", "Project state for internal or external distribution.")
+    .option(
+      "--bundle-id <id>",
+      "Bundle-id assertion; must match immutable build metadata, or acts as fallback when metadata is absent.",
+    )
+    .option("--json", "Output JSON.", false)
+    .action(
+      async (
+        appIdOrSlug: string,
+        buildId: string,
+        opts: { distribution?: string; bundleId?: string; json?: boolean },
+      ) => {
+        if (
+          opts.distribution !== undefined &&
+          opts.distribution !== "internal" &&
+          opts.distribution !== "external"
+        ) {
+          throw new Error("--distribution must be internal or external");
+        }
+        const appId = await resolveAppId(appIdOrSlug);
+        const status = await getTestflightPublishStatus(appId, buildId, opts);
+        if (shouldOutputJson(program, opts.json)) {
+          console.log(JSON.stringify(status, null, 2));
+          return;
+        }
+        console.log(
+          `TestFlight ${status.version} (${status.build_number}): ${status.state}`,
+        );
+        console.log(`  ASC app:   ${status.asc_app_id}`);
+        console.log(`  ASC build: ${status.asc_build_id ?? "not available yet"}`);
+        if (status.processing_state) {
+          console.log(`  processing: ${status.processing_state}`);
+        }
+        if (status.beta_review?.state) {
+          console.log(`  beta review: ${status.beta_review.state}`);
+        }
+        if (status.assigned_groups && status.assigned_groups.length > 0) {
+          console.log(
+            `  groups: ${status.assigned_groups.map((group) => `${group.name ?? group.id} (${group.id})`).join(", ")}`,
+          );
+        }
+      },
+    );
+
+  builds
+    .command("testflight-publish <appIdOrSlug> <buildId>")
+    .description(
+      "Distribute an already-processed App Store Connect build to TestFlight beta groups. This never publishes to the App Store or activates a Hands release.",
+    )
+    .requiredOption("--distribution <mode>", "internal or external.")
+    .requiredOption(
+      "--group-id <id>",
+      "Stable beta group id from testflight-groups. Repeat for multiple groups.",
+      collect,
+    )
+    .option(
+      "--what-to-test <locale=text>",
+      "Localized What to Test text. Repeat for multiple locales.",
+      collect,
+      [],
+    )
+    .option(
+      "--what-to-test-file <locale=path>",
+      "Read localized What to Test text from a file. Repeat for multiple locales.",
+      collect,
+      [],
+    )
+    .option(
+      "--notify-testers",
+      "External only: enable auto-notify before review, or notify an already-approved build when no auto-notify is pending.",
+      false,
+    )
+    .option(
+      "--bundle-id <id>",
+      "Bundle-id assertion; must match immutable build metadata, or acts as fallback when metadata is absent.",
+    )
+    .option(
+      "--wait",
+      "Wait for Apple processing and the requested TestFlight terminal state.",
+      false,
+    )
+    .option("--poll-interval-seconds <n>", "Polling interval while --wait is active.", "15")
+    .option("--timeout-seconds <n>", "Maximum --wait duration.", "3600")
+    .option("--json", "Output JSON.", false)
+    .action(
+      async (
+        appIdOrSlug: string,
+        buildId: string,
+        opts: {
+          distribution: string;
+          groupId: string[];
+          whatToTest?: string[];
+          whatToTestFile?: string[];
+          notifyTesters?: boolean;
+          bundleId?: string;
+          wait?: boolean;
+          pollIntervalSeconds: string;
+          timeoutSeconds: string;
+          json?: boolean;
+        },
+      ) => {
+        if (opts.distribution !== "internal" && opts.distribution !== "external") {
+          throw new Error("--distribution must be internal or external");
+        }
+        if (opts.distribution === "internal" && opts.notifyTesters) {
+          throw new Error("--notify-testers applies only to external distribution");
+        }
+        const appId = await resolveAppId(appIdOrSlug);
+        const intervalSeconds = positiveSeconds(
+          opts.pollIntervalSeconds,
+          "--poll-interval-seconds",
+        );
+        const timeoutSeconds = positiveSeconds(
+          opts.timeoutSeconds,
+          "--timeout-seconds",
+        );
+        const quiet = shouldOutputJson(program, opts.json);
+        const distribution = opts.distribution;
+        const waitStartedAt = Date.now();
+        if (opts.wait) {
+          await waitForAscBuild(appId, buildId, {
+            distribution,
+            ...(opts.bundleId ? { bundleId: opts.bundleId } : {}),
+            intervalSeconds,
+            timeoutSeconds,
+            quiet,
+          });
+        }
+
+        const remainingBeforePublishMilliseconds =
+          timeoutSeconds * 1000 - (Date.now() - waitStartedAt);
+        if (opts.wait && remainingBeforePublishMilliseconds <= 0) {
+          throw new Error(
+            `timed out after ${timeoutSeconds}s before TestFlight publish began`,
+          );
+        }
+        const publishRequest = () =>
+          apiRequest<TestflightPublishStatus>(
+            `/api/apps/${appId}/builds/${buildId}/testflight-publish`,
+            {
+              method: "POST",
+              body: {
+                distribution,
+                group_ids: opts.groupId,
+                what_to_test: parseWhatToTestOptions(opts),
+                notify_testers: Boolean(opts.notifyTesters),
+                ...(opts.bundleId ? { bundle_id: opts.bundleId } : {}),
+              },
+              ...(opts.wait
+                ? {
+                    signal: AbortSignal.timeout(
+                      Math.max(
+                        1,
+                        Math.ceil(remainingBeforePublishMilliseconds),
+                      ),
+                    ),
+                  }
+                : {}),
+            },
+          );
+        const result = opts.wait
+          ? await withTimeoutMessage(
+              `timed out after ${timeoutSeconds}s while submitting the TestFlight publish request`,
+              publishRequest,
+            )
+          : await publishRequest();
+        const elapsedSeconds = (Date.now() - waitStartedAt) / 1000;
+        const remainingTimeoutSeconds = Math.max(
+          0,
+          timeoutSeconds - elapsedSeconds,
+        );
+        if (opts.wait && remainingTimeoutSeconds === 0) {
+          throw new Error(
+            `timed out after ${timeoutSeconds}s before TestFlight distribution polling began`,
+          );
+        }
+        const finalStatus = opts.wait
+          ? await waitForTestflightDistribution(appId, buildId, {
+              distribution,
+              notifyTesters: Boolean(opts.notifyTesters),
+              ...(opts.bundleId ? { bundleId: opts.bundleId } : {}),
+              intervalSeconds,
+              timeoutSeconds: remainingTimeoutSeconds,
+              quiet,
+            })
+          : result;
+
+        if (quiet) {
+          console.log(JSON.stringify(finalStatus, null, 2));
+          return;
+        }
+        console.log(
+          `TestFlight ${distribution} publish: ${finalStatus.state}`,
+        );
+        console.log(`  Hands build: ${finalStatus.hands_build_id}`);
+        console.log(`  ASC build:   ${finalStatus.asc_build_id}`);
+        console.log(`  groups:      ${opts.groupId.join(", ")}`);
+        if (finalStatus.beta_review?.state) {
+          console.log(`  beta review: ${finalStatus.beta_review.state}`);
+        }
+        if (finalStatus.notification) {
+          console.log(`  notification: ${finalStatus.notification}`);
+        }
       },
     );
 
@@ -690,10 +1545,14 @@ export function registerBuildCommands(program: Command): void {
           ci_run_id: opts.ciRunId ?? null,
           ci_url: opts.ciUrl ?? null,
         };
-
-        const build = await apiRequest<{ id: string }>(`/api/apps/${appId}/builds`, {
-          method: "POST",
-          body: {
+        const build = await createAdmittedPublishBuild({
+          appId,
+          channelId,
+          productType: opts.productType,
+          releaseType: opts.releaseType,
+          versionName: opts.versionName,
+          versionCode,
+          buildBody: {
             channel_id: channelId,
             product_type: opts.productType,
             release_type: opts.releaseType,
@@ -768,9 +1627,11 @@ export function registerBuildCommands(program: Command): void {
           );
         }
 
-        const release = await apiRequest<{ id: string }>(`/api/apps/${appId}/releases`, {
-          method: "POST",
-          body: {
+        const release = await createReleaseOrTerminalizeVersionConflict({
+          appId,
+          buildId: build.id,
+          provenance,
+          releaseBody: {
             build_id: build.id,
             channel_id: channelId,
             product_type: opts.productType,
@@ -803,6 +1664,86 @@ export function registerBuildCommands(program: Command): void {
         console.log(`  assets:  ${assets.map((a) => `${a.artifact_kind}:${a.filetype}`).join(", ")}`);
       },
     );
+
+  builds
+    .command("publish-tauri <appIdOrSlug>")
+    .description("Create a Tauri updater build/release and upload signed updater bundles.")
+    .requiredOption("--version-name <version>", "Tauri application semver.")
+    .option("--version-code <code>", "Hands version code. Defaults from numeric semver.")
+    .requiredOption("--bundle <path>", "Tauri updater bundle. Repeat once per target.", collect, [])
+    .requiredOption("--signature <path>", "Tauri .sig file matching --bundle. Repeat in the same order.", collect, [])
+    .requiredOption("--target <target>", "Target: darwin|linux|windows plus aarch64|x86_64|i686|armv7. Repeat in the same order.", collect, [])
+    .option("--channel <slug>", "Hands release channel slug.", "main")
+    .option("--release-type <type>", "Release type metadata.", "stable")
+    .option("--changelog <text>", "Inline changelog. Repeatable with lang=text.", collect, [])
+    .option("--changelog-file <path>", "Read changelog from file. Repeatable with lang=path.", collect, [])
+    .option("--publish", "Create an active release instead of the default draft.", false)
+    .option("--json", "Output JSON.", false)
+    .action(async (appIdOrSlug: string, opts: {
+      versionName: string; versionCode?: string; bundle: string[]; signature: string[];
+      target: string[]; channel: string; releaseType: string;
+      changelog?: string[]; changelogFile?: string[]; publish?: boolean; json?: boolean;
+    }) => {
+      if (!/^\d+\.\d+\.\d+(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/.test(opts.versionName)) {
+        throw new Error("--version-name must be a valid semantic version");
+      }
+      if (opts.bundle.length === 0) throw new Error("provide at least one --bundle, --signature, and --target set");
+      if (opts.bundle.length !== opts.signature.length || opts.bundle.length !== opts.target.length) {
+        throw new Error("repeat --bundle, --signature, and --target the same number of times and in matching order");
+      }
+      for (const file of [...opts.bundle, ...opts.signature]) {
+        if (!existsSync(file)) throw new Error(`missing file: ${file}`);
+      }
+      const appId = await resolveAppId(appIdOrSlug);
+      const channelId = await resolveChannelId(appId, opts.channel);
+      const versionCode = opts.versionCode
+        ? parseNonNegativeInteger(opts.versionCode, "--version-code")
+        : versionCodeFromVersion(opts.versionName);
+      const changelog = parseChangelogOptions(opts);
+      const build = await createAdmittedPublishBuild({
+        appId,
+        channelId,
+        productType: "tauri-updater",
+        releaseType: opts.releaseType,
+        versionName: opts.versionName,
+        versionCode,
+        buildBody: {
+          channel_id: channelId, product_type: "tauri-updater", release_type: opts.releaseType,
+          version_name: opts.versionName, version_code: versionCode, changelog,
+          source: "cli", status: "succeeded",
+          build_metadata_json: { tauri: { targets: opts.target } },
+        },
+      });
+      const assets = [];
+      for (let index = 0; index < opts.bundle.length; index++) {
+        const target = splitTauriTarget(opts.target[index]!);
+        const signature = readFileSync(opts.signature[index]!, "utf8").trim();
+        if (!signature) throw new Error(`empty signature file: ${opts.signature[index]}`);
+        const bundle = opts.bundle[index]!;
+        assets.push(await uploadAndRegisterAsset(appId, build.id, bundle, {
+          artifact_kind: "tauri-updater",
+          platform: target.platform,
+          arch: target.arch,
+          filetype: inferTauriFiletype(bundle),
+          variant: basename(bundle),
+          signature,
+          metadata_json: { filename: basename(bundle), tauri_target: opts.target[index] },
+        }));
+      }
+      const release = await createReleaseOrTerminalizeVersionConflict({
+        appId,
+        buildId: build.id,
+        provenance: {},
+        releaseBody: {
+          build_id: build.id, channel_id: channelId, product_type: "tauri-updater",
+          release_type: opts.releaseType, status: opts.publish ? "active" : "draft",
+          changelog, scopes: [{ scope_type: "full", scope_value: "all" }],
+        },
+      });
+      const result = { build_id: build.id, release_id: release.id, channel: opts.channel, version: opts.versionName, assets };
+      if (shouldOutputJson(program, opts.json)) console.log(JSON.stringify(result, null, 2));
+      else console.log(`Published Tauri ${opts.publish ? "release" : "draft"} ${opts.versionName} to ${opts.channel} (${assets.length} target${assets.length === 1 ? "" : "s"})`);
+    });
 
   builds
     .command("publish-electron <appIdOrSlug>")
@@ -911,10 +1852,14 @@ export function registerBuildCommands(program: Command): void {
             arch,
           },
         };
-
-        const build = await apiRequest<{ id: string }>(`/api/apps/${appId}/builds`, {
-          method: "POST",
-          body: {
+        const build = await createAdmittedPublishBuild({
+          appId,
+          channelId,
+          productType: opts.productType,
+          releaseType: opts.releaseType,
+          versionName: opts.versionName,
+          versionCode,
+          buildBody: {
             channel_id: channelId,
             product_type: opts.productType,
             release_type: opts.releaseType,
@@ -981,9 +1926,11 @@ export function registerBuildCommands(program: Command): void {
           );
         }
 
-        const release = await apiRequest<{ id: string }>(`/api/apps/${appId}/releases`, {
-          method: "POST",
-          body: {
+        const release = await createReleaseOrTerminalizeVersionConflict({
+          appId,
+          buildId: build.id,
+          provenance,
+          releaseBody: {
             build_id: build.id,
             channel_id: channelId,
             product_type: opts.productType,
@@ -1053,6 +2000,7 @@ async function uploadAndRegisterAsset(
     platform: string;
     arch: string | null;
     filetype: string;
+    signature?: string | null;
     variant?: string | null;
     metadata_json?: Record<string, unknown>;
   },
@@ -1071,6 +2019,7 @@ async function uploadAndRegisterAsset(
       r2_key: uploaded.r2_key,
       file_hash: uploaded.file_hash,
       size_bytes: uploaded.size_bytes,
+      signature: metadata.signature ?? null,
       variant: metadata.variant ?? null,
       metadata_json: {
         original_filename: uploaded.original_filename,
@@ -1179,12 +2128,11 @@ async function generateAndUploadAndroidDeltas(args: {
           platform: "android",
           arch: args.arch,
           filetype: "patch",
-          metadata_json: {
-            from_version_code: src.from_version_code,
-            to_version_code: args.toVersionCode,
-            algorithm: "archive-patcher-v1+gzip",
-            target_sha256: args.targetSha256,
-          },
+          metadata_json: androidDeltaPatchMetadata({
+            fromVersionCode: src.from_version_code,
+            toVersionCode: args.toVersionCode,
+            targetSha256: args.targetSha256,
+          }),
         }),
       );
     }
@@ -1205,12 +2153,64 @@ export function inferElectronPlatform(filePath: string | undefined): string {
   return "win32";
 }
 
+export function splitBuildTarget(target: string): { platform: string; arch: string } {
+  const match = /^(darwin|linux|win32)-(arm64|x64)$/.exec(target);
+  if (!match) {
+    throw new Error(
+      "--target must be darwin-arm64, darwin-x64, linux-arm64, linux-x64, win32-arm64, or win32-x64",
+    );
+  }
+  return { platform: match[1]!, arch: match[2]! };
+}
+
+function parseNonNegativeInteger(value: string, flag: string): number {
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed) || parsed < 0) {
+    throw new Error(`${flag} must be a non-negative integer`);
+  }
+  return parsed;
+}
+
+export function versionCodeFromVersion(version: string): number {
+  const match = /^(\d+)\.(\d+)\.(\d+)(?:[-+].*)?$/.exec(version);
+  if (!match) {
+    throw new Error("--version-code is required when --version is not numeric major.minor.patch");
+  }
+  const parts = match.slice(1).map(Number);
+  if (parts.some((part) => !Number.isSafeInteger(part) || part > 999)) {
+    throw new Error("numeric version components must each be between 0 and 999");
+  }
+  return parts[0]! * 1_000_000 + parts[1]! * 1_000 + parts[2]!;
+}
+
 export function inferElectronFiletype(filePath: string): string {
   const name = basename(filePath);
   if (name.endsWith(".blockmap")) return "blockmap";
   if (name.endsWith(".AppImage")) return "AppImage";
   const ext = extname(name).replace(/^\./, "");
   return ext || "bin";
+}
+
+export function inferTauriFiletype(filePath: string): string {
+  const name = basename(filePath).toLowerCase();
+  if (name.endsWith(".appimage")) return "AppImage";
+  if (name.endsWith(".exe")) return "exe";
+  if (name.endsWith(".msi")) return "msi";
+  if (name.endsWith(".tar.gz")) return "tar.gz";
+  if (name.endsWith(".nsis.zip")) return "nsis.zip";
+  if (name.endsWith(".msi.zip")) return "msi.zip";
+  throw new Error(`unsupported Tauri updater bundle: ${basename(filePath)}`);
+}
+
+export function splitTauriTarget(target: string): { platform: string; arch: string } {
+  const match = /^(darwin|linux|windows)-(aarch64|x86_64|i686|armv7)$/.exec(target);
+  if (!match) {
+    throw new Error("Tauri target must be darwin|linux|windows plus aarch64|x86_64|i686|armv7");
+  }
+  return {
+    platform: match[1] === "windows" ? "win32" : match[1]!,
+    arch: match[2]!,
+  };
 }
 
 export function inferIosFiletype(filePath: string): string {

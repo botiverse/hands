@@ -2,11 +2,29 @@
 
 Android SDK for Hands server-side update checks and APK installation.
 
+`Hands.install(...)` also enables crash capture, daily device analytics, and
+release-health session tracking by default. Session start/end/crash events are
+queued on-device and retried after network or process failures; set
+`trackSessions = false` only when the host app intentionally opts out.
+
 ## Coordinates
 
-Two ways to consume the SDK. **JitPack needs no token** — prefer it unless you
-already have GitHub Packages set up. (GitHub Packages' Maven registry requires a
-`read:packages` token for every request, even though the package is public.)
+The canonical `build.hands:hands-android-sdk` publication is public on Raft
+Artifacts and needs no download token. JitPack remains available as a
+source-build fallback. GitHub Packages requires a `read:packages` token for
+every request even though the package is public.
+
+### Raft Artifacts (preferred, no token)
+
+```kotlin
+repositories {
+    maven { url = uri("https://maven.artifacts.botiverse.dev") }
+}
+
+dependencies {
+    implementation("build.hands:hands-android-sdk:0.12.4")
+}
+```
 
 ### JitPack (no token)
 
@@ -16,7 +34,7 @@ repositories {
 }
 
 dependencies {
-    implementation("com.github.botiverse:hands:android-sdk-v0.11.0")
+    implementation("com.github.botiverse:hands:android-sdk-v0.12.4")
 }
 ```
 
@@ -34,7 +52,7 @@ repositories {
 }
 
 dependencies {
-    implementation("build.hands:hands-android-sdk:0.11.0")
+    implementation("build.hands:hands-android-sdk:0.12.4")
 }
 ```
 
@@ -48,13 +66,45 @@ val checker = UpdateChecker(
     installedVersionCode = BuildConfig.VERSION_CODE.toLong(),
     channel = "main",
     arch = "arm64-v8a",
+    // Explicit host-selected locale; the SDK never guesses the system locale.
+    languageTag = "zh-CN",
+    eventListener = HandsUpdateEventListener { event ->
+        // Persist in the host's diagnostics/feedback log if desired.
+        hostUpdateLog.append(event)
+    },
 )
 
-val result = checker.checkAndInstall()
-if (!result.update_available) {
-    // Already current.
+// Idempotent command: starts a check only from idle/failed/stale/installed,
+// waits during active work, and reopens the same verified APK when ready.
+val status = checker.install()
+when (status.state) {
+    HandsUpdateState.DOWNLOADING -> showDownloading()
+    HandsUpdateState.READY_TO_INSTALL,
+    HandsUpdateState.INSTALLER_OPENED -> showInstallEnabled()
+    HandsUpdateState.INSTALLED -> showDone()
+    else -> render(status)
 }
 ```
+
+Call `checker.status()` whenever the update page or process resumes. It
+reconciles the persisted transaction against PackageManager, DownloadManager,
+and the SDK-owned APK file. `checker.reopenPendingInstaller()` opens the same
+verified file without another network request. Missing/unsafe files, target
+drift, exact version mismatch, hash mismatch (when the server supplied one), or
+signer/package mismatch fail closed as `stale`/`failed` with a stable
+`errorCode`.
+
+The persisted transaction is bound to package, Hands origin, app slug,
+channel, product, platform, and architecture. It stores target/build/asset
+identity, DownloadManager id, and an app-scoped path; it never stores the signed
+download URL or an auth secret. Structured `HandsUpdateEvent` records cover
+check, patch download/apply/validation/fallback, full download, content URI,
+installer open/reopen, resume state changes, failures, and cleanup so hosts can
+include the chain in Hands feedback rather than relying on Logcat alone.
+
+`languageTag` is an explicit BCP-47 tag. Valid values are sent as both
+`X-Hands-Lang` and `Accept-Language`; missing or malformed values send neither
+header, and unsupported values retain the server's English fallback.
 
 The SDK calls:
 
@@ -64,10 +114,38 @@ GET /public/v2/apps/{slug}/updates/check
 
 The server resolves release scope, rollout, version comparison, and APK asset selection.
 
+## Native symbols (for crash symbolication)
+
+The AAR ships a stripped `libhandscrash.so`. Release pipelines that report
+native crashes to Hands need the matching unstripped library, published as the
+`native-symbols` Maven classifier on the same version (GitHub Packages):
+
+```text
+https://maven.pkg.github.com/botiverse/hands/build/hands/hands-android-sdk/<version>/hands-android-sdk-<version>-native-symbols.zip
+```
+
+The zip contains `<abi>/libhandscrash.so` (unstripped, with `.debug_info`) for
+`arm64-v8a`, `armeabi-v7a`, `x86_64`, plus a `manifest.json` with the per-ABI
+Build ID and SHA-256. Verify each Build ID against the `.so` inside your APK
+before uploading the zip to Hands (`hands builds publish-android --symbols`);
+treat a missing or mismatched classifier as a release blocker. Published since
+`0.11.1`.
+
+Since `0.12.4`, the 64-bit crash library uses 16 KB-compatible ELF `PT_LOAD`
+alignment. CI checks both the packaged AAR and the matching unstripped symbols
+archive so a 4 KB-only native binary cannot be published silently.
+
+The classifier is also served by JitPack, but **AAR and classifier must come
+from the same channel**: JitPack rebuilds from source, so its Build IDs differ
+from the GitHub Packages build of the same tag. Never mix a JitPack AAR with a
+GitHub Packages classifier (or vice versa) — the Build ID check exists exactly
+to catch that.
+
 ## Release
 
-Push a tag `android-sdk-v<version>` (e.g. `android-sdk-v0.11.0`). That publishes to
-GitHub Packages (`build.hands:hands-android-sdk:<version>`) and, on the first
+Push a tag `android-sdk-v<version>` (e.g. `android-sdk-v0.12.4`). That publishes to
+GitHub Packages (`build.hands:hands-android-sdk:<version>`, including the
+`native-symbols` classifier) and, on the first
 request, builds the same version on JitPack
 (`com.github.botiverse:hands:android-sdk-v<version>`) — so both channels stay in
 sync from one tag. Or run the `Publish Android SDK` workflow manually.

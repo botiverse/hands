@@ -4,6 +4,7 @@
  * shareable links. Tickets carry an assignee, status flow, and comments.
  */
 import { Fragment, useEffect, useMemo, useState } from "react";
+import { Check, ChevronDown } from "lucide-react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
@@ -18,11 +19,60 @@ import {
   getFeedbackAttachmentText,
   updateFeedbackTicket,
 } from "../lib/api";
+import { feedbackMessage } from "../lib/feedbackMessages";
 import { useToast } from "../components/Toast";
 import { FeedbackTrends } from "../components/FeedbackTrends";
-import { Button, Input, Select, SelectTrigger, SelectValue, SelectIcon, SelectContent, SelectItem, Tooltip, TooltipTrigger, TooltipContent, EmptyState, EmptyStateTitle, Skeleton } from "raft-ui";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogBody,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  Button,
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+  EmptyState,
+  EmptyStateTitle,
+  Input,
+  Select,
+  SelectContent,
+  SelectIcon,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+  Skeleton,
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "raft-ui";
+import type { FeedbackTicket } from "../lib/api";
 
-const STATUSES = ["open", "in_progress", "resolved", "closed"] as const;
+const STATUSES = ["open", "in_progress", "resolved"] as const;
+
+type TeamClosureReason = NonNullable<FeedbackTicket["closure_reason"]>;
+
+const TEAM_CLOSURE_REASONS: Array<{
+  description: string;
+  label: string;
+  reason: TeamClosureReason;
+}> = [
+  { reason: "completed", label: "Completed", description: "The fix or improvement has been delivered." },
+  { reason: "not_planned", label: "Not planned", description: "Keep the record, but do not work on it now." },
+  { reason: "cannot_reproduce", label: "Cannot reproduce", description: "The issue cannot be reproduced with the available information." },
+  { reason: "duplicate", label: "Duplicate", description: "Close as a duplicate and link the original ticket." },
+];
+
+function closureReasonLabel(reason: FeedbackTicket["closure_reason"]): string {
+  if (reason === "no_longer_needed") return "No longer needed";
+  return TEAM_CLOSURE_REASONS.find((item) => item.reason === reason)?.label
+    ?? String(reason ?? "Closed");
+}
 
 const STATUS_STYLES: Record<string, string> = {
   open: "bg-red-100 text-red-800",
@@ -53,7 +103,7 @@ export function AppFeedback({ appId }: { appId: string }) {
         status: statusFilter || undefined,
         // Feedback tab = user feedback + bugs; crashes live in the Crashes
         // tab. An explicit kind/signature filter overrides this.
-        kind: kindFilter || (signatureFilter ? "crash" : "feedback,bug"),
+        kind: kindFilter || (signatureFilter ? "crash,error" : "feedback,bug"),
         deviceId: deviceFilter || undefined,
         versionCode: versionFilter ? Number(versionFilter) : undefined,
         signature: signatureFilter || undefined,
@@ -112,7 +162,7 @@ export function AppFeedback({ appId }: { appId: string }) {
         <div>
           <h2 className="text-lg font-semibold">Feedback</h2>
           <p className="text-sm text-slate-500">
-            Tickets submitted from the app (SDK <code>POST /public/v2/apps/&lt;slug&gt;/feedback</code>).
+            Feedback and crash reports submitted from this app.
           </p>
         </div>
         <div className="flex items-center gap-2 text-sm">
@@ -133,7 +183,7 @@ export function AppFeedback({ appId }: { appId: string }) {
             </SelectContent>
           </Select>
           <Select
-            items={{ "": "All kinds", feedback: "feedback", bug: "bug", crash: "crash" }}
+            items={{ "": "All kinds", feedback: "feedback", bug: "bug", crash: "crash", error: "error" }}
             value={kindFilter}
             onValueChange={(v) => setKindFilter(v as string)}
           >
@@ -532,6 +582,9 @@ export function FeedbackTicketPage({
   const queryClient = useQueryClient();
   const [comment, setComment] = useState("");
   const [assigneeDraft, setAssigneeDraft] = useState<string | null>(null);
+  const [pendingClosureReason, setPendingClosureReason] =
+    useState<TeamClosureReason | null>(null);
+  const [duplicateOfTicketId, setDuplicateOfTicketId] = useState("");
 
   const detail = useQuery({
     queryKey: ["feedback-detail", appId, ticketId],
@@ -545,7 +598,12 @@ export function FeedbackTicketPage({
   };
 
   const update = useMutation({
-    mutationFn: (body: { status?: string; assignee?: string | null }) =>
+    mutationFn: (body: {
+      status?: string;
+      assignee?: string | null;
+      closure_reason?: FeedbackTicket["closure_reason"];
+      duplicate_of_ticket_id?: string | null;
+    }) =>
       updateFeedbackTicket(appId, ticketId, body),
     onSuccess: () => {
       setAssigneeDraft(null);
@@ -556,7 +614,8 @@ export function FeedbackTicketPage({
   });
 
   const addComment = useMutation({
-    mutationFn: () => addFeedbackComment(appId, ticketId, comment.trim()),
+    mutationFn: (internal: boolean) =>
+      addFeedbackComment(appId, ticketId, comment.trim(), internal),
     onSuccess: () => {
       setComment("");
       invalidate();
@@ -580,6 +639,26 @@ export function FeedbackTicketPage({
 
   const t = detail.data?.ticket;
   const myName = me.data?.account?.display_name ?? null;
+  const pendingClosure = TEAM_CLOSURE_REASONS.find(
+    (item) => item.reason === pendingClosureReason,
+  );
+  const submitClosure = () => {
+    if (!pendingClosureReason) return;
+    update.mutate(
+      {
+        status: "closed",
+        closure_reason: pendingClosureReason,
+        duplicate_of_ticket_id:
+          pendingClosureReason === "duplicate" ? duplicateOfTicketId.trim() : null,
+      },
+      {
+        onSuccess: () => {
+          setPendingClosureReason(null);
+          setDuplicateOfTicketId("");
+        },
+      },
+    );
+  };
 
   return (
     <div className="space-y-4 max-w-3xl">
@@ -624,8 +703,72 @@ export function FeedbackTicketPage({
                   {s}
                 </Button>
               ))}
+              {t.status !== "closed" && (
+                <div className="inline-flex">
+                  <Button
+                    size="sm"
+                    variant="primary"
+                    className="rounded-r-none"
+                    disabled={update.isPending}
+                    onClick={() => setPendingClosureReason("completed")}
+                  >
+                    Completed
+                  </Button>
+                  <DropdownMenu>
+                    <DropdownMenuTrigger
+                      render={
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="primary"
+                          className="min-w-11 rounded-l-none border-l-0 px-3"
+                          disabled={update.isPending}
+                          aria-label="Choose a close reason"
+                        />
+                      }
+                    >
+                      <ChevronDown aria-hidden="true" className="size-4" />
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="end" className="w-80 max-w-[calc(100vw-24px)]">
+                      {TEAM_CLOSURE_REASONS.map((item) => (
+                        <DropdownMenuItem
+                          key={item.reason}
+                          className="items-start whitespace-normal"
+                          onClick={() => setPendingClosureReason(item.reason)}
+                        >
+                          {item.reason === "completed" ? (
+                            <Check aria-hidden="true" className="mt-0.5 size-4 shrink-0" />
+                          ) : (
+                            <span aria-hidden="true" className="size-4 shrink-0" />
+                          )}
+                          <span>
+                            <strong className="block">{item.label}</strong>
+                            <span className="mt-0.5 block text-xs text-slate-500">
+                              {item.description}
+                            </span>
+                          </span>
+                        </DropdownMenuItem>
+                      ))}
+                    </DropdownMenuContent>
+                  </DropdownMenu>
+                </div>
+              )}
             </div>
           </div>
+
+          {t.status === "closed" && t.closure_reason && (
+            <div className="card text-sm">
+              <div className="font-semibold">Closed as {closureReasonLabel(t.closure_reason)}</div>
+              {t.duplicate_of_ticket_id && (
+                <Link
+                  to={`/apps/${appId}/feedback/${t.duplicate_of_ticket_id}`}
+                  className="mt-1 inline-block font-mono text-xs text-blue-600 hover:underline"
+                >
+                  Original ticket {t.duplicate_of_ticket_id}
+                </Link>
+              )}
+            </div>
+          )}
 
           <div className="card text-sm whitespace-pre-wrap">{t.message}</div>
 
@@ -713,6 +856,12 @@ export function FeedbackTicketPage({
                 .filter(
                   ([k, v]) =>
                     !k.startsWith("crash_") &&
+                    k !== "breadcrumbs" &&
+                    k !== "stacktrace" &&
+                    k !== "exception_class" &&
+                    k !== "exception_message" &&
+                    k !== "top_frame" &&
+                    k !== "handled" &&
                     v !== null &&
                     v !== undefined &&
                     v !== "",
@@ -787,7 +936,66 @@ export function FeedbackTicketPage({
             })()}
           </div>
 
-          {t.kind === "crash" &&
+          {(() => {
+            let meta: Record<string, unknown> = {};
+            try {
+              const parsed = JSON.parse(t.metadata_json || "{}");
+              if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) meta = parsed as Record<string, unknown>;
+            } catch { /* ignore */ }
+            const stacktrace = typeof meta.stacktrace === "string" ? meta.stacktrace : null;
+            const excClass = typeof meta.exception_class === "string" ? meta.exception_class : null;
+            const excMsg = typeof meta.exception_message === "string" ? meta.exception_message : null;
+            if (!stacktrace && !excClass) return null;
+            return (
+              <div className="card">
+                <h4 className="text-sm font-semibold mb-2">Exception</h4>
+                {excClass && (
+                  <p className="text-sm font-mono text-red-700 mb-2 break-all">
+                    {excClass}{excMsg ? `: ${excMsg}` : ""}
+                  </p>
+                )}
+                {stacktrace && (
+                  <pre className="text-xs bg-slate-50 rounded p-3 overflow-x-auto max-h-80 overflow-y-auto whitespace-pre-wrap break-all">
+                    {stacktrace}
+                  </pre>
+                )}
+              </div>
+            );
+          })()}
+
+          {(() => {
+            let meta: Record<string, unknown> = {};
+            try {
+              const parsed = JSON.parse(t.metadata_json || "{}");
+              if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) meta = parsed as Record<string, unknown>;
+            } catch { /* ignore */ }
+            let crumbs: Array<{ timestamp?: number; category?: string; message?: string; level?: string }> = [];
+            if (Array.isArray(meta.breadcrumbs)) crumbs = meta.breadcrumbs as typeof crumbs;
+            else if (typeof meta.breadcrumbs === "string") {
+              try { const p = JSON.parse(meta.breadcrumbs); if (Array.isArray(p)) crumbs = p; } catch { /* ignore */ }
+            }
+            if (crumbs.length === 0) return null;
+            const levelColor = (l?: string) =>
+              l === "error" ? "text-red-600" : l === "warning" ? "text-amber-600" : "text-slate-600";
+            return (
+              <div className="card">
+                <h4 className="text-sm font-semibold mb-2">Breadcrumbs ({crumbs.length})</h4>
+                <ol className="space-y-1 text-xs max-h-60 overflow-y-auto">
+                  {crumbs.map((bc, i) => (
+                    <li key={i} className="flex gap-2 items-baseline">
+                      <span className="text-slate-400 tabular-nums shrink-0">
+                        {bc.timestamp ? new Date(bc.timestamp).toLocaleTimeString() : "—"}
+                      </span>
+                      <span className="font-medium text-slate-700 shrink-0">{bc.category ?? "general"}</span>
+                      <span className={`break-all ${levelColor(bc.level)}`}>{bc.message ?? ""}</span>
+                    </li>
+                  ))}
+                </ol>
+              </div>
+            );
+          })()}
+
+          {(t.kind === "crash" || t.kind === "error") &&
             (() => {
               const log = detail.data!.attachments.find(
                 (a) => (a.content_type?.startsWith("text/") ?? false) || /\.txt$/i.test(a.filename),
@@ -849,8 +1057,13 @@ export function FeedbackTicketPage({
             <ul className="space-y-2 text-sm">
               {detail.data!.comments.map((cm) => (
                 <li key={cm.id} className="rounded-sm border border-slate-200 p-2">
-                  <div className="text-xs text-slate-500">
-                    {cm.author_actor} · {new Date(cm.created_at).toLocaleString()}
+                  <div className="flex items-center justify-between gap-2 text-xs text-slate-500">
+                    <span>{cm.author_actor} · {new Date(cm.created_at).toLocaleString()}</span>
+                    <span className="rounded-sm border border-slate-300 px-1.5 py-0.5 font-medium">
+                      {cm.internal
+                        ? feedbackMessage("internalNote")
+                        : feedbackMessage("visibleToReporter")}
+                    </span>
                   </div>
                   <div className="whitespace-pre-wrap">{cm.body}</div>
                 </li>
@@ -863,21 +1076,74 @@ export function FeedbackTicketPage({
                 value={comment}
                 onChange={(e) => setComment(e.target.value)}
                 onKeyDown={(e) => {
-                  if (e.key === "Enter" && comment.trim()) addComment.mutate();
+                  if (e.key === "Enter" && comment.trim()) addComment.mutate(true);
                 }}
               />
+              <Button
+                className="text-sm"
+                disabled={addComment.isPending || !comment.trim()}
+                onClick={() => addComment.mutate(true)}
+              >
+                {feedbackMessage("addInternalNote")}
+              </Button>
               <Button
                 variant="primary"
                 className="text-sm"
                 disabled={addComment.isPending || !comment.trim()}
-                onClick={() => addComment.mutate()}
+                onClick={() => addComment.mutate(false)}
               >
-                Send
+                {feedbackMessage("sendToReporter")}
               </Button>
             </div>
           </div>
         </>
       )}
+      <AlertDialog
+        open={pendingClosureReason !== null}
+        onOpenChange={(open) => {
+          if (!open && !update.isPending) {
+            setPendingClosureReason(null);
+            setDuplicateOfTicketId("");
+          }
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Close this ticket?</AlertDialogTitle>
+          </AlertDialogHeader>
+          <AlertDialogBody className="space-y-3">
+            <AlertDialogDescription>
+              {pendingClosure?.description}
+            </AlertDialogDescription>
+            {pendingClosureReason === "duplicate" && (
+              <label className="block text-sm font-medium">
+                Original ticket ID
+                <Input
+                  className="mt-1"
+                  value={duplicateOfTicketId}
+                  onChange={(event) => setDuplicateOfTicketId(event.target.value)}
+                  placeholder="Full ID or a unique prefix"
+                  autoFocus
+                />
+              </label>
+            )}
+          </AlertDialogBody>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={update.isPending}>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              variant="primary"
+              loading={update.isPending}
+              disabled={
+                update.isPending
+                || (pendingClosureReason === "duplicate" && !duplicateOfTicketId.trim())
+              }
+              onClick={submitClosure}
+            >
+              Close ticket
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

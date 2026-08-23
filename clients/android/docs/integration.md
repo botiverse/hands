@@ -48,11 +48,12 @@ R2 URL that expires in `expires_in` seconds.
 
 | File | Purpose |
 |---|---|
-| `UpdateChecker.kt`            | Public API — high-level "check + download + install" entry point |
+| `UpdateChecker.kt`            | Public API — persistent status, idempotent check/install, and installer reopen |
+| `HandsUpdateTransaction.kt`   | Stable states/status/events and authority-bound transaction persistence |
 | `HandsClient.kt`              | Internal HTTP client (OkHttp + kotlinx.serialization) |
 | `models/Version.kt`           | Wire-model for `/public/v2/apps/:slug/updates/check` response |
 | `models/App.kt`               | Same, app metadata |
-| `installer/ApkInstaller.kt`   | DownloadManager + Intent.ACTION_INSTALL_PACKAGE |
+| `installer/ApkInstaller.kt`   | DownloadManager query/enqueue + read-only FileProvider installer launch |
 | `MainActivity.kt.example`     | Reference Activity wiring UpdateChecker |
 
 ## Permission
@@ -64,8 +65,25 @@ Add to `AndroidManifest.xml`:
 <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES"/>
 ```
 
-For Android 8+, you also need a FileProvider for `ACTION_VIEW` flows (not used
-here — we use `ACTION_INSTALL_PACKAGE` directly via DownloadManager).
+The SDK AAR contributes a non-exported `${applicationId}.hands.fileprovider`
+with read-only cache and app-scoped external Downloads roots. Do not add a
+world-readable APK path. The full and delta flows both launch the package
+installer through this provider with read access only.
+
+## Resume-safe host flow
+
+Create one `UpdateChecker` for the same package/origin/app/channel authority and
+pass the app-selected BCP-47 language tag explicitly. On page/lifecycle resume,
+call `status()` and map every `HandsUpdateState` value. Keep `Install` enabled
+for `ready_to_install` and `installer_opened`; calling `install()` or
+`reopenPendingInstaller()` reopens the same verified APK and never downloads it
+again. Show download progress only for `downloading`, and start a new check only
+from `idle`, `failed`, `stale`, or `installed`.
+
+`installed` is reported only after PackageManager's installed version reaches
+the exact target. A user returning from the system installer without accepting
+installation therefore remains able to press Install again instead of becoming
+stuck in a host-owned "Installing" snapshot.
 
 ## Required dependencies
 

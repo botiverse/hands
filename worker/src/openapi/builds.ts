@@ -16,6 +16,14 @@ import {
 
 const AppBuildParams = AppIdParam.merge(BuildIdParam);
 const AppBuildAssetParams = AppBuildParams.merge(AssetIdParam);
+const GuardedBuildAssetDeleteQuery = z.object({
+  expected_file_hash: z.string().regex(/^[a-f0-9]{64}$/i).optional(),
+  expected_size_bytes: z.coerce.number().int().nonnegative().optional(),
+});
+const AppQaArtifactParams = AppIdParam.merge(AssetIdParam);
+const AppBuildUploadParams = AppIdParam.merge(
+  z.object({ buildUploadId: z.string().openapi({ param: { name: "buildUploadId", in: "path" } }) }),
+);
 
 const BuildInput = z
   .object({
@@ -51,7 +59,123 @@ const BuildAssetInput = z
   .catchall(z.unknown())
   .openapi("BuildAssetInput");
 
+const ExternalBuildVersionInput = z
+  .object({
+    channel_id: z.string(),
+    version_name: z.string(),
+    version_code: z.number().int().nonnegative(),
+    target: z.enum([
+      "darwin-arm64",
+      "darwin-x64",
+      "linux-arm64",
+      "linux-x64",
+      "win32-arm64",
+      "win32-x64",
+    ]),
+    source_url: z.string().url(),
+    raw_sha256: z.string().regex(/^[a-f0-9]{64}$/i),
+    raw_size_bytes: z.number().int().nonnegative(),
+    gzip_sha256: z.string().regex(/^[a-f0-9]{64}$/i).nullable().optional(),
+    gzip_size_bytes: z.number().int().nonnegative().nullable().optional(),
+    node_version: z.string().nullable().optional(),
+    product_type: z.string().default("cli-binary").optional(),
+    release_type: z.string().default("stable").optional(),
+    metadata_json: z.record(z.string(), z.unknown()).optional(),
+    provenance_json: z.record(z.string(), z.unknown()).optional(),
+  })
+  .openapi("ExternalBuildVersionInput");
+
+const IosSimulatorQaArtifactInput = z
+  .object({
+    channel_id: z.string().optional(),
+    filename: z.string().regex(/\.app\.zip$/i),
+    size_bytes: z.number().int().positive().max(500 * 1024 * 1024),
+    sha256: z.string().regex(/^[a-f0-9]{64}$/i),
+    source_commit: z.string().regex(/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/i),
+    version_name: z.string().min(1),
+    build_number: z.union([z.string().min(1), z.number().int().nonnegative()]),
+    bundle_id: z.string().min(3),
+    github_run_id: z.union([z.string().min(1), z.number().int().nonnegative()]),
+    github_artifact_id: z.union([z.string().min(1), z.number().int().nonnegative()]).nullable().optional(),
+    github_repository: z.string().nullable().optional(),
+    github_job_id: z.union([z.string().min(1), z.number().int().nonnegative()]).nullable().optional(),
+    source_ref: z.string().nullable().optional(),
+    metadata_json: z.record(z.string(), z.unknown()).optional(),
+  })
+  .openapi("IosSimulatorQaArtifactInput");
+
+const TestflightBundleAssertion = z.object({
+  bundle_id: z.string().min(3).optional().openapi({
+    description:
+      "Optional assertion that must match immutable build metadata; used as fallback only when metadata is absent.",
+  }),
+});
+
+const TestflightPublishInput = TestflightBundleAssertion.extend({
+  distribution: z.enum(["internal", "external"]),
+  group_ids: z.array(z.string().min(1)).min(1),
+  what_to_test: z.record(z.string(), z.string().min(1)).optional(),
+  notify_testers: z.boolean().default(false).optional().openapi({
+    description:
+      "External only. Enables automatic notification before review; for an already-approved build without auto-notify pending, sends the manual build notification.",
+  }),
+}).openapi("TestflightPublishInput");
+
+const TestflightExpireInput = TestflightBundleAssertion.extend({
+  asc_build_id: z.string().min(1),
+  confirm_version: z.string().min(1),
+  confirm_build_number: z.string().regex(/^\d+$/),
+}).strict().openapi("TestflightExpireInput");
+
+const BetaAppDescriptionInput = z.object({
+  descriptions: z
+    .record(z.string().min(1).max(64), z.string().min(1).max(4_000))
+    .refine((value) => Object.keys(value).length > 0, {
+      message: "At least one locale is required.",
+    }),
+}).strict().openapi("BetaAppDescriptionInput");
+
 export function registerBuildRoutes(registry: OpenApiRegistry) {
+  register(registry, {
+    method: "get",
+    path: "/api/apps/{appId}/testflight-beta-app-description",
+    tags: ["TestFlight"],
+    summary: "Read app-level TestFlight Beta App Description localizations",
+    description:
+      "Reads betaAppLocalizations.description for the App Store Connect app resolved from the Hands app's main-channel bundle id. This is app-level metadata and is separate from each build's What to Test text.",
+    security: auth,
+    request: { params: AppIdParam },
+    responses: {
+      200: success("Live Beta App Description localizations from Apple.", GenericObject),
+      400: error("The app, bundle id, or ASC credentials are not configured for iOS."),
+      403: error("App viewer role is required."),
+      404: error("Hands or App Store Connect app was not found."),
+      502: error("Apple rejected the metadata request."),
+    },
+  });
+
+  register(registry, {
+    method: "put",
+    path: "/api/apps/{appId}/testflight-beta-app-description",
+    tags: ["TestFlight"],
+    summary: "Upsert app-level TestFlight Beta App Description localizations",
+    description:
+      "Creates or updates only the supplied betaAppLocalizations.description values, preserves other locales, then fetches Apple again and fails unless every requested locale is byte-for-byte equal. It never changes build-level What to Test text, uploads a build, distributes testers, or publishes an App Store version.",
+    security: auth,
+    request: {
+      params: AppIdParam,
+      body: { content: json(BetaAppDescriptionInput), required: true },
+    },
+    responses: {
+      200: success("Descriptions updated with exact Apple readback.", GenericObject),
+      400: error("The input, app, bundle id, or ASC credentials are invalid."),
+      403: error("App publisher role is required."),
+      404: error("Hands or App Store Connect app was not found."),
+      409: error("Apple readback did not exactly match the request."),
+      502: error("Apple rejected the metadata update or readback."),
+    },
+  });
+
   register(registry, {
     method: "get",
     path: "/api/apps/{appId}/builds",
@@ -86,6 +210,28 @@ export function registerBuildRoutes(registry: OpenApiRegistry) {
       201: success("Created build.", GenericObject),
       400: error("Invalid build payload."),
       403: error("Current principal cannot create builds."),
+    },
+  });
+
+  register(registry, {
+    method: "post",
+    path: "/api/apps/{appId}/builds/publish-version",
+    tags: ["Builds"],
+    summary: "Register an immutable externally hosted build target",
+    description:
+      "Creates or reuses a Node build ledger entry. The external HTTPS URL remains the byte authority; Hands records hashes, sizes, and runtime metadata without pretending the artifact is stored in Hands R2.",
+    security: auth,
+    request: {
+      params: AppIdParam,
+      body: { content: json(ExternalBuildVersionInput), required: true },
+    },
+    responses: {
+      200: success("Idempotent replay of an identical declaration.", GenericObject),
+      201: success("Registered external build target.", GenericObject),
+      400: error("Invalid external build declaration."),
+      403: error("Current principal cannot publish builds."),
+      404: error("App was not found."),
+      409: error("App platform or immutable declaration conflicts."),
     },
   });
 
@@ -136,6 +282,224 @@ export function registerBuildRoutes(registry: OpenApiRegistry) {
   });
 
   register(registry, {
+    method: "post",
+    path: "/api/apps/{appId}/builds/{buildId}/testflight-upload",
+    tags: ["TestFlight"],
+    summary: "Upload an existing signed IPA to App Store Connect",
+    description:
+      "Streams the immutable Hands IPA through Apple's Build Upload API. Upload only: no beta groups, tester notification, Hands activation, or App Store production publish.",
+    security: auth,
+    request: {
+      params: AppBuildParams,
+      body: { content: json(TestflightBundleAssertion), required: false },
+    },
+    responses: {
+      200: success("Apple Build Upload was created and committed.", GenericObject),
+      400: error("ASC credentials, IPA metadata, or bundle assertion is invalid."),
+      403: error("App admin role is required."),
+      404: error("Hands build or IPA was not found."),
+      502: error("Apple rejected the upload request."),
+    },
+  });
+
+  register(registry, {
+    method: "get",
+    path: "/api/apps/{appId}/testflight-uploads/{buildUploadId}",
+    tags: ["TestFlight"],
+    summary: "Get Apple Build Upload processing state",
+    security: auth,
+    request: { params: AppBuildUploadParams },
+    responses: {
+      200: success("Live Apple Build Upload state.", GenericObject),
+      400: error("ASC credentials are not configured."),
+      403: error("App viewer role is required."),
+      502: error("Apple status lookup failed."),
+    },
+  });
+
+  register(registry, {
+    method: "get",
+    path: "/api/apps/{appId}/builds/{buildId}/testflight-groups",
+    tags: ["TestFlight"],
+    summary: "List TestFlight beta groups for a build's app",
+    security: auth,
+    request: {
+      params: AppBuildParams,
+      query: TestflightBundleAssertion,
+    },
+    responses: {
+      200: success("Internal and external beta groups with stable ids.", GenericObject),
+      400: error("ASC credentials or bundle assertion is invalid."),
+      403: error("App viewer role is required."),
+      404: error("Hands build or App Store Connect app was not found."),
+      502: error("Apple group lookup failed."),
+    },
+  });
+
+  register(registry, {
+    method: "post",
+    path: "/api/apps/{appId}/builds/{buildId}/testflight-expire",
+    tags: ["TestFlight"],
+    summary: "Expire one exact TestFlight build",
+    description:
+      "Requires the resolved App Store Connect build id plus the immutable Hands version/build tuple as confirmation. Persists a redacted actor/coordinate operation intent before Apple mutation, terminalizes PATCH/readback outcome, idempotently marks only that Build resource expired, and never mutates an App Store production version or a Hands release.",
+    security: auth,
+    request: {
+      params: AppBuildParams,
+      body: { content: json(TestflightExpireInput), required: true },
+    },
+    responses: {
+      200: success("Exact build expired, or an already-expired exact build confirmed unchanged.", GenericObject),
+      400: error("ASC credentials, bundle assertion, or confirmation body is invalid."),
+      403: error("App admin role is required."),
+      404: error("Hands build or App Store Connect app was not found."),
+      409: error("The exact build coordinate or post-expire readback did not match."),
+      502: error("Apple rejected the expire request."),
+    },
+  });
+
+  register(registry, {
+    method: "post",
+    path: "/api/apps/{appId}/builds/{buildId}/testflight-publish",
+    tags: ["TestFlight"],
+    summary: "Distribute a processed build to TestFlight groups",
+    description:
+      "Assigns stable beta group ids, upserts localized What to Test text, submits external Beta App Review, and optionally notifies external testers. Never publishes an App Store production version or activates a Hands release.",
+    security: auth,
+    request: {
+      params: AppBuildParams,
+      body: { content: json(TestflightPublishInput), required: true },
+    },
+    responses: {
+      200: success("TestFlight distribution request and live Apple state.", GenericObject),
+      400: error("Distribution, group, localization, or bundle input is invalid."),
+      403: error("App publisher role is required."),
+      404: error("Hands build, ASC app, or beta group was not found."),
+      409: error("The Apple build or beta-review state is not ready."),
+      502: error("Apple rejected the distribution request."),
+    },
+  });
+
+  register(registry, {
+    method: "get",
+    path: "/api/apps/{appId}/builds/{buildId}/testflight-publish",
+    tags: ["TestFlight"],
+    summary: "Get live TestFlight distribution state",
+    security: auth,
+    request: {
+      params: AppBuildParams,
+      query: TestflightBundleAssertion.extend({
+        distribution: z.enum(["internal", "external"]).optional(),
+      }),
+    },
+    responses: {
+      200: success("Processing, expiry, groups, localizations, and beta-review state.", GenericObject),
+      400: error("ASC credentials, distribution, or bundle assertion is invalid."),
+      403: error("App viewer role is required."),
+      404: error("Hands build or App Store Connect app was not found."),
+      502: error("Apple status lookup failed."),
+    },
+  });
+
+  register(registry, {
+    method: "get",
+    path: "/api/apps/{appId}/qa-artifacts/ios-simulator",
+    tags: ["QA artifacts"],
+    summary: "List exact iOS simulator QA artifacts",
+    description:
+      "Lists QA-only .app.zip fixtures. These records are not releases and are never eligible for update offers.",
+    security: auth,
+    request: {
+      params: AppIdParam,
+      query: z.object({
+        source_commit: z.string().optional(),
+        github_run_id: z.string().optional(),
+        sha256: z.string().optional(),
+      }),
+    },
+    responses: {
+      200: success("QA artifact list.", z.object({ artifacts: z.array(GenericObject) })),
+      403: error("Current principal cannot view QA artifacts."),
+    },
+  });
+
+  register(registry, {
+    method: "post",
+    path: "/api/apps/{appId}/qa-artifacts/ios-simulator",
+    tags: ["QA artifacts"],
+    summary: "Create an exact iOS simulator QA artifact upload",
+    description:
+      "Creates a QA-only build/asset ledger entry and returns a one-hour presigned PUT URL. The filename must end in .app.zip; IPA/APK release publishing is intentionally not used.",
+    security: auth,
+    request: {
+      params: AppIdParam,
+      body: { content: json(IosSimulatorQaArtifactInput), required: true },
+    },
+    responses: {
+      201: success("Created pending QA artifact and upload URL.", GenericObject),
+      400: error("Invalid QA artifact declaration."),
+      403: error("Current principal cannot create QA artifacts."),
+      503: error("Direct R2 upload signing is unavailable."),
+    },
+  });
+
+  register(registry, {
+    method: "get",
+    path: "/api/apps/{appId}/qa-artifacts/ios-simulator/{assetId}",
+    tags: ["QA artifacts"],
+    summary: "Read one exact iOS simulator QA artifact",
+    security: auth,
+    request: { params: AppQaArtifactParams },
+    responses: {
+      200: success("QA artifact with build/asset ids and full provenance.", GenericObject),
+      403: error("Current principal cannot view QA artifacts."),
+      404: error("QA artifact was not found."),
+    },
+  });
+
+  register(registry, {
+    method: "post",
+    path: "/api/apps/{appId}/qa-artifacts/ios-simulator/{assetId}/complete",
+    tags: ["QA artifacts"],
+    summary: "Verify and complete an iOS simulator QA artifact upload",
+    description:
+      "One-shot completion: streams the uploaded object through SHA-256, compares exact size and digest, then copies verified bytes to an immutable R2 key before marking ready.",
+    security: auth,
+    request: { params: AppQaArtifactParams },
+    responses: {
+      200: success("Verified exact bytes; QA artifact is ready.", GenericObject),
+      403: error("Current principal cannot complete QA artifacts."),
+      404: error("QA artifact or uploaded object was not found."),
+      409: error("Upload is not present yet."),
+      422: error("Uploaded bytes do not match the declared size/SHA-256."),
+    },
+  });
+
+  register(registry, {
+    method: "get",
+    path: "/api/apps/{appId}/qa-artifacts/ios-simulator/{assetId}/download",
+    tags: ["QA artifacts"],
+    summary: "Download an exact iOS simulator QA artifact",
+    description:
+      "The authenticated API path is the durable reference. Add ?presign=1 to receive a short-lived anonymous object URL for curl, ditto, simctl, or Stamp.",
+    security: auth,
+    request: { params: AppQaArtifactParams },
+    responses: {
+      200: {
+        description: "Binary .app.zip stream, or JSON containing download_url when presign=1.",
+        content: {
+          ...binary(),
+          "application/json": { schema: GenericObject },
+          "application/zip": { schema: z.string().openapi({ format: "binary" }) },
+        },
+      },
+      403: error("Current principal cannot download QA artifacts."),
+      404: error("QA artifact or stored object was not found."),
+      409: error("QA artifact has not completed exact-byte verification."),
+    },
+  });
+
+  register(registry, {
     method: "get",
     path: "/api/apps/{appId}/builds/{buildId}/assets",
     tags: ["Builds"],
@@ -163,6 +527,23 @@ export function registerBuildRoutes(registry: OpenApiRegistry) {
       201: success("Created build asset.", GenericObject),
       400: error("Invalid build asset payload."),
       403: error("Current principal cannot create build assets."),
+      404: error("Build was not found."),
+    },
+  });
+
+  register(registry, {
+    method: "get",
+    path: "/api/apps/{appId}/builds/{buildId}/external-targets",
+    tags: ["Builds"],
+    summary: "List externally hosted targets for a build",
+    security: auth,
+    request: { params: AppBuildParams },
+    responses: {
+      200: success(
+        "External build target declarations.",
+        z.object({ targets: z.array(GenericObject) }),
+      ),
+      403: error("Current principal cannot view build targets."),
       404: error("Build was not found."),
     },
   });
@@ -202,13 +583,18 @@ export function registerBuildRoutes(registry: OpenApiRegistry) {
     method: "delete",
     path: "/api/apps/{appId}/builds/{buildId}/assets/{assetId}",
     tags: ["Builds"],
-    summary: "Delete a build asset",
+    summary: "Delete build-asset metadata without deleting its stored object",
+    description:
+      "App-admin metadata deletion. Supplying both expected_file_hash and expected_size_bytes enables the guarded Agent path: non-installable only, R2 existence/size preflight, immutable byte preconditions, atomic audit+delete, and audit-backed idempotent absence readback. Arbitrary absent ids fail closed. The R2 object is never deleted.",
     security: auth,
-    request: { params: AppBuildAssetParams },
+    request: { params: AppBuildAssetParams, query: GuardedBuildAssetDeleteQuery },
     responses: {
-      200: success("Deleted build asset.", GenericObject),
+      200: success("Build-asset metadata is absent; the R2 object was preserved.", GenericObject),
+      400: error("Guarded delete preconditions were malformed or incomplete."),
       403: error("Current principal cannot delete build assets."),
       404: error("Build asset was not found."),
+      409: error("Guarded delete preconditions failed or the asset is installable."),
+      503: error("R2 readback was unavailable. Post-commit failures return metadata_absent, r2_preserved=null, and the durable audit_id."),
     },
   });
 

@@ -13,6 +13,10 @@ import { emitWebhookEvent } from "./webhooks";
 import { presignR2UploadUrl } from "../lib/r2_presign";
 import { generateSignedR2Url } from "./public_v2";
 import { dashboardOrigin, requestOrigin } from "../lib/origin";
+import { loadDeployToken } from "../lib/deploy_tokens";
+import { isFeedbackOnlyToken, REPORTER_ID_PATTERN } from "../lib/reporter_auth";
+import type { AppPermission } from "../lib/app_permissions";
+import { buildFeedbackCommentEvent, buildFeedbackStatusEvent } from "../lib/feedback_events";
 
 type AdminContext = Context<AdminEnv & { Bindings: Env }>;
 
@@ -20,11 +24,96 @@ const MAX_ATTACHMENTS = 9;
 const MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024; // inline multipart cap (through the Worker)
 const MAX_PRESIGNED_BYTES = 200 * 1024 * 1024; // direct-to-R2 cap
 const PRESIGN_TTL_SECONDS = 900;
+const MULTIPART_PART_BYTES = 5 * 1024 * 1024;
+const MAX_MULTIPART_PARTS = MAX_PRESIGNED_BYTES / MULTIPART_PART_BYTES;
 const MAX_MESSAGE_CHARS = 10_000;
-const RATE_LIMIT_PER_HOUR = 10;
+const DIRECT_RATE_LIMIT_PER_HOUR = 10;
+const TRUSTED_REPORTER_RATE_LIMIT_PER_HOUR = 100;
 
 const TICKET_STATUSES = ["open", "in_progress", "resolved", "closed"] as const;
-const TICKET_KINDS = ["feedback", "bug", "crash"] as const;
+const TICKET_KINDS = ["feedback", "bug", "crash", "error"] as const;
+const FEEDBACK_CLOSURE_REASONS = [
+  "completed",
+  "not_planned",
+  "cannot_reproduce",
+  "duplicate",
+] as const;
+const SUBMISSION_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const MATERIAL_DELTA_DEFAULT_LIMIT = 100;
+const MATERIAL_DELTA_MAX_LIMIT = 200;
+
+function encodeMaterialCursor(appId: string, sequence: number): string {
+  return btoa(JSON.stringify(["material-v1", appId, sequence]))
+    .replaceAll("+", "-")
+    .replaceAll("/", "_")
+    .replaceAll("=", "");
+}
+
+function decodeMaterialCursor(value: string | undefined, appId: string): number | null {
+  if (value === undefined) return 0;
+  if (!value) return null;
+  try {
+    const base64 = value.replaceAll("-", "+").replaceAll("_", "/");
+    const padded = base64.padEnd(Math.ceil(base64.length / 4) * 4, "=");
+    const decoded = JSON.parse(atob(padded));
+    if (
+      !Array.isArray(decoded)
+      || decoded.length !== 3
+      || decoded[0] !== "material-v1"
+      || decoded[1] !== appId
+      || !Number.isSafeInteger(decoded[2])
+      || decoded[2] < 0
+    ) {
+      return null;
+    }
+    return decoded[2];
+  } catch {
+    return null;
+  }
+}
+
+function timingDuration(start: number, end: number): string {
+  return Math.max(0, end - start).toFixed(1);
+}
+
+function setServerTiming(
+  c: unknown,
+  value: string,
+): void {
+  const header = (c as {
+    header?: (name: string, value: string) => void;
+  }).header;
+  header?.call(c, "Server-Timing", value);
+}
+
+type FeedbackApp = {
+  id: string;
+  org_id: string | null;
+  slug: string;
+  client_key: string | null;
+  platform: string | null;
+};
+
+async function authorizeFeedbackUpload(c: Context<{ Bindings: Env }>) {
+  const slug = c.req.param("slug");
+  if (!slug) return { response: c.json({ error: "slug required" }, 400) };
+  const app = await c.env.DB.prepare(
+    "SELECT id, client_key FROM apps WHERE slug = ?1 AND archived = 0",
+  )
+    .bind(slug)
+    .first<{ id: string; client_key: string | null }>();
+  if (!app) return { response: c.json({ error: `app '${slug}' not found` }, 404) };
+  const presented =
+    c.req.header("X-Hands-Client-Key") ?? c.req.header("X-Quiver-Client-Key") ?? c.req.query("client_key") ?? "";
+  if (!app.client_key || presented !== app.client_key) {
+    return { response: c.json({ error: "invalid or missing client key" }, 401) };
+  }
+  return { app };
+}
+
+function validFeedbackMultipartKey(appId: string, r2Key: string): boolean {
+  return r2Key.startsWith(`feedback/${appId}/presigned/`) && r2Key.length <= 512;
+}
 
 /**
  * Presigned direct-to-R2 upload for large feedback attachments. Client-key
@@ -34,21 +123,14 @@ const TICKET_KINDS = ["feedback", "bug", "crash"] as const;
  * r2_keys via the `presigned` form field.
  */
 export async function handlePresignFeedbackAttachments(c: Context<{ Bindings: Env }>) {
-  const slug = c.req.param("slug");
-  if (!slug) return c.json({ error: "slug required" }, 400);
-  const app = await c.env.DB.prepare(
-    "SELECT id, client_key FROM apps WHERE slug = ?1 AND archived = 0",
-  )
-    .bind(slug)
-    .first<{ id: string; client_key: string | null }>();
-  if (!app) return c.json({ error: `app '${slug}' not found` }, 404);
-  const presented =
-    c.req.header("X-Hands-Client-Key") ?? c.req.header("X-Quiver-Client-Key") ?? c.req.query("client_key") ?? "";
-  if (!app.client_key || presented !== app.client_key) {
-    return c.json({ error: "invalid or missing client key" }, 401);
-  }
+  const auth = await authorizeFeedbackUpload(c);
+  if ("response" in auth) return auth.response;
+  const { app } = auth;
 
-  let body: { files?: Array<{ filename?: string; content_type?: string; size?: number }> };
+  let body: {
+    files?: Array<{ filename?: string; content_type?: string; size?: number }>;
+    upload_mode?: string;
+  };
   try {
     body = await c.req.json();
   } catch {
@@ -58,14 +140,8 @@ export async function handlePresignFeedbackAttachments(c: Context<{ Bindings: En
   if (files.length === 0 || files.length > MAX_ATTACHMENTS) {
     return c.json({ error: `files must contain 1-${MAX_ATTACHMENTS} entries` }, 400);
   }
-
-  const now = Date.now();
-  const out: Array<{
-    attachment_id: string;
-    r2_key: string;
-    upload_url: string;
-    expires_at: number;
-  }> = [];
+  // Validate the complete batch before creating any multipart session. A bad
+  // later entry must not strand an earlier R2 multipart upload.
   for (const [index, file] of files.entries()) {
     const size = typeof file.size === "number" ? file.size : 0;
     if (size <= 0 || size > MAX_PRESIGNED_BYTES) {
@@ -74,12 +150,45 @@ export async function handlePresignFeedbackAttachments(c: Context<{ Bindings: En
         400,
       );
     }
+  }
+
+  const now = Date.now();
+  const multipart = body.upload_mode === "r2_multipart_proxy";
+  const out: Array<{
+    attachment_id: string;
+    r2_key: string;
+    upload_url?: string;
+    expires_at?: number;
+    upload_id?: string;
+    part_size?: number;
+  }> = [];
+  const startedMultipartUploads: R2MultipartUpload[] = [];
+  for (const [index, file] of files.entries()) {
     const safeName =
       String(file.filename ?? "").replace(/[^A-Za-z0-9._-]/g, "_").slice(0, 120) ||
       `attachment-${index}`;
     const contentType = String(file.content_type ?? "application/octet-stream").slice(0, 100);
     const attachmentId = crypto.randomUUID();
     const r2Key = `feedback/${app.id}/presigned/${attachmentId}-${safeName}`;
+    if (multipart) {
+      let upload: R2MultipartUpload;
+      try {
+        upload = await c.env.APK_BUCKET.createMultipartUpload(r2Key, {
+          httpMetadata: { contentType },
+        });
+      } catch {
+        await Promise.allSettled(startedMultipartUploads.map((started) => started.abort()));
+        return c.json({ error: "multipart upload is not available" }, 503);
+      }
+      startedMultipartUploads.push(upload);
+      out.push({
+        attachment_id: attachmentId,
+        r2_key: r2Key,
+        upload_id: upload.uploadId,
+        part_size: MULTIPART_PART_BYTES,
+      });
+      continue;
+    }
     const uploadUrl = await presignR2UploadUrl(c.env, r2Key, contentType, PRESIGN_TTL_SECONDS);
     if (!uploadUrl) {
       return c.json({ error: "direct upload is not configured on this server" }, 501);
@@ -94,20 +203,154 @@ export async function handlePresignFeedbackAttachments(c: Context<{ Bindings: En
   return c.json({ uploads: out });
 }
 
+/**
+ * Proxies one bounded raw part from pure ArkTS into an R2 multipart upload.
+ * The body is streamed through to R2; the Worker never buffers the attachment
+ * or even a complete 5 MiB part.
+ */
+export async function handleFeedbackMultipartPart(c: Context<{ Bindings: Env }>) {
+  const auth = await authorizeFeedbackUpload(c);
+  if ("response" in auth) return auth.response;
+  const r2Key = c.req.query("r2_key") ?? "";
+  const uploadId = c.req.query("upload_id") ?? "";
+  const partNumber = Number(c.req.query("part_number") ?? "0");
+  const declaredBytes = Number(c.req.header("X-Hands-Part-Bytes") ?? "0");
+  if (!validFeedbackMultipartKey(auth.app.id, r2Key)) {
+    return c.json({ error: "invalid multipart r2_key" }, 400);
+  }
+  if (uploadId.length === 0 || uploadId.length > 2048) {
+    return c.json({ error: "invalid multipart upload_id" }, 400);
+  }
+  if (!Number.isSafeInteger(partNumber) || partNumber < 1 || partNumber > MAX_MULTIPART_PARTS) {
+    return c.json({ error: `part_number must be 1-${MAX_MULTIPART_PARTS}` }, 400);
+  }
+  if (!Number.isSafeInteger(declaredBytes) || declaredBytes < 1 || declaredBytes > MULTIPART_PART_BYTES) {
+    return c.json({ error: `X-Hands-Part-Bytes must be 1-${MULTIPART_PART_BYTES}` }, 400);
+  }
+  if (!c.req.raw.body) return c.json({ error: "raw part body required" }, 400);
+
+  let receivedBytes = 0;
+  const boundedBody = c.req.raw.body.pipeThrough(new TransformStream<Uint8Array, Uint8Array>({
+    transform(chunk, controller) {
+      receivedBytes += chunk.byteLength;
+      if (receivedBytes > declaredBytes || receivedBytes > MULTIPART_PART_BYTES) {
+        throw new Error("multipart part exceeds declared size");
+      }
+      controller.enqueue(chunk);
+    },
+  }));
+  const upload = c.env.APK_BUCKET.resumeMultipartUpload(r2Key, uploadId);
+  try {
+    const part = await upload.uploadPart(partNumber, boundedBody);
+    if (receivedBytes !== declaredBytes) {
+      await upload.abort();
+      return c.json({ error: "multipart part size mismatch" }, 400);
+    }
+    return c.json({ part_number: part.partNumber, etag: part.etag, size: receivedBytes });
+  } catch (error) {
+    console.warn(JSON.stringify({
+      event: "feedback_multipart_part_failed",
+      app_id: auth.app.id,
+      part_number: partNumber,
+      error: error instanceof Error ? error.message : String(error),
+    }));
+    return c.json({ error: "multipart part upload failed" }, 502);
+  }
+}
+
+export async function handleCompleteFeedbackMultipart(c: Context<{ Bindings: Env }>) {
+  const auth = await authorizeFeedbackUpload(c);
+  if ("response" in auth) return auth.response;
+  let body: {
+    r2_key?: string;
+    upload_id?: string;
+    size?: number;
+    parts?: Array<{ part_number?: number; etag?: string }>;
+  };
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ error: "JSON body required" }, 400);
+  }
+  const r2Key = String(body.r2_key ?? "");
+  const uploadId = String(body.upload_id ?? "");
+  const size = typeof body.size === "number" ? body.size : 0;
+  const parts = Array.isArray(body.parts) ? body.parts : [];
+  if (!validFeedbackMultipartKey(auth.app.id, r2Key)) {
+    return c.json({ error: "invalid multipart r2_key" }, 400);
+  }
+  if (uploadId.length === 0 || uploadId.length > 2048) {
+    return c.json({ error: "invalid multipart upload_id" }, 400);
+  }
+  if (!Number.isSafeInteger(size) || size < 1 || size > MAX_PRESIGNED_BYTES) {
+    return c.json({ error: `size must be 1-${MAX_PRESIGNED_BYTES}` }, 400);
+  }
+  const expectedParts = Math.ceil(size / MULTIPART_PART_BYTES);
+  if (parts.length !== expectedParts || expectedParts > MAX_MULTIPART_PARTS) {
+    return c.json({ error: `parts must contain exactly ${expectedParts} entries` }, 400);
+  }
+  const uploadedParts: R2UploadedPart[] = [];
+  for (let index = 0; index < parts.length; index++) {
+    const entry = parts[index];
+    if (!entry) return c.json({ error: "missing multipart part" }, 400);
+    const partNumber = entry.part_number;
+    const etag = String(entry.etag ?? "");
+    if (partNumber !== index + 1 || etag.length === 0 || etag.length > 256) {
+      return c.json({ error: "parts must be sequential and contain valid etags" }, 400);
+    }
+    uploadedParts.push({ partNumber, etag });
+  }
+  const upload = c.env.APK_BUCKET.resumeMultipartUpload(r2Key, uploadId);
+  try {
+    const object = await upload.complete(uploadedParts);
+    if (object.size !== size) {
+      await c.env.APK_BUCKET.delete(r2Key);
+      return c.json({ error: "completed multipart upload size mismatch" }, 400);
+    }
+    return c.json({ r2_key: r2Key, size: object.size });
+  } catch (error) {
+    console.warn(JSON.stringify({
+      event: "feedback_multipart_complete_failed",
+      app_id: auth.app.id,
+      error: error instanceof Error ? error.message : String(error),
+    }));
+    return c.json({ error: "multipart completion failed" }, 502);
+  }
+}
+
+export async function handleAbortFeedbackMultipart(c: Context<{ Bindings: Env }>) {
+  const auth = await authorizeFeedbackUpload(c);
+  if ("response" in auth) return auth.response;
+  let body: { r2_key?: string; upload_id?: string };
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ error: "JSON body required" }, 400);
+  }
+  const r2Key = String(body.r2_key ?? "");
+  const uploadId = String(body.upload_id ?? "");
+  if (!validFeedbackMultipartKey(auth.app.id, r2Key) || uploadId.length === 0 || uploadId.length > 2048) {
+    return c.json({ error: "invalid multipart upload target" }, 400);
+  }
+  try {
+    await c.env.APK_BUCKET.resumeMultipartUpload(r2Key, uploadId).abort();
+    return c.json({ aborted: true });
+  } catch {
+    // Abort is idempotent from the SDK's perspective: an already-expired or
+    // already-aborted upload has no durable attachment to clean up.
+    return c.json({ aborted: true });
+  }
+}
+
 export async function handlePublicFeedbackSubmit(c: Context<{ Bindings: Env }>) {
+  const startedAt = performance.now();
   const slug = c.req.param("slug");
   if (!slug) return c.json({ error: "slug required" }, 400);
   const app = await c.env.DB.prepare(
     "SELECT id, org_id, slug, client_key, platform FROM apps WHERE slug = ?1 AND archived = 0",
   )
     .bind(slug)
-    .first<{
-      id: string;
-      org_id: string | null;
-      slug: string;
-      client_key: string | null;
-      platform: string | null;
-    }>();
+    .first<FeedbackApp>();
   if (!app) return c.json({ error: `app '${slug}' not found` }, 404);
 
   // Client-key gate (Sentry-DSN model): always required. Apps predating the
@@ -134,6 +377,11 @@ export async function handlePublicFeedbackSubmit(c: Context<{ Bindings: Env }>) 
   const kindRaw = String(form.get("kind") ?? "feedback");
   const kind = (TICKET_KINDS as readonly string[]).includes(kindRaw) ? kindRaw : "feedback";
   const contact = String(form.get("contact") ?? "").trim() || null;
+  const submissionIdRaw = String(form.get("submission_id") ?? "").trim() || null;
+  if (submissionIdRaw && !SUBMISSION_ID_PATTERN.test(submissionIdRaw)) {
+    return c.json({ error: "submission_id must be a UUID" }, 400);
+  }
+  const submissionId = submissionIdRaw?.toLowerCase() ?? null;
 
   let metadata: Record<string, unknown> = {};
   const metadataRaw = form.get("metadata");
@@ -156,21 +404,90 @@ export async function handlePublicFeedbackSubmit(c: Context<{ Bindings: Env }>) 
       ? Math.trunc(versionCodeRaw)
       : null;
 
-  // Rate limit per app + hashed client ip.
+  // Direct SDK clients are rate-limited by client IP. A trusted server proxy
+  // may instead provide a stable pseudonymous reporter id, but only while
+  // authenticating with an app-scoped token whose sole effective permission is
+  // feedback:write for this app. This
+  // prevents public clients from rotating a spoofed forwarded identity to
+  // bypass the IP bucket.
   const clientIp =
     (c.req.raw?.cf as { clientIp?: string } | undefined)?.clientIp ??
     c.req.header("cf-connecting-ip") ??
     "unknown";
-  const clientIpHash = await sha256Hex(`feedback:${app.id}:${clientIp}`);
+  const reporterId = (c.req.header("X-Hands-Reporter-Id") ?? "").trim();
+  let rateLimitHashInput = `feedback:${app.id}:${clientIp}`;
+  let rateLimitPerHour = DIRECT_RATE_LIMIT_PER_HOUR;
+  let reporterIntegrationId: string | null = null;
+  if (reporterId) {
+    if (!REPORTER_ID_PATTERN.test(reporterId)) {
+      return c.json({ error: "X-Hands-Reporter-Id must be a 16-200 character opaque base64url value" }, 400);
+    }
+    const authorization = c.req.header("authorization") ?? "";
+    const bearerToken = authorization.startsWith("Bearer ")
+      ? authorization.slice("Bearer ".length).trim()
+      : "";
+    const deployToken = await loadDeployToken(c.env, bearerToken);
+    if (
+      !deployToken
+      || !isFeedbackOnlyToken(deployToken, app.id, "feedback:write")
+    ) {
+      return c.json({ error: "trusted reporter identity requires feedback:write permission for this app" }, 401);
+    }
+    const integration = await c.env.DB.prepare(
+      `SELECT ri.id,
+              EXISTS (
+                SELECT 1 FROM app_reporter_routes route
+                WHERE route.app_id = ri.app_id
+                  AND route.reporter_integration_id = ri.id
+                  AND route.reporter_id = ?3
+              ) AS route_exists
+       FROM app_reporter_integrations ri
+       WHERE ri.id = ?1 AND ri.app_id = ?2 AND ri.archived_at IS NULL`,
+    ).bind(deployToken.reporter_integration_id, app.id, reporterId)
+      .first<{ id: string; route_exists: number }>();
+    if (!integration) {
+      return c.json({ error: "trusted reporter identity requires an active reporter integration" }, 401);
+    }
+    reporterIntegrationId = deployToken.reporter_integration_id;
+    if (integration.route_exists !== 1) {
+      return c.json({ error: "route_required" }, 409);
+    }
+    rateLimitHashInput = `feedback:${app.id}:integration:${reporterIntegrationId}:reporter:${reporterId}`;
+    rateLimitPerHour = TRUSTED_REPORTER_RATE_LIMIT_PER_HOUR;
+  }
+  const authorizedAt = performance.now();
+  const clientIpHash = await sha256Hex(rateLimitHashInput);
   const oneHourAgo = Date.now() - 3600_000;
-  const recent = await c.env.DB.prepare(
-    `SELECT COUNT(*) AS count FROM feedback_tickets
+  // A cheap indexed lookup happens before attachment hashing/R2 HEAD work.
+  // Only a known idempotency key may bypass the rate-limit count so a lost
+  // response remains recoverable; a new key is rejected before expensive
+  // attachment processing once the subject is over quota.
+  const existingPromise = submissionId
+    ? findFeedbackSubmission(c.env.DB, app.id, submissionId, reporterIntegrationId)
+    : Promise.resolve(null);
+  const recentPromise = c.env.DB.prepare(
+    `SELECT COUNT(*) AS count, MIN(created_at) AS oldest_created_at FROM feedback_tickets
      WHERE app_id = ?1 AND client_ip_hash = ?2 AND created_at > ?3`,
   )
     .bind(app.id, clientIpHash, oneHourAgo)
-    .first<{ count: number }>();
-  if ((recent?.count ?? 0) >= RATE_LIMIT_PER_HOUR) {
-    return c.json({ error: "too many feedback submissions; try again later" }, 429);
+    .first<{ count: number; oldest_created_at: number | null }>();
+  const [existingSubmission, recent] = await Promise.all([
+    existingPromise,
+    recentPromise,
+  ]);
+  const preflightAt = performance.now();
+  if (existingSubmission && existingSubmission.reporter_id !== (reporterId || null)) {
+    return c.json({ error: "submission_id already used by a different reporter" }, 409);
+  }
+  if (!existingSubmission) {
+    if ((recent?.count ?? 0) >= rateLimitPerHour) {
+      const retryAfter = Math.max(
+        1,
+        Math.ceil(((recent?.oldest_created_at ?? Date.now()) + 3600_000 - Date.now()) / 1000),
+      );
+      c.header("Retry-After", String(retryAfter));
+      return c.json({ error: "too many feedback submissions; try again later" }, 429);
+    }
   }
 
   // Collect attachments before writing anything.
@@ -191,33 +508,32 @@ export async function handlePublicFeedbackSubmit(c: Context<{ Bindings: Env }>) 
     files.push(file);
   }
 
-  // Crash tickets get a grouping signature from their exception class + top
-  // app frame (populated by the SDK). Non-crash tickets have no signature.
-  const signature =
-    kind === "crash" ? crashSignature(metadata) : null;
-
-  const now = Date.now();
-  const ticketId = crypto.randomUUID();
-
   const attachmentRows: Array<{
     id: string;
     r2Key: string;
     filename: string;
     contentType: string | null;
     sizeBytes: number;
+    inlineFile?: File;
+    fingerprint: Record<string, unknown>;
   }> = [];
   for (const [index, file] of files.entries()) {
     const safeName = file.name.replace(/[^A-Za-z0-9._-]/g, "_").slice(0, 120) || `attachment-${index}`;
-    const r2Key = `feedback/${app.id}/${ticketId}/${index}-${safeName}`;
-    await c.env.APK_BUCKET.put(r2Key, await file.arrayBuffer(), {
-      httpMetadata: { contentType: file.type || "application/octet-stream" },
-    });
     attachmentRows.push({
       id: crypto.randomUUID(),
-      r2Key,
+      r2Key: "",
       filename: safeName,
       contentType: file.type || null,
       sizeBytes: file.size,
+      inlineFile: file,
+      fingerprint: {
+        source: "inline",
+        index,
+        filename: safeName,
+        content_type: file.type || null,
+        size_bytes: file.size,
+        sha256: await sha256BufferHex(await file.arrayBuffer()),
+      },
     });
   }
 
@@ -245,6 +561,10 @@ export async function handlePublicFeedbackSubmit(c: Context<{ Bindings: Env }>) 
       if (!head) {
         return c.json({ error: `presigned upload not found: ${r2Key}` }, 400);
       }
+      const declaredSize = typeof item.size === "number" ? item.size : 0;
+      if (declaredSize <= 0 || head.size !== declaredSize) {
+        return c.json({ error: `presigned upload size mismatch: ${r2Key}` }, 400);
+      }
       const filename =
         String(item.filename ?? "").replace(/[^A-Za-z0-9._-]/g, "_").slice(0, 120) ||
         r2Key.split("/").pop() ||
@@ -254,9 +574,84 @@ export async function handlePublicFeedbackSubmit(c: Context<{ Bindings: Env }>) 
         r2Key,
         filename,
         contentType: (item.content_type ? String(item.content_type).slice(0, 100) : null),
-        sizeBytes: head.size ?? (typeof item.size === "number" ? item.size : 0),
+        sizeBytes: head.size,
+        fingerprint: {
+          source: "presigned",
+          index: attachmentRows.length,
+          r2_key: r2Key,
+          filename,
+          content_type: item.content_type ? String(item.content_type).slice(0, 100) : null,
+          size_bytes: head.size,
+          etag: head.etag,
+        },
       });
     }
+  }
+
+  const submissionFingerprint = submissionId
+    ? await sha256Hex(stableJson({
+        message,
+        kind,
+        contact,
+        metadata,
+        reporter_id: reporterId || null,
+        attachments: attachmentRows.map((attachment) => attachment.fingerprint),
+      }))
+    : null;
+
+  if (existingSubmission && submissionFingerprint) {
+    if (existingSubmission.submission_fingerprint !== submissionFingerprint) {
+      return c.json({ error: "submission_id already used with a different payload" }, 409);
+    }
+    return feedbackSubmitResponse(c, app, existingSubmission.id, 200, true);
+  }
+
+  // Crash and error tickets get a grouping signature from their exception
+  // class + top app frame (populated by the SDK). Other kinds have no signature.
+  const signature =
+    kind === "crash" || kind === "error" ? crashSignature(metadata) : null;
+
+  const now = Date.now();
+  const ticketId = crypto.randomUUID();
+  const submissionEventId = reporterIntegrationId ? crypto.randomUUID() : null;
+  const genericSubmissionPayload = app.org_id ? JSON.stringify({
+    event: "feedback:new",
+    delivered_at: now,
+    org_id: app.org_id,
+    app_id: app.id,
+    payload: {
+      ticket_id: ticketId,
+      app_slug: app.slug,
+      kind,
+      message: message.slice(0, 500),
+      version_name: meta("version_name"),
+      version_code: versionCode,
+      attachments: attachmentRows.length,
+      reporter_id: reporterId || null,
+      reporter_integration_id: reporterIntegrationId,
+    },
+  }) : null;
+  const dedicatedSubmissionPayload = submissionEventId ? JSON.stringify({
+    id: submissionEventId,
+    event: "feedback:new",
+    created_at: now,
+    delivered_at: now,
+    org_id: app.org_id,
+    app_id: app.id,
+    payload: {
+      ticket_id: ticketId,
+      kind,
+      reporter_integration_id: reporterIntegrationId,
+      reporter_id: reporterId,
+    },
+  }) : null;
+
+  for (const [index, attachment] of attachmentRows.entries()) {
+    if (!attachment.inlineFile) continue;
+    attachment.r2Key = `feedback/${app.id}/${ticketId}/${index}-${attachment.filename}`;
+    await c.env.APK_BUCKET.put(attachment.r2Key, await attachment.inlineFile.arrayBuffer(), {
+      httpMetadata: { contentType: attachment.contentType || "application/octet-stream" },
+    });
   }
 
   const statements = [
@@ -264,8 +659,20 @@ export async function handlePublicFeedbackSubmit(c: Context<{ Bindings: Env }>) 
       `INSERT INTO feedback_tickets
        (id, app_id, kind, status, message, contact, version_name, version_code,
         channel, device_id, device_model, os_version, arch, locale,
-        metadata_json, client_ip_hash, signature, created_at, updated_at)
-       VALUES (?1, ?2, ?3, 'open', ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)`,
+        metadata_json, client_ip_hash, signature, submission_id,
+        submission_fingerprint, reporter_id, reporter_integration_id, created_at, updated_at)
+       SELECT ?1, ?2, ?3, 'open', ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13,
+              ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22
+       WHERE ?20 IS NULL OR EXISTS (
+         SELECT 1 FROM app_reporter_routes r
+         JOIN apps active_app ON active_app.id = r.app_id AND active_app.archived = 0
+         JOIN app_reporter_integrations active_ri
+           ON active_ri.id = r.reporter_integration_id
+          AND active_ri.app_id = r.app_id AND active_ri.archived_at IS NULL
+         WHERE r.app_id = ?2 AND r.reporter_integration_id = ?20
+           AND r.reporter_id = ?19
+       )
+       RETURNING id`,
     ).bind(
       ticketId,
       app.id,
@@ -283,6 +690,10 @@ export async function handlePublicFeedbackSubmit(c: Context<{ Bindings: Env }>) 
       JSON.stringify(metadata),
       clientIpHash,
       signature,
+      submissionId,
+      submissionFingerprint,
+      reporterId || null,
+      reporterIntegrationId,
       now,
       now,
     ),
@@ -293,13 +704,132 @@ export async function handlePublicFeedbackSubmit(c: Context<{ Bindings: Env }>) 
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)`,
       ).bind(a.id, ticketId, a.r2Key, a.filename, a.contentType, a.sizeBytes, now),
     ),
+    ...(submissionEventId && dedicatedSubmissionPayload
+      ? [
+          ...(genericSubmissionPayload && app.org_id ? [c.env.DB.prepare(
+            `INSERT INTO feedback_submission_events
+             (id, event_type, app_id, ticket_id, reporter_integration_id,
+              reporter_id, payload_json, route_outcome, route_subject, created_at)
+             SELECT ?1, 'feedback:new', ?2, ?3, ?4, ?5,
+                    json_set(?6, '$.payload.route_outcome', 'route_bound',
+                                 '$.payload.route_subject', r.route_subject),
+                    'route_bound', r.route_subject, ?7
+             FROM feedback_tickets t
+             JOIN apps a ON a.id = t.app_id AND a.archived = 0
+             JOIN app_reporter_integrations ri
+               ON ri.id = t.reporter_integration_id
+              AND ri.app_id = t.app_id AND ri.archived_at IS NULL
+             JOIN app_reporter_routes r
+               ON r.app_id = t.app_id
+              AND r.reporter_integration_id = t.reporter_integration_id
+              AND r.reporter_id = t.reporter_id
+             WHERE t.id = ?3 AND t.app_id = ?2
+               AND t.reporter_integration_id = ?4 AND t.reporter_id = ?5`,
+          ).bind(
+            submissionEventId,
+            app.id,
+            ticketId,
+            reporterIntegrationId,
+            reporterId,
+            dedicatedSubmissionPayload,
+            now,
+          ),
+          c.env.DB.prepare(
+            `INSERT INTO webhook_deliveries
+             (id, webhook_id, event_type, feedback_submission_event_id,
+              payload_json, signing_secret, signature_key_version, reporter_delivery, status,
+              attempts, max_attempts, next_attempt_at, created_at, updated_at)
+             SELECT ?1 || ':' || w.id, w.id, 'feedback:new', ?1, ?2,
+                    w.secret, w.signature_key_version, 0, 'pending', 0, 3, ?3, ?3, ?3
+             FROM feedback_submission_events fe
+             JOIN apps a ON a.id = fe.app_id AND a.archived = 0
+             JOIN app_reporter_integrations ri
+               ON ri.id = fe.reporter_integration_id
+              AND ri.app_id = fe.app_id AND ri.archived_at IS NULL
+             JOIN webhooks w ON w.org_id = ?4
+             WHERE fe.id = ?1 AND w.enabled = 1 AND w.archived_at IS NULL
+               AND (w.app_id IS NULL OR w.app_id = ?5)
+               AND CASE WHEN json_valid(w.events_json) THEN (
+                 json_array_length(w.events_json) = 0
+                 OR EXISTS (SELECT 1 FROM json_each(w.events_json) e
+                            WHERE e.value IN ('feedback:new', '*'))
+               ) ELSE 0 END
+               AND NOT EXISTS (
+                 SELECT 1 FROM app_reporter_webhook_subscriptions s
+                 WHERE s.webhook_id = w.id AND s.app_id = fe.app_id
+                   AND s.reporter_integration_id = fe.reporter_integration_id
+               )
+             ON CONFLICT(webhook_id, feedback_submission_event_id)
+               WHERE feedback_submission_event_id IS NOT NULL DO NOTHING`,
+          ).bind(submissionEventId, genericSubmissionPayload, now, app.org_id, app.id),
+          c.env.DB.prepare(
+            `INSERT INTO webhook_deliveries
+             (id, webhook_id, event_type, feedback_submission_event_id,
+              payload_json, signing_secret, signature_key_version, reporter_delivery, status,
+              attempts, max_attempts, next_attempt_at, created_at, updated_at)
+             SELECT ?1 || ':' || w.id, w.id, 'feedback:new', ?1, fe.payload_json,
+                    w.secret, w.signature_key_version, 1, 'pending', 0, 3, ?2, ?2, ?2
+             FROM feedback_submission_events fe
+             JOIN apps a ON a.id = fe.app_id AND a.archived = 0
+             JOIN app_reporter_webhook_subscriptions s
+               ON s.app_id = fe.app_id
+              AND s.reporter_integration_id = fe.reporter_integration_id
+             JOIN app_reporter_integrations ri
+               ON ri.id = s.reporter_integration_id
+              AND ri.app_id = s.app_id AND ri.archived_at IS NULL
+             JOIN webhooks w ON w.id = s.webhook_id
+             WHERE fe.id = ?1 AND w.app_id = fe.app_id AND w.org_id = ?3
+               AND w.enabled = 1 AND w.archived_at IS NULL
+               AND CASE WHEN json_valid(w.events_json) THEN (
+                 json_array_length(w.events_json) = 0
+                 OR EXISTS (SELECT 1 FROM json_each(w.events_json) e
+                            WHERE e.value IN ('feedback:new', '*'))
+               ) ELSE 0 END
+             ON CONFLICT(webhook_id, feedback_submission_event_id)
+               WHERE feedback_submission_event_id IS NOT NULL DO NOTHING`,
+          ).bind(submissionEventId, now, app.org_id)] : []),
+        ]
+      : []),
   ];
-  await c.env.DB.batch(statements);
-
+  const cleanupInlineUploads = () => Promise.allSettled(
+    attachmentRows
+      .filter((attachment) => attachment.inlineFile)
+      .map((attachment) => c.env.APK_BUCKET.delete(attachment.r2Key)),
+  );
+  try {
+    const results = await c.env.DB.batch(statements);
+    const committedTicket = results[0]?.results[0] as { id?: unknown } | undefined;
+    if (committedTicket?.id !== ticketId) {
+      await cleanupInlineUploads();
+      return c.json({ error: "route_required" }, 409);
+    }
+  } catch (error) {
+    if (submissionId && submissionFingerprint) {
+      const existing = await findFeedbackSubmission(
+        c.env.DB,
+        app.id,
+        submissionId,
+        reporterIntegrationId,
+      );
+      if (existing) {
+        await cleanupInlineUploads();
+        if (
+          existing.reporter_id !== (reporterId || null)
+          || existing.submission_fingerprint !== submissionFingerprint
+        ) {
+          return c.json({ error: "submission_id already used with a different payload" }, 409);
+        }
+        return feedbackSubmitResponse(c, app, existing.id, 200, true);
+      }
+    }
+    await cleanupInlineUploads();
+    throw error;
+  }
+  const committedAt = performance.now();
   // Crash tickets: symbolicate in the background (retrace / native / OHOS / dSYM
   // lanes) and record the result on the ticket's symbolicated_stack /
   // symbolication_status fields. See dispatchSymbolication.
-  if (kind === "crash") {
+  if (kind === "crash" || kind === "error") {
     const logKey = attachmentRows.length > 0 ? attachmentRows[0]!.r2Key : null;
     const run = () =>
       dispatchSymbolication(
@@ -320,8 +850,9 @@ export async function handlePublicFeedbackSubmit(c: Context<{ Bindings: Env }>) 
   // Crash alerting: fire webhooks when a signature is first seen or when it
   // spikes (10/50/100 tickets within an hour — fires once per tier as the
   // count crosses it, so no extra state table is needed).
-  if (kind === "crash" && signature && app.org_id) {
+  if ((kind === "crash" || kind === "error") && signature && app.org_id) {
     const orgId = app.org_id;
+    const eventPrefix = kind === "crash" ? "crash" : "error";
     const alert = async () => {
       const prior = await c.env.DB.prepare(
         `SELECT COUNT(*) AS n FROM feedback_tickets
@@ -341,7 +872,7 @@ export async function handlePublicFeedbackSubmit(c: Context<{ Bindings: Env }>) 
         await emitWebhookEvent(c.env.DB, {
           orgId,
           appId: app.id,
-          event: "crash:new_group",
+          event: `${eventPrefix}:new_group`,
           body: base,
         });
         return;
@@ -357,7 +888,7 @@ export async function handlePublicFeedbackSubmit(c: Context<{ Bindings: Env }>) 
         await emitWebhookEvent(c.env.DB, {
           orgId,
           appId: app.id,
-          event: "crash:spike",
+          event: `${eventPrefix}:spike`,
           body: { ...base, count_last_hour: hourCount },
         });
       }
@@ -372,7 +903,7 @@ export async function handlePublicFeedbackSubmit(c: Context<{ Bindings: Env }>) 
     }
   }
 
-  if (app.org_id) {
+  if (app.org_id && !reporterIntegrationId) {
     await emitWebhookEvent(c.env.DB, {
       orgId: app.org_id,
       appId: app.id,
@@ -385,61 +916,201 @@ export async function handlePublicFeedbackSubmit(c: Context<{ Bindings: Env }>) 
         version_name: meta("version_name"),
         version_code: versionCode,
         attachments: attachmentRows.length,
+        reporter_id: reporterId || null,
+        reporter_integration_id: reporterIntegrationId,
       },
     }).catch(() => {
       // webhook fan-out must never fail the submission
     });
   }
 
-  // A ready-to-copy reference so a pasted ticket can be located by an agent:
-  // slug + version + full id, plus a direct admin link. Keep the full UUID
-  // here because detail/attachment API routes require it.
-  const versionName = meta("version_name");
-  const versionLabel = versionName
-    ? versionCode != null
-      ? `${versionName} (${versionCode})`
-      : versionName
-    : versionCode != null
-      ? String(versionCode)
+  const respondedAt = performance.now();
+  setServerTiming(c, [
+    `hands_auth;dur=${timingDuration(startedAt, authorizedAt)}`,
+    `hands_preflight;dur=${timingDuration(authorizedAt, preflightAt)}`,
+    `hands_commit;dur=${timingDuration(preflightAt, committedAt)}`,
+    `hands_postcommit;dur=${timingDuration(committedAt, respondedAt)}`,
+  ].join(", "));
+  return feedbackNewSubmitResponse(c, app, {
+    ticketId,
+    status: "open",
+    versionName: meta("version_name"),
+    versionCode,
+    attachmentRefs: attachmentRows.map(({ id, filename }) => ({ id, filename })),
+  });
+}
+
+type FeedbackAttachmentRef = {
+  id: string;
+  filename: string;
+};
+
+function feedbackReference(
+  app: FeedbackApp,
+  input: {
+    ticketId: string;
+    versionName: string | null;
+    versionCode: number | null;
+    attachmentRefs: FeedbackAttachmentRef[];
+  },
+) {
+  const versionLabel = input.versionName
+    ? input.versionCode != null
+      ? `${input.versionName} (${input.versionCode})`
+      : input.versionName
+    : input.versionCode != null
+      ? String(input.versionCode)
       : null;
-  const ticketUrl = `${dashboardOrigin(c.env)}/apps/${app.id}/feedback/${ticketId}`;
-  // List attachment filenames in the copyable reference — one per line — so an
-  // agent reading a pasted ticket knows it carries images/files and will fetch
-  // them.
-  const attachmentNames = attachmentRows.map((a) => a.filename).filter(Boolean);
-  const referenceLine = [app.slug, versionLabel, `ticket ${ticketId}`]
+  const referenceLine = [app.slug, versionLabel, `ticket ${input.ticketId}`]
     .filter(Boolean)
     .join(" · ");
-  const reference = attachmentNames.length
-    ? `${referenceLine}\nattachments:\n${attachmentNames.join("\n")}`
+  return input.attachmentRefs.length
+    ? `${referenceLine}\nattachments:\n${input.attachmentRefs
+      .map(({ id, filename }) => `${id} · ${filename}`)
+      .join("\n")}`
     : referenceLine;
+}
+
+function feedbackNewSubmitResponse(
+  c: Context<{ Bindings: Env }>,
+  app: FeedbackApp,
+  input: {
+    ticketId: string;
+    status: string;
+    versionName: string | null;
+    versionCode: number | null;
+    attachmentRefs: FeedbackAttachmentRef[];
+  },
+) {
+  const attachmentNames = input.attachmentRefs.map(({ filename }) => filename);
+  return c.json({
+    id: input.ticketId,
+    status: input.status,
+    attachments: input.attachmentRefs.length,
+    attachment_names: attachmentNames,
+    attachment_refs: input.attachmentRefs,
+    reference: feedbackReference(app, input),
+    ticket_url: `${dashboardOrigin(c.env)}/apps/${app.id}/feedback/${input.ticketId}`,
+    idempotent_replay: false,
+  }, 201);
+}
+
+async function findFeedbackSubmission(
+  db: D1Database,
+  appId: string,
+  submissionId: string,
+  reporterIntegrationId: string | null,
+) {
+  return db.prepare(
+    `SELECT id, submission_fingerprint, reporter_id
+     FROM feedback_tickets
+     WHERE app_id = ?1 AND submission_id = ?2
+       AND reporter_integration_id IS ?3`,
+  )
+    .bind(appId, submissionId, reporterIntegrationId)
+    .first<{
+      id: string;
+      submission_fingerprint: string | null;
+      reporter_id: string | null;
+    }>();
+}
+
+async function feedbackSubmitResponse(
+  c: Context<{ Bindings: Env }>,
+  app: FeedbackApp,
+  ticketId: string,
+  httpStatus: 200 | 201,
+  idempotentReplay: boolean,
+) {
+  const ticket = await c.env.DB.prepare(
+    `SELECT status, version_name, version_code
+     FROM feedback_tickets
+     WHERE app_id = ?1 AND id = ?2`,
+  )
+    .bind(app.id, ticketId)
+    .first<{ status: string; version_name: string | null; version_code: number | null }>();
+  if (!ticket) return c.json({ error: "feedback ticket not found" }, 500);
+
+  const attachments = await c.env.DB.prepare(
+    `SELECT id, filename
+     FROM feedback_attachments
+     WHERE ticket_id = ?1
+     ORDER BY created_at, id`,
+  )
+    .bind(ticketId)
+    .all<FeedbackAttachmentRef>();
+  const attachmentRefs = attachments.results.filter(({ id, filename }) => id && filename);
+  const attachmentNames = attachmentRefs.map(({ filename }) => filename);
 
   return c.json(
     {
       id: ticketId,
-      status: "open",
-      attachments: attachmentRows.length,
+      status: ticket.status,
+      attachments: attachmentNames.length,
       attachment_names: attachmentNames,
-      reference,
-      ticket_url: ticketUrl,
+      attachment_refs: attachmentRefs,
+      reference: feedbackReference(app, {
+        ticketId,
+        versionName: ticket.version_name,
+        versionCode: ticket.version_code,
+        attachmentRefs,
+      }),
+      ticket_url: `${dashboardOrigin(c.env)}/apps/${app.id}/feedback/${ticketId}`,
+      idempotent_replay: idempotentReplay,
     },
-    201,
+    httpStatus,
   );
+}
+
+function stableJson(value: unknown): string {
+  const sort = (entry: unknown): unknown => {
+    if (Array.isArray(entry)) return entry.map(sort);
+    if (!entry || typeof entry !== "object") return entry;
+    return Object.fromEntries(
+      Object.entries(entry as Record<string, unknown>)
+        .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
+        .map(([key, child]) => [key, sort(child)]),
+    );
+  };
+  return JSON.stringify(sort(value));
 }
 
 const MINIDUMP_MAX_BYTES = 64 * 1024 * 1024; // Crashpad dumps are usually < a few MB
 
 /**
- * Electron/Crashpad crash ingest. Electron's built-in crashReporter POSTs a
+ * Crashpad minidump crash ingest. Electron's built-in crashReporter POSTs a
  * multipart/form-data with the minidump under `upload_file_minidump` plus a
  * flat set of annotation fields (productName, version, and any `extra`/
  * `globalExtra` the SDK set). We store the dump as a crash-ticket attachment,
- * fold every annotation into metadata (product_type=electron), and fire the
+ * fold every annotation into metadata (product_type from the annotation, see
+ * crashProductKind), and fire the
  * minidump symbolication lane against the version's breakpad-symbols asset.
  *
  * Client-key gate: the SDK puts it in the submitURL query (`?client_key=`),
  * which Crashpad preserves, or an X-Quiver-Client-Key header.
  */
+/**
+ * Which product produced a Crashpad minidump. Closed set: anything absent or
+ * unrecognised is Electron, so clients that predate this annotation keep the
+ * exact output they had before — the only producer of a non-Electron value is a
+ * client that deliberately sends one.
+ */
+const CRASH_PRODUCT_KINDS = ["electron", "tauri"] as const;
+type CrashProductKind = (typeof CRASH_PRODUCT_KINDS)[number];
+
+function crashProductKind(annotated: string | null): CrashProductKind {
+  const value = (annotated ?? "").trim().toLowerCase();
+  return (CRASH_PRODUCT_KINDS as readonly string[]).includes(value)
+    ? (value as CrashProductKind)
+    : "electron";
+}
+
+/** Human-facing product name for a ticket title. */
+const CRASH_PRODUCT_LABEL: Record<CrashProductKind, string> = {
+  electron: "Electron",
+  tauri: "Tauri",
+};
+
 export async function handlePublicMinidumpSubmit(c: Context<{ Bindings: Env }>) {
   const slug = c.req.param("slug");
   if (!slug) return c.json({ error: "slug required" }, 400);
@@ -497,11 +1168,12 @@ export async function handlePublicMinidumpSubmit(c: Context<{ Bindings: Env }>) 
   const versionCode =
     versionCodeRaw && /^\d+$/.test(versionCodeRaw) ? Math.trunc(Number(versionCodeRaw)) : null;
   const processType = pick("process_type", "ptype", "type"); // main / renderer / gpu / utility
+  const productKind = crashProductKind(pick("product_type", "product"));
   const metadata: Record<string, unknown> = {
     ...annotations,
-    product_type: "electron",
+    product_type: productKind,
     process_type: processType,
-    crash_platform: pick("platform", "os") ?? "electron",
+    crash_platform: pick("platform", "os") ?? productKind,
   };
 
   const clientIp =
@@ -515,7 +1187,7 @@ export async function handlePublicMinidumpSubmit(c: Context<{ Bindings: Env }>) 
   )
     .bind(app.id, clientIpHash, Date.now() - 3600_000)
     .first<{ count: number }>();
-  if ((recent?.count ?? 0) >= RATE_LIMIT_PER_HOUR) {
+  if ((recent?.count ?? 0) >= DIRECT_RATE_LIMIT_PER_HOUR) {
     return c.json({ error: "too many crash reports; try again later" }, 429);
   }
 
@@ -527,7 +1199,8 @@ export async function handlePublicMinidumpSubmit(c: Context<{ Bindings: Env }>) 
   });
 
   const reasonBits = [processType, versionName].filter(Boolean).join(" · ");
-  const message = `Electron crash${reasonBits ? ` (${reasonBits})` : ""}`;
+  const message =
+    `${CRASH_PRODUCT_LABEL[productKind]} crash${reasonBits ? ` (${reasonBits})` : ""}`;
 
   await c.env.DB.batch([
     c.env.DB.prepare(
@@ -581,6 +1254,7 @@ export async function handlePublicMinidumpSubmit(c: Context<{ Bindings: Env }>) 
         version_name: versionName,
         version_code: versionCode,
         attachments: 1,
+        reporter_id: null,
       },
     }).catch(() => {});
   }
@@ -700,7 +1374,7 @@ export async function retraceCrashTicket(
         "android-r8",
         "no_symbols",
         `No proguard-mapping asset for version_code ${versionCode}. ` +
-          "Publish the build with its R8 mapping (quiver builds publish-android --mapping).",
+          "Publish the build with its R8 mapping (hands builds publish-android --mapping).",
       );
       return;
     }
@@ -752,8 +1426,11 @@ export interface NativeFrame {
 /**
  * SDK contract (symbolication matrix): metadata.crash_native_frames is a
  * JSON array (or already-parsed array) of
- * { index, offset, soname, build_id? }. Bounded and shape-checked here so a
- * hostile client can't feed junk to the container.
+ * { index, offset, soname, build_id? }. Legacy clients may omit build_id, so
+ * parsing preserves those frames for diagnostics, but native symbolication is
+ * fail-closed per frame and never resolves one without an exact ELF BuildId.
+ * Input is bounded and shape-checked here so a hostile client can't feed junk
+ * to the container.
  */
 export function parseNativeFrames(raw: unknown): NativeFrame[] {
   let value = raw;
@@ -796,10 +1473,23 @@ export async function symbolicateNativeCrashTicket(
   ticketId: string,
   versionCode: number | null,
   frames: NativeFrame[],
-  publishHint: string = "quiver builds publish-android --symbols",
+  publishHint: string = "hands builds publish-android --symbols",
 ): Promise<void> {
   try {
     if (versionCode === null || frames.length === 0) return;
+
+    if (!frames.some((frame) => Boolean(frame.build_id))) {
+      await appendSymbolication(
+        env,
+        ticketId,
+        "native",
+        "unsymbolicated",
+        "Native frames did not include an ELF BuildId. Hands refuses basename/version-only " +
+          "symbolication because it can select the wrong binary. Update to a QNC2-capable " +
+          "Android SDK and reproduce the crash on the successor runtime.",
+      );
+      return;
+    }
 
     const symbols = await env.DB.prepare(
       `SELECT ba.r2_key FROM build_assets ba
@@ -840,7 +1530,16 @@ export async function symbolicateNativeCrashTicket(
         },
       }),
     );
-    if (!res.ok) return;
+    if (!res.ok) {
+      await appendSymbolication(
+        env,
+        ticketId,
+        "native",
+        "unsymbolicated",
+        `Native symbolicator rejected the evidence (HTTP ${res.status}); no unverified fallback was used.`,
+      );
+      return;
+    }
     const parsed = (await res.json()) as {
       frames?: Array<{ index: number; resolved?: string; error?: string }>;
     };
@@ -857,7 +1556,9 @@ export async function symbolicateNativeCrashTicket(
       env,
       ticketId,
       "native",
-      "symbolicated",
+      resolved.some((frame) => Boolean(frame.resolved && frame.resolved !== "??"))
+        ? "symbolicated"
+        : "unsymbolicated",
       lines.join("\n").slice(0, 20_000),
     );
   } catch (err) {
@@ -997,7 +1698,7 @@ export async function symbolicateOhosCrashTicket(
       ticketId,
       versionCode,
       frames,
-      "quiver builds publish-ohos --symbols",
+      "hands builds publish-ohos --symbols",
     );
   } catch (err) {
     console.error(
@@ -1191,7 +1892,40 @@ export async function symbolicateDsymCrashTicket(
 }
 
 /**
- * Resolve an Electron/Crashpad minidump against the version's breakpad-symbols
+ * The Breakpad lane symbolicates any Crashpad minidump, so its output names no
+ * product. It previously said "Electron" and pointed at `publish-electron`,
+ * which told operators of every other product the wrong thing — including the
+ * wrong command to run. The product is already on the ticket as `product_type`.
+ *
+ * Extracted from the symbolicate path so the wording is assertable without a
+ * container binding: the rule "this text mentions no product" needs something
+ * that can fail.
+ */
+export const MINIDUMP_SYMBOLICATION_LABEL = "minidump";
+
+export function minidumpSymbolicationText(input: {
+  hasSymbols: boolean;
+  crashReason: string | null;
+  crashAddress: string | null;
+  versionCode: number | null;
+  stack: string;
+}): string {
+  const header =
+    `Symbolicated minidump crash (minidump-stackwalk` +
+    `${input.hasSymbols ? "" : ", no breakpad-symbols asset — module+offset only"}):` +
+    `${input.crashReason ? `\nReason: ${input.crashReason}${input.crashAddress ? ` @ ${input.crashAddress}` : ""}` : ""}`;
+  const tip =
+    !input.hasSymbols && input.versionCode !== null
+      ? `\n\nTip: upload the version's Breakpad symbols (run dump_syms, then ` +
+        `this product's "hands builds" publish command with --symbols) ` +
+        `for version_code ${input.versionCode} to get function/file:line ` +
+        `resolution instead of raw module+offset.`
+      : "";
+  return `${header}\n\n${input.stack}${tip}`.slice(0, 20_000);
+}
+
+/**
+ * Resolve a Crashpad minidump against the version's breakpad-symbols
  * asset via the container's minidump-stackwalk lane and append the result as an
  * internal comment — mirrors the native/dSYM symbolication flows. Missing
  * symbols leaves an operator-actionable comment.
@@ -1249,22 +1983,18 @@ export async function symbolicateMinidumpCrashTicket(
     const stack = (parsed.stack_text ?? "").trim();
     if (!stack) return;
 
-    const header =
-      `Symbolicated Electron crash (minidump-stackwalk` +
-      `${symBytes ? "" : ", no breakpad-symbols asset — module+offset only"}):` +
-      `${parsed.crash_reason ? `\nReason: ${parsed.crash_reason}${parsed.crash_address ? ` @ ${parsed.crash_address}` : ""}` : ""}`;
-    const tip =
-      !symBytes && versionCode !== null
-        ? `\n\nTip: upload the version's Breakpad symbols (dump_syms → quiver builds ` +
-          `publish-electron --symbols) for version_code ${versionCode} to get ` +
-          `function/file:line resolution instead of raw module+offset.`
-        : "";
     await appendSymbolication(
       env,
       ticketId,
-      "electron-minidump",
+      MINIDUMP_SYMBOLICATION_LABEL,
       "symbolicated",
-      `${header}\n\n${stack}${tip}`.slice(0, 20_000),
+      minidumpSymbolicationText({
+        hasSymbols: Boolean(symBytes),
+        crashReason: parsed.crash_reason ?? null,
+        crashAddress: parsed.crash_address ?? null,
+        versionCode,
+        stack,
+      }),
     );
   } catch (err) {
     console.error(
@@ -1289,26 +2019,53 @@ export async function dispatchSymbolication(
   logKey: string | null,
 ): Promise<void> {
   await resetSymbolication(env, ticketId);
+  // Lane applicability is platform-first: content presence alone (a crash log
+  // attachment, structured frames) must never select another platform's lane —
+  // an iOS crash txt used to satisfy the log-attachment gate and fall into
+  // android-r8, reporting a missing ProGuard mapping on an iOS ticket. A null
+  // platform (legacy app rows) keeps the content-based behavior.
+  const platform = app.platform ?? null;
   let ran = false;
 
-  if (logKey) {
+  if (logKey && (platform === null || platform === "android")) {
     ran = true;
     await retraceCrashTicket(env, app.id, ticketId, versionCode, logKey);
   }
   const nativeFrames = parseNativeFrames(metadata["crash_native_frames"]);
-  if (nativeFrames.length > 0) {
+  if (
+    nativeFrames.length > 0 &&
+    (platform === null || platform === "android" || platform === "ohos")
+  ) {
     ran = true;
     await symbolicateNativeCrashTicket(env, app.id, ticketId, versionCode, nativeFrames);
   }
-  if (app.platform === "ohos" && logKey) {
+  if (platform === "ohos" && logKey) {
     ran = true;
     await symbolicateOhosCrashTicket(env, app.id, ticketId, versionCode, logKey);
   }
   const dsymImages = parseBinaryImages(metadata["crash_binary_images"]);
   const dsymFrames = parseCrashFrames(metadata["crash_frames"]);
-  if (dsymImages.length > 0 && dsymFrames.length > 0) {
+  if (
+    dsymImages.length > 0 &&
+    dsymFrames.length > 0 &&
+    (platform === null || platform === "ios")
+  ) {
     ran = true;
     await symbolicateDsymCrashTicket(env, app.id, ticketId, versionCode, dsymImages, dsymFrames);
+  } else if (platform === "ios" && logKey) {
+    // iOS crash without the SDK's structured frame metadata: report the iOS
+    // gap instead of settling on a silent not_applicable.
+    ran = true;
+    await appendSymbolication(
+      env,
+      ticketId,
+      "ios-dsym",
+      "no_symbols",
+      "Crash report has no structured frame metadata (crash_binary_images / " +
+        "crash_frames), so server-side dSYM symbolication cannot run. Update " +
+        "the Hands iOS SDK to include them, and publish builds with their " +
+        "dSYM archive (hands builds publish-ios --dsym).",
+    );
   }
 
   const row = await env.DB.prepare(
@@ -1334,6 +2091,11 @@ export async function dispatchSymbolication(
 
 export async function handleListCrashGroups(c: AdminContext) {
   const appId = c.req.param("appId");
+  const kindFilter = (c.req.query("kind") ?? "").trim();
+  const kindClause =
+    kindFilter === "crash" ? "AND kind = 'crash'"
+    : kindFilter === "error" ? "AND kind = 'error'"
+    : "AND kind IN ('crash', 'error')";
   const { results } = await c.env.DB.prepare(
     `SELECT
        COALESCE(signature, '(unsignatured)') AS signature,
@@ -1344,7 +2106,7 @@ export async function handleListCrashGroups(c: AdminContext) {
        GROUP_CONCAT(DISTINCT version_name) AS versions,
        SUM(CASE WHEN status IN ('open','in_progress') THEN 1 ELSE 0 END) AS open_count
      FROM feedback_tickets
-     WHERE app_id = ?1 AND kind = 'crash'
+     WHERE app_id = ?1 ${kindClause}
      GROUP BY COALESCE(signature, '(unsignatured)')
      ORDER BY count DESC, last_seen DESC
      LIMIT 200`,
@@ -1373,7 +2135,7 @@ export async function handleFeedbackStats(c: AdminContext) {
       `SELECT COALESCE(version_name, 'unknown') AS version_name,
               version_code, COUNT(*) AS n
        FROM feedback_tickets
-       WHERE app_id = ?1 AND kind = 'crash'
+       WHERE app_id = ?1 AND kind IN ('crash', 'error')
        GROUP BY COALESCE(version_name, 'unknown'), version_code
        ORDER BY COALESCE(version_code, 0) DESC
        LIMIT 12`,
@@ -1424,7 +2186,8 @@ export async function handleListFeedback(c: AdminContext) {
     where += ` AND signature = ?${binds.length}`;
   }
   const { results } = await c.env.DB.prepare(
-    `SELECT t.id, t.kind, t.status, t.assignee, t.message, t.contact, t.version_name,
+    `SELECT t.id, t.kind, t.status, t.closure_reason, t.duplicate_of_ticket_id,
+            t.assignee, t.message, t.contact, t.version_name,
             t.version_code, t.channel, t.device_id, t.device_model, t.os_version,
             t.created_at, t.updated_at,
             (SELECT COUNT(*) FROM feedback_attachments fa WHERE fa.ticket_id = t.id) AS attachment_count,
@@ -1437,6 +2200,45 @@ export async function handleListFeedback(c: AdminContext) {
     .bind(...binds)
     .all();
   return c.json({ tickets: results });
+}
+
+export async function handleListFeedbackMaterialDelta(c: AdminContext) {
+  const appId = c.req.param("appId") ?? "";
+  const cursor = decodeMaterialCursor(c.req.query("cursor"), appId);
+  if (cursor === null) return c.json({ error: "invalid cursor" }, 400);
+
+  const rawLimit = c.req.query("limit");
+  const limit = rawLimit === undefined ? MATERIAL_DELTA_DEFAULT_LIMIT : Number(rawLimit);
+  if (!Number.isInteger(limit) || limit < 1 || limit > MATERIAL_DELTA_MAX_LIMIT) {
+    return c.json({ error: `limit must be an integer between 1 and ${MATERIAL_DELTA_MAX_LIMIT}` }, 400);
+  }
+
+  const { results } = await c.env.DB.prepare(
+    `SELECT t.id, t.kind, t.status, t.closure_reason, t.duplicate_of_ticket_id,
+            t.assignee, t.message, t.contact, t.version_name,
+            t.version_code, t.channel, t.device_id, t.device_model, t.os_version,
+            t.created_at, t.updated_at, t.material_sequence,
+            (SELECT COUNT(*) FROM feedback_attachments fa WHERE fa.ticket_id = t.id) AS attachment_count,
+            (SELECT COUNT(*) FROM feedback_comments fc WHERE fc.ticket_id = t.id) AS comment_count
+     FROM feedback_tickets t
+     WHERE t.app_id = ?1 AND t.material_sequence > ?2
+     ORDER BY t.material_sequence ASC
+     LIMIT ?3`,
+  )
+    .bind(appId, cursor, limit + 1)
+    .all<Record<string, unknown> & { material_sequence: number }>();
+
+  const page = results.slice(0, limit);
+  const lastSequence = page.at(-1)?.material_sequence ?? cursor;
+  if (!Number.isSafeInteger(lastSequence) || lastSequence < 0) {
+    return c.json({ error: "invalid material sequence state" }, 500);
+  }
+  const tickets = page.map(({ material_sequence: _sequence, ...ticket }) => ticket);
+  return c.json({
+    tickets,
+    next_cursor: encodeMaterialCursor(appId, lastSequence),
+    has_more: results.length > limit,
+  });
 }
 
 const UUID_RE = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
@@ -1532,8 +2334,8 @@ export async function handleResymbolicateFeedback(c: AdminContext) {
     .bind(appId, ticketId)
     .first<{ id: string; kind: string; version_code: number | null; metadata_json: string }>();
   if (!ticket) return c.json({ error: "ticket not found" }, 404);
-  if (ticket.kind !== "crash") {
-    return c.json({ error: "only crash tickets can be symbolicated" }, 400);
+  if (ticket.kind !== "crash" && ticket.kind !== "error") {
+    return c.json({ error: "only crash/error tickets can be symbolicated" }, 400);
   }
   const app = await c.env.DB.prepare("SELECT id, platform FROM apps WHERE id = ?1")
     .bind(appId)
@@ -1574,93 +2376,474 @@ export async function handleResymbolicateFeedback(c: AdminContext) {
 }
 
 export async function handleUpdateFeedback(c: AdminContext) {
-  const appId = c.req.param("appId");
+  const appId = c.req.param("appId") ?? "";
   const resolved = await resolveTicketId(c.env.DB, appId, c.req.param("ticketId"));
   if ("error" in resolved) return ticketResolveError(c, resolved);
   const ticketId = resolved.id;
   const body = (await c.req.json().catch(() => ({}))) as {
     status?: string;
     assignee?: string | null;
+    closure_reason?: string | null;
+    duplicate_of_ticket_id?: string | null;
   };
-  const sets: string[] = [];
-  const binds: unknown[] = [];
   if (body.status !== undefined) {
     if (!(TICKET_STATUSES as readonly string[]).includes(body.status)) {
       return c.json({ error: `status must be one of ${TICKET_STATUSES.join(", ")}` }, 400);
     }
-    binds.push(body.status);
-    sets.push(`status = ?${binds.length}`);
   }
-  if (body.assignee !== undefined) {
-    const assignee =
-      typeof body.assignee === "string" ? body.assignee.trim().slice(0, 120) : "";
-    binds.push(assignee || null);
-    sets.push(`assignee = ?${binds.length}`);
-  }
-  if (sets.length === 0) {
+  if (body.status === undefined && body.assignee === undefined) {
     return c.json({ error: "nothing to update (status or assignee required)" }, 400);
   }
-  const exists = await c.env.DB.prepare(
-    "SELECT id FROM feedback_tickets WHERE app_id = ?1 AND id = ?2",
-  )
-    .bind(appId, ticketId)
-    .first();
-  if (!exists) return c.json({ error: "ticket not found" }, 404);
+  if (body.closure_reason !== undefined) {
+    if (
+      typeof body.closure_reason !== "string"
+      || !(FEEDBACK_CLOSURE_REASONS as readonly string[]).includes(body.closure_reason)
+    ) {
+      return c.json({ error: `closure_reason must be one of ${FEEDBACK_CLOSURE_REASONS.join(", ")}` }, 400);
+    }
+    if (body.status !== "closed") {
+      return c.json({ error: "closure_reason requires status closed" }, 400);
+    }
+  }
+  const duplicateTargetInput = body.duplicate_of_ticket_id === undefined
+    ? undefined
+    : typeof body.duplicate_of_ticket_id === "string"
+      ? body.duplicate_of_ticket_id.trim()
+      : "";
+  if (body.closure_reason === "duplicate" && !duplicateTargetInput) {
+    return c.json({ error: "duplicate_of_ticket_id is required for duplicate closures" }, 400);
+  }
+  if (body.closure_reason !== "duplicate" && duplicateTargetInput) {
+    return c.json({ error: "duplicate_of_ticket_id is only valid for duplicate closures" }, 400);
+  }
+  const requestedAssigneeInput = body.assignee === undefined
+    ? undefined
+    : (typeof body.assignee === "string" ? body.assignee.trim().slice(0, 120) : "") || null;
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    const existing = await loadFeedbackMutationSnapshot(c.env.DB, appId, ticketId);
+    if (!existing) return c.json({ error: "ticket not found" }, 404);
+    const requestedStatus = body.status ?? existing.status;
+    let requestedClosureReason = requestedStatus === "closed"
+      ? body.closure_reason ?? existing.closure_reason
+      : null;
+    let requestedDuplicateOfTicketId = requestedStatus === "closed"
+      ? duplicateTargetInput ?? existing.duplicate_of_ticket_id
+      : null;
+    if (
+      existing.status !== "closed"
+      && requestedStatus === "closed"
+      && !requestedClosureReason
+    ) {
+      return c.json({ error: "closure_reason is required when closing a ticket" }, 400);
+    }
+    if (requestedClosureReason === "duplicate") {
+      const duplicate = await resolveTicketId(c.env.DB, appId, requestedDuplicateOfTicketId ?? "");
+      if ("error" in duplicate) {
+        return c.json({ error: "duplicate_of_ticket_id must identify one ticket in this app" }, 400);
+      }
+      if (duplicate.id === ticketId) {
+        return c.json({ error: "a ticket cannot be a duplicate of itself" }, 400);
+      }
+      requestedDuplicateOfTicketId = duplicate.id;
+    } else {
+      requestedDuplicateOfTicketId = null;
+    }
+    const requestedAssignee = requestedAssigneeInput === undefined
+      ? existing.assignee
+      : requestedAssigneeInput;
+    const statusChanged = requestedStatus !== existing.status;
+    const assigneeChanged = requestedAssignee !== existing.assignee;
+    const closureChanged = requestedClosureReason !== existing.closure_reason
+      || requestedDuplicateOfTicketId !== existing.duplicate_of_ticket_id;
+    if (!statusChanged && !assigneeChanged && !closureChanged) {
+      return c.json({
+        id: ticketId,
+        status: existing.status,
+        assignee: existing.assignee,
+        closure_reason: existing.closure_reason,
+        duplicate_of_ticket_id: existing.duplicate_of_ticket_id,
+        updated_at: null,
+        changed: false,
+      });
+    }
 
-  const now = Date.now();
-  binds.push(now);
-  sets.push(`updated_at = ?${binds.length}`);
-  binds.push(appId, ticketId);
-  await c.env.DB.prepare(
-    `UPDATE feedback_tickets SET ${sets.join(", ")}
-     WHERE app_id = ?${binds.length - 1} AND id = ?${binds.length}`,
-  )
-    .bind(...binds)
-    .run();
-  await c.env.DB.prepare(
-    `INSERT INTO audit_logs (id, app_id, action, actor, payload, created_at)
-     VALUES (?1, ?2, 'feedback.update', ?3, ?4, ?5)`,
-  )
-    .bind(
-      crypto.randomUUID(),
-      appId,
-      currentActor(c),
-      JSON.stringify({ ticket_id: ticketId, status: body.status ?? null, assignee: body.assignee === undefined ? null : (body.assignee || null) }),
-      now,
-    )
-    .run();
-  return c.json({ id: ticketId, status: body.status ?? null, assignee: body.assignee ?? null, updated_at: now });
+    const now = Date.now();
+    const auditId = crypto.randomUUID();
+    const auditPayload = JSON.stringify({
+      ticket_id: ticketId,
+      previous_status: existing.status,
+      status: requestedStatus,
+      previous_assignee: existing.assignee,
+      assignee: requestedAssignee,
+      previous_closure_reason: existing.closure_reason,
+      closure_reason: requestedClosureReason,
+      previous_duplicate_of_ticket_id: existing.duplicate_of_ticket_id,
+      duplicate_of_ticket_id: requestedDuplicateOfTicketId,
+    });
+    const statements: D1PreparedStatement[] = [
+      c.env.DB.prepare(
+        `INSERT INTO audit_logs (id, app_id, action, actor, payload, created_at)
+         SELECT ?1, ?2, 'feedback.update', ?3, ?4, ?5
+         FROM feedback_tickets
+         WHERE app_id = ?2 AND id = ?6 AND status = ?7 AND assignee IS ?8
+           AND closure_reason IS ?9 AND duplicate_of_ticket_id IS ?10`,
+      ).bind(
+        auditId,
+        appId,
+        currentActor(c),
+        auditPayload,
+        now,
+        ticketId,
+        existing.status,
+        existing.assignee,
+        existing.closure_reason,
+        existing.duplicate_of_ticket_id,
+      ),
+      c.env.DB.prepare(
+        `UPDATE feedback_tickets
+         SET status = ?1, assignee = ?2, closure_reason = ?3,
+             duplicate_of_ticket_id = ?4, updated_at = ?5
+         WHERE app_id = ?6 AND id = ?7 AND status = ?8 AND assignee IS ?9
+           AND closure_reason IS ?10 AND duplicate_of_ticket_id IS ?11
+           AND EXISTS (SELECT 1 FROM audit_logs WHERE id = ?12)`,
+      ).bind(
+        requestedStatus,
+        requestedAssignee,
+        requestedClosureReason,
+        requestedDuplicateOfTicketId,
+        now,
+        appId,
+        ticketId,
+        existing.status,
+        existing.assignee,
+        existing.closure_reason,
+        existing.duplicate_of_ticket_id,
+        auditId,
+      ),
+    ];
+    if (
+      statusChanged
+      && existing.org_id
+      && existing.reporter_integration_id
+      && existing.reporter_id
+      && existing.reporter_active === 1
+    ) {
+      statements.push(...feedbackReporterEventStatements(c.env.DB, {
+        eventType: "feedback:status_changed",
+        orgId: existing.org_id,
+        appId,
+        ticketId,
+        reporterIntegrationId: existing.reporter_integration_id,
+        reporterId: existing.reporter_id,
+        createdAt: now,
+        previousStatus: existing.status,
+        status: requestedStatus,
+        closureReason: requestedClosureReason,
+        duplicateOfTicketId: requestedDuplicateOfTicketId,
+        claimAuditId: auditId,
+      }));
+    }
+    await c.env.DB.batch(statements);
+    const won = await c.env.DB.prepare("SELECT id FROM audit_logs WHERE id = ?1")
+      .bind(auditId)
+      .first();
+    if (won) {
+      return c.json({
+        id: ticketId,
+        status: requestedStatus,
+        assignee: requestedAssignee,
+        closure_reason: requestedClosureReason,
+        duplicate_of_ticket_id: requestedDuplicateOfTicketId,
+        updated_at: now,
+        changed: true,
+      });
+    }
+  }
+  return c.json({ error: "feedback ticket changed concurrently; retry" }, 409);
+}
+
+type FeedbackMutationSnapshot = {
+  id: string;
+  status: string;
+  assignee: string | null;
+  closure_reason: string | null;
+  duplicate_of_ticket_id: string | null;
+  reporter_integration_id: string | null;
+  reporter_id: string | null;
+  org_id: string | null;
+  reporter_active: number;
+};
+
+async function loadFeedbackMutationSnapshot(
+  db: D1Database,
+  appId: string,
+  ticketId: string,
+): Promise<FeedbackMutationSnapshot | null> {
+  return db.prepare(
+    `SELECT t.id, t.status, t.assignee, t.closure_reason, t.duplicate_of_ticket_id,
+            t.reporter_integration_id, t.reporter_id,
+            a.org_id,
+            CASE WHEN ri.id IS NOT NULL AND ri.archived_at IS NULL THEN 1 ELSE 0 END AS reporter_active
+     FROM feedback_tickets t
+     JOIN apps a ON a.id = t.app_id
+     LEFT JOIN app_reporter_integrations ri
+       ON ri.id = t.reporter_integration_id AND ri.app_id = t.app_id
+     WHERE t.app_id = ?1 AND t.id = ?2`,
+  ).bind(appId, ticketId).first<FeedbackMutationSnapshot>();
 }
 
 export async function handleAddFeedbackComment(c: AdminContext) {
-  const appId = c.req.param("appId");
-  const resolved = await resolveTicketId(c.env.DB, appId, c.req.param("ticketId"));
-  if ("error" in resolved) return ticketResolveError(c, resolved);
-  const ticketId = resolved.id;
+  const startedAt = performance.now();
+  const appId = c.req.param("appId") ?? "";
+  const rawTicketId = (c.req.param("ticketId") ?? "").trim();
+  let ticketId: string;
+  if (UUID_RE.test(rawTicketId)) {
+    // The mutation snapshot below is the authoritative existence/ownership
+    // check, so a full UUID does not need a redundant preliminary SELECT.
+    ticketId = rawTicketId.toLowerCase();
+  } else {
+    const resolved = await resolveTicketId(c.env.DB, appId, rawTicketId);
+    if ("error" in resolved) return ticketResolveError(c, resolved);
+    ticketId = resolved.id;
+  }
   const body = (await c.req.json().catch(() => ({}))) as {
     body?: string;
     internal?: boolean;
   };
   const text = (body.body ?? "").trim();
   if (!text) return c.json({ error: "body is required" }, 400);
+  // `internal` decides whether this reaches the reporter, so it is normalised
+  // exactly once here and every later use reads `isInternal`. Three sites used
+  // to re-interpret the raw field with three different coercions (truthy /
+  // strict / falsy), which let a string "false" store an internal note while
+  // the audit recorded a public reply.
+  //
+  // Non-booleans are rejected rather than coerced. Coercing is not the safe
+  // option it looks like: under a strict reading, `"true"` and `1` — the usual
+  // way a client mis-serialises a boolean — become *public*, sending a note the
+  // author meant to keep internal straight to the customer. Guessing "internal"
+  // is an inconvenience; guessing "public" cannot be taken back.
+  if (body.internal !== undefined && typeof body.internal !== "boolean") {
+    return c.json({ error: "internal must be a boolean" }, 400);
+  }
+  const isInternal = body.internal === true;
+  // A role-free feedback token may reply to the reporter, not write staff-only
+  // notes. Checked here rather than in middleware because it depends on the body.
+  const tokenPermissions = c.get("feedback_token_permissions");
+  if (tokenPermissions) {
+    const needed: AppPermission = isInternal ? "feedback:triage" : "feedback:comment";
+    if (!tokenPermissions.has(needed)) {
+      return c.json(
+        {
+          error: isInternal
+            ? "internal notes require feedback:triage or the publisher role"
+            : "replying requires feedback:comment or the publisher role",
+        },
+        403,
+      );
+    }
+  }
   const ticket = await c.env.DB.prepare(
-    "SELECT id FROM feedback_tickets WHERE app_id = ?1 AND id = ?2",
+    `SELECT t.id, t.reporter_integration_id, t.reporter_id, a.org_id,
+            CASE WHEN ri.id IS NOT NULL AND ri.archived_at IS NULL THEN 1 ELSE 0 END AS reporter_active
+     FROM feedback_tickets t
+     JOIN apps a ON a.id = t.app_id
+     LEFT JOIN app_reporter_integrations ri
+       ON ri.id = t.reporter_integration_id AND ri.app_id = t.app_id
+     WHERE t.app_id = ?1 AND t.id = ?2`,
   )
     .bind(appId, ticketId)
-    .first();
+    .first<{
+      id: string;
+      reporter_integration_id: string | null;
+      reporter_id: string | null;
+      org_id: string | null;
+      reporter_active: number;
+    }>();
   if (!ticket) return c.json({ error: "ticket not found" }, 404);
+  const preflightAt = performance.now();
   const now = Date.now();
   const id = crypto.randomUUID();
-  await c.env.DB.batch([
+  const statements = [
     c.env.DB.prepare(
-      `INSERT INTO feedback_comments (id, ticket_id, author_actor, body, internal, created_at)
-       VALUES (?1, ?2, ?3, ?4, ?5, ?6)`,
-    ).bind(id, ticketId, currentActor(c), text, body.internal ? 1 : 0, now),
+      `INSERT INTO feedback_comments
+       (id, ticket_id, author_actor, author_type, body, internal, created_at)
+       VALUES (?1, ?2, ?3, 'staff', ?4, ?5, ?6)`,
+    ).bind(id, ticketId, currentActor(c), text, isInternal ? 1 : 0, now),
     c.env.DB.prepare(
       "UPDATE feedback_tickets SET updated_at = ?1 WHERE id = ?2",
     ).bind(now, ticketId),
-  ]);
+    c.env.DB.prepare(
+      `INSERT INTO audit_logs (id, app_id, action, actor, payload, created_at)
+       VALUES (?1, ?2, 'feedback.comment', ?3, ?4, ?5)`,
+    ).bind(
+      crypto.randomUUID(),
+      appId,
+      currentActor(c),
+      JSON.stringify({ ticket_id: ticketId, comment_id: id, internal: isInternal }),
+      now,
+    ),
+  ];
+  if (
+    !isInternal
+    && ticket.org_id
+    && ticket.reporter_integration_id
+    && ticket.reporter_id
+    && ticket.reporter_active === 1
+  ) {
+    statements.push(...feedbackReporterEventStatements(c.env.DB, {
+      eventType: "feedback:comment_created",
+      orgId: ticket.org_id,
+      appId,
+      ticketId,
+      reporterIntegrationId: ticket.reporter_integration_id,
+      reporterId: ticket.reporter_id,
+      createdAt: now,
+      comment: { id, author_type: "staff", body: text, created_at: now },
+    }));
+  }
+  await c.env.DB.batch(statements);
+  const committedAt = performance.now();
+  setServerTiming(c, [
+    `hands_comment_preflight;dur=${timingDuration(startedAt, preflightAt)}`,
+    `hands_comment_commit;dur=${timingDuration(preflightAt, committedAt)}`,
+  ].join(", "));
   return c.json({ id, ticket_id: ticketId, created_at: now }, 201);
+}
+
+export function feedbackReporterEventStatements(
+  db: D1Database,
+  input: {
+    eventType: "feedback:comment_created" | "feedback:status_changed";
+    orgId: string;
+    appId: string;
+    ticketId: string;
+    reporterIntegrationId: string;
+    reporterId: string;
+    createdAt: number;
+    comment?: { id: string; author_type: "staff" | "reporter" | "system"; body: string; created_at: number };
+    previousStatus?: string;
+    status?: string;
+    closureReason?: string | null;
+    duplicateOfTicketId?: string | null;
+    claimAuditId?: string;
+  },
+): D1PreparedStatement[] {
+  const eventId = crypto.randomUUID();
+  const base = {
+    eventId,
+    eventType: input.eventType,
+    createdAt: input.createdAt,
+    orgId: input.orgId,
+    appId: input.appId,
+    ticketId: input.ticketId,
+    reporterIntegrationId: input.reporterIntegrationId,
+    reporterId: input.reporterId,
+  };
+  const payloadJson = input.eventType === "feedback:comment_created"
+    ? buildFeedbackCommentEvent({ ...base, comment: input.comment! })
+    : buildFeedbackStatusEvent({
+        ...base,
+        previousStatus: input.previousStatus!,
+        status: input.status!,
+        ...(input.closureReason !== undefined
+          ? { closureReason: input.closureReason }
+          : {}),
+        ...(input.duplicateOfTicketId !== undefined
+          ? { duplicateOfTicketId: input.duplicateOfTicketId }
+          : {}),
+      });
+  return [
+    db.prepare(
+      `INSERT INTO feedback_events
+       (id, event_type, app_id, ticket_id, reporter_integration_id,
+        reporter_id, payload_json, route_outcome, route_subject, created_at)
+       SELECT ?1, ?2, ?3, ?4, ?5, ?6,
+              CASE WHEN r.route_subject IS NULL
+                THEN json_set(?7, '$.payload.route_outcome', 'route_unbound')
+                ELSE json_set(?7, '$.payload.route_outcome', 'route_bound',
+                                   '$.payload.route_subject', r.route_subject)
+              END,
+              CASE WHEN r.route_subject IS NULL THEN 'route_unbound' ELSE 'route_bound' END,
+              r.route_subject, ?8
+       FROM feedback_tickets t
+       JOIN apps a ON a.id = t.app_id AND a.archived = 0
+       JOIN app_reporter_integrations ri
+         ON ri.id = t.reporter_integration_id
+        AND ri.app_id = t.app_id AND ri.archived_at IS NULL
+       LEFT JOIN app_reporter_routes r
+         ON r.app_id = t.app_id
+        AND r.reporter_integration_id = t.reporter_integration_id
+        AND r.reporter_id = t.reporter_id
+       WHERE t.id = ?4 AND t.app_id = ?3
+         AND t.reporter_integration_id = ?5 AND t.reporter_id = ?6
+         AND (?9 IS NULL OR EXISTS (SELECT 1 FROM audit_logs WHERE id = ?9))`,
+    ).bind(
+      eventId,
+      input.eventType,
+      input.appId,
+      input.ticketId,
+      input.reporterIntegrationId,
+      input.reporterId,
+      payloadJson,
+      input.createdAt,
+      input.claimAuditId ?? null,
+    ),
+    db.prepare(
+      `INSERT INTO webhook_deliveries
+       (id, webhook_id, event_type, event_id, payload_json,
+        signing_secret, signature_key_version, reporter_delivery, status,
+        attempts, max_attempts, next_attempt_at, created_at, updated_at)
+       SELECT ?1 || ':' || w.id, w.id, ?2, ?1, ?3,
+              w.secret, w.signature_key_version, 0, 'pending', 0, 3,
+              ?4, ?4, ?4
+       FROM feedback_events fe
+       JOIN webhooks w ON w.org_id = ?5
+       JOIN apps a ON a.id = fe.app_id AND a.archived = 0
+       WHERE fe.id = ?1
+         AND w.enabled = 1 AND w.archived_at IS NULL
+         AND (w.app_id IS NULL OR w.app_id = ?6)
+         AND CASE WHEN json_valid(w.events_json) THEN (
+           json_array_length(w.events_json) = 0
+           OR EXISTS (SELECT 1 FROM json_each(w.events_json) e
+                      WHERE e.value IN (?2, '*'))
+         ) ELSE 0 END
+         AND NOT EXISTS (
+           SELECT 1 FROM app_reporter_webhook_subscriptions s
+           WHERE s.webhook_id = w.id AND s.app_id = ?6
+             AND s.reporter_integration_id = fe.reporter_integration_id
+         )
+       ON CONFLICT(webhook_id, event_id) WHERE event_id IS NOT NULL DO NOTHING`,
+    ).bind(eventId, input.eventType, payloadJson, input.createdAt, input.orgId, input.appId),
+    db.prepare(
+      `INSERT INTO webhook_deliveries
+       (id, webhook_id, event_type, event_id, payload_json,
+        signing_secret, signature_key_version, reporter_delivery, status,
+        attempts, max_attempts, next_attempt_at, created_at, updated_at)
+       SELECT ?1 || ':' || w.id, w.id, ?2, ?1, fe.payload_json,
+              w.secret, w.signature_key_version, 1, 'pending', 0, 3,
+              ?3, ?3, ?3
+       FROM feedback_events fe
+       JOIN app_reporter_webhook_subscriptions s
+         ON s.app_id = fe.app_id
+        AND s.reporter_integration_id = fe.reporter_integration_id
+       JOIN webhooks w ON w.id = s.webhook_id
+       JOIN app_reporter_integrations ri
+         ON ri.id = s.reporter_integration_id AND ri.app_id = s.app_id
+       JOIN apps a ON a.id = s.app_id AND a.archived = 0
+       WHERE fe.id = ?1 AND fe.route_outcome = 'route_bound'
+         AND fe.route_subject IS NOT NULL
+         AND w.app_id = fe.app_id AND w.org_id = ?4
+         AND w.enabled = 1 AND w.archived_at IS NULL
+         AND ri.archived_at IS NULL
+         AND CASE WHEN json_valid(w.events_json) THEN (
+           json_array_length(w.events_json) = 0
+           OR EXISTS (SELECT 1 FROM json_each(w.events_json) e
+                      WHERE e.value IN (?2, '*'))
+         ) ELSE 0 END
+       ON CONFLICT(webhook_id, event_id) WHERE event_id IS NOT NULL DO NOTHING`,
+    ).bind(eventId, input.eventType, input.createdAt, input.orgId),
+  ];
 }
 
 export async function handleDownloadFeedbackAttachment(c: AdminContext) {
@@ -1720,6 +2903,13 @@ export async function handleDownloadFeedbackAttachment(c: AdminContext) {
 
 async function sha256Hex(input: string): Promise<string> {
   const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(input));
+  return Array.from(new Uint8Array(digest))
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
+}
+
+async function sha256BufferHex(input: ArrayBuffer): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", input);
   return Array.from(new Uint8Array(digest))
     .map((b) => b.toString(16).padStart(2, "0"))
     .join("");

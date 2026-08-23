@@ -94,6 +94,20 @@ export class ApiError extends Error {
   }
 }
 
+export interface HandsAdminOverview {
+  measured_at: number;
+  summary: { users: number; organizations: number; apps: number; active_apps: number; builds: number; releases: number };
+  users_by_type: Array<{ type: string; count: number }>;
+  apps_by_platform: Array<{ type: string; count: number }>;
+  builds_by_product_type: Array<{ type: string; count: number }>;
+  releases_by_status: Array<{ status: string; count: number }>;
+  storage: {
+    r2: { object_count: number; size_bytes: number };
+    registered: { object_count: number; size_bytes: number };
+    note: string;
+  };
+}
+
 export interface App {
   id: string;
   org_id: string | null;
@@ -212,6 +226,8 @@ export interface Release {
   product_type: string;
   release_type: string;
   status: string;            // 'draft' | 'active' | 'superseded' | 'cancelled'
+  activated_at: number | null;
+  revision: number;
   is_full: number;
   superseded_by_release_id: string | null;
   rollout_cohort_count: number | null;
@@ -223,18 +239,42 @@ export interface Release {
   created_by: string;
   created_at: number;
   updated_at: number;
+  // Flattened build/channel fields returned by the release list endpoint.
+  version_name?: string;
+  version_code?: number;
+  channel?: string;
   // release_metrics (nullable when never checked)
   offered_count?: number | null;
   current_count?: number | null;
+  offered_uv?: number | null;
+  current_uv?: number | null;
   last_checked_at?: number | null;
 }
 
 export interface ReleaseScope {
   id: string;
   release_id: string;
-  scope_type: string;         // 'full' | 'platform' | 'ip_range' | 'user_cohort'
+  scope_type: string;         // 'full' | 'platform' | 'ip_range' | 'user_cohort' | 'device_group'
   scope_value: string;
   created_at: number;
+}
+
+export interface DeviceGroupMember {
+  group_id: string;
+  device_id: string;
+  label: string | null;
+  created_at: number;
+}
+
+export interface DeviceGroup {
+  id: string;
+  app_id: string;
+  name: string;
+  description: string | null;
+  member_count: number;
+  members: DeviceGroupMember[];
+  created_at: number;
+  updated_at: number;
 }
 
 export interface Channel {
@@ -269,7 +309,13 @@ export interface AuditLogEntry {
 export interface Operation {
   id: string;
   app_id: string;
-  kind: "parse" | "upload" | "publish" | "signed_url" | "testflight-upload";
+  kind:
+    | "parse"
+    | "upload"
+    | "publish"
+    | "signed_url"
+    | "testflight-upload"
+    | "testflight-publish";
   status: "pending" | "in_progress" | "success" | "failed" | "cancelled";
   parent_op_id: string | null;
   step_number: number | null;
@@ -354,6 +400,7 @@ export interface AppServerGrant {
   server_id: string | null;
   server_slug: string | null;
   app_role: "admin" | "publisher" | "viewer";
+  access_model: "legacy_role" | "owner_server";
   granted_by: string | null;
   created_at: number;
   updated_at: number;
@@ -364,13 +411,42 @@ export interface AppDeployToken {
   app_id: string;
   name: string;
   token_prefix: string;
-  app_role: "publisher" | "viewer";
+  app_role: "publisher" | "viewer" | null;
+  scopes: AppPermission[] | null;
+  grant_valid: boolean;
+  effective_permissions: AppPermission[];
   created_by: string | null;
   created_by_actor: string;
   created_at: number;
   expires_at: number | null;
   last_used_at: number | null;
   revoked_at: number | null;
+  reporter_integration_id: string | null;
+}
+
+export interface ReporterIntegration {
+  id: string;
+  app_id: string;
+  name: string;
+  created_at: number;
+  updated_at: number;
+  archived_at: number | null;
+}
+
+export type AppPermission =
+  | "app:read"
+  | "app:publish"
+  | "app:admin"
+  | "feedback:write"
+  | "feedback:read"
+  | "feedback:comment";
+
+export interface AppPermissionModel {
+  permissions: Array<{ permission: AppPermission; label: string; description: string }>;
+  roles: Array<{
+    role: "admin" | "publisher" | "viewer";
+    permissions: AppPermission[];
+  }>;
 }
 
 export interface Invite {
@@ -448,6 +524,9 @@ export const normalizeLoginReturnPath = (returnTo = window.location.pathname) =>
 
 export const loginUrl = (returnTo = window.location.pathname) =>
   `${API_BASE}/api/auth/login?return=${encodeURIComponent(normalizeLoginReturnPath(returnTo))}`;
+
+export const getHandsAdminOverview = () =>
+  request<HandsAdminOverview>(`/api/admin/observability/overview`, { admin: true });
 
 // ---------- Admin API (requires Login with Raft bearer JWT in prod) ----------
 
@@ -661,7 +740,6 @@ export const addAppServerGrant = (
   input: {
     server_id?: string | null;
     server_slug?: string | null;
-    app_role: AppServerGrant["app_role"];
   },
 ) =>
   request<{ ok: boolean }>(`/api/apps/${appId}/server-grants`, {
@@ -669,24 +747,6 @@ export const addAppServerGrant = (
     admin: true,
     body: JSON.stringify(input),
   });
-
-export const updateAppServerGrant = (
-  appId: string,
-  grantKey: string,
-  input: {
-    server_id?: string | null;
-    server_slug?: string | null;
-    app_role: AppServerGrant["app_role"];
-  },
-) =>
-  request<{ ok: boolean }>(
-    `/api/apps/${appId}/server-grants/${encodeURIComponent(grantKey)}`,
-    {
-      method: "PATCH",
-      admin: true,
-      body: JSON.stringify(input),
-    },
-  );
 
 export const removeAppServerGrant = (appId: string, serverId: string) =>
   request<{ ok: boolean }>(
@@ -743,6 +803,36 @@ export const verifyAscCredentials = (appId: string, bundleId: string) =>
     method: "POST",
     admin: true,
     body: JSON.stringify({ bundle_id: bundleId }),
+  });
+
+export interface BetaAppDescriptionLocalization {
+  id: string;
+  locale: string | null;
+  description: string | null;
+}
+
+export const getTestflightBetaAppDescription = (appId: string) =>
+  request<{
+    bundle_id: string;
+    asc_app_id: string;
+    localizations: BetaAppDescriptionLocalization[];
+  }>(`/api/apps/${appId}/testflight-beta-app-description`, { admin: true });
+
+export const updateTestflightBetaAppDescription = (
+  appId: string,
+  descriptions: Record<string, string>,
+) =>
+  request<{
+    ok: boolean;
+    bundle_id: string;
+    asc_app_id: string;
+    updated_locales: string[];
+    readback_exact: boolean;
+    localizations: BetaAppDescriptionLocalization[];
+  }>(`/api/apps/${appId}/testflight-beta-app-description`, {
+    method: "PUT",
+    admin: true,
+    body: JSON.stringify({ descriptions }),
   });
 
 // ---------- AppGallery Connect credentials (HarmonyOS) ----------
@@ -859,6 +949,66 @@ export const getTestflightUploadStatus = (appId: string, buildUploadId: string) 
     uploaded_at: string | null;
   }>(`/api/apps/${appId}/testflight-uploads/${buildUploadId}`, { admin: true });
 
+export interface TestflightGroupState {
+  id: string;
+  name: string | null;
+  is_internal: boolean | null;
+  has_access_to_all_builds: boolean | null;
+  public_link_enabled: boolean | null;
+}
+
+export interface TestflightPublishState {
+  hands_build_id: string;
+  bundle_id: string;
+  asc_app_id: string;
+  asc_build_id: string | null;
+  version: string;
+  build_number: string;
+  processing_state?: string | null;
+  build_audience_type?: string | null;
+  expiration_date?: string | null;
+  expired?: boolean | null;
+  state: string;
+  distribution: "internal" | "external" | null;
+  assigned_groups?: TestflightGroupState[];
+  localizations?: Array<{
+    id: string;
+    locale: string | null;
+    whats_new: string | null;
+  }>;
+  beta_review?: {
+    id: string;
+    state: string | null;
+    submitted_at: string | null;
+  } | null;
+  beta_detail?: {
+    id: string;
+    auto_notify_enabled: boolean | null;
+    internal_build_state: string | null;
+    external_build_state: string | null;
+  } | null;
+  notification?: string;
+}
+
+export const getTestflightPublishStatus = (
+  appId: string,
+  buildId: string,
+  options: {
+    distribution?: "internal" | "external";
+    bundleId?: string;
+  } = {},
+) => {
+  const query = new URLSearchParams();
+  if (options.distribution) query.set("distribution", options.distribution);
+  if (options.bundleId) query.set("bundle_id", options.bundleId);
+  const queryString = query.toString();
+  const suffix = queryString ? `?${queryString}` : "";
+  return request<TestflightPublishState>(
+    `/api/apps/${appId}/builds/${buildId}/testflight-publish${suffix}`,
+    { admin: true },
+  );
+};
+
 // ---------- App Store review status (read-only) ----------
 
 export interface AppStoreVersionSummary {
@@ -906,11 +1056,16 @@ export const listAppDeployTokens = (appId: string) =>
     { admin: true },
   );
 
+export const getAppPermissionModel = () =>
+  request<AppPermissionModel>("/api/app-permissions", { admin: true });
+
 export const createAppDeployToken = (
   appId: string,
   input: {
     name: string;
-    app_role: AppDeployToken["app_role"];
+    app_role?: Exclude<AppDeployToken["app_role"], null>;
+    scopes?: AppPermission[];
+    reporter_integration_id?: string;
     expires_at?: number | null;
   },
 ) =>
@@ -931,6 +1086,28 @@ export const revokeAppDeployToken = (appId: string, tokenId: string) =>
       admin: true,
     },
   );
+
+export const listReporterIntegrations = (appId: string, includeArchived = false) =>
+  request<{ reporter_integrations: ReporterIntegration[] }>(
+    `/api/apps/${appId}/reporter-integrations${includeArchived ? "?include_archived=1" : ""}`,
+    { admin: true },
+  );
+
+export const createReporterIntegration = (appId: string, name: string) =>
+  request<ReporterIntegration>(`/api/apps/${appId}/reporter-integrations`, {
+    method: "POST",
+    admin: true,
+    body: JSON.stringify({ name }),
+  });
+
+export const updateReporterIntegration = (
+  appId: string,
+  integrationId: string,
+  archived: boolean,
+) => request<{ id: string; archived: boolean; changed: boolean }>(
+  `/api/apps/${appId}/reporter-integrations/${encodeURIComponent(integrationId)}`,
+  { method: "PATCH", admin: true, body: JSON.stringify({ archived }) },
+);
 
 export const getInvite = (token: string) =>
   request<Invite>(`/api/invites/${token}`);
@@ -1151,8 +1328,71 @@ export const getBuildAssetDownloadUrl = (
 export const listReleases = (appId: string) =>
   request<{ releases: Release[] }>(`/api/apps/${appId}/releases`, { admin: true });
 
+export const listDeviceGroups = (appId: string) =>
+  request<{ groups: DeviceGroup[] }>(`/api/apps/${appId}/device-groups`, { admin: true });
+
+export const createDeviceGroup = (appId: string, input: { name: string; description?: string }) =>
+  request<DeviceGroup>(`/api/apps/${appId}/device-groups`, {
+    method: "POST",
+    admin: true,
+    body: JSON.stringify(input),
+  });
+
+export const updateDeviceGroup = (
+  appId: string,
+  groupId: string,
+  input: { name?: string; description?: string | null },
+) => request<DeviceGroup>(`/api/apps/${appId}/device-groups/${groupId}`, {
+  method: "PATCH",
+  admin: true,
+  body: JSON.stringify(input),
+});
+
+export const deleteDeviceGroup = (appId: string, groupId: string) =>
+  request<{ ok: boolean; id: string }>(`/api/apps/${appId}/device-groups/${groupId}`, {
+    method: "DELETE",
+    admin: true,
+  });
+
+export const addDeviceGroupMember = (
+  appId: string,
+  groupId: string,
+  input: { device_id: string; label?: string },
+) => request<DeviceGroupMember>(`/api/apps/${appId}/device-groups/${groupId}/members`, {
+  method: "POST",
+  admin: true,
+  body: JSON.stringify(input),
+});
+
+export const removeDeviceGroupMember = (appId: string, groupId: string, deviceId: string) =>
+  request<{ ok: boolean }>(
+    `/api/apps/${appId}/device-groups/${groupId}/members/${encodeURIComponent(deviceId)}`,
+    { method: "DELETE", admin: true },
+  );
+
+export interface ReleaseCheck {
+  id: string;
+  source: string;
+  run_id: string | null;
+  run_url: string | null;
+  verdict: "passed" | "failed" | "warning" | "skipped";
+  cases_total: number | null;
+  cases_passed: number | null;
+  summary: string | null;
+  reviewer: string | null;
+  reviewed_at: number | null;
+  created_at: number;
+  updated_at: number;
+}
+
 export const getRelease = (appId: string, releaseId: string) =>
-  request<{ release: Release; build: Build; assets: BuildAsset[]; scopes: ReleaseScope[] }>(
+  request<{
+    release: Release;
+    build: Build;
+    assets: BuildAsset[];
+    scopes: ReleaseScope[];
+    checks: ReleaseCheck[];
+  }>(
     `/api/apps/${appId}/releases/${releaseId}`,
     { admin: true },
   );
@@ -1192,6 +1432,7 @@ export const updateRelease = (
     availability_at?: number | null | undefined;
     provenance_json?: unknown;
     scopes?: { scope_type: string; scope_value: string }[];
+    expected_revision: number;
   },
 ) =>
   request<Release>(`/api/apps/${appId}/releases/${releaseId}`, {
@@ -1200,15 +1441,24 @@ export const updateRelease = (
     body: JSON.stringify(input),
   });
 
-export const publishRelease = (appId: string, releaseId: string) =>
+export const publishRelease = (
+  appId: string,
+  releaseId: string,
+  expectedScopes: { scope_type: string; scope_value: string }[],
+  expectedRevision: number,
+) =>
   request<Release>(`/api/apps/${appId}/releases/${releaseId}/publish`, {
     method: "POST",
     admin: true,
+    body: JSON.stringify({
+      expected_scopes: expectedScopes,
+      expected_revision: expectedRevision,
+    }),
   });
 
-export const deleteRelease = (appId: string, releaseId: string) =>
-  request<{ ok: boolean; id: string; status: "cancelled" }>(
-    `/api/apps/${appId}/releases/${releaseId}`,
+export const deleteRelease = (appId: string, releaseId: string, expectedRevision: number) =>
+  request<{ ok: boolean; id: string; status: "cancelled"; revision: number }>(
+    `/api/apps/${appId}/releases/${releaseId}?expected_revision=${expectedRevision}`,
     { method: "DELETE", admin: true },
   );
 
@@ -1218,9 +1468,10 @@ export const rollbackRelease = (
   input?: {
     build_id?: string | undefined;
     scopes?: { scope_type: string; scope_value: string }[];
+    expected_revision: number;
   },
 ) =>
-  request<Release>(`/api/apps/${appId}/releases/${releaseId}/rollback`, {
+  request<Release & { restored_to_draft: boolean; reactivated: boolean }>(`/api/apps/${appId}/releases/${releaseId}/rollback`, {
     method: "POST",
     admin: true,
     body: JSON.stringify(input ?? {}),
@@ -1229,9 +1480,9 @@ export const rollbackRelease = (
 export const bumpRollout = (
   appId: string,
   releaseId: string,
-  input: { to?: number; by?: number },
+  input: { to?: number; by?: number; expected_revision: number },
 ) =>
-  request<{ ok: boolean; rollout_cohort_count: number | null }>(
+  request<{ ok: boolean; rollout_cohort_count: number | null; revision: number }>(
     `/api/apps/${appId}/releases/${releaseId}/bump-rollout`,
     { method: "POST", admin: true, body: JSON.stringify(input) },
   );
@@ -1239,9 +1490,9 @@ export const bumpRollout = (
 export const forceUpdate = (
   appId: string,
   releaseId: string,
-  input?: { enabled?: boolean },
+  input?: { enabled?: boolean; expected_revision: number },
 ) =>
-  request<{ ok: boolean; should_force_update: number }>(
+  request<{ ok: boolean; should_force_update: number; revision: number }>(
     `/api/apps/${appId}/releases/${releaseId}/force-update`,
     { method: "POST", admin: true, body: JSON.stringify(input ?? {}) },
   );
@@ -1252,9 +1503,12 @@ export const forceUpdate = (
 
 export type WebhookEventType =
   | "feedback:new"
+  | "feedback:comment_created"
+  | "feedback:status_changed"
   | "crash:new_group"
   | "crash:spike"
   | "release:new"
+  | "release:draft_created"
   | "release:superseded"
   | "release:rolled_back"
   | "release:cancelled"
@@ -1263,9 +1517,12 @@ export type WebhookEventType =
 
 export const WEBHOOK_EVENT_TYPES: WebhookEventType[] = [
   "feedback:new",
+  "feedback:comment_created",
+  "feedback:status_changed",
   "crash:new_group",
   "crash:spike",
   "release:new",
+  "release:draft_created",
   "release:superseded",
   "release:rolled_back",
   "release:cancelled",
@@ -1343,9 +1600,12 @@ export const listWebhookDeliveries = (orgId: string, webhookId: string) =>
 export interface AppShare {
   id: string;
   release_id: string;
+  channel_id: string;
+  // Copyable URL; null for legacy shares created before tokens were stored.
+  share_url: string | null;
   created_by: string;
   created_at: number;
-  expires_at: number;
+  expires_at: number | null;
   revoked_at: number | null;
   has_password: number; // 0 | 1 from SQLite
   release_status: string;
@@ -1366,7 +1626,7 @@ export const createReleaseShare = (
   releaseId: string,
   body: { ttl_seconds?: number; expires_at?: number; password?: string },
 ) =>
-  request<{ id: string; share_url: string; expires_at: number; has_password: boolean }>(
+  request<{ id: string; share_url: string; expires_at: number | null; has_password: boolean }>(
     `/api/apps/${appId}/releases/${releaseId}/shares`,
     { method: "POST", body: JSON.stringify(body), admin: true },
   );
@@ -1375,9 +1635,9 @@ export const renewReleaseShare = (
   appId: string,
   releaseId: string,
   shareId: string,
-  body: { ttl_seconds?: number; expires_at?: number; password?: string | null },
+  body: { ttl_seconds?: number; expires_at?: number | null; password?: string | null },
 ) =>
-  request<{ id: string; expires_at: number }>(
+  request<{ id: string; expires_at: number | null }>(
     `/api/apps/${appId}/releases/${releaseId}/shares/${shareId}`,
     { method: "PATCH", body: JSON.stringify(body), admin: true },
   );
@@ -1388,12 +1648,36 @@ export const revokeReleaseShare = (appId: string, releaseId: string, shareId: st
     { method: "DELETE", admin: true },
   );
 
+export const rebindReleaseShare = (
+  appId: string,
+  shareId: string,
+  body: { expected_release_id: string; target_release_id: string },
+) =>
+  request<{
+    id: string;
+    previous_release_id: string;
+    release_id: string;
+    target: { status: string; version_name: string; version_code: number; file_hash: string | null; size_bytes: number | null };
+  }>(`/api/apps/${appId}/shares/${shareId}/rebind`, {
+    method: "POST",
+    body: JSON.stringify(body),
+    admin: true,
+  });
+
 // ---- Feedback tickets (task #66) ----
 
 export interface FeedbackTicket {
   id: string;
-  kind: "feedback" | "bug" | "crash";
+  kind: "feedback" | "bug" | "crash" | "error";
   status: "open" | "in_progress" | "resolved" | "closed";
+  closure_reason:
+    | "completed"
+    | "no_longer_needed"
+    | "not_planned"
+    | "cannot_reproduce"
+    | "duplicate"
+    | null;
+  duplicate_of_ticket_id: string | null;
   assignee: string | null;
   message: string;
   contact: string | null;
@@ -1471,9 +1755,20 @@ export const resymbolicateFeedback = (appId: string, ticketId: string) =>
 export const updateFeedbackTicket = (
   appId: string,
   ticketId: string,
-  body: { status?: string; assignee?: string | null },
+  body: {
+    status?: string;
+    assignee?: string | null;
+    closure_reason?: FeedbackTicket["closure_reason"];
+    duplicate_of_ticket_id?: string | null;
+  },
 ) =>
-  request<{ id: string; status: string | null; assignee: string | null }>(
+  request<{
+    id: string;
+    status: string | null;
+    assignee: string | null;
+    closure_reason: FeedbackTicket["closure_reason"];
+    duplicate_of_ticket_id: string | null;
+  }>(
     `/api/apps/${appId}/feedback/${ticketId}`,
     {
       method: "PATCH",
@@ -1482,10 +1777,15 @@ export const updateFeedbackTicket = (
     },
   );
 
-export const addFeedbackComment = (appId: string, ticketId: string, body: string) =>
+export const addFeedbackComment = (
+  appId: string,
+  ticketId: string,
+  body: string,
+  internal: boolean,
+) =>
   request<{ id: string }>(`/api/apps/${appId}/feedback/${ticketId}/comments`, {
     method: "POST",
-    body: JSON.stringify({ body }),
+    body: JSON.stringify({ body, internal }),
     admin: true,
   });
 
@@ -1596,6 +1896,32 @@ export interface DeviceAnalytics {
   by_channel: Array<{ channel: string; devices: number }>;
 }
 
+export interface ReleaseHealthVersion {
+  version_name: string | null;
+  version_code: number | null;
+  channel: string | null;
+  sessions: number;
+  crashed_sessions: number;
+  crash_free_sessions_pct: number | null;
+  devices: number;
+  crashed_devices: number;
+  crash_free_devices_pct: number | null;
+}
+
+export interface ReleaseHealth {
+  window_days: number;
+  since: number;
+  totals: {
+    sessions: number;
+    crashed_sessions: number;
+    crash_free_sessions_pct: number | null;
+    devices: number;
+    crashed_devices: number;
+    crash_free_devices_pct: number | null;
+  };
+  versions: ReleaseHealthVersion[];
+}
+
 export interface VersionMetric {
   release_id: string | null;
   build_id: string | null;
@@ -1653,6 +1979,12 @@ export const getDeviceAnalytics = (appId: string, windowDays = 30) =>
     { admin: true },
   );
 
+export const getReleaseHealth = (appId: string, windowDays = 30) =>
+  request<ReleaseHealth>(
+    `/api/apps/${appId}/release-health?window_days=${windowDays}`,
+    { admin: true },
+  );
+
 export const getVersionMetrics = (appId: string, windowDays = 30) =>
   request<VersionMetrics>(
     `/api/apps/${appId}/analytics/versions?window_days=${windowDays}`,
@@ -1667,8 +1999,11 @@ export interface FeedbackStats {
 export const getFeedbackStats = (appId: string) =>
   request<FeedbackStats>(`/api/apps/${appId}/feedback/stats`, { admin: true });
 
-export const listCrashGroups = (appId: string) =>
-  request<{ groups: CrashGroup[] }>(`/api/apps/${appId}/feedback/crash-groups`, { admin: true });
+export const listCrashGroups = (appId: string, kind?: string) =>
+  request<{ groups: CrashGroup[] }>(
+    `/api/apps/${appId}/feedback/crash-groups${kind ? `?kind=${encodeURIComponent(kind)}` : ""}`,
+    { admin: true },
+  );
 
 export const purgeApp = (appId: string, confirmSlug: string) =>
   request<{ ok: true; purged_app_id: string; r2_objects_deleted: number }>(

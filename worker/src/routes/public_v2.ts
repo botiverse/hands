@@ -6,12 +6,13 @@
  *   Headers: X-Quiver-Client-Platform, X-Quiver-Cohort, (cf.clientIp for ip_range)
  *
  * Server picks the most specific matching scope:
- *   1. ip_range    (priority 4) — CIDR match on cf.clientIp
- *   2. user_cohort (priority 3) — exact match on X-Quiver-Cohort header
- *   3. platform    (priority 2) — CSV match on X-Quiver-Client-Platform
- *   4. full        (priority 1) — catch-all
+ *   1. device_group (priority 5) — server-owned membership keyed by device id
+ *   2. ip_range     (priority 4) — CIDR match on cf.clientIp
+ *   3. user_cohort  (priority 3) — exact match on X-Quiver-Cohort header
+ *   4. platform     (priority 2) — CSV match on X-Quiver-Client-Platform
+ *   5. full         (priority 1) — catch-all
  *
- * Within a priority level, ties broken by created_at DESC, then release_id.
+ * Within a priority level, ties break by latest activation, then release_id.
  *
  * `/public/apps/:slug/latest` is also wired to this resolver so Quiver has
  * a single release-backed public lookup path.
@@ -22,13 +23,23 @@ import { requestOrigin } from "../lib/origin";
 import { presignR2DownloadUrl } from "../lib/r2_presign";
 import { parseReleaseNotes, resolveReleaseNote, type ReleaseNotes } from "../lib/release_notes";
 import { isFeatureEnabled } from "../lib/feature_flags";
+import {
+  fnv1a32,
+  loadActiveReleaseCandidates,
+  rolloutBucket,
+  rolloutIncludes,
+  selectBestAsset,
+} from "../lib/release_resolver";
+import { verifyUpdateArtifactAttestation } from "../lib/update_attestation";
+
+export { fnv1a32, rolloutBucket, rolloutIncludes, selectBestAsset };
 
 interface ScopedResolution {
   release_id: string;
-  scope_type: "full" | "platform" | "user_cohort" | "ip_range";
+  scope_type: "full" | "platform" | "user_cohort" | "ip_range" | "device_group";
   scope_value: string;
   priority: number;
-  release_created_at: number;
+  release_activated_at: number;
 }
 
 type PublicAssetResponse = {
@@ -56,7 +67,7 @@ type PublicLatestResponse = {
   };
   assets: PublicAssetResponse[];
   scoped: {
-    scope_type: "full" | "platform" | "user_cohort" | "ip_range";
+    scope_type: "full" | "platform" | "user_cohort" | "ip_range" | "device_group";
     scope_value: string;
     release_id: string;
     rollout_cohort_count?: number | null;
@@ -69,6 +80,7 @@ const PUBLIC_DOWNLOAD_PREFIX = "/public/r2";
 
 const PRIORITY = {
   ip_range: 4,
+  device_group: 5,
   user_cohort: 3,
   platform: 2,
   full: 1,
@@ -82,18 +94,19 @@ export async function handlePublicV2Latest(c: Context<{ Bindings: Env }>) {
   const deviceId =
     c.req.header("X-Hands-Device-Id") ?? c.req.header("X-Quiver-Device-Id") ?? c.req.query("device_id") ?? null;
   const clientPlatform = effectiveClientPlatform(c);
-  // cf.clientIp is server-only (we never trust X-Forwarded-For here).
-  const clientIp =
-    (c.req.raw?.cf as { clientIp?: string } | undefined)?.clientIp ?? null;
+  // Cloudflare overwrites CF-Connecting-IP at the Worker edge. Request.cf does
+  // not expose a clientIp field in production. Never fall back to the
+  // client-controlled X-Forwarded-For header.
+  const clientIp = c.req.header("CF-Connecting-IP") ?? null;
 
-  if (!slug) return c.json({ error: "slug required" }, 400);
+  if (!slug) return c.json({ error: "slug required", code: "slug_required" }, 400);
 
   const app = await c.env.DB.prepare(
     "SELECT id, slug, platform FROM apps WHERE slug = ?",
   )
     .bind(slug)
     .first<{ id: string; slug: string; platform: string }>();
-  if (!app) return c.json({ error: `app '${slug}' not found` }, 404);
+  if (!app) return c.json({ error: `app '${slug}' not found`, code: "app_not_found" }, 404);
 
   // Channel lookup
   const channelRow = await c.env.DB.prepare(
@@ -103,50 +116,24 @@ export async function handlePublicV2Latest(c: Context<{ Bindings: Env }>) {
     .first<{ id: string }>();
   if (!channelRow) {
     return c.json(
-      { error: `channel '${channel}' not found for app '${slug}'` },
+      { error: `channel '${channel}' not found for app '${slug}'`, code: "channel_not_found" },
       404,
     );
   }
 
   // Candidates: active releases on (channel, [product_type]). No time window:
   // an active release must stay resolvable no matter how old it is.
-  const candidateSql = productType
-    ? `SELECT id, build_id, created_at, product_type, rollout_cohort_count, changelog
-       FROM releases
-       WHERE app_id = ?1 AND channel_id = ?2 AND product_type = ?3
-         AND status = 'active'
-       ORDER BY created_at DESC`
-    : `SELECT id, build_id, created_at, product_type, rollout_cohort_count, changelog
-       FROM releases
-       WHERE app_id = ?1 AND channel_id = ?2
-         AND status = 'active'
-       ORDER BY created_at DESC`;
-  const candidateStmt = c.env.DB.prepare(candidateSql);
-  const allCandidates = await (productType
-    ? candidateStmt.bind(app.id, channelRow.id, productType)
-    : candidateStmt.bind(app.id, channelRow.id)
-  ).all<{
-    id: string;
-    build_id: string;
-    created_at: number;
-    product_type: string;
-    rollout_cohort_count: number | null;
-    changelog: string | null;
-  }>();
+  const allCandidates = { results: await loadActiveReleaseCandidates(c.env.DB, {
+    appId: app.id,
+    channelId: channelRow.id,
+    productType,
+  }) };
 
-  // Rollout gate: a release with rollout_cohort_count < 100 is only served to
-  // clients whose stable per-release bucket falls below the percentage.
-  // Clients that do not send a device id only ever see fully rolled-out
-  // releases. Gated-out clients fall through to the previous active release.
-  const candidates = {
-    results: allCandidates.results.filter((release) =>
-      rolloutIncludes(release.id, release.rollout_cohort_count, deviceId),
-    ),
-  };
-  if (candidates.results.length === 0) {
+  if (allCandidates.results.length === 0) {
     return c.json(
       {
         error: `no active release for this client on channel '${channel}'`,
+        code: "no_active_release",
         app: { slug: app.slug, platform: app.platform },
         channel,
       },
@@ -155,9 +142,9 @@ export async function handlePublicV2Latest(c: Context<{ Bindings: Env }>) {
   }
 
   // Pull all scopes for those releases in one query.
-  const candidateIds = candidates.results.map((r) => r.id);
+  const candidateIds = allCandidates.results.map((r) => r.id);
   if (candidateIds.length === 0) {
-    return c.json({ error: "no candidates" }, 404);
+    return c.json({ error: "no candidates", code: "no_active_release" }, 404);
   }
   const placeholders = candidateIds.map(() => "?").join(",");
   const { results: scopes } = await c.env.DB.prepare(
@@ -168,9 +155,25 @@ export async function handlePublicV2Latest(c: Context<{ Bindings: Env }>) {
     .bind(...candidateIds)
     .all<{ release_id: string; scope_type: string; scope_value: string }>();
 
+  const deviceGroupIds = new Set<string>();
+  if (deviceId) {
+    const { results: memberships } = await c.env.DB.prepare(
+      `SELECT m.group_id
+       FROM device_group_members m
+       JOIN device_groups g ON g.id = m.group_id
+       WHERE g.app_id = ?1 AND m.device_id = ?2`,
+    ).bind(app.id, deviceId).all<{ group_id: string }>();
+    for (const membership of memberships) deviceGroupIds.add(membership.group_id);
+  }
+
   // Build match list (release, scope, priority).
   const matched: ScopedResolution[] = [];
-  for (const release of candidates.results) {
+  const rolloutEligibleReleaseIds = new Set(
+    allCandidates.results
+      .filter((release) => rolloutIncludes(release.id, release.rollout_cohort_count, deviceId))
+      .map((release) => release.id),
+  );
+  for (const release of allCandidates.results) {
     for (const s of scopes) {
       if (s.release_id !== release.id) continue;
       const ok = matchesScope(
@@ -179,8 +182,13 @@ export async function handlePublicV2Latest(c: Context<{ Bindings: Env }>) {
         cohort,
         clientPlatform,
         clientIp,
+        deviceGroupIds,
       );
       if (!ok) continue;
+      // Device groups are mandatory overrides on a staged release: a listed QA
+      // or customer device always receives the release, while its full:all
+      // scope remains percentage-gated for everybody else.
+      if (s.scope_type !== "device_group" && !rolloutEligibleReleaseIds.has(release.id)) continue;
       const prio =
         PRIORITY[s.scope_type as keyof typeof PRIORITY] ?? 0;
       matched.push({
@@ -188,7 +196,7 @@ export async function handlePublicV2Latest(c: Context<{ Bindings: Env }>) {
         scope_type: s.scope_type as ScopedResolution["scope_type"],
         scope_value: s.scope_value,
         priority: prio,
-        release_created_at: release.created_at,
+        release_activated_at: release.activated_at,
       });
     }
   }
@@ -197,6 +205,7 @@ export async function handlePublicV2Latest(c: Context<{ Bindings: Env }>) {
     return c.json(
       {
         error: "no active release matches this client",
+        code: "no_active_release",
         app: { slug: app.slug, platform: app.platform },
         channel,
         client: { platform: clientPlatform, ip: clientIp, cohort },
@@ -205,11 +214,11 @@ export async function handlePublicV2Latest(c: Context<{ Bindings: Env }>) {
     );
   }
 
-  // Sort by priority DESC, created_at DESC, release_id ASC (deterministic tie-break).
+  // Sort by priority DESC, latest activation DESC, release_id ASC.
   matched.sort((a, b) => {
     if (a.priority !== b.priority) return b.priority - a.priority;
-    if (a.release_created_at !== b.release_created_at) {
-      return b.release_created_at - a.release_created_at;
+    if (a.release_activated_at !== b.release_activated_at) {
+      return b.release_activated_at - a.release_activated_at;
     }
     return a.release_id < b.release_id ? -1 : 1;
   });
@@ -224,7 +233,7 @@ export async function handlePublicV2Latest(c: Context<{ Bindings: Env }>) {
      WHERE id = ?1`,
   )
     .bind(
-      candidates.results.find((r) => r.id === winner.release_id)?.build_id ??
+      allCandidates.results.find((r) => r.id === winner.release_id)?.build_id ??
         null,
     )
     .first<{
@@ -295,14 +304,14 @@ export async function handlePublicV2Latest(c: Context<{ Bindings: Env }>) {
   if (winner.scope_type !== "full") {
     fallbackRelease = await buildFallbackRelease(
       c,
-      candidateIds,
+      candidateIds.filter((id) => rolloutEligibleReleaseIds.has(id)),
       winner,
       productType ?? null,
     );
   }
 
   const rawChangelog =
-    candidates.results.find((r) => r.id === winner.release_id)?.changelog ??
+    allCandidates.results.find((r) => r.id === winner.release_id)?.changelog ??
       build.changelog;
 
   return c.json({
@@ -327,7 +336,7 @@ export async function handlePublicV2Latest(c: Context<{ Bindings: Env }>) {
       scope_value: winner.scope_value,
       release_id: winner.release_id,
       rollout_cohort_count:
-        candidates.results.find((r) => r.id === winner.release_id)
+        allCandidates.results.find((r) => r.id === winner.release_id)
           ?.rollout_cohort_count ?? null,
     },
     fallback_release: fallbackRelease,
@@ -344,19 +353,31 @@ function bumpReleaseMetric(
   c: Context<{ Bindings: Env }>,
   releaseId: string | undefined,
   kind: "offered" | "current",
+  deviceId: string | null,
 ): void {
   if (!releaseId) return;
   const column = kind === "offered" ? "offered_count" : "current_count";
   const now = Date.now();
-  const run = c.env.DB.prepare(
+  const statements = [c.env.DB.prepare(
     `INSERT INTO release_metrics (release_id, ${column}, last_checked_at)
      VALUES (?1, 1, ?2)
      ON CONFLICT(release_id) DO UPDATE SET
        ${column} = ${column} + 1,
        last_checked_at = ?3`,
   )
-    .bind(releaseId, now, now)
-    .run();
+    .bind(releaseId, now, now)];
+  if (deviceId) {
+    statements.push(c.env.DB.prepare(
+      `INSERT INTO release_metric_devices
+       (release_id, metric_kind, device_id, first_checked_at, last_checked_at)
+       VALUES (?1, ?2, ?3, ?4, ?4)
+       ON CONFLICT(release_id, metric_kind, device_id) DO UPDATE SET
+         last_checked_at = excluded.last_checked_at`,
+    ).bind(releaseId, kind, deviceId, now));
+  }
+  const run = statements.length === 1
+    ? statements[0]!.run()
+    : c.env.DB.batch(statements);
   try {
     c.executionCtx.waitUntil(run.catch(() => {}));
   } catch {
@@ -365,6 +386,9 @@ function bumpReleaseMetric(
 }
 
 export async function handlePublicV2UpdateCheck(c: Context<{ Bindings: Env }>) {
+  if (c.req.query("product_type") === "cli-binary" || c.req.query("current_version")) {
+    return handlePublicCliBinaryUpdateCheck(c);
+  }
   const currentVersionCodeRaw =
     c.req.query("current_version_code") ??
     c.req.query("currentVersionCode") ??
@@ -381,13 +405,22 @@ export async function handlePublicV2UpdateCheck(c: Context<{ Bindings: Env }>) {
     );
   }
 
+  const rawDeviceId =
+    c.req.header("X-Hands-Device-Id") ?? c.req.header("X-Quiver-Device-Id") ?? c.req.query("device_id") ?? null;
+  const trimmedDeviceId = rawDeviceId?.trim() ?? "";
+  // Stable SDK ids are bounded per-install identifiers. Missing/blank/oversize
+  // legacy values still contribute to PV but must not fabricate a UV row.
+  const metricDeviceId = trimmedDeviceId.length > 0 && trimmedDeviceId.length <= 256
+    ? trimmedDeviceId
+    : null;
+
   const latestResponse = await handlePublicV2Latest(c);
   if (latestResponse.status !== 200) return latestResponse;
   const latest = (await latestResponse.json()) as PublicLatestResponse;
 
   if (latest.build.version_code <= currentVersionCode) {
     if (latest.build.version_code === currentVersionCode) {
-      bumpReleaseMetric(c, latest.scoped?.release_id, "current");
+      bumpReleaseMetric(c, latest.scoped?.release_id, "current", metricDeviceId);
     }
     return c.json({
       update_available: false,
@@ -432,13 +465,12 @@ export async function handlePublicV2UpdateCheck(c: Context<{ Bindings: Env }>) {
     );
   }
 
-  bumpReleaseMetric(c, latest.scoped?.release_id, "offered");
+  bumpReleaseMetric(c, latest.scoped?.release_id, "offered", metricDeviceId);
   // Delta (differential) download offer: if the client's installed version has
   // a patch to the latest build for its arch, and that patch is meaningfully
   // smaller than the full APK, offer it. The full `asset` stays the fallback;
   // old SDKs ignore the extra `patch` field. See docs/delta-download-design.md.
-  const deviceId =
-    c.req.header("X-Hands-Device-Id") ?? c.req.header("X-Quiver-Device-Id") ?? c.req.query("device_id") ?? null;
+  const deviceId = rawDeviceId;
   const patch =
     currentVersionCode > 0
       ? await findDeltaPatch(c, {
@@ -471,6 +503,148 @@ export async function handlePublicV2UpdateCheck(c: Context<{ Bindings: Env }>) {
     ...(patch ? { patch } : {}),
     scoped: latest.scoped,
     expires_in: latest.expires_in,
+  });
+}
+
+function parseStrictSemver(value: string): [number, number, number, string | null] | null {
+  const match = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?$/u.exec(value);
+  if (!match) return null;
+  const parts = [Number(match[1]), Number(match[2]), Number(match[3])] as const;
+  if (parts.some((part) => !Number.isSafeInteger(part))) return null;
+  return [parts[0], parts[1], parts[2], match[4] ?? null];
+}
+
+function compareStrictSemver(left: string, right: string): number | null {
+  const a = parseStrictSemver(left);
+  const b = parseStrictSemver(right);
+  if (!a || !b) return null;
+  for (let index = 0; index < 3; index += 1) {
+    if (a[index] !== b[index]) return a[index]! < b[index]! ? -1 : 1;
+  }
+  if (a[3] === b[3]) return 0;
+  if (a[3] === null) return 1;
+  if (b[3] === null) return -1;
+  return a[3].localeCompare(b[3]);
+}
+
+export async function handlePublicCliBinaryUpdateCheck(c: Context<{ Bindings: Env }>) {
+  const slug = c.req.param("slug") ?? "";
+  const channel = c.req.query("channel") ?? "main";
+  const currentVersion = c.req.query("current_version") ?? "";
+  const platform = c.req.query("platform") ?? "";
+  const arch = c.req.query("arch") ?? "";
+  const requestedVersion = c.req.query("version") ?? null;
+  const target = `${platform}-${arch}`;
+  const deviceId = c.req.query("device_id") ?? c.req.header("X-Hands-Device-Id") ?? null;
+  if (!parseStrictSemver(currentVersion) || !/^[a-z0-9]+$/u.test(platform) || !/^[a-z0-9_]+$/u.test(arch)) {
+    return c.json({ error: "current_version semver, platform, and arch are required", code: "UPDATE_RESPONSE_INVALID" }, 400);
+  }
+  const { results: rows } = await c.env.DB.prepare(
+    `SELECT a.id AS app_id, a.slug, a.update_attestation_required,
+            ch.slug AS channel,
+            r.id AS release_id, r.revision, r.rollout_cohort_count,
+            r.activated_at, r.channel_id, r.product_type, r.release_type,
+            b.id AS build_id,
+            b.version_name, b.version_code,
+            e.id AS artifact_id, e.raw_sha256, e.raw_size_bytes,
+            t.schema_version, t.algorithm, t.key_id, t.payload_b64url,
+            t.signature_b64url, k.status AS key_status,
+            k.public_key_spki_b64url
+     FROM apps a
+     JOIN channels ch ON ch.app_id = a.id
+     JOIN releases r ON r.app_id = a.id AND r.channel_id = ch.id
+       AND r.product_type = 'cli-binary' AND r.status = 'active' AND r.hidden = 0
+     JOIN release_scopes s ON s.release_id = r.id
+       AND s.scope_type = 'full' AND s.scope_value = 'all'
+     JOIN builds b ON b.id = r.build_id AND b.status = 'succeeded'
+     JOIN external_build_targets e ON e.build_id = b.id AND e.target = ?3
+     JOIN release_artifact_attestations t ON t.app_id = a.id
+       AND t.release_id = r.id AND t.build_id = b.id
+       AND t.artifact_kind = 'external_build_target' AND t.artifact_id = e.id
+     JOIN update_attestation_keys k ON k.key_id = t.key_id AND k.app_id = a.id
+       AND k.status IN ('active', 'retired')
+     WHERE a.slug = ?1 AND a.update_attestation_required = 1
+       AND (r.availability_at IS NULL OR r.availability_at <= ?4)
+       AND ((?5 IS NULL AND ch.slug = ?2) OR ?5 IS NOT NULL)
+       AND (?5 IS NULL OR b.version_name = ?5)
+     ORDER BY CASE WHEN ch.slug = 'main' THEN 0 ELSE 1 END,
+              r.activated_at DESC, r.id ASC`,
+  ).bind(slug, channel, target, Date.now(), requestedVersion).all<{
+    app_id: string; slug: string; update_attestation_required: number;
+    channel: string;
+    release_id: string; revision: number; rollout_cohort_count: number | null;
+    activated_at: number; channel_id: string; product_type: string;
+    release_type: string; build_id: string;
+    version_name: string; version_code: number; artifact_id: string;
+    raw_sha256: string; raw_size_bytes: number; schema_version: number;
+    algorithm: string; key_id: string; payload_b64url: string;
+    signature_b64url: string; key_status: string; public_key_spki_b64url: string;
+  }>();
+  if (rows.length === 0) return c.json({ error: "no active attested release for target", code: "UPDATE_NO_COMPATIBLE_ARTIFACT" }, 404);
+  const verified: Array<{ row: typeof rows[number]; sourceCommit: string | null }> = [];
+  for (const row of rows) {
+    try {
+      const payload = await verifyUpdateArtifactAttestation(
+        { algorithm: row.algorithm, keyId: row.key_id, payload: row.payload_b64url, schemaVersion: row.schema_version, signature: row.signature_b64url },
+        { [row.key_id]: row.public_key_spki_b64url },
+      );
+      const exact = payload.appId === row.app_id && payload.releaseId === row.release_id &&
+        payload.channelId === row.channel_id && payload.buildId === row.build_id &&
+        payload.productType === row.product_type && payload.releaseType === row.release_type &&
+        payload.version === row.version_name && payload.versionCode === row.version_code &&
+        payload.artifact.id === row.artifact_id && payload.artifact.kind === "external_build_target" &&
+        payload.artifact.platform === platform && payload.artifact.arch === arch &&
+        payload.artifact.sha256 === row.raw_sha256 && payload.artifact.sizeBytes === row.raw_size_bytes;
+      if (!exact) throw new Error("signed payload differs from ledger");
+      verified.push({ row, sourceCommit: payload.sourceCommit });
+    } catch {
+      return c.json({ error: "active artifact attestation failed verification", code: "UPDATE_IDENTITY_DRIFT" }, 409);
+    }
+  }
+  if (requestedVersion && verified.length > 1) {
+    const identities = new Set(verified.map(({ row, sourceCommit }) =>
+      `${row.artifact_id}:${row.version_name}:${platform}:${arch}:${row.raw_size_bytes}:${row.raw_sha256}:${sourceCommit ?? ""}`
+    ));
+    if (identities.size > 1) {
+      return c.json({ error: "pinned version has divergent signed identities across channels", code: "UPDATE_IDENTITY_CONFLICT" }, 409);
+    }
+  }
+  const row = verified[0]!.row;
+  if (!rolloutIncludes(row.release_id, row.rollout_cohort_count, deviceId)) {
+    return c.json({ update_available: false, current_version: currentVersion, checked_at: Date.now() });
+  }
+  const relation = compareStrictSemver(row.version_name, currentVersion);
+  if (relation === null) return c.json({ error: "published version is not semver", code: "UPDATE_RESPONSE_INVALID" }, 500);
+  if (relation === 0) return c.json({ update_available: false, current_version: currentVersion, latest_version: row.version_name, checked_at: Date.now() });
+  const origin = requestOrigin(c);
+  return c.json({
+    update_available: true,
+    app: { id: row.app_id, slug: row.slug },
+    release: {
+      id: row.release_id,
+      revision: row.revision,
+      channel: row.channel,
+      channel_id: row.channel_id,
+      version: row.version_name,
+      version_code: row.version_code,
+      version_relation: relation > 0 ? "upgrade" : "downgrade",
+      published_at: row.activated_at,
+    },
+    artifact: {
+      id: row.artifact_id,
+      platform,
+      arch,
+      size_bytes: row.raw_size_bytes,
+      sha256: row.raw_sha256,
+      download_url: `${origin}/dl/${encodeURIComponent(slug)}/releases/${encodeURIComponent(row.release_id)}/${encodeURIComponent(target)}`,
+      attestation: {
+        schema_version: row.schema_version,
+        algorithm: row.algorithm,
+        key_id: row.key_id,
+        payload: row.payload_b64url,
+        signature: row.signature_b64url,
+      },
+    },
   });
 }
 
@@ -553,68 +727,6 @@ async function findDeltaPatch(
     size_bytes: row.size_bytes,
     target_sha256: row.target_sha256,
   };
-}
-
-export function selectBestAsset(
-  assets: PublicAssetResponse[],
-  requested: {
-    platform: string | null;
-    arch: string | null;
-    filetype: string;
-  },
-): PublicAssetResponse | null {
-  const filetypeMatches = assets.filter((a) => a.filetype === requested.filetype);
-  if (filetypeMatches.length === 0) return null;
-  const pool = filetypeMatches;
-  const parsed = splitPlatformArch(requested.platform);
-  const platform = parsed.platform;
-  const arch = requested.arch ?? parsed.arch;
-  const platformMatches = platform
-    ? pool.filter((a) => a.platform === platform)
-    : pool;
-  const candidates = platformMatches.length > 0 ? platformMatches : pool;
-  if (arch) {
-    const archMatch = candidates.find((a) => a.arch === arch);
-    if (archMatch) return archMatch;
-  }
-  return candidates.find((a) => a.arch === null) ?? candidates[0] ?? null;
-}
-
-/**
- * Stable 32-bit FNV-1a hash. Deterministic across runtimes so a device keeps
- * the same bucket for a given release while the rollout percentage climbs.
- */
-export function fnv1a32(input: string): number {
-  let hash = 0x811c9dc5;
-  for (let i = 0; i < input.length; i++) {
-    hash ^= input.charCodeAt(i);
-    hash = Math.imul(hash, 0x01000193);
-  }
-  return hash >>> 0;
-}
-
-/** Bucket in [0, 100). Salted by release id so cohorts reshuffle per release. */
-export function rolloutBucket(releaseId: string, deviceId: string): number {
-  return fnv1a32(`${releaseId}:${deviceId}`) % 100;
-}
-
-/**
- * true when the release should be served to this client.
- * - null / >=100 cohort count: fully rolled out, everyone matches.
- * - gated release + no device id: excluded (legacy clients only get full
- *   releases; they fall through to the previous active release).
- * - gated release + device id: stable bucket must fall under the percentage.
- */
-export function rolloutIncludes(
-  releaseId: string,
-  cohortCount: number | null,
-  deviceId: string | null,
-): boolean {
-  if (cohortCount === null || cohortCount === undefined) return true;
-  if (cohortCount >= 100) return true;
-  if (cohortCount <= 0) return false;
-  if (!deviceId) return false;
-  return rolloutBucket(releaseId, deviceId) < cohortCount;
 }
 
 /**
@@ -710,12 +822,15 @@ function matchesScope(
   cohort: string | null,
   clientPlatform: string | null,
   clientIp: string | null,
+  deviceGroupIds: ReadonlySet<string>,
 ): boolean {
   switch (scopeType) {
     case "full":
       return true;
     case "user_cohort":
       return !!cohort && scopeValue === cohort;
+    case "device_group":
+      return deviceGroupIds.has(scopeValue);
     case "platform": {
       if (!clientPlatform) return false;
       const tokens = scopeValue.split(",").map((s) => s.trim());
@@ -768,6 +883,7 @@ async function buildFallbackRelease(
   build: { version: string; version_code: number; platform: string };
   assets: Array<{ platform: string; download_url: string }>;
 } | null> {
+  if (candidateIds.length === 0) return null;
   // Look for a `full` match in the same candidate set, excluding the winner.
   const fallbackSql = productType
     ? `SELECT r.id AS release_id, r.build_id, r.product_type,
@@ -776,14 +892,18 @@ async function buildFallbackRelease(
        JOIN release_scopes s ON s.release_id = r.id
        WHERE r.id IN (${candidateIds.map(() => "?").join(",")})
          AND r.id != ?
-         AND s.scope_type = 'full' AND s.scope_value = 'all'`
+         AND s.scope_type = 'full' AND s.scope_value = 'all'
+       ORDER BY COALESCE(r.activated_at, r.created_at) DESC, r.id ASC
+       LIMIT 1`
     : `SELECT r.id AS release_id, r.build_id, r.product_type,
               s.scope_type, s.scope_value
        FROM releases r
        JOIN release_scopes s ON s.release_id = r.id
        WHERE r.id IN (${candidateIds.map(() => "?").join(",")})
          AND r.id != ?
-         AND s.scope_type = 'full' AND s.scope_value = 'all'`;
+         AND s.scope_type = 'full' AND s.scope_value = 'all'
+       ORDER BY COALESCE(r.activated_at, r.created_at) DESC, r.id ASC
+       LIMIT 1`;
   const stmt = c.env.DB.prepare(fallbackSql);
   const params = productType
     ? [...candidateIds, winner.release_id]
@@ -896,16 +1016,16 @@ export async function handlePublicR2Download(c: Context<{ Bindings: Env }>) {
   const key = c.req.param("key");
   const expires = Number(c.req.query("expires"));
   const sig = c.req.query("sig") ?? "";
-  if (!key) return c.json({ error: "key required" }, 400);
+  if (!key) return c.json({ error: "key required", code: "key_required" }, 400);
   if (!Number.isFinite(expires)) {
-    return c.json({ error: "expires must be a unix timestamp" }, 400);
+    return c.json({ error: "expires must be a unix timestamp", code: "expires_invalid" }, 400);
   }
   if (expires < Math.floor(Date.now() / 1000)) {
-    return c.json({ error: "download URL expired" }, 403);
+    return c.json({ error: "download URL expired", code: "url_expired" }, 403);
   }
   const expectedSig = await signDownloadUrl(c.env, key, expires);
   if (!sig || !constantTimeEqual(sig, expectedSig)) {
-    return c.json({ error: "invalid download signature" }, 403);
+    return c.json({ error: "invalid download signature", code: "invalid_signature" }, 403);
   }
 
   const asset = await c.env.DB.prepare(
@@ -917,7 +1037,12 @@ export async function handlePublicR2Download(c: Context<{ Bindings: Env }>) {
      JOIN apps a ON a.id = b.app_id
      JOIN releases r ON r.build_id = b.id
      WHERE ba.r2_key = ?1
-       AND ba.artifact_kind = 'installable'
+       AND (
+         ba.artifact_kind = 'installable'
+         OR (ba.artifact_kind = 'delta-patch' AND ba.filetype = 'patch')
+       )
+       AND b.product_type != 'ios-simulator-qa' AND b.release_type != 'qa'
+       AND r.product_type != 'ios-simulator-qa' AND r.release_type != 'qa'
        AND r.status IN ('active', 'draft')
      LIMIT 1`,
   )
@@ -940,9 +1065,9 @@ export async function handlePublicR2Download(c: Context<{ Bindings: Env }>) {
     )
       .bind(key)
       .first<{ filename: string; content_type: string | null; size_bytes: number | null }>();
-    if (!attachment) return c.json({ error: "asset not found" }, 404);
+    if (!attachment) return c.json({ error: "asset not found", code: "object_not_found" }, 404);
     const object = await c.env.APK_BUCKET.get(key);
-    if (!object) return c.json({ error: "object not found" }, 404);
+    if (!object) return c.json({ error: "object not found", code: "object_not_found" }, 404);
     const headers = new Headers();
     object.writeHttpMetadata(headers);
     headers.set("etag", object.httpEtag);
@@ -967,12 +1092,12 @@ export async function handlePublicR2Download(c: Context<{ Bindings: Env }>) {
   ));
   if (directUrl) {
     const objectHead = await c.env.APK_BUCKET.head(key);
-    if (!objectHead) return c.json({ error: "object not found" }, 404);
+    if (!objectHead) return c.json({ error: "object not found", code: "object_not_found" }, 404);
     return c.redirect(directUrl, 302);
   }
 
   const object = await c.env.APK_BUCKET.get(key);
-  if (!object) return c.json({ error: "object not found" }, 404);
+  if (!object) return c.json({ error: "object not found", code: "object_not_found" }, 404);
 
   const headers = new Headers();
   object.writeHttpMetadata(headers);

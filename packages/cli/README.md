@@ -3,10 +3,12 @@
 Hands CLI — manage apps, builds, releases from the terminal.
 
 Status: **alpha**. The npm package is public as `@botiverse/hands-cli`; v1 ships
-`login`, `logout`, `whoami`, `apps list/get`, `builds list/get`, and
-`builds publish-android`, `builds publish-ios`, `builds publish-ohos`, and
-`builds publish-electron`. Other commands listed in `docs/cli-reference.md` land
-incrementally as backend endpoints become available.
+`login`, `logout`, `whoami`, `apps create/list/get/client-key`, `builds list/get`, and
+`builds publish-version`, `builds publish-android`, `builds publish-ios`,
+`builds testflight-groups`, `builds testflight-publish`,
+`builds testflight-status`, `builds publish-ohos`, `builds publish-electron`,
+and `builds publish-tauri`. Other commands listed in
+`docs/cli-reference.md` land incrementally as backend endpoints become available.
 
 ## Install
 
@@ -15,7 +17,7 @@ npm install -g @botiverse/hands-cli
 hands --help
 
 # Or run without installing globally:
-npm exec --package @botiverse/hands-cli@0.5.0 -- hands --help
+npm exec --package @botiverse/hands-cli@0.5.15 -- hands --help
 
 # Local repo development:
 pnpm --filter @botiverse/hands-cli build
@@ -31,8 +33,12 @@ hands login
 # 2. Verify who you are.
 hands whoami
 
-# 3. List your apps.
+# 3. Create or list apps in your current Hands organization.
+hands apps create --slug hands-example-web --name "Hands Example Web" --platform web
 hands apps list
+
+# Read the public SDK client key explicitly (app admin only).
+hands apps client-key hands-example-web
 
 # 4. List builds for an app (by slug or id).
 hands builds list myapp-android
@@ -44,6 +50,43 @@ hands builds publish-android raft-android \
   --version-name 1.0.3 \
   --version-code 1000300
 ```
+
+For a Node app whose artifacts remain on an external CDN, register one
+immutable target declaration at a time:
+
+```bash
+hands builds publish-version raft-computer \
+  --version-name 0.72.13 \
+  --target darwin-arm64 \
+  --source-url https://cdn.raft.build/computer/0.72.13/darwin-arm64 \
+  --raw-sha256 "$RAW_SHA256" --raw-size "$RAW_SIZE" \
+  --gzip-sha256 "$GZIP_SHA256" --gzip-size "$GZIP_SIZE" \
+  --node-version 22.23.1
+```
+
+This records external byte evidence; it does not upload the artifact or
+activate a release. Repeating the same declaration is idempotent. Changing an
+immutable version or target field returns a conflict.
+
+## Direct API access (`hands api`)
+
+Call any Hands endpoint directly, over the same server-side RBAC and audit a
+dedicated subcommand uses — a scripting affordance, not a permission bypass:
+
+```bash
+hands api GET /api/apps --param platform=android
+hands api PATCH /api/apps/<appId>/releases/<releaseId>/shares/<shareId> --data '{"expires_at":null}'
+hands api PATCH /api/apps/<appId>/releases/<releaseId>/shares/<shareId> --data @body.json
+hands api GET /api/apps/<appId>/feedback/<ticketId>/attachments/<attachmentId> --output attachment.bin
+hands --json api GET /api/apps                                               # body only
+```
+
+Path params are raw — `<appId>` and the other ids are resource UUIDs, not slugs
+(`hands api` does not resolve slugs). Same-origin `/api/*` only (a relative path
+or a same-origin absolute URL; cross-origin, `//protocol-relative`, and
+`../`-escape are rejected). Redirects are never followed, so the bearer never
+leaves the Hands origin. Honors the global `--api` and `--json` flags. Full flag
+reference: <https://hands.build/docs/cli-reference/>.
 
 ## CI mode
 

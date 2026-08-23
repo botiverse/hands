@@ -23,18 +23,31 @@ import {
   requestOrigin,
   sharedCookieDomain,
 } from "../lib/origin";
+import { encryptAdminRaftToken } from "../lib/admin_raft_token";
 
 const LOGIN_PENDING_COOKIE = "quiver_raft_login_pending";
 const LOGIN_RETURN_COOKIE = "quiver_raft_return";
+const BROWSER_LOGIN_PROOF_COOKIE_PREFIX = "quiver_raft_login_proof_";
+const BROWSER_LOGIN_STATE_TTL_MS = 10 * 60 * 1000;
 
-type RaftTokenResponse = {
+type BrowserLoginState = {
+  v: 2;
+  purpose: "hands-browser-login";
+  nonce: string;
+  browser_proof_sha256: string;
+  return_path: string;
+  iat: number;
+  exp: number;
+};
+
+export type RaftTokenResponse = {
   access_token: string;
   token_type: "Bearer";
   expires_in: number;
   scope: string;
 };
 
-type RaftUserinfo = {
+export type RaftUserinfo = {
   sub: string;
   type: "human" | "agent";
   scope: string;
@@ -95,7 +108,7 @@ function browserReturnUrl(
     : returnPath;
 }
 
-function requireRaftConfig(c: Context<{ Bindings: Env }>) {
+export function requireRaftConfig(c: Context<{ Bindings: Env }>) {
   const clientId = c.env.RAFT_CLIENT_ID;
   const clientSecret = c.env.RAFT_CLIENT_SECRET;
   const raftOrigin = c.env.RAFT_ORIGIN;
@@ -170,6 +183,116 @@ function base64UrlBytes(bytes: Uint8Array): string {
     .replace(/=+$/g, "");
 }
 
+function base64UrlToBytes(input: string): Uint8Array | null {
+  if (!/^[A-Za-z0-9_-]+$/.test(input)) return null;
+  const padded = input.replace(/-/g, "+").replace(/_/g, "/").padEnd(
+    input.length + ((4 - (input.length % 4)) % 4),
+    "=",
+  );
+  try {
+    const binary = atob(padded);
+    return Uint8Array.from(binary, (character) => character.charCodeAt(0));
+  } catch {
+    return null;
+  }
+}
+
+async function browserLoginStateKey(clientSecret: string) {
+  return crypto.subtle.importKey(
+    "raw",
+    new TextEncoder().encode(`hands-browser-login-state-v2:${clientSecret}`),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign", "verify"],
+  );
+}
+
+async function createBrowserLoginState(
+  clientSecret: string,
+  returnPath: string,
+  nonce: string,
+  browserProofSha256: string,
+): Promise<string> {
+  const issuedAt = now();
+  const payload: BrowserLoginState = {
+    v: 2,
+    purpose: "hands-browser-login",
+    nonce,
+    browser_proof_sha256: browserProofSha256,
+    return_path: returnPath,
+    iat: Math.floor(issuedAt / 1000),
+    exp: Math.floor((issuedAt + BROWSER_LOGIN_STATE_TTL_MS) / 1000),
+  };
+  const encodedPayload = base64UrlUtf8(JSON.stringify(payload));
+  const signature = await crypto.subtle.sign(
+    "HMAC",
+    await browserLoginStateKey(clientSecret),
+    new TextEncoder().encode(encodedPayload),
+  );
+  return `${encodedPayload}.${base64UrlBytes(new Uint8Array(signature))}`;
+}
+
+async function verifyBrowserLoginState(
+  clientSecret: string,
+  state: string,
+): Promise<BrowserLoginState | null> {
+  const [encodedPayload, encodedSignature, ...extra] = state.split(".");
+  if (!encodedPayload || !encodedSignature || extra.length > 0) return null;
+  const signature = base64UrlToBytes(encodedSignature);
+  const payloadBytes = base64UrlToBytes(encodedPayload);
+  if (!signature || !payloadBytes) return null;
+  const validSignature = await crypto.subtle.verify(
+    "HMAC",
+    await browserLoginStateKey(clientSecret),
+    signature,
+    new TextEncoder().encode(encodedPayload),
+  );
+  if (!validSignature) return null;
+
+  try {
+    const payload = JSON.parse(new TextDecoder().decode(payloadBytes)) as Partial<BrowserLoginState>;
+    const currentTime = Math.floor(now() / 1000);
+    if (
+      payload.v !== 2 ||
+      payload.purpose !== "hands-browser-login" ||
+      typeof payload.nonce !== "string" ||
+      !/^[a-f0-9]{32}$/.test(payload.nonce) ||
+      typeof payload.browser_proof_sha256 !== "string" ||
+      !/^[a-f0-9]{64}$/.test(payload.browser_proof_sha256) ||
+      typeof payload.return_path !== "string" ||
+      normalizeReturnPath(payload.return_path) !== payload.return_path ||
+      typeof payload.iat !== "number" ||
+      typeof payload.exp !== "number" ||
+      payload.iat > currentTime + 60 ||
+      payload.exp <= currentTime ||
+      payload.exp - payload.iat !== BROWSER_LOGIN_STATE_TTL_MS / 1000
+    ) {
+      return null;
+    }
+    return payload as BrowserLoginState;
+  } catch {
+    return null;
+  }
+}
+
+function browserLoginProofCookieName(nonce: string): string {
+  return `${BROWSER_LOGIN_PROOF_COOKIE_PREFIX}${nonce}`;
+}
+
+function timingSafeEqualText(left: string, right: string): boolean {
+  const leftBytes = new TextEncoder().encode(left);
+  const rightBytes = new TextEncoder().encode(right);
+  if (leftBytes.byteLength !== rightBytes.byteLength) return false;
+  if (typeof crypto.subtle.timingSafeEqual === "function") {
+    return crypto.subtle.timingSafeEqual(leftBytes, rightBytes);
+  }
+  let difference = 0;
+  for (let index = 0; index < leftBytes.byteLength; index += 1) {
+    difference |= leftBytes[index]! ^ rightBytes[index]!;
+  }
+  return difference === 0;
+}
+
 export async function createSignedJwt(
   env: Env,
   accountId: string,
@@ -233,7 +356,7 @@ function slugifyOrgPart(value: string): string {
   );
 }
 
-function isUserAllowed(env: Env, userinfo: RaftUserinfo): boolean {
+export function isUserAllowed(env: Env, userinfo: RaftUserinfo): boolean {
   const serverIds = (env.RAFT_ALLOWED_SERVER_IDS || "")
     .split(",")
     .map((v) => v.trim())
@@ -249,7 +372,7 @@ function isUserAllowed(env: Env, userinfo: RaftUserinfo): boolean {
   );
 }
 
-async function exchangeRaftCode(
+export async function exchangeRaftCode(
   apiOrigin: string,
   clientId: string,
   clientSecret: string,
@@ -274,7 +397,7 @@ async function exchangeRaftCode(
   return response.json() as Promise<RaftTokenResponse>;
 }
 
-async function fetchRaftUserinfo(
+export async function fetchRaftUserinfo(
   apiOrigin: string,
   accessToken: string,
 ): Promise<RaftUserinfo> {
@@ -290,7 +413,7 @@ async function fetchRaftUserinfo(
   return response.json() as Promise<RaftUserinfo>;
 }
 
-async function upsertRaftAccount(
+export async function upsertRaftAccount(
   db: D1Database,
   userinfo: RaftUserinfo,
 ): Promise<AdminAccount> {
@@ -441,6 +564,7 @@ async function upsertRaftOrgMembership(
 async function createAuthToken(
   env: Env,
   accountId: string,
+  raftAccessToken: string,
 ): Promise<{ token: string; expiresAt: number }> {
   const timestamp = now();
   const ttlSeconds = 60 * 60 * 24 * 14;
@@ -448,13 +572,17 @@ async function createAuthToken(
   const sessionId = crypto.randomUUID();
   const token = await createSignedJwt(env, accountId, timestamp, expiresAt, sessionId);
   const tokenHash = await sha256Hex(token);
+  const encryptionSecret = env.SIGNED_URL_SECRET || env.RAFT_CLIENT_SECRET;
+  if (!encryptionSecret) throw new Error("SIGNED_URL_SECRET or RAFT_CLIENT_SECRET is required for admin token encryption");
+  const encryptedRaftToken = await encryptAdminRaftToken(encryptionSecret, raftAccessToken);
   await env.DB
     .prepare(
       `INSERT INTO raft_sessions
-       (id, account_id, token_hash, created_at, expires_at, last_seen_at, revoked_at)
-       VALUES (?1, ?2, ?3, ?4, ?5, ?4, NULL)`,
+       (id, account_id, token_hash, created_at, expires_at, last_seen_at, revoked_at,
+        raft_access_token_ciphertext)
+       VALUES (?1, ?2, ?3, ?4, ?5, ?4, NULL, ?6)`,
     )
-    .bind(sessionId, accountId, tokenHash, timestamp, expiresAt)
+    .bind(sessionId, accountId, tokenHash, timestamp, expiresAt, encryptedRaftToken)
     .run();
   return { token, expiresAt };
 }
@@ -486,7 +614,7 @@ async function finalizeRaftLogin(
   const membership = await upsertRaftOrgMembership(c.env.DB, account);
   account.org_id = membership.org_id;
   account.org_role = membership.org_role;
-  const authToken = await createAuthToken(c.env, account.id);
+  const authToken = await createAuthToken(c.env, account.id, token.access_token);
   return { account, authToken };
 }
 
@@ -533,9 +661,12 @@ export async function handleAuthMe(c: Context<{ Bindings: Env }>) {
   const bearerToken = authHeader?.startsWith("Bearer ")
     ? authHeader.slice("Bearer ".length).trim()
     : undefined;
+  // Accept the session cookie like every other authenticated route — agent
+  // integration sessions are cookie-based, and this route (the manifest's
+  // whoami/context_check) otherwise 401s for them.
   const sessionAccount = await loadAccountFromAuthToken(
     c.env,
-    bearerToken,
+    bearerToken ?? getCookie(c, SESSION_COOKIE),
   );
   if (!sessionAccount) {
     return c.json(
@@ -580,29 +711,40 @@ export async function handleAuthLogin(c: Context<{ Bindings: Env }>) {
   const config = requireRaftConfig(c);
   if (!config.ok) return config.response;
 
-  const pending = randomToken(16);
   const returnPath = normalizeReturnPath(c.req.query("return") ?? c.req.query("return_to"));
-  setCookie(c, LOGIN_PENDING_COOKIE, pending, {
-    httpOnly: true,
-    secure: secureCookie(c),
-    sameSite: "Lax",
+  const nonce = randomToken(16);
+  const browserProof = randomToken(32);
+  const state = await createBrowserLoginState(
+    config.clientSecret,
+    returnPath,
+    nonce,
+    await sha256Hex(browserProof),
+  );
+  // Clear pre-state-flow cookies so a stripped state cannot be mistaken for a
+  // browser callback. Legacy callbacks intentionally restart: accepting a
+  // pending-cookie-only callback would restore the login-CSRF gap.
+  deleteCookie(c, LOGIN_PENDING_COOKIE, {
     ...sharedCookieDomainOption(c),
     path: "/",
-    maxAge: 10 * 60,
   });
-  setCookie(c, LOGIN_RETURN_COOKIE, returnPath, {
+  deleteCookie(c, LOGIN_RETURN_COOKIE, {
+    ...sharedCookieDomainOption(c),
+    path: "/",
+  });
+  setCookie(c, browserLoginProofCookieName(nonce), browserProof, {
     httpOnly: true,
     secure: secureCookie(c),
     sameSite: "Lax",
     ...sharedCookieDomainOption(c),
-    path: "/",
-    maxAge: 10 * 60,
+    path: "/login/raft/callback",
+    maxAge: BROWSER_LOGIN_STATE_TTL_MS / 1000,
   });
 
   const setup = new URL("/login-with-raft/setup", config.raftOrigin);
   setup.searchParams.set("client_id", config.clientId);
   setup.searchParams.set("return_to", callbackUrl(c));
   setup.searchParams.set("scope", "openid profile");
+  setup.searchParams.set("state", state);
   const setupUrl = setup.toString();
   const accept = c.req.header("accept") || "";
   if (accept.includes("text/html")) {
@@ -634,11 +776,31 @@ export async function handleRaftCallback(c: Context<{ Bindings: Env }>) {
   if (!code) return c.text("Missing Raft callback code", 400);
 
   try {
-    const hasPendingBrowserLogin = Boolean(getCookie(c, LOGIN_PENDING_COOKIE));
+    const state = c.req.query("state");
+    let browserReturnPath: string | null = null;
+    let browserProofCookie: string | null = null;
+    if (state) {
+      const verifiedState = await verifyBrowserLoginState(config.clientSecret, state);
+      if (!verifiedState) {
+        return c.text("Invalid or expired local login state. Start again from /api/auth/login.", 400);
+      }
+      browserProofCookie = browserLoginProofCookieName(verifiedState.nonce);
+      const browserProof = getCookie(c, browserProofCookie);
+      const browserProofSha256 = browserProof ? await sha256Hex(browserProof) : "";
+      if (
+        !browserProof ||
+        !/^[a-f0-9]{64}$/.test(browserProof) ||
+        !timingSafeEqualText(browserProofSha256, verifiedState.browser_proof_sha256)
+      ) {
+        return c.text("Missing or invalid browser login proof. Start again from /api/auth/login.", 400);
+      }
+      browserReturnPath = verifiedState.return_path;
+    }
+
     const result = await finalizeRaftLogin(c, config, code);
     if (result instanceof Response) return result;
 
-    if (!hasPendingBrowserLogin) {
+    if (browserReturnPath === null) {
       if (result.account.principal_type !== "agent") {
         return c.text("Missing local login state. Start again from /api/auth/login.", 400);
       }
@@ -661,12 +823,17 @@ export async function handleRaftCallback(c: Context<{ Bindings: Env }>) {
       ...sharedCookieDomainOption(c),
       path: "/",
     });
-    const returnPath = normalizeReturnPath(getCookie(c, LOGIN_RETURN_COOKIE));
     deleteCookie(c, LOGIN_RETURN_COOKIE, {
       ...sharedCookieDomainOption(c),
       path: "/",
     });
-    const destination = new URL(browserReturnUrl(c, returnPath), requestOrigin(c));
+    if (browserProofCookie) {
+      deleteCookie(c, browserProofCookie, {
+        ...sharedCookieDomainOption(c),
+        path: "/login/raft/callback",
+      });
+    }
+    const destination = new URL(browserReturnUrl(c, browserReturnPath), requestOrigin(c));
     destination.hash = new URLSearchParams({
       access_token: result.authToken.token,
       expires_at: String(result.authToken.expiresAt),
@@ -715,6 +882,9 @@ export async function handleAgentHelp(c: Context<{ Bindings: Env }>) {
       "1. Authenticate (see `auth` below), then GET /api/apps to find your app_id.",
       "2. Crash triage: list-feedback (kind=crash) → get-feedback (device context + attachments) → presign-feedback-attachment, then curl the returned download_url yourself (raw-bytes endpoints get corrupted through agent transports).",
       "3. Triage as you work: update-feedback (change status/assignee, e.g. close a fixed ticket) and comment-feedback (attribution note, internal=true for staff-only). Requires org member (or app publisher).",
+      "4. Release management (app publisher): create-release from an existing build (DRAFT by default) → update-release with bilingual release_notes → after explicit human authorization, publish-release. See docs.release_guide.",
+      "5. iOS simulator QA fixtures: create-ios-simulator-artifact → PUT the .app.zip to upload.url with the returned headers → complete-ios-simulator-artifact → get/presign the durable exact-byte artifact. QA artifacts can never become releases or update offers.",
+      "6. TestFlight: get/update-testflight-beta-app-description manage app-level invitation copy separately from build-level What to Test. An app admin runs upload-testflight-build and polls get-testflight-upload-status to COMPLETE; an app viewer lists beta groups, then an app publisher runs publish-testflight-build and polls distribution status. These actions never activate a Hands release or submit an App Store production release.",
     ],
     auth: {
       raft_agents:
@@ -731,12 +901,65 @@ export async function handleAgentHelp(c: Context<{ Bindings: Env }>) {
         "PATCH /api/apps/{app_id}/feedback/{ticket_id} — body: {status?: open|in_progress|resolved|closed, assignee?: string|null}",
       comment_ticket:
         "POST /api/apps/{app_id}/feedback/{ticket_id}/comments — body: {text: string}",
+      create_release:
+        "POST /api/apps/{app_id}/releases/draft — body: {build_id, changelog?, release_notes?: {en, zh-CN}} — publisher; server-enforced draft, activate only via publish",
+      create_share:
+        "POST /api/apps/{app_id}/releases/{release_id}/shares — body: {ttl_seconds?, password?} — publisher; no expiry unless set",
+      update_release:
+        "PATCH /api/apps/{app_id}/releases/{release_id} — body: {expected_revision?, changelog?, release_notes?, hidden?} — publisher; stale revision returns 409 without side effects",
+      publish_release:
+        "POST /api/apps/{app_id}/releases/{release_id}/publish — body: {expected_revision?, expected_scopes} — publisher; live-facing, needs explicit human authorization",
+      create_ios_simulator_artifact:
+        "POST /api/apps/{app_id}/qa-artifacts/ios-simulator — publisher; declares filename/size/SHA/source/version/build/bundle/GitHub run and returns a presigned PUT URL",
+      complete_ios_simulator_artifact:
+        "POST /api/apps/{app_id}/qa-artifacts/ios-simulator/{asset_id}/complete — publisher; one-shot stream verification of size/SHA-256 followed by immutable storage sealing",
+      upload_testflight_build:
+        "POST /api/apps/{app_id}/builds/{build_id}/testflight-upload — admin; streams the stored signed IPA to Apple's Build Upload API without distributing it",
+      publish_testflight_build:
+        "POST /api/apps/{app_id}/builds/{build_id}/testflight-publish — publisher; assigns processed builds to beta groups and optionally submits external Beta App Review",
+      expire_testflight_build:
+        "POST /api/apps/{app_id}/builds/{build_id}/testflight-expire — admin; exact ASC build id + immutable version/build confirmation; expires TestFlight availability only",
     },
     docs: {
       agent_guide: `${origin}/docs/agent-cli-feedback`,
+      release_guide: `${origin}/docs/agent-guide/`,
       cli_reference: `${origin}/docs/cli-reference`,
       api_reference: `${origin}/docs/public-api-reference`,
       openapi: `${origin}/openapi.json`,
+    },
+  });
+}
+
+/**
+ * `migration-help` action target. English guidance for agents/humans still calling
+ * the deprecated `raft integration invoke` actions: how to install the Hands CLI,
+ * authenticate once with `hands login`, and map each old action to its native command.
+ */
+export async function handleAgentMigrationHelp(c: Context<{ Bindings: Env }>) {
+  const origin = appOrigin(c);
+  c.header("Cache-Control", "no-store");
+  return c.json({
+    service: "hands",
+    summary:
+      "These `raft integration invoke` actions are deprecated. Install the Hands CLI and use its native commands; you authenticate once and subsequent commands use the Hands token directly.",
+    install: [
+      "npm install -g @botiverse/hands-cli",
+      "Then run `hands --help` for the full command list, or see the CLI reference below.",
+    ],
+    login: {
+      agents:
+        "Inside a managed Raft agent, run `hands login` — it detects the agent environment, exchanges a one-time grant via the `agent-login` action, stores a Hands token under $SLOCK_HOME, and auto-refreshes for later commands. No browser, no paste.",
+      humans:
+        "Run `hands login` (browser flow). The Hands token is stored at ~/.config/hands/auth.json (a legacy ~/.config/quiver/auth.json is migrated automatically on first use).",
+      ci: "Set HANDS_AUTH_TOKEN=<deploy token> and call `hands` directly.",
+    },
+    migration: [
+      "Replace `raft integration invoke --service hands-4cc7a2 --action <name>` with the matching `hands` command.",
+      "e.g. whoami → `hands whoami`; list-apps → `hands apps list`; list-feedback → `hands feedback list <app>`. Run `hands --help` for the complete mapping.",
+    ],
+    docs: {
+      cli_reference: `${origin}/docs/cli-reference`,
+      agent_guide: `${origin}/docs/agent-guide/`,
     },
   });
 }
@@ -746,6 +969,14 @@ export async function handleAgentManifest(c: Context<{ Bindings: Env }>) {
   // Never edge-cache the manifest — the integration daemon must always see the
   // current action list (a stale cached copy makes schema changes invisible).
   c.header("Cache-Control", "no-store");
+  // Deprecation notice prepended to every EXISTING action (all but the two new ones):
+  // keep the machine contract unchanged, just point callers at `migration-help`.
+  const service = c.env.RAFT_CLIENT_ID || "hands-4cc7a2";
+  const DEPRECATION_PREFIX = `Deprecated — run raft integration invoke --service ${service} --action migration-help for Hands CLI installation and migration guidance. `;
+  const NEW_ACTIONS = new Set(["agent-login", "migration-help"]);
+  const applyDeprecation = (
+    list: Array<{ name: string; description: string; [k: string]: unknown }>,
+  ) => list.map((a) => (NEW_ACTIONS.has(a.name) ? a : { ...a, description: DEPRECATION_PREFIX + a.description }));
   return c.json({
     schema: "raft-agent-manifest.v0",
     service: c.env.RAFT_CLIENT_ID || "quiver",
@@ -759,15 +990,44 @@ export async function handleAgentManifest(c: Context<{ Bindings: Env }>) {
       method: "GET",
     },
     // HTTP API actions an agent can self-serve via `raft integration invoke`.
-    // Paths are relative to execution.base_url (`${origin}/api`). Focused on the
-    // feedback-read/log-retrieval flow; Hands serves raw attachments and does
-    // not interpret their contents.
-    actions: [
+    // Paths are relative to execution.base_url. Actions cover release,
+    // TestFlight/AppGallery, exact QA artifacts, and feedback triage without
+    // returning provider credentials or interpreting raw attachments.
+    // All EXISTING actions are retained with unchanged machine contracts; their
+    // descriptions are prefixed `Deprecated — … migration-help …` (see applyDeprecation).
+    // Only `agent-login` and `migration-help` are new and un-prefixed.
+    actions: applyDeprecation([
+      {
+        // NOTE: kept as valid raft-agent-manifest.v0 (name/description/endpoint/parameters
+        // only). The RFC 057 action semantics (authority.principal=agent_session,
+        // effect=create, idempotency=non_idempotent, readback=not_supported,
+        // rollback=not_applicable) and the response schema are documented in prose here
+        // and ENFORCED by the handler; they are NOT structured fields because the landed
+        // v0 manifest parser ignores them (and rejects a non-{type} `returns`). A full
+        // v0→v1 manifest migration is tracked separately; until then CP3 strictly
+        // validates the invoke outer success + exact service/action + grant result schema
+        // client-side rather than relying on the manifest for output enforcement.
+        name: "agent-login",
+        description:
+          "Agent CLI bootstrap (RFC 057). Send raft-cli-agent-login-request.v1 with a PKCE S256 code_challenge; receive a one-time, <=5 min raft-cli-agent-login-grant.v1 grant bound to your authenticated agent identity, then exchange it (with your code_verifier) at POST /api/auth/agent/exchange for a raft-cli-agent-session.v1 (short access token + rotating refresh). Non-idempotent create; no readback; not rollbackable. Requires an authenticated agent session; humans/CI keep the browser/deploy-token login.",
+        endpoint: { method: "POST", path: "/api/auth/agent/login" },
+        parameters: {
+          schema: { type: "string", in: "body", required: true, description: "Must be \"raft-cli-agent-login-request.v1\". Closed input: extension fields are rejected." },
+          code_challenge: { type: "string", in: "body", required: true, description: "Unpadded base64url SHA-256 (S256) of a locally-generated high-entropy code_verifier; must decode to exactly 32 bytes." },
+          code_challenge_method: { type: "string", in: "body", required: true, description: "Must be \"S256\"." },
+        },
+      },
       {
         name: "help",
         description:
           "Start here — how to authenticate, what each action does, common crash/feedback flows, and docs links.",
         endpoint: { method: "GET", path: "/api/agent/help" },
+      },
+      {
+        name: "whoami",
+        description:
+          "Return the caller's Hands account: account id, server identity, org and roles. Use the account id when asking an app admin for a membership grant.",
+        endpoint: { method: "GET", path: "/api/auth/me" },
       },
       {
         name: "list-orgs",
@@ -781,12 +1041,372 @@ export async function handleAgentManifest(c: Context<{ Bindings: Env }>) {
         endpoint: { method: "GET", path: "/api/apps" },
       },
       {
+        name: "list-app-members",
+        description:
+          "List direct members of an app, including Hands account id, Raft server identity, principal type, and app role. Requires app viewer.",
+        endpoint: { method: "GET", path: "/api/apps/{app_id}/members" },
+        parameters: {
+          app_id: {
+            type: "string",
+            in: "path",
+            required: true,
+            description: "Hands app id.",
+          },
+        },
+      },
+      {
+        name: "add-app-member",
+        description:
+          "Grant one existing Hands account direct app access by account id. This supports principals from another linked Raft server and adds missing org viewer membership automatically. Requires app admin.",
+        endpoint: { method: "POST", path: "/api/apps/{app_id}/members" },
+        parameters: {
+          app_id: {
+            type: "string",
+            in: "path",
+            required: true,
+            description: "Hands app id.",
+          },
+          account_id: {
+            type: "string",
+            in: "body",
+            required: true,
+            description: "Existing Hands account id returned by the target principal's whoami action.",
+          },
+          app_role: {
+            type: "string",
+            in: "body",
+            required: true,
+            description: "Direct app role: admin, publisher, or viewer.",
+          },
+        },
+      },
+      {
+        name: "update-app-member",
+        description:
+          "Change one direct app member's role by Hands account id. Requires app admin.",
+        endpoint: { method: "PATCH", path: "/api/apps/{app_id}/members/{account_id}" },
+        parameters: {
+          app_id: { type: "string", in: "path", required: true, description: "Hands app id." },
+          account_id: { type: "string", in: "path", required: true, description: "Hands account id." },
+          app_role: {
+            type: "string",
+            in: "body",
+            required: true,
+            description: "Direct app role: admin, publisher, or viewer.",
+          },
+        },
+      },
+      {
+        name: "remove-app-member",
+        description:
+          "Remove one direct app member by Hands account id. Inherited org or server access is unchanged. Requires app admin.",
+        endpoint: { method: "DELETE", path: "/api/apps/{app_id}/members/{account_id}" },
+        parameters: {
+          app_id: { type: "string", in: "path", required: true, description: "Hands app id." },
+          account_id: { type: "string", in: "path", required: true, description: "Hands account id." },
+        },
+      },
+      {
+        name: "create-app",
+        description:
+          "Create an app in the caller's current Hands organization. Requires org member or higher. This creates no release and activates nothing.",
+        endpoint: { method: "POST", path: "/api/apps" },
+        parameters: {
+          slug: {
+            type: "string",
+            in: "body",
+            required: true,
+            description: "Stable unique app slug.",
+          },
+          name: {
+            type: "string",
+            in: "body",
+            required: true,
+            description: "Display name.",
+          },
+          platform: {
+            type: "string",
+            in: "body",
+            required: true,
+            description:
+              "App platform, for example web, android, ios, ohos, node, or electron.",
+          },
+          description: {
+            type: "string",
+            in: "body",
+            required: false,
+            description: "Optional app description.",
+          },
+        },
+      },
+      {
+        name: "archive-app",
+        description:
+          "Archive or unarchive an app without deleting it. Requires app admin. Archiving activates nothing and is required before purge-app.",
+        endpoint: { method: "POST", path: "/api/apps/{app_id}/archive" },
+        parameters: {
+          app_id: { type: "string", in: "path", required: true, description: "App UUID." },
+          archived: {
+            type: "boolean",
+            in: "body",
+            required: false,
+            description: "Archive when true or omitted; unarchive when false.",
+          },
+        },
+      },
+      {
+        name: "purge-app",
+        description:
+          "Irreversibly delete an archived app, all child rows, and owned R2 objects. Requires app admin and an exact confirm_slug. This cannot be undone.",
+        endpoint: { method: "POST", path: "/api/apps/{app_id}/purge" },
+        parameters: {
+          app_id: { type: "string", in: "path", required: true, description: "App UUID." },
+          confirm_slug: {
+            type: "string",
+            in: "body",
+            required: true,
+            description: "Exact current app slug; a mismatch fails closed.",
+          },
+        },
+      },
+      {
+        name: "get-client-key",
+        description:
+          "Read an app's public SDK client key. Requires app admin. This never returns deploy tokens or other secrets and does not rotate the key.",
+        endpoint: { method: "GET", path: "/api/apps/{app_id}/client-key" },
+        parameters: {
+          app_id: {
+            type: "string",
+            in: "path",
+            required: true,
+            description: "App UUID.",
+          },
+        },
+      },
+      {
+        name: "list-channels",
+        endpoint: { method: "GET", path: "/api/apps/{app_id}/channels" },
+        description: "List an app's release channels (id, slug, name). Requires app viewer.",
+      },
+      {
+        name: "create-channel",
+        endpoint: { method: "POST", path: "/api/apps/{app_id}/channels" },
+        params: { slug: "string (lowercase channel slug)", name: "string (display name)" },
+        description:
+          "Create a release channel on an app (channels are never auto-created by publish). Requires app admin. Creating a channel activates nothing.",
+      },
+      {
+        name: "list-device-groups",
+        description: "List app-scoped rollout device groups and their installation device ids. Requires app publisher.",
+        endpoint: { method: "GET", path: "/api/apps/{app_id}/device-groups" },
+        parameters: {
+          app_id: { type: "string", in: "path", required: true, description: "App UUID." },
+        },
+      },
+      {
+        name: "create-device-group",
+        description: "Create an app-scoped device group for exact release targeting. Requires app publisher.",
+        endpoint: { method: "POST", path: "/api/apps/{app_id}/device-groups" },
+        parameters: {
+          app_id: { type: "string", in: "path", required: true, description: "App UUID." },
+          name: { type: "string", in: "body", required: true, description: "Display name." },
+          description: { type: "string", in: "body", required: false, description: "Optional operator note." },
+        },
+      },
+      {
+        name: "update-device-group",
+        description: "Rename or update the operator note for an app-scoped device group. Requires app publisher.",
+        endpoint: { method: "PATCH", path: "/api/apps/{app_id}/device-groups/{group_id}" },
+        parameters: {
+          app_id: { type: "string", in: "path", required: true, description: "App UUID." },
+          group_id: { type: "string", in: "path", required: true, description: "Device-group UUID." },
+          name: { type: "string", in: "body", required: false, description: "New display name." },
+          description: { type: "string", in: "body", required: false, description: "New operator note; empty clears it." },
+        },
+      },
+      {
+        name: "add-device-group-member",
+        description: "Add or relabel one stable Hands installation device id in a device group. Requires app publisher.",
+        endpoint: { method: "POST", path: "/api/apps/{app_id}/device-groups/{group_id}/members" },
+        parameters: {
+          app_id: { type: "string", in: "path", required: true, description: "App UUID." },
+          group_id: { type: "string", in: "path", required: true, description: "Device-group UUID." },
+          device_id: { type: "string", in: "body", required: true, description: "Stable per-installation id reported by the Hands update SDK." },
+          label: { type: "string", in: "body", required: false, description: "Human-readable member label." },
+        },
+      },
+      {
+        name: "remove-device-group-member",
+        description: "Remove one installation device id from a device group. Requires app publisher.",
+        endpoint: { method: "DELETE", path: "/api/apps/{app_id}/device-groups/{group_id}/members/{device_id}" },
+        parameters: {
+          app_id: { type: "string", in: "path", required: true, description: "App UUID." },
+          group_id: { type: "string", in: "path", required: true, description: "Device-group UUID." },
+          device_id: { type: "string", in: "path", required: true, description: "URL-encoded installation device id." },
+        },
+      },
+      {
+        name: "delete-device-group",
+        description: "Delete an unused device group. Draft/active release references fail closed. Requires app publisher.",
+        endpoint: { method: "DELETE", path: "/api/apps/{app_id}/device-groups/{group_id}" },
+        parameters: {
+          app_id: { type: "string", in: "path", required: true, description: "App UUID." },
+          group_id: { type: "string", in: "path", required: true, description: "Device-group UUID." },
+        },
+      },
+      {
+        name: "list-releases",
+        description: "List an app's releases (id, status, channel, version, rollout), optionally filtered to an exact release lane/version preflight. Requires app viewer.",
+        endpoint: { method: "GET", path: "/api/apps/{app_id}/releases" },
+        parameters: {
+          app_id: { type: "string", in: "path", required: true, description: "App UUID." },
+          status: { type: "string", in: "query", required: false, description: "Optional release status filter." },
+          channel: { type: "string", in: "query", required: false, description: "Optional channel UUID or slug." },
+          product_type: { type: "string", in: "query", required: false, description: "Optional product-type filter." },
+          release_type: { type: "string", in: "query", required: false, description: "Optional release-type filter." },
+          version_code: { type: "number", in: "query", required: false, description: "Optional exact non-negative version-code filter." },
+        },
+      },
+      {
+        name: "get-release",
+        description: "Get one release with its changelog/release notes and rollout state. Requires app viewer.",
+        endpoint: { method: "GET", path: "/api/apps/{app_id}/releases/{release_id}" },
+        parameters: {
+          app_id: { type: "string", in: "path", required: true, description: "App UUID." },
+          release_id: { type: "string", in: "path", required: true, description: "Release UUID." },
+        },
+      },
+      {
+        name: "create-release",
+        description:
+          "Create a DRAFT release lifecycle for a build version. A non-cancelled release in the same app/channel/product/release-type/version lane fails with RELEASE_VERSION_ALREADY_EXISTS; cancelling disables the old lifecycle and releases that version for a corrected upload while preserving its audit history. Requires app publisher.",
+        endpoint: { method: "POST", path: "/api/apps/{app_id}/releases/draft" },
+        parameters: {
+          app_id: { type: "string", in: "path", required: true, description: "App UUID." },
+          build_id: { type: "string", in: "body", required: true, description: "Hands build UUID to release." },
+          channel_id: { type: "string", in: "body", required: false, description: "Channel UUID (defaults to the build's channel)." },
+          changelog: { type: "string", in: "body", required: false, description: "Changelog text (single-language fallback)." },
+          release_notes: { type: "object", in: "body", required: false, description: "Bilingual notes, e.g. {\"en\": \"...\", \"zh-CN\": \"...\"}." },
+          rollout_cohort_count: { type: "number", in: "body", required: false, description: "Stable full-scope rollout percentage, integer 0..100. Null/omitted means 100%." },
+          scopes: { type: "array", in: "body", required: false, description: "Exact scope set. full:all may be combined with device_group entries so listed devices are always included while everyone else is percentage-gated." },
+        },
+      },
+      {
+        name: "update-release",
+        description:
+          "Update a release's changelog/bilingual release notes, rollout fields, or hidden flag. Pass the revision from fresh release detail; stale revisions fail with RELEASE_REVISION_CONFLICT. Requires app publisher.",
+        endpoint: { method: "PATCH", path: "/api/apps/{app_id}/releases/{release_id}" },
+        parameters: {
+          app_id: { type: "string", in: "path", required: true, description: "App UUID." },
+          release_id: { type: "string", in: "path", required: true, description: "Release UUID." },
+          expected_revision: { type: "number", in: "body", required: false, description: "Revision from fresh release detail. A stale value returns 409 with zero mutation side effects." },
+          changelog: { type: "string", in: "body", required: false, description: "Changelog text." },
+          release_notes: { type: "object", in: "body", required: false, description: "Bilingual notes object." },
+          hidden: { type: "boolean", in: "body", required: false, description: "Hide/show on public history without deleting." },
+          rollout_cohort_count: { type: "number", in: "body", required: false, description: "Stable full-scope rollout percentage, integer 0..100. Null means 100%." },
+          scopes: { type: "array", in: "body", required: false, description: "Replace the exact scope set. full:all plus device_group entries expresses mandatory groups over a percentage rollout." },
+        },
+      },
+      {
+        name: "publish-release",
+        description:
+          "Publish (activate) a draft release using exact scope and revision preconditions. Live-facing: only run with explicit human authorization. Requires app publisher.",
+        endpoint: { method: "POST", path: "/api/apps/{app_id}/releases/{release_id}/publish" },
+        parameters: {
+          app_id: { type: "string", in: "path", required: true, description: "App UUID." },
+          release_id: { type: "string", in: "path", required: true, description: "Release UUID." },
+          expected_revision: { type: "number", in: "body", required: false, description: "Revision from the same fresh detail read used to derive expected_scopes." },
+          expected_scope: { type: "object", in: "body", required: false, description: "Legacy single-scope precondition. New callers should send expected_scopes. Do not combine both fields." },
+          expected_scopes: { type: "array", in: "body", required: false, description: "Canonical exact-set precondition. Every stored scope must match atomically, including full:all and mandatory device_group entries." },
+        },
+      },
+      {
+        name: "cancel-release",
+        description: "Disable one draft or active release without deleting its build, assets, or audit history. If the release never activated, the cancelled row stops reserving its version so a corrected build may use that coordinate. If the release ever activated (reached clients), its version coordinate stays permanently reserved and this is enforced: corrected client bits require a higher version code. Restoring the original shipped release is done by un-cancelling it (rollback), not by publishing a new release at that version. Requires app publisher.",
+        endpoint: { method: "DELETE", path: "/api/apps/{app_id}/releases/{release_id}" },
+        parameters: {
+          app_id: { type: "string", in: "path", required: true, description: "App UUID." },
+          release_id: { type: "string", in: "path", required: true, description: "Release UUID." },
+          expected_revision: { type: "number", in: "query", required: false, description: "Revision from fresh release detail." },
+        },
+      },
+      {
+        name: "restore-release",
+        description: "Restore the same release row only while no replacement owns its version. A never-published cancelled draft returns to draft and must pass normal publish gates; a previously active release returns to active. Requires app publisher.",
+        endpoint: { method: "POST", path: "/api/apps/{app_id}/releases/{release_id}/rollback" },
+        parameters: {
+          app_id: { type: "string", in: "path", required: true, description: "App UUID." },
+          release_id: { type: "string", in: "path", required: true, description: "Existing release UUID to restore." },
+          expected_revision: { type: "number", in: "body", required: false, description: "Revision from fresh release detail." },
+        },
+      },
+      {
+        name: "list-release-shares",
+        description: "List a release's share links (metadata + stats; URLs for shares created after tokens were stored). Requires app viewer.",
+        endpoint: { method: "GET", path: "/api/apps/{app_id}/releases/{release_id}/shares" },
+        parameters: {
+          app_id: { type: "string", in: "path", required: true, description: "App UUID." },
+          release_id: { type: "string", in: "path", required: true, description: "Release UUID." },
+        },
+      },
+      {
+        name: "create-release-share",
+        description:
+          "Create a public share/download page for a release (works for drafts — that's the review flow). No expiry unless ttl_seconds is passed; lives until revoked. Requires app publisher.",
+        endpoint: { method: "POST", path: "/api/apps/{app_id}/releases/{release_id}/shares" },
+        parameters: {
+          app_id: { type: "string", in: "path", required: true, description: "App UUID." },
+          release_id: { type: "string", in: "path", required: true, description: "Release UUID." },
+          ttl_seconds: { type: "number", in: "body", required: false, description: "Optional expiry; omit for a link that lives until revoked." },
+          password: { type: "string", in: "body", required: false, description: "Optional password protection." },
+        },
+      },
+      {
+        name: "update-release-share",
+        description:
+          "Update one unrevoked release share's expiry. Pass expires_at=null to make an existing link live until revoked, or ttl_seconds for a future expiry. Requires app publisher.",
+        endpoint: { method: "PATCH", path: "/api/apps/{app_id}/releases/{release_id}/shares/{share_id}" },
+        parameters: {
+          app_id: { type: "string", in: "path", required: true, description: "App UUID." },
+          release_id: { type: "string", in: "path", required: true, description: "Current release UUID from a fresh share list." },
+          share_id: { type: "string", in: "path", required: true, description: "Share UUID." },
+          expires_at: { type: "number", in: "body", required: false, nullable: true, description: "Unix millisecond expiry; pass null to make the share live until revoked." },
+          ttl_seconds: { type: "number", in: "body", required: false, description: "Optional future expiry relative to now." },
+        },
+      },
+      {
+        name: "revoke-release-share",
+        description: "Revoke a share link (the only way a no-expiry link dies). Requires app publisher.",
+        endpoint: { method: "DELETE", path: "/api/apps/{app_id}/releases/{release_id}/shares/{share_id}" },
+        parameters: {
+          app_id: { type: "string", in: "path", required: true, description: "App UUID." },
+          release_id: { type: "string", in: "path", required: true, description: "Release UUID." },
+          share_id: { type: "string", in: "path", required: true, description: "Share UUID." },
+        },
+      },
+      {
+        name: "rebind-release-share",
+        description:
+          "Rebind one unrevoked public share URL to another active release in the same app and channel. The expected current release is a required concurrency precondition; update and audit commit atomically. Requires app publisher.",
+        endpoint: { method: "POST", path: "/api/apps/{app_id}/shares/{share_id}/rebind" },
+        parameters: {
+          app_id: { type: "string", in: "path", required: true, description: "App UUID." },
+          share_id: { type: "string", in: "path", required: true, description: "Share UUID." },
+          expected_release_id: { type: "string", in: "body", required: true, description: "Current release UUID from a fresh share list." },
+          target_release_id: { type: "string", in: "body", required: true, description: "Active target release UUID in the same app and channel." },
+        },
+      },
+      {
         name: "create-deploy-token",
         description:
           "Create an app-scoped deploy token. Requires app admin. The raw token is returned exactly once; store it immediately in a secret manager and never post it to a public channel.",
         endpoint: { method: "POST", path: "/api/apps/{app_id}/deploy-tokens" },
         parameters: {
           app_id: { type: "string", in: "path", required: true, description: "App UUID." },
+          name: { type: "string", in: "body", required: true, description: "Human-readable token name." },
+          app_role: { type: "string", in: "body", required: false, description: "Optional role bundle: publisher or viewer." },
+          scopes: { type: "array", in: "body", required: false, description: "Optional additional atomic permissions, unioned with the role bundle. At least one grant is required." },
+          expires_in_days: { type: "number", in: "body", required: false, description: "Optional expiry in days, up to 3650." },
         },
       },
       {
@@ -867,6 +1487,122 @@ export async function handleAgentManifest(c: Context<{ Bindings: Env }>) {
         },
       },
       {
+        name: "get-testflight-beta-app-description",
+        description:
+          "Read live app-level Beta App Description localizations (betaAppLocalizations.description) from App Store Connect. This is separate from every build's What to Test text. Read-only; requires app viewer.",
+        endpoint: {
+          method: "GET",
+          path: "/api/apps/{app_id}/testflight-beta-app-description",
+        },
+        parameters: {
+          app_id: { type: "string", in: "path", required: true, description: "Hands iOS app UUID; its main-channel bundle id selects the ASC app." },
+        },
+      },
+      {
+        name: "update-testflight-beta-app-description",
+        description:
+          "Create or update supplied app-level Beta App Description localizations, preserve other locales, and require exact Apple readback. Does not touch build-level What to Test, upload or distribute a build, notify testers, or publish an App Store version. Requires app publisher and explicit authorization for the live metadata change.",
+        endpoint: {
+          method: "PUT",
+          path: "/api/apps/{app_id}/testflight-beta-app-description",
+        },
+        parameters: {
+          app_id: { type: "string", in: "path", required: true, description: "Hands iOS app UUID; its main-channel bundle id selects the ASC app." },
+          descriptions: { type: "object", in: "body", required: true, description: "Non-empty locale-to-description map, for example {\"en-US\":\"A private collaboration app\"}." },
+        },
+      },
+      {
+        name: "upload-testflight-build",
+        description:
+          "Upload one existing signed Hands IPA to App Store Connect/TestFlight using the app's encrypted server-side ASC credential. This upload-only action never assigns beta groups, notifies testers, activates a Hands release, or touches App Store production publishing. Requires app admin.",
+        endpoint: {
+          method: "POST",
+          path: "/api/apps/{app_id}/builds/{build_id}/testflight-upload",
+        },
+        parameters: {
+          app_id: { type: "string", in: "path", required: true, description: "Hands app UUID." },
+          build_id: { type: "string", in: "path", required: true, description: "Hands build UUID containing the signed installable IPA." },
+          bundle_id: { type: "string", in: "body", required: false, description: "Optional bundle-id assertion that must match immutable build metadata; it is also the fallback when metadata is absent." },
+        },
+      },
+      {
+        name: "get-testflight-upload-status",
+        description:
+          "Poll one Apple Build Upload id returned by upload-testflight-build until state.state is COMPLETE or FAILED; Apple's errors, warnings, and infos remain in the state object. Read-only; requires app viewer.",
+        endpoint: {
+          method: "GET",
+          path: "/api/apps/{app_id}/testflight-uploads/{build_upload_id}",
+        },
+        parameters: {
+          app_id: { type: "string", in: "path", required: true, description: "Hands app UUID." },
+          build_upload_id: { type: "string", in: "path", required: true, description: "App Store Connect Build Upload id returned by upload-testflight-build." },
+        },
+      },
+      {
+        name: "list-testflight-groups",
+        description:
+          "List internal and external App Store Connect beta groups for the exact iOS app represented by a Hands build. Returns stable group ids for publish-testflight-build. Read-only; requires app viewer.",
+        endpoint: {
+          method: "GET",
+          path: "/api/apps/{app_id}/builds/{build_id}/testflight-groups",
+        },
+        parameters: {
+          app_id: { type: "string", in: "path", required: true, description: "Hands app UUID." },
+          build_id: { type: "string", in: "path", required: true, description: "Hands build UUID used to resolve the bundle id." },
+          bundle_id: { type: "string", in: "query", required: false, description: "Optional bundle-id assertion; it must match immutable build metadata, and is only a fallback when metadata is absent." },
+        },
+      },
+      {
+        name: "expire-testflight-build",
+        description:
+          "Expire one exact App Store Connect Build from TestFlight availability. Requires the resolved ASC build id plus exact immutable version/build confirmations, persists a redacted operation intent before Apple mutation, terminalizes PATCH/readback outcome, is idempotent with immediate readback, and never mutates App Store production or a Hands release. Requires app admin and explicit human authorization for the live-facing mutation.",
+        endpoint: {
+          method: "POST",
+          path: "/api/apps/{app_id}/builds/{build_id}/testflight-expire",
+        },
+        parameters: {
+          app_id: { type: "string", in: "path", required: true, description: "Hands app UUID." },
+          build_id: { type: "string", in: "path", required: true, description: "Hands iOS build UUID whose exact ASC build should be expired." },
+          asc_build_id: { type: "string", in: "body", required: true, description: "Exact App Store Connect Build id returned by get-testflight-publish-status." },
+          confirm_version: { type: "string", in: "body", required: true, description: "Exact immutable Hands marketing version confirmation." },
+          confirm_build_number: { type: "string", in: "body", required: true, description: "Exact immutable Hands numeric build-number confirmation." },
+          bundle_id: { type: "string", in: "body", required: false, description: "Optional bundle-id assertion; it must match immutable build metadata, and is only a fallback when metadata is absent." },
+        },
+      },
+      {
+        name: "publish-testflight-build",
+        description:
+          "Distribute one already-processed App Store Connect build to selected TestFlight groups. Upserts localized What to Test text; external mode submits Beta App Review and can auto-notify testers after approval. Never publishes to the App Store or activates a Hands release. Requires app publisher.",
+        endpoint: {
+          method: "POST",
+          path: "/api/apps/{app_id}/builds/{build_id}/testflight-publish",
+        },
+        parameters: {
+          app_id: { type: "string", in: "path", required: true, description: "Hands app UUID." },
+          build_id: { type: "string", in: "path", required: true, description: "Hands build UUID whose exact version/build number is already processed by Apple." },
+          distribution: { type: "string", in: "body", required: true, description: "internal or external; every selected group must match." },
+          group_ids: { type: "array", in: "body", required: true, description: "Non-empty stable beta group ids from list-testflight-groups." },
+          what_to_test: { type: "object", in: "body", required: false, description: "Locale-to-text map, for example {\"en-US\":\"Verify login\"}. External distribution requires at least one existing or supplied localization." },
+          notify_testers: { type: "boolean", in: "body", required: false, description: "External only. Enables automatic notification before review; for an already-approved build without auto-notify pending, sends the manual build notification." },
+          bundle_id: { type: "string", in: "body", required: false, description: "Optional bundle-id assertion; it must match immutable build metadata, and is only a fallback when metadata is absent." },
+        },
+      },
+      {
+        name: "get-testflight-publish-status",
+        description:
+          "Refresh live App Store Connect processing, expiration, assigned groups, localizations, internal/external build state, and Beta App Review state for a Hands build. Read-only; requires app viewer.",
+        endpoint: {
+          method: "GET",
+          path: "/api/apps/{app_id}/builds/{build_id}/testflight-publish",
+        },
+        parameters: {
+          app_id: { type: "string", in: "path", required: true, description: "Hands app UUID." },
+          build_id: { type: "string", in: "path", required: true, description: "Hands build UUID." },
+          distribution: { type: "string", in: "query", required: false, description: "Optional internal or external state projection." },
+          bundle_id: { type: "string", in: "query", required: false, description: "Optional bundle-id assertion; it must match immutable build metadata, and is only a fallback when metadata is absent." },
+        },
+      },
+      {
         name: "list-build-assets",
         description:
           "List every asset attached to a build, including installables, metadata, and symbols.",
@@ -891,6 +1627,86 @@ export async function handleAgentManifest(c: Context<{ Bindings: Env }>) {
         },
       },
       {
+        name: "delete-build-asset",
+        description:
+          "Delete one non-installable build-asset metadata row while preserving its R2 object. Requires app admin, exact app/build/asset binding, and immutable SHA-256/size preconditions. Audit and deletion commit atomically; an absent-row retry succeeds only by recovering the matching audit and rechecking R2. Installable assets, arbitrary absent ids, and missing/mismatched stored objects fail closed.",
+        endpoint: {
+          method: "DELETE",
+          path: "/api/apps/{app_id}/builds/{build_id}/assets/{asset_id}",
+        },
+        parameters: {
+          app_id: { type: "string", in: "path", required: true, description: "App UUID." },
+          build_id: { type: "string", in: "path", required: true, description: "Build UUID." },
+          asset_id: { type: "string", in: "path", required: true, description: "Non-installable build asset UUID." },
+          expected_file_hash: { type: "string", in: "query", required: true, description: "Expected lowercase or uppercase SHA-256 hex digest from a fresh list-build-assets read." },
+          expected_size_bytes: { type: "integer", in: "query", required: true, description: "Expected immutable byte size from the same fresh read." },
+        },
+      },
+      {
+        name: "list-ios-simulator-artifacts",
+        description:
+          "List exact-byte iOS simulator .app.zip QA fixtures. Optional source_commit, github_run_id, and sha256 filters select the exact provenance coordinate. Requires app viewer.",
+        endpoint: { method: "GET", path: "/api/apps/{app_id}/qa-artifacts/ios-simulator" },
+        parameters: {
+          app_id: { type: "string", in: "path", required: true, description: "App UUID." },
+          source_commit: { type: "string", in: "query", required: false, description: "Full source commit." },
+          github_run_id: { type: "string", in: "query", required: false, description: "GitHub Actions run id." },
+          sha256: { type: "string", in: "query", required: false, description: "Exact artifact SHA-256." },
+        },
+      },
+      {
+        name: "create-ios-simulator-artifact",
+        description:
+          "Create a QA-only iOS simulator artifact declaration and one-hour direct R2 PUT URL. Upload only a .app.zip using upload.method/url/headers, then call complete-ios-simulator-artifact. Requires app publisher.",
+        endpoint: { method: "POST", path: "/api/apps/{app_id}/qa-artifacts/ios-simulator" },
+        parameters: {
+          app_id: { type: "string", in: "path", required: true, description: "App UUID." },
+          channel_id: { type: "string", in: "body", required: false, description: "Channel UUID or slug for ledger grouping; defaults to the app default/main channel." },
+          filename: { type: "string", in: "body", required: true, description: "Original filename ending in .app.zip." },
+          size_bytes: { type: "number", in: "body", required: true, description: "Exact ZIP byte length." },
+          sha256: { type: "string", in: "body", required: true, description: "Exact ZIP SHA-256 hex digest." },
+          source_commit: { type: "string", in: "body", required: true, description: "Full 40- or 64-character git object id." },
+          version_name: { type: "string", in: "body", required: true, description: "CFBundleShortVersionString." },
+          build_number: { type: "string", in: "body", required: true, description: "CFBundleVersion." },
+          bundle_id: { type: "string", in: "body", required: true, description: "Simulator app bundle identifier." },
+          github_run_id: { type: "string", in: "body", required: true, description: "GitHub Actions run id." },
+          github_artifact_id: { type: "string", in: "body", required: false, description: "GitHub Actions artifact id." },
+          github_repository: { type: "string", in: "body", required: false, description: "owner/repository source." },
+          github_job_id: { type: "string", in: "body", required: false, description: "GitHub Actions verifier/build job id." },
+          source_ref: { type: "string", in: "body", required: false, description: "Branch or tag ref." },
+        },
+      },
+      {
+        name: "complete-ios-simulator-artifact",
+        description:
+          "After the presigned PUT finishes, stream the stored object through SHA-256 and seal it under an immutable key only if size and digest exactly match. Completion is one-shot. Requires app publisher.",
+        endpoint: { method: "POST", path: "/api/apps/{app_id}/qa-artifacts/ios-simulator/{asset_id}/complete" },
+        parameters: {
+          app_id: { type: "string", in: "path", required: true, description: "App UUID." },
+          asset_id: { type: "string", in: "path", required: true, description: "QA build asset UUID." },
+        },
+      },
+      {
+        name: "get-ios-simulator-artifact",
+        description:
+          "Read a QA artifact by asset id, including kind/qa_only, build id, exact filename/size/server SHA-256, source commit, version/version_code/bundle/build run, verification state, and durable download_api. Requires app viewer.",
+        endpoint: { method: "GET", path: "/api/apps/{app_id}/qa-artifacts/ios-simulator/{asset_id}" },
+        parameters: {
+          app_id: { type: "string", in: "path", required: true, description: "App UUID." },
+          asset_id: { type: "string", in: "path", required: true, description: "QA build asset UUID." },
+        },
+      },
+      {
+        name: "presign-ios-simulator-artifact",
+        description:
+          "Return a short-lived anonymous download URL plus exact filename/size/SHA-256 for a ready simulator QA artifact. The authenticated endpoint itself is the durable reference. Requires app viewer.",
+        endpoint: { method: "GET", path: "/api/apps/{app_id}/qa-artifacts/ios-simulator/{asset_id}/download?presign=1" },
+        parameters: {
+          app_id: { type: "string", in: "path", required: true, description: "App UUID." },
+          asset_id: { type: "string", in: "path", required: true, description: "QA build asset UUID." },
+        },
+      },
+      {
         name: "list-feedback",
         description:
           "List feedback/crash tickets for an app, newest first. Optional status/kind filters.",
@@ -899,6 +1715,106 @@ export async function handleAgentManifest(c: Context<{ Bindings: Env }>) {
           app_id: { type: "string", in: "path", required: true, description: "App UUID." },
           status: { type: "string", in: "query", required: false, description: "open|in_progress|resolved|closed" },
           kind: { type: "string", in: "query", required: false, description: "feedback|bug|crash (comma-separated)" },
+        },
+      },
+      {
+        name: "list-feedback-material-delta",
+        description:
+          "List current feedback ticket snapshots that materially changed after an opaque per-app cursor. Requires app viewer. Process the whole page before persisting next_cursor.",
+        endpoint: { method: "GET", path: "/api/apps/{app_id}/feedback/material-delta" },
+        parameters: {
+          app_id: { type: "string", in: "path", required: true, description: "App UUID." },
+          cursor: { type: "string", in: "query", required: false, description: "Opaque material-v1 cursor from the previous page; omit for bootstrap." },
+          limit: { type: "number", in: "query", required: false, description: "Page size from 1 to 200; defaults to 100." },
+        },
+      },
+      {
+        name: "bind-reporter-webhook",
+        description:
+          "Bind one active app webhook as the exact subscriber for one active reporter integration. Requires app admin and does not create or enable a webhook.",
+        endpoint: {
+          method: "PUT",
+          path: "/api/apps/{app_id}/reporter-integrations/{reporter_integration_id}/webhooks/{webhook_id}",
+        },
+        parameters: {
+          app_id: { type: "string", in: "path", required: true, description: "Hands app id." },
+          reporter_integration_id: { type: "string", in: "path", required: true, description: "Reporter integration id." },
+          webhook_id: { type: "string", in: "path", required: true, description: "Existing active app webhook id." },
+        },
+      },
+      {
+        name: "list-reporter-integrations",
+        description:
+          "List active reporter integrations for an app. Requires app admin and returns metadata only.",
+        endpoint: { method: "GET", path: "/api/apps/{app_id}/reporter-integrations" },
+        parameters: {
+          app_id: { type: "string", in: "path", required: true, description: "Hands app id." },
+          include_archived: { type: "string", in: "query", required: false, description: "Use 1 to include archived integrations." },
+        },
+      },
+      {
+        name: "create-reporter-integration",
+        description:
+          "Create an app-scoped reporter integration without creating credentials or subscriptions. Requires app admin.",
+        endpoint: { method: "POST", path: "/api/apps/{app_id}/reporter-integrations" },
+        parameters: {
+          app_id: { type: "string", in: "path", required: true, description: "Hands app id." },
+          name: { type: "string", in: "body", required: true, description: "Integration display name." },
+        },
+      },
+      {
+        name: "update-reporter-integration",
+        description:
+          "Archive or unarchive a reporter integration. Archiving atomically revokes its active tokens. Requires app admin.",
+        endpoint: { method: "PATCH", path: "/api/apps/{app_id}/reporter-integrations/{reporter_integration_id}" },
+        parameters: {
+          app_id: { type: "string", in: "path", required: true, description: "Hands app id." },
+          reporter_integration_id: { type: "string", in: "path", required: true, description: "Reporter integration id." },
+          archived: { type: "boolean", in: "body", required: true, description: "Archive when true; unarchive when false." },
+        },
+      },
+      {
+        name: "list-webhooks",
+        description:
+          "List active webhook metadata for an organization without returning signing secrets. Requires org admin.",
+        endpoint: { method: "GET", path: "/api/orgs/{org_id}/webhooks" },
+        parameters: {
+          org_id: { type: "string", in: "path", required: true, description: "Hands organization id." },
+        },
+      },
+      {
+        name: "create-webhook",
+        description:
+          "Create an enabled org/app webhook. Requires org admin; the signing secret is accepted but never returned.",
+        endpoint: { method: "POST", path: "/api/orgs/{org_id}/webhooks" },
+        parameters: {
+          org_id: { type: "string", in: "path", required: true, description: "Hands organization id." },
+          url: { type: "string", in: "body", required: true, description: "HTTPS delivery URL." },
+          secret: { type: "string", in: "body", required: true, description: "Webhook HMAC signing secret." },
+          events: { type: "array", in: "body", required: false, description: "Subscribed event names; empty means all." },
+          app_id: { type: "string", in: "body", required: false, description: "Optional exact app scope." },
+        },
+      },
+      {
+        name: "delete-webhook",
+        description:
+          "Archive a webhook so it receives no new deliveries. Requires org admin.",
+        endpoint: { method: "DELETE", path: "/api/orgs/{org_id}/webhooks/{webhook_id}" },
+        parameters: {
+          org_id: { type: "string", in: "path", required: true, description: "Hands organization id." },
+          webhook_id: { type: "string", in: "path", required: true, description: "Webhook id." },
+        },
+      },
+      {
+        name: "get-reporter-feedback-metadata",
+        description:
+          "Read safe exact grant, route, audit, subscriber, event, delivery, payload-digest, and signature metadata without returning route subject, reporter id, body, or token secret. Requires app viewer.",
+        endpoint: { method: "GET", path: "/api/apps/{app_id}/reporter-feedback-metadata" },
+        parameters: {
+          app_id: { type: "string", in: "path", required: true, description: "Hands app id." },
+          reporter_integration_id: { type: "string", in: "query", required: true, description: "Exact reporter integration id." },
+          reporter_id: { type: "string", in: "query", required: true, description: "Exact opaque reporter id; never echoed." },
+          token_id: { type: "string", in: "query", required: true, description: "Exact app token id; token secret/prefix is never returned." },
         },
       },
       {
@@ -949,6 +1865,13 @@ export async function handleAgentManifest(c: Context<{ Bindings: Env }>) {
           internal: { type: "boolean", in: "body", required: false, description: "true = staff-only internal note; omitted/false = visible to the reporter." },
         },
       },
-    ],
+      {
+        // New (un-prefixed): where deprecated actions point for CLI install + migration.
+        name: "migration-help",
+        description:
+          "How to install the Hands CLI, authenticate once (`hands login`), and migrate each deprecated action to its native `hands` command. Read this if you are still calling actions via `raft integration invoke`.",
+        endpoint: { method: "GET", path: "/api/agent/migration-help" },
+      },
+    ]),
   });
 }
