@@ -143,8 +143,8 @@ export function createHandsUpdater(options: HandsUpdaterOptions): HandsUpdater {
 
   async function checkUpdate(input: UpdateCheckInput): Promise<UpdateCheckResult> {
     if (!SEMVER.test(input.currentVersion)) throw new HandsUpdateError("UPDATE_RESPONSE_INVALID", "currentVersion must be semver");
-    if (input.deviceId !== undefined && !/^\S{1,256}$/u.test(input.deviceId)) {
-      throw new HandsUpdateError("UPDATE_RESPONSE_INVALID", "deviceId must be 1-256 non-whitespace characters");
+    if (input.deviceId !== undefined && !/^[\x21-\x7e]{1,256}$/u.test(input.deviceId)) {
+      throw new HandsUpdateError("UPDATE_RESPONSE_INVALID", "deviceId must be 1-256 printable ASCII characters");
     }
     const pinned = input.channel.startsWith("pinned:") ? input.channel.slice(7) : null;
     if (pinned && !SEMVER.test(pinned)) throw new HandsUpdateError("UPDATE_CHANNEL_UNSUPPORTED", "pinned channel requires semver");

@@ -54,11 +54,24 @@ describe("Hands updater", () => {
     const updater = createHandsUpdater({ appSlug: "raft-computer", apiOrigin: "https://hands.example", fetch });
     const input = { currentVersion: "1.0.18", channel: "main" as const, target: { platform: "linux" as const, arch: "x64" } };
     await updater.checkUpdate(input);
-    for (const deviceId of ["", " ", "contains space", "x".repeat(257)]) {
+    for (const deviceId of ["", " ", "contains space", "\0", "\x01", "\x7f", "x".repeat(257)]) {
       await expect(updater.checkUpdate({ ...input, deviceId }))
         .rejects.toEqual(expect.objectContaining<Partial<HandsUpdateError>>({ code: "UPDATE_RESPONSE_INVALID" }));
     }
     expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    ["unpublished release", (response: ReturnType<typeof fixture>["response"]) => { response.release.published_at = null as never; }],
+    ["malformed artifact", (response: ReturnType<typeof fixture>["response"]) => { response.artifact.sha256 = "not-a-sha256"; }],
+  ])("keeps %s response validation when a device id is present", async (_name, mutate) => {
+    const { response } = fixture();
+    mutate(response);
+    const fetch = vi.fn<typeof globalThis.fetch>(async () => Response.json(response));
+    const updater = createHandsUpdater({ appSlug: "raft-computer", apiOrigin: "https://hands.example", fetch });
+    await expect(updater.checkUpdate({
+      currentVersion: "1.0.18", channel: "main", target: { platform: "linux", arch: "x64" }, deviceId: "machine-stable-1",
+    })).rejects.toEqual(expect.objectContaining<Partial<HandsUpdateError>>({ code: "UPDATE_RESPONSE_INVALID" }));
   });
 
   it("checks and atomically stages a size/SHA-256 verified candidate", async () => {
