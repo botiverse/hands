@@ -15,5 +15,5 @@ The signed collect-policy, bundle, and redaction contracts are exported from
 
 `getHandsDeviceId()` returns the Hands-owned OS-user scoped UUID v4 shared by
 Hands clients. It is a rollout hint, not hardware identity or a credential.
-Use `resetHandsDeviceId()` only for deliberate state reset; malformed state
-fails with a typed error rather than silently rotating.
+Deleting the Hands state or OS user profile is the v1 rotation boundary;
+malformed state fails with a typed error rather than silently rotating.

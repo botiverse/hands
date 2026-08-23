@@ -2,7 +2,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { DeviceIdError, getHandsDeviceId, handsDeviceIdLocation, resetHandsDeviceId } from "./device-id.js";
+import { getHandsDeviceId, handsDeviceIdLocation } from "./device-id.js";
 
 describe("Hands device id", () => {
   it("uses the Hands namespace on all supported platforms", () => {
@@ -18,7 +18,7 @@ describe("Hands device id", () => {
       const options = { platform: "linux" as const, homeDir: home, env: {} };
       const ids = await Promise.all(Array.from({ length: 12 }, () => getHandsDeviceId(options)));
       expect(new Set(ids).size).toBe(1);
-      await resetHandsDeviceId(options);
+      await rm(handsDeviceIdLocation(options));
       expect(await getHandsDeviceId(options)).not.toBe(ids[0]);
       await writeFile(handsDeviceIdLocation(options), "not-a-uuid\n");
       await expect(getHandsDeviceId(options)).rejects.toMatchObject({ code: "DEVICE_ID_INVALID" });

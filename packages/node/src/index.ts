@@ -33,5 +33,5 @@ export {
   type UploadLogBundleOptions,
   type VerifyPolicyOptions,
 } from "./collect.js";
-export { DeviceIdError, getHandsDeviceId, handsDeviceIdLocation, resetHandsDeviceId } from "./device-id.js";
+export { DeviceIdError, getHandsDeviceId, handsDeviceIdLocation } from "./device-id.js";
 export type { DeviceIdErrorCode, DeviceIdOptions } from "./device-id.js";
