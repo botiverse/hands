@@ -45,6 +45,7 @@ def main() -> None:
 
     job = notifier["jobs"]["notify"]
     assert job["environment"] == "raft-workflow-notifications"
+    assert job["env"]["RAFT_PROFILE_DIR"] == "/tmp/raft-profiles/hands-workflow-notifier"
     permissions = job.get("permissions", notifier.get("permissions"))
     assert permissions == {"contents": "read"}
     assert {"failure", "cancelled", "timed_out"} <= {
@@ -64,6 +65,7 @@ def main() -> None:
     }
     post = next(step for step in steps if step.get("name") == "Post structured failure alert")
     assert 'message send --target "#proj-hands"' in post["run"]
+    assert "$RAFT_PROFILE_DIR/credential.json" in materialize["run"]
 
     health = load(HEALTH)
     assert health["on"]["schedule"] == [{"cron": "17 3 * * *"}]
@@ -71,15 +73,20 @@ def main() -> None:
     assert synthetic["type"] == "boolean" and synthetic["default"] == "false"
     health_job = health["jobs"]["health"]
     assert health_job["environment"] == "raft-workflow-notifications"
+    assert health_job["env"]["RAFT_PROFILE_DIR"] == job["env"]["RAFT_PROFILE_DIR"]
     assert health_job["env"]["RAFT_CREDENTIAL_JSON"] == "${{ secrets.RAFT_NOTIFY_CREDENTIAL_JSON }}"
     health_steps = health_job["steps"]
     verify = next(step for step in health_steps if step.get("name") == "Verify notifier credential")
     assert "agent login status" in verify["run"]
+    assert '--profile-dir "$RAFT_PROFILE_DIR"' in verify["run"]
     synthetic_post = next(
         step for step in health_steps if step.get("name") == "Send synthetic notifier alert"
     )
     assert "inputs.send_synthetic_alert" in synthetic_post["if"]
     assert 'message send --target "#proj-hands"' in synthetic_post["run"]
+    assert "$RAFT_PROFILE_DIR/credential.json" in next(
+        step for step in health_steps if step.get("name") == "Materialize isolated profile"
+    )["run"]
 
     print(
         "Notification contract clean: "

@@ -29,7 +29,7 @@ jobs:
     env:
       RAFT_SERVER: https://app.raft.build
       RAFT_PROFILE: hands-workflow-notifier
-      RAFT_PROFILE_DIR: /tmp/raft-profiles
+      RAFT_PROFILE_DIR: /tmp/raft-profiles/hands-workflow-notifier
       RUN_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
       RUN_ID: ${{ github.event.workflow_run.id }}
       RUN_NAME: ${{ github.event.workflow_run.name }}
@@ -51,18 +51,17 @@ jobs:
           set -euo pipefail
           test -n "$RAFT_CREDENTIAL_JSON"
           umask 077
-          profile_dir="$RAFT_PROFILE_DIR/$RAFT_PROFILE"
-          mkdir -p "$profile_dir"
-          printf '%s' "$RAFT_CREDENTIAL_JSON" > "$profile_dir/credential.json"
-          test "$(stat -c '%a' "$profile_dir/credential.json")" = 600
+          mkdir -p "$RAFT_PROFILE_DIR"
+          printf '%s' "$RAFT_CREDENTIAL_JSON" > "$RAFT_PROFILE_DIR/credential.json"
+          test "$(stat -c '%a' "$RAFT_PROFILE_DIR/credential.json")" = 600
 
       - name: Verify notifier credential
         shell: bash
         run: |
           set -euo pipefail
           "$RUNNER_TEMP/raft-cli/node_modules/.bin/raft" agent login status \
-            --server "$RAFT_SERVER" --agent "$(node -e 'const c=require(process.env.RAFT_PROFILE_DIR+"/"+process.env.RAFT_PROFILE+"/credential.json"); process.stdout.write(c.agentId)')" \
-            --profile-slug "$RAFT_PROFILE" --profile-dir "$RAFT_PROFILE_DIR/$RAFT_PROFILE"
+            --server "$RAFT_SERVER" --agent "$(node -e 'const c=require(process.env.RAFT_PROFILE_DIR+"/credential.json"); process.stdout.write(c.agentId)')" \
+            --profile-slug "$RAFT_PROFILE" --profile-dir "$RAFT_PROFILE_DIR"
 
       - name: Post structured failure alert
         shell: bash
