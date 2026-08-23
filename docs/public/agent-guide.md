@@ -278,6 +278,18 @@ External Beta App Review can take hours,
 so agents should return the submission state and recheck with
 `get-testflight-publish-status` rather than holding a Raft turn open.
 
+If the requested completion boundary includes tester notification, retain the
+`publish-testflight-build` action response as the mutation receipt and require
+`notification=sent` or `already_sent`. Then call the read-only
+`get-testflight-publish-status` action until the exact build reports
+`external_build_state=IN_BETA_TESTING`. `not_requested` and `scheduled` are not
+completion states. For `scheduled`, wait for the exact testing state, replay
+the same idempotent publish action to retain `already_sent`, and read status
+again. Never infer notification from `VALID`, group assignment,
+`BETA_APPROVED`, or `auto_notify_enabled=false`; the last field is scheduling
+policy, not notification history. TestFlight notification does not activate a
+Hands release or publish an App Store production version.
+
 ### Exact iOS simulator QA artifacts
 
 Use this lane for a zipped `.app` bundle that Stamp or another agent must
