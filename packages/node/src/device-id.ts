@@ -31,7 +31,7 @@ async function readWindows(): Promise<string | undefined> {
     return value;
   } catch (error) {
     if (error instanceof DeviceIdError) throw error;
-    if ((error as NodeJS.ErrnoException).code === "1") return undefined;
+    if ((error as { code?: string | number }).code === 1) return undefined;
     throw new DeviceIdError("DEVICE_ID_READ_FAILED", "Hands device ID could not be read");
   }
 }
@@ -99,7 +99,7 @@ export async function getHandsDeviceId(options: DeviceIdOptions = {}): Promise<s
 export async function resetHandsDeviceId(options: DeviceIdOptions = {}): Promise<void> {
   if ((options.platform ?? platform()) === "win32") {
     try { await exec("reg.exe", ["delete", WINDOWS_KEY, "/v", "deviceid", "/f"], { windowsHide: true }); return; }
-    catch (error) { if ((error as NodeJS.ErrnoException).code !== "1") throw new DeviceIdError("DEVICE_ID_PERSIST_FAILED", "Hands device ID could not be reset"); return; }
+    catch (error) { if ((error as { code?: string | number }).code !== 1) throw new DeviceIdError("DEVICE_ID_PERSIST_FAILED", "Hands device ID could not be reset"); return; }
   }
   try { await rm(handsDeviceIdLocation(options)); } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw new DeviceIdError("DEVICE_ID_PERSIST_FAILED", "Hands device ID could not be reset");
