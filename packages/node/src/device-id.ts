@@ -15,7 +15,7 @@ export interface DeviceIdOptions { platform?: NodeJS.Platform; homeDir?: string;
 const exec = promisify(execFile);
 const WINDOWS_KEY = "HKCU\\Software\\hands.build";
 
-export function deviceIdPath(options: DeviceIdOptions = {}): string {
+export function handsDeviceIdLocation(options: DeviceIdOptions = {}): string {
   const os = options.platform ?? platform();
   const home = options.homeDir ?? homedir();
   if (os === "win32") return `${WINDOWS_KEY}\\deviceid`;
@@ -49,15 +49,18 @@ async function readValid(path: string): Promise<string | undefined> {
   }
 }
 
-export async function getDeviceId(options: DeviceIdOptions = {}): Promise<string> {
+export async function getHandsDeviceId(options: DeviceIdOptions = {}): Promise<string> {
   const os = options.platform ?? platform();
-  const path = deviceIdPath(options);
+  const path = handsDeviceIdLocation(options);
   const dir = os === "win32"
     ? join(options.env?.LOCALAPPDATA ?? join(options.homeDir ?? homedir(), "AppData", "Local"), "hands.build")
     : dirname(path);
   const lock = join(dir, "deviceid.lock");
   await mkdir(dir, { recursive: true, mode: 0o700 }).catch(() => {
     throw new DeviceIdError("DEVICE_ID_PERSIST_FAILED", "Hands device ID directory could not be created");
+  });
+  if (os !== "win32") await chmod(dir, 0o700).catch(() => {
+    throw new DeviceIdError("DEVICE_ID_PERSIST_FAILED", "Hands device ID directory permissions could not be set");
   });
   for (let attempt = 0; attempt < 100; attempt += 1) {
     const existing = os === "win32" ? await readWindows() : await readValid(path);
@@ -80,6 +83,8 @@ export async function getDeviceId(options: DeviceIdOptions = {}): Promise<string
       await handle.close();
       await chmod(temp, 0o600);
       await rename(temp, path);
+      const directory = await open(dir, "r");
+      try { await directory.sync(); } finally { await directory.close(); }
       return value;
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "EEXIST") {
@@ -91,12 +96,12 @@ export async function getDeviceId(options: DeviceIdOptions = {}): Promise<string
   throw new DeviceIdError("DEVICE_ID_PERSIST_FAILED", "Hands device ID creation remained contended");
 }
 
-export async function resetDeviceId(options: DeviceIdOptions = {}): Promise<void> {
+export async function resetHandsDeviceId(options: DeviceIdOptions = {}): Promise<void> {
   if ((options.platform ?? platform()) === "win32") {
     try { await exec("reg.exe", ["delete", WINDOWS_KEY, "/v", "deviceid", "/f"], { windowsHide: true }); return; }
     catch (error) { if ((error as NodeJS.ErrnoException).code !== "1") throw new DeviceIdError("DEVICE_ID_PERSIST_FAILED", "Hands device ID could not be reset"); return; }
   }
-  try { await rm(deviceIdPath(options)); } catch (error) {
+  try { await rm(handsDeviceIdLocation(options)); } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw new DeviceIdError("DEVICE_ID_PERSIST_FAILED", "Hands device ID could not be reset");
   }
 }
