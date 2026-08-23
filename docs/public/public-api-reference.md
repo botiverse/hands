@@ -97,6 +97,35 @@ external-target, and revision gates. Only a previously active row returns to
 that already received that version install different bits; publish client
 corrections with a higher version code.
 
+To freeze a published release without revoking its existing share links, set
+its stable full-scope rollout to `0` in the admin release controls. This is a
+distribution-pointer mutation, not a release deletion or share revocation:
+existing `/share/...` URLs and their artifact downloads remain available, while
+the public latest/update resolver skips the zero-rollout release and resolves
+the previous eligible active release. Fresh-read both resolver responses and
+the existing share after the mutation. Record the release revision and the
+previous eligible release in the receipt. Do not claim that rollout `0`
+retroactively removes an already-installed build.
+For each resolver readback, record the querying client version and whether a
+device id was supplied. A no-device-id read is the deterministic probe for
+fully rolled-out releases; a single device-id read is not sufficient evidence
+of pointer correctness when the target rollout is strictly between `0` and
+`100`, because the result depends on the device's stable bucket.
+
+To resume distribution, do not infer a target from the frozen release or
+blindly restore `100`. The release owner must explicitly select the target
+version/release (and rollout percentage), taking into account any newer
+eligible release created while the pointer was frozen. Fresh-read the target
+release revision before changing it, apply the chosen rollout, then fresh-read
+the release, public latest/update responses, and the intended share URL again.
+Record the owner-selected target, resulting revision/rollout, and resolver
+and share readbacks in the receipt. Restoring rollout is not, by itself, proof
+that the public pointer resumed to the correct version. For each latest/update
+readback, record the querying client version and whether a device id was
+supplied; when the target rollout is strictly between `0` and `100`, include
+the no-device-id deterministic probe and do not treat one device-id result as
+sufficient evidence.
+
 ### Update Available
 
 ```json
