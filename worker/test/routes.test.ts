@@ -40,7 +40,7 @@ import {
   requestOrigin,
 } from "../src/lib/origin";
 import { openApiDocument } from "../src/openapi";
-import { handleCreateApp, handleListApps, handleUpdateFeatureFlag } from "../src/routes/apps";
+import { handleCreateApp, handleListApps, handleUpdateApp, handleUpdateFeatureFlag } from "../src/routes/apps";
 import {
   createSignedJwt,
   handleAuthLogin,
@@ -145,7 +145,8 @@ function makeMockDb() {
       id TEXT PRIMARY KEY, org_id TEXT, slug TEXT NOT NULL UNIQUE, name TEXT NOT NULL,
       platform TEXT NOT NULL, description TEXT, archived INTEGER NOT NULL DEFAULT 0,
       archived_at INTEGER, created_at INTEGER NOT NULL, icon_r2_key TEXT, public_history INTEGER NOT NULL DEFAULT 0, client_key TEXT,
-      delta_updates_enabled INTEGER NOT NULL DEFAULT 0
+      delta_updates_enabled INTEGER NOT NULL DEFAULT 0,
+      update_attestation_required INTEGER NOT NULL DEFAULT 0
     );
     CREATE TABLE feature_flags (
       id TEXT PRIMARY KEY,
@@ -895,6 +896,20 @@ describe("quiver route handlers — SQL smoke", () => {
 
   beforeEach(() => {
     env = makeMockEnv();
+  });
+
+  it("does not allow attestation enforcement to be disabled after opt-in", async () => {
+    await env.DB.prepare(
+      "INSERT INTO apps (id, slug, name, platform, created_at, update_attestation_required) VALUES (?, ?, ?, ?, ?, 1)",
+    ).bind("ratchet", "ratchet", "Ratchet", "node", Date.now()).run();
+    const response = await handleUpdateApp({
+      env,
+      req: { param: () => "ratchet", json: async () => ({ update_attestation_required: false }) },
+      get: () => "tester",
+      json: (data: unknown, status = 200) => new Response(JSON.stringify(data), { status }),
+    } as any);
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toMatchObject({ code: "UPDATE_ATTESTATION_ENFORCEMENT_IMMUTABLE" });
   });
 
   it("creates + lists apps", async () => {
@@ -4054,6 +4069,25 @@ describe("quiver releases — draft lifecycle", () => {
       { id: "rel-active", status: "active", superseded_by_release_id: null },
       { id: "rel-draft", status: "draft", superseded_by_release_id: null },
     ]);
+  });
+
+  it("rejects direct active creation after attestation enforcement is enabled", async () => {
+    const { handleCreateRelease } = await import("../src/routes/releases");
+    await env.DB.prepare("UPDATE apps SET update_attestation_required = 1 WHERE id = 'app-release'").run();
+    const response = await handleCreateRelease(makeReleaseContext("", { build_id: "build-active" }));
+    expect(response.status).toBe(409);
+    await expect(responseJson<any>(response)).resolves.toMatchObject({ code: "UPDATE_ATTESTATION_DRAFT_REQUIRED" });
+  });
+
+  it("rejects restore-to-active when the release has no attested artifact", async () => {
+    const { createRelease, handleDeleteRelease, handleRollbackRelease } = await import("../src/routes/releases");
+    await createRelease(env.DB as any, "app-release", { build_id: "build-active", status: "active" }, "tester", "rel-gated-restore");
+    const cancelled = await handleDeleteRelease(makeReleaseContext("rel-gated-restore", { expected_revision: 0 }));
+    expect(cancelled.status).toBe(200);
+    await env.DB.prepare("UPDATE apps SET update_attestation_required = 1 WHERE id = 'app-release'").run();
+    const restored = await handleRollbackRelease(makeReleaseContext("rel-gated-restore", { expected_revision: 1 }));
+    expect(restored.status).toBe(409);
+    await expect(responseJson<any>(restored)).resolves.toMatchObject({ code: "UPDATE_ARTIFACT_MISSING" });
   });
 
   it("allows a new lifecycle after the prior version is cancelled", async () => {

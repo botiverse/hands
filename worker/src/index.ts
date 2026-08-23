@@ -210,6 +210,11 @@ import {
   handleUpsertReleaseCheck,
   handleListReleaseChecks,
 } from "./routes/releases";
+import {
+  handlePrepareUpdateAttestation,
+  handleRegisterUpdateAttestationKey,
+  handleSubmitUpdateAttestation,
+} from "./routes/update_attestations";
 import { handleListChannels, handleCreateChannel, handleUpdateChannel, handleDeleteChannel } from "./routes/channels";
 import {
   handleAddDeviceGroupMember,
@@ -868,6 +873,9 @@ admin.post("/api/apps/:appId/releases/:releaseId/bump-rollout", requireAppRole("
 admin.post("/api/apps/:appId/releases/:releaseId/force-update", requireAppRole("publisher"), handleForceUpdate);
 admin.get("/api/apps/:appId/releases/:releaseId/checks", requireAppRole("viewer"), handleListReleaseChecks);
 admin.post("/api/apps/:appId/releases/:releaseId/checks", requireAppRole("publisher"), handleUpsertReleaseCheck);
+admin.post("/api/apps/:appId/update-attestation-keys", requireAppRole("admin"), handleRegisterUpdateAttestationKey);
+admin.post("/api/apps/:appId/releases/:releaseId/attestations/prepare", requireAppRole("publisher"), handlePrepareUpdateAttestation);
+admin.post("/api/apps/:appId/releases/:releaseId/attestations", requireAppRole("publisher"), handleSubmitUpdateAttestation);
 admin.get("/api/apps/:appId/shares", requireAppRole("viewer"), handleListAppShares);
 admin.post("/api/apps/:appId/shares/:shareId/rebind", requireAppRole("publisher"), handleRebindReleaseShare);
 admin.put("/api/apps/:appId/icon", requireAppRole("publisher"), handleUploadAppIcon);

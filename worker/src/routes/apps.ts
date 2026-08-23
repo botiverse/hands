@@ -347,11 +347,12 @@ export async function handleUpdateApp(c: AdminContext) {
     default_channel_id?: string | null;
     public_history?: boolean;
     delta_updates_enabled?: boolean;
+    update_attestation_required?: boolean;
   };
   // Confirm app exists.
   const existing = await c.env.DB.prepare(
-    `SELECT id FROM apps WHERE id = ?1`,
-  ).bind(appId).first<{ id: string }>();
+    `SELECT id, update_attestation_required FROM apps WHERE id = ?1`,
+  ).bind(appId).first<{ id: string; update_attestation_required?: number }>();
   if (!existing) return c.json({ error: "not found" }, 404);
 
   const updates: string[] = [];
@@ -374,6 +375,16 @@ export async function handleUpdateApp(c: AdminContext) {
   if (body.delta_updates_enabled !== undefined) {
     updates.push("delta_updates_enabled = ?");
     binds.push(body.delta_updates_enabled ? 1 : 0);
+  }
+  if (body.update_attestation_required !== undefined) {
+    if (existing.update_attestation_required === 1 && body.update_attestation_required === false) {
+      return c.json({
+        error: "update attestation enforcement cannot be disabled once enabled",
+        code: "UPDATE_ATTESTATION_ENFORCEMENT_IMMUTABLE",
+      }, 409);
+    }
+    updates.push("update_attestation_required = ?");
+    binds.push(body.update_attestation_required ? 1 : 0);
   }
   if (body.default_channel_id !== undefined) {
     if (body.default_channel_id === null) {

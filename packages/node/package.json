@@ -22,6 +22,14 @@
     "./logs/schema": {
       "types": "./dist/logs/schema.d.ts",
       "import": "./dist/logs/schema.js"
+    },
+    "./updater/attestation": {
+      "types": "./dist/updater/attestation.d.ts",
+      "import": "./dist/updater/attestation.js"
+    },
+    "./updater": {
+      "types": "./dist/updater/index.d.ts",
+      "import": "./dist/updater/index.js"
     }
   },
   "files": [
