@@ -30,6 +30,7 @@ import {
   rolloutIncludes,
   selectBestAsset,
 } from "../lib/release_resolver";
+import { verifyUpdateArtifactAttestation } from "../lib/update_attestation";
 
 export { fnv1a32, rolloutBucket, rolloutIncludes, selectBestAsset };
 
@@ -540,11 +541,13 @@ async function handlePublicCliBinaryUpdateCheck(c: Context<{ Bindings: Env }>) {
   const row = await c.env.DB.prepare(
     `SELECT a.id AS app_id, a.slug, a.update_attestation_required,
             r.id AS release_id, r.revision, r.rollout_cohort_count,
-            r.activated_at, r.channel_id, b.id AS build_id,
+            r.activated_at, r.channel_id, r.product_type, r.release_type,
+            b.id AS build_id,
             b.version_name, b.version_code,
             e.id AS artifact_id, e.raw_sha256, e.raw_size_bytes,
             t.schema_version, t.algorithm, t.key_id, t.payload_b64url,
-            t.signature_b64url, k.status AS key_status
+            t.signature_b64url, k.status AS key_status,
+            k.public_key_spki_b64url
      FROM apps a
      JOIN channels ch ON ch.app_id = a.id AND ch.slug = ?2
      JOIN releases r ON r.app_id = a.id AND r.channel_id = ch.id
@@ -564,13 +567,30 @@ async function handlePublicCliBinaryUpdateCheck(c: Context<{ Bindings: Env }>) {
   ).bind(slug, channel, target, Date.now()).first<{
     app_id: string; slug: string; update_attestation_required: number;
     release_id: string; revision: number; rollout_cohort_count: number | null;
-    activated_at: number; channel_id: string; build_id: string;
+    activated_at: number; channel_id: string; product_type: string;
+    release_type: string; build_id: string;
     version_name: string; version_code: number; artifact_id: string;
     raw_sha256: string; raw_size_bytes: number; schema_version: number;
     algorithm: string; key_id: string; payload_b64url: string;
-    signature_b64url: string; key_status: string;
+    signature_b64url: string; key_status: string; public_key_spki_b64url: string;
   }>();
   if (!row) return c.json({ error: "no active attested release for target", code: "UPDATE_NO_COMPATIBLE_ARTIFACT" }, 404);
+  try {
+    const payload = await verifyUpdateArtifactAttestation(
+      { algorithm: row.algorithm, keyId: row.key_id, payload: row.payload_b64url, schemaVersion: row.schema_version, signature: row.signature_b64url },
+      { [row.key_id]: row.public_key_spki_b64url },
+    );
+    const exact = payload.appId === row.app_id && payload.releaseId === row.release_id &&
+      payload.channelId === row.channel_id && payload.buildId === row.build_id &&
+      payload.productType === row.product_type && payload.releaseType === row.release_type &&
+      payload.version === row.version_name && payload.versionCode === row.version_code &&
+      payload.artifact.id === row.artifact_id && payload.artifact.kind === "external_build_target" &&
+      payload.artifact.platform === platform && payload.artifact.arch === arch &&
+      payload.artifact.sha256 === row.raw_sha256 && payload.artifact.sizeBytes === row.raw_size_bytes;
+    if (!exact) throw new Error("signed payload differs from ledger");
+  } catch {
+    return c.json({ error: "active artifact attestation failed verification", code: "UPDATE_IDENTITY_DRIFT" }, 409);
+  }
   if (!rolloutIncludes(row.release_id, row.rollout_cohort_count, deviceId)) {
     return c.json({ update_available: false, current_version: currentVersion, checked_at: Date.now() });
   }
