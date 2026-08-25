@@ -151,6 +151,7 @@ sufficient evidence.
     "arch": "arm64-v8a",
     "filetype": "apk",
     "size_bytes": 29192396,
+    "sha256": "9f86d081…",
     "download_url": "https://hands.build/public/r2/…"
   },
   "scoped": { "scope_type": "full", "scope_value": "all", "release_id": "…", "rollout_cohort_count": null }
@@ -177,7 +178,61 @@ GET /public/v2/apps/:appSlug/latest?channel=main&product_type=android-apk
 
 Returns the latest compatible installable release for the channel,
 independent of the client's installed version. Accepts the same `lang` and
-`device_id` inputs as the update check.
+`device_id` inputs as the update check. Pass `product_type` whenever the
+channel can carry more than one product form — without it the server picks
+the most recent active release across all types.
+
+### Unified asset shape
+
+`assets` always has one shape, regardless of where the artifact bytes live:
+
+```json
+{
+  "platform": "linux",
+  "arch": "x64",
+  "variant": null,
+  "filetype": "binary",
+  "size_bytes": 119437512,
+  "sha256": "b1946ac9…",
+  "download_url": "https://hands.build/dl/my-cli/releases/rel-…/linux-x64"
+}
+```
+
+Two storage arms feed it:
+
+- **Uploaded assets** (APKs, IPAs, installers): Hands stores the bytes and
+  `download_url` is a signed, time-limited URL. `filetype` reflects the
+  artifact kind (`apk`, `dmg`, …).
+- **External builds** (`cli-binary` — Node SEA or CLI executables whose
+  bytes stay on the publisher's CDN): Hands acts as the registry. At release
+  time the publisher declares each target's source URL, size, and SHA-256;
+  Hands records that identity immutably while the CDN remains the byte
+  authority. `/latest` projects those declarations into the same shape —
+  `platform`/`arch` derive from the target name, `filetype` is `binary`, and
+  `download_url` is the immutable release-bound
+  `/dl/:appSlug/releases/:releaseId/:target` route, which 302s to the
+  declared source URL and keeps resolving the same bytes even after the
+  release is superseded.
+
+Installers should not care which arm served an entry: select by
+`platform`/`arch`, download, verify, install.
+
+### Verifying downloads with `sha256`
+
+Every asset entry carries the lowercase hex SHA-256 of the artifact bytes as
+registered at release time. Verify downloaded bytes against it before
+installing:
+
+```sh
+curl -fL -o app "$download_url"
+echo "$sha256  app" | sha256sum --check --strict
+```
+
+This binds "the version Hands resolved" to "the bytes the CDN served": a
+half-written upload, a stale cache edge, a mispointed URL, or an accidental
+object overwrite fails the check instead of installing the wrong bytes.
+The hash is not a substitute for transport security — it complements HTTPS
+by catching content drift that transport cannot see.
 
 ## Release Notes JSON
 
