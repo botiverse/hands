@@ -453,6 +453,38 @@ export async function handleListBuilds(c: Context<{ Bindings: Env }>) {
   return c.json({ builds: results });
 }
 
+/** Secret-free, bounded build census for independent release evidence. */
+export async function handleListBuildCensus(c: Context<{ Bindings: Env }>) {
+  const appId = c.req.param("appId") ?? "";
+  const version = c.req.query("version_name");
+  const cursor = Math.max(0, Number(c.req.query("cursor") ?? "0") || 0);
+  const limit = Math.min(100, Math.max(1, Number(c.req.query("limit") ?? "50") || 50));
+  const rows = await c.env.DB.prepare(
+    `SELECT b.id, b.app_id, b.version_name, b.status, b.channel_id,
+            c.slug AS channel, b.source, b.provenance_json, b.created_at,
+            b.updated_at, b.completed_at
+       FROM builds b LEFT JOIN channels c ON c.id = b.channel_id
+      WHERE b.app_id = ?1 AND (?2 IS NULL OR b.version_name = ?2)
+      ORDER BY b.created_at ASC, b.id ASC LIMIT ?3 OFFSET ?4`,
+  ).bind(appId, version ?? null, limit + 1, cursor).all<Record<string, unknown>>();
+  const page = rows.results.slice(0, limit);
+  const builds = [];
+  for (const row of page) {
+    const targetRows = await c.env.DB.prepare(
+      "SELECT target FROM external_build_targets WHERE app_id = ?1 AND build_id = ?2 ORDER BY target ASC",
+    ).bind(appId, row.id).all<{ target: string }>();
+    builds.push({
+      id: row.id, app_id: row.app_id, version: row.version_name, status: row.status,
+      channel_id: row.channel_id, channel: row.channel, source: row.source,
+      provenance: row.provenance_json, created_at: row.created_at,
+      updated_at: row.updated_at, completed_at: row.completed_at,
+      target_count: targetRows.results.length,
+      targets: targetRows.results.map((target) => target.target),
+    });
+  }
+  return c.json({ builds, next_cursor: rows.results.length > limit ? String(cursor + limit) : null });
+}
+
 export async function handleGetBuild(c: Context<{ Bindings: Env }>) {
   const appId = c.req.param("appId") ?? "";
   const buildId = c.req.param("buildId") ?? "";

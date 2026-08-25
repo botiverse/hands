@@ -1324,6 +1324,17 @@ export async function handleAgentManifest(c: Context<{ Bindings: Env }>) {
         },
       },
       {
+        name: "list-build-census",
+        description: "List secret-free build summaries and external target names for one app, optionally filtered to an exact version. Requires app viewer; returns no artifact bytes, URLs, credentials, or write capability.",
+        endpoint: { method: "GET", path: "/api/apps/{app_id}/build-census" },
+        parameters: {
+          app_id: { type: "string", in: "path", required: true, description: "Hands app UUID." },
+          version_name: { type: "string", in: "query", required: false, description: "Exact build version filter." },
+          cursor: { type: "string", in: "query", required: false, description: "Opaque numeric page cursor returned as next_cursor." },
+          limit: { type: "integer", in: "query", required: false, description: "Page size, 1..100." },
+        },
+      },
+      {
         name: "list-build-assets",
         description:
           "List every asset attached to a build, including installables, metadata, and symbols.",

@@ -154,6 +154,7 @@ import {
   handleListExternalBuildTargets,
   handleListBuildAssets,
   handleListBuilds,
+  handleListBuildCensus,
   handlePublishExternalBuildVersion,
   handleUpdateBuild,
 } from "./routes/builds";
@@ -677,6 +678,7 @@ admin.put(
 admin.put("/api/apps/:appId/feature-flags/:key", requireAppRole("publisher"), handleUpdateFeatureFlag);
 
 admin.get("/api/apps/:appId/builds", requireAppRole("viewer"), handleListBuilds);
+admin.get("/api/apps/:appId/build-census", requireAppRole("viewer"), handleListBuildCensus);
 admin.post("/api/apps/:appId/builds", requireAppRole("publisher"), handleCreateBuild);
 admin.post(
   "/api/apps/:appId/builds/publish-version",
