@@ -37,9 +37,21 @@ const PublicAsset = z
     platform: z.string(),
     arch: z.string().nullable().optional(),
     variant: z.string().nullable().optional(),
-    filetype: z.string(),
+    filetype: z.string().openapi({
+      description: "Artifact kind, e.g. `apk`. Externally-hosted builds report `binary`.",
+    }),
     size_bytes: z.number().int(),
-    download_url: z.string().url(),
+    sha256: z.string().openapi({
+      description:
+        "Lowercase hex SHA-256 of the artifact bytes as registered at release time. " +
+        "Clients should verify downloaded bytes against it.",
+    }),
+    download_url: z.string().url().openapi({
+      description:
+        "For uploaded assets a signed, time-limited URL; for externally-hosted builds the " +
+        "immutable release-bound `/dl/{slug}/releases/{releaseId}/{target}` route " +
+        "(302 to the declared source URL).",
+    }),
   })
   .openapi("PublicAsset");
 
@@ -173,7 +185,11 @@ export function registerPublicRoutes(registry: OpenApiRegistry) {
     tags: ["Public update"],
     summary: "Check latest release for an app",
     description:
-      "Resolves the best active release for a client on a channel, optionally filtered by product type and scoped by platform/cohort/IP.",
+      "Resolves the best active release for a client on a channel, optionally filtered by product type and scoped by platform/cohort/IP. " +
+      "`assets` has one unified shape regardless of where the bytes live: uploaded build assets are served via signed URLs, while " +
+      "externally-hosted builds (e.g. `cli-binary` Node SEA, whose bytes stay on the declaring CDN) are projected from their registered " +
+      "targets with `platform`/`arch` derived from the target name and `download_url` pointing at the immutable release-bound `/dl` route. " +
+      "Every entry carries the `sha256` registered at release time so installers can verify downloaded bytes against the identity Hands resolved.",
     request: {
       params: SlugParam,
       query: z.object({

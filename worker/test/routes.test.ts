@@ -7354,6 +7354,110 @@ describe("quiver public API v2 — scope resolution", () => {
     });
   });
 
+  it("latest exposes asset sha256 so installers can verify Hands identity against CDN bytes", async () => {
+    const env = makeEnv();
+    configureR2Presign(env);
+    const now = Date.now();
+    await seedRelease(env, "rel-sha-surface", "build-sha-surface", [["full", "all"]], {
+      createdAt: now,
+      versionCode: 30,
+    });
+    await seedAsset(env, "build-sha-surface", "asset-sha-surface", {
+      arch: "arm64-v8a",
+      fileHash: "e".repeat(64),
+      sizeBytes: 4321,
+    });
+    const { handlePublicV2Latest } = await import("../src/routes/public_v2");
+
+    const response = await handlePublicV2Latest(makePublicContext(env, {
+      channel: "production",
+      product_type: "android-apk",
+      platform: "android",
+      arch: "arm64-v8a",
+    }));
+    expect(response.status).toBe(200);
+    const body = await responseJson<any>(response);
+    expect(body.assets).toHaveLength(1);
+    expect(body.assets[0]).toMatchObject({
+      platform: "android",
+      arch: "arm64-v8a",
+      filetype: "apk",
+      size_bytes: 4321,
+      sha256: "e".repeat(64),
+    });
+    expect(body.assets[0].download_url).toMatch(/^https:\/\//);
+  });
+
+  it("latest projects external build targets into the unified asset shape", async () => {
+    // Externally-hosted builds (Node SEA / cli-binary) have no R2 build_assets
+    // rows, so before this arm existed /latest resolved the release but
+    // returned assets: []. Installers doing cold installs off /latest need the
+    // same shape either way: platform/arch/size/sha256/download_url.
+    const env = makeEnv();
+    const now = Date.now();
+    await seedRelease(env, "rel-ext-latest", "build-ext-latest", [["full", "all"]], {
+      createdAt: now,
+      productType: "cli-binary",
+      versionName: "1.0.19",
+      versionCode: 40,
+    });
+    await env.DB.prepare("UPDATE builds SET source = 'external' WHERE id = 'build-ext-latest'").run();
+    for (const [target, sha] of [["darwin-arm64", "a".repeat(64)], ["linux-x64", "b".repeat(64)]] as const) {
+      await env.DB.prepare(
+        `INSERT INTO external_build_targets
+         (id, app_id, build_id, version_name, target, source_url, raw_sha256, raw_size_bytes,
+          node_version, metadata_json, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ).bind(
+        `ext-latest-${target}`,
+        "app-scope",
+        "build-ext-latest",
+        "1.0.19",
+        target,
+        `https://cdn.test/1.0.19/${target}`,
+        sha,
+        119,
+        "24.15.0",
+        "{}",
+        now,
+        now,
+      ).run();
+    }
+    const { handlePublicV2Latest } = await import("../src/routes/public_v2");
+
+    const filtered = await handlePublicV2Latest(makePublicContext(env, {
+      channel: "production",
+      product_type: "cli-binary",
+      platform: "linux-x64",
+    }));
+    expect(filtered.status).toBe(200);
+    const filteredBody = await responseJson<any>(filtered);
+    expect(filteredBody.build).toMatchObject({ version: "1.0.19", version_code: 40 });
+    expect(filteredBody.assets).toEqual([{
+      platform: "linux",
+      arch: "x64",
+      variant: null,
+      filetype: "binary",
+      size_bytes: 119,
+      sha256: "b".repeat(64),
+      // Immutable release-bound /dl route — the same download surface
+      // updates/check hands out — not the raw source URL.
+      download_url: "https://quiver-worker.test/dl/scope-app/releases/rel-ext-latest/linux-x64",
+    }]);
+
+    const unfiltered = await handlePublicV2Latest(makePublicContext(env, {
+      channel: "production",
+      product_type: "cli-binary",
+    }));
+    expect(unfiltered.status).toBe(200);
+    const unfilteredBody = await responseJson<any>(unfiltered);
+    expect(unfilteredBody.assets.map((a: any) => `${a.platform}-${a.arch}`)).toEqual([
+      "darwin-arm64",
+      "linux-x64",
+    ]);
+    expect(unfilteredBody.assets.every((a: any) => /^[a-f0-9]{64}$/.test(a.sha256))).toBe(true);
+  });
+
   it("updates/check returns no update without exposing assets when current version is latest", async () => {
     const env = makeEnv();
     const { handlePublicV2UpdateCheck } = await import("../src/routes/public_v2");

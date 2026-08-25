@@ -47,6 +47,7 @@ type PublicAssetResponse = {
   variant: string | null;
   filetype: string;
   size_bytes: number;
+  sha256: string;
   download_url: string;
 };
 
@@ -280,16 +281,55 @@ export async function handlePublicV2Latest(c: Context<{ Bindings: Env }>) {
 
   const ttl = Number(c.env.SIGNED_URL_TTL_SECONDS ?? "3600");
   const origin = publicRequestOrigin(c);
-  const assetsWithUrls = await Promise.all(
+  let assetsWithUrls: PublicAssetResponse[] = await Promise.all(
     filteredAssets.map(async (a) => ({
       platform: a.platform,
       arch: a.arch,
       variant: a.variant,
       filetype: a.filetype,
       size_bytes: a.size_bytes,
+      sha256: a.file_hash,
       download_url: await generateSignedR2Url(c.env, a.r2_key, ttl, origin),
     })),
   );
+
+  // Externally-hosted builds (source = 'external', e.g. Node SEA binaries)
+  // have no R2-backed build_assets rows; their per-target identity lives in
+  // external_build_targets. Project those targets into the same asset shape so
+  // /latest returns unified version info regardless of where the bytes live.
+  // download_url is the immutable release-bound /dl route (302 to the declared
+  // source URL) — the same surface updates/check hands out.
+  if (assets.results.length === 0) {
+    const { results: externalTargets } = await c.env.DB.prepare(
+      `SELECT target, raw_sha256, raw_size_bytes
+       FROM external_build_targets
+       WHERE build_id = ?1
+       ORDER BY target ASC`,
+    )
+      .bind(build.id)
+      .all<{ target: string; raw_sha256: string; raw_size_bytes: number }>();
+    const requested = splitPlatformArch(clientPlatform);
+    assetsWithUrls = externalTargets
+      .map((t) => {
+        const separator = t.target.indexOf("-");
+        const platform = separator > 0 ? t.target.slice(0, separator) : t.target;
+        const arch = separator > 0 ? t.target.slice(separator + 1) : null;
+        return {
+          platform,
+          arch,
+          variant: null,
+          filetype: "binary",
+          size_bytes: t.raw_size_bytes,
+          sha256: t.raw_sha256,
+          download_url: `${origin}/dl/${encodeURIComponent(app.slug)}/releases/${encodeURIComponent(winner.release_id)}/${encodeURIComponent(t.target)}`,
+        };
+      })
+      .filter((a) => {
+        if (!requested.platform) return true;
+        if (a.platform !== requested.platform) return false;
+        return requested.arch === null || a.arch === requested.arch;
+      });
+  }
 
   // Optional fallback_release: if the winner is NOT `full`, look for the
   // next-most-specific `full` match for the same client so we can warn
