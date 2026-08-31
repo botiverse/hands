@@ -1746,3 +1746,310 @@ describe("hands api command path (--api / --json wiring)", () => {
     expect(errs.join("\n")).not.toMatch(/\b200\b/);
   });
 });
+
+describe("play distribution commands", () => {
+  interface PlayRequest {
+    method: string;
+    url: string;
+    body?: unknown;
+  }
+
+  interface PlayHarness {
+    requests: PlayRequest[];
+    logs: string[];
+    run: (...args: string[]) => Promise<void>;
+    close: () => Promise<void>;
+  }
+
+  const originalEnv: Record<string, string | undefined> = {};
+  const ENV_KEYS = ["HANDS_API", "HANDS_BEARER_TOKEN", "SLOCK_CLI_TRANSPORT_DIR", "SLOCK_HOME", "SLOCK_AGENT_ID"];
+
+  beforeEach(() => {
+    for (const key of ENV_KEYS) {
+      originalEnv[key] = process.env[key];
+      // Human/CI auth path: clear inherited agent markers so admission is `human`.
+      delete process.env[key];
+    }
+  });
+
+  afterEach(() => {
+    for (const key of ENV_KEYS) {
+      if (originalEnv[key] === undefined) delete process.env[key];
+      else process.env[key] = originalEnv[key];
+    }
+  });
+
+  async function startPlayHarness(
+    overrides: { writeError?: { status: number; error: Record<string, unknown> } } = {},
+  ): Promise<PlayHarness> {
+    const requests: PlayRequest[] = [];
+    const logs: string[] = [];
+    const server = createServer(async (req, res) => {
+      let body: unknown;
+      if (req.headers["content-type"]?.includes("application/json")) {
+        const chunks: Buffer[] = [];
+        for await (const chunk of req) chunks.push(Buffer.from(chunk));
+        body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+      }
+      requests.push({ method: req.method ?? "GET", url: req.url ?? "", body });
+      res.setHeader("content-type", "application/json");
+      if (req.url === "/api/apps") {
+        return res.end(JSON.stringify({ apps: [{ id: "app-1", slug: "raft-android" }] }));
+      }
+      if (req.url === "/api/apps/app-1/releases/release-1" && req.method === "GET") {
+        return res.end(JSON.stringify({
+          release: { id: "release-1", status: "active", revision: 7 },
+        }));
+      }
+      if (req.url === "/api/apps/app-1/releases/release-1/distributions") {
+        return res.end(JSON.stringify({
+          distributions: [
+            { channel: "hands", state: "active" },
+            { channel: "google-play", state: "staged", track: "internal", version_code: 42, rollout_percent: 25 },
+          ],
+        }));
+      }
+      if (req.url === "/api/apps/app-1/releases/release-1/distributions/play" && req.method === "GET") {
+        return res.end(JSON.stringify({
+          play: {
+            track: "internal",
+            version_code: 42,
+            rollout_percent: 25,
+            last_edit_id: "edit-1",
+            last_receipt_id: "rcpt-1",
+          },
+        }));
+      }
+      if (req.url?.startsWith("/api/apps/app-1/releases/release-1/distributions/play/") && req.method === "POST") {
+        if (overrides.writeError) {
+          res.statusCode = overrides.writeError.status;
+          return res.end(JSON.stringify({ error: overrides.writeError.error }));
+        }
+        const action = req.url.split("/").at(-1);
+        return res.end(JSON.stringify({
+          receipt: {
+            id: `rcpt-${action}`,
+            action: action === "rollback" ? "rollback-republish" : action,
+            result: "success",
+            track: "internal",
+            version_code: 42,
+            rollout_percent: 25,
+            play_edit_id: `edit-${action}`,
+          },
+        }));
+      }
+      if (req.url === "/api/apps/app-1/releases/release-1/receipts") {
+        return res.end(JSON.stringify({
+          receipts: [
+            { id: "rcpt-0", kind: "acceptance", verdict: "pass", created_at: 1700000000000 },
+            { id: "rcpt-1", kind: "play-promotion", action: "promote", result: "success", created_at: 1700000100000 },
+          ],
+        }));
+      }
+      res.statusCode = 404;
+      return res.end(JSON.stringify({ error: "not found" }));
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("bad address");
+    process.env.HANDS_API = `http://127.0.0.1:${address.port}`;
+    process.env.HANDS_BEARER_TOKEN = "test-token";
+    // api.ts caches a process-wide base once any test calls setApiBase (e.g. the
+    // `hands api` describe above), so pin the base explicitly instead of relying
+    // on HANDS_API env resolution alone.
+    const { setApiBase } = await import("../src/lib/api.js");
+    setApiBase(process.env.HANDS_API);
+    const logSpy = vi.spyOn(console, "log").mockImplementation((m?: unknown) => {
+      logs.push(String(m));
+    });
+    const { registerReleaseCommands } = await import("../src/commands/releases.js");
+    const run = async (...args: string[]) => {
+      const program = new Command().option("--json", "JSON output", false);
+      registerReleaseCommands(program);
+      await program.parseAsync(["node", "hands", ...args]);
+    };
+    return {
+      requests,
+      logs,
+      run,
+      close: async () => {
+        logSpy.mockRestore();
+        await new Promise<void>((resolve) => server.close(() => resolve()));
+      },
+    };
+  }
+
+  it("lists distribution channels, in text and via --json at subcommand and root level", async () => {
+    const harness = await startPlayHarness();
+    try {
+      await harness.run("releases", "distributions", "raft-android", "release-1");
+      const text = harness.logs.join("\n");
+      expect(text).toContain("hands  active");
+      expect(text).toContain("google-play  staged  track=internal  versionCode=42  rollout=25%");
+
+      harness.logs.length = 0;
+      await harness.run("releases", "distributions", "raft-android", "release-1", "--json");
+      expect(JSON.parse(harness.logs.join("\n"))).toEqual({
+        distributions: [
+          { channel: "hands", state: "active" },
+          { channel: "google-play", state: "staged", track: "internal", version_code: 42, rollout_percent: 25 },
+        ],
+      });
+
+      // Root-level --json must not be swallowed by the subcommand (task #140 contract).
+      harness.logs.length = 0;
+      await harness.run("--json", "releases", "distributions", "raft-android", "release-1");
+      expect(JSON.parse(harness.logs.join("\n")).distributions).toHaveLength(2);
+    } finally {
+      await harness.close();
+    }
+  });
+
+  it("promotes with expected_revision, approval note, and prints receipt/edit/track/versionCode", async () => {
+    const harness = await startPlayHarness();
+    try {
+      await harness.run(
+        "releases", "play-promote", "raft-android", "release-1",
+        "--track", "internal", "--rollout-percent", "25", "--note", "ship it",
+      );
+      const post = harness.requests.find((request) => request.method === "POST");
+      expect(post).toEqual({
+        method: "POST",
+        url: "/api/apps/app-1/releases/release-1/distributions/play/promote",
+        body: {
+          track: "internal",
+          expected_revision: 7,
+          approval: { note: "ship it" },
+          rollout_percent: 25,
+        },
+      });
+      const text = harness.logs.join("\n");
+      expect(text).toContain("rcpt-promote");
+      expect(text).toContain("edit-promote");
+      expect(text).toContain("track:       internal");
+      expect(text).toContain("versionCode: 42");
+    } finally {
+      await harness.close();
+    }
+  });
+
+  it("halts and rolls back with expected_revision; rollback sends to_version_code", async () => {
+    const harness = await startPlayHarness();
+    try {
+      await harness.run("releases", "play-halt", "raft-android", "release-1");
+      await harness.run(
+        "releases", "play-rollback", "raft-android", "release-1",
+        "--to-version-code", "41", "--note", "regression",
+      );
+      const posts = harness.requests.filter((request) => request.method === "POST");
+      expect(posts).toEqual([
+        {
+          method: "POST",
+          url: "/api/apps/app-1/releases/release-1/distributions/play/halt",
+          body: { expected_revision: 7, approval: { note: "" } },
+        },
+        {
+          method: "POST",
+          url: "/api/apps/app-1/releases/release-1/distributions/play/rollback",
+          body: { to_version_code: 41, expected_revision: 7, approval: { note: "regression" } },
+        },
+      ]);
+    } finally {
+      await harness.close();
+    }
+  });
+
+  it("maps gate_failed to a verbatim gate name with no partial output", async () => {
+    const harness = await startPlayHarness({
+      writeError: {
+        status: 400,
+        error: {
+          code: "gate_failed",
+          gate: "acceptance_receipt",
+          message: "no passing acceptance receipt for this AAB",
+          receipt_id: "rcpt-failed",
+        },
+      },
+    });
+    try {
+      await expect(harness.run(
+        "releases", "play-promote", "raft-android", "release-1", "--track", "internal",
+      )).rejects.toThrow("gate acceptance_receipt");
+      expect(harness.logs).toHaveLength(0);
+    } finally {
+      await harness.close();
+    }
+  });
+
+  it("reports edit_conflict without auto-retry", async () => {
+    const harness = await startPlayHarness({
+      writeError: {
+        status: 409,
+        error: {
+          code: "edit_conflict",
+          gate: "edit_lock",
+          message: "another Play edit is active for this package",
+          receipt_id: null,
+        },
+      },
+    });
+    try {
+      await expect(harness.run(
+        "releases", "play-halt", "raft-android", "release-1",
+      )).rejects.toThrow(/edit_conflict.*Not retried automatically/);
+      expect(harness.requests.filter((request) => request.method === "POST")).toHaveLength(1);
+      expect(harness.logs).toHaveLength(0);
+    } finally {
+      await harness.close();
+    }
+  });
+
+  it("rejects invalid --track, --rollout-percent, and --to-version-code before any request", async () => {
+    const harness = await startPlayHarness();
+    try {
+      await expect(harness.run(
+        "releases", "play-promote", "raft-android", "release-1", "--track", "beta",
+      )).rejects.toThrow("--track must be one of: internal, closed, production");
+      await expect(harness.run(
+        "releases", "play-promote", "raft-android", "release-1", "--track", "closed", "--rollout-percent", "101",
+      )).rejects.toThrow("--rollout-percent must be an integer from 0 to 100");
+      await expect(harness.run(
+        "releases", "play-rollback", "raft-android", "release-1", "--to-version-code", "0",
+      )).rejects.toThrow("--to-version-code must be a positive integer");
+      expect(harness.requests).toHaveLength(0);
+    } finally {
+      await harness.close();
+    }
+  });
+
+  it("prints the immutable receipt chain", async () => {
+    const harness = await startPlayHarness();
+    try {
+      await harness.run("releases", "receipts", "raft-android", "release-1");
+      const text = harness.logs.join("\n");
+      expect(text).toContain("rcpt-0  acceptance  pass");
+      expect(text).toContain("rcpt-1  play-promotion/promote  success");
+
+      harness.logs.length = 0;
+      await harness.run("--json", "releases", "receipts", "raft-android", "release-1");
+      expect(JSON.parse(harness.logs.join("\n")).receipts).toHaveLength(2);
+    } finally {
+      await harness.close();
+    }
+  });
+
+  it("shows current Play state", async () => {
+    const harness = await startPlayHarness();
+    try {
+      await harness.run("releases", "play-status", "raft-android", "release-1");
+      const text = harness.logs.join("\n");
+      expect(text).toContain("track:        internal");
+      expect(text).toContain("versionCode:  42");
+      expect(text).toContain("rollout:      25%");
+      expect(text).toContain("last edit:    edit-1");
+      expect(text).toContain("last receipt: rcpt-1");
+    } finally {
+      await harness.close();
+    }
+  });
+});
