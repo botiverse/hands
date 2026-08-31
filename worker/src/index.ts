@@ -197,6 +197,20 @@ import {
   handleListIosSimulatorArtifacts,
 } from "./routes/qa_artifacts";
 import {
+  handleCompleteAndroidReleaseArtifact,
+  handleCreateAndroidReleaseArtifacts,
+  handleGetAndroidReleaseArtifacts,
+} from "./routes/android_release_artifacts";
+import {
+  handleCreateAcceptanceReceipt,
+  handleGetPlayDistribution,
+  handleHaltPlayDistribution,
+  handleListDistributions,
+  handleListReleaseReceipts,
+  handlePromotePlayDistribution,
+  handleRollbackPlayDistribution,
+} from "./routes/play_distribution";
+import {
   handleBumpRollout,
   handleCreateRelease,
   handleCreateReleaseDraft,
@@ -855,6 +869,24 @@ admin.get(
   handleDownloadIosSimulatorArtifact,
 );
 
+// Mobile CI declares one Android release build with exactly one AAB and one
+// APK. The pair is sealed independently but becomes ready only as one bundle.
+admin.post(
+  "/api/apps/:appId/android-release-artifacts",
+  requireAppRole("publisher"),
+  handleCreateAndroidReleaseArtifacts,
+);
+admin.get(
+  "/api/apps/:appId/android-release-artifacts/:buildId",
+  requireAppRole("viewer"),
+  handleGetAndroidReleaseArtifacts,
+);
+admin.post(
+  "/api/apps/:appId/android-release-artifacts/:buildId/assets/:assetId/complete",
+  requireAppRole("publisher"),
+  handleCompleteAndroidReleaseArtifact,
+);
+
 admin.get("/api/apps/:appId/releases", requireAppRole("viewer"), handleListReleases);
 admin.post("/api/apps/:appId/releases", requireAppRole("publisher"), handleCreateRelease);
 admin.post("/api/apps/:appId/releases/draft", requireAppRole("publisher"), handleCreateReleaseDraft);
@@ -867,6 +899,41 @@ admin.post("/api/apps/:appId/releases/:releaseId/bump-rollout", requireAppRole("
 admin.post("/api/apps/:appId/releases/:releaseId/force-update", requireAppRole("publisher"), handleForceUpdate);
 admin.get("/api/apps/:appId/releases/:releaseId/checks", requireAppRole("viewer"), handleListReleaseChecks);
 admin.post("/api/apps/:appId/releases/:releaseId/checks", requireAppRole("publisher"), handleUpsertReleaseCheck);
+admin.get(
+  "/api/apps/:appId/releases/:releaseId/distributions",
+  requireAppRole("viewer"),
+  handleListDistributions,
+);
+admin.get(
+  "/api/apps/:appId/releases/:releaseId/distributions/play",
+  requireAppRole("viewer"),
+  handleGetPlayDistribution,
+);
+admin.post(
+  "/api/apps/:appId/releases/:releaseId/distributions/play/promote",
+  requireAppRole("publisher"),
+  handlePromotePlayDistribution,
+);
+admin.post(
+  "/api/apps/:appId/releases/:releaseId/distributions/play/halt",
+  requireAppRole("publisher"),
+  handleHaltPlayDistribution,
+);
+admin.post(
+  "/api/apps/:appId/releases/:releaseId/distributions/play/rollback",
+  requireAppRole("publisher"),
+  handleRollbackPlayDistribution,
+);
+admin.get(
+  "/api/apps/:appId/releases/:releaseId/receipts",
+  requireAppRole("viewer"),
+  handleListReleaseReceipts,
+);
+admin.post(
+  "/api/apps/:appId/releases/:releaseId/receipts/acceptance",
+  requireAppRole("publisher"),
+  handleCreateAcceptanceReceipt,
+);
 admin.get("/api/apps/:appId/shares", requireAppRole("viewer"), handleListAppShares);
 admin.post("/api/apps/:appId/shares/:shareId/rebind", requireAppRole("publisher"), handleRebindReleaseShare);
 admin.put("/api/apps/:appId/icon", requireAppRole("publisher"), handleUploadAppIcon);

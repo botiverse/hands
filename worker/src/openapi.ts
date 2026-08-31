@@ -1,5 +1,6 @@
 import { OpenAPIHono } from "@hono/zod-openapi";
 import { registerAppRoutes } from "./openapi/apps";
+import { registerAndroidDistributionRoutes } from "./openapi/android_distribution";
 import { registerAuthRoutes } from "./openapi/auth";
 import { registerBuildRoutes } from "./openapi/builds";
 import { registerFeedbackRoutes } from "./openapi/feedback";
@@ -13,6 +14,7 @@ const docs = new OpenAPIHono();
 registerAuthRoutes(docs.openAPIRegistry);
 registerPublicRoutes(docs.openAPIRegistry);
 registerAppRoutes(docs.openAPIRegistry);
+registerAndroidDistributionRoutes(docs.openAPIRegistry);
 registerBuildRoutes(docs.openAPIRegistry);
 registerReleaseRoutes(docs.openAPIRegistry);
 registerFeedbackRoutes(docs.openAPIRegistry);
@@ -73,6 +75,10 @@ export const openApiDocument = docs.getOpenAPI31Document({
     {
       name: "Builds",
       description: "Create, inspect, and download build artifacts.",
+    },
+    {
+      name: "Android distribution",
+      description: "Immutable AAB/APK bundles, acceptance receipts, and server-side Google Play promotion.",
     },
     {
       name: "TestFlight",
