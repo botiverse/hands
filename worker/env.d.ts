@@ -41,6 +41,11 @@ declare global {
     FEEDBACK_REPORTER_SESSION_ACTIVE_KEY_VERSION?: string;
     /** Secret JSON object containing one or two base64url HMAC keys by version. */
     FEEDBACK_REPORTER_SESSION_KEYS?: string;
+    /**
+     * Server-side Google Play adapter. The adapter owns Play credentials; this
+     * Worker and every CI/CLI/device caller only see the service binding.
+     */
+    PLAY_RELEASE_SERVICE?: Fetcher;
   }
 }
 
