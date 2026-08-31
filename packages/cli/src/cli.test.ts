@@ -1780,7 +1780,7 @@ describe("play distribution commands", () => {
   });
 
   async function startPlayHarness(
-    overrides: { writeError?: { status: number; error: Record<string, unknown> } } = {},
+    overrides: { writeError?: { status: number; error: Record<string, unknown> }; playNull?: boolean } = {},
   ): Promise<PlayHarness> {
     const requests: PlayRequest[] = [];
     const logs: string[] = [];
@@ -1804,12 +1804,15 @@ describe("play distribution commands", () => {
       if (req.url === "/api/apps/app-1/releases/release-1/distributions") {
         return res.end(JSON.stringify({
           distributions: [
-            { channel: "hands", state: "active" },
-            { channel: "google-play", state: "staged", track: "internal", version_code: 42, rollout_percent: 25 },
+            { provider: "hands", state: "active" },
+            { provider: "google-play", state: "staged", track: "internal", version_code: 42, rollout_percent: 25 },
           ],
         }));
       }
       if (req.url === "/api/apps/app-1/releases/release-1/distributions/play" && req.method === "GET") {
+        if (overrides.playNull) {
+          return res.end(JSON.stringify({ play: null }));
+        }
         return res.end(JSON.stringify({
           play: {
             track: "internal",
@@ -1827,15 +1830,12 @@ describe("play distribution commands", () => {
         }
         const action = req.url.split("/").at(-1);
         return res.end(JSON.stringify({
-          receipt: {
-            id: `rcpt-${action}`,
-            action: action === "rollback" ? "rollback-republish" : action,
-            result: "success",
-            track: "internal",
-            version_code: 42,
-            rollout_percent: 25,
-            play_edit_id: `edit-${action}`,
-          },
+          receipt_id: `rcpt-${action}`,
+          edit_id: `edit-${action}`,
+          track: "internal",
+          version_code: 42,
+          revision: 8,
+          rollout_percent: 25,
         }));
       }
       if (req.url === "/api/apps/app-1/releases/release-1/receipts") {
@@ -1891,8 +1891,8 @@ describe("play distribution commands", () => {
       await harness.run("releases", "distributions", "raft-android", "release-1", "--json");
       expect(JSON.parse(harness.logs.join("\n"))).toEqual({
         distributions: [
-          { channel: "hands", state: "active" },
-          { channel: "google-play", state: "staged", track: "internal", version_code: 42, rollout_percent: 25 },
+          { provider: "hands", state: "active" },
+          { provider: "google-play", state: "staged", track: "internal", version_code: 42, rollout_percent: 25 },
         ],
       });
 
@@ -1928,6 +1928,7 @@ describe("play distribution commands", () => {
       expect(text).toContain("edit-promote");
       expect(text).toContain("track:       internal");
       expect(text).toContain("versionCode: 42");
+      expect(text).toContain("rollout:     25%");
     } finally {
       await harness.close();
     }
@@ -2048,6 +2049,20 @@ describe("play distribution commands", () => {
       expect(text).toContain("rollout:      25%");
       expect(text).toContain("last edit:    edit-1");
       expect(text).toContain("last receipt: rcpt-1");
+    } finally {
+      await harness.close();
+    }
+  });
+
+  it("handles the empty play-status state ({play: null}) in text and --json", async () => {
+    const harness = await startPlayHarness({ playNull: true });
+    try {
+      await harness.run("releases", "play-status", "raft-android", "release-1");
+      expect(harness.logs.join("\n")).toContain("No Play distribution yet.");
+
+      harness.logs.length = 0;
+      await harness.run("releases", "play-status", "raft-android", "release-1", "--json");
+      expect(JSON.parse(harness.logs.join("\n"))).toEqual({ play: null });
     } finally {
       await harness.close();
     }

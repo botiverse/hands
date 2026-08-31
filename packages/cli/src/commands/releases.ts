@@ -26,14 +26,14 @@ interface ReleaseScope {
   scope_value: string;
 }
 
-// Response shapes below follow docs/google-play-distribution-design.md. The
-// design pins endpoint paths, request bodies, and the error model but not the
-// exact success envelopes, so the CLI reads the repo's usual noun wrapper
-// (`{ distributions: [...] }`, `{ play: {...} }`, `{ receipt: {...} }`,
-// `{ receipts: [...] }`); keep the server implementation aligned with these.
+// Response shapes below follow docs/google-play-distribution-design.md plus the
+// server-frozen envelopes: distributions items key the channel as `provider`,
+// play-status returns `{ play: null }` before the first promotion, and Play
+// write commands return a flat `{ receipt_id, edit_id, track, version_code,
+// revision, rollout_percent? }`.
 
 interface DistributionChannel {
-  channel: string;
+  provider: string;
   state: string;
   track?: string | null;
   version_code?: number | null;
@@ -48,14 +48,13 @@ interface PlayDistributionState {
   last_receipt_id?: string | null;
 }
 
-interface PlayWriteReceipt {
-  id: string;
-  action?: string;
-  result?: string;
+interface PlayWriteResult {
+  receipt_id: string;
+  edit_id?: string | null;
   track?: string | null;
   version_code?: number | null;
+  revision?: number;
   rollout_percent?: number | null;
-  play_edit_id?: string | null;
 }
 
 interface ReleaseReceipt {
@@ -595,7 +594,7 @@ export function registerReleaseCommands(program: Command): void {
           channel.version_code != null ? `versionCode=${channel.version_code}` : "",
           channel.rollout_percent != null ? `rollout=${channel.rollout_percent}%` : "",
         ].filter(Boolean).join("  ");
-        console.log(`${channel.channel}  ${channel.state}${details ? `  ${details}` : ""}`);
+        console.log(`${channel.provider}  ${channel.state}${details ? `  ${details}` : ""}`);
       }
     });
 
@@ -605,7 +604,7 @@ export function registerReleaseCommands(program: Command): void {
     .option("--json", "Output JSON.", false)
     .action(async (appIdOrSlug: string, releaseId: string, opts: { json?: boolean }, command: Command) => {
       const appId = await resolveAppId(appIdOrSlug);
-      const res = await apiRequest<{ play: PlayDistributionState }>(
+      const res = await apiRequest<{ play: PlayDistributionState | null }>(
         `/api/apps/${appId}/releases/${releaseId}/distributions/play`,
       );
       if (opts.json || command.optsWithGlobals<{ json?: boolean }>().json) {
@@ -613,6 +612,10 @@ export function registerReleaseCommands(program: Command): void {
         return;
       }
       const play = res.play;
+      if (!play) {
+        console.log("No Play distribution yet.");
+        return;
+      }
       console.log(`Google Play state for release ${releaseId}`);
       console.log(`  track:        ${play.track ?? "(none)"}`);
       console.log(`  versionCode:  ${play.version_code ?? "(none)"}`);
@@ -645,25 +648,25 @@ export function registerReleaseCommands(program: Command): void {
         approval: { note: opts.note ?? "" },
       };
       if (rolloutPercent !== undefined) body.rollout_percent = rolloutPercent;
-      let res: { receipt: PlayWriteReceipt };
+      let res: PlayWriteResult;
       try {
-        res = await apiRequest<{ receipt: PlayWriteReceipt }>(
+        res = await apiRequest<PlayWriteResult>(
           `/api/apps/${appId}/releases/${releaseId}/distributions/play/promote`,
           { method: "POST", body },
         );
       } catch (err) {
         throw playWriteError("promote", err);
       }
-      const receipt = res.receipt;
       if (opts.json || command.optsWithGlobals<{ json?: boolean }>().json) {
         console.log(JSON.stringify(res, null, 2));
         return;
       }
       console.log(`Promoted release ${releaseId} to Google Play.`);
-      console.log(`  receipt:     ${receipt.id}`);
-      console.log(`  play edit:   ${receipt.play_edit_id ?? "unavailable"}`);
-      console.log(`  track:       ${receipt.track ?? track}`);
-      console.log(`  versionCode: ${receipt.version_code ?? "unavailable"}`);
+      console.log(`  receipt:     ${res.receipt_id}`);
+      console.log(`  play edit:   ${res.edit_id ?? "unavailable"}`);
+      console.log(`  track:       ${res.track ?? track}`);
+      console.log(`  versionCode: ${res.version_code ?? "unavailable"}`);
+      if (res.rollout_percent != null) console.log(`  rollout:     ${res.rollout_percent}%`);
     });
 
   releases
@@ -682,25 +685,25 @@ export function registerReleaseCommands(program: Command): void {
         expected_revision: await fetchReleaseRevision(appId, releaseId),
         approval: { note: opts.note ?? "" },
       };
-      let res: { receipt: PlayWriteReceipt };
+      let res: PlayWriteResult;
       try {
-        res = await apiRequest<{ receipt: PlayWriteReceipt }>(
+        res = await apiRequest<PlayWriteResult>(
           `/api/apps/${appId}/releases/${releaseId}/distributions/play/halt`,
           { method: "POST", body },
         );
       } catch (err) {
         throw playWriteError("halt", err);
       }
-      const receipt = res.receipt;
       if (opts.json || command.optsWithGlobals<{ json?: boolean }>().json) {
         console.log(JSON.stringify(res, null, 2));
         return;
       }
       console.log(`Halted the Google Play rollout for release ${releaseId}.`);
-      console.log(`  receipt:     ${receipt.id}`);
-      console.log(`  play edit:   ${receipt.play_edit_id ?? "unavailable"}`);
-      console.log(`  track:       ${receipt.track ?? "(unknown)"}`);
-      console.log(`  versionCode: ${receipt.version_code ?? "unavailable"}`);
+      console.log(`  receipt:     ${res.receipt_id}`);
+      console.log(`  play edit:   ${res.edit_id ?? "unavailable"}`);
+      console.log(`  track:       ${res.track ?? "(unknown)"}`);
+      console.log(`  versionCode: ${res.version_code ?? "unavailable"}`);
+      if (res.rollout_percent != null) console.log(`  rollout:     ${res.rollout_percent}%`);
     });
 
   releases
@@ -722,25 +725,25 @@ export function registerReleaseCommands(program: Command): void {
         expected_revision: await fetchReleaseRevision(appId, releaseId),
         approval: { note: opts.note ?? "" },
       };
-      let res: { receipt: PlayWriteReceipt };
+      let res: PlayWriteResult;
       try {
-        res = await apiRequest<{ receipt: PlayWriteReceipt }>(
+        res = await apiRequest<PlayWriteResult>(
           `/api/apps/${appId}/releases/${releaseId}/distributions/play/rollback`,
           { method: "POST", body },
         );
       } catch (err) {
         throw playWriteError("rollback", err);
       }
-      const receipt = res.receipt;
       if (opts.json || command.optsWithGlobals<{ json?: boolean }>().json) {
         console.log(JSON.stringify(res, null, 2));
         return;
       }
       console.log(`Rolled back release ${releaseId} on Google Play to versionCode ${toVersionCode}.`);
-      console.log(`  receipt:     ${receipt.id}`);
-      console.log(`  play edit:   ${receipt.play_edit_id ?? "unavailable"}`);
-      console.log(`  track:       ${receipt.track ?? "(unknown)"}`);
-      console.log(`  versionCode: ${receipt.version_code ?? "unavailable"}`);
+      console.log(`  receipt:     ${res.receipt_id}`);
+      console.log(`  play edit:   ${res.edit_id ?? "unavailable"}`);
+      console.log(`  track:       ${res.track ?? "(unknown)"}`);
+      console.log(`  versionCode: ${res.version_code ?? "unavailable"}`);
+      if (res.rollout_percent != null) console.log(`  rollout:     ${res.rollout_percent}%`);
     });
 
   releases
