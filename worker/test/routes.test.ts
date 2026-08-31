@@ -94,6 +94,7 @@ describe("quiver OpenAPI document", () => {
 
     for (const path of [
       "/public/v2/apps/{slug}/updates/check",
+      "/public/v2/apps/{slug}/versions",
       "/electron/{slug}/{channel}/{file}",
       "/public/v2/apps/{slug}/feedback",
       "/public/v2/apps/{slug}/metrics",

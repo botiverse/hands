@@ -217,6 +217,48 @@ Two storage arms feed it:
 Installers should not care which arm served an entry: select by
 `platform`/`arch`, download, verify, install.
 
+## CLI Version Index
+
+```http
+GET /public/v2/apps/:appSlug/versions?channel=alpha&platform=linux&arch=x64&limit=20
+```
+
+Lists exact `cli-binary` versions that remain universally installable for one
+channel and machine target. Active and superseded full-scope releases are
+included only when their rollout is complete (`rollout_cohort_count` is null or
+100); partial-rollout, draft, cancelled, hidden, future, and target-incompatible
+releases are excluded. Partial-rollout rows remain governed by the device-aware
+update resolver. Superseded universal versions remain downloadable through
+their immutable release-bound `/dl` route and can therefore be used for an
+explicit rollback.
+
+```json
+{
+  "schema_version": 1,
+  "app": { "id": "…", "slug": "raft-computer-cli", "platform": "desktop" },
+  "channel": "alpha",
+  "target": { "platform": "linux", "arch": "x64" },
+  "truncated": false,
+  "versions": [
+    {
+      "version": "1.0.22",
+      "version_code": 1000022,
+      "status": "active",
+      "published_at": 1788136459536,
+      "release_id": "…",
+      "sha256": "0f72382c…",
+      "size_bytes": 156503232
+    }
+  ]
+}
+```
+
+The endpoint validates every returned target identity. If two releases claim
+the same version with different bytes, or if integrity metadata is malformed,
+the request fails closed instead of returning a partial index. `limit`
+defaults to 20 and is bounded to 100; `truncated: true` tells the caller the
+bounded response omitted older versions.
+
 ### Verifying downloads with `sha256`
 
 Every asset entry carries the lowercase hex SHA-256 of the artifact bytes as

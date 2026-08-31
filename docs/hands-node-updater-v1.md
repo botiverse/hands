@@ -6,7 +6,7 @@ or roll back the application.
 
 ## Integrity model
 
-Hands returns the exact active release and external build target for the
+Hands returns the exact eligible release and external build target for the
 requested channel, version, platform, and architecture. Every candidate must
 include a byte size and lowercase SHA-256 digest from the external-build
 ledger.
@@ -44,11 +44,12 @@ if (result.kind === "update") {
 }
 ```
 
-The check endpoint selects only `active`, non-hidden `cli-binary` releases
-whose build succeeded and whose full-release scope and rollout include the
-client. Exact pinned versions may resolve across channels; identical artifact
-identity prefers `main`, while divergent size/SHA-256 identity fails with
-`UPDATE_IDENTITY_CONFLICT`.
+For ordinary channel checks, the endpoint selects only `active`, non-hidden
+`cli-binary` releases whose build succeeded and whose full-release scope and
+rollout include the client. Exact pinned versions may also select a
+`superseded` release across channels, but the same rollout inclusion check still
+applies. Identical artifact identity prefers `main`, while divergent
+size/SHA-256 identity fails with `UPDATE_IDENTITY_CONFLICT`.
 
 ## Failure boundary
 
