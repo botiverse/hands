@@ -587,7 +587,9 @@ export async function handlePublicCliBinaryUpdateCheck(c: Context<{ Bindings: En
      FROM apps a
      JOIN channels ch ON ch.app_id = a.id
      JOIN releases r ON r.app_id = a.id AND r.channel_id = ch.id
-       AND r.product_type = 'cli-binary' AND r.status = 'active' AND r.hidden = 0
+       AND r.product_type = 'cli-binary' AND r.hidden = 0
+       AND ((?5 IS NULL AND r.status = 'active')
+        OR (?5 IS NOT NULL AND r.status IN ('active', 'superseded')))
      JOIN release_scopes s ON s.release_id = r.id
        AND s.scope_type = 'full' AND s.scope_value = 'all'
      JOIN builds b ON b.id = r.build_id AND b.status = 'succeeded'
@@ -597,6 +599,7 @@ export async function handlePublicCliBinaryUpdateCheck(c: Context<{ Bindings: En
        AND ((?5 IS NULL AND ch.slug = ?2) OR ?5 IS NOT NULL)
        AND (?5 IS NULL OR b.version_name = ?5)
      ORDER BY CASE WHEN ch.slug = 'main' THEN 0 ELSE 1 END,
+              CASE WHEN r.status = 'active' THEN 0 ELSE 1 END,
               r.activated_at DESC, r.id ASC`,
   ).bind(slug, channel, target, Date.now(), requestedVersion).all<{
     app_id: string; slug: string; channel: string;
@@ -640,6 +643,173 @@ export async function handlePublicCliBinaryUpdateCheck(c: Context<{ Bindings: En
       size_bytes: row.raw_size_bytes, sha256: row.raw_sha256,
       download_url: `${origin}/dl/${encodeURIComponent(slug)}/releases/${encodeURIComponent(row.release_id)}/${encodeURIComponent(target)}`,
     },
+  });
+}
+
+type PublicCliVersionRow = {
+  app_id: string;
+  slug: string;
+  app_platform: string;
+  release_id: string;
+  release_status: "active" | "superseded";
+  activated_at: number;
+  version_name: string;
+  version_code: number;
+  raw_sha256: string;
+  raw_size_bytes: number;
+};
+
+const CLI_VERSION_INDEX_ROW_CAP = 1000;
+const CLI_VERSION_INDEX_DEFAULT_LIMIT = 20;
+const CLI_VERSION_INDEX_MAX_LIMIT = 100;
+
+/**
+ * List exact CLI-binary versions that remain installable for one public
+ * channel and machine target. This is the authoritative counterpart to the
+ * single-result `/updates/check` selector: active and superseded releases are
+ * admitted, while draft/cancelled/hidden/future rows stay invisible.
+ *
+ * The response is intentionally release-metadata only. Exact downloads still
+ * resolve through `/updates/check?...&version=<semver>`, which applies the same
+ * status and artifact-identity gates before returning a release-bound URL.
+ */
+export async function handlePublicCliBinaryVersions(c: Context<{ Bindings: Env }>) {
+  const slug = c.req.param("slug") ?? "";
+  const channel = c.req.query("channel") ?? "main";
+  const platform = c.req.query("platform") ?? "";
+  const arch = c.req.query("arch") ?? "";
+  const target = `${platform}-${arch}`;
+  const rawLimit = c.req.query("limit");
+  const limit = rawLimit === undefined ? CLI_VERSION_INDEX_DEFAULT_LIMIT : Number(rawLimit);
+
+  if (!slug) {
+    return c.json({ error: "slug required", code: "slug_required" }, 400);
+  }
+  if (!/^[a-z0-9]+$/u.test(platform) || !/^[a-z0-9_]+$/u.test(arch)) {
+    return c.json(
+      { error: "platform and arch are required", code: "VERSIONS_TARGET_INVALID" },
+      400,
+    );
+  }
+  if (!Number.isSafeInteger(limit) || limit < 1 || limit > CLI_VERSION_INDEX_MAX_LIMIT) {
+    return c.json(
+      {
+        error: `limit must be an integer from 1 to ${CLI_VERSION_INDEX_MAX_LIMIT}`,
+        code: "VERSIONS_LIMIT_INVALID",
+      },
+      400,
+    );
+  }
+
+  const app = await c.env.DB.prepare(
+    "SELECT id, slug, platform FROM apps WHERE slug = ?1",
+  ).bind(slug).first<{ id: string; slug: string; platform: string }>();
+  if (!app) {
+    return c.json({ error: `app '${slug}' not found`, code: "app_not_found" }, 404);
+  }
+  const channelRow = await c.env.DB.prepare(
+    "SELECT id FROM channels WHERE app_id = ?1 AND slug = ?2 LIMIT 1",
+  ).bind(app.id, channel).first<{ id: string }>();
+  if (!channelRow) {
+    return c.json(
+      { error: `channel '${channel}' not found for app '${slug}'`, code: "channel_not_found" },
+      404,
+    );
+  }
+
+  const { results: rows } = await c.env.DB.prepare(
+    `SELECT a.id AS app_id, a.slug, a.platform AS app_platform,
+            r.id AS release_id, r.status AS release_status,
+            r.activated_at,
+            b.version_name, b.version_code,
+            e.raw_sha256, e.raw_size_bytes
+     FROM apps a
+     JOIN channels ch ON ch.app_id = a.id
+     JOIN releases r ON r.app_id = a.id AND r.channel_id = ch.id
+       AND r.product_type = 'cli-binary'
+       AND r.status IN ('active', 'superseded')
+       AND r.hidden = 0
+     JOIN builds b ON b.id = r.build_id AND b.status = 'succeeded'
+     JOIN external_build_targets e ON e.build_id = b.id AND e.target = ?3
+     WHERE a.id = ?1 AND ch.id = ?2
+       AND (r.availability_at IS NULL OR r.availability_at <= ?4)
+       AND EXISTS (
+         SELECT 1 FROM release_scopes s
+         WHERE s.release_id = r.id
+           AND s.scope_type = 'full' AND s.scope_value = 'all'
+       )
+     ORDER BY r.activated_at DESC, r.id ASC
+     LIMIT ?5`,
+  ).bind(app.id, channelRow.id, target, Date.now(), CLI_VERSION_INDEX_ROW_CAP + 1)
+    .all<PublicCliVersionRow>();
+
+  if (rows.length > CLI_VERSION_INDEX_ROW_CAP) {
+    return c.json(
+      { error: "version index exceeds the bounded public read", code: "VERSION_INDEX_TOO_LARGE" },
+      409,
+    );
+  }
+
+  const byVersion = new Map<string, PublicCliVersionRow>();
+  for (const row of rows) {
+    if (
+      !parseStrictSemver(row.version_name)
+      || !Number.isSafeInteger(row.version_code)
+      || row.version_code < 0
+      || !/^[a-f0-9]{64}$/u.test(row.raw_sha256)
+      || !Number.isSafeInteger(row.raw_size_bytes)
+      || row.raw_size_bytes < 0
+      || !Number.isSafeInteger(row.activated_at)
+      || row.activated_at < 0
+      || !Number.isFinite(new Date(row.activated_at).valueOf())
+    ) {
+      return c.json(
+        { error: `published ${row.version_name} has invalid release identity`, code: "VERSION_IDENTITY_DRIFT" },
+        409,
+      );
+    }
+    const prior = byVersion.get(row.version_name);
+    if (prior) {
+      if (
+        prior.raw_sha256 !== row.raw_sha256
+        || prior.raw_size_bytes !== row.raw_size_bytes
+        || prior.version_code !== row.version_code
+      ) {
+        return c.json(
+          { error: `published ${row.version_name} has divergent target identities`, code: "VERSION_IDENTITY_CONFLICT" },
+          409,
+        );
+      }
+      if (prior.release_status === "superseded" && row.release_status === "active") {
+        byVersion.set(row.version_name, row);
+      }
+      continue;
+    }
+    byVersion.set(row.version_name, row);
+  }
+
+  const versions = [...byVersion.values()]
+    .sort((left, right) => {
+      if (left.activated_at !== right.activated_at) return right.activated_at - left.activated_at;
+      return left.release_id.localeCompare(right.release_id);
+    });
+  const selected = versions.slice(0, limit);
+
+  return c.json({
+    schema_version: 1,
+    app: { id: app.id, slug: app.slug, platform: app.platform },
+    channel,
+    target: { platform, arch },
+    truncated: versions.length > selected.length,
+    versions: selected.map((row) => ({
+      version: row.version_name,
+      version_code: row.version_code,
+      status: row.release_status,
+      published_at: row.activated_at,
+      release_id: row.release_id,
+      sha256: row.raw_sha256,
+      size_bytes: row.raw_size_bytes,
+    })),
   });
 }
 

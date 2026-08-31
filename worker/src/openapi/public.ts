@@ -115,6 +115,29 @@ const PublicUpdateCheckResponse = z
   .union([PublicUpdateAvailableResponse, PublicNoUpdateResponse])
   .openapi("PublicUpdateCheckResponse");
 
+const PublicCliVersionsResponse = z
+  .object({
+    schema_version: z.literal(1),
+    app: z.object({
+      id: z.string(),
+      slug: z.string(),
+      platform: z.string(),
+    }),
+    channel: z.string(),
+    target: z.object({ platform: z.string(), arch: z.string() }),
+    truncated: z.boolean(),
+    versions: z.array(z.object({
+      version: z.string(),
+      version_code: z.number().int(),
+      status: z.enum(["active", "superseded"]),
+      published_at: z.number().int(),
+      release_id: z.string(),
+      sha256: z.string(),
+      size_bytes: z.number().int(),
+    })),
+  })
+  .openapi("PublicCliVersionsResponse");
+
 const PublicChannelsResponse = z
   .object({
     app: PublicApp,
@@ -262,6 +285,32 @@ export function registerPublicRoutes(registry: OpenApiRegistry) {
       400: error("current_version_code is missing or invalid."),
       404: error("No matching app, channel, release, or compatible asset was found."),
       500: error("Matched release data is inconsistent or signing failed."),
+    },
+  });
+
+  register(registry, {
+    method: "get",
+    path: "/public/v2/apps/{slug}/versions",
+    tags: ["Public update"],
+    summary: "List installable CLI-binary versions for a channel and target",
+    description:
+      "Returns active and superseded full-scope CLI releases whose exact target remains installable. " +
+      "Draft, cancelled, hidden, future, incompatible, or malformed releases are never represented as available. " +
+      "Duplicate version identities must agree or the endpoint fails closed.",
+    request: {
+      params: SlugParam,
+      query: z.object({
+        channel: z.string().default("main").optional(),
+        platform: z.string(),
+        arch: z.string(),
+        limit: z.coerce.number().int().min(1).max(100).default(20).optional(),
+      }),
+    },
+    responses: {
+      200: success("Installable version index for the requested target.", PublicCliVersionsResponse),
+      400: error("Target or limit is invalid."),
+      404: error("App or channel was not found."),
+      409: error("The release ledger is too large or carries malformed/divergent exact-version identity."),
     },
   });
 

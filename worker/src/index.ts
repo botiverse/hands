@@ -76,6 +76,7 @@ import {
 import {
   handlePublicR2Download,
   handleInternalR2Download,
+  handlePublicCliBinaryVersions,
   handlePublicV2Latest,
   handlePublicV2UpdateCheck,
 } from "./routes/public_v2";
@@ -600,6 +601,7 @@ app.get("/public/apps/:slug/channels", handlePublicListChannels);
 // v2 endpoints with scope resolution (publish-architecture §5.4).
 app.get("/public/v2/apps/:slug/latest", handlePublicV2Latest);
 app.get("/public/v2/apps/:slug/updates/check", handlePublicV2UpdateCheck);
+app.get("/public/v2/apps/:slug/versions", handlePublicCliBinaryVersions);
 app.get("/public/v2/apps/:slug/release-notes", handlePublicReleaseNotesJson);
 app.get("/public/r2/:key", handlePublicR2Download);
 // Internal signed R2 fetch (delta-patch container pulls source APKs by key).
