@@ -667,7 +667,8 @@ const CLI_VERSION_INDEX_MAX_LIMIT = 100;
  * List exact CLI-binary versions that remain installable for one public
  * channel and machine target. This is the authoritative counterpart to the
  * single-result `/updates/check` selector: active and superseded releases are
- * admitted, while draft/cancelled/hidden/future rows stay invisible.
+ * admitted only at universal rollout, while partial-rollout and
+ * draft/cancelled/hidden/future rows stay invisible.
  *
  * The response is intentionally release-metadata only. Exact downloads still
  * resolve through `/updates/check?...&version=<semver>`, which applies the same
@@ -729,6 +730,7 @@ export async function handlePublicCliBinaryVersions(c: Context<{ Bindings: Env }
        AND r.product_type = 'cli-binary'
        AND r.status IN ('active', 'superseded')
        AND r.hidden = 0
+       AND (r.rollout_cohort_count IS NULL OR r.rollout_cohort_count >= 100)
      JOIN builds b ON b.id = r.build_id AND b.status = 'succeeded'
      JOIN external_build_targets e ON e.build_id = b.id AND e.target = ?3
      WHERE a.id = ?1 AND ch.id = ?2

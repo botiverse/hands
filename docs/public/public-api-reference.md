@@ -223,11 +223,14 @@ Installers should not care which arm served an entry: select by
 GET /public/v2/apps/:appSlug/versions?channel=alpha&platform=linux&arch=x64&limit=20
 ```
 
-Lists exact `cli-binary` versions that remain installable for one channel and
-machine target. Active and superseded full-scope releases are included;
-draft, cancelled, hidden, future, and target-incompatible releases are
-excluded. Superseded versions remain downloadable through their immutable
-release-bound `/dl` route and can therefore be used for an explicit rollback.
+Lists exact `cli-binary` versions that remain universally installable for one
+channel and machine target. Active and superseded full-scope releases are
+included only when their rollout is complete (`rollout_cohort_count` is null or
+100); partial-rollout, draft, cancelled, hidden, future, and target-incompatible
+releases are excluded. Partial-rollout rows remain governed by the device-aware
+update resolver. Superseded universal versions remain downloadable through
+their immutable release-bound `/dl` route and can therefore be used for an
+explicit rollback.
 
 ```json
 {

@@ -294,8 +294,9 @@ export function registerPublicRoutes(registry: OpenApiRegistry) {
     tags: ["Public update"],
     summary: "List installable CLI-binary versions for a channel and target",
     description:
-      "Returns active and superseded full-scope CLI releases whose exact target remains installable. " +
+      "Returns universally rolled out active and superseded full-scope CLI releases whose exact target remains installable. " +
       "Draft, cancelled, hidden, future, incompatible, or malformed releases are never represented as available. " +
+      "Partial-rollout releases remain available only through the device-aware update resolver and are excluded here. " +
       "Duplicate version identities must agree or the endpoint fails closed.",
     request: {
       params: SlugParam,

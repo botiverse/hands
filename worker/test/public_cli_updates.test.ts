@@ -47,7 +47,7 @@ describe("public cli-binary selection", () => {
     app.get("/public/v2/apps/:slug/versions", handlePublicCliBinaryVersions as never);
   });
 
-  function seedRelease(id: string, version: string, status: string, activatedAt: number, options: { channel?: "main" | "alpha"; sha256?: string; reuseArtifactFrom?: string } = {}) {
+  function seedRelease(id: string, version: string, status: string, activatedAt: number, options: { channel?: "main" | "alpha"; sha256?: string; reuseArtifactFrom?: string; rolloutCohortCount?: number | null } = {}) {
     const source = options.reuseArtifactFrom ?? id;
     const buildId = `build-${source}`;
     const artifactId = `artifact-${source}`;
@@ -57,8 +57,8 @@ describe("public cli-binary selection", () => {
       sqlite.prepare("INSERT INTO builds VALUES (?, 'app', 'succeeded', ?, ?)").run(buildId, version, activatedAt);
       sqlite.prepare("INSERT INTO external_build_targets VALUES (?, ?, 'linux-x64', ?, 8)").run(artifactId, buildId, sha256);
     }
-    sqlite.prepare("INSERT INTO releases VALUES (?, 'app', ?, ?, 'cli-binary', 'stable', ?, 0, 1, NULL, ?, NULL)")
-      .run(id, buildId, `channel-${channel}`, status, activatedAt);
+    sqlite.prepare("INSERT INTO releases VALUES (?, 'app', ?, ?, 'cli-binary', 'stable', ?, 0, 1, ?, ?, NULL)")
+      .run(id, buildId, `channel-${channel}`, status, options.rolloutCohortCount ?? null, activatedAt);
     sqlite.prepare("INSERT INTO release_scopes VALUES (?, ?, 'full', 'all')").run(`scope-${id}`, id);
   }
 
@@ -148,6 +148,35 @@ describe("public cli-binary selection", () => {
         { version: "2.0.0", status: "active", release_id: "latest", published_at: 200 },
         { version: "1.0.0", status: "superseded", release_id: "old", published_at: 100 },
       ],
+    });
+  });
+
+  it("excludes partial-rollout rows that are not universally installable", async () => {
+    seedRelease("partial-active", "3.0.0", "active", 300, {
+      channel: "alpha",
+      rolloutCohortCount: 50,
+    });
+    seedRelease("partial-superseded", "2.0.0", "superseded", 200, {
+      channel: "alpha",
+      rolloutCohortCount: 25,
+    });
+    seedRelease("universal", "1.0.0", "superseded", 100, {
+      channel: "alpha",
+      rolloutCohortCount: 100,
+    });
+
+    const response = await versions();
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      truncated: false,
+      versions: [{ version: "1.0.0", release_id: "universal" }],
+    });
+
+    const pinnedPartial = await check("&version=3.0.0");
+    expect(pinnedPartial.status).toBe(200);
+    await expect(pinnedPartial.json()).resolves.toMatchObject({
+      update_available: false,
+      current_version: "0.5.0",
     });
   });
 
