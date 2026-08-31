@@ -62,7 +62,7 @@ Parent states are `uploading`, `ready`, or `failed`.
 Typed errors are `INVALID_RELEASE_ARTIFACTS`,
 `ARTIFACT_UPLOAD_UNAVAILABLE`, `ARTIFACT_NOT_FOUND`, `INTEGRITY_MISMATCH`,
 `IMMUTABLE_CONFLICT`, and `STATE_CONFLICT`, plus the existing authorization
-errors.
+error `INSUFFICIENT_APP_ROLE`.
 
 ## Acceptance and distribution API
 
@@ -73,6 +73,11 @@ errors.
 - `POST /api/apps/:appId/releases/:releaseId/distributions/play/promote`
 - `POST /api/apps/:appId/releases/:releaseId/distributions/play/halt`
 - `POST /api/apps/:appId/releases/:releaseId/distributions/play/rollback`
+
+Rollback input includes `expected_revision`, human `approval.note`, and a
+positive `to_version_code`. P0 validates that public request shape and then
+returns the typed fail-closed adapter-not-implemented result without a Play
+write.
 
 Reads require `viewer`; writes require `publisher`. Acceptance binds a verdict
 to the exact sealed AAB and advances the release revision with compare-and-set.

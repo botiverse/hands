@@ -17,6 +17,7 @@ import {
   handleCreateAcceptanceReceipt,
   handleListDistributions,
   handleListReleaseReceipts,
+  handleRollbackPlayDistribution,
   handlePromotePlayDistribution,
 } from "../src/routes/play_distribution";
 import { createRelease } from "../src/routes/releases";
@@ -331,6 +332,7 @@ function routeHarness() {
   app.get("/api/apps/:appId/releases/:releaseId/receipts", handleListReleaseReceipts);
   app.get("/api/apps/:appId/releases/:releaseId/distributions", handleListDistributions);
   app.post("/api/apps/:appId/releases/:releaseId/distributions/play/promote", handlePromotePlayDistribution);
+  app.post("/api/apps/:appId/releases/:releaseId/distributions/play/rollback", handleRollbackPlayDistribution);
   const request = (path: string, init?: RequestInit) =>
     app.fetch(new Request(`https://hands.test${path}`, init), env, executionContext);
   return { sqlite, bucket, env, request };
@@ -539,6 +541,100 @@ describe("Play promotion route", () => {
     expect(response.status).toBe(409);
     expect(await response.json()).toMatchObject({ error: { code: "edit_conflict", gate: "edit_lock" } });
     expect(calls).toBe(0);
+  });
+
+  it("returns typed play_api_error before revision reserve for malformed track JSON", async () => {
+    const harness = await readyRelease();
+    harness.env.PLAY_RELEASE_SERVICE = {
+      fetch: async () => new Response("{", { status: 200, headers: { "content-type": "application/json" } }),
+    } as unknown as Fetcher;
+    const response = await harness.request("/api/apps/app/releases/release/distributions/play/promote", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ track: "internal", expected_revision: 1, approval: { note: "approved" } }),
+    });
+    expect(response.status).toBe(502);
+    expect(await response.json()).toMatchObject({ error: { code: "play_api_error", receipt_id: null } });
+    expect(harness.sqlite.prepare("SELECT revision FROM releases WHERE id='release'").get()).toEqual({ revision: 1 });
+    expect(harness.sqlite.prepare("SELECT COUNT(*) AS count FROM release_receipts WHERE kind='play-promotion'").get())
+      .toEqual({ count: 0 });
+  });
+
+  it("returns typed play_api_error before reserve when the track request rejects", async () => {
+    const harness = await readyRelease();
+    harness.env.PLAY_RELEASE_SERVICE = {
+      fetch: async () => { throw new Error("adapter unavailable"); },
+    } as unknown as Fetcher;
+    const response = await harness.request("/api/apps/app/releases/release/distributions/play/promote", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ track: "internal", expected_revision: 1, approval: { note: "approved" } }),
+    });
+    expect(response.status).toBe(502);
+    expect(await response.json()).toMatchObject({ error: { code: "play_api_error", receipt_id: null } });
+    expect(harness.sqlite.prepare("SELECT revision FROM releases WHERE id='release'").get()).toEqual({ revision: 1 });
+  });
+
+  it("records failed-closed after reserve when Play edit readback is malformed", async () => {
+    const harness = await readyRelease();
+    harness.env.PLAY_RELEASE_SERVICE = {
+      fetch: async (_input: RequestInfo | URL, init?: RequestInit) => init?.method === "GET"
+        ? Response.json({ max_version_code: 41 })
+        : new Response("not-json", { status: 200, headers: { "content-type": "application/json" } }),
+    } as unknown as Fetcher;
+    const response = await harness.request("/api/apps/app/releases/release/distributions/play/promote", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ track: "internal", expected_revision: 1, approval: { note: "approved" } }),
+    });
+    expect(response.status).toBe(502);
+    const failure = await response.json() as { error: { code: string; receipt_id: string } };
+    expect(failure.error).toMatchObject({ code: "play_api_error" });
+    expect(failure.error.receipt_id).toBeTruthy();
+    expect(harness.sqlite.prepare("SELECT revision FROM releases WHERE id='release'").get()).toEqual({ revision: 2 });
+    expect(harness.sqlite.prepare("SELECT verdict, id FROM release_receipts WHERE kind='play-promotion'").get())
+      .toEqual({ verdict: "failed-closed", id: failure.error.receipt_id });
+  });
+
+  it("records failed-closed after reserve when the Play edit request rejects", async () => {
+    const harness = await readyRelease();
+    harness.env.PLAY_RELEASE_SERVICE = {
+      fetch: async (_input: RequestInfo | URL, init?: RequestInit) => {
+        if (init?.method === "GET") return Response.json({ max_version_code: 41 });
+        throw new Error("adapter unavailable");
+      },
+    } as unknown as Fetcher;
+    const response = await harness.request("/api/apps/app/releases/release/distributions/play/promote", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ track: "internal", expected_revision: 1, approval: { note: "approved" } }),
+    });
+    expect(response.status).toBe(502);
+    const failure = await response.json() as { error: { code: string; receipt_id: string } };
+    expect(failure.error).toMatchObject({ code: "play_api_error" });
+    expect(failure.error.receipt_id).toBeTruthy();
+    expect(harness.sqlite.prepare("SELECT revision FROM releases WHERE id='release'").get()).toEqual({ revision: 2 });
+    expect(harness.sqlite.prepare("SELECT verdict, id FROM release_receipts WHERE kind='play-promotion'").get())
+      .toEqual({ verdict: "failed-closed", id: failure.error.receipt_id });
+  });
+
+  it("validates rollback to_version_code before the fail-closed adapter boundary", async () => {
+    const harness = await readyRelease();
+    const missing = await harness.request("/api/apps/app/releases/release/distributions/play/rollback", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ expected_revision: 1, approval: { note: "approved" } }),
+    });
+    expect(missing.status).toBe(400);
+    expect(await missing.json()).toMatchObject({ error: { gate: "version_code" } });
+
+    const valid = await harness.request("/api/apps/app/releases/release/distributions/play/rollback", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ expected_revision: 1, approval: { note: "approved" }, to_version_code: 40 }),
+    });
+    expect(valid.status).toBe(502);
+    expect(await valid.json()).toMatchObject({ error: { code: "play_api_error" } });
   });
 
   it("fails before Play when the latest acceptance does not pass", async () => {

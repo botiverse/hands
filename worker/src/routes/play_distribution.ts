@@ -423,13 +423,27 @@ export async function handlePromotePlayDistribution(c: AdminContext) {
   }
   try {
     const trackUrl = `https://play-release.service/v1/apps/${encodeURIComponent(artifact.package_name)}/tracks/${input.track}`;
-    const trackResponse = await c.env.PLAY_RELEASE_SERVICE.fetch(trackUrl, { method: "GET" });
+    let trackResponse: Response;
+    try {
+      trackResponse = await c.env.PLAY_RELEASE_SERVICE.fetch(trackUrl, { method: "GET" });
+    } catch {
+      return fail(c, 502, { code: "play_api_error", gate: null, message: "Play track read request failed" });
+    }
     if (!trackResponse.ok) {
       return fail(c, 502, { code: "play_api_error", gate: null, message: `Play track read failed with ${trackResponse.status}` });
     }
-    const trackState = await trackResponse.json<{ max_version_code: number }>();
-    const requiredVersionCode = Number(trackState.max_version_code) + 1;
-    if (!Number.isSafeInteger(requiredVersionCode) || artifact.version_code !== requiredVersionCode) {
+    let trackState: { max_version_code: number };
+    try {
+      trackState = await trackResponse.json();
+    } catch {
+      return fail(c, 502, { code: "play_api_error", gate: null, message: "Play track read returned malformed JSON" });
+    }
+    const maxVersionCode = Number(trackState?.max_version_code);
+    if (!Number.isSafeInteger(maxVersionCode) || maxVersionCode < 0) {
+      return fail(c, 502, { code: "play_api_error", gate: null, message: "Play track read returned an invalid max_version_code" });
+    }
+    const requiredVersionCode = maxVersionCode + 1;
+    if (artifact.version_code !== requiredVersionCode) {
       return fail(c, 409, { code: "version_conflict", gate: "version_code", message: `artifact versionCode ${artifact.version_code} must equal Play ${input.track} max + 1 (${requiredVersionCode})` });
     }
     const reserved = await c.env.DB.prepare(
@@ -439,13 +453,19 @@ export async function handlePromotePlayDistribution(c: AdminContext) {
     if (Number(reserved.meta?.changes ?? 0) !== 1) {
       return fail(c, 409, { code: "version_conflict", gate: null, message: "release changed before the Play edit was reserved" });
     }
-    const object = await c.env.APK_BUCKET.get(artifact.r2_key);
+    let object: R2ObjectBody | null;
+    try {
+      object = await c.env.APK_BUCKET.get(artifact.r2_key);
+    } catch {
+      const receiptId = await failedPromotionReceipt(c, artifact, actor, input.track, input.approval.note, "immutable_binding", { object_read: "failed" });
+      return fail(c, 400, { code: "gate_failed", gate: "immutable_binding", message: "stored AAB could not be read", receipt_id: receiptId });
+    }
     if (!object || object.size !== artifact.size_bytes) {
       const receiptId = await failedPromotionReceipt(c, artifact, actor, input.track, input.approval.note, "immutable_binding", { object_size: object?.size ?? null });
       return fail(c, 400, { code: "gate_failed", gate: "immutable_binding", message: "stored AAB size changed", receipt_id: receiptId });
     }
     const [hashBranch, uploadBranch] = object.body.tee();
-    const uploadResponsePromise = c.env.PLAY_RELEASE_SERVICE.fetch(
+    const uploadResponsePromise = Promise.resolve().then(() => c.env.PLAY_RELEASE_SERVICE!.fetch(
       `https://play-release.service/v1/apps/${encodeURIComponent(artifact.package_name)}/edits`,
       {
         method: "POST",
@@ -460,8 +480,18 @@ export async function handlePromotePlayDistribution(c: AdminContext) {
         },
         body: uploadBranch,
       },
-    );
-    const [local, uploadResponse] = await Promise.all([hashStream(hashBranch), uploadResponsePromise]);
+    ));
+    const [localResult, uploadResult] = await Promise.allSettled([hashStream(hashBranch), uploadResponsePromise]);
+    if (localResult.status === "rejected") {
+      const receiptId = await failedPromotionReceipt(c, artifact, actor, input.track, input.approval.note, "immutable_binding", { stream_read: "failed" });
+      return fail(c, 400, { code: "gate_failed", gate: "immutable_binding", message: "stored AAB stream could not be verified", receipt_id: receiptId });
+    }
+    if (uploadResult.status === "rejected") {
+      const receiptId = await failedPromotionReceipt(c, artifact, actor, input.track, input.approval.note, "play_api_error", { request: "failed" });
+      return fail(c, 502, { code: "play_api_error", gate: null, message: "Play edit request failed", receipt_id: receiptId });
+    }
+    const local = localResult.value;
+    const uploadResponse = uploadResult.value;
     if (local.sha256 !== artifact.file_hash || local.size !== artifact.size_bytes) {
       const receiptId = await failedPromotionReceipt(c, artifact, actor, input.track, input.approval.note, "immutable_binding", { actual: local });
       return fail(c, 400, { code: "gate_failed", gate: "immutable_binding", message: "streamed AAB did not match the accepted artifact", receipt_id: receiptId });
@@ -470,7 +500,21 @@ export async function handlePromotePlayDistribution(c: AdminContext) {
       const receiptId = await failedPromotionReceipt(c, artifact, actor, input.track, input.approval.note, "play_api_error", { status: uploadResponse.status });
       return fail(c, 502, { code: "play_api_error", gate: null, message: `Play edit failed with ${uploadResponse.status}`, receipt_id: receiptId });
     }
-    const readback = await uploadResponse.json<PlayReadback>();
+    let readback: PlayReadback;
+    try {
+      readback = await uploadResponse.json();
+    } catch {
+      const receiptId = await failedPromotionReceipt(
+        c,
+        artifact,
+        actor,
+        input.track,
+        input.approval.note,
+        "play_readback_malformed",
+        { status: uploadResponse.status },
+      );
+      return fail(c, 502, { code: "play_api_error", gate: "immutable_binding", message: "Play edit returned malformed JSON", receipt_id: receiptId });
+    }
     if (!playReadbackMatches(artifact, input.track, readback)) {
       const receiptId = await failedPromotionReceipt(c, artifact, actor, input.track, input.approval.note, "play_readback_mismatch", { readback });
       return fail(c, 502, { code: "play_api_error", gate: "immutable_binding", message: "Play readback did not match package/version/track/SHA-256", receipt_id: receiptId });
@@ -557,7 +601,11 @@ export async function handleListDistributions(c: Context<{ Bindings: Env }>) {
 
 async function unsupportedPlayMutation(c: AdminContext, action: "halt" | "rollback-republish") {
   const actor = currentActorInfo(c);
-  let body: { expected_revision?: number; approval?: { note?: string } };
+  let body: {
+    expected_revision?: number;
+    approval?: { note?: string };
+    to_version_code?: number;
+  };
   try {
     body = await c.req.json();
   } catch {
@@ -565,6 +613,12 @@ async function unsupportedPlayMutation(c: AdminContext, action: "halt" | "rollba
   }
   if (actor.type !== "human" || positiveRevision(body.expected_revision) === null || !body.approval?.note?.trim()) {
     return fail(c, 403, { code: "forbidden", gate: "permission", message: `${action} requires expected_revision and authenticated human approval` });
+  }
+  if (action === "rollback-republish") {
+    const toVersionCode = Number(body.to_version_code);
+    if (!Number.isSafeInteger(toVersionCode) || toVersionCode <= 0) {
+      return fail(c, 400, { code: "gate_failed", gate: "version_code", message: "rollback-republish requires a positive to_version_code" });
+    }
   }
   return fail(c, 502, { code: "play_api_error", gate: null, message: `${action} is fail-closed until the Google Play release service implements this operation` });
 }

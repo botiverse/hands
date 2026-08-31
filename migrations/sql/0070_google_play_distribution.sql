@@ -23,8 +23,7 @@ CREATE TABLE android_release_artifact_bundles (
   created_by                  TEXT NOT NULL,
   created_at                  INTEGER NOT NULL,
   completed_at                INTEGER,
-  UNIQUE (app_id, package_name, version_code),
-  UNIQUE (app_id, build_id)
+  UNIQUE (app_id, package_name, version_code)
 );
 
 CREATE INDEX idx_android_release_bundles_source

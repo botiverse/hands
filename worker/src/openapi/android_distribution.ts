@@ -60,6 +60,10 @@ const PlayPromotionInput = PlayApprovalInput.extend({
   rollout_percent: z.number().int().min(0).max(100).optional(),
 }).strict().openapi("PlayPromotionInput");
 
+const PlayRollbackInput = PlayApprovalInput.extend({
+  to_version_code: z.number().int().positive(),
+}).strict().openapi("PlayRollbackInput");
+
 export function registerAndroidDistributionRoutes(registry: OpenApiRegistry) {
   register(registry, {
     method: "post",
@@ -206,7 +210,10 @@ export function registerAndroidDistributionRoutes(registry: OpenApiRegistry) {
       security: auth,
       request: {
         params: AppReleaseParams,
-        body: { content: json(PlayApprovalInput), required: true },
+        body: {
+          content: json(action === "rollback" ? PlayRollbackInput : PlayApprovalInput),
+          required: true,
+        },
       },
       responses: {
         403: error("Human approval or publisher role is missing."),
