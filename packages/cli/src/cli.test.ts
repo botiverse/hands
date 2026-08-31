@@ -1864,7 +1864,9 @@ describe("play distribution commands", () => {
     });
     const { registerReleaseCommands } = await import("../src/commands/releases.js");
     const run = async (...args: string[]) => {
-      const program = new Command().option("--json", "JSON output", false);
+      // exitOverride turns parse-time errors (e.g. a missing required option)
+      // into rejections instead of process.exit, so tests can assert them.
+      const program = new Command().option("--json", "JSON output", false).exitOverride();
       registerReleaseCommands(program);
       await program.parseAsync(["node", "hands", ...args]);
     };
@@ -1937,7 +1939,7 @@ describe("play distribution commands", () => {
   it("halts and rolls back with expected_revision; rollback sends to_version_code", async () => {
     const harness = await startPlayHarness();
     try {
-      await harness.run("releases", "play-halt", "raft-android", "release-1");
+      await harness.run("releases", "play-halt", "raft-android", "release-1", "--note", "pause rollout");
       await harness.run(
         "releases", "play-rollback", "raft-android", "release-1",
         "--to-version-code", "41", "--note", "regression",
@@ -1947,7 +1949,7 @@ describe("play distribution commands", () => {
         {
           method: "POST",
           url: "/api/apps/app-1/releases/release-1/distributions/play/halt",
-          body: { expected_revision: 7, approval: { note: "" } },
+          body: { expected_revision: 7, approval: { note: "pause rollout" } },
         },
         {
           method: "POST",
@@ -1974,7 +1976,7 @@ describe("play distribution commands", () => {
     });
     try {
       await expect(harness.run(
-        "releases", "play-promote", "raft-android", "release-1", "--track", "internal",
+        "releases", "play-promote", "raft-android", "release-1", "--track", "internal", "--note", "ship",
       )).rejects.toThrow("gate acceptance_receipt");
       expect(harness.logs).toHaveLength(0);
     } finally {
@@ -1996,7 +1998,7 @@ describe("play distribution commands", () => {
     });
     try {
       await expect(harness.run(
-        "releases", "play-halt", "raft-android", "release-1",
+        "releases", "play-halt", "raft-android", "release-1", "--note", "hold",
       )).rejects.toThrow(/edit_conflict.*Not retried automatically/);
       expect(harness.requests.filter((request) => request.method === "POST")).toHaveLength(1);
       expect(harness.logs).toHaveLength(0);
@@ -2009,14 +2011,32 @@ describe("play distribution commands", () => {
     const harness = await startPlayHarness();
     try {
       await expect(harness.run(
-        "releases", "play-promote", "raft-android", "release-1", "--track", "beta",
+        "releases", "play-promote", "raft-android", "release-1", "--track", "beta", "--note", "n",
       )).rejects.toThrow("--track must be one of: internal, closed, production");
       await expect(harness.run(
-        "releases", "play-promote", "raft-android", "release-1", "--track", "closed", "--rollout-percent", "101",
+        "releases", "play-promote", "raft-android", "release-1", "--track", "closed", "--rollout-percent", "101", "--note", "n",
       )).rejects.toThrow("--rollout-percent must be an integer from 0 to 100");
       await expect(harness.run(
-        "releases", "play-rollback", "raft-android", "release-1", "--to-version-code", "0",
+        "releases", "play-rollback", "raft-android", "release-1", "--to-version-code", "0", "--note", "n",
       )).rejects.toThrow("--to-version-code must be a positive integer");
+      expect(harness.requests).toHaveLength(0);
+    } finally {
+      await harness.close();
+    }
+  });
+
+  it("requires --note on Play writes; commander rejects before any request", async () => {
+    const harness = await startPlayHarness();
+    try {
+      await expect(harness.run(
+        "releases", "play-promote", "raft-android", "release-1", "--track", "internal",
+      )).rejects.toThrow("required option '--note <note>' not specified");
+      await expect(harness.run(
+        "releases", "play-halt", "raft-android", "release-1",
+      )).rejects.toThrow("required option '--note <note>' not specified");
+      await expect(harness.run(
+        "releases", "play-rollback", "raft-android", "release-1", "--to-version-code", "41",
+      )).rejects.toThrow("required option '--note <note>' not specified");
       expect(harness.requests).toHaveLength(0);
     } finally {
       await harness.close();

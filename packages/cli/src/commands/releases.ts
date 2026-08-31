@@ -629,12 +629,12 @@ export function registerReleaseCommands(program: Command): void {
     .description("Promote the release's accepted AAB to a Google Play track (publisher role; fail-closed gates, no auto-retry).")
     .requiredOption("--track <track>", "Play track: internal, closed, or production.")
     .option("--rollout-percent <percent>", "Staged rollout percentage (0-100).")
-    .option("--note <note>", "Approval note recorded in the play-promotion receipt.")
+    .requiredOption("--note <note>", "Approval note written into the promotion receipt's approvals (required, non-empty).")
     .option("--json", "Output JSON.", false)
     .action(async (
       appIdOrSlug: string,
       releaseId: string,
-      opts: { track: string; rolloutPercent?: string; note?: string; json?: boolean },
+      opts: { track: string; rolloutPercent?: string; note: string; json?: boolean },
       command: Command,
     ) => {
       const track = parsePlayTrack(opts.track);
@@ -645,7 +645,7 @@ export function registerReleaseCommands(program: Command): void {
       const body: Record<string, unknown> = {
         track,
         expected_revision: await fetchReleaseRevision(appId, releaseId),
-        approval: { note: opts.note ?? "" },
+        approval: { note: opts.note },
       };
       if (rolloutPercent !== undefined) body.rollout_percent = rolloutPercent;
       let res: PlayWriteResult;
@@ -672,18 +672,18 @@ export function registerReleaseCommands(program: Command): void {
   releases
     .command("play-halt <appIdOrSlug> <releaseId>")
     .description("Halt the staged Google Play rollout for a release (publisher role; no auto-retry).")
-    .option("--note <note>", "Approval note recorded in the play-promotion receipt.")
+    .requiredOption("--note <note>", "Approval note written into the promotion receipt's approvals (required, non-empty).")
     .option("--json", "Output JSON.", false)
     .action(async (
       appIdOrSlug: string,
       releaseId: string,
-      opts: { note?: string; json?: boolean },
+      opts: { note: string; json?: boolean },
       command: Command,
     ) => {
       const appId = await resolveAppId(appIdOrSlug);
       const body: Record<string, unknown> = {
         expected_revision: await fetchReleaseRevision(appId, releaseId),
-        approval: { note: opts.note ?? "" },
+        approval: { note: opts.note },
       };
       let res: PlayWriteResult;
       try {
@@ -710,12 +710,12 @@ export function registerReleaseCommands(program: Command): void {
     .command("play-rollback <appIdOrSlug> <releaseId>")
     .description("Republish a previous stable versionCode on Google Play (Play has no in-place downgrade; publisher role).")
     .requiredOption("--to-version-code <versionCode>", "Previous stable versionCode to republish at a higher versionCode.")
-    .option("--note <note>", "Approval note recorded in the play-promotion receipt.")
+    .requiredOption("--note <note>", "Approval note written into the promotion receipt's approvals (required, non-empty).")
     .option("--json", "Output JSON.", false)
     .action(async (
       appIdOrSlug: string,
       releaseId: string,
-      opts: { toVersionCode: string; note?: string; json?: boolean },
+      opts: { toVersionCode: string; note: string; json?: boolean },
       command: Command,
     ) => {
       const toVersionCode = parsePlayVersionCode(opts.toVersionCode);
@@ -723,7 +723,7 @@ export function registerReleaseCommands(program: Command): void {
       const body: Record<string, unknown> = {
         to_version_code: toVersionCode,
         expected_revision: await fetchReleaseRevision(appId, releaseId),
-        approval: { note: opts.note ?? "" },
+        approval: { note: opts.note },
       };
       let res: PlayWriteResult;
       try {
