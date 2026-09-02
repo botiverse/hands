@@ -59,6 +59,7 @@ import { handleAppGalleryReview, handleGetAgcBuildSubmission, handleGetAgcSubmis
 import {
   handleListApps,
   handleCreateApp,
+  handleTransferApp,
   handleGetApp,
   handleArchiveApp,
   handlePurgeApp,
@@ -798,6 +799,7 @@ admin.post("/api/invites/:token/accept", handleAcceptInvite);
 
 admin.get("/api/apps", requireCurrentOrgRole("viewer"), handleListApps);
 admin.post("/api/apps", requireCurrentOrgRole("member"), handleCreateApp);
+admin.post("/api/apps/:appId/transfer", handleTransferApp);
 admin.get("/api/apps/:appId", requireAppRole("viewer"), handleGetApp);
 admin.patch("/api/apps/:appId", requireAppRole("admin"), handleUpdateApp);
 admin.post("/api/apps/:appId/archive", requireAppRole("admin"), handleArchiveApp);
