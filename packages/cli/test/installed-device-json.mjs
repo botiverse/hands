@@ -10,8 +10,8 @@ import { promisify } from "node:util";
 
 const exec = promisify(execFile);
 const tarball = process.argv[2];
-if (!tarball) throw new Error("usage: installed-device-json.mjs <cli-tarball>");
-const nodeTarball = process.argv[3];
+if (!tarball) throw new Error("usage: installed-device-json.mjs <cli-tarball> [local-dep-tarball...]");
+const localDepTarballs = process.argv.slice(3);
 
 async function snapshot(path) {
   try {
@@ -54,7 +54,7 @@ const server = createServer((request, response) => {
 try {
   await exec("npm", [
     "install", "--ignore-scripts", "--no-audit", "--no-fund", "--prefix", install,
-    ...(nodeTarball ? [nodeTarball] : []), tarball,
+    ...localDepTarballs, tarball,
   ]);
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   const address = server.address();

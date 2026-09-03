@@ -205,10 +205,13 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/hands-cli-pack"
+          pnpm --dir packages/agent-session-store pack --pack-destination "$RUNNER_TEMP/hands-cli-pack"
           pnpm --dir packages/node pack --pack-destination "$RUNNER_TEMP/hands-cli-pack"
           pnpm --dir packages/cli pack --pack-destination "$RUNNER_TEMP/hands-cli-pack"
           cli_path="$(find "$RUNNER_TEMP/hands-cli-pack" -maxdepth 1 -name 'botiverse-hands-cli-*.tgz' -print -quit)"
           node_path="$(find "$RUNNER_TEMP/hands-cli-pack" -maxdepth 1 -name 'botiverse-hands-node-*.tgz' -print -quit)"
+          store_path="$(find "$RUNNER_TEMP/hands-cli-pack" -maxdepth 1 -name 'botiverse-agent-session-store-*.tgz' -print -quit)"
           test -n "${cli_path}"
           test -n "${node_path}"
-          node packages/cli/test/installed-device-json.mjs "${cli_path}" "${node_path}"
+          test -n "${store_path}"
+          node packages/cli/test/installed-device-json.mjs "${cli_path}" "${node_path}" "${store_path}"
