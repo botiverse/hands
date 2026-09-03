@@ -212,6 +212,14 @@ import {
   handleRollbackPlayDistribution,
 } from "./routes/play_distribution";
 import {
+  handleDeleteGooglePlayBinding,
+  handleDisableGooglePlayBinding,
+  handleEnableGooglePlayBinding,
+  handleGetGooglePlayBinding,
+  handlePutGooglePlayBinding,
+  handleVerifyGooglePlayBinding,
+} from "./routes/google_play_bindings";
+import {
   handleBumpRollout,
   handleCreateRelease,
   handleCreateReleaseDraft,
@@ -936,6 +944,12 @@ admin.post(
   requireAppRole("publisher"),
   handleCreateAcceptanceReceipt,
 );
+admin.get("/api/apps/:appId/google-play-binding", requireAppRole("admin"), handleGetGooglePlayBinding);
+admin.put("/api/apps/:appId/google-play-binding", requireAppRole("admin"), handlePutGooglePlayBinding);
+admin.post("/api/apps/:appId/google-play-binding/verify", requireAppRole("admin"), handleVerifyGooglePlayBinding);
+admin.post("/api/apps/:appId/google-play-binding/enable", requireAppRole("admin"), handleEnableGooglePlayBinding);
+admin.post("/api/apps/:appId/google-play-binding/disable", requireAppRole("admin"), handleDisableGooglePlayBinding);
+admin.delete("/api/apps/:appId/google-play-binding", requireAppRole("admin"), handleDeleteGooglePlayBinding);
 admin.get("/api/apps/:appId/shares", requireAppRole("viewer"), handleListAppShares);
 admin.post("/api/apps/:appId/shares/:shareId/rebind", requireAppRole("publisher"), handleRebindReleaseShare);
 admin.put("/api/apps/:appId/icon", requireAppRole("publisher"), handleUploadAppIcon);

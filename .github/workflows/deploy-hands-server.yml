@@ -68,9 +68,10 @@ jobs:
       HANDS_ADMIN_ALLOWED_SERVER_IDS: ${{ vars.HANDS_ADMIN_ALLOWED_SERVER_IDS }}
       HANDS_FLAGSHIP_APP_ID: ${{ vars.HANDS_FLAGSHIP_APP_ID }}
       # Optional until the independently deployed adapter is ready. When set,
-      # the renderer adds only the service binding; Google credentials remain
-      # in the adapter's own secret store and never enter this Worker.
+      # the renderer adds the private service binding and requires an active
+      # key version for app-scoped credential encryption in this Worker.
       HANDS_PLAY_RELEASE_SERVICE_NAME: ${{ vars.HANDS_PLAY_RELEASE_SERVICE_NAME }}
+      HANDS_PLAY_CRED_ENC_ACTIVE_KEY_VERSION: ${{ vars.HANDS_PLAY_CRED_ENC_ACTIVE_KEY_VERSION }}
     steps:
       - uses: actions/checkout@v6
 
@@ -762,6 +763,7 @@ jobs:
           RAFT_CLIENT_SECRET: ${{ secrets.HANDS_RAFT_CLIENT_SECRET }}
           ASC_CRED_ENC_KEY: ${{ secrets.HANDS_ASC_CRED_ENC_KEY }}
           AGC_CRED_ENC_KEY: ${{ secrets.HANDS_AGC_CRED_ENC_KEY }}
+          PLAY_CRED_ENC_KEYS: ${{ secrets.HANDS_PLAY_CRED_ENC_KEYS }}
           FEEDBACK_AUDIT_HMAC_KEY: ${{ secrets.HANDS_FEEDBACK_AUDIT_HMAC_KEY }}
           R2_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_BOTIVERSE_ACCOUNT_ID }}
           # Optional: R2 S3-API credentials enable direct-to-R2 presigned downloads
@@ -788,6 +790,10 @@ jobs:
             echo "Missing GitHub secret HANDS_AGC_CRED_ENC_KEY." >&2
             exit 1
           fi
+          if [[ -n "${HANDS_PLAY_RELEASE_SERVICE_NAME:-}" && -z "${PLAY_CRED_ENC_KEYS:-}" ]]; then
+            echo "Missing GitHub secret HANDS_PLAY_CRED_ENC_KEYS while the Play adapter is configured." >&2
+            exit 1
+          fi
           if [[ -z "${FEEDBACK_AUDIT_HMAC_KEY:-}" ]]; then
             echo "Missing GitHub secret HANDS_FEEDBACK_AUDIT_HMAC_KEY." >&2
             exit 1
@@ -801,6 +807,9 @@ jobs:
           printf '%s' "${RAFT_CLIENT_SECRET}" | pnpm exec wrangler secret put RAFT_CLIENT_SECRET --config "${config}"
           printf '%s' "${ASC_CRED_ENC_KEY}" | pnpm exec wrangler secret put ASC_CRED_ENC_KEY --config "${config}"
           printf '%s' "${AGC_CRED_ENC_KEY}" | pnpm exec wrangler secret put AGC_CRED_ENC_KEY --config "${config}"
+          if [[ -n "${PLAY_CRED_ENC_KEYS:-}" ]]; then
+            printf '%s' "${PLAY_CRED_ENC_KEYS}" | pnpm exec wrangler secret put PLAY_CRED_ENC_KEYS --config "${config}"
+          fi
           printf '%s' "${FEEDBACK_AUDIT_HMAC_KEY}" | pnpm exec wrangler secret put FEEDBACK_AUDIT_HMAC_KEY --config "${config}"
           printf '%s' "${R2_ACCOUNT_ID}" | pnpm exec wrangler secret put R2_ACCOUNT_ID --config "${config}"
           # Optional R2 S3-API credentials (only put when configured).

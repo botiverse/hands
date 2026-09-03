@@ -871,6 +871,54 @@ export const verifyAgcCredentials = (appId: string) =>
     `/api/apps/${appId}/agc-credentials/verify`, { method: "POST", admin: true },
   );
 
+// ---------- Google Play app binding (Android) ----------
+
+export interface GooglePlayBindingMeta {
+  id: string;
+  app_id: string;
+  enabled: boolean;
+  package_name: string;
+  internal_track: string;
+  closed_track: string;
+  production_track: string;
+  service_account_email: string;
+  service_account_project_id: string | null;
+  private_key_id: string | null;
+  credential_fingerprint: string;
+  credential_key_version: string;
+  verification_state: "verified" | "stale";
+  verified_at: number | null;
+  updated_at: number;
+}
+
+export const getGooglePlayBinding = (appId: string) =>
+  request<{ google_play: GooglePlayBindingMeta | null }>(`/api/apps/${appId}/google-play-binding`, { admin: true });
+
+export const setGooglePlayBinding = (
+  appId: string,
+  input: {
+    service_account_json: string;
+    package_name: string;
+    tracks: { internal: string; closed: string; production: string };
+  },
+) => request<{ google_play: GooglePlayBindingMeta }>(`/api/apps/${appId}/google-play-binding`, {
+  method: "PUT",
+  admin: true,
+  body: JSON.stringify(input),
+});
+
+export const verifyGooglePlayBinding = (appId: string) =>
+  request<{ ok: boolean }>(`/api/apps/${appId}/google-play-binding/verify`, { method: "POST", admin: true });
+
+export const setGooglePlayBindingEnabled = (appId: string, enabled: boolean) =>
+  request<{ ok: boolean; enabled: boolean }>(`/api/apps/${appId}/google-play-binding/${enabled ? "enable" : "disable"}`, {
+    method: "POST",
+    admin: true,
+  });
+
+export const deleteGooglePlayBinding = (appId: string) =>
+  request<{ ok: boolean }>(`/api/apps/${appId}/google-play-binding`, { method: "DELETE", admin: true });
+
 export interface AgcSubmission {
   id: string;
   app_id: string;

@@ -2,61 +2,55 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { sha256 } from "@noble/hashes/sha256";
 import { bytesToHex } from "@noble/hashes/utils";
-import {
-  decodeProtectedHeader,
-  exportPKCS8,
-  generateKeyPair,
-  jwtVerify,
-} from "jose";
+import { decodeProtectedHeader, exportPKCS8, generateKeyPair, jwtVerify } from "jose";
 import type { KeyLike } from "jose";
 import { beforeAll, describe, expect, it, vi } from "vitest";
-import { createPlayAdapter } from "../src/index";
-import type { PlayAdapterEnv, TrackResource } from "../src/types";
+import { createPlayAdapterService } from "../src/index";
+import type { PlayAdapterEnv, PlayBindingInput, PromotionRpcInput, TrackResource } from "../src/types";
 
 const PACKAGE = "build.raft.app";
 const NOW = 1_780_000_000;
 const bytes = new TextEncoder().encode("exact-aab-bytes");
 const digest = bytesToHex(sha256(bytes));
 
-let credential = "";
+let binding: PlayBindingInput;
 let publicKey: CryptoKey | KeyLike;
 
 beforeAll(async () => {
   const pair = await generateKeyPair("RS256", { extractable: true });
   publicKey = pair.publicKey;
-  credential = JSON.stringify({
-    type: "service_account",
-    client_email: "hands-play@example.iam.gserviceaccount.com",
-    private_key: await exportPKCS8(pair.privateKey),
-    private_key_id: "key-1",
-  });
+  binding = {
+    credential: {
+      type: "service_account",
+      project_id: "tenant-project",
+      client_email: "tenant-app@example.iam.gserviceaccount.com",
+      private_key: await exportPKCS8(pair.privateKey),
+      private_key_id: "key-1",
+    },
+    packageName: PACKAGE,
+    tracks: { internal: "qa", closed: "closed-alpha", production: "production" },
+  };
 });
 
 function environment(overrides: Partial<PlayAdapterEnv> = {}): PlayAdapterEnv {
-  return {
-    GOOGLE_PLAY_SERVICE_ACCOUNT_JSON: credential,
-    ALLOWED_PACKAGE_NAMES: PACKAGE,
-    GOOGLE_PLAY_CLOSED_TRACK_NAME: "closed-alpha",
-    MAX_AAB_SIZE_BYTES: "209715200",
-    ...overrides,
-  };
+  return { MAX_AAB_SIZE_BYTES: "209715200", ...overrides };
 }
 
-function promotionRequest(overrides: Record<string, string> = {}, body: BodyInit = bytes): Request {
-  return new Request(`https://play-adapter.internal/v1/apps/${PACKAGE}/edits`, {
-    method: "POST",
-    headers: {
-      "content-type": "application/octet-stream",
-      "x-hands-track": "internal",
-      "x-hands-version-code": "42",
-      "x-hands-sha256": digest,
-      "x-hands-size-bytes": String(bytes.byteLength),
-      "x-hands-rollout-percent": "100",
-      "x-hands-operation-id": "operation-1",
-      ...overrides,
-    },
-    body,
-  });
+function body() {
+  return new Blob([bytes]).stream();
+}
+
+function promotion(overrides: Partial<PromotionRpcInput> = {}): PromotionRpcInput {
+  return {
+    ...binding,
+    handsTrack: "internal",
+    versionCode: 42,
+    expectedSha256: digest,
+    expectedSize: bytes.byteLength,
+    rolloutPercent: 100,
+    operationId: "operation-1",
+    ...overrides,
+  };
 }
 
 interface GoogleFixtureOptions {
@@ -81,14 +75,14 @@ function googleFixture(options: GoogleFixtureOptions = {}) {
       assertion = new URLSearchParams(String(init.body)).get("assertion") ?? "";
       return Response.json(
         options.tokenStatus && options.tokenStatus !== 200
-          ? { error: credential }
+          ? { error: JSON.stringify(binding.credential) }
           : { access_token: "access-token", expires_in: 3600 },
         { status: options.tokenStatus ?? 200 },
       );
     }
-    let body: unknown = null;
-    if (typeof init.body === "string") body = JSON.parse(init.body);
-    requests.push({ url, method, body });
+    let requestBody: unknown = null;
+    if (typeof init.body === "string") requestBody = JSON.parse(init.body);
+    requests.push({ url, method, body: requestBody });
     expect(new Headers(init.headers).get("authorization")).toBe("Bearer access-token");
     if (method === "POST" && /\/applications\/[^/]+\/edits$/.test(url)) {
       return Response.json({ id: `edit-${nextEdit++}` });
@@ -97,13 +91,10 @@ function googleFixture(options: GoogleFixtureOptions = {}) {
     if (method === "GET" && url.includes("/tracks/")) return Response.json(track);
     if (url.includes("/bundles?uploadType=media")) {
       const uploaded = new Uint8Array(await new Response(init.body).arrayBuffer());
-      return Response.json({
-        versionCode: 42,
-        sha256: options.uploadSha ?? bytesToHex(sha256(uploaded)),
-      });
+      return Response.json({ versionCode: 42, sha256: options.uploadSha ?? bytesToHex(sha256(uploaded)) });
     }
     if (method === "PUT" && url.includes("/tracks/")) {
-      track = body as TrackResource;
+      track = requestBody as TrackResource;
       return Response.json(track);
     }
     if (method === "POST" && url.includes(":commit?")) {
@@ -120,164 +111,128 @@ function googleFixture(options: GoogleFixtureOptions = {}) {
   };
 }
 
-describe("Google Play adapter", () => {
-  it("uses a one-hour RS256 service-account assertion without exposing credentials", async () => {
+describe("Google Play adapter RPC service", () => {
+  it("validates the tenant package and every configured track without committing a release", async () => {
     const fixture = googleFixture();
-    const adapter = createPlayAdapter({ fetchImpl: fixture.fetchImpl, nowSeconds: () => NOW });
-    const response = await adapter.fetch(
-      new Request(`https://play-adapter.internal/v1/apps/${PACKAGE}/tracks/internal`),
-      environment(),
-    );
-    expect(response.status).toBe(200);
-    expect(await response.json()).toEqual({ max_version_code: 41 });
+    const service = createPlayAdapterService({ fetchImpl: fixture.fetchImpl, nowSeconds: () => NOW });
+    const result = await service.verifyBinding(binding, environment());
+    expect(result).toEqual({
+      ok: true,
+      value: { client_email: binding.credential.client_email, package_name: PACKAGE, tracks: binding.tracks },
+    });
+    expect(fixture.requests.filter((request) => request.method === "GET").map((request) => request.url)).toEqual([
+      expect.stringContaining("/tracks/qa"),
+      expect.stringContaining("/tracks/closed-alpha"),
+      expect.stringContaining("/tracks/production"),
+    ]);
+    expect(fixture.requests.filter((request) => request.url.includes(":commit"))).toHaveLength(0);
+    expect(fixture.requests.filter((request) => request.method === "DELETE")).toHaveLength(1);
+  });
+
+  it("uses a one-hour RS256 assertion and reads the app-selected track", async () => {
+    const fixture = googleFixture();
+    const service = createPlayAdapterService({ fetchImpl: fixture.fetchImpl, nowSeconds: () => NOW });
+    const result = await service.readTrackMaximum({ ...binding, handsTrack: "closed" }, environment());
+    expect(result).toEqual({ ok: true, value: { max_version_code: 41 } });
     expect(decodeProtectedHeader(fixture.assertion())).toMatchObject({ alg: "RS256", kid: "key-1" });
     const verified = await jwtVerify(fixture.assertion(), publicKey, {
       algorithms: ["RS256"],
-      issuer: "hands-play@example.iam.gserviceaccount.com",
+      issuer: binding.credential.client_email,
       audience: "https://oauth2.googleapis.com/token",
       currentDate: new Date(NOW * 1000),
     });
-    expect(verified.payload).toMatchObject({
-      iat: NOW,
-      exp: NOW + 3600,
-      scope: "https://www.googleapis.com/auth/androidpublisher",
-    });
-    expect(fixture.requests.map((request) => request.method)).toEqual(["POST", "GET", "DELETE"]);
-    expect(fixture.requests[1]!.url).toContain("/tracks/qa");
-  });
-
-  it("maps the contract closed track to the configured Play Console track", async () => {
-    const fixture = googleFixture();
-    const adapter = createPlayAdapter({ fetchImpl: fixture.fetchImpl, nowSeconds: () => NOW });
-    const response = await adapter.fetch(
-      new Request(`https://play-adapter.internal/v1/apps/${PACKAGE}/tracks/closed`),
-      environment(),
-    );
-    expect(response.status).toBe(200);
+    expect(verified.payload).toMatchObject({ iat: NOW, exp: NOW + 3600 });
     expect(fixture.requests[1]!.url).toContain("/tracks/closed-alpha");
   });
 
-  it("streams once, preserves existing releases, commits once, and reads back exact identity", async () => {
+  it("streams once, preserves releases, commits once, and reads back exact identity", async () => {
     const fixture = googleFixture();
-    const adapter = createPlayAdapter({ fetchImpl: fixture.fetchImpl, nowSeconds: () => NOW });
-    const response = await adapter.fetch(promotionRequest(), environment());
-    expect(response.status).toBe(200);
-    expect(await response.json()).toEqual({
-      edit_id: "edit-1",
-      package_name: PACKAGE,
-      version_code: 42,
-      track: "internal",
-      sha256: digest,
-      rollout_percent: 100,
+    const service = createPlayAdapterService({ fetchImpl: fixture.fetchImpl, nowSeconds: () => NOW });
+    const result = await service.promote(promotion(), body(), environment());
+    expect(result).toEqual({
+      ok: true,
+      value: {
+        edit_id: "edit-1",
+        package_name: PACKAGE,
+        version_code: 42,
+        track: "internal",
+        sha256: digest,
+        rollout_percent: 100,
+      },
     });
     expect(fixture.track().releases).toEqual([
       { name: "existing", versionCodes: ["41"], status: "completed" },
       { versionCodes: ["42"], status: "completed" },
     ]);
-    const commits = fixture.requests.filter((request) => request.url.includes(":commit?"));
-    expect(commits).toHaveLength(1);
-    expect(commits[0]!.url).toContain("changesInReviewBehavior=ERROR_IF_IN_REVIEW");
+    expect(fixture.requests.filter((request) => request.url.includes(":commit?"))).toHaveLength(1);
     expect(fixture.requests.filter((request) => request.url.includes("/bundles?uploadType=media"))).toHaveLength(1);
   });
 
-  it("deletes the uncommitted edit when Google reports a different AAB hash", async () => {
+  it("deletes an uncommitted edit on exact-byte mismatch", async () => {
     const fixture = googleFixture({ uploadSha: "f".repeat(64) });
-    const adapter = createPlayAdapter({ fetchImpl: fixture.fetchImpl, nowSeconds: () => NOW });
-    const response = await adapter.fetch(promotionRequest(), environment());
-    expect(response.status).toBe(409);
-    expect(await response.json()).toMatchObject({ error: { code: "play_bundle_mismatch" } });
-    expect(fixture.requests.filter((request) => request.method === "PUT")).toHaveLength(0);
-    expect(fixture.requests.filter((request) => request.url.includes(":commit?"))).toHaveLength(0);
-    expect(fixture.requests.filter((request) => request.method === "DELETE")).toHaveLength(1);
-  });
-
-  it("rechecks the live track inside the edit and stops a version race", async () => {
-    const fixture = googleFixture({ trackMaximum: 42 });
-    const adapter = createPlayAdapter({ fetchImpl: fixture.fetchImpl, nowSeconds: () => NOW });
-    const response = await adapter.fetch(promotionRequest(), environment());
-    expect(response.status).toBe(409);
-    expect(await response.json()).toMatchObject({ error: { code: "play_version_conflict" } });
+    const service = createPlayAdapterService({ fetchImpl: fixture.fetchImpl, nowSeconds: () => NOW });
+    const result = await service.promote(promotion(), body(), environment());
+    expect(result).toMatchObject({ ok: false, error: { code: "play_bundle_mismatch" } });
     expect(fixture.requests.filter((request) => request.method === "PUT")).toHaveLength(0);
     expect(fixture.requests.filter((request) => request.method === "DELETE")).toHaveLength(1);
   });
 
-  it("does not retry or delete an edit after an ambiguous commit attempt", async () => {
-    const fixture = googleFixture({ commitThrows: true });
-    const adapter = createPlayAdapter({ fetchImpl: fixture.fetchImpl, nowSeconds: () => NOW });
-    const response = await adapter.fetch(promotionRequest(), environment());
-    expect(response.status).toBe(502);
-    expect(await response.json()).toMatchObject({ error: { code: "play_api_unavailable" } });
-    expect(fixture.requests.filter((request) => request.url.includes(":commit?"))).toHaveLength(1);
-    expect(fixture.requests.filter((request) => request.method === "DELETE")).toHaveLength(0);
-  });
-
-  it("models a partial production rollout and rejects partial test-track rollout before OAuth", async () => {
-    const internalFixture = googleFixture();
-    const adapter = createPlayAdapter({ fetchImpl: internalFixture.fetchImpl, nowSeconds: () => NOW });
-    const rejected = await adapter.fetch(
-      promotionRequest({ "x-hands-rollout-percent": "25" }),
-      environment(),
-    );
-    expect(rejected.status).toBe(400);
-    expect(internalFixture.fetchImpl).not.toHaveBeenCalled();
-
-    const productionFixture = googleFixture();
-    const production = createPlayAdapter({ fetchImpl: productionFixture.fetchImpl, nowSeconds: () => NOW });
-    const accepted = await production.fetch(
-      promotionRequest({ "x-hands-track": "production", "x-hands-rollout-percent": "25" }),
-      environment(),
-    );
-    expect(accepted.status).toBe(200);
-    expect(productionFixture.track().releases?.at(-1)).toEqual({
-      versionCodes: ["42"],
-      status: "inProgress",
-      userFraction: 0.25,
+  it("stops a version race and does not undo an ambiguous commit", async () => {
+    const race = googleFixture({ trackMaximum: 42 });
+    const raceService = createPlayAdapterService({ fetchImpl: race.fetchImpl, nowSeconds: () => NOW });
+    expect(await raceService.promote(promotion(), body(), environment())).toMatchObject({
+      ok: false,
+      error: { code: "play_version_conflict" },
     });
+    expect(race.requests.filter((request) => request.method === "PUT")).toHaveLength(0);
+    expect(race.requests.filter((request) => request.method === "DELETE")).toHaveLength(1);
+
+    const ambiguous = googleFixture({ commitThrows: true });
+    const ambiguousService = createPlayAdapterService({ fetchImpl: ambiguous.fetchImpl, nowSeconds: () => NOW });
+    expect(await ambiguousService.promote(promotion(), body(), environment())).toMatchObject({
+      ok: false,
+      error: { code: "play_api_unavailable" },
+    });
+    expect(ambiguous.requests.filter((request) => request.url.includes(":commit?"))).toHaveLength(1);
+    expect(ambiguous.requests.filter((request) => request.method === "DELETE")).toHaveLength(0);
   });
 
-  it("rejects disallowed packages and oversized AABs before credential use", async () => {
+  it("rejects invalid tenant input and oversized bytes before OAuth", async () => {
     const fixture = googleFixture();
-    const adapter = createPlayAdapter({ fetchImpl: fixture.fetchImpl, nowSeconds: () => NOW });
-    const disallowed = await adapter.fetch(
-      new Request("https://play-adapter.internal/v1/apps/other.example.app/tracks/internal"),
-      environment(),
-    );
-    expect(disallowed.status).toBe(403);
-    const oversized = await adapter.fetch(
-      promotionRequest({ "x-hands-size-bytes": "16" }),
-      environment({ MAX_AAB_SIZE_BYTES: "15" }),
-    );
-    expect(oversized.status).toBe(413);
+    const service = createPlayAdapterService({ fetchImpl: fixture.fetchImpl, nowSeconds: () => NOW });
+    expect(await service.readTrackMaximum({ ...binding, packageName: "../bad", handsTrack: "internal" }, environment())).toMatchObject({
+      ok: false,
+      error: { code: "package_name_invalid" },
+    });
+    expect(await service.promote(promotion({ expectedSize: 16 }), body(), environment({ MAX_AAB_SIZE_BYTES: "15" }))).toMatchObject({
+      ok: false,
+      error: { code: "aab_too_large" },
+    });
     expect(fixture.fetchImpl).not.toHaveBeenCalled();
   });
 
-  it("redacts provider response bodies and credentials from errors and logs", async () => {
+  it("redacts provider bodies and per-app credentials from errors and logs", async () => {
     const fixture = googleFixture({ tokenStatus: 401 });
     const log = vi.spyOn(console, "error").mockImplementation(() => undefined);
     try {
-      const adapter = createPlayAdapter({ fetchImpl: fixture.fetchImpl, nowSeconds: () => NOW });
-      const response = await adapter.fetch(
-        new Request(`https://play-adapter.internal/v1/apps/${PACKAGE}/tracks/internal`),
-        environment(),
-      );
-      const body = JSON.stringify(await response.json());
-      expect(response.status).toBe(502);
-      expect(body).not.toContain("PRIVATE KEY");
-      expect(body).not.toContain("hands-play@example");
+      const service = createPlayAdapterService({ fetchImpl: fixture.fetchImpl, nowSeconds: () => NOW });
+      const result = await service.readTrackMaximum({ ...binding, handsTrack: "internal" }, environment());
+      const text = JSON.stringify(result);
+      expect(result).toMatchObject({ ok: false, error: { status: 403, code: "play_token_rejected" } });
+      expect(text).not.toContain("PRIVATE KEY");
+      expect(text).not.toContain("tenant-app@example");
       expect(log.mock.calls.flat().join(" ")).not.toContain("PRIVATE KEY");
-      expect(log.mock.calls.flat().join(" ")).not.toContain("hands-play@example");
+      expect(log.mock.calls.flat().join(" ")).not.toContain("tenant-app@example");
     } finally {
       log.mockRestore();
     }
   });
 
-  it("has no public route or preview URL in checked-in Wrangler config", () => {
-    const config = readFileSync(
-      fileURLToPath(new URL("../wrangler.jsonc", import.meta.url)),
-      "utf8",
-    );
+  it("has no public route, preview URL, or global tenant credential in Wrangler config", () => {
+    const config = readFileSync(fileURLToPath(new URL("../wrangler.jsonc", import.meta.url)), "utf8");
     expect(config).toMatch(/"workers_dev": false/);
     expect(config).toMatch(/"preview_urls": false/);
     expect(config).not.toMatch(/"routes"\s*:/);
+    expect(config).not.toMatch(/GOOGLE_PLAY_SERVICE_ACCOUNT_JSON|ALLOWED_PACKAGE_NAMES|CLOSED_TRACK_NAME/);
   });
 });

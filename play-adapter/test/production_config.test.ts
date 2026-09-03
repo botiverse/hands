@@ -10,8 +10,6 @@ const repositoryDir = resolve(adapterDir, "..");
 const renderScript = resolve(adapterDir, "scripts/render-production-config.mjs");
 const BASE_ENV = {
   HANDS_PLAY_ADAPTER_WORKER_NAME: "hands-google-play-adapter",
-  HANDS_PLAY_ALLOWED_PACKAGE_NAMES: "build.raft.app",
-  HANDS_PLAY_CLOSED_TRACK_NAME: "closed-alpha",
   HANDS_PLAY_MAX_AAB_SIZE_BYTES: "209715200",
 };
 
@@ -36,21 +34,17 @@ test("production config keeps the adapter private and renders the exact bounded 
     assert.equal(config.preview_urls, false);
     assert.equal("routes" in config, false);
     assert.deepEqual(config.vars, {
-      ALLOWED_PACKAGE_NAMES: "build.raft.app",
-      GOOGLE_PLAY_CLOSED_TRACK_NAME: "closed-alpha",
       MAX_AAB_SIZE_BYTES: "209715200",
     });
-    assert.equal(JSON.stringify(config).includes("SERVICE_ACCOUNT"), false);
+    assert.doesNotMatch(JSON.stringify(config), /SERVICE_ACCOUNT|ALLOWED_PACKAGE|CLOSED_TRACK/);
   } finally {
     fixture.cleanup();
   }
 });
 
-test("production config rejects malformed service, package, track, and size inputs", () => {
+test("production config rejects malformed service and size inputs", () => {
   const cases = [
     [{ HANDS_PLAY_ADAPTER_WORKER_NAME: "https://bad.example" }, /valid Cloudflare Worker/],
-    [{ HANDS_PLAY_ALLOWED_PACKAGE_NAMES: "../bad" }, /package-name allowlist/],
-    [{ HANDS_PLAY_CLOSED_TRACK_NAME: "production" }, /custom closed-testing track/],
     [{ HANDS_PLAY_MAX_AAB_SIZE_BYTES: "0" }, /positive safe integer/],
   ] as const;
   for (const [environment, pattern] of cases) {
@@ -64,7 +58,7 @@ test("production config rejects malformed service, package, track, and size inpu
   }
 });
 
-test("adapter deployment is manual, environment-gated, and injects the credential only as a deploy secret", () => {
+test("adapter deployment is manual, environment-gated, and has no global Play credential", () => {
   const workflow = readFileSync(
     resolve(repositoryDir, ".github/workflows/deploy-hands-play-adapter.yml"),
     "utf8",
@@ -74,6 +68,6 @@ test("adapter deployment is manual, environment-gated, and injects the credentia
   assert.match(workflow, /^    environment: hands-play-production$/m);
   assert.match(workflow, /^    if: github\.ref == 'refs\/heads\/main'$/m);
   assert.doesNotMatch(workflow, /run_checks/);
-  assert.match(workflow, /--secrets-file "\$\{secret_file\}"/);
-  assert.doesNotMatch(workflow, /wrangler secret put/);
+  assert.doesNotMatch(workflow, /GOOGLE_PLAY_SERVICE_ACCOUNT_JSON|HANDS_PLAY_ALLOWED_PACKAGE_NAMES|HANDS_PLAY_CLOSED_TRACK_NAME/);
+  assert.doesNotMatch(workflow, /--secrets-file|wrangler secret put/);
 });

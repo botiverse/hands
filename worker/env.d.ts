@@ -5,6 +5,55 @@
 
 import "@cloudflare/workers-types";
 
+type GooglePlayCredential = {
+  type: "service_account";
+  project_id?: string;
+  private_key_id?: string;
+  private_key: string;
+  client_email: string;
+};
+
+type GooglePlayTracks = Record<"internal" | "closed" | "production", string>;
+
+type GooglePlayBindingInput = {
+  credential: GooglePlayCredential;
+  packageName: string;
+  tracks: GooglePlayTracks;
+};
+
+type GooglePlayAdapterResult<T> =
+  | { ok: true; value: T }
+  | { ok: false; error: { status: number; code: string; message: string } };
+
+interface GooglePlayAdapterService {
+  verifyBinding(input: GooglePlayBindingInput): Promise<GooglePlayAdapterResult<{
+    client_email: string;
+    package_name: string;
+    tracks: GooglePlayTracks;
+  }>>;
+  readTrackMaximum(input: GooglePlayBindingInput & { handsTrack: keyof GooglePlayTracks }): Promise<
+    GooglePlayAdapterResult<{ max_version_code: number }>
+  >;
+  promote(
+    input: GooglePlayBindingInput & {
+      handsTrack: keyof GooglePlayTracks;
+      versionCode: number;
+      expectedSha256: string;
+      expectedSize: number;
+      rolloutPercent: number;
+      operationId: string;
+    },
+    body: ReadableStream<Uint8Array>,
+  ): Promise<GooglePlayAdapterResult<{
+    edit_id: string;
+    package_name: string;
+    version_code: number;
+    track: keyof GooglePlayTracks;
+    sha256: string;
+    rollout_percent: number;
+  }>>;
+}
+
 declare global {
   interface Env {
     ADMIN_API_TOKEN?: string;
@@ -28,6 +77,10 @@ declare global {
     ASC_CRED_ENC_KEY?: string;
     /** AES-GCM root secret for per-app AppGallery Connect credential JSON. */
     AGC_CRED_ENC_KEY?: string;
+    /** Secret JSON keyring used for app-scoped Google Play credentials. */
+    PLAY_CRED_ENC_KEYS?: string;
+    /** Active key version within PLAY_CRED_ENC_KEYS. */
+    PLAY_CRED_ENC_ACTIVE_KEY_VERSION?: string;
     RAFT_ALLOWED_SERVER_IDS?: string;
     RAFT_ALLOWED_SERVER_SLUGS?: string;
     /** Exact HTTPS app-link callbacks registered for Hands Installer. */
@@ -41,11 +94,8 @@ declare global {
     FEEDBACK_REPORTER_SESSION_ACTIVE_KEY_VERSION?: string;
     /** Secret JSON object containing one or two base64url HMAC keys by version. */
     FEEDBACK_REPORTER_SESSION_KEYS?: string;
-    /**
-     * Server-side Google Play adapter. The adapter owns Play credentials; this
-     * Worker and every CI/CLI/device caller only see the service binding.
-     */
-    PLAY_RELEASE_SERVICE?: Fetcher;
+    /** Private stateless adapter; only Hands decrypts and supplies app-scoped credentials. */
+    PLAY_RELEASE_SERVICE?: GooglePlayAdapterService;
   }
 }
 
