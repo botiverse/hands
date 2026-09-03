@@ -102,24 +102,29 @@ fail-closed until the server-side Play adapter explicitly implements them.
 
 ## Server-side Play adapter protocol
 
-`PLAY_RELEASE_SERVICE` owns Google credentials. Hands makes two service-binding
-requests and never sends credentials in headers or payloads:
+Each Android app has an owner-managed Google Play binding. Hands encrypts the
+service-account JSON with an app-bound AES-GCM keyring, stores only ciphertext,
+and exposes only non-secret metadata to the admin UI. Binding or re-enabling an
+app first validates OAuth, package access, and all configured tracks with a
+temporary edit that is deleted without commit.
 
-- `GET /v1/apps/:package/tracks/:track` → `{ "max_version_code": 122 }`
-- `POST /v1/apps/:package/edits` with the AAB byte stream and only public
-  `x-hands-*` identity headers → exact readback `{edit_id, package_name,
-  version_code, track, sha256, rollout_percent}`.
+`PLAY_RELEASE_SERVICE` is a private, stateless RPC Worker. Hands decrypts only
+the selected app binding and transfers it directly through the private service
+binding together with typed operation input:
+
+- `verifyBinding({credential, packageName, tracks})` validates the app binding;
+- `readTrackMaximum({credential, packageName, tracks, handsTrack})` returns the
+  live maximum versionCode;
+- `promote(input, aabStream)` transfers the AAB stream and returns exact
+  `{edit_id, package_name, version_code, track, sha256, rollout_percent}`.
 
 No call is retried automatically. Adapter absence, non-2xx, or malformed/mismatched
 readback is a typed `play_api_error` and never becomes success.
 
 The adapter is the `play-adapter/` Worker. It has no public route, `workers.dev`
-hostname, or preview URL. Its Google service-account JSON exists only as the
-adapter secret `GOOGLE_PLAY_SERVICE_ACCOUNT_JSON`; Hands receives only the
-`PLAY_RELEASE_SERVICE` service binding. `ALLOWED_PACKAGE_NAMES` restricts the
-package surface, `internal` maps to Play's `qa` track, `production` maps to
-`production`, and `closed` maps to the existing custom track named by
-`GOOGLE_PLAY_CLOSED_TRACK_NAME`.
+hostname, preview URL, global Google credential, package allowlist, or global
+track mapping. Package and track scope comes only from the authenticated app's
+encrypted binding. Neither Worker returns or logs private credential material.
 
 Each mutation creates one Google edit, streams the AAB without buffering it,
 compares both the local SHA-256 and Google's bundle SHA-256/versionCode, reads

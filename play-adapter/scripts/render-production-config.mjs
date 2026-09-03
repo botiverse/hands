@@ -28,23 +28,6 @@ function workerName(name) {
   return value;
 }
 
-function packageNames(name) {
-  const value = required(name);
-  const packages = value.split(",").map((item) => item.trim()).filter(Boolean);
-  if (packages.length === 0 || packages.some((item) => !/^[A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z][A-Za-z0-9_]*)+$/.test(item))) {
-    throw new Error(`${name} must be a comma-separated package-name allowlist`);
-  }
-  return packages.join(",");
-}
-
-function trackName(name) {
-  const value = required(name);
-  if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(value) || value === "qa" || value === "production") {
-    throw new Error(`${name} must name a custom closed-testing track`);
-  }
-  return value;
-}
-
 function positiveInteger(name) {
   const value = required(name);
   if (!/^\d+$/.test(value) || !Number.isSafeInteger(Number(value)) || Number(value) <= 0) {
@@ -65,8 +48,6 @@ if (errors.length > 0 || !config || typeof config !== "object") {
 
 config.name = workerName("HANDS_PLAY_ADAPTER_WORKER_NAME");
 config.vars = {
-  ALLOWED_PACKAGE_NAMES: packageNames("HANDS_PLAY_ALLOWED_PACKAGE_NAMES"),
-  GOOGLE_PLAY_CLOSED_TRACK_NAME: trackName("HANDS_PLAY_CLOSED_TRACK_NAME"),
   MAX_AAB_SIZE_BYTES: positiveInteger("HANDS_PLAY_MAX_AAB_SIZE_BYTES"),
 };
 

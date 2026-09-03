@@ -13,7 +13,7 @@ concurrency:
 jobs:
   deploy:
     # This environment must keep a main-only deployment policy. The workflow
-    # writes a production secret and publishes a Worker; a job-level branch
+    # publishes a private Worker; a job-level branch
     # condition inside this file is not an equivalent external control.
     environment: hands-play-production
     if: github.ref == 'refs/heads/main'
@@ -21,10 +21,7 @@ jobs:
     env:
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_BOTIVERSE_ACCOUNT_ID }}
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_BOTIVERSE_API_TOKEN }}
-      GOOGLE_PLAY_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_PLAY_SERVICE_ACCOUNT_JSON }}
       HANDS_PLAY_ADAPTER_WORKER_NAME: ${{ vars.HANDS_PLAY_ADAPTER_WORKER_NAME }}
-      HANDS_PLAY_ALLOWED_PACKAGE_NAMES: ${{ vars.HANDS_PLAY_ALLOWED_PACKAGE_NAMES }}
-      HANDS_PLAY_CLOSED_TRACK_NAME: ${{ vars.HANDS_PLAY_CLOSED_TRACK_NAME }}
       HANDS_PLAY_MAX_AAB_SIZE_BYTES: ${{ vars.HANDS_PLAY_MAX_AAB_SIZE_BYTES }}
     steps:
       - uses: actions/checkout@v6
@@ -51,7 +48,7 @@ jobs:
           pnpm --filter @botiverse/hands-play-adapter build
           pnpm --filter @botiverse/hands-play-adapter exec wrangler deploy --dry-run --config wrangler.generated.jsonc
 
-      - name: Validate production credentials
+      - name: Validate deployment credentials
         shell: bash
         run: |
           set -euo pipefail
@@ -59,20 +56,10 @@ jobs:
             echo "Missing Cloudflare deployment credential." >&2
             exit 1
           fi
-          if [[ -z "${GOOGLE_PLAY_SERVICE_ACCOUNT_JSON:-}" ]]; then
-            echo "Missing Google Play service-account credential." >&2
-            exit 1
-          fi
 
-      - name: Deploy private adapter with its service-account secret
+      - name: Deploy private stateless adapter
         working-directory: play-adapter
         shell: bash
         run: |
           set -euo pipefail
-          secret_file="$(mktemp)"
-          trap 'rm -f "${secret_file}"' EXIT
-          chmod 600 "${secret_file}"
-          jq -n --arg value "${GOOGLE_PLAY_SERVICE_ACCOUNT_JSON}" \
-            '{GOOGLE_PLAY_SERVICE_ACCOUNT_JSON: $value}' > "${secret_file}"
-          pnpm exec wrangler deploy --strict --config wrangler.generated.jsonc \
-            --secrets-file "${secret_file}"
+          pnpm exec wrangler deploy --strict --config wrangler.generated.jsonc

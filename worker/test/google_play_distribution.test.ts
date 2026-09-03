@@ -22,6 +22,14 @@ import {
 } from "../src/routes/play_distribution";
 import { createRelease } from "../src/routes/releases";
 import { openApiDocument } from "../src/openapi";
+import { storeGooglePlayBinding } from "../src/lib/google_play_bindings";
+import { requireAppRole } from "../src/lib/permissions";
+import {
+  handleEnableGooglePlayBinding,
+  handleGetGooglePlayBinding,
+  handlePutGooglePlayBinding,
+  handleVerifyGooglePlayBinding,
+} from "../src/routes/google_play_bindings";
 
 const A = "a".repeat(64);
 const B = "b".repeat(64);
@@ -209,6 +217,10 @@ describe("Android distribution OpenAPI", () => {
       "/api/apps/{appId}/android-release-artifacts",
       "/api/apps/{appId}/android-release-artifacts/{buildId}",
       "/api/apps/{appId}/android-release-artifacts/{buildId}/assets/{assetId}/complete",
+      "/api/apps/{appId}/google-play-binding",
+      "/api/apps/{appId}/google-play-binding/verify",
+      "/api/apps/{appId}/google-play-binding/enable",
+      "/api/apps/{appId}/google-play-binding/disable",
       "/api/apps/{appId}/releases/{releaseId}/receipts",
       "/api/apps/{appId}/releases/{releaseId}/receipts/acceptance",
       "/api/apps/{appId}/releases/{releaseId}/distributions",
@@ -439,6 +451,21 @@ describe("Android artifact routes", () => {
 
 async function readyRelease() {
   const harness = routeHarness();
+  harness.env.PLAY_CRED_ENC_KEYS = JSON.stringify({ v1: "test-only-google-play-key-material-1234567890" });
+  harness.env.PLAY_CRED_ENC_ACTIVE_KEY_VERSION = "v1";
+  await storeGooglePlayBinding(harness.env.DB, {
+    appId: "app",
+    packageName: "build.raft.app",
+    tracks: { internal: "qa", closed: "closed", production: "production" },
+    credential: {
+      type: "service_account",
+      client_email: "app@example.iam.gserviceaccount.com",
+      private_key: "-----BEGIN PRIVATE KEY-----\ntest\n-----END PRIVATE KEY-----",
+    },
+    actor: "raft:human@test",
+    keyringJson: harness.env.PLAY_CRED_ENC_KEYS,
+    activeKeyVersion: harness.env.PLAY_CRED_ENC_ACTIVE_KEY_VERSION,
+  });
   const aab = new TextEncoder().encode("exact-aab");
   const apk = new TextEncoder().encode("exact-apk");
   const body = validBundle();
@@ -482,31 +509,238 @@ async function readyRelease() {
   return { ...harness, aab, aabAsset, declared };
 }
 
+type PlayAdapter = NonNullable<Env["PLAY_RELEASE_SERVICE"]>;
+
+function playAdapterStub(overrides: Partial<PlayAdapter> = {}): PlayAdapter {
+  return {
+    verifyBinding: async (input) => ({
+      ok: true,
+      value: {
+        client_email: input.credential.client_email,
+        package_name: input.packageName,
+        tracks: input.tracks,
+      },
+    }),
+    readTrackMaximum: async () => ({ ok: true, value: { max_version_code: 41 } }),
+    promote: async () => {
+      throw new Error("unexpected promote call");
+    },
+    ...overrides,
+  };
+}
+
+function googlePlayBindingHarness(role: "admin" | "publisher", withKeyring = true) {
+  const sqlite = fullDatabase();
+  const now = Date.now();
+  sqlite.prepare(`INSERT INTO raft_accounts
+    (id, provider, provider_subject, server_id, server_slug, principal_type, server_role,
+     username, display_name, avatar_url, raw_profile, created_at, updated_at, last_login_at)
+    VALUES ('binding-user', 'raft', 'binding-user', 'server', 'test', 'human', NULL,
+            'binding-user', 'Binding User', NULL, '{}', ?, ?, ?)`)
+    .run(now, now, now);
+  sqlite.prepare(`INSERT INTO app_members
+    (id, app_id, account_id, app_role, joined_at)
+    VALUES ('binding-member', 'app', 'binding-user', ?, ?)`)
+    .run(role, now);
+  sqlite.prepare("INSERT INTO apps (id, slug, name, platform, created_at) VALUES ('other', 'other', 'Other', 'android', ?)")
+    .run(now);
+
+  const env = {
+    DB: d1(sqlite),
+    ENVIRONMENT: "development",
+    BUSINESS_ORIGIN: "https://hands.test",
+    DASHBOARD_ORIGIN: "https://app.hands.test",
+    ...(withKeyring
+      ? {
+          PLAY_CRED_ENC_KEYS: JSON.stringify({ v1: "test-only-google-play-key-material-1234567890" }),
+          PLAY_CRED_ENC_ACTIVE_KEY_VERSION: "v1",
+        }
+      : {}),
+    PLAY_RELEASE_SERVICE: playAdapterStub(),
+  } as unknown as Env;
+  const app = new Hono<{ Bindings: Env; Variables: { admin_account: any; admin_actor: string } }>();
+  app.use("*", async (c, next) => {
+    c.set("admin_account", {
+      id: "binding-user",
+      provider: "raft",
+      provider_subject: "binding-user",
+      server_id: "server",
+      server_slug: "test",
+      principal_type: "human",
+      server_role: null,
+      username: "binding-user",
+      display_name: "Binding User",
+      avatar_url: null,
+      raw_profile: "{}",
+      created_at: now,
+      updated_at: now,
+      last_login_at: now,
+    });
+    c.set("admin_actor", "raft:binding-user@test");
+    await next();
+  });
+  app.get("/api/apps/:appId/google-play-binding", requireAppRole("admin"), handleGetGooglePlayBinding);
+  app.put("/api/apps/:appId/google-play-binding", requireAppRole("admin"), handlePutGooglePlayBinding);
+  app.post("/api/apps/:appId/google-play-binding/verify", requireAppRole("admin"), handleVerifyGooglePlayBinding);
+  app.post("/api/apps/:appId/google-play-binding/enable", requireAppRole("admin"), handleEnableGooglePlayBinding);
+  const request = (path: string, init?: RequestInit) =>
+    app.fetch(new Request(`https://hands.test${path}`, init), env, executionContext);
+  return { sqlite, env, request };
+}
+
+function validBindingBody() {
+  return {
+    service_account_json: {
+      type: "service_account",
+      project_id: "tenant-project",
+      private_key_id: "tenant-key",
+      client_email: "tenant@example.iam.gserviceaccount.com",
+      private_key: "-----BEGIN PRIVATE KEY-----\nprivate-tenant-material\n-----END PRIVATE KEY-----",
+    },
+    package_name: "build.raft.app",
+    tracks: { internal: "qa", closed: "closed", production: "production" },
+  };
+}
+
+describe("Google Play binding routes", () => {
+  it("allows only the app admin, stores encrypted private material, and returns safe metadata", async () => {
+    const publisher = googlePlayBindingHarness("publisher");
+    const denied = await publisher.request("/api/apps/app/google-play-binding", {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(validBindingBody()),
+    });
+    expect(denied.status).toBe(403);
+    expect(await denied.json()).toMatchObject({ code: "INSUFFICIENT_APP_ROLE", required_role: "admin" });
+
+    const admin = googlePlayBindingHarness("admin");
+    const stored = await admin.request("/api/apps/app/google-play-binding", {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(validBindingBody()),
+    });
+    expect(stored.status).toBe(200);
+    const responseText = await stored.text();
+    expect(responseText).not.toContain("private-tenant-material");
+    expect(responseText).not.toContain("BEGIN PRIVATE KEY");
+    expect(JSON.parse(responseText)).toMatchObject({
+      google_play: { app_id: "app", enabled: true, package_name: "build.raft.app" },
+    });
+    const row = admin.sqlite.prepare(`SELECT credential_ciphertext_b64, credential_iv_b64,
+      credential_key_version FROM app_google_play_bindings WHERE app_id='app'`).get() as Record<string, string>;
+    expect(JSON.stringify(row)).not.toContain("private-tenant-material");
+    expect(row.credential_key_version).toBe("v1");
+    const audit = admin.sqlite.prepare("SELECT payload FROM audit_logs WHERE action='google_play.binding.set'").get() as { payload: string };
+    expect(audit.payload).not.toContain("private-tenant-material");
+
+    const readback = await admin.request("/api/apps/app/google-play-binding");
+    expect(readback.status).toBe(200);
+    expect(await readback.text()).not.toContain("credential_ciphertext_b64");
+
+    const crossApp = await admin.request("/api/apps/other/google-play-binding");
+    expect(crossApp.status).toBe(403);
+  });
+
+  it("fails before external validation when credential encryption is unavailable", async () => {
+    const harness = googlePlayBindingHarness("admin", false);
+    let adapterCalls = 0;
+    harness.env.PLAY_RELEASE_SERVICE = playAdapterStub({
+      verifyBinding: async () => {
+        adapterCalls += 1;
+        return { ok: false, error: { status: 500, code: "UNEXPECTED", message: "unexpected" } };
+      },
+    });
+    const response = await harness.request("/api/apps/app/google-play-binding", {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(validBindingBody()),
+    });
+    expect(response.status).toBe(500);
+    expect(await response.json()).toMatchObject({ code: "PLAY_CREDENTIAL_STORAGE_UNAVAILABLE" });
+    expect(adapterCalls).toBe(0);
+  });
+
+  it("marks a definitively rejected binding stale and disabled, then re-verifies before enable", async () => {
+    const harness = googlePlayBindingHarness("admin");
+    const stored = await harness.request("/api/apps/app/google-play-binding", {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(validBindingBody()),
+    });
+    expect(stored.status).toBe(200);
+
+    harness.env.PLAY_RELEASE_SERVICE = playAdapterStub({
+      verifyBinding: async () => ({
+        ok: false,
+        error: { status: 502, code: "PLAY_UPSTREAM_UNAVAILABLE", message: "temporarily unavailable" },
+      }),
+    });
+    const transient = await harness.request("/api/apps/app/google-play-binding/verify", { method: "POST" });
+    expect(transient.status).toBe(502);
+    expect(harness.sqlite.prepare(`SELECT enabled, verification_state FROM app_google_play_bindings
+      WHERE app_id='app'`).get()).toEqual({ enabled: 1, verification_state: "verified" });
+
+    harness.env.PLAY_RELEASE_SERVICE = playAdapterStub({
+      verifyBinding: async () => ({
+        ok: false,
+        error: { status: 403, code: "PLAY_PERMISSION_DENIED", message: "permission denied" },
+      }),
+    });
+    const rejected = await harness.request("/api/apps/app/google-play-binding/verify", { method: "POST" });
+    expect(rejected.status).toBe(502);
+    expect(harness.sqlite.prepare(`SELECT enabled, verification_state, verified_at
+      FROM app_google_play_bindings WHERE app_id='app'`).get()).toEqual({
+      enabled: 0,
+      verification_state: "stale",
+      verified_at: null,
+    });
+
+    const deniedEnable = await harness.request("/api/apps/app/google-play-binding/enable", { method: "POST" });
+    expect(deniedEnable.status).toBe(502);
+    const deniedAudit = harness.sqlite.prepare(`SELECT payload FROM audit_logs
+      WHERE action='google_play.binding.enable' ORDER BY created_at DESC LIMIT 1`).get() as { payload: string };
+    expect(JSON.parse(deniedAudit.payload)).toEqual({
+      package_name: "build.raft.app",
+      ok: false,
+      code: "PLAY_PERMISSION_DENIED",
+    });
+    expect(deniedAudit.payload).not.toContain("private-tenant-material");
+
+    harness.env.PLAY_RELEASE_SERVICE = playAdapterStub();
+    const enabled = await harness.request("/api/apps/app/google-play-binding/enable", { method: "POST" });
+    expect(enabled.status).toBe(200);
+    expect(harness.sqlite.prepare(`SELECT enabled, verification_state, verified_at IS NOT NULL AS verified
+      FROM app_google_play_bindings WHERE app_id='app'`).get()).toEqual({
+      enabled: 1,
+      verification_state: "verified",
+      verified: 1,
+    });
+  });
+});
+
 describe("Play promotion route", () => {
   it("streams the accepted exact AAB once and records matching readback", async () => {
     const harness = await readyRelease();
     let trackReads = 0;
     let edits = 0;
-    harness.env.PLAY_RELEASE_SERVICE = {
-      fetch: async (input: RequestInfo | URL, init?: RequestInit) => {
-        const url = String(input);
-        if (init?.method === "GET") {
-          trackReads += 1;
-          return Response.json({ max_version_code: 41 });
-        }
+    harness.env.PLAY_RELEASE_SERVICE = playAdapterStub({
+      readTrackMaximum: async () => {
+        trackReads += 1;
+        return { ok: true, value: { max_version_code: 41 } };
+      },
+      promote: async (_input, stream) => {
         edits += 1;
-        const bytes = new Uint8Array(await new Response(init?.body).arrayBuffer());
-        return Response.json({
+        const bytes = new Uint8Array(await new Response(stream).arrayBuffer());
+        return { ok: true, value: {
           edit_id: "edit-1",
           package_name: "build.raft.app",
           version_code: 42,
           track: "internal",
           sha256: sha(bytes),
           rollout_percent: 100,
-          adapter_url: url,
-        });
+        } };
       },
-    } as unknown as Fetcher;
+    });
 
     const promoted = await harness.request("/api/apps/app/releases/release/distributions/play/promote", {
       method: "POST",
@@ -539,15 +773,55 @@ describe("Play promotion route", () => {
     expect(JSON.stringify(payload)).not.toMatch(/distribution[_-]?cert/i);
   });
 
+  it("rejects missing, disabled, and package-mismatched app bindings before any adapter call", async () => {
+    const cases = [
+      {
+        mutate: (db: Database.Database) => db.prepare("DELETE FROM app_google_play_bindings WHERE app_id='app'").run(),
+        status: 403,
+        gate: "permission",
+      },
+      {
+        mutate: (db: Database.Database) => db.prepare("UPDATE app_google_play_bindings SET enabled=0 WHERE app_id='app'").run(),
+        status: 403,
+        gate: "permission",
+      },
+      {
+        mutate: (db: Database.Database) => db.prepare("UPDATE app_google_play_bindings SET package_name='other.package' WHERE app_id='app'").run(),
+        status: 400,
+        gate: "immutable_binding",
+      },
+    ];
+    for (const fixture of cases) {
+      const harness = await readyRelease();
+      let adapterCalls = 0;
+      harness.env.PLAY_RELEASE_SERVICE = playAdapterStub({
+        readTrackMaximum: async () => {
+          adapterCalls += 1;
+          return { ok: true, value: { max_version_code: 41 } };
+        },
+      });
+      fixture.mutate(harness.sqlite);
+      const response = await harness.request("/api/apps/app/releases/release/distributions/play/promote", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ track: "internal", expected_revision: 1, approval: { note: "approved" } }),
+      });
+      expect(response.status).toBe(fixture.status);
+      expect(await response.json()).toMatchObject({ error: { gate: fixture.gate } });
+      expect(adapterCalls).toBe(0);
+      expect(harness.sqlite.prepare("SELECT revision FROM releases WHERE id='release'").get()).toEqual({ revision: 1 });
+    }
+  });
+
   it("returns edit_conflict without calling Play and never retries", async () => {
     const harness = await readyRelease();
     let calls = 0;
-    harness.env.PLAY_RELEASE_SERVICE = {
-      fetch: async () => {
+    harness.env.PLAY_RELEASE_SERVICE = playAdapterStub({
+      readTrackMaximum: async () => {
         calls += 1;
-        return Response.json({ max_version_code: 41 });
+        return { ok: true, value: { max_version_code: 41 } };
       },
-    } as unknown as Fetcher;
+    });
     harness.sqlite.prepare(`INSERT INTO play_edit_locks
       (app_id, package_name, release_id, operation_id, acquired_by, acquired_at)
       VALUES ('app', 'build.raft.app', 'release', 'other', 'other', 1)`).run();
@@ -563,9 +837,9 @@ describe("Play promotion route", () => {
 
   it("returns typed play_api_error before revision reserve for malformed track JSON", async () => {
     const harness = await readyRelease();
-    harness.env.PLAY_RELEASE_SERVICE = {
-      fetch: async () => new Response("{", { status: 200, headers: { "content-type": "application/json" } }),
-    } as unknown as Fetcher;
+    harness.env.PLAY_RELEASE_SERVICE = playAdapterStub({
+      readTrackMaximum: async () => ({ ok: true, value: { max_version_code: Number.NaN } }),
+    });
     const response = await harness.request("/api/apps/app/releases/release/distributions/play/promote", {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -580,9 +854,9 @@ describe("Play promotion route", () => {
 
   it("returns typed play_api_error before reserve when the track request rejects", async () => {
     const harness = await readyRelease();
-    harness.env.PLAY_RELEASE_SERVICE = {
-      fetch: async () => { throw new Error("adapter unavailable"); },
-    } as unknown as Fetcher;
+    harness.env.PLAY_RELEASE_SERVICE = playAdapterStub({
+      readTrackMaximum: async () => { throw new Error("adapter unavailable"); },
+    });
     const response = await harness.request("/api/apps/app/releases/release/distributions/play/promote", {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -595,11 +869,10 @@ describe("Play promotion route", () => {
 
   it("records failed-closed after reserve when Play edit readback is malformed", async () => {
     const harness = await readyRelease();
-    harness.env.PLAY_RELEASE_SERVICE = {
-      fetch: async (_input: RequestInfo | URL, init?: RequestInit) => init?.method === "GET"
-        ? Response.json({ max_version_code: 41 })
-        : new Response("not-json", { status: 200, headers: { "content-type": "application/json" } }),
-    } as unknown as Fetcher;
+    harness.env.PLAY_RELEASE_SERVICE = playAdapterStub({
+      readTrackMaximum: async () => ({ ok: true, value: { max_version_code: 41 } }),
+      promote: async () => ({ ok: true, value: null }),
+    } as unknown as Partial<PlayAdapter>);
     const response = await harness.request("/api/apps/app/releases/release/distributions/play/promote", {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -616,12 +889,10 @@ describe("Play promotion route", () => {
 
   it("records failed-closed after reserve when the Play edit request rejects", async () => {
     const harness = await readyRelease();
-    harness.env.PLAY_RELEASE_SERVICE = {
-      fetch: async (_input: RequestInfo | URL, init?: RequestInit) => {
-        if (init?.method === "GET") return Response.json({ max_version_code: 41 });
-        throw new Error("adapter unavailable");
-      },
-    } as unknown as Fetcher;
+    harness.env.PLAY_RELEASE_SERVICE = playAdapterStub({
+      readTrackMaximum: async () => ({ ok: true, value: { max_version_code: 41 } }),
+      promote: async () => { throw new Error("adapter unavailable"); },
+    });
     const response = await harness.request("/api/apps/app/releases/release/distributions/play/promote", {
       method: "POST",
       headers: { "content-type": "application/json" },

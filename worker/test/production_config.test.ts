@@ -32,6 +32,7 @@ function render(extraEnv: Record<string, string> = {}) {
     if (key.startsWith("HANDS_FEEDBACK_REPORTER_SESSION_")) delete inheritedEnv[key];
   }
   delete inheritedEnv.HANDS_PLAY_RELEASE_SERVICE_NAME;
+  delete inheritedEnv.HANDS_PLAY_CRED_ENC_ACTIVE_KEY_VERSION;
   const result = spawnSync(process.execPath, [renderScript, "--output", output], {
     cwd: workerDir,
     encoding: "utf8",
@@ -97,13 +98,25 @@ test("production config binds the Play adapter only when its exact service name 
     absent.cleanup();
   }
 
-  const configured = render({ HANDS_PLAY_RELEASE_SERVICE_NAME: "hands-google-play-adapter" });
+  const missingKeyVersion = render({ HANDS_PLAY_RELEASE_SERVICE_NAME: "hands-google-play-adapter" });
+  try {
+    assert.notEqual(missingKeyVersion.result.status, 0);
+    assert.match(missingKeyVersion.result.stderr, /PLAY_CRED_ENC_ACTIVE_KEY_VERSION is required/);
+  } finally {
+    missingKeyVersion.cleanup();
+  }
+
+  const configured = render({
+    HANDS_PLAY_RELEASE_SERVICE_NAME: "hands-google-play-adapter",
+    HANDS_PLAY_CRED_ENC_ACTIVE_KEY_VERSION: "play-v1",
+  });
   try {
     assert.equal(configured.result.status, 0, configured.result.stderr);
     const config = JSON.parse(readFileSync(configured.output, "utf8"));
     assert.deepEqual(config.services, [
       { binding: "PLAY_RELEASE_SERVICE", service: "hands-google-play-adapter" },
     ]);
+    assert.equal(config.vars.PLAY_CRED_ENC_ACTIVE_KEY_VERSION, "play-v1");
   } finally {
     configured.cleanup();
   }
@@ -115,6 +128,14 @@ test("production config binds the Play adapter only when its exact service name 
   } finally {
     invalid.cleanup();
   }
+});
+
+test("the deploy workflow writes the app-scoped Play credential keyring as a secret", () => {
+  const workflow = readFileSync(resolve(repositoryDir, ".github/workflows/deploy-hands-server.yml"), "utf8");
+  assert.match(workflow, /PLAY_CRED_ENC_KEYS: \$\{\{ secrets\.HANDS_PLAY_CRED_ENC_KEYS \}\}/);
+  assert.match(workflow, /wrangler secret put PLAY_CRED_ENC_KEYS/);
+  assert.match(workflow, /HANDS_PLAY_CRED_ENC_ACTIVE_KEY_VERSION: \$\{\{ vars\.HANDS_PLAY_CRED_ENC_ACTIVE_KEY_VERSION \}\}/);
+  assert.doesNotMatch(workflow, /PLAY_CRED_ENC_KEYS: \$\{\{ vars\./);
 });
 
 test("production config requires a closed key version before enabling reporter sessions", () => {

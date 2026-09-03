@@ -64,6 +64,19 @@ const PlayRollbackInput = PlayApprovalInput.extend({
   to_version_code: z.number().int().positive(),
 }).strict().openapi("PlayRollbackInput");
 
+const GooglePlayBindingInput = z.object({
+  service_account_json: z.union([
+    z.string().min(1),
+    z.record(z.string(), z.unknown()),
+  ]).openapi({ description: "Complete Google service-account JSON; private material is never returned." }),
+  package_name: z.string().regex(/^[A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z][A-Za-z0-9_]*)+$/),
+  tracks: z.object({
+    internal: z.string().min(1).max(128),
+    closed: z.string().min(1).max(128),
+    production: z.string().min(1).max(128),
+  }).strict(),
+}).strict().openapi("GooglePlayBindingInput");
+
 export function registerAndroidDistributionRoutes(registry: OpenApiRegistry) {
   register(registry, {
     method: "post",
@@ -84,6 +97,73 @@ export function registerAndroidDistributionRoutes(registry: OpenApiRegistry) {
       404: error("App was not found."),
       409: error("An immutable identity conflicts."),
       503: error("Direct artifact upload is unavailable."),
+    },
+  });
+
+  register(registry, {
+    method: "get",
+    path: "/api/apps/{appId}/google-play-binding",
+    tags: ["Android distribution"],
+    summary: "Read this app's Google Play binding metadata",
+    description: "Returns only non-secret app-scoped metadata. Stored service-account private material is never returned.",
+    security: auth,
+    request: { params: AppIdParam },
+    responses: {
+      200: success("Google Play binding metadata or null.", GenericObject),
+      403: error("App admin role is required."),
+      404: error("App was not found."),
+    },
+  });
+
+  register(registry, {
+    method: "put",
+    path: "/api/apps/{appId}/google-play-binding",
+    tags: ["Android distribution"],
+    summary: "Validate and replace this app's encrypted Google Play binding",
+    description: "Validates package and track access through the private adapter before encrypting the app-scoped credential and enabling the binding.",
+    security: auth,
+    request: {
+      params: AppIdParam,
+      body: { content: json(GooglePlayBindingInput), required: true },
+    },
+    responses: {
+      200: success("Binding validated, encrypted, and enabled.", GenericObject),
+      400: error("Credential, package, tracks, or platform is invalid."),
+      403: error("App admin role is required."),
+      502: error("Google Play rejected validation."),
+      503: error("The private Play adapter is unavailable."),
+    },
+  });
+
+  for (const action of ["verify", "enable", "disable"] as const) {
+    register(registry, {
+      method: "post",
+      path: `/api/apps/{appId}/google-play-binding/${action}`,
+      tags: ["Android distribution"],
+      summary: action === "verify"
+        ? "Revalidate this app's stored Google Play binding"
+        : `${action === "enable" ? "Enable" : "Disable"} Google Play promotion for this app`,
+      security: auth,
+      request: { params: AppIdParam },
+      responses: {
+        200: success("Binding state updated.", GenericObject),
+        403: error("App admin role is required."),
+        404: error("Binding was not found."),
+        502: error("Google Play validation failed."),
+      },
+    });
+  }
+
+  register(registry, {
+    method: "delete",
+    path: "/api/apps/{appId}/google-play-binding",
+    tags: ["Android distribution"],
+    summary: "Delete this app's encrypted Google Play binding",
+    security: auth,
+    request: { params: AppIdParam },
+    responses: {
+      200: success("Binding and encrypted credential deleted.", GenericObject),
+      403: error("App admin role is required."),
     },
   });
 

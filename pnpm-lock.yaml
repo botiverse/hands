@@ -199,6 +199,9 @@ importers:
         specifier: ^5.9.6
         version: 5.10.0
     devDependencies:
+      '@cloudflare/workers-types':
+        specifier: 4.20260626.1
+        version: 4.20260626.1
       jsonc-parser:
         specifier: ^3.3.1
         version: 3.3.1
@@ -209,7 +212,7 @@ importers:
         specifier: ^2.1.8
         version: 2.1.9(@types/node@24.13.2)(jsdom@26.1.0)(lightningcss@1.32.0)
       wrangler:
-        specifier: ^4.88.0
+        specifier: 4.105.0
         version: 4.105.0(@cloudflare/workers-types@4.20260626.1)
 
   worker:

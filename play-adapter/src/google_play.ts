@@ -127,7 +127,8 @@ export class GooglePlayClient {
     }
     const body = await response.json().catch(() => null) as T | null;
     if (!response.ok) {
-      throw new PlayAdapterError(502, "play_api_rejected", `Google Play API request failed with ${response.status}`);
+      const status = [400, 401, 403, 404].includes(response.status) ? 403 : 502;
+      throw new PlayAdapterError(status, "play_api_rejected", `Google Play API request failed with ${response.status}`);
     }
     if (!body || typeof body !== "object") {
       throw new PlayAdapterError(502, "play_api_malformed", "Google Play API returned malformed JSON");
@@ -147,7 +148,8 @@ export class GooglePlayClient {
       throw new PlayAdapterError(502, "play_api_unavailable", "Google Play API request failed");
     }
     if (!response.ok) {
-      throw new PlayAdapterError(502, "play_api_rejected", `Google Play API request failed with ${response.status}`);
+      const status = [400, 401, 403, 404].includes(response.status) ? 403 : 502;
+      throw new PlayAdapterError(status, "play_api_rejected", `Google Play API request failed with ${response.status}`);
     }
   }
 
@@ -188,6 +190,18 @@ export class GooglePlayClient {
     }
     await this.deleteEdit(packageName, editId);
     return value;
+  }
+
+  async verifyBinding(packageName: string, tracks: string[]): Promise<void> {
+    const editId = await this.createEdit(packageName);
+    try {
+      for (const track of [...new Set(tracks)]) {
+        await this.getTrack(packageName, editId, track);
+      }
+    } catch (error) {
+      await this.cleanupOrThrow(packageName, editId, error);
+    }
+    await this.deleteEdit(packageName, editId);
   }
 
   private async uploadBundle(request: PromotionRequest, editId: string): Promise<GoogleBundle> {

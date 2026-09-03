@@ -5,6 +5,7 @@
     "module": "ES2022",
     "moduleResolution": "Bundler",
     "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "types": ["@cloudflare/workers-types", "vitest/globals"],
     "noEmit": true,
     "isolatedModules": true
   },

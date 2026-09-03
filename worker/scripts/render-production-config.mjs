@@ -86,6 +86,9 @@ const reporterSessionActiveKeyVersion = optionalKeyVersion(
   "HANDS_FEEDBACK_REPORTER_SESSION_ACTIVE_KEY_VERSION",
 );
 const playReleaseServiceName = optionalWorkerName("HANDS_PLAY_RELEASE_SERVICE_NAME");
+const playCredentialActiveKeyVersion = optionalKeyVersion(
+  "HANDS_PLAY_CRED_ENC_ACTIVE_KEY_VERSION",
+);
 if (reporterSessionEnabled === "true" && !reporterSessionActiveKeyVersion) {
   throw new Error(
     "HANDS_FEEDBACK_REPORTER_SESSION_ACTIVE_KEY_VERSION is required when reporter sessions are enabled",
@@ -132,6 +135,12 @@ if (reporterSessionActiveKeyVersion) {
   delete config.vars.FEEDBACK_REPORTER_SESSION_ACTIVE_KEY_VERSION;
 }
 if (playReleaseServiceName) {
+  if (!playCredentialActiveKeyVersion) {
+    throw new Error(
+      "HANDS_PLAY_CRED_ENC_ACTIVE_KEY_VERSION is required when the Play adapter is configured",
+    );
+  }
+  config.vars.PLAY_CRED_ENC_ACTIVE_KEY_VERSION = playCredentialActiveKeyVersion;
   config.services = [
     ...(config.services ?? []).filter((binding) => binding.binding !== "PLAY_RELEASE_SERVICE"),
       { binding: "PLAY_RELEASE_SERVICE", service: playReleaseServiceName },
@@ -139,6 +148,9 @@ if (playReleaseServiceName) {
 } else if (Array.isArray(config.services)) {
   config.services = config.services.filter((binding) => binding.binding !== "PLAY_RELEASE_SERVICE");
   if (config.services.length === 0) delete config.services;
+}
+if (!playReleaseServiceName) {
+  delete config.vars.PLAY_CRED_ENC_ACTIVE_KEY_VERSION;
 }
 
 // Build stamp for the container image, so a rollout can be verified by reading the
