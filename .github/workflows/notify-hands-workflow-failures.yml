@@ -8,6 +8,7 @@ on:
       - Publish Electron SDK
       - Publish Hands Node SDK
       - Publish OHOS SDK
+      - Publish agent-session-store
       - Deploy Hands Server
       - Deploy Hands Google Play Adapter
       - Deploy Quiver Server
