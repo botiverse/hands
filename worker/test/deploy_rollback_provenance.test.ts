@@ -75,14 +75,36 @@ describe("deploy rollback provenance", () => {
     expect(body, "anchor step must actually fetch /versions").toMatch(
       /curl[^\n]*\$\{api\}\/versions/,
     );
-    expect(body, "anchor must fail closed when absent from /versions").toMatch(
-      /absent from \/versions/,
-    );
   });
 
-  it("fails closed when the anchor cannot be read", () => {
-    const body = workflow.slice(stepIndex(ANCHOR_STEP), stepIndex(DEPLOY_STEP));
-    // An unreadable anchor must stop the deploy, not proceed unanchored.
-    expect(body).toMatch(/exit 1/);
-  });
+  // Every rejection exit is bound to ITS OWN branch.
+  //
+  // The earlier version asserted only that the step contained the error text AND
+  // that *some* `exit 1` existed anywhere in the step. Those are independent, so
+  // deleting the terminating action of one guard — keeping its branch and message —
+  // left the suite 5/5 green (found by @Huarong reviewing PR #508). The runtime
+  // consequence was real: the anchor-absent branch printed "unrecoverable" and then
+  // fell through to the first Worker write, which is precisely what the frozen
+  // contract forbids.
+  const REJECTION_GUARDS: Array<[string, string]> = [
+    ["deployments read failure", "cannot read current deployments"],
+    ["empty live anchor", "no live version found"],
+    ["versions read failure", "cannot read /versions"],
+    ["anchor absent from /versions", "absent from /versions"],
+  ];
+
+  for (const [label, message] of REJECTION_GUARDS) {
+    it(`fails closed on ${label} — the exit belongs to that branch`, () => {
+      const body = workflow.slice(stepIndex(ANCHOR_STEP), stepIndex(DEPLOY_STEP));
+      const at = body.indexOf(message);
+      expect(at, `guard message not found: ${message}`).toBeGreaterThan(-1);
+      // Scope to this guard only: from its message to the `fi` that closes it.
+      const closing = body.indexOf("\n          fi", at);
+      expect(closing, `unterminated guard block for: ${message}`).toBeGreaterThan(at);
+      const branch = body.slice(at, closing);
+      expect(branch, `${label}: branch must terminate the job, not just log`).toMatch(
+        /\n\s*exit 1\b/,
+      );
+    });
+  }
 });
