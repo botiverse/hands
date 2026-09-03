@@ -42,6 +42,12 @@ test("production config keeps the adapter private and renders the exact bounded 
   }
 });
 
+test("adapter registers a closed HTTP handler so Cloudflare accepts the private RPC entrypoint", () => {
+  const entrypoint = readFileSync(resolve(adapterDir, "src/entrypoint.ts"), "utf8");
+  assert.match(entrypoint, /async fetch\(\): Promise<Response>/);
+  assert.match(entrypoint, /new Response\(null, \{ status: 404 \}\)/);
+});
+
 test("production config rejects malformed service and size inputs", () => {
   const cases = [
     [{ HANDS_PLAY_ADAPTER_WORKER_NAME: "https://bad.example" }, /valid Cloudflare Worker/],

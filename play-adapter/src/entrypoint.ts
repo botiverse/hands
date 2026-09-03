@@ -5,6 +5,10 @@ import type { PlayAdapterEnv, PlayBindingInput, PromotionRpcInput, TrackMaximumR
 export default class GooglePlayAdapter extends WorkerEntrypoint<PlayAdapterEnv> {
   private readonly service = createPlayAdapterService();
 
+  async fetch(): Promise<Response> {
+    return new Response(null, { status: 404 });
+  }
+
   verifyBinding(input: PlayBindingInput) {
     return this.service.verifyBinding(input, this.env);
   }
