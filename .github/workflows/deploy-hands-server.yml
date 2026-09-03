@@ -178,7 +178,7 @@ jobs:
           # Requiring the surface in the value is intentional. A bare id, or an id
           # from another/private thread, is not independently resolvable by the owner
           # responsible for this production audit and must stop before apply.
-          if [[ ! "${READBACK_OWNER}" =~ ^#proj-hands:3308eb65[[:space:]]msg=([0-9a-fA-F]{8}|[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})$ ]]; then
+          if [[ ! "${READBACK_OWNER}" =~ ^#proj-hands:3308eb65\ msg=([0-9a-fA-F]{8}|[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})$ ]]; then
             echo "" >&2
             echo "Stopping before the apply." >&2
             echo "" >&2

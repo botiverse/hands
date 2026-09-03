@@ -30,7 +30,7 @@ const workflow = readFileSync(workflowPath, "utf8");
 // Extract the canonical-reference regex verbatim from the gate step. If this
 // fails, the gate changed shape and the test should be re-read, not silently pass.
 const regexMatch = workflow.match(
-  /READBACK_OWNER\}"\s*=~\s*(\S+)\s*\]\]/,
+  /READBACK_OWNER\}"\s*=~\s*(.+?)\s+\]\]; then/,
 );
 const SHAPE_RE = regexMatch?.[1];
 
@@ -60,7 +60,7 @@ describe("migration handshake gate — the reject branch, exercised", () => {
     // The regex the gate actually uses. Pinned so a change to it fails here
     // rather than drifting from what the test exercises.
     expect(SHAPE_RE).toBe(
-      "^#proj-hands:3308eb65[[:space:]]msg=([0-9a-fA-F]{8}|[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})$",
+      "^#proj-hands:3308eb65\\ msg=([0-9a-fA-F]{8}|[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})$",
     );
   });
 
@@ -75,6 +75,9 @@ describe("migration handshake gate — the reject branch, exercised", () => {
     ["an off-surface thread", "#joint-hands:dcbb01c3 msg=f9eca512"],
     ["a malformed canonical id", "#proj-hands:3308eb65 msg=f9eca512-extra"],
     ["a double-space separator", "#proj-hands:3308eb65  msg=f9eca512"],
+    ["a tab separator", "#proj-hands:3308eb65\tmsg=f9eca512"],
+    ["a newline separator", "#proj-hands:3308eb65\nmsg=f9eca512"],
+    ["a carriage-return separator", "#proj-hands:3308eb65\rmsg=f9eca512"],
   ])("stops before apply when pending and reference is %s", (_label, reference) => {
     const { code, out } = runGate("0063_something.sql (pending)", reference);
     expect(code).toBe(1);
