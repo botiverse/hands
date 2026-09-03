@@ -47,6 +47,8 @@ import {
   getAppClientKey,
   rotateAppClientKey,
   purgeApp,
+  listOrgs,
+  transferApp,
   getAscCredentials,
   setAscCredentials,
   deleteAscCredentials,
@@ -1256,6 +1258,7 @@ export function AppSettings({ appId }: { appId: string }) {
   const me = useQuery({ queryKey: ["auth-me"], queryFn: () => getAuthMe() });
   const orgRole = me.data?.account.org_role ?? null;
   const isOrgAdmin = orgRole === "owner" || orgRole === "admin";
+  const orgs = useQuery({ queryKey: ["orgs"], queryFn: listOrgs });
 
   const [confirmArchive, setConfirmArchive] = useState(false);
 
@@ -1303,6 +1306,8 @@ export function AppSettings({ appId }: { appId: string }) {
 
       <div className="card p-4! text-sm space-y-3">
         <h2 className="text-base font-semibold">Settings</h2>
+
+        <AppTransferPanel appId={appId} app={app} orgs={orgs.data?.orgs ?? []} />
 
         {/* App name (slug is immutable) */}
         <AppNamePanel appId={appId} app={app} />
@@ -1458,6 +1463,18 @@ export function AppSettings({ appId }: { appId: string }) {
       </div>
     </div>
   );
+}
+
+function AppTransferPanel({ appId, app, orgs }: { appId: string; app: App; orgs: Array<{ id: string; name: string; slug: string; archived: number }> }) {
+  const toast = useToast(); const qc = useQueryClient();
+  const [target, setTarget] = useState(""); const [confirm, setConfirm] = useState("");
+  const transfer = useMutation({
+    mutationFn: () => transferApp(appId, { target_org_id: target, expected_source_org_id: app.org_id ?? "", idempotency_key: crypto.randomUUID() }),
+    onSuccess: () => { toast.show({ kind: "success", title: "App transferred" }); setConfirm(""); void qc.invalidateQueries({ queryKey: ["apps"] }); },
+    onError: (e) => toast.show({ kind: "error", title: "Transfer failed", description: (e as Error).message }),
+  });
+  const eligible = orgs.filter((o) => !o.archived && o.id !== app.org_id);
+  return <div className="border-t border-slate-100 pt-3"><h3 className="text-sm font-medium text-slate-700 mb-1">Transfer app</h3><p className="text-xs text-slate-500 mb-2">Preserves this app ID and all releases, builds, channels, and history. Owners of both organizations must authorize.</p><div className="flex flex-wrap gap-2"><select className="input text-sm" value={target} onChange={(e) => setTarget(e.target.value)} disabled={transfer.isPending}><option value="">Select target organization…</option>{eligible.map((o) => <option key={o.id} value={o.id}>{o.name} ({o.slug})</option>)}</select><input className="input text-sm" value={confirm} onChange={(e) => setConfirm(e.target.value)} placeholder={`Type ${app.slug} to confirm`} disabled={!target || transfer.isPending} /><button className="btn-secondary text-xs" disabled={!target || confirm !== app.slug || !app.org_id || transfer.isPending} onClick={() => transfer.mutate()}>{transfer.isPending ? "Transferring…" : "Transfer"}</button></div></div>;
 }
 
 function DefaultChannelPicker({
