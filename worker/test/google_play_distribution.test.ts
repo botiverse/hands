@@ -97,6 +97,24 @@ describe("Play promotion gates", () => {
       expected_revision: 3,
       approval: { note: " " },
     })).toThrow(/approval.note/);
+    expect(() => normalizePlayPromotionInput({
+      track: "internal",
+      rollout_percent: 25,
+      expected_revision: 3,
+      approval: { note: "ship" },
+    })).toThrow(/partial rollout.*production/);
+    expect(() => normalizePlayPromotionInput({
+      track: "production",
+      rollout_percent: 0,
+      expected_revision: 3,
+      approval: { note: "ship" },
+    })).toThrow(/1 to 100/);
+    expect(normalizePlayPromotionInput({
+      track: "production",
+      rollout_percent: 25,
+      expected_revision: 3,
+      approval: { note: "ship" },
+    })).toMatchObject({ track: "production", rollout_percent: 25 });
   });
 
   it("accepts readback only when package, version, track, and SHA all match", () => {

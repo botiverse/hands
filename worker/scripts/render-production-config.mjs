@@ -60,6 +60,15 @@ function optionalKeyVersion(name) {
   return value;
 }
 
+function optionalWorkerName(name) {
+  const value = process.env[name]?.trim();
+  if (!value) return null;
+  if (!/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(value)) {
+    throw new Error(`${name} must be a valid Cloudflare Worker service name`);
+  }
+  return value;
+}
+
 const errors = [];
 const config = parse(readFileSync(sourcePath, "utf8"), errors, {
   allowTrailingComma: true,
@@ -76,6 +85,7 @@ const reporterSessionEnabled = booleanString("HANDS_FEEDBACK_REPORTER_SESSION_EN
 const reporterSessionActiveKeyVersion = optionalKeyVersion(
   "HANDS_FEEDBACK_REPORTER_SESSION_ACTIVE_KEY_VERSION",
 );
+const playReleaseServiceName = optionalWorkerName("HANDS_PLAY_RELEASE_SERVICE_NAME");
 if (reporterSessionEnabled === "true" && !reporterSessionActiveKeyVersion) {
   throw new Error(
     "HANDS_FEEDBACK_REPORTER_SESSION_ACTIVE_KEY_VERSION is required when reporter sessions are enabled",
@@ -120,6 +130,15 @@ if (reporterSessionActiveKeyVersion) {
   config.vars.FEEDBACK_REPORTER_SESSION_ACTIVE_KEY_VERSION = reporterSessionActiveKeyVersion;
 } else {
   delete config.vars.FEEDBACK_REPORTER_SESSION_ACTIVE_KEY_VERSION;
+}
+if (playReleaseServiceName) {
+  config.services = [
+    ...(config.services ?? []).filter((binding) => binding.binding !== "PLAY_RELEASE_SERVICE"),
+      { binding: "PLAY_RELEASE_SERVICE", service: playReleaseServiceName },
+  ];
+} else if (Array.isArray(config.services)) {
+  config.services = config.services.filter((binding) => binding.binding !== "PLAY_RELEASE_SERVICE");
+  if (config.services.length === 0) delete config.services;
 }
 
 // Build stamp for the container image, so a rollout can be verified by reading the

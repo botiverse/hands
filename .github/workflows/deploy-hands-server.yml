@@ -67,6 +67,10 @@ jobs:
       HANDS_RAFT_CLIENT_ID: ${{ vars.HANDS_RAFT_CLIENT_ID }}
       HANDS_ADMIN_ALLOWED_SERVER_IDS: ${{ vars.HANDS_ADMIN_ALLOWED_SERVER_IDS }}
       HANDS_FLAGSHIP_APP_ID: ${{ vars.HANDS_FLAGSHIP_APP_ID }}
+      # Optional until the independently deployed adapter is ready. When set,
+      # the renderer adds only the service binding; Google credentials remain
+      # in the adapter's own secret store and never enter this Worker.
+      HANDS_PLAY_RELEASE_SERVICE_NAME: ${{ vars.HANDS_PLAY_RELEASE_SERVICE_NAME }}
     steps:
       - uses: actions/checkout@v6
 

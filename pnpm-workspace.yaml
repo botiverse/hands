@@ -1,5 +1,6 @@
 packages:
   - "worker"
+  - "play-adapter"
   - "container"
   - "admin"
   - "migrations"
