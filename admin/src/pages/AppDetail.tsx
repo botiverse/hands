@@ -1468,10 +1468,10 @@ export function AppSettings({ appId }: { appId: string }) {
 function AppTransferPanel({ appId, app, orgs }: { appId: string; app: App; orgs: Array<{ id: string; name: string; slug: string; archived: number }> }) {
   const toast = useToast(); const qc = useQueryClient();
   const [target, setTarget] = useState(""); const [confirm, setConfirm] = useState("");
-  const [idempotencyKey] = useState(() => crypto.randomUUID());
+  const [idempotencyKey, setIdempotencyKey] = useState(() => crypto.randomUUID());
   const transfer = useMutation({
     mutationFn: () => transferApp(appId, { target_org_id: target, expected_source_org_id: app.org_id ?? "", idempotency_key: idempotencyKey }),
-    onSuccess: () => { toast.show({ kind: "success", title: "App transferred" }); setConfirm(""); void qc.invalidateQueries({ queryKey: ["apps"] }); },
+    onSuccess: () => { toast.show({ kind: "success", title: "App transferred" }); setConfirm(""); setIdempotencyKey(crypto.randomUUID()); void qc.invalidateQueries({ queryKey: ["apps"] }); },
     onError: (e) => toast.show({ kind: "error", title: "Transfer failed", description: (e as Error).message }),
   });
   const eligible = orgs.filter((o) => !o.archived && o.id !== app.org_id);

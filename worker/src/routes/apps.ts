@@ -254,9 +254,10 @@ export async function handleTransferApp(c: AdminContext) {
   for (const row of prior.results) {
     try {
       const p = JSON.parse(row.payload) as { idempotency_key?: string; target_org_id?: string; from_org_id?: string };
-      if (p.idempotency_key === body.idempotency_key) {
+      if (p.idempotency_key === body.idempotency_key && p.target_org_id === body.target_org_id) {
         return c.json({ ok: true, idempotent: true, app_id: appId, from_org_id: p.from_org_id ?? body.expected_source_org_id, target_org_id: p.target_org_id });
       }
+      if (p.idempotency_key === body.idempotency_key) return c.json({ error: "idempotency key is bound to a different target organization", code: "IDEMPOTENCY_CONFLICT" }, 409);
     } catch { /* ignore malformed historical payloads */ }
   }
   if (app.org_id !== body.expected_source_org_id) return c.json({ error: "source org changed", code: "TRANSFER_CONFLICT" }, 409);
