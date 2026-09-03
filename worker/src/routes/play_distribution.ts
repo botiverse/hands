@@ -78,8 +78,11 @@ export function normalizePlayPromotionInput(input: PlayPromotionInput): PlayProm
   const note = typeof input.approval?.note === "string" ? input.approval.note.trim() : "";
   if (!note) throw new Error("approval.note required");
   const rollout = input.rollout_percent;
-  if (rollout !== undefined && (!Number.isInteger(rollout) || rollout < 0 || rollout > 100)) {
-    throw new Error("rollout_percent must be an integer from 0 to 100");
+  if (rollout !== undefined && (!Number.isInteger(rollout) || rollout < 1 || rollout > 100)) {
+    throw new Error("rollout_percent must be an integer from 1 to 100");
+  }
+  if (input.track !== "production" && rollout !== undefined && rollout !== 100) {
+    throw new Error("partial rollout is supported only for production");
   }
   return { track: input.track, expected_revision: expectedRevision, approval: { note }, ...(rollout === undefined ? {} : { rollout_percent: rollout }) };
 }

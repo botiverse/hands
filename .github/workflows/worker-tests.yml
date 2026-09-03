@@ -15,6 +15,7 @@ on:
   pull_request:
     paths:
       - "worker/**"
+      - "play-adapter/**"
       - "migrations/**"
       - "packages/**"
       - ".github/workflows/worker-tests.yml"
@@ -87,6 +88,30 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  play-adapter:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Test, typecheck, and bundle the private Play adapter
+        env:
+          HANDS_PLAY_ADAPTER_WORKER_NAME: hands-google-play-adapter-ci
+          HANDS_PLAY_ALLOWED_PACKAGE_NAMES: build.raft.app
+          HANDS_PLAY_CLOSED_TRACK_NAME: closed-ci
+          HANDS_PLAY_MAX_AAB_SIZE_BYTES: "209715200"
+        run: |
+          pnpm --filter @botiverse/hands-play-adapter test
+          pnpm --filter @botiverse/hands-play-adapter build
+          node play-adapter/scripts/render-production-config.mjs \
+            --output play-adapter/wrangler.generated.jsonc
+          pnpm --filter @botiverse/hands-play-adapter exec wrangler deploy \
+            --dry-run --strict --config wrangler.generated.jsonc
+
   windows-device-id:
     runs-on: windows-latest
     steps:

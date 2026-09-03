@@ -44,5 +44,6 @@ coverage/
 *.tsbuildinfo
 worker-configuration.d.ts
 worker/wrangler.*.generated.jsonc
+play-adapter/wrangler.generated.jsonc
 admin/public/docs/
 admin/public/docs.md

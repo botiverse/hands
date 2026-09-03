@@ -31,6 +31,7 @@ function render(extraEnv: Record<string, string> = {}) {
   for (const key of Object.keys(inheritedEnv)) {
     if (key.startsWith("HANDS_FEEDBACK_REPORTER_SESSION_")) delete inheritedEnv[key];
   }
+  delete inheritedEnv.HANDS_PLAY_RELEASE_SERVICE_NAME;
   const result = spawnSync(process.execPath, [renderScript, "--output", output], {
     cwd: workerDir,
     encoding: "utf8",
@@ -81,6 +82,36 @@ test("production config requires a valid Flagship app id", () => {
   try {
     assert.notEqual(invalid.result.status, 0);
     assert.match(invalid.result.stderr, /HANDS_FLAGSHIP_APP_ID must be a UUID/);
+  } finally {
+    invalid.cleanup();
+  }
+});
+
+test("production config binds the Play adapter only when its exact service name is configured", () => {
+  const absent = render();
+  try {
+    assert.equal(absent.result.status, 0, absent.result.stderr);
+    const config = JSON.parse(readFileSync(absent.output, "utf8"));
+    assert.equal("services" in config, false);
+  } finally {
+    absent.cleanup();
+  }
+
+  const configured = render({ HANDS_PLAY_RELEASE_SERVICE_NAME: "hands-google-play-adapter" });
+  try {
+    assert.equal(configured.result.status, 0, configured.result.stderr);
+    const config = JSON.parse(readFileSync(configured.output, "utf8"));
+    assert.deepEqual(config.services, [
+      { binding: "PLAY_RELEASE_SERVICE", service: "hands-google-play-adapter" },
+    ]);
+  } finally {
+    configured.cleanup();
+  }
+
+  const invalid = render({ HANDS_PLAY_RELEASE_SERVICE_NAME: "https://not-a-worker.example/path" });
+  try {
+    assert.notEqual(invalid.result.status, 0);
+    assert.match(invalid.result.stderr, /must be a valid Cloudflare Worker service name/);
   } finally {
     invalid.cleanup();
   }

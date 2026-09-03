@@ -113,9 +113,27 @@ requests and never sends credentials in headers or payloads:
 No call is retried automatically. Adapter absence, non-2xx, or malformed/mismatched
 readback is a typed `play_api_error` and never becomes success.
 
+The adapter is the `play-adapter/` Worker. It has no public route, `workers.dev`
+hostname, or preview URL. Its Google service-account JSON exists only as the
+adapter secret `GOOGLE_PLAY_SERVICE_ACCOUNT_JSON`; Hands receives only the
+`PLAY_RELEASE_SERVICE` service binding. `ALLOWED_PACKAGE_NAMES` restricts the
+package surface, `internal` maps to Play's `qa` track, `production` maps to
+`production`, and `closed` maps to the existing custom track named by
+`GOOGLE_PLAY_CLOSED_TRACK_NAME`.
+
+Each mutation creates one Google edit, streams the AAB without buffering it,
+compares both the local SHA-256 and Google's bundle SHA-256/versionCode, reads
+the live track again inside that edit, preserves its active releases, updates
+the requested release, and commits once with
+`changesInReviewBehavior=ERROR_IF_IN_REVIEW`. A fresh edit verifies the committed
+track before the adapter returns success. Pre-commit failures delete the edit;
+an ambiguous commit outcome is not retried or deleted. Partial rollout is
+allowed only for `production`; internal and closed-test promotion is 100%.
+
 ## Non-goals
 
-- no Play credentials, signing, or production promotion in this change;
+- no credential values in source, signing, deployment, or production Play write
+  performed by this source change;
 - no store listing automation, review replies, or crash/ANR threshold gate;
 - no Play distribution-certificate storage or gating;
 - no inclusion of Play artifacts in Hands alpha/delta updates.
