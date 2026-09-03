@@ -9,6 +9,7 @@ on:
       - Publish Hands Node SDK
       - Publish OHOS SDK
       - Deploy Hands Server
+      - Deploy Hands Google Play Adapter
       - Deploy Quiver Server
     types: [completed]
 

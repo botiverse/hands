@@ -108,7 +108,7 @@ jobs:
           pnpm --filter @botiverse/hands-play-adapter test
           pnpm --filter @botiverse/hands-play-adapter build
           node play-adapter/scripts/render-production-config.mjs \
-            --output play-adapter/wrangler.generated.jsonc
+            --output wrangler.generated.jsonc
           pnpm --filter @botiverse/hands-play-adapter exec wrangler deploy \
             --dry-run --strict --config wrangler.generated.jsonc
 
