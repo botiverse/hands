@@ -13,12 +13,12 @@ import { resolve } from "node:path";
  * migration was applied, and "the gate is fail-closed" only says it exists, not
  * that it blocks.
  *
- * This gives that branch a standing denominator: it extracts the shape regex
+ * This gives that branch a standing denominator: it extracts the reference regex
  * VERBATIM from the workflow (so a change to the gate re-binds the test rather
  * than testing a stale copy) and runs the gate's decision logic — stubbing only
  * the wrangler fetch — across the truth table. The reject branch is right-cause
- * RED: illegitimate owner ids stop before apply; id-shaped ids pass; no-pending
- * short-circuits.
+ * RED: opaque/off-surface references stop before apply; canonical reference
+ * shapes pass; no-pending short-circuits.
  */
 
 const workflowPath = resolve(
@@ -27,16 +27,16 @@ const workflowPath = resolve(
 );
 const workflow = readFileSync(workflowPath, "utf8");
 
-// Extract the id-shape regex verbatim from the gate step. If this fails, the gate
-// changed shape and the test should be re-read, not silently pass.
+// Extract the canonical-reference regex verbatim from the gate step. If this
+// fails, the gate changed shape and the test should be re-read, not silently pass.
 const regexMatch = workflow.match(
-  /READBACK_OWNER\}"\s*=~\s*(\S+)\s*\]\]/,
+  /READBACK_OWNER\}"\s*=~\s*(.+?)\s+\]\]; then/,
 );
 const SHAPE_RE = regexMatch?.[1];
 
 // Faithful reproduction of the gate's decision logic. Only the wrangler fetch is
 // replaced by $PENDING; everything else mirrors the workflow step.
-function runGate(pending: string, owner: string): { code: number; out: string } {
+function runGate(pending: string, reference: string): { code: number; out: string } {
   const script = `
     set -euo pipefail
     pending="$1"
@@ -49,39 +49,53 @@ function runGate(pending: string, owner: string): { code: number; out: string } 
     fi
     echo "proceeds-to-apply"
   `;
-  const r = spawnSync("bash", ["-c", script, "bash", pending, owner], {
+  const r = spawnSync("bash", ["-c", script, "bash", pending, reference], {
     encoding: "utf8",
   });
   return { code: r.status ?? -1, out: (r.stdout + r.stderr).trim() };
 }
 
 describe("migration handshake gate — the reject branch, exercised", () => {
-  it("extracts the id-shape regex from the live workflow", () => {
+  it("extracts the canonical-reference regex from the live workflow", () => {
     // The regex the gate actually uses. Pinned so a change to it fails here
     // rather than drifting from what the test exercises.
-    expect(SHAPE_RE).toBe("^[0-9a-fA-F]{8}(-[0-9a-fA-F-]{27,})?$");
+    expect(SHAPE_RE).toBe(
+      "^#proj-hands:3308eb65\\ msg=([0-9a-fA-F]{8}|[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})$",
+    );
   });
 
-  // The never-before-fired branch: migrations pending + an id that is not the
-  // owner's reply must stop before the apply.
+  // Migrations pending + a value that is not a canonical reference to the
+  // required independently visible thread must stop before the apply.
   it.each([
     ["none (the dispatch default)", "none"],
     ["too short", "12345"],
     ["illegal characters", "not-an-id!!"],
     ["empty", ""],
-  ])("stops before apply when pending and owner is %s", (_label, owner) => {
-    const { code, out } = runGate("0063_something.sql (pending)", owner);
+    ["a bare id", "f9eca512"],
+    ["an off-surface thread", "#joint-hands:dcbb01c3 msg=f9eca512"],
+    ["a malformed canonical id", "#proj-hands:3308eb65 msg=f9eca512-extra"],
+    ["a double-space separator", "#proj-hands:3308eb65  msg=f9eca512"],
+    ["a tab separator", "#proj-hands:3308eb65\tmsg=f9eca512"],
+    ["a newline separator", "#proj-hands:3308eb65\nmsg=f9eca512"],
+    ["a carriage-return separator", "#proj-hands:3308eb65\rmsg=f9eca512"],
+  ])("stops before apply when pending and reference is %s", (_label, reference) => {
+    const { code, out } = runGate("0063_something.sql (pending)", reference);
     expect(code).toBe(1);
     expect(out).toContain("stopped-before-apply");
   });
 
-  // Positive control: an id-shaped value passes the shape check, so the reject
-  // above is right-cause (rejecting non-ids), not a blanket failure.
+  // Positive control: canonical reference shapes pass, so the reject above is
+  // right-cause (wrong surface/shape), not a blanket failure. `deadbeef` is
+  // intentionally unverified: the runner has no Raft credential and this test
+  // preserves that existence/author/predates remain the readback owner's job.
   it.each([
-    ["8-char short id", "deadbeef"],
-    ["full UUID", "a1b2c3d4-1111-2222-3333-444455556666"],
-  ])("proceeds when pending and owner is an %s", (_label, owner) => {
-    const { code, out } = runGate("0063_something.sql (pending)", owner);
+    ["canonical short id", "#proj-hands:3308eb65 msg=deadbeef"],
+    [
+      "canonical full UUID",
+      "#proj-hands:3308eb65 msg=a1b2c3d4-1111-2222-3333-444455556666",
+    ],
+  ])("proceeds when pending and reference is a %s", (_label, reference) => {
+    const { code, out } = runGate("0063_something.sql (pending)", reference);
     expect(code).toBe(0);
     expect(out).toContain("proceeds-to-apply");
   });
@@ -133,6 +147,13 @@ describe("migration handshake gate — structure holds", () => {
     const exit1 = gateStep.indexOf("exit 1", shapeCheck);
     expect(shapeCheck).toBeGreaterThanOrEqual(0);
     expect(exit1).toBeGreaterThan(shapeCheck); // the reject branch really exits non-zero
+  });
+
+  it("states that canonical shape does not prove message existence", () => {
+    expect(gateStep).toContain("verify against Raft, which this runner cannot reach");
+    expect(gateStep).toContain("exists in that exact thread");
+    expect(gateStep).toContain("only checked");
+    expect(gateStep).toContain("reference shape");
   });
 
   it("places the gate BEFORE the apply step, so it can stop before apply", () => {

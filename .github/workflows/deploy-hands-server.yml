@@ -21,10 +21,15 @@ on:
         # A checkbox saying "someone is watching" is self-certifying: anyone can tick
         # it and nobody can tell afterwards whether they did. Asking for the id of the
         # owner's reply makes the same claim checkable — the readback can look it up,
-        # confirm who wrote it and confirm it predates the dispatch. It does not stop
-        # a fabricated id, but that is a traceable false statement rather than a
-        # careless click.
-        description: "If D1 migrations are pending they WILL be applied to production. Paste the message id of the owner's 'I am present' reply in #proj-hands:3308eb65, or leave as none."
+        # confirm who wrote it and confirm it predates the dispatch. The canonical
+        # thread is part of the value, not prose around the form: accepting a bare id
+        # allowed a real but private/off-surface reply to pass the shape gate while the
+        # readback owner could not resolve it in the required audit surface.
+        #
+        # This still cannot stop a fabricated reference because the GitHub runner
+        # cannot reach Raft. It does stop accidental opaque/off-surface references and
+        # makes any false canonical claim explicit and attributable.
+        description: "If D1 migrations are pending they WILL be applied to production. Paste '#proj-hands:3308eb65 msg=<message-id>' for the owner's pre-run 'I am present' reply, or leave as none."
         required: true
         type: string
         default: "none"
@@ -165,23 +170,29 @@ jobs:
           echo "Migrations pending, and this deploy will apply them to production:"
           echo "$pending"
 
-          # Shape only: an 8-character short id or a full UUID. Whether it is really
-          # the owner's reply is for the readback to check against Raft, which this
-          # runner cannot reach — so the gate refuses what is obviously not an id and
-          # prints what it was given, rather than pretending to have verified it.
-          if [[ ! "${READBACK_OWNER}" =~ ^[0-9a-fA-F]{8}(-[0-9a-fA-F-]{27,})?$ ]]; then
+          # Canonical-reference shape only: the exact auditable Raft thread plus an
+          # 8-character short id or full UUID. Whether the message exists, is really
+          # the owner's reply, and predates this run remains for the readback owner to
+          # verify against Raft, which this runner cannot reach.
+          #
+          # Requiring the surface in the value is intentional. A bare id, or an id
+          # from another/private thread, is not independently resolvable by the owner
+          # responsible for this production audit and must stop before apply.
+          if [[ ! "${READBACK_OWNER}" =~ ^#proj-hands:3308eb65\ msg=([0-9a-fA-F]{8}|[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})$ ]]; then
             echo "" >&2
             echo "Stopping before the apply." >&2
             echo "" >&2
             echo "This deploy would change the production database, and the dispatch" >&2
-            echo "said nobody is watching. That is the right answer when you came here" >&2
-            echo "to ship something unrelated - you are not being asked to take it on." >&2
+            echo "did not provide a canonical, independently auditable owner handshake." >&2
+            echo "That is the right answer when you came here to ship something unrelated" >&2
+            echo "- you are not being asked to take migration readback on." >&2
             echo "" >&2
-            echo "Got: '${READBACK_OWNER}'" >&2
+            echo "Expected: '#proj-hands:3308eb65 msg=<message-id>'" >&2
+            echo "Got:      '${READBACK_OWNER}'" >&2
             echo "" >&2
             echo "Ask the migration's owner in #proj-hands:3308eb65 and wait for their" >&2
-            echo "reply, then re-dispatch with that reply's message id. Their answer is" >&2
-            echo "the handshake - naming them is not." >&2
+            echo "reply, then re-dispatch with the exact thread-and-message reference." >&2
+            echo "Their answer is the handshake - naming them is not." >&2
             echo "" >&2
             echo "No migration has been applied and no Worker has been deployed." >&2
             echo "Scoped deliberately: the bootstrap step runs before this one and" >&2
@@ -192,9 +203,10 @@ jobs:
             exit 1
           fi
 
-          echo "Handshake reference given at dispatch: ${READBACK_OWNER}"
-          echo "The readback owner verifies this id exists, is their own reply, and"
-          echo "predates this run. This step has only checked that it is id-shaped." 
+          echo "Canonical handshake reference given at dispatch: ${READBACK_OWNER}"
+          echo "The readback owner verifies this message exists in that exact thread,"
+          echo "is their own reply, and predates this run. This step has only checked"
+          echo "the canonical thread-and-message reference shape."
 
       # Pre-apply census for the 0068 build_assets_legacy DROP. The migration guards
       # itself with an in-file CHECK that aborts before the DROP if any legacy row's
