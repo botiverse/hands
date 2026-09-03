@@ -550,6 +550,11 @@ export const updateApp = (
 export const listOrgs = () =>
   request<{ orgs: Org[] }>(`/api/orgs`, { admin: true });
 
+export const transferApp = (appId: string, input: { target_org_id: string; expected_source_org_id: string; idempotency_key: string }) =>
+  request<{ ok: true; app_id: string; from_org_id: string; target_org_id: string }>(`/api/apps/${appId}/transfer`, {
+    method: "POST", admin: true, body: JSON.stringify(input),
+  });
+
 export const listOrgMembers = (orgId: string) =>
   request<{ members: OrgMember[] }>(`/api/orgs/${orgId}/members`, { admin: true });
 

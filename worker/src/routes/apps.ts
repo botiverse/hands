@@ -7,8 +7,8 @@
 
 import type { Context } from "hono";
 import { APP_PLATFORMS, isAppPlatform } from "../lib/app_platform";
-import { currentActor, type AdminEnv } from "../middleware/auth";
-import { currentAccount, currentDeployToken } from "../lib/permissions";
+import { currentActor, currentActorInfo, type AdminEnv } from "../middleware/auth";
+import { currentAccount, currentDeployToken, getOrgMemberRole, isOrgAtLeast } from "../lib/permissions";
 
 type AdminContext = Context<AdminEnv & { Bindings: Env }>;
 
@@ -216,6 +216,68 @@ export async function handleCreateApp(c: AdminContext) {
   }
 
   return c.json({ id, org_id: orgId, slug: body.slug, name: body.name, platform: body.platform }, 201);
+}
+
+/** POST /api/apps/:appId/transfer — move an app identity between orgs.
+ *
+ * This is deliberately owner-only on both sides and uses an expected source
+ * org plus idempotency key so a stale UI cannot move a concurrently changed
+ * app. The app id and all child resources remain unchanged.
+ */
+export async function handleTransferApp(c: AdminContext) {
+  const appId = c.req.param("appId") ?? "";
+  const body = (await c.req.json().catch(() => ({}))) as {
+    target_org_id?: string;
+    expected_source_org_id?: string;
+    idempotency_key?: string;
+  };
+  if (!body.target_org_id || !body.expected_source_org_id || !body.idempotency_key) {
+    return c.json({ error: "target_org_id, expected_source_org_id, and idempotency_key are required" }, 400);
+  }
+  if (body.target_org_id === body.expected_source_org_id) {
+    return c.json({ error: "target_org_id must differ from source org" }, 400);
+  }
+  const account = currentAccount(c);
+  if (!account) return c.json({ error: "authenticated account required" }, 403);
+  const [app, targetOrg, sourceRole, targetRole] = await Promise.all([
+    c.env.DB.prepare("SELECT id, org_id, slug, name FROM apps WHERE id = ?1 LIMIT 1").bind(appId)
+      .first<{ id: string; org_id: string | null; slug: string; name: string }>(),
+    c.env.DB.prepare("SELECT id, archived FROM organizations WHERE id = ?1 LIMIT 1").bind(body.target_org_id)
+      .first<{ id: string; archived: number }>(),
+    getOrgMemberRole(c.env.DB, body.expected_source_org_id, account.id),
+    getOrgMemberRole(c.env.DB, body.target_org_id, account.id),
+  ]);
+  if (!app) return c.json({ error: "not found" }, 404);
+  const prior = await c.env.DB.prepare(
+    "SELECT payload FROM audit_logs WHERE app_id = ?1 AND action = 'app.transfer' ORDER BY created_at DESC LIMIT 20",
+  ).bind(appId).all<{ payload: string }>();
+  for (const row of prior.results) {
+    try {
+      const p = JSON.parse(row.payload) as { idempotency_key?: string; target_org_id?: string; from_org_id?: string };
+      if (p.idempotency_key === body.idempotency_key && p.target_org_id === body.target_org_id) {
+        return c.json({ ok: true, idempotent: true, app_id: appId, from_org_id: p.from_org_id ?? body.expected_source_org_id, target_org_id: p.target_org_id });
+      }
+      if (p.idempotency_key === body.idempotency_key) return c.json({ error: "idempotency key is bound to a different target organization", code: "IDEMPOTENCY_CONFLICT" }, 409);
+    } catch { /* ignore malformed historical payloads */ }
+  }
+  if (app.org_id !== body.expected_source_org_id) return c.json({ error: "source org changed", code: "TRANSFER_CONFLICT" }, 409);
+  if (!targetOrg || targetOrg.archived) return c.json({ error: "target organization not found or archived" }, 400);
+  if (!isOrgAtLeast(sourceRole, "owner") || !isOrgAtLeast(targetRole, "owner")) return c.json({ error: "source and target organization owner role required" }, 403);
+  const now = Date.now();
+  const payload = { idempotency_key: body.idempotency_key, from_org_id: app.org_id, target_org_id: body.target_org_id, slug: app.slug };
+  await c.env.DB.batch([
+    c.env.DB.prepare("UPDATE apps SET org_id = ?1 WHERE id = ?2 AND org_id = ?3")
+      .bind(body.target_org_id, appId, body.expected_source_org_id),
+    c.env.DB.prepare("UPDATE webhooks SET org_id = ?1 WHERE app_id = ?2 AND org_id = ?3")
+      .bind(body.target_org_id, appId, body.expected_source_org_id),
+    c.env.DB.prepare("UPDATE invites SET org_id = ?1 WHERE app_id = ?2 AND org_id = ?3")
+      .bind(body.target_org_id, appId, body.expected_source_org_id),
+    c.env.DB.prepare("INSERT INTO audit_logs (id, app_id, action, actor, actor_id, actor_type, payload, created_at) SELECT ?1, ?2, 'app.transfer', ?3, ?4, ?5, ?6, ?7 FROM apps WHERE id = ?2 AND org_id = ?8")
+      .bind(crypto.randomUUID(), appId, currentActorInfo(c).display_name, account.id, account.principal_type, JSON.stringify(payload), now, body.target_org_id),
+  ]);
+  const moved = await c.env.DB.prepare("SELECT org_id FROM apps WHERE id = ?1").bind(appId).first<{ org_id: string }>();
+  if (moved?.org_id !== body.target_org_id) return c.json({ error: "transfer commit could not be verified", code: "TRANSFER_UNVERIFIED" }, 500);
+  return c.json({ ok: true, idempotent: false, app_id: appId, from_org_id: app.org_id, target_org_id: moved.org_id });
 }
 
 export async function handleArchiveApp(c: Context<{ Bindings: Env }>) {
