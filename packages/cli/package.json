@@ -31,6 +31,7 @@
     "lint:fix": "eslint --fix src/"
   },
   "dependencies": {
+    "@botiverse/agent-session-store": "workspace:*",
     "@botiverse/hands-node": "workspace:*",
     "commander": "^12.1.0"
   },

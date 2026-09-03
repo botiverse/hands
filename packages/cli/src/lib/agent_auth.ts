@@ -19,14 +19,15 @@
  * The verifier never reaches Raft, logs, or the store. Only the Hands token is stored.
  */
 import { spawnSync } from "node:child_process";
-import {
-  openSync, writeSync, fsyncSync, closeSync, renameSync, rmSync,
-  mkdirSync, statSync, chmodSync,
-} from "node:fs";
-import { join } from "node:path";
 import { randomBytes, createHash } from "node:crypto";
 import { getApiBase } from "./api.js";
-import { agentAuthPath, HANDS_SERVICE, type AgentEnv } from "./agent_env.js";
+import { HANDS_SERVICE, type AgentEnv } from "./agent_env.js";
+import {
+  writeAgentSession,
+  type AgentSession,
+} from "@botiverse/agent-session-store";
+
+export { writeAgentSession, type AgentSession, type StoredAgentAuth } from "@botiverse/agent-session-store";
 
 function base64url(buf: Buffer): string {
   return buf.toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
@@ -110,15 +111,6 @@ export function parseAgentLoginInvoke(
   return { grant: result.grant, expires_at: result.expires_at };
 }
 
-export interface AgentSession {
-  schema: "raft-cli-agent-session.v1";
-  token_type: "Bearer";
-  access_token: string;
-  access_expires_at: string; // RFC3339
-  refresh_token: string;
-  refresh_expires_at: string | null; // RFC3339 | null
-}
-
 /**
  * Strictly validate the exchange/refresh success body (closed keys + RFC3339).
  * `now` is injected so validation is deterministic: a freshly issued session MUST
@@ -144,62 +136,6 @@ export function parseAgentSession(body: any, now: number): AgentSession {
     if (refreshExp <= now) throw new Error("agent-login: session refresh token is already expired");
   }
   return body as AgentSession;
-}
-
-export interface StoredAgentAuth extends AgentSession {
-  service: string;
-  api_base: string;
-  updated_at: string;
-}
-
-/** mkdir (if needed) + verify/repair 0700 (no group/other) on one path component. */
-function ensureSecureDir(dir: string): void {
-  try {
-    mkdirSync(dir, { mode: 0o700 });
-  } catch (e: any) {
-    if (e?.code !== "EEXIST") throw e;
-  }
-  const st = statSync(dir);
-  if (!st.isDirectory()) throw new Error("agent-login: store path component is not a directory");
-  if ((st.mode & 0o077) !== 0) chmodSync(dir, 0o700); // repair a pre-existing wide dir
-}
-
-/**
- * Atomic, hardened store write: O_EXCL unique temp in the same dir, 0600, write +
- * fsync + close, atomic rename. Each dir component under $SLOCK_HOME is ensured AND
- * verified 0700 (repairing a pre-existing wide dir). $SLOCK_HOME itself is not chmod'd.
- * On any failure the temp is removed and the previous file is left intact.
- */
-export function writeAgentSession(
-  a: AgentEnv,
-  service: string,
-  session: AgentSession,
-  apiBase: string,
-  now: () => string = () => new Date().toISOString(),
-): string {
-  const path = agentAuthPath(a, service); // validates slug + agent id + containment
-  let dir = a.slockHome;
-  for (const seg of ["agents", a.agentId, "integrations", service]) {
-    dir = join(dir, seg);
-    ensureSecureDir(dir);
-  }
-  const record: StoredAgentAuth = { ...session, service, api_base: apiBase, updated_at: now() };
-  const payload = JSON.stringify(record, null, 2) + "\n";
-  const tmp = join(dir, `.auth.${randomBytes(8).toString("hex")}.tmp`);
-  let fd: number | null = null;
-  try {
-    fd = openSync(tmp, "wx", 0o600); // 'wx' = O_CREAT|O_EXCL|O_WRONLY
-    writeSync(fd, payload);
-    fsyncSync(fd);
-    closeSync(fd);
-    fd = null;
-    renameSync(tmp, path);
-  } catch (e) {
-    if (fd !== null) { try { closeSync(fd); } catch { /* ignore */ } }
-    try { rmSync(tmp, { force: true }); } catch { /* ignore */ }
-    throw e; // previous auth.json (if any) is left intact
-  }
-  return path;
 }
 
 // Token responses are small JSON; cap the read so a hostile/broken endpoint cannot
