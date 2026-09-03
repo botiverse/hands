@@ -73,8 +73,17 @@ jobs:
             packages/cli/package.json @botiverse/hands-node packages/node/package.json)"
           npm view "@botiverse/hands-node@${version}" version
 
-      - name: Build Node SDK and CLI
+      - name: Verify agent-session-store dependency is published
+        shell: bash
         run: |
+          set -euo pipefail
+          version="$(node scripts/resolve-workspace-dependency-version.mjs \
+            packages/cli/package.json @botiverse/agent-session-store packages/agent-session-store/package.json)"
+          npm view "@botiverse/agent-session-store@${version}" version
+
+      - name: Build session store, Node SDK, and CLI
+        run: |
+          pnpm --filter @botiverse/agent-session-store build
           pnpm --filter @botiverse/hands-node build
           pnpm --filter @botiverse/hands-cli build
 

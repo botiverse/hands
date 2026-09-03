@@ -1,6 +1,6 @@
 {
   "name": "@botiverse/hands-cli",
-  "version": "0.5.22",
+  "version": "0.5.23",
   "description": "Hands CLI \u2014 manage apps, builds, releases from the terminal.",
   "author": {
     "name": "jiacheng",
@@ -31,6 +31,7 @@
     "lint:fix": "eslint --fix src/"
   },
   "dependencies": {
+    "@botiverse/agent-session-store": "workspace:*",
     "@botiverse/hands-node": "workspace:*",
     "commander": "^12.1.0"
   },
