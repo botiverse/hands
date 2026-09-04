@@ -8,6 +8,7 @@ import {
   writeAgentSession,
   readAgentAccessToken,
   readAgentApiBase,
+  readAgentSession,
   type AgentEnv,
   type AgentSession,
 } from "./index.js";
@@ -127,6 +128,24 @@ describe("atomic store", () => {
     chmodSync(wide, 0o777);
     writeAgentSession(a, SERVICE, SESSION, "https://api.example");
     expect(statSync(wide).mode & 0o077).toBe(0);
+  });
+
+  it("readAgentSession returns the whole stored record, and null when the file is missing or malformed", () => {
+    const a = agentEnvAt(dir, "/t");
+    expect(readAgentSession(a, SERVICE)).toBeNull();
+    const path = writeAgentSession(a, SERVICE, SESSION, "https://api.example");
+    const rec = readAgentSession(a, SERVICE);
+    expect(rec).not.toBeNull();
+    expect(rec!.refresh_token).toBe(SESSION.refresh_token);
+    expect(rec!.access_expires_at).toBe(SESSION.access_expires_at);
+    expect(rec!.api_base).toBe("https://api.example");
+    expect(rec!.service).toBe(SERVICE);
+    expect(typeof rec!.updated_at).toBe("string");
+    // Fail-soft on garbage and on a record missing a required field: null, never a throw.
+    writeFileSync(path, "{not json");
+    expect(readAgentSession(a, SERVICE)).toBeNull();
+    writeFileSync(path, JSON.stringify({ ...SESSION, service: SERVICE, api_base: "x", updated_at: "t", refresh_token: "" }));
+    expect(readAgentSession(a, SERVICE)).toBeNull();
   });
 
   it("does not read another service's token", () => {

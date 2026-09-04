@@ -1,6 +1,6 @@
 {
   "name": "@botiverse/agent-session-store",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Fail-closed Raft agent admission and atomic per-agent integration session store.",
   "author": {
     "name": "jiacheng",
