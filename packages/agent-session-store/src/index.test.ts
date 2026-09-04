@@ -131,6 +131,7 @@ describe("atomic store", () => {
   });
 
   it("readAgentSession returns the whole stored record, and null when the file is missing or malformed", () => {
+    const a = agentEnvAt(dir, "/t");
     expect(readAgentSession(a, SERVICE)).toBeNull();
     const path = writeAgentSession(a, SERVICE, SESSION, "https://api.example");
     const rec = readAgentSession(a, SERVICE);
