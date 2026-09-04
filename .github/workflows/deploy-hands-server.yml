@@ -669,6 +669,49 @@ jobs:
 
           exit "$fail"
 
+      # Production run 33790593239 measured what one "deploy" actually costs in
+      # Cloudflare versions: one `wrangler deploy` plus one per `wrangler secret
+      # put` -- ten for this workflow. /deployments returns ten entries, so a
+      # single run fills it end to end and evicts the version that was live
+      # before the run. Its second entry then names another version of THIS run and
+      # rolling back to it is a no-op wearing a rollback's clothes.
+      #
+      # So the anchor is captured here, before the first Worker write, while
+      # "currently live" is still unambiguous -- and cross-checked against
+      # /versions, which retains history past the ten-entry deployment window and
+      # is therefore where a later rollback must actually look it up.
+      - name: Capture pre-deploy rollback anchor
+        id: rollback_anchor
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_BOTIVERSE_API_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          api="https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/workers/scripts/${HANDS_WORKER_NAME}"
+          deployments=$(curl -sS -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" "${api}/deployments")
+          if [[ "$(jq -r '.success' <<<"${deployments}")" != "true" ]]; then
+            echo "::error::cannot read current deployments; refusing to write without a rollback anchor" >&2
+            exit 1
+          fi
+          anchor=$(jq -r '.result.deployments[0].versions[0].version_id // empty' <<<"${deployments}")
+          if [[ -z "${anchor}" ]]; then
+            echo "::error::no live version found; refusing to write without a rollback anchor" >&2
+            exit 1
+          fi
+          # Durability check: the anchor is only useful later if /versions still
+          # carries it once /deployments has been flushed by this run.
+          versions=$(curl -sS -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" "${api}/versions?per_page=50")
+          if [[ "$(jq -r '.success' <<<"${versions}")" != "true" ]]; then
+            echo "::error::cannot read /versions; the anchor would not be recoverable after this run" >&2
+            exit 1
+          fi
+          if ! jq -e --arg a "${anchor}" '[.result.items[]?.id, .result[]?.id] | index($a)' >/dev/null <<<"${versions}"; then
+            echo "::error::live version ${anchor} is absent from /versions; rollback target would be unrecoverable" >&2
+            exit 1
+          fi
+          echo "pre_deploy_version=${anchor}" >> "${GITHUB_OUTPUT}"
+          echo "Pre-deploy live version (ROLLBACK ANCHOR, look it up in /versions): ${anchor}"
+
       # Deploy the Worker BEFORE putting secrets. `wrangler secret put` refuses
       # when the latest uploaded Worker version isn't deployed (e.g. a stray
       # `wrangler versions upload` left a pending version); deploying first makes
@@ -831,6 +874,52 @@ jobs:
           if [[ -n "${R2_S3_SECRET_ACCESS_KEY:-}" ]]; then
             printf '%s' "${R2_S3_SECRET_ACCESS_KEY}" | pnpm exec wrangler secret put R2_S3_SECRET_ACCESS_KEY --config "${config}"
           fi
+
+
+      # The deploy step prints `Current Version ID`, but every `wrangler secret
+      # put` above creates a further version, so that id stops being live seconds
+      # after it is printed (run 33790593239: printed cd3f5f6d, live c8cbb03b).
+      # The receipt has to be read after the last write, from the running service.
+      - name: Read back the terminal live version
+        if: ${{ !cancelled() }}
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_BOTIVERSE_API_TOKEN }}
+          PRE_DEPLOY_VERSION: ${{ steps.rollback_anchor.outputs.pre_deploy_version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          api="https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/workers/scripts/${HANDS_WORKER_NAME}"
+          deployments=$(curl -sS -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" "${api}/deployments")
+          if [[ "$(jq -r '.success' <<<"${deployments}")" != "true" ]]; then
+            echo "::error::cannot read deployments; the deployed version is unverified" >&2
+            exit 1
+          fi
+          live=$(jq -r '.result.deployments[0].versions[0].version_id // empty' <<<"${deployments}")
+          traffic=$(jq -r '[.result.deployments[0].versions[]?.percentage] | add // 0' <<<"${deployments}")
+          if [[ -z "${live}" ]]; then
+            echo "::error::no live version after deploy" >&2
+            exit 1
+          fi
+          if [[ "${traffic}" != "100" ]]; then
+            echo "::error::live deployment is not serving 100% of traffic (got ${traffic})" >&2
+            exit 1
+          fi
+          if [[ "${live}" == "${PRE_DEPLOY_VERSION}" ]]; then
+            echo "::error::live version is unchanged from before the deploy (${live}); nothing was deployed" >&2
+            exit 1
+          fi
+          {
+            echo "### Hands production deploy"
+            echo ""
+            echo "| | version |"
+            echo "|---|---|"
+            echo "| terminal live (THIS is the deployed version) | \`${live}\` |"
+            echo "| rollback anchor (pre-deploy, find it in /versions) | \`${PRE_DEPLOY_VERSION}\` |"
+            echo ""
+            echo "Do NOT take a rollback target from the second entry of the deployments list: one deploy creates ~10 versions and fills that list end to end."
+          } >> "${GITHUB_STEP_SUMMARY}"
+          echo "Terminal live version: ${live} (traffic ${traffic}%)"
+          echo "Rollback anchor: ${PRE_DEPLOY_VERSION}"
 
       - name: Summary
         shell: bash
