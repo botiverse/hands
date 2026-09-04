@@ -705,7 +705,12 @@ jobs:
             echo "::error::cannot read /versions; the anchor would not be recoverable after this run" >&2
             exit 1
           fi
-          if ! jq -e --arg a "${anchor}" '[.result.items[]?.id, .result[]?.id] | index($a)' >/dev/null <<<"${versions}"; then
+          # /versions returns {"result":{"items":[...]}}; tolerate a bare
+          # {"result":[...]} too. Do NOT write this as `.result[]?.id` — on the
+          # object shape that iterates the object's VALUES, yielding the items
+          # ARRAY, and `.id` on an array is a hard jq error, so the guard can
+          # never pass. See scripts/test_deploy_rollback_anchor_jq.sh.
+          if ! jq -e --arg a "${anchor}" '[ (if (.result|type) == "array" then .result else (.result.items // []) end)[] | .id? ] | index($a)' >/dev/null <<<"${versions}"; then
             echo "::error::live version ${anchor} is absent from /versions; rollback target would be unrecoverable" >&2
             exit 1
           fi
