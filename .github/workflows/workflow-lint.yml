@@ -27,6 +27,11 @@ on:
     paths:
       - ".github/workflows/**"
       - ".github/lint-fixtures/**"
+      # The rollback-anchor guard test reads its expression out of
+      # deploy-hands-server.yml, so it has to re-run when either side moves —
+      # including when only the test moves. A check that cannot be triggered by
+      # editing the test is a check the test can be quietly weakened past.
+      - "scripts/test_deploy_rollback_anchor_jq.sh"
   push:
     branches: [main]
 
@@ -183,3 +188,9 @@ jobs:
 
       - name: Check CLI publish dependency contract
         run: python3 .github/lint-fixtures/test-publish-cli-workflow.py
+
+      # Self-tests against the #508 expression before reporting, on the same
+      # principle as the fixture above: a clean result is only worth something
+      # if the table it came from can still fail.
+      - name: Check deploy rollback-anchor durability guard
+        run: scripts/test_deploy_rollback_anchor_jq.sh
