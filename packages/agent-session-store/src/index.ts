@@ -8,6 +8,7 @@ export {
   writeAgentSession,
   readAgentAccessToken,
   readAgentApiBase,
+  readAgentSession,
   type AgentSession,
   type StoredAgentAuth,
 } from "./store.js";

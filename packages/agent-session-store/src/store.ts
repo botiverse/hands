@@ -71,6 +71,38 @@ export function writeAgentSession(
   return path;
 }
 
+/**
+ * The whole stored record, or null when there is no readable, well-formed session.
+ * Consumers that refresh need `refresh_token`, `access_expires_at` and `api_base`
+ * together; without this both adopter CLIs re-read the JSON file themselves.
+ * Same fail-soft contract as the narrow readers: any error → null, never throws.
+ */
+export function readAgentSession(a: AgentEnv, service: string): StoredAgentAuth | null {
+  let path: string;
+  try {
+    path = agentAuthPath(a, service);
+  } catch {
+    return null;
+  }
+  if (!existsSync(path)) return null;
+  try {
+    const parsed = JSON.parse(readFileSync(path, "utf8")) as Partial<StoredAgentAuth>;
+    if (
+      parsed?.schema !== "raft-cli-agent-session.v1" || parsed.token_type !== "Bearer" ||
+      typeof parsed.access_token !== "string" || parsed.access_token.length === 0 ||
+      typeof parsed.refresh_token !== "string" || parsed.refresh_token.length === 0 ||
+      typeof parsed.access_expires_at !== "string" ||
+      !(typeof parsed.refresh_expires_at === "string" || parsed.refresh_expires_at === null) ||
+      typeof parsed.service !== "string" || typeof parsed.api_base !== "string" || typeof parsed.updated_at !== "string"
+    ) {
+      return null;
+    }
+    return parsed as StoredAgentAuth;
+  } catch {
+    return null;
+  }
+}
+
 export function readAgentAccessToken(a: AgentEnv, service: string): string | null {
   let path: string;
   try {
