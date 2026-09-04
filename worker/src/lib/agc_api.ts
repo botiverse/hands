@@ -114,6 +114,13 @@ export async function getAgcReviewStatus(
   };
 }
 
+/** Huawei invitation-test windows may not exceed 90 days. */
+export const AGC_INVITATION_TEST_MAX_MS = 90 * 24 * 60 * 60 * 1000;
+
+export function invitationTestWindow(now = Date.now()) {
+  return { startTime: now, endTime: now + AGC_INVITATION_TEST_MAX_MS - 60_000 };
+}
+
 export async function createAgcInvitationVersion(auth: AgcAuth, appId: string, description: string, selfDetect: boolean, fetchImpl: typeof fetch = fetch) {
   const body = await agcJson(auth, `/api/publish/v2/test/app/version?appId=${encodeURIComponent(appId)}`, { method: "POST", body: JSON.stringify({ releaseType: 6, testType: 3, testDesc: description.slice(0, 50), onshelfSelfDetect: selfDetect ? 1 : 0 }) }, fetchImpl);
   if (!body?.versionId) throw new AgcApiError(502, "AGC did not return a test version id");
@@ -142,6 +149,13 @@ export async function getAgcCompileStatus(auth: AgcAuth, appId: string, packageI
 export async function bindAgcTestPackage(auth: AgcAuth, appId: string, versionId: string, packageId: string, fetchImpl: typeof fetch = fetch) {
   await agcJson(auth, `/api/publish/v2/test/app/version?appId=${encodeURIComponent(appId)}`, { method: "PUT", body: JSON.stringify({ versionId, pkgId: packageId }) }, fetchImpl);
 }
-export async function submitAgcTestVersion(auth: AgcAuth, appId: string, versionId: string, fetchImpl: typeof fetch = fetch) {
+export async function setAgcInvitationTestWindow(auth: AgcAuth, appId: string, versionId: string, fetchImpl: typeof fetch = fetch, now = Date.now()) {
+  const window = invitationTestWindow(now);
+  await agcJson(auth, `/api/publish/v2/test/app/version?appId=${encodeURIComponent(appId)}`, { method: "PUT", body: JSON.stringify({ versionId, openTestInfo: window }) }, fetchImpl);
+  return window;
+}
+
+export async function submitAgcTestVersion(auth: AgcAuth, appId: string, versionId: string, fetchImpl: typeof fetch = fetch, now = Date.now()) {
+  await setAgcInvitationTestWindow(auth, appId, versionId, fetchImpl, now);
   await agcJson(auth, `/api/publish/v2/test/app/version/submit?appId=${encodeURIComponent(appId)}`, { method: "POST", body: JSON.stringify({ versionId }) }, fetchImpl);
 }
