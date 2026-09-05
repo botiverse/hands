@@ -63,7 +63,7 @@ describe("AGC invitation testing API", () => {
     expect(requests[1]?.body).toContain('"testType":3');
     expect(requests[1]?.body).not.toContain("openTestInfo");
   });
-  it("writes OpenTestInfo startTime/endTime on the update-version PUT before submit", async () => {
+  it("writes the full invitation OpenTestInfo on the update-version PUT before submit", async () => {
     const now = 1_704_211_200_000;
     const window = invitationTestWindow(now);
     const requests: RequestInit[] = [];
@@ -74,10 +74,20 @@ describe("AGC invitation testing API", () => {
     expect(await setAgcInvitationTestWindow(auth, "agc-app", "version-1", mockFetch as typeof fetch, now)).toEqual(window);
     await submitAgcTestVersion(auth, "agc-app", "version-1", mockFetch as typeof fetch, now);
     expect(requests[0]?.method).toBe("PUT");
-    expect(requests[0]?.body).toContain('"openTestInfo"');
-    expect(requests[0]?.body).toContain(`"startTime":${window.startTime}`);
-    expect(requests[0]?.body).toContain(`"endTime":${window.endTime}`);
+    const firstPut = JSON.parse(String(requests[0]?.body ?? "{}"));
+    expect(firstPut.openTestInfo).toEqual({
+      startTime: window.startTime,
+      endTime: window.endTime,
+      testTaskInfo: {
+        displayArea: "1",
+        needShareLink: 0,
+        needNotify: 0,
+      },
+    });
+    expect(firstPut.openTestInfo.testTaskInfo).not.toHaveProperty("groupInfos");
     expect(requests[1]?.method).toBe("PUT");
+    const submitPut = JSON.parse(String(requests[1]?.body ?? "{}"));
+    expect(submitPut.openTestInfo).toEqual(firstPut.openTestInfo);
     expect(requests[2]?.method).toBe("POST");
   });
   it("requests upload metadata and registers the uploaded package", async () => {

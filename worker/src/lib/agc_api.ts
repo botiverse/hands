@@ -117,8 +117,27 @@ export async function getAgcReviewStatus(
 /** Huawei invitation-test windows may not exceed 90 days. */
 export const AGC_INVITATION_TEST_MAX_MS = 90 * 24 * 60 * 60 * 1000;
 
+/**
+ * Huawei invite-test PUT example (`openTestInfo.testTaskInfo`):
+ * `displayArea: "1"` = 测试专区, `needShareLink: 0`, `needNotify: 0`.
+ * Submit 204144692 ("displayArea is necessary for invite test") is the live
+ * proof that the whole TestTaskInfo object is required at submit, not just
+ * startTime/endTime. Do not send groupInfos without a real groupId.
+ */
+export const AGC_INVITE_TEST_DISPLAY_AREA = "1";
+export const AGC_INVITE_TEST_NEED_SHARE_LINK = 0;
+export const AGC_INVITE_TEST_NEED_NOTIFY = 0;
+
 export function invitationTestWindow(now = Date.now()) {
-  return { startTime: now, endTime: now + AGC_INVITATION_TEST_MAX_MS - 60_000 };
+  return {
+    startTime: now,
+    endTime: now + AGC_INVITATION_TEST_MAX_MS - 60_000,
+    testTaskInfo: {
+      displayArea: AGC_INVITE_TEST_DISPLAY_AREA,
+      needShareLink: AGC_INVITE_TEST_NEED_SHARE_LINK,
+      needNotify: AGC_INVITE_TEST_NEED_NOTIFY,
+    },
+  };
 }
 
 export async function createAgcInvitationVersion(auth: AgcAuth, appId: string, description: string, selfDetect: boolean, fetchImpl: typeof fetch = fetch) {
