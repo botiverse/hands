@@ -196,8 +196,9 @@ export async function handleSubmitAgcInvitationTest(c: AdminContext) {
   let effectiveGroupIds = requestedGroupIds;
   if (effectiveGroupIds.length === 0) {
     const groups = await listAgcTestGroups(agcAuth, sub.external_app_id);
-    if (groups.length > 0) {
-      effectiveGroupIds = [groups[0].groupId];
+    const firstGroup = groups[0];
+    if (firstGroup?.groupId) {
+      effectiveGroupIds = [firstGroup.groupId];
     }
   }
   if (effectiveGroupIds.length === 0) {
