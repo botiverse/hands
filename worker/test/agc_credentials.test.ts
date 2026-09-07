@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { decodeProtectedHeader, exportPKCS8, generateKeyPair, jwtVerify } from "jose";
 import { decryptAgcCredential, encryptAgcCredential, fingerprintAgcCredential, parseAgcCredential, type AgcApiClientCredential } from "../src/lib/agc_credentials";
-import { AgcApiError, addAgcTestPackage, bindAgcTestPackage, createAgcInvitationVersion, createAgcServiceAccountJwt, exchangeAgcApiClientToken, getAgcCompileStatus, invitationTestWindow, requestAgcUpload, resolveAgcAppId, setAgcInvitationTestWindow, submitAgcTestVersion } from "../src/lib/agc_api";
+import { AgcApiError, addAgcTestPackage, bindAgcTestPackage, createAgcInvitationVersion, createAgcServiceAccountJwt, exchangeAgcApiClientToken, getAgcCompileStatus, invitationTestWindow, listAgcTestGroups, requestAgcUpload, resolveAgcAppId, setAgcInvitationTestWindow, submitAgcTestVersion } from "../src/lib/agc_api";
 
 const raw = JSON.stringify({ type: "api_client", developer_id: "dev", project_id: "project", client_id: "client", client_secret: "secret", configuration_version: "1.0", region: "CN" });
 
@@ -89,6 +89,34 @@ describe("AGC invitation testing API", () => {
     const submitPut = JSON.parse(String(requests[1]?.body ?? "{}"));
     expect(submitPut.openTestInfo).toEqual(firstPut.openTestInfo);
     expect(requests[2]?.method).toBe("POST");
+  });
+  it("includes groupInfos in OpenTestInfo when groupIds are specified", async () => {
+    const now = 1_704_211_200_000;
+    const window = invitationTestWindow(now, ["group-abc"]);
+    expect(window.testTaskInfo.groupInfos).toEqual([{ groupId: "group-abc" }]);
+    const requests: RequestInit[] = [];
+    const mockFetch = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      requests.push(init ?? {});
+      return new Response(JSON.stringify({ ret: { code: 0 } }), { status: 200 });
+    });
+    await submitAgcTestVersion(auth, "agc-app", "version-1", mockFetch as typeof fetch, now, ["group-abc"]);
+    expect(requests[0]?.method).toBe("PUT");
+    const submitPut = JSON.parse(String(requests[0]?.body ?? "{}"));
+    expect(submitPut.openTestInfo.testTaskInfo.groupInfos).toEqual([{ groupId: "group-abc" }]);
+    expect(requests[1]?.method).toBe("POST");
+  });
+  it("queries AGC user test groups list", async () => {
+    const responses = [
+      { rtnCode: 0, groups: [{ groupId: "group-1", groupName: "Internal Testers", addedTestersNum: 5 }] },
+    ];
+    const requests: RequestInit[] = [];
+    const mockFetch = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      requests.push(init ?? {});
+      return new Response(JSON.stringify(responses.shift()), { status: 200 });
+    });
+    const groups = await listAgcTestGroups(auth, "agc-app", mockFetch as typeof fetch);
+    expect(groups).toEqual([{ groupId: "group-1", groupName: "Internal Testers", addedTestersNum: 5 }]);
+    expect(requests[0]?.headers).toMatchObject({ appId: "agc-app" });
   });
   it("requests upload metadata and registers the uploaded package", async () => {
     const responses = [
