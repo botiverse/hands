@@ -128,7 +128,20 @@ export const AGC_INVITE_TEST_DISPLAY_AREA = "1";
 export const AGC_INVITE_TEST_NEED_SHARE_LINK = 0;
 export const AGC_INVITE_TEST_NEED_NOTIFY = 0;
 
-export function invitationTestWindow(now = Date.now()) {
+export type AgcTestGroup = {
+  groupId: string;
+  groupName?: string;
+  addedTestersNum?: number;
+};
+
+export async function listAgcTestGroups(auth: AgcAuth, appId: string, fetchImpl: typeof fetch = fetch): Promise<AgcTestGroup[]> {
+  const body = await agcJson(auth, `/api/app-test/v1/test-group/list?current=1&pageSize=100`, {
+    headers: { appId },
+  }, fetchImpl);
+  return (body?.groups ?? []) as AgcTestGroup[];
+}
+
+export function invitationTestWindow(now = Date.now(), groupIds: string[] = []) {
   return {
     startTime: now,
     endTime: now + AGC_INVITATION_TEST_MAX_MS - 60_000,
@@ -136,6 +149,7 @@ export function invitationTestWindow(now = Date.now()) {
       displayArea: AGC_INVITE_TEST_DISPLAY_AREA,
       needShareLink: AGC_INVITE_TEST_NEED_SHARE_LINK,
       needNotify: AGC_INVITE_TEST_NEED_NOTIFY,
+      ...(groupIds.length > 0 ? { groupInfos: groupIds.map((groupId) => ({ groupId })) } : {}),
     },
   };
 }
@@ -168,13 +182,13 @@ export async function getAgcCompileStatus(auth: AgcAuth, appId: string, packageI
 export async function bindAgcTestPackage(auth: AgcAuth, appId: string, versionId: string, packageId: string, fetchImpl: typeof fetch = fetch) {
   await agcJson(auth, `/api/publish/v2/test/app/version?appId=${encodeURIComponent(appId)}`, { method: "PUT", body: JSON.stringify({ versionId, pkgId: packageId }) }, fetchImpl);
 }
-export async function setAgcInvitationTestWindow(auth: AgcAuth, appId: string, versionId: string, fetchImpl: typeof fetch = fetch, now = Date.now()) {
-  const window = invitationTestWindow(now);
+export async function setAgcInvitationTestWindow(auth: AgcAuth, appId: string, versionId: string, fetchImpl: typeof fetch = fetch, now = Date.now(), groupIds: string[] = []) {
+  const window = invitationTestWindow(now, groupIds);
   await agcJson(auth, `/api/publish/v2/test/app/version?appId=${encodeURIComponent(appId)}`, { method: "PUT", body: JSON.stringify({ versionId, openTestInfo: window }) }, fetchImpl);
   return window;
 }
 
-export async function submitAgcTestVersion(auth: AgcAuth, appId: string, versionId: string, fetchImpl: typeof fetch = fetch, now = Date.now()) {
-  await setAgcInvitationTestWindow(auth, appId, versionId, fetchImpl, now);
+export async function submitAgcTestVersion(auth: AgcAuth, appId: string, versionId: string, fetchImpl: typeof fetch = fetch, now = Date.now(), groupIds: string[] = []) {
+  await setAgcInvitationTestWindow(auth, appId, versionId, fetchImpl, now, groupIds);
   await agcJson(auth, `/api/publish/v2/test/app/version/submit?appId=${encodeURIComponent(appId)}`, { method: "POST", body: JSON.stringify({ versionId }) }, fetchImpl);
 }

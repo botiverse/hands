@@ -2,7 +2,7 @@ import type { Context } from "hono";
 import { currentActor, type AdminEnv } from "../middleware/auth";
 import { insertAuditLog } from "../lib/permissions";
 import { agcCredentialKind, getAgcCredentials, type AgcApiClientCredential, type AgcServiceAccountCredential } from "../lib/agc_credentials";
-import { addAgcTestPackage, AgcApiError, bindAgcTestPackage, createAgcInvitationVersion, createAgcServiceAccountJwt, exchangeAgcApiClientToken, getAgcCompileStatus, getAgcReviewStatus, requestAgcUpload, resolveAgcAppId, submitAgcTestVersion, uploadAgcObject } from "../lib/agc_api";
+import { addAgcTestPackage, AgcApiError, bindAgcTestPackage, createAgcInvitationVersion, createAgcServiceAccountJwt, exchangeAgcApiClientToken, getAgcCompileStatus, getAgcReviewStatus, listAgcTestGroups, requestAgcUpload, resolveAgcAppId, submitAgcTestVersion, uploadAgcObject } from "../lib/agc_api";
 
 type AdminContext = Context<AdminEnv & { Bindings: Env }>;
 type Submission = { id: string; app_id: string; build_id: string; state: string; external_app_id: string; external_version_id: string; external_package_id: string; provider_state_json: string; error_message: string | null; created_at: number; updated_at: number };
@@ -162,13 +162,50 @@ export async function handleGetAgcSubmission(c: AdminContext) {
   const events = await c.env.DB.prepare("SELECT state, detail_json, created_at FROM market_submission_events WHERE submission_id=?1 ORDER BY created_at").bind(id).all();
   return c.json({ submission: publicSubmission(sub), events: events.results });
 }
+export async function handleListAgcTestGroups(c: AdminContext) {
+  const appId = c.req.param("appId") ?? "";
+  const packageRow = await c.env.DB.prepare(
+    "SELECT bundle_id FROM channels WHERE app_id = ?1 AND slug = 'main' LIMIT 1",
+  ).bind(appId).first<{ bundle_id: string | null }>();
+  const packageName = (packageRow?.bundle_id ?? "").trim() || "build.raft.mobile";
+  const agcAuth = await auth(c);
+  const externalAppId = await resolveAgcAppId(agcAuth, packageName);
+  const groups = await listAgcTestGroups(agcAuth, externalAppId);
+  return c.json({ agc_app_id: externalAppId, groups });
+}
+
 export async function handleSubmitAgcInvitationTest(c: AdminContext) {
   const id = c.req.param("submissionId") ?? ""; const appId = c.req.param("appId") ?? "";
   const sub = await c.env.DB.prepare("SELECT * FROM market_submissions WHERE id=?1 AND app_id=?2").bind(id, appId).first<Submission>();
   if (!sub) return c.json({ error: "submission not found" }, 404);
   if (sub.state !== "ready") return c.json({ error: "package is not ready for testing review" }, 409);
-  const agcAuth = await auth(c); await submitAgcTestVersion(agcAuth, sub.external_app_id, sub.external_version_id);
-  await event(c.env.DB, id, "testing_review", { submitted: true });
-  await insertAuditLog(c.env.DB, c, { app_id: appId, action: "agc_test.submit", payload: { submission_id: id, build_id: sub.build_id } });
-  return c.json({ ok: true, submission_id: id, state: "testing_review" });
+  const body = await c.req.json().catch(() => ({})) as { group_id?: unknown; group_ids?: unknown };
+  const requestedGroupIds: string[] = [];
+  if (typeof body.group_id === "string" && body.group_id.trim()) {
+    requestedGroupIds.push(body.group_id.trim());
+  }
+  if (Array.isArray(body.group_ids)) {
+    for (const gid of body.group_ids) {
+      if (typeof gid === "string" && gid.trim() && !requestedGroupIds.includes(gid.trim())) {
+        requestedGroupIds.push(gid.trim());
+      }
+    }
+  }
+
+  const agcAuth = await auth(c);
+  let effectiveGroupIds = requestedGroupIds;
+  if (effectiveGroupIds.length === 0) {
+    const groups = await listAgcTestGroups(agcAuth, sub.external_app_id);
+    if (groups.length > 0) {
+      effectiveGroupIds = [groups[0].groupId];
+    }
+  }
+  if (effectiveGroupIds.length === 0) {
+    return c.json({ error: "No AGC test group found or specified for invitation test" }, 400);
+  }
+
+  await submitAgcTestVersion(agcAuth, sub.external_app_id, sub.external_version_id, undefined, undefined, effectiveGroupIds);
+  await event(c.env.DB, id, "testing_review", { submitted: true, group_ids: effectiveGroupIds });
+  await insertAuditLog(c.env.DB, c, { app_id: appId, action: "agc_test.submit", payload: { submission_id: id, build_id: sub.build_id, group_ids: effectiveGroupIds } });
+  return c.json({ ok: true, submission_id: id, state: "testing_review", group_ids: effectiveGroupIds });
 }

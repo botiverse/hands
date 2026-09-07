@@ -1469,6 +1469,14 @@ export async function handleAgentManifest(c: Context<{ Bindings: Env }>) {
         },
       },
       {
+        name: "list-agc-test-groups",
+        description: "List configured user test groups in Huawei AppGallery Connect.",
+        endpoint: { method: "GET", path: "/api/apps/{app_id}/agc-test-groups" },
+        parameters: {
+          app_id: { type: "string", in: "path", required: true, description: "OHOS app UUID." },
+        },
+      },
+      {
         name: "get-agc-submission",
         description: "Refresh AGC package compilation state and bind the package when ready.",
         endpoint: { method: "GET", path: "/api/apps/{app_id}/agc-submissions/{submission_id}" },
@@ -1484,6 +1492,7 @@ export async function handleAgentManifest(c: Context<{ Bindings: Env }>) {
         parameters: {
           app_id: { type: "string", in: "path", required: true, description: "OHOS app UUID." },
           submission_id: { type: "string", in: "path", required: true, description: "Hands market submission UUID." },
+          group_id: { type: "string", in: "body", required: false, description: "Optional AGC user test group ID to bind. Defaults to the app's configured test group." },
         },
       },
       {

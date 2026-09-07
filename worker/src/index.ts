@@ -55,7 +55,7 @@ import {
   handleSetAgcCredentials,
   handleVerifyAgcCredentials,
 } from "./routes/agc_credentials";
-import { handleAppGalleryReview, handleGetAgcBuildSubmission, handleGetAgcSubmission, handleStartAgcInvitationTest, handleSubmitAgcInvitationTest } from "./routes/agc_testing";
+import { handleAppGalleryReview, handleGetAgcBuildSubmission, handleGetAgcSubmission, handleListAgcTestGroups, handleStartAgcInvitationTest, handleSubmitAgcInvitationTest } from "./routes/agc_testing";
 import {
   handleListApps,
   handleCreateApp,
@@ -1183,6 +1183,7 @@ admin.get("/api/apps/:appId/agc-credentials", requireAppRole("admin"), handleGet
 admin.put("/api/apps/:appId/agc-credentials", requireAppRole("admin"), handleSetAgcCredentials);
 admin.delete("/api/apps/:appId/agc-credentials", requireAppRole("admin"), handleDeleteAgcCredentials);
 admin.post("/api/apps/:appId/agc-credentials/verify", requireAppRole("admin"), handleVerifyAgcCredentials);
+admin.get("/api/apps/:appId/agc-test-groups", requireAppRole("admin"), handleListAgcTestGroups);
 admin.get("/api/apps/:appId/builds/:buildId/agc-invitation-test", requireAppRole("admin"), handleGetAgcBuildSubmission);
 admin.post("/api/apps/:appId/builds/:buildId/agc-invitation-test", requireAppRole("admin"), handleStartAgcInvitationTest);
 admin.get("/api/apps/:appId/agc-submissions/:submissionId", requireAppRole("admin"), handleGetAgcSubmission);
