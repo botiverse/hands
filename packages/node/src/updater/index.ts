@@ -24,6 +24,7 @@ export interface UpdateCandidate {
     url: string;
     size: number;
     sha256: string;
+    gzip?: { url: string; size: number; sha256: string };
   };
   candidateDigest: string;
 }
@@ -130,6 +131,7 @@ function candidateIdentity(candidate: Omit<UpdateCandidate, "candidateDigest">) 
       artifactId: candidate.artifact.artifactId,
       size: candidate.artifact.size,
       sha256: candidate.artifact.sha256,
+      ...(candidate.artifact.gzip ? { gzip: candidate.artifact.gzip } : {}),
     },
   };
 }
@@ -183,6 +185,15 @@ export function createHandsUpdater(options: HandsUpdaterOptions): HandsUpdater {
       const app = record(root.app); const release = record(root.release); const artifact = record(root.artifact);
       const sha256 = string(artifact.sha256, "artifact.sha256").toLowerCase();
       if (!SHA256.test(sha256)) throw new HandsUpdateError("UPDATE_RESPONSE_INVALID", "artifact.sha256 invalid");
+      const gzipRaw = artifact.gzip;
+      let gzip: UpdateCandidate["artifact"]["gzip"];
+      if (gzipRaw !== undefined) {
+        const gz = record(gzipRaw);
+        const gzipSha = string(gz.sha256, "artifact.gzip.sha256").toLowerCase();
+        const gzipSize = integer(gz.size_bytes, "artifact.gzip.size_bytes");
+        if (!SHA256.test(gzipSha) || gzipSize <= 0) throw new HandsUpdateError("UPDATE_RESPONSE_INVALID", "artifact.gzip identity invalid");
+        gzip = { url: string(gz.download_url, "artifact.gzip.download_url"), size: gzipSize, sha256: gzipSha };
+      }
       const plain: Omit<UpdateCandidate, "candidateDigest"> = {
         appId: string(app.id, "app.id"), appSlug: string(app.slug, "app.slug"),
         releaseId: string(release.id, "release.id"), releaseRevision: integer(release.revision, "release.revision"),
@@ -190,7 +201,7 @@ export function createHandsUpdater(options: HandsUpdaterOptions): HandsUpdater {
         version: string(release.version, "release.version"), versionCode: integer(release.version_code, "release.version_code"),
         versionRelation: string(release.version_relation, "release.version_relation") as UpdateCandidate["versionRelation"],
         publishedAt: integer(release.published_at, "release.published_at"), target: input.target,
-        artifact: { artifactId: string(artifact.id, "artifact.id"), url: string(artifact.download_url, "artifact.download_url"), size: integer(artifact.size_bytes, "artifact.size_bytes"), sha256 },
+        artifact: { artifactId: string(artifact.id, "artifact.id"), url: string(artifact.download_url, "artifact.download_url"), size: integer(artifact.size_bytes, "artifact.size_bytes"), sha256, ...(gzip ? { gzip } : {}) },
       };
       if (pinned && plain.version !== pinned) throw new HandsUpdateError("UPDATE_IDENTITY_DRIFT", "pinned version was not selected");
       const candidate: UpdateCandidate = { ...plain, candidateDigest: digest(candidateIdentity(plain)) };

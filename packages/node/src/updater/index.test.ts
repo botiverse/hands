@@ -26,6 +26,32 @@ function fixture(bytes = Buffer.from("verified computer binary")) {
 }
 
 describe("Hands updater", () => {
+  it("preserves optional gzip identity and binds it into the candidate digest", async () => {
+    const { response } = fixture();
+    const gzip = { download_url: "https://downloads.example/computer.gz", size_bytes: 12, sha256: "c".repeat(64) };
+    const updater = createHandsUpdater({ appSlug: "raft-computer", apiOrigin: "https://hands.example",
+      fetch: async () => Response.json({ ...response, artifact: { ...response.artifact, gzip } }),
+    });
+    const check = await updater.checkUpdate({ currentVersion: "1.0.18", channel: "main", target: { platform: "linux", arch: "x64" } });
+    if (check.kind !== "update") throw new Error("expected update");
+    expect(check.candidate.artifact.gzip).toEqual({ url: gzip.download_url, size: 12, sha256: gzip.sha256 });
+    const directory = await mkdtemp(join(tmpdir(), "hands-gzip-")); directories.push(directory);
+    check.candidate.artifact.gzip!.sha256 = "d".repeat(64);
+    await expect(updater.prepareUpdate({ candidate: check.candidate, stagingDir: directory }))
+      .rejects.toMatchObject({ code: "UPDATE_IDENTITY_DRIFT" });
+  });
+
+  it.each([null, {}, { download_url: "https://example.test/a.gz", size_bytes: 12, sha256: "bad" },
+    { download_url: "https://example.test/a.gz", size_bytes: -1, sha256: "c".repeat(64) }])(
+    "rejects malformed advertised gzip identity %j", async (gzip) => {
+      const { response } = fixture();
+      const updater = createHandsUpdater({ appSlug: "raft-computer", apiOrigin: "https://hands.example",
+        fetch: async () => Response.json({ ...response, artifact: { ...response.artifact, gzip } }),
+      });
+      await expect(updater.checkUpdate({ currentVersion: "1.0.18", channel: "main", target: { platform: "linux", arch: "x64" } }))
+        .rejects.toMatchObject({ code: "UPDATE_RESPONSE_INVALID" });
+    },
+  );
   it("keeps package and runtime SDK version carriers identical", () => {
     expect(HANDS_NODE_SDK_VERSION).toBe(packageJson.version);
   });

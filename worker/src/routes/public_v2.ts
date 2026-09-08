@@ -583,7 +583,8 @@ export async function handlePublicCliBinaryUpdateCheck(c: Context<{ Bindings: En
             r.id AS release_id, r.revision, r.rollout_cohort_count,
             r.activated_at, r.channel_id,
             b.version_name, b.version_code,
-            e.id AS artifact_id, e.raw_sha256, e.raw_size_bytes
+            e.id AS artifact_id, e.raw_sha256, e.raw_size_bytes,
+            e.gzip_sha256, e.gzip_size_bytes
      FROM apps a
      JOIN channels ch ON ch.app_id = a.id
      JOIN releases r ON r.app_id = a.id AND r.channel_id = ch.id
@@ -607,6 +608,7 @@ export async function handlePublicCliBinaryUpdateCheck(c: Context<{ Bindings: En
     activated_at: number; channel_id: string;
     version_name: string; version_code: number; artifact_id: string;
     raw_sha256: string; raw_size_bytes: number;
+    gzip_sha256: string | null; gzip_size_bytes: number | null;
   }>();
   if (rows.length === 0) return c.json({ error: "no active release for target", code: "UPDATE_NO_COMPATIBLE_ARTIFACT" }, 404);
   if (requestedVersion && rows.length > 1) {
@@ -628,6 +630,13 @@ export async function handlePublicCliBinaryUpdateCheck(c: Context<{ Bindings: En
   if (relation === null) return c.json({ error: "published version is not semver", code: "UPDATE_RESPONSE_INVALID" }, 500);
   if (relation === 0) return c.json({ update_available: false, current_version: currentVersion, latest_version: row.version_name, checked_at: Date.now() });
   const origin = requestOrigin(c);
+  // Advertise only a complete attested representation of this same build target.
+  // An absent/incomplete optional representation leaves the canonical raw route usable.
+  const gzip = typeof row.gzip_sha256 === "string" && /^[a-f0-9]{64}$/u.test(row.gzip_sha256)
+    && typeof row.gzip_size_bytes === "number" && Number.isSafeInteger(row.gzip_size_bytes) && row.gzip_size_bytes > 0
+    ? { sha256: row.gzip_sha256, size_bytes: row.gzip_size_bytes,
+      download_url: `${origin}/dl/${encodeURIComponent(slug)}/releases/${encodeURIComponent(row.release_id)}/${encodeURIComponent(target)}.gz` }
+    : undefined;
   return c.json({
     update_available: true,
     app: { id: row.app_id, slug: row.slug },
@@ -642,6 +651,7 @@ export async function handlePublicCliBinaryUpdateCheck(c: Context<{ Bindings: En
       id: row.artifact_id, platform, arch,
       size_bytes: row.raw_size_bytes, sha256: row.raw_sha256,
       download_url: `${origin}/dl/${encodeURIComponent(slug)}/releases/${encodeURIComponent(row.release_id)}/${encodeURIComponent(target)}`,
+      ...(gzip ? { gzip } : {}),
     },
   });
 }
