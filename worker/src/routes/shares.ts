@@ -161,9 +161,9 @@ export async function handleCreateReleaseShare(c: AdminContext) {
   await c.env.DB.batch([
     c.env.DB.prepare(
       `INSERT INTO release_shares
-       (id, release_id, token, token_hash, created_by, created_at, expires_at, revoked_at, password_hash)
-       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, NULL, ?8)`,
-    ).bind(id, releaseId, token, tokenHash, currentActor(c), now, expiresAt, passwordHash),
+       (id, release_id, token_hash, created_by, created_at, expires_at, revoked_at, password_hash)
+       VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL, ?7)`,
+    ).bind(id, releaseId, tokenHash, currentActor(c), now, expiresAt, passwordHash),
     c.env.DB.prepare(
       `INSERT INTO audit_logs (id, app_id, action, actor, payload, created_at)
        VALUES (?1, ?2, ?3, ?4, ?5, ?6)`,
@@ -217,7 +217,7 @@ export async function handleListReleaseShares(c: AdminContext) {
      ORDER BY rs.created_at DESC`,
   )
     .bind(releaseId)
-    .all<ShareRow & { token: string | null }>();
+    .all<ShareRow>();
   return c.json({ shares: (results ?? []).map((row) => withShareUrl(c, row)) });
 }
 

@@ -85,11 +85,8 @@ export async function handleCreateWebhook(c: AdminContext) {
   };
   if (!body.url) return c.json({ error: "url required" }, 400);
   if (!body.secret) return c.json({ error: "secret required" }, 400);
-  try {
-    new URL(body.url);
-  } catch {
-    return c.json({ error: "url must be a valid URL" }, 400);
-  }
+  const urlError = validateWebhookUrl(body.url);
+  if (urlError) return c.json({ error: urlError }, 400);
   const events = Array.isArray(body.events) ? body.events : [];
   const id = crypto.randomUUID();
   const now = Date.now();
@@ -118,6 +115,21 @@ export async function handleCreateWebhook(c: AdminContext) {
   }, 201);
 }
 
+/** Reject non-HTTP(S), local, private and metadata endpoints. */
+export function validateWebhookUrl(raw: string): string | null {
+  let parsed: URL;
+  try { parsed = new URL(raw); } catch { return "url must be a valid URL"; }
+  if (parsed.protocol !== "https:" && parsed.protocol !== "http:") return "url must use http or https";
+  const host = parsed.hostname.toLowerCase().replace(/[\[\]]/g, "");
+  if (host === "localhost" || host.endsWith(".localhost") || host === "metadata.google.internal") {
+    return "webhook URL must not target a local or metadata host";
+  }
+  if (/^(10\.|127\.|169\.254\.|192\.168\.|172\.(1[6-9]|2\d|3[0-1])\.)/.test(host) || host === "0.0.0.0" || host === "::1" || host.startsWith("fc") || host.startsWith("fd")) {
+    return "webhook URL must not target a private or link-local address";
+  }
+  return null;
+}
+
 export async function handleDeleteWebhook(c: AdminContext) {
   const orgId = c.req.param("orgId") ?? "";
   const webhookId = c.req.param("webhookId") ?? "";
@@ -140,11 +152,8 @@ export async function handleUpdateWebhook(c: AdminContext) {
   const updates: string[] = [];
   const binds: (string | number)[] = [];
   if (body.url !== undefined) {
-    try {
-      new URL(body.url);
-    } catch {
-      return c.json({ error: "url must be a valid URL" }, 400);
-    }
+    const urlError = validateWebhookUrl(body.url);
+    if (urlError) return c.json({ error: urlError }, 400);
     updates.push("url = ?");
     binds.push(body.url);
   }
