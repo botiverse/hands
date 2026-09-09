@@ -36,7 +36,7 @@ describe("public cli-binary selection", () => {
       CREATE TABLE releases (id TEXT PRIMARY KEY, app_id TEXT, build_id TEXT, channel_id TEXT, product_type TEXT, release_type TEXT, status TEXT, hidden INTEGER, revision INTEGER, rollout_cohort_count INTEGER, activated_at INTEGER, availability_at INTEGER);
       CREATE TABLE release_scopes (id TEXT PRIMARY KEY, release_id TEXT, scope_type TEXT, scope_value TEXT);
       CREATE TABLE builds (id TEXT PRIMARY KEY, app_id TEXT, status TEXT, version_name TEXT, version_code INTEGER);
-      CREATE TABLE external_build_targets (id TEXT PRIMARY KEY, build_id TEXT, target TEXT, raw_sha256 TEXT, raw_size_bytes INTEGER);
+      CREATE TABLE external_build_targets (id TEXT PRIMARY KEY, build_id TEXT, target TEXT, raw_sha256 TEXT, raw_size_bytes INTEGER, gzip_sha256 TEXT, gzip_size_bytes INTEGER);
       INSERT INTO apps VALUES ('app', 'computer', 'desktop');
       INSERT INTO channels VALUES ('channel-main', 'app', 'main');
       INSERT INTO channels VALUES ('channel-alpha', 'app', 'alpha');
@@ -55,7 +55,7 @@ describe("public cli-binary selection", () => {
     const channel = options.channel ?? "main";
     if (!options.reuseArtifactFrom) {
       sqlite.prepare("INSERT INTO builds VALUES (?, 'app', 'succeeded', ?, ?)").run(buildId, version, activatedAt);
-      sqlite.prepare("INSERT INTO external_build_targets VALUES (?, ?, 'linux-x64', ?, 8)").run(artifactId, buildId, sha256);
+      sqlite.prepare("INSERT INTO external_build_targets (id, build_id, target, raw_sha256, raw_size_bytes) VALUES (?, ?, 'linux-x64', ?, 8)").run(artifactId, buildId, sha256);
     }
     sqlite.prepare("INSERT INTO releases VALUES (?, 'app', ?, ?, 'cli-binary', 'stable', ?, 0, 1, ?, ?, NULL)")
       .run(id, buildId, `channel-${channel}`, status, options.rolloutCohortCount ?? null, activatedAt);
@@ -69,6 +69,21 @@ describe("public cli-binary selection", () => {
   function versions(extra = "") {
     return app.request(`https://hands.example/public/v2/apps/computer/versions?channel=alpha&platform=linux&arch=x64${extra}`, {}, env);
   }
+
+  it("advertises only a complete gzip representation for the selected release", async () => {
+    seedRelease("r1", "1.0.0", "active", 100);
+    const plain = await (await check()).json() as { artifact: Record<string, unknown> };
+    expect(plain.artifact).not.toHaveProperty("gzip");
+    sqlite.prepare("UPDATE external_build_targets SET gzip_sha256 = ?, gzip_size_bytes = 4").run("c".repeat(64));
+    const compressed = await (await check()).json() as { artifact: Record<string, unknown> };
+    expect(compressed.artifact).toMatchObject({
+      size_bytes: 8, sha256: createHash("sha256").update("r1").digest("hex"),
+      gzip: { sha256: "c".repeat(64), size_bytes: 4,
+        download_url: "https://hands.example/dl/computer/releases/r1/linux-x64.gz" },
+    });
+    sqlite.prepare("UPDATE external_build_targets SET gzip_size_bytes = NULL").run();
+    expect((await (await check()).json() as { artifact: object }).artifact).not.toHaveProperty("gzip");
+  });
 
   it("selects an exact pinned active version", async () => {
     seedRelease("r1", "1.0.0", "active", 100);

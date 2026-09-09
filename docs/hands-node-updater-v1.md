@@ -61,3 +61,13 @@ backend is allowed.
 The staged receipt records the release/channel/artifact identity, expected and
 actual size/SHA-256, and candidate digest. It is evidence of byte verification,
 not evidence of installation or runtime health.
+
+## Optional gzip transport
+
+A candidate may include `artifact.gzip` with its own HTTPS URL, compressed byte
+size, and SHA-256. The metadata is part of the candidate identity. This SDK
+continues to stage the canonical artifact URL; a downstream installer such as
+K may select the gzip representation, verify its compressed digest, decompress
+with a bound, then verify the canonical size and digest. If gzip metadata is
+absent, clients use the canonical URL. Invalid or incomplete gzip metadata is
+rejected during update checking.
