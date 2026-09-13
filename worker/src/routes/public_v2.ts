@@ -85,9 +85,29 @@ const PRIORITY = {
   full: 1,
 } as const;
 
+/**
+ * Public channel aliases (inbound only).
+ *
+ * The Raft installer and Computer runtime call the stable channel `latest`;
+ * Hands stores it as `main`. An alias is resolved before the channel lookup
+ * and everything downstream — DB lookup, receipts, and the `channel` field in
+ * response bodies — uses the canonical slug, so clients that validate the
+ * echoed channel name (the Computer updater does) see exactly what they see
+ * today when they ask for `main`. Aliases never create channels: an alias
+ * whose canonical channel does not exist still answers `channel_not_found`.
+ * Raft task #proj-hands #204.
+ */
+const PUBLIC_CHANNEL_ALIASES: Readonly<Record<string, string>> = Object.freeze({
+  latest: "main",
+});
+
+export function canonicalPublicChannel(requested: string): string {
+  return PUBLIC_CHANNEL_ALIASES[requested] ?? requested;
+}
+
 export async function handlePublicV2Latest(c: Context<{ Bindings: Env }>) {
   const slug = c.req.param("slug");
-  const channel = c.req.query("channel") ?? "main";
+  const channel = canonicalPublicChannel(c.req.query("channel") ?? "main");
   const productType = c.req.query("product_type"); // optional; if null, picks most recent across all
   const cohort = c.req.header("X-Hands-Cohort") ?? c.req.header("X-Quiver-Cohort") ?? null;
   const deviceId =
@@ -565,7 +585,7 @@ function compareStrictSemver(left: string, right: string): number | null {
 
 export async function handlePublicCliBinaryUpdateCheck(c: Context<{ Bindings: Env }>) {
   const slug = c.req.param("slug") ?? "";
-  const channel = c.req.query("channel") ?? "main";
+  const channel = canonicalPublicChannel(c.req.query("channel") ?? "main");
   const currentVersion = c.req.query("current_version") ?? "";
   const platform = c.req.query("platform") ?? "";
   const arch = c.req.query("arch") ?? "";
@@ -686,7 +706,7 @@ const CLI_VERSION_INDEX_MAX_LIMIT = 100;
  */
 export async function handlePublicCliBinaryVersions(c: Context<{ Bindings: Env }>) {
   const slug = c.req.param("slug") ?? "";
-  const channel = c.req.query("channel") ?? "main";
+  const channel = canonicalPublicChannel(c.req.query("channel") ?? "main");
   const platform = c.req.query("platform") ?? "";
   const arch = c.req.query("arch") ?? "";
   const target = `${platform}-${arch}`;
