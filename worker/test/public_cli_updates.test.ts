@@ -70,6 +70,36 @@ describe("public cli-binary selection", () => {
     return app.request(`https://hands.example/public/v2/apps/computer/versions?channel=alpha&platform=linux&arch=x64${extra}`, {}, env);
   }
 
+  it("resolves the `latest` channel alias to main and echoes the canonical channel", async () => {
+    seedRelease("r1", "1.0.0", "active", 100);
+    seedRelease("a1", "1.1.0", "active", 200, { channel: "alpha" });
+    const viaMain = await app.request("https://hands.example/public/v2/apps/computer/updates/check?current_version=0.5.0&channel=main&platform=linux&arch=x64", {}, env);
+    const viaAlias = await app.request("https://hands.example/public/v2/apps/computer/updates/check?current_version=0.5.0&channel=latest&platform=linux&arch=x64", {}, env);
+    expect(viaAlias.status).toBe(200);
+    const mainBody = await viaMain.json() as { release: { id: string; channel: string } };
+    const aliasBody = await viaAlias.json() as { release: { id: string; channel: string } };
+    // Same release as main (not alpha), and the echoed channel stays canonical.
+    expect(aliasBody).toEqual(mainBody);
+    expect(aliasBody.release.id).toBe("r1");
+    expect(aliasBody.release.channel).toBe("main");
+
+    const versionsMain = await app.request("https://hands.example/public/v2/apps/computer/versions?channel=main&platform=linux&arch=x64", {}, env);
+    const versionsAlias = await app.request("https://hands.example/public/v2/apps/computer/versions?channel=latest&platform=linux&arch=x64", {}, env);
+    expect(versionsAlias.status).toBe(200);
+    const versionsAliasBody = await versionsAlias.json() as { channel: string };
+    expect(versionsAliasBody).toEqual(await versionsMain.json());
+    expect(versionsAliasBody.channel).toBe("main");
+  });
+
+  it("an alias never invents a channel: unknown names still answer channel_not_found", async () => {
+    seedRelease("r1", "1.0.0", "active", 100);
+    // `versions` looks the channel up by slug and 404s when it is missing; an
+    // unknown name must take that path unchanged (aliases only map known names).
+    const res = await app.request("https://hands.example/public/v2/apps/computer/versions?channel=nightly&platform=linux&arch=x64", {}, env);
+    expect(res.status).toBe(404);
+    expect((await res.json() as { code: string }).code).toBe("channel_not_found");
+  });
+
   it("advertises only a complete gzip representation for the selected release", async () => {
     seedRelease("r1", "1.0.0", "active", 100);
     const plain = await (await check()).json() as { artifact: Record<string, unknown> };

@@ -5125,6 +5125,11 @@ describe("quiver releases — draft lifecycle", () => {
     const unknownChannel = await handlePublicV2Latest(publicLatestContext("codes-app", "no-such-channel"));
     expect(unknownChannel.status).toBe(404);
     await expect(responseJson<any>(unknownChannel)).resolves.toMatchObject({ code: "channel_not_found" });
+    // `latest` is an inbound alias of `main` (task #204): with no `main` channel
+    // yet, the alias must NOT invent one.
+    const aliasWithoutMain = await handlePublicV2Latest(publicLatestContext("codes-app", "latest"));
+    expect(aliasWithoutMain.status).toBe(404);
+    await expect(responseJson<any>(aliasWithoutMain)).resolves.toMatchObject({ code: "channel_not_found" });
 
     env.DB.prepare(
       "INSERT INTO channels (id, app_id, slug, name, created_at) VALUES ('chan-codes', 'app-codes', 'main', 'Main', 1)",
@@ -5132,6 +5137,10 @@ describe("quiver releases — draft lifecycle", () => {
     const legitimatelyEmpty = await handlePublicV2Latest(publicLatestContext("codes-app", "main"));
     expect(legitimatelyEmpty.status).toBe(404);
     await expect(responseJson<any>(legitimatelyEmpty)).resolves.toMatchObject({ code: "no_active_release" });
+    // Once `main` exists the alias resolves to it: same outcome as asking for `main`.
+    const aliasResolved = await handlePublicV2Latest(publicLatestContext("codes-app", "latest"));
+    expect(aliasResolved.status).toBe(404);
+    await expect(responseJson<any>(aliasResolved)).resolves.toMatchObject({ code: "no_active_release", channel: "main" });
   });
 
   it("lets cancel win a rollout-bump race without stale audit or fallback damage", async () => {
