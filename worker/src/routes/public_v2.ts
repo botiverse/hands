@@ -94,7 +94,9 @@ const PRIORITY = {
  * response bodies — uses the canonical slug, so clients that validate the
  * echoed channel name (the Computer updater does) see exactly what they see
  * today when they ask for `main`. Aliases never create channels: an alias
- * whose canonical channel does not exist still answers `channel_not_found`.
+ * answers exactly as its canonical channel would, so an alias whose canonical
+ * channel has no active release answers `no_active_release`, and one whose
+ * canonical channel does not exist answers `channel_not_found`.
  * Raft task #proj-hands #204.
  */
 const PUBLIC_CHANNEL_ALIASES: Readonly<Record<string, string>> = Object.freeze({
