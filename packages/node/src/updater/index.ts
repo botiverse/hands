@@ -86,7 +86,7 @@ export interface HandsUpdater {
 
 const SEMVER = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/u;
 const SHA256 = /^[a-f0-9]{64}$/u;
-export const HANDS_NODE_SDK_VERSION = "0.5.1";
+export const HANDS_NODE_SDK_VERSION = "0.5.2";
 
 function record(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new HandsUpdateError("UPDATE_RESPONSE_INVALID", "update response must be an object");
