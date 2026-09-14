@@ -47,7 +47,7 @@ describe("public cli-binary selection", () => {
     app.get("/public/v2/apps/:slug/versions", handlePublicCliBinaryVersions as never);
   });
 
-  function seedRelease(id: string, version: string, status: string, activatedAt: number, options: { channel?: "main" | "alpha"; sha256?: string; reuseArtifactFrom?: string; rolloutCohortCount?: number | null } = {}) {
+  function seedRelease(id: string, version: string, status: string, activatedAt: number, options: { channel?: "main" | "alpha" | "latest"; sha256?: string; reuseArtifactFrom?: string; rolloutCohortCount?: number | null } = {}) {
     const source = options.reuseArtifactFrom ?? id;
     const buildId = `build-${source}`;
     const artifactId = `artifact-${source}`;
@@ -56,6 +56,11 @@ describe("public cli-binary selection", () => {
     if (!options.reuseArtifactFrom) {
       sqlite.prepare("INSERT INTO builds VALUES (?, 'app', 'succeeded', ?, ?)").run(buildId, version, activatedAt);
       sqlite.prepare("INSERT INTO external_build_targets (id, build_id, target, raw_sha256, raw_size_bytes) VALUES (?, ?, 'linux-x64', ?, 8)").run(artifactId, buildId, sha256);
+    }
+    // `latest` is seeded as a real channel, not an alias, so the shadowing rule
+    // can be exercised with both a genuine `latest` and `main` present.
+    if (channel === "latest") {
+      sqlite.prepare("INSERT OR IGNORE INTO channels VALUES ('channel-latest', 'app', 'latest')").run();
     }
     sqlite.prepare("INSERT INTO releases VALUES (?, 'app', ?, ?, 'cli-binary', 'stable', ?, 0, 1, ?, ?, NULL)")
       .run(id, buildId, `channel-${channel}`, status, options.rolloutCohortCount ?? null, activatedAt);
@@ -114,7 +119,7 @@ describe("public cli-binary selection", () => {
   it("a real channel named like an alias wins over the alias (no shadowing)", async () => {
     // Channel slugs are not validated at creation, so an app owner can create a
     // genuine `latest` channel. The alias must not silently redirect to `main`.
-    sqlite.prepare("INSERT INTO channels VALUES ('channel-latest', 'app', 'latest')").run();
+    // `seedRelease` seeds `latest` as a real channel when asked for it.
     seedRelease("r-main", "1.0.0", "active", 100);
     seedRelease("r-latest", "9.9.9", "active", 200, { channel: "latest" });
 

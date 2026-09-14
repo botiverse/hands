@@ -44,6 +44,12 @@ export function canonicalPublicChannel(requested: string): string {
  *
  * Callers that already looked the channel up by slug can pass that result as
  * `requestedExists` to avoid a duplicate query.
+ *
+ * NOTE: the same two rules are also expressed as a single inline SQL in
+ * `routes/public_v2.ts` (handlePublicV2Latest / handlePublicCliBinaryVersions)
+ * as `slug IN (?2, ?3) ORDER BY slug = ?2 DESC LIMIT 1`, which resolves both in
+ * one round trip. Both paths are covered by tests, but a rule change has to be
+ * made in both places — keep them in sync.
  */
 export async function resolvePublicChannelSlug(
   db: D1Database,
