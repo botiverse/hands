@@ -1,4 +1,5 @@
 import type { Context } from "hono";
+import { resolvePublicChannelSlug } from "../lib/public_channel";
 
 type ElectronAssetRow = {
   id: string;
@@ -21,13 +22,23 @@ const ELECTRON_METADATA_KINDS = new Set([
 
 export async function handleElectronGenericAsset(c: Context<{ Bindings: Env }>) {
   const slug = c.req.param("slug");
-  const channel = c.req.param("channel") || "main";
+  const requestedChannel = c.req.param("channel") || "main";
   const rawFile = c.req.param("file");
   const file = normalizeFileName(rawFile);
   const productType = c.req.query("product_type") || DEFAULT_PRODUCT_TYPE;
 
   if (!slug) return c.json({ error: "slug required" }, 400);
   if (!file) return c.json({ error: "file required" }, 400);
+
+  // The channel is a path segment here, so the alias applies at lookup time.
+  // A real channel named like an alias wins; unknown names pass through and
+  // keep the existing no-release response.
+  const appRow = await c.env.DB.prepare(
+    "SELECT id FROM apps WHERE slug = ?1",
+  ).bind(slug).first<{ id: string }>();
+  const channel = appRow
+    ? await resolvePublicChannelSlug(c.env.DB, appRow.id, requestedChannel)
+    : requestedChannel;
 
   const build = await c.env.DB.prepare(
     `SELECT b.id AS build_id

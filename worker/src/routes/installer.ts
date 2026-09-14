@@ -6,6 +6,7 @@ import {
   rolloutIncludes,
   selectBestAsset,
 } from "../lib/release_resolver";
+import { resolvePublicChannelSlug } from "../lib/public_channel";
 import { generateSignedR2Url } from "./public_v2";
 
 type InstallerContext = Context<{ Bindings: Env; Variables: InstallerVariables }>;
@@ -105,9 +106,13 @@ async function resolveOffer(
   app: VisibleApp,
   channelSlug: string,
 ): Promise<InstallOffer | null> {
+  // Same inbound alias rules as the public v2 routes: a real channel named
+  // like an alias wins, otherwise `latest` falls back to `main`. An unknown
+  // name is returned unchanged and still answers not-found.
+  const resolvedSlug = await resolvePublicChannelSlug(db, app.id, channelSlug);
   const channel = await db.prepare(
     "SELECT id, slug FROM channels WHERE app_id=?1 AND slug=?2 LIMIT 1",
-  ).bind(app.id, channelSlug).first<{ id: string; slug: string }>();
+  ).bind(app.id, resolvedSlug).first<{ id: string; slug: string }>();
   if (!channel) return null;
   const candidates = await loadActiveReleaseCandidates(db, {
     appId: app.id,

@@ -7,6 +7,7 @@ import type { Context } from "hono";
 import { requestOrigin } from "../lib/origin";
 import { parseReleaseNotes } from "../lib/release_notes";
 import { generateSignedR2Url, resolveChangelog, changelogToHtml, requestedLang } from "./public_v2";
+import { resolvePublicChannelSlug } from "../lib/public_channel";
 
 // UI-chrome localization (task: localize surrounding chrome, not just the
 // changelog). Detection reuses requestedLang() (Accept-Language / ?lang=);
@@ -179,7 +180,10 @@ export async function handlePublicLatestReleaseLanding(c: Context<{ Bindings: En
   if (!slug) return c.json({ error: "slug required" }, 400);
   const app = await loadHistoryApp(c.env.DB, slug);
   if (!app || !app.public_history) return new Response("Not found", { status: 404 });
-  const channel = c.req.query("channel")?.trim() || null;
+  const requested = c.req.query("channel")?.trim() || null;
+  const channel = requested
+    ? await resolvePublicChannelSlug(c.env.DB, app.id, requested)
+    : null;
   const row = await loadLatestLanding(c.env.DB, app.id, channel);
   if (!row) return new Response("No active release", { status: 404 });
   const lang =
@@ -199,7 +203,10 @@ export async function handlePublicLatestReleaseDownload(c: Context<{ Bindings: E
   if (!slug) return c.json({ error: "slug required" }, 400);
   const app = await loadHistoryApp(c.env.DB, slug);
   if (!app || !app.public_history) return new Response("Not found", { status: 404 });
-  const channel = c.req.query("channel")?.trim() || null;
+  const requested = c.req.query("channel")?.trim() || null;
+  const channel = requested
+    ? await resolvePublicChannelSlug(c.env.DB, app.id, requested)
+    : null;
   const row = await loadLatestLanding(c.env.DB, app.id, channel);
   if (!row) return c.json({ error: "no active release" }, 404);
   const url = await generateSignedR2Url(

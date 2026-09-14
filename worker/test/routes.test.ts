@@ -5142,6 +5142,20 @@ describe("quiver releases — draft lifecycle", () => {
     const aliasResolved = await handlePublicV2Latest(publicLatestContext("codes-app", "latest"));
     expect(aliasResolved.status).toBe(404);
     await expect(responseJson<any>(aliasResolved)).resolves.toMatchObject({ code: "no_active_release", channel: "main" });
+
+    // A genuine channel named `latest` wins over the alias (task #206): the
+    // request must stay on `latest`, not be folded into `main`. Both channels
+    // exist here so the shadowing rule is the only thing under test.
+    env.DB.prepare(
+      "INSERT INTO channels (id, app_id, slug, name, created_at) VALUES ('chan-codes-latest', 'app-codes', 'latest', 'Latest', 1)",
+    ).run();
+    const realLatest = await handlePublicV2Latest(publicLatestContext("codes-app", "latest"));
+    expect(realLatest.status).toBe(404);
+    await expect(responseJson<any>(realLatest)).resolves.toMatchObject({ code: "no_active_release", channel: "latest" });
+    // Asking for the canonical channel is unaffected by the real `latest`.
+    const stillMain = await handlePublicV2Latest(publicLatestContext("codes-app", "main"));
+    expect(stillMain.status).toBe(404);
+    await expect(responseJson<any>(stillMain)).resolves.toMatchObject({ code: "no_active_release", channel: "main" });
   });
 
   it("lets cancel win a rollout-bump race without stale audit or fallback damage", async () => {
