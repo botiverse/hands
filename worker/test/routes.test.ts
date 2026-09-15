@@ -6718,6 +6718,166 @@ describe("quiver public API v2 — scope resolution", () => {
     expect(immCancelled.status).toBe(404);
   });
 
+  it("hosted cli-binary: channel resolves, bytes served in-place, ?kind= addresses one release's other assets", async () => {
+    const env = makeEnv();
+    // A hosted release: bytes live in the Hands bucket, so the build has
+    // R2-backed build_assets rows and no external_build_targets declaration.
+    // This is the shape installer hosting produces (Raft #proj-hands #218).
+    // Order matters: builds -> assets -> releases -> scopes (FKs).
+    await env.DB.prepare(
+      `INSERT INTO builds (id, app_id, channel_id, product_type, release_type, version_name, version_code,
+                           source, status, build_metadata_json, parsed_metadata_json, should_force_update,
+                           provenance_json, created_at, updated_at)
+       VALUES ('b-hosted', 'app-scope', 'ch-scope-prod', 'cli-binary', 'stable', '2.0.0', 2000000,
+               'cli', 'succeeded', '{}', '{}', 0, '{}', ?1, ?1)`,
+    ).bind(Date.now()).run();
+    for (const [id, filetype, variant, content] of [
+      ["ha-bin", "binary", null, "MAIN-BINARY-BYTES"],
+      ["ha-runner", "binary", "runner", "RUNNER-SIDECAR-BYTES"],
+      ["ha-sums", "sha256sums", null, "deadbeef  raft-computer-linux-x64\n"],
+    ] as const) {
+      await env.DB.prepare(
+        `INSERT INTO build_assets (id, build_id, artifact_kind, platform, arch, variant, filetype, r2_key,
+                                   file_hash, size_bytes, metadata_json, download_count, created_at)
+         VALUES (?1, 'b-hosted', 'installable', 'linux', 'x64', ?2, ?3, ?4, ?5, ?6, '{}', 0, ?7)`,
+      ).bind(id, variant, filetype, `hosted/${id}`, "a".repeat(64), content.length, Date.now()).run();
+    }
+    await env.DB.prepare(
+      `INSERT INTO releases (id, app_id, build_id, channel_id, product_type, release_type, status,
+                             activated_at, is_full, changelog, created_by, created_at, updated_at)
+       VALUES ('rel-hosted', 'app-scope', 'b-hosted', 'ch-scope-prod', 'cli-binary', 'stable', 'active',
+               ?1, 1, NULL, 'tester', ?1, ?1)`,
+    ).bind(Date.now()).run();
+    await env.DB.prepare(
+      `INSERT INTO release_scopes (id, release_id, scope_type, scope_value, created_at)
+       VALUES ('scope-rel-hosted', 'rel-hosted', 'full', 'all', ?1)`,
+    ).bind(Date.now()).run();
+
+    const objects: Record<string, string> = {
+      "hosted/ha-bin": "MAIN-BINARY-BYTES",
+      "hosted/ha-runner": "RUNNER-SIDECAR-BYTES",
+      "hosted/ha-sums": "deadbeef  raft-computer-linux-x64\n",
+    };
+    env.APK_BUCKET = {
+      put: async () => undefined,
+      head: async (key: string) => ({ key }),
+      get: async (key: string) => (objects[key] === undefined ? null : {
+        body: objects[key],
+        httpEtag: `"etag-${key}"`,
+        writeHttpMetadata: (headers: Headers) => headers.set("content-type", "application/octet-stream"),
+      }),
+    };
+
+    const { handleExternalLatestDl, handleExternalReleaseDl } = await import("../src/routes/external_dl");
+    const dlCtx = (params: Record<string, string>, query: Record<string, string> = {}) =>
+      ({
+        env,
+        req: {
+          param: (name: string) => params[name] ?? "",
+          query: (name: string) => query[name],
+        },
+        json: (data: unknown, status = 200) => new Response(JSON.stringify(data), { status }),
+      }) as any;
+
+    // 1. The channel address resolves a hosted release (the previous
+    //    `b.source = 'external'` filter reported "no active release" for one
+    //    that plainly existed).
+    const latest = await handleExternalLatestDl(
+      dlCtx({ slug: "scope-app", channel: "production", file: "linux-x64" }),
+    );
+    expect(latest.status).toBe(302);
+    const releaseLocation = latest.headers.get("location")!;
+    expect(releaseLocation).toBe("/dl/scope-app/releases/rel-hosted/linux-x64");
+
+    // 2. The release-bound address serves hosted bytes in place (no 302 to a
+    //    source URL — these bytes live in the Hands bucket).
+    const main = await handleExternalReleaseDl(
+      dlCtx({ slug: "scope-app", releaseId: "rel-hosted", file: "linux-x64" }),
+    );
+    expect(main.status).toBe(200);
+    expect(await main.text()).toBe("MAIN-BINARY-BYTES");
+    expect(main.headers.get("content-length")).toBe(String("MAIN-BINARY-BYTES".length));
+
+    // 3. `?kind=` selects a different asset of THAT SAME release, so a caller
+    //    that reads Location once cannot split files across releases.
+    const runner = await handleExternalReleaseDl(
+      dlCtx({ slug: "scope-app", releaseId: "rel-hosted", file: "linux-x64" }, { kind: "runner" }),
+    );
+    expect(runner.status).toBe(200);
+    expect(await runner.text()).toBe("RUNNER-SIDECAR-BYTES");
+    const sums = await handleExternalReleaseDl(
+      dlCtx({ slug: "scope-app", releaseId: "rel-hosted", file: "linux-x64" }, { kind: "sha256sums" }),
+    );
+    expect(sums.status).toBe(200);
+    expect(await sums.text()).toBe("deadbeef  raft-computer-linux-x64\n");
+
+    // 4. Fail closed. An unknown or misspelled kind must NOT fall back to the
+    //    main binary: returning 200 with the wrong bytes is a "successful
+    //    error" that a checksum step would silently trust.
+    const unknownKind = await handleExternalReleaseDl(
+      dlCtx({ slug: "scope-app", releaseId: "rel-hosted", file: "linux-x64" }, { kind: "runnerz" }),
+    );
+    expect(unknownKind.status).toBe(404);
+    expect(unknownKind.headers.get("location")).toBeNull();
+    expect(await unknownKind.text()).not.toContain("MAIN-BINARY-BYTES");
+    const malformedKind = await handleExternalReleaseDl(
+      dlCtx({ slug: "scope-app", releaseId: "rel-hosted", file: "linux-x64" }, { kind: "../escape" }),
+    );
+    expect(malformedKind.status).toBe(400);
+
+    // 4b. The guard's real job: a ?kind= request must never fall through to the
+    //     external branch, which would 302 the caller to a *source URL* for a
+    //     request that asked for a specific sidecar. Builds can legitimately
+    //     carry both shapes (an external declaration plus hosted assets), so
+    //     seed that overlap and prove the sidecar address still resolves — or
+    //     fails — within this release rather than redirecting off-site.
+    await env.DB.prepare(
+      `INSERT INTO external_build_targets (id, app_id, build_id, version_name, target, source_url,
+                                           raw_sha256, raw_size_bytes, created_at, updated_at)
+       VALUES ('ebt-overlap', 'app-scope', 'b-hosted', '2.0.0', 'linux-x64',
+               'https://cdn.test/2.0.0/linux-x64', ?1, 7, ?2, ?2)`,
+    ).bind("c".repeat(64), Date.now()).run();
+    const stillRunner = await handleExternalReleaseDl(
+      dlCtx({ slug: "scope-app", releaseId: "rel-hosted", file: "linux-x64" }, { kind: "runner" }),
+    );
+    expect(stillRunner.status).toBe(200);
+    expect(await stillRunner.text()).toBe("RUNNER-SIDECAR-BYTES");
+    const unknownWithOverlap = await handleExternalReleaseDl(
+      dlCtx({ slug: "scope-app", releaseId: "rel-hosted", file: "linux-x64" }, { kind: "runnerz" }),
+    );
+    expect(unknownWithOverlap.status).toBe(404);
+    expect(unknownWithOverlap.headers.get("location")).toBeNull();
+
+    // 5. Existing external behaviour is untouched: an external release on the
+    //    same app still 302s to its declared source URL. Seeded here so this
+    //    test stands alone (the external block above uses its own fixture).
+    await env.DB.prepare(
+      `INSERT INTO builds (id, app_id, channel_id, product_type, release_type, version_name, version_code,
+                           source, status, build_metadata_json, parsed_metadata_json, should_force_update,
+                           provenance_json, created_at, updated_at)
+       VALUES ('b-ext-here', 'app-scope', 'ch-scope-prod', 'cli-binary', 'stable', '3.0.0', 3000000,
+               'external', 'succeeded', '{}', '{}', 0, '{}', ?1, ?1)`,
+    ).bind(Date.now()).run();
+    await env.DB.prepare(
+      `INSERT INTO releases (id, app_id, build_id, channel_id, product_type, release_type, status,
+                             activated_at, is_full, changelog, created_by, created_at, updated_at)
+       VALUES ('rel-ext-here', 'app-scope', 'b-ext-here', 'ch-scope-prod', 'cli-binary', 'stable', 'active',
+               ?1, 1, NULL, 'tester', ?1, ?1)`,
+    ).bind(Date.now()).run();
+    await env.DB.prepare(
+      `INSERT INTO external_build_targets (id, app_id, build_id, version_name, target, source_url,
+                                           raw_sha256, raw_size_bytes, created_at, updated_at)
+       VALUES ('ebt-here', 'app-scope', 'b-ext-here', '3.0.0', 'linux-x64',
+               'https://cdn.test/3.0.0/linux-x64', ?1, 7, ?2, ?2)`,
+    ).bind("b".repeat(64), Date.now()).run();
+
+    const externalStill = await handleExternalReleaseDl(
+      dlCtx({ slug: "scope-app", releaseId: "rel-ext-here", file: "linux-x64" }),
+    );
+    expect(externalStill.status).toBe(302);
+    expect(externalStill.headers.get("location")).toBe("https://cdn.test/3.0.0/linux-x64");
+  });
+
   it("release checks: upsert per source, advisory read-back on get-release", async () => {
     const env = makeEnv();
     await seedRelease(env, "rel-check", "build-check", [["full", "all"]]);
