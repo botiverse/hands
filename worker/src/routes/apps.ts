@@ -122,6 +122,15 @@ export async function handleCreateApp(c: AdminContext) {
   const id = crypto.randomUUID();
   const now = Date.now();
   const orgId = await currentOrgId(c);
+  // The account that creates an app becomes that app's admin, in the same batch.
+  // Without this the creator has no `app_role` at all (getAppMemberRole reads only
+  // app_members), so they cannot create a channel or mint a deploy token on the app
+  // they just made - an orphan app that only an org admin can unlock. It grants
+  // nothing new: the caller is an org member who may already create unlimited apps,
+  // and cross-app isolation is unaffected. Creating an app is a real DB write, so
+  // this path is not reachable by a deploy token and the account is always present;
+  // the guard is belt-and-braces against a future non-account caller.
+  const creator = currentAccount(c);
   const duplicate = await c.env.DB.prepare(
     "SELECT id FROM apps WHERE slug = ?1 LIMIT 1",
   )
@@ -183,6 +192,20 @@ export async function handleCreateApp(c: AdminContext) {
       c.env.DB.prepare(
         `INSERT INTO channels (id, app_id, slug, name, bundle_id, password, git_url, enabled_product_types_json, metadata_json, created_at) VALUES (?, ?, 'nightly', 'Nightly', ?, NULL, NULL, '["android-apk"]', '{}', ?)`,
       ).bind(crypto.randomUUID(), id, body.slug + ".nightly", now),
+      // Creator becomes this app's admin (see the note above).
+      // Skipped when there is no account: `dev-token` satisfies the org-role gate
+      // without one, and `app_members.account_id` is a FK to raft_accounts, so
+      // substituting a placeholder would fail the whole batch and break app
+      // creation for that caller. Omitting the row degrades to today's behaviour
+      // instead of turning a dev-token create into an error.
+      ...(creator
+        ? [
+            c.env.DB.prepare(
+              `INSERT INTO app_members (id, app_id, account_id, app_role, invited_by, joined_at)
+               VALUES (?1, ?2, ?3, 'admin', NULL, ?4)`,
+            ).bind(crypto.randomUUID(), id, creator.id, now),
+          ]
+        : []),
       // audit log
       c.env.DB.prepare(
         "INSERT INTO audit_logs (id, app_id, action, actor, payload, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
