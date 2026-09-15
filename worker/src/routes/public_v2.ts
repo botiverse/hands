@@ -633,6 +633,23 @@ export async function handlePublicCliBinaryUpdateCheck(c: Context<{ Bindings: En
     gzip_sha256: string | null; gzip_size_bytes: number | null;
   }>();
   if (rows.length === 0) return c.json({ error: "no active release for target", code: "UPDATE_NO_COMPATIBLE_ARTIFACT" }, 404);
+  // Pinned requests (`?version=`) deliberately drop the channel filter: the
+  // `((?5 IS NULL AND ch.slug = ?2) OR ?5 IS NOT NULL)` predicate above matches
+  // any channel, and the CASE ordering prefers `main`. That is the existing
+  // contract, not an oversight — "pin this exact version" is a request about
+  // version identity, and version_name is unique per release, so widening the
+  // lookup cannot silently swap in another channel's bytes while the identity
+  // check below holds.
+  //
+  // The safety comes from this block, NOT from the channel filter. If the same
+  // version_name ever exists on more than one channel, the artifact identity set
+  // is compared and any divergence fails closed with UPDATE_IDENTITY_CONFLICT.
+  // Note the precondition: `rows.length > 1`. A single matching row is used
+  // as-is and is not identity-checked against other channels.
+  //
+  // Do not "fix" this by re-adding a channel filter for pinned requests: that
+  // would break pinning across channels (e.g. pinning a feature-channel build
+  // while the stored channel differs) and is outside this route's contract.
   if (requestedVersion && rows.length > 1) {
     const identities = new Set(rows.map((row) =>
       `${row.version_name}:${target}:${row.raw_size_bytes}:${row.raw_sha256}`
