@@ -167,7 +167,11 @@ describe("builds.source documented domain", () => {
     // ("exactly TWO sites depend on...", "yielding three false positives") is a different
     // claim and is not what drifts with the domain, so those must not trip this guard.
     const driftRisk = new RegExp(
-      String.raw`\b(two|three|four|five|six|seven)(-value\b|\s+(real\s+)?(\x60?\w+\x60?\s+)?(value|values|domain|domain\b))`,
+      // Word counts ("four-value domain", "the four real `source` values") AND Arabic numerals
+      // used the same way ("4 values"). The numeral case was a reported gap in an earlier
+      // revision: a guard that only knows spelled-out counts is incomplete, since the same
+      // drift can be written "// has 4 values".
+      String.raw`\b(two|three|four|five|six|seven|\d+)(-value\b|\s+(real\s+)?(\x60?\w+\x60?\s+)?(value|values|domain|domain\b))`,
       "i",
     );
     const proseFiles = [
@@ -196,6 +200,35 @@ describe("builds.source documented domain", () => {
         `hardcoded in prose drifts as the domain grows, so either drop the number or cite the ` +
         `authoritative list on the same line:\n${offenders.join("\n")}`,
     ).toEqual([]);
+  });
+
+  it("recognises both spelled-out and numeric value counts, without false positives", () => {
+    // Pins the guard's own coverage. Review (@Hands-Rhea) found the first revision missed its
+    // motivating case; a later note observed that Arabic numerals were not caught either. Both
+    // are asserted here so the guard cannot silently regress to "looks like it is watching".
+    const driftRisk = new RegExp(
+      String.raw`\b(two|three|four|five|six|seven|\d+)(-value\b|\s+(real\s+)?(\x60?\w+\x60?\s+)?(value|values|domain|domain\b))`,
+      "i",
+    );
+    const mustCatch = [
+      "// One of the four real `source` values (see BuildInput.source ...)",
+      "// four-value domain and the fact-based rule",
+      "// the full four-value domain and the fact-based rule.",
+      "// one of the four real source values",
+      "// the four domain",
+      "// has 4 values",
+      "// there are 5 values in this column",
+      "// the 4-value domain",
+    ];
+    const mustIgnore = [
+      "// exactly TWO sites depend on source='external'",
+      "//   yielding three",
+      "// two sites",
+      "// Emit webhook event (P2.5.8). Best-effort.",
+      "// assets.results.length === 0",
+    ];
+    expect(mustCatch.filter((l) => !driftRisk.test(l))).toEqual([]);
+    expect(mustIgnore.filter((l) => driftRisk.test(l))).toEqual([]);
   });
 
   it("scopes discovery to createBuild, so unrelated `source:` properties are not counted", () => {
