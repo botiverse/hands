@@ -16,8 +16,30 @@ import { pipeline } from "node:stream/promises";
 import { promisify } from "node:util";
 import { createGunzip } from "node:zlib";
 import { apiRequest, apiUploadFile, QuiverApiError } from "../lib/api.js";
+import { createHash } from "node:crypto";
 
 const execFileAsync = promisify(execFile);
+
+/**
+ * Digest and byte length of a local file, streamed so a multi-hundred-megabyte
+ * binary does not have to be held in memory. Used to check that what the server
+ * recorded for an upload matches the bytes it was given.
+ */
+async function sha256File(path: string): Promise<{ sha256: string; sizeBytes: number }> {
+  const hash = createHash("sha256");
+  let sizeBytes = 0;
+  await pipeline(
+    createReadStream(path),
+    new Writable({
+      write(chunk: Buffer, _encoding, callback) {
+        sizeBytes += chunk.length;
+        hash.update(chunk);
+        callback();
+      },
+    }),
+  );
+  return { sha256: hash.digest("hex"), sizeBytes };
+}
 
 interface BuildRow {
   id: string;
@@ -749,6 +771,198 @@ export function registerBuildCommands(program: Command): void {
         console.log(`  build:  ${result.build_id}`);
         console.log(`  target: ${result.target_id}`);
         console.log(`  source: ${opts.sourceUrl}`);
+      },
+    );
+
+  builds
+    .command("publish-cli-binary <appIdOrSlug>")
+    .description(
+      "Host a Node/CLI build on Hands: upload the binary (and optional runner " +
+        "sidecar / SHA256SUMS) for one target, then create its release. Unlike " +
+        "publish-version, the bytes live in the Hands bucket, so the publisher " +
+        "needs no external object-store credentials.",
+    )
+    .requiredOption("--binary <path>", "Primary CLI binary for this target.")
+    .requiredOption("--version-name <version>", "Release version name, e.g. 1.0.33-channel.1.")
+    .requiredOption(
+      "--target <target>",
+      "Artifact target, for example darwin-arm64 or linux-x64.",
+    )
+    .option("--version-code <code>", "Hands ordering code. Defaults to the numeric dotted-version encoding.")
+    .option("--channel <slug>", "Hands channel slug.", "main")
+    .option("--release-type <type>", "Hands release type.", "stable")
+    .option(
+      "--runner <path>",
+      "Runner sidecar binary for this target (served as ?kind=runner).",
+    )
+    .option(
+      "--sha256sums <path>",
+      "SHA256SUMS listing for this release (served as ?kind=sha256sums).",
+    )
+    .option("--changelog <text>", "Release changelog.")
+    .option("--draft", "Create the release as a draft instead of activating it.", false)
+    .option("--source-commit <sha>", "Source commit SHA.")
+    .option("--ci-provider <name>", "CI provider name.")
+    .option("--ci-run-id <id>", "CI run id.")
+    .option("--ci-url <url>", "CI run URL.")
+    .option("--json", "Output JSON.", false)
+    .action(
+      async (
+        appIdOrSlug: string,
+        opts: {
+          binary: string;
+          versionName: string;
+          target: string;
+          versionCode?: string;
+          channel: string;
+          releaseType: string;
+          runner?: string;
+          sha256sums?: string;
+          changelog?: string;
+          draft?: boolean;
+          sourceCommit?: string;
+          ciProvider?: string;
+          ciRunId?: string;
+          ciUrl?: string;
+          json?: boolean;
+        },
+      ) => {
+        const { platform, arch } = splitBuildTarget(opts.target);
+        const versionCode = opts.versionCode
+          ? parseNonNegativeInteger(opts.versionCode, "--version-code")
+          : versionCodeFromVersion(opts.versionName);
+        const appId = await resolveAppId(appIdOrSlug);
+        const channelId = await resolveChannelId(appId, opts.channel);
+        const provenance = {
+          source_commit: opts.sourceCommit ?? null,
+          ci_provider: opts.ciProvider ?? null,
+          ci_run_id: opts.ciRunId ?? null,
+          ci_url: opts.ciUrl ?? null,
+        };
+
+        // Every file is uploaded and its recorded digest/size checked against the
+        // local bytes BEFORE the release is created. A release that became active
+        // while one of its assets was still missing would be downloadable-but-
+        // incomplete, which is worse than a publish that simply failed.
+        const planned: Array<{
+          path: string;
+          artifact_kind: string;
+          filetype: string;
+          variant: string | null;
+        }> = [
+          { path: opts.binary, artifact_kind: "installable", filetype: "binary", variant: null },
+        ];
+        if (opts.runner) {
+          planned.push({
+            path: opts.runner,
+            artifact_kind: "runner",
+            filetype: "binary",
+            variant: "runner",
+          });
+        }
+        if (opts.sha256sums) {
+          planned.push({
+            path: opts.sha256sums,
+            artifact_kind: "checksums",
+            filetype: "sha256sums",
+            variant: null,
+          });
+        }
+
+        // Preflight the local files (and their digests) before any remote write,
+        // so a typo in a path cannot leave a half-published build behind.
+        for (const entry of planned) {
+          if (!existsSync(entry.path)) {
+            throw new Error(`--${entry.variant ?? entry.filetype} path not found: ${entry.path}`);
+          }
+          await sha256File(entry.path);
+        }
+
+        const build = await apiRequest<{ id: string }>(`/api/apps/${appId}/builds`, {
+          method: "POST",
+          body: {
+            channel_id: channelId,
+            product_type: "cli-binary",
+            release_type: opts.releaseType,
+            version_name: opts.versionName,
+            version_code: versionCode,
+            // `source` keeps its original meaning here: how the build was
+            // produced (web/cli/ci). Whether Hands hosts the bytes is decided
+            // by the presence of build_assets rows, not by this label.
+            source: "cli",
+            status: "succeeded",
+            build_metadata_json: { hosted: true },
+            provenance_json: provenance,
+          },
+        });
+
+        const assets = [];
+        for (const entry of planned) {
+          const local = await sha256File(entry.path);
+          const asset = await uploadAndRegisterAsset(appId, build.id, entry.path, {
+            artifact_kind: entry.artifact_kind,
+            platform,
+            arch,
+            filetype: entry.filetype,
+            variant: entry.variant,
+            metadata_json: { filename: basename(entry.path) },
+          });
+          if (asset.file_hash !== local.sha256) {
+            throw new Error(
+              `uploaded ${basename(entry.path)} digest ${asset.file_hash} does not match local bytes ${local.sha256}; ` +
+                "build left unpublished for inspection",
+            );
+          }
+          if (asset.size_bytes !== local.sizeBytes) {
+            throw new Error(
+              `uploaded ${basename(entry.path)} size ${asset.size_bytes} does not match local bytes ${local.sizeBytes}; ` +
+                "build left unpublished for inspection",
+            );
+          }
+          assets.push(asset);
+        }
+
+        const release = await createReleaseOrTerminalizeVersionConflict({
+          appId,
+          buildId: build.id,
+          provenance,
+          releaseBody: {
+            build_id: build.id,
+            channel_id: channelId,
+            product_type: "cli-binary",
+            release_type: opts.releaseType,
+            status: opts.draft ? "draft" : "active",
+            changelog: opts.changelog ?? null,
+            provenance_json: provenance,
+            scopes: [{ scope_type: "full", scope_value: "all" }],
+          },
+        });
+
+        const result = {
+          app_id: appId,
+          build_id: build.id,
+          release_id: release.id,
+          version: opts.versionName,
+          target: opts.target,
+          channel: opts.channel,
+          status: opts.draft ? "draft" : "active",
+          assets: assets.map((asset) => ({
+            artifact_kind: asset.artifact_kind,
+            filetype: asset.filetype,
+            file_hash: asset.file_hash,
+            size_bytes: asset.size_bytes,
+          })),
+        };
+        if (shouldOutputJson(program, opts.json)) {
+          console.log(JSON.stringify(result, null, 2));
+          return;
+        }
+        console.log(`Hosted ${opts.versionName} ${opts.target} on channel ${opts.channel}`);
+        console.log(`  build:   ${build.id}`);
+        console.log(`  release: ${release.id} (${result.status})`);
+        for (const asset of result.assets) {
+          console.log(`  asset:   ${asset.filetype}/${asset.artifact_kind} ${asset.size_bytes} bytes`);
+        }
       },
     );
 
