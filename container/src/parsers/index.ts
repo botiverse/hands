@@ -5,27 +5,25 @@
  *   - apk-aapt    (Android APK + AAB; existing, re-exported)
  *   - ipa-info    (iOS IPA Info.plist metadata)
  *   - electron-asar (zip-with-asar Electron installers — mac/win/linux)
- *   - rn-bundle   (React Native Metro bundle)
  *   - cli-binary  (single-file ELF executable — Linux/macOS CLI tools)
  *
  * Dispatch order:
  *   1. Explicit ?parser_kind=... or X-Quiver-Parser-Kind header wins.
  *   2. Filename extension hint (X-Quiver-Filename or URL ?filename=...).
- *   3. Magic byte detection (zip, ELF, RN bundle, asar).
+ *   3. Magic byte detection (zip, ELF, asar).
  *   4. Falls back to apk-aapt (backward compat with v1 /parse endpoint).
  */
 
 import { parseApk } from "./apk.js";
 import { parseIpa } from "./ipa.js";
 import { parseElectronAsar } from "./electron_asar.js";
-import { parseRnBundle } from "./rn_bundle.js";
 import { parseCliBinary } from "./cli_binary.js";
 
-export type ParserKind = "apk-aapt" | "ipa-info" | "electron-asar" | "rn-bundle" | "cli-binary";
+export type ParserKind = "apk-aapt" | "ipa-info" | "electron-asar" | "cli-binary";
 
 export interface ParsedMetadata {
   parser_kind: ParserKind;
-  platform: string;             // 'android' | 'darwin' | 'linux' | 'win32' | 'rn-bundle' | ...
+  platform: string;             // 'android' | 'darwin' | 'linux' | 'win32' | ...
   arch: string | null;          // 'arm64' | 'x64' | 'arm64-v8a' | null
   version: string | null;       // human-readable version (best effort)
   version_code: number | null;  // monotonic integer (best effort)
@@ -51,7 +49,6 @@ const EXT_TO_KIND: Record<string, ParserKind> = {
   deb: "cli-binary",
   rpm: "cli-binary",
   AppImage: "cli-binary",
-  bundle: "rn-bundle",
 };
 
 export function detectParserKind(opts: {
@@ -74,7 +71,6 @@ export function detectParserKind(opts: {
     return "apk-aapt"; // default: most common zip upload today
   }
   if (isElf(opts.bytes)) return "cli-binary";
-  if (isRnBundle(opts.bytes)) return "rn-bundle";
 
   // Fallback (preserves backward compat)
   return "apk-aapt";
@@ -93,8 +89,6 @@ export async function parseWithDispatcher(opts: {
       return parseIpa(opts.bytes);
     case "electron-asar":
       return parseElectronAsar(opts.bytes, opts.filePath ?? null);
-    case "rn-bundle":
-      return parseRnBundle(opts.bytes);
     case "cli-binary":
       return parseCliBinary(opts.bytes);
   }
@@ -103,7 +97,7 @@ export async function parseWithDispatcher(opts: {
 // ---------- magic-byte helpers ----------
 
 function isKnownKind(s: string): s is ParserKind {
-  return ["apk-aapt", "ipa-info", "electron-asar", "rn-bundle", "cli-binary"].includes(s);
+  return ["apk-aapt", "ipa-info", "electron-asar", "cli-binary"].includes(s);
 }
 
 function isZip(b: Uint8Array): boolean {
@@ -126,14 +120,6 @@ function isElf(b: Uint8Array): boolean {
   );
 }
 
-function isRnBundle(b: Uint8Array): boolean {
-  // React Native Metro bundles start with `__d(function(` (the define wrapper).
-  // Allow a small prefix (BOM / leading whitespace) up to 16 bytes.
-  const head = new TextDecoder("utf-8", { fatal: false })
-    .decode(b.subarray(0, Math.min(b.length, 64)))
-    .trimStart();
-  return head.startsWith("__d(") || head.startsWith("__r(");
-}
 
 /**
  * Cheap heuristic for "this zip contains an asar archive" without unzipping

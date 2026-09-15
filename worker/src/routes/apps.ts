@@ -171,9 +171,6 @@ export async function handleCreateApp(c: AdminContext) {
         `INSERT INTO product_types (id, app_id, name, display_name, description, supported_platforms_json, default_assets_json, parser_kind, schema_json, created_at, updated_at) VALUES (?, ?, 'electron-installer', 'Electron desktop app', 'Cross-platform desktop app', '["darwin-arm64","darwin-x64","linux-x64","linux-arm64","win32-x64","win32-arm64"]', '[{"platform":"darwin-arm64","filetype":"dmg"}]', 'electron-asar', '{}', ?, ?)`,
       ).bind(crypto.randomUUID(), id, now, now),
       c.env.DB.prepare(
-        `INSERT INTO product_types (id, app_id, name, display_name, description, supported_platforms_json, default_assets_json, parser_kind, schema_json, created_at, updated_at) VALUES (?, ?, 'rn-bundle', 'React Native OTA bundle', 'JS bundle hot-update', '[]', '[{"platform":"rn","filetype":"bundle"}]', 'rn-bundle', '{}', ?, ?)`,
-      ).bind(crypto.randomUUID(), id, now, now),
-      c.env.DB.prepare(
         `INSERT INTO product_types (id, app_id, name, display_name, description, supported_platforms_json, default_assets_json, parser_kind, schema_json, created_at, updated_at) VALUES (?, ?, 'ios-ipa', 'iOS app', 'iOS IPA distributed through TestFlight, ad-hoc, or enterprise lanes', '["ios"]', '[{"platform":"ios","filetype":"ipa"},{"platform":"ios","filetype":"dsym.zip","artifact_kind":"dsym"}]', 'ipa-info', '{"distribution_profile_required":true}', ?, ?)`,
       ).bind(crypto.randomUUID(), id, now, now),
       c.env.DB.prepare(
@@ -183,14 +180,27 @@ export async function handleCreateApp(c: AdminContext) {
         `INSERT INTO product_types (id, app_id, name, display_name, description, supported_platforms_json, default_assets_json, parser_kind, schema_json, created_at, updated_at) VALUES (?, ?, 'cli-binary', 'Node / CLI binary', 'Externally hosted Node SEA or CLI binaries', '["darwin-arm64","darwin-x64","linux-arm64","linux-x64","win32-arm64","win32-x64"]', '[]', 'external', '{"external_source":true}', ?, ?)`,
       ).bind(crypto.randomUUID(), id, now, now),
       // channels (with default bundle_id overrides for parallel install)
+      //
+      // Every channel is seeded with the same set of product types: the ones we
+      // actually support. A new app should read as "all of these are available", so
+      // nobody has to widen a channel before publishing a type that is already
+      // supported. `rn-bundle` is deliberately absent - we do not ship React
+      // Native OTA bundles.
+      //
+      // This list is descriptive. Nothing in the build/release path reads
+      // `enabled_product_types_json` to accept or refuse an upload, so it does not
+      // actually constrain what can be published to a channel; keeping the three
+      // lists identical avoids implying a restriction that is not enforced.
+      // Making it enforce is a separate change: it would start rejecting uploads
+      // that succeed today.
       c.env.DB.prepare(
-        `INSERT INTO channels (id, app_id, slug, name, bundle_id, password, git_url, enabled_product_types_json, metadata_json, created_at) VALUES (?, ?, 'main', 'Main', NULL, NULL, NULL, '["android-apk","electron-installer","rn-bundle","ios-ipa","ohos-app","cli-binary"]', '{}', ?)`,
+        `INSERT INTO channels (id, app_id, slug, name, bundle_id, password, git_url, enabled_product_types_json, metadata_json, created_at) VALUES (?, ?, 'main', 'Main', NULL, NULL, NULL, '["android-apk","electron-installer","ios-ipa","ohos-app","cli-binary"]', '{}', ?)`,
       ).bind(crypto.randomUUID(), id, now),
       c.env.DB.prepare(
-        `INSERT INTO channels (id, app_id, slug, name, bundle_id, password, git_url, enabled_product_types_json, metadata_json, created_at) VALUES (?, ?, 'preview', 'Preview', ?, NULL, NULL, '["android-apk","rn-bundle","ios-ipa"]', '{}', ?)`,
+        `INSERT INTO channels (id, app_id, slug, name, bundle_id, password, git_url, enabled_product_types_json, metadata_json, created_at) VALUES (?, ?, 'preview', 'Preview', ?, NULL, NULL, '["android-apk","electron-installer","ios-ipa","ohos-app","cli-binary"]', '{}', ?)`,
       ).bind(crypto.randomUUID(), id, body.slug + ".preview", now),
       c.env.DB.prepare(
-        `INSERT INTO channels (id, app_id, slug, name, bundle_id, password, git_url, enabled_product_types_json, metadata_json, created_at) VALUES (?, ?, 'nightly', 'Nightly', ?, NULL, NULL, '["android-apk"]', '{}', ?)`,
+        `INSERT INTO channels (id, app_id, slug, name, bundle_id, password, git_url, enabled_product_types_json, metadata_json, created_at) VALUES (?, ?, 'nightly', 'Nightly', ?, NULL, NULL, '["android-apk","electron-installer","ios-ipa","ohos-app","cli-binary"]', '{}', ?)`,
       ).bind(crypto.randomUUID(), id, body.slug + ".nightly", now),
       // Creator becomes this app's admin (see the note above).
       // Skipped when there is no account: `dev-token` satisfies the org-role gate

@@ -177,7 +177,7 @@ Goal: introduce `product_types`, `release_types`, `build_assets`, `releases`, `r
 | Task | Status | Estimate | Notes |
 |---|---|---|---|
 | P3.2.1 `electron-asar` parser (extract app version, asar hash, platforms) | 🔵 TODO | 1 day | new parser in `container/src/server.ts` |
-| P3.2.2 `rn-bundle` parser (extract target_app_version, fingerprint, engine) | 🔵 TODO | 1 day | |
+| P3.2.2 `rn-bundle` parser (extract target_app_version, fingerprint, engine) | ❌ CANCELLED (2026-09-15: rn-bundle retired, not supported) | 1 day | |
 | P3.2.3 `cli-binary` parser (basic version + arch) | 🔵 TODO | 4h | |
 | P3.2.4 Parser dispatcher (route by parser_kind) | 🔵 TODO | 4h | |
 
