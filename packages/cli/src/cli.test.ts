@@ -75,6 +75,7 @@ describe("incomplete agent environment fails loudly, not as a 401", () => {
   let server: ReturnType<typeof createServer>;
   let baseUrl: string;
   let requests = 0;
+  let lastAuthorization: string | null = null;
   const saved: Record<string, string | undefined> = {};
 
   beforeEach(async () => {
@@ -82,8 +83,10 @@ describe("incomplete agent environment fails loudly, not as a 401", () => {
       saved[k] = process.env[k];
     }
     requests = 0;
+    lastAuthorization = null;
     server = createServer((_req, res) => {
       requests += 1;
+      lastAuthorization = _req.headers.authorization ?? null;
       res.setHeader("content-type", "application/json");
       res.end(JSON.stringify({ apps: [] }));
     });
@@ -139,6 +142,37 @@ describe("incomplete agent environment fails loudly, not as a 401", () => {
     expect(err!.message).toContain("SLOCK_CLI_TRANSPORT_DIR");
     expect(err!.message).toContain("SLOCK_HOME");
     expect(requests).toBe(0);
+  });
+
+  it("does NOT use a human credential that happens to be in the environment (no silent downgrade)", async () => {
+    // The safety property: fail_closed must not fall back to ambient human credentials.
+    // Asserting only "it throws" would pass even if a future edit read the human token
+    // first and threw later; assert the human token never reaches the wire.
+    process.env.SLOCK_HOME = tmpdir();
+    process.env.SLOCK_CLI_TRANSPORT_DIR = tmpdir();
+    delete process.env.SLOCK_AGENT_ID;
+    process.env.QUIVER_AUTH_TOKEN = "human-token-must-not-be-used";
+    const { apiRequest } = await import("../src/lib/api.js");
+    await expect(apiRequest("/api/apps")).rejects.toThrow();
+    expect(requests).toBe(0);
+    expect(lastAuthorization).toBeNull();
+    delete process.env.QUIVER_AUTH_TOKEN;
+  });
+
+  it("distinguishes 2/3 (fail loudly) from 0/3 (human path with no markers)", async () => {
+    // 2/3 must throw; 0/3 is a legitimate human/CI environment and must NOT throw. Keeping
+    // them in one case would hide a future change that merges the two states.
+    process.env.SLOCK_HOME = tmpdir();
+    process.env.SLOCK_CLI_TRANSPORT_DIR = tmpdir();
+    delete process.env.SLOCK_AGENT_ID;
+    const { apiRequest } = await import("../src/lib/api.js");
+    await expect(apiRequest("/api/apps")).rejects.toThrow();
+
+    delete process.env.SLOCK_CLI_TRANSPORT_DIR;
+    delete process.env.SLOCK_HOME;
+    delete process.env.SLOCK_AGENT_ID;
+    const out = await apiRequest<{ apps: unknown[] }>("/api/apps");
+    expect(out.apps).toEqual([]);
   });
 
   it("a clean human environment is unaffected (no markers at all)", async () => {

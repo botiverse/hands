@@ -40,11 +40,11 @@ export function admitAgent(env: NodeJS.ProcessEnv = process.env): Admission {
       // Name the missing marker(s): a bare "incomplete" leaves the reader unable to
       // tell this apart from an expired credential, which is exactly the confusion
       // this reason exists to prevent.
-      const missing = [
-        ...(transportDir ? [] : ["SLOCK_CLI_TRANSPORT_DIR"]),
-        ...(slockHome ? [] : ["SLOCK_HOME"]),
-        ...(agentId ? [] : ["SLOCK_AGENT_ID"]),
-      ].join(", ");
+        const missing = [
+          ...(transportDir ? [] : ["SLOCK_CLI_TRANSPORT_DIR"]),
+          ...(slockHome ? [] : ["SLOCK_HOME"]),
+          ...(agentId ? [] : ["SLOCK_AGENT_ID"]),
+        ].join(", ");
       return { kind: "fail_closed", reason: `incomplete agent markers (missing: ${missing})` };
   }
   if (!AGENT_ID_RE.test(agentId)) {
