@@ -26,7 +26,11 @@ async function resolveBearer(): Promise<string | undefined> {
   if (admission.kind === "agent") {
     return (await getFreshAgentAccessToken(admission.env)) ?? undefined;
   }
-  if (admission.kind === "fail_closed") return undefined;
+  if (admission.kind === "fail_closed") {
+    // Fail closed - do NOT fall back to human credentials - but fail LOUDLY. Returning
+    // undefined here made the request go out unauthenticated and surface as a bare 401.
+    throw new AgentEnvironmentError(admission.reason);
+  }
   return resolveAuthToken();
 }
 
@@ -61,6 +65,28 @@ export class QuiverApiError extends Error {
     this.name = "QuiverApiError";
     this.status = status;
     this.body = body;
+  }
+}
+
+/**
+ * Raised when the process looks like a managed agent (some agent markers present) but
+ * the agent environment is incomplete or invalid, so there is no credential to send.
+ *
+ * Without this, admission failure degraded into an unauthenticated request and the user
+ * saw a bare 401 - indistinguishable from an expired or revoked token, which sent people
+ * looking at token lifetimes instead of the environment. Carry the reason and say what to
+ * do, so the failure names its own cause.
+ */
+export class AgentEnvironmentError extends Error {
+  readonly reason: string;
+  constructor(reason: string) {
+    super(
+      `Not usable as an agent request: the agent environment is incomplete or invalid (${reason}). ` +
+        "No credential was sent, so this is not an expired token. Either fix the agent " +
+        "environment, or run `raft integration invoke` from the managed session.",
+    );
+    this.name = "AgentEnvironmentError";
+    this.reason = reason;
   }
 }
 

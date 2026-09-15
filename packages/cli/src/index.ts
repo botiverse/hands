@@ -30,7 +30,7 @@ import { registerDeviceGroupCommands } from "./commands/device_groups.js";
 import { registerApiCommand } from "./commands/api.js";
 import { getConfig } from "./lib/config.js";
 import { readEnv } from "./lib/env.js";
-import { setApiBase } from "./lib/api.js";
+import { setApiBase, AgentEnvironmentError } from "./lib/api.js";
 import { recordCliEvent } from "./lib/logging.js";
 import { createRequire } from "node:module";
 import { DeviceIdError } from "@botiverse/hands-node";
@@ -118,6 +118,12 @@ program.parseAsync(process.argv).catch((err) => {
     command: program.args[0] ?? "unknown",
     error_name: err instanceof Error ? err.name : "unknown",
   });
+    if (err instanceof AgentEnvironmentError) {
+    // The environment is wrong, not the credential. Say so plainly and give the way
+    // out, so this is never mistaken for an expired token.
+    console.error(`Error: ${err.message}`);
+    process.exit(1);
+    }
   if (err instanceof Error && err.name === "QuiverApiError") {
     // Admin-native, actionable error print (mirrors the Raft CLI discipline):
     // surface the server's stable Code and Next action so an agent knows what
