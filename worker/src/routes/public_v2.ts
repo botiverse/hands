@@ -633,23 +633,28 @@ export async function handlePublicCliBinaryUpdateCheck(c: Context<{ Bindings: En
     gzip_sha256: string | null; gzip_size_bytes: number | null;
   }>();
   if (rows.length === 0) return c.json({ error: "no active release for target", code: "UPDATE_NO_COMPATIBLE_ARTIFACT" }, 404);
-  // Pinned requests (`?version=`) deliberately drop the channel filter: the
-  // `((?5 IS NULL AND ch.slug = ?2) OR ?5 IS NOT NULL)` predicate above matches
-  // any channel, and the CASE ordering prefers `main`. That is the existing
-  // contract, not an oversight — "pin this exact version" is a request about
-  // version identity, and version_name is unique per release, so widening the
-  // lookup cannot silently swap in another channel's bytes while the identity
-  // check below holds.
+  // Contract for pinned requests (`?version=`).
   //
-  // The safety comes from this block, NOT from the channel filter. If the same
-  // version_name ever exists on more than one channel, the artifact identity set
-  // is compared and any divergence fails closed with UPDATE_IDENTITY_CONFLICT.
-  // Note the precondition: `rows.length > 1`. A single matching row is used
-  // as-is and is not identity-checked against other channels.
+  // The channel filter is intentionally not applied: the predicate above
+  // (`((?5 IS NULL AND ch.slug = ?2) OR ?5 IS NOT NULL)`) drops it, and the CASE
+  // ordering prefers `main`. Pinning asks about a version, not about a channel,
+  // so the lookup collects candidates by version/target across every eligible
+  // channel and then decides between them here. Do not "fix" this by re-adding a
+  // channel filter: that would narrow this contract and break pinning a build
+  // that lives on another channel (for example a feature-channel build).
   //
-  // Do not "fix" this by re-adding a channel filter for pinned requests: that
-  // would break pinning across channels (e.g. pinning a feature-channel build
-  // while the stored channel differs) and is outside this route's contract.
+  // Resolution, given the collected candidates:
+  //   - more than one row: the artifact identity set (version_name, target,
+  //     raw size, raw sha256) must collapse to exactly one member, otherwise
+  //     divergent bytes are reachable for one version and the request fails
+  //     closed with UPDATE_IDENTITY_CONFLICT. Byte-identical duplicates are
+  //     fine and resolve to the first row by the ordering above.
+  //   - exactly one row: it is used as-is. There is nothing to compare against,
+  //     so no cross-row identity check runs. (This is an implementation
+  //     precondition rather than an observable response shape: the query still
+  //     enumerates every eligible channel, it just happens to match one.)
+  // The per-row integrity checks below (sha256 shape, size bounds, rollout) are
+  // separate from that comparison and always run.
   if (requestedVersion && rows.length > 1) {
     const identities = new Set(rows.map((row) =>
       `${row.version_name}:${target}:${row.raw_size_bytes}:${row.raw_sha256}`
