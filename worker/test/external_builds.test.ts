@@ -41,8 +41,11 @@ function makeDb() {
       completed_at INTEGER,
       targets_frozen_at INTEGER,
       freeze_token TEXT,
-      required_targets_json TEXT
+      required_targets_json TEXT,
+      artifact_mode TEXT NOT NULL DEFAULT 'hands_r2'
     );
+    -- 0044's partial unique index stays on source='external' in 0073: the predicate still
+    -- matches exactly the same rows because source is unchanged.
     CREATE UNIQUE INDEX idx_builds_external_app_version
       ON builds(app_id, version_name)
       WHERE source = 'external';
@@ -293,6 +296,50 @@ describe("external Node build declarations", () => {
     await expect(response.json()).resolves.toMatchObject({
       code: "APP_PLATFORM_MISMATCH",
       app_platform: "electron",
+    });
+  });
+
+  it("finds an existing build for replay by placement, not by the source label", async () => {
+    // The replay lookup (getExternalBuild) must key off artifact_mode. If it keyed off the
+    // `source` label instead, an externally-placed build whose creation path was something
+    // other than 'external' would not be recognised, and a re-publish would try to insert a
+    // duplicate instead of replaying. Every other fixture sets both fields together, so this
+    // disagreement is the only thing that distinguishes the two implementations.
+    const db = makeDb();
+    await db.prepare("INSERT INTO apps (id, platform) VALUES (?1, 'node')").bind("computer").run();
+    await db.prepare("INSERT INTO channels (id, app_id) VALUES ('main', ?1)").bind("computer").run();
+
+    const first = await handlePublishExternalBuildVersion(
+      jsonContext(db, { appId: "computer" }, declaration()),
+    );
+    expect(first.status).toBe(201);
+    const firstBody = await first.json() as any;
+
+    // Same row, but the creation path is now something other than 'external'. Placement is
+    // unchanged, so a replay must still recognise it.
+    await db.prepare("UPDATE builds SET source = 'cli' WHERE id = ?1").bind(firstBody.build_id).run();
+
+    const replay = await handlePublishExternalBuildVersion(
+      jsonContext(db, { appId: "computer" }, declaration()),
+    );
+    expect(replay.status).toBe(200);
+    await expect(replay.json()).resolves.toMatchObject({
+      build_id: firstBody.build_id,
+      target_id: firstBody.target_id,
+      replayed: true,
+    });
+
+    // The distinguishing consequence: getExternalBuild is also the ONLY thing that runs the
+    // EXTERNAL_VERSION_CONFLICT check on a differing version payload. If the lookup keyed off
+    // the label it would return null here, skip that check, and fall through to
+    // getExternalTarget - silently accepting a conflicting re-declaration instead of 409.
+    const conflicting = await handlePublishExternalBuildVersion(
+      jsonContext(db, { appId: "computer" }, { ...declaration(), version_code: 7214 }),
+    );
+    expect(conflicting.status).toBe(409);
+    await expect(conflicting.json()).resolves.toMatchObject({
+      code: "EXTERNAL_VERSION_CONFLICT",
+      build_id: firstBody.build_id,
     });
   });
 
