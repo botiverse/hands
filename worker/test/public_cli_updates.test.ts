@@ -47,7 +47,7 @@ describe("public cli-binary selection", () => {
     app.get("/public/v2/apps/:slug/versions", handlePublicCliBinaryVersions as never);
   });
 
-  function seedRelease(id: string, version: string, status: string, activatedAt: number, options: { channel?: "main" | "alpha"; sha256?: string; reuseArtifactFrom?: string; rolloutCohortCount?: number | null } = {}) {
+  function seedRelease(id: string, version: string, status: string, activatedAt: number, options: { channel?: "main" | "alpha" | "latest"; sha256?: string; reuseArtifactFrom?: string; rolloutCohortCount?: number | null } = {}) {
     const source = options.reuseArtifactFrom ?? id;
     const buildId = `build-${source}`;
     const artifactId = `artifact-${source}`;
@@ -56,6 +56,11 @@ describe("public cli-binary selection", () => {
     if (!options.reuseArtifactFrom) {
       sqlite.prepare("INSERT INTO builds VALUES (?, 'app', 'succeeded', ?, ?)").run(buildId, version, activatedAt);
       sqlite.prepare("INSERT INTO external_build_targets (id, build_id, target, raw_sha256, raw_size_bytes) VALUES (?, ?, 'linux-x64', ?, 8)").run(artifactId, buildId, sha256);
+    }
+    // `latest` is seeded as a real channel, not an alias, so the shadowing rule
+    // can be exercised with both a genuine `latest` and `main` present.
+    if (channel === "latest") {
+      sqlite.prepare("INSERT OR IGNORE INTO channels VALUES ('channel-latest', 'app', 'latest')").run();
     }
     sqlite.prepare("INSERT INTO releases VALUES (?, 'app', ?, ?, 'cli-binary', 'stable', ?, 0, 1, ?, ?, NULL)")
       .run(id, buildId, `channel-${channel}`, status, options.rolloutCohortCount ?? null, activatedAt);
@@ -98,6 +103,57 @@ describe("public cli-binary selection", () => {
     const res = await app.request("https://hands.example/public/v2/apps/computer/versions?channel=nightly&platform=linux&arch=x64", {}, env);
     expect(res.status).toBe(404);
     expect((await res.json() as { code: string }).code).toBe("channel_not_found");
+  });
+
+  it("an alias whose canonical channel does not exist still answers channel_not_found", async () => {
+    sqlite.prepare("DELETE FROM channels WHERE slug = 'main'").run();
+    seedRelease("r1", "1.0.0", "active", 100, { channel: "alpha" });
+    const res = await app.request(
+      "https://hands.example/public/v2/apps/computer/updates/check?current_version=0.5.0&channel=latest&platform=linux&arch=x64",
+      {},
+      env,
+    );
+    expect(res.status).toBe(404);
+  });
+
+  it("a real channel named like an alias wins over the alias (no shadowing)", async () => {
+    // Channel slugs are not validated at creation, so an app owner can create a
+    // genuine `latest` channel. The alias must not silently redirect to `main`.
+    // `seedRelease` seeds `latest` as a real channel when asked for it.
+    seedRelease("r-main", "1.0.0", "active", 100);
+    seedRelease("r-latest", "9.9.9", "active", 200, { channel: "latest" });
+
+    const viaLatest = await app.request(
+      "https://hands.example/public/v2/apps/computer/updates/check?current_version=0.5.0&channel=latest&platform=linux&arch=x64",
+      {},
+      env,
+    );
+    expect(viaLatest.status).toBe(200);
+    const latestBody = await viaLatest.json() as { release: { id: string; channel: string } };
+    expect(latestBody.release.id).toBe("r-latest");
+    expect(latestBody.release.channel).toBe("latest");
+
+    const versionsRes = await app.request(
+      "https://hands.example/public/v2/apps/computer/versions?channel=latest&platform=linux&arch=x64",
+      {},
+      env,
+    );
+    expect(versionsRes.status).toBe(200);
+    const versionsBody = await versionsRes.json() as { channel: string; versions: Array<{ version: string }> };
+    expect(versionsBody.channel).toBe("latest");
+    expect(versionsBody.versions.map((v) => v.version)).toEqual(["9.9.9"]);
+
+    // Without a real `latest` channel the alias still resolves to main.
+    sqlite.prepare("DELETE FROM channels WHERE slug = 'latest'").run();
+    const fallback = await app.request(
+      "https://hands.example/public/v2/apps/computer/updates/check?current_version=0.5.0&channel=latest&platform=linux&arch=x64",
+      {},
+      env,
+    );
+    expect(fallback.status).toBe(200);
+    const fallbackBody = await fallback.json() as { release: { id: string; channel: string } };
+    expect(fallbackBody.release.id).toBe("r-main");
+    expect(fallbackBody.release.channel).toBe("main");
   });
 
   it("advertises only a complete gzip representation for the selected release", async () => {

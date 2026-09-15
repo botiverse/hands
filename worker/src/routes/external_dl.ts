@@ -26,6 +26,7 @@
  * (see the external arm there), kept in one shape across both surfaces.
  */
 import type { Context } from "hono";
+import { resolvePublicChannelSlug } from "../lib/public_channel";
 
 type DlTargetRow = {
   target: string;
@@ -162,11 +163,22 @@ export async function handleExternalReleaseDl(c: Context<{ Bindings: Env }>) {
 
 export async function handleExternalLatestDl(c: Context<{ Bindings: Env }>) {
   const slug = c.req.param("slug") ?? "";
-  const channel = c.req.param("channel") ?? "";
+  const requestedChannel = c.req.param("channel") ?? "";
   const parsed = parseFile(c.req.param("file") ?? "");
-  if (!slug || !channel || channel === "releases" || !parsed) {
+  if (!slug || !requestedChannel || requestedChannel === "releases" || !parsed) {
     return c.json({ error: "invalid download parameters" }, 400);
   }
+
+  // Stable `/dl/{slug}/{channel}/...` alias resolution, with the same rule as
+  // the public v2 routes: a real channel wins over an alias of the same name.
+  // Unknown names pass through and keep the existing no-active-release answer.
+  // (This resolves the channel FIRST; the query below then selects by placement.)
+  const appRow = await c.env.DB.prepare(
+    "SELECT id FROM apps WHERE slug = ?1",
+  ).bind(slug).first<{ id: string }>();
+  const channel = appRow
+    ? await resolvePublicChannelSlug(c.env.DB, appRow.id, requestedChannel)
+    : requestedChannel;
 
   // Resolve the channel's current active release for both delivery shapes:
   // externally-declared targets (artifact_mode='external') and hosted ones whose

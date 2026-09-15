@@ -298,6 +298,67 @@ describe("Hands Installer routes", () => {
     });
   });
 
+  it("resolves the `latest` channel alias to main, and a real `latest` channel wins", async () => {
+    const session = await issueConsumerSession(sqlite, env);
+    seedOffer(sqlite);
+    const headers = { authorization: `Bearer ${session.access_token}` };
+
+    // No real `latest` channel: the alias resolves to the owner's main release.
+    const viaAlias = await fetchWorker(
+      env, "/api/installer/v1/apps/app-1/channels/latest/manifest", { headers },
+    );
+    expect(viaAlias.status).toBe(200);
+    expect(await viaAlias.json()).toMatchObject({
+      schema: "hands-installer-manifest.v1",
+      release: { id: "release-1", version: "1.2.3" },
+    });
+
+    // A genuine `latest` channel must not be shadowed by the alias.
+    sqlite.exec(`
+      INSERT INTO channels (id, app_id, slug, name, created_at)
+      VALUES ('channel-latest', 'app-1', 'latest', 'Latest', 1);
+      INSERT INTO builds
+        (id, app_id, channel_id, product_type, release_type, version_name,
+         version_code, source, status, created_at, updated_at)
+      VALUES ('build-latest', 'app-1', 'channel-latest', 'android-apk', 'stable',
+              '9.9.9', 90909, 'ci', 'succeeded', 1, 1);
+      INSERT INTO releases
+        (id, app_id, build_id, channel_id, product_type, release_type, status,
+         created_by, created_at, updated_at, activated_at)
+      VALUES ('release-latest', 'app-1', 'build-latest', 'channel-latest', 'android-apk',
+              'stable', 'active', 'test', 1, 1, 1);
+      INSERT INTO release_scopes (id, release_id, scope_type, scope_value, created_at)
+      VALUES ('scope-latest', 'release-latest', 'full', 'all', 1);
+      INSERT INTO build_assets
+        (id, build_id, platform, filetype, r2_key, file_hash, size_bytes,
+         created_at, artifact_kind)
+      VALUES ('asset-latest', 'build-latest', 'android', 'apk', 'artifact-latest.apk',
+              'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+              10, 1, 'installable');
+      INSERT INTO installer_asset_metadata
+        (asset_id, platform, filetype, package_id, version_code, signer_lineages_json,
+         inspected_file_hash, inspector_version, inspected_at)
+      VALUES ('asset-latest', 'android', 'apk', 'dev.hands.app', 90909,
+              '[["bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                 "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"]]',
+              'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+              'inspector-v1', 2);
+    `);
+    const viaRealLatest = await fetchWorker(
+      env, "/api/installer/v1/apps/app-1/channels/latest/manifest", { headers },
+    );
+    expect(viaRealLatest.status).toBe(200);
+    expect(await viaRealLatest.json()).toMatchObject({
+      release: { id: "release-latest", version: "9.9.9" },
+    });
+
+    // An unknown channel name is still not found (aliases never invent names).
+    const unknown = await fetchWorker(
+      env, "/api/installer/v1/apps/app-1/channels/nightly/manifest", { headers },
+    );
+    expect(unknown.status).toBe(404);
+  });
+
   it("persists verified APK inspection against the exact asset before catalog opt-in", async () => {
     sqlite.exec(`
       INSERT INTO apps (id, slug, name, platform, created_at)

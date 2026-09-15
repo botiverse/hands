@@ -24,6 +24,12 @@ import { presignR2DownloadUrl } from "../lib/r2_presign";
 import { parseReleaseNotes, resolveReleaseNote, type ReleaseNotes } from "../lib/release_notes";
 import { isFeatureEnabled } from "../lib/feature_flags";
 import {
+  PUBLIC_CHANNEL_ALIASES,
+  canonicalPublicChannel,
+  resolvePublicChannelSlug,
+} from "../lib/public_channel";
+export { canonicalPublicChannel } from "../lib/public_channel";
+import {
   fnv1a32,
   loadActiveReleaseCandidates,
   rolloutBucket,
@@ -97,19 +103,16 @@ const PRIORITY = {
  * answers exactly as its canonical channel would, so an alias whose canonical
  * channel has no active release answers `no_active_release`, and one whose
  * canonical channel does not exist answers `channel_not_found`.
- * Raft task #proj-hands #204.
+ *
+ * A real channel always wins over an alias of the same name: channel slugs are
+ * not validated at creation, so an app owner can create a genuine `latest`
+ * channel and it must never be shadowed. The mapping itself lives in
+ * `lib/public_channel`, which all public channel readers share.
+ * Raft task #proj-hands #204 (alias) and #206 (shadowing + consistency).
  */
-const PUBLIC_CHANNEL_ALIASES: Readonly<Record<string, string>> = Object.freeze({
-  latest: "main",
-});
-
-export function canonicalPublicChannel(requested: string): string {
-  return PUBLIC_CHANNEL_ALIASES[requested] ?? requested;
-}
-
 export async function handlePublicV2Latest(c: Context<{ Bindings: Env }>) {
   const slug = c.req.param("slug");
-  const channel = canonicalPublicChannel(c.req.query("channel") ?? "main");
+  const requestedChannel = c.req.query("channel") ?? "main";
   const productType = c.req.query("product_type"); // optional; if null, picks most recent across all
   const cohort = c.req.header("X-Hands-Cohort") ?? c.req.header("X-Quiver-Cohort") ?? null;
   const deviceId =
@@ -129,18 +132,26 @@ export async function handlePublicV2Latest(c: Context<{ Bindings: Env }>) {
     .first<{ id: string; slug: string; platform: string }>();
   if (!app) return c.json({ error: `app '${slug}' not found`, code: "app_not_found" }, 404);
 
-  // Channel lookup
+  // Channel lookup. A real channel named like an alias wins; only otherwise do
+  // we fall back to the canonical target, so an app-owned `latest` channel is
+  // never shadowed. The response echoes whichever slug was resolved.
   const channelRow = await c.env.DB.prepare(
-    `SELECT id FROM channels WHERE app_id = ?1 AND slug = ?2 LIMIT 1`,
+    `SELECT id, slug FROM channels WHERE app_id = ?1 AND slug IN (?2, ?3)
+     ORDER BY slug = ?2 DESC LIMIT 1`,
   )
-    .bind(app.id, channel)
-    .first<{ id: string }>();
+    .bind(
+      app.id,
+      requestedChannel,
+      PUBLIC_CHANNEL_ALIASES[requestedChannel] ?? requestedChannel,
+    )
+    .first<{ id: string; slug: string }>();
   if (!channelRow) {
     return c.json(
-      { error: `channel '${channel}' not found for app '${slug}'`, code: "channel_not_found" },
+      { error: `channel '${requestedChannel}' not found for app '${slug}'`, code: "channel_not_found" },
       404,
     );
   }
+  const channel = channelRow.slug;
 
   // Candidates: active releases on (channel, [product_type]). No time window:
   // an active release must stay resolvable no matter how old it is.
@@ -587,7 +598,7 @@ function compareStrictSemver(left: string, right: string): number | null {
 
 export async function handlePublicCliBinaryUpdateCheck(c: Context<{ Bindings: Env }>) {
   const slug = c.req.param("slug") ?? "";
-  const channel = canonicalPublicChannel(c.req.query("channel") ?? "main");
+  const requestedChannel = c.req.query("channel") ?? "main";
   const currentVersion = c.req.query("current_version") ?? "";
   const platform = c.req.query("platform") ?? "";
   const arch = c.req.query("arch") ?? "";
@@ -600,6 +611,14 @@ export async function handlePublicCliBinaryUpdateCheck(c: Context<{ Bindings: En
   if (requestedVersion && !parseStrictSemver(requestedVersion)) {
     return c.json({ error: "version must be semver", code: "UPDATE_RESPONSE_INVALID" }, 400);
   }
+  // A real channel named like an alias wins over the alias. Resolving it needs
+  // the app row, so it happens before the candidate query below.
+  const appRow = await c.env.DB.prepare(
+    "SELECT id FROM apps WHERE slug = ?1",
+  ).bind(slug).first<{ id: string }>();
+  const channel = appRow
+    ? await resolvePublicChannelSlug(c.env.DB, appRow.id, requestedChannel)
+    : canonicalPublicChannel(requestedChannel);
   const { results: rows } = await c.env.DB.prepare(
     `SELECT a.id AS app_id, a.slug, ch.slug AS channel,
             r.id AS release_id, r.revision, r.rollout_cohort_count,
@@ -708,7 +727,7 @@ const CLI_VERSION_INDEX_MAX_LIMIT = 100;
  */
 export async function handlePublicCliBinaryVersions(c: Context<{ Bindings: Env }>) {
   const slug = c.req.param("slug") ?? "";
-  const channel = canonicalPublicChannel(c.req.query("channel") ?? "main");
+  const requestedChannel = c.req.query("channel") ?? "main";
   const platform = c.req.query("platform") ?? "";
   const arch = c.req.query("arch") ?? "";
   const target = `${platform}-${arch}`;
@@ -741,11 +760,16 @@ export async function handlePublicCliBinaryVersions(c: Context<{ Bindings: Env }
     return c.json({ error: `app '${slug}' not found`, code: "app_not_found" }, 404);
   }
   const channelRow = await c.env.DB.prepare(
-    "SELECT id FROM channels WHERE app_id = ?1 AND slug = ?2 LIMIT 1",
-  ).bind(app.id, channel).first<{ id: string }>();
+    `SELECT id, slug FROM channels WHERE app_id = ?1 AND slug IN (?2, ?3)
+     ORDER BY slug = ?2 DESC LIMIT 1`,
+  ).bind(
+    app.id,
+    requestedChannel,
+    PUBLIC_CHANNEL_ALIASES[requestedChannel] ?? requestedChannel,
+  ).first<{ id: string; slug: string }>();
   if (!channelRow) {
     return c.json(
-      { error: `channel '${channel}' not found for app '${slug}'`, code: "channel_not_found" },
+      { error: `channel '${requestedChannel}' not found for app '${slug}'`, code: "channel_not_found" },
       404,
     );
   }
@@ -832,7 +856,7 @@ export async function handlePublicCliBinaryVersions(c: Context<{ Bindings: Env }
   return c.json({
     schema_version: 1,
     app: { id: app.id, slug: app.slug, platform: app.platform },
-    channel,
+    channel: channelRow.slug,
     target: { platform, arch },
     truncated: versions.length > selected.length,
     versions: selected.map((row) => ({
