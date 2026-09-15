@@ -71,9 +71,10 @@ export async function handleExternalLatestDl(c: Context<{ Bindings: Env }>) {
   }
 
   const release = await c.env.DB.prepare(
-    // `b.source = 'external'` is a proxy for "this build's bytes are declared externally
-    // rather than stored in R2" (that is the only placement claim `source` carries; see
-    // BuildInput.source in builds.ts for the full domain and the fact-based rule).
+    // `b.artifact_mode = 'external'` states the placement directly: the bytes are declared
+    // externally rather than stored in R2. Reading the dedicated column instead of the
+    // `source` label means a build whose bytes are external is found regardless of which
+    // creation path produced it.
     // Also note the 404 body below is deliberately UNIFORM for every cause
     // (app missing / channel missing / no active release): it must not become an
     // existence oracle for app slugs and channels. See task #219.
@@ -82,7 +83,7 @@ export async function handleExternalLatestDl(c: Context<{ Bindings: Env }>) {
      JOIN channels ch ON ch.id = r.channel_id
      JOIN builds b ON b.id = r.build_id
      WHERE a.slug = ?1 AND ch.slug = ?2 AND r.status = 'active'
-       AND b.source = 'external'
+       AND b.artifact_mode = 'external'
        AND (r.availability_at IS NULL OR r.availability_at <= ?3)
      ORDER BY r.created_at DESC LIMIT 1`,
   )

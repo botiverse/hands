@@ -17,6 +17,9 @@ export interface BuildInput {
   version_code: number;
   changelog?: string | null;
   source?: string;
+  // Where the bytes live (0073). Defaults to 'hands_r2'; the external publish path passes
+  // 'external'. Read this - not `source` - to ask whether the bytes are hosted by us.
+  artifact_mode?: ArtifactMode;
   status?: string;
   build_metadata_json?: unknown;
   parsed_metadata_json?: unknown;
@@ -116,13 +119,12 @@ interface BuildRow {
   //  mentions it".)
   //
   // Do NOT use `source` as the general test for "is this build externally hosted".
-  // Attribute by FACT instead:
-  //   has build_assets row(s)           => R2-hosted
-  //   else has external_build_targets   => externally declared
-  //   else                              => unattributed
-  // (public_v2.ts already follows this rule — it attributes by build_assets and only
-  //  mentions the label in a comment; see also external_dl.ts, builds.ts and releases.ts
-  //  where the `source = 'external'` label is still relied on as a proxy.)
+  // Read `artifact_mode` instead (see ArtifactMode): it states placement directly, so a build
+  // whose bytes are external is found regardless of which creation path produced it. As of
+  // 0073 all three former label-readers use it (external_dl.ts, getExternalBuild here, and
+  // the releases.ts required_external_targets gate).
+  // public_v2.ts attributes by build_assets presence, which agrees with artifact_mode;
+  // it mentions the label only in a comment.
   //
   // Careful: `apps.ts` also mentions 'external', but for product_type registration
   // (parser_kind='external'). That is a different axis — do not count it as a reader here.
@@ -142,7 +144,22 @@ interface BuildRow {
   created_at: number;
   updated_at: number;
   completed_at: number | null;
+  // Present on every row (0073, NOT NULL DEFAULT 'hands_r2'). Required here because a
+  // selected row always has it; optionality would hide a missing SELECT column.
+  artifact_mode: ArtifactMode;
 }
+
+/**
+ * Where a build's bytes live. Mirrors the `builds.artifact_mode` domain (0073).
+ *
+ * 'hands_r2' - bytes are objects under `build_assets.r2_key` (our own bucket).
+ * 'external' - bytes are declared URLs in `external_build_targets`; there is no R2 object.
+ *
+ * This is the correct thing to read when the question is "are these bytes hosted by us?".
+ * Prefer it over `source`: `source` records the CREATION PATH, and only its 'external'
+ * value coincidentally also implies placement, which is why this column exists.
+ */
+export type ArtifactMode = "hands_r2" | "external";
 
 interface BuildAssetDownloadRow {
   id: string;
@@ -334,18 +351,15 @@ async function getExternalBuild(
   appId: string,
   versionName: string,
 ): Promise<ExternalBuildRow | null> {
-  // `source = 'external'` here is a proxy for "bytes are externally declared, not in R2".
-  // It is sound today: every 'external' row in production has external_build_targets and
-  // none has R2 assets (census 2026-09-15). A build created by any other path that also
-  // lacked R2 bytes would NOT be found by this query, even though it is equally
-  // "external" in the placement sense. If a new such writer appears, converge this and the
-  // other two label-reading sites (external_dl.ts, releases.ts) on the fact-based rule
-  // documented at BuildInput.source.
+  // Now reads the placement column directly rather than inferring it from the `source`
+  // label: `artifact_mode = 'external'` means the bytes are declared in
+  // external_build_targets with no R2 object. This is exact, so a future writer that stores
+  // bytes elsewhere under a different `source` value is still found here.
   return await db
     .prepare(
       `SELECT id, channel_id, product_type, release_type, version_code, provenance_json
        FROM builds
-       WHERE app_id = ?1 AND version_name = ?2 AND source = 'external'`,
+       WHERE app_id = ?1 AND version_name = ?2 AND artifact_mode = 'external'`,
     )
     .bind(appId, versionName)
     .first<ExternalBuildRow>();
@@ -423,8 +437,8 @@ export async function createBuild(
        (id, app_id, channel_id, product_type, release_type, version_name,
         version_code, changelog, source, status, build_metadata_json,
         parsed_metadata_json, should_force_update, availability_at,
-        provenance_json, created_at, updated_at, completed_at)
-       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)`,
+        provenance_json, created_at, updated_at, completed_at, artifact_mode)
+       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)`,
     )
     .bind(
       id,
@@ -447,6 +461,9 @@ export async function createBuild(
       now,
       now,
       input.status === "succeeded" ? now : null,
+      // Defaults to 'hands_r2' (matches the DB default). Writers that store bytes outside
+      // R2 must pass 'external' explicitly; see the external publish path below.
+      input.artifact_mode ?? "hands_r2",
     )
     .run();
 
@@ -665,6 +682,9 @@ export async function handlePublishExternalBuildVersion(c: AdminContext) {
           // 'external' = bytes are declared via external_build_targets, not stored in R2.
           // This is the only `source` value that asserts placement; see BuildInput.source.
           source: "external",
+          // The same fact stated in the column that actually means it. New readers should
+          // use artifact_mode; `source` remains the creation path.
+          artifact_mode: "external",
           status: "succeeded",
           build_metadata_json: { external_source: true },
           provenance_json: externalJsonString(input.provenance_json),

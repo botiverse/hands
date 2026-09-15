@@ -232,8 +232,16 @@ describe("builds.source documented domain", () => {
   });
 
   it("scopes discovery to createBuild, so unrelated `source:` properties are not counted", () => {
-    // Guards the precision of the scan itself: these belong to other tables/concerns and
-    // must never appear as builds.source values.
+    // SCOPE OF THIS GUARD, stated explicitly because a reviewer reasonably looked for it here:
+    // it covers only `source:` string literals passed as arguments INSIDE a `createBuild(...)`
+    // call in worker/src, plus createBuild's own `input.source ?? "web"` default. It does not
+    // see a bare string expression near a createBuild call, writes from packages/cli (added to
+    // DOCUMENTED_WRITERS by hand), or any value reaching the column by another path. So a
+    // mutation adding a bare undocumented string will NOT trip this test - change an existing
+    // `source: "<literal>"` argument instead.
+    //
+    // This case additionally guards the precision of the scan itself: these belong to other
+    // tables/concerns and must never appear as builds.source values.
     const written = writtenSources(repoRoot);
     for (const unrelated of ["inline", "presigned"]) {
       expect(

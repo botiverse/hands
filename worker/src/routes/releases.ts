@@ -1320,18 +1320,17 @@ async function prepareExternalTargetGate(
   requiredRaw: unknown,
 ): Promise<{ plan: ExternalTargetGatePlan | null } | { response: Response }> {
   const build = await c.env.DB.prepare(
-    `SELECT id, source, product_type, freeze_token, required_targets_json FROM builds WHERE id = ?1`,
+    `SELECT id, source, artifact_mode, product_type, freeze_token, required_targets_json FROM builds WHERE id = ?1`,
   )
     .bind(release.build_id)
-    .first<{ id: string; source: string; product_type: string; freeze_token: string | null; required_targets_json: string | null }>();
+    .first<{ id: string; source: string; artifact_mode: string; product_type: string; freeze_token: string | null; required_targets_json: string | null }>();
   if (!build) return { response: c.json({ error: "release build not found" }, 409) };
 
-  // `source !== 'external'` gates the required_external_targets contract. It is a proxy for
-  // "bytes are declared externally rather than stored in R2" — the only placement claim
-  // `source` carries. Sound today (census 2026-09-15: 31/31 external rows have declared
-  // targets and zero have R2 assets), but see BuildInput.source in builds.ts for the
-  // documented domain and the fact-based attribution rule.
-  if (build.source !== "external") {
+  // Placement is read from artifact_mode, which states it directly. It used to be inferred
+  // from `source = 'external'` - a creation-path label that only coincidentally implied
+  // placement, and would have missed a future writer storing bytes externally under a
+  // different source value.
+  if (build.artifact_mode !== "external") {
     if (requiredRaw !== undefined) {
       return { response: c.json({ error: "required_external_targets only applies to external builds" }, 400) };
     }

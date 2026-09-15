@@ -225,6 +225,7 @@ function makeMockDb() {
       targets_frozen_at INTEGER,
       freeze_token TEXT,
       required_targets_json TEXT,
+      artifact_mode TEXT NOT NULL DEFAULT 'hands_r2',
       FOREIGN KEY (app_id) REFERENCES apps(id) ON DELETE CASCADE,
       FOREIGN KEY (channel_id) REFERENCES channels(id) ON DELETE SET NULL
     );
@@ -5422,13 +5423,18 @@ describe("quiver releases — draft lifecycle", () => {
     const now = Date.now();
     for (const [buildId, versionCode, source] of [
       ["build-draft-restore-fallback", 34, "web"],
-      ["build-draft-restore-target", 35, "external"],
+      ["build-draft-restore-target", 35, "cli"],
     ] as const) {
+      // Placement is a separate fact from the creation path now (0073). For the external
+      // build, deliberately set source to a NON-'external' creation path so the two disagree:
+      // the required_external_targets gate must key off artifact_mode. If it still read the
+      // label, the 400 below would not be raised and the conflicting target set would be
+      // accepted instead.
       await env.DB.prepare(
         `INSERT INTO builds (id, app_id, channel_id, product_type, release_type, version_name, version_code,
                              source, status, build_metadata_json, parsed_metadata_json,
-                             should_force_update, provenance_json, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                             should_force_update, provenance_json, created_at, updated_at, artifact_mode)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       ).bind(
         buildId,
         "app-release",
@@ -5445,6 +5451,7 @@ describe("quiver releases — draft lifecycle", () => {
         "{}",
         now,
         now,
+        buildId === "build-draft-restore-target" ? "external" : "hands_r2",
       ).run();
     }
     for (const target of ["darwin-arm64", "linux-x64"]) {
@@ -5879,14 +5886,18 @@ describe("quiver public API v2 — scope resolution", () => {
       shouldForceUpdate?: number;
       rolloutCohortCount?: number | null;
       activatedAt?: number | null;
+      // Placement, independent of `source` (0073). Defaults to 'hands_r2'.
+      artifactMode?: "hands_r2" | "external";
+      // Creation path; separate axis from artifactMode. Default 'web'.
+      source?: string;
     } = {},
   ) {
     const now = opts.createdAt ?? Date.now();
     await env.DB.prepare(
       `INSERT INTO builds (id, app_id, channel_id, product_type, release_type, version_name, version_code,
                            source, status, build_metadata_json, parsed_metadata_json,
-                           should_force_update, provenance_json, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                           should_force_update, provenance_json, created_at, updated_at, artifact_mode)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
       .bind(
         buildId,
@@ -5896,7 +5907,7 @@ describe("quiver public API v2 — scope resolution", () => {
         "stable",
         opts.versionName ?? "1.0.0",
         opts.versionCode ?? 1,
-        "web",
+        opts.source ?? "web",
         "succeeded",
         "{}",
         "{}",
@@ -5904,6 +5915,7 @@ describe("quiver public API v2 — scope resolution", () => {
         "{}",
         now,
         now,
+        opts.artifactMode ?? "hands_r2",
       )
       .run();
     await env.DB.prepare(
@@ -6411,6 +6423,71 @@ describe("quiver public API v2 — scope resolution", () => {
     expect(JSON.parse(feedbackDelivery.payload_json).payload.reporter_id).toBeNull();
   });
 
+  it("placement is read from artifact_mode, not inferred from the source label", async () => {
+    // The test that catches reverting a reader back to `source = 'external'`. Every other
+    // fixture sets both fields together, so the two queries agree and such a regression is
+    // invisible. Here the two fields deliberately DISAGREE, in both directions.
+    const env = makeEnv();
+    const now = Date.now();
+    const { handleExternalLatestDl } = await import("../src/routes/external_dl");
+    const dlCtx = (params: Record<string, string>) =>
+      ({
+        env,
+        req: { param: (name: string) => params[name] ?? "", query: () => undefined },
+        json: (data: unknown, status = 200) => new Response(JSON.stringify(data), { status }),
+      }) as any;
+
+    // (a) bytes ARE external, but the creation path is 'cli'. Reading the label misses this
+    //     row entirely; reading artifact_mode finds it and serves the /dl redirect.
+    await seedRelease(env, "rel-place-external", "build-place-external", [["full", "all"]], {
+      createdAt: now,
+      productType: "cli-binary",
+      versionName: "1.0.30",
+      versionCode: 30,
+      source: "cli",
+      artifactMode: "external",
+    });
+    await env.DB.prepare("UPDATE releases SET status = 'active' WHERE id = 'rel-place-external'").run();
+    await env.DB.prepare(
+      `INSERT INTO external_build_targets
+       (id, app_id, build_id, version_name, target, source_url, raw_sha256, raw_size_bytes,
+        node_version, metadata_json, created_at, updated_at)
+       VALUES ('tgt-place', 'app-scope', 'build-place-external', '1.0.30', 'linux-x64',
+               'https://example.test/cli', ?1, 10, '22', '{}', ?2, ?2)`,
+    )
+      .bind("c".repeat(64), now)
+      .run();
+
+    const found = await handleExternalLatestDl(
+      dlCtx({ slug: "scope-app", channel: "production", file: "linux-x64" }),
+    );
+    expect(found.status).toBe(302);
+    expect(found.headers.get("location")).toBe("/dl/scope-app/releases/rel-place-external/linux-x64");
+
+    // (b) the opposite disagreement: source says 'external', but the bytes are ours
+    //     (artifact_mode='hands_r2'). This release is newer, so if any reader still keyed off
+    //     the label it would now serve this R2-backed build through the external route.
+    await seedRelease(env, "rel-place-hands", "build-place-hands", [["full", "all"]], {
+      createdAt: now + 1000,
+      productType: "cli-binary",
+      versionName: "1.0.31",
+      versionCode: 31,
+      source: "external",
+      artifactMode: "hands_r2",
+    });
+    await env.DB.prepare("UPDATE releases SET status = 'active' WHERE id = 'rel-place-hands'").run();
+
+    const afterR2Build = await handleExternalLatestDl(
+      dlCtx({ slug: "scope-app", channel: "production", file: "linux-x64" }),
+    );
+    // Still the (a) row: the newest *externally placed* release. A label-based reader would
+    // have picked rel-place-hands here and returned a 302 to an R2-backed build.
+    expect(afterR2Build.status).toBe(302);
+    expect(afterR2Build.headers.get("location")).toBe(
+      "/dl/scope-app/releases/rel-place-external/linux-x64",
+    );
+  });
+
   it("external-target gate: freeze on publish, set assertion, replay re-assert, dl routes", async () => {
     const env = makeEnv();
     const now = Date.now();
@@ -6418,9 +6495,9 @@ describe("quiver public API v2 — scope resolution", () => {
     await env.DB.prepare(
       `INSERT INTO builds (id, app_id, channel_id, product_type, release_type, version_name, version_code,
                            source, status, build_metadata_json, parsed_metadata_json, should_force_update,
-                           provenance_json, created_at, updated_at)
+                           provenance_json, created_at, updated_at, artifact_mode)
        VALUES ('b-ext', 'app-scope', 'ch-scope-prod', 'cli-binary', 'stable', '2.0.0', 2000000,
-               'external', 'succeeded', '{}', '{}', 0, '{"ci_provider":"gha","source_commit":"abc123"}', ?1, ?1)`,
+               'external', 'succeeded', '{}', '{}', 0, '{"ci_provider":"gha","source_commit":"abc123"}', ?1, ?1, 'external')`,
     ).bind(now).run();
     await env.DB.prepare(
       `INSERT INTO builds (id, app_id, channel_id, product_type, release_type, version_name, version_code,
@@ -7411,7 +7488,12 @@ describe("quiver public API v2 — scope resolution", () => {
       versionName: "1.0.19",
       versionCode: 40,
     });
-    await env.DB.prepare("UPDATE builds SET source = 'external' WHERE id = 'build-ext-latest'").run();
+    // Placement lives in artifact_mode; `source` stays the creation path. Fixtures that build
+    // a build row directly (rather than through createBuild, which now sets artifact_mode)
+    // must set both, exactly as the external publish path does.
+    await env.DB.prepare(
+      "UPDATE builds SET source = 'external', artifact_mode = 'external' WHERE id = 'build-ext-latest'",
+    ).run();
     for (const [target, sha] of [["darwin-arm64", "a".repeat(64)], ["linux-x64", "b".repeat(64)]] as const) {
       await env.DB.prepare(
         `INSERT INTO external_build_targets
