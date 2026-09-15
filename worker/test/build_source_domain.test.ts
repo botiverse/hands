@@ -154,9 +154,22 @@ describe("builds.source documented domain", () => {
   });
 
   it("does not hardcode a value count in prose that could drift from the domain", () => {
-    // The original defect was prose asserting a fixed count ("the four values") while the
-    // enumerated domain had grown to five. A number in a comment is a second source of truth
-    // that nothing checks, so require prose to point at the authoritative list instead.
+    // The original defect was prose asserting a fixed count while the enumerated domain had
+    // grown. A number in a comment is a second source of truth that nothing checks.
+    //
+    // Positive requirement, deliberately not a list of banned phrasings: enumerating the bad
+    // shapes is what made the first version of this guard miss its own motivating case
+    // (an intervening backticked word, e.g. "the four real `source` values", slipped past the
+    // regex).
+    //
+    // Scope: a count word attached to the *value domain* is the drift risk ("the four-value
+    // domain", "the four real `source` values"). A count of something else in the same file
+    // ("exactly TWO sites depend on...", "yielding three false positives") is a different
+    // claim and is not what drifts with the domain, so those must not trip this guard.
+    const driftRisk = new RegExp(
+      String.raw`\b(two|three|four|five|six|seven)(-value\b|\s+(real\s+)?(\x60?\w+\x60?\s+)?(value|values|domain|domain\b))`,
+      "i",
+    );
     const proseFiles = [
       "worker/src/routes/builds.ts",
       "worker/src/routes/qa_artifacts.ts",
@@ -168,18 +181,20 @@ describe("builds.source documented domain", () => {
     for (const rel of proseFiles) {
       const text = readFileSync(join(repoRoot, rel), "utf8");
       for (const line of text.split("\n")) {
-        // Only comment lines; the point is about prose, not identifiers.
         if (!line.trimStart().startsWith("//")) continue;
-        if (/\b(four|five|three|two)-value\b|\bthe (four|five|three|two) (real )?values\b/i.test(line)) {
-          offenders.push(`${rel}: ${line.trim()}`);
-        }
+        if (!driftRisk.test(line)) continue;
+        // No exemption: citing BuildInput.source on the same line is NOT a pass, because the
+        // original defect line cited it too ("One of the four real `source` values (see
+        // BuildInput.source ...)"). An earlier version of this test whitelisted such lines and
+        // could therefore never catch its own motivating case.
+        offenders.push(`${rel}: ${line.trim()}`);
       }
     }
     expect(
       offenders,
-      `prose hardcodes a value count, which drifts as the domain grows (this is exactly the ` +
-        `defect this card fixes). Point at BuildInput.source instead of stating a number:\n` +
-        offenders.join("\n"),
+      `these comments mention a value count without pointing at BuildInput.source. A count ` +
+        `hardcoded in prose drifts as the domain grows, so either drop the number or cite the ` +
+        `authoritative list on the same line:\n${offenders.join("\n")}`,
     ).toEqual([]);
   });
 
