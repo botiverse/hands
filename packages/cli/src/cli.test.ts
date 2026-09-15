@@ -12,6 +12,7 @@ import { mkdtempSync, readFileSync, rmSync, existsSync, writeFileSync } from "no
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer } from "node:http";
+import { createHash } from "node:crypto";
 import { gzipSync } from "node:zlib";
 import { Command } from "commander";
 import fixturePolicy from "./fixtures/collect-policy.json";
@@ -1313,6 +1314,223 @@ describe("external build publish helpers", () => {
       else process.env.HANDS_BEARER_TOKEN = originalToken;
       await new Promise<void>((resolve) => server.close(() => resolve()));
     }
+  });
+});
+
+describe("publish-cli-binary multi-target contract", () => {
+  // One invocation must produce ONE build for one (app, version) carrying every
+  // target's assets. 0072 makes (app_id, version_name) unique among hosted
+  // cli-binary builds, so a per-target loop collides on the second call and can
+  // never produce a complete release.
+  let dir: string;
+  let server: ReturnType<typeof createServer>;
+  let requests: Array<{ url: string; body?: any }>;
+  let originalApi: string | undefined;
+  let originalToken: string | undefined;
+
+  const bin = (name: string) => {
+    const path = join(dir, name);
+    writeFileSync(path, `bytes-for-${name}`);
+    return path;
+  };
+
+  beforeEach(async () => {
+    dir = mkdtempSync(join(tmpdir(), "quiver-cli-mt-"));
+    requests = [];
+    server = createServer(async (req, res) => {
+      let body: any;
+      if (req.headers["content-type"]?.includes("application/json")) {
+        const chunks: Buffer[] = [];
+        for await (const chunk of req) chunks.push(Buffer.from(chunk));
+        body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+      }
+      requests.push({ url: req.url ?? "", body });
+      res.setHeader("content-type", "application/json");
+      if (req.url === "/api/apps") {
+        return res.end(JSON.stringify({ apps: [{ id: "app-1", slug: "computer" }] }));
+      }
+      if (req.url === "/api/apps/app-1/channels") {
+        return res.end(JSON.stringify({ channels: [{ id: "channel-1", slug: "main", name: "main" }] }));
+      }
+      if (req.url === "/api/apps/app-1/builds" && req.method === "POST") {
+        return res.end(JSON.stringify({ id: "build-1" }));
+      }
+      if (req.url === "/api/apps/app-1/upload") {
+        // The command verifies the returned digest/size against the LOCAL bytes
+        // (that check is a feature, not something to stub past), so the stub has
+        // to report the real digest of whatever file was uploaded. Read the
+        // multipart part's filename, then hash the same file from disk.
+        const chunks: Buffer[] = [];
+        for await (const chunk of req) chunks.push(Buffer.from(chunk));
+        const text = Buffer.concat(chunks).toString("latin1");
+        const nameMatch = /filename="([^"]+)"/.exec(text);
+        const uploaded = nameMatch ? join(dir, nameMatch[1]!) : join(dir, "missing");
+        const bytes = existsSync(uploaded) ? readFileSync(uploaded) : Buffer.alloc(0);
+        return res.end(JSON.stringify({
+          r2_key: `key/${requests.length}`,
+          file_hash: createHash("sha256").update(bytes).digest("hex"),
+          size_bytes: bytes.length,
+          original_filename: nameMatch?.[1] ?? "uploaded",
+        }));
+      }
+      if (req.url?.startsWith("/api/apps/app-1/builds/build-1/assets")) {
+        return res.end(JSON.stringify({ id: `asset-${requests.length}` }));
+      }
+      if (req.url?.includes("/releases")) {
+        return res.end(JSON.stringify({ id: "release-1" }));
+      }
+      res.statusCode = 404;
+      return res.end(JSON.stringify({ error: "not found" }));
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("bad address");
+    originalApi = process.env.HANDS_API;
+    originalToken = process.env.HANDS_BEARER_TOKEN;
+    process.env.HANDS_API = `http://127.0.0.1:${address.port}`;
+    process.env.HANDS_BEARER_TOKEN = "test-token";
+  });
+
+  afterEach(async () => {
+    if (originalApi === undefined) delete process.env.HANDS_API;
+    else process.env.HANDS_API = originalApi;
+    if (originalToken === undefined) delete process.env.HANDS_BEARER_TOKEN;
+    else process.env.HANDS_BEARER_TOKEN = originalToken;
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  async function run(args: string[]) {
+    const { registerBuildCommands } = await import("../src/commands/builds.js");
+    const program = new Command().version("0.5.12").option("--json", "JSON output", false);
+    registerBuildCommands(program);
+    await program.parseAsync(["node", "hands", "builds", "publish-cli-binary", "computer", ...args]);
+  }
+
+  const buildPosts = () => requests.filter((r) => r.url === "/api/apps/app-1/builds");
+  const assetPosts = () => requests.filter((r) => r.url?.includes("/assets"));
+  // Reads (app/channel resolution) are expected before validation; what must not
+  // happen is a WRITE. Asserting on writes rather than on "no requests at all"
+  // keeps the test measuring the thing the contract cares about.
+  const writePosts = () =>
+    requests.filter(
+      (r) =>
+        r.url === "/api/apps/app-1/builds" ||
+        r.url?.includes("/upload") ||
+        r.url?.includes("/assets") ||
+        r.url?.includes("/releases"),
+    );
+
+  it("creates exactly ONE build for several targets, keeping the single-target call working", async () => {
+    await run([
+      "--version-name", "1.0.33-ch.1",
+      "--target", "darwin-arm64",
+      "--binary", bin("darwin-arm64"),
+    ]);
+    expect(buildPosts()).toHaveLength(1);
+    expect(assetPosts()).toHaveLength(1);
+
+    requests = [];
+    await run([
+      "--version-name", "1.0.33-ch.2",
+      "--target", "darwin-arm64",
+      "--target", "linux-x64",
+      "--target", "win32-x64",
+      "--binary", bin("darwin-arm64"),
+      "--binary", bin("linux-x64"),
+      "--binary", bin("win32-x64"),
+    ]);
+    // ONE build row and one asset per target - not three builds.
+    expect(buildPosts()).toHaveLength(1);
+    expect(assetPosts()).toHaveLength(3);
+    expect(assetPosts().map((r) => `${r.body.platform}-${r.body.arch}`).sort()).toEqual([
+      "darwin-arm64", "linux-x64", "win32-x64",
+    ]);
+  });
+
+  it("pairs runner and sha256sums positionally with each target", async () => {
+    await run([
+      "--version-name", "1.0.33-ch.3",
+      "--target", "darwin-arm64",
+      "--target", "linux-x64",
+      "--binary", bin("d-bin"), "--binary", bin("l-bin"),
+      "--runner", bin("d-runner"), "--runner", bin("l-runner"),
+      "--sha256sums", bin("d-sums"), "--sha256sums", bin("l-sums"),
+    ]);
+    expect(buildPosts()).toHaveLength(1);
+    const byTarget = assetPosts().map((r) => ({
+      target: `${r.body.platform}-${r.body.arch}`,
+      kind: r.body.artifact_kind,
+      variant: r.body.variant,
+    }));
+    for (const target of ["darwin-arm64", "linux-x64"]) {
+      expect(byTarget).toContainEqual({ target, kind: "installable", variant: null });
+      expect(byTarget).toContainEqual({ target, kind: "runner", variant: "runner" });
+      expect(byTarget).toContainEqual({ target, kind: "checksums", variant: null });
+    }
+    expect(assetPosts()).toHaveLength(6);
+  });
+
+  it("refuses a target/file count mismatch before any remote write", async () => {
+    await expect(
+      run([
+        "--version-name", "1.0.33-ch.4",
+        "--target", "darwin-arm64",
+        "--target", "linux-x64",
+        "--binary", bin("only-one"),
+      ]),
+    ).rejects.toThrow("--binary must be given once per --target");
+    expect(writePosts()).toEqual([]);
+  });
+
+  it("refuses a partial runner set rather than silently skipping targets", async () => {
+    await expect(
+      run([
+        "--version-name", "1.0.33-ch.5",
+        "--target", "darwin-arm64",
+        "--target", "linux-x64",
+        "--binary", bin("a"), "--binary", bin("b"),
+        "--runner", bin("only-one-runner"),
+      ]),
+    ).rejects.toThrow("--runner must be given once per --target when used");
+    expect(writePosts()).toEqual([]);
+  });
+
+  it("refuses a duplicated target, which would write two assets into one slot", async () => {
+    await expect(
+      run([
+        "--version-name", "1.0.33-ch.6",
+        "--target", "darwin-arm64",
+        "--target", "darwin-arm64",
+        "--binary", bin("a"), "--binary", bin("b"),
+      ]),
+    ).rejects.toThrow("--target darwin-arm64 was given more than once");
+    expect(writePosts()).toEqual([]);
+  });
+
+  it("documents the repeatable shape in --help so the pairing is discoverable", async () => {
+    const { registerBuildCommands } = await import("../src/commands/builds.js");
+    const program = new Command().name("hands");
+    registerBuildCommands(program);
+    const builds = program.commands.find((c) => c.name() === "builds")!;
+    const cmd = builds.commands.find((c) => c.name() === "publish-cli-binary")!;
+    const help = cmd.helpInformation();
+    // A caller reading --help must be able to learn that these repeat and pair.
+    expect(help).toMatch(/Repeat once per --target|Repeatable/);
+    expect(help).toContain("--target");
+    expect(help).toContain("--binary");
+  });
+
+  it("fails a missing per-target binary before any remote write", async () => {
+    const missing = join(dir, "does-not-exist");
+    await expect(
+      run([
+        "--version-name", "1.0.33-ch.7",
+        "--target", "darwin-arm64",
+        "--binary", missing,
+      ]),
+    ).rejects.toThrow(/path not found for target darwin-arm64/);
+    expect(writePosts()).toEqual([]);
   });
 });
 

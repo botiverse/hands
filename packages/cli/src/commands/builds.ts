@@ -777,27 +777,42 @@ export function registerBuildCommands(program: Command): void {
   builds
     .command("publish-cli-binary <appIdOrSlug>")
     .description(
-      "Host a Node/CLI build on Hands: upload the binary (and optional runner " +
-        "sidecar / SHA256SUMS) for one target, then create its release. Unlike " +
-        "publish-version, the bytes live in the Hands bucket, so the publisher " +
-        "needs no external object-store credentials.",
+      "Host a Node/CLI build on Hands: upload one or more targets' binaries " +
+        "(each with optional runner sidecar / SHA256SUMS), then create ONE release. " +
+        "Unlike publish-version, the bytes live in the Hands bucket, so the " +
+        "publisher needs no external object-store credentials.\n\n" +
+        "One invocation = one build for one (app, version) carrying every target's " +
+        "assets. --binary/--runner/--sha256sums are repeated once per --target and " +
+        "paired positionally, so a 5-target release is a single call rather than five.",
     )
-    .requiredOption("--binary <path>", "Primary CLI binary for this target.")
+    .requiredOption(
+      "--binary <path>",
+      "Primary CLI binary. Repeat once per --target, in the same order.",
+      collectRepeatable,
+      [] as string[],
+    )
     .requiredOption("--version-name <version>", "Release version name, e.g. 1.0.33-channel.1.")
     .requiredOption(
       "--target <target>",
-      "Artifact target, for example darwin-arm64 or linux-x64.",
+      "Artifact target, for example darwin-arm64 or linux-x64. Repeatable; " +
+        "every target in one call belongs to the same build and release.",
+      collectRepeatable,
+      [] as string[],
     )
     .option("--version-code <code>", "Hands ordering code. Defaults to the numeric dotted-version encoding.")
     .option("--channel <slug>", "Hands channel slug.", "main")
     .option("--release-type <type>", "Hands release type.", "stable")
     .option(
       "--runner <path>",
-      "Runner sidecar binary for this target (served as ?kind=runner).",
+      "Runner sidecar binary (served as ?kind=runner). Repeat once per --target.",
+      collectRepeatable,
+      [] as string[],
     )
     .option(
       "--sha256sums <path>",
-      "SHA256SUMS listing for this release (served as ?kind=sha256sums).",
+      "SHA256SUMS listing (served as ?kind=sha256sums). Repeat once per --target.",
+      collectRepeatable,
+      [] as string[],
     )
     .option("--changelog <text>", "Release changelog.")
     .option("--draft", "Create the release as a draft instead of activating it.", false)
@@ -810,14 +825,16 @@ export function registerBuildCommands(program: Command): void {
       async (
         appIdOrSlug: string,
         opts: {
-          binary: string;
+          // Repeated options: commander's collector always yields an array, so
+          // these are arrays even for the single-target case (length 1).
+          binary: string[];
           versionName: string;
-          target: string;
+          target: string[];
           versionCode?: string;
           channel: string;
           releaseType: string;
-          runner?: string;
-          sha256sums?: string;
+          runner: string[];
+          sha256sums: string[];
           changelog?: string;
           draft?: boolean;
           sourceCommit?: string;
@@ -827,7 +844,38 @@ export function registerBuildCommands(program: Command): void {
           json?: boolean;
         },
       ) => {
-        const { platform, arch } = splitBuildTarget(opts.target);
+        // One call = one build for one (app, version). `--target` is repeatable and
+        // each target carries its own binary (and optional runner / SHA256SUMS),
+        // paired positionally. A second build row for the same (app, version) is
+        // rejected by 0072's unique index, so splitting one release across several
+        // invocations cannot work - hence the repeatable form.
+        const targets = opts.target;
+        if (targets.length === 0) {
+          throw new Error("--target is required");
+        }
+        if (opts.binary.length !== targets.length) {
+          throw new Error(
+            `--binary must be given once per --target: ${targets.length} target(s) but ${opts.binary.length} --binary value(s)`,
+          );
+        }
+        if (opts.runner.length !== 0 && opts.runner.length !== targets.length) {
+          throw new Error(
+            `--runner must be given once per --target when used: ${targets.length} target(s) but ${opts.runner.length} --runner value(s)`,
+          );
+        }
+        if (opts.sha256sums.length !== 0 && opts.sha256sums.length !== targets.length) {
+          throw new Error(
+            `--sha256sums must be given once per --target when used: ${targets.length} target(s) but ${opts.sha256sums.length} --sha256sums value(s)`,
+          );
+        }
+        const seenTargets = new Set<string>();
+        for (const target of targets) {
+          if (seenTargets.has(target)) {
+            throw new Error(`--target ${target} was given more than once`);
+          }
+          seenTargets.add(target);
+        }
+
         const versionCode = opts.versionCode
           ? parseNonNegativeInteger(opts.versionCode, "--version-code")
           : versionCodeFromVersion(opts.versionName);
@@ -840,40 +888,63 @@ export function registerBuildCommands(program: Command): void {
           ci_url: opts.ciUrl ?? null,
         };
 
-        // Every file is uploaded and its recorded digest/size checked against the
-        // local bytes BEFORE the release is created. A release that became active
-        // while one of its assets was still missing would be downloadable-but-
-        // incomplete, which is worse than a publish that simply failed.
+        // Every file of every target is uploaded and its recorded digest/size checked
+        // against the local bytes BEFORE the release is created. A release that became
+        // active while one of its assets was still missing would be
+        // downloadable-but-incomplete, which is worse than a publish that simply failed.
         const planned: Array<{
           path: string;
           artifact_kind: string;
           filetype: string;
           variant: string | null;
-        }> = [
-          { path: opts.binary, artifact_kind: "installable", filetype: "binary", variant: null },
-        ];
-        if (opts.runner) {
+          platform: string;
+          arch: string;
+          target: string;
+        }> = [];
+        targets.forEach((target, index) => {
+          const { platform, arch } = splitBuildTarget(target);
           planned.push({
-            path: opts.runner,
-            artifact_kind: "runner",
+            path: opts.binary[index]!,
+            artifact_kind: "installable",
             filetype: "binary",
-            variant: "runner",
-          });
-        }
-        if (opts.sha256sums) {
-          planned.push({
-            path: opts.sha256sums,
-            artifact_kind: "checksums",
-            filetype: "sha256sums",
             variant: null,
+            platform,
+            arch,
+            target,
           });
-        }
+          const runner = opts.runner[index];
+          if (runner !== undefined) {
+            planned.push({
+              path: runner,
+              artifact_kind: "runner",
+              filetype: "binary",
+              variant: "runner",
+              platform,
+              arch,
+              target,
+            });
+          }
+          const sha256sums = opts.sha256sums[index];
+          if (sha256sums !== undefined) {
+            planned.push({
+              path: sha256sums,
+              artifact_kind: "checksums",
+              filetype: "sha256sums",
+              variant: null,
+              platform,
+              arch,
+              target,
+            });
+          }
+        });
 
         // Preflight the local files (and their digests) before any remote write,
         // so a typo in a path cannot leave a half-published build behind.
         for (const entry of planned) {
           if (!existsSync(entry.path)) {
-            throw new Error(`--${entry.variant ?? entry.filetype} path not found: ${entry.path}`);
+            throw new Error(
+              `--${entry.variant ?? entry.filetype} path not found for target ${entry.target}: ${entry.path}`,
+            );
           }
           await sha256File(entry.path);
         }
@@ -901,11 +972,11 @@ export function registerBuildCommands(program: Command): void {
           const local = await sha256File(entry.path);
           const asset = await uploadAndRegisterAsset(appId, build.id, entry.path, {
             artifact_kind: entry.artifact_kind,
-            platform,
-            arch,
+            platform: entry.platform,
+            arch: entry.arch,
             filetype: entry.filetype,
             variant: entry.variant,
-            metadata_json: { filename: basename(entry.path) },
+            metadata_json: { filename: basename(entry.path), target: entry.target },
           });
           if (asset.file_hash !== local.sha256) {
             throw new Error(
@@ -2283,6 +2354,16 @@ export function inferElectronPlatform(filePath: string | undefined): string {
     return "linux";
   }
   return "win32";
+}
+
+/**
+ * Collector for repeated options. Commander otherwise keeps only the LAST value
+ * of a repeated flag, which for `--target`/`--binary` would silently drop the
+ * other targets of a multi-target release - a quiet wrong result rather than an
+ * error. Collecting into an array keeps every occurrence.
+ */
+function collectRepeatable(value: string, previous: string[]): string[] {
+  return [...previous, value];
 }
 
 export function splitBuildTarget(target: string): { platform: string; arch: string } {
