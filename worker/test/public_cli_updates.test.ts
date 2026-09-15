@@ -152,19 +152,29 @@ describe("public cli-binary selection", () => {
   });
 
   it("allows an exact pin that exists only on alpha", async () => {
+    // Contract: a pinned lookup is not restricted to the channel named in the
+    // request. It collects candidates by version/target across eligible
+    // channels, and the response reports the channel the release actually lives
+    // on rather than the one asked for. See the pinned-request contract comment
+    // in handlePublicCliBinaryUpdateCheck.
     seedRelease("alpha-only", "4.0.0", "active", 400, { channel: "alpha" });
     const response = await check("&version=4.0.0");
     expect(response.status).toBe(200);
-    await expect(response.json()).resolves.toMatchObject({ release: { channel: "alpha" } });
+    await expect(response.json()).resolves.toMatchObject({
+      release: { id: "alpha-only", channel: "alpha", version: "4.0.0" },
+    });
   });
 
   it("prefers main when cross-channel artifact identity matches", async () => {
+    // Byte-identical duplicates are not a divergence: the identity set has one
+    // member, so the request resolves normally and the ordering picks main.
+    // This is what makes the divergence test below meaningful.
     const sha256 = "b".repeat(64);
     seedRelease("alpha", "5.0.0", "active", 500, { channel: "alpha", sha256 });
     seedRelease("main", "5.0.0", "active", 500, { channel: "main", reuseArtifactFrom: "alpha" });
     const response = await check("&version=5.0.0");
     expect(response.status).toBe(200);
-    await expect(response.json()).resolves.toMatchObject({ release: { channel: "main" } });
+    await expect(response.json()).resolves.toMatchObject({ release: { channel: "main", version: "5.0.0" } });
   });
 
   it("fails closed when a pinned cross-channel artifact diverges", async () => {
