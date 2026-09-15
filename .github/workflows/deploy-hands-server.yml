@@ -284,6 +284,80 @@ jobs:
           echo "Census exercised and returned 0 — every legacy row's credential columns are"
           echo "preserved in live build_assets; the 0068 drop is provably lossless."
 
+      - name: Pre-apply census — builds.artifact_mode residual split (0073 guard)
+        working-directory: worker
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_BOTIVERSE_API_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          n() {
+            pnpm exec wrangler d1 execute "${HANDS_D1_DATABASE_NAME}" \
+              --remote --json --config wrangler.hands.generated.jsonc --command "$1" \
+              | jq -r '.[0].results[0].n'
+          }
+
+          # 0073's in-migration guard sums both residual directions into a single
+          # `CHECK (ok = 1)` assertion, so an abort there reports "not zero" without
+          # saying WHICH direction. The operator then has to go and query before
+          # deciding. Printing both counts here puts the direction in the log before
+          # that decision is ever needed.
+          #
+          # The outcome this is designed against is someone removing the guard to make
+          # the deploy pass. The shorter the distance between "abort" and "understand
+          # why", the less likely that is. (Raised by @Sentinel during the #527 security
+          # read; lands as its own change because it touches this file rather than the
+          # migration, which is already merged.)
+          #
+          # If the column is absent, 0073 has not been applied yet — this census
+          # legitimately runs before it — and the in-migration guard is the check that
+          # applies. Skip cleanly rather than failing.
+          has_column=$(n "SELECT count(*) AS n FROM pragma_table_info('builds') WHERE name='artifact_mode';")
+          case "${has_column}" in
+            0) echo "builds.artifact_mode is absent — 0073 not yet applied; its in-migration guard is the check that runs. Nothing to report here."; exit 0 ;;
+            1) : ;;
+            *) echo "CANNOT RUN: artifact_mode column probe returned '${has_column}' (expected 0 or 1)." >&2; exit 2 ;;
+          esac
+
+          # Two counts rather than one sum: which direction is non-zero is the diagnosis.
+          census=$(pnpm exec wrangler d1 execute "${HANDS_D1_DATABASE_NAME}" \
+            --remote --json --config wrangler.hands.generated.jsonc --command \
+            "SELECT \
+               SUM(CASE WHEN b.artifact_mode <> 'external' \
+                             AND EXISTS (SELECT 1 FROM external_build_targets t WHERE t.build_id = b.id) \
+                             AND NOT EXISTS (SELECT 1 FROM build_assets a WHERE a.build_id = b.id) \
+                        THEN 1 ELSE 0 END) AS under_applied, \
+               SUM(CASE WHEN b.artifact_mode = 'external' \
+                             AND NOT (EXISTS (SELECT 1 FROM external_build_targets t WHERE t.build_id = b.id) \
+                                      AND NOT EXISTS (SELECT 1 FROM build_assets a WHERE a.build_id = b.id)) \
+                        THEN 1 ELSE 0 END) AS over_applied \
+             FROM builds b;" \
+            | jq -r '.[0].results[0] | "\(.under_applied // 0) \(.over_applied // 0)"')
+          read -r under_applied over_applied <<<"${census}"
+
+          echo "0073 pre-apply census: artifact_mode residual rows — under-applied (externally placed, still default)=${under_applied}, over-applied (marked external without external placement)=${over_applied}"
+
+          if [[ "${under_applied}" != "0" || "${over_applied}" != "0" ]]; then
+            echo "" >&2
+            echo "Stopping before the apply. The census exercised the 0073 guard predicate early." >&2
+            if [[ "${under_applied}" != "0" ]]; then
+              echo "  DIRECTION: under-applied = ${under_applied}. Externally placed build(s) are not marked" >&2
+              echo "  'external'; /dl/ would not resolve them while this holds." >&2
+            fi
+            if [[ "${over_applied}" != "0" ]]; then
+              echo "  DIRECTION: over-applied = ${over_applied}. Build(s) are marked 'external' without external" >&2
+              echo "  placement; these would be unreachable through /dl/." >&2
+            fi
+            echo "Do NOT apply, and do NOT weaken the 0073 guard to get past this — it is asserting a" >&2
+            echo "real fact. Escalate to the 0073 owner in #proj-hands and list offenders with the" >&2
+            echo "locator query in the 0073 migration header." >&2
+            echo "No migration has been applied and no Worker deployed." >&2
+            exit 1
+          fi
+
+          echo "Census returned 0/0 — artifact_mode agrees with placement in both directions."
+
       - name: Pre-apply census — unused build_assets.signature removal (0069 guard)
         working-directory: worker
         env:
