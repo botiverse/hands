@@ -359,6 +359,10 @@ export async function handleCreateIosSimulatorArtifact(c: AdminContext) {
         release_type: "qa",
         version_name: input.versionName,
         version_code: numericVersionCode(input.buildNumber),
+        // One of the four real `source` values (see BuildInput.source in builds.ts for the
+        // domain and the fact-based attribution rule). QA simulator artifacts are R2-backed
+        // and nothing reads this value: it records provenance only, and needs no
+        // attribution rule.
         source: "qa-artifact",
         status: "pending",
         build_metadata_json: buildMetadata,

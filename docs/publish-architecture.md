@@ -197,7 +197,7 @@ builds
   version_name            TEXT NOT NULL                     -- e.g. "1.2.3"
   version_code            INTEGER NOT NULL                 -- monotonic per (app, product_type, channel, release_type)
   changelog               TEXT                              -- markdown
-  source                  TEXT NOT NULL                     -- 'cli' | 'web' | 'ci'
+  source                  TEXT NOT NULL                     -- see note below
   status                  TEXT NOT NULL                     -- 'pending' | 'building' | 'succeeded' | 'failed' | 'smoke_testing' | 'smoke_test_passed' | 'smoke_test_failed'
   build_metadata_json     TEXT NOT NULL DEFAULT '{}'        -- build-time: ci_url, git_commit, build_duration_ms, builder_host, ...
   parsed_metadata_json    TEXT NOT NULL DEFAULT '{}'        -- from parser: package_name, signature_sha256, min_sdk, native_codes, ...
@@ -210,6 +210,49 @@ builds
 ```
 
 **Why split from releases**: same build can be re-released multiple times with different scopes (full / platform-only / IP-only). Build stays immutable forever; release is mutable.
+
+**`builds.source` — actual domain and meaning.** This column records *which creation
+path* produced the build. The values the code writes are:
+
+| value | writer | placement | is a live criterion? |
+|---|---|---|---|
+| `web` | console (`createBuild` default, `worker/src/routes/builds.ts`) | R2-backed | no — provenance only |
+| `cli` | CLI publish commands (`packages/cli`) | R2-backed | no — provenance only |
+| `qa-artifact` | QA artifact route (`worker/src/routes/qa_artifacts.ts`) | R2-backed | no — provenance only |
+| `external` | external publish-version (`worker/src/routes/builds.ts`) | **declared externally, no R2 objects** | **yes** |
+| `mobile-ci` | Android release-artifact route (`worker/src/routes/android_release_artifacts.ts`) | R2-backed | no — provenance only |
+
+Only `external` is read as a criterion: it is the one value that additionally makes a claim
+about *where the bytes live*, rather than only how the row was produced — an overload of
+this column, not a design. The others are records of provenance with no readers and
+need no attribution rule. `ci` is **never written** by any code in this repository despite
+appearing in the older `0005` migration comment; treat it as dead. (Note that `apps.ts`
+also mentions "external", but for `product_type` registration / `parser_kind` — a different
+axis, not a read of this column.)
+
+Production rows observed in the 2026-09-15 census were `cli`, `external`, `web` and
+`qa-artifact`; `mobile-ci`'s writer is live code for which no row exists yet, which is
+exactly why the domain has to be pinned to the writers rather than to the rows.
+`worker/test/build_source_domain.test.ts` enforces that tie.
+
+Because of that overload, **do not use `source` as the general test for "is this build
+externally hosted"**. Attribute by fact instead:
+
+```
+has build_assets row(s)         => R2-hosted
+else has external_build_targets  => externally declared
+else                             => unattributed
+```
+
+A production census on 2026-09-15 (221 builds) found the label consistent with the bytes:
+all 31 `external` rows had declared targets and none had R2 assets, and no `cli` row
+claimed declared targets. Exactly **three** sites currently depend on `source` as a
+placement criterion — `external_dl.ts`, `builds.ts` (`getExternalBuild`) and `releases.ts`
+(`source !== 'external'` gates `required_external_targets`). `public_v2.ts` is **not** one of
+them: it merely mentions the label in a comment while its logic already keys off
+`build_assets`, so it is the reference for the correct approach rather than a site to change.
+(Beware counting grep hits here: that conflates "logic depends on it" with "a comment
+mentions it".)
 
 ### 3.8 `build_assets` — per-(platform, arch, variant, filetype) binaries
 

@@ -71,6 +71,12 @@ export async function handleExternalLatestDl(c: Context<{ Bindings: Env }>) {
   }
 
   const release = await c.env.DB.prepare(
+    // `b.source = 'external'` is a proxy for "this build's bytes are declared externally
+    // rather than stored in R2" (that is the only placement claim `source` carries; see
+    // BuildInput.source in builds.ts for the full domain and the fact-based rule).
+    // Also note the 404 body below is deliberately UNIFORM for every cause
+    // (app missing / channel missing / no active release): it must not become an
+    // existence oracle for app slugs and channels. See task #219.
     `SELECT r.id FROM releases r
      JOIN apps a ON a.id = r.app_id
      JOIN channels ch ON ch.id = r.channel_id

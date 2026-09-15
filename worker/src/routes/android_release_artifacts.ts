@@ -287,6 +287,9 @@ export async function handleCreateAndroidReleaseArtifacts(c: AdminContext) {
       release_type: "stable",
       version_name: input.versionName,
       version_code: input.versionCode,
+      // One of the `builds.source` values; provenance only (nothing reads it). See
+      // BuildInput.source in builds.ts for the domain, the fact-based attribution rule, and
+      // why the value set is pinned to writers rather than to observed production rows.
       source: "mobile-ci",
       status: "pending",
       build_metadata_json: {
