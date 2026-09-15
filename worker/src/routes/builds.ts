@@ -80,6 +80,58 @@ interface BuildRow {
   version_name: string;
   version_code: number;
   changelog: string | null;
+  // `source` records WHICH CREATION PATH produced the build. The values the code writes are:
+  //
+  //   'web'          - created from the console; this is the DEFAULT (see createBuild)
+  //   'cli'          - created by the CLI publish commands (packages/cli)
+  //   'qa-artifact'  - created by the QA artifact route (qa_artifacts.ts)
+  //   'external'     - created by external publish-version (builds.ts)
+  //   'mobile-ci'    - created by the Android release-artifact route
+  //                    (android_release_artifacts.ts). No production row carries this value
+  //                    yet (census 2026-09-15), but the writer is live code.
+  //
+  // HOW THIS LIST WAS DERIVED (reproducible — please re-run rather than trust it):
+  //   enumerate the call sites of `createBuild` in worker/src and read the `source`
+  //   argument of each, then add this function's own `input.source ?? "web"` default.
+  //     grep -rn "createBuild(" worker/src --include=*.ts
+  //   The CLI passes 'cli' from packages/cli (outside worker/src), so it must be added
+  //   separately. Do NOT derive the list by scanning production rows: a live writer with
+  //   no rows yet ('mobile-ci') is invisible that way, and an abandoned value would look
+  //   real. Do NOT derive it by grepping `source:` across the repo either — that also
+  //   matches unrelated properties (feedback.ts has source:'inline'/'presigned', and
+  //   android_release_artifacts.ts has a CI provenance `source` object), yielding three
+  //   false positives. worker/test/build_source_domain.test.ts performs exactly this
+  //   createBuild-scoped enumeration, so the test and this comment cannot drift apart.
+  //
+  // Of these, only 'external' is a LIVE CRITERION — readers branch on it because it is the
+  // one value that ALSO carries a claim about WHERE THE BYTES LIVE (declared URLs in
+  // external_build_targets, no R2 objects). The others are PROVENANCE RECORDS ONLY:
+  // nothing reads them, and they need no attribution rule.
+  // (Verified 2026-09-15: exactly TWO sites depend on source='external' as a criterion —
+  //  external_dl.ts and getExternalBuild below. releases.ts gates on it too (source !==
+  //  'external'). public_v2.ts merely *mentions* 'external' in a comment; its logic already
+  //  keys off build_assets (`assets.results.length === 0`), so it is the reference for the
+  //  correct approach rather than a site that needs changing. Be precise about this
+  //  distinction: counting grep hits conflates "logic depends on it" with "a comment
+  //  mentions it".)
+  //
+  // Do NOT use `source` as the general test for "is this build externally hosted".
+  // Attribute by FACT instead:
+  //   has build_assets row(s)           => R2-hosted
+  //   else has external_build_targets   => externally declared
+  //   else                              => unattributed
+  // (public_v2.ts already follows this rule — it attributes by build_assets and only
+  //  mentions the label in a comment; see also external_dl.ts, builds.ts and releases.ts
+  //  where the `source = 'external'` label is still relied on as a proxy.)
+  //
+  // Careful: `apps.ts` also mentions 'external', but for product_type registration
+  // (parser_kind='external'). That is a different axis — do not count it as a reader here.
+  //
+  // 'ci' appears in some older documents (0005 migration comment,
+  // docs/publish-architecture.md) but is NEVER WRITTEN anywhere in this repo. Treat it as
+  // dead; do not implement against it.
+  //
+  // worker/test/build_source_domain.test.ts pins this list against the actual writers.
   source: string;
   status: string;
   build_metadata_json: string;
@@ -282,6 +334,13 @@ async function getExternalBuild(
   appId: string,
   versionName: string,
 ): Promise<ExternalBuildRow | null> {
+  // `source = 'external'` here is a proxy for "bytes are externally declared, not in R2".
+  // It is sound today: every 'external' row in production has external_build_targets and
+  // none has R2 assets (census 2026-09-15). A build created by any other path that also
+  // lacked R2 bytes would NOT be found by this query, even though it is equally
+  // "external" in the placement sense. If a new such writer appears, converge this and the
+  // other two label-reading sites (external_dl.ts, releases.ts) on the fact-based rule
+  // documented at BuildInput.source.
   return await db
     .prepare(
       `SELECT id, channel_id, product_type, release_type, version_code, provenance_json
@@ -376,6 +435,8 @@ export async function createBuild(
       input.version_name,
       Number(input.version_code),
       input.changelog ?? null,
+      // Default creation path is the console ('web'); see BuildInput.source for the
+      // documented domain and the fact-based attribution rule.
       input.source ?? "web",
       input.status ?? "pending",
       jsonString(input.build_metadata_json),
@@ -601,6 +662,8 @@ export async function handlePublishExternalBuildVersion(c: AdminContext) {
           release_type: input.release_type!,
           version_name: input.version_name,
           version_code: input.version_code,
+          // 'external' = bytes are declared via external_build_targets, not stored in R2.
+          // This is the only `source` value that asserts placement; see BuildInput.source.
           source: "external",
           status: "succeeded",
           build_metadata_json: { external_source: true },
