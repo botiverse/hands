@@ -153,6 +153,36 @@ describe("builds.source documented domain", () => {
     }
   });
 
+  it("does not hardcode a value count in prose that could drift from the domain", () => {
+    // The original defect was prose asserting a fixed count ("the four values") while the
+    // enumerated domain had grown to five. A number in a comment is a second source of truth
+    // that nothing checks, so require prose to point at the authoritative list instead.
+    const proseFiles = [
+      "worker/src/routes/builds.ts",
+      "worker/src/routes/qa_artifacts.ts",
+      "worker/src/routes/releases.ts",
+      "worker/src/routes/external_dl.ts",
+      "worker/src/routes/android_release_artifacts.ts",
+    ];
+    const offenders: string[] = [];
+    for (const rel of proseFiles) {
+      const text = readFileSync(join(repoRoot, rel), "utf8");
+      for (const line of text.split("\n")) {
+        // Only comment lines; the point is about prose, not identifiers.
+        if (!line.trimStart().startsWith("//")) continue;
+        if (/\b(four|five|three|two)-value\b|\bthe (four|five|three|two) (real )?values\b/i.test(line)) {
+          offenders.push(`${rel}: ${line.trim()}`);
+        }
+      }
+    }
+    expect(
+      offenders,
+      `prose hardcodes a value count, which drifts as the domain grows (this is exactly the ` +
+        `defect this card fixes). Point at BuildInput.source instead of stating a number:\n` +
+        offenders.join("\n"),
+    ).toEqual([]);
+  });
+
   it("scopes discovery to createBuild, so unrelated `source:` properties are not counted", () => {
     // Guards the precision of the scan itself: these belong to other tables/concerns and
     // must never appear as builds.source values.

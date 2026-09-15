@@ -1329,8 +1329,8 @@ async function prepareExternalTargetGate(
   // `source !== 'external'` gates the required_external_targets contract. It is a proxy for
   // "bytes are declared externally rather than stored in R2" — the only placement claim
   // `source` carries. Sound today (census 2026-09-15: 31/31 external rows have declared
-  // targets and zero have R2 assets), but see BuildInput.source in builds.ts for the full
-  // four-value domain and the fact-based attribution rule.
+  // targets and zero have R2 assets), but see BuildInput.source in builds.ts for the
+  // documented domain and the fact-based attribution rule.
   if (build.source !== "external") {
     if (requiredRaw !== undefined) {
       return { response: c.json({ error: "required_external_targets only applies to external builds" }, 400) };

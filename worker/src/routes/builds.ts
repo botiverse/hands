@@ -435,8 +435,8 @@ export async function createBuild(
       input.version_name,
       Number(input.version_code),
       input.changelog ?? null,
-      // Default creation path is the console ('web'); see BuildInput.source for the full
-      // four-value domain and the fact-based attribution rule.
+      // Default creation path is the console ('web'); see BuildInput.source for the
+      // documented domain and the fact-based attribution rule.
       input.source ?? "web",
       input.status ?? "pending",
       jsonString(input.build_metadata_json),
