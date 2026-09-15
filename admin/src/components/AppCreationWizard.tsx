@@ -66,12 +66,6 @@ const DEFAULT_PRODUCT_TYPES: Array<{
       "Platform-specific installers such as dmg, exe, AppImage, and arch variants are chosen at artifact upload time.",
   },
   {
-    name: "rn-bundle",
-    display_name: "React Native OTA bundle",
-    description: "JS bundle hot-update (replaces JS layer only)",
-    artifact_note: "Bundle assets are selected later when creating builds/releases.",
-  },
-  {
     name: "cli-binary",
     display_name: "Node / CLI binary",
     description: "Externally hosted Node SEA or CLI binary",
@@ -83,24 +77,36 @@ const DEFAULT_PRODUCT_TYPES: Array<{
 const APP_PLATFORMS = ["android", "ios", "ohos", "electron", "node", "web"] as const;
 type AppPlatform = (typeof APP_PLATFORMS)[number];
 
+// Every channel offers the same product types: the ones we support. The three
+// default channels are seeded identically so a new app reads as "all of these are
+// available". `rn-bundle` is intentionally absent (React Native OTA bundles are
+// not shipped).
+const DEFAULT_CHANNEL_PRODUCT_TYPES = [
+  "android-apk",
+  "electron-installer",
+  "ios-ipa",
+  "ohos-app",
+  "cli-binary",
+];
+
 const DEFAULT_CHANNELS = [
   {
     slug: "main",
     name: "Main",
     description: "Primary stable lane for normal users",
-    enabled_product_types: ["android-apk", "electron-installer", "rn-bundle", "ios-ipa", "ohos-app", "cli-binary"],
+    enabled_product_types: DEFAULT_CHANNEL_PRODUCT_TYPES,
   },
   {
     slug: "preview",
     name: "Preview",
     description: "Pre-release lane for QA and selected testers",
-    enabled_product_types: ["android-apk", "rn-bundle"],
+    enabled_product_types: DEFAULT_CHANNEL_PRODUCT_TYPES,
   },
   {
     slug: "nightly",
     name: "Nightly",
     description: "Fast-moving lane for internal daily validation",
-    enabled_product_types: ["android-apk"],
+    enabled_product_types: DEFAULT_CHANNEL_PRODUCT_TYPES,
   },
 ];
 
@@ -315,9 +321,6 @@ export function AppCreationWizard({
                     <div className="text-xs font-mono text-slate-500">{c.slug}</div>
                     <div className="text-xs text-slate-600 mt-1">
                       {c.description}
-                    </div>
-                    <div className="text-[11px] text-slate-400 mt-2">
-                      Products: {c.enabled_product_types.join(", ")}
                     </div>
                   </div>
                 ))}

@@ -264,7 +264,7 @@ export function ReleaseAssetUploader(props: Props) {
             : "border-slate-200 text-slate-500 hover:border-slate-400"
         }`}
       >
-        Drop APK / dmg / deb / exe / rn-bundle here, or click to choose.
+        Drop APK / dmg / deb / exe here, or click to choose.
         Multiple files OK.
       </div>
       <input

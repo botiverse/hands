@@ -39,7 +39,6 @@ export const KNOWN_PLATFORMS = [
   "darwin",
   "linux",
   "win32",
-  "rn-bundle",
 ] as const;
 
 export const KNOWN_FILETYPES = [
@@ -98,9 +97,6 @@ export function detectFromFilename(filename: string): DetectedFileMeta {
   } else if (ext === "aab") {
     platform = "android";
     filetype = "aab";
-  } else if (ext === "bundle") {
-    platform = "rn-bundle";
-    filetype = "bundle";
   }
   return { platform, arch, variant: null, filetype };
 }
@@ -123,7 +119,6 @@ function platformFromHint(hint?: string): string | null {
   if (hint.startsWith("android-")) return "android";
   if (hint.startsWith("ios-")) return "ios";
   if (hint.includes("electron")) return "darwin";
-  if (hint.includes("rn") || hint.includes("bundle")) return "rn-bundle";
   return null;
 }
 

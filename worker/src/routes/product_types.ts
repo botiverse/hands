@@ -1,7 +1,7 @@
 /**
  * /api/apps/:appId/product-types — list / create / update / delete product types
  *
- * A product type = "what we ship" (android-apk, electron-installer, rn-bundle, ...)
+ * A product type = "what we ship" (android-apk, electron-installer, ios-ipa, ...)
  * User-defined per app. The wizard seeds defaults; admin can add custom ones.
  * See docs/publish-architecture.md v3 §3.3.
  */

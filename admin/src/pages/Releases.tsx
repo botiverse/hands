@@ -191,9 +191,6 @@ function productTypeMatchesPlatform(productType: ProductType, appPlatform?: stri
   if (platform === "node") {
     return productType.name === "cli-binary" || productType.parser_kind === "external";
   }
-  if (platform === "rn" || platform === "react-native") {
-    return productType.name.includes("rn") || productType.parser_kind === "rn-bundle";
-  }
   return productType.name.includes(platform) || productType.parser_kind.includes(platform);
 }
 

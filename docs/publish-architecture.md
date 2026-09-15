@@ -35,7 +35,7 @@ Hands ships and updates software for multiple product types:
 | `android-aab` | Play Store dynamic delivery | `app-release.aab` |
 | `ios-ipa` | TestFlight / direct install | `MyApp.ipa` |
 | `electron-installer` | Squirrel auto-update via platform binary | `MyApp-1.2.3-arm64.dmg` |
-| `rn-bundle` | JS bundle hot-reload (hot-updater) | `bundle.zip` |
+| ~~`rn-bundle`~~ | JS bundle hot-reload — **retired, not supported** | — |
 | `cli-binary` | Self-update binary | `mycli-1.2.3-linux-x64.tar.gz` |
 
 User-defined per app: each app picks which product_types it supports at creation time (Sentry-style wizard).
@@ -89,10 +89,10 @@ User-defined per app. Created during app creation wizard or added later.
 product_types
   id                          TEXT PRIMARY KEY
   app_id                      TEXT NOT NULL REFERENCES apps(id) ON DELETE CASCADE
-  name                        TEXT NOT NULL         -- 'android-apk' | 'electron-installer' | 'rn-bundle' | ...
+  name                        TEXT NOT NULL         -- 'android-apk' | 'electron-installer' | | ...
   display_name                TEXT NOT NULL
   description                 TEXT
-  parser_kind                 TEXT NOT NULL         -- 'apk-aapt' | 'electron-asar' | 'rn-bundle' | 'ipa-info' | 'unknown'
+  parser_kind                 TEXT NOT NULL         -- 'apk-aapt' | 'electron-asar' | 'ipa-info' | 'unknown'
   supported_platforms_json    TEXT NOT NULL DEFAULT '[]'  -- empty for apks; e.g. ["darwin-arm64","darwin-x64",...] for electron
   default_assets_json         TEXT NOT NULL DEFAULT '[]'  -- e.g. [{"platform":"darwin-arm64","filetype":"dmg"},...]
   schema_json                 TEXT NOT NULL DEFAULT '{}'  -- parser hints: requires_native_codes, requires_electron_version, etc.
@@ -106,7 +106,6 @@ product_types
 - `android-aab` (parser: aapt)
 - `ios-ipa` (parser: ipa-info)
 - `electron-installer` (parser: electron-asar)
-- `rn-bundle` (parser: rn-bundle)
 - `cli-binary` (parser: unknown)
 
 User can add custom product_types (e.g. `firmware-esp32`, `vscode-extension`, `docker-image`, ...) or hide the defaults they don't need.
@@ -161,7 +160,10 @@ Channel = "deployment environment". A channel:
 - Can have its own bundle_id (for parallel install against production)
 - Can have its own password (gated downloads)
 - Inherits signing credentials from account (no per-channel cert upload)
-- Lists which product_types are enabled (e.g. beta channel might enable `android-apk` + `rn-bundle` but not `electron-installer`)
+- Lists which product_types are enabled (e.g. beta channel might enable `android-apk` +
+  `cli-binary` but not `electron-installer`)
+  - NOTE: this list is **descriptive only**. Nothing in the build/release path reads it to accept
+    or refuse an upload, so it does not currently constrain what can be published to a channel.
 
 ### 3.6 `signing_credentials` — code signing certs (account-level)
 
@@ -509,7 +511,11 @@ For Electron with scope=platform(darwin-only):
 }
 ```
 
-### 5.2 OTA bundles (rn-bundle)
+### 5.2 OTA bundles (rn-bundle) — **RETIRED, not implemented**
+
+> **Retired 2026-09-15.** We do not support React Native OTA bundles. The `rn-bundle`
+> product type is no longer seeded for new apps, and its parser has been removed from the
+> container. The contract below is kept for history only; nothing implements it.
 
 ```
 GET /public/apps/:slug/bundles?channel=production&product_type=rn-bundle&app_version=1.2.3
