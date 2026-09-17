@@ -66,6 +66,127 @@ describe("config round-trip", () => {
   });
 });
 
+describe("incomplete agent environment fails loudly, not as a 401", () => {
+  // Regression: with SOME agent markers present but not all, admission is fail_closed and
+  // no credential can be sent. That used to resolve to an undefined bearer, so the request
+  // went out unauthenticated and the user saw a bare 401 - which reads exactly like an
+  // expired or revoked token. It is not one. The failure must name the environment as the
+  // cause and say how to proceed.
+  let server: ReturnType<typeof createServer>;
+  let baseUrl: string;
+  let requests = 0;
+  let lastAuthorization: string | null = null;
+  const saved: Record<string, string | undefined> = {};
+
+  beforeEach(async () => {
+    for (const k of ["SLOCK_CLI_TRANSPORT_DIR", "SLOCK_HOME", "SLOCK_AGENT_ID", "QUIVER_API"]) {
+      saved[k] = process.env[k];
+    }
+    requests = 0;
+    lastAuthorization = null;
+    server = createServer((_req, res) => {
+      requests += 1;
+      lastAuthorization = _req.headers.authorization ?? null;
+      res.setHeader("content-type", "application/json");
+      res.end(JSON.stringify({ apps: [] }));
+    });
+    await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+    const addr = server.address();
+    if (!addr || typeof addr === "string") throw new Error("bad address");
+    baseUrl = `http://127.0.0.1:${addr.port}`;
+    process.env.QUIVER_API = baseUrl;
+  });
+
+  afterEach(async () => {
+    await new Promise<void>((r) => server.close(() => r()));
+    for (const [k, v] of Object.entries(saved)) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+  });
+
+  it("throws AgentEnvironmentError naming the missing marker instead of sending an unauthenticated request", async () => {
+    // Exactly the reported shape: two of three markers, SLOCK_AGENT_ID absent.
+    process.env.SLOCK_HOME = tmpdir();
+    process.env.SLOCK_CLI_TRANSPORT_DIR = tmpdir();
+    delete process.env.SLOCK_AGENT_ID;
+    const { apiRequest, AgentEnvironmentError } = await import("../src/lib/api.js");
+    await expect(apiRequest("/api/apps")).rejects.toBeInstanceOf(AgentEnvironmentError);
+    // The whole point: no request is issued at all, so nothing can look like a 401.
+    expect(requests).toBe(0);
+  });
+
+  it("the message says the environment is the cause, not the credential", async () => {
+    process.env.SLOCK_HOME = tmpdir();
+    process.env.SLOCK_CLI_TRANSPORT_DIR = tmpdir();
+    delete process.env.SLOCK_AGENT_ID;
+    const { apiRequest } = await import("../src/lib/api.js");
+    const err = await apiRequest("/api/apps").then(
+      () => null,
+      (e: unknown) => e as Error,
+    );
+    expect(err).not.toBeNull();
+    expect(err!.message).toContain("SLOCK_AGENT_ID");
+    expect(err!.message).toMatch(/not an expired token/i);
+  });
+
+  it("names every missing marker, not just the first", async () => {
+    delete process.env.SLOCK_CLI_TRANSPORT_DIR;
+    delete process.env.SLOCK_HOME;
+    process.env.SLOCK_AGENT_ID = "agent-7"; // one of three present
+    const { apiRequest } = await import("../src/lib/api.js");
+    const err = await apiRequest("/api/apps").then(
+      () => null,
+      (e: unknown) => e as Error,
+    );
+    expect(err!.message).toContain("SLOCK_CLI_TRANSPORT_DIR");
+    expect(err!.message).toContain("SLOCK_HOME");
+    expect(requests).toBe(0);
+  });
+
+  it("does NOT use a human credential that happens to be in the environment (no silent downgrade)", async () => {
+    // The safety property: fail_closed must not fall back to ambient human credentials.
+    // Asserting only "it throws" would pass even if a future edit read the human token
+    // first and threw later; assert the human token never reaches the wire.
+    process.env.SLOCK_HOME = tmpdir();
+    process.env.SLOCK_CLI_TRANSPORT_DIR = tmpdir();
+    delete process.env.SLOCK_AGENT_ID;
+    process.env.QUIVER_AUTH_TOKEN = "human-token-must-not-be-used";
+    const { apiRequest } = await import("../src/lib/api.js");
+    await expect(apiRequest("/api/apps")).rejects.toThrow();
+    expect(requests).toBe(0);
+    expect(lastAuthorization).toBeNull();
+    delete process.env.QUIVER_AUTH_TOKEN;
+  });
+
+  it("distinguishes 2/3 (fail loudly) from 0/3 (human path with no markers)", async () => {
+    // 2/3 must throw; 0/3 is a legitimate human/CI environment and must NOT throw. Keeping
+    // them in one case would hide a future change that merges the two states.
+    process.env.SLOCK_HOME = tmpdir();
+    process.env.SLOCK_CLI_TRANSPORT_DIR = tmpdir();
+    delete process.env.SLOCK_AGENT_ID;
+    const { apiRequest } = await import("../src/lib/api.js");
+    await expect(apiRequest("/api/apps")).rejects.toThrow();
+
+    delete process.env.SLOCK_CLI_TRANSPORT_DIR;
+    delete process.env.SLOCK_HOME;
+    delete process.env.SLOCK_AGENT_ID;
+    const out = await apiRequest<{ apps: unknown[] }>("/api/apps");
+    expect(out.apps).toEqual([]);
+  });
+
+  it("a clean human environment is unaffected (no markers at all)", async () => {
+    delete process.env.SLOCK_CLI_TRANSPORT_DIR;
+    delete process.env.SLOCK_HOME;
+    delete process.env.SLOCK_AGENT_ID;
+    const { apiRequest } = await import("../src/lib/api.js");
+    const out = await apiRequest<{ apps: unknown[] }>("/api/apps");
+    expect(out.apps).toEqual([]);
+    expect(requests).toBe(1);
+  });
+});
+
+
 describe("apiRequest", () => {
   let server: ReturnType<typeof createServer>;
   let baseUrl: string;
