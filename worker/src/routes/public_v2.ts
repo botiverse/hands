@@ -140,6 +140,41 @@ type BuildAssetIdentity = {
   r2_key: string | null;
 };
 
+/**
+ * Resolve ONE optional sidecar representation of a hosted build, by its variant name.
+ *
+ * #229 adds two optional companions to the raw binary of the same target:
+ *   variant='gzip'        filetype='gz'   -> the compressed stream (sha256/size describe the
+ *                                            COMPRESSED bytes, addressed as `<target>.gz`)
+ *   variant='photon-wasm' filetype='wasm' -> a WASM sidecar the installer requires when present
+ *
+ * These are optional by contract: an app without them must still answer updates/check, so a miss
+ * returns null and the caller omits the field. That is deliberately NOT the download surface's
+ * rule, where a `.gz` request for a missing gzip must 4xx rather than silently serve the raw
+ * bytes (see serveHostedAsset / handleExternalReleaseDl).
+ */
+async function resolveHostedSidecar(
+  env: Env,
+  buildId: string,
+  target: string,
+  variant: string,
+): Promise<{ sha256: string; size_bytes: number } | null> {
+  const row = await env.DB.prepare(
+    `SELECT file_hash, size_bytes
+       FROM build_assets
+      WHERE build_id = ?1
+        AND variant = ?2
+        AND artifact_kind = 'installable'
+        AND (platform || '-' || COALESCE(arch, '')) = ?3
+      ORDER BY created_at ASC LIMIT 1`,
+  ).bind(buildId, variant, target).first<{ file_hash: string; size_bytes: number }>();
+  if (!row) return null;
+  if (!/^[a-f0-9]{64}$/u.test(row.file_hash) || !Number.isSafeInteger(row.size_bytes) || row.size_bytes < 0) {
+    return null;
+  }
+  return { sha256: row.file_hash, size_bytes: row.size_bytes };
+}
+
 async function resolveBuildAssetIdentities(
   env: Env,
   appSlug: string,
@@ -792,10 +827,35 @@ export async function handlePublicCliBinaryUpdateCheck(c: Context<{ Bindings: En
   const origin = requestOrigin(c);
   // Advertise only a complete attested representation of this same build target.
   // An absent/incomplete optional representation leaves the canonical raw route usable.
-  const gzip = typeof row.gzip_sha256 === "string" && /^[a-f0-9]{64}$/u.test(row.gzip_sha256)
+  // Advertise only complete attested representations of this same target. Both are OPTIONAL
+  // by contract: an app that has neither must still get a normal answer, so a miss omits the
+  // field rather than failing the check. (The download surface is stricter: a `.gz` request
+  // for a missing gzip is a 4xx, never a silent raw body - see external_dl.ts.)
+  //
+  // External builds declare these on external_build_targets; hosted builds carry them as
+  // sibling rows in build_assets (variant=gzip / photon-wasm). Both must answer with the
+  // same shape, so prefer the declared columns and fall back to the hosted rows.
+  let gzipSidecar = typeof row.gzip_sha256 === "string" && /^[a-f0-9]{64}$/u.test(row.gzip_sha256)
     && typeof row.gzip_size_bytes === "number" && Number.isSafeInteger(row.gzip_size_bytes) && row.gzip_size_bytes > 0
-    ? { sha256: row.gzip_sha256, size_bytes: row.gzip_size_bytes,
+    ? { sha256: row.gzip_sha256, size_bytes: row.gzip_size_bytes }
+    : undefined;
+  if (!gzipSidecar && row.build_id) {
+    gzipSidecar = (await resolveHostedSidecar(c.env, row.build_id, target, "gzip")) ?? undefined;
+  }
+  // The pinned `.gz` suffix is the addressing form the external branch has always used, so a
+  // hosted gzip is published the same way rather than through a new entry point.
+  const gzip = gzipSidecar
+    ? { ...gzipSidecar,
       download_url: `${origin}/dl/${encodeURIComponent(slug)}/releases/${encodeURIComponent(row.release_id)}/${encodeURIComponent(target)}.gz` }
+    : undefined;
+  // A sidecar is reachable only through `?kind=`. The URL must carry it, or a caller following
+  // the link would hit the no-kind branch and receive the primary binary instead.
+  const wasmSidecar = row.build_id
+    ? await resolveHostedSidecar(c.env, row.build_id, target, "photon-wasm")
+    : null;
+  const photonWasm = wasmSidecar
+    ? { ...wasmSidecar,
+      download_url: `${origin}/dl/${encodeURIComponent(slug)}/releases/${encodeURIComponent(row.release_id)}/${encodeURIComponent(target)}?kind=photon-wasm` }
     : undefined;
   return c.json({
     update_available: true,
@@ -812,6 +872,7 @@ export async function handlePublicCliBinaryUpdateCheck(c: Context<{ Bindings: En
       size_bytes: row.raw_size_bytes, sha256: row.raw_sha256,
       download_url: `${origin}/dl/${encodeURIComponent(slug)}/releases/${encodeURIComponent(row.release_id)}/${encodeURIComponent(target)}`,
       ...(gzip ? { gzip } : {}),
+      ...(photonWasm ? { photon_wasm: photonWasm } : {}),
     },
   });
 }

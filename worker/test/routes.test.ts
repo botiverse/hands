@@ -6862,15 +6862,50 @@ describe("quiver public API v2 — scope resolution", () => {
     expect(unknownWithOverlap.status).toBe(404);
     expect(unknownWithOverlap.headers.get("location")).toBeNull();
 
+    // 4c. #229: a `.gz` request names the gzip REPRESENTATION of this target, whose declared
+    //     sha256/size are of the COMPRESSED bytes. Serving it must not silently return the raw
+    //     binary: before this, the hosted branch ran ahead of the gzip check with no gzip
+    //     concept at all, so `.gz` answered 200 with MAIN-BINARY-BYTES while the gzip metadata
+    //     described a different object. A build with no gzip row must fail closed instead.
+    const missingGz = await handleExternalReleaseDl(
+      dlCtx({ slug: "scope-app", releaseId: "rel-hosted", file: "linux-x64.gz" }),
+    );
+    expect(missingGz.status).toBe(404);
+    expect(await missingGz.text()).not.toContain("MAIN-BINARY-BYTES");
+
+    //     With a gzip row present, `.gz` serves THAT object - the compressed stream - and
+    //     advertises its own length, never the raw one.
+    await env.DB.prepare(
+      `INSERT INTO build_assets (id, build_id, artifact_kind, platform, arch, variant, filetype, r2_key,
+                                 file_hash, size_bytes, metadata_json, download_count, created_at)
+       VALUES ('ha-gz', 'b-hosted', 'installable', 'linux', 'x64', 'gzip', 'gz', 'hosted/ha-gz',
+               ?1, ?2, '{}', 0, ?3)`,
+    ).bind("d".repeat(64), "GZIP-STREAM-BYTES".length, Date.now()).run();
+    objects["hosted/ha-gz"] = "GZIP-STREAM-BYTES";
+    const servedGz = await handleExternalReleaseDl(
+      dlCtx({ slug: "scope-app", releaseId: "rel-hosted", file: "linux-x64.gz" }),
+    );
+    expect(servedGz.status).toBe(200);
+    expect(await servedGz.text()).toBe("GZIP-STREAM-BYTES");
+    expect(servedGz.headers.get("content-length")).toBe(String("GZIP-STREAM-BYTES".length));
+
+    //     The `.gz` suffix and `?kind=gzip` are two spellings of one representation, so they
+    //     must resolve identically rather than one working and the other 404ing.
+    const gzViaKind = await handleExternalReleaseDl(
+      dlCtx({ slug: "scope-app", releaseId: "rel-hosted", file: "linux-x64" }, { kind: "gzip" }),
+    );
+    expect(gzViaKind.status).toBe(200);
+    expect(await gzViaKind.text()).toBe("GZIP-STREAM-BYTES");
+
     // 5. Existing external behaviour is untouched: an external release on the
     //    same app still 302s to its declared source URL. Seeded here so this
     //    test stands alone (the external block above uses its own fixture).
     await env.DB.prepare(
       `INSERT INTO builds (id, app_id, channel_id, product_type, release_type, version_name, version_code,
                            source, status, build_metadata_json, parsed_metadata_json, should_force_update,
-                           provenance_json, created_at, updated_at)
+                           provenance_json, created_at, updated_at, artifact_mode)
        VALUES ('b-ext-here', 'app-scope', 'ch-scope-prod', 'cli-binary', 'stable', '3.0.0', 3000000,
-               'external', 'succeeded', '{}', '{}', 0, '{}', ?1, ?1)`,
+               'external', 'succeeded', '{}', '{}', 0, '{}', ?1, ?1, 'external')`,
     ).bind(Date.now()).run();
     await env.DB.prepare(
       `INSERT INTO releases (id, app_id, build_id, channel_id, product_type, release_type, status,
@@ -6890,6 +6925,67 @@ describe("quiver public API v2 — scope resolution", () => {
     );
     expect(externalStill.status).toBe(302);
     expect(externalStill.headers.get("location")).toBe("https://cdn.test/3.0.0/linux-x64");
+
+    // 6. Placement is decided by the DECLARED mode, the same source the selector reads. This
+    //    build declares artifact_mode='external' yet also carries stray installable
+    //    build_assets rows; inferring hosted-ness from those rows would classify it hosted,
+    //    and the selector (which reads the declared mode) would offer a release this route
+    //    then 404s. One question, one producer.
+    await env.DB.prepare(
+      `INSERT INTO builds (id, app_id, channel_id, product_type, release_type, version_name, version_code,
+                           source, status, build_metadata_json, parsed_metadata_json, should_force_update,
+                           provenance_json, created_at, updated_at, artifact_mode)
+       VALUES ('b-ext-rows', 'app-scope', 'ch-scope-prod', 'cli-binary', 'stable', '4.0.0', 4000000,
+               'cli', 'succeeded', '{}', '{}', 0, '{}', ?1, ?1, 'external')`,
+    ).bind(Date.now()).run();
+    await env.DB.prepare(
+      `INSERT INTO build_assets (id, build_id, artifact_kind, platform, arch, variant, filetype, r2_key,
+                                 file_hash, size_bytes, metadata_json, download_count, created_at)
+       VALUES ('ba-ext-stray', 'b-ext-rows', 'installable', 'linux', 'x64', NULL, 'binary', 'hosted/stray',
+               ?1, 5, '{}', 0, ?2)`,
+    ).bind("e".repeat(64), Date.now()).run();
+    await env.DB.prepare(
+      `INSERT INTO releases (id, app_id, build_id, channel_id, product_type, release_type, status,
+                             activated_at, is_full, changelog, created_by, created_at, updated_at)
+       VALUES ('rel-ext-rows', 'app-scope', 'b-ext-rows', 'ch-scope-prod', 'cli-binary', 'stable', 'active',
+               ?1, 1, NULL, 'tester', ?1, ?1)`,
+    ).bind(Date.now()).run();
+    await env.DB.prepare(
+      `INSERT INTO external_build_targets (id, app_id, build_id, version_name, target, source_url,
+                                           raw_sha256, raw_size_bytes, created_at, updated_at)
+       VALUES ('ebt-rows', 'app-scope', 'b-ext-rows', '4.0.0', 'linux-x64',
+               'https://cdn.test/4.0.0/linux-x64', ?1, 5, ?2, ?2)`,
+    ).bind("f".repeat(64), Date.now()).run();
+
+    const declaredExternal = await handleExternalReleaseDl(
+      dlCtx({ slug: "scope-app", releaseId: "rel-ext-rows", file: "linux-x64" }),
+    );
+    expect(declaredExternal.status).toBe(302);
+    expect(declaredExternal.headers.get("location")).toBe("https://cdn.test/4.0.0/linux-x64");
+
+    // 6b. The forward-looking case this guards, stated as behaviour rather than as a marker:
+    //     while a build is being migrated to hosted placement, rows for it can already exist
+    //     BEFORE the placement flips, and the public download must keep serving the original
+    //     external URL throughout. Here that state is represented directly - the build declares
+    //     `external` and installable rows for it are present - and the answer must still be the
+    //     declared URL. When #536 introduces an explicit ingest state, this same assertion holds
+    //     for its pending/ready rows; testing the invariant (mode decides, not rows) rather than
+    //     one migration's marker is what makes it survive that change.
+    const duringMigration = await handleExternalReleaseDl(
+      dlCtx({ slug: "scope-app", releaseId: "rel-ext-rows", file: "linux-x64" }),
+    );
+    expect(duringMigration.status).toBe(302);
+    expect(duringMigration.headers.get("location")).toBe("https://cdn.test/4.0.0/linux-x64");
+
+    //     ...and `/latest` selects the same build by the same rule, so the two surfaces agree:
+    //     it 302s to the release-bound path, which then serves the external URL above. The
+    //     important part is that neither surface picks the hosted rows while the build still
+    //     declares external placement.
+    const latestDuring = await handleExternalLatestDl(
+      dlCtx({ slug: "scope-app", channel: "production", file: "linux-x64" }),
+    );
+    expect(latestDuring.status).toBe(302);
+    expect(latestDuring.headers.get("location")).toBe("/dl/scope-app/releases/rel-ext-rows/linux-x64");
   });
 
   it("release checks: upsert per source, advisory read-back on get-release", async () => {
