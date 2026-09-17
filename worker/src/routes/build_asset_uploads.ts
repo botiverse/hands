@@ -432,7 +432,7 @@ async function deleteClaimedUploadObjects(
   row: { asset_id: string; attempt: number; staging_key: string },
   receipt: string,
   now: number,
-): Promise<boolean> {
+): Promise<{ prepared: boolean; deleted: boolean }> {
   // Persist every exact key before deleting anything. Generation zero is reserved
   // for the staging object; verifier generations start at one. These `cleaned`
   // rows intentionally outlive the asset, so a PUT that was already in flight
@@ -471,8 +471,11 @@ async function deleteClaimedUploadObjects(
   const deletions = await Promise.allSettled([
     ...seals.results.map((seal) => env.APK_BUCKET.delete(seal.final_key)),
   ]);
-  return seals.results.some((seal) => seal.final_key === row.staging_key)
-    && deletions.every((result) => result.status === "fulfilled");
+  const prepared = seals.results.some((seal) => seal.final_key === row.staging_key);
+  return {
+    prepared,
+    deleted: prepared && deletions.every((result) => result.status === "fulfilled"),
+  };
 }
 
 async function finalizeClaimedUploadCleanup(
@@ -562,6 +565,34 @@ async function sweepCleanedSealObjects(env: Env, now: number): Promise<void> {
   }
 }
 
+async function finalizeFailedVerificationCleanup(
+  env: Env,
+  row: { build_id: string; asset_id: string; attempt: number },
+  receipt: string,
+  reason: string,
+): Promise<void> {
+  const asset = await env.DB.prepare(
+    "SELECT metadata_json FROM build_assets WHERE id = ?1 AND build_id = ?2",
+  ).bind(row.asset_id, row.build_id).first<{ metadata_json: string }>();
+  if (!asset) return;
+  const metadata = { ...JSON.parse(asset.metadata_json), upload_state: "failed", verification_error: reason };
+  await env.DB.batch([
+    env.DB.prepare(
+      `UPDATE build_assets SET metadata_json = ?1 WHERE id = ?2 AND build_id = ?3
+        AND EXISTS (
+          SELECT 1 FROM build_asset_ingest_attempt i
+           WHERE i.asset_id = ?2 AND i.attempt = ?4 AND i.state = 'failed'
+             AND i.cleanup_state = 'tombstoned' AND i.cleanup_receipt = ?5
+        )`,
+    ).bind(JSON.stringify(metadata), row.asset_id, row.build_id, row.attempt, receipt),
+    env.DB.prepare(
+      `UPDATE build_asset_ingest_attempt SET cleanup_state = 'expired'
+        WHERE asset_id = ?1 AND attempt = ?2 AND state = 'failed'
+          AND cleanup_state = 'tombstoned' AND cleanup_receipt = ?3`,
+    ).bind(row.asset_id, row.attempt, receipt),
+  ]);
+}
+
 function limitObjectBody(body: ReadableStream<Uint8Array>, expectedBytes: number) {
   let seen = 0;
   return body.pipeThrough(new TransformStream<Uint8Array, Uint8Array>({
@@ -600,39 +631,23 @@ async function failVerification(
   c: AdminContext,
   row: DirectUploadRow,
   leaseId: string,
-  finalKey: string | null,
   reason: string,
 ): Promise<boolean> {
+  const now = Date.now();
+  const receipt = `verification_failed:${reason}:${crypto.randomUUID()}`;
   const failed = await c.env.DB.prepare(
     `UPDATE build_asset_ingest_attempt
-        SET state = 'failed', cleanup_state = 'expired', cleanup_receipt = ?1,
+        SET state = 'failed', cleanup_state = 'tombstoned', cleanup_receipt = ?1,
             verifier_lease_id = NULL, verifier_lease_expires_at = NULL
       WHERE asset_id = ?2 AND attempt = ?3 AND verifier_lease_id = ?4`,
-  ).bind(reason, row.asset_id, row.attempt, leaseId).run();
+  ).bind(receipt, row.asset_id, row.attempt, leaseId).run();
   if ((failed.meta?.changes ?? 0) !== 1) return false;
-  await Promise.allSettled([
-    c.env.APK_BUCKET.delete(row.staging_key),
-    ...(finalKey ? [c.env.APK_BUCKET.delete(finalKey)] : []),
-  ]);
-  const metadata = { ...JSON.parse(row.metadata_json), upload_state: "failed", verification_error: reason };
-  const statements = [
-    c.env.DB.prepare(
-      `UPDATE build_assets SET metadata_json = ?1
-        WHERE id = ?2 AND build_id = ?3
-          AND EXISTS (
-            SELECT 1 FROM build_asset_ingest_attempt i
-             WHERE i.asset_id = ?2 AND i.attempt = ?4
-               AND i.state = 'failed' AND i.cleanup_receipt = ?5
-          )`,
-    ).bind(JSON.stringify(metadata), row.asset_id, row.build_id, row.attempt, reason),
-  ];
-  if (finalKey) {
-    statements.push(c.env.DB.prepare(
-      `UPDATE build_asset_ingest_seal SET outcome = 'superseded', cleanup_receipt = ?1
-        WHERE asset_id = ?2 AND attempt = ?3 AND final_key = ?4 AND outcome IS NULL`,
-    ).bind(reason, row.asset_id, row.attempt, finalKey));
-  }
-  await c.env.DB.batch(statements);
+  // The tombstone claim is durable before any R2 delete. Persist both the
+  // staging key and every verifier generation into the permanent cleaned
+  // ledger; a transient delete failure or crash is then repaired by cron.
+  const cleanup = await deleteClaimedUploadObjects(c.env, row, receipt, now);
+  if (!cleanup.prepared) return true;
+  await finalizeFailedVerificationCleanup(c.env, row, receipt, reason);
   return true;
 }
 
@@ -656,7 +671,8 @@ export async function handleCompleteBuildAssetUpload(c: AdminContext) {
     if (!receipt) {
       return c.json({ error: "asset upload verification is already in progress or terminal", code: "ASSET_UPLOAD_BUSY" }, 409);
     }
-    if (await deleteClaimedUploadObjects(c.env, row, receipt, now)) {
+    const cleanup = await deleteClaimedUploadObjects(c.env, row, receipt, now);
+    if (cleanup.deleted) {
       await finalizeClaimedUploadCleanup(c.env, row, receipt, "upload_expired", currentActor(c), now);
     }
     return c.json({ error: "asset upload expired", code: "ASSET_UPLOAD_EXPIRED" }, 410);
@@ -696,20 +712,20 @@ export async function handleCompleteBuildAssetUpload(c: AdminContext) {
 
   const head = await c.env.APK_BUCKET.head(row.staging_key);
   if (!head || head.size !== row.size_bytes) {
-    if (!await failVerification(c, row, leaseId, finalKey, head ? "size_mismatch" : "upload_missing")) {
+    if (!await failVerification(c, row, leaseId, head ? "size_mismatch" : "upload_missing")) {
       return c.json({ error: "asset verification lease was lost", code: "ASSET_UPLOAD_LEASE_LOST" }, 409);
     }
     return c.json({ error: "uploaded asset size does not match the declaration", code: "ASSET_UPLOAD_INTEGRITY_MISMATCH" }, 422);
   }
   if (await c.env.APK_BUCKET.head(finalKey)) {
-    if (!await failVerification(c, row, leaseId, finalKey, "immutable_key_conflict")) {
+    if (!await failVerification(c, row, leaseId, "immutable_key_conflict")) {
       return c.json({ error: "asset verification lease was lost", code: "ASSET_UPLOAD_LEASE_LOST" }, 409);
     }
     return c.json({ error: "verified asset key already exists", code: "ASSET_UPLOAD_IMMUTABLE_CONFLICT" }, 409);
   }
   const object = await c.env.APK_BUCKET.get(row.staging_key);
   if (!object?.body || object.size !== row.size_bytes) {
-    if (!await failVerification(c, row, leaseId, finalKey, "upload_changed_before_verification")) {
+    if (!await failVerification(c, row, leaseId, "upload_changed_before_verification")) {
       return c.json({ error: "asset verification lease was lost", code: "ASSET_UPLOAD_LEASE_LOST" }, 409);
     }
     return c.json({ error: "uploaded asset changed before verification", code: "ASSET_UPLOAD_INTEGRITY_MISMATCH" }, 422);
@@ -728,14 +744,14 @@ export async function handleCompleteBuildAssetUpload(c: AdminContext) {
     }),
   ]);
   if (hashResult.status === "rejected" || pumpResult.status === "rejected" || putResult.status === "rejected") {
-    if (!await failVerification(c, row, leaseId, finalKey, "stream_or_seal_failed")) {
+    if (!await failVerification(c, row, leaseId, "stream_or_seal_failed")) {
       return c.json({ error: "asset verification lease was lost", code: "ASSET_UPLOAD_LEASE_LOST" }, 409);
     }
     return c.json({ error: "failed to verify and seal asset", code: "ASSET_UPLOAD_SEAL_FAILED" }, 422);
   }
   const actual = hashResult.value;
   if (actual.size !== row.size_bytes || actual.sha256 !== row.file_hash.toLowerCase()) {
-    if (!await failVerification(c, row, leaseId, finalKey, actual.size !== row.size_bytes ? "size_mismatch" : "sha256_mismatch")) {
+    if (!await failVerification(c, row, leaseId, actual.size !== row.size_bytes ? "size_mismatch" : "sha256_mismatch")) {
       return c.json({ error: "asset verification lease was lost", code: "ASSET_UPLOAD_LEASE_LOST" }, 409);
     }
     return c.json({
@@ -747,13 +763,14 @@ export async function handleCompleteBuildAssetUpload(c: AdminContext) {
   }
   const finalHead = await c.env.APK_BUCKET.head(finalKey);
   if (!finalHead || finalHead.size !== row.size_bytes) {
-    if (!await failVerification(c, row, leaseId, finalKey, "sealed_size_mismatch")) {
+    if (!await failVerification(c, row, leaseId, "sealed_size_mismatch")) {
       return c.json({ error: "asset verification lease was lost", code: "ASSET_UPLOAD_LEASE_LOST" }, 409);
     }
     return c.json({ error: "verified asset readback failed", code: "ASSET_UPLOAD_SEAL_FAILED" }, 422);
   }
 
   const readyAt = Date.now();
+  const readyCleanupReceipt = `ready:${leaseId}`;
   const metadata = {
     ...JSON.parse(row.metadata_json),
     upload_state: "ready",
@@ -762,6 +779,13 @@ export async function handleCompleteBuildAssetUpload(c: AdminContext) {
     verified_at: readyAt,
   };
   const readyResults = await c.env.DB.batch([
+    c.env.DB.prepare(
+      `INSERT OR IGNORE INTO build_asset_ingest_seal
+       (asset_id, attempt, lease_generation, final_key, intent_at, sealed_at, outcome, cleanup_receipt)
+       SELECT asset_id, attempt, 0, staging_key, ?1, ?1, 'cleaned', ?2
+         FROM build_asset_ingest_attempt
+        WHERE asset_id = ?3 AND attempt = ?4 AND verifier_lease_id = ?5`,
+    ).bind(readyAt, readyCleanupReceipt, assetId, row.attempt, leaseId),
     c.env.DB.prepare(
       `UPDATE build_assets SET r2_key = ?1, metadata_json = ?2
         WHERE id = ?3 AND build_id = ?4
@@ -786,6 +810,17 @@ export async function handleCompleteBuildAssetUpload(c: AdminContext) {
           )`,
     ).bind(readyAt, assetId, row.attempt, generation),
     c.env.DB.prepare(
+      `UPDATE build_asset_ingest_seal
+          SET sealed_at = ?1, outcome = 'cleaned', cleanup_receipt = ?2
+        WHERE asset_id = ?3 AND attempt = ?4 AND lease_generation <> ?5
+          AND outcome IS NULL
+          AND EXISTS (
+            SELECT 1 FROM build_asset_ingest_attempt i
+             WHERE i.asset_id = ?3 AND i.attempt = ?4
+               AND i.state = 'ready' AND i.committed_final_key = ?6
+          )`,
+    ).bind(readyAt, readyCleanupReceipt, assetId, row.attempt, generation, finalKey),
+    c.env.DB.prepare(
       `INSERT INTO audit_logs (id, app_id, action, actor, payload, created_at)
        SELECT ?1, ?2, 'build_asset.upload.complete', ?3, ?4, ?5
         WHERE EXISTS (
@@ -799,7 +834,7 @@ export async function handleCompleteBuildAssetUpload(c: AdminContext) {
       readyAt, assetId, row.attempt, finalKey,
     ),
   ]);
-  if ((readyResults[1]?.meta?.changes ?? 0) !== 1) {
+  if ((readyResults[2]?.meta?.changes ?? 0) !== 1) {
     await c.env.APK_BUCKET.delete(finalKey).catch(() => {});
     return c.json({ error: "asset verification lease was lost", code: "ASSET_UPLOAD_LEASE_LOST" }, 409);
   }
@@ -824,7 +859,8 @@ export async function handleAbortBuildAssetUpload(c: AdminContext) {
   if (!receipt) {
     return c.json({ error: "asset upload verification is in progress or terminal", code: "ASSET_UPLOAD_BUSY" }, 409);
   }
-  if (!await deleteClaimedUploadObjects(c.env, row, receipt, now)) {
+  const cleanup = await deleteClaimedUploadObjects(c.env, row, receipt, now);
+  if (!cleanup.deleted) {
     return c.json({ error: "asset cleanup will be retried", code: "ASSET_UPLOAD_CLEANUP_RETRY" }, 503);
   }
   if (!await finalizeClaimedUploadCleanup(c.env, row, receipt, "aborted", currentActor(c), now)) {
@@ -1048,7 +1084,14 @@ export async function cleanupExpiredBuildAssetUploads(env: Env, now = Date.now()
       ? row.cleanup_receipt
       : await claimUploadCleanup(env.DB, row.asset_id, row.attempt, now, "upload_expired");
     if (!receipt) continue;
-    if (!await deleteClaimedUploadObjects(env, row, receipt, now)) continue;
+    const cleanup = await deleteClaimedUploadObjects(env, row, receipt, now);
+    if (row.state === "failed" && receipt.startsWith("verification_failed:")) {
+      if (!cleanup.prepared) continue;
+      const reason = receipt.slice("verification_failed:".length).split(":", 1)[0] || "verification_failed";
+      await finalizeFailedVerificationCleanup(env, row, receipt, reason);
+      continue;
+    }
+    if (!cleanup.deleted) continue;
     await finalizeClaimedUploadCleanup(env, row, receipt, "upload_expired", "system:cron", now);
   }
 }

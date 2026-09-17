@@ -56,6 +56,7 @@ function d1(
 class MemoryR2 {
   readonly objects = new Map<string, Uint8Array>();
   readonly deleted: string[] = [];
+  readonly deleteFailures = new Set<string>();
 
   async head(key: string) {
     const bytes = this.objects.get(key);
@@ -92,6 +93,7 @@ class MemoryR2 {
 
   async delete(key: string) {
     this.deleted.push(key);
+    if (this.deleteFailures.has(key)) throw new Error(`synthetic delete failure: ${key}`);
     this.objects.delete(key);
   }
 }
@@ -243,6 +245,147 @@ describe("direct build asset upload routes", () => {
     expect([...bucket.objects.keys()]).toEqual([]);
     const metadata = JSON.parse((sqlite.prepare("SELECT metadata_json FROM build_assets WHERE id = ?").get(body.asset_id) as any).metadata_json);
     expect(metadata.upload_state).toBe("failed");
+  });
+
+  it("retries exact staging and final cleanup after verification delete failures", async () => {
+    const bytes = Buffer.from("mismatch-delete-retry");
+    const declared = await declare("1".repeat(64), bytes.length, "mismatch-delete-retry");
+    const body = await declared.json() as any;
+    const attempt = sqlite.prepare(
+      "SELECT attempt, staging_key FROM build_asset_ingest_attempt WHERE asset_id = ?",
+    ).get(body.asset_id) as any;
+    const finalKey = `apps/app-1/build-ingest/verified/build-1/${body.asset_id}/g1/raft-computer`;
+    bucket.objects.set(attempt.staging_key, bytes);
+    bucket.deleteFailures.add(attempt.staging_key);
+    bucket.deleteFailures.add(finalKey);
+
+    const completed = await app.request(
+      `http://hands.test/api/apps/app-1/builds/build-1/assets/${body.asset_id}/upload/complete`,
+      { method: "POST" },
+      env,
+    );
+    expect(completed.status).toBe(422);
+    expect(bucket.objects.has(attempt.staging_key)).toBe(true);
+    expect(bucket.objects.has(finalKey)).toBe(true);
+    expect(sqlite.prepare(
+      "SELECT state, cleanup_state FROM build_asset_ingest_attempt WHERE asset_id = ?",
+    ).get(body.asset_id)).toEqual({ state: "failed", cleanup_state: "expired" });
+    expect(sqlite.prepare(
+      "SELECT lease_generation, outcome FROM build_asset_ingest_seal WHERE asset_id = ? ORDER BY lease_generation",
+    ).all(body.asset_id)).toEqual([
+      { lease_generation: 0, outcome: "cleaned" },
+      { lease_generation: 1, outcome: "cleaned" },
+    ]);
+
+    bucket.deleteFailures.clear();
+    await cleanupExpiredBuildAssetUploads(env, Date.now() + 2 * 60 * 60 * 1000);
+    expect(bucket.objects.has(attempt.staging_key)).toBe(false);
+    expect(bucket.objects.has(finalKey)).toBe(false);
+  });
+
+  it("recovers a crash after failed verification claimed cleanup ownership", async () => {
+    const bytes = Buffer.from("failed-verification-crash");
+    const declared = await declare("1".repeat(64), bytes.length, "failed-verification-crash");
+    const body = await declared.json() as any;
+    const attempt = sqlite.prepare(
+      "SELECT attempt, staging_key FROM build_asset_ingest_attempt WHERE asset_id = ?",
+    ).get(body.asset_id) as any;
+    const finalKey = `apps/app-1/build-ingest/verified/build-1/${body.asset_id}/g1/raft-computer`;
+    const receipt = "verification_failed:sha256_mismatch:crashed-worker";
+    bucket.objects.set(attempt.staging_key, bytes);
+    bucket.objects.set(finalKey, bytes);
+    sqlite.prepare(
+      `UPDATE build_asset_ingest_attempt
+          SET state = 'failed', cleanup_state = 'tombstoned', cleanup_receipt = ?
+        WHERE asset_id = ? AND attempt = ?`,
+    ).run(receipt, body.asset_id, attempt.attempt);
+    sqlite.prepare(
+      `INSERT INTO build_asset_ingest_seal
+       (asset_id, attempt, lease_generation, final_key, intent_at)
+       VALUES (?, ?, 1, ?, ?)`,
+    ).run(body.asset_id, attempt.attempt, finalKey, Date.now());
+
+    await cleanupExpiredBuildAssetUploads(env, Date.now() + 1);
+
+    expect(bucket.objects.has(attempt.staging_key)).toBe(false);
+    expect(bucket.objects.has(finalKey)).toBe(false);
+    expect(sqlite.prepare(
+      "SELECT state, cleanup_state FROM build_asset_ingest_attempt WHERE asset_id = ?",
+    ).get(body.asset_id)).toEqual({ state: "failed", cleanup_state: "expired" });
+    expect(sqlite.prepare(
+      "SELECT lease_generation, outcome FROM build_asset_ingest_seal WHERE asset_id = ? ORDER BY lease_generation",
+    ).all(body.asset_id)).toEqual([
+      { lease_generation: 0, outcome: "cleaned" },
+      { lease_generation: 1, outcome: "cleaned" },
+    ]);
+  });
+
+  it("keeps successful staging cleanup retryable without deleting the committed final", async () => {
+    const bytes = Buffer.from("ready-staging-delete-retry");
+    const hash = createHash("sha256").update(bytes).digest("hex");
+    const declared = await declare(hash, bytes.length, "ready-staging-delete-retry");
+    const body = await declared.json() as any;
+    const attempt = sqlite.prepare(
+      "SELECT staging_key FROM build_asset_ingest_attempt WHERE asset_id = ?",
+    ).get(body.asset_id) as any;
+    bucket.objects.set(attempt.staging_key, bytes);
+    bucket.deleteFailures.add(attempt.staging_key);
+
+    const completed = await app.request(
+      `http://hands.test/api/apps/app-1/builds/build-1/assets/${body.asset_id}/upload/complete`,
+      { method: "POST" },
+      env,
+    );
+    const completedBody = await completed.json() as any;
+    expect(completed.status).toBe(200);
+    expect(bucket.objects.has(attempt.staging_key)).toBe(true);
+    expect(bucket.objects.has(completedBody.r2_key)).toBe(true);
+    expect(sqlite.prepare(
+      "SELECT outcome FROM build_asset_ingest_seal WHERE asset_id = ? AND lease_generation = 0",
+    ).get(body.asset_id)).toEqual({ outcome: "cleaned" });
+
+    bucket.deleteFailures.clear();
+    await cleanupExpiredBuildAssetUploads(env, Date.now() + 16 * 60 * 1000);
+    expect(bucket.objects.has(attempt.staging_key)).toBe(false);
+    expect(bucket.objects.has(completedBody.r2_key)).toBe(true);
+  });
+
+  it("reaps an older verifier generation after a newer verifier commits", async () => {
+    const bytes = Buffer.from("newer-verifier-wins");
+    const hash = createHash("sha256").update(bytes).digest("hex");
+    const declared = await declare(hash, bytes.length, "newer-verifier-wins");
+    const body = await declared.json() as any;
+    const attempt = sqlite.prepare(
+      "SELECT attempt, staging_key FROM build_asset_ingest_attempt WHERE asset_id = ?",
+    ).get(body.asset_id) as any;
+    const staleFinalKey = `apps/app-1/build-ingest/verified/build-1/${body.asset_id}/g1/raft-computer`;
+    bucket.objects.set(attempt.staging_key, bytes);
+    bucket.objects.set(staleFinalKey, bytes);
+    sqlite.prepare(
+      `INSERT INTO build_asset_ingest_seal
+       (asset_id, attempt, lease_generation, final_key, intent_at)
+       VALUES (?, ?, 1, ?, ?)`,
+    ).run(body.asset_id, attempt.attempt, staleFinalKey, Date.now() - 60_000);
+
+    const completed = await app.request(
+      `http://hands.test/api/apps/app-1/builds/build-1/assets/${body.asset_id}/upload/complete`,
+      { method: "POST" },
+      env,
+    );
+    const completedBody = await completed.json() as any;
+    expect(completed.status).toBe(200);
+    expect(completedBody.r2_key).toContain("/g2/");
+    expect(sqlite.prepare(
+      "SELECT lease_generation, outcome FROM build_asset_ingest_seal WHERE asset_id = ? ORDER BY lease_generation",
+    ).all(body.asset_id)).toEqual([
+      { lease_generation: 0, outcome: "cleaned" },
+      { lease_generation: 1, outcome: "cleaned" },
+      { lease_generation: 2, outcome: "committed" },
+    ]);
+
+    await cleanupExpiredBuildAssetUploads(env, Date.now() + 16 * 60 * 1000);
+    expect(bucket.objects.has(staleFinalKey)).toBe(false);
+    expect(bucket.objects.has(completedBody.r2_key)).toBe(true);
   });
 
   it("expires abandoned staging uploads without leaving a publishable asset", async () => {
