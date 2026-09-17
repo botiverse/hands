@@ -24,7 +24,10 @@ export async function loadActiveReleaseCandidates(
        ${withProduct ? "AND r.product_type = ?3" : ""}
        AND r.status = 'active'
        AND b.product_type != 'ios-simulator-qa' AND b.release_type != 'qa'
-     ORDER BY COALESCE(r.activated_at, r.created_at) DESC`,
+     -- Total order, deliberately: without the id tie-break two releases activated in the same
+     -- millisecond come back in planner order, so callers would see a different "current
+     -- release" run to run. This is the resolver behind the installer path.
+     ORDER BY COALESCE(r.activated_at, r.created_at) DESC, r.id ASC`,
   );
   const result = await (withProduct
     ? statement.bind(args.appId, args.channelId, args.productType)

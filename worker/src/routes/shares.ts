@@ -640,7 +640,7 @@ async function findLatestActiveInstallableKey(env: Env, appId: string): Promise<
        AND r.status = 'active'
        AND r.hidden = 0
        AND ba.artifact_kind = 'installable'
-     ORDER BY r.created_at DESC, ba.filetype = 'apk' DESC, ba.created_at ASC
+     ORDER BY r.activated_at DESC, r.id ASC, ba.filetype = 'apk' DESC, ba.created_at ASC
      LIMIT 5`,
   )
     .bind(appId)

@@ -269,6 +269,57 @@ describe("Hands Installer routes", () => {
     expect(cannotEscalate.status).toBe(401);
   });
 
+  it("manifest picks deterministically when two active releases share activated_at", async () => {
+    // This is the site the ordering defect was originally found on: resolveOffer walks the
+    // candidates and takes the FIRST that passes every gate, so `loadActiveReleaseCandidates`'
+    // order decides the winner outright. Without the id tie-break, two releases activated in the
+    // same millisecond resolve to whichever row the planner returns, and no other surface's test
+    // would catch a regression here.
+    const session = await issueConsumerSession(sqlite, env);
+    seedOffer(sqlite);
+    // A second active release, tied on activated_at, with a LOWER id than 'release-1'.
+    sqlite.exec(`
+      INSERT INTO builds
+        (id, app_id, channel_id, product_type, release_type, version_name,
+         version_code, source, status, created_at, updated_at)
+      VALUES ('build-0', 'app-1', 'channel-1', 'android-apk', 'stable',
+              '0.9.0', 900, 'ci', 'succeeded', 1, 1);
+      INSERT INTO releases
+        (id, app_id, build_id, channel_id, product_type, release_type, status,
+         created_by, created_at, updated_at, activated_at)
+      VALUES ('release-0', 'app-1', 'build-0', 'channel-1', 'android-apk',
+              'stable', 'active', 'test', 1, 1, 1);
+      INSERT INTO release_scopes (id, release_id, scope_type, scope_value, created_at)
+      VALUES ('scope-0', 'release-0', 'full', 'all', 1);
+      INSERT INTO build_assets
+        (id, build_id, platform, filetype, r2_key, file_hash, size_bytes,
+         created_at, artifact_kind)
+      VALUES ('asset-0', 'build-0', 'android', 'apk', 'artifact-zero.apk',
+              'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+              10, 1, 'installable');
+      -- resolveOffer only offers a build whose asset is VERIFIED for this app's package_id and
+      -- version_code, so the tied release needs its own metadata row or it is skipped and the
+      -- tie is never actually exercised.
+      INSERT INTO installer_asset_metadata
+        (asset_id, platform, filetype, package_id, version_code, signer_lineages_json,
+         inspected_file_hash, inspector_version, inspected_at)
+      VALUES ('asset-0', 'android', 'apk', 'dev.hands.app', 900,
+              '[["bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                 "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"]]',
+              'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+              'inspector-v1', 2);
+    `);
+    const headers = { authorization: `Bearer ${session.access_token}` };
+    const manifest = await fetchWorker(
+      env, "/api/installer/v1/apps/app-1/channels/main/manifest", { headers },
+    );
+    expect(manifest.status).toBe(200);
+    const body = await manifest.json() as any;
+    // The lower id wins the tie, so release-0 (0.9.0) is what gets offered.
+    expect(body).toMatchObject({ release: { id: "release-0", version: "0.9.0" } });
+  });
+
+
   it("uses one active/non-QA rollout resolver for catalog and manifest", async () => {
     const session = await issueConsumerSession(sqlite, env);
     seedOffer(sqlite);

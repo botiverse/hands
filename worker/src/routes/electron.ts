@@ -50,7 +50,7 @@ export async function handleElectronGenericAsset(c: Context<{ Bindings: Env }>) 
        AND ch.slug = ?2
        AND r.product_type = ?3
        AND r.status = 'active'
-     ORDER BY r.created_at DESC, r.id ASC
+     ORDER BY r.activated_at DESC, r.id ASC
      LIMIT 1`,
   )
     .bind(slug, channel, productType)
