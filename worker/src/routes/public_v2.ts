@@ -196,7 +196,26 @@ async function resolveBuildAssetIdentities(
   //
   // Without this, the pinned choice fell out of an ORDER BY filetype and therefore depended
   // on alphabetical accident: `apk` sorts before `aab`, `app` before `hap`.
-  const hosted = await env.DB.prepare(
+  // Placement is DECLARED, not inferred. `builds.artifact_mode` is the authoritative column
+  // (migration 0073; the same one `handleExternalLatestDl` selects on and `buildIsHosted`
+  // reads). A build that still declares `external` owns no hosted representation yet, so the
+  // rows below - which may exist before a migration finalises the switch - must not be served:
+  // doing so would hand out signed R2 URLs for objects the download route is still resolving as
+  // external. One question, one producer.
+  //
+  // A build with no declared mode predates the column, so presence of installable rows is the
+  // best available signal there - the same fallback `buildIsHosted` uses.
+  const placement = await env.DB.prepare(
+    `SELECT artifact_mode AS mode,
+            EXISTS (SELECT 1 FROM build_assets ba
+                     WHERE ba.build_id = b.id AND ba.artifact_kind = 'installable') AS has_assets
+       FROM builds b WHERE b.id = ?1`,
+  ).bind(buildId).first<{ mode: string | null; has_assets: number }>();
+  const usesHostedAssets = placement === null
+    ? true
+    : placement.mode === "hands_r2" || (placement.mode === null && placement.has_assets === 1);
+
+  const hosted = usesHostedAssets ? await env.DB.prepare(
     `SELECT platform, arch, variant, filetype, file_hash, size_bytes, r2_key
      FROM build_assets
      WHERE build_id = ?1
@@ -213,7 +232,7 @@ async function resolveBuildAssetIdentities(
       file_hash: string;
       size_bytes: number;
       r2_key: string;
-    }>();
+    }>() : { results: [] as Array<{ platform: string; arch: string | null; variant: string | null; filetype: string; file_hash: string; size_bytes: number; r2_key: string }> };
 
   if (hosted.results.length > 0) {
     return hosted.results.map((a) => ({

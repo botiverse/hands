@@ -5092,6 +5092,7 @@ describe("quiver releases — draft lifecycle", () => {
     }
   });
 
+
   it("distinguishes the three public-latest 404 kinds with machine-readable codes", async () => {
     // A consumer showing a download page must branch on WHICH 404 this is:
     // "legitimately nothing to serve" renders as an empty state, a mistyped slug
@@ -6731,6 +6732,64 @@ describe("quiver public API v2 — scope resolution", () => {
     const immCancelled = await handleExternalReleaseDl(dlCtx({ slug: "scope-app", releaseId: "rel-ext", file: "darwin-arm64" }));
     expect(immCancelled.status).toBe(404);
   });
+
+  it("/latest follows DECLARED placement, not the presence of hosted rows", async () => {
+    // #536's contract: until a build's placement switch is finalised, every public read must
+    // keep describing it as external. Rows for a build can exist before that switch, so a
+    // resolver branching on row presence alone would hand out signed R2 URLs for objects the
+    // download route is still serving as external - the surfaces would disagree, and a client
+    // would fetch a representation the release has not published.
+    const env = makeEnv();
+    const now = Date.now();
+    await seedRelease(env, "rel-place", "build-place", [["full", "all"]], {
+      createdAt: now,
+      versionCode: 10,
+      artifactMode: "external",
+    });
+    await seedAsset(env, "build-place", "asset-place", {
+      arch: "arm64-v8a",
+      fileHash: "a".repeat(64),
+      sizeBytes: 1234,
+    });
+    await env.DB.prepare(
+      `INSERT INTO external_build_targets (id, app_id, build_id, version_name, target, source_url,
+                                           raw_sha256, raw_size_bytes, created_at, updated_at)
+       VALUES ('ebt-place', 'app-scope', 'build-place', '2.0.0', 'android-arm64-v8a',
+               'https://cdn.test/2.0.0/android-arm64-v8a', ?1, 77, ?2, ?2)`,
+    ).bind("b".repeat(64), now).run();
+
+    const { handlePublicV2Latest } = await import("../src/routes/public_v2");
+    const latestCtx = () => ({
+      env,
+      req: {
+        url: "https://hands.test/public/v2/apps/scope-app/latest",
+        param: (name: string) => ({ slug: "scope-app" })[name] ?? "",
+        query: (name: string) => ({ channel: "production", product_type: "android-apk", platform: "android", arch: "arm64-v8a" })[name],
+        header: () => undefined,
+        raw: { cf: {} },
+      },
+      json: (data: unknown, status = 200) => new Response(JSON.stringify(data), {
+        status, headers: { "content-type": "application/json" },
+      }),
+    }) as any;
+
+    const asExternal = await handlePublicV2Latest(latestCtx());
+    expect(asExternal.status).toBe(200);
+    const extAsset = (await responseJson<any>(asExternal)).assets.find((x: any) => x.arch === "arm64-v8a");
+    // Declared-external identity: the declared row's own sha/size, never the hosted row's.
+    expect(extAsset.sha256).toBe("b".repeat(64));
+    expect(extAsset.size_bytes).toBe(77);
+
+    // Flip ONLY the declaration, leaving the rows untouched. The same request now resolves the
+    // hosted asset - which is what makes the assertion above about placement, not row existence.
+    await env.DB.prepare("UPDATE builds SET artifact_mode = 'hands_r2' WHERE id = 'build-place'").run();
+    const asHosted = await handlePublicV2Latest(latestCtx());
+    expect(asHosted.status).toBe(200);
+    const hostedAsset = (await responseJson<any>(asHosted)).assets.find((x: any) => x.arch === "arm64-v8a");
+    expect(hostedAsset.sha256).toBe("a".repeat(64));
+    expect(hostedAsset.size_bytes).toBe(1234);
+  });
+
 
   it("hosted cli-binary: channel resolves, bytes served in-place, ?kind= addresses one release's other assets", async () => {
     const env = makeEnv();

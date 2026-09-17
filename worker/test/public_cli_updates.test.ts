@@ -35,7 +35,7 @@ describe("public cli-binary selection", () => {
       CREATE TABLE channels (id TEXT PRIMARY KEY, app_id TEXT, slug TEXT);
       CREATE TABLE releases (id TEXT PRIMARY KEY, app_id TEXT, build_id TEXT, channel_id TEXT, product_type TEXT, release_type TEXT, status TEXT, hidden INTEGER, revision INTEGER, rollout_cohort_count INTEGER, activated_at INTEGER, availability_at INTEGER, created_at INTEGER, updated_at INTEGER);
       CREATE TABLE release_scopes (id TEXT PRIMARY KEY, release_id TEXT, scope_type TEXT, scope_value TEXT);
-      CREATE TABLE builds (id TEXT PRIMARY KEY, app_id TEXT, status TEXT, version_name TEXT, version_code INTEGER);
+      CREATE TABLE builds (id TEXT PRIMARY KEY, app_id TEXT, status TEXT, version_name TEXT, version_code INTEGER, artifact_mode TEXT);
       CREATE TABLE external_build_targets (id TEXT PRIMARY KEY, build_id TEXT, target TEXT, raw_sha256 TEXT, raw_size_bytes INTEGER, gzip_sha256 TEXT, gzip_size_bytes INTEGER);
         CREATE TABLE build_assets (id TEXT PRIMARY KEY, build_id TEXT, platform TEXT, arch TEXT, variant TEXT, filetype TEXT, artifact_kind TEXT, r2_key TEXT, file_hash TEXT, size_bytes INTEGER, created_at INTEGER);
       INSERT INTO apps VALUES ('app', 'computer', 'desktop');
@@ -55,7 +55,7 @@ describe("public cli-binary selection", () => {
     const sha256 = options.sha256 ?? createHash("sha256").update(id).digest("hex");
     const channel = options.channel ?? "main";
     if (!options.reuseArtifactFrom) {
-      sqlite.prepare("INSERT INTO builds VALUES (?, 'app', 'succeeded', ?, ?)").run(buildId, version, activatedAt);
+      sqlite.prepare("INSERT INTO builds VALUES (?, 'app', 'succeeded', ?, ?, 'hands_r2')").run(buildId, version, activatedAt);
       sqlite.prepare("INSERT INTO external_build_targets (id, build_id, target, raw_sha256, raw_size_bytes) VALUES (?, ?, 'linux-x64', ?, 8)").run(artifactId, buildId, sha256);
     }
     // `latest` is seeded as a real channel, not an alias, so the shadowing rule
@@ -76,7 +76,7 @@ describe("public cli-binary selection", () => {
     const buildId = `build-${id}`;
     const sha256 = options.sha256 ?? createHash("sha256").update(`hosted-${id}`).digest("hex");
     const channel = options.channel ?? "main";
-    sqlite.prepare("INSERT INTO builds VALUES (?, 'app', 'succeeded', ?, ?)").run(buildId, version, activatedAt);
+    sqlite.prepare("INSERT INTO builds VALUES (?, 'app', 'succeeded', ?, ?, 'hands_r2')").run(buildId, version, activatedAt);
     sqlite.prepare(
       "INSERT INTO build_assets (id, build_id, platform, arch, variant, filetype, artifact_kind, r2_key, file_hash, size_bytes, created_at) VALUES (?, ?, 'linux', 'x64', NULL, 'binary', 'installable', ?, ?, 4242, ?)",
     ).run(`asset-${id}`, buildId, `apps/app/${id}/linux-x64`, sha256, activatedAt);
@@ -391,7 +391,7 @@ describe("public cli-binary selection", () => {
   });
 
   it("still answers 404 when neither hosting mode has an artifact for the target", async () => {
-    sqlite.prepare("INSERT INTO builds VALUES ('build-empty', 'app', 'succeeded', '1.0.0', 100)").run();
+    sqlite.prepare("INSERT INTO builds VALUES ('build-empty', 'app', 'succeeded', '1.0.0', 100, 'hands_r2')").run();
       sqlite.prepare("INSERT INTO releases VALUES ('r-empty', 'app', 'build-empty', 'channel-main', 'cli-binary', 'stable', 'active', 0, 1, NULL, 100, NULL, 100, 100)").run();
     sqlite.prepare("INSERT INTO release_scopes VALUES ('scope-empty', 'r-empty', 'full', 'all')").run();
     const res = await check("&version=1.0.0");
