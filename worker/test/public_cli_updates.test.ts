@@ -33,10 +33,11 @@ describe("public cli-binary selection", () => {
     sqlite.exec(`
       CREATE TABLE apps (id TEXT PRIMARY KEY, slug TEXT, platform TEXT);
       CREATE TABLE channels (id TEXT PRIMARY KEY, app_id TEXT, slug TEXT);
-      CREATE TABLE releases (id TEXT PRIMARY KEY, app_id TEXT, build_id TEXT, channel_id TEXT, product_type TEXT, release_type TEXT, status TEXT, hidden INTEGER, revision INTEGER, rollout_cohort_count INTEGER, activated_at INTEGER, availability_at INTEGER);
+      CREATE TABLE releases (id TEXT PRIMARY KEY, app_id TEXT, build_id TEXT, channel_id TEXT, product_type TEXT, release_type TEXT, status TEXT, hidden INTEGER, revision INTEGER, rollout_cohort_count INTEGER, activated_at INTEGER, availability_at INTEGER, created_at INTEGER, updated_at INTEGER);
       CREATE TABLE release_scopes (id TEXT PRIMARY KEY, release_id TEXT, scope_type TEXT, scope_value TEXT);
       CREATE TABLE builds (id TEXT PRIMARY KEY, app_id TEXT, status TEXT, version_name TEXT, version_code INTEGER);
       CREATE TABLE external_build_targets (id TEXT PRIMARY KEY, build_id TEXT, target TEXT, raw_sha256 TEXT, raw_size_bytes INTEGER, gzip_sha256 TEXT, gzip_size_bytes INTEGER);
+        CREATE TABLE build_assets (id TEXT PRIMARY KEY, build_id TEXT, platform TEXT, arch TEXT, variant TEXT, filetype TEXT, artifact_kind TEXT, r2_key TEXT, file_hash TEXT, size_bytes INTEGER, created_at INTEGER);
       INSERT INTO apps VALUES ('app', 'computer', 'desktop');
       INSERT INTO channels VALUES ('channel-main', 'app', 'main');
       INSERT INTO channels VALUES ('channel-alpha', 'app', 'alpha');
@@ -62,9 +63,27 @@ describe("public cli-binary selection", () => {
     if (channel === "latest") {
       sqlite.prepare("INSERT OR IGNORE INTO channels VALUES ('channel-latest', 'app', 'latest')").run();
     }
-    sqlite.prepare("INSERT INTO releases VALUES (?, 'app', ?, ?, 'cli-binary', 'stable', ?, 0, 1, ?, ?, NULL)")
-      .run(id, buildId, `channel-${channel}`, status, options.rolloutCohortCount ?? null, activatedAt);
+    sqlite.prepare("INSERT INTO releases VALUES (?, 'app', ?, ?, 'cli-binary', 'stable', ?, 0, 1, ?, ?, NULL, ?, ?)")
+      .run(id, buildId, `channel-${channel}`, status, options.rolloutCohortCount ?? null, activatedAt, activatedAt, activatedAt);
     sqlite.prepare("INSERT INTO release_scopes VALUES (?, ?, 'full', 'all')").run(`scope-${id}`, id);
+  }
+
+  /**
+   * Seed a release whose bytes are hosted by Hands (build_assets) rather than declared as an
+   * external target. This is the case the pinned surfaces previously could not select.
+   */
+  function seedHostedRelease(id: string, version: string, status: string, activatedAt: number, options: { channel?: "main" | "alpha"; sha256?: string } = {}) {
+    const buildId = `build-${id}`;
+    const sha256 = options.sha256 ?? createHash("sha256").update(`hosted-${id}`).digest("hex");
+    const channel = options.channel ?? "main";
+    sqlite.prepare("INSERT INTO builds VALUES (?, 'app', 'succeeded', ?, ?)").run(buildId, version, activatedAt);
+    sqlite.prepare(
+      "INSERT INTO build_assets (id, build_id, platform, arch, variant, filetype, artifact_kind, r2_key, file_hash, size_bytes, created_at) VALUES (?, ?, 'linux', 'x64', NULL, 'binary', 'installable', ?, ?, 4242, ?)",
+    ).run(`asset-${id}`, buildId, `apps/app/${id}/linux-x64`, sha256, activatedAt);
+    sqlite.prepare("INSERT INTO releases VALUES (?, 'app', ?, ?, 'cli-binary', 'stable', ?, 0, 1, ?, ?, NULL, ?, ?)")
+      .run(id, buildId, `channel-${channel}`, status, null, activatedAt, activatedAt, activatedAt);
+    sqlite.prepare("INSERT INTO release_scopes VALUES (?, ?, 'full', 'all')").run(`scope-${id}`, id);
+    return sha256;
   }
 
   function check(extra = "") {
@@ -325,4 +344,106 @@ describe("public cli-binary selection", () => {
       versions: [{ version: "2.0.0" }],
     });
   });
+
+  it("pinned lookup selects a Hands-hosted build and reports its hosted identity", async () => {
+    const sha = seedHostedRelease("h1", "1.0.0", "active", 100);
+    const res = await check("&version=1.0.0");
+    expect(res.status).toBe(200);
+    const body = await res.json() as { release: { id: string }; artifact: { sha256: string; size_bytes: number; download_url: string } };
+    expect(body.release.id).toBe("h1");
+    expect(body.artifact.sha256).toBe(sha);
+    expect(body.artifact.size_bytes).toBe(4242);
+    // The pinned surface hands out the immutable release-bound route, never a signed URL:
+    // a client that pinned a release may refetch it after a signature would have expired.
+    expect(body.artifact.download_url).toBe("https://hands.example/dl/computer/releases/h1/linux-x64");
+  });
+
+  it("both pinned surfaces resolve a hosted build identically", async () => {
+    const sha = seedHostedRelease("h1", "1.0.0", "active", 100, { channel: "alpha" });
+    const viaCheck = await check("&version=1.0.0");
+    const viaVersions = await versions();
+    expect(viaCheck.status).toBe(200);
+    expect(viaVersions.status).toBe(200);
+    const checkBody = await viaCheck.json() as { artifact: { sha256: string; size_bytes: number; download_url: string } };
+    const versionsBody = await viaVersions.json() as { versions: Array<{ version: string; sha256: string; size_bytes: number }> };
+    const listed = versionsBody.versions.find((v) => v.version === "1.0.0");
+    expect(listed).toBeDefined();
+
+    // The two surfaces have different response shapes by design (updates/check answers with one
+    // artifact, versions lists many), so "aligned" is asserted on the identity they share: the
+    // same hosted build must resolve to the same digest and size on both. Asserting a whole-object
+    // equality would only be testing the shape difference, which is not what this change is about.
+    expect(listed!.sha256).toBe(sha);
+    expect(listed!.sha256).toBe(checkBody.artifact.sha256);
+    expect(listed!.size_bytes).toBe(checkBody.artifact.size_bytes);
+  });
+
+  it("a hosted build uses the same download route shape as an external one", async () => {
+    seedRelease("e1", "1.0.0", "active", 100, { sha256: "a".repeat(64) });
+    const externalBody = await (await check("&version=1.0.0")).json() as { artifact: { download_url: string } };
+    expect(externalBody.artifact.download_url).toBe("https://hands.example/dl/computer/releases/e1/linux-x64");
+
+    sqlite.exec("DELETE FROM releases; DELETE FROM release_scopes; DELETE FROM external_build_targets;");
+    seedHostedRelease("h2", "1.0.0", "active", 100);
+    const hostedBody = await (await check("&version=1.0.0")).json() as { artifact: { download_url: string } };
+    // Same shape, so a caller cannot tell the hosting mode from the URL.
+    expect(hostedBody.artifact.download_url.replace("/h2/", "/e1/")).toBe(externalBody.artifact.download_url);
+  });
+
+  it("still answers 404 when neither hosting mode has an artifact for the target", async () => {
+    sqlite.prepare("INSERT INTO builds VALUES ('build-empty', 'app', 'succeeded', '1.0.0', 100)").run();
+      sqlite.prepare("INSERT INTO releases VALUES ('r-empty', 'app', 'build-empty', 'channel-main', 'cli-binary', 'stable', 'active', 0, 1, NULL, 100, NULL, 100, 100)").run();
+    sqlite.prepare("INSERT INTO release_scopes VALUES ('scope-empty', 'r-empty', 'full', 'all')").run();
+    const res = await check("&version=1.0.0");
+    expect(res.status).toBe(404);
+    await expect(res.json()).resolves.toMatchObject({ code: "UPDATE_NO_COMPATIBLE_ARTIFACT" });
+  });
+
+
+  it("a sibling representation on the same target cannot hijack the pinned identity", async () => {
+    // A hosted build may hold more than one installable row for one platform-arch: OHOS ships
+    // an `appgallery` App Pack beside a `sideload` HAP, and #229 adds gzip / photon-wasm
+    // representations next to the raw binary. The pinned surfaces must report the SAME asset
+    // that the release-bound /dl URL serves, which is the variant-IS-NULL primary. Selecting
+    // by `ORDER BY filetype` instead would depend on alphabetical accident - `app` sorts
+    // before `hap`, so the App Pack would win and its digest would describe an object the
+    // URL never returns.
+    const primarySha = seedHostedRelease("h1", "1.0.0", "active", 100);
+    // A sibling with a LOWER filetype would win any filetype-ordered pick, and one with a
+    // HIGHER filetype must still lose to the primary. Seeding both directions makes the test
+    // fail whichever way the resolver leans if it stops filtering on variant.
+    sqlite.prepare(
+      "INSERT INTO build_assets (id, build_id, platform, arch, variant, filetype, artifact_kind, r2_key, file_hash, size_bytes, created_at) VALUES (?, ?, 'linux', 'x64', 'z-sidecar', 'aaa', 'installable', ?, ?, 1111, ?)",
+    ).run("asset-aaa", "build-h1", "apps/app/h1/linux-x64-aaa", "a".repeat(64), 100);
+    sqlite.prepare(
+      "INSERT INTO build_assets (id, build_id, platform, arch, variant, filetype, artifact_kind, r2_key, file_hash, size_bytes, created_at) VALUES (?, ?, 'linux', 'x64', 'gzip', 'zzz', 'installable', ?, ?, 2222, ?)",
+    ).run("asset-zzz", "build-h1", "apps/app/h1/linux-x64-zzz", "b".repeat(64), 101);
+
+    const res = await check("&version=1.0.0");
+    expect(res.status).toBe(200);
+    const body = await res.json() as { artifact: { sha256: string; size_bytes: number; download_url: string } };
+    expect(body.artifact.sha256).toBe(primarySha);
+    expect(body.artifact.size_bytes).toBe(4242);
+    expect(body.artifact.download_url).toBe("https://hands.example/dl/computer/releases/h1/linux-x64");
+  });
+
+  it("the pinned surfaces stay aligned when a sibling exists, and /versions reports the same primary", async () => {
+    const primarySha = seedHostedRelease("h1", "1.0.0", "active", 100, { channel: "alpha" });
+    sqlite.prepare(
+      "INSERT INTO build_assets (id, build_id, platform, arch, variant, filetype, artifact_kind, r2_key, file_hash, size_bytes, created_at) VALUES (?, ?, 'linux', 'x64', 'gzip', 'gz', 'installable', ?, ?, 3333, ?)",
+    ).run("asset-gz", "build-h1", "apps/app/h1/linux-x64.gz", "c".repeat(64), 100);
+
+    const viaCheck = await check("&version=1.0.0");
+    const viaVersions = await versions();
+    const checkBody = await viaCheck.json() as { artifact: { sha256: string; size_bytes: number } };
+    const versionsBody = await viaVersions.json() as { versions: Array<{ version: string; sha256: string; size_bytes: number }> };
+    const listed = versionsBody.versions.find((v) => v.version === "1.0.0");
+
+    expect(checkBody.artifact.sha256).toBe(primarySha);
+    expect(checkBody.artifact.size_bytes).toBe(4242);
+    expect(listed!.sha256).toBe(primarySha);
+    expect(listed!.size_bytes).toBe(4242);
+  });
+
+
 });
