@@ -961,7 +961,15 @@ export function registerBuildCommands(program: Command): void {
             // produced (web/cli/ci). Whether Hands hosts the bytes is decided
             // by the presence of build_assets rows, not by this label.
             source: "cli",
-            status: "succeeded",
+            status: "pending",
+            asset_ingest_protocol_version: 1,
+            required_asset_slots_json: planned.map((entry) => ({
+              artifact_kind: entry.artifact_kind,
+              platform: entry.platform,
+              arch: entry.arch,
+              variant: entry.variant,
+              filetype: entry.filetype,
+            })),
             build_metadata_json: { hosted: true },
             provenance_json: provenance,
           },
@@ -970,7 +978,7 @@ export function registerBuildCommands(program: Command): void {
         const assets = [];
         for (const entry of planned) {
           const local = await sha256File(entry.path);
-          const asset = await uploadAndRegisterAsset(appId, build.id, entry.path, {
+          const asset = await uploadDirectBuildAsset(appId, build.id, entry.path, {
             artifact_kind: entry.artifact_kind,
             platform: entry.platform,
             arch: entry.arch,
@@ -992,6 +1000,11 @@ export function registerBuildCommands(program: Command): void {
           }
           assets.push(asset);
         }
+
+        await apiRequest(`/api/apps/${appId}/builds/${build.id}`, {
+          method: "PATCH",
+          body: { status: "succeeded" },
+        });
 
         const release = await createReleaseOrTerminalizeVersionConflict({
           appId,
@@ -2237,6 +2250,93 @@ async function uploadAndRegisterAsset(
     filetype: metadata.filetype,
     file_hash: uploaded.file_hash,
     size_bytes: uploaded.size_bytes,
+  };
+}
+
+async function uploadDirectBuildAsset(
+  appId: string,
+  buildId: string,
+  filePath: string,
+  metadata: {
+    artifact_kind: string;
+    platform: string;
+    arch: string | null;
+    filetype: string;
+    variant?: string | null;
+    metadata_json?: Record<string, unknown>;
+  },
+): Promise<{
+  id: string;
+  artifact_kind: string;
+  filetype: string;
+  file_hash: string;
+  size_bytes: number;
+}> {
+  const local = await sha256File(filePath);
+  const idempotencyKey = createHash("sha256").update(JSON.stringify({
+    build_id: buildId,
+    artifact_kind: metadata.artifact_kind,
+    platform: metadata.platform,
+    arch: metadata.arch,
+    variant: metadata.variant ?? null,
+    filetype: metadata.filetype,
+    sha256: local.sha256,
+    size_bytes: local.sizeBytes,
+  })).digest("hex");
+  const declared = await apiRequest<{
+    asset_id: string;
+    state: string;
+    upload: null | {
+      url: string;
+      headers: Record<string, string>;
+    };
+  }>(`/api/apps/${appId}/builds/${buildId}/assets/uploads`, {
+    method: "POST",
+    body: {
+      idempotency_key: `cli:${idempotencyKey}`,
+      artifact_kind: metadata.artifact_kind,
+      platform: metadata.platform,
+      arch: metadata.arch,
+      variant: metadata.variant ?? null,
+      filetype: metadata.filetype,
+      sha256: local.sha256,
+      size_bytes: local.sizeBytes,
+      filename: basename(filePath),
+      content_type: "application/octet-stream",
+      metadata_json: {
+        filename: basename(filePath),
+        ...metadata.metadata_json,
+      },
+    },
+  });
+  if (declared.state !== "ready") {
+    if (!declared.upload) throw new Error("Hands did not return a direct upload URL");
+    const uploadResponse = await fetch(declared.upload.url, {
+      method: "PUT",
+      headers: {
+        ...declared.upload.headers,
+        "content-length": String(local.sizeBytes),
+      },
+      body: createReadStream(filePath),
+      duplex: "half",
+    } as RequestInit & { duplex: "half" });
+    if (!uploadResponse.ok) {
+      throw new Error(`direct R2 upload failed: ${uploadResponse.status} ${uploadResponse.statusText}`);
+    }
+  }
+  const completed = await apiRequest<{
+    asset_id: string;
+    file_hash: string;
+    size_bytes: number;
+  }>(`/api/apps/${appId}/builds/${buildId}/assets/${declared.asset_id}/upload/complete`, {
+    method: "POST",
+  });
+  return {
+    id: completed.asset_id,
+    artifact_kind: metadata.artifact_kind,
+    filetype: metadata.filetype,
+    file_hash: completed.file_hash,
+    size_bytes: completed.size_bytes,
   };
 }
 

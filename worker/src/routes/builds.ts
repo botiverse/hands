@@ -26,6 +26,14 @@ export interface BuildInput {
   provenance_json?: unknown;
   should_force_update?: boolean;
   availability_at?: number | null;
+  asset_ingest_protocol_version?: number | null;
+  required_asset_slots_json?: Array<{
+    artifact_kind?: string;
+    platform: string;
+    arch?: string | null;
+    variant?: string | null;
+    filetype: string;
+  }> | null;
 }
 
 export interface BuildAssetInput {
@@ -140,6 +148,8 @@ interface BuildRow {
   parsed_metadata_json: string;
   should_force_update: number;
   availability_at: number | null;
+  asset_ingest_protocol_version: number | null;
+  required_asset_slots_json: string | null;
   provenance_json: string;
   created_at: number;
   updated_at: number;
@@ -423,6 +433,31 @@ export async function createBuild(
   if (!input.version_name || !Number.isFinite(Number(input.version_code))) {
     throw new Error("version_name, version_code required");
   }
+  if (input.asset_ingest_protocol_version !== undefined && input.asset_ingest_protocol_version !== null) {
+    if (input.asset_ingest_protocol_version !== 1) {
+      throw new Error("asset_ingest_protocol_version must be 1");
+    }
+    if ((input.status ?? "pending") !== "pending") {
+      throw new Error("direct asset ingest builds must start pending");
+    }
+    if (!Array.isArray(input.required_asset_slots_json) || input.required_asset_slots_json.length === 0) {
+      throw new Error("required_asset_slots_json must contain at least one slot");
+    }
+    const keys = new Set<string>();
+    for (const slot of input.required_asset_slots_json) {
+      if (!slot?.platform || !slot.filetype) throw new Error("required asset slots need platform and filetype");
+      if (slot.arch === "-" || slot.variant === "-") throw new Error("required asset slot arch/variant cannot be '-'");
+      const key = JSON.stringify([
+        slot.artifact_kind ?? "installable",
+        slot.platform,
+        slot.arch ?? null,
+        slot.variant ?? null,
+        slot.filetype,
+      ]);
+      if (keys.has(key)) throw new Error("required_asset_slots_json contains a duplicate slot");
+      keys.add(key);
+    }
+  }
 
   const channel = await db
     .prepare("SELECT id FROM channels WHERE app_id = ?1 AND id = ?2")
@@ -431,41 +466,59 @@ export async function createBuild(
   if (!channel) throw new Error("channel_id not found for app");
 
   const now = Date.now();
-  await db
-    .prepare(
+  const commonBinds = [
+    id,
+    appId,
+    input.channel_id,
+    input.product_type,
+    input.release_type ?? "stable",
+    input.version_name,
+    Number(input.version_code),
+    input.changelog ?? null,
+    // Default creation path is the console ('web'); see BuildInput.source for the
+    // documented domain and the fact-based attribution rule.
+    input.source ?? "web",
+    input.status ?? "pending",
+    jsonString(input.build_metadata_json),
+    jsonString(input.parsed_metadata_json),
+    input.should_force_update ? 1 : 0,
+    input.availability_at ?? null,
+    jsonString(input.provenance_json),
+    now,
+    now,
+    input.status === "succeeded" ? now : null,
+    // Defaults to 'hands_r2' (matches the DB default). Writers that store bytes outside
+    // R2 must pass 'external' explicitly; see the external publish path below.
+    input.artifact_mode ?? "hands_r2",
+  ] as const;
+  if (input.asset_ingest_protocol_version === 1) {
+    await db.prepare(
+      `INSERT INTO builds
+       (id, app_id, channel_id, product_type, release_type, version_name,
+        version_code, changelog, source, status, build_metadata_json,
+        parsed_metadata_json, should_force_update, availability_at,
+        provenance_json, created_at, updated_at, completed_at, artifact_mode,
+        asset_ingest_protocol_version, required_asset_slots_json)
+       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21)`,
+    ).bind(
+      ...commonBinds,
+      input.asset_ingest_protocol_version ?? null,
+      input.required_asset_slots_json === undefined || input.required_asset_slots_json === null
+        ? null
+        : JSON.stringify(input.required_asset_slots_json),
+    ).run();
+  } else {
+    // Keep the legacy insert shape for ordinary writers and older local test
+    // schemas. Protocol columns are only required by the new direct-ingest path.
+    await db.prepare(
       `INSERT INTO builds
        (id, app_id, channel_id, product_type, release_type, version_name,
         version_code, changelog, source, status, build_metadata_json,
         parsed_metadata_json, should_force_update, availability_at,
         provenance_json, created_at, updated_at, completed_at, artifact_mode)
        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)`,
-    )
-    .bind(
-      id,
-      appId,
-      input.channel_id,
-      input.product_type,
-      input.release_type ?? "stable",
-      input.version_name,
-      Number(input.version_code),
-      input.changelog ?? null,
-      // Default creation path is the console ('web'); see BuildInput.source for the
-      // documented domain and the fact-based attribution rule.
-      input.source ?? "web",
-      input.status ?? "pending",
-      jsonString(input.build_metadata_json),
-      jsonString(input.parsed_metadata_json),
-      input.should_force_update ? 1 : 0,
-      input.availability_at ?? null,
-      jsonString(input.provenance_json),
-      now,
-      now,
-      input.status === "succeeded" ? now : null,
-      // Defaults to 'hands_r2' (matches the DB default). Writers that store bytes outside
-      // R2 must pass 'external' explicitly; see the external publish path below.
-      input.artifact_mode ?? "hands_r2",
-    )
-    .run();
+    ).bind(...commonBinds).run();
+  }
 
   await insertAuditLog(
     db,
@@ -908,6 +961,48 @@ export async function handleUpdateBuild(c: AdminContext) {
   const existing = await getBuildForApp(c.env.DB, appId, buildId);
   if (!existing) return c.json({ error: "not found" }, 404);
 
+  if (body.status === "succeeded" && existing.asset_ingest_protocol_version === 1) {
+    let required: Array<{
+      artifact_kind?: string;
+      platform: string;
+      arch?: string | null;
+      variant?: string | null;
+      filetype: string;
+    }>;
+    try {
+      required = JSON.parse(existing.required_asset_slots_json ?? "[]");
+    } catch {
+      return c.json({ error: "build has invalid required asset slots", code: "INVALID_REQUIRED_ASSET_SLOTS" }, 500);
+    }
+    if (!Array.isArray(required) || required.length === 0) {
+      return c.json({ error: "build has no required asset slots", code: "REQUIRED_ASSETS_INCOMPLETE" }, 409);
+    }
+    for (const slot of required) {
+      const ready = await c.env.DB.prepare(
+        `SELECT 1 AS ready
+           FROM build_assets a
+           JOIN build_asset_ingest_attempt i ON i.asset_id = a.id
+          WHERE a.build_id = ?1 AND a.artifact_kind = ?2 AND a.platform = ?3
+            AND a.slot_arch = COALESCE(?4, '-') AND a.slot_variant = COALESCE(?5, '-')
+            AND a.filetype = ?6 AND i.state = 'ready'
+            AND json_extract(a.metadata_json, '$.upload_state') = 'ready'
+            AND json_extract(a.metadata_json, '$.verified_sha256') = a.file_hash
+            AND json_extract(a.metadata_json, '$.verified_size_bytes') = a.size_bytes
+          LIMIT 1`,
+      ).bind(
+        buildId,
+        slot.artifact_kind ?? "installable",
+        slot.platform,
+        slot.arch ?? null,
+        slot.variant ?? null,
+        slot.filetype,
+      ).first<{ ready: number }>();
+      if (!ready) {
+        return c.json({ error: "required build assets are not verified", code: "REQUIRED_ASSETS_INCOMPLETE", slot }, 409);
+      }
+    }
+  }
+
   const updates: string[] = [];
   const binds: (string | number | null)[] = [];
   if (body.changelog !== undefined) {
@@ -966,12 +1061,19 @@ export async function handleListBuildAssets(c: Context<{ Bindings: Env }>) {
   const build = await getBuildForApp(c.env.DB, appId, buildId);
   if (!build) return c.json({ error: "build not found" }, 404);
   const { results } = await c.env.DB.prepare(
-    `SELECT id, build_id, artifact_kind, platform, arch, variant, filetype, r2_key,
-            file_hash, size_bytes, signing_credential_id,
-            metadata_json, download_count, created_at
-     FROM build_assets
-     WHERE build_id = ?1
-     ORDER BY created_at ASC`,
+    `SELECT a.id, a.build_id, a.artifact_kind, a.platform, a.arch, a.variant, a.filetype, a.r2_key,
+            a.file_hash, a.size_bytes, a.signing_credential_id,
+            a.metadata_json, a.download_count, a.created_at,
+            i.state AS ingest_state, i.declared_sha256, i.declared_size AS declared_size_bytes,
+            i.committed_final_key, i.upload_expires_at,
+            json_extract(a.metadata_json, '$.verified_sha256') AS verified_sha256,
+            json_extract(a.metadata_json, '$.verified_size_bytes') AS verified_size_bytes
+       FROM build_assets a
+       LEFT JOIN build_asset_ingest_attempt i
+         ON i.asset_id = a.id
+        AND i.attempt = (SELECT MAX(i2.attempt) FROM build_asset_ingest_attempt i2 WHERE i2.asset_id = a.id)
+      WHERE a.build_id = ?1
+      ORDER BY a.created_at ASC`,
   )
     .bind(buildId)
     .all();

@@ -123,6 +123,31 @@ declaration replays successfully; changing version-level or target-level
 immutable fields returns a conflict. This command does not upload bytes or
 activate a release/channel pointer.
 
+## Publish Hands-hosted CLI Binaries
+
+`builds publish-cli-binary` uploads one or more platform binaries directly to
+Hands storage and creates one release only after every declared artifact has
+been verified:
+
+```bash
+hands builds publish-cli-binary raft-computer \
+  --version-name 1.0.33 \
+  --channel main \
+  --target darwin-arm64 --binary ./raft-computer-darwin-arm64 \
+  --target linux-x64 --binary ./raft-computer-linux-x64
+```
+
+`--target` and `--binary` pair by position. Optional `--runner` and
+`--sha256sums` values also repeat once per target when used.
+
+The command creates a pending build with its complete artifact slot set frozen,
+streams each file to a short-lived single-object upload URL, and asks Hands to
+verify the exact SHA-256 digest and byte size. Hands marks the build succeeded
+and creates the release only after every frozen slot is ready. Interrupted runs
+can replay the same declaration: pending assets retain their declared digest and
+size, while ready assets return no upload URL. The client never receives an R2
+bucket credential.
+
 ## Publish Android
 
 Use `builds publish-android` to upload an APK and create a release. Per the

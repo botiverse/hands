@@ -39,6 +39,14 @@ const BuildInput = z
     ci_run_id: z.string().nullable().optional(),
     ci_url: z.string().nullable().optional(),
     metadata_json: z.record(z.string(), z.unknown()).optional(),
+    asset_ingest_protocol_version: z.literal(1).optional(),
+    required_asset_slots_json: z.array(z.object({
+      artifact_kind: z.string().optional(),
+      platform: z.string(),
+      arch: z.string().nullable().optional(),
+      variant: z.string().nullable().optional(),
+      filetype: z.string(),
+    })).optional(),
   })
   .catchall(z.unknown())
   .openapi("BuildInput");
@@ -57,6 +65,43 @@ const BuildAssetInput = z
   })
   .catchall(z.unknown())
   .openapi("BuildAssetInput");
+
+const DirectBuildAssetUploadInput = z.object({
+  idempotency_key: z.string().min(1).max(200),
+  artifact_kind: z.string().default("installable").optional(),
+  platform: z.string(),
+  arch: z.string().nullable().optional(),
+  variant: z.string().nullable().optional(),
+  filetype: z.string(),
+  sha256: z.string().regex(/^[a-f0-9]{64}$/i),
+  size_bytes: z.number().int().positive().max(5 * 1024 * 1024 * 1024),
+  filename: z.string().min(1).max(255),
+  content_type: z.string().max(150).optional(),
+  metadata_json: z.record(z.string(), z.unknown()).optional(),
+}).openapi("DirectBuildAssetUploadInput");
+
+const RequiredAssetSlot = z.object({
+  artifact_kind: z.string().default("installable").optional(),
+  platform: z.string(),
+  arch: z.string().nullable().optional(),
+  variant: z.string().nullable().optional(),
+  filetype: z.string(),
+});
+
+const HostedBuildMigrationInput = z.object({
+  expected: z.object({
+    source: z.string(),
+    version_name: z.string(),
+    version_code: z.number().int(),
+    artifact_mode: z.literal("external"),
+    status: z.literal("succeeded"),
+  }),
+  required_asset_slots_json: z.array(RequiredAssetSlot).min(1),
+}).openapi("HostedBuildMigrationInput");
+
+const CompleteHostedBuildMigrationInput = z.object({
+  asset_ids: z.array(z.string()).min(1),
+}).openapi("CompleteHostedBuildMigrationInput");
 
 const ExternalBuildVersionInput = z
   .object({
@@ -150,6 +195,42 @@ export function registerBuildRoutes(registry: OpenApiRegistry) {
       403: error("App viewer role is required."),
       404: error("Hands or App Store Connect app was not found."),
       502: error("Apple rejected the metadata request."),
+    },
+  });
+
+  register(registry, {
+    method: "post",
+    path: "/api/apps/{appId}/builds/{buildId}/hosted-migration",
+    tags: ["Builds"],
+    summary: "Begin an identity-preserving external-to-hosted build migration",
+    description:
+      "Freezes the complete hosted asset slot set on an existing succeeded external build without changing its source, version, build ID, release ID, status, or current public read path.",
+    security: auth,
+    request: { params: AppBuildParams, body: { content: json(HostedBuildMigrationInput), required: true } },
+    responses: {
+      201: success("Hosted migration initialized.", GenericObject),
+      400: error("Invalid migration declaration."),
+      403: error("Current principal cannot migrate builds."),
+      404: error("Build was not found."),
+      409: error("Build identity or a prior migration declaration conflicts."),
+    },
+  });
+
+  register(registry, {
+    method: "post",
+    path: "/api/apps/{appId}/builds/{buildId}/hosted-migration/complete",
+    tags: ["Builds"],
+    summary: "Atomically switch a fully verified external build to Hands hosting",
+    description:
+      "Rechecks the exact supplied asset IDs, frozen slots, SHA-256 values, sizes, and immutable R2 keys, then changes only artifact_mode to hands_r2. Existing version/source/build/release identities remain unchanged.",
+    security: auth,
+    request: { params: AppBuildParams, body: { content: json(CompleteHostedBuildMigrationInput), required: true } },
+    responses: {
+      200: success("Build now reads from Hands-hosted assets.", GenericObject),
+      400: error("Invalid exact asset ID set."),
+      403: error("Current principal cannot finalize build migration."),
+      404: error("Build was not found."),
+      409: error("Frozen slots, asset verification, or build identity is incomplete or changed."),
     },
   });
 
@@ -527,6 +608,60 @@ export function registerBuildRoutes(registry: OpenApiRegistry) {
       400: error("Invalid build asset payload."),
       403: error("Current principal cannot create build assets."),
       404: error("Build was not found."),
+    },
+  });
+
+  register(registry, {
+    method: "post",
+    path: "/api/apps/{appId}/builds/{buildId}/assets/uploads",
+    tags: ["Builds"],
+    summary: "Declare a direct R2 build-asset upload",
+    description:
+      "Creates an app/build/slot-bound upload attempt and returns a short-lived single-object R2 PUT URL. The caller receives no bucket credential. The build must use asset ingest protocol v1 and remain pending.",
+    security: auth,
+    request: {
+      params: AppBuildParams,
+      body: { content: json(DirectBuildAssetUploadInput), required: true },
+    },
+    responses: {
+      201: success("Upload attempt declared.", GenericObject),
+      400: error("Invalid upload declaration."),
+      403: error("Current principal cannot upload build assets."),
+      409: error("Build, slot, or idempotency state conflicts."),
+      503: error("Direct R2 upload is not configured."),
+    },
+  });
+
+  register(registry, {
+    method: "post",
+    path: "/api/apps/{appId}/builds/{buildId}/assets/{assetId}/upload/complete",
+    tags: ["Builds"],
+    summary: "Verify and seal a direct build-asset upload",
+    description:
+      "Streams one immutable staging snapshot through SHA-256 verification and a verified R2 key. Asset metadata becomes ready only after exact size and digest readback succeeds.",
+    security: auth,
+    request: { params: AppBuildAssetParams },
+    responses: {
+      200: success("Upload verified and sealed.", GenericObject),
+      403: error("Current principal cannot complete build-asset uploads."),
+      404: error("Upload attempt was not found."),
+      409: error("Upload is busy or the build is no longer pending."),
+      410: error("Upload attempt expired."),
+      422: error("Uploaded bytes failed exact integrity verification."),
+    },
+  });
+
+  register(registry, {
+    method: "post",
+    path: "/api/apps/{appId}/builds/{buildId}/assets/{assetId}/upload/abort",
+    tags: ["Builds"],
+    summary: "Abort an unverified build-asset upload",
+    security: auth,
+    request: { params: AppBuildAssetParams },
+    responses: {
+      200: success("Upload aborted and staging state removed.", GenericObject),
+      403: error("Current principal cannot abort build-asset uploads."),
+      409: error("Upload is being verified or is already ready."),
     },
   });
 

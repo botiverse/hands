@@ -1445,7 +1445,9 @@ describe("publish-cli-binary multi-target contract", () => {
   // never produce a complete release.
   let dir: string;
   let server: ReturnType<typeof createServer>;
-  let requests: Array<{ url: string; body?: any }>;
+  let requests: Array<{ method: string; url: string; body?: any }>;
+  let uploadedBytes: Map<string, Buffer>;
+  let nextAsset: number;
   let originalApi: string | undefined;
   let originalToken: string | undefined;
 
@@ -1458,6 +1460,8 @@ describe("publish-cli-binary multi-target contract", () => {
   beforeEach(async () => {
     dir = mkdtempSync(join(tmpdir(), "quiver-cli-mt-"));
     requests = [];
+    uploadedBytes = new Map();
+    nextAsset = 1;
     server = createServer(async (req, res) => {
       let body: any;
       if (req.headers["content-type"]?.includes("application/json")) {
@@ -1465,7 +1469,7 @@ describe("publish-cli-binary multi-target contract", () => {
         for await (const chunk of req) chunks.push(Buffer.from(chunk));
         body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
       }
-      requests.push({ url: req.url ?? "", body });
+      requests.push({ method: req.method ?? "GET", url: req.url ?? "", body });
       res.setHeader("content-type", "application/json");
       if (req.url === "/api/apps") {
         return res.end(JSON.stringify({ apps: [{ id: "app-1", slug: "computer" }] }));
@@ -1476,26 +1480,39 @@ describe("publish-cli-binary multi-target contract", () => {
       if (req.url === "/api/apps/app-1/builds" && req.method === "POST") {
         return res.end(JSON.stringify({ id: "build-1" }));
       }
-      if (req.url === "/api/apps/app-1/upload") {
-        // The command verifies the returned digest/size against the LOCAL bytes
-        // (that check is a feature, not something to stub past), so the stub has
-        // to report the real digest of whatever file was uploaded. Read the
-        // multipart part's filename, then hash the same file from disk.
-        const chunks: Buffer[] = [];
-        for await (const chunk of req) chunks.push(Buffer.from(chunk));
-        const text = Buffer.concat(chunks).toString("latin1");
-        const nameMatch = /filename="([^"]+)"/.exec(text);
-        const uploaded = nameMatch ? join(dir, nameMatch[1]!) : join(dir, "missing");
-        const bytes = existsSync(uploaded) ? readFileSync(uploaded) : Buffer.alloc(0);
+      if (req.url === "/api/apps/app-1/builds/build-1/assets/uploads" && req.method === "POST") {
+        const assetId = `asset-${nextAsset++}`;
         return res.end(JSON.stringify({
-          r2_key: `key/${requests.length}`,
-          file_hash: createHash("sha256").update(bytes).digest("hex"),
-          size_bytes: bytes.length,
-          original_filename: nameMatch?.[1] ?? "uploaded",
+          asset_id: assetId,
+          attempt: 1,
+          state: "pending",
+          upload: {
+            method: "PUT",
+            url: `http://${req.headers.host}/r2-upload/${assetId}`,
+            headers: { "content-type": body.content_type },
+          },
         }));
       }
-      if (req.url?.startsWith("/api/apps/app-1/builds/build-1/assets")) {
-        return res.end(JSON.stringify({ id: `asset-${requests.length}` }));
+      if (req.url?.startsWith("/r2-upload/") && req.method === "PUT") {
+        const chunks: Buffer[] = [];
+        for await (const chunk of req) chunks.push(Buffer.from(chunk));
+        uploadedBytes.set(req.url.split("/").at(-1)!, Buffer.concat(chunks));
+        res.statusCode = 200;
+        return res.end();
+      }
+      const completeMatch = /^\/api\/apps\/app-1\/builds\/build-1\/assets\/(asset-\d+)\/upload\/complete$/.exec(req.url ?? "");
+      if (completeMatch && req.method === "POST") {
+        const bytes = uploadedBytes.get(completeMatch[1]!) ?? Buffer.alloc(0);
+        return res.end(JSON.stringify({
+          asset_id: completeMatch[1],
+          state: "ready",
+          r2_key: `verified/${completeMatch[1]}`,
+          file_hash: createHash("sha256").update(bytes).digest("hex"),
+          size_bytes: bytes.length,
+        }));
+      }
+      if (req.url === "/api/apps/app-1/builds/build-1" && req.method === "PATCH") {
+        return res.end(JSON.stringify({ id: "build-1", status: body.status }));
       }
       if (req.url?.includes("/releases")) {
         return res.end(JSON.stringify({ id: "release-1" }));
@@ -1529,7 +1546,7 @@ describe("publish-cli-binary multi-target contract", () => {
   }
 
   const buildPosts = () => requests.filter((r) => r.url === "/api/apps/app-1/builds");
-  const assetPosts = () => requests.filter((r) => r.url?.includes("/assets"));
+  const assetPosts = () => requests.filter((r) => r.method === "POST" && r.url.endsWith("/assets/uploads"));
   // Reads (app/channel resolution) are expected before validation; what must not
   // happen is a WRITE. Asserting on writes rather than on "no requests at all"
   // keeps the test measuring the thing the contract cares about.
@@ -1567,6 +1584,10 @@ describe("publish-cli-binary multi-target contract", () => {
     expect(assetPosts().map((r) => `${r.body.platform}-${r.body.arch}`).sort()).toEqual([
       "darwin-arm64", "linux-x64", "win32-x64",
     ]);
+    const writes = requests.filter((request) => request.method !== "GET").map((request) => `${request.method} ${request.url}`);
+    expect(writes.at(-2)).toBe("PATCH /api/apps/app-1/builds/build-1");
+    expect(writes.at(-1)).toContain("POST /api/apps/app-1/releases");
+    expect(requests.some((request) => request.url === "/api/apps/app-1/upload")).toBe(false);
   });
 
   it("pairs runner and sha256sums positionally with each target", async () => {

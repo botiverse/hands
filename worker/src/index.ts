@@ -169,6 +169,14 @@ import {
 import { handleGenerateDeltaPatches, handleDeltaSources } from "./routes/delta";
 import { handleUploadApk } from "./routes/upload";
 import {
+  cleanupExpiredBuildAssetUploads,
+  handleAbortBuildAssetUpload,
+  handleBeginHostedBuildMigration,
+  handleCompleteBuildAssetUpload,
+  handleCompleteHostedBuildMigration,
+  handleDeclareBuildAssetUpload,
+} from "./routes/build_asset_uploads";
+import {
   handleListOperations,
   handleGetOperation,
   handleRetryOperation,
@@ -840,6 +848,31 @@ admin.get(
   handleListExternalBuildTargets,
 );
 admin.post("/api/apps/:appId/builds/:buildId/assets", requireAppRole("publisher"), handleCreateBuildAsset);
+admin.post(
+  "/api/apps/:appId/builds/:buildId/assets/uploads",
+  requireAppRole("publisher"),
+  handleDeclareBuildAssetUpload,
+);
+admin.post(
+  "/api/apps/:appId/builds/:buildId/assets/:assetId/upload/complete",
+  requireAppRole("publisher"),
+  handleCompleteBuildAssetUpload,
+);
+admin.post(
+  "/api/apps/:appId/builds/:buildId/assets/:assetId/upload/abort",
+  requireAppRole("publisher"),
+  handleAbortBuildAssetUpload,
+);
+admin.post(
+  "/api/apps/:appId/builds/:buildId/hosted-migration",
+  requireAppRole("publisher"),
+  handleBeginHostedBuildMigration,
+);
+admin.post(
+  "/api/apps/:appId/builds/:buildId/hosted-migration/complete",
+  requireAppRole("publisher"),
+  handleCompleteHostedBuildMigration,
+);
 admin.get(
   "/api/apps/:appId/builds/:buildId/assets/:assetId/download",
   requireAppRole("viewer"),
@@ -1235,6 +1268,7 @@ export async function scheduled(
   ctx.waitUntil(Promise.all([
     reaper,
     cleanupReporterFeedbackData(env),
+    cleanupExpiredBuildAssetUploads(env),
   ]).then(() => undefined));
 }
 
