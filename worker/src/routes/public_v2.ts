@@ -110,6 +110,150 @@ const PRIORITY = {
  * `lib/public_channel`, which all public channel readers share.
  * Raft task #proj-hands #204 (alias) and #206 (shadowing + consistency).
  */
+/**
+ * Resolve the installable artifacts of one build, whichever way the bytes are hosted.
+ *
+ * Hosted builds carry R2-backed `build_assets` rows; externally-hosted builds (source
+ * 'external', e.g. Node SEA binaries) have no assets and declare their per-target identity
+ * in `external_build_targets` instead. Both paths must answer with the same asset shape so a
+ * client never has to know which mode a build uses — and so `/latest`, `/updates/check` and
+ * `/versions` cannot drift apart. This function is the single place that decides:
+ *
+ *   1. hosted assets win when the build has any (matching the precedence `/latest` has used
+ *      since external targets were folded in);
+ *   2. otherwise the declared external targets are projected into the same shape.
+ *
+ * `download_url` is always the immutable release-bound `/dl/{slug}/releases/{releaseId}/{target}`
+ * route, in both modes: for hosted builds `target` addresses the R2 object, for external ones
+ * the route 302s to the declared source URL. Callers must not hand out expiring signed URLs
+ * for the pinned surface, because a client may pin a release and refetch it later.
+ */
+type BuildAssetIdentity = {
+  platform: string;
+  arch: string | null;
+  variant: string | null;
+  filetype: string;
+  size_bytes: number;
+  sha256: string;
+  target: string;
+  /** Bucket key for hosted assets; null for externally-declared targets. */
+  r2_key: string | null;
+};
+
+async function resolveBuildAssetIdentities(
+  env: Env,
+  appSlug: string,
+  buildId: string,
+): Promise<BuildAssetIdentity[]> {
+  const hosted = await env.DB.prepare(
+    `SELECT platform, arch, variant, filetype, file_hash, size_bytes, r2_key
+     FROM build_assets
+     WHERE build_id = ?1
+       AND artifact_kind = 'installable'
+     ORDER BY platform ASC, arch ASC, filetype ASC`,
+  )
+    .bind(buildId)
+    .all<{
+      platform: string;
+      arch: string | null;
+      variant: string | null;
+      filetype: string;
+      file_hash: string;
+      size_bytes: number;
+      r2_key: string;
+    }>();
+
+  if (hosted.results.length > 0) {
+    return hosted.results.map((a) => ({
+      platform: a.platform,
+      arch: a.arch,
+      variant: a.variant,
+      filetype: a.filetype,
+      size_bytes: a.size_bytes,
+      sha256: a.file_hash,
+      r2_key: a.r2_key,
+      // The release-bound /dl route addresses a hosted asset by its platform-arch
+      // selector, not by its bucket key (see serveHostedAsset: it matches
+      // `platform || '-' || COALESCE(arch, '')` and, for a non-primary asset,
+      // carries the variant/filetype through `?kind=`). So the URL we hand out here
+      // must use that same selector or the download would 404.
+      target: a.arch === null ? `${a.platform}-` : `${a.platform}-${a.arch}`,
+    }));
+  }
+
+  const external = await env.DB.prepare(
+    `SELECT target, raw_sha256, raw_size_bytes
+     FROM external_build_targets
+     WHERE build_id = ?1
+     ORDER BY target ASC`,
+  )
+    .bind(buildId)
+    .all<{ target: string; raw_sha256: string; raw_size_bytes: number }>();
+
+  return external.results.map((t) => {
+    const separator = t.target.indexOf("-");
+    const platform = separator > 0 ? t.target.slice(0, separator) : t.target;
+    const arch = separator > 0 ? t.target.slice(separator + 1) : null;
+    return {
+      platform,
+      arch,
+      variant: null,
+      filetype: "binary",
+      size_bytes: t.raw_size_bytes,
+      sha256: t.raw_sha256,
+      target: t.target,
+      r2_key: null,
+    };
+  });
+}
+
+/**
+ * Download URL policy, per surface — these genuinely differ and must not be unified.
+ *
+ * `/latest` answers "what should this client fetch right now", so a hosted asset can be
+ * handed out as a short-lived signed R2 URL (fresh each call, cacheable by the client); its
+ * externally-declared assets still use the immutable release-bound `/dl` route because there
+ * is no bucket object to sign.
+ *
+ * The pinned surfaces (`/updates/check`, `/versions`) answer "give me exactly this release's
+ * bytes", so they use the immutable `/dl` route for BOTH modes. A client that pinned a
+ * release may refetch it long after any signature would have expired, and a URL that stops
+ * working would break rollback and audit continuity.
+ *
+ * What must be identical across surfaces is the resolved identity (platform, arch, variant,
+ * filetype, size, sha256) — that is what `resolveBuildAssetIdentities` shares.
+ */
+async function latestAssetDownloadUrl(
+  env: Env,
+  origin: string,
+  appSlug: string,
+  releaseId: string,
+  asset: BuildAssetIdentity,
+  ttl: number,
+): Promise<string> {
+  if (asset.r2_key !== null) {
+    return generateSignedR2Url(env, asset.r2_key, ttl, origin);
+  }
+  return releaseBoundUrl(origin, appSlug, releaseId, asset.target);
+}
+
+/**
+ * Does a resolved asset identity correspond to the caller's requested machine target?
+ *
+ * Externally-declared targets are opaque strings that must match exactly; a hosted asset is
+ * addressed by its platform-arch selector, which is what `resolveBuildAssetIdentities`
+ * returns for it. The same comparison therefore covers both modes with no branching — which
+ * is the point: a caller must not have to know how a build's bytes are hosted.
+ */
+function targetMatches(platform: string, arch: string | null, target: string): boolean {
+  return (arch === null ? `${platform}-` : `${platform}-${arch}`) === target;
+}
+
+/** The immutable release-bound `/dl` URL, used by the pinned surfaces for both modes. */
+function releaseBoundUrl(origin: string, appSlug: string, releaseId: string, target: string): string {
+  return `${origin}/dl/${encodeURIComponent(appSlug)}/releases/${encodeURIComponent(releaseId)}/${encodeURIComponent(target)}`;
+}
+
 export async function handlePublicV2Latest(c: Context<{ Bindings: Env }>) {
   const slug = c.req.param("slug");
   const requestedChannel = c.req.query("channel") ?? "main";
@@ -282,87 +426,30 @@ export async function handlePublicV2Latest(c: Context<{ Bindings: Env }>) {
     return c.json({ error: "matched release has no build row" }, 500);
   }
 
-  // Pick the best matching asset for the client (filter by client_platform).
-  const assets = await c.env.DB.prepare(
-    `SELECT id, platform, arch, variant, filetype, r2_key, file_hash,
-            size_bytes
-     FROM build_assets
-     WHERE build_id = ?1
-       AND artifact_kind = 'installable'
-     ORDER BY platform ASC, arch ASC, filetype ASC`,
-  )
-    .bind(build.id)
-    .all<{
-      id: string;
-      platform: string;
-      arch: string | null;
-      variant: string | null;
-      filetype: string;
-      r2_key: string;
-      file_hash: string;
-      size_bytes: number;
-    }>();
-
-  const filteredAssets = clientPlatform
-    ? assets.results.filter((a) => {
-        const parsed = splitPlatformArch(clientPlatform);
-        if (a.platform === parsed.platform && parsed.arch === null) return true;
-        if (a.platform === parsed.platform && a.arch === parsed.arch) return true;
-        return false;
-      })
-    : assets.results;
-
-  const ttl = Number(c.env.SIGNED_URL_TTL_SECONDS ?? "3600");
-  const origin = publicRequestOrigin(c);
-  let assetsWithUrls: PublicAssetResponse[] = await Promise.all(
-    filteredAssets.map(async (a) => ({
-      platform: a.platform,
-      arch: a.arch,
-      variant: a.variant,
-      filetype: a.filetype,
-      size_bytes: a.size_bytes,
-      sha256: a.file_hash,
-      download_url: await generateSignedR2Url(c.env, a.r2_key, ttl, origin),
-    })),
-  );
-
-  // Externally-hosted builds (source = 'external', e.g. Node SEA binaries)
-  // have no R2-backed build_assets rows; their per-target identity lives in
-  // external_build_targets. Project those targets into the same asset shape so
-  // /latest returns unified version info regardless of where the bytes live.
-  // download_url is the immutable release-bound /dl route (302 to the declared
-  // source URL) — the same surface updates/check hands out.
-  if (assets.results.length === 0) {
-    const { results: externalTargets } = await c.env.DB.prepare(
-      `SELECT target, raw_sha256, raw_size_bytes
-       FROM external_build_targets
-       WHERE build_id = ?1
-       ORDER BY target ASC`,
-    )
-      .bind(build.id)
-      .all<{ target: string; raw_sha256: string; raw_size_bytes: number }>();
+    // Resolve this build's installable artifacts through the shared resolver, so
+    // /latest, /updates/check and /versions cannot disagree about where bytes live.
+    const identities = await resolveBuildAssetIdentities(c.env, app.slug, build.id);
+    const ttl = Number(c.env.SIGNED_URL_TTL_SECONDS ?? "3600");
+    const origin = publicRequestOrigin(c);
     const requested = splitPlatformArch(clientPlatform);
-    assetsWithUrls = externalTargets
-      .map((t) => {
-        const separator = t.target.indexOf("-");
-        const platform = separator > 0 ? t.target.slice(0, separator) : t.target;
-        const arch = separator > 0 ? t.target.slice(separator + 1) : null;
-        return {
-          platform,
-          arch,
-          variant: null,
-          filetype: "binary",
-          size_bytes: t.raw_size_bytes,
-          sha256: t.raw_sha256,
-          download_url: `${origin}/dl/${encodeURIComponent(app.slug)}/releases/${encodeURIComponent(winner.release_id)}/${encodeURIComponent(t.target)}`,
-        };
-      })
-      .filter((a) => {
-        if (!requested.platform) return true;
-        if (a.platform !== requested.platform) return false;
-        return requested.arch === null || a.arch === requested.arch;
-      });
-  }
+    const assetsWithUrls: PublicAssetResponse[] = (
+      await Promise.all(
+        identities.map(async (a) => ({
+          platform: a.platform,
+          arch: a.arch,
+          variant: a.variant,
+          filetype: a.filetype,
+          size_bytes: a.size_bytes,
+          sha256: a.sha256,
+          download_url: await latestAssetDownloadUrl(c.env, origin, app.slug, winner.release_id, a, ttl),
+        })),
+      )
+    ).filter((a) => {
+      if (!requested.platform) return true;
+      if (a.platform !== requested.platform) return false;
+      return requested.arch === null || a.arch === requested.arch;
+    });
+
 
   // Optional fallback_release: if the winner is NOT `full`, look for the
   // next-most-specific `full` match for the same client so we can warn
@@ -623,7 +710,7 @@ export async function handlePublicCliBinaryUpdateCheck(c: Context<{ Bindings: En
     `SELECT a.id AS app_id, a.slug, ch.slug AS channel,
             r.id AS release_id, r.revision, r.rollout_cohort_count,
             r.activated_at, r.channel_id,
-            b.version_name, b.version_code,
+            b.id AS build_id, b.version_name, b.version_code,
             e.id AS artifact_id, e.raw_sha256, e.raw_size_bytes,
             e.gzip_sha256, e.gzip_size_bytes
      FROM apps a
@@ -635,7 +722,7 @@ export async function handlePublicCliBinaryUpdateCheck(c: Context<{ Bindings: En
      JOIN release_scopes s ON s.release_id = r.id
        AND s.scope_type = 'full' AND s.scope_value = 'all'
      JOIN builds b ON b.id = r.build_id AND b.status = 'succeeded'
-     JOIN external_build_targets e ON e.build_id = b.id AND e.target = ?3
+     LEFT JOIN external_build_targets e ON e.build_id = b.id AND e.target = ?3
      WHERE a.slug = ?1
        AND (r.availability_at IS NULL OR r.availability_at <= ?4)
        AND ((?5 IS NULL AND ch.slug = ?2) OR ?5 IS NOT NULL)
@@ -647,8 +734,9 @@ export async function handlePublicCliBinaryUpdateCheck(c: Context<{ Bindings: En
     app_id: string; slug: string; channel: string;
     release_id: string; revision: number; rollout_cohort_count: number | null;
     activated_at: number; channel_id: string;
+      build_id: string;
     version_name: string; version_code: number; artifact_id: string;
-    raw_sha256: string; raw_size_bytes: number;
+    raw_sha256: string | null; raw_size_bytes: number | null;
     gzip_sha256: string | null; gzip_size_bytes: number | null;
   }>();
   if (rows.length === 0) return c.json({ error: "no active release for target", code: "UPDATE_NO_COMPATIBLE_ARTIFACT" }, 404);
@@ -661,6 +749,20 @@ export async function handlePublicCliBinaryUpdateCheck(c: Context<{ Bindings: En
     }
   }
   const row = rows[0]!;
+    // A hosted build has no external_build_targets row, so the LEFT JOIN above leaves the
+    // declared identity null. Resolve it through the shared resolver — the same function
+    // /latest uses — which is what keeps the two surfaces from disagreeing about where a
+    // build's bytes live. External builds keep their declared identity verbatim.
+    if (row.raw_sha256 === null || row.raw_size_bytes === null) {
+      const resolved = (await resolveBuildAssetIdentities(c.env, row.slug, row.build_id))
+        .filter((a) => targetMatches(a.platform, a.arch, target));
+      if (resolved.length === 0) {
+        return c.json({ error: "no active release for target", code: "UPDATE_NO_COMPATIBLE_ARTIFACT" }, 404);
+      }
+      row.raw_sha256 = resolved[0]!.sha256;
+      row.raw_size_bytes = resolved[0]!.size_bytes;
+      row.artifact_id = resolved[0]!.target;
+    }
   if (!/^[a-f0-9]{64}$/u.test(row.raw_sha256) || !Number.isSafeInteger(row.raw_size_bytes) || row.raw_size_bytes < 0) {
     return c.json({ error: "active artifact integrity metadata is invalid", code: "UPDATE_IDENTITY_DRIFT" }, 409);
   }
@@ -778,7 +880,7 @@ export async function handlePublicCliBinaryVersions(c: Context<{ Bindings: Env }
     `SELECT a.id AS app_id, a.slug, a.platform AS app_platform,
             r.id AS release_id, r.status AS release_status,
             r.activated_at,
-            b.version_name, b.version_code,
+            b.id AS build_id, b.version_name, b.version_code,
             e.raw_sha256, e.raw_size_bytes
      FROM apps a
      JOIN channels ch ON ch.app_id = a.id
@@ -788,7 +890,7 @@ export async function handlePublicCliBinaryVersions(c: Context<{ Bindings: Env }
        AND r.hidden = 0
        AND (r.rollout_cohort_count IS NULL OR r.rollout_cohort_count >= 100)
      JOIN builds b ON b.id = r.build_id AND b.status = 'succeeded'
-     JOIN external_build_targets e ON e.build_id = b.id AND e.target = ?3
+     LEFT JOIN external_build_targets e ON e.build_id = b.id AND e.target = ?3
      WHERE a.id = ?1 AND ch.id = ?2
        AND (r.availability_at IS NULL OR r.availability_at <= ?4)
        AND EXISTS (
@@ -810,6 +912,16 @@ export async function handlePublicCliBinaryVersions(c: Context<{ Bindings: Env }
 
   const byVersion = new Map<string, PublicCliVersionRow>();
   for (const row of rows) {
+      // Hosted builds arrive with a null declared identity: they have no
+      // external_build_targets row. Resolve them through the same shared resolver the other
+      // public surfaces use, so this index cannot disagree with /latest or /updates/check.
+      if (row.raw_sha256 === null || row.raw_size_bytes === null) {
+        const resolved = (await resolveBuildAssetIdentities(c.env, row.slug, row.build_id))
+          .filter((a) => targetMatches(a.platform, a.arch, target));
+        if (resolved.length === 0) continue;
+        row.raw_sha256 = resolved[0]!.sha256;
+        row.raw_size_bytes = resolved[0]!.size_bytes;
+      }
     if (
       !parseStrictSemver(row.version_name)
       || !Number.isSafeInteger(row.version_code)
