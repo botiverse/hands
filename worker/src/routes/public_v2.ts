@@ -912,10 +912,11 @@ type PublicCliVersionRow = {
   release_id: string;
   release_status: "active" | "superseded";
   activated_at: number;
+  build_id: string;
   version_name: string;
   version_code: number;
-  raw_sha256: string;
-  raw_size_bytes: number;
+  raw_sha256: string | null;
+  raw_size_bytes: number | null;
   artifact_mode: string | null;
   has_hosted_assets: number;
 };

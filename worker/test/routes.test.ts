@@ -105,6 +105,10 @@ describe("quiver OpenAPI document", () => {
       "/api/apps/{appId}/builds",
       "/api/apps/{appId}/builds/publish-version",
       "/api/apps/{appId}/builds/{buildId}/external-targets",
+      "/api/apps/{appId}/builds/{buildId}/assets/uploads",
+      "/api/apps/{appId}/builds/{buildId}/assets/{assetId}/upload/complete",
+      "/api/apps/{appId}/builds/{buildId}/hosted-migration",
+      "/api/apps/{appId}/builds/{buildId}/hosted-migration/complete",
       "/api/apps/{appId}/builds/{buildId}/testflight-upload",
       "/api/apps/{appId}/testflight-uploads/{buildUploadId}",
       "/api/apps/{appId}/testflight-beta-app-description",
@@ -278,6 +282,22 @@ function makeMockDb() {
       created_at INTEGER NOT NULL,
       UNIQUE (build_id, platform, arch, variant, filetype),
       FOREIGN KEY (build_id) REFERENCES builds(id) ON DELETE CASCADE
+    );
+    CREATE TABLE build_asset_ingest_attempt (
+      asset_id TEXT NOT NULL REFERENCES build_assets(id) ON DELETE CASCADE,
+      attempt INTEGER NOT NULL,
+      declared_sha256 TEXT NOT NULL,
+      declared_size INTEGER NOT NULL,
+      staging_key TEXT NOT NULL,
+      committed_final_key TEXT,
+      upload_expires_at INTEGER NOT NULL,
+      state TEXT NOT NULL,
+      verifier_lease_id TEXT,
+      verifier_lease_expires_at INTEGER,
+      cleanup_state TEXT NOT NULL DEFAULT 'live',
+      cleanup_receipt TEXT,
+      created_at INTEGER NOT NULL,
+      PRIMARY KEY (asset_id, attempt)
     );
     CREATE TABLE releases (
       id TEXT PRIMARY KEY,
