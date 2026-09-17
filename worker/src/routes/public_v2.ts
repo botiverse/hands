@@ -144,12 +144,29 @@ async function resolveBuildAssetIdentities(
   env: Env,
   appSlug: string,
   buildId: string,
+  opts: { primaryOnly: boolean },
 ): Promise<BuildAssetIdentity[]> {
+  // `primaryOnly` selects the rule the caller actually needs, because the two public
+  // surfaces ask different questions of the same build:
+  //
+  //   - The pinned surfaces (`/updates/check?version=`, `/versions`) hand out the immutable
+  //     `/dl/{slug}/releases/{releaseId}/{target}` URL. With no `?kind=`, that route serves
+  //     the asset whose variant IS NULL (see serveHostedAsset). So they must resolve the
+  //     SAME asset: anything else makes the reported sha256/size describe a different object
+  //     than the one the URL returns. Sibling representations (a HAP beside an App Pack; the
+  //     gzip and photon-wasm sidecars added by #229) are addressed explicitly via `?kind=`
+  //     or the `.gz` suffix, never by being "first in the list".
+  //   - `/latest` answers "what may this client fetch right now" and has always listed every
+  //     installable representation, so it keeps that behaviour.
+  //
+  // Without this, the pinned choice fell out of an ORDER BY filetype and therefore depended
+  // on alphabetical accident: `apk` sorts before `aab`, `app` before `hap`.
   const hosted = await env.DB.prepare(
     `SELECT platform, arch, variant, filetype, file_hash, size_bytes, r2_key
      FROM build_assets
      WHERE build_id = ?1
        AND artifact_kind = 'installable'
+       ${opts.primaryOnly ? "AND variant IS NULL" : ""}
      ORDER BY platform ASC, arch ASC, filetype ASC`,
   )
     .bind(buildId)
@@ -428,7 +445,7 @@ export async function handlePublicV2Latest(c: Context<{ Bindings: Env }>) {
 
     // Resolve this build's installable artifacts through the shared resolver, so
     // /latest, /updates/check and /versions cannot disagree about where bytes live.
-    const identities = await resolveBuildAssetIdentities(c.env, app.slug, build.id);
+    const identities = await resolveBuildAssetIdentities(c.env, app.slug, build.id, { primaryOnly: false });
     const ttl = Number(c.env.SIGNED_URL_TTL_SECONDS ?? "3600");
     const origin = publicRequestOrigin(c);
     const requested = splitPlatformArch(clientPlatform);
@@ -754,7 +771,7 @@ export async function handlePublicCliBinaryUpdateCheck(c: Context<{ Bindings: En
     // /latest uses — which is what keeps the two surfaces from disagreeing about where a
     // build's bytes live. External builds keep their declared identity verbatim.
     if (row.raw_sha256 === null || row.raw_size_bytes === null) {
-      const resolved = (await resolveBuildAssetIdentities(c.env, row.slug, row.build_id))
+      const resolved = (await resolveBuildAssetIdentities(c.env, row.slug, row.build_id, { primaryOnly: true }))
         .filter((a) => targetMatches(a.platform, a.arch, target));
       if (resolved.length === 0) {
         return c.json({ error: "no active release for target", code: "UPDATE_NO_COMPATIBLE_ARTIFACT" }, 404);
@@ -916,7 +933,7 @@ export async function handlePublicCliBinaryVersions(c: Context<{ Bindings: Env }
       // external_build_targets row. Resolve them through the same shared resolver the other
       // public surfaces use, so this index cannot disagree with /latest or /updates/check.
       if (row.raw_sha256 === null || row.raw_size_bytes === null) {
-        const resolved = (await resolveBuildAssetIdentities(c.env, row.slug, row.build_id))
+        const resolved = (await resolveBuildAssetIdentities(c.env, row.slug, row.build_id, { primaryOnly: true }))
           .filter((a) => targetMatches(a.platform, a.arch, target));
         if (resolved.length === 0) continue;
         row.raw_sha256 = resolved[0]!.sha256;

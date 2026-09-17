@@ -33,7 +33,7 @@ describe("public cli-binary selection", () => {
     sqlite.exec(`
       CREATE TABLE apps (id TEXT PRIMARY KEY, slug TEXT, platform TEXT);
       CREATE TABLE channels (id TEXT PRIMARY KEY, app_id TEXT, slug TEXT);
-      CREATE TABLE releases (id TEXT PRIMARY KEY, app_id TEXT, build_id TEXT, channel_id TEXT, product_type TEXT, release_type TEXT, status TEXT, hidden INTEGER, revision INTEGER, rollout_cohort_count INTEGER, activated_at INTEGER, availability_at INTEGER);
+      CREATE TABLE releases (id TEXT PRIMARY KEY, app_id TEXT, build_id TEXT, channel_id TEXT, product_type TEXT, release_type TEXT, status TEXT, hidden INTEGER, revision INTEGER, rollout_cohort_count INTEGER, activated_at INTEGER, availability_at INTEGER, created_at INTEGER, updated_at INTEGER);
       CREATE TABLE release_scopes (id TEXT PRIMARY KEY, release_id TEXT, scope_type TEXT, scope_value TEXT);
       CREATE TABLE builds (id TEXT PRIMARY KEY, app_id TEXT, status TEXT, version_name TEXT, version_code INTEGER);
       CREATE TABLE external_build_targets (id TEXT PRIMARY KEY, build_id TEXT, target TEXT, raw_sha256 TEXT, raw_size_bytes INTEGER, gzip_sha256 TEXT, gzip_size_bytes INTEGER);
@@ -63,8 +63,8 @@ describe("public cli-binary selection", () => {
     if (channel === "latest") {
       sqlite.prepare("INSERT OR IGNORE INTO channels VALUES ('channel-latest', 'app', 'latest')").run();
     }
-    sqlite.prepare("INSERT INTO releases VALUES (?, 'app', ?, ?, 'cli-binary', 'stable', ?, 0, 1, ?, ?, NULL)")
-      .run(id, buildId, `channel-${channel}`, status, options.rolloutCohortCount ?? null, activatedAt);
+    sqlite.prepare("INSERT INTO releases VALUES (?, 'app', ?, ?, 'cli-binary', 'stable', ?, 0, 1, ?, ?, NULL, ?, ?)")
+      .run(id, buildId, `channel-${channel}`, status, options.rolloutCohortCount ?? null, activatedAt, activatedAt, activatedAt);
     sqlite.prepare("INSERT INTO release_scopes VALUES (?, ?, 'full', 'all')").run(`scope-${id}`, id);
   }
 
@@ -80,8 +80,8 @@ describe("public cli-binary selection", () => {
     sqlite.prepare(
       "INSERT INTO build_assets (id, build_id, platform, arch, variant, filetype, artifact_kind, r2_key, file_hash, size_bytes, created_at) VALUES (?, ?, 'linux', 'x64', NULL, 'binary', 'installable', ?, ?, 4242, ?)",
     ).run(`asset-${id}`, buildId, `apps/app/${id}/linux-x64`, sha256, activatedAt);
-    sqlite.prepare("INSERT INTO releases VALUES (?, 'app', ?, ?, 'cli-binary', 'stable', ?, 0, 1, ?, ?, NULL)")
-      .run(id, buildId, `channel-${channel}`, status, null, activatedAt);
+    sqlite.prepare("INSERT INTO releases VALUES (?, 'app', ?, ?, 'cli-binary', 'stable', ?, 0, 1, ?, ?, NULL, ?, ?)")
+      .run(id, buildId, `channel-${channel}`, status, null, activatedAt, activatedAt, activatedAt);
     sqlite.prepare("INSERT INTO release_scopes VALUES (?, ?, 'full', 'all')").run(`scope-${id}`, id);
     return sha256;
   }
@@ -392,11 +392,58 @@ describe("public cli-binary selection", () => {
 
   it("still answers 404 when neither hosting mode has an artifact for the target", async () => {
     sqlite.prepare("INSERT INTO builds VALUES ('build-empty', 'app', 'succeeded', '1.0.0', 100)").run();
-    sqlite.prepare("INSERT INTO releases VALUES ('r-empty', 'app', 'build-empty', 'channel-main', 'cli-binary', 'stable', 'active', 0, 1, NULL, 100, NULL)").run();
+      sqlite.prepare("INSERT INTO releases VALUES ('r-empty', 'app', 'build-empty', 'channel-main', 'cli-binary', 'stable', 'active', 0, 1, NULL, 100, NULL, 100, 100)").run();
     sqlite.prepare("INSERT INTO release_scopes VALUES ('scope-empty', 'r-empty', 'full', 'all')").run();
     const res = await check("&version=1.0.0");
     expect(res.status).toBe(404);
     await expect(res.json()).resolves.toMatchObject({ code: "UPDATE_NO_COMPATIBLE_ARTIFACT" });
   });
+
+
+  it("a sibling representation on the same target cannot hijack the pinned identity", async () => {
+    // A hosted build may hold more than one installable row for one platform-arch: OHOS ships
+    // an `appgallery` App Pack beside a `sideload` HAP, and #229 adds gzip / photon-wasm
+    // representations next to the raw binary. The pinned surfaces must report the SAME asset
+    // that the release-bound /dl URL serves, which is the variant-IS-NULL primary. Selecting
+    // by `ORDER BY filetype` instead would depend on alphabetical accident - `app` sorts
+    // before `hap`, so the App Pack would win and its digest would describe an object the
+    // URL never returns.
+    const primarySha = seedHostedRelease("h1", "1.0.0", "active", 100);
+    // A sibling with a LOWER filetype would win any filetype-ordered pick, and one with a
+    // HIGHER filetype must still lose to the primary. Seeding both directions makes the test
+    // fail whichever way the resolver leans if it stops filtering on variant.
+    sqlite.prepare(
+      "INSERT INTO build_assets (id, build_id, platform, arch, variant, filetype, artifact_kind, r2_key, file_hash, size_bytes, created_at) VALUES (?, ?, 'linux', 'x64', 'z-sidecar', 'aaa', 'installable', ?, ?, 1111, ?)",
+    ).run("asset-aaa", "build-h1", "apps/app/h1/linux-x64-aaa", "a".repeat(64), 100);
+    sqlite.prepare(
+      "INSERT INTO build_assets (id, build_id, platform, arch, variant, filetype, artifact_kind, r2_key, file_hash, size_bytes, created_at) VALUES (?, ?, 'linux', 'x64', 'gzip', 'zzz', 'installable', ?, ?, 2222, ?)",
+    ).run("asset-zzz", "build-h1", "apps/app/h1/linux-x64-zzz", "b".repeat(64), 101);
+
+    const res = await check("&version=1.0.0");
+    expect(res.status).toBe(200);
+    const body = await res.json() as { artifact: { sha256: string; size_bytes: number; download_url: string } };
+    expect(body.artifact.sha256).toBe(primarySha);
+    expect(body.artifact.size_bytes).toBe(4242);
+    expect(body.artifact.download_url).toBe("https://hands.example/dl/computer/releases/h1/linux-x64");
+  });
+
+  it("the pinned surfaces stay aligned when a sibling exists, and /versions reports the same primary", async () => {
+    const primarySha = seedHostedRelease("h1", "1.0.0", "active", 100, { channel: "alpha" });
+    sqlite.prepare(
+      "INSERT INTO build_assets (id, build_id, platform, arch, variant, filetype, artifact_kind, r2_key, file_hash, size_bytes, created_at) VALUES (?, ?, 'linux', 'x64', 'gzip', 'gz', 'installable', ?, ?, 3333, ?)",
+    ).run("asset-gz", "build-h1", "apps/app/h1/linux-x64.gz", "c".repeat(64), 100);
+
+    const viaCheck = await check("&version=1.0.0");
+    const viaVersions = await versions();
+    const checkBody = await viaCheck.json() as { artifact: { sha256: string; size_bytes: number } };
+    const versionsBody = await viaVersions.json() as { versions: Array<{ version: string; sha256: string; size_bytes: number }> };
+    const listed = versionsBody.versions.find((v) => v.version === "1.0.0");
+
+    expect(checkBody.artifact.sha256).toBe(primarySha);
+    expect(checkBody.artifact.size_bytes).toBe(4242);
+    expect(listed!.sha256).toBe(primarySha);
+    expect(listed!.size_bytes).toBe(4242);
+  });
+
 
 });

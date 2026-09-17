@@ -7649,6 +7649,45 @@ describe("quiver public API v2 — scope resolution", () => {
     expect(body.assets[0].download_url).toMatch(/^https:\/\//);
   });
 
+    it("latest lists sibling representations of the same target, not just the primary", async () => {
+      // The complement of the pinned surfaces' primary-only rule: /latest answers "what may
+      // this client fetch right now" and has always listed every installable representation,
+      // so narrowing the pinned resolvers must not narrow it. A sibling (here a gzip
+      // representation of the same target, the shape #229 adds) must still appear.
+      const env = makeEnv();
+      configureR2Presign(env);
+      const now = Date.now();
+      await seedRelease(env, "rel-siblings", "build-siblings", [["full", "all"]], {
+        createdAt: now,
+        versionCode: 31,
+      });
+      await seedAsset(env, "build-siblings", "asset-primary", {
+        arch: "arm64-v8a",
+        fileHash: "f".repeat(64),
+        sizeBytes: 5000,
+      });
+      await seedAsset(env, "build-siblings", "asset-gz", {
+        arch: "arm64-v8a",
+        variant: "gzip",
+        filetype: "gz",
+        fileHash: "0".repeat(64),
+        sizeBytes: 1500,
+      });
+      const { handlePublicV2Latest } = await import("../src/routes/public_v2");
+
+      const response = await handlePublicV2Latest(makePublicContext(env, {
+        channel: "production",
+        product_type: "android-apk",
+        platform: "android",
+        arch: "arm64-v8a",
+      }));
+      expect(response.status).toBe(200);
+      const body = await responseJson<any>(response);
+      const shas = body.assets.map((a: any) => a.sha256);
+      expect(shas).toContain("f".repeat(64));
+      expect(shas).toContain("0".repeat(64));
+    });
+
   it("latest projects external build targets into the unified asset shape", async () => {
     // Externally-hosted builds (Node SEA / cli-binary) have no R2 build_assets
     // rows, so before this arm existed /latest resolved the release but
