@@ -58,7 +58,16 @@ export interface ConfirmActionDialogProps {
   /** Style of the confirm button. Default: 'primary'. */
   confirmKind?: "primary" | "danger" | undefined;
   /** If set, user must type this string before Confirm becomes enabled. */
-  typeToConfirm?: string | undefined;
+    /**
+     * If set, the operator must type this exact string before Confirm is enabled.
+     * The dialog does not own the value: pass `typedValue`/`onTypedChange` and enforce
+     * the match via `confirmDisabled`, so the gate cannot silently pass.
+     */
+    requiredText?: string | undefined;
+    /** Current typed value; owned by the caller. */
+    typedValue?: string | undefined;
+    /** Receives each keystroke; owned by the caller. */
+    onTypedChange?: ((v: string) => void) | undefined;
   /** Disable the confirm button (e.g. while a mutation is in flight). */
   pending?: boolean | undefined;
   /** Caller-controlled disable, e.g. for a typed-confirm gate. */
@@ -77,7 +86,9 @@ export function ConfirmActionDialog({
   confirmLabel = "Confirm",
   cancelLabel = "Cancel",
   confirmKind = "primary",
-  typeToConfirm,
+    requiredText,
+    typedValue = "",
+    onTypedChange,
   pending = false,
   confirmDisabled = false,
   onConfirm,
@@ -119,15 +130,13 @@ export function ConfirmActionDialog({
             {body}
           </div>
 
-          {typeToConfirm !== undefined && (
-            <TypedConfirmField
-              required={typeToConfirm}
-              value={pending ? "•••" : ""}
-              onChange={() => {
-                /* gated via external state; see TypedConfirmField doc */
-              }}
-            />
-          )}
+            {requiredText !== undefined && (
+              <TypedConfirmField
+                required={requiredText}
+                value={typedValue}
+                onChange={(v) => onTypedChange?.(v)}
+              />
+            )}
         </AlertDialogBody>
 
         <AlertDialogFooter className="flex-col-reverse items-stretch gap-2 sm:flex-row sm:items-center sm:justify-end sm:gap-3">
