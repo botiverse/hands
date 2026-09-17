@@ -26,6 +26,7 @@
  * (see the external arm there), kept in one shape across both surfaces.
  */
 import type { Context } from "hono";
+import { usesHostedAssets } from "../lib/release_resolver";
 import { resolvePublicChannelSlug } from "../lib/public_channel";
 
 type DlTargetRow = {
@@ -214,9 +215,7 @@ async function buildIsHosted(env: Env, buildId: string): Promise<boolean> {
        FROM builds b WHERE b.id = ?1`,
   ).bind(buildId).first<{ mode: string | null; has_assets: number }>();
   if (!row) return false;
-  if (row.mode === "external") return false;
-  if (row.mode === "hands_r2") return true;
-  return row.has_assets === 1;
+  return usesHostedAssets(row.mode, row.has_assets === 1);
 }
 
 export async function handleExternalLatestDl(c: Context<{ Bindings: Env }>) {

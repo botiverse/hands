@@ -93,3 +93,27 @@ export function rolloutIncludes(
   if (cohortCount <= 0 || !key) return false;
   return rolloutBucket(releaseId, key) < cohortCount;
 }
+
+/**
+ * Whether a build's artifacts live in the Hands bucket, decided from DECLARED placement.
+ *
+ * `builds.artifact_mode` is the authoritative column (migration 0073): `hands_r2` means the
+ * bytes are objects under `build_assets`, `external` means they are declared in
+ * `external_build_targets`. The distinction matters while a build is being migrated, because
+ * its rows can exist BEFORE the switch is final and every public read must keep describing the
+ * build as external until then. Inferring from row presence alone would let a migration leak
+ * hosted identities (signed R2 URLs) while the download route is still serving the declared
+ * external URL - the surfaces would disagree about one release.
+ *
+ * Pure by design: callers already read these two facts in their own queries, so this adds no
+ * round trip and cannot drift from what they selected on. A build with no mode predates the
+ * column, so there the presence of installable rows is the only available signal.
+ */
+export function usesHostedAssets(
+  artifactMode: string | null,
+  hasHostedAssets: boolean,
+): boolean {
+  if (artifactMode === "external") return false;
+  if (artifactMode === "hands_r2") return true;
+  return hasHostedAssets;
+}
