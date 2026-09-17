@@ -6214,7 +6214,7 @@ describe("quiver public API v2 — scope resolution", () => {
       handlePublishRelease,
     } = await import("../src/routes/releases");
     const { handlePublicV2UpdateCheck } = await import("../src/routes/public_v2");
-    const { handleCreateReleaseShare, handlePublicReleaseShare } = await import("../src/routes/shares");
+    const { handleCreateReleaseShare, handlePublicReleaseShare, handlePublicReleaseShareDownload } = await import("../src/routes/shares");
     const { handlePublicAppHistory, handlePublicReleaseNotesJson } = await import("../src/routes/history");
     const { handlePublicFeedbackSubmit } = await import("../src/routes/feedback");
 
@@ -6456,6 +6456,56 @@ describe("quiver public API v2 — scope resolution", () => {
       .bind("wh-e2e")
       .first()) as { payload_json: string };
     expect(JSON.parse(feedbackDelivery.payload_json).payload.reporter_id).toBeNull();
+  });
+
+  it("the current release is chosen deterministically when timestamps tie", async () => {
+    // "Newest active release" must be a function of the data, not of the query planner. Two
+    // releases activated in the same millisecond previously left the winner to whatever order
+    // the engine happened to produce, so two clients could receive different downloads for the
+    // same request - and a test asserting either one would pass or fail at random. The id
+    // tie-break makes the ordering total, so the SAME answer is pinned here rather than one of
+    // two acceptable ones.
+    const env = makeEnv();
+    const { handleExternalLatestDl } = await import("../src/routes/external_dl");
+    const dlCtx = (params: Record<string, string>) =>
+      ({
+        env,
+        req: { param: (name: string) => params[name] ?? "", query: () => undefined },
+        json: (data: unknown, status = 200) => new Response(JSON.stringify(data), { status }),
+      }) as any;
+    const activatedAt = 1_700_000_000_000;
+
+    for (const [id, buildId, versionName] of [
+      ["rel-tie-b", "build-tie-b", "1.0.41"],
+      ["rel-tie-a", "build-tie-a", "1.0.40"],
+    ] as const) {
+      await seedRelease(env, id, buildId, [["full", "all"]], {
+        createdAt: activatedAt,
+        productType: "cli-binary",
+        versionName,
+        versionCode: Number(versionName.split(".")[2]),
+        artifactMode: "external",
+      });
+      await env.DB.prepare(
+        "UPDATE releases SET status = 'active', activated_at = ?1 WHERE id = ?2",
+      ).bind(activatedAt, id).run();
+      await env.DB.prepare(
+        `INSERT INTO external_build_targets
+         (id, app_id, build_id, version_name, target, source_url, raw_sha256, raw_size_bytes,
+          node_version, metadata_json, created_at, updated_at)
+         VALUES (?1, 'app-scope', ?2, ?3, 'linux-x64', 'https://example.test/tie',
+                 ?4, 10, '22', '{}', ?5, ?5)`,
+      ).bind(`tgt-${versionName}`, buildId, versionName, "d".repeat(64), activatedAt).run();
+    }
+
+    // Both releases are active, share activated_at exactly, and both serve linux-x64. The only
+    // thing that can separate them is the tie-break, so this asserts a specific winner
+    // (`rel-tie-a`, the lower id) instead of accepting either.
+    const picked = await handleExternalLatestDl(
+      dlCtx({ slug: "scope-app", channel: "production", file: "linux-x64" }),
+    );
+    expect(picked.status).toBe(302);
+    expect(picked.headers.get("location")).toBe("/dl/scope-app/releases/rel-tie-a/linux-x64");
   });
 
   it("placement is read from artifact_mode, not inferred from the source label", async () => {
@@ -7189,6 +7239,57 @@ describe("quiver public API v2 — scope resolution", () => {
     );
     expect(detail.checks).toHaveLength(1);
     expect(detail.checks[0].verdict).toBe("passed");
+  });
+
+  it("share fallback: the newest active release wins over an older release's apk", async () => {
+    // The semantic #232 settles, previously untested. `findLatestActiveInstallableKey` is named
+    // "latest", so recency is the primary axis: an older release's apk must not outrank a newer
+    // release's aab. The fixture is built so the two candidate orderings DISAGREE - the old apk
+    // and the new aab are both reachable, and the share binds to a third release whose asset is
+    // gone - otherwise the fallback would return the same key either way and the test could not
+    // discriminate the behaviour it claims to pin.
+    const env = makeEnv();
+    const { handleCreateReleaseShare, handlePublicReleaseShareDownload } = await import("../src/routes/shares");
+    const base = 1_700_000_000_000;
+
+    await seedRelease(env, "rel-bound-share", "build-bound-share", [["full", "all"]], {
+      createdAt: base, activatedAt: base, versionCode: 9,
+    });
+    await seedAsset(env, "build-bound-share", "asset-bound", {
+      filetype: "apk", r2Key: "hosted/bound-pruned", fileHash: "d".repeat(64),
+    });
+    await seedRelease(env, "rel-old-share", "build-old-share", [["full", "all"]], {
+      createdAt: base, activatedAt: base + 1_000, versionCode: 10,
+    });
+    await seedAsset(env, "build-old-share", "asset-old-apk", {
+      filetype: "apk", r2Key: "hosted/old-apk", fileHash: "a".repeat(64),
+    });
+    await seedRelease(env, "rel-new-share", "build-new-share", [["full", "all"]], {
+      createdAt: base, activatedAt: base + 2_000, versionCode: 11,
+    });
+    await seedAsset(env, "build-new-share", "asset-new-aab", {
+      filetype: "aab", r2Key: "hosted/new-aab", fileHash: "c".repeat(64),
+    });
+
+    // Both candidates reachable; the share's own bound asset pruned so the fallback runs.
+    const r2 = new Set(["hosted/old-apk", "hosted/new-aab"]);
+    env.APK_BUCKET = {
+      put: async () => undefined,
+      head: async (key: string) => (r2.has(key) ? { key } : null),
+      get: async () => null,
+    } as any;
+
+    const created = await responseJson<any>(
+      await handleCreateReleaseShare(
+        makeShareAdminContext(env, { appId: "app-scope", releaseId: "rel-bound-share" }),
+      ),
+    );
+    const token = new URL(created.share_url).pathname.replace("/share/", "");
+
+    const res = await handlePublicReleaseShareDownload(makeSharePublicContext(env, token));
+    expect(res.status).toBe(302);
+    // The NEWER release's asset. An apk-first ordering would return the old release's apk here.
+    expect(res.headers.get("location")).toContain("new-aab");
   });
 
   it("shares: no ttl never expires, url is re-copyable, expiry semantics on update", async () => {
@@ -8721,6 +8822,53 @@ describe("quiver public API v2 — scope resolution", () => {
     expect(await response.text()).toBe("version: 1.2.3\nfiles: []\n");
   });
 
+    it("electron: two releases activated in the same millisecond resolve deterministically", async () => {
+      // The electron feed picks one build by release order, so an untied timestamp left WHICH
+      // build it served to the query planner - the same defect #232 fixes elsewhere. Two
+      // releases share activated_at exactly, so the id tie-break is the only thing separating
+      // them and the assertion names a specific winner rather than accepting either.
+      const env = makeEnv();
+      const { handleElectronGenericAsset } = await import("../src/routes/electron");
+      const at = 1_700_000_500_000;
+
+      for (const [releaseId, buildId, versionName, buildVersion] of [
+        ["rel-tie-b", "build-tie-b", "9.9.9", "3.3.3"],
+        ["rel-tie-a", "build-tie-a", "8.8.8", "2.2.2"],
+      ] as const) {
+        await seedRelease(env, releaseId, buildId, [["full", "all"]], {
+          productType: "electron-installer",
+          versionName,
+          activatedAt: at,
+        });
+        await seedAsset(env, buildId, `asset-${buildId}`, {
+          artifactKind: "electron-metadata",
+          platform: "win32",
+          filetype: "yml",
+          variant: "latest.yml",
+          r2Key: `apps/scope-app/electron/${buildId}-latest.yml`,
+          sizeBytes: 3,
+          metadata: { filename: "latest.yml" },
+        });
+      }
+
+      // Record which build's bytes the route reaches for: that IS the selection outcome, and it
+      // is the only observable the tie-break controls.
+      const requested: string[] = [];
+      env.APK_BUCKET = {
+        get: async (key: string) => {
+          requested.push(key);
+          return { body: new Blob(["x"]).stream(), httpEtag: '"e"', writeHttpMetadata: () => {} };
+        },
+      } as any;
+
+      const response = await handleElectronGenericAsset(makeElectronContext(env, "latest.yml"));
+      expect(response.status).toBe(200);
+      // The lower id wins the tie, so the LOWER build's asset is the one served.
+      expect(requested.some((k) => k.includes("build-tie-a"))).toBe(true);
+      expect(requested.some((k) => k.includes("build-tie-b"))).toBe(false);
+    });
+
+
   it("serves electron-updater installer and blockmap assets by original filename", async () => {
     const env = makeEnv();
     const { handleElectronGenericAsset } = await import("../src/routes/electron");
@@ -9413,7 +9561,7 @@ describe("quiver public API v2 — scope resolution", () => {
 
   it("public release share page renders metadata and a signed download URL", async () => {
     const env = makeEnv();
-    const { handleCreateReleaseShare, handlePublicReleaseShare } = await import("../src/routes/shares");
+    const { handleCreateReleaseShare, handlePublicReleaseShare, handlePublicReleaseShareDownload } = await import("../src/routes/shares");
     await seedRelease(env, "rel-share", "build-share", [["full", "all"]], {
       versionCode: 11,
       versionName: "1.0.11",
@@ -9490,7 +9638,7 @@ describe("quiver public API v2 — scope resolution", () => {
 
   it("share PAGE redirects to the app's latest version when the bound object is gone (#442)", async () => {
     const env = makeEnv();
-    const { handleCreateReleaseShare, handlePublicReleaseShare } = await import("../src/routes/shares");
+    const { handleCreateReleaseShare, handlePublicReleaseShare, handlePublicReleaseShareDownload } = await import("../src/routes/shares");
     await seedRelease(env, "rel-pold", "build-pold", [["full", "all"]], { versionCode: 5, versionName: "1.0.5", createdAt: 1000 });
     await seedAsset(env, "build-pold", "asset-pold", { arch: "arm64-v8a" });
     const created = await responseJson<any>(

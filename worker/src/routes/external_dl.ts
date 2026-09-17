@@ -262,7 +262,7 @@ export async function handleExternalLatestDl(c: Context<{ Bindings: Env }>) {
          b.artifact_mode = 'external'
          OR EXISTS (SELECT 1 FROM build_assets ba WHERE ba.build_id = b.id)
        )
-     ORDER BY r.created_at DESC LIMIT 1`,
+     ORDER BY r.activated_at DESC, r.id ASC LIMIT 1`,
   )
     .bind(slug, channel, Date.now())
     .first<{ id: string }>();
