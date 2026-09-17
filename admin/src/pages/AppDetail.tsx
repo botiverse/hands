@@ -1415,9 +1415,15 @@ export function AppSettings({ appId }: { appId: string }) {
 
   const [confirmArchive, setConfirmArchive] = useState(false);
 
+  // Owns the typed-confirmation state for the purge gate. ConfirmActionDialog renders the
+  // field but deliberately does not hold state, so the caller supplies value/onChange and
+  // enforces the match itself (see TypedConfirmField's doc comment).
+  const [purgeTyped, setPurgeTyped] = useState("");
   const [confirmPurge, setConfirmPurge] = useState(false);
   const purge = useMutation({
-    mutationFn: () => purgeApp(appId, app?.slug ?? ""),
+    // Send what the operator actually typed. Passing `app.slug` made the gate decorative -
+    // the caller never had to reproduce the slug, so it could not stop a misclick.
+    mutationFn: () => purgeApp(appId, purgeTyped),
     onSuccess: (res) => {
       toast.show({
         kind: "success",
@@ -1555,10 +1561,16 @@ export function AppSettings({ appId }: { appId: string }) {
             }
             confirmLabel="Purge permanently"
             confirmKind="danger"
-            typeToConfirm={app.slug}
+            requiredText={app.slug}
+            typedValue={purgeTyped}
+            onTypedChange={setPurgeTyped}
+            confirmDisabled={purgeTyped !== app.slug}
             pending={purge.isPending}
             onConfirm={() => purge.mutate()}
-            onCancel={() => setConfirmPurge(false)}
+            onCancel={() => {
+              setConfirmPurge(false);
+              setPurgeTyped("");
+            }}
           />
 
           <ConfirmActionDialog
