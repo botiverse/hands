@@ -83,8 +83,23 @@ async function serveHostedAsset(
   buildId: string,
   target: string,
   kind: { variant: string | null; filetype: string | null },
+  gzip = false,
 ): Promise<Response | null> {
-  const match = kind.filetype !== null
+  // A `.gz` request names the gzip REPRESENTATION of this target, whose declared sha256/size
+  // are of the COMPRESSED stream. It is a distinct object from the raw binary, so it is looked
+  // up as such - never by falling back to the raw row, which would hand out a body whose
+  // length/hash contradict the gzip metadata.
+  const match = gzip
+    ? c.env.DB.prepare(
+      `SELECT r2_key, file_hash, size_bytes, filetype, variant
+         FROM build_assets
+        WHERE build_id = ?1
+          AND variant = 'gzip'
+          AND artifact_kind = 'installable'
+          AND (platform || '-' || COALESCE(arch, '')) = ?2
+        ORDER BY created_at ASC LIMIT 1`,
+    ).bind(buildId, target)
+    : kind.filetype !== null
     ? c.env.DB.prepare(
       `SELECT r2_key, file_hash, size_bytes, filetype, variant
          FROM build_assets
@@ -136,11 +151,27 @@ export async function handleExternalReleaseDl(c: Context<{ Bindings: Env }>) {
     .first<{ id: string; build_id: string }>();
   if (!release) return c.json({ error: "release not found" }, 404);
 
-  // Hosted first: this release's bytes live in the Hands bucket, so serve them
-  // directly (and honour `?kind=` for its sidecars). The external branch below
-  // is unchanged for externally-declared targets.
-  const hosted = await serveHostedAsset(c, release.build_id, parsed.target, kind);
-  if (hosted) return hosted;
+  // A target is served by exactly one hosting mode. Which one decides the miss rule, so the
+  // mode is established first and the byte source second:
+  //
+  //   hosted   - the build has installable rows in build_assets, so the bytes live in the Hands
+  //              bucket and `?kind=` / the `.gz` suffix address sibling representations. Here a
+  //              miss is FINAL: a `.gz` request for a build with no gzip row must 4xx, never
+  //              fall through. Previously this call ran before the gzip check and had no gzip
+  //              concept at all, so `<target>.gz` returned the RAW binary with a 200 - a silent
+  //              downgrade whose body contradicts the gzip metadata.
+  //   external - the build declares targets in external_build_targets, and this route only
+  //              redirects to the declared URL. Its `.gz` behaviour (`gzip_source_url`, else
+  //              `<source_url>.gz`, else 404) is unchanged.
+  const isHosted = await buildIsHosted(c.env, release.build_id);
+  if (isHosted) {
+    const hosted = await serveHostedAsset(c, release.build_id, parsed.target, kind, parsed.gzip);
+    if (hosted) return hosted;
+    if (parsed.gzip) {
+      return c.json({ error: "no gzip transport declared for this target" }, 404);
+    }
+    return c.json({ error: "asset not found" }, 404);
+  }
   if (kind.variant !== null || kind.filetype !== null) {
     return c.json({ error: "asset not found" }, 404);
   }
@@ -159,6 +190,33 @@ export async function handleExternalReleaseDl(c: Context<{ Bindings: Env }>) {
     return new Response(null, { status: 302, headers: { location: url, ...noStore } });
   }
   return new Response(null, { status: 302, headers: { location: row.source_url, ...noStore } });
+}
+
+/**
+ * Whether this build's artifacts live in the Hands bucket rather than as declarations on
+ * external_build_targets. Used to pick the hosting mode - and therefore the miss rule - before
+ * looking for any particular representation.
+ */
+async function buildIsHosted(env: Env, buildId: string): Promise<boolean> {
+  // Read the DECLARED placement, the same source `handleExternalLatestDl` selects on
+  // (`artifact_mode = 'external' OR EXISTS(build_assets …)`). Inferring hosted-ness from the
+  // presence of build_assets rows made the two disagree for a build that declares
+  // `artifact_mode='external'` but carries stray asset rows: the selector would offer it as
+  // serviceable and this would then 404 it. One question, one producer.
+  //
+  // `artifact_mode` is the column added by migration 0073 for exactly this purpose - stating
+  // where the bytes live instead of deducing it. A build with no declared mode predates that
+  // column, so fall back to the presence of installable assets.
+  const row = await env.DB.prepare(
+    `SELECT b.artifact_mode AS mode,
+            EXISTS (SELECT 1 FROM build_assets ba
+                     WHERE ba.build_id = b.id AND ba.artifact_kind = 'installable') AS has_assets
+       FROM builds b WHERE b.id = ?1`,
+  ).bind(buildId).first<{ mode: string | null; has_assets: number }>();
+  if (!row) return false;
+  if (row.mode === "external") return false;
+  if (row.mode === "hands_r2") return true;
+  return row.has_assets === 1;
 }
 
 export async function handleExternalLatestDl(c: Context<{ Bindings: Env }>) {

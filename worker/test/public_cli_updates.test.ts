@@ -446,4 +446,66 @@ describe("public cli-binary selection", () => {
   });
 
 
+
+  it("advertises a hosted gzip sidecar with the compressed bytes' own digest", async () => {
+    // #229: gzip is a separate REPRESENTATION of the same target, so its sha256/size describe
+    // the COMPRESSED stream - not the raw binary. Advertising the raw digest under a gzip URL
+    // would make the installer's post-download check fail on every valid payload.
+    seedHostedRelease("h1", "1.0.0", "active", 100);
+    const gzSha = "a".repeat(64);
+    sqlite.prepare(
+      "INSERT INTO build_assets (id, build_id, platform, arch, variant, filetype, artifact_kind, r2_key, file_hash, size_bytes, created_at) VALUES (?, ?, 'linux', 'x64', 'gzip', 'gz', 'installable', ?, ?, 1500, ?)",
+    ).run("asset-gz", "build-h1", "apps/app/h1/linux-x64.gz", gzSha, 100);
+
+    const res = await check("&version=1.0.0");
+    expect(res.status).toBe(200);
+    const body = await res.json() as { artifact: { sha256: string; size_bytes: number; gzip?: { sha256: string; size_bytes: number; download_url: string } } };
+    // The raw identity must stay the primary's, and the gzip block must carry its own numbers.
+    expect(body.artifact.sha256).not.toBe(gzSha);
+    expect(body.artifact.size_bytes).toBe(4242);
+    expect(body.artifact.gzip).toBeDefined();
+    expect(body.artifact.gzip!.sha256).toBe(gzSha);
+    expect(body.artifact.gzip!.size_bytes).toBe(1500);
+    expect(body.artifact.gzip!.download_url).toBe("https://hands.example/dl/computer/releases/h1/linux-x64.gz");
+  });
+
+  it("advertises an optional hosted photon-wasm sidecar through its ?kind= address", async () => {
+    seedHostedRelease("h1", "1.0.0", "active", 100);
+    const wasmSha = "b".repeat(64);
+    sqlite.prepare(
+      "INSERT INTO build_assets (id, build_id, platform, arch, variant, filetype, artifact_kind, r2_key, file_hash, size_bytes, created_at) VALUES (?, ?, 'linux', 'x64', 'photon-wasm', 'wasm', 'installable', ?, ?, 900, ?)",
+    ).run("asset-wasm", "build-h1", "apps/app/h1/linux-x64.wasm", wasmSha, 100);
+
+    const res = await check("&version=1.0.0");
+    expect(res.status).toBe(200);
+    const body = await res.json() as { artifact: { sha256: string; photon_wasm?: { sha256: string; size_bytes: number; download_url: string } } };
+    expect(body.artifact.photon_wasm).toBeDefined();
+    expect(body.artifact.photon_wasm!.sha256).toBe(wasmSha);
+    expect(body.artifact.photon_wasm!.size_bytes).toBe(900);
+    // Without `?kind=` this URL would resolve the no-kind branch and serve the raw binary.
+    expect(body.artifact.photon_wasm!.download_url).toBe(
+      "https://hands.example/dl/computer/releases/h1/linux-x64?kind=photon-wasm",
+    );
+    // The primary identity is untouched by the presence of a sidecar.
+    expect(body.artifact.sha256).not.toBe(wasmSha);
+  });
+
+  it("omits both sidecars when absent, and still answers normally", async () => {
+    // @archer's contract: gzip and photon_wasm are OPTIONAL in updates/check, so a build with
+    // neither must not fail the query. (Only the download surface is strict: `.gz` for a
+    // missing gzip is a 4xx.)
+    seedHostedRelease("h1", "1.0.0", "active", 100);
+    sqlite.prepare(
+      "INSERT INTO build_assets (id, build_id, platform, arch, variant, filetype, artifact_kind, r2_key, file_hash, size_bytes, created_at) VALUES (?, ?, 'linux', 'x64', 'gzip', 'gz', 'installable', ?, ?, 1500, ?)",
+    ).run("asset-gz-other", "build-h1", "apps/app/h1/linux-x64.gz", "c".repeat(64), 100);
+    // A gzip exists for a DIFFERENT target only; linux-x64 has none.
+    sqlite.prepare("UPDATE build_assets SET platform = 'darwin' WHERE id = 'asset-gz-other'").run();
+
+    const res = await check("&version=1.0.0");
+    expect(res.status).toBe(200);
+    const body = await res.json() as { artifact: { gzip?: unknown; photon_wasm?: unknown } };
+    expect(body.artifact.gzip).toBeUndefined();
+    expect(body.artifact.photon_wasm).toBeUndefined();
+  });
+
 });
