@@ -35,6 +35,7 @@ import {
   rolloutBucket,
   rolloutIncludes,
   selectBestAsset,
+  usesHostedAssets,
 } from "../lib/release_resolver";
 
 export { fnv1a32, rolloutBucket, rolloutIncludes, selectBestAsset };
@@ -179,6 +180,7 @@ async function resolveBuildAssetIdentities(
   env: Env,
   appSlug: string,
   buildId: string,
+  placement: { artifactMode: string | null; hasHostedAssets: boolean },
   opts: { primaryOnly: boolean },
 ): Promise<BuildAssetIdentity[]> {
   // `primaryOnly` selects the rule the caller actually needs, because the two public
@@ -196,7 +198,13 @@ async function resolveBuildAssetIdentities(
   //
   // Without this, the pinned choice fell out of an ORDER BY filetype and therefore depended
   // on alphabetical accident: `apk` sorts before `aab`, `app` before `hap`.
-  const hosted = await env.DB.prepare(
+  // Placement comes from the caller, which already selects it in the query it used to get here.
+  // Deciding it in this function would add a round trip per call - and, worse, could disagree
+  // with what the caller selected on. The rule lives in one pure function; the facts come from
+  // the caller's own read (see usesHostedAssets).
+  const servedFromHosted = usesHostedAssets(placement.artifactMode, placement.hasHostedAssets);
+
+  const hosted = servedFromHosted ? await env.DB.prepare(
     `SELECT platform, arch, variant, filetype, file_hash, size_bytes, r2_key
      FROM build_assets
      WHERE build_id = ?1
@@ -213,7 +221,7 @@ async function resolveBuildAssetIdentities(
       file_hash: string;
       size_bytes: number;
       r2_key: string;
-    }>();
+    }>() : { results: [] as Array<{ platform: string; arch: string | null; variant: string | null; filetype: string; file_hash: string; size_bytes: number; r2_key: string }> };
 
   if (hosted.results.length > 0) {
     return hosted.results.map((a) => ({
@@ -456,7 +464,10 @@ export async function handlePublicV2Latest(c: Context<{ Bindings: Env }>) {
   // Build the response: build + assets + scoped block + fallback release.
   const build = await c.env.DB.prepare(
     `SELECT id, version_name, version_code, status,
-            changelog, should_force_update, created_at, completed_at
+            changelog, should_force_update, created_at, completed_at,
+            artifact_mode,
+            EXISTS (SELECT 1 FROM build_assets ba
+                     WHERE ba.build_id = builds.id AND ba.artifact_kind = 'installable') AS has_hosted_assets
      FROM builds
      WHERE id = ?1`,
   )
@@ -473,6 +484,8 @@ export async function handlePublicV2Latest(c: Context<{ Bindings: Env }>) {
       should_force_update: number;
       created_at: number;
       completed_at: number | null;
+        artifact_mode: string | null;
+        has_hosted_assets: number;
     }>();
   if (!build) {
     return c.json({ error: "matched release has no build row" }, 500);
@@ -480,7 +493,9 @@ export async function handlePublicV2Latest(c: Context<{ Bindings: Env }>) {
 
     // Resolve this build's installable artifacts through the shared resolver, so
     // /latest, /updates/check and /versions cannot disagree about where bytes live.
-    const identities = await resolveBuildAssetIdentities(c.env, app.slug, build.id, { primaryOnly: false });
+    const identities = await resolveBuildAssetIdentities(c.env, app.slug, build.id,
+      { artifactMode: build.artifact_mode, hasHostedAssets: build.has_hosted_assets === 1 },
+      { primaryOnly: false });
     const ttl = Number(c.env.SIGNED_URL_TTL_SECONDS ?? "3600");
     const origin = publicRequestOrigin(c);
     const requested = splitPlatformArch(clientPlatform);
@@ -762,7 +777,9 @@ export async function handlePublicCliBinaryUpdateCheck(c: Context<{ Bindings: En
     `SELECT a.id AS app_id, a.slug, ch.slug AS channel,
             r.id AS release_id, r.revision, r.rollout_cohort_count,
             r.activated_at, r.channel_id,
-            b.id AS build_id, b.version_name, b.version_code,
+            b.id AS build_id, b.artifact_mode, b.version_name, b.version_code,
+            EXISTS (SELECT 1 FROM build_assets ba
+                     WHERE ba.build_id = b.id AND ba.artifact_kind = 'installable') AS has_hosted_assets,
             e.id AS artifact_id, e.raw_sha256, e.raw_size_bytes,
             e.gzip_sha256, e.gzip_size_bytes
      FROM apps a
@@ -787,6 +804,8 @@ export async function handlePublicCliBinaryUpdateCheck(c: Context<{ Bindings: En
     release_id: string; revision: number; rollout_cohort_count: number | null;
     activated_at: number; channel_id: string;
       build_id: string;
+      artifact_mode: string | null;
+      has_hosted_assets: number;
     version_name: string; version_code: number; artifact_id: string;
     raw_sha256: string | null; raw_size_bytes: number | null;
     gzip_sha256: string | null; gzip_size_bytes: number | null;
@@ -806,7 +825,9 @@ export async function handlePublicCliBinaryUpdateCheck(c: Context<{ Bindings: En
     // /latest uses — which is what keeps the two surfaces from disagreeing about where a
     // build's bytes live. External builds keep their declared identity verbatim.
     if (row.raw_sha256 === null || row.raw_size_bytes === null) {
-      const resolved = (await resolveBuildAssetIdentities(c.env, row.slug, row.build_id, { primaryOnly: true }))
+      const resolved = (await resolveBuildAssetIdentities(c.env, row.slug, row.build_id,
+        { artifactMode: row.artifact_mode, hasHostedAssets: row.has_hosted_assets === 1 },
+        { primaryOnly: true }))
         .filter((a) => targetMatches(a.platform, a.arch, target));
       if (resolved.length === 0) {
         return c.json({ error: "no active release for target", code: "UPDATE_NO_COMPATIBLE_ARTIFACT" }, 404);
@@ -839,7 +860,14 @@ export async function handlePublicCliBinaryUpdateCheck(c: Context<{ Bindings: En
     && typeof row.gzip_size_bytes === "number" && Number.isSafeInteger(row.gzip_size_bytes) && row.gzip_size_bytes > 0
     ? { sha256: row.gzip_sha256, size_bytes: row.gzip_size_bytes }
     : undefined;
-  if (!gzipSidecar && row.build_id) {
+  // Hosted sidecars are advertised only when the build DECLARES hosted placement. Reading the
+  // mode rather than the presence of rows matters while a build is being migrated: rows for it
+  // can exist before the placement flips, and advertising them early would tell a client to
+  // fetch a representation the download path is (correctly) still serving as external. The
+  // download 302 and this response must agree about which representation exists, so both read
+  // the same declared column.
+  const hostedSidecars = usesHostedAssets(row.artifact_mode, row.has_hosted_assets === 1);
+  if (!gzipSidecar && hostedSidecars && row.build_id) {
     gzipSidecar = (await resolveHostedSidecar(c.env, row.build_id, target, "gzip")) ?? undefined;
   }
   // The pinned `.gz` suffix is the addressing form the external branch has always used, so a
@@ -850,7 +878,7 @@ export async function handlePublicCliBinaryUpdateCheck(c: Context<{ Bindings: En
     : undefined;
   // A sidecar is reachable only through `?kind=`. The URL must carry it, or a caller following
   // the link would hit the no-kind branch and receive the primary binary instead.
-  const wasmSidecar = row.build_id
+  const wasmSidecar = hostedSidecars && row.build_id
     ? await resolveHostedSidecar(c.env, row.build_id, target, "photon-wasm")
     : null;
   const photonWasm = wasmSidecar
@@ -888,6 +916,8 @@ type PublicCliVersionRow = {
   version_code: number;
   raw_sha256: string;
   raw_size_bytes: number;
+  artifact_mode: string | null;
+  has_hosted_assets: number;
 };
 
 const CLI_VERSION_INDEX_ROW_CAP = 1000;
@@ -958,7 +988,9 @@ export async function handlePublicCliBinaryVersions(c: Context<{ Bindings: Env }
     `SELECT a.id AS app_id, a.slug, a.platform AS app_platform,
             r.id AS release_id, r.status AS release_status,
             r.activated_at,
-            b.id AS build_id, b.version_name, b.version_code,
+            b.id AS build_id, b.version_name, b.version_code, b.artifact_mode,
+            EXISTS (SELECT 1 FROM build_assets ba
+                     WHERE ba.build_id = b.id AND ba.artifact_kind = 'installable') AS has_hosted_assets,
             e.raw_sha256, e.raw_size_bytes
      FROM apps a
      JOIN channels ch ON ch.app_id = a.id
@@ -994,7 +1026,9 @@ export async function handlePublicCliBinaryVersions(c: Context<{ Bindings: Env }
       // external_build_targets row. Resolve them through the same shared resolver the other
       // public surfaces use, so this index cannot disagree with /latest or /updates/check.
       if (row.raw_sha256 === null || row.raw_size_bytes === null) {
-        const resolved = (await resolveBuildAssetIdentities(c.env, row.slug, row.build_id, { primaryOnly: true }))
+        const resolved = (await resolveBuildAssetIdentities(c.env, row.slug, row.build_id,
+        { artifactMode: row.artifact_mode, hasHostedAssets: row.has_hosted_assets === 1 },
+        { primaryOnly: true }))
           .filter((a) => targetMatches(a.platform, a.arch, target));
         if (resolved.length === 0) continue;
         row.raw_sha256 = resolved[0]!.sha256;

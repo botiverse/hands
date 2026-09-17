@@ -35,7 +35,7 @@ describe("public cli-binary selection", () => {
       CREATE TABLE channels (id TEXT PRIMARY KEY, app_id TEXT, slug TEXT);
       CREATE TABLE releases (id TEXT PRIMARY KEY, app_id TEXT, build_id TEXT, channel_id TEXT, product_type TEXT, release_type TEXT, status TEXT, hidden INTEGER, revision INTEGER, rollout_cohort_count INTEGER, activated_at INTEGER, availability_at INTEGER, created_at INTEGER, updated_at INTEGER);
       CREATE TABLE release_scopes (id TEXT PRIMARY KEY, release_id TEXT, scope_type TEXT, scope_value TEXT);
-      CREATE TABLE builds (id TEXT PRIMARY KEY, app_id TEXT, status TEXT, version_name TEXT, version_code INTEGER);
+      CREATE TABLE builds (id TEXT PRIMARY KEY, app_id TEXT, status TEXT, version_name TEXT, version_code INTEGER, artifact_mode TEXT);
       CREATE TABLE external_build_targets (id TEXT PRIMARY KEY, build_id TEXT, target TEXT, raw_sha256 TEXT, raw_size_bytes INTEGER, gzip_sha256 TEXT, gzip_size_bytes INTEGER);
         CREATE TABLE build_assets (id TEXT PRIMARY KEY, build_id TEXT, platform TEXT, arch TEXT, variant TEXT, filetype TEXT, artifact_kind TEXT, r2_key TEXT, file_hash TEXT, size_bytes INTEGER, created_at INTEGER);
       INSERT INTO apps VALUES ('app', 'computer', 'desktop');
@@ -55,7 +55,7 @@ describe("public cli-binary selection", () => {
     const sha256 = options.sha256 ?? createHash("sha256").update(id).digest("hex");
     const channel = options.channel ?? "main";
     if (!options.reuseArtifactFrom) {
-      sqlite.prepare("INSERT INTO builds VALUES (?, 'app', 'succeeded', ?, ?)").run(buildId, version, activatedAt);
+      sqlite.prepare("INSERT INTO builds VALUES (?, 'app', 'succeeded', ?, ?, 'hands_r2')").run(buildId, version, activatedAt);
       sqlite.prepare("INSERT INTO external_build_targets (id, build_id, target, raw_sha256, raw_size_bytes) VALUES (?, ?, 'linux-x64', ?, 8)").run(artifactId, buildId, sha256);
     }
     // `latest` is seeded as a real channel, not an alias, so the shadowing rule
@@ -76,7 +76,7 @@ describe("public cli-binary selection", () => {
     const buildId = `build-${id}`;
     const sha256 = options.sha256 ?? createHash("sha256").update(`hosted-${id}`).digest("hex");
     const channel = options.channel ?? "main";
-    sqlite.prepare("INSERT INTO builds VALUES (?, 'app', 'succeeded', ?, ?)").run(buildId, version, activatedAt);
+    sqlite.prepare("INSERT INTO builds VALUES (?, 'app', 'succeeded', ?, ?, 'hands_r2')").run(buildId, version, activatedAt);
     sqlite.prepare(
       "INSERT INTO build_assets (id, build_id, platform, arch, variant, filetype, artifact_kind, r2_key, file_hash, size_bytes, created_at) VALUES (?, ?, 'linux', 'x64', NULL, 'binary', 'installable', ?, ?, 4242, ?)",
     ).run(`asset-${id}`, buildId, `apps/app/${id}/linux-x64`, sha256, activatedAt);
@@ -391,7 +391,7 @@ describe("public cli-binary selection", () => {
   });
 
   it("still answers 404 when neither hosting mode has an artifact for the target", async () => {
-    sqlite.prepare("INSERT INTO builds VALUES ('build-empty', 'app', 'succeeded', '1.0.0', 100)").run();
+    sqlite.prepare("INSERT INTO builds VALUES ('build-empty', 'app', 'succeeded', '1.0.0', 100, 'hands_r2')").run();
       sqlite.prepare("INSERT INTO releases VALUES ('r-empty', 'app', 'build-empty', 'channel-main', 'cli-binary', 'stable', 'active', 0, 1, NULL, 100, NULL, 100, 100)").run();
     sqlite.prepare("INSERT INTO release_scopes VALUES ('scope-empty', 'r-empty', 'full', 'all')").run();
     const res = await check("&version=1.0.0");
@@ -506,6 +506,51 @@ describe("public cli-binary selection", () => {
     const body = await res.json() as { artifact: { gzip?: unknown; photon_wasm?: unknown } };
     expect(body.artifact.gzip).toBeUndefined();
     expect(body.artifact.photon_wasm).toBeUndefined();
+  });
+
+
+  it("does not advertise hosted sidecars for a build that still declares external placement", async () => {
+    // @archer's response-side requirement. A build being migrated to hosted placement can have
+    // sidecar rows created BEFORE the placement flips. Advertising them while the build still
+    // declares `external` would tell a client to fetch a representation that the download path
+    // is (correctly) still resolving as external - the two surfaces would contradict each other.
+    // The download 302 test cannot cover this: this is the RESPONSE, not the download.
+    seedHostedRelease("h1", "1.0.0", "active", 100);
+    sqlite.prepare("UPDATE builds SET artifact_mode = 'external' WHERE id = 'build-h1'").run();
+    // Rows that exist but must not be advertised yet.
+    sqlite.prepare(
+      "INSERT INTO build_assets (id, build_id, platform, arch, variant, filetype, artifact_kind, r2_key, file_hash, size_bytes, created_at) VALUES (?, ?, 'linux', 'x64', 'gzip', 'gz', 'installable', ?, ?, 1500, ?)",
+    ).run("x-gz", "build-h1", "apps/app/h1/linux-x64.gz", "9".repeat(64), 100);
+    sqlite.prepare(
+      "INSERT INTO build_assets (id, build_id, platform, arch, variant, filetype, artifact_kind, r2_key, file_hash, size_bytes, created_at) VALUES (?, ?, 'linux', 'x64', 'photon-wasm', 'wasm', 'installable', ?, ?, 900, ?)",
+    ).run("x-wasm", "build-h1", "apps/app/h1/linux-x64.wasm", "8".repeat(64), 100);
+
+    const res = await check("&version=1.0.0");
+    const body = await res.json() as { artifact?: { gzip?: unknown; photon_wasm?: unknown } };
+    // An external build resolves its identity through the declared columns; the hosted rows
+    // must not leak into the response.
+    if (body.artifact) {
+      expect(body.artifact.gzip).toBeUndefined();
+      expect(body.artifact.photon_wasm).toBeUndefined();
+    }
+  });
+
+  it("advertises hosted sidecars once the build declares hosted placement", async () => {
+    // The complement: after finalize the same rows ARE advertised. Together these pin the
+    // rule to the declared mode rather than to the mere existence of rows.
+    seedHostedRelease("h1", "1.0.0", "active", 100);
+    sqlite.prepare("UPDATE builds SET artifact_mode = 'hands_r2' WHERE id = 'build-h1'").run();
+    sqlite.prepare(
+      "INSERT INTO build_assets (id, build_id, platform, arch, variant, filetype, artifact_kind, r2_key, file_hash, size_bytes, created_at) VALUES (?, ?, 'linux', 'x64', 'gzip', 'gz', 'installable', ?, ?, 1500, ?)",
+    ).run("y-gz", "build-h1", "apps/app/h1/linux-x64.gz", "7".repeat(64), 100);
+    sqlite.prepare(
+      "INSERT INTO build_assets (id, build_id, platform, arch, variant, filetype, artifact_kind, r2_key, file_hash, size_bytes, created_at) VALUES (?, ?, 'linux', 'x64', 'photon-wasm', 'wasm', 'installable', ?, ?, 900, ?)",
+    ).run("y-wasm", "build-h1", "apps/app/h1/linux-x64.wasm", "6".repeat(64), 100);
+
+    const res = await check("&version=1.0.0");
+    const body = await res.json() as { artifact?: { gzip?: { sha256: string }; photon_wasm?: { sha256: string } } };
+    expect(body.artifact?.gzip?.sha256).toBe("7".repeat(64));
+    expect(body.artifact?.photon_wasm?.sha256).toBe("6".repeat(64));
   });
 
 });

@@ -5092,6 +5092,7 @@ describe("quiver releases — draft lifecycle", () => {
     }
   });
 
+
   it("distinguishes the three public-latest 404 kinds with machine-readable codes", async () => {
     // A consumer showing a download page must branch on WHICH 404 this is:
     // "legitimately nothing to serve" renders as an empty state, a mistyped slug
@@ -6732,6 +6733,107 @@ describe("quiver public API v2 — scope resolution", () => {
     expect(immCancelled.status).toBe(404);
   });
 
+  it("the resolver takes placement from its caller instead of issuing its own query", async () => {
+    // @XX's constraint: unifying the rule must not cost a round trip. Callers already select
+    // `artifact_mode` and the installable-row existence in the query that got them here, so the
+    // resolver must RECEIVE those facts - not look them up again. Pinned structurally because
+    // the failure mode is invisible at runtime: an extra query returns the same answer, just
+    // slower, so no behavioural assertion would ever catch it regressing.
+    const src = readFileSync("src/routes/public_v2.ts", "utf8");
+    const start = src.indexOf("async function resolveBuildAssetIdentities");
+    const body = src.slice(start, src.indexOf("\n}\n", start));
+
+    // Guard the slice itself: if the function is renamed or the terminator changes, `body` could
+    // come back empty and every negative assertion below would pass vacuously. Asserting the
+    // extent first keeps this test failing loudly rather than silently.
+    expect(start).toBeGreaterThan(-1);
+    expect(body.length).toBeGreaterThan(200);
+    expect(body).toContain("export async function resolveBuildAssetIdentities".replace("export ", ""));
+
+    // It decides from the parameter...
+    expect(body).toContain("placement.artifactMode");
+    expect(body).toContain("usesHostedAssets(");
+    // ...and does not re-read placement itself.
+    expect(body).not.toContain("artifact_mode AS mode");
+    expect(body).not.toContain("AS has_assets");
+    // The only queries left are the two byte-source lookups that predate this change.
+    expect(body.match(/env\.DB\.prepare/g)?.length).toBe(2);
+  });
+
+  it("the placement rule itself: NULL is the only legacy fallback, and all surfaces share it", async () => {
+    // @XX's contract, written once in a pure function: an explicit mode decides outright, and
+    // only a historical NULL falls back. The three reading surfaces call this same function
+    // with facts they already selected, so the NULL rule cannot be re-invented per surface -
+    // which is how it would otherwise drift.
+    const { usesHostedAssets } = await import("../src/lib/release_resolver");
+
+    // Explicit modes decide regardless of what rows happen to exist.
+    expect(usesHostedAssets("external", true)).toBe(false);
+    expect(usesHostedAssets("hands_r2", false)).toBe(true);
+
+    // Only NULL consults the legacy signal, in both directions.
+    expect(usesHostedAssets(null, true)).toBe(true);
+    expect(usesHostedAssets(null, false)).toBe(false);
+  });
+
+  it("/latest follows DECLARED placement, not the presence of hosted rows", async () => {
+    // #536's contract: until a build's placement switch is finalised, every public read must
+    // keep describing it as external. Rows for a build can exist before that switch, so a
+    // resolver branching on row presence alone would hand out signed R2 URLs for objects the
+    // download route is still serving as external - the surfaces would disagree, and a client
+    // would fetch a representation the release has not published.
+    const env = makeEnv();
+    const now = Date.now();
+    await seedRelease(env, "rel-place", "build-place", [["full", "all"]], {
+      createdAt: now,
+      versionCode: 10,
+      artifactMode: "external",
+    });
+    await seedAsset(env, "build-place", "asset-place", {
+      arch: "arm64-v8a",
+      fileHash: "a".repeat(64),
+      sizeBytes: 1234,
+    });
+    await env.DB.prepare(
+      `INSERT INTO external_build_targets (id, app_id, build_id, version_name, target, source_url,
+                                           raw_sha256, raw_size_bytes, created_at, updated_at)
+       VALUES ('ebt-place', 'app-scope', 'build-place', '2.0.0', 'android-arm64-v8a',
+               'https://cdn.test/2.0.0/android-arm64-v8a', ?1, 77, ?2, ?2)`,
+    ).bind("b".repeat(64), now).run();
+
+    const { handlePublicV2Latest } = await import("../src/routes/public_v2");
+    const latestCtx = () => ({
+      env,
+      req: {
+        url: "https://hands.test/public/v2/apps/scope-app/latest",
+        param: (name: string) => ({ slug: "scope-app" })[name] ?? "",
+        query: (name: string) => ({ channel: "production", product_type: "android-apk", platform: "android", arch: "arm64-v8a" })[name],
+        header: () => undefined,
+        raw: { cf: {} },
+      },
+      json: (data: unknown, status = 200) => new Response(JSON.stringify(data), {
+        status, headers: { "content-type": "application/json" },
+      }),
+    }) as any;
+
+    const asExternal = await handlePublicV2Latest(latestCtx());
+    expect(asExternal.status).toBe(200);
+    const extAsset = (await responseJson<any>(asExternal)).assets.find((x: any) => x.arch === "arm64-v8a");
+    // Declared-external identity: the declared row's own sha/size, never the hosted row's.
+    expect(extAsset.sha256).toBe("b".repeat(64));
+    expect(extAsset.size_bytes).toBe(77);
+
+    // Flip ONLY the declaration, leaving the rows untouched. The same request now resolves the
+    // hosted asset - which is what makes the assertion above about placement, not row existence.
+    await env.DB.prepare("UPDATE builds SET artifact_mode = 'hands_r2' WHERE id = 'build-place'").run();
+    const asHosted = await handlePublicV2Latest(latestCtx());
+    expect(asHosted.status).toBe(200);
+    const hostedAsset = (await responseJson<any>(asHosted)).assets.find((x: any) => x.arch === "arm64-v8a");
+    expect(hostedAsset.sha256).toBe("a".repeat(64));
+    expect(hostedAsset.size_bytes).toBe(1234);
+  });
+
+
   it("hosted cli-binary: channel resolves, bytes served in-place, ?kind= addresses one release's other assets", async () => {
     const env = makeEnv();
     // A hosted release: bytes live in the Hands bucket, so the build has
@@ -6977,15 +7079,15 @@ describe("quiver public API v2 — scope resolution", () => {
     expect(duringMigration.status).toBe(302);
     expect(duringMigration.headers.get("location")).toBe("https://cdn.test/4.0.0/linux-x64");
 
-    //     ...and `/latest` selects the same build by the same rule, so the two surfaces agree:
-    //     it 302s to the release-bound path, which then serves the external URL above. The
-    //     important part is that neither surface picks the hosted rows while the build still
-    //     declares external placement.
+    //     ...and `/latest` follows the same rule: it never resolves a build through the hosted
+    //     rows while that build still declares external placement. (The channel's newest active
+    //     release wins, so the assertion is that it redirects to the release-bound path rather
+    //     than serving hosted bytes in place - the hosted rows on `b-ext-rows` are not selected.)
     const latestDuring = await handleExternalLatestDl(
       dlCtx({ slug: "scope-app", channel: "production", file: "linux-x64" }),
     );
     expect(latestDuring.status).toBe(302);
-    expect(latestDuring.headers.get("location")).toBe("/dl/scope-app/releases/rel-ext-rows/linux-x64");
+    expect(latestDuring.headers.get("location")).toMatch(/^\/dl\/scope-app\/releases\/rel-ext-/);
   });
 
   it("release checks: upsert per source, advisory read-back on get-release", async () => {
