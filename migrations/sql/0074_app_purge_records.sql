@@ -1,7 +1,7 @@
--- Migration 0075 — numbered 0075, not 0074, because #534 (app creator becomes admin) claimed
--- 0074 first. Two migrations sharing a number is not an error the runner catches - D1 records
--- applied migrations by filename - but it makes the intended order unknowable to a reader and
--- leaves the sequence ambiguous for whoever adds the next one.
+-- Migration 0074 — the next free number in main's migrations/sql sequence at the time this
+-- landed. Numbers are assigned by the order migrations actually enter main, not by when their PRs
+-- were opened: #534 (app creator becomes admin) is still open, so it takes whatever number is
+-- free when it lands, not this one.
 --
 -- App purge left no trace: `audit_logs.app_id` cascades from `apps`, so deleting an app deleted
 -- its own audit rows, and `handlePurgeApp` wrote no purge record of its own. After a purge there

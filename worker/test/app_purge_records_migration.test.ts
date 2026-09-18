@@ -1,5 +1,5 @@
 /**
- * Migration 0075 — the app purge audit record.
+ * Migration 0074 — the app purge audit record.
  *
  * Loads the REAL migration files in order rather than a hand-written schema. The earlier
  * verification of this migration was manual (run by hand, read the output); nothing in CI would
@@ -19,7 +19,7 @@ import Database from "better-sqlite3";
 import { describe, expect, it } from "vitest";
 
 const MIGRATION_DIR = fileURLToPath(new URL("../../migrations/sql/", import.meta.url));
-const MIGRATION = "0075_app_purge_records.sql";
+const MIGRATION = "0074_app_purge_records.sql";
 
 function database(): Database.Database {
   const db = new Database(":memory:");
@@ -46,7 +46,7 @@ function insert(db: Database.Database, s: State): boolean {
   }
 }
 
-describe("migration 0075: app_purge_records state machine", () => {
+describe("migration 0074: app_purge_records state machine", () => {
   it("accepts exactly the three legal states", () => {
     const db = database();
     expect(insert(db, { id: "s1", status: "started", completedAt: null, failureClass: null })).toBe(true);
