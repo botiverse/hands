@@ -10406,19 +10406,19 @@ describe("quiver public API v2 — scope resolution", () => {
       ).run();
       const before = await env.DB.prepare(
         "SELECT COUNT(*) AS n FROM audit_logs WHERE app_id = 'app-scope'",
-      ).first<{ n: number }>();
+      ).first() as { n: number } | null;
       expect(before!.n).toBe(1);
 
       expect((await handlePurgeApp(ctx({ confirm_slug: "scope-app" }))).status).toBe(200);
 
       // The app row and its audit row are gone...
-      expect(await env.DB.prepare("SELECT COUNT(*) AS n FROM apps WHERE id = 'app-scope'").first<{ n: number }>()).toMatchObject({ n: 0 });
-      expect(await env.DB.prepare("SELECT COUNT(*) AS n FROM audit_logs WHERE app_id = 'app-scope'").first<{ n: number }>()).toMatchObject({ n: 0 });
+      expect(await env.DB.prepare("SELECT COUNT(*) AS n FROM apps WHERE id = 'app-scope'").first() as { n: number } | null).toMatchObject({ n: 0 });
+      expect(await env.DB.prepare("SELECT COUNT(*) AS n FROM audit_logs WHERE app_id = 'app-scope'").first() as { n: number } | null).toMatchObject({ n: 0 });
 
       // ...while the receipt survives, complete and queryable by slug.
       const recs = await env.DB.prepare(
         "SELECT * FROM app_purge_records WHERE app_slug = 'scope-app'",
-      ).all<Record<string, unknown>>();
+      ).all() as { results: Array<Record<string, unknown>> };
       expect(recs.results).toHaveLength(1);
       const rec = recs.results[0]!;
       expect(rec.app_id).toBe("app-scope");
@@ -10452,8 +10452,8 @@ describe("quiver public API v2 — scope resolution", () => {
 
       const recs = await env.DB.prepare(
         "SELECT app_id FROM app_purge_records WHERE app_slug = 'scope-app'",
-      ).all<{ app_id: string }>();
-      expect(recs.results.map((r) => r.app_id).sort()).toEqual(["app-scope", "app-scope-2"]);
+      ).all() as { results: Array<{ app_id: string }> };
+      expect(recs.results.map((r: { app_id: string }) => r.app_id).sort()).toEqual(["app-scope", "app-scope-2"]);
     });
 
     it("apps: purging a legacy app with no org records a real NULL, and still succeeds", async () => {
@@ -10474,7 +10474,7 @@ describe("quiver public API v2 — scope resolution", () => {
 
       const rec = await env.DB.prepare(
         "SELECT org_id, status FROM app_purge_records WHERE app_slug = 'scope-app'",
-      ).first<{ org_id: string | null; status: string }>();
+      ).first() as { org_id: string | null; status: string } | null;
       expect(rec!.status).toBe("completed");
       expect(rec!.org_id).toBeNull(); // a real NULL, not a fabricated default
     });
@@ -10515,7 +10515,7 @@ describe("quiver public API v2 — scope resolution", () => {
       expect(await res.json()).toMatchObject({ code: "PURGE_INTENT_UNWRITTEN" });
       // Fail closed: no R2 object touched, and the app still present.
       expect(deleted).toEqual([]);
-      expect(await env.DB.prepare("SELECT COUNT(*) AS n FROM apps WHERE id = 'app-scope'").first<{ n: number }>()).toMatchObject({ n: 1 });
+      expect(await env.DB.prepare("SELECT COUNT(*) AS n FROM apps WHERE id = 'app-scope'").first() as { n: number } | null).toMatchObject({ n: 1 });
     });
 
     it("apps: two real concurrent purges leave exactly one completed record", async () => {
@@ -10550,9 +10550,10 @@ describe("quiver public API v2 — scope resolution", () => {
       let arrived = 0;
       let release!: () => void;
       const bothArrived = new Promise<void>((resolve) => { release = resolve; });
-      const realDelete = env.APK_BUCKET.delete;
+      const bucket = env.APK_BUCKET as { delete: (keys: string | string[]) => Promise<void> };
+      const realDelete = bucket.delete;
       env.APK_BUCKET = {
-        ...env.APK_BUCKET,
+        ...bucket,
         delete: async (keys: string | string[]) => {
           arrived += 1;
           if (arrived === 2) release();
@@ -10579,10 +10580,10 @@ describe("quiver public API v2 — scope resolution", () => {
       // Both requests opened an intent, so the interleaving really happened.
       const rows = await env.DB.prepare(
         "SELECT status, failure_class, r2_objects_deleted, r2_objects_unconfirmed FROM app_purge_records WHERE app_id = 'app-scope' ORDER BY status",
-      ).all<{ status: string; failure_class: string | null; r2_objects_deleted: number; r2_objects_unconfirmed: number }>();
+      ).all() as { results: Array<{ status: string; failure_class: string | null; r2_objects_deleted: number; r2_objects_unconfirmed: number }> };
       expect(rows.results).toHaveLength(2);
-      const completedRows = rows.results.filter((r) => r.status === "completed");
-      const failedRows = rows.results.filter((r) => r.status === "failed");
+      const completedRows = rows.results.filter((r: { status: string }) => r.status === "completed");
+      const failedRows = rows.results.filter((r: { status: string }) => r.status === "failed");
       expect(completedRows).toHaveLength(1);
       expect(failedRows).toHaveLength(1);
       // The loser names its cause rather than staying at 'started'.
@@ -10593,7 +10594,7 @@ describe("quiver public API v2 — scope resolution", () => {
         expect(r.r2_objects_unconfirmed).toBe(0);
       }
       // ...and the app is gone exactly once.
-      expect(await env.DB.prepare("SELECT COUNT(*) AS n FROM apps WHERE id = 'app-scope'").first<{ n: number }>()).toMatchObject({ n: 0 });
+      expect(await env.DB.prepare("SELECT COUNT(*) AS n FROM apps WHERE id = 'app-scope'").first() as { n: number } | null).toMatchObject({ n: 0 });
     });
 
     it("apps: the purge DELETE is bound to this record completing", async () => {
@@ -10646,9 +10647,9 @@ describe("quiver public API v2 — scope resolution", () => {
       // No completed receipt, and the app is still there - the two facts must agree.
       const completed = await env.DB.prepare(
         "SELECT COUNT(*) AS n FROM app_purge_records WHERE status = 'completed'",
-      ).first<{ n: number }>();
+      ).first() as { n: number } | null;
       expect(completed!.n).toBe(0);
-      expect(await env.DB.prepare("SELECT COUNT(*) AS n FROM apps WHERE id = 'app-scope'").first<{ n: number }>()).toMatchObject({ n: 1 });
+      expect(await env.DB.prepare("SELECT COUNT(*) AS n FROM apps WHERE id = 'app-scope'").first() as { n: number } | null).toMatchObject({ n: 1 });
     });
 
     it("apps: a failed R2 delete leaves no completed purge record", async () => {
@@ -10672,7 +10673,7 @@ describe("quiver public API v2 — scope resolution", () => {
 
       const rec = await env.DB.prepare(
         "SELECT status, failure_class, completed_at, r2_objects_deleted, r2_objects_unconfirmed FROM app_purge_records WHERE app_slug = 'scope-app'",
-      ).first<{ status: string; failure_class: string | null; completed_at: number | null; r2_objects_deleted: number; r2_objects_unconfirmed: number }>();
+      ).first() as { status: string; failure_class: string | null; completed_at: number | null; r2_objects_deleted: number; r2_objects_unconfirmed: number } | null;
       expect(rec).toBeTruthy();
       expect(rec!.status).toBe("failed");
       expect(rec!.failure_class).toBe("r2_delete_failed");
@@ -10683,7 +10684,7 @@ describe("quiver public API v2 — scope resolution", () => {
       expect(rec!.r2_objects_deleted).toBe(0);
       expect(rec!.r2_objects_unconfirmed).toBe(1);
       // The app is untouched, which is what makes the non-completed status honest.
-      expect(await env.DB.prepare("SELECT COUNT(*) AS n FROM apps WHERE id = 'app-scope'").first<{ n: number }>()).toMatchObject({ n: 1 });
+      expect(await env.DB.prepare("SELECT COUNT(*) AS n FROM apps WHERE id = 'app-scope'").first() as { n: number } | null).toMatchObject({ n: 1 });
     });
 
 
