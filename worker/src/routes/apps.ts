@@ -342,13 +342,18 @@ export async function handleArchiveApp(c: Context<{ Bindings: Env }>) {
  * allowed on archived apps — archive first, purge second. Irreversible; the
  * DB keeps no tombstone (children cascade), so the response is the record.
  */
+/** The actor kinds a purge record may carry; anything else is normalised to
+ * 'system'. */
+const PURGE_ACTOR_TYPES = new Set(["human", "agent", "system"]);
+
 export async function handlePurgeApp(c: AdminContext) {
+  const actorInfo = currentActorInfo(c);
   const appId = c.req.param("appId") ?? "";
   const app = await c.env.DB.prepare(
-    "SELECT id, slug, archived, icon_r2_key FROM apps WHERE id = ?1",
+    "SELECT id, slug, archived, icon_r2_key, org_id FROM apps WHERE id = ?1",
   )
     .bind(appId)
-    .first<{ id: string; slug: string; archived: number; icon_r2_key: string | null }>();
+    .first<{ id: string; slug: string; archived: number; icon_r2_key: string | null; org_id: string | null }>();
   if (!app) return c.json({ error: "not found" }, 404);
   if (!app.archived) {
     return c.json({ error: "archive the app before purging it" }, 409);
@@ -389,12 +394,136 @@ export async function handlePurgeApp(c: AdminContext) {
   }
 
   const keyList = [...keys];
-  for (let i = 0; i < keyList.length; i += 500) {
-    await c.env.APK_BUCKET.delete(keyList.slice(i, i + 500));
+  const recordId = crypto.randomUUID();
+  const startedAt = Date.now();
+
+  // Open a purge INTENT before anything destructive happens, in a table that does not cascade
+  // from `apps` (audit_logs.app_id does, so an audit row would be deleted with the app and could
+  // not answer "who purged this"). The purge spans two systems - R2 and D1 - and cannot be atomic
+  // across them, so a single row written at the end would claim a COMPLETED purge even when the
+  // final DELETE failed. That is worse than no record: it would read as "purged" while the app
+  // still existed. The intent is visible from the outset; only the receipt below may complete it.
+  // Fail LOUD, not just closed. If this write is refused there is no durable intent, so
+  // nothing destructive may run - but a bare 500 would leave an operator unable to tell
+  // "refused before touching anything" from an unrelated server error. The fact must survive
+  // as a distinguishable outcome, so it gets its own code.
+  try {
+    await c.env.DB.prepare(
+      `INSERT INTO app_purge_records
+         (id, app_id, app_slug, org_id, actor, actor_id, actor_type,
+          status, r2_objects_deleted, started_at)
+       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'started', 0, ?8)`,
+    ).bind(
+      recordId,
+      appId,
+      app.slug,
+      app.org_id,
+      actorInfo.display_name,
+      actorInfo.id,
+      // currentActorInfo() types this as human|agent|system, but it reads it off a context value a
+      // caller can shape freely. A NULL would fail the insert and, with it, the purge, so normalise
+      // into the declared domain rather than letting a malformed context turn a missing audit field
+      // into a blocked, irreversible operation.
+      PURGE_ACTOR_TYPES.has(actorInfo.type) ? actorInfo.type : "system",
+      startedAt,
+    ).run();
+  } catch (error) {
+    console.error(
+      `app purge refused before any destructive step: app=${appId} slug=${app.slug} ` +
+      `actor=${actorInfo.display_name} reason=intent_write_failed ` +
+      `err=${error instanceof Error ? error.message : String(error)}`,
+    );
+    return c.json({
+      error: "purge could not be started; nothing was deleted",
+      code: "PURGE_INTENT_UNWRITTEN",
+    }, 500);
   }
 
-  // Children (builds, releases, tickets, tokens, audit rows, …) cascade.
-  await c.env.DB.prepare("DELETE FROM apps WHERE id = ?1").bind(appId).run();
+  // Count what actually went, not what was attempted: on a partial failure the difference is the
+  // debris left in R2, and a later reader needs it to judge whether a retry is safe.
+  let deletedCount = 0;
+  let attemptedBatchSize = 0;
+  try {
+    for (let i = 0; i < keyList.length; i += 500) {
+      const batch = keyList.slice(i, i + 500);
+      attemptedBatchSize = batch.length;
+      await c.env.APK_BUCKET.delete(batch);
+      deletedCount += batch.length;
+      attemptedBatchSize = 0;
+    }
+  } catch (error) {
+    // R2 failed and the app still exists, so this must NOT read as a completed purge. The named
+    // failure class distinguishes this from an intent-write failure or a failed app delete: with
+    // only 'started' left behind, a reader cannot tell "crashed midway" from "R2 said no", which
+    // is what makes a retry decision guesswork rather than inference.
+    await c.env.DB.prepare(
+      `UPDATE app_purge_records
+          SET status = 'failed', failure_class = 'r2_delete_failed',
+              r2_objects_deleted = ?2, r2_objects_unconfirmed = ?3
+        WHERE id = ?1 AND status = 'started'`,
+    ).bind(recordId, deletedCount, keyList.length - deletedCount).run();
+    throw error;
+  }
+
+  // Receipt and delete commit together, so the record can never say "completed" for an app that
+  // is still present. Children (builds, releases, tickets, tokens, audit rows, …) cascade.
+  //
+  // The receipt is conditional on the app still existing. Two purge requests for one app each
+  // open their OWN 'started' row, so a guard on `id` alone would let the second one mark its row
+  // completed after the first had already deleted the app - two completed records for one purge,
+  // and a 200 for a request that deleted nothing. Requiring the app to be present means the
+  // loser's receipt cannot complete, and its DELETE affects no rows.
+  let receipt;
+  try {
+    receipt = await c.env.DB.batch([
+      c.env.DB.prepare(
+        `UPDATE app_purge_records
+            SET status = 'completed', completed_at = ?2, r2_objects_deleted = ?3, r2_objects_unconfirmed = 0
+          WHERE id = ?1 AND status = 'started'
+            AND EXISTS (SELECT 1 FROM apps WHERE id = ?4)`,
+      ).bind(recordId, Date.now(), keyList.length, appId),
+        // Bound to the receipt: the delete only applies if this request's row really did reach
+      // 'completed'. An unconditional DELETE would still commit when the receipt matched 0 rows
+      // (a lost race, or a row already settled), removing the app with no completed record - the
+      // false state this design exists to prevent.
+      c.env.DB.prepare(
+        `DELETE FROM apps
+          WHERE id = ?2
+            AND EXISTS (SELECT 1 FROM app_purge_records WHERE id = ?1 AND status = 'completed')`,
+      ).bind(recordId, appId),
+    ]);
+  } catch (error) {
+    // The completion transaction itself failed. The app is untouched, so the only honest
+    // outcome is a named failure - leaving 'started' would be indistinguishable from a crash
+    // midway, which is the ambiguity this whole card exists to remove.
+    await c.env.DB.prepare(
+      `UPDATE app_purge_records
+          SET status = 'failed', failure_class = 'db_finalize_failed',
+              r2_objects_deleted = ?2, r2_objects_unconfirmed = ?3
+        WHERE id = ?1 AND status = 'started'`,
+    ).bind(recordId, deletedCount, keyList.length - deletedCount).run().catch(() => undefined);
+    throw error;
+  }
+
+  // Verify both halves rather than trusting batch()'s resolution: a completed record against a
+  // surviving app is the false receipt this design exists to prevent, and a receipt that did not
+  // update (0 rows) means this request lost the race and deleted nothing.
+  const stillThere = await c.env.DB.prepare("SELECT 1 AS ok FROM apps WHERE id = ?1")
+    .bind(appId).first<{ ok: number }>();
+  const receiptChanged = Number(
+    (receipt?.[0] as { meta?: { changes?: number } } | undefined)?.meta?.changes ?? 0,
+  ) > 0;
+  if (!receiptChanged || stillThere) {
+    // Nothing was completed. A row left at 'started' would be indistinguishable from a crash
+    // midway, so record why with a name of its own.
+    await c.env.DB.prepare(
+      `UPDATE app_purge_records
+          SET status = 'failed', failure_class = 'app_delete_unverified', completed_at = NULL,
+              r2_objects_deleted = ?2, r2_objects_unconfirmed = ?3
+        WHERE id = ?1 AND status = 'started'`,
+    ).bind(recordId, deletedCount, keyList.length - deletedCount).run();
+    return c.json({ error: "purge could not be verified", code: "PURGE_UNVERIFIED" }, 500);
+  }
 
   console.log(
     `app purged: id=${appId} slug=${app.slug} actor=${currentActor(c)} r2_objects=${keyList.length}`,
