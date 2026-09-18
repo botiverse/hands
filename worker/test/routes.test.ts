@@ -152,6 +152,17 @@ function makeMockDb() {
       archived_at INTEGER, created_at INTEGER NOT NULL, icon_r2_key TEXT, public_history INTEGER NOT NULL DEFAULT 0, client_key TEXT,
       delta_updates_enabled INTEGER NOT NULL DEFAULT 0
     );
+      -- Mirrors migrations/sql/0074_app_purge_records.sql: deliberately NOT keyed to apps, so a
+      -- purge record outlives the app it describes (audit_logs.app_id cascades away with it).
+      -- Mirrors migrations/sql/0074_app_purge_records.sql: deliberately NOT keyed to apps, so a
+      -- purge record outlives the app it describes (audit_logs.app_id cascades away with it).
+      CREATE TABLE app_purge_records (
+        id TEXT PRIMARY KEY, app_id TEXT NOT NULL, app_slug TEXT NOT NULL, org_id TEXT,
+        actor TEXT NOT NULL, actor_id TEXT, actor_type TEXT NOT NULL,
+        status TEXT NOT NULL, failure_class TEXT,
+        r2_objects_deleted INTEGER NOT NULL DEFAULT 0, r2_objects_unconfirmed INTEGER NOT NULL DEFAULT 0,
+        started_at INTEGER NOT NULL, completed_at INTEGER
+      );
     CREATE TABLE feature_flags (
       id TEXT PRIMARY KEY,
       app_id TEXT,
@@ -10366,6 +10377,316 @@ describe("quiver public API v2 — scope resolution", () => {
       "INSERT INTO apps (id, org_id, slug, name, platform, client_key, created_at) VALUES (?1,?2,?3,?4,?5,?6,?7)",
     ).bind("app-scope", "default", "scope-app", "Scope App", "android", "qk_test", 1).run();
   });
+
+    it("apps: purge leaves a completed record that outlives the app and its cascaded audit rows", async () => {
+      // The defect this guards: audit_logs.app_id cascades from apps, so purging an app deleted
+      // its own audit rows, and the handler wrote no purge record. Afterwards nothing could say
+      // who removed the app or when. Reading it back WITH THE APP ALREADY GONE is the point - an
+      // assertion made before the delete would prove nothing.
+      const env = makeEnv();
+      env.APK_BUCKET = {
+        list: async () => ({ objects: [{ key: "apps/app-scope/stray.apk" }], truncated: false }),
+        delete: async () => {},
+      };
+      const { handlePurgeApp } = await import("../src/routes/apps");
+      const ctx = (body: Record<string, unknown>) => ({
+        env,
+        req: { param: () => "app-scope", json: async () => body },
+        get: () => "tester",
+        json: (data: unknown, status = 200) => new Response(JSON.stringify(data), { status }),
+      }) as any;
+
+      await env.DB.prepare("UPDATE apps SET archived = 1 WHERE id = 'app-scope'").run();
+      // Seed an audit row for this app. Without seeding one, "audit rows = 0 after" would pass
+      // vacuously - it would also be 0 before. The pair (1 before, 0 after) is what shows the
+      // cascade erased a row that actually existed.
+      await env.DB.prepare(
+        `INSERT INTO audit_logs (id, app_id, action, actor, payload, created_at)
+         VALUES ('purge-audit', 'app-scope', 'app.archive', 'tester', '{}', 1)`,
+      ).run();
+      const before = await env.DB.prepare(
+        "SELECT COUNT(*) AS n FROM audit_logs WHERE app_id = 'app-scope'",
+      ).first<{ n: number }>();
+      expect(before!.n).toBe(1);
+
+      expect((await handlePurgeApp(ctx({ confirm_slug: "scope-app" }))).status).toBe(200);
+
+      // The app row and its audit row are gone...
+      expect(await env.DB.prepare("SELECT COUNT(*) AS n FROM apps WHERE id = 'app-scope'").first<{ n: number }>()).toMatchObject({ n: 0 });
+      expect(await env.DB.prepare("SELECT COUNT(*) AS n FROM audit_logs WHERE app_id = 'app-scope'").first<{ n: number }>()).toMatchObject({ n: 0 });
+
+      // ...while the receipt survives, complete and queryable by slug.
+      const recs = await env.DB.prepare(
+        "SELECT * FROM app_purge_records WHERE app_slug = 'scope-app'",
+      ).all<Record<string, unknown>>();
+      expect(recs.results).toHaveLength(1);
+      const rec = recs.results[0]!;
+      expect(rec.app_id).toBe("app-scope");
+      expect(rec.status).toBe("completed");
+      expect(rec.completed_at).toBeGreaterThan(0);
+      expect(rec.started_at).toBeGreaterThan(0);
+      expect(rec.actor_type).toBe("system"); // the fake ctx supplies no account
+      expect(rec.actor).toBeTruthy();
+      expect(rec.r2_objects_deleted).toBe(1);
+    });
+
+    it("apps: a second purge of the same slug leaves both records intact", async () => {
+      // Slug reuse is the case a value-keyed (rather than FK-keyed) record has to survive.
+      const env = makeEnv();
+      env.APK_BUCKET = { list: async () => ({ objects: [], truncated: false }), delete: async () => {} };
+      const { handlePurgeApp } = await import("../src/routes/apps");
+      const ctx = (appId: string) => ({
+        env,
+        req: { param: () => appId, json: async () => ({ confirm_slug: "scope-app" }) },
+        get: () => "tester",
+        json: (data: unknown, status = 200) => new Response(JSON.stringify(data), { status }),
+      }) as any;
+
+      await env.DB.prepare("UPDATE apps SET archived = 1 WHERE id = 'app-scope'").run();
+      expect((await handlePurgeApp(ctx("app-scope"))).status).toBe(200);
+      // A different app now reuses the same slug and is purged in turn.
+      await env.DB.prepare(
+        "INSERT INTO apps (id, org_id, slug, name, platform, archived, created_at) VALUES ('app-scope-2', 'default', 'scope-app', 'Again', 'android', 1, 2)",
+      ).run();
+      expect((await handlePurgeApp(ctx("app-scope-2"))).status).toBe(200);
+
+      const recs = await env.DB.prepare(
+        "SELECT app_id FROM app_purge_records WHERE app_slug = 'scope-app'",
+      ).all<{ app_id: string }>();
+      expect(recs.results.map((r) => r.app_id).sort()).toEqual(["app-scope", "app-scope-2"]);
+    });
+
+    it("apps: purging a legacy app with no org records a real NULL, and still succeeds", async () => {
+      // B2: an app predating orgs has org_id NULL. The record must carry that real NULL rather
+      // than inventing 'default' - and the purge must not fail for want of an org.
+      const env = makeEnv();
+      env.APK_BUCKET = { list: async () => ({ objects: [], truncated: false }), delete: async () => {} };
+      const { handlePurgeApp } = await import("../src/routes/apps");
+      const ctx = () => ({
+        env,
+        req: { param: () => "app-scope", json: async () => ({ confirm_slug: "scope-app" }) },
+        get: () => "tester",
+        json: (data: unknown, status = 200) => new Response(JSON.stringify(data), { status }),
+      }) as any;
+
+      await env.DB.prepare("UPDATE apps SET archived = 1, org_id = NULL WHERE id = 'app-scope'").run();
+      expect((await handlePurgeApp(ctx())).status).toBe(200);
+
+      const rec = await env.DB.prepare(
+        "SELECT org_id, status FROM app_purge_records WHERE app_slug = 'scope-app'",
+      ).first<{ org_id: string | null; status: string }>();
+      expect(rec!.status).toBe("completed");
+      expect(rec!.org_id).toBeNull(); // a real NULL, not a fabricated default
+    });
+
+    it("apps: an intent that cannot be written stops before any deletion", async () => {
+      // M3: the whole design rests on the intent being durable first. If it cannot be written,
+      // nothing destructive may happen - otherwise this card would recreate the very defect it
+      // exists to fix ("deleted, but no record").
+      const env = makeEnv();
+      const deleted: string[] = [];
+      env.APK_BUCKET = {
+        list: async () => ({ objects: [{ key: "apps/app-scope/stray.apk" }], truncated: false }),
+        delete: async (keys: string | string[]) => { deleted.push(...(Array.isArray(keys) ? keys : [keys])); },
+      };
+      const { handlePurgeApp } = await import("../src/routes/apps");
+      const ctx = () => ({
+        env,
+        req: { param: () => "app-scope", json: async () => ({ confirm_slug: "scope-app" }) },
+        get: () => "tester",
+        json: (data: unknown, status = 200) => new Response(JSON.stringify(data), { status }),
+      }) as any;
+
+      await env.DB.prepare("UPDATE apps SET archived = 1 WHERE id = 'app-scope'").run();
+      // Reject only the intent insert, leaving everything else working.
+      const originalPrepare = env.DB.prepare.bind(env.DB);
+      (env.DB as any).prepare = (sql: string) => {
+        const stmt = originalPrepare(sql);
+        if (sql.includes("INSERT INTO app_purge_records")) {
+          return { ...stmt, bind: () => ({ run: async () => { throw new Error("intent write refused"); } }) };
+        }
+        return stmt;
+      };
+
+      // Fail LOUD as well as closed: a distinguishable error, not a bare 500. "Fail closed but
+      // silent" would lose the fact, which is the whole reason this card exists.
+      const res = await handlePurgeApp(ctx());
+      expect(res.status).toBe(500);
+      expect(await res.json()).toMatchObject({ code: "PURGE_INTENT_UNWRITTEN" });
+      // Fail closed: no R2 object touched, and the app still present.
+      expect(deleted).toEqual([]);
+      expect(await env.DB.prepare("SELECT COUNT(*) AS n FROM apps WHERE id = 'app-scope'").first<{ n: number }>()).toMatchObject({ n: 1 });
+    });
+
+    it("apps: two real concurrent purges leave exactly one completed record", async () => {
+      // Drives the REAL handler twice, concurrently - not a hand-copied batch. Both calls start
+      // before either finishes, so each opens its own intent and they interleave at await points.
+      // Exactly one may end up completed with the app deleted; the other must be unable to claim
+      // the same purge. (An earlier version of this test ran one handler to completion, then
+      // INSERTed a loser row and replayed the SQL - which proved only that I had copied the SQL
+      // correctly.)
+      const env = makeEnv();
+      // One real R2 key, so the counters are non-trivial (0 would pass vacuously).
+      env.APK_BUCKET = {
+        list: async ({ prefix }: { prefix: string }) => ({
+          objects: prefix === "apps/app-scope/" ? [{ key: "apps/app-scope/one.apk" }] : [],
+          truncated: false,
+        }),
+        delete: async () => {},
+      };
+      const { handlePurgeApp } = await import("../src/routes/apps");
+      const ctx = () => ({
+        env,
+        req: { param: () => "app-scope", json: async () => ({ confirm_slug: "scope-app" }) },
+        get: () => "tester",
+        json: (data: unknown, status = 200) => new Response(JSON.stringify(data), { status }),
+      }) as any;
+
+      await env.DB.prepare("UPDATE apps SET archived = 1 WHERE id = 'app-scope'").run();
+
+      // An explicit barrier on the shared R2 delete, so the interleaving is produced by the
+      // fixture rather than by whichever way the event loop happened to schedule two awaits.
+      // Both requests must reach the delete before either is released.
+      let arrived = 0;
+      let release!: () => void;
+      const bothArrived = new Promise<void>((resolve) => { release = resolve; });
+      const realDelete = env.APK_BUCKET.delete;
+      env.APK_BUCKET = {
+        ...env.APK_BUCKET,
+        delete: async (keys: string | string[]) => {
+          arrived += 1;
+          if (arrived === 2) release();
+          await bothArrived;
+          return realDelete(keys);
+        },
+      } as any;
+
+      // Start both before awaiting either, so they genuinely overlap.
+      const results = await Promise.allSettled([
+        handlePurgeApp(ctx()),
+        handlePurgeApp(ctx()),
+      ]);
+      const statuses = results.map((r) => (r.status === "fulfilled" ? r.value.status : "threw"));
+      console.log("  concurrent outcomes:", JSON.stringify(statuses));
+
+      // Pin the outcome exactly, not just "one succeeded": the loser must be told why it failed
+      // and must not be left ambiguous. A bare "exactly one 200" would still pass if the loser
+      // threw an unrelated error or was left dangling at 'started'.
+      // Order is NOT part of the contract: the two requests are symmetric, so either may win.
+      // Asserting [200, 500] would quietly encode "the first call wins", which would fail the
+      // moment scheduling favoured the other one.
+      expect([...statuses].sort()).toEqual([200, 500]);
+      // Both requests opened an intent, so the interleaving really happened.
+      const rows = await env.DB.prepare(
+        "SELECT status, failure_class, r2_objects_deleted, r2_objects_unconfirmed FROM app_purge_records WHERE app_id = 'app-scope' ORDER BY status",
+      ).all<{ status: string; failure_class: string | null; r2_objects_deleted: number; r2_objects_unconfirmed: number }>();
+      expect(rows.results).toHaveLength(2);
+      const completedRows = rows.results.filter((r) => r.status === "completed");
+      const failedRows = rows.results.filter((r) => r.status === "failed");
+      expect(completedRows).toHaveLength(1);
+      expect(failedRows).toHaveLength(1);
+      // The loser names its cause rather than staying at 'started'.
+      expect(failedRows[0]!.failure_class).toBe("app_delete_unverified");
+      // Counters are exact on BOTH rows: one key was deleted, none are unaccounted for.
+      for (const r of rows.results) {
+        expect(r.r2_objects_deleted).toBe(1);
+        expect(r.r2_objects_unconfirmed).toBe(0);
+      }
+      // ...and the app is gone exactly once.
+      expect(await env.DB.prepare("SELECT COUNT(*) AS n FROM apps WHERE id = 'app-scope'").first<{ n: number }>()).toMatchObject({ n: 0 });
+    });
+
+    it("apps: the purge DELETE is bound to this record completing", async () => {
+      // The binding cannot be staged through the handler single-threaded: the receipt and the
+      // DELETE share one transaction, so nothing can slip between them. What the binding guards
+      // is the delete committing when the receipt matched 0 rows - a lost race, or a record
+      // already settled - which would remove an app the record never says was purged. So it is
+      // asserted on the source shape: the DELETE must carry the same record id and require that
+      // record to be completed. A guarded assertion: it fails if the binding is dropped, and it
+      // cannot pass on a replica because it reads the real file.
+      const src = readFileSync("src/routes/apps.ts", "utf8");
+      const start = src.indexOf("let receipt;");
+      const body = src.slice(start, src.indexOf("const receiptChanged", start));
+      expect(start).toBeGreaterThan(-1);
+      expect(body.length).toBeGreaterThan(200);
+      // The receipt is conditional on the app still existing...
+      expect(body).toContain("AND EXISTS (SELECT 1 FROM apps WHERE id = ?4)");
+      // ...and the delete is conditional on THIS record being completed.
+      expect(body).toMatch(/DELETE FROM apps[\s\S]*?EXISTS \(SELECT 1 FROM app_purge_records WHERE id = \?1 AND status = 'completed'\)/);
+    });
+
+    it("apps: a failing app DELETE never leaves a completed receipt", async () => {
+      // The other direction of atomicity. The receipt must not commit when the DELETE does not:
+      // a 'completed' row beside a surviving app is the false receipt this design exists to
+      // prevent. (The companion case fails the RECEIPT instead - failing the DELETE alone cannot
+      // distinguish an atomic batch from two loose statements, because the receipt never runs
+      // either way; see the rollback case below.)
+      const env = makeEnv();
+      env.APK_BUCKET = { list: async () => ({ objects: [], truncated: false }), delete: async () => {} };
+      const { handlePurgeApp } = await import("../src/routes/apps");
+      const ctx = () => ({
+        env,
+        req: { param: () => "app-scope", json: async () => ({ confirm_slug: "scope-app" }) },
+        get: () => "tester",
+        json: (data: unknown, status = 200) => new Response(JSON.stringify(data), { status }),
+      }) as any;
+
+      await env.DB.prepare("UPDATE apps SET archived = 1 WHERE id = 'app-scope'").run();
+      const originalPrepare = env.DB.prepare.bind(env.DB);
+      (env.DB as any).prepare = (sql: string) => {
+        const stmt = originalPrepare(sql);
+        if (sql.startsWith("DELETE FROM apps")) {
+          const refuse = () => { throw new Error("delete refused"); };
+          return { ...stmt, bind: () => ({ _runSync: refuse, run: async () => refuse() }) };
+        }
+        return stmt;
+      };
+
+      await expect(handlePurgeApp(ctx())).rejects.toThrow();
+      // No completed receipt, and the app is still there - the two facts must agree.
+      const completed = await env.DB.prepare(
+        "SELECT COUNT(*) AS n FROM app_purge_records WHERE status = 'completed'",
+      ).first<{ n: number }>();
+      expect(completed!.n).toBe(0);
+      expect(await env.DB.prepare("SELECT COUNT(*) AS n FROM apps WHERE id = 'app-scope'").first<{ n: number }>()).toMatchObject({ n: 1 });
+    });
+
+    it("apps: a failed R2 delete leaves no completed purge record", async () => {
+      // The receipt must never claim a purge that did not happen: if R2 deletion throws, the app
+      // still exists, so the record must not read as completed.
+      const env = makeEnv();
+      env.APK_BUCKET = {
+        list: async () => ({ objects: [{ key: "apps/app-scope/stray.apk" }], truncated: false }),
+        delete: async () => { throw new Error("r2 unavailable"); },
+      };
+      const { handlePurgeApp } = await import("../src/routes/apps");
+      const ctx = () => ({
+        env,
+        req: { param: () => "app-scope", json: async () => ({ confirm_slug: "scope-app" }) },
+        get: () => "tester",
+        json: (data: unknown, status = 200) => new Response(JSON.stringify(data), { status }),
+      }) as any;
+
+      await env.DB.prepare("UPDATE apps SET archived = 1 WHERE id = 'app-scope'").run();
+      await expect(handlePurgeApp(ctx())).rejects.toThrow();
+
+      const rec = await env.DB.prepare(
+        "SELECT status, failure_class, completed_at, r2_objects_deleted, r2_objects_unconfirmed FROM app_purge_records WHERE app_slug = 'scope-app'",
+      ).first<{ status: string; failure_class: string | null; completed_at: number | null; r2_objects_deleted: number; r2_objects_unconfirmed: number }>();
+      expect(rec).toBeTruthy();
+      expect(rec!.status).toBe("failed");
+      expect(rec!.failure_class).toBe("r2_delete_failed");
+      expect(rec!.completed_at).toBeNull();
+      // The counters must describe this failure, not sit at the intent's defaults. The delete
+      // rejects on the first (only) batch, so nothing is confirmed deleted and the single key is
+      // unconfirmed - a 0/0 here would claim there was nothing to account for.
+      expect(rec!.r2_objects_deleted).toBe(0);
+      expect(rec!.r2_objects_unconfirmed).toBe(1);
+      // The app is untouched, which is what makes the non-completed status honest.
+      expect(await env.DB.prepare("SELECT COUNT(*) AS n FROM apps WHERE id = 'app-scope'").first<{ n: number }>()).toMatchObject({ n: 1 });
+    });
+
+
 
   it("feedback: crash alert webhooks fire on new group only once", async () => {
     const env = makeEnv();
