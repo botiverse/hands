@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
 const migration = readFileSync(
-  fileURLToPath(new URL("../../migrations/sql/0074_app_creator_becomes_admin.sql", import.meta.url)),
+  fileURLToPath(new URL("../../migrations/sql/0075_app_creator_becomes_admin.sql", import.meta.url)),
   "utf8",
 );
 

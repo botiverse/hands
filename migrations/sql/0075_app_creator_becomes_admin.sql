@@ -1,4 +1,10 @@
--- Migration 0074: make each existing app's creator that app's admin.
+-- Migration 0075: make each existing app's creator that app's admin.
+--
+-- Numbered 0075, not 0074: migration numbers are assigned by entry order into main, and
+-- 0074_app_purge_records landed first (applied to production on 2026-09-18). Two migrations
+-- sharing a number is not something the merge path catches - it is a new file, so git sees no
+-- conflict and the PR shows CLEAN - which is exactly why the collision has to be checked rather
+-- than discovered at the next deploy's apply step.
 --
 -- WHY
 -- ---
