@@ -152,9 +152,9 @@ function makeMockDb() {
       archived_at INTEGER, created_at INTEGER NOT NULL, icon_r2_key TEXT, public_history INTEGER NOT NULL DEFAULT 0, client_key TEXT,
       delta_updates_enabled INTEGER NOT NULL DEFAULT 0
     );
-      -- Mirrors migrations/sql/0074_app_purge_records.sql: deliberately NOT keyed to apps, so a
+      -- Mirrors migrations/sql/0075_app_purge_records.sql: deliberately NOT keyed to apps, so a
       -- purge record outlives the app it describes (audit_logs.app_id cascades away with it).
-      -- Mirrors migrations/sql/0074_app_purge_records.sql: deliberately NOT keyed to apps, so a
+      -- Mirrors migrations/sql/0075_app_purge_records.sql: deliberately NOT keyed to apps, so a
       -- purge record outlives the app it describes (audit_logs.app_id cascades away with it).
       CREATE TABLE app_purge_records (
         id TEXT PRIMARY KEY, app_id TEXT NOT NULL, app_slug TEXT NOT NULL, org_id TEXT,
