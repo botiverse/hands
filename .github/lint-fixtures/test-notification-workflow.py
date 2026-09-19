@@ -79,6 +79,36 @@ def main() -> None:
     assert 'Message (sent|queued)' in post["run"]
     assert "$RAFT_PROFILE_DIR/credential.json" in materialize["run"]
 
+    readback = notifier["jobs"]["deploy-readback-request"]
+    assert readback["environment"] == "raft-workflow-notifications"
+    assert readback["env"]["RAFT_PROFILE_DIR"] == job["env"]["RAFT_PROFILE_DIR"]
+    assert readback["env"]["READBACK_OWNER"] == "@Gogo"
+    assert readback.get("permissions", notifier.get("permissions")) == {"contents": "read"}
+    # Success-only and Deploy-Hands-Server-only: every other success stays silent.
+    assert "workflow_run.name == 'Deploy Hands Server'" in readback["if"]
+    assert "workflow_run.conclusion == 'success'" in readback["if"]
+    assert "Deploy Hands Server" in watched_names
+    readback_steps = readback["steps"]
+    readback_install = next(
+        step for step in readback_steps if step.get("name") == "Install pinned Raft CLI"
+    )
+    assert readback_install["run"] == install["run"]
+    readback_materialize = next(
+        step
+        for step in readback_steps
+        if step.get("name") == "Materialize isolated profile credential"
+    )
+    assert readback_materialize == materialize
+    readback_post = next(
+        step for step in readback_steps if step.get("name") == "Post deploy readback request"
+    )
+    assert "${READBACK_OWNER}" in readback_post["run"]
+    assert 'message check' in readback_post["run"]
+    assert 'message send --target "#proj-hands"' in readback_post["run"]
+    assert 'message send --send-draft --anyway --target "#proj-hands"' in readback_post["run"]
+    assert 'Message (sent|queued)' in readback_post["run"]
+    assert "MENTION_DELIVERY_FAILED" in readback_post["run"]
+
     health = load(HEALTH)
     assert health["on"]["schedule"] == [{"cron": "17 3 * * *"}]
     synthetic = health["on"]["workflow_dispatch"]["inputs"]["send_synthetic_alert"]
@@ -106,7 +136,7 @@ def main() -> None:
     print(
         "Notification contract clean: "
         f"{len(watched_names)} Publish/Deploy workflows, isolated credential, pinned CLI, "
-        "daily health + explicit synthetic alert."
+        "daily health + explicit synthetic alert, Deploy Hands Server readback ping."
     )
 
 

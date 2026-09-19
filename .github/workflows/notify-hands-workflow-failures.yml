@@ -97,3 +97,87 @@ jobs:
             exit 1
           }
           printf '%s\n' "$output"
+
+  deploy-readback-request:
+    # One deliberate exception to "success is silent": a successful
+    # Deploy Hands Server run may have applied D1 migrations to production, and
+    # the release owner reads each one back (live d1_migrations + the pre-run
+    # handshake). This pings that owner so the readback no longer depends on a
+    # daily manual check. Failures are already covered by `notify` above.
+    if: ${{ github.event.workflow_run.name == 'Deploy Hands Server' && github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-latest
+    environment: raft-workflow-notifications
+    env:
+      RAFT_SERVER: https://app.raft.build
+      RAFT_PROFILE: hands-workflow-notifier
+      RAFT_PROFILE_DIR: /tmp/raft-profiles/hands-workflow-notifier
+      READBACK_OWNER: "@Gogo"
+      RUN_ID: ${{ github.event.workflow_run.id }}
+      RUN_NAME: ${{ github.event.workflow_run.name }}
+      RUN_HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+      RUN_URL: ${{ github.event.workflow_run.html_url }}
+      REPOSITORY: ${{ github.event.workflow_run.repository.full_name }}
+    steps:
+      - name: Install pinned Raft CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm install --no-save --ignore-scripts --prefix "$RUNNER_TEMP/raft-cli" @botiverse/raft@0.0.17
+
+      - name: Materialize isolated profile credential
+        env:
+          RAFT_CREDENTIAL_JSON: ${{ secrets.RAFT_NOTIFY_CREDENTIAL_JSON }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$RAFT_CREDENTIAL_JSON"
+          umask 077
+          mkdir -p "$RAFT_PROFILE_DIR"
+          printf '%s' "$RAFT_CREDENTIAL_JSON" > "$RAFT_PROFILE_DIR/credential.json"
+          test "$(stat -c '%a' "$RAFT_PROFILE_DIR/credential.json")" = 600
+
+      - name: Verify notifier credential
+        shell: bash
+        run: |
+          set -euo pipefail
+          "$RUNNER_TEMP/raft-cli/node_modules/.bin/raft" agent login status \
+            --server "$RAFT_SERVER" --agent "$(node -e 'const c=require(process.env.RAFT_PROFILE_DIR+"/credential.json"); process.stdout.write(c.agentId)')" \
+            --profile-slug "$RAFT_PROFILE" --profile-dir "$RAFT_PROFILE_DIR"
+
+      - name: Post deploy readback request
+        shell: bash
+        run: |
+          set -euo pipefail
+          printf -v body '%s\n' \
+            "${READBACK_OWNER} Hands production deploy succeeded — please read it back." \
+            "repository: ${REPOSITORY}" \
+            "workflow: ${RUN_NAME}" \
+            "run: ${RUN_URL}" \
+            "run_id: ${RUN_ID}" \
+            "head_sha: ${RUN_HEAD_SHA}"
+          cli="$RUNNER_TEMP/raft-cli/node_modules/.bin/raft"
+          "$cli" message check >/dev/null
+          set +e
+          output=$("$cli" message send --target "#proj-hands" <<<"$body" 2>&1)
+          send_status=$?
+          set -e
+          if grep -q "saved as a draft" <<<"$output"; then
+            set +e
+            output=$("$cli" message send --send-draft --anyway --target "#proj-hands" 2>&1)
+            send_status=$?
+            set -e
+          fi
+          printf '%s\n' "$output"
+          # The whole point of this job is the mention. A queued message whose
+          # mention did not reach the owner must fail the job, not pass quietly.
+          if grep -q "MENTION_DELIVERY_FAILED\|status=not_queued" <<<"$output"; then
+            echo "::error::readback request posted but ${READBACK_OWNER} was not notified"
+            exit 1
+          fi
+          if (( send_status != 0 )); then
+            exit 1
+          fi
+          grep -Eq "Message (sent|queued)" <<<"$output" || {
+            printf 'Notifier delivery was not accepted:\n%s\n' "$output" >&2
+            exit 1
+          }
