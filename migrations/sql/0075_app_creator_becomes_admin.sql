@@ -63,8 +63,11 @@
 --   WHERE NOT EXISTS (SELECT 1 FROM app_members m
 --                     WHERE m.app_id = a.id AND m.app_role = 'admin');
 --
--- The unmapped app is deliberately left alone: 'myapp-android' has actor = 'admin'
--- (not a raft: handle) and already carries an admin row.
+-- The unmapped app is deliberately left alone: at the time this was written 'myapp-android'
+-- had actor = 'admin' (not a raft: handle) and already carried an admin row. That app was
+-- purged on 2026-09-20, so its app.create audit row is gone and no such row exists today -
+-- finding none is the expected result, not a regression. The skip branch still stands on its
+-- own: any actor that is not a raft: handle is skipped rather than guessed at.
 
 -- Inserts one admin row per app whose recorded creator maps to an account and is not
 -- already a member. `joined_at` uses the app's own creation time, not now(): the row
@@ -104,8 +107,8 @@ WHERE NOT EXISTS (
 -- INSERT skips anyone who is already a member - so a creator who was already present
 -- with some other role keeps it, and asserting 'admin' here would fire on correct data.
 -- Nor does it assert "every app has an admin": that is false after this migration,
--- since an app whose actor never mapped ('myapp-android', actor = the literal 'admin')
--- is intentionally skipped, and a dev-token-created app has no account at all.
+-- since an app whose actor never mapped (the literal 'admin' actor, e.g. the since-purged
+-- 'myapp-android') is intentionally skipped, and a dev-token-created app has no account at all.
 CREATE TABLE IF NOT EXISTS _0074_guard_unbackfilled (ok INTEGER NOT NULL CHECK (ok = 0));
 DELETE FROM _0074_guard_unbackfilled;
 INSERT INTO _0074_guard_unbackfilled (ok)
