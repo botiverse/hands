@@ -976,9 +976,10 @@ export async function handleAgentManifest(c: Context<{ Bindings: Env }>) {
   const NEW_ACTIONS = new Set([
     "agent-login",
     "migration-help",
-    // Added 2026-09 (#167 follow-up / #175). These are NEW actions, not pre-migration ones, so the
-    // migration nudge must not be prepended - otherwise a brand-new action ships labelled
-    // "Deprecated". Registered for that reason only; it says nothing about their stability.
+    // Decision (2026-09, #167 follow-up / #175): these three are newly added actions, so they are
+    // registered here deliberately. This set is what stops the migration nudge from being
+    // prepended; without it a brand-new action would ship labelled "Deprecated". Membership is a
+    // statement about provenance (added after the migration), not about stability or support.
     "list-builds",
     "update-channel",
     "delete-channel",
@@ -1216,8 +1217,8 @@ export async function handleAgentManifest(c: Context<{ Bindings: Env }>) {
           bundle_id: { type: "string", in: "body", required: false, description: "New bundle id; an empty string clears it." },
           password: { type: "string", in: "body", required: false, description: "New shared password; an empty string clears it." },
           git_url: { type: "string", in: "body", required: false, description: "New git url; an empty string clears it." },
-          enabled_product_types: { type: "string[]", in: "body", required: false, description: "Replacement product-type allowlist; stored as JSON." },
-          metadata: { type: "string", in: "body", required: false, description: "Opaque metadata; stored as JSON." },
+          enabled_product_types: { type: "array", in: "body", required: false, description: "Replacement product-type allowlist; stored as JSON." },
+          metadata: { type: "object", in: "body", required: false, description: "Opaque metadata object; stored as JSON." },
         },
       },
       {
@@ -1649,7 +1650,7 @@ export async function handleAgentManifest(c: Context<{ Bindings: Env }>) {
       {
         name: "list-builds",
         description:
-          "List an app's builds, newest first, with the same product/channel/status filters the CLI uses.",
+          "List an app's builds, newest first, capped at 200, with the same product/channel/status filters the CLI uses. Requires app viewer.",
         endpoint: { method: "GET", path: "/api/apps/{app_id}/builds" },
         parameters: {
           app_id: { type: "string", in: "path", required: true, description: "App UUID." },

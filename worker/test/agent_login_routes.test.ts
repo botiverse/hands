@@ -260,6 +260,13 @@ describe("manifest: actions retained + deprecated, migration-help added", () => 
       expect(a.parameters).toBeDefined();
       expect(a.params).toBeUndefined();
     }
+
+    // Structured body fields must use the labels the Raft side recognises. `invoke` treats only
+    // `array` and `object` as structured types (slock commands/integration/invoke.ts:308-316), so a
+    // `string[]` or `string` label for a structured field silently loses the value. Assert the
+    // labels, not just the field names.
+    expect(updateChannel.parameters.enabled_product_types.type).toBe("array");
+    expect(updateChannel.parameters.metadata.type).toBe("object");
   });
 
   it("migration-help endpoint returns install + login guidance", async () => {
