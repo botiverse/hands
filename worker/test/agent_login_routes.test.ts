@@ -232,6 +232,34 @@ describe("manifest: actions retained + deprecated, migration-help added", () => 
     expect(body.actions.find((a: any) => a.name === "migration-help").description.startsWith("Deprecated")).toBe(false);
     // machine contract unchanged: help still GET /api/agent/help
     expect(body.actions.find((a: any) => a.name === "help").endpoint).toEqual({ method: "GET", path: "/api/agent/help" });
+
+    // 2026-09 (#167 follow-up / #175): three actions added for surfaces that previously had no
+    // agent action. They are NEW, so the migration nudge must not label them deprecated.
+    for (const n of ["list-builds", "update-channel", "delete-channel"]) {
+      expect(names).toContain(n);
+      expect(body.actions.find((a: any) => a.name === n).description.startsWith("Deprecated")).toBe(false);
+    }
+    // Each maps to an endpoint the worker already serves, and declares the fields the handler reads.
+    const listBuilds = body.actions.find((a: any) => a.name === "list-builds");
+    expect(listBuilds.endpoint).toEqual({ method: "GET", path: "/api/apps/{app_id}/builds" });
+    expect(Object.keys(listBuilds.parameters).sort()).toEqual(
+      ["app_id", "channel", "product_type", "status", "version_name"].sort(),
+    );
+    const updateChannel = body.actions.find((a: any) => a.name === "update-channel");
+    expect(updateChannel.endpoint).toEqual({ method: "PATCH", path: "/api/apps/{app_id}/channels/{channel_id}" });
+    // The handler reads six body fields; listing fewer silently hides settable fields.
+    expect(Object.keys(updateChannel.parameters).sort()).toEqual(
+      ["app_id", "bundle_id", "channel_id", "enabled_product_types", "git_url", "metadata", "name", "password"].sort(),
+    );
+    const deleteChannel = body.actions.find((a: any) => a.name === "delete-channel");
+    expect(deleteChannel.endpoint).toEqual({ method: "DELETE", path: "/api/apps/{app_id}/channels/{channel_id}" });
+    // The Raft-side parser reads `parameters` only (a `params` key is ignored), so actions added
+    // here must use the key the parser actually reads.
+    for (const n of ["list-builds", "update-channel", "delete-channel"]) {
+      const a = body.actions.find((x: any) => x.name === n);
+      expect(a.parameters).toBeDefined();
+      expect(a.params).toBeUndefined();
+    }
   });
 
   it("migration-help endpoint returns install + login guidance", async () => {

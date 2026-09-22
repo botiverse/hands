@@ -973,7 +973,16 @@ export async function handleAgentManifest(c: Context<{ Bindings: Env }>) {
   // keep the machine contract unchanged, just point callers at `migration-help`.
   const service = c.env.RAFT_CLIENT_ID || "hands-4cc7a2";
   const DEPRECATION_PREFIX = `Deprecated — run raft integration invoke --service ${service} --action migration-help for Hands CLI installation and migration guidance. `;
-  const NEW_ACTIONS = new Set(["agent-login", "migration-help"]);
+  const NEW_ACTIONS = new Set([
+    "agent-login",
+    "migration-help",
+    // Added 2026-09 (#167 follow-up / #175). These are NEW actions, not pre-migration ones, so the
+    // migration nudge must not be prepended - otherwise a brand-new action ships labelled
+    // "Deprecated". Registered for that reason only; it says nothing about their stability.
+    "list-builds",
+    "update-channel",
+    "delete-channel",
+  ]);
   const applyDeprecation = (
     list: Array<{ name: string; description: string; [k: string]: unknown }>,
   ) => list.map((a) => (NEW_ACTIONS.has(a.name) ? a : { ...a, description: DEPRECATION_PREFIX + a.description }));
@@ -1194,6 +1203,32 @@ export async function handleAgentManifest(c: Context<{ Bindings: Env }>) {
         params: { slug: "string (lowercase channel slug)", name: "string (display name)" },
         description:
           "Create a release channel on an app (channels are never auto-created by publish). Requires app admin. Creating a channel activates nothing.",
+      },
+      {
+        name: "update-channel",
+        description:
+          "Change a release channel's settings. Requires app admin. Fields omitted from the body are left unchanged; a body with none of them is rejected with \"nothing to update\".",
+        endpoint: { method: "PATCH", path: "/api/apps/{app_id}/channels/{channel_id}" },
+        parameters: {
+          app_id: { type: "string", in: "path", required: true, description: "App UUID." },
+          channel_id: { type: "string", in: "path", required: true, description: "Channel UUID." },
+          name: { type: "string", in: "body", required: false, description: "New display name." },
+          bundle_id: { type: "string", in: "body", required: false, description: "New bundle id; an empty string clears it." },
+          password: { type: "string", in: "body", required: false, description: "New shared password; an empty string clears it." },
+          git_url: { type: "string", in: "body", required: false, description: "New git url; an empty string clears it." },
+          enabled_product_types: { type: "string[]", in: "body", required: false, description: "Replacement product-type allowlist; stored as JSON." },
+          metadata: { type: "string", in: "body", required: false, description: "Opaque metadata; stored as JSON." },
+        },
+      },
+      {
+        name: "delete-channel",
+        description:
+          "Delete a release channel. Requires app admin. Refused (not cascaded) while any build or release still references the channel.",
+        endpoint: { method: "DELETE", path: "/api/apps/{app_id}/channels/{channel_id}" },
+        parameters: {
+          app_id: { type: "string", in: "path", required: true, description: "App UUID." },
+          channel_id: { type: "string", in: "path", required: true, description: "Channel UUID." },
+        },
       },
       {
         name: "list-device-groups",
@@ -1609,6 +1644,19 @@ export async function handleAgentManifest(c: Context<{ Bindings: Env }>) {
           build_id: { type: "string", in: "path", required: true, description: "Hands build UUID." },
           distribution: { type: "string", in: "query", required: false, description: "Optional internal or external state projection." },
           bundle_id: { type: "string", in: "query", required: false, description: "Optional bundle-id assertion; it must match immutable build metadata, and is only a fallback when metadata is absent." },
+        },
+      },
+      {
+        name: "list-builds",
+        description:
+          "List an app's builds, newest first, with the same product/channel/status filters the CLI uses.",
+        endpoint: { method: "GET", path: "/api/apps/{app_id}/builds" },
+        parameters: {
+          app_id: { type: "string", in: "path", required: true, description: "App UUID." },
+          product_type: { type: "string", in: "query", required: false, description: "Filter by product type (e.g. cli-binary)." },
+          channel: { type: "string", in: "query", required: false, description: "Filter by channel id or slug." },
+          status: { type: "string", in: "query", required: false, description: "Filter by build status." },
+          version_name: { type: "string", in: "query", required: false, description: "Filter by version name." },
         },
       },
       {
