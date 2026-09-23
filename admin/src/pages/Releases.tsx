@@ -260,6 +260,41 @@ function PendingReleaseApprovals({ appId, gateOn }: { appId: string; gateOn: boo
                     ))}
                   </ul>
                 )}
+                {(() => {
+                  // The conditions the approver is signing off on (task #239 review).
+                  let scopes: { scope_type: string; scope_value: string }[] = [];
+                  let targets: string[] = [];
+                  try {
+                    scopes = JSON.parse(a.expected_scopes);
+                  } catch {}
+                  try {
+                    targets = a.required_external_targets ? JSON.parse(a.required_external_targets) : [];
+                  } catch {}
+                  return (
+                    <div className="text-xs text-slate-600 mt-1 flex flex-wrap items-center gap-1">
+                      <span className="text-slate-500">Publishes to</span>
+                      {scopes.length === 0 ? (
+                        <span className="font-mono">full:all</span>
+                      ) : (
+                        scopes.map((s, i) => (
+                          <span key={i} className="font-mono rounded-sm bg-slate-100 px-1">
+                            {s.scope_type}:{s.scope_value}
+                          </span>
+                        ))
+                      )}
+                      {targets.length > 0 && (
+                        <>
+                          <span className="text-slate-500">· requires targets</span>
+                          {targets.map((t, i) => (
+                            <span key={i} className="font-mono rounded-sm bg-slate-100 px-1">
+                              {t}
+                            </span>
+                          ))}
+                        </>
+                      )}
+                    </div>
+                  );
+                })()}
                 <div className="text-xs text-slate-500 mt-1">
                   Requested by {a.requested_by_actor} · {new Date(a.created_at).toLocaleString()}
                 </div>

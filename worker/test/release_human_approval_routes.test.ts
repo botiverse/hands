@@ -510,4 +510,115 @@ describe("release human-approval gate (task #239)", () => {
     expect(row.status).toBe("approved");
     expect(releaseStatus(sqlite, "relM")).toBe("active");
   });
+
+  it("re-requesting the same intent is idempotent (same request id)", async () => {
+    const { sqlite, env } = environment();
+    seedBase(sqlite, { gated: true });
+    seedDraftRelease(sqlite, "relI");
+    await seedAgentToken(sqlite, AGENT);
+    const a = app();
+
+    const publish = () =>
+      a.request(
+        "/api/apps/app1/releases/relI/publish",
+        {
+          method: "POST",
+          headers: { authorization: `Bearer ${AGENT}`, "content-type": "application/json" },
+          body: JSON.stringify({ required_external_targets: ["darwin-arm64", "linux-x64"] }),
+        },
+        env,
+        EXEC,
+      );
+    const first = (await (await publish()).json()) as any;
+    // Order-insensitive: same set in a different order is the SAME intent.
+    const reorder = await a.request(
+      "/api/apps/app1/releases/relI/publish",
+      {
+        method: "POST",
+        headers: { authorization: `Bearer ${AGENT}`, "content-type": "application/json" },
+        body: JSON.stringify({ required_external_targets: ["linux-x64", "darwin-arm64"] }),
+      },
+      env,
+      EXEC,
+    );
+    const second = (await reorder.json()) as any;
+    expect(reorder.status).toBe(202);
+    expect(second.approval_request_id).toBe(first.approval_request_id);
+    expect(second.already_pending).toBe(true);
+    const pending = sqlite.prepare(
+      "SELECT COUNT(*) n FROM release_approval_requests WHERE release_id='relI' AND status='pending'",
+    ).get() as { n: number };
+    expect(pending.n).toBe(1);
+  });
+
+  it("re-requesting with different conditions conflicts and leaves the pending request untouched", async () => {
+    const { sqlite, env } = environment();
+    seedBase(sqlite, { gated: true });
+    seedDraftRelease(sqlite, "relD");
+    await seedAgentToken(sqlite, AGENT);
+    const a = app();
+
+    const first = await a.request(
+      "/api/apps/app1/releases/relD/publish",
+      {
+        method: "POST",
+        headers: { authorization: `Bearer ${AGENT}`, "content-type": "application/json" },
+        body: JSON.stringify({ required_external_targets: ["darwin-arm64"] }),
+      },
+      env,
+      EXEC,
+    );
+    expect(first.status).toBe(202);
+    const { approval_request_id: reqId } = (await first.json()) as any;
+    const before = sqlite
+      .prepare("SELECT status, expected_scopes, required_external_targets FROM release_approval_requests WHERE id = ?")
+      .get(reqId) as any;
+
+    // Change only required_external_targets → different publish intent → conflict.
+    const conflict = await a.request(
+      "/api/apps/app1/releases/relD/publish",
+      {
+        method: "POST",
+        headers: { authorization: `Bearer ${AGENT}`, "content-type": "application/json" },
+        body: JSON.stringify({ required_external_targets: ["linux-x64"] }),
+      },
+      env,
+      EXEC,
+    );
+    expect(conflict.status).toBe(409);
+    const conflictBody = (await conflict.json()) as any;
+    expect(conflictBody.code).toBe("PENDING_WITH_DIFFERENT_CONDITIONS");
+
+    // The original pending request is unchanged (no silent overwrite).
+    const after = sqlite
+      .prepare("SELECT status, expected_scopes, required_external_targets FROM release_approval_requests WHERE id = ?")
+      .get(reqId) as any;
+    expect(after.status).toBe("pending");
+    expect(after.required_external_targets).toBe(before.required_external_targets);
+    expect(releaseStatus(sqlite, "relD")).toBe("draft");
+  });
+
+  it("re-requesting the identical conditions returns the existing pending request", async () => {
+    const { sqlite, env } = environment();
+    seedBase(sqlite, { gated: true });
+    seedDraftRelease(sqlite, "relS");
+    await seedAgentToken(sqlite, AGENT);
+    const a = app();
+    const body = JSON.stringify({ required_external_targets: ["darwin-arm64", "win32-x64"] });
+
+    const first = (await (await a.request(
+      "/api/apps/app1/releases/relS/publish",
+      { method: "POST", headers: { authorization: `Bearer ${AGENT}`, "content-type": "application/json" }, body },
+      env,
+      EXEC,
+    )).json()) as any;
+    const second = (await (await a.request(
+      "/api/apps/app1/releases/relS/publish",
+      { method: "POST", headers: { authorization: `Bearer ${AGENT}`, "content-type": "application/json" }, body },
+      env,
+      EXEC,
+    )).json()) as any;
+    expect(second.approval_request_id).toBe(first.approval_request_id);
+    expect(second.already_pending).toBe(true);
+  });
 });

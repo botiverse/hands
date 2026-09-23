@@ -1508,7 +1508,67 @@ function isHumanCaller(c: AdminContext): boolean {
   return account !== null && account.principal_type === "human";
 }
 
-type PendingApprovalRequest = { id: string; created: boolean };
+type PendingApprovalRequest = { id: string; created: boolean } | { conflict: "different_conditions" };
+
+// Canonical forms for the pending-request idempotency key (task #239 review):
+// a re-request only reuses an existing pending request when the publish INTENT
+// is byte-for-byte the same (revision, scope set, target set). Order-insensitive
+// so [a,b] == [b,a]; any difference is a conflict, never a silent overwrite.
+function canonicalScopes(scopes: ReleaseScopeInput[]): string {
+  return JSON.stringify(
+    [...scopes]
+      .map((s) => ({ scope_type: s.scope_type, scope_value: s.scope_value }))
+      .sort((a, b) => {
+        const ka = `${a.scope_type}\u0000${a.scope_value}`;
+        const kb = `${b.scope_type}\u0000${b.scope_value}`;
+        return ka < kb ? -1 : ka > kb ? 1 : 0;
+      }),
+  );
+}
+
+function normalizeDeep(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map(normalizeDeep).sort((a, b) => {
+      const sa = JSON.stringify(a);
+      const sb = JSON.stringify(b);
+      return sa < sb ? -1 : sa > sb ? 1 : 0;
+    });
+  }
+  if (value && typeof value === "object") {
+    const obj = value as Record<string, unknown>;
+    const out: Record<string, unknown> = {};
+    for (const key of Object.keys(obj).sort()) out[key] = normalizeDeep(obj[key]);
+    return out;
+  }
+  return value;
+}
+
+function canonicalTargets(raw: unknown): string {
+  if (raw === undefined || raw === null) return "null";
+  const canon = canonicalizeRequiredTargets(raw);
+  if (!("error" in canon)) return JSON.stringify(canon.set);
+  // Malformed shape: fall back to a deep-normalized JSON so identical-malformed
+  // still compares equal and different-malformed compares different.
+  return JSON.stringify(normalizeDeep(raw));
+}
+
+function sameApprovalIntent(
+  existing: { expected_revision: number; expected_scopes: string; required_external_targets: string | null },
+  incoming: { expectedRevision: number; expectedScopes: ReleaseScopeInput[]; requiredExternalTargets: unknown },
+): boolean {
+  if (existing.expected_revision !== incoming.expectedRevision) return false;
+  let storedScopes: ReleaseScopeInput[] = [];
+  try {
+    storedScopes = JSON.parse(existing.expected_scopes) as ReleaseScopeInput[];
+  } catch {
+    return false;
+  }
+  if (canonicalScopes(storedScopes) !== canonicalScopes(incoming.expectedScopes)) return false;
+  const storedTargets = existing.required_external_targets
+    ? (JSON.parse(existing.required_external_targets) as unknown)
+    : null;
+  return canonicalTargets(storedTargets) === canonicalTargets(incoming.requiredExternalTargets);
+}
 
 async function createOrGetPendingApprovalRequest(
   c: AdminContext,
@@ -1545,15 +1605,21 @@ async function createOrGetPendingApprovalRequest(
       .run();
     return { id, created: true };
   } catch {
-    // A pending request for this release already exists (unique partial index):
-    // an idempotent re-request returns it instead of erroring.
+    // A pending request for this release already exists (unique partial index).
+    // Reuse it only when the publish intent is identical; a different intent is a
+    // conflict so the approver never approves conditions the agent no longer wants
+    // (task #239 review).
     const existing = await c.env.DB.prepare(
-      "SELECT id FROM release_approval_requests WHERE release_id = ?1 AND status = 'pending'",
+      `SELECT id, expected_revision, expected_scopes, required_external_targets
+       FROM release_approval_requests WHERE release_id = ?1 AND status = 'pending'`,
     )
       .bind(releaseId)
-      .first<{ id: string }>();
-    if (existing) return { id: existing.id, created: false };
-    throw new Error("failed to create or find pending release approval request");
+      .first<{ id: string; expected_revision: number; expected_scopes: string; required_external_targets: string | null }>();
+    if (!existing) throw new Error("failed to create or find pending release approval request");
+    if (sameApprovalIntent(existing, { expectedRevision, expectedScopes, requiredExternalTargets })) {
+      return { id: existing.id, created: false };
+    }
+    return { conflict: "different_conditions" };
   }
 }
 
@@ -1821,6 +1887,18 @@ export async function handlePublishRelease(c: AdminContext) {
         expectedScopes,
         requiredExternalTargets: publishBody.required_external_targets,
       });
+      if ("conflict" in request) {
+        return c.json(
+          {
+            error:
+              "A pending approval request for this release already exists with different conditions. " +
+              "Wait for it to be decided, or have an admin reject it before re-requesting.",
+            code: "PENDING_WITH_DIFFERENT_CONDITIONS",
+            release_id: releaseId,
+          },
+          409,
+        );
+      }
       return c.json(
         {
           status: "pending_approval",
