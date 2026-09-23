@@ -27,6 +27,7 @@ import { registerWhoamiCommand } from "./commands/whoami.js";
 import { registerDeviceIdCommand } from "./commands/device_id.js";
 import { registerLogsCommands } from "./commands/logs.js";
 import { registerDeviceGroupCommands } from "./commands/device_groups.js";
+import { registerChannelCommands } from "./commands/channels.js";
 import { registerApiCommand } from "./commands/api.js";
 import { getConfig } from "./lib/config.js";
 import { readEnv } from "./lib/env.js";
@@ -67,6 +68,9 @@ Common recipes:
   hands feedback show <app> <ticketId>                One ticket: device context + attachments
   hands feedback download-attachment <app> <t> <a>    Pull a crash log / screenshot
   hands releases list <app>                           Release history
+  hands channels list <app>                            Release channels
+  hands channels update <app> <ch> --name <n>          Rename / reconfigure a channel (admin)
+  hands channels delete <app> <ch>                     Delete a channel (admin)
   hands builds testflight-status <app> <build>        Apple processing / beta review state
   hands logs collect                                  Bundle local CLI logs for a bug report
 
@@ -101,6 +105,7 @@ registerAppCommands(program);
 registerBuildCommands(program);
 registerReleaseCommands(program);
 registerDeviceGroupCommands(program);
+registerChannelCommands(program);
 registerFeedbackCommands(program);
 registerDeployTokenCommands(program);
 registerLogsCommands(program);
