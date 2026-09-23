@@ -1,5 +1,6 @@
 import type { Context } from "hono";
 import { currentActor, type AdminEnv } from "../middleware/auth";
+import { currentAccount, currentDeployToken } from "../lib/permissions";
 import { emitWebhookEvent } from "./webhooks";
 import { generateDeltaPatchesForBuild } from "./delta";
 import { requestOrigin } from "../lib/origin";
@@ -1446,6 +1447,231 @@ function externalTargetFreezeStatement(
   );
 }
 
+// ---- Release human-approval gate (task #239) ----
+//
+// When apps.release_requires_human_approval is on, an agent-initiated publish
+// (app deploy token, no human admin session) is held as a durable pending
+// request instead of executing. A human (app admin / org admin) approves or
+// rejects it from the admin console; approving re-runs the exact publish logic
+// (executeReleasePublish) under the approver's identity and the preconditions
+// the agent originally sent.
+
+async function appRequiresHumanApproval(db: D1Database, appId: string): Promise<boolean> {
+  const row = await db
+    .prepare("SELECT release_requires_human_approval FROM apps WHERE id = ?1")
+    .bind(appId)
+    .first<{ release_requires_human_approval: number }>();
+  return row?.release_requires_human_approval === 1;
+}
+
+type PendingApprovalRequest = { id: string; created: boolean };
+
+async function createOrGetPendingApprovalRequest(
+  c: AdminContext,
+  args: {
+    appId: string;
+    releaseId: string;
+    expectedRevision: number;
+    expectedScopes: ReleaseScopeInput[];
+    requiredExternalTargets: unknown;
+  },
+): Promise<PendingApprovalRequest> {
+  const { appId, releaseId, expectedRevision, expectedScopes, requiredExternalTargets } = args;
+  const token = currentDeployToken(c);
+  const id = crypto.randomUUID();
+  const now = Date.now();
+  try {
+    await c.env.DB.prepare(
+      `INSERT INTO release_approval_requests
+         (id, app_id, release_id, requested_by_actor, requested_by_token_id,
+          expected_revision, expected_scopes, required_external_targets, status, created_at)
+       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'pending', ?9)`,
+    )
+      .bind(
+        id,
+        appId,
+        releaseId,
+        currentActor(c),
+        token?.id ?? null,
+        expectedRevision,
+        JSON.stringify(expectedScopes),
+        requiredExternalTargets === undefined ? null : JSON.stringify(requiredExternalTargets),
+        now,
+      )
+      .run();
+    return { id, created: true };
+  } catch {
+    // A pending request for this release already exists (unique partial index):
+    // an idempotent re-request returns it instead of erroring.
+    const existing = await c.env.DB.prepare(
+      "SELECT id FROM release_approval_requests WHERE release_id = ?1 AND status = 'pending'",
+    )
+      .bind(releaseId)
+      .first<{ id: string }>();
+    if (existing) return { id: existing.id, created: false };
+    throw new Error("failed to create or find pending release approval request");
+  }
+}
+
+type ApprovalRequestRow = {
+  id: string;
+  app_id: string;
+  release_id: string;
+  requested_by_actor: string;
+  requested_by_token_id: string | null;
+  expected_revision: number;
+  expected_scopes: string;
+  required_external_targets: string | null;
+  status: string;
+  decided_by: string | null;
+  decided_at: number | null;
+  decision_note: string | null;
+  created_at: number;
+  // joined release/build context for the approval queue
+  release_status: string | null;
+  version_name: string | null;
+  version_code: number | null;
+  changelog: string | null;
+  build_id: string | null;
+  channel_slug: string | null;
+};
+
+function approvalRequestSelect(appIdParam: string) {
+  return {
+    sql: `SELECT r.id, r.app_id, r.release_id, r.requested_by_actor, r.requested_by_token_id,
+            r.expected_revision, r.expected_scopes, r.required_external_targets,
+            r.status, r.decided_by, r.decided_at, r.decision_note, r.created_at,
+            rel.status AS release_status,
+            b.version_name, b.version_code, b.changelog, rel.build_id,
+            ch.slug AS channel_slug
+     FROM release_approval_requests r
+     LEFT JOIN releases rel ON rel.id = r.release_id
+     LEFT JOIN builds b ON b.id = rel.build_id
+     LEFT JOIN channels ch ON ch.id = rel.channel_id
+     WHERE r.app_id = ${appIdParam}`,
+  };
+}
+
+export async function handleListReleaseApprovals(c: AdminContext) {
+  const appId = c.req.param("appId") ?? "";
+  const status = c.req.query("status") ?? "pending";
+  const sel = approvalRequestSelect("?1");
+  let sql = sel.sql;
+  const binds: (string)[] = [appId];
+  if (status !== "all") {
+    sql += " AND r.status = ?2";
+    binds.push(status);
+  }
+  sql += " ORDER BY r.created_at DESC";
+  const { results } = await c.env.DB.prepare(sql).bind(...binds).all<ApprovalRequestRow>();
+  return c.json({ app_id: appId, status, approvals: results });
+}
+
+function humanOnlyApprovalError(c: AdminContext) {
+  return c.json(
+    {
+      error: "human_approval_required",
+      code: "HUMAN_APPROVAL_REQUIRED",
+      next_action:
+        "Only a human (app admin or org admin) can approve or reject a release. " +
+        "Agent deploy tokens cannot decide approvals.",
+    },
+    403,
+  );
+}
+
+async function loadPendingApprovalRequest(c: AdminContext, appId: string, requestId: string) {
+  const sel = approvalRequestSelect("?1");
+  const row = await c.env.DB.prepare(`${sel.sql} AND r.id = ?2`)
+    .bind(appId, requestId)
+    .first<ApprovalRequestRow>();
+  return row;
+}
+
+export async function handleApproveReleaseApproval(c: AdminContext) {
+  const appId = c.req.param("appId") ?? "";
+  const requestId = c.req.param("requestId") ?? "";
+  if (currentDeployToken(c) !== null) return humanOnlyApprovalError(c);
+
+  const request = await loadPendingApprovalRequest(c, appId, requestId);
+  if (!request) return c.json({ error: "not found" }, 404);
+  if (request.status !== "pending") {
+    return c.json({ error: `approval request already ${request.status}`, code: "ALREADY_DECIDED" }, 409);
+  }
+  const release = await getReleaseForApp(c.env.DB, appId, request.release_id);
+  if (!release) return c.json({ error: "release not found" }, 404);
+  if (release.status !== "draft") {
+    return c.json({ error: `cannot approve a ${release.status} release`, code: "RELEASE_NOT_DRAFT" }, 409);
+  }
+
+  let expectedScopes: ReleaseScopeInput[];
+  try {
+    expectedScopes = JSON.parse(request.expected_scopes) as ReleaseScopeInput[];
+  } catch {
+    return c.json({ error: "stored approval request has invalid scopes" }, 500);
+  }
+  const requiredExternalTargets = request.required_external_targets
+    ? (JSON.parse(request.required_external_targets) as unknown)
+    : undefined;
+
+  const targetGateResult = await prepareExternalTargetGate(c, release, requiredExternalTargets);
+  if ("response" in targetGateResult) return targetGateResult.response;
+
+  // Re-execute the exact publish logic as the approving human, under the
+  // preconditions the agent originally requested.
+  const publishResponse = await executeReleasePublish(c, {
+    existing: release,
+    appId,
+    releaseId: request.release_id,
+    expectedRevision: request.expected_revision,
+    expectedScopes,
+    externalTargetGate: targetGateResult.plan,
+  });
+
+  if (publishResponse.status === 200) {
+    const now = Date.now();
+    const decided = await c.env.DB.prepare(
+      `UPDATE release_approval_requests
+       SET status = 'approved', decided_by = ?1, decided_at = ?2
+       WHERE id = ?3 AND status = 'pending'`,
+    )
+      .bind(currentActor(c), now, requestId)
+      .run();
+    if (Number(decided.meta.changes ?? 0) !== 1) {
+      return c.json({ error: "approval request changed before it could be recorded", code: "ALREADY_DECIDED" }, 409);
+    }
+  }
+  // On a non-200 (e.g. 409 revision/scope/target conflict) the request stays
+  // pending so the approver can see the conflict and retry or reject.
+  return publishResponse;
+}
+
+export async function handleRejectReleaseApproval(c: AdminContext) {
+  const appId = c.req.param("appId") ?? "";
+  const requestId = c.req.param("requestId") ?? "";
+  if (currentDeployToken(c) !== null) return humanOnlyApprovalError(c);
+
+  const request = await loadPendingApprovalRequest(c, appId, requestId);
+  if (!request) return c.json({ error: "not found" }, 404);
+  if (request.status !== "pending") {
+    return c.json({ error: `approval request already ${request.status}`, code: "ALREADY_DECIDED" }, 409);
+  }
+  const body = (await c.req.json().catch(() => ({}))) as { note?: string };
+  const now = Date.now();
+  const decided = await c.env.DB.prepare(
+    `UPDATE release_approval_requests
+     SET status = 'rejected', decided_by = ?1, decided_at = ?2, decision_note = ?3
+     WHERE id = ?4 AND status = 'pending'`,
+  )
+    .bind(currentActor(c), now, body.note ?? null, requestId)
+    .run();
+  if (Number(decided.meta.changes ?? 0) !== 1) {
+    return c.json({ error: "approval request changed before it could be recorded", code: "ALREADY_DECIDED" }, 409);
+  }
+  const updated = await loadPendingApprovalRequest(c, appId, requestId);
+  return c.json({ ok: true, approval: updated });
+}
+
 export async function handlePublishRelease(c: AdminContext) {
   const appId = c.req.param("appId") ?? "";
   const releaseId = c.req.param("releaseId") ?? "";
@@ -1514,6 +1740,37 @@ export async function handlePublishRelease(c: AdminContext) {
     return c.json({ error: `cannot publish ${existing.status} release` }, 409);
   }
 
+  // Per-app "must be approved by a human" gate (task #239). When the app has it
+  // on and the caller is an agent (app deploy token, no human admin session), a
+  // draft publish is NOT executed: a durable pending approval request is
+  // recorded and the agent gets 202 pending_approval. Human-initiated publishes
+  // (admin session) and publishes of already-active releases are unaffected.
+  if (existing.status === "draft") {
+    const requiresApproval = await appRequiresHumanApproval(c.env.DB, appId);
+    const isAgent = currentDeployToken(c) !== null && currentAccount(c) === null;
+    if (requiresApproval && isAgent) {
+      const request = await createOrGetPendingApprovalRequest(c, {
+        appId,
+        releaseId,
+        expectedRevision,
+        expectedScopes,
+        requiredExternalTargets: publishBody.required_external_targets,
+      });
+      return c.json(
+        {
+          status: "pending_approval",
+          approval_request_id: request.id,
+          release_id: releaseId,
+          already_pending: !request.created,
+          next_action:
+            "This app requires a human to approve agent-initiated releases. " +
+            "An app admin or org admin must approve it from the admin console.",
+        },
+        202,
+      );
+    }
+  }
+
   const targetGateResult = await prepareExternalTargetGate(
     c,
     existing,
@@ -1562,6 +1819,34 @@ export async function handlePublishRelease(c: AdminContext) {
     return c.json(withReleaseNotes(active ?? existing));
   }
 
+  return executeReleasePublish(c, {
+    existing,
+    appId,
+    releaseId,
+    expectedRevision,
+    expectedScopes,
+    externalTargetGate,
+  });
+}
+
+// Executes the publish (conditional audit + optional external-target freeze +
+// supersede + activation, then webhook/delta side effects) and returns the
+// response. Shared by the direct publish path (handlePublishRelease) and the
+// human-approval path (handleApproveReleaseApproval) so an approved agent
+// request re-runs the exact same, already-reviewed publish logic under the
+// approving human's identity and the preconditions the agent originally sent.
+async function executeReleasePublish(
+  c: AdminContext,
+  args: {
+    existing: ReleaseRow;
+    appId: string;
+    releaseId: string;
+    expectedRevision: number;
+    expectedScopes: ReleaseScopeInput[];
+    externalTargetGate: ExternalTargetGatePlan | null;
+  },
+): Promise<Response> {
+  const { existing, appId, releaseId, expectedRevision, expectedScopes, externalTargetGate } = args;
   const now = Date.now();
   const auditId = crypto.randomUUID();
   const auditPayload = {

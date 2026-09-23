@@ -537,6 +537,7 @@ export async function handleGetApp(c: Context<{ Bindings: Env }>) {
     `SELECT a.id, a.org_id, a.slug, a.name, a.platform, a.description,
             a.archived, a.archived_at, a.created_at, a.public_history,
             a.delta_updates_enabled,
+            a.release_requires_human_approval,
             a.default_channel_id,
             ch.slug AS default_channel_slug,
             ch.name AS default_channel_name
@@ -555,6 +556,7 @@ export async function handleGetApp(c: Context<{ Bindings: Env }>) {
     created_at: number;
     public_history: number;
     delta_updates_enabled: number;
+    release_requires_human_approval: number;
     default_channel_id: string | null;
     default_channel_slug: string | null;
     default_channel_name: string | null;
@@ -571,6 +573,7 @@ export async function handleUpdateApp(c: AdminContext) {
     default_channel_id?: string | null;
     public_history?: boolean;
     delta_updates_enabled?: boolean;
+    release_requires_human_approval?: boolean;
   };
   // Confirm app exists.
   const existing = await c.env.DB.prepare(
@@ -598,6 +601,10 @@ export async function handleUpdateApp(c: AdminContext) {
   if (body.delta_updates_enabled !== undefined) {
     updates.push("delta_updates_enabled = ?");
     binds.push(body.delta_updates_enabled ? 1 : 0);
+  }
+  if (body.release_requires_human_approval !== undefined) {
+    updates.push("release_requires_human_approval = ?");
+    binds.push(body.release_requires_human_approval ? 1 : 0);
   }
   if (body.default_channel_id !== undefined) {
     if (body.default_channel_id === null) {

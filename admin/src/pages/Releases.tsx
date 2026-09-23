@@ -19,10 +19,14 @@ import {
   listDeviceGroups,
   listProductTypes,
   listReleases,
+  listReleaseApprovals,
+  approveReleaseApproval,
+  rejectReleaseApproval,
   publishRelease,
   rollbackRelease,
   updateRelease,
   type Release,
+  type ReleaseApproval,
   type ReleaseScope,
   type ProductType,
 } from "../lib/api";
@@ -194,6 +198,81 @@ function productTypeMatchesPlatform(productType: ProductType, appPlatform?: stri
   return productType.name.includes(platform) || productType.parser_kind.includes(platform);
 }
 
+function PendingReleaseApprovals({ appId }: { appId: string }) {
+  const qc = useQueryClient();
+  const toast = useToast();
+  const approvals = useQuery({
+    queryKey: ["release-approvals", appId],
+    queryFn: () => listReleaseApprovals(appId, "pending"),
+  });
+  const mutation = useMutation({
+    mutationFn: ({ requestId, action }: { requestId: string; action: "approve" | "reject" }) =>
+      action === "approve" ? approveReleaseApproval(appId, requestId) : rejectReleaseApproval(appId, requestId),
+    onSuccess: (_data, vars) => {
+      toast.show({
+        kind: "success",
+        title: vars.action === "approve" ? "Release approved and published" : "Release request rejected",
+      });
+      qc.invalidateQueries({ queryKey: ["release-approvals", appId] });
+      qc.invalidateQueries({ queryKey: ["releases", appId] });
+    },
+    onError: (e) =>
+      toast.show({ kind: "error", title: "Action failed", description: (e as Error).message }),
+  });
+  const items = approvals.data?.approvals ?? [];
+  return (
+    <div className="card p-3! mb-4">
+      <h3 className="text-sm font-semibold mb-2">Pending release approvals</h3>
+      {approvals.isLoading ? (
+        <Skeleton className="h-10" />
+      ) : items.length === 0 ? (
+        <div className="text-xs text-slate-500">No releases waiting for approval.</div>
+      ) : (
+        <ul className="space-y-2">
+          {items.map((a: ReleaseApproval) => (
+            <li
+              key={a.id}
+              className="rounded-sm border border-slate-200 p-2 flex items-start justify-between gap-3"
+            >
+              <div className="text-sm min-w-0">
+                <div className="font-medium">
+                  {a.version_name ?? "?"}{" "}
+                  <span className="text-xs text-slate-500">
+                    (code {a.version_code ?? "?"}) · {a.channel_slug ?? ""}
+                  </span>
+                </div>
+                {a.changelog && (
+                  <div className="text-xs text-slate-600 whitespace-pre-wrap">{a.changelog}</div>
+                )}
+                <div className="text-xs text-slate-500 mt-1">
+                  Requested by {a.requested_by_actor} · {new Date(a.created_at).toLocaleString()}
+                </div>
+              </div>
+              <div className="flex gap-2 shrink-0">
+                <Button
+                  variant="primary"
+                  className="text-sm"
+                  disabled={mutation.isPending}
+                  onClick={() => mutation.mutate({ requestId: a.id, action: "approve" })}
+                >
+                  Approve
+                </Button>
+                <Button
+                  className="text-sm"
+                  disabled={mutation.isPending}
+                  onClick={() => mutation.mutate({ requestId: a.id, action: "reject" })}
+                >
+                  Reject
+                </Button>
+              </div>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
 export function Releases({ appId }: { appId: string }) {
   const qc = useQueryClient();
   const toast = useToast();
@@ -257,6 +336,11 @@ export function Releases({ appId }: { appId: string }) {
           value={channels.data?.channels.length ?? 0}
         />
       </div>
+
+      {/* Release human-approval queue (task #239) — only when the gate is on */}
+      {Boolean(thisApp?.release_requires_human_approval) && (
+        <PendingReleaseApprovals appId={appId} />
+      )}
 
       {/* Filters */}
       <div className="card p-3! mb-4 flex flex-wrap gap-3 items-center">
