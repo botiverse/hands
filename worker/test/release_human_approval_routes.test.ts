@@ -472,4 +472,42 @@ describe("release human-approval gate (task #239)", () => {
     expect(row.status).toBe("pending");
     expect(row.decided_by).toBeNull();
   });
+
+  it("approve-then-reject is mutually exclusive: only {active+approved} or {draft+rejected}", async () => {
+    const { sqlite, env } = environment();
+    seedBase(sqlite, { gated: true });
+    seedDraftRelease(sqlite, "relM");
+    await seedAgentToken(sqlite, AGENT);
+    await seedHumanSession(sqlite, HUMAN);
+    const a = app();
+
+    const held = await a.request(
+      "/api/apps/app1/releases/relM/publish",
+      { method: "POST", headers: { authorization: `Bearer ${AGENT}`, "content-type": "application/json" }, body: "{}" },
+      env,
+      EXEC,
+    );
+    const { approval_request_id: reqId } = (await held.json()) as any;
+
+    // Approve wins first: {active + approved}.
+    const approve = await a.request(
+      `/api/apps/app1/release-approvals/${reqId}/approve`,
+      { method: "POST", headers: { authorization: `Bearer ${HUMAN}`, "content-type": "application/json" }, body: "{}" },
+      env,
+      EXEC,
+    );
+    expect(approve.status).toBe(200);
+    expect(releaseStatus(sqlite, "relM")).toBe("active");
+    // A late reject cannot undo an approved+published decision.
+    const reject = await a.request(
+      `/api/apps/app1/release-approvals/${reqId}/reject`,
+      { method: "POST", headers: { authorization: `Bearer ${HUMAN}`, "content-type": "application/json" }, body: "{}" },
+      env,
+      EXEC,
+    );
+    expect(reject.status).toBe(409);
+    const row = sqlite.prepare("SELECT status FROM release_approval_requests WHERE id = ?").get(reqId) as any;
+    expect(row.status).toBe("approved");
+    expect(releaseStatus(sqlite, "relM")).toBe("active");
+  });
 });

@@ -348,6 +348,11 @@ function conditionalReleaseAuditStatement(
     expectedRevision: number;
     expectedScopes: ReleaseScopeInput[];
     externalTargetGate?: ExternalTargetGatePlan | null;
+    // Approval-driven publish (task #239): when set, the audit receipt — the
+    // transactional gate for activation/supersede/freeze — is additionally
+    // conditional on the approval request still being pending, so the decision
+    // and the publish mutation commit atomically in the same D1 batch.
+    approvalClaim?: { requestId: string } | null;
   },
 ): D1PreparedStatement {
   const binds: (string | number | null)[] = [];
@@ -399,6 +404,17 @@ function conditionalReleaseAuditStatement(
            ${targetPredicates.map((predicate) => `AND ${predicate}`).join("\n           ")}
        )`;
   }
+  // Approval-driven publishes only produce an audit receipt (and therefore any
+  // publish effect) while the request is still pending. A concurrent reject makes
+  // this SELECT return no rows, so the whole batch is a no-op.
+  let approvalPredicate = "";
+  if (options.approvalClaim) {
+    const requestIdParam = bind(options.approvalClaim.requestId);
+    approvalPredicate = `AND EXISTS (
+         SELECT 1 FROM release_approval_requests q
+         WHERE q.id = ${requestIdParam} AND q.status = 'pending'
+       )`;
+  }
 
   return db.prepare(
     `INSERT INTO audit_logs (id, app_id, action, actor, payload, created_at)
@@ -409,7 +425,8 @@ function conditionalReleaseAuditStatement(
        AND ${rolloutPredicate}
        AND (SELECT COUNT(*) FROM release_scopes s WHERE s.release_id = r.id) = ${scopeCountParam}
        ${scopePredicates.map((predicate) => `AND ${predicate}`).join("\n       ")}
-       ${externalTargetPredicate}`,
+       ${externalTargetPredicate}
+       ${approvalPredicate}`,
   ).bind(...binds);
 }
 
@@ -1675,47 +1692,23 @@ export async function handleApproveReleaseApproval(c: AdminContext) {
   const targetGateResult = await prepareExternalTargetGate(c, release, requiredExternalTargets);
   if ("response" in targetGateResult) return targetGateResult.response;
 
-  // Claim the pending request atomically BEFORE publishing. Only the claim
-  // winner proceeds; a concurrent reject (or double-approve) loses the claim and
-  // gets 409 without publishing. This removes the "published but record
-  // rejected" race the publish-then-record order allowed (task #239 review).
-  const now = Date.now();
-  const claimed = await c.env.DB.prepare(
-    `UPDATE release_approval_requests
-     SET status = 'approved', decided_by = ?1, decided_at = ?2
-     WHERE id = ?3 AND status = 'pending'`,
-  )
-    .bind(currentActor(c), now, requestId)
-    .run();
-  if (Number(claimed.meta.changes ?? 0) !== 1) {
-    return c.json({ error: "approval request already decided", code: "ALREADY_DECIDED" }, 409);
-  }
-
   // Re-execute the exact publish logic as the approving human, under the
-  // preconditions the agent originally requested.
-  const publishResponse = await executeReleasePublish(c, {
+  // preconditions the agent originally requested. The approval decision
+  // (pending -> approved) is committed in the SAME D1 batch as the publish
+  // mutation, gated by the same conditional audit receipt: either the request is
+  // still pending and both the decision and the publish apply, or a precondition
+  // fails and the whole batch is a no-op. No cross-transaction compensation, so
+  // no approved-but-draft / active-but-unapproved intermediate state is possible
+  // even across a crash (task #239 review, item 4).
+  return executeReleasePublish(c, {
     existing: release,
     appId,
     releaseId: request.release_id,
     expectedRevision: request.expected_revision,
     expectedScopes,
     externalTargetGate: targetGateResult.plan,
+    approvalClaim: { requestId, decidedBy: currentActor(c), decidedAt: Date.now() },
   });
-
-  if (publishResponse.status !== 200) {
-    // Publish did not take effect (revision/scope/target conflict). Revert our
-    // claim so the request returns to pending and the approver can retry; the
-    // release was not activated. The decided_at guard ensures we only revert our
-    // own claim, never another decider's.
-    await c.env.DB.prepare(
-      `UPDATE release_approval_requests
-       SET status = 'pending', decided_by = NULL, decided_at = NULL
-       WHERE id = ?1 AND status = 'approved' AND decided_at = ?2`,
-    )
-      .bind(requestId, now)
-      .run();
-  }
-  return publishResponse;
 }
 
 export async function handleRejectReleaseApproval(c: AdminContext) {
@@ -1916,9 +1909,14 @@ async function executeReleasePublish(
     expectedRevision: number;
     expectedScopes: ReleaseScopeInput[];
     externalTargetGate: ExternalTargetGatePlan | null;
+    // Approval-driven publish (task #239): when set, the approval decision
+    // (pending -> approved) is committed in the SAME D1 batch as the publish
+    // mutation, gated by the same conditional audit receipt. No cross-
+    // transaction compensation.
+    approvalClaim?: { requestId: string; decidedBy: string; decidedAt: number } | null;
   },
 ): Promise<Response> {
-  const { existing, appId, releaseId, expectedRevision, expectedScopes, externalTargetGate } = args;
+  const { existing, appId, releaseId, expectedRevision, expectedScopes, externalTargetGate, approvalClaim } = args;
   const now = Date.now();
   const auditId = crypto.randomUUID();
   const auditPayload = {
@@ -1927,12 +1925,17 @@ async function executeReleasePublish(
     expected_revision: expectedRevision,
     expected_scopes: expectedScopes,
     required_external_targets: externalTargetGate?.requiredTargets,
+    ...(approvalClaim ? { approval_request_id: approvalClaim.requestId } : {}),
   };
 
   // D1 batch is transactional. Every side effect is gated by the conditional
   // audit insert, whose SELECT re-checks draft state, exact stored scopes, and
   // the external target/freeze precondition. A stale preflight read therefore
-  // becomes a clean 409 with zero freeze, audit, fallback, or activation.
+  // becomes a clean 409 with zero freeze, audit, fallback, or activation. For an
+  // approval-driven publish the audit receipt is additionally conditional on the
+  // approval request still being pending, and the pending -> approved decision is
+  // a statement in this same batch — so the decision and the publish effect commit
+  // atomically (no intermediate approved-but-draft / active-but-unapproved state).
   const statements: D1PreparedStatement[] = [
     conditionalReleaseAuditStatement(c.env.DB, {
       auditId,
@@ -1945,8 +1948,26 @@ async function executeReleasePublish(
       expectedRevision,
       expectedScopes,
       externalTargetGate,
+      approvalClaim: approvalClaim ? { requestId: approvalClaim.requestId } : null,
     }),
   ];
+  let approvalResultIndex: number | null = null;
+  if (approvalClaim) {
+    approvalResultIndex = statements.length;
+    // Gated on the same audit receipt as activation: the decision only lands if
+    // the publish preconditions held (audit row inserted). Otherwise this is a
+    // no-op and the request stays pending — never approved-but-draft.
+    statements.push(
+      c.env.DB
+        .prepare(
+          `UPDATE release_approval_requests
+           SET status = 'approved', decided_by = ?1, decided_at = ?2
+           WHERE id = ?3 AND status = 'pending'
+             AND EXISTS (SELECT 1 FROM audit_logs WHERE id = ?4)`,
+        )
+        .bind(approvalClaim.decidedBy, approvalClaim.decidedAt, approvalClaim.requestId, auditId),
+    );
+  }
   let freezeResultIndex: number | null = null;
   if (externalTargetGate?.freezesBuild) {
     freezeResultIndex = statements.length;
@@ -1996,7 +2017,22 @@ async function executeReleasePublish(
   const batchResults = await c.env.DB.batch(statements);
   if (Number(batchResults[0]?.meta?.changes ?? 0) !== 1 ||
       Number(batchResults[activationResultIndex]?.meta?.changes ?? 0) !== 1 ||
+      (approvalResultIndex !== null && Number(batchResults[approvalResultIndex]?.meta?.changes ?? 0) !== 1) ||
       (freezeResultIndex !== null && Number(batchResults[freezeResultIndex]?.meta?.changes ?? 0) !== 1)) {
+    // Approval-driven conflict: if the request is no longer pending (a concurrent
+    // reject / double-approve won the decision), report that specifically. The
+    // batch was atomic, so nothing was published and the request keeps its
+    // winner's decision.
+    if (approvalClaim) {
+      const req = await c.env.DB.prepare(
+        "SELECT status FROM release_approval_requests WHERE id = ?1",
+      )
+        .bind(approvalClaim.requestId)
+        .first<{ status: string }>();
+      if (req && req.status !== "pending") {
+        return c.json({ error: `approval request already ${req.status}`, code: "ALREADY_DECIDED" }, 409);
+      }
+    }
     const currentRevision = await currentReleaseRevision(c.env.DB, appId, releaseId);
     if (currentRevision !== expectedRevision) {
       return releaseRevisionConflictResponse(c, expectedRevision, currentRevision);
