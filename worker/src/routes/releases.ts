@@ -1234,6 +1234,22 @@ export async function handleCreateRelease(c: AdminContext) {
   const appId = c.req.param("appId") ?? "";
   const body = (await c.req.json()) as ReleaseInput;
   try {
+    // Agents (deploy tokens and agent-principal sessions) must not create an
+    // already-active release here — that would skip the publish choke point and,
+    // on gated apps, the human-approval gate (task #239). They create a draft and
+    // publish it; on gated apps that publish is held for a human to approve.
+    if (!isHumanCaller(c) && releaseStatus(body.status) === "active") {
+      return c.json(
+        {
+          error: "agent_cannot_create_active_release",
+          code: "AGENT_ACTIVE_RELEASE_FORBIDDEN",
+          next_action:
+            "Agents can only create draft releases. Create a draft, then publish it; " +
+            "on apps that require human approval the publish is held for a human to approve.",
+        },
+        403,
+      );
+    }
     const id = await createRelease(c.env.DB, appId, body, currentActor(c));
     const status = releaseStatus(body.status);
     // release:new fires only when the release is actually live; drafts get
@@ -1464,6 +1480,17 @@ async function appRequiresHumanApproval(db: D1Database, appId: string): Promise<
   return row?.release_requires_human_approval === 1;
 }
 
+// A "human" caller is a Raft account whose principal is a human. Both an app
+// deploy token (agent) and an agent-principal Raft session are NOT human
+// (task #239): the approval gate, and the approve/reject decisions, must be
+// exercised by a human. Checking only for a deploy token would let an
+// agent-principal session (which authenticates as an account) slip through.
+function isHumanCaller(c: AdminContext): boolean {
+  if (currentDeployToken(c) !== null) return false;
+  const account = currentAccount(c);
+  return account !== null && account.principal_type === "human";
+}
+
 type PendingApprovalRequest = { id: string; created: boolean };
 
 async function createOrGetPendingApprovalRequest(
@@ -1564,7 +1591,38 @@ export async function handleListReleaseApprovals(c: AdminContext) {
   }
   sql += " ORDER BY r.created_at DESC";
   const { results } = await c.env.DB.prepare(sql).bind(...binds).all<ApprovalRequestRow>();
-  return c.json({ app_id: appId, status, approvals: results });
+
+  // Artifact identity for the approval surface (task #239 review item 5): the
+  // approver must be able to confirm exactly what will be published, so each
+  // request carries its build's assets (kind/platform/arch/variant/filetype,
+  // hash, size, signature).
+  const { results: assetRows } = await c.env.DB.prepare(
+    `SELECT r.id AS release_id, ba.platform, ba.arch, ba.variant, ba.filetype,
+            ba.file_hash, ba.size_bytes, ba.artifact_kind
+     FROM build_assets ba
+     JOIN releases r ON r.build_id = ba.build_id
+     WHERE r.app_id = ?1
+     ORDER BY ba.created_at ASC`,
+  )
+    .bind(appId)
+    .all<{
+      release_id: string;
+      platform: string;
+      arch: string | null;
+      variant: string | null;
+      filetype: string;
+      file_hash: string;
+      size_bytes: number;
+      artifact_kind: string;
+    }>();
+  const assetsByRelease = new Map<string, typeof assetRows>();
+  for (const row of assetRows) {
+    const list = assetsByRelease.get(row.release_id) ?? [];
+    list.push(row);
+    assetsByRelease.set(row.release_id, list);
+  }
+  const approvals = results.map((r: ApprovalRequestRow) => ({ ...r, assets: assetsByRelease.get(r.release_id) ?? [] }));
+  return c.json({ app_id: appId, status, approvals });
 }
 
 function humanOnlyApprovalError(c: AdminContext) {
@@ -1574,7 +1632,7 @@ function humanOnlyApprovalError(c: AdminContext) {
       code: "HUMAN_APPROVAL_REQUIRED",
       next_action:
         "Only a human (app admin or org admin) can approve or reject a release. " +
-        "Agent deploy tokens cannot decide approvals.",
+        "Agent deploy tokens and agent-principal sessions cannot decide approvals.",
     },
     403,
   );
@@ -1591,7 +1649,7 @@ async function loadPendingApprovalRequest(c: AdminContext, appId: string, reques
 export async function handleApproveReleaseApproval(c: AdminContext) {
   const appId = c.req.param("appId") ?? "";
   const requestId = c.req.param("requestId") ?? "";
-  if (currentDeployToken(c) !== null) return humanOnlyApprovalError(c);
+  if (!isHumanCaller(c)) return humanOnlyApprovalError(c);
 
   const request = await loadPendingApprovalRequest(c, appId, requestId);
   if (!request) return c.json({ error: "not found" }, 404);
@@ -1617,6 +1675,22 @@ export async function handleApproveReleaseApproval(c: AdminContext) {
   const targetGateResult = await prepareExternalTargetGate(c, release, requiredExternalTargets);
   if ("response" in targetGateResult) return targetGateResult.response;
 
+  // Claim the pending request atomically BEFORE publishing. Only the claim
+  // winner proceeds; a concurrent reject (or double-approve) loses the claim and
+  // gets 409 without publishing. This removes the "published but record
+  // rejected" race the publish-then-record order allowed (task #239 review).
+  const now = Date.now();
+  const claimed = await c.env.DB.prepare(
+    `UPDATE release_approval_requests
+     SET status = 'approved', decided_by = ?1, decided_at = ?2
+     WHERE id = ?3 AND status = 'pending'`,
+  )
+    .bind(currentActor(c), now, requestId)
+    .run();
+  if (Number(claimed.meta.changes ?? 0) !== 1) {
+    return c.json({ error: "approval request already decided", code: "ALREADY_DECIDED" }, 409);
+  }
+
   // Re-execute the exact publish logic as the approving human, under the
   // preconditions the agent originally requested.
   const publishResponse = await executeReleasePublish(c, {
@@ -1628,28 +1702,26 @@ export async function handleApproveReleaseApproval(c: AdminContext) {
     externalTargetGate: targetGateResult.plan,
   });
 
-  if (publishResponse.status === 200) {
-    const now = Date.now();
-    const decided = await c.env.DB.prepare(
+  if (publishResponse.status !== 200) {
+    // Publish did not take effect (revision/scope/target conflict). Revert our
+    // claim so the request returns to pending and the approver can retry; the
+    // release was not activated. The decided_at guard ensures we only revert our
+    // own claim, never another decider's.
+    await c.env.DB.prepare(
       `UPDATE release_approval_requests
-       SET status = 'approved', decided_by = ?1, decided_at = ?2
-       WHERE id = ?3 AND status = 'pending'`,
+       SET status = 'pending', decided_by = NULL, decided_at = NULL
+       WHERE id = ?1 AND status = 'approved' AND decided_at = ?2`,
     )
-      .bind(currentActor(c), now, requestId)
+      .bind(requestId, now)
       .run();
-    if (Number(decided.meta.changes ?? 0) !== 1) {
-      return c.json({ error: "approval request changed before it could be recorded", code: "ALREADY_DECIDED" }, 409);
-    }
   }
-  // On a non-200 (e.g. 409 revision/scope/target conflict) the request stays
-  // pending so the approver can see the conflict and retry or reject.
   return publishResponse;
 }
 
 export async function handleRejectReleaseApproval(c: AdminContext) {
   const appId = c.req.param("appId") ?? "";
   const requestId = c.req.param("requestId") ?? "";
-  if (currentDeployToken(c) !== null) return humanOnlyApprovalError(c);
+  if (!isHumanCaller(c)) return humanOnlyApprovalError(c);
 
   const request = await loadPendingApprovalRequest(c, appId, requestId);
   if (!request) return c.json({ error: "not found" }, 404);
@@ -1747,7 +1819,7 @@ export async function handlePublishRelease(c: AdminContext) {
   // (admin session) and publishes of already-active releases are unaffected.
   if (existing.status === "draft") {
     const requiresApproval = await appRequiresHumanApproval(c.env.DB, appId);
-    const isAgent = currentDeployToken(c) !== null && currentAccount(c) === null;
+    const isAgent = !isHumanCaller(c);
     if (requiresApproval && isAgent) {
       const request = await createOrGetPendingApprovalRequest(c, {
         appId,

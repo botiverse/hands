@@ -198,7 +198,7 @@ function productTypeMatchesPlatform(productType: ProductType, appPlatform?: stri
   return productType.name.includes(platform) || productType.parser_kind.includes(platform);
 }
 
-function PendingReleaseApprovals({ appId }: { appId: string }) {
+function PendingReleaseApprovals({ appId, gateOn }: { appId: string; gateOn: boolean }) {
   const qc = useQueryClient();
   const toast = useToast();
   const approvals = useQuery({
@@ -220,6 +220,10 @@ function PendingReleaseApprovals({ appId }: { appId: string }) {
       toast.show({ kind: "error", title: "Action failed", description: (e as Error).message }),
   });
   const items = approvals.data?.approvals ?? [];
+  // The queue stays reachable even if the gate was switched off after requests
+  // were created — pending approvals hang until decided, so they must not vanish
+  // from the official entry point (task #239 review item 5).
+  if (!gateOn && !approvals.isLoading && items.length === 0) return null;
   return (
     <div className="card p-3! mb-4">
       <h3 className="text-sm font-semibold mb-2">Pending release approvals</h3>
@@ -243,6 +247,18 @@ function PendingReleaseApprovals({ appId }: { appId: string }) {
                 </div>
                 {a.changelog && (
                   <div className="text-xs text-slate-600 whitespace-pre-wrap">{a.changelog}</div>
+                )}
+                {a.assets.length > 0 && (
+                  <ul className="text-xs text-slate-600 mt-1 space-y-0.5">
+                    {a.assets.map((asset, i) => (
+                      <li key={i} className="font-mono break-all">
+                        {asset.artifact_kind} · {asset.platform}
+                        {asset.arch ? `/${asset.arch}` : ""}
+                        {asset.variant ? `/${asset.variant}` : ""} · {asset.filetype} ·{" "}
+                        {asset.size_bytes} B · sha256 {asset.file_hash.slice(0, 16)}…
+                      </li>
+                    ))}
+                  </ul>
                 )}
                 <div className="text-xs text-slate-500 mt-1">
                   Requested by {a.requested_by_actor} · {new Date(a.created_at).toLocaleString()}
@@ -337,10 +353,10 @@ export function Releases({ appId }: { appId: string }) {
         />
       </div>
 
-      {/* Release human-approval queue (task #239) — only when the gate is on */}
-      {Boolean(thisApp?.release_requires_human_approval) && (
-        <PendingReleaseApprovals appId={appId} />
-      )}
+      {/* Release human-approval queue (task #239). Mounted regardless of the
+          current toggle so already-pending requests stay reachable; the
+          component hides itself only when the gate is off and nothing is pending. */}
+      <PendingReleaseApprovals appId={appId} gateOn={Boolean(thisApp?.release_requires_human_approval)} />
 
       {/* Filters */}
       <div className="card p-3! mb-4 flex flex-wrap gap-3 items-center">

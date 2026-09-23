@@ -22,10 +22,12 @@ import { requireAppRole } from "../src/lib/permissions";
 import { sha256Hex } from "../src/lib/agent_login";
 import {
   handlePublishRelease,
+  handleCreateRelease,
   handleListReleaseApprovals,
   handleApproveReleaseApproval,
   handleRejectReleaseApproval,
 } from "../src/routes/releases";
+import { handleListApps } from "../src/routes/apps";
 
 const MIGRATION_DIR = fileURLToPath(new URL("../../migrations/sql/", import.meta.url));
 
@@ -107,6 +109,8 @@ async function seedAgentToken(sqlite: Database.Database, token: string) {
 function app() {
   const a = new Hono();
   const auth = authMiddleware as any;
+  a.get("/api/apps", auth, handleListApps as any);
+  a.post("/api/apps/:appId/releases", auth, requireAppRole("publisher") as any, handleCreateRelease as any);
   a.post("/api/apps/:appId/releases/:releaseId/publish", auth, requireAppRole("publisher") as any, handlePublishRelease as any);
   a.get("/api/apps/:appId/release-approvals", auth, requireAppRole("admin") as any, handleListReleaseApprovals as any);
   a.post("/api/apps/:appId/release-approvals/:requestId/approve", auth, requireAppRole("admin") as any, handleApproveReleaseApproval as any);
@@ -116,12 +120,27 @@ function app() {
 
 const HUMAN = "human-session-token";
 const AGENT = "qvdt_agentsecret";
+const AGENT_SESSION = "agent-session-token";
 // Hono's app.request throws when a handler touches c.executionCtx without one
 // being supplied; the publish path uses waitUntil for webhook/delta side effects.
 const EXEC = { waitUntil: () => undefined } as unknown as ExecutionContext;
 
 function releaseStatus(sqlite: Database.Database, releaseId: string): string {
   return (sqlite.prepare("SELECT status FROM releases WHERE id = ?").get(releaseId) as { status: string }).status;
+}
+
+// A Raft *agent-principal* account that is an org admin, authenticated via a
+// session (not a deploy token). This is the bypass the review caught: it has an
+// admin role but is NOT a human, so it must still be gated / barred from deciding.
+async function seedAgentAdminSession(sqlite: Database.Database, token: string) {
+  sqlite.exec(`INSERT INTO raft_accounts
+    (id, provider, provider_subject, server_id, server_slug, principal_type, server_role,
+     username, display_name, avatar_url, raw_profile, created_at, updated_at, last_login_at)
+    VALUES ('agentAcct','raft','agentSubj','srvH','srvH','agent',NULL,'agentbot','AgentBot',NULL,'{}',1,1,1)`);
+  sqlite.exec(`INSERT INTO org_members (org_id, account_id, org_role, joined_at) VALUES ('org1','agentAcct','admin',1)`);
+  const hash = await sha256Hex(token);
+  sqlite.exec(`INSERT INTO raft_sessions (id, account_id, token_hash, created_at, expires_at, last_seen_at)
+    VALUES ('sess-agent','agentAcct','${hash}',1,9999999999999,1)`);
 }
 
 describe("release human-approval gate (task #239)", () => {
@@ -299,5 +318,158 @@ describe("release human-approval gate (task #239)", () => {
       version_code: 1,
       channel_slug: "production",
     });
+    // Artifact identity is surfaced for the approver (task #239 review item 5).
+    expect(Array.isArray(body.approvals[0].assets)).toBe(true);
+  });
+
+  it("listApps returns release_requires_human_approval so the toggle/queue can read it", async () => {
+    const { sqlite, env } = environment();
+    seedBase(sqlite, { gated: true });
+    await seedHumanSession(sqlite, HUMAN);
+    const res = await app().request("/api/apps", { method: "GET", headers: { authorization: `Bearer ${HUMAN}` } }, env, EXEC);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as any;
+    const app1 = body.apps.find((a: any) => a.id === "app1");
+    expect(app1.release_requires_human_approval).toBe(1);
+  });
+
+  it("an agent-principal session (org admin) is still gated on publish", async () => {
+    const { sqlite, env } = environment();
+    seedBase(sqlite, { gated: true });
+    seedDraftRelease(sqlite, "relAS");
+    await seedAgentAdminSession(sqlite, AGENT_SESSION);
+
+    const res = await app().request(
+      "/api/apps/app1/releases/relAS/publish",
+      { method: "POST", headers: { authorization: `Bearer ${AGENT_SESSION}`, "content-type": "application/json" }, body: "{}" },
+      env,
+      EXEC,
+    );
+    // Not a human => held for approval, NOT published directly.
+    expect(res.status).toBe(202);
+    expect(releaseStatus(sqlite, "relAS")).toBe("draft");
+  });
+
+  it("an agent-principal session cannot approve or reject", async () => {
+    const { sqlite, env } = environment();
+    seedBase(sqlite, { gated: true });
+    seedDraftRelease(sqlite, "relAD");
+    await seedAgentToken(sqlite, AGENT);
+    await seedAgentAdminSession(sqlite, AGENT_SESSION);
+    const a = app();
+
+    const held = await a.request(
+      "/api/apps/app1/releases/relAD/publish",
+      { method: "POST", headers: { authorization: `Bearer ${AGENT}`, "content-type": "application/json" }, body: "{}" },
+      env,
+      EXEC,
+    );
+    const { approval_request_id: reqId } = (await held.json()) as any;
+
+    const approve = await a.request(
+      `/api/apps/app1/release-approvals/${reqId}/approve`,
+      { method: "POST", headers: { authorization: `Bearer ${AGENT_SESSION}`, "content-type": "application/json" }, body: "{}" },
+      env,
+      EXEC,
+    );
+    expect(approve.status).toBe(403);
+    const reject = await a.request(
+      `/api/apps/app1/release-approvals/${reqId}/reject`,
+      { method: "POST", headers: { authorization: `Bearer ${AGENT_SESSION}`, "content-type": "application/json" }, body: "{}" },
+      env,
+      EXEC,
+    );
+    expect(reject.status).toBe(403);
+    // Untouched: still pending, still draft.
+    const row = sqlite.prepare("SELECT status FROM release_approval_requests WHERE id = ?").get(reqId) as any;
+    expect(row.status).toBe("pending");
+    expect(releaseStatus(sqlite, "relAD")).toBe("draft");
+  });
+
+  it("a deploy token cannot create an already-active release (gate bypass)", async () => {
+    const { sqlite, env } = environment();
+    seedBase(sqlite, { gated: true });
+    await seedAgentToken(sqlite, AGENT);
+
+    const res = await app().request(
+      "/api/apps/app1/releases",
+      {
+        method: "POST",
+        headers: { authorization: `Bearer ${AGENT}`, "content-type": "application/json" },
+        body: JSON.stringify({ build_id: "b-x", channel_id: "ch1", status: "active" }),
+      },
+      env,
+      EXEC,
+    );
+    expect(res.status).toBe(403);
+    const body = (await res.json()) as any;
+    expect(body.code).toBe("AGENT_ACTIVE_RELEASE_FORBIDDEN");
+    const count = sqlite.prepare("SELECT COUNT(*) n FROM releases").get() as { n: number };
+    expect(count.n).toBe(0);
+  });
+
+  it("approve after the request was already rejected loses the claim (409, no publish)", async () => {
+    const { sqlite, env } = environment();
+    seedBase(sqlite, { gated: true });
+    seedDraftRelease(sqlite, "relC");
+    await seedAgentToken(sqlite, AGENT);
+    await seedHumanSession(sqlite, HUMAN);
+    const a = app();
+
+    const held = await a.request(
+      "/api/apps/app1/releases/relC/publish",
+      { method: "POST", headers: { authorization: `Bearer ${AGENT}`, "content-type": "application/json" }, body: "{}" },
+      env,
+      EXEC,
+    );
+    const { approval_request_id: reqId } = (await held.json()) as any;
+    await a.request(
+      `/api/apps/app1/release-approvals/${reqId}/reject`,
+      { method: "POST", headers: { authorization: `Bearer ${HUMAN}`, "content-type": "application/json" }, body: "{}" },
+      env,
+      EXEC,
+    );
+    const approve = await a.request(
+      `/api/apps/app1/release-approvals/${reqId}/approve`,
+      { method: "POST", headers: { authorization: `Bearer ${HUMAN}`, "content-type": "application/json" }, body: "{}" },
+      env,
+      EXEC,
+    );
+    expect(approve.status).toBe(409);
+    expect(releaseStatus(sqlite, "relC")).toBe("draft");
+    const row = sqlite.prepare("SELECT status FROM release_approval_requests WHERE id = ?").get(reqId) as any;
+    expect(row.status).toBe("rejected");
+  });
+
+  it("approve reverts to pending when the publish precondition no longer holds", async () => {
+    const { sqlite, env } = environment();
+    seedBase(sqlite, { gated: true });
+    seedDraftRelease(sqlite, "relV");
+    await seedAgentToken(sqlite, AGENT);
+    await seedHumanSession(sqlite, HUMAN);
+    const a = app();
+
+    const held = await a.request(
+      "/api/apps/app1/releases/relV/publish",
+      { method: "POST", headers: { authorization: `Bearer ${AGENT}`, "content-type": "application/json" }, body: "{}" },
+      env,
+      EXEC,
+    );
+    const { approval_request_id: reqId } = (await held.json()) as any;
+    // The release's revision moves after the request was captured, so the stored
+    // expected_revision no longer matches at approve time.
+    sqlite.exec(`UPDATE releases SET revision = 1 WHERE id = 'relV'`);
+
+    const approve = await a.request(
+      `/api/apps/app1/release-approvals/${reqId}/approve`,
+      { method: "POST", headers: { authorization: `Bearer ${HUMAN}`, "content-type": "application/json" }, body: "{}" },
+      env,
+      EXEC,
+    );
+    expect(approve.status).toBe(409); // revision conflict surfaced to the approver
+    expect(releaseStatus(sqlite, "relV")).toBe("draft"); // nothing activated
+    const row = sqlite.prepare("SELECT status, decided_by FROM release_approval_requests WHERE id = ?").get(reqId) as any;
+    expect(row.status).toBe("pending");
+    expect(row.decided_by).toBeNull();
   });
 });

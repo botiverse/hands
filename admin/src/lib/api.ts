@@ -1942,6 +1942,15 @@ export interface ReleaseApproval {
   changelog: string | null;
   build_id: string | null;
   channel_slug: string | null;
+  assets: {
+    platform: string;
+    arch: string | null;
+    variant: string | null;
+    filetype: string;
+    file_hash: string;
+    size_bytes: number;
+    artifact_kind: string;
+  }[];
 }
 
 export const listReleaseApprovals = (appId: string, status = "pending") =>
