@@ -198,7 +198,7 @@ function productTypeMatchesPlatform(productType: ProductType, appPlatform?: stri
   return productType.name.includes(platform) || productType.parser_kind.includes(platform);
 }
 
-function PendingReleaseApprovals({ appId, gateOn }: { appId: string; gateOn: boolean }) {
+export function PendingReleaseApprovals({ appId, gateOn }: { appId: string; gateOn: boolean }) {
   const qc = useQueryClient();
   const toast = useToast();
   const approvals = useQuery({
@@ -262,14 +262,30 @@ function PendingReleaseApprovals({ appId, gateOn }: { appId: string; gateOn: boo
                 )}
                 {(() => {
                   // The conditions the approver is signing off on (task #239 review).
-                  let scopes: { scope_type: string; scope_value: string }[] = [];
-                  let targets: string[] = [];
-                  try {
-                    scopes = JSON.parse(a.expected_scopes);
-                  } catch {}
-                  try {
-                    targets = a.required_external_targets ? JSON.parse(a.required_external_targets) : [];
-                  } catch {}
+                  // Guard the parsed values are arrays with the expected item
+                  // shape — a malformed stored value must not break the card.
+                  const parseScopes = (): { scope_type: string; scope_value: string }[] => {
+                    try {
+                      const v = JSON.parse(a.expected_scopes);
+                      return Array.isArray(v)
+                        ? v.filter(
+                            (s) => s && typeof s.scope_type === "string" && typeof s.scope_value === "string",
+                          )
+                        : [];
+                    } catch {
+                      return [];
+                    }
+                  };
+                  const parseTargets = (): string[] => {
+                    try {
+                      const v = a.required_external_targets ? JSON.parse(a.required_external_targets) : [];
+                      return Array.isArray(v) ? v.filter((t) => typeof t === "string") : [];
+                    } catch {
+                      return [];
+                    }
+                  };
+                  const scopes = parseScopes();
+                  const targets = parseTargets();
                   return (
                     <div className="text-xs text-slate-600 mt-1 flex flex-wrap items-center gap-1">
                       <span className="text-slate-500">Publishes to</span>

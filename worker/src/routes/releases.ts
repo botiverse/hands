@@ -1871,6 +1871,20 @@ export async function handlePublishRelease(c: AdminContext) {
     return c.json({ error: `cannot publish ${existing.status} release` }, 409);
   }
 
+  // Validate + plan the external-target contract BEFORE any approval hold,
+  // running the same read-only check the direct publish runs (task #239 review):
+  // an invalid intent returns the original 400/409 with zero pending rows, and a
+  // valid intent persists only the canonical target set. prepareExternalTargetGate
+  // is read-only (SELECTs only); the freeze write still happens inside
+  // executeReleasePublish when the publish actually runs, so nothing freezes early.
+  const targetGateResult = await prepareExternalTargetGate(
+    c,
+    existing,
+    publishBody.required_external_targets,
+  );
+  if ("response" in targetGateResult) return targetGateResult.response;
+  const externalTargetGate = targetGateResult.plan;
+
   // Per-app "must be approved by a human" gate (task #239). When the app has it
   // on and the caller is an agent (app deploy token, no human admin session), a
   // draft publish is NOT executed: a durable pending approval request is
@@ -1885,7 +1899,8 @@ export async function handlePublishRelease(c: AdminContext) {
         releaseId,
         expectedRevision,
         expectedScopes,
-        requiredExternalTargets: publishBody.required_external_targets,
+        // persist the canonical target set the gate produced, not the raw body value
+        requiredExternalTargets: externalTargetGate ? externalTargetGate.requiredTargets : undefined,
       });
       if ("conflict" in request) {
         return c.json(
@@ -1913,14 +1928,6 @@ export async function handlePublishRelease(c: AdminContext) {
       );
     }
   }
-
-  const targetGateResult = await prepareExternalTargetGate(
-    c,
-    existing,
-    publishBody.required_external_targets,
-  );
-  if ("response" in targetGateResult) return targetGateResult.response;
-  const externalTargetGate = targetGateResult.plan;
 
   if (existing.status === "active") {
     if (externalTargetGate?.freezesBuild) {

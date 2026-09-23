@@ -93,6 +93,27 @@ function seedDraftRelease(sqlite: Database.Database, releaseId: string) {
     VALUES ('s-${releaseId}','${releaseId}','full','all',1)`);
 }
 
+// A real external (artifact_mode='external', product_type='cli-binary') draft
+// release with two declared build targets. required_external_targets is
+// meaningful only here — the gate validates it against the declared set and
+// freezes it at publish. Internal builds reject any required_external_targets.
+function seedExternalDraftRelease(sqlite: Database.Database, releaseId: string) {
+  const buildId = `b-${releaseId}`;
+  sqlite.exec(`INSERT INTO builds
+    (id, app_id, channel_id, product_type, release_type, version_name, version_code, source, status, artifact_mode, created_at, updated_at)
+    VALUES ('${buildId}','app1','ch1','cli-binary','stable','2.0.0',2000000,'external','succeeded','external',1,1)`);
+  for (const target of ["darwin-arm64", "linux-x64"]) {
+    sqlite.exec(`INSERT INTO external_build_targets
+      (id, app_id, build_id, version_name, target, source_url, raw_sha256, raw_size_bytes, created_at, updated_at)
+      VALUES ('t-${releaseId}-${target}','app1','${buildId}','2.0.0','${target}','https://cdn.test/2.0.0/${target}','${"a".repeat(64)}',100,1,1)`);
+  }
+  sqlite.exec(`INSERT INTO releases
+    (id, app_id, build_id, channel_id, product_type, release_type, created_by, status, revision, created_at, updated_at)
+    VALUES ('${releaseId}','app1','${buildId}','ch1','cli-binary','stable','agent','draft',0,1,1)`);
+  sqlite.exec(`INSERT INTO release_scopes (id, release_id, scope_type, scope_value, created_at)
+    VALUES ('s-${releaseId}','${releaseId}','full','all',1)`);
+}
+
 async function seedHumanSession(sqlite: Database.Database, token: string) {
   const hash = await sha256Hex(token);
   sqlite.exec(`INSERT INTO raft_sessions (id, account_id, token_hash, created_at, expires_at, last_seen_at)
@@ -511,26 +532,27 @@ describe("release human-approval gate (task #239)", () => {
     expect(releaseStatus(sqlite, "relM")).toBe("active");
   });
 
-  it("re-requesting the same intent is idempotent (same request id)", async () => {
+  it("re-requesting the same external-target intent is idempotent (order-insensitive, same id)", async () => {
     const { sqlite, env } = environment();
     seedBase(sqlite, { gated: true });
-    seedDraftRelease(sqlite, "relI");
+    seedExternalDraftRelease(sqlite, "relI");
     await seedAgentToken(sqlite, AGENT);
     const a = app();
 
-    const publish = () =>
-      a.request(
-        "/api/apps/app1/releases/relI/publish",
-        {
-          method: "POST",
-          headers: { authorization: `Bearer ${AGENT}`, "content-type": "application/json" },
-          body: JSON.stringify({ required_external_targets: ["darwin-arm64", "linux-x64"] }),
-        },
-        env,
-        EXEC,
-      );
-    const first = (await (await publish()).json()) as any;
-    // Order-insensitive: same set in a different order is the SAME intent.
+    const first = await a.request(
+      "/api/apps/app1/releases/relI/publish",
+      {
+        method: "POST",
+        headers: { authorization: `Bearer ${AGENT}`, "content-type": "application/json" },
+        body: JSON.stringify({ required_external_targets: ["darwin-arm64", "linux-x64"] }),
+      },
+      env,
+      EXEC,
+    );
+    expect(first.status).toBe(202);
+    const { approval_request_id: reqId } = (await first.json()) as any;
+
+    // Same target set, different order → identical intent → reuse the request.
     const reorder = await a.request(
       "/api/apps/app1/releases/relI/publish",
       {
@@ -541,9 +563,9 @@ describe("release human-approval gate (task #239)", () => {
       env,
       EXEC,
     );
-    const second = (await reorder.json()) as any;
     expect(reorder.status).toBe(202);
-    expect(second.approval_request_id).toBe(first.approval_request_id);
+    const second = (await reorder.json()) as any;
+    expect(second.approval_request_id).toBe(reqId);
     expect(second.already_pending).toBe(true);
     const pending = sqlite.prepare(
       "SELECT COUNT(*) n FROM release_approval_requests WHERE release_id='relI' AND status='pending'",
@@ -551,19 +573,20 @@ describe("release human-approval gate (task #239)", () => {
     expect(pending.n).toBe(1);
   });
 
-  it("re-requesting with different conditions conflicts and leaves the pending request untouched", async () => {
+  it("a valid re-request under a drifted target contract conflicts and leaves the old pending untouched", async () => {
     const { sqlite, env } = environment();
     seedBase(sqlite, { gated: true });
-    seedDraftRelease(sqlite, "relD");
+    seedExternalDraftRelease(sqlite, "relD");
     await seedAgentToken(sqlite, AGENT);
     const a = app();
 
+    // First request persists the canonical 2-target set as its intent.
     const first = await a.request(
       "/api/apps/app1/releases/relD/publish",
       {
         method: "POST",
         headers: { authorization: `Bearer ${AGENT}`, "content-type": "application/json" },
-        body: JSON.stringify({ required_external_targets: ["darwin-arm64"] }),
+        body: JSON.stringify({ required_external_targets: ["darwin-arm64", "linux-x64"] }),
       },
       env,
       EXEC,
@@ -571,40 +594,43 @@ describe("release human-approval gate (task #239)", () => {
     expect(first.status).toBe(202);
     const { approval_request_id: reqId } = (await first.json()) as any;
     const before = sqlite
-      .prepare("SELECT status, expected_scopes, required_external_targets FROM release_approval_requests WHERE id = ?")
+      .prepare("SELECT status, required_external_targets FROM release_approval_requests WHERE id = ?")
       .get(reqId) as any;
 
-    // Change only required_external_targets → different publish intent → conflict.
+    // The declared contract drifts (a third target appears). A new request that
+    // now matches the *new* contract is itself valid, but its intent differs from
+    // the stored pending → 409, not a silent reuse of the stale request.
+    sqlite.exec(`INSERT INTO external_build_targets
+      (id, app_id, build_id, version_name, target, source_url, raw_sha256, raw_size_bytes, created_at, updated_at)
+      VALUES ('t-relD-win','app1','b-relD','2.0.0','win32-x64','https://cdn.test/2.0.0/win32-x64','${"c".repeat(64)}',100,1,1)`);
     const conflict = await a.request(
       "/api/apps/app1/releases/relD/publish",
       {
         method: "POST",
         headers: { authorization: `Bearer ${AGENT}`, "content-type": "application/json" },
-        body: JSON.stringify({ required_external_targets: ["linux-x64"] }),
+        body: JSON.stringify({ required_external_targets: ["darwin-arm64", "linux-x64", "win32-x64"] }),
       },
       env,
       EXEC,
     );
     expect(conflict.status).toBe(409);
-    const conflictBody = (await conflict.json()) as any;
-    expect(conflictBody.code).toBe("PENDING_WITH_DIFFERENT_CONDITIONS");
+    expect(((await conflict.json()) as any).code).toBe("PENDING_WITH_DIFFERENT_CONDITIONS");
 
-    // The original pending request is unchanged (no silent overwrite).
     const after = sqlite
-      .prepare("SELECT status, expected_scopes, required_external_targets FROM release_approval_requests WHERE id = ?")
+      .prepare("SELECT status, required_external_targets FROM release_approval_requests WHERE id = ?")
       .get(reqId) as any;
     expect(after.status).toBe("pending");
     expect(after.required_external_targets).toBe(before.required_external_targets);
     expect(releaseStatus(sqlite, "relD")).toBe("draft");
   });
 
-  it("re-requesting the identical conditions returns the existing pending request", async () => {
+  it("re-requesting identical conditions on an external build returns the existing pending request", async () => {
     const { sqlite, env } = environment();
     seedBase(sqlite, { gated: true });
-    seedDraftRelease(sqlite, "relS");
+    seedExternalDraftRelease(sqlite, "relS");
     await seedAgentToken(sqlite, AGENT);
     const a = app();
-    const body = JSON.stringify({ required_external_targets: ["darwin-arm64", "win32-x64"] });
+    const body = JSON.stringify({ required_external_targets: ["darwin-arm64", "linux-x64"] });
 
     const first = (await (await a.request(
       "/api/apps/app1/releases/relS/publish",
@@ -620,5 +646,58 @@ describe("release human-approval gate (task #239)", () => {
     )).json()) as any;
     expect(second.approval_request_id).toBe(first.approval_request_id);
     expect(second.already_pending).toBe(true);
+  });
+
+  it("a non-external release carrying required_external_targets returns the original 400 and writes no pending", async () => {
+    const { sqlite, env } = environment();
+    seedBase(sqlite, { gated: true });
+    seedDraftRelease(sqlite, "relN"); // internal (android-apk), not external
+    await seedAgentToken(sqlite, AGENT);
+    const a = app();
+
+    const res = await a.request(
+      "/api/apps/app1/releases/relN/publish",
+      {
+        method: "POST",
+        headers: { authorization: `Bearer ${AGENT}`, "content-type": "application/json" },
+        body: JSON.stringify({ required_external_targets: ["darwin-arm64"] }),
+      },
+      env,
+      EXEC,
+    );
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as any).error).toContain("required_external_targets only applies to external builds");
+    const pending = sqlite.prepare(
+      "SELECT COUNT(*) n FROM release_approval_requests WHERE release_id='relN'",
+    ).get() as { n: number };
+    expect(pending.n).toBe(0);
+    expect(releaseStatus(sqlite, "relN")).toBe("draft");
+  });
+
+  it("a malformed required_external_targets shape returns the original 400 and writes no pending", async () => {
+    const { sqlite, env } = environment();
+    seedBase(sqlite, { gated: true });
+    seedExternalDraftRelease(sqlite, "relB");
+    await seedAgentToken(sqlite, AGENT);
+    const a = app();
+
+    for (const bad of [{ length: 1 }, "darwin-arm64", ["not a target"], [123]]) {
+      const res = await a.request(
+        "/api/apps/app1/releases/relB/publish",
+        {
+          method: "POST",
+          headers: { authorization: `Bearer ${AGENT}`, "content-type": "application/json" },
+          body: JSON.stringify({ required_external_targets: bad }),
+        },
+        env,
+        EXEC,
+      );
+      expect(res.status).toBe(400);
+    }
+    const pending = sqlite.prepare(
+      "SELECT COUNT(*) n FROM release_approval_requests WHERE release_id='relB'",
+    ).get() as { n: number };
+    expect(pending.n).toBe(0);
+    expect(releaseStatus(sqlite, "relB")).toBe("draft");
   });
 });
