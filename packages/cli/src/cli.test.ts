@@ -2448,3 +2448,107 @@ describe("play distribution commands", () => {
     }
   });
 });
+
+describe("channel commands", () => {
+  it("creates, updates and deletes a release channel via the REST endpoints", async () => {
+    const requests: Array<{ method: string; url: string; body?: any }> = [];
+    const server = createServer(async (req, res) => {
+      let body: any = undefined;
+      if (req.headers["content-type"]?.includes("application/json")) {
+        const chunks: Buffer[] = [];
+        for await (const chunk of req) chunks.push(Buffer.from(chunk));
+        body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+      }
+      requests.push({ method: req.method ?? "GET", url: req.url ?? "", body });
+      res.setHeader("content-type", "application/json");
+      if (req.url === "/api/apps") {
+        return res.end(JSON.stringify({ apps: [{ id: "app-1", slug: "raft-android" }] }));
+      }
+      if (req.url === "/api/apps/app-1/channels" && req.method === "GET") {
+        return res.end(JSON.stringify({ channels: [{ id: "channel-1", slug: "main", name: "Main" }] }));
+      }
+      if (req.url === "/api/apps/app-1/channels" && req.method === "POST") {
+        return res.end(JSON.stringify({ id: "channel-1", app_id: "app-1", slug: "beta", name: "Beta" }));
+      }
+      if (req.url === "/api/apps/app-1/channels/channel-1" && req.method === "PATCH") {
+        return res.end(JSON.stringify({ ok: true }));
+      }
+      if (req.url === "/api/apps/app-1/channels/channel-1" && req.method === "DELETE") {
+        return res.end(JSON.stringify({ ok: true }));
+      }
+      res.statusCode = 404;
+      return res.end(JSON.stringify({ error: "not found" }));
+    });
+
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("bad address");
+    const originalApi = process.env.HANDS_API;
+    const originalToken = process.env.HANDS_BEARER_TOKEN;
+    process.env.HANDS_API = `http://127.0.0.1:${address.port}`;
+    process.env.HANDS_BEARER_TOKEN = "test-token";
+
+    try {
+      // api.ts caches a process-wide base once any test calls setApiBase (the
+      // `hands api` describe above), so pin the base explicitly.
+      const { setApiBase } = await import("../src/lib/api.js");
+      setApiBase(process.env.HANDS_API);
+      const { registerChannelCommands } = await import("../src/commands/channels.js");
+
+      const createProgram = new Command();
+      registerChannelCommands(createProgram);
+      await createProgram.parseAsync([
+        "node", "hands", "channels", "create", "raft-android",
+        "--slug", "beta", "--name", "Beta",
+        "--git-url", "https://git.example/repo",
+        "--product-types", "android-apk,electron-installer",
+      ]);
+
+      // update resolves the slug -> channel id via GET /channels, then PATCHes it.
+      const updateProgram = new Command();
+      registerChannelCommands(updateProgram);
+      await updateProgram.parseAsync([
+        "node", "hands", "channels", "update", "raft-android", "main",
+        "--name", "Main (renamed)", "--bundle-id", "",
+      ]);
+
+      const deleteProgram = new Command();
+      registerChannelCommands(deleteProgram);
+      await deleteProgram.parseAsync([
+        "node", "hands", "channels", "delete", "raft-android", "main",
+      ]);
+
+      expect(requests.find((r) => r.url === "/api/apps/app-1/channels" && r.method === "POST")).toMatchObject({
+        method: "POST",
+        body: {
+          slug: "beta", name: "Beta",
+          git_url: "https://git.example/repo",
+          enabled_product_types: ["android-apk", "electron-installer"],
+        },
+      });
+      expect(requests.find((r) => r.url === "/api/apps/app-1/channels/channel-1" && r.method === "PATCH")).toMatchObject({
+        method: "PATCH",
+        body: { name: "Main (renamed)", bundle_id: "" },
+      });
+      expect(requests.find((r) => r.url === "/api/apps/app-1/channels/channel-1" && r.method === "DELETE")).toMatchObject({
+        method: "DELETE",
+      });
+    } finally {
+      if (originalApi === undefined) delete process.env.HANDS_API;
+      else process.env.HANDS_API = originalApi;
+      if (originalToken === undefined) delete process.env.HANDS_BEARER_TOKEN;
+      else process.env.HANDS_BEARER_TOKEN = originalToken;
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
+  it("update rejects an empty change before hitting the API", async () => {
+    const { registerChannelCommands } = await import("../src/commands/channels.js");
+    const program = new Command();
+    program.exitOverride();
+    registerChannelCommands(program);
+    await expect(
+      program.parseAsync(["node", "hands", "channels", "update", "raft-android", "main"]),
+    ).rejects.toThrow(/nothing to update/);
+  });
+});
