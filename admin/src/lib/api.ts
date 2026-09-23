@@ -118,6 +118,7 @@ export interface App {
   archived: number;       // 0 = active, 1 = archived (soft-delete)
   public_history?: number; // 1 = public /apps/:slug/history page enabled
   delta_updates_enabled?: number; // 1 = auto-generate Android delta patches on publish
+  release_requires_human_approval?: number; // 1 = agent-initiated releases need a human approval (task #239)
   archived_at: number | null;
   created_at: number;
   // Default release channel (P2.5.9 / migration 0018). pre-fills the
@@ -1911,6 +1912,64 @@ export const updateAppDeltaUpdates = (appId: string, enabled: boolean) =>
   request<{ ok: boolean }>(`/api/apps/${appId}`, {
     method: "PATCH",
     body: JSON.stringify({ delta_updates_enabled: enabled }),
+    admin: true,
+  });
+
+export const updateAppReleaseApproval = (appId: string, enabled: boolean) =>
+  request<{ ok: boolean }>(`/api/apps/${appId}`, {
+    method: "PATCH",
+    body: JSON.stringify({ release_requires_human_approval: enabled }),
+    admin: true,
+  });
+
+export interface ReleaseApproval {
+  id: string;
+  app_id: string;
+  release_id: string;
+  requested_by_actor: string;
+  requested_by_token_id: string | null;
+  expected_revision: number;
+  expected_scopes: string;
+  required_external_targets: string | null;
+  status: string;
+  decided_by: string | null;
+  decided_at: number | null;
+  decision_note: string | null;
+  created_at: number;
+  release_status: string | null;
+  version_name: string | null;
+  version_code: number | null;
+  changelog: string | null;
+  build_id: string | null;
+  channel_slug: string | null;
+  assets: {
+    platform: string;
+    arch: string | null;
+    variant: string | null;
+    filetype: string;
+    file_hash: string;
+    size_bytes: number;
+    artifact_kind: string;
+  }[];
+}
+
+export const listReleaseApprovals = (appId: string, status = "pending") =>
+  request<{ app_id: string; status: string; approvals: ReleaseApproval[] }>(
+    `/api/apps/${appId}/release-approvals?status=${encodeURIComponent(status)}`,
+    { admin: true },
+  );
+
+export const approveReleaseApproval = (appId: string, requestId: string) =>
+  request<unknown>(`/api/apps/${appId}/release-approvals/${requestId}/approve`, {
+    method: "POST",
+    body: JSON.stringify({}),
+    admin: true,
+  });
+
+export const rejectReleaseApproval = (appId: string, requestId: string, note?: string) =>
+  request<{ ok: boolean; approval: ReleaseApproval }>(`/api/apps/${appId}/release-approvals/${requestId}/reject`, {
+    method: "POST",
+    body: JSON.stringify(note ? { note } : {}),
     admin: true,
   });
 

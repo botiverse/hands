@@ -291,6 +291,14 @@ export function registerReleaseRoutes(registry: OpenApiRegistry) {
           : {}),
       },
       responses: {
+        ...(isPublish
+          ? {
+              202: success(
+                "App requires human approval: the agent-initiated publish was held as a pending approval request (approval_request_id) instead of publishing.",
+                GenericObject,
+              ),
+            }
+          : {}),
         200: success("Release operation result.", GenericObject),
         400: error("Invalid release operation."),
         403: error("Current principal cannot modify this release."),
@@ -299,6 +307,63 @@ export function registerReleaseRoutes(registry: OpenApiRegistry) {
       },
     });
   }
+
+  const RequestIdParam = z.object({
+    requestId: z.string().openapi({ param: { name: "requestId", in: "path" } }),
+  });
+  const AppReleaseApprovalParams = AppIdParam.merge(RequestIdParam);
+
+  register(registry, {
+    method: "get",
+    path: "/api/apps/{appId}/release-approvals",
+    tags: ["Releases"],
+    summary: "List release approval requests (default: pending) for an app, with joined release/build context",
+    security: auth,
+    request: {
+      params: AppIdParam,
+      query: z.object({ status: z.enum(["pending", "approved", "rejected", "all"]).optional() }),
+    },
+    responses: {
+      200: success(
+        "Approval requests.",
+        z.object({ app_id: z.string(), status: z.string(), approvals: z.array(GenericObject) }),
+      ),
+      403: error("Current principal is not an app/org admin."),
+    },
+  });
+
+  register(registry, {
+    method: "post",
+    path: "/api/apps/{appId}/release-approvals/{requestId}/approve",
+    tags: ["Releases"],
+    summary: "Approve a pending agent-requested release and publish it (human app/org admin only)",
+    security: auth,
+    request: { params: AppReleaseApprovalParams },
+    responses: {
+      200: success("Release published; approval request marked approved.", GenericObject),
+      403: error("Only a human app/org admin can approve; agent deploy tokens are rejected."),
+      404: error("Approval request or release not found."),
+      409: error("Request already decided, release not draft, or publish precondition conflict (request stays pending)."),
+    },
+  });
+
+  register(registry, {
+    method: "post",
+    path: "/api/apps/{appId}/release-approvals/{requestId}/reject",
+    tags: ["Releases"],
+    summary: "Reject a pending agent-requested release (human app/org admin only)",
+    security: auth,
+    request: {
+      params: AppReleaseApprovalParams,
+      body: { content: json(z.object({ note: z.string().optional() })), required: false },
+    },
+    responses: {
+      200: success("Approval request rejected.", z.object({ ok: z.boolean(), approval: GenericObject })),
+      403: error("Only a human app/org admin can reject; agent deploy tokens are rejected."),
+      404: error("Approval request not found."),
+      409: error("Request already decided."),
+    },
+  });
 
   register(registry, {
     method: "get",

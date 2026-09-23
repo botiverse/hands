@@ -44,6 +44,7 @@ import {
   publicAppIconUrl,
   updateAppPublicHistory,
   updateAppDeltaUpdates,
+  updateAppReleaseApproval,
   getAppClientKey,
   rotateAppClientKey,
   purgeApp,
@@ -1349,6 +1350,45 @@ function DeltaUpdatesToggle({ appId, app }: { appId: string; app: App }) {
   );
 }
 
+function ReleaseApprovalToggle({ appId, app }: { appId: string; app: App }) {
+  const toast = useToast();
+  const qc = useQueryClient();
+  const enabled = Boolean(app.release_requires_human_approval);
+  const toggle = useMutation({
+    mutationFn: () => updateAppReleaseApproval(appId, !enabled),
+    onSuccess: () => {
+      toast.show({
+        kind: "success",
+        title: !enabled ? "Human approval required" : "Human approval not required",
+      });
+      qc.invalidateQueries({ queryKey: ["apps"] });
+    },
+    onError: (e) =>
+      toast.show({
+        kind: "error",
+        title: "Update failed",
+        description: (e as Error).message,
+      }),
+  });
+  return (
+    <div className="flex items-center gap-3">
+      <div className="flex-1">
+        <div className="text-sm font-medium">Require human approval for agent releases</div>
+        <div className="text-xs text-slate-500">
+          {enabled
+            ? "On. Releases that an agent (deploy token) tries to publish are held for an app admin or org admin to approve or reject before they go live. Releases you publish from this console are unaffected."
+            : "When on, agent-initiated releases are held for a human (app admin / org admin) to approve before publishing. Your own console publishes are never gated."}
+        </div>
+      </div>
+      <Switch
+        checked={enabled}
+        disabled={toggle.isPending}
+        onCheckedChange={() => toggle.mutate()}
+      />
+    </div>
+  );
+}
+
 function AppIconUploader({ appId, slug }: { appId: string; slug: string }) {
   const toast = useToast();
   const [bust, setBust] = useState(0);
@@ -1483,6 +1523,11 @@ export function AppSettings({ appId }: { appId: string }) {
         {/* Delta/differential updates — Android apps only */}
         {app.platform === "android" && <DeltaUpdatesToggle appId={appId} app={app} />}
         {app.platform === "android" && <GooglePlayPanel appId={appId} />}
+
+        {/* Release human-approval gate (task #239) — mobile platforms */}
+        {["ios", "android", "ohos"].includes(app.platform) && (
+          <ReleaseApprovalToggle appId={appId} app={app} />
+        )}
 
         {/* Client key (feedback/crash reporting auth) */}
         <ClientKeyPanel appId={appId} />

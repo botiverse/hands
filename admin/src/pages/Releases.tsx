@@ -19,10 +19,14 @@ import {
   listDeviceGroups,
   listProductTypes,
   listReleases,
+  listReleaseApprovals,
+  approveReleaseApproval,
+  rejectReleaseApproval,
   publishRelease,
   rollbackRelease,
   updateRelease,
   type Release,
+  type ReleaseApproval,
   type ReleaseScope,
   type ProductType,
 } from "../lib/api";
@@ -194,6 +198,148 @@ function productTypeMatchesPlatform(productType: ProductType, appPlatform?: stri
   return productType.name.includes(platform) || productType.parser_kind.includes(platform);
 }
 
+export function PendingReleaseApprovals({ appId, gateOn }: { appId: string; gateOn: boolean }) {
+  const qc = useQueryClient();
+  const toast = useToast();
+  const approvals = useQuery({
+    queryKey: ["release-approvals", appId],
+    queryFn: () => listReleaseApprovals(appId, "pending"),
+  });
+  const mutation = useMutation({
+    mutationFn: ({ requestId, action }: { requestId: string; action: "approve" | "reject" }) =>
+      action === "approve" ? approveReleaseApproval(appId, requestId) : rejectReleaseApproval(appId, requestId),
+    onSuccess: (_data, vars) => {
+      toast.show({
+        kind: "success",
+        title: vars.action === "approve" ? "Release approved and published" : "Release request rejected",
+      });
+      qc.invalidateQueries({ queryKey: ["release-approvals", appId] });
+      qc.invalidateQueries({ queryKey: ["releases", appId] });
+    },
+    onError: (e) =>
+      toast.show({ kind: "error", title: "Action failed", description: (e as Error).message }),
+  });
+  const items = approvals.data?.approvals ?? [];
+  // The queue stays reachable even if the gate was switched off after requests
+  // were created — pending approvals hang until decided, so they must not vanish
+  // from the official entry point (task #239 review item 5).
+  if (!gateOn && !approvals.isLoading && items.length === 0) return null;
+  return (
+    <div className="card p-3! mb-4">
+      <h3 className="text-sm font-semibold mb-2">Pending release approvals</h3>
+      {approvals.isLoading ? (
+        <Skeleton className="h-10" />
+      ) : items.length === 0 ? (
+        <div className="text-xs text-slate-500">No releases waiting for approval.</div>
+      ) : (
+        <ul className="space-y-2">
+          {items.map((a: ReleaseApproval) => (
+            <li
+              key={a.id}
+              className="rounded-sm border border-slate-200 p-2 flex items-start justify-between gap-3"
+            >
+              <div className="text-sm min-w-0">
+                <div className="font-medium">
+                  {a.version_name ?? "?"}{" "}
+                  <span className="text-xs text-slate-500">
+                    (code {a.version_code ?? "?"}) · {a.channel_slug ?? ""}
+                  </span>
+                </div>
+                {a.changelog && (
+                  <div className="text-xs text-slate-600 whitespace-pre-wrap">{a.changelog}</div>
+                )}
+                {a.assets.length > 0 && (
+                  <ul className="text-xs text-slate-600 mt-1 space-y-0.5">
+                    {a.assets.map((asset, i) => (
+                      <li key={i} className="font-mono break-all">
+                        {asset.artifact_kind} · {asset.platform}
+                        {asset.arch ? `/${asset.arch}` : ""}
+                        {asset.variant ? `/${asset.variant}` : ""} · {asset.filetype} ·{" "}
+                        {asset.size_bytes} B · sha256 {asset.file_hash.slice(0, 16)}…
+                      </li>
+                    ))}
+                  </ul>
+                )}
+                {(() => {
+                  // The conditions the approver is signing off on (task #239 review).
+                  // Guard the parsed values are arrays with the expected item
+                  // shape — a malformed stored value must not break the card.
+                  const parseScopes = (): { scope_type: string; scope_value: string }[] => {
+                    try {
+                      const v = JSON.parse(a.expected_scopes);
+                      return Array.isArray(v)
+                        ? v.filter(
+                            (s) => s && typeof s.scope_type === "string" && typeof s.scope_value === "string",
+                          )
+                        : [];
+                    } catch {
+                      return [];
+                    }
+                  };
+                  const parseTargets = (): string[] => {
+                    try {
+                      const v = a.required_external_targets ? JSON.parse(a.required_external_targets) : [];
+                      return Array.isArray(v) ? v.filter((t) => typeof t === "string") : [];
+                    } catch {
+                      return [];
+                    }
+                  };
+                  const scopes = parseScopes();
+                  const targets = parseTargets();
+                  return (
+                    <div className="text-xs text-slate-600 mt-1 flex flex-wrap items-center gap-1">
+                      <span className="text-slate-500">Publishes to</span>
+                      {scopes.length === 0 ? (
+                        <span className="font-mono">full:all</span>
+                      ) : (
+                        scopes.map((s, i) => (
+                          <span key={i} className="font-mono rounded-sm bg-slate-100 px-1">
+                            {s.scope_type}:{s.scope_value}
+                          </span>
+                        ))
+                      )}
+                      {targets.length > 0 && (
+                        <>
+                          <span className="text-slate-500">· requires targets</span>
+                          {targets.map((t, i) => (
+                            <span key={i} className="font-mono rounded-sm bg-slate-100 px-1">
+                              {t}
+                            </span>
+                          ))}
+                        </>
+                      )}
+                    </div>
+                  );
+                })()}
+                <div className="text-xs text-slate-500 mt-1">
+                  Requested by {a.requested_by_actor} · {new Date(a.created_at).toLocaleString()}
+                </div>
+              </div>
+              <div className="flex gap-2 shrink-0">
+                <Button
+                  variant="primary"
+                  className="text-sm"
+                  disabled={mutation.isPending}
+                  onClick={() => mutation.mutate({ requestId: a.id, action: "approve" })}
+                >
+                  Approve
+                </Button>
+                <Button
+                  className="text-sm"
+                  disabled={mutation.isPending}
+                  onClick={() => mutation.mutate({ requestId: a.id, action: "reject" })}
+                >
+                  Reject
+                </Button>
+              </div>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
 export function Releases({ appId }: { appId: string }) {
   const qc = useQueryClient();
   const toast = useToast();
@@ -257,6 +403,11 @@ export function Releases({ appId }: { appId: string }) {
           value={channels.data?.channels.length ?? 0}
         />
       </div>
+
+      {/* Release human-approval queue (task #239). Mounted regardless of the
+          current toggle so already-pending requests stay reachable; the
+          component hides itself only when the gate is off and nothing is pending. */}
+      <PendingReleaseApprovals appId={appId} gateOn={Boolean(thisApp?.release_requires_human_approval)} />
 
       {/* Filters */}
       <div className="card p-3! mb-4 flex flex-wrap gap-3 items-center">

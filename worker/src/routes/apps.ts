@@ -26,7 +26,8 @@ export async function handleListApps(c: AdminContext) {
   if (deployToken) {
     const row = await c.env.DB.prepare(
       `SELECT id, org_id, slug, name, platform,
-              description, archived, archived_at, created_at, public_history
+              description, archived, archived_at, created_at, public_history,
+              release_requires_human_approval
        FROM apps
        WHERE id = ?1
        LIMIT 1`,
@@ -43,6 +44,7 @@ export async function handleListApps(c: AdminContext) {
         archived_at: number | null;
         created_at: number;
         public_history: number;
+        release_requires_human_approval: number;
       }>();
     return c.json({ apps: row ? [row] : [] });
   }
@@ -52,7 +54,8 @@ export async function handleListApps(c: AdminContext) {
   const query = orgId && account
     ? {
         sql: `SELECT a.id, a.org_id, a.slug, a.name, a.platform,
-                     a.description, a.archived, a.archived_at, a.created_at, a.public_history
+                     a.description, a.archived, a.archived_at, a.created_at, a.public_history,
+                     a.release_requires_human_approval
               FROM apps a
               WHERE a.org_id = ?1
                  OR EXISTS (
@@ -70,7 +73,8 @@ export async function handleListApps(c: AdminContext) {
     : orgId
     ? {
         sql: `SELECT id, org_id, slug, name, platform,
-                     description, archived, archived_at, created_at, public_history
+                     description, archived, archived_at, created_at, public_history,
+                     release_requires_human_approval
               FROM apps
               WHERE org_id = ?1
               ORDER BY archived ASC, created_at DESC`,
@@ -78,7 +82,8 @@ export async function handleListApps(c: AdminContext) {
       }
     : {
         sql: `SELECT id, org_id, slug, name, platform,
-                     description, archived, archived_at, created_at, public_history
+                     description, archived, archived_at, created_at, public_history,
+                     release_requires_human_approval
               FROM apps
               ORDER BY archived ASC, created_at DESC`,
         params: [],
@@ -95,6 +100,7 @@ export async function handleListApps(c: AdminContext) {
     archived: number;
     archived_at: number | null;
     created_at: number;
+    release_requires_human_approval: number;
   }>();
   return c.json({ apps: results });
 }
@@ -537,6 +543,7 @@ export async function handleGetApp(c: Context<{ Bindings: Env }>) {
     `SELECT a.id, a.org_id, a.slug, a.name, a.platform, a.description,
             a.archived, a.archived_at, a.created_at, a.public_history,
             a.delta_updates_enabled,
+            a.release_requires_human_approval,
             a.default_channel_id,
             ch.slug AS default_channel_slug,
             ch.name AS default_channel_name
@@ -555,6 +562,7 @@ export async function handleGetApp(c: Context<{ Bindings: Env }>) {
     created_at: number;
     public_history: number;
     delta_updates_enabled: number;
+    release_requires_human_approval: number;
     default_channel_id: string | null;
     default_channel_slug: string | null;
     default_channel_name: string | null;
@@ -571,6 +579,7 @@ export async function handleUpdateApp(c: AdminContext) {
     default_channel_id?: string | null;
     public_history?: boolean;
     delta_updates_enabled?: boolean;
+    release_requires_human_approval?: boolean;
   };
   // Confirm app exists.
   const existing = await c.env.DB.prepare(
@@ -598,6 +607,10 @@ export async function handleUpdateApp(c: AdminContext) {
   if (body.delta_updates_enabled !== undefined) {
     updates.push("delta_updates_enabled = ?");
     binds.push(body.delta_updates_enabled ? 1 : 0);
+  }
+  if (body.release_requires_human_approval !== undefined) {
+    updates.push("release_requires_human_approval = ?");
+    binds.push(body.release_requires_human_approval ? 1 : 0);
   }
   if (body.default_channel_id !== undefined) {
     if (body.default_channel_id === null) {

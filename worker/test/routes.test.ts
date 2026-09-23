@@ -150,8 +150,22 @@ function makeMockDb() {
       id TEXT PRIMARY KEY, org_id TEXT, slug TEXT NOT NULL UNIQUE, name TEXT NOT NULL,
       platform TEXT NOT NULL, description TEXT, archived INTEGER NOT NULL DEFAULT 0,
       archived_at INTEGER, created_at INTEGER NOT NULL, icon_r2_key TEXT, public_history INTEGER NOT NULL DEFAULT 0, client_key TEXT,
-      delta_updates_enabled INTEGER NOT NULL DEFAULT 0
+      delta_updates_enabled INTEGER NOT NULL DEFAULT 0,
+      release_requires_human_approval INTEGER NOT NULL DEFAULT 0
     );
+      -- Mirrors migrations/sql/0076_release_human_approval.sql (task #239).
+      CREATE TABLE release_approval_requests (
+        id TEXT PRIMARY KEY, app_id TEXT NOT NULL, release_id TEXT NOT NULL,
+        requested_by_actor TEXT NOT NULL, requested_by_token_id TEXT,
+        expected_revision INTEGER NOT NULL, expected_scopes TEXT NOT NULL,
+        required_external_targets TEXT,
+        status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','approved','rejected')),
+        decided_by TEXT, decided_at INTEGER, decision_note TEXT, created_at INTEGER NOT NULL,
+        CHECK ((status = 'pending' AND decided_by IS NULL AND decided_at IS NULL)
+          OR (status IN ('approved','rejected') AND decided_by IS NOT NULL AND decided_at IS NOT NULL AND decided_at > 0))
+      );
+      CREATE UNIQUE INDEX idx_release_approval_requests_one_pending
+        ON release_approval_requests(release_id) WHERE status = 'pending';
       -- Mirrors migrations/sql/0074_app_purge_records.sql: deliberately NOT keyed to apps, so a
       -- purge record outlives the app it describes (audit_logs.app_id cascades away with it).
       -- Mirrors migrations/sql/0074_app_purge_records.sql: deliberately NOT keyed to apps, so a

@@ -240,6 +240,9 @@ import {
   handleUpdateRelease,
   handleUpsertReleaseCheck,
   handleListReleaseChecks,
+  handleListReleaseApprovals,
+  handleApproveReleaseApproval,
+  handleRejectReleaseApproval,
 } from "./routes/releases";
 import { handleListChannels, handleCreateChannel, handleUpdateChannel, handleDeleteChannel } from "./routes/channels";
 import {
@@ -936,6 +939,11 @@ admin.post("/api/apps/:appId/releases/draft", requireAppRole("publisher"), handl
 admin.get("/api/apps/:appId/releases/:releaseId", requireAppRole("viewer"), handleGetRelease);
 admin.patch("/api/apps/:appId/releases/:releaseId", requireAppRole("publisher"), handleUpdateRelease);
 admin.post("/api/apps/:appId/releases/:releaseId/publish", requireAppRole("publisher"), handlePublishRelease);
+// Release human-approval queue (task #239): list pending approvals, and approve /
+// reject them. approve/reject additionally enforce human-only inside the handler.
+admin.get("/api/apps/:appId/release-approvals", requireAppRole("admin"), handleListReleaseApprovals);
+admin.post("/api/apps/:appId/release-approvals/:requestId/approve", requireAppRole("admin"), handleApproveReleaseApproval);
+admin.post("/api/apps/:appId/release-approvals/:requestId/reject", requireAppRole("admin"), handleRejectReleaseApproval);
 admin.delete("/api/apps/:appId/releases/:releaseId", requireAppRole("publisher"), handleDeleteRelease);
 admin.post("/api/apps/:appId/releases/:releaseId/rollback", requireAppRole("publisher"), handleRollbackRelease);
 admin.post("/api/apps/:appId/releases/:releaseId/bump-rollout", requireAppRole("publisher"), handleBumpRollout);
