@@ -1069,31 +1069,36 @@ export function FeedbackTicketPage({
                 </li>
               ))}
             </ul>
-            <div className="mt-2 flex gap-2">
-              <Input
-                className="flex-1 rounded-sm border border-slate-300 px-2 py-1.5 text-sm"
+            <div className="mt-2">
+              <textarea
+                rows={3}
+                className="w-full resize-y rounded-sm border border-slate-300 px-2 py-1.5 text-sm"
                 placeholder="Add a comment…"
                 value={comment}
                 onChange={(e) => setComment(e.target.value)}
                 onKeyDown={(e) => {
-                  if (e.key === "Enter" && comment.trim()) addComment.mutate(true);
+                  if ((e.metaKey || e.ctrlKey) && e.key === "Enter" && comment.trim()) {
+                    addComment.mutate(true);
+                  }
                 }}
               />
-              <Button
-                className="text-sm"
-                disabled={addComment.isPending || !comment.trim()}
-                onClick={() => addComment.mutate(true)}
-              >
-                {feedbackMessage("addInternalNote")}
-              </Button>
-              <Button
-                variant="primary"
-                className="text-sm"
-                disabled={addComment.isPending || !comment.trim()}
-                onClick={() => addComment.mutate(false)}
-              >
-                {feedbackMessage("sendToReporter")}
-              </Button>
+              <div className="mt-2 flex justify-end gap-2">
+                <Button
+                  className="text-sm"
+                  disabled={addComment.isPending || !comment.trim()}
+                  onClick={() => addComment.mutate(true)}
+                >
+                  {feedbackMessage("addInternalNote")}
+                </Button>
+                <Button
+                  variant="primary"
+                  className="text-sm"
+                  disabled={addComment.isPending || !comment.trim()}
+                  onClick={() => addComment.mutate(false)}
+                >
+                  {feedbackMessage("sendToReporter")}
+                </Button>
+              </div>
             </div>
           </div>
         </>
