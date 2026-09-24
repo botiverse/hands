@@ -141,6 +141,12 @@ jobs:
             pnpm exec wrangler r2 bucket create "${HANDS_R2_BUCKET_NAME}"
           fi
 
+          # Real-time webhook delivery queue (PR #550). Create it only when
+          # missing so a re-run is a no-op.
+          if ! pnpm exec wrangler queues list 2>/dev/null | grep -q 'hands-webhook-deliveries'; then
+            pnpm exec wrangler queues create "hands-webhook-deliveries"
+          fi
+
       # A deploy applies whatever migrations are pending, whatever the deploy was for.
       # Somebody dispatching this to ship an admin asset has no reason to know that,
       # and nothing in the process tells them: the obligation to watch the first apply
