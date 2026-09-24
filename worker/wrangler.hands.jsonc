@@ -74,6 +74,24 @@
     "crons": ["*/5 * * * *"]
   },
 
+  // Cloudflare Queue for real-time webhook first attempts. Producer (send)
+  // + consumer (queue() handler) on the same worker; the cron reaper above
+  // remains the retry/backoff + safety-net lane. The queue must exist in the
+  // account (wrangler queues create hands-webhook-deliveries).
+  "queues": {
+    "producers": [
+      { "binding": "WEBHOOK_QUEUE", "queue": "hands-webhook-deliveries" }
+    ],
+    "consumers": [
+      {
+        "queue": "hands-webhook-deliveries",
+        "max_batch_size": 25,
+        "max_batch_timeout": 1,
+        "max_retries": 3
+      }
+    ]
+  },
+
   "vars": {
     "ENVIRONMENT": "development",
     "MAX_APK_SIZE_MB": "200",

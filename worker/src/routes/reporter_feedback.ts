@@ -3,6 +3,7 @@ import { authenticateReporter, type ReporterPrincipal } from "../lib/reporter_au
 import { computeReporterAuditHash } from "../lib/reporter_audit";
 import { buildFeedbackCommentEvent } from "../lib/feedback_events";
 import { feedbackReporterEventStatements } from "./feedback";
+import { triggerDeliveryNow } from "./webhooks";
 
 type ReporterContext = Context<{ Bindings: Env }>;
 
@@ -1019,6 +1020,9 @@ export async function handleCloseReporterFeedback(c: ReporterContext) {
       }));
     }
     await c.env.DB.batch(statements);
+    // Real-time first attempt for the feedback:comment_created deliveries just
+    // created by this batch; non-blocking, cron reaper stays the safety net.
+    triggerDeliveryNow(c, c.env, now);
     const won = await c.env.DB.prepare("SELECT id FROM audit_logs WHERE id = ?1")
       .bind(auditId)
       .first();

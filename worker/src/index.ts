@@ -261,6 +261,7 @@ import {
   handleDeleteWebhook,
   handleListDeliveries,
   handleListWebhooks,
+  handleWebhookQueue,
   reapWebhookDeliveries,
   handleUpdateWebhook,
 } from "./routes/webhooks";
@@ -1281,9 +1282,11 @@ export async function scheduled(
 }
 
 // The Workers runtime only looks at the default export for handlers: a bare
-// Hono app provides fetch but silently drops the cron trigger (`scheduled`
-// as a named export is never invoked). Export both explicitly.
+// Hono app provides fetch but silently drops the cron trigger and queue
+// consumer (`scheduled`/`queue` as named exports are never invoked). Export
+// all three explicitly.
 export default {
   fetch: app.fetch,
   scheduled,
+  queue: handleWebhookQueue,
 };

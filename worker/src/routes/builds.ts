@@ -934,7 +934,7 @@ export async function handleCreateBuild(c: AdminContext) {
     const orgId = c.get("org_id");
     if (orgId && (body.status === "succeeded" || body.status === "failed")) {
       c.executionCtx?.waitUntil(
-        emitWebhookEvent(c.env.DB, {
+        emitWebhookEvent(c.env, {
           orgId,
           appId,
           event: body.status === "succeeded" ? "build:succeeded" : "build:failed",
@@ -1043,7 +1043,7 @@ export async function handleUpdateBuild(c: AdminContext) {
     const orgId = c.get("org_id");
     if (orgId) {
       c.executionCtx?.waitUntil(
-        emitWebhookEvent(c.env.DB, {
+        emitWebhookEvent(c.env, {
           orgId,
           appId,
           event: body.status === "succeeded" ? "build:succeeded" : "build:failed",
