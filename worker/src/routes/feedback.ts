@@ -9,7 +9,7 @@
  */
 import type { Context } from "hono";
 import { currentActor, type AdminEnv } from "../middleware/auth";
-import { emitWebhookEvent } from "./webhooks";
+import { emitWebhookEvent, triggerDeliveryNow } from "./webhooks";
 import { presignR2UploadUrl } from "../lib/r2_presign";
 import { generateSignedR2Url } from "./public_v2";
 import { dashboardOrigin, requestOrigin } from "../lib/origin";
@@ -803,6 +803,10 @@ export async function handlePublicFeedbackSubmit(c: Context<{ Bindings: Env }>) 
       await cleanupInlineUploads();
       return c.json({ error: "route_required" }, 409);
     }
+    // Real-time first attempt for the webhook deliveries this submission just
+    // created (feedback:new generic + dedicated). Non-blocking; the cron reaper
+    // remains the safety net.
+    triggerDeliveryNow(c, c.env, now);
   } catch (error) {
     if (submissionId && submissionFingerprint) {
       const existing = await findFeedbackSubmission(
@@ -869,7 +873,7 @@ export async function handlePublicFeedbackSubmit(c: Context<{ Bindings: Env }>) 
         version_code: versionCode,
       };
       if ((prior?.n ?? 0) === 0) {
-        await emitWebhookEvent(c.env.DB, {
+        await emitWebhookEvent(c.env, {
           orgId,
           appId: app.id,
           event: `${eventPrefix}:new_group`,
@@ -885,7 +889,7 @@ export async function handlePublicFeedbackSubmit(c: Context<{ Bindings: Env }>) 
         .first<{ n: number }>();
       const hourCount = recent?.n ?? 0;
       if (hourCount === 10 || hourCount === 50 || hourCount === 100) {
-        await emitWebhookEvent(c.env.DB, {
+        await emitWebhookEvent(c.env, {
           orgId,
           appId: app.id,
           event: `${eventPrefix}:spike`,
@@ -904,7 +908,7 @@ export async function handlePublicFeedbackSubmit(c: Context<{ Bindings: Env }>) 
   }
 
   if (app.org_id && !reporterIntegrationId) {
-    await emitWebhookEvent(c.env.DB, {
+    await emitWebhookEvent(c.env, {
       orgId: app.org_id,
       appId: app.id,
       event: "feedback:new",
@@ -1242,7 +1246,7 @@ export async function handlePublicMinidumpSubmit(c: Context<{ Bindings: Env }>) 
   }
 
   if (app.org_id) {
-    await emitWebhookEvent(c.env.DB, {
+    await emitWebhookEvent(c.env, {
       orgId: app.org_id,
       appId: app.id,
       event: "feedback:new",
@@ -2544,6 +2548,7 @@ export async function handleUpdateFeedback(c: AdminContext) {
       }));
     }
     await c.env.DB.batch(statements);
+    triggerDeliveryNow(c, c.env, now);
     const won = await c.env.DB.prepare("SELECT id FROM audit_logs WHERE id = ?1")
       .bind(auditId)
       .first();
@@ -2703,6 +2708,7 @@ export async function handleAddFeedbackComment(c: AdminContext) {
     }));
   }
   await c.env.DB.batch(statements);
+  triggerDeliveryNow(c, c.env, now);
   const committedAt = performance.now();
   setServerTiming(c, [
     `hands_comment_preflight;dur=${timingDuration(startedAt, preflightAt)}`,

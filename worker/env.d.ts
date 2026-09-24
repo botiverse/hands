@@ -96,6 +96,10 @@ declare global {
     FEEDBACK_REPORTER_SESSION_KEYS?: string;
     /** Private stateless adapter; only Hands decrypts and supplies app-scoped credentials. */
     PLAY_RELEASE_SERVICE?: GooglePlayAdapterService;
+    /** Cloudflare Queue for real-time webhook first attempts (task webhooks-
+     * queue). Optional: absent → webhook_deliveries are delivered only by the
+     * cron reaper every 5 min. */
+    WEBHOOK_QUEUE?: Queue<unknown>;
   }
 }
 

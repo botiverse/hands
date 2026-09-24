@@ -205,7 +205,7 @@ export async function handleListDeliveries(c: AdminContext) {
 // ============================================================================
 
 export async function emitWebhookEvent(
-  db: D1Database,
+  env: Pick<Env, "DB"> & Partial<Pick<Env, "WEBHOOK_QUEUE">>,
   payload: {
     orgId: string;
     appId: string | null;
@@ -213,6 +213,7 @@ export async function emitWebhookEvent(
     body: Record<string, unknown>;
   },
 ): Promise<void> {
+  const db = env.DB;
   // Find all enabled, non-archived webhooks in this org that subscribe to
   // this event (org-wide OR per-app matching appId).
   const { results: subs } = await db
@@ -257,7 +258,8 @@ export async function emitWebhookEvent(
   });
 
   // Batch insert pending deliveries.
-  const stmts = filtered.map((s) =>
+  const deliveryIds = filtered.map(() => crypto.randomUUID());
+  const stmts = filtered.map((s, i) =>
     db
       .prepare(
         `INSERT INTO webhook_deliveries
@@ -266,9 +268,18 @@ export async function emitWebhookEvent(
           created_at, updated_at)
          VALUES (?1, ?2, ?3, ?4, 'pending', 0, 3, NULL, ?5, ?6, ?7)`,
       )
-      .bind(crypto.randomUUID(), s.id, payload.event, body, now, now, now),
+      .bind(deliveryIds[i], s.id, payload.event, body, now, now, now),
   );
   await db.batch(stmts);
+
+  // Real-time first attempt: hand the new delivery ids to the queue so a
+  // consumer POSTs immediately. The cron reaper stays as the backoff /
+  // safety-net lane — enqueue failure here must never fail the event.
+  try {
+    await enqueueDeliveries(env, deliveryIds);
+  } catch {
+    // Swallowed: a queue outage only delays the first attempt to the cron.
+  }
 }
 
 // ============================================================================
@@ -298,6 +309,238 @@ export interface ReapDeliveriesSummary {
   terminalized: number;
   durationMs: number;
   errorCodes: Record<string, number>;
+}
+
+// ============================================================================
+// Real-time first attempt (Cloudflare Queue)
+// ============================================================================
+// webhook_deliveries stays the single source of truth: the queue only carries
+// the delivery_id and acts as the *first-attempt* trigger. Retry/backoff and
+// terminalization still run through the same D1 state machine used by the cron
+// reaper, which remains as the safety net for any delivery whose queue message
+// is lost or whose handler throws before the attempt is recorded.
+
+interface EnqueueDeliveriesEnv {
+  DB: D1Database;
+  WEBHOOK_QUEUE?: Queue<unknown>;
+}
+
+/**
+ * Hand newly-created pending deliveries to the queue for an immediate first
+ * attempt. Non-blocking for correctness — a failure here just means the cron
+ * reaper delivers on its next tick.
+ */
+export async function enqueueDeliveries(
+  env: EnqueueDeliveriesEnv,
+  deliveryIds: string[],
+): Promise<number> {
+  if (deliveryIds.length === 0 || !env.WEBHOOK_QUEUE) return 0;
+  // Cloudflare Queue sendBatch caps at 100 messages per call.
+  const CHUNK = 100;
+  let sent = 0;
+  for (let i = 0; i < deliveryIds.length; i += CHUNK) {
+    const chunk = deliveryIds.slice(i, i + CHUNK);
+    await env.WEBHOOK_QUEUE.sendBatch(
+      chunk.map((id) => ({ body: { delivery_id: id } })),
+    );
+    sent += chunk.length;
+  }
+  return sent;
+}
+
+/**
+ * After a producer batch commits, sweep the pending deliveries it created
+ * (created_at = the batch's `now`) and hand them to the queue for an
+ * immediate first attempt. Every webhook_deliveries producer stamps
+ * created_at with the request's `now`, so this covers emitWebhookEvent's
+ * per-sub insert AND the dedicated reporter INSERT...SELECT paths uniformly
+ * — and self-heals: any still-due pending row from an earlier enqueue failure
+ * is re-queued too (the consumer's status='pending' guard makes a duplicate
+ * queue message a no-op).
+ */
+export async function enqueueDueDeliveries(
+  env: EnqueueDeliveriesEnv,
+  createdAt: number,
+): Promise<number> {
+  if (!env.WEBHOOK_QUEUE) return 0;
+  const { results } = await env.DB.prepare(
+    `SELECT id FROM webhook_deliveries
+     WHERE status = 'pending'
+       AND created_at = ?1
+       AND (next_attempt_at IS NULL OR next_attempt_at <= ?2)
+     ORDER BY created_at ASC, id ASC
+     LIMIT 100`,
+  )
+    .bind(createdAt, Date.now())
+    .all<{ id: string }>();
+  return enqueueDeliveries(env, results.map((r) => r.id));
+}
+
+/**
+ * Request-scoped trigger for `enqueueDueDeliveries`: fire-and-forget via
+ * `executionCtx.waitUntil` so the response isn't held, with a catch-all so an
+ * enqueue outage only delays the first attempt to the cron tick. Falls back to
+ * a plain (still awaited-by-nobody) call when executionCtx is absent (tests).
+ */
+export function triggerDeliveryNow(
+  c: { executionCtx?: { waitUntil(p: Promise<unknown>): void } },
+  env: EnqueueDeliveriesEnv,
+  createdAt: number,
+): void {
+  const job = enqueueDueDeliveries(env, createdAt).catch(() => {
+    // Enqueue failure only delays the first attempt to the cron tick.
+  });
+  try {
+    c.executionCtx?.waitUntil(job);
+  } catch {
+    void job;
+  }
+}
+
+/**
+ * Resolve + process ONE delivery by id (queue consumer fast path). Loads the
+ * delivery with the same LEFT JOIN as the reaper, then runs the identical
+ * processDelivery state transitions. Returns a short outcome tag for the
+ * consumer's summary; unknown/terminal ids are no-ops (already delivered).
+ */
+export async function processDeliveryById(
+  env: EnqueueDeliveriesEnv,
+  deliveryId: string,
+  options: { fetchImpl?: typeof fetch; deliveryTimeoutMs?: number } = {},
+): Promise<string> {
+  const now = Date.now();
+  const d = await env.DB.prepare(
+    `SELECT d.id, d.webhook_id, d.status,
+            COALESCE(d.event_id, d.feedback_submission_event_id) AS event_id,
+            d.attempts, d.max_attempts, d.payload_json, d.signing_secret,
+            w.id AS resolved_webhook_id, w.url AS webhook_url,
+            w.secret AS webhook_secret, w.enabled AS webhook_enabled,
+            w.archived_at AS webhook_archived_at
+     FROM webhook_deliveries d
+     LEFT JOIN webhooks w ON w.id = d.webhook_id
+     WHERE d.id = ?1`,
+  )
+    .bind(deliveryId)
+    .first<DueDelivery & { status: string }>();
+  if (!d) return "missing";
+  // Already delivered/terminalized (e.g. a duplicate queue message or the cron
+  // beat the consumer): the D1 row is authoritative — do not attempt again.
+  if (d.status !== "pending") return "already_terminal";
+  const summary: ReapDeliveriesSummary = {
+    scheduledTime: null,
+    selected: 1,
+    succeeded: 0,
+    retried: 0,
+    terminalized: 0,
+    durationMs: 0,
+    errorCodes: {},
+  };
+  const recordError = (code: string) => {
+    summary.errorCodes[code] = (summary.errorCodes[code] ?? 0) + 1;
+  };
+  await processDeliveryRow(env, d, now, options, summary, recordError);
+  if (summary.succeeded) return "succeeded";
+  if (summary.terminalized) return "terminalized";
+  return "retried";
+}
+
+/** Shared single-delivery attempt used by both the cron reaper and the queue
+ * consumer. Performs the full pending→{succeeded|failed|pending(retry)}
+ * transition against webhook_deliveries. */
+async function processDeliveryRow(
+  env: Pick<Env, "DB">,
+  d: DueDelivery,
+  now: number,
+  options: { fetchImpl?: typeof fetch; deliveryTimeoutMs?: number },
+  summary: ReapDeliveriesSummary,
+  recordError: (code: string) => void,
+): Promise<void> {
+  const fetchImpl = options.fetchImpl ?? fetch;
+  const deliveryTimeoutMs = options.deliveryTimeoutMs ?? DELIVERY_ATTEMPT_TIMEOUT_MS;
+  const unavailableCode = !d.resolved_webhook_id
+    ? "webhook_missing"
+    : d.webhook_archived_at !== null
+      ? "webhook_archived"
+      : d.webhook_enabled !== 1
+        ? "webhook_disabled"
+        : null;
+  if (unavailableCode) {
+    await env.DB.prepare(
+      `UPDATE webhook_deliveries
+       SET status = 'failed', next_attempt_at = NULL, last_error = ?1,
+           completed_at = ?2, updated_at = ?2
+       WHERE id = ?3 AND status = 'pending'`,
+    ).bind(unavailableCode, now, d.id).run();
+    summary.terminalized++;
+    recordError(unavailableCode);
+    return;
+  }
+
+  const result = await postOnce(
+    d.webhook_url!,
+    d.signing_secret ?? d.webhook_secret!,
+    d.payload_json,
+    d.id,
+    d.event_id,
+    fetchImpl,
+    deliveryTimeoutMs,
+  );
+  const nextAttempts = d.attempts + 1;
+  if (result.ok) {
+    await env.DB.prepare(
+      `UPDATE webhook_deliveries
+       SET status = 'succeeded', attempts = ?1, last_attempt_at = ?2,
+           next_attempt_at = NULL, last_response_status = ?3,
+           last_response_body = ?4, last_error = NULL,
+           completed_at = ?2, updated_at = ?2
+       WHERE id = ?5 AND status = 'pending'`,
+    ).bind(nextAttempts, now, result.status, result.body ?? null, d.id).run();
+    summary.succeeded++;
+    return;
+  }
+
+  const errorCode = result.errorCode ?? "webhook_http_error";
+  recordError(errorCode);
+  if (nextAttempts >= d.max_attempts) {
+    await env.DB.prepare(
+      `UPDATE webhook_deliveries
+       SET status = 'failed', attempts = ?1, last_attempt_at = ?2,
+           next_attempt_at = NULL, last_response_status = ?3,
+           last_response_body = ?4, last_error = ?5,
+           completed_at = ?2, updated_at = ?2
+       WHERE id = ?6 AND status = 'pending'`,
+    ).bind(
+      nextAttempts,
+      now,
+      result.status,
+      result.body ?? null,
+      errorCode,
+      d.id,
+    ).run();
+    summary.terminalized++;
+    return;
+  }
+
+  const backoff =
+    BACKOFF_SCHEDULE_MS[d.attempts] ??
+    BACKOFF_SCHEDULE_MS[BACKOFF_SCHEDULE_MS.length - 1] ??
+    60_000;
+  await env.DB.prepare(
+    `UPDATE webhook_deliveries
+     SET attempts = ?1, last_attempt_at = ?2, next_attempt_at = ?3,
+         last_response_status = ?4, last_response_body = ?5,
+         last_error = ?6, updated_at = ?2
+     WHERE id = ?7 AND status = 'pending'`,
+  ).bind(
+    nextAttempts,
+    now,
+    now + backoff,
+    result.status,
+    result.body ?? null,
+    errorCode,
+    d.id,
+  ).run();
+  summary.retried++;
 }
 
 interface DueDelivery {
@@ -371,90 +614,14 @@ export async function reapWebhookDeliveries(
   };
 
   const processDelivery = async (d: DueDelivery) => {
-    const unavailableCode = !d.resolved_webhook_id
-      ? "webhook_missing"
-      : d.webhook_archived_at !== null
-        ? "webhook_archived"
-        : d.webhook_enabled !== 1
-          ? "webhook_disabled"
-          : null;
-    if (unavailableCode) {
-      await env.DB.prepare(
-        `UPDATE webhook_deliveries
-         SET status = 'failed', next_attempt_at = NULL, last_error = ?1,
-             completed_at = ?2, updated_at = ?2
-         WHERE id = ?3 AND status = 'pending'`,
-      ).bind(unavailableCode, now, d.id).run();
-      summary.terminalized++;
-      recordError(unavailableCode);
-      return;
-    }
-
-    const result = await postOnce(
-      d.webhook_url!,
-      d.signing_secret ?? d.webhook_secret!,
-      d.payload_json,
-      d.id,
-      d.event_id,
-      fetchImpl,
-      deliveryTimeoutMs,
-    );
-    const nextAttempts = d.attempts + 1;
-    if (result.ok) {
-      await env.DB.prepare(
-        `UPDATE webhook_deliveries
-         SET status = 'succeeded', attempts = ?1, last_attempt_at = ?2,
-             next_attempt_at = NULL, last_response_status = ?3,
-             last_response_body = ?4, last_error = NULL,
-             completed_at = ?2, updated_at = ?2
-         WHERE id = ?5 AND status = 'pending'`,
-      ).bind(nextAttempts, now, result.status, result.body ?? null, d.id).run();
-      summary.succeeded++;
-      return;
-    }
-
-    const errorCode = result.errorCode ?? "webhook_http_error";
-    recordError(errorCode);
-    if (nextAttempts >= d.max_attempts) {
-      await env.DB.prepare(
-        `UPDATE webhook_deliveries
-         SET status = 'failed', attempts = ?1, last_attempt_at = ?2,
-             next_attempt_at = NULL, last_response_status = ?3,
-             last_response_body = ?4, last_error = ?5,
-             completed_at = ?2, updated_at = ?2
-         WHERE id = ?6 AND status = 'pending'`,
-      ).bind(
-        nextAttempts,
-        now,
-        result.status,
-        result.body ?? null,
-        errorCode,
-        d.id,
-      ).run();
-      summary.terminalized++;
-      return;
-    }
-
-    const backoff =
-      BACKOFF_SCHEDULE_MS[d.attempts] ??
-      BACKOFF_SCHEDULE_MS[BACKOFF_SCHEDULE_MS.length - 1] ??
-      60_000;
-    await env.DB.prepare(
-      `UPDATE webhook_deliveries
-       SET attempts = ?1, last_attempt_at = ?2, next_attempt_at = ?3,
-           last_response_status = ?4, last_response_body = ?5,
-           last_error = ?6, updated_at = ?2
-       WHERE id = ?7 AND status = 'pending'`,
-    ).bind(
-      nextAttempts,
+    await processDeliveryRow(
+      env,
+      d,
       now,
-      now + backoff,
-      result.status,
-      result.body ?? null,
-      errorCode,
-      d.id,
-    ).run();
-    summary.retried++;
+      { fetchImpl, deliveryTimeoutMs },
+      summary,
+      recordError,
+    );
   };
 
   let nextIndex = 0;
@@ -606,4 +773,55 @@ async function hmacSha256Hex(secret: string, body: string): Promise<string> {
   return Array.from(new Uint8Array(sig))
     .map((b) => b.toString(16).padStart(2, "0"))
     .join("");
+}
+
+// ============================================================================
+// Queue consumer — real-time first attempt for each enqueued delivery id
+// ============================================================================
+
+export interface WebhookQueueMessage {
+  delivery_id?: unknown;
+}
+
+/**
+ * Cloudflare Queue consumer. Each message carries { delivery_id }; the consumer
+ * resolves it and runs the same first-attempt path as the cron reaper. The D1
+ * row is authoritative, so:
+ *  - messages are always acked (never retried at the queue layer): an HTTP
+ *    failure is already recorded as a pending row with a backoff
+ *    next_attempt_at, and a thrown error leaves the row pending for the cron
+ *    safety net. Queue-level redelivery would only double-attempt.
+ *  - unknown / non-pending ids are no-ops (already delivered or terminalized).
+ */
+export async function handleWebhookQueue(
+  batch: MessageBatch<WebhookQueueMessage>,
+  env: Pick<Env, "DB"> & Partial<Pick<Env, "WEBHOOK_QUEUE">>,
+): Promise<void> {
+  const outcomes: Record<string, number> = {};
+  for (const message of batch.messages) {
+    const deliveryId =
+      message.body && typeof message.body === "object"
+        ? (message.body as WebhookQueueMessage).delivery_id
+        : undefined;
+    let outcome = "malformed";
+    if (typeof deliveryId === "string" && deliveryId.length > 0) {
+      try {
+        outcome = await processDeliveryById(env, deliveryId);
+      } catch {
+        // Left pending for the cron reaper; never propagate so the whole batch
+        // isn't retried on one bad row.
+        outcome = "processing_error";
+      }
+    }
+    outcomes[outcome] = (outcomes[outcome] ?? 0) + 1;
+    message.ack();
+  }
+  console.info(
+    "hands_webhook_queue_batch",
+    JSON.stringify({
+      queue: batch.queue,
+      size: batch.messages.length,
+      outcomes,
+    }),
+  );
 }

@@ -1173,7 +1173,7 @@ async function emitReleaseDraftCreated(
       }
     }
 
-    await emitWebhookEvent(c.env.DB, {
+    await emitWebhookEvent(c.env, {
       orgId,
       appId,
       event: "release:draft_created",
@@ -1274,7 +1274,7 @@ export async function handleCreateRelease(c: AdminContext) {
     const orgId = c.get("org_id");
     if (status === "active" && orgId) {
       c.executionCtx?.waitUntil(
-        emitWebhookEvent(c.env.DB, {
+        emitWebhookEvent(c.env, {
           orgId,
           appId,
           event: "release:new",
@@ -2141,7 +2141,7 @@ async function executeReleasePublish(
   const orgId = c.get("org_id");
   if (orgId) {
     c.executionCtx?.waitUntil(
-      emitWebhookEvent(c.env.DB, {
+      emitWebhookEvent(c.env, {
         orgId,
         appId,
         event: "release:new",
@@ -2267,7 +2267,7 @@ export async function handleDeleteRelease(c: AdminContext) {
   const orgId = c.get("org_id");
   if (orgId && existing.status === "active") {
     c.executionCtx?.waitUntil(
-      emitWebhookEvent(c.env.DB, {
+      emitWebhookEvent(c.env, {
         orgId,
         appId,
         event: "release:cancelled",
@@ -2457,7 +2457,7 @@ export async function handleRollbackRelease(c: AdminContext) {
     const orgId = c.get("org_id");
     if (orgId && !restoresDraft) {
       c.executionCtx?.waitUntil(
-        emitWebhookEvent(c.env.DB, {
+        emitWebhookEvent(c.env, {
           orgId,
           appId,
           event: "release:rolled_back",
