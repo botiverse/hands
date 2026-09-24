@@ -13,6 +13,10 @@ export function buildFeedbackCommentEvent(input: EventBase & {
   comment: {
     id: string;
     author_type: "reporter" | "staff" | "system";
+    // Stored author identifier — raft:<handle>@<server> for staff/system,
+    // opaque reporter:<hash> for reporter. Lets a webhook consumer render
+    // "who replied" without dereferencing the anonymous reporter id.
+    author_actor: string;
     body: string;
     created_at: number;
   };

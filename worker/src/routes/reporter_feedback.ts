@@ -735,7 +735,7 @@ export async function handleAddReporterComment(c: ReporterContext) {
     ticketId,
     reporterIntegrationId: authorized.principal.integrationId,
     reporterId: authorized.principal.reporterId,
-    comment: { id: commentId, author_type: "reporter", body: text, created_at: now },
+    comment: { id: commentId, author_type: "reporter", author_actor: `reporter:${authorized.pseudonym.hash}`, body: text, created_at: now },
   });
   const auditPayload = JSON.stringify({
     ticket_id: ticketId,

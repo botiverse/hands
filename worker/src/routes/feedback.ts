@@ -17,6 +17,7 @@ import { loadDeployToken } from "../lib/deploy_tokens";
 import { isFeedbackOnlyToken, REPORTER_ID_PATTERN } from "../lib/reporter_auth";
 import type { AppPermission } from "../lib/app_permissions";
 import { buildFeedbackCommentEvent, buildFeedbackStatusEvent } from "../lib/feedback_events";
+import { computeReporterAuditHash } from "../lib/reporter_audit";
 
 type AdminContext = Context<AdminEnv & { Bindings: Env }>;
 
@@ -614,6 +615,11 @@ export async function handlePublicFeedbackSubmit(c: Context<{ Bindings: Env }>) 
   const now = Date.now();
   const ticketId = crypto.randomUUID();
   const submissionEventId = reporterIntegrationId ? crypto.randomUUID() : null;
+  // Same pseudonymous actor that reporter comments carry
+  // (`reporter:<HMAC(app, integration, reporter)>`), so a webhook consumer can
+  // correlate a ticket with its later comments without seeing the raw id.
+  // Null for anonymous direct-SDK submissions or when the audit key is absent.
+  const authorActor = await reporterAuthorActor(c.env, app.id, reporterIntegrationId, reporterId);
   const genericSubmissionPayload = app.org_id ? JSON.stringify({
     event: "feedback:new",
     delivered_at: now,
@@ -629,6 +635,7 @@ export async function handlePublicFeedbackSubmit(c: Context<{ Bindings: Env }>) 
       attachments: attachmentRows.length,
       reporter_id: reporterId || null,
       reporter_integration_id: reporterIntegrationId,
+      author_actor: authorActor,
     },
   }) : null;
   const dedicatedSubmissionPayload = submissionEventId ? JSON.stringify({
@@ -643,6 +650,7 @@ export async function handlePublicFeedbackSubmit(c: Context<{ Bindings: Env }>) 
       kind,
       reporter_integration_id: reporterIntegrationId,
       reporter_id: reporterId,
+      author_actor: authorActor,
     },
   }) : null;
 
@@ -922,6 +930,7 @@ export async function handlePublicFeedbackSubmit(c: Context<{ Bindings: Env }>) 
         attachments: attachmentRows.length,
         reporter_id: reporterId || null,
         reporter_integration_id: reporterIntegrationId,
+        author_actor: authorActor,
       },
     }).catch(() => {
       // webhook fan-out must never fail the submission
@@ -1259,12 +1268,26 @@ export async function handlePublicMinidumpSubmit(c: Context<{ Bindings: Env }>) 
         version_code: versionCode,
         attachments: 1,
         reporter_id: null,
+        author_actor: null,
       },
     }).catch(() => {});
   }
 
   // Crashpad only checks for a 2xx; a short id body is conventional.
   return c.json({ id: ticketId, status: "open" }, 201);
+}
+
+async function reporterAuthorActor(
+  env: Env,
+  appId: string,
+  integrationId: string | null,
+  reporterId: string,
+): Promise<string | null> {
+  if (!integrationId || !reporterId) return null;
+  const key = env.FEEDBACK_AUDIT_HMAC_KEY;
+  if (!key || !env.FEEDBACK_AUDIT_KEY_VERSION?.trim()) return null;
+  const hash = await computeReporterAuditHash({ key, appId, integrationId, reporterId });
+  return hash ? `reporter:${hash}` : null;
 }
 
 /** Signature = "<ExceptionClass>@<top app frame>", trimmed and bounded. */
@@ -2704,7 +2727,7 @@ export async function handleAddFeedbackComment(c: AdminContext) {
       reporterIntegrationId: ticket.reporter_integration_id,
       reporterId: ticket.reporter_id,
       createdAt: now,
-      comment: { id, author_type: "staff", body: text, created_at: now },
+      comment: { id, author_type: "staff", author_actor: currentActor(c), body: text, created_at: now },
     }));
   }
   await c.env.DB.batch(statements);
@@ -2727,7 +2750,7 @@ export function feedbackReporterEventStatements(
     reporterIntegrationId: string;
     reporterId: string;
     createdAt: number;
-    comment?: { id: string; author_type: "staff" | "reporter" | "system"; body: string; created_at: number };
+    comment?: { id: string; author_type: "staff" | "reporter" | "system"; author_actor: string; body: string; created_at: number };
     previousStatus?: string;
     status?: string;
     closureReason?: string | null;
