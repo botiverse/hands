@@ -17,7 +17,7 @@
 
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import Database from "better-sqlite3";
-import { createHash } from "node:crypto";
+import { createHash, createHmac } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { Hono } from "hono";
 import { authMiddleware } from "../src/middleware/auth";
@@ -11175,6 +11175,8 @@ describe("quiver public API v2 — scope resolution", () => {
 
   it("feedback: trusted server proxy persists and rate-limits by pseudonymous reporter id", async () => {
     const env = makeEnv();
+    const auditKey = "test-audit-key-with-enough-entropy";
+    Object.assign(env as any, { FEEDBACK_AUDIT_HMAC_KEY: auditKey, FEEDBACK_AUDIT_KEY_VERSION: "test-v1" });
     let r2Writes = 0;
     env.APK_BUCKET = { put: async () => { r2Writes += 1; }, get: async () => null };
     const { handlePublicFeedbackSubmit } = await import("../src/routes/feedback");
@@ -11448,6 +11450,12 @@ describe("quiver public API v2 — scope resolution", () => {
       feedback_submission_event_id: string;
     };
     expect(JSON.parse(trustedDelivery.payload_json).payload.reporter_id).toBe("g".repeat(64));
+    // author_actor = the same pseudonym reporter comments carry; never raw contact.
+    const expectedActor = "reporter:" + createHmac("sha256", auditKey)
+      .update(["feedback-audit-v1", "app-scope", "integration-proxy", "g".repeat(64)].join("\0"))
+      .digest("hex");
+    expect(JSON.parse(trustedDelivery.payload_json).payload.author_actor).toBe(expectedActor);
+    expect(JSON.parse(trustedDelivery.payload_json).payload).not.toHaveProperty("contact");
     expect(JSON.parse(trustedDelivery.payload_json).payload.reporter_integration_id)
       .toBe("integration-proxy");
     expect(JSON.parse(trustedDelivery.payload_json).payload).toMatchObject({
@@ -13411,6 +13419,11 @@ describe("Hands iOS simulator QA artifacts", () => {
       author_type: "reporter",
       body: "hello reporter loop",
     });
+    const reporterCommentActor = JSON.parse(reporterEvent!.payload_json).payload.comment.author_actor;
+    expect(reporterCommentActor).toMatch(/^reporter:[0-9a-f]{64}$/);
+    expect((await env.DB.prepare(
+      "SELECT author_actor FROM feedback_comments WHERE ticket_id = ?1 AND author_type = 'reporter' ORDER BY created_at DESC LIMIT 1",
+    ).bind(ticketA).first() as any).author_actor).toBe(reporterCommentActor);
     expect(JSON.parse(reporterEvent!.payload_json).payload.comment).toHaveProperty("id");
     expect(JSON.parse(reporterEvent!.payload_json).payload.comment).toHaveProperty("created_at");
     expect(JSON.parse(reporterEvent!.payload_json).payload).toMatchObject({
@@ -14025,6 +14038,7 @@ describe("Hands iOS simulator QA artifacts", () => {
       author_type: "staff",
       body: "staff reply",
     });
+    expect(JSON.parse(staffEvent!.payload_json).payload.comment.author_actor).toBe("staff:test");
     const update = await handleUpdateFeedback(adminContext({ status: "resolved", assignee: "staff:test" }));
     expect(update.status).toBe(200);
     expect((await env.DB.prepare(
