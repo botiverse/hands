@@ -65,10 +65,22 @@ function makeDb() {
 }
 
 type Db = ReturnType<typeof makeDb>;
-const env = (db: Db, queue?: { sent: string[] }) => ({
-  DB: db as unknown as D1Database,
-  ...(queue ? { WEBHOOK_QUEUE: { sendBatch: async (msgs: { body: { delivery_id: string } }[]) => { for (const m of msgs) queue.sent.push(m.body.delivery_id); return { success: true }; } } } : {}),
-});
+
+// A sendBatch-only stand-in cast to Queue: the consumer path only ever calls
+// sendBatch, and the full Queue interface (metrics/send/etc.) isn't needed to
+// exercise the enqueue + deliver flow. The cast keeps the typecheck honest
+// without mocking a dozen unrelated members.
+const env = (db: Db, queue?: { sent: string[] }) => {
+  const base = { DB: db as unknown as D1Database };
+  if (!queue) return base;
+  const WEBHOOK_QUEUE = {
+    sendBatch: async (msgs: { body: { delivery_id: string } }[]) => {
+      for (const m of msgs) queue.sent.push(m.body.delivery_id);
+      return { success: true };
+    },
+  } as unknown as Queue<unknown>;
+  return { ...base, WEBHOOK_QUEUE };
+};
 
 async function insertWebhook(db: Db, id: string) {
   await db.prepare(
