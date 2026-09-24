@@ -205,7 +205,7 @@ export async function handleListDeliveries(c: AdminContext) {
 // ============================================================================
 
 export async function emitWebhookEvent(
-  env: Pick<Env, "DB"> & Partial<Pick<Env, "WEBHOOK_QUEUE">>,
+  env: EnqueueDeliveriesEnv,
   payload: {
     orgId: string;
     appId: string | null;
@@ -322,7 +322,9 @@ export interface ReapDeliveriesSummary {
 
 interface EnqueueDeliveriesEnv {
   DB: D1Database;
-  WEBHOOK_QUEUE?: Queue<unknown>;
+  // `| undefined` (not just `?`) so `Env` and Partial<Pick<Env,...>> callers
+  // assign cleanly under exactOptionalPropertyTypes.
+  WEBHOOK_QUEUE?: Queue<unknown> | undefined;
 }
 
 /**
@@ -795,7 +797,7 @@ export interface WebhookQueueMessage {
  */
 export async function handleWebhookQueue(
   batch: MessageBatch<WebhookQueueMessage>,
-  env: Pick<Env, "DB"> & Partial<Pick<Env, "WEBHOOK_QUEUE">>,
+  env: EnqueueDeliveriesEnv,
 ): Promise<void> {
   const outcomes: Record<string, number> = {};
   for (const message of batch.messages) {

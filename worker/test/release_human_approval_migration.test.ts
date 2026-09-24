@@ -74,7 +74,7 @@ describe("migration 0076: release_requires_human_approval", () => {
     ).run();
     const row = db
       .prepare(`SELECT release_requires_human_approval AS v FROM apps WHERE id = 'x'`)
-      .get<{ v: number }>();
+      .get() as { v: number } | undefined;
     expect(row?.v).toBe(0);
   });
 
@@ -116,7 +116,7 @@ describe("migration 0076: release_requires_human_approval", () => {
     db.prepare(
       `UPDATE release_approval_requests SET status = 'approved', decided_by = 'human@x', decided_at = 9 WHERE id = 'req-1'`,
     ).run();
-    const row = db.prepare(`SELECT status FROM release_approval_requests WHERE id = 'req-1'`).get<{ status: string }>();
+    const row = db.prepare(`SELECT status FROM release_approval_requests WHERE id = 'req-1'`).get() as { status: string } | undefined;
     expect(row?.status).toBe("approved");
   });
 
@@ -137,7 +137,7 @@ describe("migration 0076: release_requires_human_approval", () => {
     const { releaseId } = seedAppAndRelease(db);
     insertRequest(db, releaseId, { status: "pending", decidedBy: null, decidedAt: null });
     db.prepare(`DELETE FROM releases WHERE id = ?`).run(releaseId);
-    const left = db.prepare(`SELECT COUNT(*) AS n FROM release_approval_requests`).get<{ n: number }>();
+    const left = db.prepare(`SELECT COUNT(*) AS n FROM release_approval_requests`).get() as { n: number } | undefined;
     expect(left?.n).toBe(0);
   });
 
@@ -146,7 +146,7 @@ describe("migration 0076: release_requires_human_approval", () => {
     const { appId, releaseId } = seedAppAndRelease(db);
     insertRequest(db, releaseId, { status: "pending", decidedBy: null, decidedAt: null });
     db.prepare(`DELETE FROM apps WHERE id = ?`).run(appId);
-    const left = db.prepare(`SELECT COUNT(*) AS n FROM release_approval_requests`).get<{ n: number }>();
+    const left = db.prepare(`SELECT COUNT(*) AS n FROM release_approval_requests`).get() as { n: number } | undefined;
     expect(left?.n).toBe(0);
   });
 });
