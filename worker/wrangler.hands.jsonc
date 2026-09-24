@@ -86,7 +86,10 @@
       {
         "queue": "hands-webhook-deliveries",
         "max_batch_size": 25,
-        "max_batch_timeout": 1,
+        // Wait up to 5s to coalesce a burst into one consumer invocation; a
+        // sparse queue still flushes within 5s (real-time vs the old 5-min
+        // cron), and a busy one amortises per-message overhead.
+        "max_batch_timeout": 5,
         "max_retries": 3
       }
     ]
