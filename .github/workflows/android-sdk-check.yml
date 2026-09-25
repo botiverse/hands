@@ -22,13 +22,17 @@ jobs:
           distribution: temurin
           java-version: "17"
       - uses: android-actions/setup-android@v3
+        with:
+          # cmdline-tools 16 on current runners no longer ships the legacy
+          # 'tools' package the action installs by default.
+          packages: platform-tools
       - name: Install pinned Android NDK
         run: sdkmanager "ndk;26.3.11579264"
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: "8.10.2"
       - name: Build SDK and run central publication gate
-        run: gradle -p clients/android testReleaseUnitTest verifyReleaseElfAlignment -PVERSION_NAME=0.12.4
+        run: gradle -p clients/android testReleaseUnitTest verifyReleaseElfAlignment -PVERSION_NAME=0.13.0
       - name: Verify local and remote publication task graphs
         run: scripts/test_android_publication_gate.sh
 

@@ -6,7 +6,7 @@ on:
       version:
         description: "SDK version to publish, for example 0.1.0"
         required: true
-        default: "0.12.4"
+        default: "0.13.0"
       dry_run:
         description: "Publish the complete SDK to the runner-local Maven repository only."
         required: true
@@ -32,6 +32,10 @@ jobs:
           java-version: "17"
 
       - uses: android-actions/setup-android@v3
+        with:
+          # cmdline-tools 16 on current runners no longer ships the legacy
+          # 'tools' package the action installs by default.
+          packages: platform-tools
 
       - name: Install pinned Android NDK
         run: sdkmanager "ndk;26.3.11579264"

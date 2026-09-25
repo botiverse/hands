@@ -875,6 +875,7 @@ export async function handlePublicFeedbackSubmit(c: Context<{ Bindings: Env }>) 
       const base = {
         app_slug: app.slug,
         signature,
+        crash_type: crashTypeOf(metadata),
         ticket_id: ticketId,
         message: message.slice(0, 300),
         version_name: meta("version_name"),
@@ -2116,6 +2117,30 @@ export async function dispatchSymbolication(
   }
 }
 
+/**
+ * Crash flavour derived from SDK metadata (no column, no migration):
+ * `anr` (Android ApplicationExitInfo REASON_ANR, `crash_type=anr`),
+ * `native` (signal records, `crash_reason=native_signal`), else `exception`.
+ */
+const CRASH_TYPE_SQL = `CASE
+    WHEN json_extract(metadata_json, '$.crash_type') = 'anr' THEN 'anr'
+    WHEN json_extract(metadata_json, '$.crash_reason') = 'native_signal' THEN 'native'
+    ELSE 'exception'
+  END`;
+export const CRASH_TYPES = ["anr", "native", "exception"] as const;
+export type CrashType = (typeof CRASH_TYPES)[number];
+
+export function crashTypeOf(metadata: Record<string, unknown>): CrashType {
+  if (metadata["crash_type"] === "anr") return "anr";
+  if (metadata["crash_reason"] === "native_signal") return "native";
+  return "exception";
+}
+
+function crashTypeParam(raw: string | undefined): CrashType | null {
+  const value = (raw ?? "").trim();
+  return (CRASH_TYPES as readonly string[]).includes(value) ? (value as CrashType) : null;
+}
+
 export async function handleListCrashGroups(c: AdminContext) {
   const appId = c.req.param("appId");
   const kindFilter = (c.req.query("kind") ?? "").trim();
@@ -2123,9 +2148,17 @@ export async function handleListCrashGroups(c: AdminContext) {
     kindFilter === "crash" ? "AND kind = 'crash'"
     : kindFilter === "error" ? "AND kind = 'error'"
     : "AND kind IN ('crash', 'error')";
+  const crashType = crashTypeParam(c.req.query("crash_type"));
+  const binds: unknown[] = [appId];
+  let typeClause = "";
+  if (crashType) {
+    binds.push(crashType);
+    typeClause = `AND ${CRASH_TYPE_SQL} = ?${binds.length}`;
+  }
   const { results } = await c.env.DB.prepare(
     `SELECT
        COALESCE(signature, '(unsignatured)') AS signature,
+       MAX(${CRASH_TYPE_SQL}) AS crash_type,
        COUNT(*) AS count,
        COUNT(DISTINCT device_id) AS device_count,
        MIN(created_at) AS first_seen,
@@ -2133,12 +2166,12 @@ export async function handleListCrashGroups(c: AdminContext) {
        GROUP_CONCAT(DISTINCT version_name) AS versions,
        SUM(CASE WHEN status IN ('open','in_progress') THEN 1 ELSE 0 END) AS open_count
      FROM feedback_tickets
-     WHERE app_id = ?1 ${kindClause}
+     WHERE app_id = ?1 ${kindClause} ${typeClause}
      GROUP BY COALESCE(signature, '(unsignatured)')
      ORDER BY count DESC, last_seen DESC
      LIMIT 200`,
   )
-    .bind(appId)
+    .bind(...binds)
     .all();
   return c.json({ groups: results });
 }
@@ -2212,11 +2245,17 @@ export async function handleListFeedback(c: AdminContext) {
     binds.push(signatureFilter);
     where += ` AND signature = ?${binds.length}`;
   }
+  const crashTypeFilter = crashTypeParam(c.req.query("crash_type"));
+  if (crashTypeFilter) {
+    binds.push(crashTypeFilter);
+    where += ` AND kind IN ('crash', 'error') AND ${CRASH_TYPE_SQL} = ?${binds.length}`;
+  }
   const { results } = await c.env.DB.prepare(
     `SELECT t.id, t.kind, t.status, t.closure_reason, t.duplicate_of_ticket_id,
             t.assignee, t.message, t.contact, t.version_name,
             t.version_code, t.channel, t.device_id, t.device_model, t.os_version,
             t.created_at, t.updated_at,
+            CASE WHEN t.kind IN ('crash', 'error') THEN ${CRASH_TYPE_SQL} END AS crash_type,
             (SELECT COUNT(*) FROM feedback_attachments fa WHERE fa.ticket_id = t.id) AS attachment_count,
             (SELECT COUNT(*) FROM feedback_comments fc WHERE fc.ticket_id = t.id) AS comment_count
      FROM feedback_tickets t
