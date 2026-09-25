@@ -84,6 +84,54 @@ rebuilding SDK UI. Browser negotiation selects the first supported entry in
 </FeedbackProvider>
 ```
 
+## Host-staged attachments
+
+A host may put one small file (for example a validated diagnostic snapshot)
+into the reporter's pending attachment list on the new-feedback form:
+
+```tsx
+const workspace = useRef<FeedbackWorkspaceHandle>(null);
+
+<button
+  onClick={() => {
+    const file = new File([json], "diagnostic.json", {
+      type: "application/json",
+    });
+    const result = workspace.current?.attachPendingFile({ file });
+    if (result && !result.ok) showReason(result.reason);
+  }}
+>
+  Attach diagnostic
+</button>
+<FeedbackWorkspace ref={workspace} route={{ view: "new" }} />
+```
+
+The contract:
+
+- **Stage only.** It never uploads or submits. The reporter sees the file,
+  can remove it, and it is sent only when they press Submit.
+- **User gesture required.** Call it synchronously from a user action (click,
+  key press). Without transient browser user activation
+  (`navigator.userActivation.isActive`) it returns
+  `user_activation_required` and changes nothing.
+- **Bytes only.** Input is exactly `{ file: File }`. No paths, URLs,
+  callbacks, or background fetches.
+- **Bounded.** At most `MAX_FEEDBACK_HOST_ATTACHMENTS` (1) host file,
+  `MAX_FEEDBACK_HOST_ATTACHMENT_BYTES` (1 MiB), types in
+  `FEEDBACK_HOST_ATTACHMENT_TYPES` (the screenshot image types plus
+  `application/json` and `text/plain`), and it counts toward the shared
+  3-attachment limit. The same file (name, type, size, lastModified) is
+  rejected as `duplicate`.
+- **Typed rejection, zero mutation.** Failures return
+  `{ ok: false, reason }` (`FeedbackHostAttachmentRejection`) and do not
+  change the pending list, show an error banner, or upload anything.
+  `composer_closed` means the new-feedback view is not open; `busy` means a
+  submission is in flight.
+
+Your Hands app and transport must accept the injected MIME type. The Hands
+public submit endpoint accepts any type. Reporter replies accept only images,
+which is why the handle targets the new-feedback form only.
+
 ## Security boundary
 
 - The package has no `appToken`, `clientSecret`, `reporterId`, or arbitrary

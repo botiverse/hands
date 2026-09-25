@@ -1,4 +1,7 @@
 export {
+  FEEDBACK_HOST_ATTACHMENT_TYPES,
+  MAX_FEEDBACK_HOST_ATTACHMENT_BYTES,
+  MAX_FEEDBACK_HOST_ATTACHMENTS,
   FeedbackInbox,
   FeedbackTicket,
   FeedbackWorkspace,
@@ -9,6 +12,10 @@ export type {
   FeedbackTicketProps,
   FeedbackWorkspaceProps,
   FeedbackPendingAttachmentOpenInput,
+  FeedbackHostAttachmentInput,
+  FeedbackHostAttachmentRejection,
+  FeedbackHostAttachmentResult,
+  FeedbackWorkspaceHandle,
   FeedbackWorkspaceNavigationOptions,
   FeedbackWorkspaceRoute,
   NewFeedbackProps,
