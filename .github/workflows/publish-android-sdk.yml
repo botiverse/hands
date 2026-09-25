@@ -6,7 +6,7 @@ on:
       version:
         description: "SDK version to publish, for example 0.1.0"
         required: true
-        default: "0.12.4"
+        default: "0.13.0"
       dry_run:
         description: "Publish the complete SDK to the runner-local Maven repository only."
         required: true

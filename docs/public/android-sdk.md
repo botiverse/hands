@@ -19,7 +19,7 @@ repositories {
 }
 
 dependencies {
-    implementation("com.github.botiverse:hands:android-sdk-v0.12.4")
+    implementation("com.github.botiverse:hands:android-sdk-v0.13.0")
 }
 ```
 
@@ -37,7 +37,7 @@ repositories {
 }
 
 dependencies {
-    implementation("build.hands:hands-android-sdk:0.12.4")
+    implementation("build.hands:hands-android-sdk:0.13.0")
 }
 ```
 
@@ -173,6 +173,24 @@ tombstone/abort-message equivalent without reading `/data/tombstones`. The
 match requires the recorded process id, native-crash reason, and a narrow
 timestamp window; retained evidence is assigned one-to-one and persisted for
 deterministic retry rather than guessed from the nearest package exit.
+
+### ANRs
+
+Since `0.13.0`, on Android 11+ (API 30) the SDK also reports ANRs
+(Application Not Responding kills). The system kills the process from outside,
+so nothing runs in-process; on the next launch the SDK reads
+`ApplicationExitInfo` entries with `REASON_ANR` and submits each one once as a
+`kind=crash` ticket with `crash_type=anr`. The system ANR thread dump is
+attached (and R8-retraced like a Java crash log). The ticket is grouped as
+`ANR@<first app frame on the main thread>`, so the same freeze clusters
+across builds and never merges with a Java exception on the same frame. The
+console's Crashes page can filter by type (Exceptions / Native / ANRs).
+
+Reporting is exactly-once: a persisted watermark advances only after the
+server accepts a ticket, so a failed upload retries on the next launch. The
+first launch with this SDK looks back 7 days, and at most 3 ANRs are sent per
+launch. Pass `captureAnrs = false` to `Hands.install(...)` to opt out. Below
+API 30 this is a no-op.
 
 ## Release health
 

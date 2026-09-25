@@ -31,6 +31,9 @@ import org.json.JSONObject
  * local files are removed on success. At most [MAX_STORED_CRASHES] recent
  * crashes are kept.
  *
+ * With `captureAnrs` (default on), ANR kills recorded by the system
+ * (Android 11+) are reported the same way on the next launch; see [HandsAnr].
+ *
  * This replaces the app's previous in-process crash reporter; app-specific
  * context (e.g. recent diagnostics) is injected via [extraContext].
  */
@@ -52,6 +55,7 @@ object HandsCrash {
         copyToClipboard: Boolean = true,
         uploadOnLaunch: Boolean = true,
         captureNativeCrashes: Boolean = true,
+        captureAnrs: Boolean = true,
         reportDeviceAnalytics: Boolean = true,
         extraContext: (() -> String)? = null,
     ) {
@@ -102,6 +106,17 @@ object HandsCrash {
                 }
                 if (uploadOnLaunch) runCatching {
                     uploadPending(appContext, baseUrl, appSlug, versionName, versionCode, channel, clientKey)
+                    if (captureAnrs) {
+                        // ANR kills leave no in-process trace; read them from the
+                        // system exit history (API 30+, no-op below).
+                        runCatching {
+                            kotlinx.coroutines.runBlocking {
+                                HandsAnr.uploadPending(
+                                    appContext, baseUrl, appSlug, versionName, versionCode, channel, clientKey,
+                                )
+                            }
+                        }.onFailure { Log.w(TAG, "ANR upload pass failed", it) }
+                    }
                     if (captureNativeCrashes) {
                         // Dedicated background thread — blocking here is fine.
                         runCatching {

@@ -336,8 +336,9 @@ export function registerFeedbackRoutes(registry: OpenApiRegistry) {
     request: {
       params: AppIdParam,
       query: z.object({
-        status: z.string().optional(),
-        limit: z.coerce.number().int().optional(),
+        kind: z.enum(["crash", "error"]).optional(),
+        crash_type: z.enum(["anr", "native", "exception"]).optional()
+          .describe("Filter by crash flavour; each group also returns its crash_type."),
       }),
     },
     responses: {

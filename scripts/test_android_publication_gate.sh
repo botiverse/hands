@@ -4,7 +4,7 @@ export PYTHONDONTWRITEBYTECODE=1
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 GRADLE_BIN="${GRADLE_BIN:-gradle}"
-SDK_VERSION="${HANDS_ANDROID_SDK_TEST_VERSION:-0.12.4}"
+SDK_VERSION="${HANDS_ANDROID_SDK_TEST_VERSION:-0.13.0}"
 
 command -v "${GRADLE_BIN}" >/dev/null 2>&1 || {
   echo "error: ${GRADLE_BIN} is required" >&2

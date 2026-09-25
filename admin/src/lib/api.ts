@@ -1745,7 +1745,11 @@ export interface FeedbackTicket {
   updated_at: number;
   attachment_count: number;
   comment_count: number;
+  /** Crash flavour for crash/error tickets (derived server-side); null otherwise. */
+  crash_type?: CrashType | null;
 }
+
+export type CrashType = "anr" | "native" | "exception";
 
 export interface FeedbackDetail {
   ticket: FeedbackTicket & {
@@ -1780,6 +1784,7 @@ export const listFeedback = (
     deviceId?: string | undefined;
     versionCode?: number | undefined;
     signature?: string | undefined;
+    crashType?: CrashType | undefined;
   },
 ) => {
   const params = new URLSearchParams();
@@ -1788,6 +1793,7 @@ export const listFeedback = (
   if (filters?.deviceId) params.set("device_id", filters.deviceId);
   if (filters?.versionCode != null) params.set("version_code", String(filters.versionCode));
   if (filters?.signature) params.set("signature", filters.signature);
+  if (filters?.crashType) params.set("crash_type", filters.crashType);
   const qs = params.toString();
   return request<{ tickets: FeedbackTicket[] }>(
     `/api/apps/${appId}/feedback${qs ? `?${qs}` : ""}`,
@@ -1992,6 +1998,7 @@ export const publicAppIconUrl = (slug: string) => `${API_BASE}/public/apps/${slu
 
 export interface CrashGroup {
   signature: string;
+  crash_type: CrashType;
   count: number;
   device_count: number;
   first_seen: number;
@@ -2111,11 +2118,16 @@ export interface FeedbackStats {
 export const getFeedbackStats = (appId: string) =>
   request<FeedbackStats>(`/api/apps/${appId}/feedback/stats`, { admin: true });
 
-export const listCrashGroups = (appId: string, kind?: string) =>
-  request<{ groups: CrashGroup[] }>(
-    `/api/apps/${appId}/feedback/crash-groups${kind ? `?kind=${encodeURIComponent(kind)}` : ""}`,
+export const listCrashGroups = (appId: string, kind?: string, crashType?: CrashType) => {
+  const params = new URLSearchParams();
+  if (kind) params.set("kind", kind);
+  if (crashType) params.set("crash_type", crashType);
+  const qs = params.toString();
+  return request<{ groups: CrashGroup[] }>(
+    `/api/apps/${appId}/feedback/crash-groups${qs ? `?${qs}` : ""}`,
     { admin: true },
   );
+};
 
 export const purgeApp = (appId: string, confirmSlug: string) =>
   request<{ ok: true; purged_app_id: string; r2_objects_deleted: number }>(

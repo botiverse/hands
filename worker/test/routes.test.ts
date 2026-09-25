@@ -9875,6 +9875,92 @@ describe("quiver public API v2 — scope resolution", () => {
     expect(home.open_count).toBe(2);
   });
 
+  it("feedback: Android ANR crashes group by main-thread frame and filter by crash_type", async () => {
+    const env = makeEnv();
+    env.APK_BUCKET = { put: async () => {}, get: async () => null };
+    const { handlePublicFeedbackSubmit, handleListCrashGroups, handleListFeedback } = await import(
+      "../src/routes/feedback"
+    );
+    const submit = async (device: string, extras: Record<string, unknown>) => {
+      const form = new FormData();
+      form.set("message", "crash");
+      form.set("kind", "crash");
+      form.set(
+        "metadata",
+        JSON.stringify({ version_name: "1.0.1", version_code: 1000101, device_id: device, ...extras }),
+      );
+      const ctx = {
+        env,
+        executionCtx: { waitUntil: () => {} },
+        req: {
+          param: (n: string) => (n === "slug" ? "scope-app" : ""),
+          header: (n: string) => (n === "X-Quiver-Client-Key" ? "qk_test" : undefined),
+          query: () => undefined,
+          formData: async () => form,
+          raw: { cf: { clientIp: `10.0.1.${device.length}` } },
+        },
+        json: (data: unknown, status = 200) => new Response(JSON.stringify(data), { status }),
+      } as any;
+      return handlePublicFeedbackSubmit(ctx);
+    };
+    // Shape sent by HandsAnr.kt (clients/android).
+    const anr = (frame: string) => ({
+      crash_type: "anr",
+      crash_reason: "anr",
+      crash_exception_class: "ANR",
+      crash_top_frame: frame,
+      crash_thread: "main",
+    });
+    expect((await submit("devA", anr("app.members.MemberTab.bind(MemberTab.kt:88)"))).status).toBe(201);
+    expect((await submit("devB", anr("app.members.MemberTab.bind(MemberTab.kt:91)"))).status).toBe(201);
+    expect((await submit("devC", {
+      crash_exception_class: "java.lang.IllegalStateException",
+      crash_top_frame: "app.members.MemberTab.bind(MemberTab.kt:88)",
+    })).status).toBe(201);
+    expect((await submit("devD", {
+      crash_exception_class: "SIGSEGV",
+      crash_top_frame: "libraft.so+0x1a2b",
+      crash_reason: "native_signal",
+    })).status).toBe(201);
+
+    const groups = async (query: Record<string, string>) => {
+      const ctx = {
+        env,
+        req: { param: (n: string) => (n === "appId" ? "app-scope" : ""), query: (k: string) => query[k] },
+        json: (data: unknown, status = 200) => new Response(JSON.stringify(data), { status }),
+      } as any;
+      return (await responseJson<any>(await handleListCrashGroups(ctx))).groups as any[];
+    };
+    const all = await groups({});
+    expect(all).toHaveLength(3);
+    // Same frame, different builds' line numbers → one ANR group, never merged
+    // with the Java exception on the same frame.
+    const anrGroup = all.find((g) => g.signature === "ANR@app.members.MemberTab.bind")!;
+    expect(anrGroup).toMatchObject({ crash_type: "anr", count: 2, device_count: 2 });
+    expect(all.find((g) => g.signature.startsWith("java.lang.IllegalStateException@"))!.crash_type)
+      .toBe("exception");
+    expect(all.find((g) => g.signature.startsWith("SIGSEGV@"))!.crash_type).toBe("native");
+
+    expect((await groups({ crash_type: "anr" })).map((g) => g.signature))
+      .toEqual(["ANR@app.members.MemberTab.bind"]);
+    expect((await groups({ crash_type: "native" })).map((g) => g.crash_type)).toEqual(["native"]);
+    expect(await groups({ crash_type: "exception" })).toHaveLength(1);
+    // Unknown values are ignored (no filter), never interpolated.
+    expect(await groups({ crash_type: "anr' OR 1=1 --" })).toHaveLength(3);
+
+    const listCtx = {
+      env,
+      req: {
+        param: (n: string) => (n === "appId" ? "app-scope" : ""),
+        query: (k: string) => ({ kind: "crash", crash_type: "anr" } as Record<string, string>)[k],
+      },
+      json: (data: unknown, status = 200) => new Response(JSON.stringify(data), { status }),
+    } as any;
+    const tickets = (await responseJson<any>(await handleListFeedback(listCtx))).tickets as any[];
+    expect(tickets).toHaveLength(2);
+    expect(tickets.every((t) => t.crash_type === "anr")).toBe(true);
+  });
+
   it("parseNativeFrames bounds and shape-checks SDK input", async () => {
     const { parseNativeFrames } = await import("../src/routes/feedback");
     const frames = parseNativeFrames(JSON.stringify([
