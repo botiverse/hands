@@ -2,9 +2,11 @@ import {
   type ChangeEvent,
   type KeyboardEvent,
   type ReactNode,
+  type Ref,
   type RefObject,
   useCallback,
   useEffect,
+  useImperativeHandle,
   useLayoutEffect,
   useMemo,
   useRef,
@@ -146,7 +148,113 @@ type PendingAttachment = {
   file: File;
   progress: number;
   state: "ready" | "uploading" | "failed";
+  /** `host` entries came through `attachPendingFile`, never a file picker. */
+  source?: "user" | "host";
 };
+
+/** Largest file a host may inject through `attachPendingFile`. */
+export const MAX_FEEDBACK_HOST_ATTACHMENT_BYTES = 1024 * 1024;
+/** At most this many host-injected files may be pending at once. */
+export const MAX_FEEDBACK_HOST_ATTACHMENTS = 1;
+/** MIME types a host may inject (screenshots plus small text diagnostics). */
+export const FEEDBACK_HOST_ATTACHMENT_TYPES = [
+  ...FEEDBACK_ATTACHMENT_TYPES,
+  "application/json",
+  "text/plain",
+] as const;
+const MAX_FEEDBACK_HOST_ATTACHMENT_NAME = 120;
+
+export type FeedbackHostAttachmentInput = {
+  /** Caller-built bytes with an explicit name and MIME type. */
+  file: File;
+};
+
+export type FeedbackHostAttachmentRejection =
+  /** No transient browser user activation (call only from a user gesture). */
+  | "user_activation_required"
+  /** The new-feedback composer is not mounted/visible. */
+  | "composer_closed"
+  /** A submission is in flight. */
+  | "busy"
+  /** Input is not exactly `{ file: File }`. */
+  | "invalid_input"
+  | "invalid_name"
+  | "empty"
+  | "too_large"
+  | "unsupported_type"
+  /** The same file (name, type, size, lastModified) is already pending. */
+  | "duplicate"
+  /** Host or total pending-attachment limit reached. */
+  | "limit_reached";
+
+export type FeedbackHostAttachmentResult =
+  | { ok: true }
+  | { ok: false; reason: FeedbackHostAttachmentRejection };
+
+/**
+ * Imperative handle for hosts. `attachPendingFile` only adds a file to the
+ * reporter's pending list; it never uploads or submits. The reporter still
+ * reviews/removes it and presses Submit.
+ */
+export type FeedbackWorkspaceHandle = {
+  attachPendingFile(
+    input: FeedbackHostAttachmentInput,
+  ): FeedbackHostAttachmentResult;
+};
+
+function hasTransientUserActivation() {
+  const activation = (
+    globalThis.navigator as
+      | (Navigator & { userActivation?: { isActive?: boolean } })
+      | undefined
+  )?.userActivation;
+  return activation?.isActive === true;
+}
+
+function fileIdentity(file: File) {
+  return JSON.stringify([file.name, file.type, file.size, file.lastModified]);
+}
+
+function hostAttachmentRejection(
+  input: unknown,
+  pending: PendingAttachment[],
+): FeedbackHostAttachmentRejection | null {
+  if (
+    !input ||
+    typeof input !== "object" ||
+    Object.keys(input).length !== 1 ||
+    !("file" in input) ||
+    typeof File === "undefined" ||
+    !((input as { file: unknown }).file instanceof File)
+  )
+    return "invalid_input";
+  const { file } = input as FeedbackHostAttachmentInput;
+  const name = file.name;
+  if (
+    !name ||
+    name.length > MAX_FEEDBACK_HOST_ATTACHMENT_NAME ||
+    /[\\/\u0000-\u001f]/.test(name) ||
+    name === "." ||
+    name === ".."
+  )
+    return "invalid_name";
+  if (file.size <= 0) return "empty";
+  if (file.size > MAX_FEEDBACK_HOST_ATTACHMENT_BYTES) return "too_large";
+  if (
+    !(FEEDBACK_HOST_ATTACHMENT_TYPES as readonly string[]).includes(file.type)
+  )
+    return "unsupported_type";
+  const identity = fileIdentity(file);
+  if (pending.some((item) => fileIdentity(item.file) === identity))
+    return "duplicate";
+  if (
+    pending.length >= MAX_FEEDBACK_ATTACHMENTS ||
+    pending.filter((item) => item.source === "host").length >=
+      MAX_FEEDBACK_HOST_ATTACHMENTS
+  )
+    return "limit_reached";
+  return null;
+}
 
 export type FeedbackPendingAttachmentOpenInput = {
   file: File;
@@ -183,6 +291,18 @@ export function validateFeedbackAttachments(files: File[]): string | null {
       return `${file.name} is larger than 10 MB.`;
   }
   return null;
+}
+
+function localizedPendingAttachmentError(
+  pending: PendingAttachment[],
+  message: (key: FeedbackMessageKey, values?: FeedbackMessageValues) => string,
+) {
+  if (pending.length > MAX_FEEDBACK_ATTACHMENTS)
+    return message("attachmentTooMany", { count: MAX_FEEDBACK_ATTACHMENTS });
+  return localizedAttachmentError(
+    pending.filter((item) => item.source !== "host").map(({ file }) => file),
+    message,
+  );
 }
 
 function localizedAttachmentError(
@@ -618,16 +738,17 @@ function FeedbackPendingAttachmentImage({
   const { message } = useHandsFeedback();
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
 
+  const isImage = file.type.startsWith("image/");
   useLayoutEffect(() => {
-    if (typeof URL.createObjectURL !== "function") return;
+    if (!isImage || typeof URL.createObjectURL !== "function") return;
     const url = URL.createObjectURL(file);
     setPreviewUrl(url);
     return () => {
       if (typeof URL.revokeObjectURL === "function") URL.revokeObjectURL(url);
     };
-  }, [file]);
+  }, [file, isImage]);
 
-  if (!previewUrl) {
+  if (!isImage || !previewUrl) {
     return (
       <ComposerAttachmentFile>
         <ImagePlus aria-hidden="true" />
@@ -1938,12 +2059,15 @@ export type NewFeedbackProps = {
   onOpenPendingAttachment?: (
     input: FeedbackPendingAttachmentOpenInput,
   ) => void;
+  /** Host handle; see `FeedbackWorkspaceHandle`. */
+  ref?: Ref<FeedbackWorkspaceHandle>;
 };
 
 export function NewFeedback({
   onCancel,
   onCreated,
   onOpenPendingAttachment,
+  ref,
 }: NewFeedbackProps) {
   const { message: copy, reportUnread, transport } = useHandsFeedback();
   const safeError = useSafeError();
@@ -1958,6 +2082,38 @@ export function NewFeedback({
     null,
   );
   const textareaRef = useAutosize(message);
+  const attachmentsRef = useRef(attachments);
+  attachmentsRef.current = attachments;
+  const sendingRef = useRef(sending);
+  sendingRef.current = sending;
+  useImperativeHandle(
+    ref,
+    () => ({
+      attachPendingFile(input) {
+        // The user-action gate comes first: without a live user gesture
+        // nothing below runs and nothing is mutated.
+        if (!hasTransientUserActivation())
+          return { ok: false, reason: "user_activation_required" };
+        if (sendingRef.current) return { ok: false, reason: "busy" };
+        const reason = hostAttachmentRejection(input, attachmentsRef.current);
+        if (reason) return { ok: false, reason };
+        const next: PendingAttachment[] = [
+          ...attachmentsRef.current,
+          {
+            id: submissionId(),
+            file: input.file,
+            progress: 0,
+            state: "ready",
+            source: "host",
+          },
+        ];
+        attachmentsRef.current = next;
+        setAttachments(next);
+        return { ok: true };
+      },
+    }),
+    [],
+  );
   useEffect(() => {
     actionController.current?.abort();
     actionController.current = null;
@@ -1973,7 +2129,7 @@ export function NewFeedback({
     const normalized = message.trim();
     if (!normalized || sending) return;
     const files = attachments.map(({ file }) => file);
-    const attachmentError = localizedAttachmentError(files, copy);
+    const attachmentError = localizedPendingAttachmentError(attachments, copy);
     if (attachmentError) {
       setError(attachmentError);
       return;
@@ -2041,8 +2197,16 @@ export function NewFeedback({
 
   const choose = (event: ChangeEvent<HTMLInputElement>) => {
     const selected = Array.from(event.currentTarget.files ?? []);
-    const combined = [...attachments.map(({ file }) => file), ...selected];
-    const attachmentError = localizedAttachmentError(combined, copy);
+    const combined = [
+      ...attachments,
+      ...selected.map((file) => ({
+        id: "",
+        file,
+        progress: 0,
+        state: "ready" as const,
+      })),
+    ];
+    const attachmentError = localizedPendingAttachmentError(combined, copy);
     if (attachmentError) {
       setError(attachmentError);
       event.currentTarget.value = "";
@@ -2197,6 +2361,11 @@ export type FeedbackWorkspaceProps = {
   onOpenPendingAttachment?: FeedbackTicketProps["onOpenPendingAttachment"];
   /** Enables mobile pull-to-refresh for the inbox and ticket conversation. */
   enablePullToRefresh?: boolean;
+  /**
+   * Host handle. `attachPendingFile` targets the new-feedback composer only
+   * and returns `composer_closed` on any other route.
+   */
+  ref?: Ref<FeedbackWorkspaceHandle>;
 };
 
 export function FeedbackWorkspace({
@@ -2206,6 +2375,7 @@ export function FeedbackWorkspace({
   onOpenAttachment,
   onOpenPendingAttachment,
   enablePullToRefresh = false,
+  ref,
 }: FeedbackWorkspaceProps) {
   const { theme } = useHandsFeedback();
   const initial = useMemo<FeedbackWorkspaceRoute>(
@@ -2227,6 +2397,20 @@ export function FeedbackWorkspace({
   const [routeTicket, setRouteTicket] =
     useState<FeedbackTicketSummary | null>(null);
   const originTicket = useRef<string | null>(initialTicketId ?? null);
+  const newFeedbackRef = useRef<FeedbackWorkspaceHandle | null>(null);
+  useImperativeHandle(
+    ref,
+    () => ({
+      attachPendingFile(input) {
+        if (!hasTransientUserActivation())
+          return { ok: false, reason: "user_activation_required" };
+        const composer = newFeedbackRef.current;
+        if (!composer) return { ok: false, reason: "composer_closed" };
+        return composer.attachPendingFile(input);
+      },
+    }),
+    [],
+  );
   const pendingInboxFocus = useRef<string | null>(null);
   const rootRef = useRef<HTMLDivElement | null>(null);
   const navigate = (
@@ -2301,6 +2485,7 @@ export function FeedbackWorkspace({
       />
       {route.view === "new" && (
         <NewFeedback
+          ref={newFeedbackRef}
           {...(onOpenPendingAttachment ? { onOpenPendingAttachment } : {})}
           onCancel={() => navigate({ view: "inbox" })}
           onCreated={(ticketId, detail) => {
