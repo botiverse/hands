@@ -167,6 +167,7 @@ import {
   handleGetBetaAppDescription,
   handleUpdateBetaAppDescription,
 } from "./routes/testflight_beta_app_description";
+import { handleGetTestflightCrashLog, handleListTestflightCrashes } from "./routes/testflight_crashes";
 import { handleGenerateDeltaPatches, handleDeltaSources } from "./routes/delta";
 import { handleUploadApk } from "./routes/upload";
 import {
@@ -1230,6 +1231,12 @@ admin.put(
   "/api/apps/:appId/testflight-beta-app-description",
   requireAppRole("publisher"),
   handleUpdateBetaAppDescription,
+);
+admin.get("/api/apps/:appId/testflight-crashes", requireAppRole("viewer"), handleListTestflightCrashes);
+admin.get(
+  "/api/apps/:appId/testflight-crashes/:submissionId/log",
+  requireAppRole("viewer"),
+  handleGetTestflightCrashLog,
 );
 admin.get("/api/apps/:appId/appgallery-review", requireAppRole("viewer"), handleAppGalleryReview);
 admin.put("/api/apps/:appId/asc-credentials", requireAppRole("admin"), handleSetAscCredentials);
