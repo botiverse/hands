@@ -3945,6 +3945,45 @@ describe("quiver apps — default_channel_id", () => {
       .all();
     expect((results[0] as any).default_channel_id).toBeNull();
   });
+
+  it("creating a channel whose slug already exists returns 409, not 500", async () => {
+    const env = makeEnv();
+    const { handleCreateChannel } = await import("../src/routes/channels");
+    const ctx = (body: unknown) => ({
+      env,
+      req: {
+        param: (n: string) => (n === "appId" ? "app-dc" : ""),
+        json: async () => body,
+        header: () => undefined,
+      },
+      get: () => undefined,
+      json: (data: unknown, status = 200) => new Response(JSON.stringify(data), { status }),
+    }) as any;
+
+    const dup = await handleCreateChannel(ctx({ slug: "production", name: "Prod again" }));
+    expect(dup.status).toBe(409);
+    expect(await dup.json()).toMatchObject({ code: "channel_exists", id: "ch-prod" });
+
+    const created = await handleCreateChannel(ctx({ slug: "nightly", name: "Nightly" }));
+    expect(created.status).toBe(201);
+
+    // A concurrent create that slips past the pre-check still maps the
+    // UNIQUE(app_id, slug) violation to 409.
+    const realPrepare = env.DB.prepare.bind(env.DB);
+    env.DB.prepare = (sql: string) =>
+      /^SELECT id FROM channels WHERE app_id/.test(sql)
+        ? { bind: () => ({ first: async () => null }) }
+        : realPrepare(sql);
+    const raced = await handleCreateChannel(ctx({ slug: "beta", name: "Beta" }));
+    expect(raced.status).toBe(409);
+    expect(await raced.json()).toMatchObject({ code: "channel_exists" });
+    env.DB.prepare = realPrepare;
+
+    const { results } = await env.DB.prepare(
+      "SELECT slug FROM channels WHERE app_id = ?1 ORDER BY slug",
+    ).bind("app-dc").all();
+    expect(results.map((r: any) => r.slug)).toEqual(["beta", "nightly", "production"]);
+  });
 });
 
 describe("quiver releases — draft lifecycle", () => {
