@@ -92,7 +92,11 @@ export function clearConfig(): void {
   const next: CliConfig = { ...current };
   delete next.authToken;
   delete next.sessionCookie;
-  saveConfig(next);
+  // Write the file directly: saveConfig() merges over the current config, which
+  // would put the deleted credentials straight back (logout used to be a no-op).
+  const path = configPath();
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, JSON.stringify(next, null, 2) + "\n", { mode: 0o600 });
 }
 
 export function resolveApiBase(): string {

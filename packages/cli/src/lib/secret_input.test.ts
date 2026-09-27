@@ -41,3 +41,26 @@ describe("hidden secret input", () => {
     expect("error" in normalizeToken("not-a-jwt")).toBe(true);
   });
 });
+
+describe("config clearing", () => {
+  it("clearConfig actually removes the saved credentials", async () => {
+    const { mkdtempSync, readFileSync } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const home = mkdtempSync(join(tmpdir(), "hands-cfg-"));
+    const prev = { HOME: process.env.HOME, XDG: process.env.XDG_CONFIG_HOME };
+    process.env.HOME = home;
+    delete process.env.XDG_CONFIG_HOME;
+    try {
+      const cfg = await import("./config.js");
+      cfg.saveConfig({ apiBase: "https://hands.build", authToken: "a.b.c", sessionCookie: "s" });
+      cfg.clearConfig();
+      const onDisk = JSON.parse(readFileSync(cfg.configPath(), "utf8"));
+      expect(onDisk).toEqual({ apiBase: "https://hands.build" });
+      expect(cfg.getConfig().authToken).toBeUndefined();
+    } finally {
+      process.env.HOME = prev.HOME;
+      if (prev.XDG !== undefined) process.env.XDG_CONFIG_HOME = prev.XDG;
+    }
+  });
+});

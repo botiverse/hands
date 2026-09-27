@@ -22,6 +22,19 @@ import { admitAgent, agentAuthPath, HANDS_SERVICE } from "../lib/agent_env.js";
 import { runAgentLogin } from "../lib/agent_auth.js";
 import { normalizeToken, promptSecret } from "../lib/secret_input.js";
 
+/** POST /api/auth/logout with the given bearer; true when the server confirmed. */
+async function revokeSession(apiBase: string, token: string): Promise<boolean> {
+  try {
+    const res = await fetch(new URL("/api/auth/logout", apiBase), {
+      method: "POST",
+      headers: { accept: "application/json", authorization: `Bearer ${token}` },
+    });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
 export function registerLoginCommands(program: Command): void {
   const cmd = program
     .command("login")
@@ -128,6 +141,13 @@ export function registerLoginCommands(program: Command): void {
           process.exit(1);
         }
 
+        // Replacing an older human login: revoke it (best-effort) so re-login
+        // actually retires the previous session instead of leaving it live.
+        const previous = getConfig();
+        const previousToken = previous.authToken ?? previous.sessionCookie;
+        if (previousToken && previousToken !== token) {
+          await revokeSession(previous.apiBase ?? apiBase, previousToken);
+        }
         clearConfig();
         saveConfig({ apiBase, authToken: token });
         console.log(`✔ Token verified — you're logged in. Saved to ${configPath()}`);
@@ -146,7 +166,7 @@ export function registerLoginCommands(program: Command): void {
   program
     .command("logout")
     .description("Clear the saved Hands token (agent store in an agent, else human config).")
-    .action(() => {
+    .action(async () => {
       const admission = admitAgent();
       if (admission.kind === "agent") {
         // Clear the per-agent store only; never touch the human config.
@@ -169,8 +189,20 @@ export function registerLoginCommands(program: Command): void {
         console.log("Not logged in (no saved Hands token).");
         return;
       }
+      // Revoke server-side first so a copied/leaked token stops working too;
+      // clearing only the local file would leave the session alive for 14 days.
+      const saved = cfg.authToken ?? cfg.sessionCookie!;
+      const revoked = await revokeSession(cfg.apiBase ?? getApiBase(), saved);
       clearConfig();
       console.log(`✔ Logged out (token cleared from ${configPath()}).`);
+      if (revoked) {
+        console.log("  Session revoked on the server.");
+      } else {
+        console.error(
+          "  ⚠ Could not revoke the session on the server (offline?). The token stays valid until it expires;" +
+            " revoke it with: curl -X POST <api>/api/auth/logout -H \"Authorization: Bearer <token>\"",
+        );
+      }
     });
 }
 
