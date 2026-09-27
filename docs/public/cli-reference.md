@@ -526,6 +526,11 @@ printf %s "$NEW_SECRET" | hands webhooks update my-app <webhook-id> --secret-std
 hands webhooks delete my-app <webhook-id>
 ```
 
+`release:new` payloads carry `release_id`, `app_id`, `build_id`, `channel_id`
+plus `version_name`, `version_code`, `app_slug` and `channel` (slug), so a
+consumer can link the pinned public page `https://hands.build/apps/<app_slug>/v/<version_name>`
+without an API call.
+
 Omitting `--events` subscribes to all events. Deliveries carry
 `X-Hands-Signature: sha256=<hex>` (HMAC-SHA256 of the raw body with the secret). REST:
 `/api/apps/:appId/webhooks` (list/create), `/api/apps/:appId/webhooks/:id`
