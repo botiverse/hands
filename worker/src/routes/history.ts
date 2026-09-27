@@ -198,6 +198,69 @@ export async function handlePublicLatestReleaseLanding(c: Context<{ Bindings: En
   });
 }
 
+// Same row shape as LATEST_LANDING_SQL, pinned to one published version by
+// its version_name. superseded releases still resolve (an announcement link
+// must not rot when the next version ships); drafts, cancelled, hidden and QA
+// builds never do. When several channels shipped the same version_name, main
+// wins, then the highest build number.
+const VERSION_LANDING_SQL = `
+  SELECT r.id AS release_id, r.status AS release_status,
+         COALESCE(b.completed_at, r.created_at) AS released_at,
+         ch.slug AS channel_slug,
+         b.version_name, b.version_code,
+         COALESCE(r.changelog, b.changelog) AS changelog,
+         COALESCE(
+           json_extract(b.parsed_metadata_json, '$.package_id'),
+           json_extract(b.parsed_metadata_json, '$.package_name'),
+           json_extract(b.build_metadata_json, '$.package_id'),
+           json_extract(b.build_metadata_json, '$.package_name'),
+           json_extract(b.build_metadata_json, '$.android.package_id')
+         ) AS package_id,
+         ba.platform, ba.arch, ba.variant, ba.filetype,
+         ba.size_bytes, ba.r2_key, ba.file_hash
+  FROM releases r
+  JOIN builds b ON b.id = r.build_id
+  JOIN channels ch ON ch.id = r.channel_id
+  JOIN build_assets ba ON ba.build_id = b.id AND ba.artifact_kind = 'installable'
+  WHERE r.app_id = ?1 AND r.hidden = 0 AND r.status IN ('active', 'superseded')
+    AND b.product_type != 'ios-simulator-qa' AND b.release_type != 'qa'
+    AND b.version_name = ?2
+    AND (?3 IS NULL OR ch.slug = ?3)
+  ORDER BY CASE WHEN ?3 IS NULL AND ch.slug = 'main' THEN 0 ELSE 1 END,
+           b.version_code DESC, released_at DESC,
+           ba.filetype = 'apk' DESC, ba.created_at ASC
+  LIMIT 1`;
+
+/** Version-pinned public landing page: `/apps/<slug>/<version_name>`.
+ * Unlike `/latest` it never rolls forward, so release announcements can link
+ * the exact version (notes + download) without minting a share token. Same
+ * `public_history` gate as the rest of the public history surface. */
+export async function handlePublicVersionLanding(c: Context<{ Bindings: Env }>) {
+  const slug = c.req.param("slug");
+  const version = c.req.param("version");
+  if (!slug || !version) return new Response("Not found", { status: 404 });
+  const app = await loadHistoryApp(c.env.DB, slug);
+  if (!app || !app.public_history) return new Response("Not found", { status: 404 });
+  const requested = c.req.query("channel")?.trim() || null;
+  const channel = requested
+    ? await resolvePublicChannelSlug(c.env.DB, app.id, requested)
+    : null;
+  const row = await c.env.DB.prepare(VERSION_LANDING_SQL)
+    .bind(app.id, version, channel)
+    .first<LatestLandingRow>();
+  if (!row) return new Response("Version not found", { status: 404 });
+  const lang =
+    c.req.query("lang")?.trim() ||
+    (c.req.header("accept-language") ?? "").split(",")[0]?.trim().split(";")[0] ||
+    null;
+  return new Response(renderLatestLandingPage(app, row, lang, historyStrings(c), { pinned: true }), {
+    headers: {
+      "content-type": "text/html; charset=utf-8",
+      "cache-control": "public, max-age=60",
+    },
+  });
+}
+
 export async function handlePublicLatestReleaseDownload(c: Context<{ Bindings: Env }>) {
   const slug = c.req.param("slug");
   if (!slug) return c.json({ error: "slug required" }, 400);
@@ -403,9 +466,16 @@ function renderLatestLandingPage(
   row: LatestLandingRow,
   lang: string | null,
   t: HistoryStrings,
+  opts: { pinned?: boolean } = {},
 ): string {
   const notes = resolveChangelog(row.changelog, lang);
   const channelQuery = `?channel=${encodeURIComponent(row.channel_slug)}`;
+  // Pinned (per-version) pages download that exact release and only show the
+  // "latest" badge while it still is; /latest keeps its rolling link.
+  const downloadHref = opts.pinned
+    ? `/apps/${esc(app.slug)}/history/${esc(row.release_id)}/download`
+    : `/apps/${esc(app.slug)}/latest/download${channelQuery}`;
+  const showLatestBadge = !opts.pinned || row.release_status === "active";
   return `<!doctype html>
 <html lang="${t.htmlLang}">
 <head>
@@ -436,7 +506,7 @@ function renderLatestLandingPage(
     <header>
       ${app.icon_r2_key ? `<img src="/public/apps/${esc(app.slug)}/icon" alt="" width="56" height="56">` : ""}
       <div>
-        <h1>${esc(app.name)} <span class="badge">${t.latestBadge}</span></h1>
+        <h1>${esc(app.name)}${showLatestBadge ? ` <span class="badge">${t.latestBadge}</span>` : ""}</h1>
         <p>${esc(row.version_name)} · ${t.build} ${row.version_code} · ${esc(row.channel_slug)}</p>
       </div>
     </header>
@@ -446,7 +516,7 @@ function renderLatestLandingPage(
       <dt>${t.platformLabel}</dt><dd>${esc([row.platform, row.arch, row.variant].filter(Boolean).join(" / "))}</dd>
       <dt>${t.checksumLabel}</dt><dd>${esc(row.file_hash)}</dd>
     </dl>
-    <a class="download" href="/apps/${esc(app.slug)}/latest/download${channelQuery}">${t.download}</a>
+    <a class="download" href="${downloadHref}">${t.download}</a>
     <a class="history" href="/apps/${esc(app.slug)}/history">${t.versionHistory}</a>
     ${notes ? `<div class="notes">${changelogToHtml(notes)}</div>` : ""}
   </main>

@@ -1113,6 +1113,45 @@ export async function handleListReleaseChecks(c: AdminContext) {
  * presigned URL expires. Best-effort: a payload-assembly failure never fails
  * the release creation.
  */
+/**
+ * Emit `release:new` with enough context for a consumer to link the release
+ * without a follow-up API call: version (so it can build the pinned
+ * `/notes/<app_slug>?version_code=<N>` URL) plus app/channel slugs. The four
+ * identity fields are always present; the enrichment is additive and a lookup
+ * failure falls back to the bare body rather than dropping the event.
+ */
+export async function emitReleaseNew(
+  env: Env,
+  orgId: string,
+  appId: string,
+  base: { release_id: string; app_id: string; build_id: unknown; channel_id: unknown },
+): Promise<void> {
+  let extra: Record<string, unknown> = {};
+  try {
+    const row = await env.DB.prepare(
+      `SELECT b.version_name, b.version_code, a.slug AS app_slug, ch.slug AS channel
+       FROM releases r
+       JOIN apps a ON a.id = r.app_id
+       JOIN builds b ON b.id = r.build_id
+       LEFT JOIN channels ch ON ch.id = r.channel_id
+       WHERE r.app_id = ?1 AND r.id = ?2`,
+    )
+      .bind(appId, base.release_id)
+      .first<{ version_name: string | null; version_code: number | null; app_slug: string; channel: string | null }>();
+    if (row) {
+      extra = {
+        version_name: row.version_name,
+        version_code: row.version_code,
+        app_slug: row.app_slug,
+        channel: row.channel,
+      };
+    }
+  } catch (err) {
+    console.warn("[release:new] version lookup failed; emitting bare payload", err);
+  }
+  await emitWebhookEvent(env, { orgId, appId, event: "release:new", body: { ...base, ...extra } });
+}
+
 async function emitReleaseDraftCreated(
   c: AdminContext,
   appId: string,
@@ -1274,11 +1313,11 @@ export async function handleCreateRelease(c: AdminContext) {
     const orgId = c.get("org_id");
     if (status === "active" && orgId) {
       c.executionCtx?.waitUntil(
-        emitWebhookEvent(c.env, {
-          orgId,
-          appId,
-          event: "release:new",
-          body: { release_id: id, app_id: appId, build_id: body.build_id, channel_id: body.channel_id },
+        emitReleaseNew(c.env, orgId, appId, {
+          release_id: id,
+          app_id: appId,
+          build_id: body.build_id,
+          channel_id: body.channel_id,
         }),
       );
     } else if (status === "draft") {
@@ -2141,16 +2180,11 @@ async function executeReleasePublish(
   const orgId = c.get("org_id");
   if (orgId) {
     c.executionCtx?.waitUntil(
-      emitWebhookEvent(c.env, {
-        orgId,
-        appId,
-        event: "release:new",
-        body: {
-          release_id: releaseId,
-          app_id: appId,
-          build_id: existing.build_id,
-          channel_id: existing.channel_id,
-        },
+      emitReleaseNew(c.env, orgId, appId, {
+        release_id: releaseId,
+        app_id: appId,
+        build_id: existing.build_id,
+        channel_id: existing.channel_id,
       }),
     );
   }

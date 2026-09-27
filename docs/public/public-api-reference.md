@@ -625,6 +625,14 @@ When enabled per app (Settings → Public version history):
   localized changelogs, sizes, and downloads.
 - `GET /apps/:appSlug/history/:releaseId/download` — per-version download
   (302 to a signed URL).
+- `GET /apps/:appSlug/latest` — landing page for the newest active release
+  (version, changelog, download); optional `?channel=`.
+- `GET /apps/:appSlug/:version` — the same landing page pinned to one
+  published `version_name` (e.g. `/apps/raft-android/1.12.0`). Superseded
+  versions still resolve, so release announcements can link it permanently;
+  drafts, cancelled, hidden and QA builds do not. The version segment must start
+  with a digit. Optional `?channel=` when several channels shipped the same
+  version (default prefers `main`).
 
 Disabled apps return `404`.
 

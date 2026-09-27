@@ -7807,6 +7807,88 @@ describe("quiver public API v2 — scope resolution", () => {
     expect(privatePage.status).toBe(404);
   });
 
+  it("version landing: /apps/<slug>/<version> pins one published version and never rolls forward", async () => {
+    const env = makeEnv();
+    await env.DB.prepare("UPDATE apps SET public_history = 1 WHERE id = ?").bind("app-scope").run();
+    await seedRelease(env, "rel-ver-1", "build-ver-1", [["full", "all"]], {
+      createdAt: 100, versionCode: 1, versionName: "1.0.0",
+    });
+    await seedAsset(env, "build-ver-1", "asset-ver-1");
+    await seedRelease(env, "rel-ver-2", "build-ver-2", [["full", "all"]], {
+      createdAt: 200, versionCode: 2, versionName: "2.0.0",
+    });
+    await seedAsset(env, "build-ver-2", "asset-ver-2");
+    await env.DB.prepare("UPDATE releases SET status = 'superseded', changelog = ? WHERE id = ?")
+      .bind("- fixed the thing in 1.0.0", "rel-ver-1").run();
+    await seedRelease(env, "rel-ver-3", "build-ver-3", [["full", "all"]], {
+      createdAt: 300, versionCode: 3, versionName: "3.0.0",
+    });
+    await seedAsset(env, "build-ver-3", "asset-ver-3");
+    await env.DB.prepare("UPDATE releases SET status = 'draft' WHERE id = ?").bind("rel-ver-3").run();
+    const { handlePublicVersionLanding } = await import("../src/routes/history");
+    const makeContext = (version: string, channel?: string) => ({
+      env,
+      req: {
+        param: (name: string) => (name === "slug" ? "scope-app" : name === "version" ? version : ""),
+        query: (name: string) => (name === "channel" ? channel : undefined),
+        header: (name: string) => (name.toLowerCase() === "accept-language" ? "en-US" : undefined),
+      },
+      json: (data: unknown, status = 200) =>
+        new Response(JSON.stringify(data), { status, headers: { "content-type": "application/json" } }),
+    } as any);
+
+    // Superseded version still resolves, with its own notes and exact download, and no "Latest" badge.
+    const old = await handlePublicVersionLanding(makeContext("1.0.0"));
+    expect(old.status).toBe(200);
+    const oldHtml = await old.text();
+    expect(oldHtml).toContain("<title>Scope App — 1.0.0</title>");
+    expect(oldHtml).toContain("fixed the thing in 1.0.0");
+    expect(oldHtml).toContain('href="/apps/scope-app/history/rel-ver-1/download"');
+    expect(oldHtml).not.toContain("/latest/download");
+    expect(oldHtml).not.toContain('class="badge">Latest');
+
+    // Current version is badged Latest.
+    const cur = await handlePublicVersionLanding(makeContext("2.0.0"));
+    expect(cur.status).toBe(200);
+    expect(await cur.text()).toContain('class="badge">Latest');
+
+    // Drafts, unknown versions, unknown channels and private apps are 404.
+    expect((await handlePublicVersionLanding(makeContext("3.0.0"))).status).toBe(404);
+    expect((await handlePublicVersionLanding(makeContext("9.9.9"))).status).toBe(404);
+    expect((await handlePublicVersionLanding(makeContext("2.0.0", "beta"))).status).toBe(404);
+    await env.DB.prepare("UPDATE apps SET public_history = 0 WHERE id = ?").bind("app-scope").run();
+    expect((await handlePublicVersionLanding(makeContext("2.0.0"))).status).toBe(404);
+  });
+
+  it("release:new webhook payload carries version_name, version_code, app_slug and channel", async () => {
+    const env = makeEnv();
+    await seedRelease(env, "rel-evt", "build-evt", [["full", "all"]], { versionCode: 42, versionName: "1.12.0" });
+    await env.DB.prepare(
+      `INSERT INTO webhooks (id, org_id, app_id, url, secret, events_json, enabled, created_by, created_at, updated_at)
+       VALUES ('wh-evt', 'default', 'app-scope', 'https://bobo.example/h', 's', '["release:new"]', 1, 't', 1, 1)`,
+    ).run();
+    const { emitReleaseNew } = await import("../src/routes/releases");
+    await emitReleaseNew(env as any, "default", "app-scope", {
+      release_id: "rel-evt", app_id: "app-scope", build_id: "build-evt", channel_id: "ch-scope-prod",
+    });
+    // Missing release: still emitted, bare identity fields only.
+    await emitReleaseNew(env as any, "default", "app-scope", {
+      release_id: "rel-gone", app_id: "app-scope", build_id: "b", channel_id: "c",
+    });
+    const { results } = await env.DB.prepare(
+      "SELECT payload_json FROM webhook_deliveries WHERE webhook_id = 'wh-evt' ORDER BY created_at, rowid",
+    ).all();
+    const bodies = (results as any[]).map((r) => JSON.parse(r.payload_json));
+    const full = bodies.find((b) => b.payload.release_id === "rel-evt");
+    expect(full.payload).toMatchObject({
+      release_id: "rel-evt", app_id: "app-scope", build_id: "build-evt", channel_id: "ch-scope-prod",
+      version_name: "1.12.0", version_code: 42, app_slug: "scope-app", channel: "production",
+    });
+    const bare = bodies.find((b) => b.payload.release_id === "rel-gone");
+    expect(bare.payload).toMatchObject({ release_id: "rel-gone", build_id: "b" });
+    expect((bare.payload).version_name).toBeUndefined();
+  });
+
   // ------------------------------------------------------------------
   // helpers — re-implement matchesScope here so we can unit-test it
   // without spinning up the Hono context. Mirrors public_v2.ts.
