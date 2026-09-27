@@ -1,6 +1,7 @@
 import { z } from "@hono/zod-openapi";
 import {
   AccountIdParam,
+  AppIdParam,
   GenericObject,
   InviteIdParam,
   InviteTokenParam,
@@ -18,6 +19,7 @@ import {
 const OrgMemberParams = OrgIdParam.merge(AccountIdParam);
 const OrgInviteParams = OrgIdParam.merge(InviteIdParam);
 const OrgWebhookParams = OrgIdParam.merge(WebhookIdParam);
+const AppWebhookParams = AppIdParam.merge(WebhookIdParam);
 
 const InviteInput = z
   .object({
@@ -184,6 +186,36 @@ export function registerOrgRoutes(registry: OpenApiRegistry) {
         400: error("Invalid webhook request."),
         403: error("Current principal cannot manage webhooks."),
         404: error("Webhook was not found."),
+      },
+    });
+  }
+
+  // App-scoped webhooks: app admins manage webhooks bound to their own app.
+  // The server forces app_id = {appId}; org-wide webhooks are not visible here.
+  for (const [method, path, summary] of [
+    ["get", "/api/apps/{appId}/webhooks", "List app webhooks"],
+    ["post", "/api/apps/{appId}/webhooks", "Create app webhook"],
+    ["patch", "/api/apps/{appId}/webhooks/{webhookId}", "Update app webhook"],
+    ["delete", "/api/apps/{appId}/webhooks/{webhookId}", "Delete app webhook"],
+    ["get", "/api/apps/{appId}/webhooks/{webhookId}/deliveries", "List app webhook deliveries"],
+  ] as const) {
+    const hasWebhookId = path.includes("{webhookId}");
+    const needsBody = method === "post" || method === "patch";
+    register(registry, {
+      method,
+      path,
+      tags: ["Webhooks"],
+      summary,
+      security: auth,
+      request: {
+        params: hasWebhookId ? AppWebhookParams : AppIdParam,
+        ...(needsBody ? { body: { content: json(WebhookInput), required: true } } : {}),
+      },
+      responses: {
+        [method === "post" ? 201 : 200]: success("Webhook operation result.", GenericObject),
+        400: error("Invalid webhook request."),
+        403: error("Current principal is not an admin of this app."),
+        404: error("Webhook was not found on this app."),
       },
     });
   }

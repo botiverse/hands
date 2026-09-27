@@ -508,6 +508,29 @@ hands feedback update raft-android <ticket-id> --status resolved
 
 `--assignee none` unassigns. All subcommands accept `--json` for scripting.
 
+## App Webhooks
+
+App admins can subscribe an endpoint to one app's events without org-admin
+rights. The server pins these webhooks to the app; org-wide webhooks (all apps)
+remain org-admin-only and are not listed here.
+
+```bash
+# Secret generated and printed once:
+hands webhooks create my-app --url https://example.com/hands --events release:new,build:failed
+# Or bring your own secret (never on argv):
+printf %s "$HOOK_SECRET" | hands webhooks create my-app --url https://example.com/hands --secret-stdin
+hands webhooks list my-app
+hands webhooks deliveries my-app <webhook-id>
+hands webhooks update my-app <webhook-id> --disable
+printf %s "$NEW_SECRET" | hands webhooks update my-app <webhook-id> --secret-stdin
+hands webhooks delete my-app <webhook-id>
+```
+
+Omitting `--events` subscribes to all events. Deliveries carry
+`X-Hands-Signature: sha256=<hex>` (HMAC-SHA256 of the raw body with the secret). REST:
+`/api/apps/:appId/webhooks` (list/create), `/api/apps/:appId/webhooks/:id`
+(PATCH/DELETE), `/api/apps/:appId/webhooks/:id/deliveries`.
+
 ## Direct API Access (`hands api`)
 
 A power-user / scripting affordance for calling a Hands API endpoint directly,

@@ -1642,6 +1642,169 @@ describe("quiver route handlers — SQL smoke", () => {
     expect(publisherResponse.status).toBe(200);
   });
 
+  it("app admins manage webhooks scoped to their own app only", async () => {
+    const now = Date.now();
+    const {
+      handleCreateAppWebhook, handleListAppWebhooks, handleUpdateAppWebhook,
+      handleDeleteAppWebhook, handleListAppWebhookDeliveries, emitWebhookEvent,
+    } = await import("../src/routes/webhooks");
+    await env.DB
+      .prepare(
+        `INSERT INTO organizations (id, slug, name, external_provider, external_id, created_at, archived)
+         VALUES (?, ?, ?, 'raft', ?, ?, 0)`,
+      )
+      .bind("raft_wh", "wh-org", "WH Org", "wh-server", now)
+      .run();
+    for (const id of ["wh-app", "wh-other"]) {
+      await env.DB
+        .prepare("INSERT INTO apps (id, org_id, slug, name, platform, created_at) VALUES (?, ?, ?, ?, ?, ?)")
+        .bind(id, "raft_wh", id, id, "node", now)
+        .run();
+    }
+    // Pre-existing: an org-wide webhook and one on another app.
+    for (const [id, appId] of [["wh-org-wide", null], ["wh-foreign", "wh-other"]] as const) {
+      await env.DB
+        .prepare(
+          `INSERT INTO webhooks (id, org_id, app_id, url, secret, events_json, enabled, created_by, created_at, updated_at)
+           VALUES (?, 'raft_wh', ?, 'https://org.example/hook', 's', '[]', 1, 'x', ?, ?)`,
+        )
+        .bind(id, appId, now, now)
+        .run();
+    }
+    // admin = org viewer + app admin (not org admin); pub = org viewer + app publisher.
+    const accounts = [
+      { id: "wh-adm", org: "viewer", app: "admin", token: "wh-adm-token" },
+      { id: "wh-pub", org: "viewer", app: "publisher", token: "wh-pub-token" },
+    ];
+    for (const a of accounts) {
+      await env.DB
+        .prepare(
+          `INSERT INTO raft_accounts
+           (id, provider, provider_subject, server_id, server_slug, principal_type,
+            server_role, username, display_name, avatar_url, raw_profile,
+            created_at, updated_at, last_login_at)
+           VALUES (?, 'raft', ?, 'wh-server', 'wh-org', 'agent', NULL, ?, ?, NULL, '{}', ?, ?, ?)`,
+        )
+        .bind(a.id, `${a.id}-sub`, a.id, a.id, now, now, now)
+        .run();
+      await env.DB
+        .prepare("INSERT INTO org_members (id, org_id, account_id, org_role, joined_at) VALUES (?, ?, ?, ?, ?)")
+        .bind(`om-${a.id}`, "raft_wh", a.id, a.org, now)
+        .run();
+      await env.DB
+        .prepare("INSERT INTO app_members (id, app_id, account_id, app_role, joined_at) VALUES (?, ?, ?, ?, ?)")
+        .bind(`am-${a.id}`, "wh-app", a.id, a.app, now)
+        .run();
+      await env.DB
+        .prepare(
+          "INSERT INTO raft_sessions (id, account_id, token_hash, created_at, expires_at, last_seen_at) VALUES (?, ?, ?, ?, ?, ?)",
+        )
+        .bind(`s-${a.id}`, a.id, createHash("sha256").update(a.token).digest("hex"), now, now + 60_000, now)
+        .run();
+    }
+
+    const testApp = new Hono<{ Bindings: Env }>();
+    testApp.use("*", authMiddleware as any);
+    testApp.get("/api/apps/:appId/webhooks", requireAppRole("admin") as any, handleListAppWebhooks as any);
+    testApp.post("/api/apps/:appId/webhooks", requireAppRole("admin") as any, handleCreateAppWebhook as any);
+    testApp.patch("/api/apps/:appId/webhooks/:webhookId", requireAppRole("admin") as any, handleUpdateAppWebhook as any);
+    testApp.delete("/api/apps/:appId/webhooks/:webhookId", requireAppRole("admin") as any, handleDeleteAppWebhook as any);
+    testApp.get(
+      "/api/apps/:appId/webhooks/:webhookId/deliveries",
+      requireAppRole("admin") as any,
+      handleListAppWebhookDeliveries as any,
+    );
+    const call = (token: string, method: string, path: string, body?: unknown) =>
+      testApp.request(
+        `https://quiver-worker.test${path}`,
+        {
+          method,
+          headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+          ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        },
+        env as any,
+      );
+    const adm = "wh-adm-token";
+
+    // Publisher is below the admin bar.
+    expect((await call("wh-pub-token", "GET", "/api/apps/wh-app/webhooks")).status).toBe(403);
+    expect((await call("wh-pub-token", "POST", "/api/apps/wh-app/webhooks",
+      { url: "https://bobo.example/h", secret: "x" })).status).toBe(403);
+    // App admin of wh-app has no rights on wh-other.
+    expect((await call(adm, "GET", "/api/apps/wh-other/webhooks")).status).toBe(403);
+
+    // Validation.
+    expect((await call(adm, "POST", "/api/apps/wh-app/webhooks", { url: "https://x.example" })).status).toBe(400);
+    expect((await call(adm, "POST", "/api/apps/wh-app/webhooks",
+      { url: "ftp://x.example", secret: "s" })).status).toBe(400);
+    const badEvent = await call(adm, "POST", "/api/apps/wh-app/webhooks",
+      { url: "https://x.example", secret: "s", events: ["release:new", "release:nope"] });
+    expect(badEvent.status).toBe(400);
+    expect(((await badEvent.json()) as any).error).toContain("release:nope");
+
+    // Create: body app_id (null = org-wide, or another app) is ignored.
+    const created = await call(adm, "POST", "/api/apps/wh-app/webhooks", {
+      url: "https://bobo.example/hooks/hands", secret: "shh", events: ["release:new"], app_id: null,
+    });
+    expect(created.status).toBe(201);
+    const createdBody = (await created.json()) as any;
+    expect(createdBody).toMatchObject({ app_id: "wh-app", events: ["release:new"], secret_set: true });
+    expect(createdBody.secret).toBeUndefined();
+    const hookId = createdBody.id as string;
+    const smuggled = await call(adm, "POST", "/api/apps/wh-app/webhooks",
+      { url: "https://bobo.example/2", secret: "s", app_id: "wh-other" });
+    const smuggledId = ((await smuggled.json()) as any).id as string;
+    const rows = await env.DB
+      .prepare("SELECT id, org_id, app_id, created_by FROM webhooks WHERE id IN (?, ?) ORDER BY id")
+      .bind(hookId, smuggledId)
+      .all();
+    for (const r of rows.results as any[]) {
+      expect(r).toMatchObject({ org_id: "raft_wh", app_id: "wh-app", created_by: "wh-adm" });
+    }
+
+    // List shows only this app's webhooks, never secrets, never org-wide/foreign ones.
+    const listed = (await (await call(adm, "GET", "/api/apps/wh-app/webhooks")).json()) as any;
+    expect(listed.webhooks.map((w: any) => w.id).sort()).toEqual([hookId, smuggledId].sort());
+    expect(listed.webhooks.every((w: any) => w.secret === undefined && w.secret_set === true)).toBe(true);
+
+    // Org-wide and foreign webhooks cannot be touched through the app route.
+    for (const id of ["wh-org-wide", "wh-foreign"]) {
+      expect((await call(adm, "PATCH", `/api/apps/wh-app/webhooks/${id}`, { enabled: false })).status).toBe(404);
+      expect((await call(adm, "DELETE", `/api/apps/wh-app/webhooks/${id}`)).status).toBe(404);
+      expect((await call(adm, "GET", `/api/apps/wh-app/webhooks/${id}/deliveries`)).status).toBe(404);
+    }
+    const untouched = (await env.DB
+      .prepare("SELECT COUNT(*) AS n FROM webhooks WHERE id IN ('wh-org-wide','wh-foreign') AND enabled = 1 AND archived_at IS NULL")
+      .first()) as { n: number } | null;
+    expect(untouched?.n).toBe(2);
+
+    // Update (incl. secret rotation) on its own webhook.
+    expect((await call(adm, "PATCH", `/api/apps/wh-app/webhooks/${hookId}`, {})).status).toBe(400);
+    expect((await call(adm, "PATCH", `/api/apps/wh-app/webhooks/${hookId}`, { enabled: "no" })).status).toBe(400);
+    expect((await call(adm, "PATCH", `/api/apps/wh-app/webhooks/${hookId}`,
+      { events: ["release:new", "build:failed"], secret: "rotated" })).status).toBe(200);
+    const after = (await env.DB
+      .prepare("SELECT events_json, secret FROM webhooks WHERE id = ?")
+      .bind(hookId)
+      .first()) as { events_json: string; secret: string } | null;
+    expect(JSON.parse(after!.events_json)).toEqual(["release:new", "build:failed"]);
+    expect(after!.secret).toBe("rotated");
+
+    // The app webhook receives its app's release:new and nothing from the other app.
+    await emitWebhookEvent(env as any, { orgId: "raft_wh", appId: "wh-app", event: "release:new", body: {} });
+    await emitWebhookEvent(env as any, { orgId: "raft_wh", appId: "wh-other", event: "release:new", body: {} });
+    const deliveries = (await (await call(adm, "GET",
+      `/api/apps/wh-app/webhooks/${hookId}/deliveries`)).json()) as any;
+    expect(deliveries.deliveries).toHaveLength(1);
+    expect(deliveries.deliveries[0].event_type).toBe("release:new");
+
+    // Delete is a soft-delete; a second delete is 404.
+    expect((await call(adm, "DELETE", `/api/apps/wh-app/webhooks/${hookId}`)).status).toBe(200);
+    expect((await call(adm, "DELETE", `/api/apps/wh-app/webhooks/${hookId}`)).status).toBe(404);
+    const remaining = (await (await call(adm, "GET", "/api/apps/wh-app/webhooks")).json()) as any;
+    expect(remaining.webhooks.map((w: any) => w.id)).toEqual([smuggledId]);
+  });
+
   it("uses a validated selected-org header for org-scoped app requests", async () => {
     const now = Date.now();
     const token = "multi-org-token";

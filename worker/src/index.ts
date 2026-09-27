@@ -257,6 +257,11 @@ import { handleListProductTypes, handleCreateProductType, handleUpdateProductTyp
 import { handleListReleaseTypes, handleCreateReleaseType, handleUpdateReleaseType, handleDeleteReleaseType } from "./routes/release_types";
 import { handleListAuditLogs, handleListUserAudit } from "./routes/audit";
 import {
+  handleCreateAppWebhook,
+  handleDeleteAppWebhook,
+  handleListAppWebhookDeliveries,
+  handleListAppWebhooks,
+  handleUpdateAppWebhook,
   handleCreateWebhook,
   handleDeleteWebhook,
   handleListDeliveries,
@@ -811,6 +816,11 @@ admin.post("/api/orgs/:orgId/webhooks", requireOrgRole("orgId", "admin"), handle
 admin.patch("/api/orgs/:orgId/webhooks/:webhookId", requireOrgRole("orgId", "admin"), handleUpdateWebhook);
 admin.delete("/api/orgs/:orgId/webhooks/:webhookId", requireOrgRole("orgId", "admin"), handleDeleteWebhook);
 admin.get("/api/orgs/:orgId/webhooks/:webhookId/deliveries", requireOrgRole("orgId", "admin"), handleListDeliveries);
+admin.get("/api/apps/:appId/webhooks", requireAppRole("admin"), handleListAppWebhooks);
+admin.post("/api/apps/:appId/webhooks", requireAppRole("admin"), handleCreateAppWebhook);
+admin.patch("/api/apps/:appId/webhooks/:webhookId", requireAppRole("admin"), handleUpdateAppWebhook);
+admin.delete("/api/apps/:appId/webhooks/:webhookId", requireAppRole("admin"), handleDeleteAppWebhook);
+admin.get("/api/apps/:appId/webhooks/:webhookId/deliveries", requireAppRole("admin"), handleListAppWebhookDeliveries);
 
 // Scheduled reaper (no auth — Worker Cron Trigger schedules `scheduled()` in exports)
 // app.get("/api/webhook-reaper", handleReapDeliveries);  // removed; use scheduled() instead
