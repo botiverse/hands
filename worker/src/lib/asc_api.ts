@@ -871,3 +871,97 @@ export async function getBetaReviewStates(
     }),
   );
 }
+
+// ---------- TestFlight crash feedback ----------
+
+/**
+ * One tester-submitted TestFlight crash (betaFeedbackCrashSubmissions).
+ * Only crashes the tester chose to share from the TestFlight prompt exist
+ * here; silent crashes surface in Xcode Organizer instead.
+ */
+export interface BetaFeedbackCrashSubmission {
+  id: string;
+  attributes?: {
+    createdDate?: string | null;
+    comment?: string | null;
+    email?: string | null;
+    deviceModel?: string | null;
+    osVersion?: string | null;
+    locale?: string | null;
+    timeZone?: string | null;
+    architecture?: string | null;
+    connectionType?: string | null;
+    appUptimeInMilliseconds?: number | null;
+    batteryPercentage?: number | null;
+    appPlatform?: string | null;
+    devicePlatform?: string | null;
+    deviceFamily?: string | null;
+    buildBundleId?: string | null;
+  };
+  relationships?: {
+    build?: { data?: { id: string } | null };
+  };
+}
+
+/** Resolve an ASC build by build number, optionally pinned to a marketing version. */
+export async function findAscBuildsByNumber(
+  creds: AscApiCredentials,
+  args: { ascAppId: string; buildNumber: string; version?: string | undefined },
+): Promise<AscBuildResource[]> {
+  const query = [
+    `filter[app]=${encodeURIComponent(args.ascAppId)}`,
+    `filter[version]=${encodeURIComponent(args.buildNumber)}`,
+    ...(args.version
+      ? [`filter[preReleaseVersion.version]=${encodeURIComponent(args.version)}`]
+      : []),
+    "filter[preReleaseVersion.platform]=IOS",
+    "limit=5",
+  ].join("&");
+  const res = await ascRequest<{ data: AscBuildResource[] }>(creds, "GET", `/v1/builds?${query}`);
+  return res.data ?? [];
+}
+
+/** Newest-first crash submissions for an app, optionally for one ASC build. */
+export async function listBetaFeedbackCrashSubmissions(
+  creds: AscApiCredentials,
+  args: { ascAppId: string; ascBuildId?: string | undefined; limit: number },
+): Promise<BetaFeedbackCrashSubmission[]> {
+  const query = [
+    ...(args.ascBuildId ? [`filter[build]=${encodeURIComponent(args.ascBuildId)}`] : []),
+    "include=build",
+    "sort=-createdDate",
+    `limit=${args.limit}`,
+  ].join("&");
+  const res = await ascRequest<{ data: BetaFeedbackCrashSubmission[] }>(
+    creds,
+    "GET",
+    `/v1/apps/${encodeURIComponent(args.ascAppId)}/betaFeedbackCrashSubmissions?${query}`,
+  );
+  return res.data ?? [];
+}
+
+/** Read one submission (used to check it belongs to the app before serving its log). */
+export async function getBetaFeedbackCrashSubmission(
+  creds: AscApiCredentials,
+  submissionId: string,
+): Promise<BetaFeedbackCrashSubmission> {
+  const res = await ascRequest<{ data: BetaFeedbackCrashSubmission }>(
+    creds,
+    "GET",
+    `/v1/betaFeedbackCrashSubmissions/${encodeURIComponent(submissionId)}`,
+  );
+  return res.data;
+}
+
+/** The raw crash log text (.ips-style) attached to a crash submission. */
+export async function getBetaCrashLogText(
+  creds: AscApiCredentials,
+  submissionId: string,
+): Promise<string | null> {
+  const res = await ascRequest<{ data?: { attributes?: { logText?: string | null } } | null }>(
+    creds,
+    "GET",
+    `/v1/betaFeedbackCrashSubmissions/${encodeURIComponent(submissionId)}/crashLog`,
+  );
+  return res.data?.attributes?.logText ?? null;
+}

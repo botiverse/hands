@@ -29,6 +29,7 @@ import { registerLogsCommands } from "./commands/logs.js";
 import { registerDeviceGroupCommands } from "./commands/device_groups.js";
 import { registerChannelCommands } from "./commands/channels.js";
 import { registerWebhookCommands } from "./commands/webhooks.js";
+import { registerTestflightCommands } from "./commands/testflight.js";
 import { registerApiCommand } from "./commands/api.js";
 import { getConfig } from "./lib/config.js";
 import { readEnv } from "./lib/env.js";
@@ -75,6 +76,8 @@ Common recipes:
   hands webhooks create <app> --url <u> --events release:new
                                                        App webhook (app admin; secret generated or --secret-stdin)
   hands builds testflight-status <app> <build>        Apple processing / beta review state
+  hands testflight crashes <app> --build <n> --download
+                                                       Tester-shared TestFlight crashes + .ips logs
   hands logs collect                                  Bundle local CLI logs for a bug report
 
 Every command supports --json for scripts/agents. Full docs:
@@ -110,6 +113,7 @@ registerReleaseCommands(program);
 registerDeviceGroupCommands(program);
 registerChannelCommands(program);
 registerWebhookCommands(program);
+registerTestflightCommands(program);
 registerFeedbackCommands(program);
 registerDeployTokenCommands(program);
 registerLogsCommands(program);

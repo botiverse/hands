@@ -303,6 +303,24 @@ Official Apple references:
 - [Invite external testers](https://developer.apple.com/help/app-store-connect/test-a-beta-version/invite-external-testers/)
 - [TestFlight overview](https://developer.apple.com/help/app-store-connect/test-a-beta-version/testflight-overview/)
 
+### TestFlight crash reports
+
+Pull the crashes testers shared from TestFlight, using the app's stored App
+Store Connect key (app viewer is enough):
+
+```bash
+# newest 20 crashes for one build, with each crash log saved as .ips
+hands testflight crashes raft-ios --build 11200001 --download ./crashes
+# pin the marketing version too, JSON for scripts
+hands testflight crashes raft-ios --build 11200001 --app-version 1.12.0 --json
+```
+
+Only crashes a tester chose to share from the TestFlight prompt are available
+from Apple's API. Unshared crashes appear only in Xcode Organizer, so an
+empty list does not prove the build never crashed. Tester emails are not
+returned. API: `GET /api/apps/<appId>/testflight-crashes?build=&version=&limit=`
+and `GET /api/apps/<appId>/testflight-crashes/<id>/log` (text/plain).
+
 For raw CI drafts, a single `--changelog-file ./changelog.txt` is still valid.
 For reviewed notes, prefer repeatable `lang=file` entries such as
 `--changelog-file zh=zh.md --changelog-file en=en.md`.

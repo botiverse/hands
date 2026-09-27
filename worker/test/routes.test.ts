@@ -112,6 +112,8 @@ describe("quiver OpenAPI document", () => {
       "/api/apps/{appId}/builds/{buildId}/testflight-upload",
       "/api/apps/{appId}/testflight-uploads/{buildUploadId}",
       "/api/apps/{appId}/testflight-beta-app-description",
+      "/api/apps/{appId}/testflight-crashes",
+      "/api/apps/{appId}/testflight-crashes/{submissionId}/log",
       "/api/apps/{appId}/builds/{buildId}/testflight-groups",
       "/api/apps/{appId}/builds/{buildId}/testflight-expire",
       "/api/apps/{appId}/builds/{buildId}/testflight-publish",

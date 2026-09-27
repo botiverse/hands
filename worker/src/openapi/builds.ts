@@ -182,6 +182,52 @@ const BetaAppDescriptionInput = z.object({
 export function registerBuildRoutes(registry: OpenApiRegistry) {
   register(registry, {
     method: "get",
+    path: "/api/apps/{appId}/testflight-crashes",
+    tags: ["TestFlight"],
+    summary: "List tester-submitted TestFlight crashes",
+    description:
+      "Newest-first betaFeedbackCrashSubmissions for the App Store Connect app resolved from the Hands app's main-channel bundle id. Optional `build` (build number, e.g. 11200001), `version` (marketing version; requires build) and `limit` (1-200, default 20). Only crashes testers chose to share from TestFlight appear; unshared crashes are only in Xcode Organizer. Tester emails are not returned.",
+    security: auth,
+    request: {
+      params: AppIdParam,
+      query: z.object({
+        build: z.string().optional(),
+        version: z.string().optional(),
+        limit: z.string().optional(),
+      }),
+    },
+    responses: {
+      200: success("Crash submissions from Apple.", GenericObject),
+      400: error("Invalid filter, or the app/bundle id/ASC credentials are not configured for iOS."),
+      403: error("App viewer role is required."),
+      404: error("Hands app, App Store Connect app, or the requested build was not found."),
+      502: error("Apple rejected the request."),
+    },
+  });
+
+  register(registry, {
+    method: "get",
+    path: "/api/apps/{appId}/testflight-crashes/{submissionId}/log",
+    tags: ["TestFlight"],
+    summary: "Download one TestFlight crash log",
+    description:
+      "Returns the raw crash log text (text/plain, attachment filename testflight-crash-<id>.ips) for one crash submission belonging to this app.",
+    security: auth,
+    request: {
+      params: AppIdParam.merge(
+        z.object({ submissionId: z.string().openapi({ param: { name: "submissionId", in: "path" } }) }),
+      ),
+    },
+    responses: {
+      200: { description: "Crash log text.", content: { "text/plain": { schema: z.string() } } },
+      403: error("App viewer role is required."),
+      404: error("Submission not found for this app, or Apple has no log for it."),
+      502: error("Apple rejected the request."),
+    },
+  });
+
+  register(registry, {
+    method: "get",
     path: "/api/apps/{appId}/testflight-beta-app-description",
     tags: ["TestFlight"],
     summary: "Read app-level TestFlight Beta App Description localizations",
