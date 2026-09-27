@@ -14,47 +14,13 @@
  * login into a copyable signed JWT for the CLI.
  */
 
-import { createInterface } from "node:readline/promises";
-import { stdin, stdout } from "node:process";
 import type { Command } from "commander";
 import { rmSync } from "node:fs";
-import { apiRequest, getApiBase, setApiBase, QuiverApiError } from "../lib/api.js";
+import { getApiBase, setApiBase } from "../lib/api.js";
 import { clearConfig, saveConfig, getConfig, configPath } from "../lib/config.js";
 import { admitAgent, agentAuthPath, HANDS_SERVICE } from "../lib/agent_env.js";
 import { runAgentLogin } from "../lib/agent_auth.js";
-
-async function promptSecret(message: string): Promise<string> {
-  // Use a raw-mode readline so we can mask input with '*'.
-  const rl = createInterface({ input: stdin, output: stdout, terminal: true });
-  process.stdout.write(message);
-  return new Promise((resolve, reject) => {
-    let input = "";
-    const onData = (chunk: string | Buffer) => {
-      const ch = chunk.toString();
-      if (ch === "\n" || ch === "\r" || ch === "\u0004") {
-        process.stdin.removeListener("data", onData);
-        process.stdout.write("\n");
-        rl.close();
-        resolve(input);
-      } else if (ch === "\u0003") {
-        // Ctrl+C
-        process.stdout.write("\n");
-        rl.close();
-        reject(new Error("cancelled"));
-      } else if (ch === "\u007f" || ch === "\b") {
-        // Backspace
-        if (input.length > 0) {
-          input = input.slice(0, -1);
-          process.stdout.write("\b \b");
-        }
-      } else {
-        input += ch;
-        process.stdout.write("*");
-      }
-    };
-    process.stdin.on("data", onData);
-  });
-}
+import { normalizeToken, promptSecret } from "../lib/secret_input.js";
 
 export function registerLoginCommands(program: Command): void {
   const cmd = program
@@ -125,44 +91,55 @@ export function registerLoginCommands(program: Command): void {
         console.log(`  3. Copy the JWT shown there and paste it below.`);
         console.log("");
 
-        let token = opts.token;
-        if (!token) {
-          token = await promptSecret(
-            "Hands JWT (input is hidden): ",
-          );
-          if (token.length < 8) {
-            console.error("Token looks too short (min 8 chars).");
-            process.exit(1);
+        let raw = opts.token;
+        if (!raw) {
+          try {
+            raw = await promptSecret("Hands JWT (input is hidden): ");
+          } catch {
+            console.error("Cancelled.");
+            process.exit(130);
           }
         }
+        const normalized = normalizeToken(raw);
+        if ("error" in normalized) {
+          console.error(`✘ ${normalized.error}`);
+          process.exit(1);
+        }
+        const token = normalized.token;
 
-        // Persist the token + apiBase to config file.
+        // Verify BEFORE persisting: a rejected or unreachable token must not
+        // replace a working saved login.
+        setApiBase(apiBase);
+        try {
+          const res = await fetch(new URL("/api/auth/me", apiBase), {
+            headers: { accept: "application/json", authorization: `Bearer ${token}` },
+          });
+          if (res.status === 401) {
+            console.error("✘ Token rejected (401): expired or not a Hands login token. Nothing was saved.");
+            process.exit(1);
+          }
+          if (!res.ok) {
+            console.error(`✘ Could not verify the token (HTTP ${res.status}). Nothing was saved; try again.`);
+            process.exit(1);
+          }
+        } catch (e) {
+          const cause = e instanceof Error && e.cause instanceof Error ? `: ${e.cause.message}` : "";
+          console.error(`✘ Could not reach ${apiBase} to verify the token${cause}. Nothing was saved.`);
+          process.exit(1);
+        }
+
         clearConfig();
         saveConfig({ apiBase, authToken: token });
-        console.log(`✔ Saved to ${configPath()}`);
+        console.log(`✔ Token verified — you're logged in. Saved to ${configPath()}`);
         console.log(`  API base: ${apiBase}`);
-
-        // Verify the token works by calling /api/auth/me.
-        try {
-          await apiRequest("/api/auth/me");
-          console.log(`✔ Token verified — you're logged in.`);
-          console.log("");
-          console.log("Next steps:");
-          console.log("  hands whoami                            confirm who you are");
-          console.log("  hands apps list                         see your apps");
-          console.log("  hands feedback list <app> --kind crash  newest crash tickets");
-          console.log("  hands --help                            all commands + recipes");
-          console.log("");
-          console.log("Docs: https://hands.build/docs/cli-reference");
-        } catch (e) {
-          if (e instanceof QuiverApiError && e.status === 401) {
-            console.error(
-              `✘ Token rejected (401). Run \`hands logout\` and try again.`,
-            );
-            process.exit(1);
-          }
-          throw e;
-        }
+        console.log("");
+        console.log("Next steps:");
+        console.log("  hands whoami                            confirm who you are");
+        console.log("  hands apps list                         see your apps");
+        console.log("  hands feedback list <app> --kind crash  newest crash tickets");
+        console.log("  hands --help                            all commands + recipes");
+        console.log("");
+        console.log("Docs: https://hands.build/docs/cli-reference");
       },
     );
 
