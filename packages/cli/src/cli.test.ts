@@ -2552,3 +2552,79 @@ describe("channel commands", () => {
     ).rejects.toThrow(/nothing to update/);
   });
 });
+
+describe("webhook commands", () => {
+  it("manages app-scoped webhooks without putting secrets on argv", async () => {
+    const requests: Array<{ method: string; url: string; body?: any }> = [];
+    const server = createServer(async (req, res) => {
+      let body: any = undefined;
+      if (req.headers["content-type"]?.includes("application/json")) {
+        const chunks: Buffer[] = [];
+        for await (const chunk of req) chunks.push(Buffer.from(chunk));
+        body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+      }
+      requests.push({ method: req.method ?? "GET", url: req.url ?? "", body });
+      res.setHeader("content-type", "application/json");
+      if (req.url === "/api/apps") {
+        return res.end(JSON.stringify({ apps: [{ id: "app-1", slug: "bobo-release-test" }] }));
+      }
+      if (req.url === "/api/apps/app-1/webhooks" && req.method === "POST") {
+        res.statusCode = 201;
+        return res.end(JSON.stringify({ id: "wh-1", url: body.url, events: body.events ?? [] }));
+      }
+      if (req.url === "/api/apps/app-1/webhooks/wh-1" && (req.method === "PATCH" || req.method === "DELETE")) {
+        return res.end(JSON.stringify({ ok: true }));
+      }
+      res.statusCode = 404;
+      return res.end(JSON.stringify({ error: "not found" }));
+    });
+
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("bad address");
+    const originalApi = process.env.HANDS_API;
+    const originalToken = process.env.HANDS_BEARER_TOKEN;
+    process.env.HANDS_API = `http://127.0.0.1:${address.port}`;
+    process.env.HANDS_BEARER_TOKEN = "test-token";
+    const logs: string[] = [];
+    const logSpy = vi.spyOn(console, "log").mockImplementation((...args: unknown[]) => {
+      logs.push(args.join(" "));
+    });
+
+    try {
+      const { setApiBase } = await import("../src/lib/api.js");
+      setApiBase(process.env.HANDS_API);
+      const { registerWebhookCommands } = await import("../src/commands/webhooks.js");
+      const run = async (...args: string[]) => {
+        const program = new Command();
+        program.exitOverride();
+        registerWebhookCommands(program);
+        await program.parseAsync(["node", "hands", "webhooks", ...args]);
+      };
+
+      // No --secret-stdin: a random secret is generated, sent, and printed once.
+      await run("create", "bobo-release-test", "--url", "https://bobo.example/hooks/hands", "--events", "release:new, build:failed");
+      const create = requests.find((r) => r.url === "/api/apps/app-1/webhooks" && r.method === "POST")!;
+      expect(create.body).toMatchObject({ url: "https://bobo.example/hooks/hands", events: ["release:new", "build:failed"] });
+      expect(create.body.secret).toMatch(/^[0-9a-f]{64}$/);
+      expect(create.body.app_id).toBeUndefined();
+      expect(logs.some((l) => l.includes(create.body.secret))).toBe(true);
+
+      await run("update", "bobo-release-test", "wh-1", "--disable", "--events", "release:new");
+      expect(requests.find((r) => r.method === "PATCH")!.body).toEqual({ enabled: false, events: ["release:new"] });
+
+      await expect(run("update", "bobo-release-test", "wh-1")).rejects.toThrow(/Nothing to update/);
+      await expect(run("update", "bobo-release-test", "wh-1", "--enable", "--disable")).rejects.toThrow(/only one/);
+
+      await run("delete", "bobo-release-test", "wh-1");
+      expect(requests.some((r) => r.method === "DELETE" && r.url === "/api/apps/app-1/webhooks/wh-1")).toBe(true);
+    } finally {
+      logSpy.mockRestore();
+      if (originalApi === undefined) delete process.env.HANDS_API;
+      else process.env.HANDS_API = originalApi;
+      if (originalToken === undefined) delete process.env.HANDS_BEARER_TOKEN;
+      else process.env.HANDS_BEARER_TOKEN = originalToken;
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+});

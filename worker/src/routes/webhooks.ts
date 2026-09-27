@@ -4,8 +4,9 @@
  * Implements P2.5.8 webhook dispatch per docs/publish-architecture.md §5
  * + docs/publish-tasks.md P2.5.8.
  *
- * Scope: webhooks are org-wide (events from any app in the org) OR per-app
- * (events only from that app). v1 keeps it simple — only org-wide webhooks.
+ * Scope: webhooks are org-wide (events from any app in the org, managed by
+ * org admins under /api/orgs/:orgId/webhooks) OR per-app (events only from
+ * that app, also manageable by app admins under /api/apps/:appId/webhooks).
  *
  * Events emitted (from worker/src/routes/webhook_events.ts):
  *   release:new           - release activated (created active or published)
@@ -197,6 +198,181 @@ export async function handleListDeliveries(c: AdminContext) {
     created_at: number;
     completed_at: number | null;
   }>();
+  return c.json({ deliveries });
+}
+
+// ============================================================================
+// App-scoped webhook CRUD (/api/apps/:appId/webhooks, app admin)
+//
+// Lets an app admin manage webhooks for their own app without org-admin
+// rights. Every statement is confined to `app_id = :appId` (and the app's
+// org); the body can never widen scope — `app_id` in the body is ignored,
+// and org-wide webhooks (app_id NULL) are neither listed nor mutable here.
+// ============================================================================
+
+const WEBHOOK_EVENTS: ReadonlySet<string> = new Set<WebhookEventType | "*">([
+  "feedback:new",
+  "feedback:comment_created",
+  "feedback:status_changed",
+  "crash:new_group",
+  "crash:spike",
+  "error:new_group",
+  "error:spike",
+  "release:new",
+  "release:draft_created",
+  "release:superseded",
+  "release:rolled_back",
+  "release:cancelled",
+  "build:succeeded",
+  "build:failed",
+  "*",
+]);
+
+function parseAppWebhookEvents(value: unknown): { events: string[] } | { error: string } {
+  if (value === undefined) return { events: [] };
+  if (!Array.isArray(value) || !value.every((e) => typeof e === "string")) {
+    return { error: "events must be an array of event names" };
+  }
+  const unknown = value.filter((e) => !WEBHOOK_EVENTS.has(e));
+  if (unknown.length > 0) return { error: `unknown events: ${unknown.join(", ")}` };
+  return { events: [...new Set(value as string[])] };
+}
+
+function isHttpUrl(value: unknown): value is string {
+  if (typeof value !== "string") return false;
+  try {
+    const url = new URL(value);
+    return url.protocol === "https:" || url.protocol === "http:";
+  } catch {
+    return false;
+  }
+}
+
+export async function handleListAppWebhooks(c: AdminContext) {
+  const appId = c.req.param("appId") ?? "";
+  const { results: rows } = await c.env.DB.prepare(
+    `SELECT w.id, w.org_id, w.app_id, w.url, w.events_json, w.enabled,
+            w.created_at, w.updated_at
+     FROM webhooks w
+     JOIN apps a ON a.id = w.app_id AND a.org_id = w.org_id
+     WHERE w.app_id = ?1 AND w.archived_at IS NULL
+     ORDER BY w.created_at DESC`,
+  ).bind(appId).all<Omit<WebhookRow, "secret" | "archived_at">>();
+  return c.json({ webhooks: rows.map((w) => ({ ...w, secret_set: true })) });
+}
+
+export async function handleCreateAppWebhook(c: AdminContext) {
+  const appId = c.req.param("appId") ?? "";
+  const body = (await c.req.json().catch(() => ({}))) as {
+    url?: unknown;
+    secret?: unknown;
+    events?: unknown;
+  };
+  if (!body.url) return c.json({ error: "url required" }, 400);
+  if (!isHttpUrl(body.url)) return c.json({ error: "url must be a valid http(s) URL" }, 400);
+  if (typeof body.secret !== "string" || body.secret.length === 0) {
+    return c.json({ error: "secret required" }, 400);
+  }
+  const parsed = parseAppWebhookEvents(body.events);
+  if ("error" in parsed) return c.json({ error: parsed.error }, 400);
+  const app = await c.env.DB.prepare(
+    "SELECT org_id FROM apps WHERE id = ?1 AND archived = 0",
+  ).bind(appId).first<{ org_id: string | null }>();
+  if (!app?.org_id) return c.json({ error: "app not found" }, 404);
+  const id = crypto.randomUUID();
+  const now = Date.now();
+  const actor = currentActorInfo(c);
+  await c.env.DB.prepare(
+    `INSERT INTO webhooks
+     (id, org_id, app_id, url, secret, events_json, enabled, created_by, created_at, updated_at)
+     VALUES (?1, ?2, ?3, ?4, ?5, ?6, 1, ?7, ?8, ?8)`,
+  ).bind(id, app.org_id, appId, body.url, body.secret, JSON.stringify(parsed.events), actor.id, now).run();
+  return c.json({
+    id,
+    app_id: appId,
+    url: body.url,
+    events: parsed.events,
+    enabled: true,
+    secret_set: true,
+    created_at: now,
+  }, 201);
+}
+
+export async function handleUpdateAppWebhook(c: AdminContext) {
+  const appId = c.req.param("appId") ?? "";
+  const webhookId = c.req.param("webhookId") ?? "";
+  const body = (await c.req.json().catch(() => ({}))) as {
+    url?: unknown;
+    events?: unknown;
+    enabled?: unknown;
+    secret?: unknown;
+  };
+  const updates: string[] = [];
+  const binds: (string | number)[] = [];
+  if (body.url !== undefined) {
+    if (!isHttpUrl(body.url)) return c.json({ error: "url must be a valid http(s) URL" }, 400);
+    updates.push("url = ?");
+    binds.push(body.url);
+  }
+  if (body.events !== undefined) {
+    const parsed = parseAppWebhookEvents(body.events);
+    if ("error" in parsed) return c.json({ error: parsed.error }, 400);
+    updates.push("events_json = ?");
+    binds.push(JSON.stringify(parsed.events));
+  }
+  if (body.enabled !== undefined) {
+    if (typeof body.enabled !== "boolean") return c.json({ error: "enabled must be a boolean" }, 400);
+    updates.push("enabled = ?");
+    binds.push(body.enabled ? 1 : 0);
+  }
+  if (body.secret !== undefined) {
+    if (typeof body.secret !== "string" || body.secret.length === 0) {
+      return c.json({ error: "secret must be a non-empty string" }, 400);
+    }
+    updates.push("secret = ?");
+    binds.push(body.secret);
+  }
+  if (updates.length === 0) return c.json({ error: "nothing to update" }, 400);
+  updates.push("updated_at = ?");
+  binds.push(Date.now());
+  binds.push(webhookId, appId);
+  const result = await c.env.DB.prepare(
+    `UPDATE webhooks SET ${updates.join(", ")}
+     WHERE id = ? AND app_id = ? AND archived_at IS NULL`,
+  ).bind(...binds).run();
+  if (result.meta.changes === 0) return c.json({ error: "webhook not found" }, 404);
+  return c.json({ ok: true });
+}
+
+export async function handleDeleteAppWebhook(c: AdminContext) {
+  const appId = c.req.param("appId") ?? "";
+  const webhookId = c.req.param("webhookId") ?? "";
+  // Soft-delete, same as the org route, so the reaper terminalizes pending
+  // deliveries instead of posting to a retired endpoint.
+  const result = await c.env.DB.prepare(
+    `UPDATE webhooks SET archived_at = ?1
+     WHERE id = ?2 AND app_id = ?3 AND archived_at IS NULL`,
+  ).bind(Date.now(), webhookId, appId).run();
+  if (result.meta.changes === 0) return c.json({ error: "webhook not found" }, 404);
+  return c.json({ ok: true });
+}
+
+export async function handleListAppWebhookDeliveries(c: AdminContext) {
+  const appId = c.req.param("appId") ?? "";
+  const webhookId = c.req.param("webhookId") ?? "";
+  const owned = await c.env.DB.prepare(
+    "SELECT 1 AS ok FROM webhooks WHERE id = ?1 AND app_id = ?2",
+  ).bind(webhookId, appId).first<{ ok: number }>();
+  if (!owned) return c.json({ error: "webhook not found" }, 404);
+  const { results: deliveries } = await c.env.DB.prepare(
+    `SELECT id, webhook_id, event_type, status, attempts, max_attempts,
+            last_attempt_at, next_attempt_at, last_response_status,
+            last_response_body, last_error, created_at, completed_at
+     FROM webhook_deliveries
+     WHERE webhook_id = ?1
+     ORDER BY created_at DESC
+     LIMIT 100`,
+  ).bind(webhookId).all();
   return c.json({ deliveries });
 }
 
