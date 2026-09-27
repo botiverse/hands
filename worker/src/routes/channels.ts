@@ -34,25 +34,37 @@ export async function handleCreateChannel(c: Context<{ Bindings: Env }>) {
   if (!body.slug || !body.name) {
     return c.json({ error: "slug, name required" }, 400);
   }
+  const existing = await c.env.DB.prepare(
+    "SELECT id FROM channels WHERE app_id = ?1 AND slug = ?2",
+  ).bind(appId, body.slug).first<{ id: string }>();
+  if (existing) return channelExists(c, body.slug, existing.id);
   const id = crypto.randomUUID();
   const now = Date.now();
-  await c.env.DB.prepare(
-    `INSERT INTO channels
-     (id, app_id, slug, name, bundle_id, password, git_url,
-      enabled_product_types_json, metadata_json, created_at)
-     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)`,
-  ).bind(
-    id,
-    appId,
-    body.slug,
-    body.name,
-    body.bundle_id ?? null,
-    body.password ?? null,
-    body.git_url ?? null,
-    JSON.stringify(body.enabled_product_types ?? []),
-    JSON.stringify(body.metadata ?? {}),
-    now,
-  ).run();
+  try {
+    await c.env.DB.prepare(
+      `INSERT INTO channels
+       (id, app_id, slug, name, bundle_id, password, git_url,
+        enabled_product_types_json, metadata_json, created_at)
+       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)`,
+    ).bind(
+      id,
+      appId,
+      body.slug,
+      body.name,
+      body.bundle_id ?? null,
+      body.password ?? null,
+      body.git_url ?? null,
+      JSON.stringify(body.enabled_product_types ?? []),
+      JSON.stringify(body.metadata ?? {}),
+      now,
+    ).run();
+  } catch (err) {
+    // Lost a race with a concurrent create of the same slug: UNIQUE(app_id, slug).
+    if (/UNIQUE constraint/i.test(err instanceof Error ? err.message : String(err))) {
+      return channelExists(c, body.slug, null);
+    }
+    throw err;
+  }
 
   await c.env.DB.prepare(
     "INSERT INTO audit_logs (id, app_id, action, actor, payload, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
@@ -68,6 +80,17 @@ export async function handleCreateChannel(c: Context<{ Bindings: Env }>) {
     .run();
 
   return c.json({ id, app_id: appId, slug: body.slug, name: body.name }, 201);
+}
+
+function channelExists(c: Context<{ Bindings: Env }>, slug: string, id: string | null) {
+  return c.json(
+    {
+      error: `channel "${slug}" already exists for this app`,
+      code: "channel_exists",
+      ...(id ? { id } : {}),
+    },
+    409,
+  );
 }
 
 export async function handleUpdateChannel(c: Context<{ Bindings: Env }>) {
