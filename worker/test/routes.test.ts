@@ -7807,7 +7807,7 @@ describe("quiver public API v2 — scope resolution", () => {
     expect(privatePage.status).toBe(404);
   });
 
-  it("version landing: /apps/<slug>/<version> pins one published version and never rolls forward", async () => {
+  it("version landing: /apps/<slug>/v/<version> pins one published version and never rolls forward", async () => {
     const env = makeEnv();
     await env.DB.prepare("UPDATE apps SET public_history = 1 WHERE id = ?").bind("app-scope").run();
     await seedRelease(env, "rel-ver-1", "build-ver-1", [["full", "all"]], {

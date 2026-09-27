@@ -678,10 +678,9 @@ app.get("/apps/:slug/history", handlePublicAppHistory);
 app.get("/apps/:slug/history/:releaseId/download", handlePublicAppHistoryDownload);
 app.get("/apps/:slug/latest", handlePublicLatestReleaseLanding);
 app.get("/apps/:slug/latest/download", handlePublicLatestReleaseDownload);
-// Version-pinned landing (`/apps/raft-android/1.12.0`). The segment must start
-// with a digit so console SPA routes (`/apps/:appId/releases`, …) — all
-// alphabetic — never match and still fall through to the asset handler.
-app.get("/apps/:slug/:version{[0-9][0-9A-Za-z._+-]{0,63}}", handlePublicVersionLanding);
+// Version-pinned landing (`/apps/raft-android/v/1.12.0`). The fixed `v`
+// segment keeps it clear of console SPA routes (`/apps/:appId/<tab>`).
+app.get("/apps/:slug/v/:version{[0-9A-Za-z._+-]{1,64}}", handlePublicVersionLanding);
 app.get("/notes/:slug", handlePublicReleaseNotes);
 app.get("/api/invites/:token", handleGetInvite);
 

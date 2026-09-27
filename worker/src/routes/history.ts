@@ -231,7 +231,7 @@ const VERSION_LANDING_SQL = `
            ba.filetype = 'apk' DESC, ba.created_at ASC
   LIMIT 1`;
 
-/** Version-pinned public landing page: `/apps/<slug>/<version_name>`.
+/** Version-pinned public landing page: `/apps/<slug>/v/<version_name>`.
  * Unlike `/latest` it never rolls forward, so release announcements can link
  * the exact version (notes + download) without minting a share token. Same
  * `public_history` gate as the rest of the public history surface. */

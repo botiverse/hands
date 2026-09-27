@@ -528,7 +528,7 @@ hands webhooks delete my-app <webhook-id>
 
 `release:new` payloads carry `release_id`, `app_id`, `build_id`, `channel_id`
 plus `version_name`, `version_code`, `app_slug` and `channel` (slug), so a
-consumer can link the pinned public page `https://hands.build/apps/<app_slug>/<version_name>`
+consumer can link the pinned public page `https://hands.build/apps/<app_slug>/v/<version_name>`
 without an API call.
 
 Omitting `--events` subscribes to all events. Deliveries carry
