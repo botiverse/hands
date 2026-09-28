@@ -27,6 +27,7 @@ export async function handleListApps(c: AdminContext) {
     const row = await c.env.DB.prepare(
       `SELECT id, org_id, slug, name, platform,
               description, archived, archived_at, created_at, public_history,
+              history_channels, history_show_downloads,
               release_requires_human_approval
        FROM apps
        WHERE id = ?1
@@ -44,6 +45,8 @@ export async function handleListApps(c: AdminContext) {
         archived_at: number | null;
         created_at: number;
         public_history: number;
+        history_channels: string | null;
+        history_show_downloads: number;
         release_requires_human_approval: number;
       }>();
     return c.json({ apps: row ? [row] : [] });
@@ -55,6 +58,7 @@ export async function handleListApps(c: AdminContext) {
     ? {
         sql: `SELECT a.id, a.org_id, a.slug, a.name, a.platform,
                      a.description, a.archived, a.archived_at, a.created_at, a.public_history,
+                     a.history_channels, a.history_show_downloads,
                      a.release_requires_human_approval
               FROM apps a
               WHERE a.org_id = ?1
@@ -74,6 +78,7 @@ export async function handleListApps(c: AdminContext) {
     ? {
         sql: `SELECT id, org_id, slug, name, platform,
                      description, archived, archived_at, created_at, public_history,
+                     history_channels, history_show_downloads,
                      release_requires_human_approval
               FROM apps
               WHERE org_id = ?1
@@ -83,6 +88,7 @@ export async function handleListApps(c: AdminContext) {
     : {
         sql: `SELECT id, org_id, slug, name, platform,
                      description, archived, archived_at, created_at, public_history,
+                     history_channels, history_show_downloads,
                      release_requires_human_approval
               FROM apps
               ORDER BY archived ASC, created_at DESC`,
@@ -542,6 +548,7 @@ export async function handleGetApp(c: Context<{ Bindings: Env }>) {
   const row = await c.env.DB.prepare(
     `SELECT a.id, a.org_id, a.slug, a.name, a.platform, a.description,
             a.archived, a.archived_at, a.created_at, a.public_history,
+            a.history_channels, a.history_show_downloads,
             a.delta_updates_enabled,
             a.release_requires_human_approval,
             a.default_channel_id,
@@ -561,6 +568,8 @@ export async function handleGetApp(c: Context<{ Bindings: Env }>) {
     archived_at: number | null;
     created_at: number;
     public_history: number;
+    history_channels: string | null;
+    history_show_downloads: number;
     delta_updates_enabled: number;
     release_requires_human_approval: number;
     default_channel_id: string | null;
@@ -580,6 +589,8 @@ export async function handleUpdateApp(c: AdminContext) {
     public_history?: boolean;
     delta_updates_enabled?: boolean;
     release_requires_human_approval?: boolean;
+    history_channels?: string[] | null;
+    history_show_downloads?: boolean;
   };
   // Confirm app exists.
   const existing = await c.env.DB.prepare(
@@ -603,6 +614,34 @@ export async function handleUpdateApp(c: AdminContext) {
   if (body.public_history !== undefined) {
     updates.push("public_history = ?");
     binds.push(body.public_history ? 1 : 0);
+  }
+  if (body.history_channels !== undefined) {
+    // null/empty array = every channel (the pre-flag behaviour). Any provided
+    // slug must be a real channel of this app — a typo would otherwise
+    // silently empty the public page and read like an outage.
+    if (body.history_channels === null) {
+      updates.push("history_channels = ?");
+      binds.push(null);
+    } else {
+      if (!Array.isArray(body.history_channels) || body.history_channels.some((s) => typeof s !== "string" || !s.trim())) {
+        return c.json({ error: "history_channels must be an array of channel slugs or null" }, 400);
+      }
+      const slugs = body.history_channels.map((s) => s.trim());
+      const { results: known } = await c.env.DB.prepare(
+        `SELECT slug FROM channels WHERE app_id = ?1 AND slug IN (SELECT value FROM json_each(?2))`,
+      ).bind(appId, JSON.stringify(slugs)).all<{ slug: string }>();
+      const knownSet = new Set((known ?? []).map((r) => r.slug));
+      const missing = slugs.filter((s) => !knownSet.has(s));
+      if (missing.length) {
+        return c.json({ error: `unknown channel slugs: ${missing.join(", ")}` }, 400);
+      }
+      updates.push("history_channels = ?");
+      binds.push(JSON.stringify(slugs));
+    }
+  }
+  if (body.history_show_downloads !== undefined) {
+    updates.push("history_show_downloads = ?");
+    binds.push(body.history_show_downloads ? 1 : 0);
   }
   if (body.delta_updates_enabled !== undefined) {
     updates.push("delta_updates_enabled = ?");

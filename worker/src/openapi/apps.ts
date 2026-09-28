@@ -18,7 +18,12 @@ const AppInput = z
     name: z.string().min(1).optional(),
     platform: z.string().optional(),
     description: z.string().nullable().optional(),
-    public_history_enabled: z.boolean().optional(),
+    public_history: z.boolean().optional(),
+    history_channels: z.array(z.string().min(1)).nullable().optional(),
+    history_show_downloads: z.boolean().optional(),
+    delta_updates_enabled: z.boolean().optional(),
+    release_requires_human_approval: z.boolean().optional(),
+    default_channel_id: z.string().nullable().optional(),
   })
   .catchall(z.unknown())
   .openapi("AppInput");

@@ -108,7 +108,7 @@ type LatestLandingRow = HistoryRow & {
 async function loadHistoryApp(db: D1Database, slug: string) {
   return db
     .prepare(
-      "SELECT id, slug, name, platform, icon_r2_key, public_history FROM apps WHERE slug = ?1 AND archived = 0",
+      "SELECT id, slug, name, platform, icon_r2_key, public_history, history_channels, history_show_downloads FROM apps WHERE slug = ?1 AND archived = 0",
     )
     .bind(slug)
     .first<{
@@ -118,8 +118,27 @@ async function loadHistoryApp(db: D1Database, slug: string) {
       platform: string;
       icon_r2_key: string | null;
       public_history: number;
+      history_channels: string | null;
+      history_show_downloads: number;
     }>();
 }
+
+// `history_channels` is a JSON array of channel slugs the public pages may
+// list; NULL/empty/invalid means "all channels" (the pre-migration behaviour).
+// The app writes this column through PATCH /api/apps/:id, which validates
+// slugs against the app's real channels — here we only decode defensively.
+function historyChannelJson(app: { history_channels: string | null }): string | null {
+  if (!app.history_channels) return null;
+  try {
+    const parsed = JSON.parse(app.history_channels);
+    if (!Array.isArray(parsed) || parsed.length === 0) return null;
+    return app.history_channels;
+  } catch {
+    return null;
+  }
+}
+
+
 
 const HISTORY_SQL = `
   SELECT r.id AS release_id, r.status AS release_status,
@@ -135,6 +154,7 @@ const HISTORY_SQL = `
   JOIN channels ch ON ch.id = r.channel_id
   WHERE r.app_id = ?1 AND r.hidden = 0 AND r.status IN ('active', 'superseded')
     AND b.product_type != 'ios-simulator-qa' AND b.release_type != 'qa'
+    AND (?2 IS NULL OR ch.slug IN (SELECT value FROM json_each(?2)))
   ORDER BY b.version_code DESC, released_at DESC
   LIMIT 50`;
 
@@ -160,6 +180,7 @@ const LATEST_LANDING_SQL = `
   WHERE r.app_id = ?1 AND r.hidden = 0 AND r.status = 'active'
     AND b.product_type != 'ios-simulator-qa' AND b.release_type != 'qa'
     AND (?2 IS NULL OR ch.slug = ?2)
+    AND (?3 IS NULL OR ch.slug IN (SELECT value FROM json_each(?3)))
   ORDER BY CASE WHEN ?2 IS NULL AND ch.slug = 'main' THEN 0 ELSE 1 END,
            b.version_code DESC, released_at DESC,
            ba.filetype = 'apk' DESC, ba.created_at ASC
@@ -169,8 +190,9 @@ async function loadLatestLanding(
   db: D1Database,
   appId: string,
   channel: string | null,
+  channelList: string | null,
 ): Promise<LatestLandingRow | null> {
-  return db.prepare(LATEST_LANDING_SQL).bind(appId, channel).first<LatestLandingRow>();
+  return db.prepare(LATEST_LANDING_SQL).bind(appId, channel, channelList).first<LatestLandingRow>();
 }
 
 /** Stable public landing page for the current active release. Unlike a share
@@ -184,18 +206,23 @@ export async function handlePublicLatestReleaseLanding(c: Context<{ Bindings: En
   const channel = requested
     ? await resolvePublicChannelSlug(c.env.DB, app.id, requested)
     : null;
-  const row = await loadLatestLanding(c.env.DB, app.id, channel);
+  const row = await loadLatestLanding(c.env.DB, app.id, channel, historyChannelJson(app));
   if (!row) return new Response("No active release", { status: 404 });
   const lang =
     c.req.query("lang")?.trim() ||
     (c.req.header("accept-language") ?? "").split(",")[0]?.trim().split(";")[0] ||
     null;
-  return new Response(renderLatestLandingPage(app, row, lang, historyStrings(c)), {
-    headers: {
-      "content-type": "text/html; charset=utf-8",
-      "cache-control": "public, max-age=60",
+  return new Response(
+    renderLatestLandingPage(app, row, lang, historyStrings(c), {
+      showDownloads: app.history_show_downloads !== 0,
+    }),
+    {
+      headers: {
+        "content-type": "text/html; charset=utf-8",
+        "cache-control": "public, max-age=60",
+      },
     },
-  });
+  );
 }
 
 // Same row shape as LATEST_LANDING_SQL, pinned to one published version by
@@ -226,6 +253,7 @@ const VERSION_LANDING_SQL = `
     AND b.product_type != 'ios-simulator-qa' AND b.release_type != 'qa'
     AND b.version_name = ?2
     AND (?3 IS NULL OR ch.slug = ?3)
+    AND (?4 IS NULL OR ch.slug IN (SELECT value FROM json_each(?4)))
   ORDER BY CASE WHEN ?3 IS NULL AND ch.slug = 'main' THEN 0 ELSE 1 END,
            b.version_code DESC, released_at DESC,
            ba.filetype = 'apk' DESC, ba.created_at ASC
@@ -246,19 +274,25 @@ export async function handlePublicVersionLanding(c: Context<{ Bindings: Env }>) 
     ? await resolvePublicChannelSlug(c.env.DB, app.id, requested)
     : null;
   const row = await c.env.DB.prepare(VERSION_LANDING_SQL)
-    .bind(app.id, version, channel)
+    .bind(app.id, version, channel, historyChannelJson(app))
     .first<LatestLandingRow>();
   if (!row) return new Response("Version not found", { status: 404 });
   const lang =
     c.req.query("lang")?.trim() ||
     (c.req.header("accept-language") ?? "").split(",")[0]?.trim().split(";")[0] ||
     null;
-  return new Response(renderLatestLandingPage(app, row, lang, historyStrings(c), { pinned: true }), {
-    headers: {
-      "content-type": "text/html; charset=utf-8",
-      "cache-control": "public, max-age=60",
+  return new Response(
+    renderLatestLandingPage(app, row, lang, historyStrings(c), {
+      pinned: true,
+      showDownloads: app.history_show_downloads !== 0,
+    }),
+    {
+      headers: {
+        "content-type": "text/html; charset=utf-8",
+        "cache-control": "public, max-age=60",
+      },
     },
-  });
+  );
 }
 
 export async function handlePublicLatestReleaseDownload(c: Context<{ Bindings: Env }>) {
@@ -266,11 +300,14 @@ export async function handlePublicLatestReleaseDownload(c: Context<{ Bindings: E
   if (!slug) return c.json({ error: "slug required" }, 400);
   const app = await loadHistoryApp(c.env.DB, slug);
   if (!app || !app.public_history) return new Response("Not found", { status: 404 });
+  if (!app.history_show_downloads) {
+    return new Response("Not found", { status: 404 });
+  }
   const requested = c.req.query("channel")?.trim() || null;
   const channel = requested
     ? await resolvePublicChannelSlug(c.env.DB, app.id, requested)
     : null;
-  const row = await loadLatestLanding(c.env.DB, app.id, channel);
+  const row = await loadLatestLanding(c.env.DB, app.id, channel, historyChannelJson(app));
   if (!row) return c.json({ error: "no active release" }, 404);
   const url = await generateSignedR2Url(
     c.env,
@@ -303,6 +340,7 @@ const NOTES_SQL = `
     OR (r.status = 'draft' AND b.version_code = ?2)
   )
     AND b.product_type != 'ios-simulator-qa' AND b.release_type != 'qa'
+    AND (?3 IS NULL OR ch.slug IN (SELECT value FROM json_each(?3)))
   ORDER BY b.version_code DESC, released_at DESC
   LIMIT 50`;
 
@@ -314,13 +352,18 @@ export async function handlePublicAppHistory(c: Context<{ Bindings: Env }>) {
     return new Response("Not found", { status: 404 });
   }
   const { results } = await c.env.DB.prepare(HISTORY_SQL)
-    .bind(app.id)
+    .bind(app.id, historyChannelJson(app))
     .all<HistoryRow>();
   const lang =
     (c.req.header("accept-language") ?? "").split(",")[0]?.trim().split(";")[0] ?? null;
-  return new Response(renderHistoryPage(app, results, lang, historyStrings(c)), {
-    headers: { "content-type": "text/html; charset=utf-8" },
-  });
+  return new Response(
+    renderHistoryPage(app, results, lang, historyStrings(c), {
+      showDownloads: app.history_show_downloads !== 0,
+    }),
+    {
+      headers: { "content-type": "text/html; charset=utf-8" },
+    },
+  );
 }
 
 /**
@@ -350,7 +393,7 @@ export async function handlePublicReleaseNotes(c: Context<{ Bindings: Env }>) {
   // be previewed by its code, marked "Draft". Other drafts stay hidden;
   // cancelled is always excluded.
   const { results } = await c.env.DB.prepare(NOTES_SQL)
-    .bind(app.id, requestedCode ?? -1)
+    .bind(app.id, requestedCode ?? -1, historyChannelJson(app))
     .all<HistoryRow>();
 
   // With a version_code: show that version and everything older (previous
@@ -387,7 +430,7 @@ export async function handlePublicReleaseNotesJson(c: Context<{ Bindings: Env }>
       ? Number(rawVc)
       : null;
   const { results } = await c.env.DB.prepare(NOTES_SQL)
-    .bind(app.id, requestedCode ?? -1)
+    .bind(app.id, requestedCode ?? -1, historyChannelJson(app))
     .all<HistoryRow>();
   const lang =
     c.req.query("lang")?.trim() ||
@@ -424,6 +467,9 @@ export async function handlePublicAppHistoryDownload(
   if (!slug || !releaseId) return c.json({ error: "missing params" }, 400);
   const app = await loadHistoryApp(c.env.DB, slug);
   if (!app || !app.public_history) {
+    return new Response("Not found", { status: 404 });
+  }
+  if (!app.history_show_downloads) {
     return new Response("Not found", { status: 404 });
   }
   const asset = await c.env.DB.prepare(
@@ -466,7 +512,7 @@ function renderLatestLandingPage(
   row: LatestLandingRow,
   lang: string | null,
   t: HistoryStrings,
-  opts: { pinned?: boolean } = {},
+  opts: { pinned?: boolean; showDownloads?: boolean } = {},
 ): string {
   const notes = resolveChangelog(row.changelog, lang);
   const channelQuery = `?channel=${encodeURIComponent(row.channel_slug)}`;
@@ -476,6 +522,7 @@ function renderLatestLandingPage(
     ? `/apps/${esc(app.slug)}/history/${esc(row.release_id)}/download`
     : `/apps/${esc(app.slug)}/latest/download${channelQuery}`;
   const showLatestBadge = !opts.pinned || row.release_status === "active";
+  const showDownloads = opts.showDownloads !== false;
   return `<!doctype html>
 <html lang="${t.htmlLang}">
 <head>
@@ -516,7 +563,7 @@ function renderLatestLandingPage(
       <dt>${t.platformLabel}</dt><dd>${esc([row.platform, row.arch, row.variant].filter(Boolean).join(" / "))}</dd>
       <dt>${t.checksumLabel}</dt><dd>${esc(row.file_hash)}</dd>
     </dl>
-    <a class="download" href="${downloadHref}">${t.download}</a>
+    ${showDownloads ? `<a class="download" href="${downloadHref}">${t.download}</a>` : ""}
     <a class="history" href="/apps/${esc(app.slug)}/history">${t.versionHistory}</a>
     ${notes ? `<div class="notes">${changelogToHtml(notes)}</div>` : ""}
   </main>
@@ -529,10 +576,17 @@ function renderHistoryPage(
   rows: HistoryRow[],
   lang: string | null,
   t: HistoryStrings,
+  opts: { showDownloads?: boolean } = {},
 ): string {
+  const showDownloads = opts.showDownloads !== false;
   const items = rows
     .map((row) => {
       const changelog = resolveChangelog(row.changelog, lang);
+      const downloadLink = showDownloads
+        ? `<a class="dl" href="/apps/${esc(app.slug)}/history/${esc(row.release_id)}/download">
+          ${t.download}${row.size_bytes ? ` · ${formatSize(row.size_bytes)}` : ""}
+        </a>`
+        : "";
       return `
     <li class="release">
       <div class="head">
@@ -541,9 +595,7 @@ function renderHistoryPage(
           <span class="meta">${t.build} ${row.version_code} · ${esc(row.channel_slug)}</span>
           ${row.release_status === "active" ? `<span class="badge">${t.latest}</span>` : ""}
         </div>
-        <a class="dl" href="/apps/${esc(app.slug)}/history/${esc(row.release_id)}/download">
-          ${t.download}${row.size_bytes ? ` · ${formatSize(row.size_bytes)}` : ""}
-        </a>
+        ${downloadLink}
       </div>
       <div class="date" data-ts="${row.released_at}"></div>
       ${changelog ? `<div class="notes">${changelogToHtml(changelog)}</div>` : ""}
