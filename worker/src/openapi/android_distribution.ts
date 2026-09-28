@@ -24,7 +24,7 @@ const AndroidArtifactDeclaration = z.object({
   filename: z.string().min(1).max(255),
   size_bytes: z.number().int().positive().max(4 * 1024 * 1024 * 1024),
   sha256: Sha256,
-}).strict();
+}).passthrough();
 
 const AndroidReleaseArtifactInput = z.object({
   channel_id: z.string().min(1).max(128).optional(),
@@ -32,7 +32,7 @@ const AndroidReleaseArtifactInput = z.object({
     repository: z.string().min(1).max(255),
     commit_sha: SourceCommit,
     ci_run_id: z.union([z.string().min(1).max(128), z.number().int().nonnegative()]),
-  }).strict(),
+  }).passthrough(),
   package_name: z.string().min(3).max(255),
   version_name: z.string().min(1).max(128),
   version_code: z.number().int().positive(),
@@ -40,7 +40,7 @@ const AndroidReleaseArtifactInput = z.object({
   artifacts: z.array(AndroidArtifactDeclaration).length(2).openapi({
     description: "Exactly one AAB and one APK; duplicate or missing kinds are rejected.",
   }),
-}).strict().openapi("AndroidReleaseArtifactInput");
+}).passthrough().openapi("AndroidReleaseArtifactInput");
 
 const AcceptanceReceiptInput = z.object({
   artifact_id: z.string().min(1),
@@ -48,21 +48,21 @@ const AcceptanceReceiptInput = z.object({
   matrix_ref: z.string().min(1),
   note: z.string().optional(),
   expected_revision: z.number().int().nonnegative(),
-}).strict().openapi("AcceptanceReceiptInput");
+}).passthrough().openapi("AcceptanceReceiptInput");
 
 const PlayApprovalInput = z.object({
   expected_revision: z.number().int().nonnegative(),
-  approval: z.object({ note: z.string().min(1) }).strict(),
-}).strict();
+  approval: z.object({ note: z.string().min(1) }).passthrough(),
+}).passthrough();
 
 const PlayPromotionInput = PlayApprovalInput.extend({
   track: z.enum(["internal", "closed", "production"]),
   rollout_percent: z.number().int().min(0).max(100).optional(),
-}).strict().openapi("PlayPromotionInput");
+}).passthrough().openapi("PlayPromotionInput");
 
 const PlayRollbackInput = PlayApprovalInput.extend({
   to_version_code: z.number().int().positive(),
-}).strict().openapi("PlayRollbackInput");
+}).passthrough().openapi("PlayRollbackInput");
 
 const GooglePlayBindingInput = z.object({
   service_account_json: z.union([
@@ -74,8 +74,8 @@ const GooglePlayBindingInput = z.object({
     internal: z.string().min(1).max(128),
     closed: z.string().min(1).max(128),
     production: z.string().min(1).max(128),
-  }).strict(),
-}).strict().openapi("GooglePlayBindingInput");
+  }).passthrough(),
+}).passthrough().openapi("GooglePlayBindingInput");
 
 export function registerAndroidDistributionRoutes(): RouteConfigList {
   const routes: RouteConfigDef[] = [];

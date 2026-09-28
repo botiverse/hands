@@ -169,7 +169,7 @@ const TestflightExpireInput = TestflightBundleAssertion.extend({
   asc_build_id: z.string().min(1),
   confirm_version: z.string().min(1),
   confirm_build_number: z.string().regex(/^\d+$/),
-}).strict().openapi("TestflightExpireInput");
+}).passthrough().openapi("TestflightExpireInput");
 
 const BetaAppDescriptionInput = z.object({
   descriptions: z
@@ -177,7 +177,7 @@ const BetaAppDescriptionInput = z.object({
     .refine((value) => Object.keys(value).length > 0, {
       message: "At least one locale is required.",
     }),
-}).strict().openapi("BetaAppDescriptionInput");
+}).passthrough().openapi("BetaAppDescriptionInput");
 
 export function registerBuildRoutes(): RouteConfigList {
   const routes: RouteConfigDef[] = [];
