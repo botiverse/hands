@@ -721,6 +721,8 @@ export async function handlePublicV2UpdateCheck(c: Context<{ Bindings: Env }>) {
       release_notes: latest.build.release_notes,
       force_update: latest.build.force_update,
       released_at: latest.build.released_at,
+      // Canonical public "what's new" page for this version.
+      page_url: `${publicRequestOrigin(c)}/apps/${encodeURIComponent(latest.app.slug)}/v/${encodeURIComponent(latest.build.version)}`,
     },
     asset,
     ...(patch ? { patch } : {}),
@@ -894,6 +896,8 @@ export async function handlePublicCliBinaryUpdateCheck(c: Context<{ Bindings: En
       version_code: row.version_code,
       version_relation: relation > 0 ? "upgrade" : "downgrade",
       published_at: row.activated_at,
+      // Canonical public "what's new" page for this version.
+      page_url: `${origin}/apps/${encodeURIComponent(slug)}/v/${encodeURIComponent(row.version_name)}`,
     },
     artifact: {
       id: row.artifact_id, platform, arch,

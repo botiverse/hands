@@ -156,7 +156,7 @@ const HISTORY_SQL = `
     AND b.product_type != 'ios-simulator-qa' AND b.release_type != 'qa'
     AND (?2 IS NULL OR ch.slug IN (SELECT value FROM json_each(?2)))
   ORDER BY b.version_code DESC, released_at DESC
-  LIMIT 50`;
+  LIMIT ?3 OFFSET ?4`;
 
 const LATEST_LANDING_SQL = `
   SELECT r.id AS release_id, r.status AS release_status,
@@ -344,6 +344,8 @@ const NOTES_SQL = `
   ORDER BY b.version_code DESC, released_at DESC
   LIMIT 50`;
 
+const HISTORY_PAGE_SIZE = 30;
+
 export async function handlePublicAppHistory(c: Context<{ Bindings: Env }>) {
   const slug = c.req.param("slug");
   if (!slug) return c.json({ error: "slug required" }, 400);
@@ -351,14 +353,30 @@ export async function handlePublicAppHistory(c: Context<{ Bindings: Env }>) {
   if (!app || !app.public_history) {
     return new Response("Not found", { status: 404 });
   }
+  // offset-based paging; `fragment=1` returns the bare <li> rows so the page
+  // can lazy-append without re-rendering the shell.
+  const rawOffset = typeof c.req.query === "function" ? c.req.query("offset") : null;
+  const offset = Math.max(0, Number.parseInt(rawOffset ?? "0", 10) || 0);
   const { results } = await c.env.DB.prepare(HISTORY_SQL)
-    .bind(app.id, historyChannelJson(app))
+    .bind(app.id, historyChannelJson(app), HISTORY_PAGE_SIZE + 1, offset)
     .all<HistoryRow>();
+  const rows = results ?? [];
+  const hasMore = rows.length > HISTORY_PAGE_SIZE;
+  const page = hasMore ? rows.slice(0, HISTORY_PAGE_SIZE) : rows;
   const lang =
     (c.req.header("accept-language") ?? "").split(",")[0]?.trim().split(";")[0] ?? null;
+  const t = historyStrings(c);
+  if (typeof c.req.query === "function" && c.req.query("fragment") === "1") {
+    return new Response(
+      renderHistoryItems(app, page, lang, t, { showDownloads: app.history_show_downloads !== 0 }),
+      { headers: { "content-type": "text/html; charset=utf-8" } },
+    );
+  }
   return new Response(
-    renderHistoryPage(app, results, lang, historyStrings(c), {
+    renderHistoryPage(app, page, lang, t, {
       showDownloads: app.history_show_downloads !== 0,
+      hasMore,
+      nextOffset: offset + page.length,
     }),
     {
       headers: { "content-type": "text/html; charset=utf-8" },
@@ -571,15 +589,15 @@ function renderLatestLandingPage(
 </html>`;
 }
 
-function renderHistoryPage(
-  app: { slug: string; name: string; platform: string; icon_r2_key: string | null },
+function renderHistoryItems(
+  app: { slug: string },
   rows: HistoryRow[],
   lang: string | null,
   t: HistoryStrings,
   opts: { showDownloads?: boolean } = {},
 ): string {
   const showDownloads = opts.showDownloads !== false;
-  const items = rows
+  return rows
     .map((row) => {
       const changelog = resolveChangelog(row.changelog, lang);
       const downloadLink = showDownloads
@@ -588,7 +606,7 @@ function renderHistoryPage(
         </a>`
         : "";
       return `
-    <li class="release">
+    <li class="release" id="v-${esc(row.version_name)}">
       <div class="head">
         <div>
           <strong>${esc(row.version_name)}</strong>
@@ -602,6 +620,18 @@ function renderHistoryPage(
     </li>`;
     })
     .join("\n");
+}
+
+function renderHistoryPage(
+  app: { slug: string; name: string; platform: string; icon_r2_key: string | null },
+  rows: HistoryRow[],
+  lang: string | null,
+  t: HistoryStrings,
+  opts: { showDownloads?: boolean; hasMore?: boolean; nextOffset?: number } = {},
+): string {
+  const items = renderHistoryItems(app, rows, lang, t, opts);
+  const hasMore = opts.hasMore === true;
+  const nextOffset = opts.nextOffset ?? rows.length;
 
   return `<!doctype html>
 <html lang="${t.htmlLang}">
@@ -646,16 +676,46 @@ function renderHistoryPage(
         <div class="sub">${esc(app.platform)} · ${t.versionHistory}</div>
       </div>
     </header>
-    ${rows.length === 0 ? `<p class="sub">${t.noVersions}</p>` : `<ul>${items}</ul>`}
+    ${rows.length === 0 ? `<p class="sub">${t.noVersions}</p>` : `<ul id="hist-list">${items}</ul>`}
+    ${hasMore ? `<div id="hist-more" data-offset="${nextOffset}" class="sub" style="text-align:center;padding:8px 0;">…</div>` : ""}
   </main>
   <script>
-    document.querySelectorAll(".date").forEach((el) => {
-      const ms = Number(el.dataset.ts);
-      if (!Number.isFinite(ms)) return;
-      try {
-        el.textContent = new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(new Date(ms));
-      } catch { el.textContent = new Date(ms).toLocaleString(); }
-    });
+    function formatDates(root) {
+      (root || document).querySelectorAll(".date").forEach((el) => {
+        const ms = Number(el.dataset.ts);
+        if (!Number.isFinite(ms)) return;
+        try {
+          el.textContent = new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(new Date(ms));
+        } catch { el.textContent = new Date(ms).toLocaleString(); }
+      });
+    }
+    formatDates(document);
+    // Lazy-load older versions when the sentinel scrolls into view.
+    (function () {
+      const more = document.getElementById("hist-more");
+      if (!more) return;
+      const list = document.getElementById("hist-list");
+      let loading = false;
+      const observer = new IntersectionObserver(async (entries) => {
+        if (!entries.some((e) => e.isIntersecting) || loading) return;
+        loading = true;
+        try {
+          const res = await fetch(location.pathname + "?fragment=1&offset=" + more.dataset.offset);
+          if (!res.ok) { observer.disconnect(); more.remove(); return; }
+          const html = await res.text();
+          more.insertAdjacentHTML("beforebegin", html);
+          formatDates(list);
+          const parsed = Number(more.dataset.offset) + (html.match(/class="release"/g) || []).length;
+          // A short page means we've hit the end.
+          if ((html.match(/class="release"/g) || []).length === 0) { observer.disconnect(); more.remove(); return; }
+          more.dataset.offset = String(parsed);
+        } catch { observer.disconnect(); more.remove(); }
+        loading = false;
+      }, { rootMargin: "400px" });
+      observer.observe(more);
+    })();
+    // Deep-link: if a #v-<version> fragment targets a row not in the first
+    // page, the row is absent — fall back to letting the browser no-op.
   </script>
 </body>
 </html>`;
