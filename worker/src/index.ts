@@ -539,7 +539,13 @@ const app = new OpenAPIHono<{ Bindings: Env }>({
   // see a consistent payload.
   defaultHook: (result, c) => {
     if (!result.success) {
-      return c.json({ error: "invalid request", detail: result.error.message }, 400);
+      // ZodError#message is a serialized JSON array of issues; surface a
+      // human-readable path:message summary instead.
+      const detail = result.error.issues
+        .slice(0, 5)
+        .map((i) => `${i.path.join(".") || "body"}: ${i.message}`)
+        .join("; ");
+      return c.json({ error: "invalid request", detail }, 400);
     }
   },
 });
@@ -807,7 +813,13 @@ export const admin = new OpenAPIHono<{
 }>({
   defaultHook: (result, c) => {
     if (!result.success) {
-      return c.json({ error: "invalid request", detail: result.error.message }, 400);
+      // ZodError#message is a serialized JSON array of issues; surface a
+      // human-readable path:message summary instead.
+      const detail = result.error.issues
+        .slice(0, 5)
+        .map((i) => `${i.path.join(".") || "body"}: ${i.message}`)
+        .join("; ");
+      return c.json({ error: "invalid request", detail }, 400);
     }
   },
 });
