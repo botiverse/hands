@@ -926,7 +926,7 @@ export interface AgcSubmission {
   build_id: string;
   provider: "appgallery";
   lane: "invitation_test";
-  state: "uploading" | "processing" | "ready" | "testing_review" | "failed";
+  state: "uploading" | "processing" | "ready" | "testing_review" | "testing_scheduled" | "testing_active" | "rejected" | "stopped" | "failed";
   external_app_id: string | null;
   external_version_id: string | null;
   external_package_id: string | null;
@@ -953,7 +953,7 @@ export const startAgcInvitationTest = (appId: string, buildId: string, packageNa
   );
 
 export const getAgcSubmission = (appId: string, submissionId: string) =>
-  request<{ submission: AgcSubmission; events: Array<{ state: string; detail_json: string; created_at: number }> }>(
+  request<{ submission: AgcSubmission; events: Array<{ state: string; detail_json: string; created_at: number }>; sync_error?: string }>(
     `/api/apps/${appId}/agc-submissions/${submissionId}`,
     { admin: true },
   );

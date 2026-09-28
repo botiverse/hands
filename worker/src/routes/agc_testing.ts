@@ -2,7 +2,7 @@ import type { Context } from "hono";
 import { currentActor, type AdminEnv } from "../middleware/auth";
 import { insertAuditLog } from "../lib/permissions";
 import { agcCredentialKind, getAgcCredentials, type AgcApiClientCredential, type AgcServiceAccountCredential } from "../lib/agc_credentials";
-import { addAgcTestPackage, AgcApiError, bindAgcTestPackage, createAgcInvitationVersion, createAgcServiceAccountJwt, exchangeAgcApiClientToken, getAgcCompileStatus, getAgcReviewStatus, listAgcTestGroups, requestAgcUpload, resolveAgcAppId, submitAgcTestVersion, uploadAgcObject } from "../lib/agc_api";
+import { addAgcTestPackage, AgcApiError, bindAgcTestPackage, createAgcInvitationVersion, createAgcServiceAccountJwt, exchangeAgcApiClientToken, AGC_PACKAGE_FAILED, AGC_PACKAGE_OK, getAgcCompileStatus, getAgcReviewStatus, getAgcTestVersionStatus, mapAgcTestReleaseState, listAgcTestGroups, requestAgcUpload, resolveAgcAppId, submitAgcTestVersion, uploadAgcObject } from "../lib/agc_api";
 
 type AdminContext = Context<AdminEnv & { Bindings: Env }>;
 type Submission = { id: string; app_id: string; build_id: string; state: string; external_app_id: string; external_version_id: string; external_package_id: string; provider_state_json: string; error_message: string | null; created_at: number; updated_at: number };
@@ -25,6 +25,15 @@ async function event(db: D1Database, submissionId: string, state: string, detail
   await db.batch([
     db.prepare("UPDATE market_submissions SET state=?1, provider_state_json=?2, error_message=NULL, updated_at=?3 WHERE id=?4").bind(state, JSON.stringify(detail), now, submissionId),
     db.prepare("INSERT INTO market_submission_events (id, submission_id, state, detail_json, created_at) VALUES (?1,?2,?3,?4,?5)").bind(crypto.randomUUID(), submissionId, state, JSON.stringify(detail), now),
+  ]);
+}
+/** States whose outcome is decided on Huawei's side and must be re-read. */
+const TRACKED_REVIEW_STATES = new Set(["testing_review", "testing_scheduled", "testing_active"]);
+async function failSubmission(db: D1Database, submissionId: string, message: string, detail: object = {}) {
+  const now = Date.now();
+  await db.batch([
+    db.prepare("UPDATE market_submissions SET state='failed', provider_state_json=?1, error_message=?2, updated_at=?3 WHERE id=?4").bind(JSON.stringify(detail), message, now, submissionId),
+    db.prepare("INSERT INTO market_submission_events (id, submission_id, state, detail_json, created_at) VALUES (?1,?2,'failed',?3,?4)").bind(crypto.randomUUID(), submissionId, JSON.stringify({ ...detail, error: message }), now),
   ]);
 }
 /**
@@ -152,15 +161,43 @@ export async function handleGetAgcSubmission(c: AdminContext) {
   const id = c.req.param("submissionId") ?? "";
   const sub = await c.env.DB.prepare("SELECT * FROM market_submissions WHERE id=?1 AND app_id=?2").bind(id, c.req.param("appId") ?? "").first<Submission>();
   if (!sub) return c.json({ error: "submission not found" }, 404);
-  if (sub.state === "processing") {
-    const agcAuth = await auth(c); const status = await getAgcCompileStatus(agcAuth, sub.external_app_id, sub.external_package_id);
-    if (status && Number(status.successStatus) === 0) {
-      await bindAgcTestPackage(agcAuth, sub.external_app_id, sub.external_version_id, sub.external_package_id);
-      await event(c.env.DB, id, "ready", { compile_status: status, package_bound: true }); sub.state = "ready";
+  let syncError: string | null = null;
+  try {
+    if (sub.state === "processing") {
+      const agcAuth = await auth(c); const status = await getAgcCompileStatus(agcAuth, sub.external_app_id, sub.external_package_id);
+      const compile = status ? Number(status.successStatus) : NaN;
+      if (compile === AGC_PACKAGE_OK) {
+        await bindAgcTestPackage(agcAuth, sub.external_app_id, sub.external_version_id, sub.external_package_id);
+        await event(c.env.DB, id, "ready", { compile_status: status, package_bound: true }); sub.state = "ready";
+      } else if (compile === AGC_PACKAGE_FAILED) {
+        // Huawei marks the package unusable; without this the row stayed in
+        // `processing` forever and the UI never offered a retry.
+        const message = "AppGallery could not compile the uploaded package (successStatus 2)";
+        await failSubmission(c.env.DB, id, message, { compile_status: status });
+        sub.state = "failed"; sub.error_message = message;
+      }
+    } else if (TRACKED_REVIEW_STATES.has(sub.state) && sub.external_version_id) {
+      // After submit Hands used to stop looking, so every invitation test sat
+      // in `testing_review` regardless of what Huawei decided. Re-read the
+      // test version and record a transition only when the state changes.
+      const agcAuth = await auth(c);
+      const remote = await getAgcTestVersionStatus(agcAuth, sub.external_app_id, sub.external_version_id);
+      const next = mapAgcTestReleaseState(remote.release_state);
+      const previous = JSON.parse(sub.provider_state_json || "{}") as Record<string, unknown>;
+      const snapshot = { ...previous, release_state: remote.release_state, audit_opinion: remote.audit_opinion, open_test_info: remote.open_test_info, synced_at: Date.now() };
+      if (next && next !== sub.state) {
+        await event(c.env.DB, id, next, snapshot); sub.state = next;
+      } else {
+        await c.env.DB.prepare("UPDATE market_submissions SET provider_state_json=?1, updated_at=?2 WHERE id=?3").bind(JSON.stringify(snapshot), Date.now(), id).run();
+      }
+      sub.provider_state_json = JSON.stringify(snapshot);
     }
+  } catch (error) {
+    // A provider read failure must not hide the stored submission.
+    syncError = error instanceof AgcApiError ? error.message : "AppGallery status is unavailable";
   }
   const events = await c.env.DB.prepare("SELECT state, detail_json, created_at FROM market_submission_events WHERE submission_id=?1 ORDER BY created_at").bind(id).all();
-  return c.json({ submission: publicSubmission(sub), events: events.results });
+  return c.json({ submission: publicSubmission(sub), events: events.results, ...(syncError ? { sync_error: syncError } : {}) });
 }
 export async function handleListAgcTestGroups(c: AdminContext) {
   const appId = c.req.param("appId") ?? "";
@@ -195,11 +232,17 @@ export async function handleSubmitAgcInvitationTest(c: AdminContext) {
   const agcAuth = await auth(c);
   let effectiveGroupIds = requestedGroupIds;
   if (effectiveGroupIds.length === 0) {
-    const groups = await listAgcTestGroups(agcAuth, sub.external_app_id);
-    const firstGroup = groups[0];
-    if (firstGroup?.groupId) {
-      effectiveGroupIds = [firstGroup.groupId];
+    // Only default when there is exactly one group. With several groups the
+    // old code silently used whichever Huawei listed first, which can send a
+    // build to the wrong testers.
+    const groups = (await listAgcTestGroups(agcAuth, sub.external_app_id)).filter((g) => g?.groupId);
+    if (groups.length > 1) {
+      return c.json({
+        error: "Several AGC test groups exist; pass group_id or group_ids",
+        groups: groups.map((g) => ({ group_id: g.groupId, group_name: g.groupName ?? null })),
+      }, 400);
     }
+    if (groups[0]) effectiveGroupIds = [groups[0].groupId];
   }
   if (effectiveGroupIds.length === 0) {
     return c.json({ error: "No AGC test group found or specified for invitation test" }, 400);
