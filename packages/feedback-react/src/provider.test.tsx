@@ -228,6 +228,12 @@ describe("FeedbackProvider", () => {
       /\.hands-feedback-close-caret\s*\{[^}]*min-width:\s*20px/,
     );
     expect(css).toMatch(
+      /\.hands-feedback-close-main\s*\{[^}]*padding-left:\s*8px/,
+    );
+    expect(css).toMatch(
+      /\.hands-feedback-close-main::before\s*\{[^}]*display:\s*none/,
+    );
+    expect(css).toMatch(
       /\.hands-feedback-close-split\[data-menu-open\],[\s\S]*\.hands-feedback-close-split:has\(\.hands-feedback-close-main:active\),[\s\S]*\.hands-feedback-close-split:has\(\.hands-feedback-close-caret:active\)\s*\{[^}]*box-shadow:\s*4px 4px 0 var\(--line-strong\)[^}]*translate:\s*0 -1px/,
     );
     expect(css).toMatch(

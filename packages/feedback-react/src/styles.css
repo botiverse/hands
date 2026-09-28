@@ -466,6 +466,11 @@
   color: inherit;
   cursor: pointer;
   font-family: inherit;
+  padding-left: 8px;
+}
+
+.hands-feedback-close-main::before {
+  display: none;
 }
 
 .hands-feedback-close-caret {
