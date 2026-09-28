@@ -27,6 +27,8 @@ async function event(db: D1Database, submissionId: string, state: string, detail
     db.prepare("INSERT INTO market_submission_events (id, submission_id, state, detail_json, created_at) VALUES (?1,?2,?3,?4,?5)").bind(crypto.randomUUID(), submissionId, state, JSON.stringify(detail), now),
   ]);
 }
+/** Terminal states from which a new upload of the same build may start. */
+const RETRYABLE_STATES = new Set(["failed", "rejected", "stopped"]);
 /** States whose outcome is decided on Huawei's side and must be re-read. */
 const TRACKED_REVIEW_STATES = new Set(["testing_review", "testing_scheduled", "testing_active"]);
 async function failSubmission(db: D1Database, submissionId: string, message: string, detail: object = {}) {
@@ -124,8 +126,11 @@ export async function handleStartAgcInvitationTest(c: AdminContext) {
     WHERE b.id=?1 AND b.app_id=?2 AND ba.platform='ohos' AND ba.filetype='app'`).bind(buildId, appId).first<{ r2_key: string; file_hash: string; size_bytes: number; filetype: string }>();
   if (!row) return c.json({ error: "signed OHOS .app asset not found for build" }, 404);
   const existing = await c.env.DB.prepare("SELECT * FROM market_submissions WHERE idempotency_key=?1").bind(`agc-invitation:${buildId}`).first<Submission>();
-  if (existing && existing.state !== "failed") return c.json({ submission: publicSubmission(existing) });
-  if (existing) await c.env.DB.prepare("DELETE FROM market_submissions WHERE id=?1").bind(existing.id).run();
+  if (existing && !RETRYABLE_STATES.has(existing.state)) return c.json({ submission: publicSubmission(existing) });
+  // Retry after failed / rejected / stopped: a fresh AGC test version is
+  // created. The old row keeps its events for history; it only gives up the
+  // per-build idempotency key so the new attempt can claim it.
+  if (existing) await c.env.DB.prepare("UPDATE market_submissions SET idempotency_key=?1, updated_at=?2 WHERE id=?3").bind(`agc-invitation:${buildId}:superseded:${existing.id}`, Date.now(), existing.id).run();
   const id = crypto.randomUUID(); const now = Date.now();
   await c.env.DB.prepare(`INSERT INTO market_submissions (id,app_id,build_id,provider,lane,state,idempotency_key,created_by_actor,created_at,updated_at)
     VALUES (?1,?2,?3,'appgallery','invitation_test','uploading',?4,?5,?6,?6)`).bind(id, appId, buildId, `agc-invitation:${buildId}`, currentActor(c), now).run();

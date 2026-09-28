@@ -385,8 +385,21 @@ submission and phased release are not automated yet; do those in AppGallery
 Connect. The app needs AGC Service Account credentials (Settings → AppGallery)
 and the channel `bundle_id` set to the HarmonyOS package name.
 
-There is no dedicated CLI command yet; call the admin API with `hands api`
-(app admin role):
+CLI (0.5.30+, app admin role):
+
+```bash
+hands agc groups raft-ohos
+hands agc upload raft-ohos <buildId> --package-name build.raft.mobile \
+  --test-desc "1.12.0 (11200003)" --wait
+hands agc submit raft-ohos <submissionId> --group <groupId>
+hands agc status raft-ohos <submissionId> --events   # or: <buildId> --build
+```
+
+`upload` is idempotent per build. After `failed`, `rejected`, or `stopped` it
+starts a new attempt (a new AGC test version); the earlier submission keeps its
+history.
+
+The same flow over the admin API with `hands api`:
 
 ```bash
 APP=/api/apps/<appId>
