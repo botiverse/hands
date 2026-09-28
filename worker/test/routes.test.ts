@@ -7035,6 +7035,123 @@ describe("quiver public API v2 — scope resolution", () => {
     expect(immCancelled.status).toBe(404);
   });
 
+  it("zero-target external build: generic /builds rejects 'external', publish gate rejects empty set", async () => {
+    // Regression for the 2026-09-28 0073 census failure: a build reached
+    // artifact_mode='external' with ZERO external_build_targets rows, which the
+    // pre-deploy census reports as over-applied and which could never serve a
+    // single download. Two surfaces closed here:
+    //   (a) the generic POST /builds accepts artifact_mode but cannot declare a
+    //       target in the same request — it must refuse 'external' outright;
+    //   (b) publish-time: `required_external_targets: []` is defined-but-empty
+    //       and slips past the cli-binary required-set check, so the gate itself
+    //       must reject an empty effective target set for ANY external build.
+    const env = makeEnv();
+    const now = Date.now();
+    const { handleCreateBuild } = await import("../src/routes/builds");
+    const { handlePublishRelease } = await import("../src/routes/releases");
+
+    // (a) Generic create endpoint must not mint an external build with no way
+    // to declare targets atomically.
+    const createCtx = (body: unknown) =>
+      ({
+        env,
+        executionCtx: { waitUntil: () => undefined },
+        req: {
+          url: "https://quiver-worker.test/api/apps/app-scope/builds",
+          param: (name: string) => (name === "appId" ? "app-scope" : ""),
+          query: () => undefined,
+          json: async () => body,
+        },
+        get: (name: string) => (name === "admin_actor" ? "tester" : name === "org_id" ? "default" : undefined),
+        json: (data: unknown, status = 200) =>
+          new Response(JSON.stringify(data), { status, headers: { "content-type": "application/json" } }),
+      }) as any;
+    const externalCreate = await handleCreateBuild(createCtx({
+      channel_id: "ch-scope-prod",
+      product_type: "cli-binary",
+      release_type: "stable",
+      version_name: "9.9.9",
+      version_code: 999,
+      source: "cli",
+      status: "succeeded",
+      artifact_mode: "external",
+    }));
+    expect(externalCreate.status).toBe(400);
+    await expect(externalCreate.json()).resolves.toMatchObject({ code: "EXTERNAL_BUILD_NO_TARGETS" });
+    await expect(env.DB.prepare(
+      "SELECT COUNT(*) AS count FROM builds WHERE version_name = '9.9.9'",
+    ).first()).resolves.toEqual({ count: 0 });
+
+    // (b) The bad state pre-existing in production (created before this gate):
+    // seed it directly, then show publish refuses every path into activation.
+    await env.DB.prepare(
+      `INSERT INTO builds (id, app_id, channel_id, product_type, release_type, version_name, version_code,
+                           source, status, build_metadata_json, parsed_metadata_json, should_force_update,
+                           provenance_json, created_at, updated_at, artifact_mode)
+       VALUES ('b-ext-zero', 'app-scope', 'ch-scope-prod', 'cli-binary', 'stable', '3.0.0', 3000000,
+               'external', 'succeeded', '{}', '{}', 0, '{}', ?1, ?1, 'external')`,
+    ).bind(now).run();
+    await env.DB.prepare(
+      `INSERT INTO releases (id, app_id, build_id, channel_id, product_type, release_type, status,
+                             is_full, changelog, created_by, created_at, updated_at)
+       VALUES ('rel-ext-zero', 'app-scope', 'b-ext-zero', 'ch-scope-prod', 'cli-binary', 'stable', 'draft',
+               1, NULL, 'tester', ?1, ?1)`,
+    ).bind(now).run();
+    await env.DB.prepare(
+      `INSERT INTO release_scopes (id, release_id, scope_type, scope_value, created_at)
+       VALUES ('scope-rel-ext-zero', 'rel-ext-zero', 'full', 'all', ?1)`,
+    ).bind(now).run();
+
+    const ctx = (body: unknown) =>
+      ({
+        env,
+        executionCtx: { waitUntil: () => undefined },
+        req: {
+          url: "https://quiver-worker.test/api/apps/app-scope/releases/rel-ext-zero/publish",
+          param: (name: string) => ({ appId: "app-scope", releaseId: "rel-ext-zero" })[name] ?? "",
+          query: () => undefined,
+          json: async () => body,
+        },
+        get: (name: string) => (name === "admin_actor" ? "tester" : name === "org_id" ? "default" : undefined),
+        json: (data: unknown, status = 200) =>
+          new Response(JSON.stringify(data), { status, headers: { "content-type": "application/json" } }),
+      }) as any;
+
+    // Caller supplies an explicit empty set: defined, but still zero targets.
+    const emptySet = await handlePublishRelease(ctx({ required_external_targets: [] }));
+    expect(emptySet.status).toBe(409);
+    await expect(emptySet.json()).resolves.toMatchObject({ code: "EXTERNAL_TARGETS_EMPTY" });
+    await expect(env.DB.prepare(
+      "SELECT status FROM releases WHERE id = 'rel-ext-zero'",
+    ).first()).resolves.toEqual({ status: "draft" });
+
+    // Omitted entirely (non-cli-binary product types reach the same branch):
+    // effective required set falls back to `declared`, which is empty.
+    const omitted = await handlePublishRelease(ctx({}));
+    expect(omitted.status).toBe(400); // cli-binary still demands a required set
+    await expect(env.DB.prepare(
+      "SELECT status FROM releases WHERE id = 'rel-ext-zero'",
+    ).first()).resolves.toEqual({ status: "draft" });
+
+    // Same build on a non-cli-binary product type: no required-set demand, so
+    // the empty-declared branch is the guard that must fire.
+    await env.DB.prepare(
+      "UPDATE builds SET product_type = 'node-package' WHERE id = 'b-ext-zero'",
+    ).run();
+    await env.DB.prepare(
+      "UPDATE releases SET product_type = 'node-package' WHERE id = 'rel-ext-zero'",
+    ).run();
+    const omittedNode = await handlePublishRelease(ctx({}));
+    expect(omittedNode.status).toBe(409);
+    await expect(omittedNode.json()).resolves.toMatchObject({ code: "EXTERNAL_TARGETS_EMPTY" });
+    await expect(env.DB.prepare(
+      "SELECT status FROM releases WHERE id = 'rel-ext-zero'",
+    ).first()).resolves.toEqual({ status: "draft" });
+    await expect(env.DB.prepare(
+      "SELECT COUNT(*) AS count FROM audit_logs WHERE action = 'release.publish'",
+    ).first()).resolves.toEqual({ count: 0 });
+  });
+
   it("the resolver takes placement from its caller instead of issuing its own query", async () => {
     // @XX's constraint: unifying the rule must not cost a round trip. Callers already select
     // `artifact_mode` and the installable-row existence in the query that got them here, so the

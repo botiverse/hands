@@ -928,6 +928,22 @@ export async function handleListExternalBuildTargets(c: Context<{ Bindings: Env 
 export async function handleCreateBuild(c: AdminContext) {
   const appId = c.req.param("appId") ?? "";
   const body = (await c.req.json()) as BuildInput;
+  // 'external' means the bytes are declared rows in external_build_targets, and
+  // this generic endpoint cannot declare even one in the same request - so a
+  // build created here as 'external' would violate the placement invariant
+  // (artifact_mode = 'external' <-> has targets, no R2 assets; see 0073) and
+  // stays permanently unfixable at publish time. The only legitimate external
+  // creation path is POST .../builds/publish-version, which inserts the build
+  // and its first target atomically.
+  if (body.artifact_mode === "external") {
+    return c.json(
+      {
+        error: "artifact_mode 'external' requires a declared external target; use POST /api/apps/:appId/builds/publish-version",
+        code: "EXTERNAL_BUILD_NO_TARGETS",
+      },
+      400,
+    );
+  }
   try {
     const id = await createBuild(c.env.DB, appId, body, currentActor(c));
     // Emit webhook event (P2.5.8). Best-effort.
