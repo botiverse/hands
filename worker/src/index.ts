@@ -12,6 +12,7 @@
 
 import { Container, getRandom } from "@cloudflare/containers";
 import { Hono } from "hono";
+import { OpenAPIHono } from "@hono/zod-openapi";
 import type { Context } from "hono";
 import { cors } from "hono/cors";
 import { publicDocAssetPaths } from "./lib/public_docs";
@@ -308,6 +309,7 @@ import {
   requireOrgRole,
 } from "./lib/permissions";
 import { openApiDocument } from "./openapi";
+import { feedbackRoutes } from "./openapi/feedback";
 import {
   httpsRedirectUrl,
   requestOrigin,
@@ -462,7 +464,16 @@ function parseBadgingAndCerts(
 
 // ---------- Hono app ----------
 
-const app = new Hono<{ Bindings: Env }>();
+const app = new OpenAPIHono<{ Bindings: Env }>({
+  // Validation failures keep our plain `{error}` shape rather than zod-openapi's
+  // default {success,error:{issues}} so callers that already parse `error`
+  // see a consistent payload.
+  defaultHook: (result, c) => {
+    if (!result.success) {
+      return c.json({ error: "invalid request", detail: result.error.message }, 400);
+    }
+  },
+});
 
 app.use("*", async (c, next) => {
   const redirectUrl = httpsRedirectUrl(c);
@@ -670,16 +681,14 @@ app.post("/public/v2/apps/:slug/feedback/presign", handlePresignFeedbackAttachme
 app.put("/public/v2/apps/:slug/feedback/multipart/part", handleFeedbackMultipartPart);
 app.post("/public/v2/apps/:slug/feedback/multipart/complete", handleCompleteFeedbackMultipart);
 app.post("/public/v2/apps/:slug/feedback/multipart/abort", handleAbortFeedbackMultipart);
-app.get("/api/apps/:appId/reporter-feedback", handleListReporterFeedback);
-app.post("/api/apps/:appId/reporter-feedback/session", handleMintReporterSession);
-app.put("/api/apps/:appId/reporter-feedback/route-subject", handleBindReporterRouteSubject);
-app.get("/api/apps/:appId/reporter-feedback/:ticketId", handleGetReporterFeedback);
-app.post("/api/apps/:appId/reporter-feedback/:ticketId/comments", handleAddReporterComment);
-app.post("/api/apps/:appId/reporter-feedback/:ticketId/close", handleCloseReporterFeedback);
-app.get(
-  "/api/apps/:appId/reporter-feedback/:ticketId/attachments/:attachmentId",
-  handleDownloadReporterAttachment,
-);
+app.openapi(feedbackRoutes.listReporter, handleListReporterFeedback as any);
+app.openapi(feedbackRoutes.mintReporterSession, handleMintReporterSession as any);
+app.openapi(feedbackRoutes.bindReporterRouteSubject, handleBindReporterRouteSubject as any);
+app.openapi(feedbackRoutes.getReporter, handleGetReporterFeedback as any);
+app.openapi(feedbackRoutes.addReporterComment, handleAddReporterComment as any);
+app.openapi(feedbackRoutes.closeReporter, handleCloseReporterFeedback as any);
+app.openapi(feedbackRoutes.downloadReporterAttachment, handleDownloadReporterAttachment as any);
+
 app.get("/public/apps/:slug/icon", handlePublicAppIcon);
 app.get("/apps/:slug/history", handlePublicAppHistory);
 app.get("/apps/:slug/history/:releaseId/download", handlePublicAppHistoryDownload);
@@ -717,7 +726,7 @@ app.use("*", async (c, next) => {
 // Exported so tests can enumerate the real route table rather than pattern-match
 // the source: coverage should be decided by the router, not by whether a regex
 // recognises a particular registration style.
-export const admin = new Hono<{
+export const admin = new OpenAPIHono<{
   Bindings: Env;
   Variables: {
     admin_account?: import("./middleware/auth").AdminAccount;
@@ -726,7 +735,13 @@ export const admin = new Hono<{
     org_id?: string;
     org_role?: "owner" | "admin" | "member" | "viewer";
   };
-}>();
+}>({
+  defaultHook: (result, c) => {
+    if (!result.success) {
+      return c.json({ error: "invalid request", detail: result.error.message }, 400);
+    }
+  },
+});
 admin.use("*", authMiddleware);
 
 // Agent CLI login (RFC 057) action — needs the authenticated agent session so it
@@ -1018,25 +1033,20 @@ admin.post("/api/apps/:appId/shares/:shareId/rebind", requireAppRole("publisher"
 admin.put("/api/apps/:appId/icon", requireAppRole("publisher"), handleUploadAppIcon);
 admin.get("/api/apps/:appId/client-key", requireAppRole("admin"), handleGetClientKey);
 admin.post("/api/apps/:appId/rotate-client-key", requireAppRole("admin"), handleRotateClientKey);
-admin.get("/api/apps/:appId/feedback/crash-groups", requireAppRole("viewer"), handleListCrashGroups);
-admin.get("/api/apps/:appId/feedback/stats", requireAppRole("viewer"), handleFeedbackStats);
+admin.openapi({ ...feedbackRoutes.listCrashGroups, middleware: requireAppRole("viewer") }, handleListCrashGroups as any);
+admin.openapi({ ...feedbackRoutes.feedbackStats, middleware: requireAppRole("viewer") }, handleFeedbackStats as any);
 admin.get("/api/apps/:appId/analytics/devices", requireAppRole("viewer"), handleDeviceAnalytics);
 admin.get("/api/apps/:appId/analytics/versions", requireAppRole("viewer"), handleVersionAnalytics);
 admin.get("/api/apps/:appId/analytics/devices/:deviceId", requireAppRole("viewer"), handleDeviceDetail);
 admin.get("/api/apps/:appId/release-health", requireAppRole("viewer"), handleReleaseHealth);
-admin.get("/api/apps/:appId/feedback", requireAppRoleOrFeedbackPermission("viewer", {}, "feedback:read"), handleListFeedback);
-admin.get(
-  "/api/apps/:appId/feedback/material-delta",
-  requireAppRoleOrFeedbackPermission("viewer", {}, "feedback:read"),
-  handleListFeedbackMaterialDelta,
-);
-admin.get("/api/apps/:appId/feedback/:ticketId", requireAppRoleOrFeedbackPermission("viewer", {}, "feedback:read"), handleGetFeedback);
-admin.patch("/api/apps/:appId/feedback/:ticketId", requireAppRoleOrFeedbackPermission("publisher", { orgMinimum: "member" }, "feedback:triage"), handleUpdateFeedback);
-admin.post(
-  "/api/apps/:appId/feedback/:ticketId/comments",
+admin.openapi({ ...feedbackRoutes.listFeedback, middleware: requireAppRoleOrFeedbackPermission("viewer", {}, "feedback:read") }, handleListFeedback as any);
+admin.openapi({ ...feedbackRoutes.listMaterialDelta, middleware: requireAppRoleOrFeedbackPermission("viewer", {}, "feedback:read") }, handleListFeedbackMaterialDelta as any);
+admin.openapi({ ...feedbackRoutes.getFeedback, middleware: requireAppRoleOrFeedbackPermission("viewer", {}, "feedback:read") }, handleGetFeedback as any);
+admin.openapi({ ...feedbackRoutes.updateFeedback, middleware: requireAppRoleOrFeedbackPermission("publisher", { orgMinimum: "member" }, "feedback:triage") }, handleUpdateFeedback as any);
+admin.openapi(
   // Both actions share this endpoint; handleAddFeedbackComment splits them on `internal`.
-  requireAppRoleOrFeedbackPermission("publisher", { orgMinimum: "member" }, "feedback:comment", "feedback:triage"),
-  handleAddFeedbackComment,
+  { ...feedbackRoutes.addFeedbackComment, middleware: requireAppRoleOrFeedbackPermission("publisher", { orgMinimum: "member" }, "feedback:comment", "feedback:triage") },
+  handleAddFeedbackComment as any,
 );
 admin.post("/api/apps/:appId/feedback/:ticketId/symbolicate", requireFeedbackTriageRole(), handleResymbolicateFeedback);
 admin.get(

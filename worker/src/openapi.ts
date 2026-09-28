@@ -1,9 +1,9 @@
-import { OpenAPIHono } from "@hono/zod-openapi";
+import { createRoute, OpenAPIHono } from "@hono/zod-openapi";
 import { registerAppRoutes } from "./openapi/apps";
 import { registerAndroidDistributionRoutes } from "./openapi/android_distribution";
 import { registerAuthRoutes } from "./openapi/auth";
 import { registerBuildRoutes } from "./openapi/builds";
-import { registerFeedbackRoutes } from "./openapi/feedback";
+import { feedbackRoutes } from "./openapi/feedback";
 import { registerOrgRoutes } from "./openapi/orgs";
 import { registerPublicRoutes } from "./openapi/public";
 import { registerReleaseRoutes } from "./openapi/releases";
@@ -17,7 +17,10 @@ registerAppRoutes(docs.openAPIRegistry);
 registerAndroidDistributionRoutes(docs.openAPIRegistry);
 registerBuildRoutes(docs.openAPIRegistry);
 registerReleaseRoutes(docs.openAPIRegistry);
-registerFeedbackRoutes(docs.openAPIRegistry);
+// Feedback routes are bound live via OpenAPIHono elsewhere; registering the
+// same RouteConfig here keeps this document complete while avoiding a second
+// source of truth.
+for (const r of Object.values(feedbackRoutes)) docs.openAPIRegistry.registerPath(createRoute(r));
 registerOrgRoutes(docs.openAPIRegistry);
 registerSettingsRoutes(docs.openAPIRegistry);
 
