@@ -303,23 +303,47 @@ Official Apple references:
 - [Invite external testers](https://developer.apple.com/help/app-store-connect/test-a-beta-version/invite-external-testers/)
 - [TestFlight overview](https://developer.apple.com/help/app-store-connect/test-a-beta-version/testflight-overview/)
 
-### TestFlight crash reports
+### TestFlight crash reports and screenshot feedback
 
-Pull the crashes testers shared from TestFlight, using the app's stored App
-Store Connect key (app viewer is enough):
+Pull what testers submitted from TestFlight, using the app's stored App Store
+Connect key (app viewer is enough). Pulling never changes anything on Apple's
+side.
 
 ```bash
-# newest 20 crashes for one build, with each crash log saved as .ips
+# crashes: newest 20 for one build, each crash log saved as .ips
 hands testflight crashes raft-ios --build 11200001 --download ./crashes
+# screenshot feedback: tester text, device, build, screenshots
+hands testflight feedback raft-ios --build 11200001 --download ./shots
 # pin the marketing version too, JSON for scripts
 hands testflight crashes raft-ios --build 11200001 --app-version 1.12.0 --json
 ```
 
 Only crashes a tester chose to share from the TestFlight prompt are available
 from Apple's API. Unshared crashes appear only in Xcode Organizer, so an
-empty list does not prove the build never crashed. Tester emails are not
-returned. API: `GET /api/apps/<appId>/testflight-crashes?build=&version=&limit=`
-and `GET /api/apps/<appId>/testflight-crashes/<id>/log` (text/plain).
+empty list does not prove the build never crashed. Some shared crashes have no
+log on Apple's side (`CRASH_LOG_NOT_AVAILABLE`). Screenshot URLs are signed by
+Apple and expire (`expires_at`). Tester emails are not returned.
+
+**Closing (separate, explicit step).** After triage, close the item on Apple's
+side. This calls Apple's official TestFlight feedback API, and Apple's only
+resolution for a submission is delete: the crash or screenshot feedback is
+removed from TestFlight feedback in App Store Connect. Needs app publisher or
+the `feedback:triage` permission.
+
+```bash
+hands testflight close raft-ios crash <crashId>
+hands testflight close raft-ios feedback <feedbackId>
+```
+
+API:
+
+| Action | Request |
+| --- | --- |
+| List crashes | `GET /api/apps/<appId>/testflight-crashes?build=&version=&limit=` |
+| Crash log | `GET /api/apps/<appId>/testflight-crashes/<id>/log` (text/plain) |
+| List screenshot feedback | `GET /api/apps/<appId>/testflight-feedback?build=&version=&limit=` |
+| Close crash | `DELETE /api/apps/<appId>/testflight-crashes/<id>` |
+| Close screenshot feedback | `DELETE /api/apps/<appId>/testflight-feedback/<id>` |
 
 For raw CI drafts, a single `--changelog-file ./changelog.txt` is still valid.
 For reviewed notes, prefer repeatable `lang=file` entries such as

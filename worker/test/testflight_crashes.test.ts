@@ -2,6 +2,9 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { Hono } from "hono";
 import { encryptP8 } from "../src/lib/asc_credentials";
 import {
+  handleCloseTestflightCrash,
+  handleCloseTestflightFeedback,
+  handleListTestflightFeedback,
   handleGetTestflightCrashLog,
   handleListTestflightCrashes,
   parseCrashLimit,
@@ -56,9 +59,48 @@ async function setup(platform = "ios") {
   const calls: string[] = [];
   vi.stubGlobal(
     "fetch",
-    vi.fn(async (input: RequestInfo | URL) => {
+    vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = new URL(String(input));
-      calls.push(`${url.pathname}?${url.searchParams.toString()}`);
+      const method = init?.method ?? "GET";
+      calls.push(`${method} ${url.pathname}?${url.searchParams.toString()}`);
+      if (method === "DELETE") {
+        if (url.pathname === "/v1/betaFeedbackCrashSubmissions/crash-1") return new Response(null, { status: 204 });
+        if (url.pathname === "/v1/betaFeedbackScreenshotSubmissions/shot-1") return new Response(null, { status: 204 });
+        return Response.json({ errors: [{ title: "UNEXPECTED DELETE" }] }, { status: 500 });
+      }
+      if (url.pathname === "/v1/apps/asc-app-1/betaFeedbackScreenshotSubmissions") {
+        return Response.json({
+          data: [
+            {
+              id: "shot-1",
+              attributes: {
+                createdDate: "2026-09-27T20:00:00Z",
+                deviceModel: "iPhone17,1",
+                osVersion: "26.0",
+                email: "tester@example.com",
+                comment: "button is cut off",
+                buildBundleId: "build.raft.app",
+                screenshots: [
+                  { url: "https://asc.example/shot.png?sig=1", width: 1179, height: 2556, expirationDate: "2026-09-28T20:00:00Z" },
+                ],
+              },
+              relationships: { build: { data: { id: "asc-build-1" } } },
+            },
+          ],
+        });
+      }
+      if (url.pathname === "/v1/betaFeedbackScreenshotSubmissions/shot-1") {
+        return Response.json({ data: { id: "shot-1", attributes: { buildBundleId: "build.raft.app" } } });
+      }
+      if (url.pathname === "/v1/betaFeedbackScreenshotSubmissions/shot-other") {
+        return Response.json({ data: { id: "shot-other", attributes: { buildBundleId: "com.other.app" } } });
+      }
+      if (url.pathname === "/v1/betaFeedbackCrashSubmissions/crash-nolog") {
+        return Response.json({ data: { id: "crash-nolog", attributes: { buildBundleId: "build.raft.app" } } });
+      }
+      if (url.pathname === "/v1/betaFeedbackCrashSubmissions/crash-nolog/crashLog") {
+        return Response.json({ errors: [{ title: "The specified resource does not exist" }] }, { status: 404 });
+      }
       if (url.pathname === "/v1/apps") return Response.json({ data: [{ id: "asc-app-1" }] });
       if (url.pathname === "/v1/builds" && url.searchParams.get("filter[version]") === "11200001") {
         return Response.json({ data: [{ id: "asc-build-1", attributes: { version: "11200001" } }] });
@@ -111,6 +153,9 @@ async function setup(platform = "ios") {
   const app = new Hono();
   app.get("/api/apps/:appId/testflight-crashes", handleListTestflightCrashes as any);
   app.get("/api/apps/:appId/testflight-crashes/:submissionId/log", handleGetTestflightCrashLog as any);
+  app.get("/api/apps/:appId/testflight-feedback", handleListTestflightFeedback as any);
+  app.delete("/api/apps/:appId/testflight-crashes/:submissionId", handleCloseTestflightCrash as any);
+  app.delete("/api/apps/:appId/testflight-feedback/:submissionId", handleCloseTestflightFeedback as any);
   const env = { DB: db, ASC_CRED_ENC_KEY: "test-key" } as any;
   return { app, env, calls };
 }
@@ -165,5 +210,50 @@ describe("TestFlight crash pull", () => {
     expect(other.status).toBe(404);
     const invalid = await app.request("/api/apps/app-1/testflight-crashes/..%2Fx/log", undefined, env);
     expect(invalid.status).toBe(400);
+  });
+
+  it("maps Apple's missing crash log 404 to CRASH_LOG_NOT_AVAILABLE", async () => {
+    const { app, env } = await setup();
+    const res = await app.request("/api/apps/app-1/testflight-crashes/crash-nolog/log", undefined, env);
+    expect(res.status).toBe(404);
+    expect(((await res.json()) as any).code).toBe("CRASH_LOG_NOT_AVAILABLE");
+  });
+
+  it("lists screenshot feedback with screenshots and build labels, no tester email", async () => {
+    const { app, env } = await setup();
+    const res = await app.request("/api/apps/app-1/testflight-feedback?build=11200001", undefined, env);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as any;
+    expect(body.feedback).toEqual([
+      expect.objectContaining({
+        id: "shot-1",
+        build_number: "11200001",
+        version: "1.12.0",
+        comment: "button is cut off",
+        screenshots: [
+          { url: "https://asc.example/shot.png?sig=1", width: 1179, height: 2556, expires_at: "2026-09-28T20:00:00Z" },
+        ],
+      }),
+    ]);
+    expect(JSON.stringify(body)).not.toContain("tester@example.com");
+  });
+
+  it("closes a crash or screenshot submission via Apple's DELETE only when explicitly called", async () => {
+    const { app, env, calls } = await setup();
+    await app.request("/api/apps/app-1/testflight-feedback", undefined, env);
+    await app.request("/api/apps/app-1/testflight-crashes", undefined, env);
+    expect(calls.some((c) => c.startsWith("DELETE"))).toBe(false);
+
+    const crash = await app.request("/api/apps/app-1/testflight-crashes/crash-1", { method: "DELETE" }, env);
+    expect(crash.status).toBe(200);
+    expect(await crash.json()).toMatchObject({ ok: true, id: "crash-1", kind: "crash" });
+    const shot = await app.request("/api/apps/app-1/testflight-feedback/shot-1", { method: "DELETE" }, env);
+    expect(shot.status).toBe(200);
+    expect(calls).toContain("DELETE /v1/betaFeedbackCrashSubmissions/crash-1?");
+    expect(calls).toContain("DELETE /v1/betaFeedbackScreenshotSubmissions/shot-1?");
+
+    const other = await app.request("/api/apps/app-1/testflight-feedback/shot-other", { method: "DELETE" }, env);
+    expect(other.status).toBe(404);
+    expect(calls.some((c) => c.includes("DELETE /v1/betaFeedbackScreenshotSubmissions/shot-other"))).toBe(false);
   });
 });

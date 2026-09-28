@@ -19,6 +19,15 @@ export type TestflightCrash = {
   app_uptime_ms: number | null;
   comment: string | null;
 };
+export type TestflightFeedback = TestflightCrash & {
+  screenshots: Array<{ url: string; width: number | null; height: number | null; expires_at: string | null }>;
+};
+type FeedbackList = {
+  bundle_id: string;
+  asc_app_id: string;
+  feedback: TestflightFeedback[];
+  note: string;
+};
 type CrashList = {
   bundle_id: string;
   asc_app_id: string;
@@ -78,6 +87,84 @@ export function registerTestflightCommands(program: Command): void {
         if (list.crashes.length === 0) console.log(`(${list.note})`);
       },
     );
+  testflight
+    .command("feedback <appIdOrSlug>")
+    .description("List tester-submitted TestFlight screenshot feedback (newest first); --download saves the screenshots.")
+    .option("--build <number>", "Build number (CFBundleVersion), e.g. 11200001.")
+    .option("--app-version <version>", "Marketing version (e.g. 1.12.0) to pin the build number to (needs --build).")
+    .option("--limit <n>", "Max submissions (1-200).", "20")
+    .option("--download [dir]", "Save screenshots as <dir>/testflight-feedback-<id>-<n>.<ext> (default: cwd).")
+    .option("--json", "Output JSON.", false)
+    .action(
+      async (
+        appIdOrSlug: string,
+        opts: { build?: string; appVersion?: string; limit: string; download?: string | boolean; json?: boolean },
+      ) => {
+        const appId = await resolveAppId(appIdOrSlug);
+        const list = await apiRequest<FeedbackList>(`/api/apps/${appId}/testflight-feedback`, {
+          query: { build: opts.build, version: opts.appVersion, limit: opts.limit },
+        });
+        const saved: Record<string, string> = {};
+        if (opts.download !== undefined && opts.download !== false) {
+          const dir = typeof opts.download === "string" ? opts.download : ".";
+          await mkdir(dir, { recursive: true });
+          for (const item of list.feedback) {
+            const paths: string[] = [];
+            for (const [i, shot] of item.screenshots.entries()) {
+              // Apple-signed URL: fetch directly, never with our Hands token.
+              const res = await fetch(shot.url);
+              if (!res.ok) {
+                console.error(`  ✘ ${item.id} screenshot ${i + 1}: ${res.status}`);
+                continue;
+              }
+              const ext = (res.headers.get("content-type") ?? "").includes("jpeg") ? "jpg" : "png";
+              const path = join(dir, `testflight-feedback-${item.id}-${i + 1}.${ext}`);
+              await writeFile(path, Buffer.from(await res.arrayBuffer()));
+              paths.push(path);
+            }
+            if (paths.length) saved[item.id] = paths.join(", ");
+          }
+        }
+        if (opts.json || program.opts<{ json?: boolean }>().json) {
+          console.log(JSON.stringify({ ...list, saved }, null, 2));
+          return;
+        }
+        if (list.feedback.length === 0) {
+          console.log("No TestFlight screenshot feedback.");
+          return;
+        }
+        console.log(
+          formatCrashTable(
+            list.feedback.map((f) => ({ ...f, comment: `${f.comment ?? ""} [${f.screenshots.length} screenshot(s)]`.trim() })),
+            saved,
+          ),
+        );
+      },
+    );
+
+  testflight
+    .command("close <appIdOrSlug> <crash|feedback> <submissionId>")
+    .description(
+      "Close a TestFlight crash or screenshot feedback after triage. Calls Apple's TestFlight feedback API, " +
+        "whose only resolution is delete: the item disappears from App Store Connect.",
+    )
+    .option("--json", "Output JSON.", false)
+    .action(async (appIdOrSlug: string, kind: string, submissionId: string, opts: { json?: boolean }) => {
+      if (kind !== "crash" && kind !== "feedback") {
+        throw new Error(`kind must be "crash" or "feedback", got "${kind}"`);
+      }
+      const appId = await resolveAppId(appIdOrSlug);
+      const segment = kind === "crash" ? "testflight-crashes" : "testflight-feedback";
+      const result = await apiRequest<{ ok: boolean; id: string }>(
+        `/api/apps/${appId}/${segment}/${encodeURIComponent(submissionId)}`,
+        { method: "DELETE" },
+      );
+      if (opts.json || program.opts<{ json?: boolean }>().json) {
+        console.log(JSON.stringify(result, null, 2));
+        return;
+      }
+      console.log(`✔ Closed TestFlight ${kind} ${submissionId} (deleted in App Store Connect).`);
+    });
 }
 
 export function formatCrashTable(crashes: TestflightCrash[], saved: Record<string, string> = {}): string {

@@ -6,6 +6,13 @@
  *   from the main channel's bundle id, optionally narrowed to one build.
  * GET /api/apps/:appId/testflight-crashes/:submissionId/log
  *   The raw crash log text for one submission (text/plain), ready to save as .ips.
+ * GET /api/apps/:appId/testflight-feedback?build=&version=&limit=
+ *   Newest-first TestFlight screenshot feedback (text, device, build, and
+ *   Apple-signed screenshot URLs that expire) (task #247).
+ * DELETE /api/apps/:appId/testflight-crashes/:submissionId
+ * DELETE /api/apps/:appId/testflight-feedback/:submissionId
+ *   "Close" an item after triage. Apple's only resolution action is delete, so
+ *   the submission disappears from App Store Connect / TestFlight feedback.
  *
  * Only crashes that a tester chose to share from the TestFlight prompt exist in
  * this Apple API. Crashes the tester did not share show up only in Xcode
@@ -18,9 +25,13 @@ import { getAscCredentials } from "../lib/asc_credentials";
 import {
   AscApiError,
   ascRequest,
+  deleteBetaFeedbackSubmission,
   findAscBuildsByNumber,
+  getBetaFeedbackSubmission,
+  listBetaFeedbackScreenshotSubmissions,
+  type BetaFeedbackKind,
+  type BetaFeedbackScreenshotSubmission,
   getBetaCrashLogText,
-  getBetaFeedbackCrashSubmission,
   listBetaFeedbackCrashSubmissions,
   resolveAscAppId,
   type AscApiCredentials,
@@ -170,45 +181,59 @@ export function parseCrashLimit(raw: string | undefined): number {
   return n;
 }
 
+type BuildFilter = { buildNumber: string | undefined; version: string | undefined; limit: number };
+
+function parseBuildFilter(c: AdminContext): BuildFilter {
+  const limit = parseCrashLimit(c.req.query("limit"));
+  const buildNumber = c.req.query("build")?.trim() || undefined;
+  const version = c.req.query("version")?.trim() || undefined;
+  if (version && !buildNumber) {
+    throw new CrashPullError(400, "BUILD_REQUIRED", "version filter needs build (the build number)");
+  }
+  return { buildNumber, version, limit };
+}
+
+/** Fetch newest-first submissions for the app, or for every ASC build matching the filter. */
+async function listForFilter<T extends BetaFeedbackCrashSubmission>(
+  creds: AscApiCredentials,
+  ascAppId: string,
+  bundleId: string,
+  filter: BuildFilter,
+  list: (args: { ascAppId: string; ascBuildId?: string | undefined; limit: number }) => Promise<T[]>,
+): Promise<T[]> {
+  const { buildNumber, version, limit } = filter;
+  if (!buildNumber) return list({ ascAppId, limit });
+  const builds = await findAscBuildsByNumber(creds, { ascAppId, buildNumber, version });
+  if (builds.length === 0) {
+    throw new CrashPullError(
+      404,
+      "ASC_BUILD_NOT_FOUND",
+      `no App Store Connect build ${buildNumber}${version ? ` (${version})` : ""} for ${bundleId}`,
+    );
+  }
+  const perBuild = await Promise.all(builds.map((b) => list({ ascAppId, ascBuildId: b.id, limit })));
+  return perBuild
+    .flat()
+    .sort((x, y) => (y.attributes?.createdDate ?? "").localeCompare(x.attributes?.createdDate ?? ""))
+    .slice(0, limit);
+}
+
+function buildIdsOf(items: BetaFeedbackCrashSubmission[]): string[] {
+  return [...new Set(items.map((s) => s.relationships?.build?.data?.id).filter((v): v is string => !!v))];
+}
+
 export async function handleListTestflightCrashes(c: AdminContext) {
   try {
-    const limit = parseCrashLimit(c.req.query("limit"));
-    const buildNumber = c.req.query("build")?.trim() || undefined;
-    const version = c.req.query("version")?.trim() || undefined;
-    if (version && !buildNumber) {
-      throw new CrashPullError(400, "BUILD_REQUIRED", "version filter needs build (the build number)");
-    }
+    const filter = parseBuildFilter(c);
     const { bundleId, ascAppId, creds } = await resolveIosAppContext(c);
-
-    let submissions: BetaFeedbackCrashSubmission[];
-    if (buildNumber) {
-      const builds = await findAscBuildsByNumber(creds, { ascAppId, buildNumber, version });
-      if (builds.length === 0) {
-        throw new CrashPullError(
-          404,
-          "ASC_BUILD_NOT_FOUND",
-          `no App Store Connect build ${buildNumber}${version ? ` (${version})` : ""} for ${bundleId}`,
-        );
-      }
-      const perBuild = await Promise.all(
-        builds.map((b) => listBetaFeedbackCrashSubmissions(creds, { ascAppId, ascBuildId: b.id, limit })),
-      );
-      submissions = perBuild
-        .flat()
-        .sort((x, y) => (y.attributes?.createdDate ?? "").localeCompare(x.attributes?.createdDate ?? ""))
-        .slice(0, limit);
-    } else {
-      submissions = await listBetaFeedbackCrashSubmissions(creds, { ascAppId, limit });
-    }
-
-    const buildIds = [
-      ...new Set(submissions.map((s) => s.relationships?.build?.data?.id).filter((v): v is string => !!v)),
-    ];
-    const labels = await describeBuilds(creds, buildIds);
+    const submissions = await listForFilter(creds, ascAppId, bundleId, filter, (args) =>
+      listBetaFeedbackCrashSubmissions(creds, args),
+    );
+    const labels = await describeBuilds(creds, buildIdsOf(submissions));
     return c.json({
       bundle_id: bundleId,
       asc_app_id: ascAppId,
-      filter: { build: buildNumber ?? null, version: version ?? null, limit },
+      filter: { build: filter.buildNumber ?? null, version: filter.version ?? null, limit: filter.limit },
       crashes: submissions.map((s) => publicCrash(s, labels)),
       note: "Only crashes testers chose to share from TestFlight appear here; unshared crashes are only in Xcode Organizer.",
     });
@@ -217,20 +242,88 @@ export async function handleListTestflightCrashes(c: AdminContext) {
   }
 }
 
+export async function handleListTestflightFeedback(c: AdminContext) {
+  try {
+    const filter = parseBuildFilter(c);
+    const { bundleId, ascAppId, creds } = await resolveIosAppContext(c);
+    const submissions: BetaFeedbackScreenshotSubmission[] = await listForFilter(
+      creds,
+      ascAppId,
+      bundleId,
+      filter,
+      (args) => listBetaFeedbackScreenshotSubmissions(creds, args),
+    );
+    const labels = await describeBuilds(creds, buildIdsOf(submissions));
+    return c.json({
+      bundle_id: bundleId,
+      asc_app_id: ascAppId,
+      filter: { build: filter.buildNumber ?? null, version: filter.version ?? null, limit: filter.limit },
+      feedback: submissions.map((s) => ({
+        ...publicCrash(s, labels),
+        screenshots: (s.attributes?.screenshots ?? [])
+          .filter((img) => !!img?.url)
+          .map((img) => ({
+            url: img.url as string,
+            width: img.width ?? null,
+            height: img.height ?? null,
+            expires_at: img.expirationDate ?? null,
+          })),
+      })),
+      note: "Screenshot URLs are signed by Apple and expire (see expires_at); download them promptly.",
+    });
+  } catch (error) {
+    return errorResponse(c, error);
+  }
+}
+
+/** Load a submission and make sure it belongs to this app's bundle (ASC keys are team-wide). */
+async function loadOwnedSubmission(
+  c: AdminContext,
+  kind: BetaFeedbackKind,
+): Promise<{ submissionId: string; creds: AscApiCredentials }> {
+  const submissionId = c.req.param("submissionId") ?? "";
+  if (!SUBMISSION_ID.test(submissionId)) {
+    throw new CrashPullError(400, "INVALID_SUBMISSION_ID", "invalid submission id");
+  }
+  const { bundleId, creds } = await resolveIosAppContext(c);
+  const submission = await getBetaFeedbackSubmission(creds, kind, submissionId);
+  const submissionBundle = submission.attributes?.buildBundleId ?? null;
+  if (submissionBundle && submissionBundle !== bundleId) {
+    throw new CrashPullError(
+      404,
+      kind === "crash" ? "CRASH_NOT_FOUND" : "FEEDBACK_NOT_FOUND",
+      `${kind === "crash" ? "crash" : "feedback"} submission not found for this app`,
+    );
+  }
+  return { submissionId, creds };
+}
+
+function closeHandler(kind: BetaFeedbackKind) {
+  return async (c: AdminContext) => {
+    try {
+      const { submissionId, creds } = await loadOwnedSubmission(c, kind);
+      await deleteBetaFeedbackSubmission(creds, kind, submissionId);
+      return c.json({ ok: true, id: submissionId, kind, closed: "deleted_in_app_store_connect" });
+    } catch (error) {
+      return errorResponse(c, error);
+    }
+  };
+}
+
+export const handleCloseTestflightCrash = closeHandler("crash");
+export const handleCloseTestflightFeedback = closeHandler("screenshot");
+
 export async function handleGetTestflightCrashLog(c: AdminContext) {
   try {
-    const submissionId = c.req.param("submissionId") ?? "";
-    if (!SUBMISSION_ID.test(submissionId)) {
-      throw new CrashPullError(400, "INVALID_SUBMISSION_ID", "invalid crash submission id");
+    const { submissionId, creds } = await loadOwnedSubmission(c, "crash");
+    let text: string | null;
+    try {
+      text = await getBetaCrashLogText(creds, submissionId);
+    } catch (error) {
+      // Apple answers 404 "no resource of type betaCrashLogs" when it kept no log.
+      if (error instanceof AscApiError && error.status === 404) text = null;
+      else throw error;
     }
-    const { bundleId, creds } = await resolveIosAppContext(c);
-    // ASC keys are team-wide: make sure the submission belongs to THIS app's bundle.
-    const submission = await getBetaFeedbackCrashSubmission(creds, submissionId);
-    const submissionBundle = submission.attributes?.buildBundleId ?? null;
-    if (submissionBundle && submissionBundle !== bundleId) {
-      throw new CrashPullError(404, "CRASH_NOT_FOUND", "crash submission not found for this app");
-    }
-    const text = await getBetaCrashLogText(creds, submissionId);
     if (!text) {
       throw new CrashPullError(404, "CRASH_LOG_NOT_AVAILABLE", "Apple has no crash log for this submission");
     }
