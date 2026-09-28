@@ -1482,6 +1482,27 @@ async function prepareExternalTargetGate(
     };
   }
 
+  // An external build claims bytes hosted elsewhere; a publish over ZERO targets
+  // would activate a release that no device can download and - more importantly -
+  // violates the placement invariant 0073's backfill census asserts
+  // (artifact_mode = 'external' <-> has external_build_targets and no R2 assets).
+  // The generic POST /builds endpoint accepts artifact_mode: 'external' without
+  // creating any target row, so an empty set is a real reachable state (it
+  // produced the census over-applied failure on 2026-09-28). `[]` also slips past
+  // the cli-binary requirement above because it is defined-but-empty. Reject at
+  // this choke point so every publish path (direct, approval, retry) is covered.
+  if (required.length === 0) {
+    return {
+      response: c.json(
+        {
+          error: "an external build cannot be published with zero declared targets",
+          code: "EXTERNAL_TARGETS_EMPTY",
+        },
+        409,
+      ),
+    };
+  }
+
   const nextFreezeToken = build.freeze_token ?? crypto.randomUUID();
   return {
     plan: {
