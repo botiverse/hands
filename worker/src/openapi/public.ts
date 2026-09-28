@@ -92,6 +92,8 @@ const PublicUpdateAvailableResponse = z
       release_notes: ReleaseNotes.optional(),
       force_update: z.boolean(),
       released_at: z.number().int(),
+      // Canonical public "what's new" page for this version.
+      page_url: z.string().optional(),
     }),
     asset: PublicAsset,
     scoped: PublicScope,

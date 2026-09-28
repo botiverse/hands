@@ -8067,6 +8067,58 @@ describe("quiver public API v2 — scope resolution", () => {
     expect(dl.status).toBe(404);
   });
 
+  it("public history page paginates via ?offset and serves bare fragments", async () => {
+    const env = makeEnv();
+    await env.DB.prepare("UPDATE apps SET public_history = 1 WHERE id = ?").bind("app-scope").run();
+    // Seed more than one page of releases (HISTORY_PAGE_SIZE=30).
+    for (let i = 0; i < 35; i++) {
+      await env.DB.prepare(
+        `INSERT INTO builds (id, app_id, channel_id, product_type, release_type, version_name, version_code,
+                             source, status, build_metadata_json, parsed_metadata_json,
+                             should_force_update, provenance_json, created_at, updated_at, artifact_mode)
+         VALUES (?, 'app-scope', 'ch-scope-prod', 'android-apk', 'stable', ?, ?, 'web', 'succeeded',
+                 '{}', '{}', 0, '{}', ?, ?, 'hands_r2')`,
+      ).bind(`build-pg-${i}`, `1.0.${i}`, i + 1, 100 + i, 100 + i).run();
+      await env.DB.prepare(
+        `INSERT INTO releases (id, app_id, build_id, channel_id, product_type, release_type, status,
+                               activated_at, is_full, rollout_cohort_count, changelog,
+                               created_by, created_at, updated_at)
+         VALUES (?, 'app-scope', ?, 'ch-scope-prod', 'android-apk', 'stable', 'active',
+                 ?, 1, 100, NULL, 'tester', ?, ?)`,
+      ).bind(`rel-pg-${i}`, `build-pg-${i}`, 100 + i, 100 + i, 100 + i).run();
+    }
+    const { handlePublicAppHistory } = await import("../src/routes/history");
+    const ctx = (query: Record<string, string> = {}) => ({
+      env,
+      req: {
+        url: "https://quiver-worker.test/apps/scope-app/history",
+        param: (name: string) => (name === "slug" ? "scope-app" : ""),
+        query: (name: string) => query[name],
+        header: (name: string) => (name === "accept-language" ? "en-US" : undefined),
+      },
+      json: (data: unknown, status = 200) => new Response(JSON.stringify(data), { status }),
+    } as any);
+
+    // First page: 30 rows + sentinel pointing at the next offset + anchors.
+    let page = await handlePublicAppHistory(ctx());
+    let html = await page.text();
+    expect(html.match(/class="release" id="v-/g)?.length).toBe(30);
+    expect(html).toContain('id="hist-more"');
+    expect(html).toContain('data-offset="30"');
+    expect(html).toContain('id="v-1.0.34"'); // newest first
+
+    // Fragment fetch for offset=30 returns bare <li> rows with the tail.
+    const frag = await handlePublicAppHistory(ctx({ fragment: "1", offset: "30" }));
+    const fragHtml = await frag.text();
+    expect(fragHtml.match(/class="release" id="v-/g)?.length).toBe(5);
+    expect(fragHtml).toContain('id="v-1.0.0"');
+    expect(fragHtml).not.toContain("<!doctype");
+
+    // Past-the-end offset returns an empty fragment.
+    const empty = await handlePublicAppHistory(ctx({ fragment: "1", offset: "99" }));
+    expect((await empty.text()).trim()).toBe("");
+  });
+
   it("release:new webhook payload carries version_name, version_code, app_slug and channel", async () => {
     const env = makeEnv();
     await seedRelease(env, "rel-evt", "build-evt", [["full", "all"]], { versionCode: 42, versionName: "1.12.0" });
