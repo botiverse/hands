@@ -72,8 +72,11 @@ hands feedback update raft-android 389d855b-0000-0000-0000-000000000000 --status
 hands feedback update raft-android 389d855b-0000-0000-0000-000000000000 --status resolved
 hands feedback update raft-android 389d855b-0000-0000-0000-000000000000 --assignee none   # unassign
 
-# Leave an internal comment (also where auto-retrace/symbolication land)
+# Reply to the reporter (public — they see it in their feedback thread)
 hands feedback comment raft-android 389d855b-0000-0000-0000-000000000000 "reproduced on SGT-AL10; fix in progress"
+
+# Staff-only internal note (needs feedback:triage or publisher role)
+hands feedback comment raft-android 389d855b-0000-0000-0000-000000000000 "root cause: null listItemId in badge render" --internal
 ```
 
 Status flow: `open → in_progress → resolved → closed`. Assignee is

@@ -143,19 +143,20 @@ export function registerFeedbackCommands(program: Command): void {
 
   feedback
     .command("comment <appIdOrSlug> <ticketId> <text>")
-    .description("Add a comment to a ticket.")
+    .description("Add a comment to a ticket (visible to the reporter by default; --internal for a staff-only note).")
     .option("--json", "Output JSON.", false)
-    .action(async (appIdOrSlug: string, ticketId: string, text: string, opts: { json?: boolean }) => {
+    .option("--internal", "Post as a staff-only internal note (requires feedback:triage or publisher role).", false)
+    .action(async (appIdOrSlug: string, ticketId: string, text: string, opts: { json?: boolean; internal?: boolean }) => {
       const appId = await resolveAppId(appIdOrSlug);
       const res = await apiRequest<Record<string, unknown>>(
         `/api/apps/${appId}/feedback/${ticketId}/comments`,
-        { method: "POST", body: { body: text } },
+        { method: "POST", body: { body: text, internal: opts.internal === true } },
       );
       if (opts.json) {
         console.log(JSON.stringify(res, null, 2));
         return;
       }
-      console.log(`Commented on ${ticketId.slice(0, 8)}.`);
+      console.log(`${opts.internal ? "Internal note" : "Commented"} on ${ticketId.slice(0, 8)}.`);
     });
 
   feedback
