@@ -228,6 +228,55 @@ export function registerBuildRoutes(registry: OpenApiRegistry) {
 
   register(registry, {
     method: "get",
+    path: "/api/apps/{appId}/testflight-feedback",
+    tags: ["TestFlight"],
+    summary: "List tester-submitted TestFlight screenshot feedback",
+    description:
+      "Newest-first betaFeedbackScreenshotSubmissions (tester text, device, build, screenshots) for the app's App Store Connect record. Same `build` / `version` / `limit` filters as testflight-crashes. Screenshot URLs are signed by Apple and expire (`expires_at`). Tester emails are not returned.",
+    security: auth,
+    request: {
+      params: AppIdParam,
+      query: z.object({
+        build: z.string().optional(),
+        version: z.string().optional(),
+        limit: z.string().optional(),
+      }),
+    },
+    responses: {
+      200: success("Screenshot feedback submissions from Apple.", GenericObject),
+      400: error("Invalid filter, or the app/bundle id/ASC credentials are not configured for iOS."),
+      403: error("App viewer role is required."),
+      404: error("Hands app, App Store Connect app, or the requested build was not found."),
+      502: error("Apple rejected the request."),
+    },
+  });
+
+  for (const [segment, label] of [
+    ["testflight-crashes", "crash"],
+    ["testflight-feedback", "screenshot feedback"],
+  ] as const) {
+    register(registry, {
+      method: "delete",
+      path: `/api/apps/{appId}/${segment}/{submissionId}`,
+      tags: ["TestFlight"],
+      summary: `Close (delete) one TestFlight ${label} submission`,
+      description:
+        "Marks the item handled on Apple's side. App Store Connect's only resolution action is delete, so the submission is removed from TestFlight feedback in App Store Connect. Requires app publisher or the feedback:triage permission.",
+      security: auth,
+      request: { params: AppIdParam.merge(
+        z.object({ submissionId: z.string().openapi({ param: { name: "submissionId", in: "path" } }) }),
+      ) },
+      responses: {
+        200: success("Deleted in App Store Connect.", GenericObject),
+        403: error("App publisher or feedback:triage is required."),
+        404: error("Submission not found for this app."),
+        502: error("Apple rejected the request."),
+      },
+    });
+  }
+
+  register(registry, {
+    method: "get",
     path: "/api/apps/{appId}/testflight-beta-app-description",
     tags: ["TestFlight"],
     summary: "Read app-level TestFlight Beta App Description localizations",

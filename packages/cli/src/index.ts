@@ -78,6 +78,8 @@ Common recipes:
   hands builds testflight-status <app> <build>        Apple processing / beta review state
   hands testflight crashes <app> --build <n> --download
                                                        Tester-shared TestFlight crashes + .ips logs
+  hands testflight feedback <app> --build <n>          TestFlight screenshot feedback
+  hands testflight close <app> crash|feedback <id>    Close it on Apple's side (deletes in ASC)
   hands logs collect                                  Bundle local CLI logs for a bug report
 
 Every command supports --json for scripts/agents. Full docs:

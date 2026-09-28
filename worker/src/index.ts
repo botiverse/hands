@@ -167,7 +167,13 @@ import {
   handleGetBetaAppDescription,
   handleUpdateBetaAppDescription,
 } from "./routes/testflight_beta_app_description";
-import { handleGetTestflightCrashLog, handleListTestflightCrashes } from "./routes/testflight_crashes";
+import {
+  handleCloseTestflightCrash,
+  handleCloseTestflightFeedback,
+  handleGetTestflightCrashLog,
+  handleListTestflightCrashes,
+  handleListTestflightFeedback,
+} from "./routes/testflight_crashes";
 import { handleGenerateDeltaPatches, handleDeltaSources } from "./routes/delta";
 import { handleUploadApk } from "./routes/upload";
 import {
@@ -1231,6 +1237,18 @@ admin.put(
   "/api/apps/:appId/testflight-beta-app-description",
   requireAppRole("publisher"),
   handleUpdateBetaAppDescription,
+);
+admin.get("/api/apps/:appId/testflight-feedback", requireAppRole("viewer"), handleListTestflightFeedback);
+// Closing deletes the submission in App Store Connect: same bar as feedback triage.
+admin.delete(
+  "/api/apps/:appId/testflight-crashes/:submissionId",
+  requireAppRoleOrFeedbackPermission("publisher", { orgMinimum: "member" }, "feedback:triage"),
+  handleCloseTestflightCrash,
+);
+admin.delete(
+  "/api/apps/:appId/testflight-feedback/:submissionId",
+  requireAppRoleOrFeedbackPermission("publisher", { orgMinimum: "member" }, "feedback:triage"),
+  handleCloseTestflightFeedback,
 );
 admin.get("/api/apps/:appId/testflight-crashes", requireAppRole("viewer"), handleListTestflightCrashes);
 admin.get(

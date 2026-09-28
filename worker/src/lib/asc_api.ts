@@ -965,3 +965,75 @@ export async function getBetaCrashLogText(
   );
   return res.data?.attributes?.logText ?? null;
 }
+
+// ---------- TestFlight screenshot feedback + closing submissions ----------
+
+export interface BetaFeedbackScreenshotImage {
+  url?: string | null;
+  width?: number | null;
+  height?: number | null;
+  expirationDate?: string | null;
+}
+
+/** One tester-submitted TestFlight screenshot feedback (betaFeedbackScreenshotSubmissions). */
+export interface BetaFeedbackScreenshotSubmission extends BetaFeedbackCrashSubmission {
+  attributes?: NonNullable<BetaFeedbackCrashSubmission["attributes"]> & {
+    screenshots?: BetaFeedbackScreenshotImage[] | null;
+  };
+}
+
+export type BetaFeedbackKind = "crash" | "screenshot";
+
+const FEEDBACK_RESOURCE: Record<BetaFeedbackKind, string> = {
+  crash: "betaFeedbackCrashSubmissions",
+  screenshot: "betaFeedbackScreenshotSubmissions",
+};
+
+/** Newest-first screenshot submissions for an app, optionally for one ASC build. */
+export async function listBetaFeedbackScreenshotSubmissions(
+  creds: AscApiCredentials,
+  args: { ascAppId: string; ascBuildId?: string | undefined; limit: number },
+): Promise<BetaFeedbackScreenshotSubmission[]> {
+  const query = [
+    ...(args.ascBuildId ? [`filter[build]=${encodeURIComponent(args.ascBuildId)}`] : []),
+    "include=build",
+    "sort=-createdDate",
+    `limit=${args.limit}`,
+  ].join("&");
+  const res = await ascRequest<{ data: BetaFeedbackScreenshotSubmission[] }>(
+    creds,
+    "GET",
+    `/v1/apps/${encodeURIComponent(args.ascAppId)}/betaFeedbackScreenshotSubmissions?${query}`,
+  );
+  return res.data ?? [];
+}
+
+/** Read one crash or screenshot submission. */
+export async function getBetaFeedbackSubmission(
+  creds: AscApiCredentials,
+  kind: BetaFeedbackKind,
+  submissionId: string,
+): Promise<BetaFeedbackScreenshotSubmission> {
+  const res = await ascRequest<{ data: BetaFeedbackScreenshotSubmission }>(
+    creds,
+    "GET",
+    `/v1/${FEEDBACK_RESOURCE[kind]}/${encodeURIComponent(submissionId)}`,
+  );
+  return res.data;
+}
+
+/**
+ * "Close" a TestFlight feedback item: Apple's only resolution action is DELETE,
+ * which removes the submission from App Store Connect / TestFlight feedback.
+ */
+export async function deleteBetaFeedbackSubmission(
+  creds: AscApiCredentials,
+  kind: BetaFeedbackKind,
+  submissionId: string,
+): Promise<void> {
+  await ascRequest<unknown>(
+    creds,
+    "DELETE",
+    `/v1/${FEEDBACK_RESOURCE[kind]}/${encodeURIComponent(submissionId)}`,
+  );
+}
