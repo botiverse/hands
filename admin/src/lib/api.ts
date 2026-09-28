@@ -117,6 +117,8 @@ export interface App {
   description: string | null;
   archived: number;       // 0 = active, 1 = archived (soft-delete)
   public_history?: number; // 1 = public /apps/:slug/history page enabled
+  history_channels?: string | null; // JSON array of channel slugs allowed on the public history surface; null = all
+  history_show_downloads?: number; // 0 = hide download CTAs and 404 the public download endpoints
   delta_updates_enabled?: number; // 1 = auto-generate Android delta patches on publish
   release_requires_human_approval?: number; // 1 = agent-initiated releases need a human approval (task #239)
   archived_at: number | null;
@@ -1905,6 +1907,20 @@ export const updateAppPublicHistory = (appId: string, enabled: boolean) =>
   request<{ ok: boolean }>(`/api/apps/${appId}`, {
     method: "PATCH",
     body: JSON.stringify({ public_history: enabled }),
+    admin: true,
+  });
+
+export const updateAppHistoryChannels = (appId: string, channels: string[] | null) =>
+  request<{ ok: boolean }>(`/api/apps/${appId}`, {
+    method: "PATCH",
+    body: JSON.stringify({ history_channels: channels }),
+    admin: true,
+  });
+
+export const updateAppHistoryDownloads = (appId: string, enabled: boolean) =>
+  request<{ ok: boolean }>(`/api/apps/${appId}`, {
+    method: "PATCH",
+    body: JSON.stringify({ history_show_downloads: enabled }),
     admin: true,
   });
 

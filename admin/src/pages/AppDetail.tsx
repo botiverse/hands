@@ -43,6 +43,8 @@ import {
   uploadAppIcon,
   publicAppIconUrl,
   updateAppPublicHistory,
+  updateAppHistoryChannels,
+  updateAppHistoryDownloads,
   updateAppDeltaUpdates,
   updateAppReleaseApproval,
   getAppClientKey,
@@ -1254,6 +1256,45 @@ function PublicHistoryToggle({ appId, app }: { appId: string; app: App }) {
   const toast = useToast();
   const qc = useQueryClient();
   const enabled = Boolean(app.public_history);
+  const channelsQuery = useQuery({
+    queryKey: ["channels", appId],
+    queryFn: () => listChannels(appId),
+  });
+  // history_channels is a JSON array of slugs; null/empty = all channels shown.
+  const selectedChannels: string[] = (() => {
+    try {
+      const parsed = app.history_channels ? JSON.parse(app.history_channels) : null;
+      return Array.isArray(parsed) ? parsed : [];
+    } catch {
+      return [];
+    }
+  })();
+  const showDownloads = app.history_show_downloads !== 0;
+  const channelsMutation = useMutation({
+    mutationFn: (slugs: string[]) => updateAppHistoryChannels(appId, slugs.length ? slugs : null),
+    onSuccess: () => {
+      toast.show({ kind: "success", title: "Visible channels updated" });
+      qc.invalidateQueries({ queryKey: ["apps"] });
+    },
+    onError: (e) => toast.show({ kind: "error", title: "Update failed", description: (e as Error).message }),
+  });
+  const downloadsToggle = useMutation({
+    mutationFn: () => updateAppHistoryDownloads(appId, !showDownloads),
+    onSuccess: () => {
+      toast.show({
+        kind: "success",
+        title: !showDownloads ? "Downloads shown on public pages" : "Downloads hidden on public pages",
+      });
+      qc.invalidateQueries({ queryKey: ["apps"] });
+    },
+    onError: (e) => toast.show({ kind: "error", title: "Update failed", description: (e as Error).message }),
+  });
+  const toggleChannel = (slug: string) => {
+    const next = selectedChannels.includes(slug)
+      ? selectedChannels.filter((s) => s !== slug)
+      : [...selectedChannels, slug];
+    channelsMutation.mutate(next);
+  };
   const toggle = useMutation({
     mutationFn: () => updateAppPublicHistory(appId, !enabled),
     onSuccess: () => {
@@ -1271,42 +1312,76 @@ function PublicHistoryToggle({ appId, app }: { appId: string; app: App }) {
       }),
   });
   return (
-    <div className="flex items-center gap-3">
-      <div className="flex-1">
-        <div className="text-sm font-medium">Public version history</div>
-        <div className="text-xs text-slate-500">
-          {enabled ? (
-            <>
-              Anyone can browse and download published versions at{" "}
-              <a
-                className="underline"
-                href={`/apps/${app.slug}/history`}
-                target="_blank"
-                rel="noopener noreferrer"
-              >
-                /apps/{app.slug}/history
-              </a>
-              {" · latest landing: "}
-              <a
-                className="underline"
-                href={`/apps/${app.slug}/latest`}
-                target="_blank"
-                rel="noopener noreferrer"
-              >
-                /apps/{app.slug}/latest
-              </a>
-              .
-            </>
-          ) : (
-            "Expose a public page listing published versions with changelogs and downloads."
-          )}
+    <div className="space-y-2">
+      <div className="flex items-center gap-3">
+        <div className="flex-1">
+          <div className="text-sm font-medium">Public version history</div>
+          <div className="text-xs text-slate-500">
+            {enabled ? (
+              <>
+                Anyone can browse and download published versions at{" "}
+                <a
+                  className="underline"
+                  href={`/apps/${app.slug}/history`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                >
+                  /apps/{app.slug}/history
+                </a>
+                {" · latest landing: "}
+                <a
+                  className="underline"
+                  href={`/apps/${app.slug}/latest`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                >
+                  /apps/{app.slug}/latest
+                </a>
+                .
+              </>
+            ) : (
+              "Expose a public page listing published versions with changelogs and downloads."
+            )}
+          </div>
         </div>
+        <Switch
+          checked={enabled}
+          disabled={toggle.isPending}
+          onCheckedChange={() => toggle.mutate()}
+        />
       </div>
-      <Switch
-        checked={enabled}
-        disabled={toggle.isPending}
-        onCheckedChange={() => toggle.mutate()}
-      />
+      {enabled && (
+        <div className="pl-1 space-y-2 text-sm">
+          <div className="flex items-center gap-3">
+            <div className="flex-1 text-xs text-slate-500">
+              Channels shown on the public history pages (none selected = all).
+            </div>
+            <div className="flex flex-wrap gap-2">
+              {(channelsQuery.data?.channels ?? []).map((ch) => (
+                <label key={ch.id} className="flex items-center gap-1 text-xs">
+                  <input
+                    type="checkbox"
+                    checked={selectedChannels.includes(ch.slug)}
+                    disabled={channelsMutation.isPending}
+                    onChange={() => toggleChannel(ch.slug)}
+                  />
+                  {ch.slug}
+                </label>
+              ))}
+            </div>
+          </div>
+          <div className="flex items-center gap-3">
+            <div className="flex-1 text-xs text-slate-500">
+              Show per-version download buttons on the public history, notes and landing pages.
+            </div>
+            <Switch
+              checked={showDownloads}
+              disabled={downloadsToggle.isPending}
+              onCheckedChange={() => downloadsToggle.mutate()}
+            />
+          </div>
+        </div>
+      )}
     </div>
   );
 }

@@ -155,6 +155,8 @@ function makeMockDb() {
       id TEXT PRIMARY KEY, org_id TEXT, slug TEXT NOT NULL UNIQUE, name TEXT NOT NULL,
       platform TEXT NOT NULL, description TEXT, archived INTEGER NOT NULL DEFAULT 0,
       archived_at INTEGER, created_at INTEGER NOT NULL, icon_r2_key TEXT, public_history INTEGER NOT NULL DEFAULT 0, client_key TEXT,
+      -- Mirrors migrations/sql/0077_app_public_history_display.sql (task #888).
+      history_channels TEXT, history_show_downloads INTEGER NOT NULL DEFAULT 1,
       delta_updates_enabled INTEGER NOT NULL DEFAULT 0,
       release_requires_human_approval INTEGER NOT NULL DEFAULT 0
     );
@@ -7980,6 +7982,89 @@ describe("quiver public API v2 — scope resolution", () => {
     expect((await handlePublicVersionLanding(makeContext("2.0.0", "beta"))).status).toBe(404);
     await env.DB.prepare("UPDATE apps SET public_history = 0 WHERE id = ?").bind("app-scope").run();
     expect((await handlePublicVersionLanding(makeContext("2.0.0"))).status).toBe(404);
+  });
+
+  it("public history respects app-level channel allowlist and download suppression", async () => {
+    const env = makeEnv();
+    await env.DB.prepare("UPDATE apps SET public_history = 1 WHERE id = ?").bind("app-scope").run();
+    // Second (non-main) channel carrying a candidate release of the same version name.
+    await env.DB.prepare(
+      `INSERT INTO channels (id, app_id, slug, name, enabled_product_types_json, metadata_json, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    ).bind("ch-scope-alpha", "app-scope", "alpha", "Alpha", "[]", "{}", 1).run();
+    await seedRelease(env, "rel-hist-main", "build-hist-main", [["full", "all"]], {
+      createdAt: 100, versionCode: 1, versionName: "1.0.0",
+    });
+    await seedAsset(env, "build-hist-main", "asset-hist-main");
+    // Same version name published on the alpha channel — must be filtered out
+    // when history_channels=["production"].
+    await env.DB.prepare(
+      `INSERT INTO builds (id, app_id, channel_id, product_type, release_type, version_name, version_code,
+                           source, status, build_metadata_json, parsed_metadata_json,
+                           should_force_update, provenance_json, created_at, updated_at, artifact_mode)
+       VALUES ('build-hist-alpha', 'app-scope', 'ch-scope-alpha', 'android-apk', 'stable', '1.0.0', 1,
+               'web', 'succeeded', '{}', '{}', 0, '{}', 90, 90, 'hands_r2')`,
+    ).run();
+    await env.DB.prepare(
+      `INSERT INTO releases (id, app_id, build_id, channel_id, product_type, release_type, status,
+                             activated_at, is_full, rollout_cohort_count, changelog,
+                             created_by, created_at, updated_at)
+       VALUES ('rel-hist-alpha', 'app-scope', 'build-hist-alpha', 'ch-scope-alpha', 'android-apk', 'stable',
+               'active', 90, 1, 100, NULL, 'tester', 90, 90)`,
+    ).run();
+
+    const { handlePublicAppHistory, handlePublicAppHistoryDownload } = await import("../src/routes/history");
+    const historyCtx = () => ({
+      env,
+      req: {
+        url: "https://quiver-worker.test/apps/scope-app/history",
+        param: (name: string) => (name === "slug" ? "scope-app" : ""),
+        header: (name: string) => (name === "accept-language" ? "en-US" : undefined),
+      },
+      json: (data: unknown, status = 200) => new Response(JSON.stringify(data), { status }),
+    } as any);
+    const dlCtx = () => ({
+      env,
+      req: {
+        param: (name: string) =>
+          name === "slug" ? "scope-app" : name === "releaseId" ? "rel-hist-main" : "",
+      },
+      json: (data: unknown, status = 200) => new Response(JSON.stringify(data), { status }),
+    } as any);
+
+    // Default: both channels listed, download link rendered.
+    let page = await handlePublicAppHistory(historyCtx());
+    let html = await page.text();
+    expect(html.match(/· production/g)?.length).toBe(1);
+    expect(html).toContain("· alpha");
+    expect(html).toContain("/apps/scope-app/history/rel-hist-main/download");
+
+    // Restrict to the production channel only: the alpha row disappears.
+    await env.DB.prepare("UPDATE apps SET history_channels = ? WHERE id = ?")
+      .bind(JSON.stringify(["production"]), "app-scope")
+      .run();
+    page = await handlePublicAppHistory(historyCtx());
+    html = await page.text();
+    expect(html).toContain("· production");
+    expect(html).not.toContain("· alpha");
+
+    // An unknown/typo channel stored in the allowlist behaves as "no match",
+    // not as an error page.
+    await env.DB.prepare("UPDATE apps SET history_channels = ? WHERE id = ?")
+      .bind(JSON.stringify(["does-not-exist"]), "app-scope")
+      .run();
+    page = await handlePublicAppHistory(historyCtx());
+    html = await page.text();
+    expect(html).not.toContain("· production");
+    await env.DB.prepare("UPDATE apps SET history_channels = NULL WHERE id = ?").bind("app-scope").run();
+
+    // Downloads off: CTA disappears AND the endpoint 404s (not just cosmetic).
+    await env.DB.prepare("UPDATE apps SET history_show_downloads = 0 WHERE id = ?").bind("app-scope").run();
+    page = await handlePublicAppHistory(historyCtx());
+    html = await page.text();
+    expect(html).not.toContain("class=\"dl\"");
+    const dl = await handlePublicAppHistoryDownload(dlCtx());
+    expect(dl.status).toBe(404);
   });
 
   it("release:new webhook payload carries version_name, version_code, app_slug and channel", async () => {
