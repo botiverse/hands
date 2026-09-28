@@ -231,7 +231,8 @@ function AgcTestingPanel({ appId, build, packageName }: { appId: string; build: 
     onError: (e) => toast.show({ kind: "error", title: "Review submission failed", description: (e as Error).message }),
   });
   const state = submission?.state;
-  const stateClass = state === "failed" ? "text-red-700" : state === "ready" || state === "testing_review" ? "text-green-700" : "text-blue-700";
+  const stateClass = state === "failed" || state === "rejected" ? "text-red-700" : state === "stopped" ? "text-slate-500" : state === "ready" || state === "testing_review" || state === "testing_scheduled" || state === "testing_active" ? "text-green-700" : "text-blue-700";
+  const auditOpinion = typeof submission?.provider_state?.audit_opinion === "string" ? submission.provider_state.audit_opinion : null;
 
   return (
     <div className="mt-2 pt-2 border-t border-slate-100">
@@ -272,7 +273,12 @@ function AgcTestingPanel({ appId, build, packageName }: { appId: string; build: 
       </div>
       {submission?.error_message && <p className="mt-1 text-xs text-red-700">{submission.error_message}</p>}
       {state === "ready" && <p className="mt-1 text-xs text-slate-500">Build compiled and ready. Invitation testing has not been submitted.</p>}
-      {state === "testing_review" && <p className="mt-1 text-xs text-green-700">Build submitted to AppGallery invitation testing review.</p>}
+      {state === "testing_review" && <p className="mt-1 text-xs text-green-700">Submitted to AppGallery invitation testing review. Status refreshes from Huawei each time this panel loads.</p>}
+      {state === "testing_scheduled" && <p className="mt-1 text-xs text-green-700">Approved; invitation testing starts at the scheduled time.</p>}
+      {state === "testing_active" && <p className="mt-1 text-xs text-green-700">Invitation testing is live for the selected test group.</p>}
+      {state === "rejected" && <p className="mt-1 text-xs text-red-700">Huawei rejected the test version{auditOpinion ? `: ${auditOpinion}` : "."}</p>}
+      {state === "stopped" && <p className="mt-1 text-xs text-slate-500">Invitation testing has ended on Huawei&apos;s side.</p>}
+      {status.data?.sync_error && <p className="mt-1 text-xs text-amber-700">Could not refresh from Huawei: {status.data.sync_error}</p>}
     </div>
   );
 }

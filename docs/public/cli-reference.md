@@ -377,6 +377,52 @@ distribution metadata. Public update consumers can request `filetype=app` or
 Signing certificates, profiles, P12 files, and passwords remain in CI and are
 never uploaded to Hands.
 
+### AppGallery invitation testing (OHOS)
+
+Hands can push a build's signed `.app` to AppGallery Connect as an
+**invitation test** (Huawei App Testing, `releaseType=6`). Store listing
+submission and phased release are not automated yet; do those in AppGallery
+Connect. The app needs AGC Service Account credentials (Settings → AppGallery)
+and the channel `bundle_id` set to the HarmonyOS package name.
+
+There is no dedicated CLI command yet; call the admin API with `hands api`
+(app admin role):
+
+```bash
+APP=/api/apps/<appId>
+# 1. Upload the build's .app and create the test version (idempotent per build).
+hands api POST $APP/builds/<buildId>/agc-invitation-test \
+  --data '{"package_name":"build.raft.mobile","test_desc":"1.12.0 (11200003)"}' --json
+# 2. Poll until state is "ready" (Huawei compiles the package, ~1-3 min).
+hands api GET $APP/agc-submissions/<submissionId> --json
+# 3. List groups, then submit to one or more of them.
+hands api GET $APP/agc-test-groups --json
+hands api POST $APP/agc-submissions/<submissionId>/submit \
+  --data '{"group_id":"<groupId>"}' --json
+# 4. Re-read for Huawei's review outcome.
+hands api GET $APP/agc-submissions/<submissionId> --json
+```
+
+`submit` requires an explicit `group_id`/`group_ids` when the app has more than
+one test group; with exactly one group it uses that group. Every `GET` of a
+submission re-reads Huawei while the outcome is still open, so the stored state
+follows AppGallery:
+
+| Hands `state` | Huawei test `releaseState` |
+| --- | --- |
+| `processing` | package still compiling (`successStatus` 1) |
+| `ready` | compiled and bound; `7` 准备提交 / `11` 撤销审核 |
+| `testing_review` | `4` 正在审核 / `12` 预审中 |
+| `testing_scheduled` | `3` 待生效 |
+| `testing_active` | `0` 正在测试 |
+| `rejected` | `1` 审核不通过 / `13` 预审不通过 (`provider_state.audit_opinion` has Huawei's reason) |
+| `stopped` | `2` / `10` 已失效 |
+| `failed` | upload error, or Huawei could not compile the package (`successStatus` 2); upload again to retry |
+
+The raw `release_state`, `audit_opinion`, and test window are kept in
+`provider_state`. If Huawei cannot be reached the response still returns the
+stored submission plus `sync_error`.
+
 ## Publish Electron (generic provider)
 
 Hands can host Electron apps that use `electron-updater` with the generic

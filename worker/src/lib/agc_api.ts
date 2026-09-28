@@ -114,6 +114,69 @@ export async function getAgcReviewStatus(
   };
 }
 
+export type AgcTestVersionStatus = {
+  release_state: number | null;
+  audit_opinion: string | null;
+  open_test_info: { start_time: number | null; end_time: number | null } | null;
+};
+
+/**
+ * Read-only status of one HarmonyOS test version (invitation/public testing).
+ * Huawei's Testing API has no dedicated "query test version" call; the
+ * documented way is the Publishing app-info query with `releaseType=6`, where
+ * `versionId` becomes mandatory. The provider enum is returned unmapped;
+ * `mapAgcTestReleaseState` is the only place that interprets it.
+ */
+export async function getAgcTestVersionStatus(
+  auth: AgcAuth,
+  appId: string,
+  versionId: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<AgcTestVersionStatus> {
+  const query = new URLSearchParams({ appId, releaseType: "6", versionId });
+  const body = await agcJson(auth, `/api/publish/v3/app-info?${query}`, {}, fetchImpl);
+  const releaseState = body?.appInfo?.releaseState;
+  const numeric = typeof releaseState === "number"
+    ? releaseState
+    : typeof releaseState === "string" && releaseState.trim() !== "" ? Number(releaseState) : NaN;
+  const opinion = body?.auditInfo?.auditOpinion;
+  const openTest = body?.openTestInfo;
+  const ms = (value: unknown) => (typeof value === "number" && Number.isFinite(value) ? value : null);
+  return {
+    release_state: Number.isFinite(numeric) ? numeric : null,
+    audit_opinion: typeof opinion === "string" && opinion.trim() ? opinion : null,
+    open_test_info: openTest ? { start_time: ms(openTest.startTime), end_time: ms(openTest.endTime) } : null,
+  };
+}
+
+/**
+ * Huawei test-release `releaseState` (releaseType=6) → Hands submission state.
+ * Source: AppInfo data model, "releaseType 为6时" table.
+ *   0 正在测试 → testing_active      1 审核不通过 → rejected
+ *   2 已失效（运营停止）→ stopped     3 待生效 → testing_scheduled
+ *   4 正在审核 / 12 预审中 → testing_review
+ *   7 准备提交 → ready (submit did not take; can be resubmitted)
+ *   10 已失效（开发者停止）→ stopped   11 撤销审核 → ready
+ *   13 预审不通过 → rejected
+ * Unknown values return null so the caller keeps its state and surfaces the
+ * raw provider value instead of guessing.
+ */
+export function mapAgcTestReleaseState(releaseState: number | null): string | null {
+  switch (releaseState) {
+    case 0: return "testing_active";
+    case 1: case 13: return "rejected";
+    case 2: case 10: return "stopped";
+    case 3: return "testing_scheduled";
+    case 4: case 12: return "testing_review";
+    case 7: case 11: return "ready";
+    default: return null;
+  }
+}
+
+/** PackageStates.successStatus: 0 normal, 1 parsing, 2 failed (unusable). */
+export const AGC_PACKAGE_OK = 0;
+export const AGC_PACKAGE_FAILED = 2;
+
 /** Huawei invitation-test windows may not exceed 90 days. */
 export const AGC_INVITATION_TEST_MAX_MS = 90 * 24 * 60 * 60 * 1000;
 
