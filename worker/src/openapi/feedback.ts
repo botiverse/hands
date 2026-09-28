@@ -10,6 +10,7 @@ import {
   json,
   multipart,
   success,
+  type RouteConfigDef,
   type RouteConfigList,
 } from "./common";
 
@@ -56,7 +57,7 @@ const ReporterCloseInput = z.object({
   submission_id: z.string().uuid().optional(),
 }).openapi("ReporterFeedbackCloseInput");
 
-export const feedbackRoutes = {
+export const feedbackRoutes: Record<string, RouteConfigDef> = {
   listReporter: {
     method: "get",
     path: "/api/apps/{appId}/reporter-feedback",

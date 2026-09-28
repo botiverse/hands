@@ -8,9 +8,9 @@ import {
   auth,
   error,
   json,
-  register,
   success,
-  type OpenApiRegistry,
+  type RouteConfigDef,
+  type RouteConfigList,
 } from "./common";
 
 const AppBuildParams = AppIdParam.merge(BuildIdParam);
@@ -77,8 +77,9 @@ const GooglePlayBindingInput = z.object({
   }).strict(),
 }).strict().openapi("GooglePlayBindingInput");
 
-export function registerAndroidDistributionRoutes(registry: OpenApiRegistry) {
-  register(registry, {
+export function registerAndroidDistributionRoutes(): RouteConfigList {
+  const routes: RouteConfigDef[] = [];
+  routes.push({
     method: "post",
     path: "/api/apps/{appId}/android-release-artifacts",
     tags: ["Android distribution"],
@@ -100,7 +101,7 @@ export function registerAndroidDistributionRoutes(registry: OpenApiRegistry) {
     },
   });
 
-  register(registry, {
+  routes.push({
     method: "get",
     path: "/api/apps/{appId}/google-play-binding",
     tags: ["Android distribution"],
@@ -115,7 +116,7 @@ export function registerAndroidDistributionRoutes(registry: OpenApiRegistry) {
     },
   });
 
-  register(registry, {
+  routes.push({
     method: "put",
     path: "/api/apps/{appId}/google-play-binding",
     tags: ["Android distribution"],
@@ -136,7 +137,7 @@ export function registerAndroidDistributionRoutes(registry: OpenApiRegistry) {
   });
 
   for (const action of ["verify", "enable", "disable"] as const) {
-    register(registry, {
+    routes.push({
       method: "post",
       path: `/api/apps/{appId}/google-play-binding/${action}`,
       tags: ["Android distribution"],
@@ -154,7 +155,7 @@ export function registerAndroidDistributionRoutes(registry: OpenApiRegistry) {
     });
   }
 
-  register(registry, {
+  routes.push({
     method: "delete",
     path: "/api/apps/{appId}/google-play-binding",
     tags: ["Android distribution"],
@@ -167,7 +168,7 @@ export function registerAndroidDistributionRoutes(registry: OpenApiRegistry) {
     },
   });
 
-  register(registry, {
+  routes.push({
     method: "get",
     path: "/api/apps/{appId}/android-release-artifacts/{buildId}",
     tags: ["Android distribution"],
@@ -181,7 +182,7 @@ export function registerAndroidDistributionRoutes(registry: OpenApiRegistry) {
     },
   });
 
-  register(registry, {
+  routes.push({
     method: "post",
     path: "/api/apps/{appId}/android-release-artifacts/{buildId}/assets/{assetId}/complete",
     tags: ["Android distribution"],
@@ -199,7 +200,7 @@ export function registerAndroidDistributionRoutes(registry: OpenApiRegistry) {
     },
   });
 
-  register(registry, {
+  routes.push({
     method: "get",
     path: "/api/apps/{appId}/releases/{releaseId}/receipts",
     tags: ["Android distribution"],
@@ -212,7 +213,7 @@ export function registerAndroidDistributionRoutes(registry: OpenApiRegistry) {
     },
   });
 
-  register(registry, {
+  routes.push({
     method: "post",
     path: "/api/apps/{appId}/releases/{releaseId}/receipts/acceptance",
     tags: ["Android distribution"],
@@ -233,7 +234,7 @@ export function registerAndroidDistributionRoutes(registry: OpenApiRegistry) {
     },
   });
 
-  register(registry, {
+  routes.push({
     method: "get",
     path: "/api/apps/{appId}/releases/{releaseId}/distributions",
     tags: ["Android distribution"],
@@ -246,7 +247,7 @@ export function registerAndroidDistributionRoutes(registry: OpenApiRegistry) {
     },
   });
 
-  register(registry, {
+  routes.push({
     method: "get",
     path: "/api/apps/{appId}/releases/{releaseId}/distributions/play",
     tags: ["Android distribution"],
@@ -259,7 +260,7 @@ export function registerAndroidDistributionRoutes(registry: OpenApiRegistry) {
     },
   });
 
-  register(registry, {
+  routes.push({
     method: "post",
     path: "/api/apps/{appId}/releases/{releaseId}/distributions/play/promote",
     tags: ["Android distribution"],
@@ -281,7 +282,7 @@ export function registerAndroidDistributionRoutes(registry: OpenApiRegistry) {
   });
 
   for (const action of ["halt", "rollback"] as const) {
-    register(registry, {
+    routes.push({
       method: "post",
       path: `/api/apps/{appId}/releases/{releaseId}/distributions/play/${action}`,
       tags: ["Android distribution"],
@@ -301,4 +302,5 @@ export function registerAndroidDistributionRoutes(registry: OpenApiRegistry) {
       },
     });
   }
+  return routes;
 }

@@ -9,9 +9,9 @@ import {
   error,
   json,
   multipart,
-  register,
   success,
-  type OpenApiRegistry,
+  type RouteConfigDef,
+  type RouteConfigList,
 } from "./common";
 
 const AppBuildParams = AppIdParam.merge(BuildIdParam);
@@ -179,8 +179,9 @@ const BetaAppDescriptionInput = z.object({
     }),
 }).strict().openapi("BetaAppDescriptionInput");
 
-export function registerBuildRoutes(registry: OpenApiRegistry) {
-  register(registry, {
+export function registerBuildRoutes(): RouteConfigList {
+  const routes: RouteConfigDef[] = [];
+  routes.push({
     method: "get",
     path: "/api/apps/{appId}/testflight-crashes",
     tags: ["TestFlight"],
@@ -205,7 +206,7 @@ export function registerBuildRoutes(registry: OpenApiRegistry) {
     },
   });
 
-  register(registry, {
+  routes.push({
     method: "get",
     path: "/api/apps/{appId}/testflight-crashes/{submissionId}/log",
     tags: ["TestFlight"],
@@ -226,7 +227,7 @@ export function registerBuildRoutes(registry: OpenApiRegistry) {
     },
   });
 
-  register(registry, {
+  routes.push({
     method: "get",
     path: "/api/apps/{appId}/testflight-feedback",
     tags: ["TestFlight"],
@@ -255,7 +256,7 @@ export function registerBuildRoutes(registry: OpenApiRegistry) {
     ["testflight-crashes", "crash"],
     ["testflight-feedback", "screenshot feedback"],
   ] as const) {
-    register(registry, {
+    routes.push({
       method: "delete",
       path: `/api/apps/{appId}/${segment}/{submissionId}`,
       tags: ["TestFlight"],
@@ -275,7 +276,7 @@ export function registerBuildRoutes(registry: OpenApiRegistry) {
     });
   }
 
-  register(registry, {
+  routes.push({
     method: "get",
     path: "/api/apps/{appId}/testflight-beta-app-description",
     tags: ["TestFlight"],
@@ -293,7 +294,7 @@ export function registerBuildRoutes(registry: OpenApiRegistry) {
     },
   });
 
-  register(registry, {
+  routes.push({
     method: "post",
     path: "/api/apps/{appId}/builds/{buildId}/hosted-migration",
     tags: ["Builds"],
@@ -311,7 +312,7 @@ export function registerBuildRoutes(registry: OpenApiRegistry) {
     },
   });
 
-  register(registry, {
+  routes.push({
     method: "post",
     path: "/api/apps/{appId}/builds/{buildId}/hosted-migration/complete",
     tags: ["Builds"],
@@ -329,7 +330,7 @@ export function registerBuildRoutes(registry: OpenApiRegistry) {
     },
   });
 
-  register(registry, {
+  routes.push({
     method: "put",
     path: "/api/apps/{appId}/testflight-beta-app-description",
     tags: ["TestFlight"],
@@ -351,7 +352,7 @@ export function registerBuildRoutes(registry: OpenApiRegistry) {
     },
   });
 
-  register(registry, {
+  routes.push({
     method: "get",
     path: "/api/apps/{appId}/builds",
     tags: ["Builds"],
@@ -371,7 +372,7 @@ export function registerBuildRoutes(registry: OpenApiRegistry) {
     },
   });
 
-  register(registry, {
+  routes.push({
     method: "post",
     path: "/api/apps/{appId}/builds",
     tags: ["Builds"],
@@ -388,7 +389,7 @@ export function registerBuildRoutes(registry: OpenApiRegistry) {
     },
   });
 
-  register(registry, {
+  routes.push({
     method: "post",
     path: "/api/apps/{appId}/builds/publish-version",
     tags: ["Builds"],
@@ -410,7 +411,7 @@ export function registerBuildRoutes(registry: OpenApiRegistry) {
     },
   });
 
-  register(registry, {
+  routes.push({
     method: "get",
     path: "/api/apps/{appId}/builds/{buildId}",
     tags: ["Builds"],
@@ -424,7 +425,7 @@ export function registerBuildRoutes(registry: OpenApiRegistry) {
     },
   });
 
-  register(registry, {
+  routes.push({
     method: "patch",
     path: "/api/apps/{appId}/builds/{buildId}",
     tags: ["Builds"],
@@ -442,7 +443,7 @@ export function registerBuildRoutes(registry: OpenApiRegistry) {
     },
   });
 
-  register(registry, {
+  routes.push({
     method: "delete",
     path: "/api/apps/{appId}/builds/{buildId}",
     tags: ["Builds"],
@@ -456,7 +457,7 @@ export function registerBuildRoutes(registry: OpenApiRegistry) {
     },
   });
 
-  register(registry, {
+  routes.push({
     method: "post",
     path: "/api/apps/{appId}/builds/{buildId}/testflight-upload",
     tags: ["TestFlight"],
@@ -477,7 +478,7 @@ export function registerBuildRoutes(registry: OpenApiRegistry) {
     },
   });
 
-  register(registry, {
+  routes.push({
     method: "get",
     path: "/api/apps/{appId}/testflight-uploads/{buildUploadId}",
     tags: ["TestFlight"],
@@ -492,7 +493,7 @@ export function registerBuildRoutes(registry: OpenApiRegistry) {
     },
   });
 
-  register(registry, {
+  routes.push({
     method: "get",
     path: "/api/apps/{appId}/builds/{buildId}/testflight-groups",
     tags: ["TestFlight"],
@@ -511,7 +512,7 @@ export function registerBuildRoutes(registry: OpenApiRegistry) {
     },
   });
 
-  register(registry, {
+  routes.push({
     method: "post",
     path: "/api/apps/{appId}/builds/{buildId}/testflight-expire",
     tags: ["TestFlight"],
@@ -533,7 +534,7 @@ export function registerBuildRoutes(registry: OpenApiRegistry) {
     },
   });
 
-  register(registry, {
+  routes.push({
     method: "post",
     path: "/api/apps/{appId}/builds/{buildId}/testflight-publish",
     tags: ["TestFlight"],
@@ -555,7 +556,7 @@ export function registerBuildRoutes(registry: OpenApiRegistry) {
     },
   });
 
-  register(registry, {
+  routes.push({
     method: "get",
     path: "/api/apps/{appId}/builds/{buildId}/testflight-publish",
     tags: ["TestFlight"],
@@ -576,7 +577,7 @@ export function registerBuildRoutes(registry: OpenApiRegistry) {
     },
   });
 
-  register(registry, {
+  routes.push({
     method: "get",
     path: "/api/apps/{appId}/qa-artifacts/ios-simulator",
     tags: ["QA artifacts"],
@@ -598,7 +599,7 @@ export function registerBuildRoutes(registry: OpenApiRegistry) {
     },
   });
 
-  register(registry, {
+  routes.push({
     method: "post",
     path: "/api/apps/{appId}/qa-artifacts/ios-simulator",
     tags: ["QA artifacts"],
@@ -618,7 +619,7 @@ export function registerBuildRoutes(registry: OpenApiRegistry) {
     },
   });
 
-  register(registry, {
+  routes.push({
     method: "get",
     path: "/api/apps/{appId}/qa-artifacts/ios-simulator/{assetId}",
     tags: ["QA artifacts"],
@@ -632,7 +633,7 @@ export function registerBuildRoutes(registry: OpenApiRegistry) {
     },
   });
 
-  register(registry, {
+  routes.push({
     method: "post",
     path: "/api/apps/{appId}/qa-artifacts/ios-simulator/{assetId}/complete",
     tags: ["QA artifacts"],
@@ -650,7 +651,7 @@ export function registerBuildRoutes(registry: OpenApiRegistry) {
     },
   });
 
-  register(registry, {
+  routes.push({
     method: "get",
     path: "/api/apps/{appId}/qa-artifacts/ios-simulator/{assetId}/download",
     tags: ["QA artifacts"],
@@ -674,7 +675,7 @@ export function registerBuildRoutes(registry: OpenApiRegistry) {
     },
   });
 
-  register(registry, {
+  routes.push({
     method: "get",
     path: "/api/apps/{appId}/builds/{buildId}/assets",
     tags: ["Builds"],
@@ -688,7 +689,7 @@ export function registerBuildRoutes(registry: OpenApiRegistry) {
     },
   });
 
-  register(registry, {
+  routes.push({
     method: "post",
     path: "/api/apps/{appId}/builds/{buildId}/assets",
     tags: ["Builds"],
@@ -706,7 +707,7 @@ export function registerBuildRoutes(registry: OpenApiRegistry) {
     },
   });
 
-  register(registry, {
+  routes.push({
     method: "post",
     path: "/api/apps/{appId}/builds/{buildId}/assets/uploads",
     tags: ["Builds"],
@@ -727,7 +728,7 @@ export function registerBuildRoutes(registry: OpenApiRegistry) {
     },
   });
 
-  register(registry, {
+  routes.push({
     method: "post",
     path: "/api/apps/{appId}/builds/{buildId}/assets/{assetId}/upload/complete",
     tags: ["Builds"],
@@ -746,7 +747,7 @@ export function registerBuildRoutes(registry: OpenApiRegistry) {
     },
   });
 
-  register(registry, {
+  routes.push({
     method: "post",
     path: "/api/apps/{appId}/builds/{buildId}/assets/{assetId}/upload/abort",
     tags: ["Builds"],
@@ -760,7 +761,7 @@ export function registerBuildRoutes(registry: OpenApiRegistry) {
     },
   });
 
-  register(registry, {
+  routes.push({
     method: "get",
     path: "/api/apps/{appId}/builds/{buildId}/external-targets",
     tags: ["Builds"],
@@ -777,7 +778,7 @@ export function registerBuildRoutes(registry: OpenApiRegistry) {
     },
   });
 
-  register(registry, {
+  routes.push({
     method: "get",
     path: "/api/apps/{appId}/builds/{buildId}/assets/{assetId}/download",
     tags: ["Builds"],
@@ -808,7 +809,7 @@ export function registerBuildRoutes(registry: OpenApiRegistry) {
     },
   });
 
-  register(registry, {
+  routes.push({
     method: "delete",
     path: "/api/apps/{appId}/builds/{buildId}/assets/{assetId}",
     tags: ["Builds"],
@@ -827,7 +828,7 @@ export function registerBuildRoutes(registry: OpenApiRegistry) {
     },
   });
 
-  register(registry, {
+  routes.push({
     method: "post",
     path: "/api/apps/{appId}/upload",
     tags: ["Builds"],
@@ -844,7 +845,7 @@ export function registerBuildRoutes(registry: OpenApiRegistry) {
     },
   });
 
-  register(registry, {
+  routes.push({
     method: "post",
     path: "/api/parse-apk",
     tags: ["Builds"],
@@ -859,4 +860,5 @@ export function registerBuildRoutes(registry: OpenApiRegistry) {
       403: error("Current principal cannot parse APKs."),
     },
   });
+  return routes;
 }

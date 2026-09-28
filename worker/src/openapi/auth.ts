@@ -1,8 +1,10 @@
 import { z } from "@hono/zod-openapi";
-import { GenericObject, OkResponse, error, json, register, success, type OpenApiRegistry } from "./common";
+import { GenericObject, OkResponse, error, json, success } from "./common";
+import type { RouteConfigDef, RouteConfigList } from "./common";
 
-export function registerAuthRoutes(registry: OpenApiRegistry) {
-  register(registry, {
+export function registerAuthRoutes(): RouteConfigList {
+  const routes: RouteConfigDef[] = [];
+  routes.push({
     method: "get",
     path: "/health",
     tags: ["System"],
@@ -12,7 +14,7 @@ export function registerAuthRoutes(registry: OpenApiRegistry) {
     },
   });
 
-  register(registry, {
+  routes.push({
     method: "get",
     path: "/.well-known/raft-agent-manifest.json",
     tags: ["Auth"],
@@ -22,7 +24,7 @@ export function registerAuthRoutes(registry: OpenApiRegistry) {
     },
   });
 
-  register(registry, {
+  routes.push({
     method: "get",
     path: "/api/auth/config",
     tags: ["Auth"],
@@ -32,7 +34,7 @@ export function registerAuthRoutes(registry: OpenApiRegistry) {
     },
   });
 
-  register(registry, {
+  routes.push({
     method: "get",
     path: "/api/auth/login",
     tags: ["Auth"],
@@ -46,7 +48,7 @@ export function registerAuthRoutes(registry: OpenApiRegistry) {
     },
   });
 
-  register(registry, {
+  routes.push({
     method: "get",
     path: "/login/raft/callback",
     tags: ["Auth"],
@@ -65,7 +67,7 @@ export function registerAuthRoutes(registry: OpenApiRegistry) {
     },
   });
 
-  register(registry, {
+  routes.push({
     method: "get",
     path: "/api/auth/me",
     tags: ["Auth"],
@@ -75,7 +77,7 @@ export function registerAuthRoutes(registry: OpenApiRegistry) {
     },
   });
 
-  register(registry, {
+  routes.push({
     method: "post",
     path: "/api/auth/logout",
     tags: ["Auth"],
@@ -84,5 +86,6 @@ export function registerAuthRoutes(registry: OpenApiRegistry) {
       200: success("Logged out.", OkResponse),
     },
   });
+  return routes;
 }
 

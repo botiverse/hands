@@ -12,9 +12,9 @@ import {
   auth,
   error,
   json,
-  register,
   success,
-  type OpenApiRegistry,
+  type RouteConfigDef,
+  type RouteConfigList,
 } from "./common";
 
 const AppReleaseParams = AppIdParam.merge(ReleaseIdParam);
@@ -202,8 +202,9 @@ const AppPermissionModel = z.object({
   })),
 }).openapi("AppPermissionModel");
 
-export function registerReleaseRoutes(registry: OpenApiRegistry) {
-  register(registry, {
+export function registerReleaseRoutes(): RouteConfigList {
+  const routes: RouteConfigDef[] = [];
+  routes.push({
     method: "get",
     path: "/api/app-permissions",
     tags: ["App access"],
@@ -214,7 +215,7 @@ export function registerReleaseRoutes(registry: OpenApiRegistry) {
       401: error("Missing or invalid authentication."),
     },
   });
-  register(registry, {
+  routes.push({
     method: "get",
     path: "/api/apps/{appId}/releases",
     tags: ["Releases"],
@@ -237,7 +238,7 @@ export function registerReleaseRoutes(registry: OpenApiRegistry) {
     },
   });
 
-  register(registry, {
+  routes.push({
     method: "post",
     path: "/api/apps/{appId}/releases",
     tags: ["Releases"],
@@ -266,7 +267,7 @@ export function registerReleaseRoutes(registry: OpenApiRegistry) {
   ] as const) {
     const isPublish = path.endsWith("/publish");
     const isRollback = path.endsWith("/rollback");
-    register(registry, {
+    routes.push({
       method,
       path,
       tags: ["Releases"],
@@ -313,7 +314,7 @@ export function registerReleaseRoutes(registry: OpenApiRegistry) {
   });
   const AppReleaseApprovalParams = AppIdParam.merge(RequestIdParam);
 
-  register(registry, {
+  routes.push({
     method: "get",
     path: "/api/apps/{appId}/release-approvals",
     tags: ["Releases"],
@@ -332,7 +333,7 @@ export function registerReleaseRoutes(registry: OpenApiRegistry) {
     },
   });
 
-  register(registry, {
+  routes.push({
     method: "post",
     path: "/api/apps/{appId}/release-approvals/{requestId}/approve",
     tags: ["Releases"],
@@ -347,7 +348,7 @@ export function registerReleaseRoutes(registry: OpenApiRegistry) {
     },
   });
 
-  register(registry, {
+  routes.push({
     method: "post",
     path: "/api/apps/{appId}/release-approvals/{requestId}/reject",
     tags: ["Releases"],
@@ -365,7 +366,7 @@ export function registerReleaseRoutes(registry: OpenApiRegistry) {
     },
   });
 
-  register(registry, {
+  routes.push({
     method: "get",
     path: "/api/apps/{appId}/shares",
     tags: ["Release shares"],
@@ -378,7 +379,7 @@ export function registerReleaseRoutes(registry: OpenApiRegistry) {
     },
   });
 
-  register(registry, {
+  routes.push({
     method: "get",
     path: "/api/apps/{appId}/releases/{releaseId}/shares",
     tags: ["Release shares"],
@@ -393,7 +394,7 @@ export function registerReleaseRoutes(registry: OpenApiRegistry) {
     },
   });
 
-  register(registry, {
+  routes.push({
     method: "post",
     path: "/api/apps/{appId}/releases/{releaseId}/shares",
     tags: ["Release shares"],
@@ -413,7 +414,7 @@ export function registerReleaseRoutes(registry: OpenApiRegistry) {
     },
   });
 
-  register(registry, {
+  routes.push({
     method: "patch",
     path: "/api/apps/{appId}/releases/{releaseId}/shares/{shareId}",
     tags: ["Release shares"],
@@ -433,7 +434,7 @@ export function registerReleaseRoutes(registry: OpenApiRegistry) {
     },
   });
 
-  register(registry, {
+  routes.push({
     method: "delete",
     path: "/api/apps/{appId}/releases/{releaseId}/shares/{shareId}",
     tags: ["Release shares"],
@@ -448,10 +449,12 @@ export function registerReleaseRoutes(registry: OpenApiRegistry) {
     },
   });
 
-  registerAccessRoutes(registry);
+  accessRoutes(routes);
+
+  return routes;
 }
 
-function registerAccessRoutes(registry: OpenApiRegistry) {
+function accessRoutes(routes: RouteConfigDef[]) {
   for (const [method, path, summary] of [
     ["get", "/api/apps/{appId}/server-grants", "List additional owner servers for an app"],
     ["post", "/api/apps/{appId}/server-grants", "Add an owner server to an app"],
@@ -460,7 +463,7 @@ function registerAccessRoutes(registry: OpenApiRegistry) {
   ] as const) {
     const hasServerId = path.includes("{serverId}");
     const needsBody = method === "post" || method === "patch";
-    register(registry, {
+    routes.push({
       method,
       path,
       tags: ["App access"],
@@ -484,7 +487,7 @@ function registerAccessRoutes(registry: OpenApiRegistry) {
     });
   }
 
-  register(registry, {
+  routes.push({
     method: "get",
     path: "/api/apps/{appId}/deploy-tokens",
     tags: ["App access"],
@@ -502,7 +505,7 @@ function registerAccessRoutes(registry: OpenApiRegistry) {
     },
   });
 
-  register(registry, {
+  routes.push({
     method: "post",
     path: "/api/apps/{appId}/deploy-tokens",
     tags: ["App access"],
@@ -522,7 +525,7 @@ function registerAccessRoutes(registry: OpenApiRegistry) {
     },
   });
 
-  register(registry, {
+  routes.push({
     method: "delete",
     path: "/api/apps/{appId}/deploy-tokens/{tokenId}",
     tags: ["App access"],

@@ -7,9 +7,9 @@ import {
   binary,
   error,
   json,
-  register,
   success,
-  type OpenApiRegistry,
+  type RouteConfigDef,
+  type RouteConfigList,
 } from "./common";
 
 const AppInput = z
@@ -73,8 +73,9 @@ const VersionMetricsResponse = z
   })
   .openapi("VersionMetricsResponse");
 
-export function registerAppRoutes(registry: OpenApiRegistry) {
-  register(registry, {
+export function registerAppRoutes(): RouteConfigList {
+  const routes: RouteConfigDef[] = [];
+  routes.push({
     method: "get",
     path: "/api/apps",
     tags: ["Apps"],
@@ -86,7 +87,7 @@ export function registerAppRoutes(registry: OpenApiRegistry) {
     },
   });
 
-  register(registry, {
+  routes.push({
     method: "post",
     path: "/api/apps",
     tags: ["Apps"],
@@ -101,7 +102,7 @@ export function registerAppRoutes(registry: OpenApiRegistry) {
     },
   });
 
-  register(registry, {
+  routes.push({
     method: "get",
     path: "/api/apps/{appId}",
     tags: ["Apps"],
@@ -115,7 +116,7 @@ export function registerAppRoutes(registry: OpenApiRegistry) {
     },
   });
 
-  register(registry, {
+  routes.push({
     method: "patch",
     path: "/api/apps/{appId}",
     tags: ["Apps"],
@@ -133,7 +134,7 @@ export function registerAppRoutes(registry: OpenApiRegistry) {
     },
   });
 
-  register(registry, {
+  routes.push({
     method: "post",
     path: "/api/apps/{appId}/archive",
     tags: ["Apps"],
@@ -153,7 +154,7 @@ export function registerAppRoutes(registry: OpenApiRegistry) {
     },
   });
 
-  register(registry, {
+  routes.push({
     method: "post",
     path: "/api/apps/{appId}/purge",
     tags: ["Apps"],
@@ -174,7 +175,7 @@ export function registerAppRoutes(registry: OpenApiRegistry) {
     },
   });
 
-  register(registry, {
+  routes.push({
     method: "put",
     path: "/api/apps/{appId}/icon",
     tags: ["Apps"],
@@ -194,7 +195,7 @@ export function registerAppRoutes(registry: OpenApiRegistry) {
     },
   });
 
-  register(registry, {
+  routes.push({
     method: "get",
     path: "/api/apps/{appId}/analytics/versions",
     tags: ["Analytics"],
@@ -210,7 +211,7 @@ export function registerAppRoutes(registry: OpenApiRegistry) {
     },
   });
 
-  register(registry, {
+  routes.push({
     method: "get",
     path: "/api/apps/{appId}/client-key",
     tags: ["Apps"],
@@ -225,7 +226,7 @@ export function registerAppRoutes(registry: OpenApiRegistry) {
     },
   });
 
-  register(registry, {
+  routes.push({
     method: "post",
     path: "/api/apps/{appId}/rotate-client-key",
     tags: ["Apps"],
@@ -238,4 +239,5 @@ export function registerAppRoutes(registry: OpenApiRegistry) {
       404: error("App was not found."),
     },
   });
+  return routes;
 }

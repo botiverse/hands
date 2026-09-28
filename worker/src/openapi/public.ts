@@ -11,9 +11,9 @@ import {
   html,
   json,
   multipart,
-  register,
   success,
-  type OpenApiRegistry,
+  type RouteConfigDef,
+  type RouteConfigList,
 } from "./common";
 
 const PublicApp = z
@@ -201,8 +201,9 @@ const MetricsIngestResponse = z.object({ ok: z.boolean() }).openapi("MetricsInge
 
 const InviteResponse = GenericObject.openapi("InviteResponse");
 
-export function registerPublicRoutes(registry: OpenApiRegistry) {
-  register(registry, {
+export function registerPublicRoutes(): RouteConfigList {
+  const routes: RouteConfigDef[] = [];
+  routes.push({
     method: "get",
     path: "/public/v2/apps/{slug}/latest",
     tags: ["Public update"],
@@ -235,7 +236,7 @@ export function registerPublicRoutes(registry: OpenApiRegistry) {
     },
   });
 
-  register(registry, {
+  routes.push({
     method: "get",
     path: "/public/apps/{slug}/latest",
     tags: ["Public update"],
@@ -253,7 +254,7 @@ export function registerPublicRoutes(registry: OpenApiRegistry) {
     },
   });
 
-  register(registry, {
+  routes.push({
     method: "get",
     path: "/public/v2/apps/{slug}/updates/check",
     tags: ["Public update"],
@@ -288,7 +289,7 @@ export function registerPublicRoutes(registry: OpenApiRegistry) {
     },
   });
 
-  register(registry, {
+  routes.push({
     method: "get",
     path: "/public/v2/apps/{slug}/versions",
     tags: ["Public update"],
@@ -315,7 +316,7 @@ export function registerPublicRoutes(registry: OpenApiRegistry) {
     },
   });
 
-  register(registry, {
+  routes.push({
     method: "get",
     path: "/public/v2/apps/{slug}/release-notes",
     tags: ["Public update"],
@@ -338,7 +339,7 @@ export function registerPublicRoutes(registry: OpenApiRegistry) {
     },
   });
 
-  register(registry, {
+  routes.push({
     method: "get",
     path: "/public/apps/{slug}/channels",
     tags: ["Public update"],
@@ -350,7 +351,7 @@ export function registerPublicRoutes(registry: OpenApiRegistry) {
     },
   });
 
-  register(registry, {
+  routes.push({
     method: "post",
     path: "/public/v2/apps/{slug}/metrics",
     tags: ["Public metrics"],
@@ -374,7 +375,7 @@ export function registerPublicRoutes(registry: OpenApiRegistry) {
     },
   });
 
-  register(registry, {
+  routes.push({
     method: "post",
     path: "/public/v2/apps/{slug}/devices",
     tags: ["Public metrics"],
@@ -398,7 +399,7 @@ export function registerPublicRoutes(registry: OpenApiRegistry) {
     },
   });
 
-  register(registry, {
+  routes.push({
     method: "post",
     path: "/public/v2/apps/{slug}/feedback",
     tags: ["Public feedback"],
@@ -429,7 +430,7 @@ export function registerPublicRoutes(registry: OpenApiRegistry) {
     },
   });
 
-  register(registry, {
+  routes.push({
     method: "get",
     path: "/public/apps/{slug}/icon",
     tags: ["Public pages"],
@@ -441,7 +442,7 @@ export function registerPublicRoutes(registry: OpenApiRegistry) {
     },
   });
 
-  register(registry, {
+  routes.push({
     method: "get",
     path: "/electron/{slug}/{channel}/{file}",
     tags: ["Public update"],
@@ -467,7 +468,7 @@ export function registerPublicRoutes(registry: OpenApiRegistry) {
     },
   });
 
-  register(registry, {
+  routes.push({
     method: "get",
     path: "/public/r2/{key}",
     tags: ["Public downloads"],
@@ -502,7 +503,7 @@ export function registerPublicRoutes(registry: OpenApiRegistry) {
     },
   });
 
-  register(registry, {
+  routes.push({
     method: "get",
     path: "/share/{token}",
     tags: ["Public pages"],
@@ -514,7 +515,7 @@ export function registerPublicRoutes(registry: OpenApiRegistry) {
     },
   });
 
-  register(registry, {
+  routes.push({
     method: "post",
     path: "/share/{token}/unlock",
     tags: ["Public pages"],
@@ -537,7 +538,7 @@ export function registerPublicRoutes(registry: OpenApiRegistry) {
     },
   });
 
-  register(registry, {
+  routes.push({
     method: "get",
     path: "/share/{token}/download",
     tags: ["Public downloads"],
@@ -550,7 +551,7 @@ export function registerPublicRoutes(registry: OpenApiRegistry) {
     },
   });
 
-  register(registry, {
+  routes.push({
     method: "get",
     path: "/share/{token}/icon",
     tags: ["Public pages"],
@@ -562,7 +563,7 @@ export function registerPublicRoutes(registry: OpenApiRegistry) {
     },
   });
 
-  register(registry, {
+  routes.push({
     method: "get",
     path: "/apps/{slug}/latest",
     tags: ["Public pages"],
@@ -577,7 +578,7 @@ export function registerPublicRoutes(registry: OpenApiRegistry) {
     },
   });
 
-  register(registry, {
+  routes.push({
     method: "get",
     path: "/apps/{slug}/latest/download",
     tags: ["Public downloads"],
@@ -592,7 +593,7 @@ export function registerPublicRoutes(registry: OpenApiRegistry) {
     },
   });
 
-  register(registry, {
+  routes.push({
     method: "get",
     path: "/apps/{slug}/history",
     tags: ["Public pages"],
@@ -604,7 +605,7 @@ export function registerPublicRoutes(registry: OpenApiRegistry) {
     },
   });
 
-  register(registry, {
+  routes.push({
     method: "get",
     path: "/apps/{slug}/history/{releaseId}/download",
     tags: ["Public downloads"],
@@ -621,7 +622,7 @@ export function registerPublicRoutes(registry: OpenApiRegistry) {
     },
   });
 
-  register(registry, {
+  routes.push({
     method: "get",
     path: "/api/invites/{token}",
     tags: ["Invites"],
@@ -632,6 +633,7 @@ export function registerPublicRoutes(registry: OpenApiRegistry) {
       404: error("Invite was not found."),
     },
   });
+  return routes;
 }
 
 export { ErrorResponse };
