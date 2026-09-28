@@ -310,6 +310,16 @@ import {
 } from "./lib/permissions";
 import { openApiDocument } from "./openapi";
 import { feedbackRoutes } from "./openapi/feedback";
+import type { RouteConfigDef } from "./openapi/common";
+
+// Look up a RouteConfig from a named domain map; throws at startup if the
+// (method, path) isn't documented, so a spec↔route drift fails fast here
+// instead of silently serving an unvalidated route.
+const openapiLookup = (map: Record<string, RouteConfigDef>, key: string): RouteConfigDef => {
+  const cfg = map[key];
+  if (!cfg) throw new Error(`openapi route missing: ${key}`);
+  return cfg;
+};
 import {
   httpsRedirectUrl,
   requestOrigin,
@@ -681,13 +691,13 @@ app.post("/public/v2/apps/:slug/feedback/presign", handlePresignFeedbackAttachme
 app.put("/public/v2/apps/:slug/feedback/multipart/part", handleFeedbackMultipartPart);
 app.post("/public/v2/apps/:slug/feedback/multipart/complete", handleCompleteFeedbackMultipart);
 app.post("/public/v2/apps/:slug/feedback/multipart/abort", handleAbortFeedbackMultipart);
-app.openapi(feedbackRoutes.listReporter, handleListReporterFeedback as any);
-app.openapi(feedbackRoutes.mintReporterSession, handleMintReporterSession as any);
-app.openapi(feedbackRoutes.bindReporterRouteSubject, handleBindReporterRouteSubject as any);
-app.openapi(feedbackRoutes.getReporter, handleGetReporterFeedback as any);
-app.openapi(feedbackRoutes.addReporterComment, handleAddReporterComment as any);
-app.openapi(feedbackRoutes.closeReporter, handleCloseReporterFeedback as any);
-app.openapi(feedbackRoutes.downloadReporterAttachment, handleDownloadReporterAttachment as any);
+app.openapi(openapiLookup(feedbackRoutes, "listReporter"), handleListReporterFeedback as any);
+app.openapi(openapiLookup(feedbackRoutes, "mintReporterSession"), handleMintReporterSession as any);
+app.openapi(openapiLookup(feedbackRoutes, "bindReporterRouteSubject"), handleBindReporterRouteSubject as any);
+app.openapi(openapiLookup(feedbackRoutes, "getReporter"), handleGetReporterFeedback as any);
+app.openapi(openapiLookup(feedbackRoutes, "addReporterComment"), handleAddReporterComment as any);
+app.openapi(openapiLookup(feedbackRoutes, "closeReporter"), handleCloseReporterFeedback as any);
+app.openapi(openapiLookup(feedbackRoutes, "downloadReporterAttachment"), handleDownloadReporterAttachment as any);
 
 app.get("/public/apps/:slug/icon", handlePublicAppIcon);
 app.get("/apps/:slug/history", handlePublicAppHistory);
@@ -1033,19 +1043,19 @@ admin.post("/api/apps/:appId/shares/:shareId/rebind", requireAppRole("publisher"
 admin.put("/api/apps/:appId/icon", requireAppRole("publisher"), handleUploadAppIcon);
 admin.get("/api/apps/:appId/client-key", requireAppRole("admin"), handleGetClientKey);
 admin.post("/api/apps/:appId/rotate-client-key", requireAppRole("admin"), handleRotateClientKey);
-admin.openapi({ ...feedbackRoutes.listCrashGroups, middleware: requireAppRole("viewer") }, handleListCrashGroups as any);
-admin.openapi({ ...feedbackRoutes.feedbackStats, middleware: requireAppRole("viewer") }, handleFeedbackStats as any);
+admin.openapi({ ...openapiLookup(feedbackRoutes, "listCrashGroups"), middleware: requireAppRole("viewer") }, handleListCrashGroups as any);
+admin.openapi({ ...openapiLookup(feedbackRoutes, "feedbackStats"), middleware: requireAppRole("viewer") }, handleFeedbackStats as any);
 admin.get("/api/apps/:appId/analytics/devices", requireAppRole("viewer"), handleDeviceAnalytics);
 admin.get("/api/apps/:appId/analytics/versions", requireAppRole("viewer"), handleVersionAnalytics);
 admin.get("/api/apps/:appId/analytics/devices/:deviceId", requireAppRole("viewer"), handleDeviceDetail);
 admin.get("/api/apps/:appId/release-health", requireAppRole("viewer"), handleReleaseHealth);
-admin.openapi({ ...feedbackRoutes.listFeedback, middleware: requireAppRoleOrFeedbackPermission("viewer", {}, "feedback:read") }, handleListFeedback as any);
-admin.openapi({ ...feedbackRoutes.listMaterialDelta, middleware: requireAppRoleOrFeedbackPermission("viewer", {}, "feedback:read") }, handleListFeedbackMaterialDelta as any);
-admin.openapi({ ...feedbackRoutes.getFeedback, middleware: requireAppRoleOrFeedbackPermission("viewer", {}, "feedback:read") }, handleGetFeedback as any);
-admin.openapi({ ...feedbackRoutes.updateFeedback, middleware: requireAppRoleOrFeedbackPermission("publisher", { orgMinimum: "member" }, "feedback:triage") }, handleUpdateFeedback as any);
+admin.openapi({ ...openapiLookup(feedbackRoutes, "listFeedback"), middleware: requireAppRoleOrFeedbackPermission("viewer", {}, "feedback:read") }, handleListFeedback as any);
+admin.openapi({ ...openapiLookup(feedbackRoutes, "listMaterialDelta"), middleware: requireAppRoleOrFeedbackPermission("viewer", {}, "feedback:read") }, handleListFeedbackMaterialDelta as any);
+admin.openapi({ ...openapiLookup(feedbackRoutes, "getFeedback"), middleware: requireAppRoleOrFeedbackPermission("viewer", {}, "feedback:read") }, handleGetFeedback as any);
+admin.openapi({ ...openapiLookup(feedbackRoutes, "updateFeedback"), middleware: requireAppRoleOrFeedbackPermission("publisher", { orgMinimum: "member" }, "feedback:triage") }, handleUpdateFeedback as any);
 admin.openapi(
   // Both actions share this endpoint; handleAddFeedbackComment splits them on `internal`.
-  { ...feedbackRoutes.addFeedbackComment, middleware: requireAppRoleOrFeedbackPermission("publisher", { orgMinimum: "member" }, "feedback:comment", "feedback:triage") },
+  { ...openapiLookup(feedbackRoutes, "addFeedbackComment"), middleware: requireAppRoleOrFeedbackPermission("publisher", { orgMinimum: "member" }, "feedback:comment", "feedback:triage") },
   handleAddFeedbackComment as any,
 );
 admin.post("/api/apps/:appId/feedback/:ticketId/symbolicate", requireFeedbackTriageRole(), handleResymbolicateFeedback);
