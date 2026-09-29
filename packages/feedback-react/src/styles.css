@@ -96,6 +96,12 @@
   outline: none;
 }
 
+/* When the host hides the title, keep the header actions right-aligned
+   (the title no longer fills the space-between layout). */
+.hands-feedback-header > .hands-feedback-header-title[hidden] ~ :last-child {
+  margin-left: auto;
+}
+
 .hands-feedback-content {
   margin: 0 auto;
   max-width: var(--hf-content-width);
