@@ -32,9 +32,9 @@ jobs:
       OHOS_TOOL_HOME: /opt/harmonyos-tools/command-line-tools
       DEVECO_SDK_HOME: /opt/harmonyos-tools/command-line-tools/sdk
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: "20"
 
@@ -123,7 +123,7 @@ jobs:
         working-directory: clients/ohos
         run: ohpm prepublish hands/build/default/outputs/default/hands.har --log_level info
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: botiverse-hands-ohos-${{ steps.version.outputs.value }}.har
           path: clients/ohos/hands/build/default/outputs/default/hands.har
