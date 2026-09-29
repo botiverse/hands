@@ -6,3 +6,6 @@
 /worker/src/routes/hands_admin.ts @bytemain
 /worker/src/lib/admin_raft_token.ts @bytemain
 /migrations/sql/0063_integrated_hands_admin.sql @bytemain
+
+# Workflow changes can exfiltrate or rotate secrets — require platform review.
+/.github/workflows/ @bytemain
