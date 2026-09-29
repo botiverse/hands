@@ -28,6 +28,7 @@ object Hands {
         copyToClipboard: Boolean = true,
         uploadOnLaunch: Boolean = true,
         captureNativeCrashes: Boolean = true,
+        captureAnrs: Boolean = true,
         reportDeviceAnalytics: Boolean = true,
         trackSessions: Boolean = true,
         extraContext: (() -> String)? = null,
@@ -54,6 +55,7 @@ object Hands {
             copyToClipboard = copyToClipboard,
             uploadOnLaunch = uploadOnLaunch,
             captureNativeCrashes = captureNativeCrashes,
+            captureAnrs = captureAnrs,
             reportDeviceAnalytics = reportDeviceAnalytics,
             extraContext = extraContext,
         )
