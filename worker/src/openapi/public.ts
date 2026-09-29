@@ -266,7 +266,12 @@ export function registerPublicRoutes(): RouteConfigList {
     request: {
       params: SlugParam,
       query: z.object({
-        current_version_code: z.coerce.number().int().min(0),
+        // Optional at the schema level: cli-binary callers send `current_version`
+        // (string) instead, and the android path's handler produces its own 400
+        // ("current_version_code must be a non-negative number") — the validator
+        // must not pre-empt either contract.
+        current_version_code: z.coerce.number().int().min(0).optional(),
+        current_version: z.string().optional(),
         channel: z.string().default("main").optional(),
         product_type: z.string().default("android-apk").optional(),
         platform: z.string().optional(),
