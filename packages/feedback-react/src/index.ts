@@ -16,6 +16,7 @@ export type {
   FeedbackHostAttachmentRejection,
   FeedbackHostAttachmentResult,
   FeedbackWorkspaceHandle,
+  FeedbackWorkspaceHostHandle,
   FeedbackWorkspaceNavigationOptions,
   FeedbackWorkspaceRoute,
   NewFeedbackProps,

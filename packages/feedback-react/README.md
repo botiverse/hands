@@ -87,33 +87,44 @@ rebuilding SDK UI. Browser negotiation selects the first supported entry in
 ## Host-staged attachments
 
 A host may put one small file (for example a validated diagnostic snapshot)
-into the reporter's pending attachment list on the new-feedback form:
+into the reporter's pending attachments. Prepare the `File` first (any async
+fetch/validation happens before this click), then call the handle
+**synchronously** from the click handler:
 
 ```tsx
-const workspace = useRef<FeedbackWorkspaceHandle>(null);
+const workspace = useRef<FeedbackWorkspaceHostHandle>(null);
 
 <button
   onClick={() => {
-    const file = new File([json], "diagnostic.json", {
-      type: "application/json",
+    // No `await` before this call: it needs the live user gesture.
+    const result = workspace.current?.openNewFeedbackWithPendingFile({
+      file: preparedDiagnosticFile,
     });
-    const result = workspace.current?.attachPendingFile({ file });
     if (result && !result.ok) showReason(result.reason);
   }}
 >
-  Attach diagnostic
+  Report issue with diagnostic
 </button>
-<FeedbackWorkspace ref={workspace} route={{ view: "new" }} />
+<FeedbackWorkspace
+  ref={workspace}
+  onOpenPendingAttachment={({ file }) => previewInHost(file)}
+/>
 ```
 
-The contract:
+- `openNewFeedbackWithPendingFile({ file })` opens the new-feedback form with
+  the file already pending in the same call. If the form is already open, it
+  adds the file there. It is synchronous and returns a typed result.
+- `attachPendingFile({ file })` is the low-level variant: it only stages into
+  an already open form and returns `composer_closed` otherwise.
 
-- **Stage only.** It never uploads or submits. The reporter sees the file,
+The contract (both methods):
+
+- **Stage only.** They never upload or submit. The reporter sees the file,
+  can open it (via `onOpenPendingAttachment`, including non-image files),
   can remove it, and it is sent only when they press Submit.
-- **User gesture required.** Call it synchronously from a user action (click,
-  key press). Without transient browser user activation
-  (`navigator.userActivation.isActive`) it returns
-  `user_activation_required` and changes nothing.
+- **User gesture required.** Without transient browser user activation
+  (`navigator.userActivation.isActive`) they return
+  `user_activation_required` and change nothing, including the route.
 - **Bytes only.** Input is exactly `{ file: File }`. No paths, URLs,
   callbacks, or background fetches.
 - **Bounded.** At most `MAX_FEEDBACK_HOST_ATTACHMENTS` (1) host file,
@@ -124,13 +135,12 @@ The contract:
   rejected as `duplicate`.
 - **Typed rejection, zero mutation.** Failures return
   `{ ok: false, reason }` (`FeedbackHostAttachmentRejection`) and do not
-  change the pending list, show an error banner, or upload anything.
-  `composer_closed` means the new-feedback view is not open; `busy` means a
-  submission is in flight.
+  navigate, change the pending list, show an error banner, or upload
+  anything. `busy` means a submission is in flight.
 
 Your Hands app and transport must accept the injected MIME type. The Hands
 public submit endpoint accepts any type. Reporter replies accept only images,
-which is why the handle targets the new-feedback form only.
+which is why host files go to the new-feedback form only.
 
 ## Security boundary
 

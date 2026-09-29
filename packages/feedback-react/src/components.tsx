@@ -197,10 +197,23 @@ export type FeedbackHostAttachmentResult =
  * reviews/removes it and presses Submit.
  */
 export type FeedbackWorkspaceHandle = {
+  /** Low-level: stage into an already-open new-feedback composer. */
   attachPendingFile(
     input: FeedbackHostAttachmentInput,
   ): FeedbackHostAttachmentResult;
+  /**
+   * Opens the new-feedback form with `file` already pending, in the same
+   * synchronous call (call it from a click handler, do not `await` first).
+   * If the form is already open, the file is added to it. Never uploads.
+   * Only on `FeedbackWorkspace`; `NewFeedback` handles do not implement it.
+   */
+  openNewFeedbackWithPendingFile?(
+    input: FeedbackHostAttachmentInput,
+  ): FeedbackHostAttachmentResult;
 };
+
+/** Handle returned by `FeedbackWorkspace`'s `ref`. */
+export type FeedbackWorkspaceHostHandle = Required<FeedbackWorkspaceHandle>;
 
 function hasTransientUserActivation() {
   const activation = (
@@ -750,8 +763,25 @@ function FeedbackPendingAttachmentImage({
 
   if (!isImage || !previewUrl) {
     return (
-      <ComposerAttachmentFile>
-        <ImagePlus aria-hidden="true" />
+      <ComposerAttachmentFile
+        render={onOpenAttachment ? <button type="button" /> : undefined}
+        className={
+          onOpenAttachment ? "hands-feedback-pending-file-button" : undefined
+        }
+        aria-label={
+          onOpenAttachment
+            ? message("openAttachment", { name: file.name })
+            : undefined
+        }
+        onClick={
+          onOpenAttachment ? () => onOpenAttachment({ file }) : undefined
+        }
+      >
+        {isImage ? (
+          <ImagePlus aria-hidden="true" />
+        ) : (
+          <Paperclip aria-hidden="true" />
+        )}
         <ComposerAttachmentBody>
           <ComposerAttachmentTitle>{file.name}</ComposerAttachmentTitle>
           <ComposerAttachmentMeta>
@@ -2063,17 +2093,46 @@ export type NewFeedbackProps = {
   ref?: Ref<FeedbackWorkspaceHandle>;
 };
 
-export function NewFeedback({
+type NewFeedbackInternalProps = NewFeedbackProps & {
+  /** Workspace-only: a pre-validated host file present from first render. */
+  initialHostFile?: File | null;
+  onInitialHostFileConsumed?: () => void;
+};
+
+export function NewFeedback(props: NewFeedbackProps) {
+  return <NewFeedbackForm {...props} />;
+}
+
+function NewFeedbackForm({
   onCancel,
   onCreated,
   onOpenPendingAttachment,
   ref,
-}: NewFeedbackProps) {
+  initialHostFile,
+  onInitialHostFileConsumed,
+}: NewFeedbackInternalProps) {
   const { message: copy, reportUnread, transport } = useHandsFeedback();
   const safeError = useSafeError();
   const [kind, setKind] = useState<FeedbackKind>("feedback");
   const [message, setMessage] = useState("");
-  const [attachments, setAttachments] = useState<PendingAttachment[]>([]);
+  const [attachments, setAttachments] = useState<PendingAttachment[]>(() =>
+    initialHostFile
+      ? [
+          {
+            id: submissionId(),
+            file: initialHostFile,
+            progress: 0,
+            state: "ready",
+            source: "host",
+          },
+        ]
+      : [],
+  );
+  useEffect(() => {
+    if (initialHostFile) onInitialHostFileConsumed?.();
+    // Consume once on mount; later prop changes never inject.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [announcement, setAnnouncement] = useState("");
@@ -2365,7 +2424,7 @@ export type FeedbackWorkspaceProps = {
    * Host handle. `attachPendingFile` targets the new-feedback composer only
    * and returns `composer_closed` on any other route.
    */
-  ref?: Ref<FeedbackWorkspaceHandle>;
+  ref?: Ref<FeedbackWorkspaceHostHandle>;
 };
 
 export function FeedbackWorkspace({
@@ -2398,6 +2457,11 @@ export function FeedbackWorkspace({
     useState<FeedbackTicketSummary | null>(null);
   const originTicket = useRef<string | null>(initialTicketId ?? null);
   const newFeedbackRef = useRef<FeedbackWorkspaceHandle | null>(null);
+  // A validated host file waiting for the new-feedback form to mount. It is
+  // set in the same synchronous call as the route change and consumed by the
+  // form's initial state, so there is no deferred injection step.
+  const [hostSeed, setHostSeed] = useState<File | null>(null);
+  const navigateRef = useRef<(next: FeedbackWorkspaceRoute) => void>(() => {});
   useImperativeHandle(
     ref,
     () => ({
@@ -2407,6 +2471,18 @@ export function FeedbackWorkspace({
         const composer = newFeedbackRef.current;
         if (!composer) return { ok: false, reason: "composer_closed" };
         return composer.attachPendingFile(input);
+      },
+      openNewFeedbackWithPendingFile(input) {
+        if (!hasTransientUserActivation())
+          return { ok: false, reason: "user_activation_required" };
+        const composer = newFeedbackRef.current;
+        if (composer) return composer.attachPendingFile(input);
+        const reason = hostAttachmentRejection(input, []);
+        if (reason) return { ok: false, reason };
+        setHostSeed(input.file);
+        setRouteTicket(null);
+        navigateRef.current({ view: "new" });
+        return { ok: true };
       },
     }),
     [],
@@ -2420,6 +2496,7 @@ export function FeedbackWorkspace({
     if (!controlledRoute) setInternalRoute(next);
     onRouteChange?.(next, options);
   };
+  navigateRef.current = navigate;
   const back = () => {
     pendingInboxFocus.current = originTicket.current ?? "";
     navigate({ view: "inbox" });
@@ -2474,6 +2551,7 @@ export function FeedbackWorkspace({
         readTicketVersion={readTicket.version}
         upsertTicket={createdTicket}
         onNewFeedback={() => {
+          setHostSeed(null);
           setRouteTicket(null);
           navigate({ view: "new" });
         }}
@@ -2484,10 +2562,15 @@ export function FeedbackWorkspace({
         }}
       />
       {route.view === "new" && (
-        <NewFeedback
+        <NewFeedbackForm
           ref={newFeedbackRef}
+          initialHostFile={hostSeed}
+          onInitialHostFileConsumed={() => setHostSeed(null)}
           {...(onOpenPendingAttachment ? { onOpenPendingAttachment } : {})}
-          onCancel={() => navigate({ view: "inbox" })}
+          onCancel={() => {
+            setHostSeed(null);
+            navigate({ view: "inbox" });
+          }}
           onCreated={(ticketId, detail) => {
             if (detail) {
               setCreatedTicket(detail.ticket);
