@@ -464,22 +464,22 @@ function FeedbackStatusChip({
   const config = {
     open: {
       Icon: Circle,
-      backgroundColor: "var(--color-brutal-orange)",
+      backgroundColor: "var(--hf-status-open-bg)",
       variant: "warning" as const,
     },
     in_progress: {
       Icon: Play,
-      backgroundColor: "var(--color-brutal-cyan)",
+      backgroundColor: "var(--hf-status-in-progress-bg)",
       variant: "information" as const,
     },
     resolved: {
       Icon: CheckCircle,
-      backgroundColor: "var(--color-brutal-lime)",
+      backgroundColor: "var(--hf-status-resolved-bg)",
       variant: "success" as const,
     },
     closed: {
       Icon: Ban,
-      backgroundColor: "var(--color-brutal-stone)",
+      backgroundColor: "var(--hf-status-closed-bg)",
       variant: "muted" as const,
     },
   }[displayStatus];
@@ -984,6 +984,8 @@ export type FeedbackInboxProps = {
   upsertTicket?: FeedbackTicketSummary | null;
   /** Enables touch pull-to-refresh on the list viewport. */
   enablePullToRefresh?: boolean;
+  /** Hides the workspace title text/icon in the header (actions stay). */
+  hideHeaderTitle?: boolean;
 };
 
 export function FeedbackInbox({
@@ -995,6 +997,7 @@ export function FeedbackInbox({
   readTicketVersion,
   upsertTicket,
   enablePullToRefresh = false,
+  hideHeaderTitle = false,
 }: FeedbackInboxProps) {
   const { formatDate, message, reportUnread, transport } = useHandsFeedback();
   const safeError = useSafeError();
@@ -1152,7 +1155,7 @@ export function FeedbackInbox({
       hidden={hidden}
     >
       <header className="hands-feedback-header">
-        <div className="hands-feedback-header-title">
+        <div className="hands-feedback-header-title" hidden={hideHeaderTitle}>
           <span className="hands-feedback-header-icon" aria-hidden="true">
             <MessageSquare size={16} />
           </span>
@@ -1375,6 +1378,8 @@ export type FeedbackTicketProps = {
   onTicketUpdated?: (ticket: FeedbackTicketSummary) => void;
   /** Enables touch pull-to-refresh on the conversation viewport. */
   enablePullToRefresh?: boolean;
+  /** Hides the workspace title text in the header (back button stays). */
+  hideHeaderTitle?: boolean;
 };
 
 function previewTicketDetail(
@@ -1581,6 +1586,7 @@ export function FeedbackTicket({
   onReadSuccess,
   onTicketUpdated,
   enablePullToRefresh = false,
+  hideHeaderTitle = false,
 }: FeedbackTicketProps) {
   const { message, reportUnread, transport } = useHandsFeedback();
   const safeError = useSafeError();
@@ -1906,7 +1912,11 @@ export function FeedbackTicket({
           >
             <ArrowLeft aria-hidden="true" size={16} />
           </Button>
-          <h2 id="hands-feedback-ticket-heading" tabIndex={-1}>
+          <h2
+            id="hands-feedback-ticket-heading"
+            tabIndex={-1}
+            hidden={hideHeaderTitle}
+          >
             {message("workspaceTitle")}
           </h2>
         </div>
@@ -2091,6 +2101,8 @@ export type NewFeedbackProps = {
   ) => void;
   /** Host handle; see `FeedbackWorkspaceHandle`. */
   ref?: Ref<FeedbackWorkspaceHandle>;
+  /** Hides the workspace title text in the header (back button stays). */
+  hideHeaderTitle?: boolean;
 };
 
 type NewFeedbackInternalProps = NewFeedbackProps & {
@@ -2110,6 +2122,7 @@ function NewFeedbackForm({
   ref,
   initialHostFile,
   onInitialHostFileConsumed,
+  hideHeaderTitle = false,
 }: NewFeedbackInternalProps) {
   const { message: copy, reportUnread, transport } = useHandsFeedback();
   const safeError = useSafeError();
@@ -2309,7 +2322,11 @@ function NewFeedbackForm({
           >
             <ArrowLeft aria-hidden="true" size={16} />
           </Button>
-          <h2 id="hands-feedback-new-title" tabIndex={-1}>
+          <h2
+            id="hands-feedback-new-title"
+            tabIndex={-1}
+            hidden={hideHeaderTitle}
+          >
             {copy("newFeedback")}
           </h2>
         </div>
@@ -2420,6 +2437,8 @@ export type FeedbackWorkspaceProps = {
   onOpenPendingAttachment?: FeedbackTicketProps["onOpenPendingAttachment"];
   /** Enables mobile pull-to-refresh for the inbox and ticket conversation. */
   enablePullToRefresh?: boolean;
+  /** Hides the workspace title text/icon in headers; navigation actions stay. */
+  hideHeaderTitle?: boolean;
   /**
    * Host handle. `attachPendingFile` targets the new-feedback composer only
    * and returns `composer_closed` on any other route.
@@ -2434,6 +2453,7 @@ export function FeedbackWorkspace({
   onOpenAttachment,
   onOpenPendingAttachment,
   enablePullToRefresh = false,
+  hideHeaderTitle = false,
   ref,
 }: FeedbackWorkspaceProps) {
   const { theme } = useHandsFeedback();
@@ -2546,6 +2566,7 @@ export function FeedbackWorkspace({
     >
       <FeedbackInbox
         enablePullToRefresh={enablePullToRefresh}
+        hideHeaderTitle={hideHeaderTitle}
         hidden={route.view !== "inbox"}
         readTicketId={readTicket.id}
         readTicketVersion={readTicket.version}
@@ -2564,6 +2585,7 @@ export function FeedbackWorkspace({
       {route.view === "new" && (
         <NewFeedbackForm
           ref={newFeedbackRef}
+          hideHeaderTitle={hideHeaderTitle}
           initialHostFile={hostSeed}
           onInitialHostFileConsumed={() => setHostSeed(null)}
           {...(onOpenPendingAttachment ? { onOpenPendingAttachment } : {})}
@@ -2584,6 +2606,7 @@ export function FeedbackWorkspace({
       {route.view === "ticket" && route.ticketId && (
         <FeedbackTicket
           enablePullToRefresh={enablePullToRefresh}
+          hideHeaderTitle={hideHeaderTitle}
           ticketId={route.ticketId}
           {...(routeTicket?.id === route.ticketId
             ? { initialTicket: routeTicket }

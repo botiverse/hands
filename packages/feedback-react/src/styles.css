@@ -1,12 +1,22 @@
 .hands-feedback-root {
-  --hf-bg: var(--layer-primary, #fff);
-  --hf-surface: var(--layer-secondary, #f8fafc);
+  /* Theme aliases: --hf-* is the stable public surface. The right-hand names
+     must exist under every raft-ui theme variant (incl. elegant dark) —
+     historical aliases like --layer-primary/--primary/--danger never existed
+     there and silently fell back to light-theme literals. */
+  --hf-bg: var(--layer-page, #fff);
+  --hf-surface: var(--layer-panel, var(--layer-muted, #f8fafc));
   --hf-border: var(--line-subtle, #d9e0e8);
   --hf-border-strong: var(--line-strong, #111827);
-  --hf-text: var(--foreground-primary, #111827);
+  --hf-text: var(--foreground, #111827);
   --hf-muted: var(--foreground-muted, #64748b);
-  --hf-accent: var(--primary, #2563eb);
-  --hf-danger: var(--danger, #b91c1c);
+  --hf-accent: var(--accent-500, var(--color-primary-500, #2563eb));
+  --hf-danger: var(--state-danger-base, #b91c1c);
+  /* Status badge surfaces; hosts may recolor per-status. Defaults keep the
+     brutal palette under brutal and state scales under elegant. */
+  --hf-status-open-bg: var(--color-brutal-orange, var(--state-warning-base, #f59e0b));
+  --hf-status-in-progress-bg: var(--color-brutal-cyan, var(--state-info-base, #3b82f6));
+  --hf-status-resolved-bg: var(--color-brutal-lime, var(--state-success-base, #16a34a));
+  --hf-status-closed-bg: var(--color-brutal-stone, var(--state-neutral-base, var(--layer-muted, #9ca3af)));
   --hf-content-width: 860px;
   background: var(--hf-bg);
   box-sizing: border-box;
@@ -415,9 +425,9 @@
 }
 
 .hands-feedback-problem-chip {
-  --reference-icon: var(--danger, var(--color-brutal-red));
+  --reference-icon: var(--hf-danger, var(--color-brutal-red));
 
-  background-color: var(--danger-muted, var(--color-brutal-red-200));
+  background-color: var(--state-danger-lighter, var(--color-brutal-red-200));
 }
 
 .hands-feedback-reference-chip-content {
