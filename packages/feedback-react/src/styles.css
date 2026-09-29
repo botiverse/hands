@@ -11,12 +11,14 @@
   --hf-muted: var(--foreground-muted, #64748b);
   --hf-accent: var(--accent-500, var(--color-primary-500, #2563eb));
   --hf-danger: var(--state-danger-base, #b91c1c);
-  /* Status badge surfaces; hosts may recolor per-status. Defaults keep the
-     brutal palette under brutal and state scales under elegant. */
-  --hf-status-open-bg: var(--color-brutal-orange, var(--state-warning-base, #f59e0b));
-  --hf-status-in-progress-bg: var(--color-brutal-cyan, var(--state-info-base, #3b82f6));
-  --hf-status-resolved-bg: var(--color-brutal-lime, var(--state-success-base, #16a34a));
-  --hf-status-closed-bg: var(--color-brutal-stone, var(--state-neutral-base, var(--layer-muted, #9ca3af)));
+  /* Status badge surfaces; hosts may recolor per-status. Neutral defaults —
+     [data-theme="brutal"] below overrides with the brutal palette; elegant
+     keeps the state scales. (--color-brutal-* exist globally in @theme, so
+     var() fallbacks cannot discriminate between themes.) */
+  --hf-status-open-bg: var(--state-warning-base, #f59e0b);
+  --hf-status-in-progress-bg: var(--state-info-base, #3b82f6);
+  --hf-status-resolved-bg: var(--state-success-base, #16a34a);
+  --hf-status-closed-bg: var(--layer-muted, #9ca3af);
   --hf-content-width: 860px;
   background: var(--hf-bg);
   box-sizing: border-box;
