@@ -489,9 +489,13 @@ export function registerPublicRoutes(): RouteConfigList {
       "'version_code protects them'.",
     request: {
       params: R2KeyParam,
+      // Optional in the schema so the HANDLER (not the validator) produces the
+      // machine-coded 400/403 (`expires_invalid` / `invalid_signature`) that
+      // clients re-resolve against; making them required would surface a generic
+      // validator 400 without `code` — a contract break.
       query: z.object({
-        expires: z.coerce.number().int(),
-        sig: z.string(),
+        expires: z.coerce.number().int().optional(),
+        sig: z.string().optional(),
       }),
     },
     responses: {
