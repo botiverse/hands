@@ -979,7 +979,7 @@ export type FeedbackInboxProps = {
   upsertTicket?: FeedbackTicketSummary | null;
   /** Enables touch pull-to-refresh on the list viewport. */
   enablePullToRefresh?: boolean;
-  /** Hides the workspace title text/icon in the header (actions stay). */
+  /** Hides the inbox title text/icon in the header (actions stay right). */
   hideHeaderTitle?: boolean;
 };
 
@@ -1373,8 +1373,6 @@ export type FeedbackTicketProps = {
   onTicketUpdated?: (ticket: FeedbackTicketSummary) => void;
   /** Enables touch pull-to-refresh on the conversation viewport. */
   enablePullToRefresh?: boolean;
-  /** Hides the workspace title text in the header (back button stays). */
-  hideHeaderTitle?: boolean;
 };
 
 function previewTicketDetail(
@@ -1581,7 +1579,6 @@ export function FeedbackTicket({
   onReadSuccess,
   onTicketUpdated,
   enablePullToRefresh = false,
-  hideHeaderTitle = false,
 }: FeedbackTicketProps) {
   const { message, reportUnread, transport } = useHandsFeedback();
   const safeError = useSafeError();
@@ -1907,11 +1904,7 @@ export function FeedbackTicket({
           >
             <ArrowLeft aria-hidden="true" size={16} />
           </Button>
-          <h2
-            id="hands-feedback-ticket-heading"
-            tabIndex={-1}
-            hidden={hideHeaderTitle}
-          >
+          <h2 id="hands-feedback-ticket-heading" tabIndex={-1}>
             {message("workspaceTitle")}
           </h2>
         </div>
@@ -2096,8 +2089,6 @@ export type NewFeedbackProps = {
   ) => void;
   /** Host handle; see `FeedbackWorkspaceHandle`. */
   ref?: Ref<FeedbackWorkspaceHandle>;
-  /** Hides the workspace title text in the header (back button stays). */
-  hideHeaderTitle?: boolean;
 };
 
 type NewFeedbackInternalProps = NewFeedbackProps & {
@@ -2117,7 +2108,6 @@ function NewFeedbackForm({
   ref,
   initialHostFile,
   onInitialHostFileConsumed,
-  hideHeaderTitle = false,
 }: NewFeedbackInternalProps) {
   const { message: copy, reportUnread, transport } = useHandsFeedback();
   const safeError = useSafeError();
@@ -2317,11 +2307,7 @@ function NewFeedbackForm({
           >
             <ArrowLeft aria-hidden="true" size={16} />
           </Button>
-          <h2
-            id="hands-feedback-new-title"
-            tabIndex={-1}
-            hidden={hideHeaderTitle}
-          >
+          <h2 id="hands-feedback-new-title" tabIndex={-1}>
             {copy("newFeedback")}
           </h2>
         </div>
@@ -2432,7 +2418,7 @@ export type FeedbackWorkspaceProps = {
   onOpenPendingAttachment?: FeedbackTicketProps["onOpenPendingAttachment"];
   /** Enables mobile pull-to-refresh for the inbox and ticket conversation. */
   enablePullToRefresh?: boolean;
-  /** Hides the workspace title text/icon in headers; navigation actions stay. */
+  /** Hides the inbox title text/icon; ticket and composer headers keep theirs. */
   hideHeaderTitle?: boolean;
   /**
    * Host handle. `attachPendingFile` targets the new-feedback composer only
@@ -2580,7 +2566,6 @@ export function FeedbackWorkspace({
       {route.view === "new" && (
         <NewFeedbackForm
           ref={newFeedbackRef}
-          hideHeaderTitle={hideHeaderTitle}
           initialHostFile={hostSeed}
           onInitialHostFileConsumed={() => setHostSeed(null)}
           {...(onOpenPendingAttachment ? { onOpenPendingAttachment } : {})}
@@ -2601,7 +2586,6 @@ export function FeedbackWorkspace({
       {route.view === "ticket" && route.ticketId && (
         <FeedbackTicket
           enablePullToRefresh={enablePullToRefresh}
-          hideHeaderTitle={hideHeaderTitle}
           ticketId={route.ticketId}
           {...(routeTicket?.id === route.ticketId
             ? { initialTicket: routeTicket }
