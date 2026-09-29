@@ -1089,21 +1089,18 @@ bindAdmin("post", "/api/apps/:appId/shares/:shareId/rebind", requireAppRole("pub
 bindAdmin("put", "/api/apps/:appId/icon", requireAppRole("publisher"), handleUploadAppIcon);
 bindAdmin("get", "/api/apps/:appId/client-key", requireAppRole("admin"), handleGetClientKey);
 bindAdmin("post", "/api/apps/:appId/rotate-client-key", requireAppRole("admin"), handleRotateClientKey);
-admin.openapi({ ...openapiLookup(feedbackRoutes, "listCrashGroups"), middleware: requireAppRole("viewer") }, handleListCrashGroups as any);
-admin.openapi({ ...openapiLookup(feedbackRoutes, "feedbackStats"), middleware: requireAppRole("viewer") }, handleFeedbackStats as any);
+bindAdmin("get", "/api/apps/:appId/feedback/crash-groups", requireAppRole("viewer"), handleListCrashGroups);
+bindAdmin("get", "/api/apps/:appId/feedback/stats", requireAppRole("viewer"), handleFeedbackStats);
 bindAdmin("get", "/api/apps/:appId/analytics/devices", requireAppRole("viewer"), handleDeviceAnalytics);
 bindAdmin("get", "/api/apps/:appId/analytics/versions", requireAppRole("viewer"), handleVersionAnalytics);
 bindAdmin("get", "/api/apps/:appId/analytics/devices/:deviceId", requireAppRole("viewer"), handleDeviceDetail);
 bindAdmin("get", "/api/apps/:appId/release-health", requireAppRole("viewer"), handleReleaseHealth);
-admin.openapi({ ...openapiLookup(feedbackRoutes, "listFeedback"), middleware: requireAppRoleOrFeedbackPermission("viewer", {}, "feedback:read") }, handleListFeedback as any);
-admin.openapi({ ...openapiLookup(feedbackRoutes, "listMaterialDelta"), middleware: requireAppRoleOrFeedbackPermission("viewer", {}, "feedback:read") }, handleListFeedbackMaterialDelta as any);
-admin.openapi({ ...openapiLookup(feedbackRoutes, "getFeedback"), middleware: requireAppRoleOrFeedbackPermission("viewer", {}, "feedback:read") }, handleGetFeedback as any);
-admin.openapi({ ...openapiLookup(feedbackRoutes, "updateFeedback"), middleware: requireAppRoleOrFeedbackPermission("publisher", { orgMinimum: "member" }, "feedback:triage") }, handleUpdateFeedback as any);
-admin.openapi(
-  // Both actions share this endpoint; handleAddFeedbackComment splits them on `internal`.
-  { ...openapiLookup(feedbackRoutes, "addFeedbackComment"), middleware: requireAppRoleOrFeedbackPermission("publisher", { orgMinimum: "member" }, "feedback:comment", "feedback:triage") },
-  handleAddFeedbackComment as any,
-);
+bindAdmin("get", "/api/apps/:appId/feedback", requireAppRoleOrFeedbackPermission("viewer", {}, "feedback:read"), handleListFeedback);
+bindAdmin("get", "/api/apps/:appId/feedback/material-delta", requireAppRoleOrFeedbackPermission("viewer", {}, "feedback:read"), handleListFeedbackMaterialDelta);
+bindAdmin("get", "/api/apps/:appId/feedback/:ticketId", requireAppRoleOrFeedbackPermission("viewer", {}, "feedback:read"), handleGetFeedback);
+bindAdmin("patch", "/api/apps/:appId/feedback/:ticketId", requireAppRoleOrFeedbackPermission("publisher", { orgMinimum: "member" }, "feedback:triage"), handleUpdateFeedback);
+// Both actions share this endpoint; handleAddFeedbackComment splits them on `internal`.
+bindAdmin("post", "/api/apps/:appId/feedback/:ticketId/comments", requireAppRoleOrFeedbackPermission("publisher", { orgMinimum: "member" }, "feedback:comment", "feedback:triage"), handleAddFeedbackComment);
 bindAdmin("post", "/api/apps/:appId/feedback/:ticketId/symbolicate", requireFeedbackTriageRole(), handleResymbolicateFeedback);
 bindAdmin("get", "/api/apps/:appId/feedback/:ticketId/attachments/:attachmentId",
   // An attachment is the substance of most crash reports; reading a ticket
