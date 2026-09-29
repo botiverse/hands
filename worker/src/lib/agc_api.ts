@@ -238,6 +238,18 @@ export async function addAgcTestPackage(auth: AgcAuth, appId: string, fileName: 
   if (!packageId) throw new AgcApiError(502, "AGC did not return a package id");
   return String(packageId);
 }
+/** Huawei package API: distributeMode 2 places the package in AppGallery,
+ * without creating a test version or submitting any review.
+ * https://developer.huawei.com/consumer/cn/doc/app/agc-help-test-api-add-test-package-0000002236201330
+ */
+export async function addAgcMarketPackage(auth: AgcAuth, appId: string, fileName: string, objectId: string, fetchImpl: typeof fetch = fetch) {
+  const body = await agcJson(auth, `/api/publish/v2/test/version/pkg?appId=${encodeURIComponent(appId)}`, {
+    method: "POST", body: JSON.stringify({ distributeMode: 2, file: { fileName, objectId } }),
+  }, fetchImpl);
+  const packageId = body?.pkgVersion?.[0];
+  if (!packageId) throw new AgcApiError(502, "AGC did not return a package id");
+  return String(packageId);
+}
 export async function getAgcCompileStatus(auth: AgcAuth, appId: string, packageId: string, fetchImpl: typeof fetch = fetch) {
   const body = await agcJson(auth, `/api/publish/v3/package/compile/status?appId=${encodeURIComponent(appId)}&pkgIds=${encodeURIComponent(packageId)}`, {}, fetchImpl);
   return body?.pkgStateList?.[0] ?? null;

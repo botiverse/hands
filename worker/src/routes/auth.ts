@@ -1457,6 +1457,25 @@ export async function handleAgentManifest(c: Context<{ Bindings: Env }>) {
         },
       },
       {
+        name: "upload-agc-market-package",
+        description: "Upload an existing signed OHOS App Pack to Huawei market package management; never submits review.",
+        endpoint: { method: "POST", path: "/api/apps/{app_id}/builds/{build_id}/agc-market-package" },
+        parameters: {
+          app_id: { type: "string", in: "path", required: true, description: "OHOS app UUID." },
+          build_id: { type: "string", in: "path", required: true, description: "Hands build UUID." },
+          package_name: { type: "string", in: "body", required: true, description: "HarmonyOS bundle name." },
+        },
+      },
+      {
+        name: "get-agc-market-package",
+        description: "Read and refresh formal market package parsing status; ready does not mean published.",
+        endpoint: { method: "GET", path: "/api/apps/{app_id}/builds/{build_id}/agc-market-package" },
+        parameters: {
+          app_id: { type: "string", in: "path", required: true, description: "OHOS app UUID." },
+          build_id: { type: "string", in: "path", required: true, description: "Hands build UUID." },
+        },
+      },
+      {
         name: "start-agc-invitation-test",
         description: "Upload a signed OHOS App Pack from a Hands build and wait for Huawei package processing. Creates an unsubmitted draft version; it does not enter testing or submit review.",
         endpoint: { method: "POST", path: "/api/apps/{app_id}/builds/{build_id}/agc-invitation-test" },
