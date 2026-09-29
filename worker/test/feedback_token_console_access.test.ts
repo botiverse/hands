@@ -209,7 +209,7 @@ describe("the tested wiring is the shipped wiring", () => {
       for (const m of indexSource.matchAll(REG_MARKERS)) {
         if (m.index === undefined || m.index >= lit) break;
         start = m.index;
-        matchedVerb = (m[2] ?? m[3]).toLowerCase();
+        matchedVerb = (m[2] ?? m[3] ?? "").toLowerCase();
       }
       if (start === -1 || matchedVerb !== verb) continue;
       // end at the next marker after the literal
