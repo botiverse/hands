@@ -1,24 +1,24 @@
 .hands-feedback-root {
   /* Theme aliases: --hf-* is the stable public surface. The right-hand names
-     must exist under every raft-ui theme variant (incl. elegant dark) —
-     historical aliases like --layer-primary/--primary/--danger never existed
-     there and silently fell back to light-theme literals. */
-  --hf-bg: var(--layer-page, #fff);
-  --hf-surface: var(--layer-panel, var(--layer-muted, #f8fafc));
-  --hf-border: var(--line-subtle, #d9e0e8);
+     must exist under every raft-ui 0.5.x theme variant (incl. elegant dark) —
+     historical aliases like --layer-primary/--foreground-primary never existed
+     at all, so Elegant Dark silently fell back to light-theme literals. */
+  --hf-bg: var(--layer-canvas, #fff);
+  --hf-surface: var(--layer-panel, #f8fafc);
+  --hf-border: var(--line-muted, #d9e0e8);
   --hf-border-strong: var(--line-strong, #111827);
   --hf-text: var(--foreground, #111827);
   --hf-muted: var(--foreground-muted, #64748b);
-  --hf-accent: var(--accent-500, var(--color-primary-500, #2563eb));
-  --hf-danger: var(--state-danger-base, #b91c1c);
-  /* Status badge surfaces; hosts may recolor per-status. Neutral defaults —
-     [data-theme="brutal"] below overrides with the brutal palette; elegant
-     keeps the state scales. (--color-brutal-* exist globally in @theme, so
-     var() fallbacks cannot discriminate between themes.) */
-  --hf-status-open-bg: var(--state-warning-base, #f59e0b);
-  --hf-status-in-progress-bg: var(--state-info-base, #3b82f6);
-  --hf-status-resolved-bg: var(--state-success-base, #16a34a);
-  --hf-status-closed-bg: var(--layer-muted, #9ca3af);
+  --hf-accent: var(--accent-500, var(--accent-soft, #2563eb));
+  --hf-danger: var(--danger, #b91c1c);
+  /* Status badge surfaces; hosts may recolor per-status. Defaults track the
+     badge variant palette in elegant; [data-theme="brutal"] below restores the
+     brutal colors. (--color-brutal-* exist globally in @theme, so var()
+     fallbacks alone cannot discriminate between themes.) */
+  --hf-status-open-bg: var(--color-warning, #f59e0b);
+  --hf-status-in-progress-bg: var(--color-info, #3b82f6);
+  --hf-status-resolved-bg: var(--color-success, #16a34a);
+  --hf-status-closed-bg: var(--fill-muted, #9ca3af);
   --hf-content-width: 860px;
   background: var(--hf-bg);
   box-sizing: border-box;
@@ -429,7 +429,7 @@
 .hands-feedback-problem-chip {
   --reference-icon: var(--hf-danger, var(--color-brutal-red));
 
-  background-color: var(--state-danger-lighter, var(--color-brutal-red-200));
+  background-color: var(--danger-muted, var(--color-brutal-red-200));
 }
 
 .hands-feedback-reference-chip-content {

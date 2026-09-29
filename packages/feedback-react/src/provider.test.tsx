@@ -204,7 +204,7 @@ describe("FeedbackProvider", () => {
     );
     expect(css).not.toMatch(/\.hands-feedback-unread-dot\s*\{/);
     expect(css).toMatch(
-      /\.hands-feedback-problem-chip\s*\{[^}]*--reference-icon:\s*var\(--hf-danger[^}]*background-color:\s*var\(--state-danger-lighter/,
+      /\.hands-feedback-problem-chip\s*\{[^}]*--reference-icon:\s*var\(--hf-danger[^}]*background-color:\s*var\(--danger-muted/,
     );
     expect(css).toMatch(
       /\.hands-feedback-reference-chip\s*\{[^}]*font-size:\s*10\.5px[^}]*height:\s*20px[^}]*min-height:\s*20px[^}]*padding:\s*0 6px/,
