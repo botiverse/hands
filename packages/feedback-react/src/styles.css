@@ -11,14 +11,6 @@
   --hf-muted: var(--foreground-muted, #64748b);
   --hf-accent: var(--accent-500, var(--accent-soft, #2563eb));
   --hf-danger: var(--danger, #b91c1c);
-  /* Status badge surfaces; hosts may recolor per-status. Defaults track the
-     badge variant palette in elegant; [data-theme="brutal"] below restores the
-     brutal colors. (--color-brutal-* exist globally in @theme, so var()
-     fallbacks alone cannot discriminate between themes.) */
-  --hf-status-open-bg: var(--color-warning, #f59e0b);
-  --hf-status-in-progress-bg: var(--color-info, #3b82f6);
-  --hf-status-resolved-bg: var(--color-success, #16a34a);
-  --hf-status-closed-bg: var(--fill-muted, #9ca3af);
   --hf-content-width: 860px;
   background: var(--hf-bg);
   box-sizing: border-box;

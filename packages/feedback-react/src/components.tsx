@@ -464,22 +464,18 @@ function FeedbackStatusChip({
   const config = {
     open: {
       Icon: Circle,
-      backgroundColor: "var(--hf-status-open-bg)",
       variant: "warning" as const,
     },
     in_progress: {
       Icon: Play,
-      backgroundColor: "var(--hf-status-in-progress-bg)",
       variant: "information" as const,
     },
     resolved: {
       Icon: CheckCircle,
-      backgroundColor: "var(--hf-status-resolved-bg)",
       variant: "success" as const,
     },
     closed: {
       Icon: Ban,
-      backgroundColor: "var(--hf-status-closed-bg)",
       variant: "muted" as const,
     },
   }[displayStatus];
@@ -491,7 +487,6 @@ function FeedbackStatusChip({
       variant={config.variant}
       data-feedback-status={status}
       data-feedback-display-status={displayStatus}
-      style={{ backgroundColor: config.backgroundColor }}
     >
       <StatusIcon aria-hidden="true" size={10} />
       {feedbackStatusLabel(displayStatus, message)}

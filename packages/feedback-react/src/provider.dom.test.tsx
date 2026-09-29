@@ -522,10 +522,10 @@ describe("FeedbackWorkspace browser behavior", () => {
         slot: badge.dataset.slot,
       })),
     ).toEqual([
-      { backgroundColor: "var(--hf-status-open-bg)", slot: "badge" },
-      { backgroundColor: "var(--hf-status-in-progress-bg)", slot: "badge" },
-      { backgroundColor: "var(--hf-status-resolved-bg)", slot: "badge" },
-      { backgroundColor: "var(--hf-status-closed-bg)", slot: "badge" },
+      { backgroundColor: "", slot: "badge" },
+      { backgroundColor: "", slot: "badge" },
+      { backgroundColor: "", slot: "badge" },
+      { backgroundColor: "", slot: "badge" },
     ]);
     expect(
       Array.from(
@@ -692,9 +692,7 @@ describe("FeedbackWorkspace browser behavior", () => {
       "[data-feedback-status='closed']",
     )!;
     expect(completedStatus.dataset.feedbackDisplayStatus).toBe("resolved");
-    expect(completedStatus.style.backgroundColor).toBe(
-      "var(--hf-status-resolved-bg)",
-    );
+    expect(completedStatus.style.backgroundColor).toBe("");
     expect(completedStatus.textContent).toContain("Resolved");
     expect(completedStatus.querySelector("svg")?.getAttribute("class")).toBe(
       "lucide lucide-circle-check-big",
@@ -719,9 +717,7 @@ describe("FeedbackWorkspace browser behavior", () => {
       "[data-feedback-status='closed']",
     )!;
     expect(noLongerNeededStatus.dataset.feedbackDisplayStatus).toBe("closed");
-    expect(noLongerNeededStatus.style.backgroundColor).toBe(
-      "var(--hf-status-closed-bg)",
-    );
+    expect(noLongerNeededStatus.style.backgroundColor).toBe("");
     expect(noLongerNeededStatus.textContent).toContain("Closed");
     expect(noLongerNeededStatus.querySelector("svg")?.getAttribute("class")).toBe(
       "lucide lucide-ban",
