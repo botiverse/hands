@@ -89,6 +89,7 @@ function ctx(db: unknown, params: Record<string, string>, body: unknown = {}) {
     env: { DB: db, AGC_CRED_ENC_KEY: "k" },
     req: { param: (n: string) => params[n] ?? "", json: async () => body },
     json: (b: unknown, status = 200) => new Response(JSON.stringify(b), { status }),
+    get: (key: string) => (key === "user" ? { id: "u-1", email: "t@example.com" } : undefined),
   } as never;
 }
 
@@ -192,5 +193,42 @@ describe("handleSubmitAgcInvitationTest group selection", () => {
     const f = fakeDb({ ...base, state: "ready", provider_state_json: "{}" });
     const body = await (await routes.handleSubmitAgcInvitationTest(ctx(f.db, { appId: "app-1", submissionId: "sub-1" }, {}))).json() as { group_ids: string[] };
     expect(body.group_ids).toEqual(["g1"]);
+  });
+});
+
+describe("handleStartAgcInvitationTest retry", () => {
+  it("returns the existing submission while it is still in review", async () => {
+    vi.resetModules();
+    vi.doMock("../src/lib/permissions", () => ({ insertAuditLog: async () => {} }));
+    const routes = await import("../src/routes/agc_testing");
+    const existing = { ...base, state: "testing_review", provider_state_json: "{}" };
+    const db = {
+      prepare: (sql: string) => ({
+        bind() { return this; },
+        async first() { return sql.includes("build_assets") ? { r2_key: "k", file_hash: "h", size_bytes: 1, filetype: "app" } : existing; },
+        async run() { throw new Error(`unexpected write: ${sql}`); },
+      }),
+    };
+    const res = await routes.handleStartAgcInvitationTest(ctx(db, { appId: "app-1", buildId: "b-1" }, { package_name: "build.raft.mobile" }));
+    expect(((await res.json()) as { submission: { id: string } }).submission.id).toBe("sub-1");
+  });
+
+  it.each(["failed", "rejected", "stopped"])("supersedes a %s submission without deleting its history", async (state) => {
+    vi.resetModules();
+    vi.doMock("../src/lib/permissions", () => ({ insertAuditLog: async () => {} }));
+    const routes = await import("../src/routes/agc_testing");
+    const writes: string[] = [];
+    const db = {
+      prepare: (sql: string) => ({
+        bind() { return this; },
+        async first() { return sql.includes("build_assets") ? { r2_key: "k", file_hash: "h", size_bytes: 1, filetype: "app" } : { ...base, state, provider_state_json: "{}" }; },
+        async run() { writes.push(sql); return {}; },
+      }),
+    };
+    // No AGC credentials → the new attempt fails fast after claiming the key.
+    await routes.handleStartAgcInvitationTest(ctx(db, { appId: "app-1", buildId: "b-1" }, { package_name: "build.raft.mobile" }));
+    expect(writes.some((w) => w.startsWith("DELETE"))).toBe(false);
+    expect(writes[0]).toMatch(/^UPDATE market_submissions SET idempotency_key=/);
+    expect(writes[1]).toMatch(/^INSERT INTO market_submissions/);
   });
 });

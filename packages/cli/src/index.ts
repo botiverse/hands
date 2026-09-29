@@ -30,6 +30,7 @@ import { registerDeviceGroupCommands } from "./commands/device_groups.js";
 import { registerChannelCommands } from "./commands/channels.js";
 import { registerWebhookCommands } from "./commands/webhooks.js";
 import { registerTestflightCommands } from "./commands/testflight.js";
+import { registerAgcCommands } from "./commands/agc.js";
 import { registerApiCommand } from "./commands/api.js";
 import { getConfig } from "./lib/config.js";
 import { readEnv } from "./lib/env.js";
@@ -80,6 +81,10 @@ Common recipes:
                                                        Tester-shared TestFlight crashes + .ips logs
   hands testflight feedback <app> --build <n>          TestFlight screenshot feedback
   hands testflight close <app> crash|feedback <id>    Close it on Apple's side (deletes in ASC)
+  hands agc upload <app> <build> --package-name <n> --wait
+                                                       OHOS .app → AppGallery invitation-test version
+  hands agc submit <app> <submission> --group <id>    Submit it to Huawei review for a test group
+  hands agc status <app> <submission>                 Huawei review / testing state (refreshed)
   hands logs collect                                  Bundle local CLI logs for a bug report
 
 Every command supports --json for scripts/agents. Full docs:
@@ -116,6 +121,7 @@ registerDeviceGroupCommands(program);
 registerChannelCommands(program);
 registerWebhookCommands(program);
 registerTestflightCommands(program);
+registerAgcCommands(program);
 registerFeedbackCommands(program);
 registerDeployTokenCommands(program);
 registerLogsCommands(program);

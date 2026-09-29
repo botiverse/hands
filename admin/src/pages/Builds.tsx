@@ -238,7 +238,7 @@ function AgcTestingPanel({ appId, build, packageName }: { appId: string; build: 
     <div className="mt-2 pt-2 border-t border-slate-100">
       <div className="flex items-center gap-2 flex-wrap text-xs">
         <span className="badge-gray">AppGallery</span>
-        {!submission || state === "failed" ? (
+        {!submission || state === "failed" || state === "rejected" || state === "stopped" ? (
           <Tooltip>
             <TooltipTrigger
               render={
@@ -248,7 +248,7 @@ function AgcTestingPanel({ appId, build, packageName }: { appId: string; build: 
                   disabled={upload.isPending || build.status !== "succeeded" || !packageName}
                   onClick={() => upload.mutate()}
                 >
-                  {upload.isPending ? "Uploading build…" : state === "failed" ? "Retry build upload" : "Upload build to AppGallery"}
+                  {upload.isPending ? "Uploading build…" : state === "failed" || state === "rejected" || state === "stopped" ? "Upload again" : "Upload build to AppGallery"}
                 </Button>
               }
             />
