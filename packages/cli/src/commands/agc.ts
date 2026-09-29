@@ -23,8 +23,30 @@ type AgcGroup = { groupId: string; groupName?: string | null; addedTestersNum?: 
  * review outcome is open.
  */
 export function registerAgcCommands(program: Command): void {
-  const agc = program.command("agc").description("AppGallery Connect invitation testing for HarmonyOS builds.");
+  const agc = program.command("agc").description("AppGallery Connect packages and invitation testing for HarmonyOS builds.");
   const wantsJson = (opts: { json?: boolean }) => Boolean(opts.json || program.opts<{ json?: boolean }>().json);
+
+  agc
+    .command("upload-market <appIdOrSlug> <buildId>")
+    .description("Upload a signed HarmonyOS .app to AppGallery formal package management; does not submit review.")
+    .requiredOption("--package-name <name>", "HarmonyOS bundle name.")
+    .option("--json", "Output JSON.", false)
+    .action(async (app: string, buildId: string, opts: { packageName: string; json?: boolean }) => {
+      const appId = await resolveAppId(app);
+      const result = await apiRequest(`/api/apps/${appId}/builds/${encodeURIComponent(buildId)}/agc-market-package`, {
+        method: "POST", body: { package_name: opts.packageName },
+      });
+      console.log(JSON.stringify(result, null, 2));
+      if (!wantsJson(opts)) console.log(`Check parsing: hands agc market-status ${app} ${buildId}`);
+    });
+  agc
+    .command("market-status <appIdOrSlug> <buildId>")
+    .description("Refresh formal package parsing status (ready means selectable, not published).")
+    .option("--json", "Output JSON.", false)
+    .action(async (app: string, buildId: string) => {
+      const appId = await resolveAppId(app);
+      console.log(JSON.stringify(await apiRequest(`/api/apps/${appId}/builds/${encodeURIComponent(buildId)}/agc-market-package`), null, 2));
+    });
 
   agc
     .command("groups <appIdOrSlug>")

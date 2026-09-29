@@ -1,3 +1,4 @@
+import { handleUploadAgcMarketPackage, handleGetAgcMarketPackage } from "./routes/agc_market_packages";
 /**
  * quiver Worker entry
  *
@@ -1319,6 +1320,8 @@ bindAdmin("put", "/api/apps/:appId/agc-credentials", requireAppRole("admin"), ha
 bindAdmin("delete", "/api/apps/:appId/agc-credentials", requireAppRole("admin"), handleDeleteAgcCredentials);
 bindAdmin("post", "/api/apps/:appId/agc-credentials/verify", requireAppRole("admin"), handleVerifyAgcCredentials);
 bindAdmin("get", "/api/apps/:appId/agc-test-groups", requireAppRole("admin"), handleListAgcTestGroups);
+bindAdmin("post", "/api/apps/:appId/builds/:buildId/agc-market-package", requireAppRole("admin"), handleUploadAgcMarketPackage);
+bindAdmin("get", "/api/apps/:appId/builds/:buildId/agc-market-package", requireAppRole("admin"), handleGetAgcMarketPackage);
 bindAdmin("get", "/api/apps/:appId/builds/:buildId/agc-invitation-test", requireAppRole("admin"), handleGetAgcBuildSubmission);
 bindAdmin("post", "/api/apps/:appId/builds/:buildId/agc-invitation-test", requireAppRole("admin"), handleStartAgcInvitationTest);
 bindAdmin("get", "/api/apps/:appId/agc-submissions/:submissionId", requireAppRole("admin"), handleGetAgcSubmission);

@@ -9,7 +9,7 @@ type Submission = { id: string; app_id: string; build_id: string; state: string;
 function publicSubmission(sub: Submission) {
   return { ...sub, provider_state: JSON.parse(sub.provider_state_json || "{}"), provider_state_json: undefined };
 }
-async function auth(c: AdminContext) {
+export async function resolveAgcAuth(c: AdminContext) {
   if (!c.env.AGC_CRED_ENC_KEY) throw new Error("server is missing AGC_CRED_ENC_KEY");
   const credential = await getAgcCredentials(c.env.DB, c.env.AGC_CRED_ENC_KEY, c.req.param("appId") ?? "");
   if (!credential) throw new Error("no AGC credentials configured for this app");
@@ -77,7 +77,7 @@ export async function handleAppGalleryReview(c: AdminContext) {
       });
     }
 
-    const agcAuth = await auth(c);
+    const agcAuth = await resolveAgcAuth(c);
     const externalAppId = await resolveAgcAppId(agcAuth, packageName);
     const review = await getAgcReviewStatus(agcAuth, externalAppId);
     return c.json({
@@ -135,7 +135,7 @@ export async function handleStartAgcInvitationTest(c: AdminContext) {
   await c.env.DB.prepare(`INSERT INTO market_submissions (id,app_id,build_id,provider,lane,state,idempotency_key,created_by_actor,created_at,updated_at)
     VALUES (?1,?2,?3,'appgallery','invitation_test','uploading',?4,?5,?6,?6)`).bind(id, appId, buildId, `agc-invitation:${buildId}`, currentActor(c), now).run();
   try {
-    const agcAuth = await auth(c); const externalAppId = await resolveAgcAppId(agcAuth, packageName);
+    const agcAuth = await resolveAgcAuth(c); const externalAppId = await resolveAgcAppId(agcAuth, packageName);
     const versionId = await createAgcInvitationVersion(agcAuth, externalAppId, description, body.onshelf_self_detect === true);
     const fileName = `${packageName}-${buildId}.app`;
     const upload = await requestAgcUpload(agcAuth, externalAppId, fileName, row.file_hash, row.size_bytes);
@@ -169,7 +169,7 @@ export async function handleGetAgcSubmission(c: AdminContext) {
   let syncError: string | null = null;
   try {
     if (sub.state === "processing") {
-      const agcAuth = await auth(c); const status = await getAgcCompileStatus(agcAuth, sub.external_app_id, sub.external_package_id);
+      const agcAuth = await resolveAgcAuth(c); const status = await getAgcCompileStatus(agcAuth, sub.external_app_id, sub.external_package_id);
       const compile = status ? Number(status.successStatus) : NaN;
       if (compile === AGC_PACKAGE_OK) {
         await bindAgcTestPackage(agcAuth, sub.external_app_id, sub.external_version_id, sub.external_package_id);
@@ -185,7 +185,7 @@ export async function handleGetAgcSubmission(c: AdminContext) {
       // After submit Hands used to stop looking, so every invitation test sat
       // in `testing_review` regardless of what Huawei decided. Re-read the
       // test version and record a transition only when the state changes.
-      const agcAuth = await auth(c);
+      const agcAuth = await resolveAgcAuth(c);
       const remote = await getAgcTestVersionStatus(agcAuth, sub.external_app_id, sub.external_version_id);
       const next = mapAgcTestReleaseState(remote.release_state);
       const previous = JSON.parse(sub.provider_state_json || "{}") as Record<string, unknown>;
@@ -210,7 +210,7 @@ export async function handleListAgcTestGroups(c: AdminContext) {
     "SELECT bundle_id FROM channels WHERE app_id = ?1 AND slug = 'main' LIMIT 1",
   ).bind(appId).first<{ bundle_id: string | null }>();
   const packageName = (packageRow?.bundle_id ?? "").trim() || "build.raft.mobile";
-  const agcAuth = await auth(c);
+  const agcAuth = await resolveAgcAuth(c);
   const externalAppId = await resolveAgcAppId(agcAuth, packageName);
   const groups = await listAgcTestGroups(agcAuth, externalAppId);
   return c.json({ agc_app_id: externalAppId, groups });
@@ -234,7 +234,7 @@ export async function handleSubmitAgcInvitationTest(c: AdminContext) {
     }
   }
 
-  const agcAuth = await auth(c);
+  const agcAuth = await resolveAgcAuth(c);
   let effectiveGroupIds = requestedGroupIds;
   if (effectiveGroupIds.length === 0) {
     // Only default when there is exactly one group. With several groups the
