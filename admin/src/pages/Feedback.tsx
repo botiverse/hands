@@ -245,6 +245,11 @@ export function AppFeedback({ appId }: { appId: string }) {
                     <span className={`rounded-sm px-1.5 py-0.5 text-xs font-medium mr-2 ${KIND_STYLES[t.kind]}`}>
                       {t.kind}
                     </span>
+                    {t.crash_type === "anr" && (
+                      <span className="rounded-sm px-1.5 py-0.5 text-xs font-medium mr-2 bg-orange-100 text-orange-800">
+                        ANR
+                      </span>
+                    )}
                     <span className="align-middle">{t.message.slice(0, 80)}{t.message.length > 80 ? "…" : ""}</span>
                   </td>
                   <td className="py-2 pr-3">
