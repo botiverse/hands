@@ -1,0 +1,105 @@
+name: Publish Hands Feedback React
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Feedback React version to publish. Defaults to packages/feedback-react/package.json."
+        required: false
+        type: string
+      dry_run:
+        description: "Run npm publish --dry-run only."
+        required: true
+        type: boolean
+        default: false
+  push:
+    tags:
+      - "feedback-react-v*"
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
+        with:
+          version: 9.12.0
+
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: "22"
+          cache: "pnpm"
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Use npm with trusted publishing support
+        run: |
+          npm install -g npm@^11.5.1
+          npm --version
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Resolve version
+        id: version
+        shell: bash
+        env:
+          REQUESTED_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          package_version="$(node -p "require('./packages/feedback-react/package.json').version")"
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            requested="${GITHUB_REF_NAME#feedback-react-v}"
+          elif [[ -n "${REQUESTED_VERSION:-}" ]]; then
+            requested="${REQUESTED_VERSION}"
+          else
+            requested="${package_version}"
+          fi
+          if [[ "${requested}" != "${package_version}" ]]; then
+            echo "Requested version ${requested} does not match packages/feedback-react/package.json ${package_version}" >&2
+            exit 1
+          fi
+          echo "value=${package_version}" >> "$GITHUB_OUTPUT"
+
+      - name: Test and build Feedback React
+        run: |
+          pnpm --filter @botiverse/hands-feedback-react test
+          pnpm --filter @botiverse/hands-feedback-react build
+
+      - name: Pack check
+        working-directory: packages/feedback-react
+        run: npm pack --dry-run
+
+      - name: Publish dry run
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run }}
+        working-directory: packages/feedback-react
+        run: npm publish --access public --dry-run
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Publish to npm
+        if: ${{ github.event_name != 'workflow_dispatch' || !inputs.dry_run }}
+        working-directory: packages/feedback-react
+        run: npm publish --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Summary
+        shell: bash
+        env:
+          DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run }}
+          RESOLVED_VERSION: ${{ steps.version.outputs.value }}
+        run: |
+          {
+            echo "### Hands Feedback React publish"
+            echo
+            echo "| Field | Value |"
+            echo "|---|---|"
+            echo "| Package | \`@botiverse/hands-feedback-react\` |"
+            echo "| Version | \`${RESOLVED_VERSION}\` |"
+            echo "| Dry run | \`${DRY_RUN}\` |"
+          } >> "$GITHUB_STEP_SUMMARY"

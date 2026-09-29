@@ -1,11 +1,15 @@
 .hands-feedback-root {
-  --hf-bg: var(--layer-primary, #fff);
-  --hf-surface: var(--layer-secondary, #f8fafc);
-  --hf-border: var(--line-subtle, #d9e0e8);
+  /* Theme aliases: --hf-* is the stable public surface. The right-hand names
+     must exist under every raft-ui 0.5.x theme variant (incl. elegant dark) —
+     historical aliases like --layer-primary/--foreground-primary never existed
+     at all, so Elegant Dark silently fell back to light-theme literals. */
+  --hf-bg: var(--layer-canvas, #fff);
+  --hf-surface: var(--layer-panel, #f8fafc);
+  --hf-border: var(--line-muted, #d9e0e8);
   --hf-border-strong: var(--line-strong, #111827);
-  --hf-text: var(--foreground-primary, #111827);
+  --hf-text: var(--foreground, #111827);
   --hf-muted: var(--foreground-muted, #64748b);
-  --hf-accent: var(--primary, #2563eb);
+  --hf-accent: var(--accent-500, var(--accent-soft, #2563eb));
   --hf-danger: var(--danger, #b91c1c);
   --hf-content-width: 860px;
   background: var(--hf-bg);
@@ -405,6 +409,15 @@
   margin-top: 4px;
 }
 
+/* These chips ride raft-ui inline-reference recipes that use items-baseline;
+   inside the SDK's fixed 20px pills content must center, not sit on a text
+   baseline. */
+.hands-feedback-reference-chip,
+.hands-feedback-close-main,
+.hands-feedback-close-caret {
+  align-items: center;
+}
+
 .hands-feedback-reference-chip {
   font-size: 10.5px;
   font-weight: 700;
@@ -415,7 +428,7 @@
 }
 
 .hands-feedback-problem-chip {
-  --reference-icon: var(--danger, var(--color-brutal-red));
+  --reference-icon: var(--hf-danger, var(--color-brutal-red));
 
   background-color: var(--danger-muted, var(--color-brutal-red-200));
 }
