@@ -4,6 +4,12 @@ export type OpenApiRegistry = {
   registerPath: (route: ReturnType<typeof createRoute>) => void;
 };
 
+// A route definition usable both as documentation and as a live route binding:
+// the same RouteConfig is what `OpenAPIHono.openapi()` registers, so the spec
+// and the executing route cannot drift apart.
+export type RouteConfigDef = Parameters<typeof createRoute>[0];
+export type RouteConfigList = readonly RouteConfigDef[];
+
 export const AppIdParam = z.object({
   appId: z.string().openapi({
     param: { name: "appId", in: "path" },
@@ -216,6 +222,10 @@ export const success = (description: string, schema: z.ZodType = GenericObject) 
 
 export const noContent = (description: string) => ({ description });
 
-export function register(registry: OpenApiRegistry, config: Parameters<typeof createRoute>[0]) {
+export function route(config: RouteConfigDef): RouteConfigDef {
+  return config;
+}
+
+export function register(registry: OpenApiRegistry, config: RouteConfigDef) {
   registry.registerPath(createRoute(config));
 }

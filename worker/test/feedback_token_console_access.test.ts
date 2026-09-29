@@ -194,12 +194,30 @@ describe("the tested wiring is the shipped wiring", () => {
   // Scan registrations of THIS verb and take the one whose path matches. Looking
   // up the path first is wrong: GET and PATCH share "/…/feedback/:ticketId", so
   // indexOf lands on whichever appears first in the file.
+  // Registrations may be written as `admin.<verb>(` (raw Hono) or
+  // `bindAdmin("<verb>",` (OpenAPI-bound dispatcher); both are the real wiring.
+  // Anchor on the route literal, then walk BACK to the registration marker —
+  // scanning forward from a marker can land on a block that merely mentions
+  // the path (e.g. a GET registration inside a PATCH block), which was exactly
+  // the false positive this guard produced under the dispatcher form.
+  const REG_MARKERS = /(admin\.(get|post|put|patch|delete)\(|bindAdmin\("(get|post|put|patch|delete)"\s*,)/g;
   const writeRegistration = (verb: string, route: string) => {
-    const marker = "admin." + verb + "(";
-    for (let at = indexSource.indexOf(marker); at !== -1; at = indexSource.indexOf(marker, at + 1)) {
-      const next = indexSource.indexOf("admin.", at + marker.length);
-      const block = indexSource.slice(at, next === -1 ? indexSource.length : next);
-      if (block.includes('"' + route + '"')) return block;
+    const literal = '"' + route + '"';
+    for (let lit = indexSource.indexOf(literal); lit !== -1; lit = indexSource.indexOf(literal, lit + 1)) {
+      // nearest registration marker before this literal
+      let start = -1, matchedVerb = "";
+      for (const m of indexSource.matchAll(REG_MARKERS)) {
+        if (m.index === undefined || m.index >= lit) break;
+        start = m.index;
+        matchedVerb = (m[2] ?? m[3]).toLowerCase();
+      }
+      if (start === -1 || matchedVerb !== verb) continue;
+      // end at the next marker after the literal
+      let end = indexSource.length;
+      for (const m of indexSource.matchAll(REG_MARKERS)) {
+        if (m.index !== undefined && m.index > lit) { end = m.index; break; }
+      }
+      return indexSource.slice(start, end);
     }
     throw new Error(`no ${verb.toUpperCase()} registration for ${route}`);
   };

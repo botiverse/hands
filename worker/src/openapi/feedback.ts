@@ -9,9 +9,9 @@ import {
   error,
   json,
   multipart,
-  register,
   success,
-  type OpenApiRegistry,
+  type RouteConfigDef,
+  type RouteConfigList,
 } from "./common";
 
 const AppTicketParams = AppIdParam.merge(TicketIdParam);
@@ -33,9 +33,13 @@ const FeedbackUpdateInput = z
   .catchall(z.unknown())
   .openapi("FeedbackUpdateInput");
 
+// The staff comment body the handler actually reads: `body` is the text and
+// `internal` selects a staff-only note. The spec previously advertised
+// `{message}` — field-name drift that also hid `internal` from the docs.
 const FeedbackCommentInput = z
   .object({
-    message: z.string().min(1),
+    body: z.string().min(1),
+    internal: z.boolean().optional(),
   })
   .openapi("FeedbackCommentInput");
 
@@ -49,133 +53,72 @@ const ReporterCommentInput = z.object({
 }).openapi("ReporterFeedbackCommentInput");
 
 const ReporterCloseInput = z.object({
-  reason: z.enum(["completed", "no_longer_needed"]),
-}).strict().openapi("ReporterFeedbackCloseInput");
+  closure_reason: z.enum(["no_longer_needed", "duplicate"]).optional(),
+  submission_id: z.string().uuid().optional(),
+}).openapi("ReporterFeedbackCloseInput");
 
-const ReporterSessionInput = z.object({
-  scopes: z.array(z.enum(["feedback:read", "feedback:comment"]))
-    .min(1),
-}).strict().openapi("ReporterSessionInput");
-
-const ReporterSessionOutput = z.object({
-  session_token: z.string(),
-  expires_at: z.number().int(),
-  reporter_integration_id: z.string().uuid(),
-  scopes: z.array(z.string()),
-}).openapi("ReporterSessionOutput");
-
-const ReporterRouteInput = z.object({
-  route_subject: z.string().regex(/^rfr_v1_[A-Za-z0-9_-]+$/).max(160),
-}).strict().openapi("ReporterRouteSubjectInput");
-
-const ReporterWebhookParams = AppIdParam.extend({
-  integrationId: z.string().min(1),
-  webhookId: z.string().min(1),
-});
-
-export function registerFeedbackRoutes(registry: OpenApiRegistry) {
-  register(registry, {
-    method: "post",
-    path: "/api/apps/{appId}/reporter-feedback/session",
-    tags: ["Reporter Feedback"],
-    summary: "Mint a short-lived server-only reporter session",
-    description: "Disabled by default. Requires an active feedback-only deploy token; callers must keep the returned session on a trusted server.",
-    security: auth,
-    request: {
-      params: AppIdParam,
-      headers: ReporterHeaders,
-      body: { content: json(ReporterSessionInput), required: true },
-    },
-    responses: {
-      201: success("Short-lived reporter session; never expose it to a browser.", ReporterSessionOutput),
-      400: error("Malformed reporter id, app id, or scope set."),
-      401: error("Missing or invalid deploy token."),
-      403: error("Deploy token is not an active reporter integration grant for every requested scope."),
-      404: error("Reporter sessions are disabled."),
-      429: error("Reporter session mint rate limit exceeded."),
-      503: error("Reporter session signing or audit configuration is unavailable."),
-    },
-  });
-
-  register(registry, {
-    method: "put",
-    path: "/api/apps/{appId}/reporter-feedback/route-subject",
-    tags: ["Reporter Feedback"],
-    summary: "Bind an immutable opaque v1 reporter route subject",
-    security: auth,
-    request: {
-      params: AppIdParam,
-      headers: ReporterHeaders,
-      body: { content: json(ReporterRouteInput), required: true },
-    },
-    responses: {
-      200: success("Exact idempotent replay; subject is not returned.", GenericObject),
-      201: success("Route binding created; subject is not returned.", GenericObject),
-      400: error("Malformed route subject."),
-      401: error("Missing or invalid bearer token."),
-      403: error("Invalid reporter integration grant."),
-      409: error("A different immutable v1 subject already exists."),
-    },
-  });
-
-  register(registry, {
-    method: "put",
-    path: "/api/apps/{appId}/reporter-integrations/{integrationId}/webhooks/{webhookId}",
-    tags: ["Reporter Feedback"],
-    summary: "Bind one active webhook as the exact reporter-integration subscriber",
-    security: auth,
-    request: { params: ReporterWebhookParams },
-    responses: {
-      200: success("Exact idempotent replay.", GenericObject),
-      201: success("Dedicated reporter webhook subscription created.", GenericObject),
-      403: error("Current principal cannot administer this app."),
-      409: error("App, integration, or webhook is inactive or mismatched."),
-    },
-  });
-
-  register(registry, {
-    method: "get",
-    path: "/api/apps/{appId}/reporter-feedback-metadata",
-    tags: ["Reporter Feedback"],
-    summary: "Read safe route, grant, audit, and delivery metadata",
-    security: auth,
-    request: {
-      params: AppIdParam,
-      query: z.object({
-        reporter_integration_id: z.string().min(1),
-        reporter_id: z.string().min(16).max(200),
-        token_id: z.string().min(1),
-      }),
-    },
-    responses: {
-      200: success("Safe metadata; never returns route subject, reporter id, body, or token secret.", GenericObject),
-      400: error("Required coordinate or token id is missing."),
-      403: error("Current principal cannot view this app."),
-      503: error("Reporter audit metadata is not configured."),
-    },
-  });
-
-  register(registry, {
+export const feedbackRoutes: Record<string, RouteConfigDef> = {
+  listReporter: {
     method: "get",
     path: "/api/apps/{appId}/reporter-feedback",
     tags: ["Reporter Feedback"],
-    summary: "List feedback owned by the reporter integration",
+    summary: "List the authenticated reporter's feedback tickets",
     security: auth,
     request: {
       params: AppIdParam,
       headers: ReporterHeaders,
-      query: z.object({ limit: z.coerce.number().int().min(1).max(50).default(20), cursor: z.string().optional() }),
+      query: z.object({
+        limit: z.coerce.number().int().min(1).max(100).optional(),
+        cursor: z.string().optional(),
+      }),
     },
     responses: {
-      200: success("Reporter-owned feedback list with authoritative unread totals.", GenericObject),
-      400: error("Missing or malformed reporter id or cursor."),
+      200: success("Reporter-owned feedback ticket list.", GenericObject),
+      400: error("Missing or malformed reporter id."),
       401: error("Missing or invalid bearer token."),
-      403: error("Bearer grant is not an active reporter integration grant."),
+      403: error("Invalid reporter integration grant."),
       429: error("Reporter rate limit exceeded."),
     },
-  });
-
-  register(registry, {
+  },
+  mintReporterSession: {
+    method: "post",
+    path: "/api/apps/{appId}/reporter-feedback/session",
+    tags: ["Reporter Feedback"],
+    summary: "Mint a reporter session for an integration",
+    security: auth,
+    request: {
+      params: AppIdParam,
+      body: { content: json(GenericObject), required: true },
+    },
+    responses: {
+      201: success("Reporter session minted.", GenericObject),
+      400: error("Invalid reporter session request."),
+      401: error("Missing or invalid bearer token."),
+      403: error("Invalid reporter integration grant."),
+      429: error("Reporter session mint rate limit exceeded."),
+    },
+  },
+  bindReporterRouteSubject: {
+    method: "put",
+    path: "/api/apps/{appId}/reporter-feedback/route-subject",
+    tags: ["Reporter Feedback"],
+    summary: "Bind the reporter route subject",
+    security: auth,
+    request: {
+      params: AppIdParam,
+      headers: ReporterHeaders,
+      body: { content: json(GenericObject), required: true },
+    },
+    responses: {
+      200: success("Reporter route subject bound.", GenericObject),
+      400: error("Invalid route subject payload."),
+      401: error("Missing or invalid bearer token."),
+      403: error("Invalid reporter integration grant."),
+      404: error("Reporter route subject not found."),
+      429: error("Reporter rate limit exceeded."),
+    },
+  },
+  getReporter: {
     method: "get",
     path: "/api/apps/{appId}/reporter-feedback/{ticketId}",
     tags: ["Reporter Feedback"],
@@ -197,9 +140,8 @@ export function registerFeedbackRoutes(registry: OpenApiRegistry) {
       404: error("Ticket is not owned by this reporter integration."),
       429: error("Reporter rate limit exceeded."),
     },
-  });
-
-  register(registry, {
+  },
+  addReporterComment: {
     method: "post",
     path: "/api/apps/{appId}/reporter-feedback/{ticketId}/comments",
     tags: ["Reporter Feedback"],
@@ -223,9 +165,8 @@ export function registerFeedbackRoutes(registry: OpenApiRegistry) {
       409: error("Submission id was already used with a different body or attachment set."),
       429: error("Reporter rate limit exceeded."),
     },
-  });
-
-  register(registry, {
+  },
+  closeReporter: {
     method: "post",
     path: "/api/apps/{appId}/reporter-feedback/{ticketId}/close",
     tags: ["Reporter Feedback"],
@@ -246,9 +187,8 @@ export function registerFeedbackRoutes(registry: OpenApiRegistry) {
       409: error("Ticket changed concurrently; retry."),
       429: error("Reporter rate limit exceeded."),
     },
-  });
-
-  register(registry, {
+  },
+  downloadReporterAttachment: {
     method: "get",
     path: "/api/apps/{appId}/reporter-feedback/{ticketId}/attachments/{attachmentId}",
     tags: ["Reporter Feedback"],
@@ -263,9 +203,8 @@ export function registerFeedbackRoutes(registry: OpenApiRegistry) {
       404: error("Attachment is not reporter-visible or not owned."),
       429: error("Reporter rate limit exceeded."),
     },
-  });
-
-  register(registry, {
+  },
+  listFeedback: {
     method: "get",
     path: "/api/apps/{appId}/feedback",
     tags: ["Feedback"],
@@ -284,9 +223,8 @@ export function registerFeedbackRoutes(registry: OpenApiRegistry) {
       200: success("Feedback ticket list.", z.object({ tickets: z.array(GenericObject) }).catchall(z.unknown())),
       403: error("Current principal cannot view feedback."),
     },
-  });
-
-  register(registry, {
+  },
+  listMaterialDelta: {
     method: "get",
     path: "/api/apps/{appId}/feedback/material-delta",
     tags: ["Feedback"],
@@ -312,9 +250,8 @@ export function registerFeedbackRoutes(registry: OpenApiRegistry) {
       400: error("Invalid material cursor or limit."),
       403: error("Current principal cannot view feedback."),
     },
-  });
-
-  register(registry, {
+  },
+  feedbackStats: {
     method: "get",
     path: "/api/apps/{appId}/feedback/stats",
     tags: ["Feedback"],
@@ -325,9 +262,8 @@ export function registerFeedbackRoutes(registry: OpenApiRegistry) {
       200: success("Feedback stats.", GenericObject),
       403: error("Current principal cannot view feedback stats."),
     },
-  });
-
-  register(registry, {
+  },
+  listCrashGroups: {
     method: "get",
     path: "/api/apps/{appId}/feedback/crash-groups",
     tags: ["Feedback"],
@@ -344,9 +280,8 @@ export function registerFeedbackRoutes(registry: OpenApiRegistry) {
       200: success("Crash group list.", z.object({ groups: z.array(GenericObject) }).catchall(z.unknown())),
       403: error("Current principal cannot view crash groups."),
     },
-  });
-
-  register(registry, {
+  },
+  getFeedback: {
     method: "get",
     path: "/api/apps/{appId}/feedback/{ticketId}",
     tags: ["Feedback"],
@@ -358,9 +293,8 @@ export function registerFeedbackRoutes(registry: OpenApiRegistry) {
       403: error("Current principal cannot view feedback ticket."),
       404: error("Feedback ticket was not found."),
     },
-  });
-
-  register(registry, {
+  },
+  updateFeedback: {
     method: "patch",
     path: "/api/apps/{appId}/feedback/{ticketId}",
     tags: ["Feedback"],
@@ -376,9 +310,8 @@ export function registerFeedbackRoutes(registry: OpenApiRegistry) {
       403: error("Current principal cannot update feedback ticket."),
       404: error("Feedback ticket was not found."),
     },
-  });
-
-  register(registry, {
+  },
+  addFeedbackComment: {
     method: "post",
     path: "/api/apps/{appId}/feedback/{ticketId}/comments",
     tags: ["Feedback"],
@@ -394,9 +327,8 @@ export function registerFeedbackRoutes(registry: OpenApiRegistry) {
       403: error("Current principal cannot comment on feedback ticket."),
       404: error("Feedback ticket was not found."),
     },
-  });
-
-  register(registry, {
+  },
+  downloadFeedbackAttachment: {
     method: "get",
     path: "/api/apps/{appId}/feedback/{ticketId}/attachments/{attachmentId}",
     tags: ["Feedback"],
@@ -408,5 +340,5 @@ export function registerFeedbackRoutes(registry: OpenApiRegistry) {
       403: error("Current principal cannot download feedback attachment."),
       404: error("Feedback attachment was not found."),
     },
-  });
-}
+  },
+};

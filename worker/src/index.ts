@@ -12,6 +12,7 @@
 
 import { Container, getRandom } from "@cloudflare/containers";
 import { Hono } from "hono";
+import { OpenAPIHono } from "@hono/zod-openapi";
 import type { Context } from "hono";
 import { cors } from "hono/cors";
 import { publicDocAssetPaths } from "./lib/public_docs";
@@ -308,6 +309,76 @@ import {
   requireOrgRole,
 } from "./lib/permissions";
 import { openApiDocument } from "./openapi";
+import { feedbackRoutes } from "./openapi/feedback";
+import { registerAppRoutes } from "./openapi/apps";
+import { registerAndroidDistributionRoutes } from "./openapi/android_distribution";
+import { registerAuthRoutes } from "./openapi/auth";
+import { registerBuildRoutes } from "./openapi/builds";
+import { registerOrgRoutes } from "./openapi/orgs";
+import { registerPublicRoutes } from "./openapi/public";
+import { registerReleaseRoutes } from "./openapi/releases";
+import { registerSettingsRoutes } from "./openapi/settings";
+import type { RouteConfigDef } from "./openapi/common";
+
+// Single source of truth for request schemas: every documented route is bound
+// through .openapi() so the handler can never drift from the spec again.
+// Index keyed "METHOD {openapi-path}"; register*() producers keep loop
+// generation, so paths only exist at runtime — this map is built here once.
+const specIndex = new Map<string, RouteConfigDef>();
+for (const cfg of [
+  ...Object.values(feedbackRoutes),
+  ...registerAuthRoutes(),
+  ...registerPublicRoutes(),
+  ...registerAppRoutes(),
+  ...registerAndroidDistributionRoutes(),
+  ...registerBuildRoutes(),
+  ...registerReleaseRoutes(),
+  ...registerOrgRoutes(),
+  ...registerSettingsRoutes(),
+]) {
+  specIndex.set(`${cfg.method.toUpperCase()} ${cfg.path}`, cfg);
+}
+
+// Look up a RouteConfig from a named domain map; throws at startup if the
+// (method, path) isn't documented, so a spec↔route drift fails fast here
+// instead of silently serving an unvalidated route.
+const openapiLookup = (map: Record<string, RouteConfigDef>, key: string): RouteConfigDef => {
+  const cfg = map[key];
+  if (!cfg) throw new Error(`openapi route missing: ${key}`);
+  return cfg;
+};
+
+const honoPathToSpecPath = (p: string) => p.replace(/:([A-Za-z0-9_]+)(\{[^}]*\})?/g, "{$1}");
+
+// Routes whose request body isn't JSON (file uploads, streams, multipart)
+// must stay raw — the zod-openapi validator would otherwise reject them.
+const isJsonBoundRoute = (cfg: RouteConfigDef): boolean => {
+  const content = cfg.request?.body?.content as Record<string, unknown> | undefined;
+  if (!content) return true;
+  return Object.keys(content).every((k) => k === "application/json" || k.endsWith("+json"));
+};
+
+// Route/middleware signatures differ across Hono generics; the binding layer
+// accepts both and only preserves ordering.
+type HandlerOrMw = (c: any, next?: any) => unknown;
+const bindRoute = (
+  target: any,
+  method: string,
+  path: string,
+  handlers: HandlerOrMw[],
+) => {
+  const cfg = specIndex.get(`${method.toUpperCase()} ${honoPathToSpecPath(path)}`);
+  if (cfg && isJsonBoundRoute(cfg)) {
+    const mw = handlers.slice(0, -1);
+    target.openapi({ ...cfg, middleware: mw }, handlers[handlers.length - 1]);
+  } else {
+    target[method](path, ...handlers);
+  }
+};
+const bindApp = (method: string, path: string, ...handlers: HandlerOrMw[]) =>
+  bindRoute(app, method, path, handlers);
+const bindAdmin = (method: string, path: string, ...handlers: HandlerOrMw[]) =>
+  bindRoute(admin, method, path, handlers);
 import {
   httpsRedirectUrl,
   requestOrigin,
@@ -462,7 +533,22 @@ function parseBadgingAndCerts(
 
 // ---------- Hono app ----------
 
-const app = new Hono<{ Bindings: Env }>();
+const app = new OpenAPIHono<{ Bindings: Env }>({
+  // Validation failures keep our plain `{error}` shape rather than zod-openapi's
+  // default {success,error:{issues}} so callers that already parse `error`
+  // see a consistent payload.
+  defaultHook: (result, c) => {
+    if (!result.success) {
+      // ZodError#message is a serialized JSON array of issues; surface a
+      // human-readable path:message summary instead.
+      const detail = result.error.issues
+        .slice(0, 5)
+        .map((i) => `${i.path.join(".") || "body"}: ${i.message}`)
+        .join("; ");
+      return c.json({ error: "invalid request", detail }, 400);
+    }
+  },
+});
 
 app.use("*", async (c, next) => {
   const redirectUrl = httpsRedirectUrl(c);
@@ -510,9 +596,9 @@ app.use(
 );
 
 // Public — health check (no auth)
-app.get("/health", handleHealth);
-app.get("/.well-known/raft-agent-manifest.json", handleAgentManifest);
-app.get("/openapi.json", (c) => c.json({
+bindApp("get", "/health", handleHealth);
+bindApp("get", "/.well-known/raft-agent-manifest.json", handleAgentManifest);
+bindApp("get", "/openapi.json", (c) => c.json({
   ...openApiDocument,
   servers: [
     {
@@ -525,7 +611,7 @@ app.get("/openapi.json", (c) => c.json({
     },
   ],
 }));
-app.get("/api-docs", (c) => c.html(`<!doctype html>
+bindApp("get", "/api-docs", (c) => c.html(`<!doctype html>
 <html lang="en">
   <head>
     <title>Hands API Reference</title>
@@ -612,27 +698,27 @@ async function handlePublicDocs(c: Context<{ Bindings: Env }>) {
   return c.env.ASSETS.fetch(new Request(new URL(assetPaths.htmlPath, c.req.url), c.req.raw));
 }
 
-app.get("/docs", handlePublicDocs);
-app.get("/docs.md", handlePublicDocs);
-app.get("/docs/*", handlePublicDocs);
+bindApp("get", "/docs", handlePublicDocs);
+bindApp("get", "/docs.md", handlePublicDocs);
+bindApp("get", "/docs/*", handlePublicDocs);
 
-app.get("/api/auth/config", handleAuthConfig);
-app.get("/api/auth/dashboard", handleDashboardRedirect);
-app.get("/api/auth/login", handleAuthLogin);
-app.get("/login/raft/callback", handleRaftCallback);
-app.get("/api/auth/me", handleAuthMe);
-app.get("/api/agent/help", handleAgentHelp);
-app.get("/api/agent/migration-help", handleAgentMigrationHelp);
-app.post("/api/auth/logout", handleAuthLogout);
+bindApp("get", "/api/auth/config", handleAuthConfig);
+bindApp("get", "/api/auth/dashboard", handleDashboardRedirect);
+bindApp("get", "/api/auth/login", handleAuthLogin);
+bindApp("get", "/login/raft/callback", handleRaftCallback);
+bindApp("get", "/api/auth/me", handleAuthMe);
+bindApp("get", "/api/agent/help", handleAgentHelp);
+bindApp("get", "/api/agent/migration-help", handleAgentMigrationHelp);
+bindApp("post", "/api/auth/logout", handleAuthLogout);
 // Agent CLI login token endpoints (RFC 057) — PUBLIC: the grant+verifier / refresh
 // token is itself the credential (OAuth-token-endpoint style), so no prior session.
-app.post("/api/auth/agent/exchange", handleAgentExchange);
-app.post("/api/auth/agent/refresh", handleAgentRefresh);
+bindApp("post", "/api/auth/agent/exchange", handleAgentExchange);
+bindApp("post", "/api/auth/agent/refresh", handleAgentRefresh);
 
-app.get("/api/installer/v1/auth/login", handleInstallerLogin);
-app.get("/login/raft/installer/callback", handleInstallerRaftCallback);
-app.post("/api/installer/v1/auth/token", handleInstallerToken);
-app.post("/api/installer/v1/auth/logout", handleInstallerLogout);
+bindApp("get", "/api/installer/v1/auth/login", handleInstallerLogin);
+bindApp("get", "/login/raft/installer/callback", handleInstallerRaftCallback);
+bindApp("post", "/api/installer/v1/auth/token", handleInstallerToken);
+bindApp("post", "/api/installer/v1/auth/logout", handleInstallerLogout);
 
 const installer = new Hono<{ Bindings: Env; Variables: InstallerVariables }>();
 installer.use("/api/installer/v1/*", installerAuthMiddleware);
@@ -643,53 +729,51 @@ installer.delete("/api/installer/v1/subscriptions/:appId/:channel", handleDelete
 installer.get("/api/installer/v1/apps/:appId/channels/:channel/manifest", handleInstallerManifest);
 app.route("/", installer);
 
-app.get("/public/apps/:slug/latest", handlePublicV2Latest);
-app.get("/public/apps/:slug/channels", handlePublicListChannels);
+bindApp("get", "/public/apps/:slug/latest", handlePublicV2Latest);
+bindApp("get", "/public/apps/:slug/channels", handlePublicListChannels);
 
 // v2 endpoints with scope resolution (publish-architecture §5.4).
-app.get("/public/v2/apps/:slug/latest", handlePublicV2Latest);
-app.get("/public/v2/apps/:slug/updates/check", handlePublicV2UpdateCheck);
-app.get("/public/v2/apps/:slug/versions", handlePublicCliBinaryVersions);
-app.get("/public/v2/apps/:slug/release-notes", handlePublicReleaseNotesJson);
-app.get("/public/r2/:key", handlePublicR2Download);
+bindApp("get", "/public/v2/apps/:slug/latest", handlePublicV2Latest);
+bindApp("get", "/public/v2/apps/:slug/updates/check", handlePublicV2UpdateCheck);
+bindApp("get", "/public/v2/apps/:slug/versions", handlePublicCliBinaryVersions);
+bindApp("get", "/public/v2/apps/:slug/release-notes", handlePublicReleaseNotesJson);
+bindApp("get", "/public/r2/:key", handlePublicR2Download);
 // Internal signed R2 fetch (delta-patch container pulls source APKs by key).
-app.get("/internal/r2/:key", handleInternalR2Download);
-app.get("/electron/:slug/:channel/:file", handleElectronGenericAsset);
-app.get("/dl/:slug/releases/:releaseId/:file", handleExternalReleaseDl);
-app.get("/dl/:slug/:channel/:file", handleExternalLatestDl);
-app.get("/share/:token/download", handlePublicReleaseShareDownload);
-app.get("/share/:token", handlePublicReleaseShare);
-app.post("/share/:token/unlock", handlePublicReleaseShareUnlock);
-app.get("/share/:token/icon", handlePublicReleaseShareIcon);
-app.post("/public/v2/apps/:slug/feedback", handlePublicFeedbackSubmit);
-app.post("/public/v2/apps/:slug/minidump", handlePublicMinidumpSubmit);
-app.post("/public/v2/apps/:slug/devices", handleDeviceRegister);
-app.post("/public/v2/apps/:slug/metrics", handleDeviceRegister);
-app.post("/public/v2/apps/:slug/sessions", handleSessionEvent);
-app.post("/public/v2/apps/:slug/feedback/presign", handlePresignFeedbackAttachments);
-app.put("/public/v2/apps/:slug/feedback/multipart/part", handleFeedbackMultipartPart);
-app.post("/public/v2/apps/:slug/feedback/multipart/complete", handleCompleteFeedbackMultipart);
-app.post("/public/v2/apps/:slug/feedback/multipart/abort", handleAbortFeedbackMultipart);
-app.get("/api/apps/:appId/reporter-feedback", handleListReporterFeedback);
-app.post("/api/apps/:appId/reporter-feedback/session", handleMintReporterSession);
-app.put("/api/apps/:appId/reporter-feedback/route-subject", handleBindReporterRouteSubject);
-app.get("/api/apps/:appId/reporter-feedback/:ticketId", handleGetReporterFeedback);
-app.post("/api/apps/:appId/reporter-feedback/:ticketId/comments", handleAddReporterComment);
-app.post("/api/apps/:appId/reporter-feedback/:ticketId/close", handleCloseReporterFeedback);
-app.get(
-  "/api/apps/:appId/reporter-feedback/:ticketId/attachments/:attachmentId",
-  handleDownloadReporterAttachment,
-);
-app.get("/public/apps/:slug/icon", handlePublicAppIcon);
-app.get("/apps/:slug/history", handlePublicAppHistory);
-app.get("/apps/:slug/history/:releaseId/download", handlePublicAppHistoryDownload);
-app.get("/apps/:slug/latest", handlePublicLatestReleaseLanding);
-app.get("/apps/:slug/latest/download", handlePublicLatestReleaseDownload);
+bindApp("get", "/internal/r2/:key", handleInternalR2Download);
+bindApp("get", "/electron/:slug/:channel/:file", handleElectronGenericAsset);
+bindApp("get", "/dl/:slug/releases/:releaseId/:file", handleExternalReleaseDl);
+bindApp("get", "/dl/:slug/:channel/:file", handleExternalLatestDl);
+bindApp("get", "/share/:token/download", handlePublicReleaseShareDownload);
+bindApp("get", "/share/:token", handlePublicReleaseShare);
+bindApp("post", "/share/:token/unlock", handlePublicReleaseShareUnlock);
+bindApp("get", "/share/:token/icon", handlePublicReleaseShareIcon);
+bindApp("post", "/public/v2/apps/:slug/feedback", handlePublicFeedbackSubmit);
+bindApp("post", "/public/v2/apps/:slug/minidump", handlePublicMinidumpSubmit);
+bindApp("post", "/public/v2/apps/:slug/devices", handleDeviceRegister);
+bindApp("post", "/public/v2/apps/:slug/metrics", handleDeviceRegister);
+bindApp("post", "/public/v2/apps/:slug/sessions", handleSessionEvent);
+bindApp("post", "/public/v2/apps/:slug/feedback/presign", handlePresignFeedbackAttachments);
+bindApp("put", "/public/v2/apps/:slug/feedback/multipart/part", handleFeedbackMultipartPart);
+bindApp("post", "/public/v2/apps/:slug/feedback/multipart/complete", handleCompleteFeedbackMultipart);
+bindApp("post", "/public/v2/apps/:slug/feedback/multipart/abort", handleAbortFeedbackMultipart);
+app.openapi(openapiLookup(feedbackRoutes, "listReporter"), handleListReporterFeedback as any);
+app.openapi(openapiLookup(feedbackRoutes, "mintReporterSession"), handleMintReporterSession as any);
+app.openapi(openapiLookup(feedbackRoutes, "bindReporterRouteSubject"), handleBindReporterRouteSubject as any);
+app.openapi(openapiLookup(feedbackRoutes, "getReporter"), handleGetReporterFeedback as any);
+app.openapi(openapiLookup(feedbackRoutes, "addReporterComment"), handleAddReporterComment as any);
+app.openapi(openapiLookup(feedbackRoutes, "closeReporter"), handleCloseReporterFeedback as any);
+app.openapi(openapiLookup(feedbackRoutes, "downloadReporterAttachment"), handleDownloadReporterAttachment as any);
+
+bindApp("get", "/public/apps/:slug/icon", handlePublicAppIcon);
+bindApp("get", "/apps/:slug/history", handlePublicAppHistory);
+bindApp("get", "/apps/:slug/history/:releaseId/download", handlePublicAppHistoryDownload);
+bindApp("get", "/apps/:slug/latest", handlePublicLatestReleaseLanding);
+bindApp("get", "/apps/:slug/latest/download", handlePublicLatestReleaseDownload);
 // Version-pinned landing (`/apps/raft-android/v/1.12.0`). The fixed `v`
 // segment keeps it clear of console SPA routes (`/apps/:appId/<tab>`).
-app.get("/apps/:slug/v/:version{[0-9A-Za-z._+-]{1,64}}", handlePublicVersionLanding);
-app.get("/notes/:slug", handlePublicReleaseNotes);
-app.get("/api/invites/:token", handleGetInvite);
+bindApp("get", "/apps/:slug/v/:version{[0-9A-Za-z._+-]{1,64}}", handlePublicVersionLanding);
+bindApp("get", "/notes/:slug", handlePublicReleaseNotes);
+bindApp("get", "/api/invites/:token", handleGetInvite);
 
 function isWorkerRoute(pathname: string): boolean {
   return pathname === "/health" ||
@@ -717,7 +801,7 @@ app.use("*", async (c, next) => {
 // Exported so tests can enumerate the real route table rather than pattern-match
 // the source: coverage should be decided by the router, not by whether a regex
 // recognises a particular registration style.
-export const admin = new Hono<{
+export const admin = new OpenAPIHono<{
   Bindings: Env;
   Variables: {
     admin_account?: import("./middleware/auth").AdminAccount;
@@ -726,16 +810,28 @@ export const admin = new Hono<{
     org_id?: string;
     org_role?: "owner" | "admin" | "member" | "viewer";
   };
-}>();
+}>({
+  defaultHook: (result, c) => {
+    if (!result.success) {
+      // ZodError#message is a serialized JSON array of issues; surface a
+      // human-readable path:message summary instead.
+      const detail = result.error.issues
+        .slice(0, 5)
+        .map((i) => `${i.path.join(".") || "body"}: ${i.message}`)
+        .join("; ");
+      return c.json({ error: "invalid request", detail }, 400);
+    }
+  },
+});
 admin.use("*", authMiddleware);
 
 // Agent CLI login (RFC 057) action — needs the authenticated agent session so it
 // binds the grant to the pre-org-switch identity. Exchange/refresh are public.
-admin.post("/api/auth/agent/login", handleAgentLoginAction);
+bindAdmin("post", "/api/auth/agent/login", handleAgentLoginAction);
 
 // Global Hands observability is server-admin scoped, not app-role scoped.
 admin.use("/api/admin/observability/*", requireHandsAdmin);
-admin.get("/api/admin/observability/overview", handleHandsAdminOverview);
+bindAdmin("get", "/api/admin/observability/overview", handleHandsAdminOverview);
 
 // Global error handler: surface unhandled exceptions as JSON instead of
 // Hono's default empty "Internal Server Error" body. This makes every
@@ -768,7 +864,7 @@ admin.onError((err, c) => {
 // Admin-gated on purpose. The exact deployed commit narrows a public repository's tree to
 // one revision for anyone asking which known issues currently apply, and this readback is
 // run by operators, not by clients.
-admin.get("/api/admin/container/build", async (c) => {
+bindAdmin("get", "/api/admin/container/build", async (c) => {
   const container = await getRandom(c.env.APK_PARSER, 1);
   const res = await container.fetch(new Request("http://container/health"));
   const body = await res.text();
@@ -811,258 +907,224 @@ admin.get("/api/admin/container/build", async (c) => {
   });
 });
 
-admin.get("/api/orgs", handleListOrgs);
-admin.get("/api/orgs/:orgId/members", requireOrgRole("orgId", "viewer"), handleListOrgMembers);
-admin.patch("/api/orgs/:orgId/members/:accountId", requireOrgRole("orgId", "admin"), handleUpdateOrgMember);
-admin.delete("/api/orgs/:orgId/members/:accountId", requireOrgRole("orgId", "admin"), handleRemoveOrgMember);
-admin.get("/api/orgs/:orgId/invites", requireOrgRole("orgId", "admin"), handleListOrgInvites);
-admin.post("/api/orgs/:orgId/invites", requireOrgRole("orgId", "admin"), handleCreateOrgInvite);
-admin.post("/api/orgs/:orgId/invites/:inviteId/resend", requireOrgRole("orgId", "admin"), handleResendOrgInvite);
-admin.delete("/api/orgs/:orgId/invites/:inviteId", requireOrgRole("orgId", "admin"), handleRevokeOrgInvite);
-admin.get("/api/orgs/:orgId/audit-logs", requireOrgRole("orgId", "member"), handleListOrgAuditLogs);
+bindAdmin("get", "/api/orgs", handleListOrgs);
+bindAdmin("get", "/api/orgs/:orgId/members", requireOrgRole("orgId", "viewer"), handleListOrgMembers);
+bindAdmin("patch", "/api/orgs/:orgId/members/:accountId", requireOrgRole("orgId", "admin"), handleUpdateOrgMember);
+bindAdmin("delete", "/api/orgs/:orgId/members/:accountId", requireOrgRole("orgId", "admin"), handleRemoveOrgMember);
+bindAdmin("get", "/api/orgs/:orgId/invites", requireOrgRole("orgId", "admin"), handleListOrgInvites);
+bindAdmin("post", "/api/orgs/:orgId/invites", requireOrgRole("orgId", "admin"), handleCreateOrgInvite);
+bindAdmin("post", "/api/orgs/:orgId/invites/:inviteId/resend", requireOrgRole("orgId", "admin"), handleResendOrgInvite);
+bindAdmin("delete", "/api/orgs/:orgId/invites/:inviteId", requireOrgRole("orgId", "admin"), handleRevokeOrgInvite);
+bindAdmin("get", "/api/orgs/:orgId/audit-logs", requireOrgRole("orgId", "member"), handleListOrgAuditLogs);
 
 // Webhooks (P2.5.8)
-admin.get("/api/orgs/:orgId/webhooks", requireOrgRole("orgId", "admin"), handleListWebhooks);
-admin.post("/api/orgs/:orgId/webhooks", requireOrgRole("orgId", "admin"), handleCreateWebhook);
-admin.patch("/api/orgs/:orgId/webhooks/:webhookId", requireOrgRole("orgId", "admin"), handleUpdateWebhook);
-admin.delete("/api/orgs/:orgId/webhooks/:webhookId", requireOrgRole("orgId", "admin"), handleDeleteWebhook);
-admin.get("/api/orgs/:orgId/webhooks/:webhookId/deliveries", requireOrgRole("orgId", "admin"), handleListDeliveries);
-admin.get("/api/apps/:appId/webhooks", requireAppRole("admin"), handleListAppWebhooks);
-admin.post("/api/apps/:appId/webhooks", requireAppRole("admin"), handleCreateAppWebhook);
-admin.patch("/api/apps/:appId/webhooks/:webhookId", requireAppRole("admin"), handleUpdateAppWebhook);
-admin.delete("/api/apps/:appId/webhooks/:webhookId", requireAppRole("admin"), handleDeleteAppWebhook);
-admin.get("/api/apps/:appId/webhooks/:webhookId/deliveries", requireAppRole("admin"), handleListAppWebhookDeliveries);
+bindAdmin("get", "/api/orgs/:orgId/webhooks", requireOrgRole("orgId", "admin"), handleListWebhooks);
+bindAdmin("post", "/api/orgs/:orgId/webhooks", requireOrgRole("orgId", "admin"), handleCreateWebhook);
+bindAdmin("patch", "/api/orgs/:orgId/webhooks/:webhookId", requireOrgRole("orgId", "admin"), handleUpdateWebhook);
+bindAdmin("delete", "/api/orgs/:orgId/webhooks/:webhookId", requireOrgRole("orgId", "admin"), handleDeleteWebhook);
+bindAdmin("get", "/api/orgs/:orgId/webhooks/:webhookId/deliveries", requireOrgRole("orgId", "admin"), handleListDeliveries);
+bindAdmin("get", "/api/apps/:appId/webhooks", requireAppRole("admin"), handleListAppWebhooks);
+bindAdmin("post", "/api/apps/:appId/webhooks", requireAppRole("admin"), handleCreateAppWebhook);
+bindAdmin("patch", "/api/apps/:appId/webhooks/:webhookId", requireAppRole("admin"), handleUpdateAppWebhook);
+bindAdmin("delete", "/api/apps/:appId/webhooks/:webhookId", requireAppRole("admin"), handleDeleteAppWebhook);
+bindAdmin("get", "/api/apps/:appId/webhooks/:webhookId/deliveries", requireAppRole("admin"), handleListAppWebhookDeliveries);
 
 // Scheduled reaper (no auth — Worker Cron Trigger schedules `scheduled()` in exports)
-// app.get("/api/webhook-reaper", handleReapDeliveries);  // removed; use scheduled() instead
+// bindApp("get", "/api/webhook-reaper", handleReapDeliveries);  // removed; use scheduled() instead
 
-admin.post("/api/invites/:token/accept", handleAcceptInvite);
+bindAdmin("post", "/api/invites/:token/accept", handleAcceptInvite);
 
-admin.get("/api/apps", requireCurrentOrgRole("viewer"), handleListApps);
-admin.post("/api/apps", requireCurrentOrgRole("member"), handleCreateApp);
-admin.post("/api/apps/:appId/transfer", requireAppRole("admin"), handleTransferApp);
-admin.get("/api/apps/:appId", requireAppRole("viewer"), handleGetApp);
-admin.patch("/api/apps/:appId", requireAppRole("admin"), handleUpdateApp);
-admin.post("/api/apps/:appId/archive", requireAppRole("admin"), handleArchiveApp);
-admin.post("/api/apps/:appId/purge", requireAppRole("admin"), handlePurgeApp);
-admin.get("/api/apps/:appId/feature-flags/:key", requireAppRole("viewer"), handleGetFeatureFlag);
-admin.get("/api/apps/:appId/reporter-feedback-metadata", requireAppRole("viewer"), handleGetReporterRouteMetadata);
-admin.put(
-  "/api/apps/:appId/reporter-integrations/:integrationId/webhooks/:webhookId",
+bindAdmin("get", "/api/apps", requireCurrentOrgRole("viewer"), handleListApps);
+bindAdmin("post", "/api/apps", requireCurrentOrgRole("member"), handleCreateApp);
+bindAdmin("post", "/api/apps/:appId/transfer", requireAppRole("admin"), handleTransferApp);
+bindAdmin("get", "/api/apps/:appId", requireAppRole("viewer"), handleGetApp);
+bindAdmin("patch", "/api/apps/:appId", requireAppRole("admin"), handleUpdateApp);
+bindAdmin("post", "/api/apps/:appId/archive", requireAppRole("admin"), handleArchiveApp);
+bindAdmin("post", "/api/apps/:appId/purge", requireAppRole("admin"), handlePurgeApp);
+bindAdmin("get", "/api/apps/:appId/feature-flags/:key", requireAppRole("viewer"), handleGetFeatureFlag);
+bindAdmin("get", "/api/apps/:appId/reporter-feedback-metadata", requireAppRole("viewer"), handleGetReporterRouteMetadata);
+bindAdmin("put", "/api/apps/:appId/reporter-integrations/:integrationId/webhooks/:webhookId",
   requireAppRole("admin"),
   handleBindReporterWebhook,
 );
 // Feature flags are rollout controls (like bump-rollout / force-update), so they
 // sit at the publisher (ship) tier rather than admin.
-admin.put("/api/apps/:appId/feature-flags/:key", requireAppRole("publisher"), handleUpdateFeatureFlag);
+bindAdmin("put", "/api/apps/:appId/feature-flags/:key", requireAppRole("publisher"), handleUpdateFeatureFlag);
 
-admin.get("/api/apps/:appId/builds", requireAppRole("viewer"), handleListBuilds);
-admin.post("/api/apps/:appId/builds", requireAppRole("publisher"), handleCreateBuild);
-admin.post(
-  "/api/apps/:appId/builds/publish-version",
+bindAdmin("get", "/api/apps/:appId/builds", requireAppRole("viewer"), handleListBuilds);
+bindAdmin("post", "/api/apps/:appId/builds", requireAppRole("publisher"), handleCreateBuild);
+bindAdmin("post", "/api/apps/:appId/builds/publish-version",
   requireAppRole("publisher"),
   handlePublishExternalBuildVersion,
 );
-admin.get("/api/apps/:appId/builds/:buildId", requireAppRole("viewer"), handleGetBuild);
-admin.patch("/api/apps/:appId/builds/:buildId", requireAppRole("publisher"), handleUpdateBuild);
-admin.delete("/api/apps/:appId/builds/:buildId", requireAppRole("admin"), handleDeleteBuild);
-admin.get("/api/apps/:appId/builds/:buildId/assets", requireAppRole("viewer"), handleListBuildAssets);
-admin.get(
-  "/api/apps/:appId/builds/:buildId/external-targets",
+bindAdmin("get", "/api/apps/:appId/builds/:buildId", requireAppRole("viewer"), handleGetBuild);
+bindAdmin("patch", "/api/apps/:appId/builds/:buildId", requireAppRole("publisher"), handleUpdateBuild);
+bindAdmin("delete", "/api/apps/:appId/builds/:buildId", requireAppRole("admin"), handleDeleteBuild);
+bindAdmin("get", "/api/apps/:appId/builds/:buildId/assets", requireAppRole("viewer"), handleListBuildAssets);
+bindAdmin("get", "/api/apps/:appId/builds/:buildId/external-targets",
   requireAppRole("viewer"),
   handleListExternalBuildTargets,
 );
-admin.post("/api/apps/:appId/builds/:buildId/assets", requireAppRole("publisher"), handleCreateBuildAsset);
-admin.post(
-  "/api/apps/:appId/builds/:buildId/assets/uploads",
+bindAdmin("post", "/api/apps/:appId/builds/:buildId/assets", requireAppRole("publisher"), handleCreateBuildAsset);
+bindAdmin("post", "/api/apps/:appId/builds/:buildId/assets/uploads",
   requireAppRole("publisher"),
   handleDeclareBuildAssetUpload,
 );
-admin.post(
-  "/api/apps/:appId/builds/:buildId/assets/:assetId/upload/complete",
+bindAdmin("post", "/api/apps/:appId/builds/:buildId/assets/:assetId/upload/complete",
   requireAppRole("publisher"),
   handleCompleteBuildAssetUpload,
 );
-admin.post(
-  "/api/apps/:appId/builds/:buildId/assets/:assetId/upload/abort",
+bindAdmin("post", "/api/apps/:appId/builds/:buildId/assets/:assetId/upload/abort",
   requireAppRole("publisher"),
   handleAbortBuildAssetUpload,
 );
-admin.post(
-  "/api/apps/:appId/builds/:buildId/hosted-migration",
+bindAdmin("post", "/api/apps/:appId/builds/:buildId/hosted-migration",
   requireAppRole("publisher"),
   handleBeginHostedBuildMigration,
 );
-admin.post(
-  "/api/apps/:appId/builds/:buildId/hosted-migration/complete",
+bindAdmin("post", "/api/apps/:appId/builds/:buildId/hosted-migration/complete",
   requireAppRole("publisher"),
   handleCompleteHostedBuildMigration,
 );
-admin.get(
-  "/api/apps/:appId/builds/:buildId/assets/:assetId/download",
+bindAdmin("get", "/api/apps/:appId/builds/:buildId/assets/:assetId/download",
   requireAppRole("viewer"),
   handleDownloadBuildAsset,
 );
-admin.delete(
-  "/api/apps/:appId/builds/:buildId/assets/:assetId",
+bindAdmin("delete", "/api/apps/:appId/builds/:buildId/assets/:assetId",
   requireAppRole("admin"),
   handleDeleteBuildAsset,
 );
 
 // QA-only iOS simulator artifacts. These are immutable exact-byte fixtures
 // for agent/device validation and are deliberately outside the release model.
-admin.get(
-  "/api/apps/:appId/qa-artifacts/ios-simulator",
+bindAdmin("get", "/api/apps/:appId/qa-artifacts/ios-simulator",
   requireAppRole("viewer"),
   handleListIosSimulatorArtifacts,
 );
-admin.post(
-  "/api/apps/:appId/qa-artifacts/ios-simulator",
+bindAdmin("post", "/api/apps/:appId/qa-artifacts/ios-simulator",
   requireAppRole("publisher"),
   handleCreateIosSimulatorArtifact,
 );
-admin.get(
-  "/api/apps/:appId/qa-artifacts/ios-simulator/:assetId",
+bindAdmin("get", "/api/apps/:appId/qa-artifacts/ios-simulator/:assetId",
   requireAppRole("viewer"),
   handleGetIosSimulatorArtifact,
 );
-admin.post(
-  "/api/apps/:appId/qa-artifacts/ios-simulator/:assetId/complete",
+bindAdmin("post", "/api/apps/:appId/qa-artifacts/ios-simulator/:assetId/complete",
   requireAppRole("publisher"),
   handleCompleteIosSimulatorArtifact,
 );
-admin.get(
-  "/api/apps/:appId/qa-artifacts/ios-simulator/:assetId/download",
+bindAdmin("get", "/api/apps/:appId/qa-artifacts/ios-simulator/:assetId/download",
   requireAppRole("viewer"),
   handleDownloadIosSimulatorArtifact,
 );
 
 // Mobile CI declares one Android release build with exactly one AAB and one
 // APK. The pair is sealed independently but becomes ready only as one bundle.
-admin.post(
-  "/api/apps/:appId/android-release-artifacts",
+bindAdmin("post", "/api/apps/:appId/android-release-artifacts",
   requireAppRole("publisher"),
   handleCreateAndroidReleaseArtifacts,
 );
-admin.get(
-  "/api/apps/:appId/android-release-artifacts/:buildId",
+bindAdmin("get", "/api/apps/:appId/android-release-artifacts/:buildId",
   requireAppRole("viewer"),
   handleGetAndroidReleaseArtifacts,
 );
-admin.post(
-  "/api/apps/:appId/android-release-artifacts/:buildId/assets/:assetId/complete",
+bindAdmin("post", "/api/apps/:appId/android-release-artifacts/:buildId/assets/:assetId/complete",
   requireAppRole("publisher"),
   handleCompleteAndroidReleaseArtifact,
 );
 
-admin.get("/api/apps/:appId/releases", requireAppRole("viewer"), handleListReleases);
-admin.post("/api/apps/:appId/releases", requireAppRole("publisher"), handleCreateRelease);
-admin.post("/api/apps/:appId/releases/draft", requireAppRole("publisher"), handleCreateReleaseDraft);
-admin.get("/api/apps/:appId/releases/:releaseId", requireAppRole("viewer"), handleGetRelease);
-admin.patch("/api/apps/:appId/releases/:releaseId", requireAppRole("publisher"), handleUpdateRelease);
-admin.post("/api/apps/:appId/releases/:releaseId/publish", requireAppRole("publisher"), handlePublishRelease);
+bindAdmin("get", "/api/apps/:appId/releases", requireAppRole("viewer"), handleListReleases);
+bindAdmin("post", "/api/apps/:appId/releases", requireAppRole("publisher"), handleCreateRelease);
+bindAdmin("post", "/api/apps/:appId/releases/draft", requireAppRole("publisher"), handleCreateReleaseDraft);
+bindAdmin("get", "/api/apps/:appId/releases/:releaseId", requireAppRole("viewer"), handleGetRelease);
+bindAdmin("patch", "/api/apps/:appId/releases/:releaseId", requireAppRole("publisher"), handleUpdateRelease);
+bindAdmin("post", "/api/apps/:appId/releases/:releaseId/publish", requireAppRole("publisher"), handlePublishRelease);
 // Release human-approval queue (task #239): list pending approvals, and approve /
 // reject them. approve/reject additionally enforce human-only inside the handler.
-admin.get("/api/apps/:appId/release-approvals", requireAppRole("admin"), handleListReleaseApprovals);
-admin.post("/api/apps/:appId/release-approvals/:requestId/approve", requireAppRole("admin"), handleApproveReleaseApproval);
-admin.post("/api/apps/:appId/release-approvals/:requestId/reject", requireAppRole("admin"), handleRejectReleaseApproval);
-admin.delete("/api/apps/:appId/releases/:releaseId", requireAppRole("publisher"), handleDeleteRelease);
-admin.post("/api/apps/:appId/releases/:releaseId/rollback", requireAppRole("publisher"), handleRollbackRelease);
-admin.post("/api/apps/:appId/releases/:releaseId/bump-rollout", requireAppRole("publisher"), handleBumpRollout);
-admin.post("/api/apps/:appId/releases/:releaseId/force-update", requireAppRole("publisher"), handleForceUpdate);
-admin.get("/api/apps/:appId/releases/:releaseId/checks", requireAppRole("viewer"), handleListReleaseChecks);
-admin.post("/api/apps/:appId/releases/:releaseId/checks", requireAppRole("publisher"), handleUpsertReleaseCheck);
-admin.get(
-  "/api/apps/:appId/releases/:releaseId/distributions",
+bindAdmin("get", "/api/apps/:appId/release-approvals", requireAppRole("admin"), handleListReleaseApprovals);
+bindAdmin("post", "/api/apps/:appId/release-approvals/:requestId/approve", requireAppRole("admin"), handleApproveReleaseApproval);
+bindAdmin("post", "/api/apps/:appId/release-approvals/:requestId/reject", requireAppRole("admin"), handleRejectReleaseApproval);
+bindAdmin("delete", "/api/apps/:appId/releases/:releaseId", requireAppRole("publisher"), handleDeleteRelease);
+bindAdmin("post", "/api/apps/:appId/releases/:releaseId/rollback", requireAppRole("publisher"), handleRollbackRelease);
+bindAdmin("post", "/api/apps/:appId/releases/:releaseId/bump-rollout", requireAppRole("publisher"), handleBumpRollout);
+bindAdmin("post", "/api/apps/:appId/releases/:releaseId/force-update", requireAppRole("publisher"), handleForceUpdate);
+bindAdmin("get", "/api/apps/:appId/releases/:releaseId/checks", requireAppRole("viewer"), handleListReleaseChecks);
+bindAdmin("post", "/api/apps/:appId/releases/:releaseId/checks", requireAppRole("publisher"), handleUpsertReleaseCheck);
+bindAdmin("get", "/api/apps/:appId/releases/:releaseId/distributions",
   requireAppRole("viewer"),
   handleListDistributions,
 );
-admin.get(
-  "/api/apps/:appId/releases/:releaseId/distributions/play",
+bindAdmin("get", "/api/apps/:appId/releases/:releaseId/distributions/play",
   requireAppRole("viewer"),
   handleGetPlayDistribution,
 );
-admin.post(
-  "/api/apps/:appId/releases/:releaseId/distributions/play/promote",
+bindAdmin("post", "/api/apps/:appId/releases/:releaseId/distributions/play/promote",
   requireAppRole("publisher"),
   handlePromotePlayDistribution,
 );
-admin.post(
-  "/api/apps/:appId/releases/:releaseId/distributions/play/halt",
+bindAdmin("post", "/api/apps/:appId/releases/:releaseId/distributions/play/halt",
   requireAppRole("publisher"),
   handleHaltPlayDistribution,
 );
-admin.post(
-  "/api/apps/:appId/releases/:releaseId/distributions/play/rollback",
+bindAdmin("post", "/api/apps/:appId/releases/:releaseId/distributions/play/rollback",
   requireAppRole("publisher"),
   handleRollbackPlayDistribution,
 );
-admin.get(
-  "/api/apps/:appId/releases/:releaseId/receipts",
+bindAdmin("get", "/api/apps/:appId/releases/:releaseId/receipts",
   requireAppRole("viewer"),
   handleListReleaseReceipts,
 );
-admin.post(
-  "/api/apps/:appId/releases/:releaseId/receipts/acceptance",
+bindAdmin("post", "/api/apps/:appId/releases/:releaseId/receipts/acceptance",
   requireAppRole("publisher"),
   handleCreateAcceptanceReceipt,
 );
-admin.get("/api/apps/:appId/google-play-binding", requireAppRole("admin"), handleGetGooglePlayBinding);
-admin.put("/api/apps/:appId/google-play-binding", requireAppRole("admin"), handlePutGooglePlayBinding);
-admin.post("/api/apps/:appId/google-play-binding/verify", requireAppRole("admin"), handleVerifyGooglePlayBinding);
-admin.post("/api/apps/:appId/google-play-binding/enable", requireAppRole("admin"), handleEnableGooglePlayBinding);
-admin.post("/api/apps/:appId/google-play-binding/disable", requireAppRole("admin"), handleDisableGooglePlayBinding);
-admin.delete("/api/apps/:appId/google-play-binding", requireAppRole("admin"), handleDeleteGooglePlayBinding);
-admin.get("/api/apps/:appId/shares", requireAppRole("viewer"), handleListAppShares);
-admin.post("/api/apps/:appId/shares/:shareId/rebind", requireAppRole("publisher"), handleRebindReleaseShare);
-admin.put("/api/apps/:appId/icon", requireAppRole("publisher"), handleUploadAppIcon);
-admin.get("/api/apps/:appId/client-key", requireAppRole("admin"), handleGetClientKey);
-admin.post("/api/apps/:appId/rotate-client-key", requireAppRole("admin"), handleRotateClientKey);
-admin.get("/api/apps/:appId/feedback/crash-groups", requireAppRole("viewer"), handleListCrashGroups);
-admin.get("/api/apps/:appId/feedback/stats", requireAppRole("viewer"), handleFeedbackStats);
-admin.get("/api/apps/:appId/analytics/devices", requireAppRole("viewer"), handleDeviceAnalytics);
-admin.get("/api/apps/:appId/analytics/versions", requireAppRole("viewer"), handleVersionAnalytics);
-admin.get("/api/apps/:appId/analytics/devices/:deviceId", requireAppRole("viewer"), handleDeviceDetail);
-admin.get("/api/apps/:appId/release-health", requireAppRole("viewer"), handleReleaseHealth);
-admin.get("/api/apps/:appId/feedback", requireAppRoleOrFeedbackPermission("viewer", {}, "feedback:read"), handleListFeedback);
-admin.get(
-  "/api/apps/:appId/feedback/material-delta",
-  requireAppRoleOrFeedbackPermission("viewer", {}, "feedback:read"),
-  handleListFeedbackMaterialDelta,
-);
-admin.get("/api/apps/:appId/feedback/:ticketId", requireAppRoleOrFeedbackPermission("viewer", {}, "feedback:read"), handleGetFeedback);
-admin.patch("/api/apps/:appId/feedback/:ticketId", requireAppRoleOrFeedbackPermission("publisher", { orgMinimum: "member" }, "feedback:triage"), handleUpdateFeedback);
-admin.post(
-  "/api/apps/:appId/feedback/:ticketId/comments",
-  // Both actions share this endpoint; handleAddFeedbackComment splits them on `internal`.
-  requireAppRoleOrFeedbackPermission("publisher", { orgMinimum: "member" }, "feedback:comment", "feedback:triage"),
-  handleAddFeedbackComment,
-);
-admin.post("/api/apps/:appId/feedback/:ticketId/symbolicate", requireFeedbackTriageRole(), handleResymbolicateFeedback);
-admin.get(
-  "/api/apps/:appId/feedback/:ticketId/attachments/:attachmentId",
+bindAdmin("get", "/api/apps/:appId/google-play-binding", requireAppRole("admin"), handleGetGooglePlayBinding);
+bindAdmin("put", "/api/apps/:appId/google-play-binding", requireAppRole("admin"), handlePutGooglePlayBinding);
+bindAdmin("post", "/api/apps/:appId/google-play-binding/verify", requireAppRole("admin"), handleVerifyGooglePlayBinding);
+bindAdmin("post", "/api/apps/:appId/google-play-binding/enable", requireAppRole("admin"), handleEnableGooglePlayBinding);
+bindAdmin("post", "/api/apps/:appId/google-play-binding/disable", requireAppRole("admin"), handleDisableGooglePlayBinding);
+bindAdmin("delete", "/api/apps/:appId/google-play-binding", requireAppRole("admin"), handleDeleteGooglePlayBinding);
+bindAdmin("get", "/api/apps/:appId/shares", requireAppRole("viewer"), handleListAppShares);
+bindAdmin("post", "/api/apps/:appId/shares/:shareId/rebind", requireAppRole("publisher"), handleRebindReleaseShare);
+bindAdmin("put", "/api/apps/:appId/icon", requireAppRole("publisher"), handleUploadAppIcon);
+bindAdmin("get", "/api/apps/:appId/client-key", requireAppRole("admin"), handleGetClientKey);
+bindAdmin("post", "/api/apps/:appId/rotate-client-key", requireAppRole("admin"), handleRotateClientKey);
+bindAdmin("get", "/api/apps/:appId/feedback/crash-groups", requireAppRole("viewer"), handleListCrashGroups);
+bindAdmin("get", "/api/apps/:appId/feedback/stats", requireAppRole("viewer"), handleFeedbackStats);
+bindAdmin("get", "/api/apps/:appId/analytics/devices", requireAppRole("viewer"), handleDeviceAnalytics);
+bindAdmin("get", "/api/apps/:appId/analytics/versions", requireAppRole("viewer"), handleVersionAnalytics);
+bindAdmin("get", "/api/apps/:appId/analytics/devices/:deviceId", requireAppRole("viewer"), handleDeviceDetail);
+bindAdmin("get", "/api/apps/:appId/release-health", requireAppRole("viewer"), handleReleaseHealth);
+bindAdmin("get", "/api/apps/:appId/feedback", requireAppRoleOrFeedbackPermission("viewer", {}, "feedback:read"), handleListFeedback);
+bindAdmin("get", "/api/apps/:appId/feedback/material-delta", requireAppRoleOrFeedbackPermission("viewer", {}, "feedback:read"), handleListFeedbackMaterialDelta);
+bindAdmin("get", "/api/apps/:appId/feedback/:ticketId", requireAppRoleOrFeedbackPermission("viewer", {}, "feedback:read"), handleGetFeedback);
+bindAdmin("patch", "/api/apps/:appId/feedback/:ticketId", requireAppRoleOrFeedbackPermission("publisher", { orgMinimum: "member" }, "feedback:triage"), handleUpdateFeedback);
+// Both actions share this endpoint; handleAddFeedbackComment splits them on `internal`.
+bindAdmin("post", "/api/apps/:appId/feedback/:ticketId/comments", requireAppRoleOrFeedbackPermission("publisher", { orgMinimum: "member" }, "feedback:comment", "feedback:triage"), handleAddFeedbackComment);
+bindAdmin("post", "/api/apps/:appId/feedback/:ticketId/symbolicate", requireFeedbackTriageRole(), handleResymbolicateFeedback);
+bindAdmin("get", "/api/apps/:appId/feedback/:ticketId/attachments/:attachmentId",
   // An attachment is the substance of most crash reports; reading a ticket
   // without being able to fetch its screenshot is not "read feedback".
   requireAppRoleOrFeedbackPermission("viewer", {}, "feedback:read"),
   handleDownloadFeedbackAttachment,
 );
-admin.get("/api/apps/:appId/releases/:releaseId/shares", requireAppRole("viewer"), handleListReleaseShares);
-admin.post("/api/apps/:appId/releases/:releaseId/shares", requireAppRole("publisher"), handleCreateReleaseShare);
-admin.patch("/api/apps/:appId/releases/:releaseId/shares/:shareId", requireAppRole("publisher"), handleUpdateReleaseShare);
-admin.delete("/api/apps/:appId/releases/:releaseId/shares/:shareId", requireAppRole("publisher"), handleRevokeReleaseShare);
+bindAdmin("get", "/api/apps/:appId/releases/:releaseId/shares", requireAppRole("viewer"), handleListReleaseShares);
+bindAdmin("post", "/api/apps/:appId/releases/:releaseId/shares", requireAppRole("publisher"), handleCreateReleaseShare);
+bindAdmin("patch", "/api/apps/:appId/releases/:releaseId/shares/:shareId", requireAppRole("publisher"), handleUpdateReleaseShare);
+bindAdmin("delete", "/api/apps/:appId/releases/:releaseId/shares/:shareId", requireAppRole("publisher"), handleRevokeReleaseShare);
 
 // Multipart APK upload → R2 (admin only, validates + audits)
-admin.post("/api/apps/:appId/upload", requireAppRole("publisher"), handleUploadApk);
+bindAdmin("post", "/api/apps/:appId/upload", requireAppRole("publisher"), handleUploadApk);
 
 // Operation log + SSE stream (admin)
-admin.get("/api/apps/:appId/operations", requireAppRole("viewer"), handleListOperations);
-admin.get("/api/apps/:appId/operations/stream", requireAppRole("viewer"), handleStreamOperations);
-admin.get("/api/apps/:appId/operations/:opId", requireAppRole("viewer"), handleGetOperation);
-admin.post("/api/apps/:appId/operations/:opId/retry", requireAppRole("publisher"), handleRetryOperation);
-admin.delete("/api/apps/:appId/operations/:opId", requireAppRole("admin"), handleDeleteOperation);
+bindAdmin("get", "/api/apps/:appId/operations", requireAppRole("viewer"), handleListOperations);
+bindAdmin("get", "/api/apps/:appId/operations/stream", requireAppRole("viewer"), handleStreamOperations);
+bindAdmin("get", "/api/apps/:appId/operations/:opId", requireAppRole("viewer"), handleGetOperation);
+bindAdmin("post", "/api/apps/:appId/operations/:opId/retry", requireAppRole("publisher"), handleRetryOperation);
+bindAdmin("delete", "/api/apps/:appId/operations/:opId", requireAppRole("admin"), handleDeleteOperation);
 
 // Parse APK: write to R2, ask container to parse via exec(), return metadata
-admin.post("/api/parse-apk", requireCurrentOrgRole("member"), async (c) => {
+bindAdmin("post", "/api/parse-apk", requireCurrentOrgRole("member"), async (c) => {
   const ab = await c.req.arrayBuffer();
   if (ab.byteLength === 0) return c.json({ error: "empty body" }, 400);
   if (ab.byteLength > 200 * 1024 * 1024) {
@@ -1164,118 +1226,109 @@ admin.post("/api/parse-apk", requireCurrentOrgRole("member"), async (c) => {
   }
 });
 
-admin.get("/api/apps/:appId/channels", requireAppRole("viewer"), handleListChannels);
-admin.post("/api/apps/:appId/channels", requireAppRole("admin"), handleCreateChannel);
-admin.patch("/api/apps/:appId/channels/:channelId", requireAppRole("admin"), handleUpdateChannel);
-admin.delete("/api/apps/:appId/channels/:channelId", requireAppRole("admin"), handleDeleteChannel);
+bindAdmin("get", "/api/apps/:appId/channels", requireAppRole("viewer"), handleListChannels);
+bindAdmin("post", "/api/apps/:appId/channels", requireAppRole("admin"), handleCreateChannel);
+bindAdmin("patch", "/api/apps/:appId/channels/:channelId", requireAppRole("admin"), handleUpdateChannel);
+bindAdmin("delete", "/api/apps/:appId/channels/:channelId", requireAppRole("admin"), handleDeleteChannel);
 
-admin.get("/api/apps/:appId/device-groups", requireAppRole("publisher"), handleListDeviceGroups);
-admin.post("/api/apps/:appId/device-groups", requireAppRole("publisher"), handleCreateDeviceGroup);
-admin.patch("/api/apps/:appId/device-groups/:groupId", requireAppRole("publisher"), handleUpdateDeviceGroup);
-admin.delete("/api/apps/:appId/device-groups/:groupId", requireAppRole("publisher"), handleDeleteDeviceGroup);
-admin.post(
-  "/api/apps/:appId/device-groups/:groupId/members",
+bindAdmin("get", "/api/apps/:appId/device-groups", requireAppRole("publisher"), handleListDeviceGroups);
+bindAdmin("post", "/api/apps/:appId/device-groups", requireAppRole("publisher"), handleCreateDeviceGroup);
+bindAdmin("patch", "/api/apps/:appId/device-groups/:groupId", requireAppRole("publisher"), handleUpdateDeviceGroup);
+bindAdmin("delete", "/api/apps/:appId/device-groups/:groupId", requireAppRole("publisher"), handleDeleteDeviceGroup);
+bindAdmin("post", "/api/apps/:appId/device-groups/:groupId/members",
   requireAppRole("publisher"),
   handleAddDeviceGroupMember,
 );
-admin.delete(
-  "/api/apps/:appId/device-groups/:groupId/members/:deviceId",
+bindAdmin("delete", "/api/apps/:appId/device-groups/:groupId/members/:deviceId",
   requireAppRole("publisher"),
   handleRemoveDeviceGroupMember,
 );
 
-admin.get("/api/apps/:appId/product-types", requireAppRole("viewer"), handleListProductTypes);
-admin.post("/api/apps/:appId/product-types", requireAppRole("admin"), handleCreateProductType);
-admin.patch("/api/apps/:appId/product-types/:ptId", requireAppRole("admin"), handleUpdateProductType);
-admin.delete("/api/apps/:appId/product-types/:ptId", requireAppRole("admin"), handleDeleteProductType);
+bindAdmin("get", "/api/apps/:appId/product-types", requireAppRole("viewer"), handleListProductTypes);
+bindAdmin("post", "/api/apps/:appId/product-types", requireAppRole("admin"), handleCreateProductType);
+bindAdmin("patch", "/api/apps/:appId/product-types/:ptId", requireAppRole("admin"), handleUpdateProductType);
+bindAdmin("delete", "/api/apps/:appId/product-types/:ptId", requireAppRole("admin"), handleDeleteProductType);
 
-admin.get("/api/apps/:appId/release-types", requireAppRole("viewer"), handleListReleaseTypes);
-admin.post("/api/apps/:appId/release-types", requireAppRole("admin"), handleCreateReleaseType);
-admin.patch("/api/apps/:appId/release-types/:rtId", requireAppRole("admin"), handleUpdateReleaseType);
-admin.delete("/api/apps/:appId/release-types/:rtId", requireAppRole("admin"), handleDeleteReleaseType);
+bindAdmin("get", "/api/apps/:appId/release-types", requireAppRole("viewer"), handleListReleaseTypes);
+bindAdmin("post", "/api/apps/:appId/release-types", requireAppRole("admin"), handleCreateReleaseType);
+bindAdmin("patch", "/api/apps/:appId/release-types/:rtId", requireAppRole("admin"), handleUpdateReleaseType);
+bindAdmin("delete", "/api/apps/:appId/release-types/:rtId", requireAppRole("admin"), handleDeleteReleaseType);
 
-admin.get("/api/apps/:appId/audit-logs", requireAppRole("viewer"), handleListAuditLogs);
+bindAdmin("get", "/api/apps/:appId/audit-logs", requireAppRole("viewer"), handleListAuditLogs);
 
 // Per-user scoped audit (cross-app within orgs the caller is in).
-admin.get("/api/users/:accountId/audit", handleListUserAudit);
-admin.get("/api/apps/:appId/members", requireAppRole("viewer"), handleListAppMembers);
-admin.post("/api/apps/:appId/members", requireAppRole("admin"), handleAddAppMember);
-admin.patch("/api/apps/:appId/members/:accountId", requireAppRole("admin"), handleUpdateAppMember);
-admin.delete("/api/apps/:appId/members/:accountId", requireAppRole("admin"), handleRemoveAppMember);
-admin.get("/api/apps/:appId/server-grants", requireAppRole("viewer"), handleListAppServerGrants);
-admin.post("/api/apps/:appId/server-grants", requireAppRole("admin"), handleAddAppServerGrant);
-admin.patch("/api/apps/:appId/server-grants/:serverId", requireAppRole("admin"), handleUpdateAppServerGrant);
-admin.delete("/api/apps/:appId/server-grants/:serverId", requireAppRole("admin"), handleRemoveAppServerGrant);
-admin.get("/api/apps/:appId/deploy-tokens", requireAppRole("admin"), handleListAppDeployTokens);
-admin.get("/api/app-permissions", handleGetAppPermissionModel);
-admin.post("/api/apps/:appId/deploy-tokens", requireAppRole("admin"), handleCreateAppDeployToken);
-admin.delete("/api/apps/:appId/deploy-tokens/:tokenId", requireAppRole("admin"), handleRevokeAppDeployToken);
-admin.get("/api/apps/:appId/reporter-integrations", requireAppRole("admin"), handleListReporterIntegrations);
-admin.post("/api/apps/:appId/reporter-integrations", requireAppRole("admin"), handleCreateReporterIntegration);
-admin.patch(
-  "/api/apps/:appId/reporter-integrations/:integrationId",
+bindAdmin("get", "/api/users/:accountId/audit", handleListUserAudit);
+bindAdmin("get", "/api/apps/:appId/members", requireAppRole("viewer"), handleListAppMembers);
+bindAdmin("post", "/api/apps/:appId/members", requireAppRole("admin"), handleAddAppMember);
+bindAdmin("patch", "/api/apps/:appId/members/:accountId", requireAppRole("admin"), handleUpdateAppMember);
+bindAdmin("delete", "/api/apps/:appId/members/:accountId", requireAppRole("admin"), handleRemoveAppMember);
+bindAdmin("get", "/api/apps/:appId/server-grants", requireAppRole("viewer"), handleListAppServerGrants);
+bindAdmin("post", "/api/apps/:appId/server-grants", requireAppRole("admin"), handleAddAppServerGrant);
+bindAdmin("patch", "/api/apps/:appId/server-grants/:serverId", requireAppRole("admin"), handleUpdateAppServerGrant);
+bindAdmin("delete", "/api/apps/:appId/server-grants/:serverId", requireAppRole("admin"), handleRemoveAppServerGrant);
+bindAdmin("get", "/api/apps/:appId/deploy-tokens", requireAppRole("admin"), handleListAppDeployTokens);
+bindAdmin("get", "/api/app-permissions", handleGetAppPermissionModel);
+bindAdmin("post", "/api/apps/:appId/deploy-tokens", requireAppRole("admin"), handleCreateAppDeployToken);
+bindAdmin("delete", "/api/apps/:appId/deploy-tokens/:tokenId", requireAppRole("admin"), handleRevokeAppDeployToken);
+bindAdmin("get", "/api/apps/:appId/reporter-integrations", requireAppRole("admin"), handleListReporterIntegrations);
+bindAdmin("post", "/api/apps/:appId/reporter-integrations", requireAppRole("admin"), handleCreateReporterIntegration);
+bindAdmin("patch", "/api/apps/:appId/reporter-integrations/:integrationId",
   requireAppRole("admin"),
   handleUpdateReporterIntegration,
 );
 
 // App Store Connect API credentials (for Hands-orchestrated TestFlight uploads).
-admin.get("/api/apps/:appId/asc-credentials", requireAppRole("admin"), handleGetAscCredentials);
-admin.post("/api/apps/:appId/asc-credentials/verify", requireAppRole("admin"), handleVerifyAscCredentials);
-admin.post("/api/apps/:appId/builds/:buildId/testflight-upload", requireAppRole("admin"), handleTestflightUpload);
-admin.get("/api/apps/:appId/testflight-uploads/:buildUploadId", requireAppRole("viewer"), handleTestflightUploadStatus);
-admin.get("/api/apps/:appId/builds/:buildId/testflight-groups", requireAppRole("viewer"), handleListTestflightGroups);
-admin.post("/api/apps/:appId/builds/:buildId/testflight-expire", requireAppRole("admin"), handleTestflightExpire);
-admin.post("/api/apps/:appId/builds/:buildId/testflight-publish", requireAppRole("publisher"), handleTestflightPublish);
-admin.get("/api/apps/:appId/builds/:buildId/testflight-publish", requireAppRole("viewer"), handleTestflightPublishStatus);
-admin.get("/api/apps/:appId/appstore-review", requireAppRole("viewer"), handleAppStoreReview);
-admin.get(
-  "/api/apps/:appId/testflight-beta-app-description",
+bindAdmin("get", "/api/apps/:appId/asc-credentials", requireAppRole("admin"), handleGetAscCredentials);
+bindAdmin("post", "/api/apps/:appId/asc-credentials/verify", requireAppRole("admin"), handleVerifyAscCredentials);
+bindAdmin("post", "/api/apps/:appId/builds/:buildId/testflight-upload", requireAppRole("admin"), handleTestflightUpload);
+bindAdmin("get", "/api/apps/:appId/testflight-uploads/:buildUploadId", requireAppRole("viewer"), handleTestflightUploadStatus);
+bindAdmin("get", "/api/apps/:appId/builds/:buildId/testflight-groups", requireAppRole("viewer"), handleListTestflightGroups);
+bindAdmin("post", "/api/apps/:appId/builds/:buildId/testflight-expire", requireAppRole("admin"), handleTestflightExpire);
+bindAdmin("post", "/api/apps/:appId/builds/:buildId/testflight-publish", requireAppRole("publisher"), handleTestflightPublish);
+bindAdmin("get", "/api/apps/:appId/builds/:buildId/testflight-publish", requireAppRole("viewer"), handleTestflightPublishStatus);
+bindAdmin("get", "/api/apps/:appId/appstore-review", requireAppRole("viewer"), handleAppStoreReview);
+bindAdmin("get", "/api/apps/:appId/testflight-beta-app-description",
   requireAppRole("viewer"),
   handleGetBetaAppDescription,
 );
-admin.put(
-  "/api/apps/:appId/testflight-beta-app-description",
+bindAdmin("put", "/api/apps/:appId/testflight-beta-app-description",
   requireAppRole("publisher"),
   handleUpdateBetaAppDescription,
 );
-admin.get("/api/apps/:appId/testflight-feedback", requireAppRole("viewer"), handleListTestflightFeedback);
+bindAdmin("get", "/api/apps/:appId/testflight-feedback", requireAppRole("viewer"), handleListTestflightFeedback);
 // Closing deletes the submission in App Store Connect: same bar as feedback triage.
-admin.delete(
-  "/api/apps/:appId/testflight-crashes/:submissionId",
+bindAdmin("delete", "/api/apps/:appId/testflight-crashes/:submissionId",
   requireAppRoleOrFeedbackPermission("publisher", { orgMinimum: "member" }, "feedback:triage"),
   handleCloseTestflightCrash,
 );
-admin.delete(
-  "/api/apps/:appId/testflight-feedback/:submissionId",
+bindAdmin("delete", "/api/apps/:appId/testflight-feedback/:submissionId",
   requireAppRoleOrFeedbackPermission("publisher", { orgMinimum: "member" }, "feedback:triage"),
   handleCloseTestflightFeedback,
 );
-admin.get("/api/apps/:appId/testflight-crashes", requireAppRole("viewer"), handleListTestflightCrashes);
-admin.get(
-  "/api/apps/:appId/testflight-crashes/:submissionId/log",
+bindAdmin("get", "/api/apps/:appId/testflight-crashes", requireAppRole("viewer"), handleListTestflightCrashes);
+bindAdmin("get", "/api/apps/:appId/testflight-crashes/:submissionId/log",
   requireAppRole("viewer"),
   handleGetTestflightCrashLog,
 );
-admin.get("/api/apps/:appId/appgallery-review", requireAppRole("viewer"), handleAppGalleryReview);
-admin.put("/api/apps/:appId/asc-credentials", requireAppRole("admin"), handleSetAscCredentials);
-admin.delete("/api/apps/:appId/asc-credentials", requireAppRole("admin"), handleDeleteAscCredentials);
+bindAdmin("get", "/api/apps/:appId/appgallery-review", requireAppRole("viewer"), handleAppGalleryReview);
+bindAdmin("put", "/api/apps/:appId/asc-credentials", requireAppRole("admin"), handleSetAscCredentials);
+bindAdmin("delete", "/api/apps/:appId/asc-credentials", requireAppRole("admin"), handleDeleteAscCredentials);
 // AppGallery Connect Service Account and legacy API client credentials for OHOS publishing.
-admin.get("/api/apps/:appId/agc-credentials", requireAppRole("admin"), handleGetAgcCredentials);
-admin.put("/api/apps/:appId/agc-credentials", requireAppRole("admin"), handleSetAgcCredentials);
-admin.delete("/api/apps/:appId/agc-credentials", requireAppRole("admin"), handleDeleteAgcCredentials);
-admin.post("/api/apps/:appId/agc-credentials/verify", requireAppRole("admin"), handleVerifyAgcCredentials);
-admin.get("/api/apps/:appId/agc-test-groups", requireAppRole("admin"), handleListAgcTestGroups);
-admin.get("/api/apps/:appId/builds/:buildId/agc-invitation-test", requireAppRole("admin"), handleGetAgcBuildSubmission);
-admin.post("/api/apps/:appId/builds/:buildId/agc-invitation-test", requireAppRole("admin"), handleStartAgcInvitationTest);
-admin.get("/api/apps/:appId/agc-submissions/:submissionId", requireAppRole("admin"), handleGetAgcSubmission);
-admin.post("/api/apps/:appId/agc-submissions/:submissionId/submit", requireAppRole("admin"), handleSubmitAgcInvitationTest);
-admin.post(
-  "/api/apps/:appId/builds/:buildId/generate-delta-patches",
+bindAdmin("get", "/api/apps/:appId/agc-credentials", requireAppRole("admin"), handleGetAgcCredentials);
+bindAdmin("put", "/api/apps/:appId/agc-credentials", requireAppRole("admin"), handleSetAgcCredentials);
+bindAdmin("delete", "/api/apps/:appId/agc-credentials", requireAppRole("admin"), handleDeleteAgcCredentials);
+bindAdmin("post", "/api/apps/:appId/agc-credentials/verify", requireAppRole("admin"), handleVerifyAgcCredentials);
+bindAdmin("get", "/api/apps/:appId/agc-test-groups", requireAppRole("admin"), handleListAgcTestGroups);
+bindAdmin("get", "/api/apps/:appId/builds/:buildId/agc-invitation-test", requireAppRole("admin"), handleGetAgcBuildSubmission);
+bindAdmin("post", "/api/apps/:appId/builds/:buildId/agc-invitation-test", requireAppRole("admin"), handleStartAgcInvitationTest);
+bindAdmin("get", "/api/apps/:appId/agc-submissions/:submissionId", requireAppRole("admin"), handleGetAgcSubmission);
+bindAdmin("post", "/api/apps/:appId/agc-submissions/:submissionId/submit", requireAppRole("admin"), handleSubmitAgcInvitationTest);
+bindAdmin("post", "/api/apps/:appId/builds/:buildId/generate-delta-patches",
   requireAppRole("publisher"),
   handleGenerateDeltaPatches,
 );
 // delta-sources is a read-only listing; align it with every other GET at viewer.
-admin.get("/api/apps/:appId/delta-sources", requireAppRole("viewer"), handleDeltaSources);
+bindAdmin("get", "/api/apps/:appId/delta-sources", requireAppRole("viewer"), handleDeltaSources);
 
 app.route("/", admin);
 

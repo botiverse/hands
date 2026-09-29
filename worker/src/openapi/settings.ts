@@ -11,9 +11,9 @@ import {
   auth,
   error,
   json,
-  register,
   success,
-  type OpenApiRegistry,
+  type RouteConfigDef,
+  type RouteConfigList,
 } from "./common";
 
 const AppChannelParams = AppIdParam.merge(ChannelIdParam);
@@ -22,8 +22,8 @@ const AppReleaseTypeParams = AppIdParam.merge(ReleaseTypeIdParam);
 const AppOperationParams = AppIdParam.merge(OperationIdParam);
 const AppMemberParams = AppIdParam.merge(AccountIdParam);
 
-function registerCollectionRoutes(
-  registry: OpenApiRegistry,
+function collectionRoutes(
+  routes: RouteConfigDef[],
   tag: string,
   basePath: string,
   itemPath: string,
@@ -31,7 +31,7 @@ function registerCollectionRoutes(
   bodyName: string,
 ) {
   const Body = GenericObject.openapi(bodyName);
-  register(registry, {
+  routes.push( {
     method: "get",
     path: basePath,
     tags: [tag],
@@ -44,7 +44,7 @@ function registerCollectionRoutes(
     },
   });
 
-  register(registry, {
+  routes.push( {
     method: "post",
     path: basePath,
     tags: [tag],
@@ -62,7 +62,7 @@ function registerCollectionRoutes(
   });
 
   for (const method of ["patch", "delete"] as const) {
-    register(registry, {
+    routes.push( {
       method,
       path: itemPath,
       tags: [tag],
@@ -82,9 +82,9 @@ function registerCollectionRoutes(
   }
 }
 
-export function registerSettingsRoutes(registry: OpenApiRegistry) {
-  registerCollectionRoutes(
-    registry,
+export function registerSettingsRoutes(): RouteConfigList {
+  const routes: RouteConfigDef[] = [];
+  collectionRoutes(routes,
     "Channels",
     "/api/apps/{appId}/channels",
     "/api/apps/{appId}/channels/{channelId}",
@@ -92,8 +92,7 @@ export function registerSettingsRoutes(registry: OpenApiRegistry) {
     "ChannelInput",
   );
 
-  registerCollectionRoutes(
-    registry,
+  collectionRoutes(routes,
     "Product types",
     "/api/apps/{appId}/product-types",
     "/api/apps/{appId}/product-types/{ptId}",
@@ -101,8 +100,7 @@ export function registerSettingsRoutes(registry: OpenApiRegistry) {
     "ProductTypeInput",
   );
 
-  registerCollectionRoutes(
-    registry,
+  collectionRoutes(routes,
     "Release types",
     "/api/apps/{appId}/release-types",
     "/api/apps/{appId}/release-types/{rtId}",
@@ -110,7 +108,7 @@ export function registerSettingsRoutes(registry: OpenApiRegistry) {
     "ReleaseTypeInput",
   );
 
-  register(registry, {
+  routes.push( {
     method: "get",
     path: "/api/apps/{appId}/audit-logs",
     tags: ["Audit"],
@@ -123,7 +121,7 @@ export function registerSettingsRoutes(registry: OpenApiRegistry) {
     },
   });
 
-  register(registry, {
+  routes.push( {
     method: "get",
     path: "/api/users/{accountId}/audit",
     tags: ["Audit"],
@@ -144,7 +142,7 @@ export function registerSettingsRoutes(registry: OpenApiRegistry) {
   ] as const) {
     const hasAccount = path.includes("{accountId}");
     const needsBody = method === "post" || method === "patch";
-    register(registry, {
+    routes.push( {
       method,
       path,
       tags: ["App access"],
@@ -170,7 +168,7 @@ export function registerSettingsRoutes(registry: OpenApiRegistry) {
     });
   }
 
-  register(registry, {
+  routes.push( {
     method: "get",
     path: "/api/apps/{appId}/operations",
     tags: ["Operations"],
@@ -183,7 +181,7 @@ export function registerSettingsRoutes(registry: OpenApiRegistry) {
     },
   });
 
-  register(registry, {
+  routes.push( {
     method: "get",
     path: "/api/apps/{appId}/operations/stream",
     tags: ["Operations"],
@@ -206,7 +204,7 @@ export function registerSettingsRoutes(registry: OpenApiRegistry) {
     ["post", "/api/apps/{appId}/operations/{opId}/retry", "Retry app operation"],
     ["delete", "/api/apps/{appId}/operations/{opId}", "Delete app operation"],
   ] as const) {
-    register(registry, {
+    routes.push( {
       method,
       path,
       tags: ["Operations"],
@@ -220,4 +218,5 @@ export function registerSettingsRoutes(registry: OpenApiRegistry) {
       },
     });
   }
+  return routes;
 }

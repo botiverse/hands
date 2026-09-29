@@ -11,9 +11,9 @@ import {
   auth,
   error,
   json,
-  register,
   success,
-  type OpenApiRegistry,
+  type RouteConfigDef,
+  type RouteConfigList,
 } from "./common";
 
 const OrgMemberParams = OrgIdParam.merge(AccountIdParam);
@@ -40,8 +40,9 @@ const WebhookInput = z
   .catchall(z.unknown())
   .openapi("WebhookInput");
 
-export function registerOrgRoutes(registry: OpenApiRegistry) {
-  register(registry, {
+export function registerOrgRoutes(): RouteConfigList {
+  const routes: RouteConfigDef[] = [];
+  routes.push({
     method: "get",
     path: "/api/orgs",
     tags: ["Organizations"],
@@ -53,7 +54,7 @@ export function registerOrgRoutes(registry: OpenApiRegistry) {
     },
   });
 
-  register(registry, {
+  routes.push({
     method: "get",
     path: "/api/orgs/{orgId}/members",
     tags: ["Organizations"],
@@ -66,7 +67,7 @@ export function registerOrgRoutes(registry: OpenApiRegistry) {
     },
   });
 
-  register(registry, {
+  routes.push({
     method: "patch",
     path: "/api/orgs/{orgId}/members/{accountId}",
     tags: ["Organizations"],
@@ -83,7 +84,7 @@ export function registerOrgRoutes(registry: OpenApiRegistry) {
     },
   });
 
-  register(registry, {
+  routes.push({
     method: "delete",
     path: "/api/orgs/{orgId}/members/{accountId}",
     tags: ["Organizations"],
@@ -103,7 +104,7 @@ export function registerOrgRoutes(registry: OpenApiRegistry) {
     ["delete", "/api/orgs/{orgId}/invites/{inviteId}", "Revoke invite link"],
   ] as const) {
     const hasInviteId = path.includes("{inviteId}");
-    register(registry, {
+    routes.push({
       method,
       path,
       tags: ["Invites"],
@@ -127,7 +128,7 @@ export function registerOrgRoutes(registry: OpenApiRegistry) {
     });
   }
 
-  register(registry, {
+  routes.push({
     method: "post",
     path: "/api/invites/{token}/accept",
     tags: ["Invites"],
@@ -143,7 +144,7 @@ export function registerOrgRoutes(registry: OpenApiRegistry) {
     },
   });
 
-  register(registry, {
+  routes.push({
     method: "get",
     path: "/api/orgs/{orgId}/audit-logs",
     tags: ["Audit"],
@@ -171,7 +172,7 @@ export function registerOrgRoutes(registry: OpenApiRegistry) {
   ] as const) {
     const hasWebhookId = path.includes("{webhookId}");
     const needsBody = method === "post" || method === "patch";
-    register(registry, {
+    routes.push({
       method,
       path,
       tags: ["Webhooks"],
@@ -201,7 +202,7 @@ export function registerOrgRoutes(registry: OpenApiRegistry) {
   ] as const) {
     const hasWebhookId = path.includes("{webhookId}");
     const needsBody = method === "post" || method === "patch";
-    register(registry, {
+    routes.push({
       method,
       path,
       tags: ["Webhooks"],
@@ -219,5 +220,6 @@ export function registerOrgRoutes(registry: OpenApiRegistry) {
       },
     });
   }
+  return routes;
 }
 

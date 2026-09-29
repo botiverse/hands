@@ -1,9 +1,9 @@
-import { OpenAPIHono } from "@hono/zod-openapi";
+import { createRoute, OpenAPIHono } from "@hono/zod-openapi";
 import { registerAppRoutes } from "./openapi/apps";
 import { registerAndroidDistributionRoutes } from "./openapi/android_distribution";
 import { registerAuthRoutes } from "./openapi/auth";
 import { registerBuildRoutes } from "./openapi/builds";
-import { registerFeedbackRoutes } from "./openapi/feedback";
+import { feedbackRoutes } from "./openapi/feedback";
 import { registerOrgRoutes } from "./openapi/orgs";
 import { registerPublicRoutes } from "./openapi/public";
 import { registerReleaseRoutes } from "./openapi/releases";
@@ -11,15 +11,18 @@ import { registerSettingsRoutes } from "./openapi/settings";
 
 const docs = new OpenAPIHono();
 
-registerAuthRoutes(docs.openAPIRegistry);
-registerPublicRoutes(docs.openAPIRegistry);
-registerAppRoutes(docs.openAPIRegistry);
-registerAndroidDistributionRoutes(docs.openAPIRegistry);
-registerBuildRoutes(docs.openAPIRegistry);
-registerReleaseRoutes(docs.openAPIRegistry);
-registerFeedbackRoutes(docs.openAPIRegistry);
-registerOrgRoutes(docs.openAPIRegistry);
-registerSettingsRoutes(docs.openAPIRegistry);
+for (const r of registerAuthRoutes()) docs.openAPIRegistry.registerPath(createRoute(r));
+for (const r of registerPublicRoutes()) docs.openAPIRegistry.registerPath(createRoute(r));
+for (const r of registerAppRoutes()) docs.openAPIRegistry.registerPath(createRoute(r));
+for (const r of registerAndroidDistributionRoutes()) docs.openAPIRegistry.registerPath(createRoute(r));
+for (const r of registerBuildRoutes()) docs.openAPIRegistry.registerPath(createRoute(r));
+for (const r of registerReleaseRoutes()) docs.openAPIRegistry.registerPath(createRoute(r));
+// Feedback routes are bound live via OpenAPIHono elsewhere; registering the
+// same RouteConfig here keeps this document complete while avoiding a second
+// source of truth.
+for (const r of Object.values(feedbackRoutes)) docs.openAPIRegistry.registerPath(createRoute(r));
+for (const r of registerOrgRoutes()) docs.openAPIRegistry.registerPath(createRoute(r));
+for (const r of registerSettingsRoutes()) docs.openAPIRegistry.registerPath(createRoute(r));
 
 export const openApiDocument = docs.getOpenAPI31Document({
   openapi: "3.1.0",
