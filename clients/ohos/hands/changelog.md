@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.3.5
+
+- Native crash titles use `signo` as the signal number and label `code` as
+  si_code. `{ signo: 11, code: 2 }` is SIGSEGV / SEGV_ACCERR, not signal 2.
+- A crash uploaded after a newer install keeps the crashed build's version
+  name and version code. The version code is omitted when the fault log has
+  no `VersionCode`, instead of borrowing the running install.
+- A historical crash whose version cannot be recovered is stored as unknown
+  and uploaded with no version. An older sidecar without version keys is
+  recovered from its log, and stays unknown when that log has none. Ordinary
+  feedback still reports the running install.
+- An empty `Version`, `Version name`, `Bundle version`, or version-code line
+  stays empty. The matcher does not read the next line.
+
 ## 0.3.4
 
 - Upload large feedback attachments through bounded 5 MiB ArkTS reads and an

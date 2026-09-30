@@ -7,6 +7,7 @@ import {
   uploadCrashThenDelete,
 } from './HandsCrashStoragePolicy';
 import { HandsFeedbackClient, HandsFeedbackExtras } from './HandsFeedbackClient';
+import { historicalCrashBuild, StoredCrashBuild, StoredCrashBuildKeys } from './HandsFaultReportPolicy';
 
 const TAG: string = 'HandsCrashUploader';
 const MAX_STORED_CRASHES: number = 5;
@@ -17,6 +18,9 @@ export interface CrashMeta {
   top_frame?: string;
   reason?: string;
   crash_at?: number;
+  /** Version of the build that crashed, not the build that uploads the ticket. */
+  version_name?: string;
+  version_code?: number | null;
 }
 
 /**
@@ -76,10 +80,31 @@ export class HandsCrashUploader {
       }
       let meta: CrashMeta = {};
       try {
-        meta = JSON.parse(fs.readTextSync(sidecarPath)) as CrashMeta;
+        const parsed = JSON.parse(fs.readTextSync(sidecarPath)) as CrashMeta;
+        if (parsed !== null && typeof parsed === 'object') {
+          meta = parsed;
+        }
       } catch (error) {
         hilog.warn(0x0000, TAG, 'meta parse failed for %{public}s', sidecarName);
       }
+      const versionKeys: StoredCrashBuildKeys = {
+        versionName: meta.version_name !== undefined,
+        versionCode: meta.version_code !== undefined,
+      };
+      let logText = '';
+      if (!versionKeys.versionName && !versionKeys.versionCode) {
+        try {
+          logText = fs.readTextSync(logPath);
+        } catch (error) {
+          hilog.warn(0x0000, TAG, 'crash log read failed for %{public}s', sidecarName);
+        }
+      }
+      // A historical crash never borrows the install that uploads it.
+      const storedBuild: StoredCrashBuild = {
+        versionName: typeof meta.version_name === 'string' ? meta.version_name : '',
+        versionCode: typeof meta.version_code === 'number' ? meta.version_code : null,
+      };
+      const captured = historicalCrashBuild(storedBuild, versionKeys, logText);
       const exceptionClass = meta.exception_class ?? 'OhosCrash';
       const topFrame = meta.top_frame ?? '';
       const detail = (meta.exception_message ?? '').slice(0, 200);
@@ -98,7 +123,14 @@ export class HandsCrashUploader {
       ];
       try {
         const ticketId = await uploadCrashThenDelete(
-          (): Promise<string> => HandsFeedbackClient.submit(context, message, 'crash', [logPath], extras),
+          (): Promise<string> => HandsFeedbackClient.submit(
+            context,
+            message,
+            'crash',
+            [logPath],
+            extras,
+            captured,
+          ),
           (): void => HandsCrashUploader.deletePair(logPath),
         );
         hilog.info(0x0000, TAG, 'uploaded crash %{public}s as %{public}s', sidecarName, ticketId.slice(0, 8));

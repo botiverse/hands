@@ -4,7 +4,8 @@ import fs from '@ohos.file.fs';
 import hilog from '@ohos.hilog';
 import { HandsCrashStorage } from './HandsCrashStorage';
 import { runIsolatedCrashCapture } from './HandsCrashStoragePolicy';
-import { HandsCrashUploader } from './HandsCrashUploader';
+import { CrashMeta, HandsCrashUploader } from './HandsCrashUploader';
+import { describeFaultSignal, faultBuildIdentity } from './HandsFaultReportPolicy';
 
 const TAG: string = 'HandsFaultWatcher';
 const FAULT_LOG_MAX_CHARS: number = 180000;
@@ -149,13 +150,19 @@ export class HandsFaultWatcher {
 
     const crashPath = HandsCrashStorage.writeLog(context, crashLog, 'fault', faultTime);
     const summary = HandsFaultWatcher.exceptionSummary(exception, kind);
-    HandsCrashUploader.writeMeta(crashPath, {
+    const identity = faultBuildIdentity(params['bundle_version'], externalFileContents);
+    const meta: CrashMeta = {
       exception_class: summary.cls,
       exception_message: summary.message,
       top_frame: summary.topFrame,
       reason: eventName === hiAppEvent.event.APP_FREEZE ? 'appFreeze' : 'nativeCrash',
       crash_at: faultTime,
-    });
+      // Always record the crashed build, including an explicit unknown.
+      // A missing key would be uploaded as the install that is running now.
+      version_name: identity === null ? '' : identity.versionName,
+      version_code: identity === null ? null : identity.versionCode,
+    };
+    HandsCrashUploader.writeMeta(crashPath, meta);
     hilog.info(0x0000, TAG, 'captured %{public}s fault', kind);
   }
 
@@ -168,7 +175,7 @@ export class HandsFaultWatcher {
       const ex = exception as Record<string, Object>;
       const name = String(ex['name'] ?? '');
       const message = String(ex['message'] ?? '');
-      const signal = HandsFaultWatcher.describeSignal(ex['signal']);
+      const signal = describeFaultSignal(ex['signal'] as Object | string | number | null | undefined);
       if (name.length > 0) {
         result.cls = name;
       } else if (signal.length > 0) {
@@ -193,34 +200,6 @@ export class HandsFaultWatcher {
       }
     }
     return result;
-  }
-
-  /**
-   * hiAppEvent may deliver the signal as a string or a structured object
-   * (e.g. { signal: 11, name: "SIGSEGV" }). String(obj) would produce
-   * "[object Object]", so pull out a human name/number instead.
-   */
-  private static describeSignal(signal: Object | undefined): string {
-    if (signal === undefined || signal === null) {
-      return '';
-    }
-    if (typeof signal !== 'object') {
-      return String(signal);
-    }
-    const s = signal as Record<string, Object>;
-    const parts: string[] = [];
-    const name = s['name'] ?? s['signal_name'];
-    const code = s['code'] ?? s['signal'] ?? s['number'];
-    if (name !== undefined && name !== null) parts.push(String(name));
-    if (code !== undefined && code !== null) parts.push(String(code));
-    if (parts.length > 0) {
-      return parts.join(' ');
-    }
-    try {
-      return JSON.stringify(signal);
-    } catch (error) {
-      return 'unknown';
-    }
   }
 
   private static joinLines(value: Object | undefined): string {
