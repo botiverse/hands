@@ -54,6 +54,7 @@ interface DirectUploadRow {
   state: "pending" | "verifying" | "ready" | "failed" | "expired";
   committed_final_key: string | null;
   verifier_lease_expires_at: number | null;
+  cleanup_receipt?: string | null;
 }
 
 interface HostedMigrationBeginInput {
@@ -202,6 +203,26 @@ function requestDigest(input: ReturnType<typeof normalizedInput>): string {
   }))));
 }
 
+function uploadStatus(row: DirectUploadRow) {
+  const expires = row.state === "verifying" ? row.verifier_lease_expires_at : null;
+  const receiptReason = row.cleanup_receipt?.match(/^verification_failed:([^:]+):/)?.[1];
+  return {
+    asset_id: row.asset_id, attempt: row.attempt, state: row.state,
+    upload_expires_at: row.upload_expires_at,
+    verification_started_at: expires === null ? null : expires - VERIFY_LEASE_MS,
+    verifier_lease_expires_at: expires,
+    can_retry_complete: row.upload_expires_at > Date.now() && (row.state === "pending" || (row.state === "verifying" && (expires ?? 0) < Date.now())),
+    verification_error: row.state === "failed" ? receiptReason ?? null : null,
+  };
+}
+
+export async function handleGetBuildAssetUpload(c: AdminContext) {
+  const row = await loadUpload(c.env.DB, c.req.param("appId") ?? "", c.req.param("buildId") ?? "", c.req.param("assetId") ?? "");
+  if (!row) return c.json({ error: "asset upload not found", code: "ASSET_UPLOAD_NOT_FOUND" }, 404);
+  c.header("Cache-Control", "no-store");
+  return c.json(uploadStatus(row));
+}
+
 function uploadResponse(
   c: AdminContext,
   row: DirectUploadRow,
@@ -211,9 +232,7 @@ function uploadResponse(
   const ready = row.state === "ready";
   const metadata = JSON.parse(row.metadata_json) as Record<string, unknown>;
   return c.json({
-    asset_id: row.asset_id,
-    attempt: row.attempt,
-    state: row.state,
+    ...uploadStatus(row),
     replayed,
     upload: ready || row.state !== "pending" || !uploadUrl ? null : {
       method: "PUT",
@@ -236,7 +255,7 @@ async function findUploadByReplay(
             a.id AS asset_id, a.artifact_kind, a.platform, a.arch, a.variant,
             a.filetype, a.r2_key, a.file_hash, a.size_bytes, a.metadata_json,
             i.attempt, i.staging_key, i.upload_expires_at, i.state,
-            i.committed_final_key, i.verifier_lease_expires_at,
+            i.committed_final_key, i.verifier_lease_expires_at, i.cleanup_receipt,
             r.request_digest
        FROM build_asset_ingest_replay r
        JOIN builds b ON b.app_id = r.app_id AND b.id = r.build_id
@@ -400,7 +419,7 @@ async function loadUpload(db: D1Database, appId: string, buildId: string, assetI
             a.id AS asset_id, a.artifact_kind, a.platform, a.arch, a.variant,
             a.filetype, a.r2_key, a.file_hash, a.size_bytes, a.metadata_json,
             i.attempt, i.staging_key, i.upload_expires_at, i.state,
-            i.committed_final_key, i.verifier_lease_expires_at
+            i.committed_final_key, i.verifier_lease_expires_at, i.cleanup_receipt
        FROM builds b
        JOIN build_assets a ON a.build_id = b.id
        JOIN build_asset_ingest_attempt i ON i.asset_id = a.id
@@ -594,16 +613,20 @@ async function finalizeFailedVerificationCleanup(
   ]);
 }
 
+class UploadStreamSizeError extends Error {
+  constructor(readonly actualBytes: number, readonly expectedBytes: number) { super("streamed asset size differs from declaration"); }
+}
+
 function limitObjectBody(body: ReadableStream<Uint8Array>, expectedBytes: number) {
   let seen = 0;
   return body.pipeThrough(new TransformStream<Uint8Array, Uint8Array>({
     transform(chunk, controller) {
       seen += chunk.byteLength;
-      if (seen > expectedBytes) throw new Error("object exceeds declared size while streaming");
+      if (seen > expectedBytes) throw new UploadStreamSizeError(seen, expectedBytes);
       controller.enqueue(chunk);
     },
     flush() {
-      if (seen !== expectedBytes) throw new Error("object ended before declared size");
+      if (seen !== expectedBytes) throw new UploadStreamSizeError(seen, expectedBytes);
     },
   }));
 }
@@ -622,10 +645,10 @@ async function hashBody(body: ReadableStream<Uint8Array>) {
   return { sha256: bytesToHex(hasher.digest()), size };
 }
 
-function fixedLengthBody(body: ReadableStream<Uint8Array>, length: number) {
-  if (typeof FixedLengthStream === "undefined") return { readable: body, pump: Promise.resolve() };
+function fixedLengthBody(body: ReadableStream<Uint8Array>, length: number, signal: AbortSignal) {
+  if (typeof FixedLengthStream === "undefined") return { readable: body.pipeThrough(new TransformStream<Uint8Array, Uint8Array>(), { signal }), pump: Promise.resolve() };
   const fixed = new FixedLengthStream(length);
-  return { readable: fixed.readable, pump: body.pipeTo(fixed.writable) };
+  return { readable: fixed.readable, pump: body.pipeTo(fixed.writable, { signal }) };
 }
 
 async function failVerification(
@@ -652,6 +675,18 @@ async function failVerification(
   return true;
 }
 
+async function retryStorageVerification(c: AdminContext, row: DirectUploadRow, leaseId: string, phase: string) {
+  // The failed operation has settled. Retain staging bytes and the generation
+  // ledger; a later successful verifier or cleanup reaps any partial seal.
+  const released = await c.env.DB.prepare(
+    `UPDATE build_asset_ingest_attempt SET state = 'pending', verifier_lease_id = NULL, verifier_lease_expires_at = NULL
+      WHERE asset_id = ?1 AND attempt = ?2 AND verifier_lease_id = ?3 AND cleanup_state = 'live'`,
+  ).bind(row.asset_id, row.attempt, leaseId).run();
+  if ((released.meta?.changes ?? 0) !== 1) return completeUploadContention(c, row.app_id, row.build_id, row.asset_id);
+  c.header("Retry-After", String(UPLOAD_RETRY_SECONDS));
+  return c.json({ error: "storage verification failed; retry the same completion without re-uploading", code: "ASSET_UPLOAD_STORAGE_FAILED", phase, state: "pending", retryable: true }, 503);
+}
+
 function isTransientUploadError(error: unknown): boolean {
   // A D1_ERROR prefix alone is not sufficient: constraint/schema errors must
   // remain terminal. D1 may wrap the transport error in Error.cause.
@@ -673,7 +708,7 @@ async function completeUploadContention(c: AdminContext, appId: string, buildId:
   }
   if (current.state === "verifying" || current.state === "pending") {
     c.header("Retry-After", String(UPLOAD_RETRY_SECONDS));
-    return c.json({ error: current.state === "pending" ? "asset verification was released; retry completion" : "asset verification is in progress; poll the upload declaration", code: "ASSET_UPLOAD_BUSY", state: current.state, retryable: true }, 409);
+    return c.json({ error: current.state === "pending" ? "asset verification was released; retry completion" : "asset verification is in progress; poll the upload declaration", code: "ASSET_UPLOAD_BUSY", ...uploadStatus(current), retryable: true }, 409);
   }
   return c.json({ error: "asset upload is no longer available for verification", code: "ASSET_UPLOAD_TERMINAL", state: current.state, retryable: false }, 409);
 }
@@ -750,20 +785,27 @@ export async function handleCompleteBuildAssetUpload(c: AdminContext) {
     return c.json({ error: (error as Error).message, code: "ASSET_UPLOAD_SEAL_INTENT_FAILED", retryable }, retryable ? 503 : 409);
   }
 
-  const head = await c.env.APK_BUCKET.head(row.staging_key);
+  let head: R2Object | null;
+  try { head = await c.env.APK_BUCKET.head(row.staging_key); }
+  catch { return retryStorageVerification(c, row, leaseId, "staging_head"); }
   if (!head || head.size !== row.size_bytes) {
     if (!await failVerification(c, row, leaseId, head ? "size_mismatch" : "upload_missing")) {
       return c.json({ error: "asset verification lease was lost", code: "ASSET_UPLOAD_LEASE_LOST" }, 409);
     }
-    return c.json({ error: "uploaded asset size does not match the declaration", code: "ASSET_UPLOAD_INTEGRITY_MISMATCH" }, 422);
+    return c.json({ error: "uploaded asset size does not match the declaration", code: "ASSET_UPLOAD_INTEGRITY_MISMATCH", retryable: false, reason: head ? "size_mismatch" : "upload_missing", expected: { size_bytes: row.size_bytes }, actual: { size_bytes: head?.size ?? null } }, 422);
   }
-  if (await c.env.APK_BUCKET.head(finalKey)) {
+  let existingFinal: R2Object | null;
+  try { existingFinal = await c.env.APK_BUCKET.head(finalKey); }
+  catch { return retryStorageVerification(c, row, leaseId, "seal_head"); }
+  if (existingFinal) {
     if (!await failVerification(c, row, leaseId, "immutable_key_conflict")) {
       return c.json({ error: "asset verification lease was lost", code: "ASSET_UPLOAD_LEASE_LOST" }, 409);
     }
     return c.json({ error: "verified asset key already exists", code: "ASSET_UPLOAD_IMMUTABLE_CONFLICT" }, 409);
   }
-  const object = await c.env.APK_BUCKET.get(row.staging_key);
+  let object: R2ObjectBody | null;
+  try { object = await c.env.APK_BUCKET.get(row.staging_key); }
+  catch { return retryStorageVerification(c, row, leaseId, "staging_read"); }
   if (!object?.body || object.size !== row.size_bytes) {
     if (!await failVerification(c, row, leaseId, "upload_changed_before_verification")) {
       return c.json({ error: "asset verification lease was lost", code: "ASSET_UPLOAD_LEASE_LOST" }, 409);
@@ -773,21 +815,29 @@ export async function handleCompleteBuildAssetUpload(c: AdminContext) {
 
   const limited = limitObjectBody(object.body, row.size_bytes);
   const [hashStream, sealStream] = limited.tee();
-  const fixed = fixedLengthBody(sealStream, row.size_bytes);
+  const abort = new AbortController();
+  const fixed = fixedLengthBody(sealStream, row.size_bytes, abort.signal);
   const contentType = String((JSON.parse(row.metadata_json) as Record<string, unknown>).content_type ?? "application/octet-stream");
+  // A failed PUT must cancel both stream branches, including the fixed-length
+  // pump, so it cannot leave verification waiting for a consumer forever.
+  let failurePhase: string | null = null;
+  const failTogether = <T>(operation: Promise<T>, phase: string): Promise<T> => operation.catch((error: unknown) => { failurePhase ??= phase; abort.abort(error); throw error; });
   const [hashResult, pumpResult, putResult] = await Promise.allSettled([
-    hashBody(hashStream),
-    fixed.pump,
-    c.env.APK_BUCKET.put(finalKey, fixed.readable, {
+    failTogether(hashBody(hashStream.pipeThrough(new TransformStream<Uint8Array, Uint8Array>(), { signal: abort.signal })), "staging_stream"),
+    failTogether(fixed.pump, "seal_stream"),
+    failTogether(c.env.APK_BUCKET.put(finalKey, fixed.readable, {
       httpMetadata: { contentType },
       customMetadata: { sha256: row.file_hash, build_id: buildId, asset_id: assetId },
-    }),
+    }), "seal_write"),
   ]);
   if (hashResult.status === "rejected" || pumpResult.status === "rejected" || putResult.status === "rejected") {
-    if (!await failVerification(c, row, leaseId, "stream_or_seal_failed")) {
-      return c.json({ error: "asset verification lease was lost", code: "ASSET_UPLOAD_LEASE_LOST" }, 409);
+    const failures = [hashResult, pumpResult, putResult].filter((result) => result.status === "rejected");
+    const integrityFailure = failures.find((result) => result.status === "rejected" && result.reason instanceof UploadStreamSizeError);
+    if (!integrityFailure) {
+      return retryStorageVerification(c, row, leaseId, failurePhase ?? "staging_stream");
     }
-    return c.json({ error: "failed to verify and seal asset", code: "ASSET_UPLOAD_SEAL_FAILED" }, 422);
+    if (!await failVerification(c, row, leaseId, "stream_size_mismatch")) return completeUploadContention(c, appId, buildId, assetId);
+    return c.json({ error: "streamed asset size differs from declaration", code: "ASSET_UPLOAD_INTEGRITY_MISMATCH", reason: "stream_size_mismatch", retryable: false, expected: { size_bytes: row.size_bytes }, actual: { size_bytes: (integrityFailure.reason as UploadStreamSizeError).actualBytes } }, 422);
   }
   const actual = hashResult.value;
   if (actual.size !== row.size_bytes || actual.sha256 !== row.file_hash.toLowerCase()) {
@@ -797,16 +847,19 @@ export async function handleCompleteBuildAssetUpload(c: AdminContext) {
     return c.json({
       error: "uploaded asset does not match the declared exact bytes",
       code: "ASSET_UPLOAD_INTEGRITY_MISMATCH",
+      reason: actual.size !== row.size_bytes ? "size_mismatch" : "sha256_mismatch", retryable: false,
       expected: { sha256: row.file_hash, size_bytes: row.size_bytes },
       actual: { sha256: actual.sha256, size_bytes: actual.size },
     }, 422);
   }
-  const finalHead = await c.env.APK_BUCKET.head(finalKey);
+  let finalHead: R2Object | null;
+  try { finalHead = await c.env.APK_BUCKET.head(finalKey); }
+  catch { return retryStorageVerification(c, row, leaseId, "seal_readback"); }
   if (!finalHead || finalHead.size !== row.size_bytes) {
     if (!await failVerification(c, row, leaseId, "sealed_size_mismatch")) {
       return c.json({ error: "asset verification lease was lost", code: "ASSET_UPLOAD_LEASE_LOST" }, 409);
     }
-    return c.json({ error: "verified asset readback failed", code: "ASSET_UPLOAD_SEAL_FAILED" }, 422);
+    return c.json({ error: "verified asset readback failed", code: "ASSET_UPLOAD_SEAL_FAILED", reason: "sealed_size_mismatch", retryable: false, expected: { size_bytes: row.size_bytes }, actual: { size_bytes: finalHead?.size ?? null } }, 422);
   }
 
   const readyAt = Date.now();

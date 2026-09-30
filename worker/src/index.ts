@@ -185,6 +185,7 @@ import {
   handleCompleteBuildAssetUpload,
   handleCompleteHostedBuildMigration,
   handleDeclareBuildAssetUpload,
+  handleGetBuildAssetUpload,
 } from "./routes/build_asset_uploads";
 import {
   handleListOperations,
@@ -970,7 +971,9 @@ bindAdmin("post", "/api/apps/:appId/builds/:buildId/assets", requireAppRole("pub
 bindAdmin("post", "/api/apps/:appId/builds/:buildId/assets/uploads",
   requireAppRole("publisher"),
   handleDeclareBuildAssetUpload,
+  handleGetBuildAssetUpload,
 );
+bindAdmin("get", "/api/apps/:appId/builds/:buildId/assets/:assetId/upload", requireAppRole("publisher"), handleGetBuildAssetUpload);
 bindAdmin("post", "/api/apps/:appId/builds/:buildId/assets/:assetId/upload/complete",
   requireAppRole("publisher"),
   handleCompleteBuildAssetUpload,
