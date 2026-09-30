@@ -148,6 +148,16 @@ can replay the same declaration: pending assets retain their declared digest and
 size, while ready assets return no upload URL. The client never receives an R2
 bucket credential.
 
+Hosted release URLs under `/dl/:slug/releases/:releaseId/:file` redirect to
+a short-lived, object-scoped R2 download URL when R2 signing is configured.
+The channel URL `/dl/:slug/:channel/:file` first redirects to an immutable
+release URL. Download clients must follow redirects (for example, `curl -L`)
+and verify the declared digest as before. Keep the Hands release URL for
+future downloads; the final R2 URL expires. A HEAD request receives a URL
+signed for HEAD, while GET receives one signed for GET. Redirects are
+`Cache-Control: no-store`; this does not promise CDN caching of object bytes.
+Self-hosted instances without R2 signing continue to stream through Hands.
+
 ## Publish Android
 
 Use `builds publish-android` to upload an APK and create a release. Per the
