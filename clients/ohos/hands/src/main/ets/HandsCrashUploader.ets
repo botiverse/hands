@@ -79,24 +79,24 @@ export class HandsCrashUploader {
         continue;
       }
       let meta: CrashMeta = {};
-      let raw: Record<string, Object> = {};
       try {
-        const parsed = JSON.parse(fs.readTextSync(sidecarPath)) as Object;
+        const parsed = JSON.parse(fs.readTextSync(sidecarPath)) as CrashMeta;
         if (parsed !== null && typeof parsed === 'object') {
-          raw = parsed as Record<string, Object>;
-          meta = parsed as CrashMeta;
+          meta = parsed;
         }
       } catch (error) {
         hilog.warn(0x0000, TAG, 'meta parse failed for %{public}s', sidecarName);
       }
+      // Missing sidecar keys stay undefined. A recorded null version code is
+      // present and must not fall back to the build that uploads the ticket.
       const captured = capturedCrashBuild(
         {
           versionName: typeof meta.version_name === 'string' ? meta.version_name : '',
           versionCode: typeof meta.version_code === 'number' ? meta.version_code : null,
         },
         {
-          versionName: Object.prototype.hasOwnProperty.call(raw, 'version_name'),
-          versionCode: Object.prototype.hasOwnProperty.call(raw, 'version_code'),
+          versionName: meta.version_name !== undefined,
+          versionCode: meta.version_code !== undefined,
         },
       );
       const exceptionClass = meta.exception_class ?? 'OhosCrash';
