@@ -143,12 +143,14 @@ internal object HandsAnr {
             if (watermark == null) prefs.edit().putLong(KEY_WATERMARK, System.currentTimeMillis() - FIRST_RUN_LOOKBACK_MS).apply()
             return
         }
+        // ApplicationExitInfo has no app version. Leave the ticket build empty
+        // instead of stamping versionName/versionCode from the uploading install.
         val feedback = HandsFeedback(
             context = context,
             baseUrl = baseUrl,
             appSlug = appSlug,
-            versionName = versionName,
-            versionCode = versionCode,
+            versionName = null,
+            versionCode = null,
             channel = channel,
             clientKey = clientKey,
         )

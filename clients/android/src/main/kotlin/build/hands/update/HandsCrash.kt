@@ -69,12 +69,13 @@ object HandsCrash {
             // Persist the release-health crash marker before doing any heavier
             // crash-log work. It is flushed on the next launch.
             runCatching { HandsSessions.markCurrentCrashed() }
+            val crashedBuild = installedBuild(appContext)
             val crashLog =
-                runCatching { buildCrashLog(appContext, thread, throwable, extraContext) }
+                runCatching { buildCrashLog(appContext, thread, throwable, extraContext, crashedBuild) }
                     .getOrElse { buildFallbackCrashLog(thread, throwable, it) }
                     .take(CRASH_LOG_MAX_CHARS)
 
-            runCatching { writeCrash(appContext, thread, throwable, crashLog) }
+            runCatching { writeCrash(appContext, thread, throwable, crashLog, crashedBuild) }
                 .onFailure { Log.e(TAG, "Failed to write crash log", it) }
             if (copyToClipboard) {
                 runCatching {
@@ -137,6 +138,11 @@ object HandsCrash {
      * Upload stored crashes through the feedback channel and delete them on
      * success. Safe to call repeatedly; runs synchronously on the calling
      * thread.
+     *
+     * [versionName] and [versionCode] are the install that is uploading.
+     * A stored crash keeps the build captured when it happened. An older
+     * sidecar with no build keys is recovered from the log. An unknown build
+     * is omitted. Neither path copies the uploading install onto the ticket.
      */
     fun uploadPending(
         context: Context,
@@ -156,8 +162,8 @@ object HandsCrash {
                 context = context,
                 baseUrl = baseUrl,
                 appSlug = appSlug,
-                versionName = versionName,
-                versionCode = versionCode,
+                versionName = null,
+                versionCode = null,
                 channel = channel,
                 clientKey = clientKey,
             )
@@ -168,6 +174,8 @@ object HandsCrash {
                 continue
             }
             val meta = runCatching { JSONObject(sidecar.readText()) }.getOrNull() ?: JSONObject()
+            val logText = runCatching { logFile.readText() }.getOrDefault("")
+            val historical = historicalBuildFromSidecar(meta, logText)
             val exceptionClass = meta.optString("exception_class", "UnknownException")
             val topFrame = meta.optString("top_frame", "")
             val message =
@@ -185,14 +193,15 @@ object HandsCrash {
                             kind = "crash",
                             attachments = listOf(logFile),
                             extras =
-                                mapOf(
-                                    "crash_exception_class" to exceptionClass,
-                                    "crash_top_frame" to topFrame,
-                                    "crash_thread" to meta.optString("thread", ""),
-                                    "crash_at" to meta.optLong("crash_at", 0L),
-                                    "crash_process_uptime_ms" to meta.optLong("process_uptime_ms", -1L),
-                                    "breadcrumbs" to meta.optString("breadcrumbs", "[]"),
-                                ),
+                                buildMap {
+                                    put("crash_exception_class", exceptionClass)
+                                    put("crash_top_frame", topFrame)
+                                    put("crash_thread", meta.optString("thread", ""))
+                                    put("crash_at", meta.optLong("crash_at", 0L))
+                                    put("crash_process_uptime_ms", meta.optLong("process_uptime_ms", -1L))
+                                    put("breadcrumbs", meta.optString("breadcrumbs", "[]"))
+                                    putAll(HandsHistoricalBuildPolicy.versionExtras(historical))
+                                },
                         )
                     }
                 }
@@ -215,11 +224,49 @@ object HandsCrash {
         return dir
     }
 
+    internal fun historicalBuildFromSidecar(meta: JSONObject, logText: String): HandsHistoricalBuild {
+        val namePresent = meta.has("version_name")
+        val codePresent = meta.has("version_code")
+        val name = if (!namePresent || meta.isNull("version_name")) {
+            null
+        } else {
+            meta.optString("version_name", "")
+        }
+        val code = if (!codePresent || meta.isNull("version_code")) {
+            null
+        } else {
+            HandsHistoricalBuildPolicy.versionCodeOrNull(meta.get("version_code"))
+        }
+        return HandsHistoricalBuildPolicy.resolve(
+            versionNamePresent = namePresent,
+            versionName = name,
+            versionCodePresent = codePresent,
+            versionCode = code,
+            logText = logText,
+        )
+    }
+
+    private fun installedBuild(context: Context): HandsHistoricalBuild =
+        runCatching {
+            val packageInfo = context.packageManager.getPackageInfo(context.packageName, 0)
+            val code =
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                    packageInfo.longVersionCode
+                } else {
+                    @Suppress("DEPRECATION") packageInfo.versionCode.toLong()
+                }
+            HandsHistoricalBuild(
+                versionName = packageInfo.versionName?.trim()?.takeIf { it.isNotEmpty() },
+                versionCode = code.takeIf { HandsHistoricalBuildPolicy.versionCodeOrNull(it) != null },
+            )
+        }.getOrDefault(HandsHistoricalBuild(null, null))
+
     private fun writeCrash(
         context: Context,
         thread: Thread,
         throwable: Throwable,
         crashLog: String,
+        crashedBuild: HandsHistoricalBuild,
     ) {
         val dir = crashDir(context) ?: return
         // Cap retention: keep the newest MAX_STORED_CRASHES - 1 before adding.
@@ -244,6 +291,8 @@ object HandsCrash {
                 .put("thread", thread.name)
                 .put("crash_at", System.currentTimeMillis())
                 .put("process_uptime_ms", System.currentTimeMillis() - processStartMs)
+                .put("version_name", crashedBuild.versionName ?: "")
+                .put("version_code", crashedBuild.versionCode ?: JSONObject.NULL)
         runCatching { meta.put("breadcrumbs", HandsCapture.snapshotBreadcrumbs()) }
         File("${base.absolutePath}.meta.json").writeText(meta.toString())
         Log.e(TAG, "Crash log written to: ${base.absolutePath}.txt")
@@ -254,21 +303,13 @@ object HandsCrash {
         thread: Thread,
         throwable: Throwable,
         extraContext: (() -> String)?,
+        crashedBuild: HandsHistoricalBuild,
     ): String =
         buildString {
-            val packageInfo = context.packageManager.getPackageInfo(context.packageName, 0)
             appendLine("Crash log")
             appendLine("Crash at: ${Date()}")
             appendLine("Package: ${context.packageName}")
-            appendLine("Version name: ${packageInfo.versionName.orEmpty()}")
-            appendLine(
-                "Version code: " +
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-                        packageInfo.longVersionCode.toString()
-                    } else {
-                        @Suppress("DEPRECATION") packageInfo.versionCode.toString()
-                    },
-            )
+            append(HandsHistoricalBuildPolicy.crashLogVersionLines(crashedBuild))
             appendLine("Device: ${Build.MANUFACTURER} ${Build.MODEL}".trim())
             appendLine("Android: ${Build.VERSION.RELEASE} / SDK ${Build.VERSION.SDK_INT}")
             appendLine("Device id: ${HandsDeviceId.get(context)}")
