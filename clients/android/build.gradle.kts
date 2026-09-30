@@ -165,7 +165,15 @@ tasks.withType<Test>().configureEach {
             throw GradleException("$name cannot run sidecar JSON cases without org.json on the classpath")
         }
         val rest = all.filterNot { it.name.matches(Regex("""json-\d.*\.jar""")) }
-        classpath.setFrom(jsonJars + rest)
+        // Kotlin turns ConfigurableFileCollection.setFrom into the `from` property,
+        // so the method is not visible as classpath.setFrom.
+        val setFrom = classpath.javaClass.methods.first { method ->
+            method.name == "setFrom" &&
+                method.parameterCount == 1 &&
+                Iterable::class.java.isAssignableFrom(method.parameterTypes[0]) &&
+                !method.parameterTypes[0].isArray
+        }
+        setFrom.invoke(classpath, jsonJars + rest)
     }
 }
 
