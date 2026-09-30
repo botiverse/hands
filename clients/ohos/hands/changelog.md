@@ -11,6 +11,8 @@
   and uploaded with no version. An older sidecar without version keys is
   recovered from its log, and stays unknown when that log has none. Ordinary
   feedback still reports the running install.
+- An empty `Version`, `Version name`, `Bundle version`, or version-code line
+  stays empty. The matcher does not read the next line.
 
 ## 0.3.4
 

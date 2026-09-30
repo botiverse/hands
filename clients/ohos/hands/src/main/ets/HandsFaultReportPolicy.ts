@@ -74,11 +74,13 @@ export function faultBuildIdentity(
   bundleVersion: SignalValue,
   faultText: string,
 ): FaultBuildIdentity | null {
-  const headerName = labeledLine(faultText, /^Version:\s*(\S.*?)\s*$/m);
-  const reportedName = labeledLine(faultText, /^Version name:\s*(\S.*?)\s*$/m);
-  const bundleLine = labeledLine(faultText, /^Bundle version:\s*(\S.*?)\s*$/m);
-  const headerCode = labeledCode(faultText, /^VersionCode:\s*(\d+)\s*$/m);
-  const reportedCode = labeledCode(faultText, /^Version code:\s*(\d+)\s*$/m);
+  // Whitespace stays on the same line. `\s` would cross the newline and
+  // treat the following field, such as `Pid/Uid`, as the version.
+  const headerName = labeledLine(faultText, /^Version:[ \t]*(\S.*?)[ \t]*$/m);
+  const reportedName = labeledLine(faultText, /^Version name:[ \t]*(\S.*?)[ \t]*$/m);
+  const bundleLine = labeledLine(faultText, /^Bundle version:[ \t]*(\S.*?)[ \t]*$/m);
+  const headerCode = labeledCode(faultText, /^VersionCode:[ \t]*(\d+)[ \t]*$/m);
+  const reportedCode = labeledCode(faultText, /^Version code:[ \t]*(\d+)[ \t]*$/m);
   const paramName = typeof bundleVersion === 'string' ? bundleVersion.trim() : '';
   const versionName = headerName || reportedName || bundleLine || paramName;
   const versionCode = headerCode ?? reportedCode;

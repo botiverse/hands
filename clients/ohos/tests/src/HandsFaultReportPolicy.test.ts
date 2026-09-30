@@ -47,6 +47,27 @@ test('bundle_version is only the version-name fallback', () => {
   assert.equal(faultBuildIdentity('', 'no header'), null);
 });
 
+test('an empty version line does not consume the next field', () => {
+  const live = { versionName: 'new-install', versionCode: 10000972 };
+  const text = 'Bundle version: \nPid/Uid: 123/456\n';
+  assert.equal(faultBuildIdentity(undefined, text), null);
+  assert.equal(faultBuildIdentity('', 'Version: \nPid/Uid: 123/456\n'), null);
+  assert.equal(faultBuildIdentity('', 'Version name: \nPid/Uid: 123/456\n'), null);
+  assert.equal(faultBuildIdentity('', 'VersionCode: \n123\n'), null);
+  assert.equal(faultBuildIdentity('', 'Version code: \n123\n'), null);
+  assert.deepEqual(
+    crashTicketVersions(
+      historicalCrashBuild(
+        { versionName: '', versionCode: null },
+        { versionName: false, versionCode: false },
+        text,
+      ),
+      live,
+    ),
+    { versionName: null, versionCode: null },
+  );
+});
+
 test('in-process and bundle-version log lines recover the crashed build', () => {
   assert.deepEqual(
     faultBuildIdentity('', 'Version name: 1.0.0-kuikly228\nVersion code: 10000971\n'),
