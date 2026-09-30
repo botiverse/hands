@@ -439,6 +439,50 @@ viewer for read-only access. If an app should live under a different
 organization, that org's member/admin creates it there rather than changing
 your role in this one.
 
+## Direct build asset upload retries
+
+For asset ingest protocol v1, declare each asset with
+`POST /api/apps/:appId/builds/:buildId/assets/uploads`, PUT the declared
+bytes to `upload.url`, then POST `complete_url`. Completion synchronously
+streams and verifies the full object before returning `state: ready`.
+Allow a generous completion timeout for large artifacts. Verification time
+depends on object size and storage/network throughput; there is no fixed
+seconds-per-MB guarantee.
+
+Keep the exact declaration body and `idempotency_key` for recovery. Repeating
+it returns HTTP 200 with the same asset and its current state:
+
+| State | `upload` | Next step |
+| --- | --- | --- |
+| `pending` | PUT instructions | If PUT already succeeded, retry completion with the existing bytes. Otherwise finish PUT first. |
+| `verifying` | `null` | Wait and repeat the declaration to poll; do not PUT again while verification runs. |
+| `ready` | `null` | Asset is complete. Repeating completion also returns HTTP 200 with `replayed: true`. |
+| `failed` / `expired` | `null` | Terminal attempt; stop polling. A null upload alone never means success. |
+
+A pending attempt past its upload expiry returns HTTP 410 instead of PUT
+instructions. After a client timeout, first poll with the identical
+declaration: the original completion may have finished, may still be running,
+or may have lost its request lifetime. If it remains `verifying`, repeat
+completion after a delay; an active verifier returns the busy response below.
+An expired verifier lease can be reclaimed by completion while the upload
+itself remains valid. The verifier lease lasts 15 minutes; the PUT upload
+window lasts one hour. Bound retries by your job deadline.
+
+| Completion response | Recovery |
+| --- | --- |
+| HTTP 503, `ASSET_UPLOAD_SEAL_INTENT_FAILED`, `retryable: true` | Honor `Retry-After` (seconds), then retry the same completion. Existing staging bytes are preserved. |
+| HTTP 409, `ASSET_UPLOAD_BUSY`, `retryable: true` | Honor `Retry-After` and poll the declaration. `state: verifying` means verification is in progress; `state: pending` means the competing verifier released its lease, so retry completion with the existing bytes. Avoid another PUT. |
+| HTTP 409, `ASSET_UPLOAD_TERMINAL`, `retryable: false` | Stop retrying this attempt. |
+| Other HTTP 409, including non-transient seal-intent errors | Resolve the conflict; do not retry indiscriminately. |
+| HTTP 410 / 422 | Expired upload or integrity failure; stop this attempt. |
+
+For terminal attempts, create a new pending build to retry the release with
+new declarations. A build already marked `failed` cannot resume uploads.
+Changing only the idempotency key does not free an occupied asset slot.
+The abort endpoint can discard an abandoned pending upload after verification
+has stopped; failed or expired attempts may already be owned by cleanup.
+Do not mark the build succeeded until every required asset is ready.
+
 ## Rules for agents
 
 1. **Draft-first**: CI never completes a release; publishing is an explicit,

@@ -10,6 +10,7 @@ const DIRECT_UPLOAD_PROTOCOL = 1;
 const MAX_ASSET_BYTES = 5 * 1024 * 1024 * 1024;
 const UPLOAD_TTL_SECONDS = 3600;
 const VERIFY_LEASE_MS = 15 * 60 * 1000;
+const UPLOAD_RETRY_SECONDS = 5;
 const CLEANED_SEAL_RETRY_MS = VERIFY_LEASE_MS;
 const CLEANED_SEAL_FAST_WINDOW_MS = 24 * 60 * 60 * 1000;
 const CLEANED_SEAL_MEDIUM_WINDOW_MS = 7 * CLEANED_SEAL_FAST_WINDOW_MS;
@@ -651,6 +652,32 @@ async function failVerification(
   return true;
 }
 
+function isTransientUploadError(error: unknown): boolean {
+  // A D1_ERROR prefix alone is not sufficient: constraint/schema errors must
+  // remain terminal. D1 may wrap the transport error in Error.cause.
+  let current = error;
+  for (let depth = 0; depth < 5 && current instanceof Error; depth++) {
+    if (/network connection lost|network error|fetch failed|timed? ?out|timeout|temporarily unavailable|database is (?:locked|busy)|overloaded|connection reset/i.test(current.message)) return true;
+    current = current.cause;
+  }
+  return false;
+}
+
+async function completeUploadContention(c: AdminContext, appId: string, buildId: string, assetId: string) {
+  // The CAS can lose to completion or cleanup, not just another verifier.
+  // Fresh-read before advertising a conflict as safe to retry.
+  const current = await loadUpload(c.env.DB, appId, buildId, assetId);
+  if (!current) return c.json({ error: "asset upload not found", code: "ASSET_UPLOAD_NOT_FOUND" }, 404);
+  if (current.state === "ready" && current.committed_final_key) {
+    return c.json({ asset_id: assetId, state: "ready", r2_key: current.committed_final_key, file_hash: current.file_hash, size_bytes: current.size_bytes, replayed: true });
+  }
+  if (current.state === "verifying" || current.state === "pending") {
+    c.header("Retry-After", String(UPLOAD_RETRY_SECONDS));
+    return c.json({ error: current.state === "pending" ? "asset verification was released; retry completion" : "asset verification is in progress; poll the upload declaration", code: "ASSET_UPLOAD_BUSY", state: current.state, retryable: true }, 409);
+  }
+  return c.json({ error: "asset upload is no longer available for verification", code: "ASSET_UPLOAD_TERMINAL", state: current.state, retryable: false }, 409);
+}
+
 export async function handleCompleteBuildAssetUpload(c: AdminContext) {
   const appId = c.req.param("appId") ?? "";
   const buildId = c.req.param("buildId") ?? "";
@@ -659,6 +686,9 @@ export async function handleCompleteBuildAssetUpload(c: AdminContext) {
   if (!row) return c.json({ error: "asset upload not found", code: "ASSET_UPLOAD_NOT_FOUND" }, 404);
   if (row.state === "ready" && row.committed_final_key) {
     return c.json({ asset_id: assetId, state: "ready", r2_key: row.committed_final_key, file_hash: row.file_hash, size_bytes: row.size_bytes, replayed: true });
+  }
+  if (row.state === "failed" || row.state === "expired") {
+    return c.json({ error: "asset upload is terminal; stop retrying this attempt", code: "ASSET_UPLOAD_TERMINAL", state: row.state, retryable: false }, 409);
   }
   const newBuildUpload = row.build_status === "pending" && row.artifact_mode === "hands_r2";
   const migrationUpload = row.build_status === "succeeded" && row.artifact_mode === "external";
@@ -669,7 +699,7 @@ export async function handleCompleteBuildAssetUpload(c: AdminContext) {
   if (row.upload_expires_at <= now) {
     const receipt = await claimUploadCleanup(c.env.DB, assetId, row.attempt, now, "upload_expired");
     if (!receipt) {
-      return c.json({ error: "asset upload verification is already in progress or terminal", code: "ASSET_UPLOAD_BUSY" }, 409);
+      return completeUploadContention(c, appId, buildId, assetId);
     }
     const cleanup = await deleteClaimedUploadObjects(c.env, row, receipt, now);
     if (cleanup.deleted) {
@@ -686,28 +716,38 @@ export async function handleCompleteBuildAssetUpload(c: AdminContext) {
         AND (state = 'pending' OR (state = 'verifying' AND verifier_lease_expires_at < ?5))`,
   ).bind(leaseId, now + VERIFY_LEASE_MS, assetId, row.attempt, now).run();
   if ((lease.meta?.changes ?? 0) !== 1) {
-    return c.json({ error: "asset upload verification is already in progress or terminal", code: "ASSET_UPLOAD_BUSY" }, 409);
+    return completeUploadContention(c, appId, buildId, assetId);
   }
 
-  const generationRow = await c.env.DB.prepare(
-    "SELECT COALESCE(MAX(lease_generation), 0) + 1 AS generation FROM build_asset_ingest_seal WHERE asset_id = ?1 AND attempt = ?2",
-  ).bind(assetId, row.attempt).first<{ generation: number }>();
-  const generation = Number(generationRow?.generation ?? 1);
   const filename = safeFilename((JSON.parse(row.metadata_json) as Record<string, unknown>).filename ?? assetId);
-  const finalKey = `apps/${appId}/build-ingest/verified/${buildId}/${assetId}/g${generation}/${filename}`;
+  let generation: number;
+  let finalKey: string;
   try {
+    const generationRow = await c.env.DB.prepare(
+      "SELECT COALESCE(MAX(lease_generation), 0) + 1 AS generation FROM build_asset_ingest_seal WHERE asset_id = ?1 AND attempt = ?2",
+    ).bind(assetId, row.attempt).first<{ generation: number }>();
+    generation = Number(generationRow?.generation ?? 1);
+    finalKey = `apps/${appId}/build-ingest/verified/${buildId}/${assetId}/g${generation}/${filename}`;
     await c.env.DB.prepare(
       `INSERT INTO build_asset_ingest_seal
        (asset_id, attempt, lease_generation, final_key, intent_at)
        VALUES (?1, ?2, ?3, ?4, ?5)`,
     ).bind(assetId, row.attempt, generation, finalKey, now).run();
   } catch (error) {
-    await c.env.DB.prepare(
-      `UPDATE build_asset_ingest_attempt
+    try {
+      await c.env.DB.prepare(
+        `UPDATE build_asset_ingest_attempt
           SET state = 'pending', verifier_lease_id = NULL, verifier_lease_expires_at = NULL
         WHERE asset_id = ?1 AND attempt = ?2 AND verifier_lease_id = ?3`,
-    ).bind(assetId, row.attempt, leaseId).run();
-    return c.json({ error: (error as Error).message, code: "ASSET_UPLOAD_SEAL_INTENT_FAILED" }, 409);
+      ).bind(assetId, row.attempt, leaseId).run();
+    } catch {
+      // If D1 is still unavailable, the existing lease fences retries until it
+      // expires. Never claim that the attempt was reset without a receipt.
+      console.error("asset_upload_seal_intent_reset_failed");
+    }
+    const retryable = isTransientUploadError(error);
+    if (retryable) c.header("Retry-After", String(UPLOAD_RETRY_SECONDS));
+    return c.json({ error: (error as Error).message, code: "ASSET_UPLOAD_SEAL_INTENT_FAILED", retryable }, retryable ? 503 : 409);
   }
 
   const head = await c.env.APK_BUCKET.head(row.staging_key);

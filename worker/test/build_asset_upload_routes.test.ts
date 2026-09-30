@@ -11,10 +11,13 @@ import {
   handleDeclareBuildAssetUpload,
 } from "../src/routes/build_asset_uploads";
 import { handleUpdateBuild } from "../src/routes/builds";
+import { openApiDocument } from "../src/openapi";
 
 function d1(
   sqlite: Database.Database,
   afterRead?: (sql: string, kind: "all" | "first") => void,
+  beforeWrite?: (sql: string) => void,
+  afterWrite?: (sql: string, changes: number) => void,
 ) {
   return {
     batch: async (statements: Array<{ _runSync: () => unknown }>) =>
@@ -28,7 +31,9 @@ function d1(
       const bind = (...params: unknown[]) => {
         const values = indexes.length ? indexes.map((index) => params[index - 1]) : params;
         const runSync = () => {
+          beforeWrite?.(sql);
           const result = statement.run(...values);
+          afterWrite?.(sql, result.changes);
           return { success: true, meta: { changes: result.changes } };
         };
         return {
@@ -183,6 +188,111 @@ describe("direct build asset upload routes", () => {
       }),
     }, env);
   }
+
+  it.each([
+    [new Error("D1_ERROR: Network connection lost."), 503, true],
+    [new Error("D1_ERROR", { cause: new Error("fetch failed") }), 503, true],
+    [new Error("D1_ERROR: UNIQUE constraint failed: build_asset_ingest_seal.final_key"), 409, false],
+  ])("classifies seal-intent failures and preserves bytes for retry (%s)", async (error, status, retryable) => {
+    const bytes = Buffer.from("retry-exact-bytes");
+    const hash = createHash("sha256").update(bytes).digest("hex");
+    const body = await (await declare(hash, bytes.length)).json() as any;
+    const attempt = sqlite.prepare("SELECT staging_key FROM build_asset_ingest_attempt WHERE asset_id = ?").get(body.asset_id) as any;
+    bucket.objects.set(attempt.staging_key, bytes);
+    let failOnce = true;
+    env.DB = d1(sqlite, undefined, (sql) => {
+      if (failOnce && sql.includes("INSERT INTO build_asset_ingest_seal")) {
+        failOnce = false;
+        throw error;
+      }
+    });
+    const url = `http://hands.test/api/apps/app-1/builds/build-1/assets/${body.asset_id}/upload/complete`;
+    const failed = await app.request(url, { method: "POST" }, env);
+    expect(failed.status).toBe(status);
+    expect(await failed.json()).toMatchObject({ code: "ASSET_UPLOAD_SEAL_INTENT_FAILED", retryable });
+    expect(failed.headers.get("Retry-After")).toBe(retryable ? "5" : null);
+    expect(sqlite.prepare("SELECT state, verifier_lease_id FROM build_asset_ingest_attempt WHERE asset_id = ?").get(body.asset_id))
+      .toEqual({ state: "pending", verifier_lease_id: null });
+    expect(bucket.objects.get(attempt.staging_key)).toEqual(bytes);
+    expect(bucket.deleted).toEqual([]);
+    if (retryable) {
+      const completed = await app.request(url, { method: "POST" }, env);
+      expect(completed.status).toBe(200);
+      expect(await completed.json()).toMatchObject({ state: "ready", file_hash: hash, size_bytes: bytes.length });
+    }
+  });
+
+  it("reports a concurrent verification as retryable and polls to ready without another PUT", async () => {
+    const bytes = Buffer.from("slow-verification");
+    const hash = createHash("sha256").update(bytes).digest("hex");
+    const body = await (await declare(hash, bytes.length)).json() as any;
+    const attempt = sqlite.prepare("SELECT staging_key FROM build_asset_ingest_attempt WHERE asset_id = ?").get(body.asset_id) as any;
+    bucket.objects.set(attempt.staging_key, bytes);
+    let release!: () => void;
+    let started!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const entered = new Promise<void>((resolve) => { started = resolve; });
+    const get = bucket.get.bind(bucket);
+    bucket.get = async (key) => { started(); await gate; return get(key); };
+    const url = `http://hands.test/api/apps/app-1/builds/build-1/assets/${body.asset_id}/upload/complete`;
+    const first = app.request(url, { method: "POST" }, env);
+    await entered;
+    try {
+      const poll = await declare(hash, bytes.length);
+      expect(poll.status).toBe(200);
+      expect(await poll.json()).toMatchObject({ asset_id: body.asset_id, state: "verifying", upload: null, replayed: true });
+      const busy = await app.request(url, { method: "POST" }, env);
+      expect(busy.status).toBe(409);
+      expect(busy.headers.get("Retry-After")).toBe("5");
+      expect(await busy.json()).toMatchObject({ code: "ASSET_UPLOAD_BUSY", state: "verifying", retryable: true });
+    } finally {
+      release();
+    }
+    expect((await first).status).toBe(200);
+    expect(await (await declare(hash, bytes.length)).json()).toMatchObject({ state: "ready", upload: null });
+    const replay = await app.request(url, { method: "POST" }, env);
+    expect(replay.status).toBe(200);
+    expect(await replay.json()).toMatchObject({ state: "ready", replayed: true });
+    expect(sqlite.prepare("SELECT COUNT(*) AS n FROM build_asset_ingest_seal WHERE lease_generation > 0").get()).toEqual({ n: 1 });
+  });
+
+  it.each(["failed", "expired"])("does not label a terminal %s attempt as busy", async (state) => {
+    const body = await (await declare("1".repeat(64), 1)).json() as any;
+    sqlite.prepare("UPDATE build_asset_ingest_attempt SET state = ? WHERE asset_id = ?").run(state, body.asset_id);
+    const response = await app.request(`http://hands.test/api/apps/app-1/builds/build-1/assets/${body.asset_id}/upload/complete`, { method: "POST" }, env);
+    expect(response.status).toBe(409);
+    expect(response.headers.get("Retry-After")).toBeNull();
+    expect(await response.json()).toMatchObject({ code: "ASSET_UPLOAD_TERMINAL", state, retryable: false });
+  });
+
+  it("keeps a lease loser retryable when the competing verifier resets to pending before readback", async () => {
+    const body = await (await declare("1".repeat(64), 1)).json() as any;
+    env.DB = d1(sqlite, undefined, (sql) => {
+      if (sql.includes("SET state = 'verifying'")) {
+        sqlite.prepare("UPDATE build_asset_ingest_attempt SET state = 'verifying', verifier_lease_id = 'competitor', verifier_lease_expires_at = ? WHERE asset_id = ?")
+          .run(Date.now() + 60_000, body.asset_id);
+      }
+    }, (sql, changes) => {
+      if (sql.includes("SET state = 'verifying'") && changes === 0) {
+        sqlite.prepare("UPDATE build_asset_ingest_attempt SET state = 'pending', verifier_lease_id = NULL, verifier_lease_expires_at = NULL WHERE asset_id = ?").run(body.asset_id);
+      }
+    });
+    const response = await app.request(`http://hands.test/api/apps/app-1/builds/build-1/assets/${body.asset_id}/upload/complete`, { method: "POST" }, env);
+    expect(response.status).toBe(409);
+    expect(response.headers.get("Retry-After")).toBe("5");
+    expect(await response.json()).toMatchObject({ code: "ASSET_UPLOAD_BUSY", state: "pending", retryable: true });
+  });
+
+  it("documents replay states and a nullable upload in the served OpenAPI", () => {
+    const paths = openApiDocument.paths as any;
+    const declaration = paths["/api/apps/{appId}/builds/{buildId}/assets/uploads"].post;
+    expect(declaration.responses[200].content["application/json"].schema.$ref).toContain("DirectBuildAssetUploadResponse");
+    const schemas = openApiDocument.components?.schemas as any;
+    expect(schemas.DirectBuildAssetUploadResponse.properties.state.enum).toEqual(["pending", "verifying", "ready", "failed", "expired"]);
+    expect(schemas.DirectBuildAssetUploadResponse.properties.upload.type).toContain("null");
+    const complete = paths["/api/apps/{appId}/builds/{buildId}/assets/{assetId}/upload/complete"].post;
+    expect(complete.responses[503].description).toContain("Retry-After");
+  });
 
   it("binds a replay to one exact staging key and exposes only a single-key PUT URL", async () => {
     const bytes = Buffer.from("computer-bytes");
