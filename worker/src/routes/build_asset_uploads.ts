@@ -671,9 +671,9 @@ async function completeUploadContention(c: AdminContext, appId: string, buildId:
   if (current.state === "ready" && current.committed_final_key) {
     return c.json({ asset_id: assetId, state: "ready", r2_key: current.committed_final_key, file_hash: current.file_hash, size_bytes: current.size_bytes, replayed: true });
   }
-  if (current.state === "verifying") {
+  if (current.state === "verifying" || current.state === "pending") {
     c.header("Retry-After", String(UPLOAD_RETRY_SECONDS));
-    return c.json({ error: "asset verification is in progress; poll the upload declaration", code: "ASSET_UPLOAD_BUSY", state: current.state, retryable: true }, 409);
+    return c.json({ error: current.state === "pending" ? "asset verification was released; retry completion" : "asset verification is in progress; poll the upload declaration", code: "ASSET_UPLOAD_BUSY", state: current.state, retryable: true }, 409);
   }
   return c.json({ error: "asset upload is no longer available for verification", code: "ASSET_UPLOAD_TERMINAL", state: current.state, retryable: false }, 409);
 }

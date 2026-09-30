@@ -17,6 +17,7 @@ function d1(
   sqlite: Database.Database,
   afterRead?: (sql: string, kind: "all" | "first") => void,
   beforeWrite?: (sql: string) => void,
+  afterWrite?: (sql: string, changes: number) => void,
 ) {
   return {
     batch: async (statements: Array<{ _runSync: () => unknown }>) =>
@@ -32,6 +33,7 @@ function d1(
         const runSync = () => {
           beforeWrite?.(sql);
           const result = statement.run(...values);
+          afterWrite?.(sql, result.changes);
           return { success: true, meta: { changes: result.changes } };
         };
         return {
@@ -261,6 +263,24 @@ describe("direct build asset upload routes", () => {
     expect(response.status).toBe(409);
     expect(response.headers.get("Retry-After")).toBeNull();
     expect(await response.json()).toMatchObject({ code: "ASSET_UPLOAD_TERMINAL", state, retryable: false });
+  });
+
+  it("keeps a lease loser retryable when the competing verifier resets to pending before readback", async () => {
+    const body = await (await declare("1".repeat(64), 1)).json() as any;
+    env.DB = d1(sqlite, undefined, (sql) => {
+      if (sql.includes("SET state = 'verifying'")) {
+        sqlite.prepare("UPDATE build_asset_ingest_attempt SET state = 'verifying', verifier_lease_id = 'competitor', verifier_lease_expires_at = ? WHERE asset_id = ?")
+          .run(Date.now() + 60_000, body.asset_id);
+      }
+    }, (sql, changes) => {
+      if (sql.includes("SET state = 'verifying'") && changes === 0) {
+        sqlite.prepare("UPDATE build_asset_ingest_attempt SET state = 'pending', verifier_lease_id = NULL, verifier_lease_expires_at = NULL WHERE asset_id = ?").run(body.asset_id);
+      }
+    });
+    const response = await app.request(`http://hands.test/api/apps/app-1/builds/build-1/assets/${body.asset_id}/upload/complete`, { method: "POST" }, env);
+    expect(response.status).toBe(409);
+    expect(response.headers.get("Retry-After")).toBe("5");
+    expect(await response.json()).toMatchObject({ code: "ASSET_UPLOAD_BUSY", state: "pending", retryable: true });
   });
 
   it("documents replay states and a nullable upload in the served OpenAPI", () => {

@@ -759,7 +759,7 @@ export function registerBuildRoutes(): RouteConfigList {
     tags: ["Builds"],
     summary: "Verify and seal a direct build-asset upload",
     description:
-      "Synchronously streams one immutable staging snapshot through SHA-256 verification and a verified R2 key. Asset metadata becomes ready only after exact size and digest readback succeeds. Verification time depends on size and storage/network throughput; there is no fixed per-size duration guarantee. After a client timeout, poll by replaying the identical upload declaration. ASSET_UPLOAD_BUSY with retryable:true means another verification is running; honor Retry-After and poll, do not re-upload. Transient ASSET_UPLOAD_SEAL_INTENT_FAILED returns 503 with retryable:true and Retry-After; retry the same complete request. Failed/expired attempts return ASSET_UPLOAD_TERMINAL with retryable:false. See /docs/agent-guide/#direct-build-asset-upload-retries.",
+      "Synchronously streams one immutable staging snapshot through SHA-256 verification and a verified R2 key. Asset metadata becomes ready only after exact size and digest readback succeeds. Verification time depends on size and storage/network throughput; there is no fixed per-size duration guarantee. After a client timeout, poll by replaying the identical upload declaration. ASSET_UPLOAD_BUSY with retryable:true means verification contention; honor Retry-After and poll, do not re-upload. State verifying is still running; state pending means the competing verifier released its lease, so retry completion. Transient ASSET_UPLOAD_SEAL_INTENT_FAILED returns 503 with retryable:true and Retry-After; retry the same complete request. Failed/expired attempts return ASSET_UPLOAD_TERMINAL with retryable:false. See /docs/agent-guide/#direct-build-asset-upload-retries.",
     security: auth,
     request: { params: AppBuildAssetParams },
     responses: {
@@ -767,7 +767,7 @@ export function registerBuildRoutes(): RouteConfigList {
       403: error("Current principal cannot complete build-asset uploads."),
       404: error("Upload attempt was not found."),
       409: {
-        ...error("ASSET_UPLOAD_BUSY with retryable:true and Retry-After means verification is in progress; other conflicts, including ASSET_UPLOAD_TERMINAL and non-transient seal-intent errors, are not retryable."),
+        ...error("ASSET_UPLOAD_BUSY with retryable:true and Retry-After means verification contention (verifying: poll; pending: retry completion); other conflicts, including ASSET_UPLOAD_TERMINAL and non-transient seal-intent errors, are not retryable."),
         headers: { "Retry-After": { description: "Seconds before retrying, present for ASSET_UPLOAD_BUSY.", schema: { type: "string" } } },
       },
       410: error("Upload attempt expired."),

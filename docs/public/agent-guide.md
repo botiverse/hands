@@ -471,7 +471,7 @@ window lasts one hour. Bound retries by your job deadline.
 | Completion response | Recovery |
 | --- | --- |
 | HTTP 503, `ASSET_UPLOAD_SEAL_INTENT_FAILED`, `retryable: true` | Honor `Retry-After` (seconds), then retry the same completion. Existing staging bytes are preserved. |
-| HTTP 409, `ASSET_UPLOAD_BUSY`, `retryable: true` | Verification is in progress. Honor `Retry-After`, poll the declaration, and avoid another PUT. |
+| HTTP 409, `ASSET_UPLOAD_BUSY`, `retryable: true` | Honor `Retry-After` and poll the declaration. `state: verifying` means verification is in progress; `state: pending` means the competing verifier released its lease, so retry completion with the existing bytes. Avoid another PUT. |
 | HTTP 409, `ASSET_UPLOAD_TERMINAL`, `retryable: false` | Stop retrying this attempt. |
 | Other HTTP 409, including non-transient seal-intent errors | Resolve the conflict; do not retry indiscriminately. |
 | HTTP 410 / 422 | Expired upload or integrity failure; stop this attempt. |
