@@ -142,6 +142,9 @@ dependencies {
     // file-by-file engine; the CLI/CI side generates patches with the SAME jar.
     implementation("com.eidu:archive-patcher:3.0.0")
     testImplementation("junit:junit:4.13.2")
+    // JVM unit tests otherwise load the mockable android.jar stub, whose
+    // org.json.JSONObject throws "not mocked". This jar is the real implementation.
+    testImplementation("org.json:json:20240303")
     androidTestImplementation("androidx.test:core-ktx:1.6.1")
     androidTestImplementation("androidx.test.ext:junit:1.2.1")
     androidTestImplementation("androidx.test:runner:1.6.2")
@@ -149,6 +152,21 @@ dependencies {
 
 tasks.matching { it.name == "testReleaseUnitTest" }.configureEach {
     dependsOn(testNativeRecordIdentity)
+}
+
+tasks.withType<Test>().configureEach {
+    if (!name.contains("UnitTest")) return@configureEach
+    // The mockable android.jar is earlier on the test classpath than Maven
+    // dependencies, so put/has hit the stub. Move the real org.json jar first.
+    doFirst {
+        val all = classpath.files.toList()
+        val jsonJars = all.filter { it.name.matches(Regex("""json-\d.*\.jar""")) }
+        if (jsonJars.isEmpty()) {
+            throw GradleException("$name cannot run sidecar JSON cases without org.json on the classpath")
+        }
+        val rest = all.filterNot { it.name.matches(Regex("""json-\d.*\.jar""")) }
+        classpath.setFrom(jsonJars + rest)
+    }
 }
 
 tasks.withType<PublishToMavenLocal>().configureEach {

@@ -8,13 +8,18 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class HandsHistoricalBuildTest {
-    private val crashed = HandsHistoricalBuild("1.12.0-alpha.77", 10000077L)
-    private val uploading = HandsHistoricalBuild("1.12.0-alpha.81", 10000081L)
+    // Ticket 4888324b attachment crash-20260930-192038.txt, lines 4–5.
+    // The ticket itself was labeled 1.0.0-alpha+fc7ca86b1 / 10000081.
+    private val crashed = HandsHistoricalBuild("1.0.0-alpha+ba23a8a6a", 10000077L)
+    private val uploading = HandsHistoricalBuild("1.0.0-alpha+fc7ca86b1", 10000081L)
+    private val attachmentLog =
+        "Version name: 1.0.0-alpha+ba23a8a6a\n" +
+            "Version code: 10000077\n"
 
     @Test
     fun oldSidecarKeepsTheCrashedBuildFromTheLog() {
         val log = "Crash log\nPackage: build.hands.raft\n" +
-            HandsHistoricalBuildPolicy.crashLogVersionLines(crashed) +
+            attachmentLog +
             "Device: test\n"
         val ticket = HandsHistoricalBuildPolicy.resolve(
             versionNamePresent = false,
@@ -27,7 +32,7 @@ class HandsHistoricalBuildTest {
         assertEquals(crashed, ticket)
         assertFalse(ticket == uploading)
         val extras = HandsHistoricalBuildPolicy.versionExtras(ticket)
-        assertEquals("1.12.0-alpha.77", extras["version_name"])
+        assertEquals("1.0.0-alpha+ba23a8a6a", extras["version_name"])
         assertEquals(10000077L, extras["version_code"])
         assertTrue(extras["version_code"] is Long)
     }
@@ -41,14 +46,14 @@ class HandsHistoricalBuildTest {
 
     @Test
     fun sameLineWhitespaceStillReadsTheVersion() {
-        val log = "Version name:\t1.12.0-alpha.77   \nVersion code:   10000077\t\n"
+        val log = "Version name:\t1.0.0-alpha+ba23a8a6a   \nVersion code:   10000077\t\n"
         assertEquals(crashed, HandsHistoricalBuildPolicy.fromLog(log))
     }
 
     @Test
     fun versionCodeWithTrailingJunkStaysMissing() {
-        val log = "Version name: 1.12.0-alpha.77\nVersion code: 10000077 extra\n"
-        assertEquals(HandsHistoricalBuild("1.12.0-alpha.77", null), HandsHistoricalBuildPolicy.fromLog(log))
+        val log = "Version name: 1.0.0-alpha+ba23a8a6a\nVersion code: 10000077 extra\n"
+        assertEquals(HandsHistoricalBuild("1.0.0-alpha+ba23a8a6a", null), HandsHistoricalBuildPolicy.fromLog(log))
     }
 
     @Test
@@ -65,12 +70,12 @@ class HandsHistoricalBuildTest {
         val log = HandsHistoricalBuildPolicy.crashLogVersionLines(uploading)
         val recorded = HandsHistoricalBuildPolicy.resolve(
             versionNamePresent = true,
-            versionName = "1.12.0-alpha.77",
+            versionName = "1.0.0-alpha+ba23a8a6a",
             versionCodePresent = false,
             versionCode = null,
             logText = log,
         )
-        assertEquals(HandsHistoricalBuild("1.12.0-alpha.77", null), recorded)
+        assertEquals(HandsHistoricalBuild("1.0.0-alpha+ba23a8a6a", null), recorded)
     }
 
     @Test
@@ -103,7 +108,8 @@ class HandsHistoricalBuildTest {
 
     @Test
     fun writtenLinesRoundTripAndABlankBuildDoesNotCaptureTheFollowingField() {
-        assertEquals(crashed, HandsHistoricalBuildPolicy.fromLog(HandsHistoricalBuildPolicy.crashLogVersionLines(crashed)))
+        assertEquals(attachmentLog, HandsHistoricalBuildPolicy.crashLogVersionLines(crashed))
+        assertEquals(crashed, HandsHistoricalBuildPolicy.fromLog(attachmentLog))
         val blank = HandsHistoricalBuildPolicy.crashLogVersionLines(HandsHistoricalBuild(null, null)) +
             "Pid/Uid: 123/456\n"
         assertEquals(HandsHistoricalBuild(null, null), HandsHistoricalBuildPolicy.fromLog(blank))
@@ -124,7 +130,7 @@ class HandsHistoricalBuildTest {
     @Test
     fun sidecarNumberWinsOverADifferentLog() {
         val meta = JSONObject()
-            .put("version_name", "1.12.0-alpha.77")
+            .put("version_name", "1.0.0-alpha+ba23a8a6a")
             .put("version_code", 10000077L)
         val ticket = HandsCrash.historicalBuildFromSidecar(
             meta,
@@ -137,20 +143,20 @@ class HandsHistoricalBuildTest {
     @Test
     fun sidecarStringCodeIsNotAVersionNumber() {
         val meta = JSONObject()
-            .put("version_name", "1.12.0-alpha.77")
+            .put("version_name", "1.0.0-alpha+ba23a8a6a")
             .put("version_code", "10000077")
         val ticket = HandsCrash.historicalBuildFromSidecar(
             meta,
             HandsHistoricalBuildPolicy.crashLogVersionLines(uploading),
         )
-        assertEquals(HandsHistoricalBuild("1.12.0-alpha.77", null), ticket)
+        assertEquals(HandsHistoricalBuild("1.0.0-alpha+ba23a8a6a", null), ticket)
     }
 
     @Test
     fun sidecarWithoutKeysRecoversTheLogBuild() {
         val ticket = HandsCrash.historicalBuildFromSidecar(
             JSONObject(),
-            HandsHistoricalBuildPolicy.crashLogVersionLines(crashed),
+            attachmentLog,
         )
         assertEquals(crashed, ticket)
         assertEquals(10000077L, HandsHistoricalBuildPolicy.versionExtras(ticket).getValue("version_code"))
