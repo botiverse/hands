@@ -107,12 +107,14 @@ object HandsNativeCrash {
             }
         }
 
+        // A QNC record has no crash-time version. Leave the ticket build empty
+        // instead of stamping versionName/versionCode from the uploading install.
         val feedback = HandsFeedback(
             context = context,
             baseUrl = baseUrl,
             appSlug = appSlug,
-            versionName = versionName,
-            versionCode = versionCode,
+            versionName = null,
+            versionCode = null,
             channel = channel,
             clientKey = clientKey,
         )
