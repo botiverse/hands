@@ -471,10 +471,36 @@ window lasts one hour. Bound retries by your job deadline.
 | Completion response | Recovery |
 | --- | --- |
 | HTTP 503, `ASSET_UPLOAD_SEAL_INTENT_FAILED`, `retryable: true` | Honor `Retry-After` (seconds), then retry the same completion. Existing staging bytes are preserved. |
-| HTTP 409, `ASSET_UPLOAD_BUSY`, `retryable: true` | Honor `Retry-After` and poll the declaration. `state: verifying` means verification is in progress; `state: pending` means the competing verifier released its lease, so retry completion with the existing bytes. Avoid another PUT. |
+| HTTP 409, `ASSET_UPLOAD_BUSY`, `retryable: true` | Honor `Retry-After` and poll the declaration. `state: verifying` means a lease is held; it does not prove that its holder is still alive; `state: pending` means the competing verifier released its lease, so retry completion with the existing bytes. Avoid another PUT. |
 | HTTP 409, `ASSET_UPLOAD_TERMINAL`, `retryable: false` | Stop retrying this attempt. |
 | Other HTTP 409, including non-transient seal-intent errors | Resolve the conflict; do not retry indiscriminately. |
 | HTTP 410 / 422 | Expired upload or integrity failure; stop this attempt. |
+
+Read `GET /api/apps/{appId}/builds/{buildId}/assets/{assetId}/upload` to poll
+without replaying a declaration. It returns `state`, `verification_started_at`,
+`verifier_lease_expires_at`, `upload_expires_at` (Unix milliseconds),
+`can_retry_complete`, and a durable `verification_error` for failed attempts.
+The response is `no-store`. This endpoint requires the app publisher role.
+The declaration replay and busy completion response also include these fields.
+
+A verifier lease is not renewed: at its 15-minute deadline, call the same
+completion again to take over using the existing staging bytes. A previous
+verifier cannot commit after another has taken its lease. The one-hour upload
+expiry still applies; no fixed verification duration per file size is promised.
+
+`503 ASSET_UPLOAD_STORAGE_FAILED` includes `retryable:true`, `Retry-After`, and
+`phase` (`staging_head`, `seal_head`, `staging_read`, `staging_stream`,
+`seal_stream`, `seal_write`, or `seal_readback`). Retry the same completion
+without another PUT. The attempt returns to pending and keeps its staging
+bytes; a later verifier uses a new immutable seal generation. A rejected stream
+operation cancels the other stream branches so they do not wait forever for a
+failed consumer. Abrupt runtime termination may still leave a verifying lease
+until its deadline.
+
+Integrity failures remain terminal and include `reason` and the available
+expected/actual measurements. SHA-256 mismatch includes both hashes and sizes;
+size mismatch includes expected and observed size. `GET .../upload` retains
+the terminal reason even after object cleanup.
 
 For terminal attempts, create a new pending build to retry the release with
 new declarations. A build already marked `failed` cannot resume uploads.

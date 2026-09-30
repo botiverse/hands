@@ -1,7 +1,7 @@
 import Database from "better-sqlite3";
 import { createHash } from "node:crypto";
 import { Hono } from "hono";
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   cleanupExpiredBuildAssetUploads,
   handleAbortBuildAssetUpload,
@@ -9,6 +9,7 @@ import {
   handleCompleteBuildAssetUpload,
   handleCompleteHostedBuildMigration,
   handleDeclareBuildAssetUpload,
+  handleGetBuildAssetUpload,
 } from "../src/routes/build_asset_uploads";
 import { handleUpdateBuild } from "../src/routes/builds";
 import { openApiDocument } from "../src/openapi";
@@ -167,6 +168,7 @@ describe("direct build asset upload routes", () => {
     app = new Hono<any>();
     app.use("*", async (c, next) => { c.set("admin_actor", "test:publisher"); await next(); });
     app.post("/api/apps/:appId/builds/:buildId/assets/uploads", handleDeclareBuildAssetUpload as any);
+    app.get("/api/apps/:appId/builds/:buildId/assets/:assetId/upload", handleGetBuildAssetUpload as any);
     app.post("/api/apps/:appId/builds/:buildId/assets/:assetId/upload/complete", handleCompleteBuildAssetUpload as any);
     app.post("/api/apps/:appId/builds/:buildId/assets/:assetId/upload/abort", handleAbortBuildAssetUpload as any);
     app.post("/api/apps/:appId/builds/:buildId/hosted-migration", handleBeginHostedBuildMigration as any);
@@ -188,6 +190,86 @@ describe("direct build asset upload routes", () => {
       }),
     }, env);
   }
+
+  it("exposes a verifier deadline and takes over an expired lease on the same bytes", async () => {
+    const bytes = Buffer.from("stale-verifier-recovery");
+    const declared = await declare(createHash("sha256").update(bytes).digest("hex"), bytes.length);
+    const body = await declared.json() as any;
+    const attempt = sqlite.prepare("SELECT staging_key FROM build_asset_ingest_attempt WHERE asset_id = ?").get(body.asset_id) as any;
+    bucket.objects.set(attempt.staging_key, bytes);
+    const deadline = Date.now() + 60_000;
+    sqlite.prepare("UPDATE build_asset_ingest_attempt SET state = 'verifying', verifier_lease_id = 'dead', verifier_lease_expires_at = ? WHERE asset_id = ?").run(deadline, body.asset_id);
+    const url = `http://hands.test/api/apps/app-1/builds/build-1/assets/${body.asset_id}/upload`;
+    const status = await app.request(url, {}, env);
+    expect(status.headers.get("Cache-Control")).toBe("no-store");
+    expect(await status.json()).toMatchObject({ state: "verifying", verifier_lease_expires_at: deadline, verification_started_at: deadline - 15 * 60_000, can_retry_complete: false });
+    const busy = await app.request(`${url}/complete`, { method: "POST" }, env);
+    expect(await busy.json()).toMatchObject({ code: "ASSET_UPLOAD_BUSY", verifier_lease_expires_at: deadline });
+    sqlite.prepare("UPDATE build_asset_ingest_attempt SET verifier_lease_expires_at = ? WHERE asset_id = ?").run(Date.now() - 1, body.asset_id);
+    expect(await (await app.request(url, {}, env)).json()).toMatchObject({ can_retry_complete: true });
+    expect((await app.request(`${url}/complete`, { method: "POST" }, env)).status).toBe(200);
+    expect(await (await app.request(url, {}, env)).json()).toMatchObject({ state: "ready", verifier_lease_expires_at: null });
+    expect((await app.request(url.replace("app-1", "other-app"), {}, env)).status).toBe(404);
+  });
+
+  it.each(["staging_head", "staging_read", "seal_write", "seal_readback"])("preserves staging and retries after %s failure", async (phase) => {
+    const bytes = Buffer.from("storage-retry");
+    const body = await (await declare(createHash("sha256").update(bytes).digest("hex"), bytes.length)).json() as any;
+    const attempt = sqlite.prepare("SELECT staging_key FROM build_asset_ingest_attempt WHERE asset_id = ?").get(body.asset_id) as any;
+    bucket.objects.set(attempt.staging_key, bytes);
+    const head = bucket.head.bind(bucket), get = bucket.get.bind(bucket), put = bucket.put.bind(bucket);
+    let fail = true;
+    bucket.head = async (key) => {
+      if (fail && ((phase === "staging_head" && key === attempt.staging_key) || (phase === "seal_readback" && key.includes("/verified/") && bucket.objects.has(key)))) { fail = false; throw new Error("storage read failed"); }
+      return head(key);
+    };
+    bucket.get = async (key) => { if (fail && phase === "staging_read") { fail = false; throw new Error("storage read failed"); } return get(key); };
+    // Exercise the production fixed-length pump with a blocked consumer.
+    vi.stubGlobal("FixedLengthStream", class extends TransformStream<Uint8Array, Uint8Array> { constructor(_length: number) { super(); } });
+    bucket.put = async (key, stream) => { if (fail && phase === "seal_write") { fail = false; throw new Error("storage write failed"); } return put(key, stream); };
+    try {
+      const url = `http://hands.test/api/apps/app-1/builds/build-1/assets/${body.asset_id}/upload`;
+      const failed = await app.request(`${url}/complete`, { method: "POST" }, env);
+      expect(failed.status).toBe(503);
+      expect(await failed.json()).toMatchObject({ code: "ASSET_UPLOAD_STORAGE_FAILED", phase, retryable: true, state: "pending" });
+      expect(bucket.objects.has(attempt.staging_key)).toBe(true);
+      expect(await (await app.request(url, {}, env)).json()).toMatchObject({ state: "pending", can_retry_complete: true });
+      expect((await app.request(`${url}/complete`, { method: "POST" }, env)).status).toBe(200);
+    } finally { vi.unstubAllGlobals(); }
+  });
+
+  it.each(["read_failure", "short_stream", "long_stream"])("distinguishes %s from a recoverable storage failure", async (mode) => {
+    const bytes = Buffer.from("declared-bytes");
+    const body = await (await declare(createHash("sha256").update(bytes).digest("hex"), bytes.length)).json() as any;
+    const attempt = sqlite.prepare("SELECT staging_key FROM build_asset_ingest_attempt WHERE asset_id = ?").get(body.asset_id) as any;
+    bucket.objects.set(attempt.staging_key, bytes);
+    const streamBytes = mode === "short_stream" ? bytes.subarray(1) : Buffer.concat([bytes, bytes]);
+    bucket.get = async (key) => ({ key, size: bytes.length, body: new ReadableStream<Uint8Array>({ start(controller) {
+      if (mode === "read_failure") controller.error(new Error("storage stream disconnected"));
+      else { controller.enqueue(streamBytes); controller.close(); }
+    } }) });
+    const response = await app.request(`http://hands.test/api/apps/app-1/builds/build-1/assets/${body.asset_id}/upload/complete`, { method: "POST" }, env);
+    if (mode === "read_failure") {
+      expect(response.status).toBe(503);
+      expect(await response.json()).toMatchObject({ phase: "staging_stream", retryable: true });
+      expect(bucket.objects.has(attempt.staging_key)).toBe(true);
+    } else {
+      expect(response.status).toBe(422);
+      expect(await response.json()).toMatchObject({ reason: "stream_size_mismatch", retryable: false, expected: { size_bytes: bytes.length }, actual: { size_bytes: streamBytes.length } });
+      expect(bucket.objects.has(attempt.staging_key)).toBe(false);
+    }
+  });
+
+  it("returns a durable hash failure reason in upload status", async () => {
+    const bytes = Buffer.from("bad-hash");
+    const body = await (await declare("1".repeat(64), bytes.length)).json() as any;
+    const attempt = sqlite.prepare("SELECT staging_key FROM build_asset_ingest_attempt WHERE asset_id = ?").get(body.asset_id) as any;
+    bucket.objects.set(attempt.staging_key, bytes);
+    const url = `http://hands.test/api/apps/app-1/builds/build-1/assets/${body.asset_id}/upload`;
+    const failure = await app.request(`${url}/complete`, { method: "POST" }, env);
+    expect(await failure.json()).toMatchObject({ reason: "sha256_mismatch", retryable: false, expected: { sha256: "1".repeat(64) }, actual: { sha256: createHash("sha256").update(bytes).digest("hex") } });
+    expect(await (await app.request(url, {}, env)).json()).toMatchObject({ state: "failed", verification_error: "sha256_mismatch", can_retry_complete: false });
+  });
 
   it.each([
     [new Error("D1_ERROR: Network connection lost."), 503, true],

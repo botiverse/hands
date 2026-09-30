@@ -80,7 +80,14 @@ const DirectBuildAssetUploadInput = z.object({
   metadata_json: z.record(z.string(), z.unknown()).optional(),
 }).openapi("DirectBuildAssetUploadInput");
 
+const DirectBuildAssetUploadStatus = z.object({
+  asset_id: z.string(), attempt: z.number().int(), state: z.enum(["pending", "verifying", "ready", "failed", "expired"]),
+  upload_expires_at: z.number().int(), verification_started_at: z.number().int().nullable(),
+  verifier_lease_expires_at: z.number().int().nullable(), can_retry_complete: z.boolean(), verification_error: z.string().nullable(),
+}).openapi("DirectBuildAssetUploadStatus");
+
 const DirectBuildAssetUploadResponse = z.object({
+  ...DirectBuildAssetUploadStatus.shape,
   asset_id: z.string(),
   attempt: z.number().int(),
   state: z.enum(["pending", "verifying", "ready", "failed", "expired"]),
@@ -754,12 +761,20 @@ export function registerBuildRoutes(): RouteConfigList {
   });
 
   routes.push({
+    method: "get", path: "/api/apps/{appId}/builds/{buildId}/assets/{assetId}/upload", tags: ["Builds"],
+    summary: "Read upload verification state and lease deadline", security: auth,
+    description: "Read-only, no-store state. A verifying lease lasts 15 minutes and does not prove its holder is alive. At expiry retry complete to take over; no re-upload is needed. Upload validity is one hour. Failed/expired states are terminal. Times are Unix milliseconds; verification_error names the durable terminal reason.",
+    request: { params: AppBuildAssetParams },
+    responses: { 200: success("Current upload state.", DirectBuildAssetUploadStatus), 403: error("Publisher access required."), 404: error("Upload not found.") },
+  });
+
+  routes.push({
     method: "post",
     path: "/api/apps/{appId}/builds/{buildId}/assets/{assetId}/upload/complete",
     tags: ["Builds"],
     summary: "Verify and seal a direct build-asset upload",
     description:
-      "Synchronously streams one immutable staging snapshot through SHA-256 verification and a verified R2 key. Asset metadata becomes ready only after exact size and digest readback succeeds. Verification time depends on size and storage/network throughput; there is no fixed per-size duration guarantee. After a client timeout, poll by replaying the identical upload declaration. ASSET_UPLOAD_BUSY with retryable:true means verification contention; honor Retry-After and poll, do not re-upload. State verifying is still running; state pending means the competing verifier released its lease, so retry completion. Transient ASSET_UPLOAD_SEAL_INTENT_FAILED returns 503 with retryable:true and Retry-After; retry the same complete request. Failed/expired attempts return ASSET_UPLOAD_TERMINAL with retryable:false. See /docs/agent-guide/#direct-build-asset-upload-retries.",
+      "Synchronously streams one immutable staging snapshot through SHA-256 verification and a verified R2 key. Asset metadata becomes ready only after exact size and digest readback succeeds. Verification time depends on size and storage/network throughput; there is no fixed per-size duration guarantee. After a client timeout, poll by replaying the identical upload declaration. ASSET_UPLOAD_BUSY with retryable:true means verification contention; honor Retry-After and poll, do not re-upload. State verifying means a lease is held, not that its holder is alive; read GET .../assets/{assetId}/upload for its 15-minute deadline and retry complete after expiry; state pending means the competing verifier released its lease, so retry completion. Transient ASSET_UPLOAD_SEAL_INTENT_FAILED returns 503 with retryable:true and Retry-After; retry the same complete request. Failed/expired attempts return ASSET_UPLOAD_TERMINAL with retryable:false. See /docs/agent-guide/#direct-build-asset-upload-retries.",
     security: auth,
     request: { params: AppBuildAssetParams },
     responses: {
@@ -773,9 +788,9 @@ export function registerBuildRoutes(): RouteConfigList {
       410: error("Upload attempt expired."),
       422: error("Uploaded bytes failed exact integrity verification."),
       503: {
-        description: "Transient seal-intent failure: ASSET_UPLOAD_SEAL_INTENT_FAILED, retryable:true, Retry-After in seconds. Retry the same complete request.",
+        description: "Retryable storage or transient seal-intent failure: ASSET_UPLOAD_SEAL_INTENT_FAILED, retryable:true, Retry-After in seconds. Retry the same complete request.",
         headers: { "Retry-After": { description: "Seconds before retrying the same completion.", required: true, schema: { type: "string" } } },
-        content: json(z.object({ error: z.string(), code: z.literal("ASSET_UPLOAD_SEAL_INTENT_FAILED"), retryable: z.literal(true) })),
+        content: json(z.object({ error: z.string(), code: z.enum(["ASSET_UPLOAD_SEAL_INTENT_FAILED", "ASSET_UPLOAD_STORAGE_FAILED"]), retryable: z.literal(true), phase: z.string().optional(), state: z.literal("pending").optional() })),
       },
     },
   });
