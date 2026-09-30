@@ -2,7 +2,7 @@
   "name": "quiver",
   "private": true,
   "version": "0.1.0",
-  "description": "Ship Android builds, releases, and share links from one place — Cloudflare-native (Workers + Container + D1 + R2).",
+  "description": "Ship Android builds, releases, and share links from one place \u2014 Cloudflare-native (Workers + Container + D1 + R2).",
   "license": "MIT",
   "type": "module",
   "packageManager": "pnpm@9.12.0",
@@ -24,5 +24,12 @@
   "devDependencies": {
     "@types/node": "^22.10.0",
     "typescript": "^5.7.2"
+  },
+  "pnpm": {
+    "overrides": {
+      "undici": "7.29.1",
+      "brace-expansion": "1.1.21",
+      "electron": "43.5.0"
+    }
   }
 }
