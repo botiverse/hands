@@ -7295,15 +7295,17 @@ describe("quiver public API v2 — scope resolution", () => {
       "hosted/ha-runner": "RUNNER-SIDECAR-BYTES",
       "hosted/ha-sums": "deadbeef  raft-computer-linux-x64\n",
     };
-    env.APK_BUCKET = {
+    const hostedBucket = {
       put: async () => undefined,
-      head: async (key: string) => ({ key }),
+      head: async (key: string) => objects[key] === undefined ? null : { key },
       get: async (key: string) => (objects[key] === undefined ? null : {
         body: objects[key],
         httpEtag: `"etag-${key}"`,
         writeHttpMetadata: (headers: Headers) => headers.set("content-type", "application/octet-stream"),
       }),
     };
+
+    env.APK_BUCKET = hostedBucket;
 
     const { handleExternalLatestDl, handleExternalReleaseDl } = await import("../src/routes/external_dl");
     const dlCtx = (params: Record<string, string>, query: Record<string, string> = {}) =>
@@ -7419,6 +7421,74 @@ describe("quiver public API v2 — scope resolution", () => {
     );
     expect(gzViaKind.status).toBe(200);
     expect(await gzViaKind.text()).toBe("GZIP-STREAM-BYTES");
+
+    // With signing configured, the Worker must not open the object's body.
+    // Every representation still resolves within the pinned release.
+    Object.assign(env, {
+      R2_S3_ENDPOINT: "https://r2.example.test",
+      R2_BUCKET_NAME: "assets",
+      R2_S3_ACCESS_KEY_ID: "test-access",
+      R2_S3_SECRET_ACCESS_KEY: "test-secret",
+      R2_PRESIGNED_DOWNLOAD_TTL_SECONDS: "120",
+    });
+    const oldGet = hostedBucket.get;
+    hostedBucket.get = async () => { throw new Error("direct downloads must not stream through the Worker"); };
+    hostedBucket.head = async (key: string) => objects[key] === undefined ? null : { key };
+    const direct = await handleExternalReleaseDl(
+      dlCtx({ slug: "scope-app", releaseId: "rel-hosted", file: "linux-x64" }),
+    );
+    expect(direct.status).toBe(302);
+    expect(direct.headers.get("cache-control")).toBe("no-store");
+    expect(await direct.text()).toBe("");
+    const directUrl = new URL(direct.headers.get("location")!);
+    expect(directUrl.origin).toBe("https://r2.example.test");
+    expect(directUrl.pathname).toBe("/assets/hosted/ha-bin");
+    expect(directUrl.searchParams.get("X-Amz-Expires")).toBe("120");
+    expect(directUrl.searchParams.get("X-Amz-Signature")).toMatch(/^[a-f0-9]{64}$/);
+    expect(directUrl.searchParams.get("response-content-disposition")).toBe("attachment; filename*=UTF-8''ha-bin");
+    for (const [file, query, expectedKey] of [
+      ["linux-x64", { kind: "runner" }, "ha-runner"],
+      ["linux-x64", { kind: "sha256sums" }, "ha-sums"],
+      ["linux-x64.gz", {}, "ha-gz"],
+      ["linux-x64", { kind: "gzip" }, "ha-gz"],
+    ] as const) {
+      const response = await handleExternalReleaseDl(dlCtx({ slug: "scope-app", releaseId: "rel-hosted", file }, query));
+      expect(response.status).toBe(302);
+      expect(new URL(response.headers.get("location")!).pathname).toBe(`/assets/hosted/${expectedKey}`);
+    }
+    const headContext = dlCtx({ slug: "scope-app", releaseId: "rel-hosted", file: "linux-x64" });
+    headContext.req.method = "HEAD";
+    const head = await handleExternalReleaseDl(headContext);
+    expect(head.status).toBe(302);
+    const headUrl = new URL(head.headers.get("location")!);
+    expect(headUrl.pathname).toBe(directUrl.pathname);
+    expect(headUrl.searchParams.get("X-Amz-Signature")).not.toBe(directUrl.searchParams.get("X-Amz-Signature"));
+    delete objects["hosted/ha-runner"];
+    const missingObject = await handleExternalReleaseDl(
+      dlCtx({ slug: "scope-app", releaseId: "rel-hosted", file: "linux-x64" }, { kind: "runner" }),
+    );
+    expect(missingObject.status).toBe(404);
+    expect(missingObject.headers.get("location")).toBeNull();
+    const unknownDirect = await handleExternalReleaseDl(
+      dlCtx({ slug: "scope-app", releaseId: "rel-hosted", file: "linux-x64" }, { kind: "unknown" }),
+    );
+    expect(unknownDirect.status).toBe(404);
+    await env.DB.prepare("UPDATE releases SET status = 'superseded' WHERE id = 'rel-hosted'").run();
+    const supersededDirect = await handleExternalReleaseDl(
+      dlCtx({ slug: "scope-app", releaseId: "rel-hosted", file: "linux-x64" }),
+    );
+    expect(supersededDirect.status).toBe(302);
+    for (const status of ["draft", "cancelled"]) {
+      await env.DB.prepare("UPDATE releases SET status = ?1 WHERE id = 'rel-hosted'").bind(status).run();
+      const blocked = await handleExternalReleaseDl(
+        dlCtx({ slug: "scope-app", releaseId: "rel-hosted", file: "linux-x64" }),
+      );
+      expect(blocked.status).toBe(404);
+      expect(blocked.headers.get("location")).toBeNull();
+    }
+    await env.DB.prepare("UPDATE releases SET status = 'active' WHERE id = 'rel-hosted'").run();
+    Object.assign(env, { R2_S3_ENDPOINT: undefined, R2_BUCKET_NAME: undefined, R2_S3_ACCESS_KEY_ID: undefined, R2_S3_SECRET_ACCESS_KEY: undefined, R2_PRESIGNED_DOWNLOAD_TTL_SECONDS: undefined });
+    hostedBucket.get = oldGet;
 
     // 5. Existing external behaviour is untouched: an external release on the
     //    same app still 302s to its declared source URL. Seeded here so this

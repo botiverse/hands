@@ -6,8 +6,8 @@
  *       source URL; draft/cancelled 404. A manifest that pinned a release keeps
  *       resolving the same bytes through supersession (rollback/audit
  *       continuity).
- *       Hosted (bytes in the Hands bucket): streamed directly from R2, so a
- *       pinned release keeps serving the same object.
+ *       Hosted (bytes in the Hands bucket): redirects to a short-lived R2 URL
+ *       when signing is configured; otherwise streams the same pinned object.
  *
  *   /dl/{slug}/{channel}/{target}[.gz]              — stable "latest".
  *       Resolves to the channel's current ACTIVE release, then serves it the
@@ -28,6 +28,7 @@
 import type { Context } from "hono";
 import { usesHostedAssets } from "../lib/release_resolver";
 import { resolvePublicChannelSlug } from "../lib/public_channel";
+import { presignR2DownloadUrl } from "../lib/r2_presign";
 
 type DlTargetRow = {
   target: string;
@@ -118,6 +119,20 @@ async function serveHostedAsset(
 
   const asset = await match.first<HostedAssetRow>();
   if (!asset) return null;
+
+  const configuredTtl = Number(c.env.R2_PRESIGNED_DOWNLOAD_TTL_SECONDS ?? c.env.SIGNED_URL_TTL_SECONDS ?? "3600");
+  const filename = asset.r2_key.split("/").pop() || `${target}.${asset.filetype}`;
+  const directUrl = await presignR2DownloadUrl(c.env, {
+    key: asset.r2_key,
+    filetype: asset.filetype,
+    contentDisposition: `attachment; filename*=UTF-8''${encodeURIComponent(filename)}`,
+  }, Number.isFinite(configuredTtl) ? configuredTtl : 3600, c.req.method === "HEAD" ? "HEAD" : "GET");
+  if (directUrl) {
+    if (!await c.env.APK_BUCKET.head(asset.r2_key)) return null;
+    // The release/key is immutable, but the URL's signature expires. Never
+    // cache this redirect as immutable or clients will retain an expired URL.
+    return new Response(null, { status: 302, headers: { location: directUrl, ...noStore } });
+  }
 
   const object = await c.env.APK_BUCKET.get(asset.r2_key);
   if (!object) return null;
