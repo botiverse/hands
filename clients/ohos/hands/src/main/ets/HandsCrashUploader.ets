@@ -7,7 +7,7 @@ import {
   uploadCrashThenDelete,
 } from './HandsCrashStoragePolicy';
 import { HandsFeedbackClient, HandsFeedbackExtras } from './HandsFeedbackClient';
-import { historicalCrashBuild } from './HandsFaultReportPolicy';
+import { historicalCrashBuild, StoredCrashBuild, StoredCrashBuildKeys } from './HandsFaultReportPolicy';
 
 const TAG: string = 'HandsCrashUploader';
 const MAX_STORED_CRASHES: number = 5;
@@ -87,7 +87,7 @@ export class HandsCrashUploader {
       } catch (error) {
         hilog.warn(0x0000, TAG, 'meta parse failed for %{public}s', sidecarName);
       }
-      const versionKeys = {
+      const versionKeys: StoredCrashBuildKeys = {
         versionName: meta.version_name !== undefined,
         versionCode: meta.version_code !== undefined,
       };
@@ -100,14 +100,11 @@ export class HandsCrashUploader {
         }
       }
       // A historical crash never borrows the install that uploads it.
-      const captured = historicalCrashBuild(
-        {
-          versionName: typeof meta.version_name === 'string' ? meta.version_name : '',
-          versionCode: typeof meta.version_code === 'number' ? meta.version_code : null,
-        },
-        versionKeys,
-        logText,
-      );
+      const storedBuild: StoredCrashBuild = {
+        versionName: typeof meta.version_name === 'string' ? meta.version_name : '',
+        versionCode: typeof meta.version_code === 'number' ? meta.version_code : null,
+      };
+      const captured = historicalCrashBuild(storedBuild, versionKeys, logText);
       const exceptionClass = meta.exception_class ?? 'OhosCrash';
       const topFrame = meta.top_frame ?? '';
       const detail = (meta.exception_message ?? '').slice(0, 200);

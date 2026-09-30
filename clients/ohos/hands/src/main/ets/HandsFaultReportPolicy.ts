@@ -9,6 +9,16 @@ export interface HandsCapturedBuild {
   versionCode?: number | null;
 }
 
+export interface StoredCrashBuild {
+  versionName: string;
+  versionCode: number | null;
+}
+
+export interface StoredCrashBuildKeys {
+  versionName: boolean;
+  versionCode: boolean;
+}
+
 export interface FaultBuildIdentity {
   versionName: string;
   versionCode: number | null;
@@ -87,8 +97,8 @@ export function faultBuildIdentity(
  * Neither case may borrow the install that uploads the ticket.
  */
 export function historicalCrashBuild(
-  stored: { versionName: string; versionCode: number | null },
-  keys: { versionName: boolean; versionCode: boolean },
+  stored: StoredCrashBuild,
+  keys: StoredCrashBuildKeys,
   logText: string,
 ): HandsCapturedBuild {
   const recorded = capturedCrashBuild(stored, keys);
@@ -107,8 +117,8 @@ export function historicalCrashBuild(
 
 /** A sidecar that recorded a build is a capture. Missing keys are not a build. */
 export function capturedCrashBuild(
-  stored: { versionName: string; versionCode: number | null },
-  keys: { versionName: boolean; versionCode: boolean },
+  stored: StoredCrashBuild,
+  keys: StoredCrashBuildKeys,
 ): HandsCapturedBuild | null {
   if (!keys.versionName && !keys.versionCode) {
     return null;
