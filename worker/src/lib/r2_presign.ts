@@ -19,6 +19,7 @@ export async function presignR2DownloadUrl(
   env: Env,
   asset: R2PresignAsset,
   ttlSeconds: number,
+  method: "GET" | "HEAD" = "GET",
 ): Promise<string | null> {
   if (!canPresignR2Download(env)) return null;
 
@@ -36,7 +37,7 @@ export async function presignR2DownloadUrl(
     retries: 0,
   });
   const request = await aws.sign(url.toString(), {
-    method: "GET",
+    method,
     aws: {
       signQuery: true,
       service: "s3",
