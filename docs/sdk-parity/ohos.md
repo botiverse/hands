@@ -2,7 +2,7 @@
 
 Source: `clients/ohos/hands` (ArkTS and release contract read 2026-07-30).
 
-The package and runtime `hands_sdk` metadata share one `0.3.4` release
+The package and runtime `hands_sdk` metadata share one `0.3.5` release
 constant, covered by a host-side parity test.
 
 Positioning note: this SDK is a feedback + crash-ticket client mirroring the

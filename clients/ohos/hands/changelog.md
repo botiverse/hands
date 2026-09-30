@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.3.5
+
+- Native crash titles use `signo` as the signal number and label `code` as
+  si_code. `{ signo: 11, code: 2 }` is SIGSEGV / SEGV_ACCERR, not signal 2.
+- A crash uploaded after a newer install keeps the crashed build's version
+  name and version code. The version code is omitted when the fault log has
+  no `VersionCode`, instead of borrowing the running install.
+
 ## 0.3.4
 
 - Upload large feedback attachments through bounded 5 MiB ArkTS reads and an

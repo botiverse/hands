@@ -40,12 +40,15 @@ export class HandsCrashReporter {
       const exceptionClass = firstLine.split(':')[0]?.trim() ?? 'OhosCrash';
       const exceptionMessage = firstLine.slice(exceptionClass.length + 1).trim();
       const frameLine = errorText.split('\n').find((line: string): boolean => line.trim().startsWith('at ')) ?? '';
+      const bundleInfo = bundleManager.getBundleInfoForSelfSync(bundleManager.BundleFlag.GET_BUNDLE_INFO_DEFAULT);
       HandsCrashUploader.writeMeta(crashPath, {
         exception_class: exceptionClass.length > 0 ? exceptionClass : 'OhosCrash',
         exception_message: exceptionMessage,
         top_frame: frameLine.trim().replace(/^at\s+/, ''),
         reason: reason,
         crash_at: Date.now(),
+        version_name: bundleInfo.versionName,
+        version_code: bundleInfo.versionCode,
       });
     } catch (error) {
       hilog.error(0x0000, TAG, 'failed to write crash: %{public}s', String(error));

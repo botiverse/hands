@@ -7,6 +7,7 @@ import {
   uploadCrashThenDelete,
 } from './HandsCrashStoragePolicy';
 import { HandsFeedbackClient, HandsFeedbackExtras } from './HandsFeedbackClient';
+import { capturedCrashBuild } from './HandsFaultReportPolicy';
 
 const TAG: string = 'HandsCrashUploader';
 const MAX_STORED_CRASHES: number = 5;
@@ -17,6 +18,9 @@ export interface CrashMeta {
   top_frame?: string;
   reason?: string;
   crash_at?: number;
+  /** Version of the build that crashed, not the build that uploads the ticket. */
+  version_name?: string;
+  version_code?: number | null;
 }
 
 /**
@@ -75,11 +79,26 @@ export class HandsCrashUploader {
         continue;
       }
       let meta: CrashMeta = {};
+      let raw: Record<string, Object> = {};
       try {
-        meta = JSON.parse(fs.readTextSync(sidecarPath)) as CrashMeta;
+        const parsed = JSON.parse(fs.readTextSync(sidecarPath)) as Object;
+        if (parsed !== null && typeof parsed === 'object') {
+          raw = parsed as Record<string, Object>;
+          meta = parsed as CrashMeta;
+        }
       } catch (error) {
         hilog.warn(0x0000, TAG, 'meta parse failed for %{public}s', sidecarName);
       }
+      const captured = capturedCrashBuild(
+        {
+          versionName: typeof meta.version_name === 'string' ? meta.version_name : '',
+          versionCode: typeof meta.version_code === 'number' ? meta.version_code : null,
+        },
+        {
+          versionName: Object.prototype.hasOwnProperty.call(raw, 'version_name'),
+          versionCode: Object.prototype.hasOwnProperty.call(raw, 'version_code'),
+        },
+      );
       const exceptionClass = meta.exception_class ?? 'OhosCrash';
       const topFrame = meta.top_frame ?? '';
       const detail = (meta.exception_message ?? '').slice(0, 200);
@@ -98,7 +117,14 @@ export class HandsCrashUploader {
       ];
       try {
         const ticketId = await uploadCrashThenDelete(
-          (): Promise<string> => HandsFeedbackClient.submit(context, message, 'crash', [logPath], extras),
+          (): Promise<string> => HandsFeedbackClient.submit(
+            context,
+            message,
+            'crash',
+            [logPath],
+            extras,
+            captured,
+          ),
           (): void => HandsCrashUploader.deletePair(logPath),
         );
         hilog.info(0x0000, TAG, 'uploaded crash %{public}s as %{public}s', sidecarName, ticketId.slice(0, 8));

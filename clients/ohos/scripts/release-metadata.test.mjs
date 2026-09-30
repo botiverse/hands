@@ -19,7 +19,7 @@ test('published HAR manifest carries the authorized OHPM author identity', () =>
     refType: 'branch',
     refName: 'codex/task215-ohpm-author-retry',
   });
-  assert.equal(metadata.version, '0.3.4');
+  assert.equal(metadata.version, '0.3.5');
   assert.deepEqual(metadata.author, EXPECTED_OHPM_AUTHOR);
 });
 

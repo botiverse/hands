@@ -10,6 +10,7 @@
   },
   "include": [
     "src/**/*.ts",
-    "../hands/src/main/ets/HandsCrashStoragePolicy.ts"
+    "../hands/src/main/ets/HandsCrashStoragePolicy.ts",
+    "../hands/src/main/ets/HandsFaultReportPolicy.ts"
   ]
 }

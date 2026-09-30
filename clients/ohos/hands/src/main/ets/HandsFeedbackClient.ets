@@ -9,6 +9,7 @@ import statvfs from '@ohos.file.statvfs';
 import batteryInfo from '@ohos.batteryInfo';
 import { Hands } from './Hands';
 import { HANDS_OHOS_SDK_VERSION } from './HandsCrashStoragePolicy';
+import { crashTicketVersions, HandsCapturedBuild } from './HandsFaultReportPolicy';
 import { HandsDeviceId } from './HandsDeviceId';
 import {
   HANDS_OHOS_PRESIGN_MAX_BYTES,
@@ -119,12 +120,16 @@ export class HandsFeedbackClient {
     kind: string,
     attachmentPaths: string[],
     extras: HandsFeedbackExtras[],
+    capturedBuild: HandsCapturedBuild | null = null,
   ): Promise<string> {
     const bundleInfo = bundleManager.getBundleInfoForSelfSync(bundleManager.BundleFlag.GET_BUNDLE_INFO_DEFAULT);
+    const versions = crashTicketVersions(capturedBuild, {
+      versionName: bundleInfo.versionName,
+      versionCode: bundleInfo.versionCode,
+    });
     const metadata: Record<string, string | number> = {
-      // App / build identity
-      'version_name': bundleInfo.versionName,
-      'version_code': bundleInfo.versionCode,
+      // App / build identity. A stored crash build replaces the process that
+      // uploads it; a missing captured code is left unset, not filled from now.
       'bundle_id': bundleInfo.name,
       'platform': 'ohos',
       'hands_sdk': HANDS_OHOS_SDK_VERSION,
@@ -144,6 +149,12 @@ export class HandsFeedbackClient {
       'locale': i18n.System.getSystemLocale(),
       'system_language': i18n.System.getSystemLanguage(),
     };
+    if (versions.versionName !== null) {
+      metadata['version_name'] = versions.versionName;
+    }
+    if (versions.versionCode !== null) {
+      metadata['version_code'] = versions.versionCode;
+    }
 
     // Runtime state (best-effort; a metadata read must never fail submit).
     try {
