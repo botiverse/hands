@@ -55,29 +55,57 @@ export function describeFaultSignal(signal: SignalValue): string {
 }
 
 /**
- * `Version` / `VersionCode` are the crashed process header. `bundle_version`
- * is only a version-name fallback when that header is missing.
+ * `Version` / `VersionCode` are the crashed process header. In-process logs
+ * use `Version name` / `Version code`. `bundle_version` and a `Bundle version`
+ * line are only a version-name fallback. No match means the build is unknown,
+ * not that the uploading install should be used.
  */
 export function faultBuildIdentity(
   bundleVersion: SignalValue,
   faultText: string,
 ): FaultBuildIdentity | null {
-  const versionMatch = faultText.match(/^Version:\s*(\S.*?)\s*$/m);
-  const codeMatch = faultText.match(/^VersionCode:\s*(\d+)\s*$/m);
-  const logName = versionMatch?.[1]?.trim() ?? '';
-  const logCode = codeMatch ? finiteSignalNumber(codeMatch[1]) : null;
+  const headerName = labeledLine(faultText, /^Version:\s*(\S.*?)\s*$/m);
+  const reportedName = labeledLine(faultText, /^Version name:\s*(\S.*?)\s*$/m);
+  const bundleLine = labeledLine(faultText, /^Bundle version:\s*(\S.*?)\s*$/m);
+  const headerCode = labeledCode(faultText, /^VersionCode:\s*(\d+)\s*$/m);
+  const reportedCode = labeledCode(faultText, /^Version code:\s*(\d+)\s*$/m);
   const paramName = typeof bundleVersion === 'string' ? bundleVersion.trim() : '';
-  const versionName = logName || paramName;
-  if (versionName.length === 0 && logCode === null) {
+  const versionName = headerName || reportedName || bundleLine || paramName;
+  const versionCode = headerCode ?? reportedCode;
+  if (versionName.length === 0 && versionCode === null) {
     return null;
   }
   return {
     versionName,
-    versionCode: logCode,
+    versionCode,
   };
 }
 
-/** A sidecar that recorded a build is a capture. Missing keys stay on the live install. */
+/**
+ * Crash upload identity. A stored key, including an empty name or a null code,
+ * is explicit. An older sidecar with neither key is recovered from its log.
+ * Neither case may borrow the install that uploads the ticket.
+ */
+export function historicalCrashBuild(
+  stored: { versionName: string; versionCode: number | null },
+  keys: { versionName: boolean; versionCode: boolean },
+  logText: string,
+): HandsCapturedBuild {
+  const recorded = capturedCrashBuild(stored, keys);
+  if (recorded !== null) {
+    return recorded;
+  }
+  const fromLog = faultBuildIdentity('', logText);
+  if (fromLog !== null) {
+    return {
+      versionName: fromLog.versionName,
+      versionCode: fromLog.versionCode,
+    };
+  }
+  return { versionName: '', versionCode: null };
+}
+
+/** A sidecar that recorded a build is a capture. Missing keys are not a build. */
 export function capturedCrashBuild(
   stored: { versionName: string; versionCode: number | null },
   keys: { versionName: boolean; versionCode: boolean },
@@ -114,6 +142,15 @@ export function crashTicketVersions(
     versionName: name.length > 0 ? name : null,
     versionCode: code,
   };
+}
+
+function labeledLine(text: string, pattern: RegExp): string {
+  return text.match(pattern)?.[1]?.trim() ?? '';
+}
+
+function labeledCode(text: string, pattern: RegExp): number | null {
+  const match = text.match(pattern);
+  return match ? finiteSignalNumber(match[1]) : null;
 }
 
 function signalLabel(value: SignalValue): string {

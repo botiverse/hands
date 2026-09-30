@@ -157,11 +157,11 @@ export class HandsFaultWatcher {
       top_frame: summary.topFrame,
       reason: eventName === hiAppEvent.event.APP_FREEZE ? 'appFreeze' : 'nativeCrash',
       crash_at: faultTime,
+      // Always record the crashed build, including an explicit unknown.
+      // A missing key would be uploaded as the install that is running now.
+      version_name: identity === null ? '' : identity.versionName,
+      version_code: identity === null ? null : identity.versionCode,
     };
-    if (identity) {
-      meta.version_name = identity.versionName;
-      meta.version_code = identity.versionCode;
-    }
     HandsCrashUploader.writeMeta(crashPath, meta);
     hilog.info(0x0000, TAG, 'captured %{public}s fault', kind);
   }

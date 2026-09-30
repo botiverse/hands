@@ -7,6 +7,10 @@
 - A crash uploaded after a newer install keeps the crashed build's version
   name and version code. The version code is omitted when the fault log has
   no `VersionCode`, instead of borrowing the running install.
+- A historical crash whose version cannot be recovered is stored as unknown
+  and uploaded with no version. An older sidecar without version keys is
+  recovered from its log, and stays unknown when that log has none. Ordinary
+  feedback still reports the running install.
 
 ## 0.3.4
 

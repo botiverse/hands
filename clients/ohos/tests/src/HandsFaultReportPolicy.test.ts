@@ -5,6 +5,7 @@ import {
   crashTicketVersions,
   describeFaultSignal,
   faultBuildIdentity,
+  historicalCrashBuild,
 } from '../../hands/src/main/ets/HandsFaultReportPolicy.ts';
 
 test('native signal title uses signo and labels si_code', () => {
@@ -42,7 +43,19 @@ test('bundle_version is only the version-name fallback', () => {
     versionName: '1.0.0-kuikly228',
     versionCode: null,
   });
+  assert.equal(faultBuildIdentity(undefined, ''), null);
   assert.equal(faultBuildIdentity('', 'no header'), null);
+});
+
+test('in-process and bundle-version log lines recover the crashed build', () => {
+  assert.deepEqual(
+    faultBuildIdentity('', 'Version name: 1.0.0-kuikly228\nVersion code: 10000971\n'),
+    { versionName: '1.0.0-kuikly228', versionCode: 10000971 },
+  );
+  assert.deepEqual(faultBuildIdentity('', 'Bundle version: 1.0.0-kuikly228\n'), {
+    versionName: '1.0.0-kuikly228',
+    versionCode: null,
+  });
 });
 
 test('a captured crash does not inherit the build that uploads it', () => {
@@ -61,7 +74,44 @@ test('a captured crash does not inherit the build that uploads it', () => {
   assert.deepEqual(crashTicketVersions(null, live), live);
 });
 
-test('sidecars written before build capture keep the live install', () => {
+test('a historical crash with no recoverable version stays blank', () => {
+  const live = { versionName: 'new-install', versionCode: 10000972 };
+  const captured = historicalCrashBuild(
+    { versionName: '', versionCode: null },
+    { versionName: false, versionCode: false },
+    'no header',
+  );
+  assert.deepEqual(crashTicketVersions(captured, live), {
+    versionName: null,
+    versionCode: null,
+  });
+  assert.deepEqual(
+    crashTicketVersions(
+      historicalCrashBuild(
+        { versionName: '', versionCode: null },
+        { versionName: true, versionCode: true },
+        '',
+      ),
+      live,
+    ),
+    { versionName: null, versionCode: null },
+  );
+});
+
+test('an older sidecar recovers its crashed build from the log', () => {
+  const live = { versionName: 'new-install', versionCode: 10000972 };
+  const captured = historicalCrashBuild(
+    { versionName: '', versionCode: null },
+    { versionName: false, versionCode: false },
+    'Version:1.0.0-kuikly228\nVersionCode:10000971\n',
+  );
+  assert.deepEqual(crashTicketVersions(captured, live), {
+    versionName: '1.0.0-kuikly228',
+    versionCode: 10000971,
+  });
+});
+
+test('recorded sidecar keys are a capture and missing keys are not', () => {
   assert.equal(
     capturedCrashBuild(
       { versionName: '', versionCode: null },
@@ -71,9 +121,9 @@ test('sidecars written before build capture keep the live install', () => {
   );
   assert.deepEqual(
     capturedCrashBuild(
-      { versionName: '1.0.0-kuikly228', versionCode: null },
+      { versionName: '', versionCode: null },
       { versionName: true, versionCode: true },
     ),
-    { versionName: '1.0.0-kuikly228', versionCode: null },
+    { versionName: '', versionCode: null },
   );
 });

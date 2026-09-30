@@ -7,7 +7,7 @@ import {
   uploadCrashThenDelete,
 } from './HandsCrashStoragePolicy';
 import { HandsFeedbackClient, HandsFeedbackExtras } from './HandsFeedbackClient';
-import { capturedCrashBuild } from './HandsFaultReportPolicy';
+import { historicalCrashBuild } from './HandsFaultReportPolicy';
 
 const TAG: string = 'HandsCrashUploader';
 const MAX_STORED_CRASHES: number = 5;
@@ -87,17 +87,26 @@ export class HandsCrashUploader {
       } catch (error) {
         hilog.warn(0x0000, TAG, 'meta parse failed for %{public}s', sidecarName);
       }
-      // Missing sidecar keys stay undefined. A recorded null version code is
-      // present and must not fall back to the build that uploads the ticket.
-      const captured = capturedCrashBuild(
+      const versionKeys = {
+        versionName: meta.version_name !== undefined,
+        versionCode: meta.version_code !== undefined,
+      };
+      let logText = '';
+      if (!versionKeys.versionName && !versionKeys.versionCode) {
+        try {
+          logText = fs.readTextSync(logPath);
+        } catch (error) {
+          hilog.warn(0x0000, TAG, 'crash log read failed for %{public}s', sidecarName);
+        }
+      }
+      // A historical crash never borrows the install that uploads it.
+      const captured = historicalCrashBuild(
         {
           versionName: typeof meta.version_name === 'string' ? meta.version_name : '',
           versionCode: typeof meta.version_code === 'number' ? meta.version_code : null,
         },
-        {
-          versionName: meta.version_name !== undefined,
-          versionCode: meta.version_code !== undefined,
-        },
+        versionKeys,
+        logText,
       );
       const exceptionClass = meta.exception_class ?? 'OhosCrash';
       const topFrame = meta.top_frame ?? '';
