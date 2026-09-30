@@ -80,6 +80,29 @@ const DirectBuildAssetUploadInput = z.object({
   metadata_json: z.record(z.string(), z.unknown()).optional(),
 }).openapi("DirectBuildAssetUploadInput");
 
+const DirectBuildAssetUploadResponse = z.object({
+  asset_id: z.string(),
+  attempt: z.number().int(),
+  state: z.enum(["pending", "verifying", "ready", "failed", "expired"]),
+  replayed: z.boolean(),
+  upload: z.object({
+    method: z.literal("PUT"),
+    url: z.string(),
+    headers: z.object({ "content-type": z.string() }),
+    expires_at: z.number().int(),
+  }).nullable().describe("PUT instructions only while pending; null when verifying, ready, failed, or expired. Null alone does not mean success."),
+  complete_url: z.string(),
+}).openapi("DirectBuildAssetUploadResponse");
+
+const DirectBuildAssetCompleteResponse = z.object({
+  asset_id: z.string(),
+  state: z.literal("ready"),
+  r2_key: z.string(),
+  file_hash: z.string(),
+  size_bytes: z.number().int(),
+  replayed: z.boolean(),
+}).openapi("DirectBuildAssetCompleteResponse");
+
 const RequiredAssetSlot = z.object({
   artifact_kind: z.string().default("installable").optional(),
   platform: z.string(),
@@ -713,17 +736,19 @@ export function registerBuildRoutes(): RouteConfigList {
     tags: ["Builds"],
     summary: "Declare a direct R2 build-asset upload",
     description:
-      "Creates an app/build/slot-bound upload attempt and returns a short-lived single-object R2 PUT URL. The caller receives no bucket credential. The build must use asset ingest protocol v1 and remain pending.",
+      "Creates an app/build/slot-bound upload attempt and returns a short-lived single-object R2 PUT URL. The caller receives no bucket credential. The build must use asset ingest protocol v1. Repeating the exact declaration and idempotency_key returns 200 with the current state: pending has PUT instructions; verifying, ready, failed and expired have upload:null. Poll by repeating that declaration, without re-uploading while verifying. Only ready is success; failed/expired are terminal. See /docs/agent-guide/#direct-build-asset-upload-retries.",
     security: auth,
     request: {
       params: AppBuildParams,
       body: { content: json(DirectBuildAssetUploadInput), required: true },
     },
     responses: {
-      201: success("Upload attempt declared.", GenericObject),
+      200: success("Idempotent replay with current upload state, including verifying and upload:null.", DirectBuildAssetUploadResponse),
+      201: success("Upload attempt declared.", DirectBuildAssetUploadResponse),
       400: error("Invalid upload declaration."),
       403: error("Current principal cannot upload build assets."),
       409: error("Build, slot, or idempotency state conflicts."),
+      410: error("Pending upload attempt expired."),
       503: error("Direct R2 upload is not configured."),
     },
   });
@@ -734,16 +759,24 @@ export function registerBuildRoutes(): RouteConfigList {
     tags: ["Builds"],
     summary: "Verify and seal a direct build-asset upload",
     description:
-      "Streams one immutable staging snapshot through SHA-256 verification and a verified R2 key. Asset metadata becomes ready only after exact size and digest readback succeeds.",
+      "Synchronously streams one immutable staging snapshot through SHA-256 verification and a verified R2 key. Asset metadata becomes ready only after exact size and digest readback succeeds. Verification time depends on size and storage/network throughput; there is no fixed per-size duration guarantee. After a client timeout, poll by replaying the identical upload declaration. ASSET_UPLOAD_BUSY with retryable:true means another verification is running; honor Retry-After and poll, do not re-upload. Transient ASSET_UPLOAD_SEAL_INTENT_FAILED returns 503 with retryable:true and Retry-After; retry the same complete request. Failed/expired attempts return ASSET_UPLOAD_TERMINAL with retryable:false. See /docs/agent-guide/#direct-build-asset-upload-retries.",
     security: auth,
     request: { params: AppBuildAssetParams },
     responses: {
-      200: success("Upload verified and sealed.", GenericObject),
+      200: success("Upload verified and sealed, or ready replay.", DirectBuildAssetCompleteResponse),
       403: error("Current principal cannot complete build-asset uploads."),
       404: error("Upload attempt was not found."),
-      409: error("Upload is busy or the build is no longer pending."),
+      409: {
+        ...error("ASSET_UPLOAD_BUSY with retryable:true and Retry-After means verification is in progress; other conflicts, including ASSET_UPLOAD_TERMINAL and non-transient seal-intent errors, are not retryable."),
+        headers: { "Retry-After": { description: "Seconds before retrying, present for ASSET_UPLOAD_BUSY.", schema: { type: "string" } } },
+      },
       410: error("Upload attempt expired."),
       422: error("Uploaded bytes failed exact integrity verification."),
+      503: {
+        description: "Transient seal-intent failure: ASSET_UPLOAD_SEAL_INTENT_FAILED, retryable:true, Retry-After in seconds. Retry the same complete request.",
+        headers: { "Retry-After": { description: "Seconds before retrying the same completion.", required: true, schema: { type: "string" } } },
+        content: json(z.object({ error: z.string(), code: z.literal("ASSET_UPLOAD_SEAL_INTENT_FAILED"), retryable: z.literal(true) })),
+      },
     },
   });
 
