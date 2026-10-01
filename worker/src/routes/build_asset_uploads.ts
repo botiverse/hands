@@ -1166,6 +1166,7 @@ export async function cleanupExpiredBuildAssetUploads(env: Env, now = Date.now()
        JOIN builds b ON b.id = a.build_id
       WHERE i.cleanup_state = 'tombstoned'
          OR (i.upload_expires_at <= ?1 AND i.cleanup_state = 'live'
+             AND i.state <> 'ready'
              AND NOT (i.state = 'verifying' AND i.verifier_lease_expires_at >= ?1))
       ORDER BY i.upload_expires_at ASC LIMIT 50`,
   ).bind(now).all<{
