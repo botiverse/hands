@@ -376,6 +376,45 @@ describe("direct build asset upload routes", () => {
     expect(complete.responses[503].description).toContain("Retry-After");
   });
 
+  it.each(["pending", "verifying"])("cleans expired %s uploads behind a full batch of ready assets", async (state) => {
+    const bytes = Buffer.from("expired-behind-ready");
+    const hash = createHash("sha256").update(bytes).digest("hex");
+    const declared = await declare(hash, bytes.length, "expired-behind-ready");
+    const body = await declared.json() as any;
+    const attempt = sqlite.prepare("SELECT staging_key FROM build_asset_ingest_attempt WHERE asset_id = ?").get(body.asset_id) as any;
+    bucket.objects.set(attempt.staging_key, bytes);
+    sqlite.prepare(`UPDATE build_asset_ingest_attempt SET state = ?, upload_expires_at = 2,
+      verifier_lease_id = ?, verifier_lease_expires_at = 1 WHERE asset_id = ?`)
+      .run(state, state === "verifying" ? "old-verifier" : null, body.asset_id);
+
+    for (let index = 0; index < 50; index++) {
+      const id = `ready-${index}`;
+      const finalKey = `verified/${id}`;
+      sqlite.prepare(`INSERT INTO build_assets
+        (id, build_id, artifact_kind, platform, arch, variant, filetype, r2_key,
+         file_hash, size_bytes, metadata_json, download_count, created_at)
+        VALUES (?, 'build-1', 'installable', 'darwin', 'arm64', ?, 'bin', ?, ?, ?, '{}', 0, 0)`)
+        .run(id, id, finalKey, hash, bytes.length);
+      sqlite.prepare(`INSERT INTO build_asset_ingest_attempt
+        (asset_id, attempt, declared_sha256, declared_size, staging_key,
+         committed_final_key, upload_expires_at, state, created_at)
+        VALUES (?, 1, ?, ?, ?, ?, 1, 'ready', 0)`)
+        .run(id, hash, bytes.length, `staging/${id}`, finalKey);
+      bucket.objects.set(finalKey, bytes);
+    }
+
+    await cleanupExpiredBuildAssetUploads(env, 3);
+    expect(sqlite.prepare("SELECT id FROM build_assets WHERE id = ?").get(body.asset_id)).toBeUndefined();
+    expect(sqlite.prepare("SELECT asset_id FROM build_asset_ingest_replay WHERE asset_id = ?").get(body.asset_id)).toBeUndefined();
+    expect(bucket.objects.has(attempt.staging_key)).toBe(false);
+    expect(sqlite.prepare("SELECT COUNT(*) AS count FROM build_asset_ingest_attempt WHERE state = 'ready'").get()).toEqual({ count: 50 });
+    for (let index = 0; index < 50; index++) expect(bucket.objects.has(`verified/ready-${index}`)).toBe(true);
+
+    const redeclared = await declare(hash, bytes.length, "expired-behind-ready");
+    expect(redeclared.status).toBe(201);
+    expect((await redeclared.json() as any).asset_id).not.toBe(body.asset_id);
+  });
+
   it("binds a replay to one exact staging key and exposes only a single-key PUT URL", async () => {
     const bytes = Buffer.from("computer-bytes");
     const hash = createHash("sha256").update(bytes).digest("hex");
