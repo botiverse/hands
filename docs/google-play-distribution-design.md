@@ -103,7 +103,7 @@ fail-closed until the server-side Play adapter explicitly implements them.
 ## Server-side Play adapter protocol
 
 Each Android app has an owner-managed Google Play binding. Hands encrypts the
-service-account JSON with an app-bound AES-GCM keyring, stores only ciphertext,
+service-account JSON or a Google OAuth refresh credential with an app-bound AES-GCM keyring, stores only ciphertext,
 and exposes only non-secret metadata to the admin UI. Binding or re-enabling an
 app first validates OAuth, package access, and all configured tracks with a
 temporary edit that is deleted without commit.
@@ -142,3 +142,77 @@ allowed only for `production`; internal and closed-test promotion is 100%.
 - no store listing automation, review replies, or crash/ANR threshold gate;
 - no Play distribution-certificate storage or gating;
 - no inclusion of Play artifacts in Hands alpha/delta updates.
+
+## Google user authorization
+
+Human app administrators can use Settings → Google Play → Authorize with Google
+instead of creating a service-account key. The selected Google account needs
+Play Console access to the exact package and all configured tracks. This does
+not change any organization policy governing service-account key creation.
+
+POST /api/apps/{appId}/google-play-oauth/start accepts only package_name and
+tracks. It creates a ten-minute authorization with S256 PKCE, hashed state and
+an encrypted verifier, bound to the session-authenticated human and effective
+app administrator. The browser uses Google's consent page with androidpublisher,
+openid and email scopes and offline access. The fixed callback is
+/api/google-play/oauth/callback on BUSINESS_ORIGIN.
+
+The callback must use the same authenticated Hands identity. Browser login uses
+a Bearer session stored locally; initiation bridges the Google redirect with a
+ten-minute HttpOnly, SameSite=Lax cookie scoped only to this callback path and
+authorization. That cookie is never accepted on other API routes, and session
+expiry/revocation still applies. The callback clears it. It restores the
+organization identity selected at initiation and checks app administrator
+permission again. State is claimed once before contacting Google. Partial
+consent, missing refresh tokens, unverified email, expired authorization and
+failed package/track checks cannot produce a binding. Saving also checks that
+the existing binding has not changed and that disconnect has not cancelled the
+authorization. Pending consumed state contains no Google tokens and expires
+after ten minutes; expired rows are removed at the next authorization start.
+
+The private adapter accepts a typed authorized_user credential and exchanges
+the refresh token at Google's fixed token endpoint for each operation. Tokens
+and Google error bodies are never included in responses or adapter logs.
+Invalid grants require reconnecting. Existing service-account bindings retain
+their behavior. Promotion still requires the existing human approval and
+artifact acceptance gates.
+
+Unbind deletes the encrypted credential and pending authorization for this app.
+It does not revoke the Google-wide grant: revoking that grant could affect
+other apps connected with the same Google account and OAuth client. The UI links
+to Google Account connections for a deliberate grant revocation.
+
+### Operator setup
+
+1. Enable the Google Play Android Developer API in the Google Cloud project.
+2. Configure Google Auth Platform branding, audience and consent, including the
+   androidpublisher, openid and email scopes. An external app in testing needs
+   the intended authorizer listed as a test user; test refresh credentials may
+   expire. Use the appropriate production consent configuration before relying
+   on unattended publication.
+3. Create an OAuth client of type Web application. For production Hands,
+   register the exact authorized redirect URI
+   https://hands.build/api/google-play/oauth/callback. Other installations must
+   register their exact BUSINESS_ORIGIN plus the same path.
+4. Store the client ID and client secret in GitHub Actions secrets
+   HANDS_GOOGLE_PLAY_OAUTH_CLIENT_ID and HANDS_GOOGLE_PLAY_OAUTH_CLIENT_SECRET.
+   The existing deployment writes them as Worker secrets; never put the secret
+   in a browser bundle, repository, message or build log.
+5. Configure and deploy the private Play adapter, PLAY_CRED_ENC_KEYS and
+   HANDS_PLAY_CRED_ENC_ACTIVE_KEY_VERSION using the existing deployment path.
+   Deploy the adapter before the business Worker so OAuth credentials are
+   supported before the new authorization entry becomes available.
+6. Apply the additive OAuth migration with the normal reviewed deployment.
+   Then sign in to Hands as a human app administrator and authorize using a
+   Google account with the package permissions. Test connection before asking
+   for any actual Play publication.
+
+An absent client configuration leaves the OAuth button disabled. OAuth setup
+does not permit publishing an unsigned AAB or bypass Play Console's application
+setup and signing requirements. Rotating or removing a Google OAuth client may
+require reconnecting existing bindings; previously stored credentials remain
+encrypted under the app vault's versioned keys.
+
+Official setup and protocol references:
+[Google Play OAuth clients](https://developers.google.com/android-publisher/getting_started#use_oauth_clients),
+[Google server-side OAuth](https://developers.google.com/identity/protocols/oauth2/web-server).

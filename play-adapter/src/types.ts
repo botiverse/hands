@@ -13,10 +13,19 @@ export interface ServiceAccountCredential {
   private_key_id?: string;
 }
 
+export interface GoogleOAuthCredential {
+  type: "authorized_user";
+  client_id: string;
+  client_secret: string;
+  refresh_token: string;
+  client_email: string;
+}
+export type GooglePlayCredential = ServiceAccountCredential | GoogleOAuthCredential;
+
 export type PlayTracks = Record<HandsTrack, string>;
 
 export interface PlayBindingInput {
-  credential: ServiceAccountCredential;
+  credential: GooglePlayCredential;
   packageName: string;
   tracks: PlayTracks;
 }

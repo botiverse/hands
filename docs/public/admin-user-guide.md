@@ -175,3 +175,22 @@ Your account or deploy token does not have the required role for the action. The
 To resolve, an organization **admin/owner** opens `manage_url` — **Org → Members** for org roles, or an app's **Access** tab for app-level roles — and raises the account's role to `required_role`. Then retry the same request.
 
 Note: creating an app (`POST /api/apps`) requires an **org member or higher** — an app-level member role or a deploy token is not enough. Newly Agent-Login'd agents normally start as **member**; **viewer** is a read-only role that an org admin can assign manually.
+
+
+## Connect Google Play without a service-account key
+
+For an Android app, open Settings and find Google Play. Enter the package name
+and the internal, closed testing and production track names, then choose
+**Authorize with Google**. Sign in with the Google account that has Play Console
+access to that package and those tracks. Only a human Hands app administrator
+can authorize. Connection testing checks access without publishing a release.
+
+Hands encrypts the authorization on the server and refreshes access when needed.
+If the Google button is unavailable, your Hands operator must configure the
+Google OAuth client and private Play adapter first. Existing service-account
+JSON connections are still supported.
+
+**Unbind** removes the authorization stored by Hands for this app. To revoke
+Google's grant too, follow the Google Account connections link and remove Hands;
+this can affect other apps using that Google account. Play publication still
+requires a valid signed AAB and the existing acceptance and approval steps.

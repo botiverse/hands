@@ -62,6 +62,7 @@ import {
   verifyAgcCredentials,
   deleteGooglePlayBinding,
   getGooglePlayBinding,
+  startGooglePlayOAuth,
   setGooglePlayBinding,
   setGooglePlayBindingEnabled,
   verifyGooglePlayBinding,
@@ -917,6 +918,31 @@ export function GooglePlayPanel({ appId }: { appId: string }) {
 
   const refresh = () => qc.invalidateQueries({ queryKey: ["google-play-binding", appId] });
   const fail = (error: unknown) => toast.show({ kind: "error", title: gp("actionFailed"), description: (error as Error).message });
+  useEffect(() => {
+    const result = new URLSearchParams(window.location.search).get("google_play_oauth");
+    if (!result || query.isLoading) return;
+    const url = new URL(window.location.href);
+    url.searchParams.delete("google_play_oauth");
+    window.history.replaceState(null, "", url);
+    if (result === "connected" && meta?.credential_kind === "authorized_user") {
+      toast.show({ kind: "success", title: gp("saveSuccess") });
+    } else if (result === "failed" || result === "cancelled") {
+      toast.show({ kind: "error", title: gp(result === "failed" ? "oauthFailed" : "oauthCancelled") });
+    }
+  }, [query.isLoading, meta, toast]);
+
+  const authorize = useMutation({
+    mutationFn: () => startGooglePlayOAuth(appId, {
+      package_name: packageName.trim(),
+      tracks: { internal: internalTrack.trim(), closed: closedTrack.trim(), production: productionTrack.trim() },
+    }),
+    onSuccess: ({ authorization_url }) => {
+      const url = new URL(authorization_url);
+      if (url.origin !== "https://accounts.google.com") { fail(new Error(gp("oauthFailed"))); return; }
+      window.location.assign(url.toString());
+    },
+    onError: fail,
+  });
   const save = useMutation({
     mutationFn: () => setGooglePlayBinding(appId, {
       service_account_json: credentialJson,
@@ -986,7 +1012,7 @@ export function GooglePlayPanel({ appId }: { appId: string }) {
               </span>
               {" · "}{gp(meta.verification_state === "verified" ? "verified" : "stale")}{" · "}<span className="font-mono">{meta.package_name}</span>
             </div>
-            <div className="font-mono break-all">{gp("serviceAccount")}: {meta.service_account_email}</div>
+            <div className="font-mono break-all">{gp(meta.credential_kind === "authorized_user" ? "authorizedAccount" : "serviceAccount")}: {meta.service_account_email}</div>
             <div className="font-mono">{meta.internal_track} · {meta.closed_track} · {meta.production_track}</div>
           </div>}
         </div>
@@ -1010,6 +1036,9 @@ export function GooglePlayPanel({ appId }: { appId: string }) {
           }}>{gp("unbind")}</Button>
         </div>}
       </div>
+      {meta?.credential_kind === "authorized_user" && <p className="mt-2 text-xs text-slate-500">{gp("disconnectHelp")}{" "}
+        <a href="https://myaccount.google.com/connections" target="_blank" rel="noopener noreferrer">{gp("authorizedAccount")}</a>
+      </p>}
       {showForm && <div className="mt-3 p-3 border border-slate-200 rounded-md space-y-3">
         <p className="text-xs text-slate-600">{gp("formHelp")}</p>
         <div className="grid gap-3 md:grid-cols-2">
@@ -1026,6 +1055,9 @@ export function GooglePlayPanel({ appId }: { appId: string }) {
             <Input className="mt-1 font-mono" value={productionTrack} onChange={(event) => setProductionTrack(event.target.value)} />
           </label>
         </div>
+        <p className="text-xs text-slate-600">{gp("oauthHelp")}</p>
+        <Button variant="primary" disabled={!query.data?.oauth_available || !packageName.trim() || !internalTrack.trim() || !closedTrack.trim() || !productionTrack.trim() || authorize.isPending} onClick={() => authorize.mutate()}>{gp("authorize")}</Button>
+        {!query.data?.oauth_available && <p className="text-xs text-slate-500">{gp("oauthUnavailable")}</p>}
         <label className="block text-xs font-medium">{gp("credentialJson")}</label>
         <input type="file" accept=".json,application/json" aria-label={gp("chooseFile")} onChange={(event) => {
           const file = event.target.files?.[0];

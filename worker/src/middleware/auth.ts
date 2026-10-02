@@ -28,6 +28,11 @@ import {
 // to Authorization: Bearer.
 export const SESSION_COOKIE = "hands_session";
 
+/** Short-lived per-authorization cookie, accepted only on the Google callback. */
+export function googlePlayOAuthCookieName(state: string | undefined): string | null {
+  return state && /^[a-f0-9]{64}$/.test(state) ? "hands_play_oauth_" + state : null;
+}
+
 export const ACTIVE_ORG_HEADER = "x-hands-org-id";
 
 export type AdminAccount = {
@@ -180,7 +185,9 @@ export const authMiddleware: MiddlewareHandler<AdminEnv & { Bindings: Env }> =
       : undefined;
     // Fall back to the session cookie (raft CLI Agent Login) when there is no
     // Authorization: Bearer header. Bearer still takes precedence.
-    const sessionToken = bearerToken ?? getCookie(c, SESSION_COOKIE);
+    const oauthCookie = new URL(c.req.url).pathname === "/api/google-play/oauth/callback"
+      ? googlePlayOAuthCookieName(c.req.query("state")) : null;
+    const sessionToken = bearerToken ?? (oauthCookie ? getCookie(c, oauthCookie) : undefined) ?? getCookie(c, SESSION_COOKIE);
     const sessionAccount = await loadAccountFromAuthToken(
       c.env,
       sessionToken,
