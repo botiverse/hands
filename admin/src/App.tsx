@@ -50,6 +50,7 @@ import {
   TooltipContent,
 } from "raft-ui";
 import { appRouteMessage } from "./lib/appRouteMessages";
+import { legalMessage } from "./lib/legalMessages";
 import { AppRouteBoundary } from "./components/AppRouteBoundary";
 import { AppsList } from "./pages/AppsList";
 import { AppChannels, AppDetail, AppSettings, AppStoreReviewPanel } from "./pages/AppDetail";
@@ -1087,8 +1088,10 @@ function PublicLanding({ account }: { account?: AuthAccount }) {
             </a>{" "}
             product
           </span>
-          <div className="flex items-center gap-4">
+          <div className="flex flex-wrap items-center justify-center gap-4">
             <a href="/docs" className="hover:text-slate-700">Docs</a>
+            <a href="/privacy/" className="hover:text-slate-700">{legalMessage("privacy")}</a>
+            <a href="/terms/" className="hover:text-slate-700">{legalMessage("terms")}</a>
             <a
               href="https://github.com/oranix-io/hands"
               target="_blank"

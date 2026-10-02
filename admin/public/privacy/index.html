@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta name="description" content="How Hands handles account, application, diagnostic, and Google Play data." />
+<title>Privacy Policy — Hands</title>
+<link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+<link rel="stylesheet" href="/legal.css" />
+</head>
+<body>
+<header><nav aria-label="Main navigation"><a class="brand" href="/"><img src="/favicon.svg" alt="" width="32" height="32" />Hands</a><a href="/docs/">Docs</a></nav></header>
+<main><h1>Privacy Policy</h1><p>Effective date: October 2, 2026.</p>
+<p>Hands is a Botiverse product for managing application builds, releases, distribution, feedback, and crash reports. This policy describes data handled by the Hands hosted service at hands.build and app.hands.build, including its Google Play integration.</p>
+<h2>Data we handle</h2>
+<ul>
+<li><strong>Account and access information:</strong> identifiers, profile information supplied by Raft sign-in, organization and application membership, roles, and authorization records.</li>
+<li><strong>Application data:</strong> build files, symbols, release metadata, distribution settings, feedback, attachments, and diagnostics submitted by you, your authorized integrations, or users of applications that integrate Hands.</li>
+<li><strong>Device and diagnostic information:</strong> depending on the host application's SDK configuration, installation identifiers, app versions, device and operating-system information, session and update events, crash details, and logs. Attachments may contain information supplied by the host application or its users.</li>
+<li><strong>Service and security information:</strong> request metadata, authentication cookies or browser storage, operation history, and audit records used to operate and protect the service. Network requests also expose metadata such as IP addresses to our hosting provider.</li>
+</ul>
+<p>Application owners choose which Hands SDK features to enable and what information to submit. They are responsible for their own users' notices, consent, and lawful collection. Avoid submitting unnecessary personal information or secrets in feedback and diagnostic attachments.</p>
+<h2>Google Play authorization and data</h2>
+<p>Connecting Google Play is optional. Hands requests OpenID and email permissions to identify the Google account you authorize, and the Android Publisher permission to access Google Play publishing features within that account's Play Console permissions.</p>
+<p>Hands receives the authorized account's email and email-verification status, OAuth tokens, and responses needed to verify and operate the selected application, including package, track, version, and publishing-operation information. We store the account email, selected package and tracks, encrypted credentials, and verification and operation records.</p>
+<p>Hands uses this access to check the connection, upload the builds you select, inspect configured tracks, and perform release operations you or your authorized application members or agents request. A connection test creates and deletes a temporary Google Play edit; connecting does not publish a version. Publishing remains subject to your Hands permissions and any enabled approval requirements.</p>
+<p>Google credentials are encrypted in server-side storage. The service uses them to obtain access tokens and call Google APIs. Raw Google credentials are not returned to application members or their agents through the console or public API.</p>
+<h2>How we use and share data</h2>
+<p>We use data to provide the features you request, manage access, deliver builds and releases, process feedback and diagnostics, maintain service reliability, and investigate security incidents or abuse.</p>
+<p>Application data and connection metadata can be accessed by people and agents you authorize through Hands roles and permissions. Content you explicitly publish, such as public releases, version-history pages, or share links, can be visible to the audiences you select.</p>
+<p>Cloudflare processes hosted service data as our infrastructure provider. Raft processes sign-in requests. Google receives the requests and build files needed for Google Play operations you authorize; other connected stores or notification destinations receive data when you configure and use those integrations. These providers also apply their own terms and privacy policies.</p>
+<p>We do not sell Google user data, use it for advertising, or use it to train general-purpose AI models. Google data is used for the disclosed integration features. Human access to Google data is limited to your permission to inspect specific data, necessary security investigations, legal obligations, or aggregated internal operations permitted by Google's policies. Other disclosures are limited to delivering your authorized features, protecting security, or complying with applicable law.</p>
+<p>Hands' use and transfer of information received from Google APIs follows the <a href="https://developers.google.com/terms/api-services-user-data-policy">Google API Services User Data Policy</a>, including its Limited Use requirements.</p>
+<h2>Storage, retention, and security</h2>
+<p>We retain data while needed to provide the service, maintain your configured integrations, and meet security or legal requirements. Retention depends on the data and the application's settings; this policy does not promise a single fixed deletion period. Access controls, HTTPS, encrypted integration credentials, and audit records help protect data. No system can guarantee complete security.</p>
+<p>Disabling a Google Play binding stops its use for publishing but retains its encrypted credentials. Unbinding deletes that application's stored Google credentials and pending OAuth requests from Hands. It does not remove previously uploaded files or operation and audit records, and it does not by itself revoke Google's authorization.</p>
+<h2>Your choices and requests</h2>
+<p>You can manage application membership, public distribution, and integrations in Hands. An application administrator can disable or unbind Google Play in application settings. You can also revoke Google's authorization through <a href="https://myaccount.google.com/connections">Google account connections</a>; revocation can affect other Hands applications using the same Google grant.</p>
+<p>For access, correction, deletion, or privacy questions, contact <a href="mailto:contact@raft.build">contact@raft.build</a>. We may need to verify your identity and authority over the relevant application. Requests concerning a host application's collection should also be directed to that application's operator.</p>
+<h2>Changes and contact</h2>
+<p>We will update this page and its effective date when this policy changes. If we introduce a new use of Google user data, we will disclose it and obtain any required consent before that use. Contact Hands at <a href="mailto:contact@raft.build">contact@raft.build</a>.</p></main>
+<footer><a href="/">Hands</a><a href="/privacy/">Privacy Policy</a><a href="/terms/">Terms of Service</a><a href="mailto:contact@raft.build">Contact</a></footer>
+</body>
+</html>
