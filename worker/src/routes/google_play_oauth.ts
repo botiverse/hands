@@ -123,7 +123,7 @@ export async function handleGooglePlayOAuthCallback(c: AdminContext) {
     const token = await response.json() as Record<string, unknown>;
     if (!response.ok || token.token_type !== "Bearer" || typeof token.access_token !== "string" || !token.access_token
       || typeof token.refresh_token !== "string" || !token.refresh_token
-      || typeof token.scope !== "string" || !token.scope.split(" ").includes(SCOPE)) return finish("failed");
+      || typeof token.scope !== "string" || !token.scope.split(/\s+/).some((scope) => scope === SCOPE)) return finish("failed");
     const profileResponse = await fetch("https://openidconnect.googleapis.com/v1/userinfo", {
       headers: { authorization: "Bearer " + token.access_token }, redirect: "error", signal: AbortSignal.timeout(30_000),
     });

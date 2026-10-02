@@ -130,10 +130,10 @@ describe("Google Play OAuth", () => {
     h.sqlite.exec("DELETE FROM app_members");
     expect((await h.start()).response.status).toBe(403);
   });
-  it.each(["cancelled", "scope", "refresh", "unverified", "play", "revoked", "replacement", "disconnect", "disconnect-during-callback", "expired-during-callback"])("does not persist a credential after %s", async (mode) => {
+  it.each(["cancelled", "scope", "scope-prefix", "scope-suffix", "refresh", "unverified", "play", "revoked", "replacement", "disconnect", "disconnect-during-callback", "expired-during-callback"])("does not persist a credential after %s", async (mode) => {
     const h = harness(); const fetch = google(); const { url } = await h.start(); const state = url!.searchParams.get("state")!;
-    if (mode === "scope" || mode === "refresh") fetch.mockResolvedValueOnce(Response.json({ access_token: "access", token_type: "Bearer",
-      refresh_token: mode === "refresh" ? undefined : "secret", scope: mode === "scope" ? "openid email" : "https://www.googleapis.com/auth/androidpublisher" }));
+    if (mode.startsWith("scope") || mode === "refresh") fetch.mockResolvedValueOnce(Response.json({ access_token: "access", token_type: "Bearer",
+      refresh_token: mode === "refresh" ? undefined : "secret", scope: mode === "scope" ? "openid email" : mode === "scope-prefix" ? "https://evil.test/https://www.googleapis.com/auth/androidpublisher" : mode === "scope-suffix" ? "https://www.googleapis.com/auth/androidpublisher.extra" : "https://www.googleapis.com/auth/androidpublisher" }));
     if (mode === "unverified") fetch.mockImplementationOnce(async () => Response.json({ access_token: "access", refresh_token: "secret", token_type: "Bearer", scope: "https://www.googleapis.com/auth/androidpublisher" }))
       .mockResolvedValueOnce(Response.json({ email: "user@example.com", email_verified: false }));
     if (mode === "play") h.verify.mockResolvedValueOnce({ ok: false, error: { status: 403 } } as any);
