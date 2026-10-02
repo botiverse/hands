@@ -18,3 +18,9 @@ CREATE TABLE apple_webhook_events (
  received_at INTEGER NOT NULL,
  PRIMARY KEY(app_id,event_id)
 );
+
+-- Existing event_id and feedback_submission_event_id reference feedback-only
+-- ledgers. Keep them intact; external producer IDs have a separate namespace.
+ALTER TABLE webhook_deliveries ADD COLUMN external_event_id TEXT;
+CREATE UNIQUE INDEX idx_webhook_deliveries_external_event
+ ON webhook_deliveries(webhook_id,external_event_id) WHERE external_event_id IS NOT NULL;

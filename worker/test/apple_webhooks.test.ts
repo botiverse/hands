@@ -1,5 +1,5 @@
 import Database from "better-sqlite3";
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { Hono } from "hono";
 import { requireAppRole } from "../src/lib/permissions";
 import { describe, expect, it } from "vitest";
@@ -10,6 +10,11 @@ import {
   handleDeleteAppleWebhook,
   verifyAppleSignature,
 } from "../src/routes/apple_webhooks";
+import {
+  handleCreateAppWebhook,
+  handleUpdateAppWebhook,
+  processDeliveryById,
+} from "../src/routes/webhooks";
 import { encryptP8 } from "../src/lib/asc_credentials";
 
 const secret = "This is my secret";
@@ -51,21 +56,28 @@ async function signature(body: string) {
 async function setup() {
   const sql = new Database(":memory:");
   sql.pragma("foreign_keys = ON");
-  sql.exec(`CREATE TABLE apps(id TEXT PRIMARY KEY,org_id TEXT,slug TEXT,name TEXT,archived_at INTEGER,platform TEXT);
- INSERT INTO apps VALUES('app','org','raft-ios','Raft iOS',NULL,'ios');
- CREATE TABLE webhooks(id TEXT PRIMARY KEY,org_id TEXT,app_id TEXT,enabled INTEGER,archived_at INTEGER,events_json TEXT,secret TEXT);
- INSERT INTO webhooks VALUES('matching','org','app',1,NULL,'["app_store:version_state_changed"]','receiver-key');
- INSERT INTO webhooks VALUES('org-wide','org',NULL,1,NULL,'[]','receiver-key');
- INSERT INTO webhooks VALUES('other-app','org','other',1,NULL,'[]','receiver-key');
- INSERT INTO webhooks VALUES('other-org','other-org',NULL,1,NULL,'[]','receiver-key');
- INSERT INTO webhooks VALUES('disabled','org',NULL,0,NULL,'[]','receiver-key');
- CREATE TABLE webhook_deliveries(id TEXT PRIMARY KEY,webhook_id TEXT,event_type TEXT,event_id TEXT,payload_json TEXT,signing_secret TEXT,status TEXT,attempts INTEGER,max_attempts INTEGER,next_attempt_at INTEGER,created_at INTEGER,updated_at INTEGER);`);
-  sql.exec(
-    readFileSync(
-      new URL("../../migrations/sql/0080_apple_webhooks.sql", import.meta.url),
-      "utf8",
-    ),
-  );
+  // Apply the full production migration chain so existing foreign keys and
+  // later schema constraints participate in every ingress regression.
+  const directory = new URL("../../migrations/sql/", import.meta.url);
+  for (const file of readdirSync(directory).sort())
+    if (file.endsWith(".sql"))
+      sql.exec(readFileSync(new URL(file, directory), "utf8"));
+  sql.exec(`INSERT INTO organizations(id,slug,name,external_id,created_at) VALUES('org','org','Org','org',0),('other-org','other-org','Other','other',0);
+ INSERT INTO raft_accounts(id,provider_subject,server_id,principal_type,display_name,raw_profile,created_at,updated_at,last_login_at) VALUES('actor','actor','server','human','Actor','{}',0,0,0);
+ INSERT INTO apps(id,slug,name,platform,created_at,org_id) VALUES('app','raft-ios','Raft iOS','ios',0,'org'),('other','other','Other','ios',0,'org');`);
+  for (const [id, org, app, enabled, events] of [
+    ["matching", "org", "app", 1, '["app_store:version_state_changed"]'],
+    ["org-wide", "org", null, 1, "[]"],
+    ["other-app", "org", "other", 1, "[]"],
+    ["other-org", "other-org", null, 1, "[]"],
+    ["disabled", "org", null, 0, "[]"],
+  ])
+    sql
+      .prepare(
+        `INSERT INTO webhooks(id,org_id,app_id,url,enabled,events_json,secret,created_by,created_at,updated_at)
+ VALUES(?,?,?,'https://receiver.example',?,?, 'receiver-key','actor',0,0)`,
+      )
+      .run(id, org, app, enabled, events);
   const encrypted = await encryptP8(secret, encKey);
   sql
     .prepare(
@@ -81,7 +93,7 @@ async function setup() {
       }),
     );
     function bind(...args: unknown[]) {
-      const values = indexes.map((n) => args[n - 1]);
+      const values = indexes.length ? indexes.map((n) => args[n - 1]) : args;
       return {
         execute() {
           const r = stmt.run(...values);
@@ -101,8 +113,22 @@ async function setup() {
     batch: async (stmts: Array<{ execute: () => unknown }>) =>
       sql.transaction(() => stmts.map((s) => s.execute()))(),
   };
-  const app = new Hono<{ Bindings: Env }>();
+  const app = new Hono<any>();
+  app.use("/api/apps/*", async (c, next) => {
+    c.set("admin_account", {
+      id: "actor",
+      principal_type: "human",
+      display_name: "Actor",
+      server_id: "server",
+    });
+    await next();
+  });
   app.post("/api/apple/webhooks/:configId", handleAppleWebhook);
+  app.post("/api/apps/:appId/webhooks", handleCreateAppWebhook as any);
+  app.patch(
+    "/api/apps/:appId/webhooks/:webhookId",
+    handleUpdateAppWebhook as any,
+  );
   app.post("/api/apps/:appId/apple-webhook", handleCreateAppleWebhook as any);
   app.get("/api/apps/:appId/apple-webhook", handleGetAppleWebhook as any);
   app.delete("/api/apps/:appId/apple-webhook", handleDeleteAppleWebhook as any);
@@ -123,6 +149,79 @@ async function setup() {
   return { sql, send, app, env };
 }
 describe("Apple ingress", () => {
+  it("allows Apple subscriptions through actual app-scoped create and update handlers", async () => {
+    const { app, env } = await setup();
+    const events = [
+      "app_store:version_state_changed",
+      "testflight:external_state_changed",
+      "app_store:build_upload_state_changed",
+    ];
+    const created = await app.request(
+      "/api/apps/app/webhooks",
+      {
+        method: "POST",
+        body: JSON.stringify({
+          url: "https://receiver.example",
+          secret: "receiver-key",
+          events,
+        }),
+      },
+      env,
+    );
+    expect(created.status).toBe(201);
+    const row = (await created.json()) as any;
+    expect(row.events).toEqual(events);
+    expect(
+      (
+        await app.request(
+          "/api/apps/app/webhooks/" + row.id,
+          { method: "PATCH", body: JSON.stringify({ events }) },
+          env,
+        )
+      ).status,
+    ).toBe(200);
+    expect(
+      (
+        await app.request(
+          "/api/apps/app/webhooks/" + row.id,
+          {
+            method: "PATCH",
+            body: JSON.stringify({ events: ["unknown:event"] }),
+          },
+          env,
+        )
+      ).status,
+    ).toBe(400);
+  });
+  it("preserves feedback foreign keys and delivers Apple external IDs through the existing consumer", async () => {
+    const { sql, send, env } = await setup();
+    expect(() =>
+      sql
+        .prepare(
+          "INSERT INTO webhook_deliveries(id,webhook_id,event_type,event_id,payload_json,created_at,updated_at) VALUES('bad','matching','x','non-feedback','{}',0,0)",
+        )
+        .run(),
+    ).toThrow(/FOREIGN KEY/);
+    expect((await send(fixture())).status).toBe(200);
+    const row = sql
+      .prepare(
+        "SELECT id,event_id,external_event_id FROM webhook_deliveries WHERE webhook_id=?",
+      )
+      .get("matching") as any;
+    expect(row.event_id).toBeNull();
+    expect(row.external_event_id).toBe("apple:app:event-1");
+    let header: string | null = null;
+    expect(
+      await processDeliveryById(env, row.id, {
+        fetchImpl: async (_url, opts) => {
+          header = new Headers(opts?.headers).get("X-Hands-Event-Id");
+          return new Response(null, { status: 204 });
+        },
+      }),
+    ).toBe("succeeded");
+    expect(header).toBe("apple:app:event-1");
+  });
+
   it("denies publisher deploy tokens and absent principals before managing webhook secrets", async () => {
     const { env } = await setup();
     const id = "00000000-0000-4000-8000-000000000001";
@@ -236,7 +335,7 @@ describe("Apple ingress", () => {
     ).toEqual({ n: 1 });
     const rows = sql
       .prepare(
-        "SELECT webhook_id,payload_json,event_id,signing_secret FROM webhook_deliveries ORDER BY webhook_id",
+        "SELECT webhook_id,payload_json,external_event_id AS event_id,signing_secret FROM webhook_deliveries ORDER BY webhook_id",
       )
       .all() as any[];
     expect(rows.map((r) => r.webhook_id)).toEqual(["matching", "org-wide"]);

@@ -255,7 +255,7 @@ export async function handleAppleWebhook(c: Context<{ Bindings: Env }>) {
       SELECT ?1,?2,?3,?4,?5,?6 WHERE EXISTS(SELECT 1 FROM apple_webhook_configs WHERE id=?7 AND enabled=1)`,
     ).bind(config.app_id, d.id, d.type, digest, nonce, now, config.id),
     c.env.DB.prepare(
-      `INSERT INTO webhook_deliveries (id,webhook_id,event_type,event_id,payload_json,signing_secret,status,attempts,max_attempts,next_attempt_at,created_at,updated_at)
+      `INSERT INTO webhook_deliveries (id,webhook_id,event_type,external_event_id,payload_json,signing_secret,status,attempts,max_attempts,next_attempt_at,created_at,updated_at)
       SELECT lower(hex(randomblob(16))),w.id,?1,?2,?3,w.secret,'pending',0,3,?4,?4,?4 FROM webhooks w
       WHERE w.org_id=?5 AND (w.app_id IS NULL OR w.app_id=?6) AND w.enabled=1 AND w.archived_at IS NULL
       AND json_valid(w.events_json) AND json_type(CASE WHEN json_valid(w.events_json) THEN w.events_json ELSE '[]' END)='array' AND (json_array_length(CASE WHEN json_valid(w.events_json) THEN w.events_json ELSE '[null]' END)=0 OR EXISTS(SELECT 1 FROM json_each(CASE WHEN json_valid(w.events_json) THEN w.events_json ELSE '[]' END) WHERE value IN (?1,'*')))
