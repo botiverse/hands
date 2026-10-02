@@ -34,6 +34,7 @@ import {
   type AppPermission,
   type App,
 } from "../lib/api";
+import { appAccessMessage } from "../lib/appAccessMessages";
 import { useToast } from "../components/Toast";
 import {
   buildTokenGrantDisplay,
@@ -100,12 +101,10 @@ export function AppAccess({ appId }: { appId: string }) {
   const currentAccess = currentAppRole ?? currentServerGrantRole ?? inheritedRole ?? null;
 
   return (
-    <div className="space-y-4">
-      <div className="card p-4! text-sm">
-        <div className="text-slate-600 mb-2">
-          <strong>Access.</strong> Review inherited owner-server access,
-          external Raft server visibility, and direct per-app member grants.
-        </div>
+    <section aria-labelledby="app-access-heading" className="space-y-4">
+      <header className="space-y-2">
+        <h2 id="app-access-heading" className="text-lg font-semibold">{appAccessMessage("title")}</h2>
+        <p className="text-sm text-slate-600">{appAccessMessage("description")}</p>
         <div className="text-xs text-slate-500">
           Your current access: <span className="font-mono">{currentAccess ?? "—"}</span>{" "}
           {isOwningOrg && <span>(inherited from owning org)</span>}
@@ -115,7 +114,7 @@ export function AppAccess({ appId }: { appId: string }) {
           {!isOwningOrg && currentAppRole && <span>(direct app member)</span>}{" "}
           {canManage ? "(can manage access)" : "(read-only)"}
         </div>
-      </div>
+      </header>
       <AppServerGrantList
         appId={appId}
         app={app}
@@ -160,7 +159,7 @@ export function AppAccess({ appId }: { appId: string }) {
           onAdded={() => setShowAddDeployToken(false)}
         />
       )}
-    </div>
+    </section>
   );
 }
 
