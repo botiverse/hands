@@ -519,3 +519,16 @@ Do not mark the build succeeded until every required asset is ready.
    for the purpose — never reuse a human's browser session.
 4. **Secrets stay out of channels**: never paste bearer tokens or deploy
    tokens into shared chat; audit logs already attribute your actions.
+
+### Application identifiers and direct grants
+
+Raw `/api/apps/:appId/...` requests and console `/apps/:appId/settings` links
+use the full application UUID. Resolve a slug with `hands apps get <slug> --json`
+and use its `id`; a name or slug is not an application ID.
+
+Adding an application member also creates an organization viewer membership
+if needed. This does not downgrade the application role: an application admin
+can administer that application while remaining an organization viewer. Direct
+application grants are included in the application list even when the session's
+selected organization is different. Other applications in that organization are
+not exposed by a direct grant.

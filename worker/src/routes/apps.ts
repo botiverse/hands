@@ -71,8 +71,12 @@ export async function handleListApps(c: AdminContext) {
                        OR (?3 IS NOT NULL AND asg.server_slug = ?4)
                      )
                  )
+                 OR EXISTS (
+                   SELECT 1 FROM app_members am
+                   WHERE am.app_id = a.id AND am.account_id = ?5
+                 )
               ORDER BY a.archived ASC, a.created_at DESC`,
-        params: [orgId, account.server_id, account.server_slug ?? null, account.server_slug ?? null],
+        params: [orgId, account.server_id, account.server_slug ?? null, account.server_slug ?? null, account.id],
       }
     : orgId
     ? {
