@@ -1013,7 +1013,7 @@ function PublicLanding({ account }: { account?: AuthAccount }) {
           </div>
         </section>
 
-        <section className="mx-auto grid max-w-6xl gap-4 px-4 py-8 sm:grid-cols-2 lg:grid-cols-4">
+        <section id="features" className="mx-auto grid max-w-6xl gap-4 px-4 py-8 sm:grid-cols-2 lg:grid-cols-4">
           <LandingFeature
             title="Channels & staged rollouts"
             body="Separate main, preview, and nightly; publish at 5% and raise it as confidence grows — devices keep their cohort."
@@ -1032,7 +1032,7 @@ function PublicLanding({ account }: { account?: AuthAccount }) {
           />
         </section>
 
-        <section className="border-t border-slate-200 bg-white">
+        <section id="integrations" className="border-t border-slate-200 bg-white">
           <div className="mx-auto max-w-6xl px-4 py-10">
             <div className="max-w-2xl">
               <h2 className="text-xl font-semibold">Choose an integration path.</h2>
@@ -1074,32 +1074,50 @@ function PublicLanding({ account }: { account?: AuthAccount }) {
           </div>
         </section>
       </main>
-      <footer className="border-t border-slate-200 bg-white">
-        <div className="mx-auto flex max-w-6xl flex-col items-center justify-between gap-2 px-4 py-6 text-xs text-slate-500 sm:flex-row">
-          <span>
-            Hands — a{" "}
-            <a
-              href="https://botiverse.dev/"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="font-medium text-slate-600 hover:text-slate-900"
-            >
-              Botiverse
-            </a>{" "}
-            product
-          </span>
-          <div className="flex flex-wrap items-center justify-center gap-4">
-            <a href="/docs" className="hover:text-slate-700">Docs</a>
-            <a href="/privacy/" className="hover:text-slate-700">{legalMessage("privacy")}</a>
-            <a href="/terms/" className="hover:text-slate-700">{legalMessage("terms")}</a>
-            <a
-              href="https://github.com/oranix-io/hands"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="hover:text-slate-700"
-            >
-              GitHub
-            </a>
+      <footer className="bg-slate-950 text-slate-100">
+        <div className="mx-auto max-w-6xl px-4 py-10">
+          <div className="grid grid-cols-2 gap-8 lg:grid-cols-[2fr_repeat(4,1fr)]">
+            <div className="col-span-2 lg:col-span-1">
+              <a href="/" className="inline-flex items-center gap-2 text-xl font-medium">
+                <QuiverMark className="h-9 w-9 flex-none" />Hands
+              </a>
+              <p className="mt-4 max-w-xs text-sm leading-6 text-slate-400">{legalMessage("tagline")}</p>
+            </div>
+            {[
+              { title: legalMessage("product"), links: [
+                { label: legalMessage("features"), href: "/#features" },
+                { label: legalMessage("integrations"), href: "/#integrations" },
+              ] },
+              { title: legalMessage("resources"), links: [
+                { label: legalMessage("docs"), href: "/docs/" },
+                { label: legalMessage("cli"), href: "/docs/cli-reference/" },
+                { label: legalMessage("api"), href: "/api-docs" },
+              ] },
+              { title: legalMessage("sdks"), links: [
+                { label: "Android", href: "/docs/android-sdk/" },
+                { label: "iOS", href: "/docs/ios-sdk/" },
+                { label: "HarmonyOS", href: "/docs/ohos-sdk/" },
+                { label: "Electron", href: "/docs/electron-sdk/" },
+              ] },
+              { title: legalMessage("company"), links: [
+                { label: "Botiverse", href: "https://botiverse.dev/" },
+                { label: legalMessage("contact"), href: "mailto:contact@raft.build" },
+                { label: legalMessage("privacy"), href: "/privacy/" },
+                { label: legalMessage("terms"), href: "/terms/" },
+              ] },
+            ].map((group) => (
+              <nav key={group.title} aria-label={group.title}>
+                <h2 className="text-xs font-semibold uppercase tracking-widest text-slate-400">{group.title}</h2>
+                <ul className="mt-4 space-y-3 text-sm">
+                  {group.links.map((link) => (
+                    <li key={link.href}><a href={link.href} className="hover:text-sky-300">{link.label}</a></li>
+                  ))}
+                </ul>
+              </nav>
+            ))}
+          </div>
+          <div className="mt-8 border-t border-slate-800 pt-6 text-xs text-slate-400">
+            © {new Date().getFullYear()} Botiverse, Inc. {legalMessage("copyright")}
           </div>
         </div>
       </footer>
