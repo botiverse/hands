@@ -218,5 +218,21 @@ export function registerSettingsRoutes(): RouteConfigList {
       },
     });
   }
+  const AppleWebhookInput = z.object({ apple_app_id: z.string().regex(/^\d+$/).max(64) }).openapi("AppleWebhookInput");
+  routes.push({
+    method: "post", path: "/api/apps/{appId}/apple-webhook", tags: ["Apple webhooks"],
+    summary: "Create Apple ingress configuration and reveal its secret once", security: auth,
+    request: { params: AppIdParam, body: { content: json(AppleWebhookInput), required: true } },
+    responses: { 201: success("New configuration; keep the returned secret private.", GenericObject),
+      400: error("Invalid Apple app ID or non-iOS app."), 403: error("App admin required."),
+      409: error("Configuration already exists."), 503: error("Encryption is not configured.") },
+  });
+  for (const method of ["get", "delete"] as const) {
+    routes.push({ method, path: "/api/apps/{appId}/apple-webhook", tags: ["Apple webhooks"],
+      summary: method === "get" ? "Get Apple webhook metadata without secrets" : "Invalidate Apple ingress configuration",
+      security: auth, request: { params: AppIdParam },
+      responses: { 200: success("Configuration result.", GenericObject), 403: error("App admin required.") },
+    });
+  }
   return routes;
 }

@@ -26,6 +26,9 @@ import { currentActorInfo } from "../middleware/auth";
 import type { AdminContext } from "../lib/permissions";
 
 type WebhookEventType =
+  | "app_store:version_state_changed"
+  | "testflight:external_state_changed"
+  | "app_store:build_upload_state_changed"
   | "feedback:new"
   | "feedback:comment_created"
   | "feedback:status_changed"

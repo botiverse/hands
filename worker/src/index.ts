@@ -1,3 +1,4 @@
+import { handleAppleWebhook, handleCreateAppleWebhook, handleGetAppleWebhook, handleDeleteAppleWebhook } from "./routes/apple_webhooks";
 import { handleStartGooglePlayOAuth, handleGooglePlayOAuthCallback } from "./routes/google_play_oauth";
 import { handleUploadAgcMarketPackage, handleGetAgcMarketPackage } from "./routes/agc_market_packages";
 /**
@@ -598,6 +599,8 @@ app.use(
     credentials: false,
   }),
 );
+
+bindApp("post", "/api/apple/webhooks/:configId", handleAppleWebhook);
 
 // Public — health check (no auth)
 bindApp("get", "/health", handleHealth);
@@ -1341,6 +1344,9 @@ bindAdmin("post", "/api/apps/:appId/builds/:buildId/generate-delta-patches",
 // delta-sources is a read-only listing; align it with every other GET at viewer.
 bindAdmin("get", "/api/apps/:appId/delta-sources", requireAppRole("viewer"), handleDeltaSources);
 
+bindAdmin("post", "/api/apps/:appId/apple-webhook", requireAppRole("admin"), handleCreateAppleWebhook);
+bindAdmin("get", "/api/apps/:appId/apple-webhook", requireAppRole("admin"), handleGetAppleWebhook);
+bindAdmin("delete", "/api/apps/:appId/apple-webhook", requireAppRole("admin"), handleDeleteAppleWebhook);
 app.route("/", admin);
 
 // ============================================================================
