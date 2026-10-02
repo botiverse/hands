@@ -877,6 +877,7 @@ export const verifyAgcCredentials = (appId: string) =>
 // ---------- Google Play app binding (Android) ----------
 
 export interface GooglePlayBindingMeta {
+  credential_kind: "service_account" | "authorized_user";
   id: string;
   app_id: string;
   enabled: boolean;
@@ -895,7 +896,7 @@ export interface GooglePlayBindingMeta {
 }
 
 export const getGooglePlayBinding = (appId: string) =>
-  request<{ google_play: GooglePlayBindingMeta | null }>(`/api/apps/${appId}/google-play-binding`, { admin: true });
+  request<{ google_play: GooglePlayBindingMeta | null; oauth_available: boolean }>(`/api/apps/${appId}/google-play-binding`, { admin: true });
 
 export const setGooglePlayBinding = (
   appId: string,
@@ -2162,3 +2163,9 @@ export const rotateAppClientKey = (appId: string) =>
     `/api/apps/${appId}/rotate-client-key`,
     { method: "POST", body: "{}", admin: true },
   );
+
+export const startGooglePlayOAuth = (appId: string, input: {
+  package_name: string; tracks: { internal: string; closed: string; production: string };
+}) => request<{ authorization_url: string }>(`/api/apps/${appId}/google-play-oauth/start`, {
+  method: "POST", admin: true, body: JSON.stringify(input),
+});

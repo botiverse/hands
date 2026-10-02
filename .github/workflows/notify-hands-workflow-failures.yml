@@ -6,6 +6,7 @@ on:
       - Publish Android SDK
       - Publish CLI
       - Publish Electron SDK
+      - Publish Hands Feedback React
       - Publish Hands Node SDK
       - Publish OHOS SDK
       - Publish agent-session-store

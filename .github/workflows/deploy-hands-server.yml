@@ -904,6 +904,8 @@ jobs:
           ASC_CRED_ENC_KEY: ${{ secrets.HANDS_ASC_CRED_ENC_KEY }}
           AGC_CRED_ENC_KEY: ${{ secrets.HANDS_AGC_CRED_ENC_KEY }}
           PLAY_CRED_ENC_KEYS: ${{ secrets.HANDS_PLAY_CRED_ENC_KEYS }}
+          GOOGLE_PLAY_OAUTH_CLIENT_ID: ${{ secrets.HANDS_GOOGLE_PLAY_OAUTH_CLIENT_ID }}
+          GOOGLE_PLAY_OAUTH_CLIENT_SECRET: ${{ secrets.HANDS_GOOGLE_PLAY_OAUTH_CLIENT_SECRET }}
           FEEDBACK_AUDIT_HMAC_KEY: ${{ secrets.HANDS_FEEDBACK_AUDIT_HMAC_KEY }}
           R2_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_BOTIVERSE_ACCOUNT_ID }}
           # Optional: R2 S3-API credentials enable direct-to-R2 presigned downloads
@@ -942,6 +944,12 @@ jobs:
             echo "Missing GitHub secret CLOUDFLARE_BOTIVERSE_ACCOUNT_ID." >&2
             exit 1
           fi
+          if [[ -n "${GOOGLE_PLAY_OAUTH_CLIENT_ID:-}" || -n "${GOOGLE_PLAY_OAUTH_CLIENT_SECRET:-}" ]]; then
+            if [[ -z "${GOOGLE_PLAY_OAUTH_CLIENT_ID:-}" || -z "${GOOGLE_PLAY_OAUTH_CLIENT_SECRET:-}" || -z "${HANDS_PLAY_RELEASE_SERVICE_NAME:-}" ]]; then
+              echo "Google Play OAuth requires both client secrets and the Play adapter." >&2
+              exit 1
+            fi
+          fi
           config=wrangler.hands.generated.jsonc
           printf '%s' "${SIGNED_URL_SECRET}" | pnpm exec wrangler secret put SIGNED_URL_SECRET --config "${config}"
           printf '%s' "${RAFT_CLIENT_SECRET}" | pnpm exec wrangler secret put RAFT_CLIENT_SECRET --config "${config}"
@@ -949,6 +957,10 @@ jobs:
           printf '%s' "${AGC_CRED_ENC_KEY}" | pnpm exec wrangler secret put AGC_CRED_ENC_KEY --config "${config}"
           if [[ -n "${PLAY_CRED_ENC_KEYS:-}" ]]; then
             printf '%s' "${PLAY_CRED_ENC_KEYS}" | pnpm exec wrangler secret put PLAY_CRED_ENC_KEYS --config "${config}"
+          fi
+          if [[ -n "${GOOGLE_PLAY_OAUTH_CLIENT_ID:-}" ]]; then
+            printf '%s' "${GOOGLE_PLAY_OAUTH_CLIENT_ID}" | pnpm exec wrangler secret put GOOGLE_PLAY_OAUTH_CLIENT_ID --config "${config}"
+            printf '%s' "${GOOGLE_PLAY_OAUTH_CLIENT_SECRET}" | pnpm exec wrangler secret put GOOGLE_PLAY_OAUTH_CLIENT_SECRET --config "${config}"
           fi
           printf '%s' "${FEEDBACK_AUDIT_HMAC_KEY}" | pnpm exec wrangler secret put FEEDBACK_AUDIT_HMAC_KEY --config "${config}"
           printf '%s' "${R2_ACCOUNT_ID}" | pnpm exec wrangler secret put R2_ACCOUNT_ID --config "${config}"

@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
   get: vi.fn(),
+  authorize: vi.fn(),
   save: vi.fn(),
   verify: vi.fn(),
   toggle: vi.fn(),
@@ -20,6 +21,7 @@ vi.mock("../components/Toast", () => ({
 vi.mock("../lib/api", async (importOriginal) => ({
   ...await importOriginal<typeof import("../lib/api")>(),
   getGooglePlayBinding: mocks.get,
+  startGooglePlayOAuth: mocks.authorize,
   setGooglePlayBinding: mocks.save,
   verifyGooglePlayBinding: mocks.verify,
   setGooglePlayBindingEnabled: mocks.toggle,
@@ -48,6 +50,32 @@ beforeEach(() => {
 });
 
 describe("GooglePlayPanel", () => {
+  it("offers OAuth without a JSON key after package entry and keeps it disabled without server configuration", async () => {
+    mocks.get.mockResolvedValue({ google_play: null, oauth_available: true });
+    mocks.authorize.mockRejectedValue(new Error("fixture rejection"));
+    renderPanel();
+    const button = await screen.findByRole("button", { name: "Authorize with Google" });
+    expect(button.hasAttribute("disabled")).toBe(true);
+    fireEvent.change(screen.getByLabelText("Android package name"), { target: { value: "build.raft.app" } });
+    expect(button.hasAttribute("disabled")).toBe(false);
+    fireEvent.click(button);
+    await waitFor(() => expect(mocks.authorize).toHaveBeenCalledWith("app-a", {
+      package_name: "build.raft.app", tracks: { internal: "internal", closed: "closed", production: "production" },
+    }));
+    expect(mocks.save).not.toHaveBeenCalled();
+    cleanup();
+    mocks.get.mockResolvedValue({ google_play: null, oauth_available: false });
+    renderPanel();
+    expect((await screen.findByRole("button", { name: "Authorize with Google" })).hasAttribute("disabled")).toBe(true);
+    expect(screen.getByText("Google authorization is not configured on this server.")).toBeTruthy();
+  });
+  it("labels a human OAuth identity and explains local disconnect", async () => {
+    mocks.get.mockResolvedValue({ google_play: { credential_kind: "authorized_user", enabled: true, verification_state: "verified", package_name: "build.raft.app", service_account_email: "human@example.com", internal_track: "internal", closed_track: "closed", production_track: "production" } });
+    renderPanel();
+    expect(await screen.findByText("Google account: human@example.com")).toBeTruthy();
+    expect(screen.getByText(/Unbind deletes the credential stored by Hands/)).toBeTruthy();
+  });
+
   it("shows app-scoped binding metadata and enables only through the explicit action", async () => {
     mocks.get.mockResolvedValue({
       google_play: {

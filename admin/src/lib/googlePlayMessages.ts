@@ -1,5 +1,5 @@
 export const GOOGLE_PLAY_MESSAGE_KEYS = [
-  "title", "description", "configured", "enabled", "disabled", "verified", "stale", "serviceAccount",
+  "authorize", "authorizedAccount", "oauthUnavailable", "oauthHelp", "oauthFailed", "oauthCancelled", "disconnectHelp", "title", "description", "configured", "enabled", "disabled", "verified", "stale", "serviceAccount",
   "packageName", "internalTrack", "closedTrack", "productionTrack", "credentialJson", "chooseFile",
   "saveEnable", "replace", "cancel", "test", "testing", "enable", "disable", "unbind",
   "saveSuccess", "verifySuccess", "enableSuccess", "disableSuccess", "unbindSuccess", "actionFailed",
@@ -10,8 +10,16 @@ export type GooglePlayMessageKey = typeof GOOGLE_PLAY_MESSAGE_KEYS[number];
 
 export const GOOGLE_PLAY_MESSAGES: Record<"en" | "zh-CN", Record<GooglePlayMessageKey, string>> = {
   en: {
+    authorize: "Authorize with Google",
+    authorizedAccount: "Google account",
+    oauthUnavailable: "Google authorization is not configured on this server.",
+    oauthHelp: "Sign in with a Google account that has Play access to this package and the configured tracks. No service-account key is needed.",
+    oauthFailed: "Google authorization failed. Check Play permissions and try again.",
+    oauthCancelled: "Google authorization was cancelled.",
+    disconnectHelp: "Unbind deletes the credential stored by Hands. To revoke Google's grant as well, remove Hands in your Google account connections.",
+
     title: "Google Play",
-    description: "Bind this app to its own Google Play service account. Credentials are encrypted and never shown again.",
+    description: "Connect this app to Google Play with Google authorization or a service account. Credentials are encrypted and never shown again.",
     configured: "Configured", enabled: "Enabled", disabled: "Disabled", verified: "Verified", stale: "Needs verification",
     serviceAccount: "Service account", packageName: "Android package name", internalTrack: "Internal track",
     closedTrack: "Closed testing track", productionTrack: "Production track", credentialJson: "Service account JSON",
@@ -26,8 +34,16 @@ export const GOOGLE_PLAY_MESSAGES: Record<"en" | "zh-CN", Record<GooglePlayMessa
     invalidJson: "Choose the complete service-account JSON file downloaded from Google Cloud.",
   },
   "zh-CN": {
+    authorize: "使用 Google 授权",
+    authorizedAccount: "Google 账号",
+    oauthUnavailable: "此服务器尚未配置 Google 授权。",
+    oauthHelp: "请登录拥有此包名及所配轨道 Play 权限的 Google 账号，无需创建服务账号密钥。",
+    oauthFailed: "Google 授权失败，请检查 Play 权限后重试。",
+    oauthCancelled: "Google 授权已取消。",
+    disconnectHelp: "解除绑定会删除 Hands 保存的凭据。若也要撤销 Google 的授权，请在 Google 账号的第三方连接中移除 Hands。",
+
     title: "Google Play",
-    description: "将此应用绑定到它自己的 Google Play 服务账号。凭据会加密保存，保存后不会再次显示。",
+    description: "通过 Google 授权或服务账号连接此应用的 Google Play。凭据会加密保存，保存后不会再次显示。",
     configured: "已配置", enabled: "已启用", disabled: "已停用", verified: "已验证", stale: "需要重新验证",
     serviceAccount: "服务账号", packageName: "Android 包名", internalTrack: "内部测试轨道",
     closedTrack: "封闭测试轨道", productionTrack: "正式发布轨道", credentialJson: "服务账号 JSON",

@@ -5,13 +5,7 @@
 
 import "@cloudflare/workers-types";
 
-type GooglePlayCredential = {
-  type: "service_account";
-  project_id?: string;
-  private_key_id?: string;
-  private_key: string;
-  client_email: string;
-};
+type GooglePlayCredential = import("./src/lib/google_play_bindings").GooglePlayCredential;
 
 type GooglePlayTracks = Record<"internal" | "closed" | "production", string>;
 
@@ -77,6 +71,9 @@ declare global {
     ASC_CRED_ENC_KEY?: string;
     /** AES-GCM root secret for per-app AppGallery Connect credential JSON. */
     AGC_CRED_ENC_KEY?: string;
+    /** Optional server-side Google OAuth Web client. */
+    GOOGLE_PLAY_OAUTH_CLIENT_ID?: string;
+    GOOGLE_PLAY_OAUTH_CLIENT_SECRET?: string;
     /** Secret JSON keyring used for app-scoped Google Play credentials. */
     PLAY_CRED_ENC_KEYS?: string;
     /** Active key version within PLAY_CRED_ENC_KEYS. */

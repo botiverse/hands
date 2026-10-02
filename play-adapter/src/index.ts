@@ -1,4 +1,4 @@
-import { createAccessToken, parseServiceAccount } from "./auth";
+import { createAccessToken, parsePlayCredential } from "./auth";
 import { PlayAdapterError } from "./errors";
 import { GooglePlayClient } from "./google_play";
 import type {
@@ -47,7 +47,7 @@ function bindingInput(input: PlayBindingInput): PlayBindingInput {
   if (Object.values(tracks).some((track) => !TRACK_NAME.test(track))) {
     throw new PlayAdapterError(400, "track_name_invalid", "Google Play track name is invalid");
   }
-  return { credential: parseServiceAccount(input.credential), packageName, tracks };
+  return { credential: parsePlayCredential(input.credential), packageName, tracks };
 }
 
 function trackInput(input: TrackMaximumRpcInput) {

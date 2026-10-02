@@ -17,7 +17,7 @@ import {
 
 type AdminContext = Context<AdminEnv & { Bindings: Env }>;
 
-async function requireAndroidApp(c: AdminContext) {
+export async function requireAndroidApp(c: AdminContext) {
   const appId = c.req.param("appId") ?? "";
   const app = await c.env.DB.prepare("SELECT platform FROM apps WHERE id=?1").bind(appId)
     .first<{ platform: string }>();
@@ -32,7 +32,7 @@ function safeMeta(meta: Awaited<ReturnType<typeof getGooglePlayBindingMeta>>) {
   return meta ? { ...meta, enabled: meta.enabled === 1 } : null;
 }
 
-async function verifyBinding(c: AdminContext, binding: Pick<GooglePlayBinding, "credential" | "package_name" | "tracks">) {
+export async function verifyBinding(c: AdminContext, binding: Pick<GooglePlayBinding, "credential" | "package_name" | "tracks">) {
   if (!c.env.PLAY_RELEASE_SERVICE) {
     return { ok: false as const, invalidate: false, status: 503 as const, code: "PLAY_SERVICE_UNAVAILABLE", error: "Google Play validation service is not configured" };
   }
@@ -66,7 +66,10 @@ async function verifyBinding(c: AdminContext, binding: Pick<GooglePlayBinding, "
 export async function handleGetGooglePlayBinding(c: AdminContext) {
   const invalid = await requireAndroidApp(c);
   if (invalid) return invalid;
-  return c.json({ google_play: safeMeta(await getGooglePlayBindingMeta(c.env.DB, c.req.param("appId") ?? "")) });
+  return c.json({
+    google_play: safeMeta(await getGooglePlayBindingMeta(c.env.DB, c.req.param("appId") ?? "")),
+    oauth_available: Boolean(c.env.GOOGLE_PLAY_OAUTH_CLIENT_ID && c.env.GOOGLE_PLAY_OAUTH_CLIENT_SECRET && c.env.PLAY_RELEASE_SERVICE && c.env.PLAY_CRED_ENC_KEYS && c.env.PLAY_CRED_ENC_ACTIVE_KEY_VERSION),
+  });
 }
 
 export async function handlePutGooglePlayBinding(c: AdminContext) {

@@ -80,6 +80,25 @@ const GooglePlayBindingInput = z.object({
 export function registerAndroidDistributionRoutes(): RouteConfigList {
   const routes: RouteConfigDef[] = [];
   routes.push({
+    method: "post", path: "/api/apps/{appId}/google-play-oauth/start",
+    tags: ["Android distribution"], summary: "Start human Google Play OAuth authorization",
+    security: auth,
+    request: { params: AppIdParam, body: { required: true, content: json(GooglePlayBindingInput.omit({ service_account_json: true })) } },
+    responses: { 200: success("Google authorization URL; no credential is returned.", GenericObject),
+      400: error("Invalid package or tracks."), 403: error("Human app administrator required."),
+      404: error("Android app not found."), 503: error("OAuth or credential encryption unavailable.") },
+  });
+  routes.push({
+    method: "get", path: "/api/google-play/oauth/callback",
+    tags: ["Android distribution"], summary: "Consume one Google Play authorization callback",
+    security: auth,
+    request: { query: z.object({ state: z.string(), code: z.string().optional(), error: z.string().optional() }) },
+    responses: { 303: { description: "Redirect to app settings with a non-secret outcome." },
+      400: error("Invalid, expired, consumed, or mismatched authorization."),
+      403: error("App administrator role required.") },
+  });
+
+  routes.push({
     method: "post",
     path: "/api/apps/{appId}/android-release-artifacts",
     tags: ["Android distribution"],

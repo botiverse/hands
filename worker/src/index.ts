@@ -1,3 +1,4 @@
+import { handleStartGooglePlayOAuth, handleGooglePlayOAuthCallback } from "./routes/google_play_oauth";
 import { handleUploadAgcMarketPackage, handleGetAgcMarketPackage } from "./routes/agc_market_packages";
 /**
  * quiver Worker entry
@@ -1082,6 +1083,8 @@ bindAdmin("post", "/api/apps/:appId/releases/:releaseId/receipts/acceptance",
   requireAppRole("publisher"),
   handleCreateAcceptanceReceipt,
 );
+bindAdmin("post", "/api/apps/:appId/google-play-oauth/start", requireAppRole("admin"), handleStartGooglePlayOAuth);
+bindAdmin("get", "/api/google-play/oauth/callback", handleGooglePlayOAuthCallback);
 bindAdmin("get", "/api/apps/:appId/google-play-binding", requireAppRole("admin"), handleGetGooglePlayBinding);
 bindAdmin("put", "/api/apps/:appId/google-play-binding", requireAppRole("admin"), handlePutGooglePlayBinding);
 bindAdmin("post", "/api/apps/:appId/google-play-binding/verify", requireAppRole("admin"), handleVerifyGooglePlayBinding);
