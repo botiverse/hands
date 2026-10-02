@@ -179,6 +179,8 @@ Note: creating an app (`POST /api/apps`) requires an **org member or higher** â€
 
 ## Connect Google Play without a service-account key
 
+See the [Google Play authorization setup guide](/docs/google-play-oauth/) for the complete setup and troubleshooting steps.
+
 For an Android app, open Settings and find Google Play. Enter the package name
 and the internal, closed testing and production track names, then choose
 **Authorize with Google**. Sign in with the Google account that has Play Console

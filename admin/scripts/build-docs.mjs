@@ -58,6 +58,13 @@ const pages = [
     description: "How iOS builds reach TestFlight: Hands uploads server-side with the stored ASC credential.",
   },
   {
+    slug: "google-play-oauth",
+    source: "google-play-oauth.md",
+    title: "Google Play Authorization",
+    category: "Console",
+    description: "通过 Google 授权连接 Play：创建 Web 客户端、配置、验证和撤销，无需服务账号密钥。",
+  },
+  {
     slug: "admin-user-guide",
     title: "Admin User Guide",
     category: "Console",
