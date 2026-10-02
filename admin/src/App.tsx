@@ -49,6 +49,8 @@ import {
   TooltipTrigger,
   TooltipContent,
 } from "raft-ui";
+import { appRouteMessage } from "./lib/appRouteMessages";
+import { AppRouteBoundary } from "./components/AppRouteBoundary";
 import { AppsList } from "./pages/AppsList";
 import { AppChannels, AppDetail, AppSettings, AppStoreReviewPanel } from "./pages/AppDetail";
 import { AuditLog } from "./pages/AuditLog";
@@ -267,7 +269,7 @@ function Header({ account }: { account: AuthAccount }) {
                         <>
                           <span className="hidden min-w-0 flex-1 text-left md:block">
                             <span className="block truncate font-medium text-slate-800">
-                              {currentApp?.name ?? "Loading app…"}
+                              {currentApp?.name ?? appRouteMessage(apps.isPending ? "loading" : "unavailable")}
                             </span>
                             <span className="block truncate text-xs font-mono text-slate-400">
                               {currentApp?.slug}
@@ -512,7 +514,7 @@ function MobileTopNav({ account }: { account: AuthAccount }) {
                     {(currentApp?.name ?? "A").slice(0, 1).toUpperCase()}
                   </span>
                   <span className="truncate text-sm font-medium text-slate-800">
-                    {currentApp?.name ?? "Loading app…"}
+                    {currentApp?.name ?? appRouteMessage(apps.isPending ? "loading" : "unavailable")}
                   </span>
                   <ChevronsUpDown className="h-4 w-4 flex-none text-slate-400" aria-hidden="true" />
                 </button>
@@ -1390,16 +1392,9 @@ const LAST_APP_KEY = "quiver:last-app-id";
 
 function AppShell() {
   const { appId } = useParams();
-  useEffect(() => {
-    if (appId) {
-      try {
-        window.localStorage.setItem(LAST_APP_KEY, appId);
-      } catch {
-        // private-mode / storage disabled — non-fatal
-      }
-    }
-  }, [appId]);
+  if (!appId) return null;
   return (
+    <AppRouteBoundary appId={appId}>
     <div className="flex flex-1 min-h-0 items-stretch">
       <div className="min-w-0 flex-1">
         <main className="w-full px-8 py-6">
@@ -1423,5 +1418,6 @@ function AppShell() {
         </main>
       </div>
     </div>
+    </AppRouteBoundary>
   );
 }

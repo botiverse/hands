@@ -1901,6 +1901,27 @@ describe("quiver route handlers — SQL smoke", () => {
       apps: [{ id: "app-primary", org_id: "org-primary" }],
     });
 
+    // A direct app grant must remain discoverable outside the session's default
+    // organization, without exposing the other applications in that organization.
+    await env.DB.prepare(
+      "INSERT INTO app_members (id, app_id, account_id, app_role, joined_at) VALUES (?, ?, ?, ?, ?)",
+    ).bind("direct-member", "app-secondary", "multi-org-primary", "admin", now).run();
+    const grantedList = await requestApps();
+    expect((await grantedList.json() as any).apps.map((a: any) => a.id).sort())
+      .toEqual(["app-primary", "app-secondary"]);
+    const roleApp = new Hono<{ Bindings: Env }>();
+    roleApp.use("*", authMiddleware as any);
+    roleApp.get("/api/apps/:appId/check", requireAppRole("admin") as any, (c) => c.json({ ok: true }));
+    const grantedRole = await roleApp.request("https://quiver-worker.test/api/apps/app-secondary/check",
+      { headers: { authorization: `Bearer ${token}` } }, env as any);
+    expect(grantedRole.status).toBe(200);
+    await env.DB.prepare("DELETE FROM app_members WHERE id = ?").bind("direct-member").run();
+    const revokedList = await requestApps();
+    expect((await revokedList.json() as any).apps.map((a: any) => a.id)).toEqual(["app-primary"]);
+    const revokedRole = await roleApp.request("https://quiver-worker.test/api/apps/app-secondary/check",
+      { headers: { authorization: `Bearer ${token}` } }, env as any);
+    expect(revokedRole.status).toBe(403);
+
     const orgsResponse = await testApp.request(
       "https://quiver-worker.test/api/orgs",
       { headers: { authorization: `Bearer ${token}` } },

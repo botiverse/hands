@@ -246,9 +246,9 @@ function forbiddenRole(
   } catch {
     // request URL/method unavailable (e.g. tests) — keep defaults
   }
-  const manageUrl = ids.org_id
+  const manageUrl = scope === "org" && ids.org_id
     ? `${dashboardOrigin(c.env)}/orgs/${ids.org_id}/members`
-    : ids.app_id
+    : scope === "app" && ids.app_id && UUID_RE.test(ids.app_id)
       ? `${dashboardOrigin(c.env)}/apps/${ids.app_id}/settings`
       : null;
   // Admin-native, actionable error: tell the caller (agent or human) exactly
@@ -261,7 +261,10 @@ function forbiddenRole(
     `You have role '${currentRole ?? "none"}' but '${requiredRole}' is required for ${target}. ` +
     `Ask an admin of ${target} to grant you the '${requiredRole}' role` +
     (manageUrl ? ` (manage roles at ${manageUrl})` : "") +
-    `, or have an admin perform this action for you.`;
+    `, or have an admin perform this action for you.` +
+    (scope === "app" && ids.app_id && !UUID_RE.test(ids.app_id)
+      ? " App API paths require the full app UUID, not a name or slug. Resolve it with `hands apps get <slug>` and retry with the returned id."
+      : "");
   return c.json(
     {
       error: scope === "org" ? "insufficient_org_role" : "insufficient_app_role",

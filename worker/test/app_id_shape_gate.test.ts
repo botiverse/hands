@@ -27,12 +27,15 @@ function emptyDb() {
   } as unknown as D1Database;
 }
 
-async function hit(appId: string) {
+async function hit(appId: string, orgId: string | null = null) {
   const app = new Hono<any>();
   app.use("*", async (c, next) => { c.set("admin_account", account); await next(); });
   app.use("/api/apps/:appId/*", requireAppRole("viewer"));
   app.get("/api/apps/:appId/thing", (c) => c.json({ ok: true }));
-  const env = { DB: emptyDb(), DASHBOARD_ORIGIN: "https://dashboard.example" } as unknown as Env;
+  const env = { DB: orgId ? { prepare: (sql: string) => ({ bind: () => ({
+    first: async () => sql.includes("SELECT org_id FROM apps") ? { org_id: orgId } : null,
+    all: async () => ({ results: [] }),
+  }) }) } : emptyDb(), DASHBOARD_ORIGIN: "https://dashboard.example" } as unknown as Env;
   return app.request(`https://app.hands.build/api/apps/${appId}/thing`, {}, env);
 }
 
@@ -59,6 +62,23 @@ describe("app id shape gate (requireAppRole / ensureAppRole)", () => {
     const res = await hit("76304f16-fbf7-488f-8445-e16ffdd6cef8");
     expect(res.status).toBe(403);
     expect((await res.json<{ code: string }>()).code).toBe("INSUFFICIENT_APP_ROLE");
+  });
+
+  it("links an app role denial to the UUID settings page even when the app has an organization", async () => {
+    const id = "76304f16-fbf7-488f-8445-e16ffdd6cef8";
+    const response = await hit(id, "org-1");
+    const body = await response.json<{ manage_url: string; next_action: string }>();
+    expect(body.manage_url).toBe(`https://dashboard.example/apps/${id}/settings`);
+    expect(body.next_action).toContain(body.manage_url);
+  });
+
+  it("does not advertise a broken settings link for a slug", async () => {
+    const response = await hit("ferry-ios");
+    const body = await response.json<{ manage_url: string | null; next_action: string }>();
+    expect(body.manage_url).toBeNull();
+    expect(body.next_action).toContain("full app UUID");
+    expect(body.next_action).toContain("hands apps get <slug>");
+    expect(body.next_action).not.toContain("/apps/ferry-ios/settings");
   });
 
   it("does NOT shape-reject synthetic slug-like ids (contain non-hex chars) — they reach the normal role check", async () => {
