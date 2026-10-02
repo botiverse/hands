@@ -2,7 +2,7 @@ import type { Context } from "hono";
 import { deleteCookie, getCookie, setCookie } from "hono/cookie";
 import { currentActor, accountForRequestedOrg, accountActor, googlePlayOAuthCookieName, SESSION_COOKIE, type AdminEnv } from "../middleware/auth";
 import { currentAccount, ensureAppRole, insertAuditLog } from "../lib/permissions";
-import { businessOrigin, dashboardOrigin } from "../lib/origin";
+import { businessOrigin, dashboardOrigin, configuredProductionHost, sharedCookieDomain } from "../lib/origin";
 import { decryptGooglePlayValue, encryptGooglePlayValue, getGooglePlayBindingMeta,
   normalizeGooglePlayPackage, normalizeGooglePlayTracks, storeGooglePlayBinding,
   parseGooglePlayCredential, type GooglePlayTracks } from "../lib/google_play_bindings";
@@ -10,6 +10,12 @@ import { requireAndroidApp, verifyBinding } from "./google_play_bindings";
 type AdminContext = Context<AdminEnv & { Bindings: Env }>;
 const SCOPE = "https://www.googleapis.com/auth/androidpublisher";
 function callbackUri(env: Env) { return businessOrigin(env) + "/api/google-play/oauth/callback"; }
+function cookieDomain(c: AdminContext): { domain: string } | Record<string, never> {
+  const domain = sharedCookieDomain(c.env);
+  const host = new URL(c.req.url).hostname;
+  return domain && configuredProductionHost(c.env, host)
+    && (host === domain || host.endsWith("." + domain)) ? { domain } : {};
+}
 function randomToken() { return Array.from(crypto.getRandomValues(new Uint8Array(32)), (b) => b.toString(16).padStart(2, "0")).join(""); }
 export async function oauthStateHash(value: string) {
   const bytes = new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value)));
@@ -45,6 +51,10 @@ export async function handleStartGooglePlayOAuth(c: AdminContext) {
     packageName = normalizeGooglePlayPackage(body.package_name);
     tracks = normalizeGooglePlayTracks(body.tracks);
   } catch { return c.json({ code: "INVALID_PLAY_BINDING", error: "Valid package and tracks are required" }, 400); }
+  const domainOption = cookieDomain(c);
+  if (new URL(c.req.url).hostname !== new URL(callbackUri(c.env)).hostname && !domainOption.domain) {
+    return c.json({ code: "PLAY_OAUTH_ORIGIN_MISMATCH", error: "Dashboard and callback need a shared cookie domain" }, 503);
+  }
   const state = randomToken();
   const verifier = randomToken();
   let encrypted;
@@ -68,7 +78,7 @@ export async function handleStartGooglePlayOAuth(c: AdminContext) {
   }).toString();
   setCookie(c, googlePlayOAuthCookieName(state)!, sessionToken, {
     httpOnly: true, secure: new URL(callbackUri(c.env)).protocol === "https:",
-    sameSite: "Lax", path: "/api/google-play/oauth/callback", maxAge: 600,
+    ...domainOption, sameSite: "Lax", path: "/api/google-play/oauth/callback", maxAge: 600,
   });
   await insertAuditLog(c.env.DB, c, { app_id: appId, action: "google_play.oauth.start", payload: { package_name: packageName } });
   return c.json({ authorization_url: url.toString() });
@@ -84,7 +94,7 @@ export async function handleGooglePlayOAuthCallback(c: AdminContext) {
   const state = c.req.query("state") ?? "";
   const account = currentAccount(c);
   const cookieName = googlePlayOAuthCookieName(state);
-  if (cookieName) deleteCookie(c, cookieName, { path: "/api/google-play/oauth/callback" });
+  if (cookieName) deleteCookie(c, cookieName, { ...cookieDomain(c), path: "/api/google-play/oauth/callback" });
   if (!/^[a-f0-9]{64}$/.test(state) || account?.principal_type !== "human") {
     return c.json({ error: "Invalid Google Play authorization", code: "INVALID_OAUTH_STATE" }, 400);
   }

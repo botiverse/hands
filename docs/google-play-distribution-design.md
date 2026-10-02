@@ -160,7 +160,8 @@ openid and email scopes and offline access. The fixed callback is
 The callback must use the same authenticated Hands identity. Browser login uses
 a Bearer session stored locally; initiation bridges the Google redirect with a
 ten-minute HttpOnly, SameSite=Lax cookie scoped only to this callback path and
-authorization. That cookie is never accepted on other API routes, and session
+authorization. The configured business parent domain shares it with the dashboard
+subdomain; unrelated hosts are rejected. That cookie is never accepted on other API routes, and session
 expiry/revocation still applies. The callback clears it. It restores the
 organization identity selected at initiation and checks app administrator
 permission again. State is claimed once before contacting Google. Partial

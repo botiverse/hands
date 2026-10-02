@@ -69,9 +69,9 @@ function harness(realAuth = false) {
   app.post("/api/apps/:appId/google-play-oauth/start", handleStartGooglePlayOAuth);
   app.get("/api/google-play/oauth/callback", handleGooglePlayOAuthCallback);
   app.delete("/api/apps/:appId/google-play-binding", handleDeleteGooglePlayBinding);
-  const request = (path: string, init?: RequestInit) => app.fetch(new Request("https://hands.test" + path, init), env);
-  const start = async () => {
-    const response = await request("/api/apps/" + appId + "/google-play-oauth/start", { method: "POST", headers: { "content-type": "application/json", authorization: "Bearer browser-session" }, body: JSON.stringify(input) });
+  const request = (path: string, init?: RequestInit, origin = "https://hands.test") => app.fetch(new Request(origin + path, init), env);
+  const start = async (origin = "https://hands.test") => {
+    const response = await request("/api/apps/" + appId + "/google-play-oauth/start", { method: "POST", headers: { "content-type": "application/json", authorization: "Bearer browser-session" }, body: JSON.stringify(input) }, origin);
     return { response, url: response.ok ? new URL((await response.json() as any).authorization_url) : null };
   };
   const callback = (state: string, suffix = "&code=private-code") => request("/api/google-play/oauth/callback?state=" + state + suffix);
@@ -176,6 +176,24 @@ describe("Google Play OAuth", () => {
     expect((await h.request("/api/google-play/oauth/callback?state=" + second.url!.searchParams.get("state") + "&code=code", {
       headers: { cookie: second.response.headers.get("set-cookie")!.split(";")[0]! },
     })).status).toBe(401);
+  });
+  it("shares only the configured parent domain between dashboard initiation and business callback", async () => {
+    const h = harness(true); google();
+    h.env.BUSINESS_ORIGIN = "https://hands.test";
+    h.env.DASHBOARD_ORIGIN = "https://app.hands.test";
+    h.sqlite.prepare("INSERT INTO raft_sessions (id, account_id, token_hash, created_at, expires_at, last_seen_at) VALUES ('session', 'human', ?, ?, ?, ?)").run(createHash("sha256").update("browser-session").digest("hex"), Date.now(), Date.now() + 3600000, Date.now());
+    const start = await h.start("https://app.hands.test");
+    expect(start.response.status).toBe(200);
+    expect(start.response.headers.get("set-cookie")).toContain("Domain=hands.test");
+    const response = await h.request("/api/google-play/oauth/callback?state=" + start.url!.searchParams.get("state") + "&code=code", {
+      headers: { cookie: start.response.headers.get("set-cookie")!.split(";")[0]! },
+    }, "https://hands.test");
+    expect(response.headers.get("location")).toContain("https://app.hands.test/apps/");
+    expect(response.headers.get("set-cookie")).toContain("Domain=hands.test");
+    expect(response.headers.get("set-cookie")).toContain("Max-Age=0");
+    h.env.DASHBOARD_ORIGIN = "https://unrelated.test";
+    expect((await h.start("https://unrelated.test")).response.status).toBe(503);
+    expect((await h.start("https://untrusted.hands.test")).response.status).toBe(503);
   });
   it("binds the authenticated identity across an organization switch and restores the effective administrator", async () => {
     const h = harness(); google();
