@@ -10,7 +10,7 @@
  */
 import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { Button, Tooltip, TooltipTrigger, TooltipContent, Progress, ProgressTrack, ProgressIndicator } from "raft-ui";
+import { Button, Card, Tooltip, TooltipTrigger, TooltipContent, Progress, ProgressTrack, ProgressIndicator } from "raft-ui";
 import { getFeedbackStats } from "../lib/api";
 
 const KINDS = ["feedback", "bug", "crash", "error"] as const;
@@ -65,17 +65,17 @@ export function FeedbackTrends({ appId }: { appId: string }) {
   if (total === 0) return null;
 
   return (
-    <div className="card p-4! mb-4">
+    <Card className="p-4 mb-4">
       <div className="flex items-center justify-between mb-1">
         <div>
           <h3 className="text-sm font-semibold">Last 30 days</h3>
-          <p className="text-xs text-slate-500">
+          <p className="text-xs text-foreground-muted">
             {total} ticket{total === 1 ? "" : "s"} · hover for daily detail
           </p>
         </div>
         <div className="flex items-center gap-4">
           {/* Legend — identity channel for the three kinds */}
-          <div className="hidden sm:flex items-center gap-3 text-xs text-slate-600">
+          <div className="hidden sm:flex items-center gap-3 text-xs text-foreground">
             {KINDS.map((k) => (
               <span key={k} className="inline-flex items-center gap-1.5">
                 <span
@@ -101,7 +101,7 @@ export function FeedbackTrends({ appId }: { appId: string }) {
       ) : (
         <StackedDaily days={days} />
       )}
-    </div>
+    </Card>
   );
 }
 
@@ -126,7 +126,7 @@ function StackedDaily({
         {/* recessive hairline gridlines at 0 and the top tick */}
         <line x1={0} y1={plotH} x2={W} y2={plotH} stroke="#e2e8f0" strokeWidth={1} />
         <line x1={0} y1={plotH - (plotH - 8)} x2={W} y2={plotH - (plotH - 8)} stroke="#f1f5f9" strokeWidth={1} />
-        <text x={0} y={10} className="fill-slate-400" fontSize={9}>
+        <text x={0} y={10} className="fill-foreground-hint" fontSize={9}>
           {yTop}
         </text>
         {days.map((d, i) => {
@@ -165,7 +165,7 @@ function StackedDaily({
                 <rect x={x - 1} y={0} width={barW + 2} height={plotH} fill="#0f172a" opacity={0.04} />
               )}
               {(i === 0 || i === days.length - 1 || i === Math.floor(days.length / 2)) && (
-                <text x={i * band + band / 2} y={H - 4} textAnchor="middle" className="fill-slate-400" fontSize={9}>
+                <text x={i * band + band / 2} y={H - 4} textAnchor="middle" className="fill-foreground-hint" fontSize={9}>
                   {d.label}
                 </text>
               )}
@@ -175,12 +175,12 @@ function StackedDaily({
       </svg>
       {hover !== null && (
         <div
-          className="pointer-events-none absolute -top-2 z-10 rounded-md border border-slate-200 bg-white px-2.5 py-1.5 text-xs shadow-xs"
+          className="pointer-events-none absolute -top-2 z-10 rounded-md border border-line-muted bg-layer-panel px-2.5 py-1.5 text-xs shadow-xs"
           style={{ left: `${Math.min(85, (hover / days.length) * 100)}%` }}
         >
-          <div className="font-medium text-slate-800">{days[hover]!.day}</div>
+          <div className="font-medium text-foreground-strong">{days[hover]!.day}</div>
           {KINDS.map((k) => (
-            <div key={k} className="flex items-center gap-1.5 text-slate-600">
+            <div key={k} className="flex items-center gap-1.5 text-foreground">
               <span className="inline-block h-2 w-2 rounded-xs" style={{ background: KIND_COLOR[k] }} />
               {k}: {days[hover]![k] as number}
             </div>
@@ -198,7 +198,7 @@ export function CrashByVersion({
 }) {
   if (rows.length === 0) {
     return (
-      <div className="flex items-center justify-center text-xs text-slate-400">
+      <div className="flex items-center justify-center text-xs text-foreground-hint">
         No crashes recorded
       </div>
     );
@@ -206,14 +206,14 @@ export function CrashByVersion({
   const max = Math.max(...rows.map((r) => r.n));
   return (
     <div>
-      <h4 className="text-xs font-medium text-slate-600 mb-2">Crashes by version</h4>
+      <h4 className="text-xs font-medium text-foreground mb-2">Crashes by version</h4>
       <div className="space-y-1.5">
         {rows.map((r) => (
           <div key={`${r.version_name}-${r.version_code}`} className="flex items-center gap-2 text-xs">
             <Tooltip>
               <TooltipTrigger
                 render={
-                  <span className="w-20 truncate text-slate-600">
+                  <span className="w-20 truncate text-foreground">
                     {r.version_name}
                   </span>
                 }
@@ -229,7 +229,7 @@ export function CrashByVersion({
               </ProgressTrack>
             </Progress>
             {/* value at the bar tip, in text ink */}
-            <span className="w-8 text-right tabular-nums text-slate-700">{r.n}</span>
+            <span className="w-8 text-right tabular-nums text-foreground-strong">{r.n}</span>
           </div>
         ))}
       </div>
@@ -248,7 +248,7 @@ function TrendTable({
   return (
     <table className="w-full text-xs">
       <thead>
-        <tr className="text-left text-slate-500">
+        <tr className="text-left text-foreground-muted">
           <th className="py-1 font-medium">Day</th>
           {KINDS.map((k) => (
             <th key={k} className="py-1 font-medium capitalize">{k}</th>
@@ -258,12 +258,12 @@ function TrendTable({
       </thead>
       <tbody>
         {nonEmpty.map((d) => (
-          <tr key={d.day} className="border-t border-slate-100">
-            <td className="py-1 text-slate-700">{d.day}</td>
+          <tr key={d.day} className="border-t border-line-hairline">
+            <td className="py-1 text-foreground-strong">{d.day}</td>
             {KINDS.map((k) => (
-              <td key={k} className="py-1 tabular-nums text-slate-600">{d[k] as number}</td>
+              <td key={k} className="py-1 tabular-nums text-foreground">{d[k] as number}</td>
             ))}
-            <td className="py-1 tabular-nums font-medium text-slate-800">
+            <td className="py-1 tabular-nums font-medium text-foreground-strong">
               {(d.feedback as number) + (d.bug as number) + (d.crash as number)}
             </td>
           </tr>
