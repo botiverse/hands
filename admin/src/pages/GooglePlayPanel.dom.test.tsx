@@ -163,6 +163,31 @@ describe("GooglePlayConnector", () => {
     expect(window.location.search).not.toContain("google_play_oauth");
   });
 
+  it("maps a known backend error code to specific copy and clears the URL", async () => {
+    mocks.get.mockResolvedValue({ google_play: null, oauth_available: true });
+    window.history.replaceState(null, "", "/?google_play_oauth=failed&google_play_oauth_error=play_permissions");
+    renderPanel();
+    expect(await screen.findByText(/lacks access to this Play app/)).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Retry" })).toBeTruthy();
+    expect(window.location.search).not.toContain("google_play_oauth");
+    expect(window.location.search).not.toContain("play_permissions");
+  });
+
+  it("explains offline-access failures distinctly", async () => {
+    mocks.get.mockResolvedValue({ google_play: null, oauth_available: true });
+    window.history.replaceState(null, "", "/?google_play_oauth=failed&google_play_oauth_error=offline_access");
+    renderPanel();
+    expect(await screen.findByText(/offline access/)).toBeTruthy();
+  });
+
+  it("falls back to the generic copy for unknown error codes without echoing them", async () => {
+    mocks.get.mockResolvedValue({ google_play: null, oauth_available: true });
+    window.history.replaceState(null, "", "/?google_play_oauth=failed&google_play_oauth_error=future_code");
+    renderPanel();
+    expect(await screen.findByText(/Google authorization failed\./)).toBeTruthy();
+    expect(screen.queryByText(/future_code/)).toBeNull();
+  });
+
   it("labels a human OAuth identity and explains local disconnect", async () => {
     mocks.get.mockResolvedValue({ google_play: { credential_kind: "authorized_user", enabled: true, verification_state: "verified", package_name: "build.raft.app", service_account_email: "human@example.com", internal_track: "internal", closed_track: "closed", production_track: "production" } });
     renderPanel();

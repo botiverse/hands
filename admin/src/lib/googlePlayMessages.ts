@@ -1,5 +1,6 @@
 export const GOOGLE_PLAY_MESSAGE_KEYS = [
-  "existingPackage", "manualPackage", "parsed", "declared", "channel", "googleMethod", "packageMissing", "authorize", "authorizedAccount", "oauthUnavailable", "oauthHelp", "oauthFailed", "oauthCancelled", "disconnectHelp", "title", "description", "configured", "enabled", "disabled", "verified", "stale", "serviceAccount",
+  "existingPackage", "manualPackage", "parsed", "declared", "channel", "googleMethod", "packageMissing", "authorize", "authorizedAccount", "oauthUnavailable", "oauthHelp", "oauthFailed", "oauthCancelled",
+  "oauthErrMissingCode", "oauthErrServerConfig", "oauthErrTokenExchange", "oauthErrOfflineAccess", "oauthErrGooglePermissions", "oauthErrAccountIdentity", "oauthErrPlayPermissions", "oauthErrAccessChanged", "oauthErrConnectionChanged", "oauthErrCredentialStorage", "disconnectHelp", "title", "description", "configured", "enabled", "disabled", "verified", "stale", "serviceAccount",
   "packageName", "internalTrack", "closedTrack", "productionTrack", "credentialJson", "chooseFile",
   "saveEnable", "replace", "cancel", "test", "testing", "enable", "disable", "unbind",
   "connect", "connecting", "connected", "retry", "needsConfig", "needsConfigHelp", "expand", "collapse", "saveSuccess", "verifySuccess", "enableSuccess", "disableSuccess", "unbindSuccess", "actionFailed",
@@ -17,8 +18,18 @@ export const GOOGLE_PLAY_MESSAGES: Record<"en" | "zh-CN", Record<GooglePlayMessa
     authorizedAccount: "Google account",
     oauthUnavailable: "Google authorization is not configured on this server.",
     oauthHelp: "Sign in with a Google account that has Play access to this package and the configured tracks. No service-account key is needed.",
-    oauthFailed: "Google authorization failed. Check Play permissions and try again.",
+    oauthFailed: "Google authorization failed. Try again; if it keeps failing, contact your administrator.",
     oauthCancelled: "Google authorization was cancelled.",
+    oauthErrMissingCode: "Google sign-in didn't return an authorization code. Start the connection again.",
+    oauthErrServerConfig: "Google authorization isn't fully configured on this server. Contact an administrator.",
+    oauthErrTokenExchange: "Couldn't complete the token exchange with Google. Try again in a moment.",
+    oauthErrOfflineAccess: "Google didn't grant offline access, so the connection can't be kept. Reconnect and approve access.",
+    oauthErrGooglePermissions: "The Google account wasn't granted permission to publish. Grant publishing access and reconnect.",
+    oauthErrAccountIdentity: "Couldn't read the connected Google account. Try again.",
+    oauthErrPlayPermissions: "The Google account lacks access to this Play app. Check Play Console permissions and retry.",
+    oauthErrAccessChanged: "Access changed since the connection was made. Reconnect to refresh it.",
+    oauthErrConnectionChanged: "The Google connection changed. Reconnect to restore it.",
+    oauthErrCredentialStorage: "Authorization succeeded, but saving the credential failed. Try again.",
     disconnectHelp: "Unbind deletes the credential stored by Hands. To revoke Google's grant as well, remove Hands in your Google account connections.",
 
     title: "Google Play",
@@ -44,8 +55,18 @@ export const GOOGLE_PLAY_MESSAGES: Record<"en" | "zh-CN", Record<GooglePlayMessa
     authorizedAccount: "Google 账号",
     oauthUnavailable: "此服务器尚未配置 Google 授权。",
     oauthHelp: "请登录拥有此包名及所配轨道 Play 权限的 Google 账号，无需创建服务账号密钥。",
-    oauthFailed: "Google 授权失败，请检查 Play 权限后重试。",
+    oauthFailed: "Google 授权失败。请重试；若持续失败，请联系管理员。",
     oauthCancelled: "Google 授权已取消。",
+    oauthErrMissingCode: "Google 授权未返回授权码（回调不完整）。请重新发起连接。",
+    oauthErrServerConfig: "服务端尚未完成 Google 授权配置，请联系管理员。",
+    oauthErrTokenExchange: "与 Google 换取令牌失败，请稍后重试。",
+    oauthErrOfflineAccess: "未获得离线授权，连接无法保持。请重新连接并同意授权。",
+    oauthErrGooglePermissions: "Google 授权未包含发布权限。请授予发布权限后重新连接。",
+    oauthErrAccountIdentity: "读取 Google 账号信息失败，请重试。",
+    oauthErrPlayPermissions: "该 Google 账号没有此 Play 应用的权限。请确认 Play Console 权限后重试。",
+    oauthErrAccessChanged: "连接后账号权限发生了变化。请重新连接以刷新。",
+    oauthErrConnectionChanged: "Google 侧的连接状态发生了变化。请重新连接恢复。",
+    oauthErrCredentialStorage: "授权成功但凭据保存失败，请重试。",
     disconnectHelp: "解除绑定会删除 Hands 保存的凭据。若也要撤销 Google 的授权，请在 Google 账号的第三方连接中移除 Hands。",
 
     title: "Google Play",
@@ -64,6 +85,30 @@ export const GOOGLE_PLAY_MESSAGES: Record<"en" | "zh-CN", Record<GooglePlayMessa
     invalidJson: "请选择从 Google Cloud 下载的完整服务账号 JSON 文件。",
   },
 };
+
+// Fixed error contract from the worker side (Volta, #proj-hands b529da37):
+// the callback only ever carries these values; anything else falls back to
+// the generic copy and the raw code is never rendered.
+const OAUTH_FAILURE_MESSAGE_KEYS: Record<string, GooglePlayMessageKey> = {
+  missing_code: "oauthErrMissingCode",
+  server_configuration: "oauthErrServerConfig",
+  token_exchange: "oauthErrTokenExchange",
+  offline_access: "oauthErrOfflineAccess",
+  google_permissions: "oauthErrGooglePermissions",
+  account_identity: "oauthErrAccountIdentity",
+  play_permissions: "oauthErrPlayPermissions",
+  access_changed: "oauthErrAccessChanged",
+  connection_changed: "oauthErrConnectionChanged",
+  credential_storage: "oauthErrCredentialStorage",
+};
+
+export function googlePlayOAuthFailureMessage(
+  errorCode: string | null | undefined,
+  languages?: readonly string[],
+) {
+  const key = errorCode ? OAUTH_FAILURE_MESSAGE_KEYS[errorCode] : undefined;
+  return key ? googlePlayMessage(key, languages) : googlePlayMessage("oauthFailed", languages);
+}
 
 export function googlePlayMessage(
   key: GooglePlayMessageKey,
