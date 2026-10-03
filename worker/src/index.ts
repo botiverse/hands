@@ -1,4 +1,4 @@
-import { handleAppleWebhook, handleCreateAppleWebhook, handleGetAppleWebhook, handleDeleteAppleWebhook } from "./routes/apple_webhooks";
+import { handleAppleWebhook, handleCreateAppleWebhook, handleGetAppleWebhook, handleDeleteAppleWebhook, handleRegisterAppleWebhook } from "./routes/apple_webhooks";
 import { handleStartGooglePlayOAuth, handleGooglePlayOAuthCallback } from "./routes/google_play_oauth";
 import { handleUploadAgcMarketPackage, handleGetAgcMarketPackage } from "./routes/agc_market_packages";
 /**
@@ -1350,6 +1350,7 @@ bindAdmin("get", "/api/apps/:appId/delta-sources", requireAppRole("viewer"), han
 bindAdmin("post", "/api/apps/:appId/apple-webhook", requireAppRole("admin"), handleCreateAppleWebhook);
 bindAdmin("get", "/api/apps/:appId/apple-webhook", requireAppRole("admin"), handleGetAppleWebhook);
 bindAdmin("delete", "/api/apps/:appId/apple-webhook", requireAppRole("admin"), handleDeleteAppleWebhook);
+bindAdmin("post", "/api/apps/:appId/apple-webhook/register", requireAppRole("admin"), handleRegisterAppleWebhook);
 app.route("/", admin);
 
 // ============================================================================

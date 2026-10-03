@@ -1,6 +1,8 @@
 import type { Context } from "hono";
 import type { AdminContext } from "../lib/permissions";
-import { encryptP8, decryptP8 } from "../lib/asc_credentials";
+import { getAscCredentials, encryptP8, decryptP8 } from "../lib/asc_credentials";
+import { ascRequest, AscApiError } from "../lib/asc_api";
+import { insertAuditLog } from "../lib/permissions";
 import { businessOrigin } from "../lib/origin";
 import { triggerDeliveryNow } from "./webhooks";
 
@@ -281,4 +283,91 @@ export async function handleAppleWebhook(c: Context<{ Bindings: Env }>) {
     return c.json({ error: "Event ID reused with a different payload" }, 409);
   triggerDeliveryNow(c, c.env, now);
   return c.json({ received: true, duplicate: receipt.receipt_nonce !== nonce });
+}
+
+
+const APPLE_EVENT_TYPES = [
+  "APP_STORE_VERSION_APP_VERSION_STATE_UPDATED",
+  "BUILD_BETA_DETAIL_EXTERNAL_BUILD_STATE_UPDATED",
+  "BUILD_UPLOAD_STATE_UPDATED",
+];
+type AppleWebhookResource = {
+  id: string;
+  type: string;
+  attributes: { url: string; enabled: boolean; eventTypes: string[] };
+};
+
+/** Register the existing ingress using the app's stored ASC credentials.
+ * No caller-provided URL, app ID, secret, or credential is accepted here.
+ * Read-before-create permits recovery after an ambiguous provider response;
+ * a matching URL is updated rather than generating another subscription.
+ */
+export async function handleRegisterAppleWebhook(c: AdminContext) {
+  c.header("Cache-Control", "no-store");
+  const encKey = c.env.ASC_CRED_ENC_KEY;
+  if (!encKey) return c.json({ error: "Apple credential encryption is not configured" }, 503);
+  const appId = c.req.param("appId")!;
+  const config = await c.env.DB.prepare(
+    `SELECT w.* FROM apple_webhook_configs w JOIN apps a ON a.id=w.app_id
+     WHERE w.app_id=?1 AND w.enabled=1 AND a.platform='ios' AND a.archived_at IS NULL`,
+  ).bind(appId).first<Config>();
+  if (!config) return c.json({ error: "Create an enabled Apple webhook configuration first" }, 409);
+  const creds = await getAscCredentials(c.env.DB, encKey, appId);
+  if (!creds) return c.json({ error: "App Store Connect credentials are not configured" }, 409);
+  const url = `${businessOrigin(c.env)}/api/apple/webhooks/${config.id}`;
+  const collectionPath = `/v1/apps/${encodeURIComponent(config.apple_app_id)}/webhooks`;
+  let stage = "list_webhooks";
+  try {
+    const matches: AppleWebhookResource[] = [];
+    let path: string | null = `${collectionPath}?limit=200`;
+    for (let pages = 0; path && pages < 10; pages++) {
+      const page: { data: AppleWebhookResource[]; links?: { next?: string | null } } = await ascRequest(
+        creds, "GET", path, undefined, AbortSignal.timeout(30000),
+      );
+      if (!Array.isArray(page?.data)) throw new Error("Malformed Apple response");
+      matches.push(...page.data.filter((r) => r.type === "webhooks" && r.attributes?.url === url));
+      const next: string | null | undefined = page.links?.next;
+      if (!next) { path = null; break; }
+      const parsed = new URL(next, "https://api.appstoreconnect.apple.com");
+      if (parsed.origin !== "https://api.appstoreconnect.apple.com" || parsed.pathname !== collectionPath)
+        throw new Error("Unexpected Apple pagination URL");
+      path = parsed.pathname + parsed.search;
+    }
+    if (path) return c.json({ error: "Apple webhook list exceeded the safety limit", stage }, 502);
+    if (matches.length > 1) return c.json({ error: "Multiple Apple subscriptions match this ingress; resolve duplicates before registering" }, 409);
+    // Do not register an ingress removed while Apple listing was in flight.
+    const stillEnabled = await c.env.DB.prepare("SELECT id FROM apple_webhook_configs WHERE app_id=?1 AND id=?2 AND enabled=1")
+      .bind(appId, config.id).first();
+    if (!stillEnabled) return c.json({ error: "Apple ingress configuration changed; retry from current configuration" }, 409);
+    const secret = await decryptP8(config.secret_ciphertext_b64, config.secret_iv_b64, encKey);
+    const existing = matches[0];
+    stage = existing ? "update_webhook" : "create_webhook";
+    const attributes = { name: `Hands ${appId}`, url, secret, enabled: true, eventTypes: APPLE_EVENT_TYPES };
+    const registered = await ascRequest<{ data: AppleWebhookResource }>(
+      creds, existing ? "PATCH" : "POST",
+      existing ? `/v1/webhooks/${encodeURIComponent(existing.id)}` : "/v1/webhooks",
+      { data: { type: "webhooks", ...(existing ? { id: existing.id } : {}), attributes,
+        ...(!existing ? { relationships: { app: { data: { type: "apps", id: config.apple_app_id } } } } : {}),
+      } }, AbortSignal.timeout(30000),
+    );
+    stage = "readback_webhook";
+    const readback = await ascRequest<{ data: AppleWebhookResource }>(
+      creds, "GET", `/v1/webhooks/${encodeURIComponent(registered.data.id)}`, undefined, AbortSignal.timeout(30000),
+    );
+    const result = readback.data;
+    if (result.type !== "webhooks" || result.attributes?.url !== url || result.attributes.enabled !== true
+      || !Array.isArray(result.attributes.eventTypes) || !APPLE_EVENT_TYPES.every((e) => result.attributes.eventTypes.includes(e)))
+      return c.json({ error: "Apple subscription readback did not match the requested configuration", stage }, 502);
+    // The provider operation has succeeded. Audit failure must not encourage
+    // blind repeat creation; subsequent calls discover the existing URL.
+    try {
+      await insertAuditLog(c.env.DB, c, { app_id: appId, action: "apple_webhook.register",
+        payload: { configuration_id: config.id, apple_webhook_id: result.id, apple_app_id: config.apple_app_id }, created_at: Date.now() });
+    } catch { console.error("apple_webhook_registration_audit_failed"); }
+    return c.json({ registered: true, apple_webhook_id: result.id, apple_app_id: config.apple_app_id,
+      payload_url: url, event_types: APPLE_EVENT_TYPES, reused: !!existing });
+  } catch (error) {
+    return c.json({ error: "App Store Connect webhook registration failed", stage,
+      upstream_status: error instanceof AscApiError ? error.status : null }, 502);
+  }
 }
