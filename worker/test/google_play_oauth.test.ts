@@ -83,6 +83,7 @@ function harness(realAuth = false, beforeConnectMigration = false) {
 }
 function google() {
   return vi.spyOn(globalThis, "fetch").mockImplementation(async (url, init) => {
+    expect(init?.redirect).toBe("manual");
     if (String(url) === "https://oauth2.googleapis.com/token") {
       const body = new URLSearchParams(String(init?.body));
       expect(body.get("grant_type")).toBe("authorization_code");
@@ -157,6 +158,26 @@ describe("Google Play OAuth", () => {
     expect(h.verify).not.toHaveBeenCalled();
     expect((await h.callback(state)).status).toBe(400);
     expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(['token', 'profile'] as const)('rejects %s redirects without forwarding credentials', async (stage) => {
+    const h = harness(); const fetch = google(); vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const redirect = new Response('private-code private-access', {status:302, headers:{location:'https://untrusted.test/steal'}});
+    if (stage === 'token') fetch.mockResolvedValueOnce(redirect);
+    else fetch.mockResolvedValueOnce(Response.json({access_token:'access',refresh_token:oauth.refresh_token,token_type:'Bearer',scope:'https://www.googleapis.com/auth/androidpublisher'})).mockResolvedValueOnce(redirect);
+    const {url} = await h.start(); const state = url!.searchParams.get('state')!;
+    const result = await h.callback(state);
+    expect(new URL(result.headers.get('location')!).searchParams.get('google_play_oauth_error')).toBe(stage === 'token' ? 'token_exchange' : 'account_identity');
+    expect(fetch).toHaveBeenCalledTimes(stage === 'token' ? 1 : 2);
+    for (const [url, init] of fetch.mock.calls) {
+      expect(String(url)).not.toContain('untrusted');
+      expect(init?.redirect).toBe('manual');
+    }
+    const row = h.sqlite.prepare("SELECT payload FROM audit_logs WHERE action='google_play.oauth.failed'").get() as {payload:string};
+    expect(JSON.parse(row.payload)).toMatchObject({provider_status:302});
+    expect(row.payload).not.toContain('private-');
+    expect(await getGooglePlayBindingMeta(h.env.DB, appId)).toBeNull();
+    expect(h.verify).not.toHaveBeenCalled();
   });
 
   it('keeps an actually stored connection successful when receipt bookkeeping fails', async () => {
