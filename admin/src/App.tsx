@@ -180,25 +180,25 @@ function Header({ account }: { account: AuthAccount }) {
   const railItem = ({ isActive }: { isActive: boolean }) =>
     `flex w-full items-center rounded-md py-2 text-sm ${collapsed ? "flex-col gap-0.5 px-1 text-[11px] leading-none" : "gap-2 px-2"} ${
       isActive
-        ? "bg-slate-100 font-medium text-slate-950"
-        : "text-slate-500 hover:bg-slate-100 hover:text-slate-950"
+        ? "bg-fill-muted font-medium text-foreground-strong"
+        : "text-foreground-muted hover:bg-fill-muted hover:text-foreground-strong"
     }`;
 
   return (
     <header
-      className={`sticky top-0 z-30 hidden h-screen flex-none flex-col border-r border-slate-200 bg-white py-3 transition-[width] duration-150 md:flex ${
+      className={`sticky top-0 z-30 hidden h-screen flex-none flex-col border-r border-line-muted bg-layer-canvas-muted py-3 transition-[width] duration-150 md:flex ${
         collapsed ? "w-16 items-center" : "w-16 items-stretch md:w-60"
       }`}
     >
       <div className={`mb-4 flex h-9 items-center ${collapsed ? "justify-center" : "justify-between px-3"}`}>
         <Link to="/" aria-label="Hands" className="flex min-w-0 items-center gap-2">
           <QuiverMark className="h-9 w-9 flex-none" />
-          {!collapsed && <span className="hidden truncate text-sm font-semibold text-slate-900 md:inline">Hands</span>}
+          {!collapsed && <span className="hidden truncate text-sm font-semibold text-foreground-strong md:inline">Hands</span>}
         </Link>
         {!collapsed && (
           <button
             type="button"
-            className="relative z-10 hidden h-10 w-10 flex-none touch-manipulation items-center justify-center rounded-md text-slate-500 outline-hidden hover:bg-slate-100 hover:text-slate-950 focus-visible:ring-2 focus-visible:ring-sky-500 md:flex"
+            className="relative z-10 hidden h-10 w-10 flex-none touch-manipulation items-center justify-center rounded-md text-foreground-muted outline-hidden hover:bg-fill-muted hover:text-foreground-strong focus-visible:ring-2 focus-visible:ring-primary-400 md:flex"
             onClick={() => setCollapsed(true)}
             aria-label="Collapse sidebar"
             title="Collapse sidebar"
@@ -218,20 +218,20 @@ function Header({ account }: { account: AuthAccount }) {
                   aria-label={`Organization ${currentOrg?.name ?? account.server_slug ?? account.server_id}`}
                   title={collapsed ? currentOrg?.name ?? "Switch organization" : undefined}
                 >
-                  <span className="flex h-6 w-6 flex-none items-center justify-center rounded-md border border-slate-200 bg-slate-50 text-[10px] font-semibold text-slate-600">
+                  <span className="flex h-6 w-6 flex-none items-center justify-center rounded-md border border-line-muted bg-layer-inset text-[10px] font-semibold text-foreground-muted">
                     {(currentOrg?.name ?? account.server_slug ?? "O").slice(0, 1).toUpperCase()}
                   </span>
                   {!collapsed && (
                     <>
                       <span className="hidden min-w-0 flex-1 text-left md:block">
-                        <span className="block truncate font-medium text-slate-800">
+                        <span className="block truncate font-medium text-foreground-strong">
                           {currentOrg?.name ?? account.server_slug ?? "Organization"}
                         </span>
-                        <span className="block truncate text-xs text-slate-400">
+                        <span className="block truncate text-xs text-foreground-hint">
                           {account.org_role ?? "member"}
                         </span>
                       </span>
-                      <ChevronDown className="hidden h-4 w-4 text-slate-400 md:block" aria-hidden="true" />
+                      <ChevronDown className="hidden h-4 w-4 text-foreground-hint md:block" aria-hidden="true" />
                     </>
                   )}
                 </button>
@@ -255,7 +255,7 @@ function Header({ account }: { account: AuthAccount }) {
         </div>
         {appId && appBase && (
           <>
-            <div className="relative w-full border-t border-slate-100 pt-2">
+            <div className="relative w-full border-t border-line-hairline pt-2">
               <DropdownMenu>
                 <DropdownMenuTrigger
                   render={
@@ -265,20 +265,20 @@ function Header({ account }: { account: AuthAccount }) {
                       title={collapsed ? currentApp?.name ?? "Switch app" : undefined}
                       aria-label="Switch app"
                     >
-                      <span className="flex h-6 w-6 flex-none items-center justify-center rounded-md bg-sky-50 text-[10px] font-semibold text-sky-700">
+                      <span className="flex h-6 w-6 flex-none items-center justify-center rounded-md bg-info/10 text-[10px] font-semibold text-info-strong">
                         {(currentApp?.name ?? "A").slice(0, 1).toUpperCase()}
                       </span>
                       {!collapsed && (
                         <>
                           <span className="hidden min-w-0 flex-1 text-left md:block">
-                            <span className="block truncate font-medium text-slate-800">
+                            <span className="block truncate font-medium text-foreground-strong">
                               {currentApp?.name ?? appRouteMessage(apps.isPending ? "loading" : "unavailable")}
                             </span>
-                            <span className="block truncate text-xs font-mono text-slate-400">
+                            <span className="block truncate text-xs font-mono text-foreground-hint">
                               {currentApp?.slug}
                             </span>
                           </span>
-                          <ChevronsUpDown className="hidden h-4 w-4 text-slate-400 md:block" aria-hidden="true" />
+                          <ChevronsUpDown className="hidden h-4 w-4 text-foreground-hint md:block" aria-hidden="true" />
                         </>
                       )}
                     </button>
@@ -294,11 +294,11 @@ function Header({ account }: { account: AuthAccount }) {
                       }}
                     >
                       <span className="truncate">{app.name}</span>
-                      <span className="badge-blue ml-auto">{app.platform}</span>
+                      <Badge variant="information" className="ml-auto">{app.platform}</Badge>
                     </DropdownMenuItem>
                   ))}
                   {otherApps.length === 0 && (
-                    <div className="px-3 py-2 text-xs text-slate-400">No other apps</div>
+                    <div className="px-3 py-2 text-xs text-foreground-hint">No other apps</div>
                   )}
                   <DropdownMenuSeparator />
                   <DropdownMenuItem render={<Link to="/apps?new=1" />}>
@@ -314,7 +314,7 @@ function Header({ account }: { account: AuthAccount }) {
               {APP_NAV_SECTIONS.map((section) => (
                 <div key={section.label} className="mb-3">
                   {!collapsed && (
-                    <div className="hidden px-2 pb-1 text-[11px] font-semibold uppercase tracking-wide text-slate-400 md:block">
+                    <div className="hidden px-2 pb-1 text-[11px] font-semibold uppercase tracking-wide text-foreground-hint md:block">
                       {section.label}
                     </div>
                   )}
@@ -357,7 +357,7 @@ function Header({ account }: { account: AuthAccount }) {
         {collapsed && (
           <button
             type="button"
-            className="relative z-10 mb-2 hidden h-10 w-full touch-manipulation items-center justify-center rounded-md text-slate-500 outline-hidden hover:bg-slate-100 hover:text-slate-950 focus-visible:ring-2 focus-visible:ring-sky-500 md:flex"
+            className="relative z-10 mb-2 hidden h-10 w-full touch-manipulation items-center justify-center rounded-md text-foreground-muted outline-hidden hover:bg-fill-muted hover:text-foreground-strong focus-visible:ring-2 focus-visible:ring-primary-400 md:flex"
             onClick={() => setCollapsed(false)}
             aria-label="Expand sidebar"
             title="Expand sidebar"
@@ -370,7 +370,7 @@ function Header({ account }: { account: AuthAccount }) {
             render={
               <button
                 type="button"
-                className={`flex w-full items-center rounded-md outline-hidden hover:bg-slate-100 ${
+                className={`flex w-full items-center rounded-md outline-hidden hover:bg-fill-muted ${
                   collapsed ? "justify-center p-1" : "gap-2 px-2 py-2 text-left"
                 }`}
                 title={`${account.display_name} · ${account.server_slug || account.server_id}`}
@@ -378,7 +378,7 @@ function Header({ account }: { account: AuthAccount }) {
                 <Avatar
                   size="sm"
                   type={account.principal_type === "agent" ? "agent" : "human"}
-                  className="border border-slate-200"
+                  className="border border-line-muted"
                 >
                   {account.avatar_url ? (
                     <AvatarImage src={account.avatar_url} alt="" />
@@ -389,10 +389,10 @@ function Header({ account }: { account: AuthAccount }) {
                 </Avatar>
                 {!collapsed && (
                   <span className="hidden min-w-0 flex-1 md:block">
-                    <span className="block truncate text-sm font-medium text-slate-800">
+                    <span className="block truncate text-sm font-medium text-foreground-strong">
                       {account.display_name}
                     </span>
-                    <span className="block truncate text-xs text-slate-400">
+                    <span className="block truncate text-xs text-foreground-hint">
                       {account.server_slug || account.server_id}
                     </span>
                   </span>
@@ -402,18 +402,16 @@ function Header({ account }: { account: AuthAccount }) {
           />
           <DropdownMenuContent side="right" align="end" className="w-64">
             <DropdownMenuLabel>
-              <div className="font-medium text-slate-900 flex items-center gap-1">
+              <div className="font-medium text-foreground-strong flex items-center gap-1">
                 {account.display_name}
                 {account.principal_type === "agent" && (
-                  <span className="badge-purple text-xs" title="Raft agent principal">
-                    agent
-                  </span>
+                  <Badge variant="accent" title="Raft agent principal">agent</Badge>
                 )}
               </div>
-              <div className="text-xs text-slate-500">
+              <div className="text-xs text-foreground-muted">
                 {account.server_slug || account.server_id}
               </div>
-              <div className="mt-1 text-xs text-slate-500">
+              <div className="mt-1 text-xs text-foreground-muted">
                 {account.principal_type === "agent" ? "Raft agent" : "Raft user"}
               </div>
             </DropdownMenuLabel>
@@ -465,12 +463,12 @@ function MobileTopNav({ account }: { account: AuthAccount }) {
   const chip = ({ isActive }: { isActive: boolean }) =>
     `inline-flex flex-none items-center gap-1.5 rounded-md px-2.5 py-1.5 text-sm ${
       isActive
-        ? "bg-slate-100 font-medium text-slate-950"
-        : "text-slate-500 hover:bg-slate-100 hover:text-slate-950"
+        ? "bg-fill-muted font-medium text-foreground-strong"
+        : "text-foreground-muted hover:bg-fill-muted hover:text-foreground-strong"
     }`;
 
   return (
-    <header className="sticky top-0 z-20 flex flex-col gap-2 border-b border-slate-200 bg-white px-3 py-2 md:hidden">
+    <header className="sticky top-0 z-20 flex flex-col gap-2 border-b border-line-muted bg-layer-canvas-muted px-3 py-2 md:hidden">
       <div className="flex items-center gap-2">
         <Link to="/" aria-label="Hands" className="flex flex-none items-center">
           <QuiverMark className="h-8 w-8" />
@@ -480,16 +478,16 @@ function MobileTopNav({ account }: { account: AuthAccount }) {
             render={
               <button
                 type="button"
-                className="flex min-w-0 items-center gap-1.5 rounded-md px-2 py-1.5 text-left hover:bg-slate-100"
+                className="flex min-w-0 items-center gap-1.5 rounded-md px-2 py-1.5 text-left hover:bg-fill-muted"
                 aria-label={`Organization ${currentOrg?.name ?? account.server_slug ?? account.server_id}`}
               >
-                <span className="flex h-6 w-6 flex-none items-center justify-center rounded-md border border-slate-200 bg-slate-50 text-[10px] font-semibold text-slate-600">
+                <span className="flex h-6 w-6 flex-none items-center justify-center rounded-md border border-line-muted bg-layer-inset text-[10px] font-semibold text-foreground-muted">
                   {(currentOrg?.name ?? account.server_slug ?? "O").slice(0, 1).toUpperCase()}
                 </span>
-                <span className="truncate text-sm font-medium text-slate-800">
+                <span className="truncate text-sm font-medium text-foreground-strong">
                   {currentOrg?.name ?? account.server_slug ?? "Organization"}
                 </span>
-                <ChevronDown className="h-4 w-4 flex-none text-slate-400" aria-hidden="true" />
+                <ChevronDown className="h-4 w-4 flex-none text-foreground-hint" aria-hidden="true" />
               </button>
             }
           />
@@ -510,16 +508,16 @@ function MobileTopNav({ account }: { account: AuthAccount }) {
               render={
                 <button
                   type="button"
-                  className="flex min-w-0 items-center gap-1.5 rounded-md px-2 py-1.5 text-left hover:bg-slate-100"
+                  className="flex min-w-0 items-center gap-1.5 rounded-md px-2 py-1.5 text-left hover:bg-fill-muted"
                   aria-label="Switch app"
                 >
-                  <span className="flex h-6 w-6 flex-none items-center justify-center rounded-md bg-sky-50 text-[10px] font-semibold text-sky-700">
+                  <span className="flex h-6 w-6 flex-none items-center justify-center rounded-md bg-info/10 text-[10px] font-semibold text-info-strong">
                     {(currentApp?.name ?? "A").slice(0, 1).toUpperCase()}
                   </span>
-                  <span className="truncate text-sm font-medium text-slate-800">
+                  <span className="truncate text-sm font-medium text-foreground-strong">
                     {currentApp?.name ?? appRouteMessage(apps.isPending ? "loading" : "unavailable")}
                   </span>
-                  <ChevronsUpDown className="h-4 w-4 flex-none text-slate-400" aria-hidden="true" />
+                  <ChevronsUpDown className="h-4 w-4 flex-none text-foreground-hint" aria-hidden="true" />
                 </button>
               }
             />
@@ -533,11 +531,11 @@ function MobileTopNav({ account }: { account: AuthAccount }) {
                   }}
                 >
                   <span className="truncate">{app.name}</span>
-                  <span className="badge-blue ml-auto">{app.platform}</span>
+                  <Badge variant="information" className="ml-auto">{app.platform}</Badge>
                 </DropdownMenuItem>
               ))}
               {otherApps.length === 0 && (
-                <div className="px-3 py-2 text-xs text-slate-400">No other apps</div>
+                <div className="px-3 py-2 text-xs text-foreground-hint">No other apps</div>
               )}
               <DropdownMenuSeparator />
               <DropdownMenuItem render={<Link to="/apps?new=1" />}>
@@ -555,13 +553,13 @@ function MobileTopNav({ account }: { account: AuthAccount }) {
               render={
                 <button
                   type="button"
-                  className="flex items-center rounded-md p-1 hover:bg-slate-100"
+                  className="flex items-center rounded-md p-1 hover:bg-fill-muted"
                   title={`${account.display_name} · ${account.server_slug || account.server_id}`}
                 >
                   <Avatar
                     size="sm"
                     type={account.principal_type === "agent" ? "agent" : "human"}
-                    className="border border-slate-200"
+                    className="border border-line-muted"
                   >
                     {account.avatar_url ? (
                       <AvatarImage src={account.avatar_url} alt="" />
@@ -575,18 +573,16 @@ function MobileTopNav({ account }: { account: AuthAccount }) {
             />
             <DropdownMenuContent side="bottom" align="end" className="w-64">
               <DropdownMenuLabel>
-                <div className="font-medium text-slate-900 flex items-center gap-1">
+                <div className="font-medium text-foreground-strong flex items-center gap-1">
                   {account.display_name}
                   {account.principal_type === "agent" && (
-                    <span className="badge-purple text-xs" title="Raft agent principal">
-                      agent
-                    </span>
+                    <Badge variant="accent" title="Raft agent principal">agent</Badge>
                   )}
                 </div>
-                <div className="text-xs text-slate-500">
+                <div className="text-xs text-foreground-muted">
                   {account.server_slug || account.server_id}
                 </div>
-                <div className="mt-1 text-xs text-slate-500">
+                <div className="mt-1 text-xs text-foreground-muted">
                   {account.principal_type === "agent" ? "Raft agent" : "Raft user"}
                 </div>
               </DropdownMenuLabel>
@@ -838,8 +834,8 @@ function AuthGate() {
 
   if (me.isLoading) {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-slate-50">
-        <div className="text-sm text-slate-500">Checking Raft session...</div>
+      <div className="min-h-screen flex items-center justify-center bg-layer-canvas">
+        <div className="text-sm text-foreground-muted">Checking Raft session...</div>
       </div>
     );
   }
@@ -1313,7 +1309,7 @@ function AuthenticatedApp({ account }: { account: AuthAccount }) {
           path="*"
           element={
             <div className="max-w-5xl mx-auto px-4 py-8">
-              <p className="text-slate-500">404 - not found</p>
+              <p className="text-foreground-muted">404 - not found</p>
             </div>
           }
         />
