@@ -5,6 +5,11 @@ import {
   Badge,
   Button,
   Card,
+  CardDescription,
+  CardHeader,
+  CardLeading,
+  CardTitle,
+  CardTrailing,
   Input,
   Select,
   SelectContent,
@@ -204,15 +209,16 @@ export function GooglePlayConnector({ appId }: { appId: string }) {
 
   return (
     <Card data-testid="google-play-binding-panel">
-      <div className="flex items-start gap-3 p-4">
-        <span className="flex size-9 shrink-0 items-center justify-center rounded-md border border-line-muted bg-layer-inset text-foreground-muted">
-          <Play className="size-4" aria-hidden="true" />
-        </span>
-        <div className="min-w-0 flex-1 space-y-1">
-          <div className="text-sm font-semibold text-foreground-strong">{gp("title")}</div>
-          <div className="text-xs text-foreground-muted">{gp("description")}</div>
-          {meta ? (
-            <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-foreground-muted">
+      <CardHeader>
+        <CardLeading>
+          <span className="flex size-9 shrink-0 items-center justify-center rounded-md border border-line-muted bg-layer-inset text-foreground-muted">
+            <Play className="size-4" aria-hidden="true" />
+          </span>
+        </CardLeading>
+        <CardTitle>{gp("title")}</CardTitle>
+        <CardDescription>{gp("description")}</CardDescription>
+        {meta ? (
+            <div className="col-start-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-foreground-muted">
               {needsConfig ? (
                 <>
                   <Badge variant="success">{gp("connected")}</Badge>
@@ -229,8 +235,7 @@ export function GooglePlayConnector({ appId }: { appId: string }) {
               )}
             </div>
           ) : null}
-        </div>
-        <div className="flex shrink-0 items-center gap-2">
+        <CardTrailing className="gap-2">
           {!meta ? (
             <>
               <Button
@@ -264,8 +269,8 @@ export function GooglePlayConnector({ appId }: { appId: string }) {
               />
             </Button>
           )}
-        </div>
-      </div>
+        </CardTrailing>
+      </CardHeader>
       {!meta && !query.isLoading && !query.data?.oauth_available ? (
         <p className="border-t border-line-hairline px-4 py-2 text-xs text-foreground-muted">
           {gp("oauthUnavailable")}
