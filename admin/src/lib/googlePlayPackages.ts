@@ -1,5 +1,3 @@
-import type { Build, Channel } from "./api";
-
 export type GooglePlayPackageOption = {
   packageName: string;
   source: "parsed" | "declared" | "channel";
@@ -15,8 +13,8 @@ function packageFrom(value: string): string | null {
 }
 
 export function googlePlayPackageOptions(
-  channels: Pick<Channel, "id" | "slug" | "bundle_id">[],
-  builds: Pick<Build, "channel_id" | "status" | "product_type" | "parsed_metadata_json" | "build_metadata_json">[],
+  channels: { id: string; slug: string; bundle_id: string | null }[],
+  builds: { channel_id: string | null; status: string; product_type: string; parsed_metadata_json: string; build_metadata_json: string }[],
 ): GooglePlayPackageOption[] {
   const options = new Map<string, GooglePlayPackageOption>();
   const rank = { parsed: 3, declared: 2, channel: 1 };

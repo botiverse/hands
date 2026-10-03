@@ -620,7 +620,8 @@ export async function handleListBuilds(c: Context<{ Bindings: Env }>) {
     `SELECT b.id, b.app_id, b.channel_id, c.slug AS channel, b.product_type,
             b.release_type, b.status, b.version_name, b.version_code,
             b.changelog, b.source, b.should_force_update, b.availability_at,
-            b.provenance_json, b.created_at, b.updated_at, b.completed_at
+            b.provenance_json, b.created_at, b.updated_at, b.completed_at,
+            b.build_metadata_json, b.parsed_metadata_json
      FROM builds b
      LEFT JOIN channels c ON c.id = b.channel_id
      WHERE ${conditions.join(" AND ")}
