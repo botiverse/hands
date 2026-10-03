@@ -47,6 +47,8 @@ import {
   DropdownMenuItem,
   DropdownMenuLabel,
   DropdownMenuSeparator,
+  DropdownMenuSubmenu,
+  DropdownMenuSubmenuTrigger,
   Avatar,
   AvatarImage,
   AvatarFallback,
@@ -391,7 +393,7 @@ function Header({ account }: { account: AuthAccount }) {
                 </DropdownMenuContent>
               </DropdownMenu>
             </div>
-            <div className="mt-1 flex-1 overflow-y-auto sidebar-scroll">
+            <div className="mt-1 flex-1 overflow-y-auto overflow-x-hidden sidebar-scroll">
               {APP_NAV_SECTIONS.map((section) => (
                 <div key={section.label} className="mb-1">
                   {!collapsed && (
@@ -502,20 +504,24 @@ function Header({ account }: { account: AuthAccount }) {
               </div>
             </DropdownMenuLabel>
             <DropdownMenuSeparator />
-            <DropdownMenuLabel>Appearance</DropdownMenuLabel>
-            {APPEARANCE_OPTIONS.map((option) => (
-              <DropdownMenuItem
-                key={option.id}
-                closeOnClick={false}
-                onClick={() => option.apply(setTheme)}
-              >
-                <Check
-                  className={`size-3.5 ${option.isActive(theme, mode) ? "opacity-100" : "opacity-0"}`}
-                  aria-hidden="true"
-                />
-                <span>{option.label}</span>
-              </DropdownMenuItem>
-            ))}
+            <DropdownMenuSubmenu>
+              <DropdownMenuSubmenuTrigger>Appearance</DropdownMenuSubmenuTrigger>
+              <DropdownMenuContent side="right" align="start" className="w-44">
+                {APPEARANCE_OPTIONS.map((option) => (
+                  <DropdownMenuItem
+                    key={option.id}
+                    closeOnClick={false}
+                    onClick={() => option.apply(setTheme)}
+                  >
+                    <Check
+                      className={`size-3.5 ${option.isActive(theme, mode) ? "opacity-100" : "opacity-0"}`}
+                      aria-hidden="true"
+                    />
+                    <span>{option.label}</span>
+                  </DropdownMenuItem>
+                ))}
+              </DropdownMenuContent>
+            </DropdownMenuSubmenu>
             <DropdownMenuSeparator />
             <DropdownMenuItem render={<Link to="/settings" />}>
               Settings
