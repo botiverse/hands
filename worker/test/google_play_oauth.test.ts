@@ -96,6 +96,56 @@ function google() {
 }
 afterEach(() => vi.restoreAllMocks());
 describe("Google Play OAuth", () => {
+  it.each([
+    ["token_exchange", {error:"invalid_grant", error_description:"private-code private-client-secret"}, 400],
+    ["token_exchange", {access_token:"private-access",token_type:"unexpected",refresh_token:"private-refresh",scope:"https://www.googleapis.com/auth/androidpublisher"}, 200],
+    ["offline_access", {access_token:"private-access",token_type:"Bearer",scope:"https://www.googleapis.com/auth/androidpublisher"}, 200],
+    ["google_permissions", {access_token:"private-access",token_type:"Bearer",refresh_token:"private-refresh",scope:"openid email"}, 200],
+  ] as const)("persists a safe %s reason without blaming Play app permissions", async (reason, token, status) => {
+    const h = harness(); const warning = vi.spyOn(console,"warn").mockImplementation(() => {});
+    vi.spyOn(globalThis,"fetch").mockResolvedValue(Response.json(token, {status}));
+    const response = await h.request('/api/apps/' + appId + '/google-play-oauth/start', {method:'POST',headers:{authorization:'Bearer browser-session'}});
+    const state = new URL((await response.json() as any).authorization_url).searchParams.get('state')!;
+    const result = await h.callback(state);
+    const redirect = new URL(result.headers.get('location')!);
+    expect(redirect.searchParams.get('google_play_oauth')).toBe('failed');
+    expect(redirect.searchParams.get('google_play_oauth_error')).toBe(reason);
+    const rows = h.sqlite.prepare("SELECT payload FROM audit_logs WHERE action='google_play.oauth.failed'").all() as Array<{payload:string}>;
+    expect(rows).toHaveLength(1);
+    expect(JSON.parse(rows[0]!.payload)).toMatchObject({reason});
+    if (status === 400) expect(JSON.parse(rows[0]!.payload)).toMatchObject({provider_status:400,provider_error:'invalid_grant'});
+    const diagnostics = JSON.stringify([rows,warning.mock.calls,result.headers.get('location')]);
+    for (const secret of ['private-code','private-client-secret','private-access','private-refresh',state]) expect(diagnostics).not.toContain(secret);
+    expect(await getGooglePlayBindingMeta(h.env.DB,appId)).toBeNull();
+    expect(h.verify).not.toHaveBeenCalled();
+    expect((await h.callback(state)).status).toBe(400);
+  });
+
+  it.each(['timeout','profile','storage'] as const)('distinguishes %s failures without serializing exceptions or Google bodies', async mode => {
+    const h = harness(); const warning = vi.spyOn(console,'warn').mockImplementation(() => {}); const fetch = google();
+    if (mode === 'timeout') fetch.mockImplementationOnce(async () => {throw new Error('private-code private-refresh');});
+    if (mode === 'profile') fetch.mockImplementationOnce(async () => Response.json({access_token:'access',refresh_token:oauth.refresh_token,token_type:'Bearer',scope:'https://www.googleapis.com/auth/androidpublisher'})).mockImplementationOnce(async () => Response.json({error:'private-access'}, {status:403}));
+    if (mode === 'storage') h.sqlite.exec("CREATE TRIGGER reject_binding BEFORE INSERT ON app_google_play_bindings BEGIN SELECT RAISE(ABORT, 'private-refresh'); END");
+    const started = await h.request('/api/apps/' + appId + '/google-play-oauth/start', {method:'POST',headers:{authorization:'Bearer browser-session'}});
+    const state = new URL((await started.json() as any).authorization_url).searchParams.get('state')!;
+    const result = await h.callback(state);
+    const reason = mode === 'timeout' ? 'token_exchange' : mode === 'profile' ? 'account_identity' : 'credential_storage';
+    expect(new URL(result.headers.get('location')!).searchParams.get('google_play_oauth_error')).toBe(reason);
+    expect(h.sqlite.prepare("SELECT count(*) n FROM audit_logs WHERE action='google_play.oauth.failed'").get()).toEqual({n:1});
+    expect(JSON.stringify(warning.mock.calls)).not.toContain('private-');
+    expect(h.verify).not.toHaveBeenCalled();
+  });
+
+  it('keeps an actually stored connection successful when receipt bookkeeping fails', async () => {
+    const h = harness(); google(); vi.spyOn(console,'warn').mockImplementation(() => {});
+    h.sqlite.exec("CREATE TRIGGER reject_connect_audit BEFORE INSERT ON audit_logs WHEN NEW.action='google_play.oauth.connect' BEGIN SELECT RAISE(ABORT, 'audit unavailable'); END");
+    const response = await h.request('/api/apps/' + appId + '/google-play-oauth/start', {method:'POST',headers:{authorization:'Bearer browser-session'}});
+    const state = new URL((await response.json() as any).authorization_url).searchParams.get('state')!;
+    expect((await h.callback(state)).headers.get('location')).toContain('google_play_oauth=connected');
+    expect(await getGooglePlayBindingMeta(h.env.DB,appId)).not.toBeNull();
+    expect((await h.callback(state)).status).toBe(400);
+  });
+
   it.each(['role', 'disconnect', 'expired'])('does not save an unconfigured connection after %s changes during Google I/O', async (mode) => {
     const h = harness(); const fetch = google();
     const response = await h.request('/api/apps/' + appId + '/google-play-oauth/start', {method:'POST',headers:{authorization:'Bearer browser-session'}});
