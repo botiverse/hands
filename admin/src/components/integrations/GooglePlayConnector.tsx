@@ -24,7 +24,7 @@ import {
   verifyGooglePlayBinding,
 } from "../../lib/api";
 import { googlePlayPackageOptions } from "../../lib/googlePlayPackages";
-import { googlePlayMessage as gp } from "../../lib/googlePlayMessages";
+import { googlePlayMessage as gp, googlePlayOAuthFailureMessage } from "../../lib/googlePlayMessages";
 import { useToast } from "../Toast";
 
 export function GooglePlayConnector({ appId }: { appId: string }) {
@@ -62,18 +62,23 @@ export function GooglePlayConnector({ appId }: { appId: string }) {
   const refresh = () => qc.invalidateQueries({ queryKey: ["google-play-binding", appId] });
   const fail = (error: unknown) => toast.show({ kind: "error", title: gp("actionFailed"), description: (error as Error).message });
   useEffect(() => {
-    const result = new URLSearchParams(window.location.search).get("google_play_oauth");
+    const params = new URLSearchParams(window.location.search);
+    const result = params.get("google_play_oauth");
     if (!result || query.isLoading) return;
     const url = new URL(window.location.href);
     url.searchParams.delete("google_play_oauth");
+    url.searchParams.delete("google_play_oauth_error");
     window.history.replaceState(null, "", url);
     if (result === "connected" && meta?.credential_kind === "authorized_user") {
       toast.show({ kind: "success", title: gp("saveSuccess") });
       setOauthResult(null);
-    } else if (result === "failed" || result === "cancelled") {
+    } else if (result === "failed") {
       // Keep the failure on the row with a retry action instead of a toast
-      // that disappears (artin, #proj-hands b529da37).
-      setOauthResult(result);
+      // that disappears (artin, #proj-hands b529da37). The optional error
+      // code maps to specific copy; unknown values fall back to generic.
+      setOauthResult({ kind: "failed", errorCode: params.get("google_play_oauth_error") });
+    } else if (result === "cancelled") {
+      setOauthResult({ kind: "cancelled" });
     }
   }, [query.isLoading, meta, toast]);
 
@@ -136,7 +141,9 @@ export function GooglePlayConnector({ appId }: { appId: string }) {
   const needsConfig = Boolean(meta && !meta.package_name);
   const showForm = editing || (!meta && !query.isLoading);
   const [userExpanded, setUserExpanded] = useState<boolean | null>(null);
-  const [oauthResult, setOauthResult] = useState<"failed" | "cancelled" | null>(null);
+  const [oauthResult, setOauthResult] = useState<
+    { kind: "failed"; errorCode: string | null } | { kind: "cancelled" } | null
+  >(null);
   // Only a connected binding opens the detail; an unconfigured connector stays
   // a single row with Connect.
   const expanded = userExpanded ?? needsConfig;
@@ -267,7 +274,9 @@ export function GooglePlayConnector({ appId }: { appId: string }) {
       {oauthResult ? (
         <div className="flex flex-wrap items-center gap-2 border-t border-line-hairline px-4 py-2 text-xs">
           <span className="min-w-0 flex-1 text-danger">
-            {gp(oauthResult === "failed" ? "oauthFailed" : "oauthCancelled")}
+            {oauthResult.kind === "failed"
+              ? googlePlayOAuthFailureMessage(oauthResult.errorCode)
+              : gp("oauthCancelled")}
           </span>
           <Button size="xs" variant="outline" onClick={startConnect}>
             {gp("retry")}
