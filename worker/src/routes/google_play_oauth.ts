@@ -87,6 +87,7 @@ export async function handleStartGooglePlayOAuth(c: AdminContext) {
   await insertAuditLog(c.env.DB, c, { app_id: appId, action: "google_play.oauth.start", payload: { package_name: packageName } });
   return c.json({ authorization_url: url.toString() });
 }
+type OAuthFailure = "missing_code" | "server_configuration" | "token_exchange" | "offline_access" | "google_permissions" | "account_identity" | "play_permissions" | "access_changed" | "connection_changed" | "credential_storage";
 type Pending = {
   state_hash: string; app_id: string; account_id: string; authenticated_account_id: string; org_id: string | null; client_id: string; package_name: string | null;
   tracks_json: string | null; expected_binding_version: string | null; expires_at: number; consumed_at: number | null;
@@ -127,12 +128,27 @@ export async function handleGooglePlayOAuthCallback(c: AdminContext) {
   if (!claimed) return c.json({ error: "Authorization was already consumed", code: "INVALID_OAUTH_STATE" }, 400);
   const resultUrl = new URL(dashboardOrigin(c.env) + "/apps/" + pending.app_id + "/integrations");
   const finish = (result: string) => { resultUrl.searchParams.set("google_play_oauth", result); return c.redirect(resultUrl.toString(), 303); };
+  // Only allowlisted enums and HTTP statuses cross the diagnostic boundary.
+  // Never log the callback URL, code, state, provider bodies or credentials.
+  const fail = async (reason: OAuthFailure, status?: number, providerError?: string) => {
+    const safeProviderError = ["invalid_grant", "invalid_client", "access_denied", "temporarily_unavailable"].includes(providerError ?? "") ? providerError : undefined;
+    const payload = { reason, ...(status === undefined ? {} : { provider_status: status }),
+      ...(safeProviderError ? { provider_error: safeProviderError } : {}) };
+    console.warn("google_play.oauth.failed", { app_id: pending.app_id, ...payload });
+    try { await insertAuditLog(c.env.DB, c, { app_id: pending.app_id, action: "google_play.oauth.failed", payload }); }
+    catch { console.warn("google_play.oauth.failure_audit_unavailable", { app_id: pending.app_id }); }
+    resultUrl.searchParams.set("google_play_oauth_error", reason);
+    return finish("failed");
+  };
   if (c.req.query("error")) return finish("cancelled");
-  if (!c.req.query("code")) return finish("failed");
+  if (!c.req.query("code")) return fail("missing_code");
+  let stage: OAuthFailure = "server_configuration";
+  let stored = false;
   try {
-    if (!c.env.GOOGLE_PLAY_OAUTH_CLIENT_ID || !c.env.GOOGLE_PLAY_OAUTH_CLIENT_SECRET || pending.client_id !== c.env.GOOGLE_PLAY_OAUTH_CLIENT_ID) return finish("failed");
+    if (!c.env.GOOGLE_PLAY_OAUTH_CLIENT_ID || !c.env.GOOGLE_PLAY_OAUTH_CLIENT_SECRET || pending.client_id !== c.env.GOOGLE_PLAY_OAUTH_CLIENT_ID) return fail("server_configuration");
     const verifier = await decryptGooglePlayValue(pending.verifier_ciphertext_b64, pending.verifier_iv_b64, pending.app_id, pending.verifier_key_version, c.env.PLAY_CRED_ENC_KEYS);
-    if (typeof verifier !== "string" || !/^[a-f0-9]{64}$/.test(verifier)) return finish("failed");
+    if (typeof verifier !== "string" || !/^[a-f0-9]{64}$/.test(verifier)) return fail("server_configuration");
+    stage = "token_exchange";
     const response = await fetch("https://oauth2.googleapis.com/token", {
       method: "POST", redirect: "error", signal: AbortSignal.timeout(30_000),
       headers: { "content-type": "application/x-www-form-urlencoded" },
@@ -141,36 +157,54 @@ export async function handleGooglePlayOAuthCallback(c: AdminContext) {
         client_secret: c.env.GOOGLE_PLAY_OAUTH_CLIENT_SECRET }),
     });
     const token = await response.json() as Record<string, unknown>;
-    if (!response.ok || token.token_type !== "Bearer" || typeof token.access_token !== "string" || !token.access_token
-      || typeof token.refresh_token !== "string" || !token.refresh_token
-      || typeof token.scope !== "string" || !token.scope.split(/\s+/).some((scope) => scope === SCOPE)) return finish("failed");
+    if (!response.ok) return fail("token_exchange", response.status, typeof token.error === "string" ? token.error : undefined);
+    if (token.token_type !== "Bearer"
+      || typeof token.access_token !== "string" || !token.access_token) return fail("token_exchange", response.status);
+    if (typeof token.refresh_token !== "string" || !token.refresh_token) return fail("offline_access");
+    if (typeof token.scope !== "string" || !token.scope.split(/\s+/).some((scope) => scope === SCOPE)) return fail("google_permissions");
+    stage = "account_identity";
     const profileResponse = await fetch("https://openidconnect.googleapis.com/v1/userinfo", {
       headers: { authorization: "Bearer " + token.access_token }, redirect: "error", signal: AbortSignal.timeout(30_000),
     });
     const profile = await profileResponse.json() as Record<string, unknown>;
-    if (!profileResponse.ok || typeof profile.email !== "string" || profile.email_verified !== true) return finish("failed");
+    if (!profileResponse.ok || typeof profile.email !== "string" || profile.email_verified !== true) return fail("account_identity", profileResponse.status);
     const credential = parseGooglePlayCredential({
       type: "authorized_user", client_id: c.env.GOOGLE_PLAY_OAUTH_CLIENT_ID,
       client_secret: c.env.GOOGLE_PLAY_OAUTH_CLIENT_SECRET, refresh_token: token.refresh_token, client_email: profile.email,
     });
+    stage = "server_configuration";
     const tracks = pending.tracks_json === null ? null : normalizeGooglePlayTracks(JSON.parse(pending.tracks_json));
     if (pending.package_name !== null || tracks !== null) {
-      if (pending.package_name === null || tracks === null) return finish("failed");
+      if (pending.package_name === null || tracks === null) return fail("server_configuration");
+      stage = "play_permissions";
       const verified = await verifyBinding(c, { credential, package_name: pending.package_name, tracks });
-      if (!verified.ok) return finish("failed");
+      if (!verified.ok) return fail("play_permissions");
     }
     // Recheck role after I/O; compare-and-set protects an intervening binding
     // replacement/disable/disconnect from being overwritten.
+    stage = "access_changed";
     const changedRole = await ensureAppRole(c, pending.app_id, "admin");
-    if (!changedRole.ok) return finish("failed");
+    if (!changedRole.ok) return fail("access_changed");
+    stage = "credential_storage";
     const meta = await storeGooglePlayBinding(c.env.DB, {
       appId: pending.app_id, packageName: pending.package_name, tracks, credential,
       actor: currentActor(c), keyringJson: c.env.PLAY_CRED_ENC_KEYS, activeKeyVersion: c.env.PLAY_CRED_ENC_ACTIVE_KEY_VERSION,
       expectedBindingVersion: pending.expected_binding_version, expectedOAuthStateHash: hash,
     });
+    stored = true;
     await insertAuditLog(c.env.DB, c, { app_id: pending.app_id, action: "google_play.oauth.connect",
       payload: { package_name: pending.package_name, credential_kind: credential.type, credential_fingerprint: meta.credential_fingerprint } });
     await c.env.DB.prepare("DELETE FROM google_play_oauth_requests WHERE state_hash=?1").bind(hash).run();
     return finish("connected");
-  } catch { return finish("failed"); }
+  } catch (error) {
+    // A bookkeeping failure after the credential commit must not tell the user
+    // their Google connection failed. The consumed row still prevents replay.
+    if (stored) {
+      console.warn("google_play.oauth.post_connect_bookkeeping_failed", { app_id: pending.app_id });
+      return finish("connected");
+    }
+    const reason = stage === "credential_storage" && error instanceof Error
+      && error.message === "Google Play binding changed during authorization" ? "connection_changed" : stage;
+    return fail(reason);
+  }
 }
