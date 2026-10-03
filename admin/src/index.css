@@ -5,6 +5,11 @@
 @import 'raft-ui/styles.css';
 @source '../node_modules/raft-ui/dist';
 
+/* Tailwind utilities scoped to the Brutal theme root (same contract as the
+   platform web app). Enables `theme-brutal:` classes for surfaces and
+   dividers that follow Raft's hard-edged Brutal recipe. */
+@custom-variant theme-brutal (&:where([data-theme="brutal"], [data-theme="brutal"] *));
+
 @theme {
   --font-sans:
     ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, sans-serif;

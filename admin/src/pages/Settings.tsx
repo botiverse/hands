@@ -10,6 +10,7 @@ import {
   DescriptionItem,
   DescriptionList,
   DescriptionTerm,
+  Separator,
   TextHeading,
   TextMono,
   TextSans,
@@ -84,10 +85,8 @@ export function Settings() {
                 </DescriptionDetails>
               </DescriptionItem>
             </DescriptionList>
-            <TextSans
-              size="caption"
-              className="border-t border-line-hairline pt-3"
-            >
+            <Separator />
+            <TextSans size="caption">
               Signed in with Raft. To change role, ask an organization owner or
               admin in Organization settings.
             </TextSans>

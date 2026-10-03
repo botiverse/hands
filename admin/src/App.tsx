@@ -4,6 +4,7 @@ import {
   Route,
   NavLink,
   Navigate,
+  useMatch,
   useParams,
   useNavigate,
   useLocation,
@@ -50,6 +51,9 @@ import {
   Tooltip,
   TooltipTrigger,
   TooltipContent,
+  SidebarGroupLabel,
+  SidebarItem,
+  SidebarRoot,
 } from "raft-ui";
 import { appRouteMessage } from "./lib/appRouteMessages";
 import { legalMessage } from "./lib/legalMessages";
@@ -137,6 +141,41 @@ function QuiverMark({ className = "" }: { className?: string }) {
 
 const SIDEBAR_COLLAPSED_KEY = "hands:sidebar-collapsed";
 
+/** One sidebar navigation row. RUI `SidebarItem` owns the per-theme geometry
+ *  (brutal: hard 2px black borders + offset shadow on hover/active; elegant:
+ *  soft rounded rows), so the row only supplies structure and content. */
+function SidebarNavItem({
+  to,
+  end,
+  collapsed,
+  label,
+  icon: Icon,
+  ...rest
+}: {
+  to: string;
+  end: boolean;
+  collapsed: boolean;
+  label: string;
+  icon: LucideIcon;
+} & React.HTMLAttributes<HTMLElement>) {
+  const match = useMatch({ path: to, end });
+  return (
+    <SidebarItem
+      active={match !== null}
+      render={<NavLink to={to} end={end} aria-label={label} />}
+      className={
+        collapsed
+          ? "flex-col gap-0.5 px-1 py-1 text-[11px] leading-none"
+          : undefined
+      }
+      {...rest}
+    >
+      <Icon className="h-4 w-4 flex-none" aria-hidden="true" />
+      {!collapsed && <span className="hidden md:inline">{label}</span>}
+    </SidebarItem>
+  );
+}
+
 function Header({ account }: { account: AuthAccount }) {
   const navigate = useNavigate();
   const onLogout = async () => {
@@ -177,20 +216,13 @@ function Header({ account }: { account: AuthAccount }) {
     }
   }, [collapsed]);
 
-  const railItem = ({ isActive }: { isActive: boolean }) =>
-    `flex w-full items-center rounded-md py-2 text-sm ${collapsed ? "flex-col gap-0.5 px-1 text-[11px] leading-none" : "gap-2 px-2"} ${
-      isActive
-        ? "bg-fill-muted font-medium text-foreground-strong"
-        : "text-foreground-muted hover:bg-fill-muted hover:text-foreground-strong"
-    }`;
-
   return (
-    <header
-      className={`sticky top-0 z-30 hidden h-screen flex-none flex-col border-r border-line-muted bg-layer-canvas-muted py-3 transition-[width] duration-150 md:flex ${
+    <SidebarRoot
+      className={`sticky top-0 z-30 hidden h-screen flex-none flex-col border-r border-line-muted py-3 transition-[width] duration-150 theme-brutal:border-r-2 theme-brutal:border-black md:flex ${
         collapsed ? "w-16 items-center" : "w-16 items-stretch md:w-60"
       }`}
     >
-      <div className={`mb-4 flex h-9 items-center ${collapsed ? "justify-center" : "justify-between px-3"}`}>
+      <div className={`mb-4 flex h-9 items-center theme-brutal:mb-3 theme-brutal:h-10 theme-brutal:border-b-2 theme-brutal:border-black theme-brutal:pb-2 ${collapsed ? "justify-center" : "justify-between px-3"}`}>
         <Link to="/" aria-label="Hands" className="flex min-w-0 items-center gap-2">
           <QuiverMark className="h-9 w-9 flex-none" />
           {!collapsed && <span className="hidden truncate text-sm font-semibold text-foreground-strong md:inline">Hands</span>}
@@ -212,11 +244,16 @@ function Header({ account }: { account: AuthAccount }) {
           <DropdownMenu>
             <DropdownMenuTrigger
               render={
-                <button
-                  type="button"
-                  className={railItem({ isActive: location.pathname.startsWith("/orgs/") })}
+                <SidebarItem
+                  active={location.pathname.startsWith("/orgs/")}
                   aria-label={`Organization ${currentOrg?.name ?? account.server_slug ?? account.server_id}`}
                   title={collapsed ? currentOrg?.name ?? "Switch organization" : undefined}
+                  render={<button type="button" />}
+                  className={
+                    collapsed
+                      ? "flex-col gap-0.5 px-1 py-1 text-[11px] leading-none"
+                      : undefined
+                  }
                 >
                   <span className="flex h-6 w-6 flex-none items-center justify-center rounded-md border border-line-muted bg-layer-inset text-[10px] font-semibold text-foreground-muted">
                     {(currentOrg?.name ?? account.server_slug ?? "O").slice(0, 1).toUpperCase()}
@@ -234,7 +271,7 @@ function Header({ account }: { account: AuthAccount }) {
                       <ChevronDown className="hidden h-4 w-4 text-foreground-hint md:block" aria-hidden="true" />
                     </>
                   )}
-                </button>
+                </SidebarItem>
               }
             />
             <DropdownMenuContent
@@ -255,15 +292,20 @@ function Header({ account }: { account: AuthAccount }) {
         </div>
         {appId && appBase && (
           <>
-            <div className="relative w-full border-t border-line-hairline pt-2">
+            <div className="relative w-full border-t border-line-hairline pt-2 theme-brutal:border-t-2 theme-brutal:border-black">
               <DropdownMenu>
                 <DropdownMenuTrigger
                   render={
-                    <button
-                      type="button"
-                      className={railItem({ isActive: false })}
+                    <SidebarItem
+                      active={false}
                       title={collapsed ? currentApp?.name ?? "Switch app" : undefined}
                       aria-label="Switch app"
+                      render={<button type="button" />}
+                      className={
+                        collapsed
+                          ? "flex-col gap-0.5 px-1 py-1 text-[11px] leading-none"
+                          : undefined
+                      }
                     >
                       <span className="flex h-6 w-6 flex-none items-center justify-center rounded-md bg-info/10 text-[10px] font-semibold text-info-strong">
                         {(currentApp?.name ?? "A").slice(0, 1).toUpperCase()}
@@ -281,7 +323,7 @@ function Header({ account }: { account: AuthAccount }) {
                           <ChevronsUpDown className="hidden h-4 w-4 text-foreground-hint md:block" aria-hidden="true" />
                         </>
                       )}
-                    </button>
+                    </SidebarItem>
                   }
                 />
                 <DropdownMenuContent side="bottom" align="start" className="w-64">
@@ -314,9 +356,9 @@ function Header({ account }: { account: AuthAccount }) {
               {APP_NAV_SECTIONS.map((section) => (
                 <div key={section.label} className="mb-3">
                   {!collapsed && (
-                    <div className="hidden px-2 pb-1 text-[11px] font-semibold uppercase tracking-wide text-foreground-hint md:block">
+                    <SidebarGroupLabel className="hidden md:block">
                       {section.label}
-                    </div>
+                    </SidebarGroupLabel>
                   )}
                   <div className="space-y-0.5">
                     {section.items
@@ -325,17 +367,15 @@ function Header({ account }: { account: AuthAccount }) {
                           !item.platform || item.platform === currentApp?.platform,
                       )
                       .map((item) => {
-                      const Icon = item.icon;
                       const link = (
-                        <NavLink
+                        <SidebarNavItem
                           key={item.label}
-                          to={item.to ? `${appBase}/${item.to}` : appBase}
+                          to={item.to ? `${appBase}/${item.to}` : (appBase ?? "/apps")}
                           end={item.end ?? false}
-                          className={railItem}
-                        >
-                          <Icon className="h-4 w-4 flex-none" aria-hidden="true" />
-                          {!collapsed && <span className="hidden md:inline">{item.label}</span>}
-                        </NavLink>
+                          collapsed={collapsed}
+                          label={item.label}
+                          icon={item.icon}
+                        />
                       );
                       return collapsed ? (
                         <Tooltip key={item.label}>
@@ -368,12 +408,13 @@ function Header({ account }: { account: AuthAccount }) {
         <DropdownMenu>
           <DropdownMenuTrigger
             render={
-              <button
-                type="button"
-                className={`flex w-full items-center rounded-md outline-hidden hover:bg-fill-muted ${
-                  collapsed ? "justify-center p-1" : "gap-2 px-2 py-2 text-left"
-                }`}
+              <SidebarItem
                 title={`${account.display_name} · ${account.server_slug || account.server_id}`}
+                aria-label={account.display_name}
+                render={<button type="button" />}
+                className={
+                  collapsed ? "justify-center px-1 py-1" : undefined
+                }
               >
                 <Avatar
                   size="sm"
@@ -397,7 +438,7 @@ function Header({ account }: { account: AuthAccount }) {
                     </span>
                   </span>
                 )}
-              </button>
+              </SidebarItem>
             }
           />
           <DropdownMenuContent side="right" align="end" className="w-64">
@@ -426,7 +467,7 @@ function Header({ account }: { account: AuthAccount }) {
           </DropdownMenuContent>
         </DropdownMenu>
       </div>
-    </header>
+    </SidebarRoot>
   );
 }
 
