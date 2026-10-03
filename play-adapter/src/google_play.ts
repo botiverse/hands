@@ -106,9 +106,15 @@ function hashingBody(body: ReadableStream<Uint8Array>, maxBytes: number) {
 export class GooglePlayClient {
   constructor(
     private readonly accessToken: string,
-    private readonly fetchImpl: typeof fetch,
+    fetchImpl: typeof fetch,
     private readonly maxAabSize: number,
-  ) {}
+  ) {
+    // Workers native fetch rejects a class instance as its receiver.
+    // Keep injected fetch functions callable without changing their this value.
+    this.fetchImpl = (input, init) => fetchImpl(input, init);
+  }
+
+  private readonly fetchImpl: typeof fetch;
 
   private async requestJson<T>(url: string, init: RequestInit = {}): Promise<T> {
     let response: Response;
