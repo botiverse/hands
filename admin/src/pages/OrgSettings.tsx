@@ -38,8 +38,12 @@ import {
   type WebhookEventType,
 } from "../lib/api";
 import { useToast } from "../components/Toast";
+
+type BadgeVariant = NonNullable<BadgeProps["variant"]>;
 import {
+  Badge,
   Button,
+  Card,
   Input,
   Select,
   SelectTrigger,
@@ -64,10 +68,12 @@ import {
   EmptyStateTitle,
   Skeleton,
   Tabs,
+  Textarea,
   TabsList,
   TabsTab,
   TabsIndicator,
 } from "raft-ui";
+import type { BadgeProps } from "raft-ui";
 
 const ORG_SETTINGS_TAB_LABELS: Record<OrgSettingsTab, string> = {
   general: "General",
@@ -108,22 +114,22 @@ export function OrgSettings({
   return (
     <div>
       <div className="mb-6">
-        <div className="text-sm text-slate-500">Organization</div>
+        <div className="text-sm text-foreground-muted">Organization</div>
         <h1 className="text-2xl font-bold">
           {account
             ? `${account.server_slug ?? account.server_id} · Raft org`
             : "Settings"}
         </h1>
-        <div className="text-sm text-slate-500 font-mono">{orgId}</div>
+        <div className="text-sm text-foreground-muted font-mono">{orgId}</div>
       </div>
 
-      {me.isLoading && <p className="text-slate-500">Loading…</p>}
+      {me.isLoading && <p className="text-foreground-muted">Loading…</p>}
 
       {!isCurrentOrg && currentOrgId && (
-        <div className="card p-4! bg-yellow-50 border-yellow-200 text-yellow-800 text-sm mb-4">
+        <Card className="p-4 bg-warning-soft border-warning text-warning-strong text-sm mb-4">
           ⚠ The org in the URL ({orgId}) doesn't match your current org (
           {currentOrgId}). Multi-org support deferred to v2.
-        </div>
+        </Card>
       )}
 
       {/* Visual-only Tabs: navigation stays with NavLink; the controlled
@@ -145,7 +151,7 @@ export function OrgSettings({
       </Tabs>
 
       {tab === "general" && (
-        <div className="card p-4! text-sm space-y-2">
+        <Card className="p-4 text-sm space-y-2">
           <Row k="External provider" v={account?.provider ?? "?"} />
           <Row k="External ID (Raft server_id)" v={account?.server_id ?? "?"} />
           <Row k="Server slug" v={account?.server_slug ?? "—"} />
@@ -175,11 +181,11 @@ export function OrgSettings({
             k="Your server_role (from Raft)"
             v={account?.server_role ?? "—"}
           />
-          <p className="text-xs text-slate-500 pt-3 border-t border-slate-100">
+          <p className="text-xs text-foreground-muted pt-3 border-t border-line-hairline">
             Future: editable org name + slug, danger zone (archive org),
             sign-up mode (open vs invite-only).
           </p>
-        </div>
+        </Card>
       )}
 
       {tab === "members" && (
@@ -258,7 +264,7 @@ function MembersTab({
   });
 
   return (
-    <div className="card p-4! text-sm">
+    <Card className="p-4 text-sm">
       <div className="flex items-center justify-between mb-3">
         <h3 className="text-base font-semibold">Members</h3>
         <div className="flex items-center gap-2">
@@ -290,7 +296,7 @@ function MembersTab({
               <SelectItem value="agent">Agents only</SelectItem>
             </SelectContent>
           </Select>
-          <span className="text-xs text-slate-500">
+          <span className="text-xs text-foreground-muted">
             {filteredMembers.length} member{filteredMembers.length === 1 ? "" : "s"}
             {principalFilter !== "all" && (
               <span className="ml-1">({principalFilter})</span>
@@ -299,7 +305,7 @@ function MembersTab({
         </div>
       </div>
       {!isAdmin && (
-        <p className="text-xs text-yellow-700 mb-2">
+        <p className="text-xs text-warning mb-2">
           ⚠ Your current role is "{currentRole ?? "—"}" — you can view
           members but not edit them.
         </p>
@@ -312,7 +318,7 @@ function MembersTab({
         </div>
       )}
       {members.error && (
-        <p className="text-red-600">Failed: {(members.error as Error).message}</p>
+        <p className="text-danger">Failed: {(members.error as Error).message}</p>
       )}
       {members.data && filteredMembers.length === 0 && (
         <EmptyState>
@@ -326,7 +332,7 @@ function MembersTab({
       {members.data && filteredMembers.length > 0 && (
         <table className="w-full text-sm">
           <thead>
-            <tr className="text-slate-500 text-left border-b border-slate-100">
+            <tr className="text-foreground-muted text-left border-b border-line-hairline">
               <th className="font-normal py-1 pr-2">Principal</th>
               <th className="font-normal py-1 pr-2">Type</th>
               <th className="font-normal py-1 pr-2">Role</th>
@@ -339,16 +345,16 @@ function MembersTab({
             {filteredMembers.map((m) => (
               <tr
                 key={m.account_id}
-                className="border-b border-slate-50 hover:bg-slate-50"
+                className="border-b border-line-hairline hover:bg-fill-muted"
               >
                 <td className="py-2 pr-2">
                   <div className="font-medium">
                     {m.display_name}
                     {m.account_id === currentAccountId && (
-                      <span className="ml-1 text-xs text-slate-500">(you)</span>
+                      <span className="ml-1 text-xs text-foreground-muted">(you)</span>
                     )}
                   </div>
-                  <div className="text-xs text-slate-500">
+                  <div className="text-xs text-foreground-muted">
                     {m.username ? (
                       <span className="font-mono">@{m.username}</span>
                     ) : (
@@ -360,7 +366,7 @@ function MembersTab({
                 </td>
                 <td className="py-2 pr-2">
                   {m.principal_type === "agent" ? (
-                    <span className="badge-purple text-xs">agent</span>
+                    <Badge variant="accent">agent</Badge>
                   ) : (
                     <span className="text-xs">human</span>
                   )}
@@ -412,10 +418,10 @@ function MembersTab({
                     </span>
                   )}
                 </td>
-                <td className="py-2 pr-2 text-xs text-slate-500">
+                <td className="py-2 pr-2 text-xs text-foreground-muted">
                   {new Date(m.joined_at).toISOString().slice(0, 10)}
                 </td>
-                <td className="py-2 pr-2 text-xs text-slate-500">
+                <td className="py-2 pr-2 text-xs text-foreground-muted">
                   {m.last_login_at
                     ? new Date(m.last_login_at).toISOString().slice(0, 10)
                     : "—"}
@@ -426,7 +432,7 @@ function MembersTab({
                       <Button
                         variant="link"
                         size="sm"
-                        className="text-red-600"
+                        className="text-danger"
                         onClick={() => {
                           if (
                             confirm(
@@ -448,7 +454,7 @@ function MembersTab({
           </tbody>
         </table>
       )}
-    </div>
+    </Card>
   );
 }
 
@@ -504,7 +510,7 @@ function InvitesTab({
   });
 
   return (
-    <div className="card p-4! text-sm">
+    <Card className="p-4 text-sm">
       <div className="flex items-center justify-between mb-3">
         <h3 className="text-base font-semibold">Invites</h3>
         <div className="flex items-center gap-2">
@@ -550,7 +556,7 @@ function InvitesTab({
         </div>
       </div>
       {!canManage && (
-        <p className="text-xs text-yellow-700 mb-2">
+        <p className="text-xs text-warning mb-2">
           ⚠ Owner / admin required to manage invites.
         </p>
       )}
@@ -561,7 +567,7 @@ function InvitesTab({
         </div>
       )}
       {invites.error && (
-        <p className="text-red-600">Failed: {(invites.error as Error).message}</p>
+        <p className="text-danger">Failed: {(invites.error as Error).message}</p>
       )}
       {invites.data && filteredInvites.length === 0 && (
         <EmptyState>
@@ -575,7 +581,7 @@ function InvitesTab({
       {invites.data && filteredInvites.length > 0 && (
         <table className="w-full text-sm">
           <thead>
-            <tr className="text-slate-500 text-left border-b border-slate-100">
+            <tr className="text-foreground-muted text-left border-b border-line-hairline">
               <th className="font-normal py-1 pr-2">Email</th>
               <th className="font-normal py-1 pr-2">Role</th>
               <th className="font-normal py-1 pr-2">Status</th>
@@ -587,14 +593,14 @@ function InvitesTab({
             {filteredInvites.map((inv) => (
               <tr
                 key={inv.id}
-                className="border-b border-slate-50 hover:bg-slate-50"
+                className="border-b border-line-hairline hover:bg-fill-muted"
               >
                 <td className="py-2 pr-2 font-mono text-xs">{inv.email}</td>
                 <td className="py-2 pr-2 text-xs">{inv.role}</td>
                 <td className="py-2 pr-2 text-xs">
                   <InviteStatusBadge status={inv.status} />
                 </td>
-                <td className="py-2 pr-2 text-xs text-slate-500">
+                <td className="py-2 pr-2 text-xs text-foreground-muted">
                   {new Date(inv.expires_at).toISOString().slice(0, 10)}
                 </td>
                 {canManage && inv.status === "pending" && (
@@ -610,7 +616,7 @@ function InvitesTab({
                     <Button
                       variant="link"
                       size="sm"
-                      className="text-red-600"
+                      className="text-danger"
                       onClick={() => {
                         if (confirm(`Revoke invite to ${inv.email}?`)) {
                           revoke.mutate(inv.id);
@@ -638,7 +644,7 @@ function InvitesTab({
           }}
         />
       )}
-    </div>
+    </Card>
   );
 }
 
@@ -695,7 +701,7 @@ function CreateInviteDialog({
             className="space-y-3"
           >
             <div>
-              <label className="label">Email</label>
+              <label className="block text-sm font-medium text-foreground-strong mb-1">Email</label>
               <Input
                 type="email"
                 value={email}
@@ -705,7 +711,7 @@ function CreateInviteDialog({
               />
             </div>
             <div>
-              <label className="label">Role</label>
+              <label className="block text-sm font-medium text-foreground-strong mb-1">Role</label>
               <Select
                 items={{
                   member: "member (default)",
@@ -725,9 +731,9 @@ function CreateInviteDialog({
               </Select>
             </div>
             <div>
-              <label className="label">Message (optional)</label>
-              <textarea
-                className="input text-xs min-h-[60px]"
+              <label className="block text-sm font-medium text-foreground-strong mb-1">Message (optional)</label>
+              <Textarea
+                className="text-xs min-h-[60px]"
                 value={message}
                 onChange={(e) => setMessage(e.target.value)}
               />
@@ -757,13 +763,13 @@ function CreateInviteDialog({
 }
 
 function InviteStatusBadge({ status }: { status: string }) {
-  const map: Record<string, string> = {
-    pending: "badge-blue",
-    accepted: "badge-green",
-    revoked: "badge-gray",
-    expired: "badge-orange",
+  const map: Record<string, BadgeVariant> = {
+    pending: "information",
+    accepted: "success",
+    revoked: "muted",
+    expired: "warning",
   };
-  return <span className={map[status] ?? "badge-gray"}>{status}</span>;
+  return <Badge variant={map[status] ?? "muted"}>{status}</Badge>;
 }
 
 function AuditTab({
@@ -779,10 +785,10 @@ function AuditTab({
     enabled: canView,
   });
   return (
-    <div className="card p-4! text-sm">
+    <Card className="p-4 text-sm">
       <h3 className="text-base font-semibold mb-3">Audit log</h3>
       {!canView && (
-        <p className="text-xs text-yellow-700 mb-2">
+        <p className="text-xs text-warning mb-2">
           ⚠ Org member required to view audit log.
         </p>
       )}
@@ -794,7 +800,7 @@ function AuditTab({
         </div>
       )}
       {audit.error && (
-        <p className="text-red-600">Failed: {(audit.error as Error).message}</p>
+        <p className="text-danger">Failed: {(audit.error as Error).message}</p>
       )}
       {audit.data && audit.data.logs.length === 0 && (
         <EmptyState>
@@ -805,7 +811,7 @@ function AuditTab({
         <div className="overflow-x-auto max-w-full">
         <table className="w-full text-xs">
           <thead>
-            <tr className="text-slate-500 text-left border-b border-slate-100">
+            <tr className="text-foreground-muted text-left border-b border-line-hairline">
               <th className="font-normal py-1 pr-2">When</th>
               <th className="font-normal py-1 pr-2">Actor</th>
               <th className="font-normal py-1 pr-2">App</th>
@@ -823,9 +829,9 @@ function AuditTab({
               return (
                 <tr
                   key={log.id}
-                  className="border-b border-slate-50 hover:bg-slate-50"
+                  className="border-b border-line-hairline hover:bg-fill-muted"
                 >
-                  <td className="py-1 pr-2 text-slate-500 font-mono whitespace-nowrap">
+                  <td className="py-1 pr-2 text-foreground-muted font-mono whitespace-nowrap">
                     {new Date(log.created_at).toISOString().slice(0, 19)}Z
                   </td>
                   <td className="py-1 pr-2">
@@ -843,14 +849,14 @@ function AuditTab({
                       </Avatar>
                       <span>{actorName}</span>
                       {log.actor_type === "agent" && (
-                        <span className="badge-purple text-[10px]">agent</span>
+                        <Badge variant="accent">agent</Badge>
                       )}
                       {log.actor_type === "system" && (
-                        <span className="badge-gray text-[10px]">system</span>
+                        <Badge variant="muted">system</Badge>
                       )}
                     </span>
                   </td>
-                  <td className="py-1 pr-2 font-mono text-slate-500 whitespace-nowrap">
+                  <td className="py-1 pr-2 font-mono text-foreground-muted whitespace-nowrap">
                     {log.app_slug ?? log.app_id?.slice(0, 8) ?? "—"}
                   </td>
                   <td className="py-1 pr-2 font-mono whitespace-nowrap">{log.action}</td>
@@ -864,7 +870,7 @@ function AuditTab({
         </table>
         </div>
       )}
-    </div>
+    </Card>
   );
 }
 
@@ -881,7 +887,7 @@ function Row({
 }) {
   return (
     <div className="flex items-center gap-2">
-      <div className="w-48 text-xs text-slate-500">{k}</div>
+      <div className="w-48 text-xs text-foreground-muted">{k}</div>
       <div
         className={mono ? "font-mono text-xs" : "text-sm"}
         style={{ color }}
@@ -937,11 +943,11 @@ function WebhooksTab({
 
   return (
     <div className="space-y-3">
-      <div className="card p-4! text-sm">
+      <Card className="p-4 text-sm">
         <div className="flex items-center justify-between mb-3">
           <div>
             <h3 className="text-base font-semibold">Webhooks</h3>
-            <p className="text-xs text-slate-500">
+            <p className="text-xs text-foreground-muted">
               Subscribe external HTTP endpoints to release and build events.
               Deliveries are signed with HMAC SHA-256
               (<code className="font-mono">X-Hands-Signature</code>).
@@ -959,7 +965,7 @@ function WebhooksTab({
         </div>
 
         {!canManage && (
-          <p className="text-xs text-yellow-700 mb-2">
+          <p className="text-xs text-warning mb-2">
             ⚠ Org owner / admin required to manage webhooks.
           </p>
         )}
@@ -971,7 +977,7 @@ function WebhooksTab({
           </div>
         )}
         {webhooks.error && (
-          <p className="text-red-600 text-xs">
+          <p className="text-danger text-xs">
             Failed: {(webhooks.error as Error).message}
           </p>
         )}
@@ -1003,9 +1009,9 @@ function WebhooksTab({
             ))}
           </div>
         )}
-      </div>
+      </Card>
 
-      <div className="card p-4! text-xs text-slate-600">
+      <Card className="p-4 text-xs text-foreground">
         <h4 className="font-semibold mb-1">Delivery semantics</h4>
         <ul className="list-disc pl-5 space-y-1">
           <li>
@@ -1022,7 +1028,7 @@ function WebhooksTab({
             <code className="font-mono">X-Quiver-Signature</code> is still sent too).
           </li>
         </ul>
-      </div>
+      </Card>
 
       {showCreate && (
         <CreateWebhookDialog
@@ -1067,30 +1073,24 @@ function WebhookRow({
     enabled: expanded,
   });
   return (
-    <div className="border border-slate-200 rounded-sm p-3">
+    <div className="border border-line-muted rounded-sm p-3">
       <div className="flex items-center justify-between gap-3">
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2">
-            <span
-              className={
-                webhook.enabled === 1
-                  ? "badge-green text-xs"
-                  : "badge-gray text-xs"
-              }
-            >
+            <Badge variant={webhook.enabled === 1 ? "success" : "muted"}>
               {webhook.enabled === 1 ? "enabled" : "disabled"}
-            </span>
+            </Badge>
             <span className="font-mono text-xs truncate">{webhook.url}</span>
           </div>
-          <div className="text-xs text-slate-500 mt-1">
+          <div className="text-xs text-foreground-muted mt-1">
             events:{" "}
             {events.length === 0 ? (
               <span className="italic">(all)</span>
             ) : (
               events.map((e) => (
-                <span key={e} className="badge-blue text-xs mr-1">
+                <Badge key={e} variant="information" className="mr-1">
                   {e}
-                </span>
+                </Badge>
               ))
             )}
           </div>
@@ -1122,22 +1122,22 @@ function WebhookRow({
       </div>
 
       {expanded && (
-        <div className="mt-3 pt-3 border-t border-slate-100">
+        <div className="mt-3 pt-3 border-t border-line-hairline">
           {deliveries.isLoading && (
-            <p className="text-xs text-slate-500">Loading deliveries…</p>
+            <p className="text-xs text-foreground-muted">Loading deliveries…</p>
           )}
           {deliveries.error && (
-            <p className="text-red-600 text-xs">
+            <p className="text-danger text-xs">
               Failed: {(deliveries.error as Error).message}
             </p>
           )}
           {deliveries.data && deliveries.data.deliveries.length === 0 && (
-            <p className="text-xs text-slate-500">No deliveries yet.</p>
+            <p className="text-xs text-foreground-muted">No deliveries yet.</p>
           )}
           {deliveries.data && deliveries.data.deliveries.length > 0 && (
             <table className="w-full text-xs">
               <thead>
-                <tr className="text-slate-500 text-left border-b border-slate-100">
+                <tr className="text-foreground-muted text-left border-b border-line-hairline">
                   <th className="font-normal py-1 pr-2">When</th>
                   <th className="font-normal py-1 pr-2">Event</th>
                   <th className="font-normal py-1 pr-2">Status</th>
@@ -1150,24 +1150,24 @@ function WebhookRow({
                 {deliveries.data.deliveries.map((d: WebhookDelivery) => (
                   <tr
                     key={d.id}
-                    className="border-b border-slate-50 hover:bg-slate-50"
+                    className="border-b border-line-hairline hover:bg-fill-muted"
                   >
-                    <td className="py-1 pr-2 font-mono text-slate-500">
+                    <td className="py-1 pr-2 font-mono text-foreground-muted">
                       {new Date(d.created_at).toISOString().slice(0, 19)}Z
                     </td>
                     <td className="py-1 pr-2 font-mono">{d.event_type}</td>
                     <td className="py-1 pr-2">
-                      <span
-                        className={
+                      <Badge
+                        variant={
                           d.status === "succeeded"
-                            ? "badge-green text-xs"
+                            ? "success"
                             : d.status === "failed"
-                              ? "badge-red text-xs"
-                              : "badge-blue text-xs"
+                              ? "danger"
+                              : "information"
                         }
                       >
                         {d.status}
-                      </span>
+                      </Badge>
                     </td>
                     <td className="py-1 pr-2 font-mono">
                       {d.attempts}/{d.max_attempts}
@@ -1175,7 +1175,7 @@ function WebhookRow({
                     <td className="py-1 pr-2 font-mono">
                       {d.last_response_status ?? "—"}
                     </td>
-                    <td className="py-1 pr-2 font-mono text-slate-500 truncate max-w-xs">
+                    <td className="py-1 pr-2 font-mono text-foreground-muted truncate max-w-xs">
                       {d.last_error
                         ? d.last_error
                         : d.next_attempt_at
@@ -1250,7 +1250,7 @@ function CreateWebhookDialog({
             className="space-y-3"
           >
             <div>
-              <label className="label">URL</label>
+              <label className="block text-sm font-medium text-foreground-strong mb-1">URL</label>
               <Input
                 type="url"
                 value={url}
@@ -1261,7 +1261,7 @@ function CreateWebhookDialog({
               />
             </div>
             <div>
-              <label className="label">Secret (HMAC)</label>
+              <label className="block text-sm font-medium text-foreground-strong mb-1">Secret (HMAC)</label>
               <Input
                 type="text"
                 className="font-mono text-xs"
@@ -1270,14 +1270,14 @@ function CreateWebhookDialog({
                 placeholder="at-least-16-random-bytes"
                 required
               />
-              <p className="text-xs text-slate-500 mt-1">
+              <p className="text-xs text-foreground-muted mt-1">
                 Used to sign deliveries via{" "}
                 <code className="font-mono">X-Hands-Signature</code>. Choose a
                 strong secret; receivers must verify the signature.
               </p>
             </div>
             <div>
-              <label className="label">Events (empty = all)</label>
+              <label className="block text-sm font-medium text-foreground-strong mb-1">Events (empty = all)</label>
               <div className="grid grid-cols-2 gap-1">
                 {WEBHOOK_EVENT_TYPES.map((ev) => (
                   <label
