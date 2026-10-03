@@ -1,34 +1,71 @@
 import type { ReactElement } from "react";
+import type { LucideIcon } from "lucide-react";
+import { Apple, Play, Smartphone } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 import { useParams } from "react-router-dom";
-import { Card, TextHeading, TextSans } from "raft-ui";
+import {
+  Badge,
+  Card,
+  CardDescription,
+  CardHeader,
+  CardLeading,
+  CardTitle,
+  CardTrailing,
+  TextHeading,
+  TextSans,
+} from "raft-ui";
 import { listApps } from "../lib/api";
 import { AppGalleryConnector } from "../components/integrations/AppGalleryConnector";
 import { GooglePlayConnector } from "../components/integrations/GooglePlayConnector";
 import { TestFlightConnector } from "../components/integrations/TestFlightConnector";
 
 /**
- * Connector registry. Each entry renders one complete connector row (icon,
+ * Connector registry. Every entry renders one complete connector row (icon,
  * name, description, status badge, Connect button / expandable detail) — the
  * page itself never changes when a connector is added; new connectors only add
- * a definition here plus their component. Google Play (Android) is the first.
+ * a definition here plus their component.
+ *
+ * All connectors are listed for every app: rows whose platform does not match
+ * the app's platform stay visible (muted, with an "only for X apps" badge) so
+ * the page reads as the full integration catalog (artin, b5d06d23).
  */
 const CONNECTORS: ReadonlyArray<{
   id: string;
-  platform?: "android" | "ios" | "ohos" | "electron";
+  label: string;
+  platform: "android" | "ios" | "ohos";
+  platformLabel: string;
+  Icon: LucideIcon;
   Component: (props: { appId: string }) => ReactElement;
 }> = [
-  { id: "google-play", platform: "android", Component: GooglePlayConnector },
-  { id: "testflight", platform: "ios", Component: TestFlightConnector },
-  { id: "appgallery", platform: "ohos", Component: AppGalleryConnector },
+  {
+    id: "google-play",
+    label: "Google Play",
+    platform: "android",
+    platformLabel: "Android",
+    Icon: Play,
+    Component: GooglePlayConnector,
+  },
+  {
+    id: "testflight",
+    label: "TestFlight",
+    platform: "ios",
+    platformLabel: "iOS",
+    Icon: Apple,
+    Component: TestFlightConnector,
+  },
+  {
+    id: "appgallery",
+    label: "AppGallery Connect",
+    platform: "ohos",
+    platformLabel: "HarmonyOS",
+    Icon: Smartphone,
+    Component: AppGalleryConnector,
+  },
 ];
 
 export function Integrations({ appId }: { appId: string }) {
   const apps = useQuery({ queryKey: ["apps"], queryFn: listApps });
   const app = apps.data?.apps.find((candidate) => candidate.id === appId);
-  const connectors = CONNECTORS.filter(
-    (connector) => !connector.platform || connector.platform === app?.platform,
-  );
 
   return (
     <div className="space-y-4">
@@ -38,21 +75,35 @@ export function Integrations({ appId }: { appId: string }) {
         </TextHeading>
         <TextSans size="small">
           Connect the external services this app publishes or reports to.
-          Integrations follow the app's platform: Google Play for Android,
-          TestFlight for iOS, AppGallery Connect for HarmonyOS.
+          Rows that don't apply to this app's platform are shown for
+          reference.
         </TextSans>
       </div>
-      {app && connectors.length > 0 && (
+      {app && (
         <div className="space-y-3">
-          {connectors.map(({ id, Component }) => (
-            <Component key={id} appId={appId} />
-          ))}
+          {CONNECTORS.map(({ id, label, platform, platformLabel, Icon, Component }) =>
+            app.platform === platform ? (
+              <Component key={id} appId={appId} />
+            ) : (
+              <Card key={id} data-testid={`connector-inactive-${id}`}>
+                <CardHeader>
+                  <CardLeading>
+                    <span className="flex size-9 shrink-0 items-center justify-center rounded-md border border-line-muted bg-layer-inset text-foreground-hint">
+                      <Icon className="size-4" aria-hidden="true" />
+                    </span>
+                  </CardLeading>
+                  <CardTitle className="text-foreground-muted">{label}</CardTitle>
+                  <CardDescription>
+                    Available for {platformLabel} apps.
+                  </CardDescription>
+                  <CardTrailing>
+                    <Badge variant="muted">Only for {platformLabel} apps</Badge>
+                  </CardTrailing>
+                </CardHeader>
+              </Card>
+            ),
+          )}
         </div>
-      )}
-      {app && connectors.length === 0 && (
-        <Card className="p-4 text-sm text-foreground-muted">
-          No integrations are available for this platform yet.
-        </Card>
       )}
     </div>
   );
