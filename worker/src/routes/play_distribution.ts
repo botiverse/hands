@@ -395,8 +395,9 @@ export async function handlePromotePlayDistribution(c: AdminContext) {
   } catch (error) {
     return fail(c, 400, { code: "gate_failed", gate: "permission", message: (error as Error).message });
   }
-  if (currentActorInfo(c).type !== "human") {
-    return fail(c, 403, { code: "forbidden", gate: "permission", message: "Play promotion requires approval by an authenticated human publisher" });
+  const actorType = currentActorInfo(c).type;
+  if (actorType !== "human" && actorType !== "agent") {
+    return fail(c, 403, { code: "forbidden", gate: "permission", message: "Play promotion requires an authenticated human or agent publisher" });
   }
   const artifact = await getReleaseArtifact(c.env.DB, appId, releaseId);
   if (!artifact) return fail(c, 400, { code: "gate_failed", gate: "channel", message: "release does not contain an Android AAB" });
