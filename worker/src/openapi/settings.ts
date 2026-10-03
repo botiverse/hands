@@ -227,6 +227,11 @@ export function registerSettingsRoutes(): RouteConfigList {
       400: error("Invalid Apple app ID or non-iOS app."), 403: error("App admin required."),
       409: error("Configuration already exists."), 503: error("Encryption is not configured.") },
   });
+  routes.push({ method: "post", path: "/api/apps/{appId}/apple-webhook/register", tags: ["Apple webhooks"],
+    summary: "Register existing Apple ingress using stored App Store Connect credentials", security: auth,
+    request: { params: AppIdParam }, responses: { 200: success("Apple subscription verified without revealing secrets.", GenericObject),
+      403: error("App admin required."), 409: error("Configuration or credentials missing or duplicate subscriptions."),
+      502: error("Apple registration or readback failed."), 503: error("Encryption unavailable.") } });
   for (const method of ["get", "delete"] as const) {
     routes.push({ method, path: "/api/apps/{appId}/apple-webhook", tags: ["Apple webhooks"],
       summary: method === "get" ? "Get Apple webhook metadata without secrets" : "Invalidate Apple ingress configuration",

@@ -252,6 +252,21 @@ Content-Type: application/json
 ```
 
 The response contains `payload_url`, `secret` (shown once), and `event_types`.
+
+If the app already has App Store Connect credentials stored in Hands, an app
+admin can register this callback without copying keys or signing secrets:
+
+```sh
+hands api POST /api/apps/{app_id}/apple-webhook/register
+```
+
+Hands calls Apple using the stored credentials, discovers an existing subscription
+for this exact callback URL before creating one, and reads it back to verify the
+URL, enabled state, and all three event types. The result reveals no secret.
+If Apple refuses the operation, the response names the failure stage and upstream
+status; use an App Store Connect key with permission to manage webhooks.
+Registration alone does not prove a real review notification reached your team.
+
 The secret is encrypted at rest with the existing ASC credential encryption
 key; keep it out of chat, logs, and shell arguments. Creating an existing
 configuration returns 409 without rotating its secret. `GET` on the same path

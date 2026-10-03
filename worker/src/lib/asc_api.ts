@@ -95,10 +95,12 @@ export async function ascRequest<T>(
   method: string,
   path: string,
   body?: unknown,
+  signal?: AbortSignal,
 ): Promise<T> {
   const jwt = await createAscJwt(creds);
   const res = await fetch(`${ASC_API_BASE}${path}`, {
     method,
+    ...(signal ? { signal } : {}),
     headers: {
       authorization: `Bearer ${jwt}`,
       ...(body !== undefined ? { "content-type": "application/json" } : {}),
