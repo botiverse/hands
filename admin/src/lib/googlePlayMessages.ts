@@ -1,5 +1,5 @@
 export const GOOGLE_PLAY_MESSAGE_KEYS = [
-  "googleMethod", "packageMissing", "authorize", "authorizedAccount", "oauthUnavailable", "oauthHelp", "oauthFailed", "oauthCancelled", "disconnectHelp", "title", "description", "configured", "enabled", "disabled", "verified", "stale", "serviceAccount",
+  "existingPackage", "manualPackage", "parsed", "declared", "channel", "googleMethod", "packageMissing", "authorize", "authorizedAccount", "oauthUnavailable", "oauthHelp", "oauthFailed", "oauthCancelled", "disconnectHelp", "title", "description", "configured", "enabled", "disabled", "verified", "stale", "serviceAccount",
   "packageName", "internalTrack", "closedTrack", "productionTrack", "credentialJson", "chooseFile",
   "saveEnable", "replace", "cancel", "test", "testing", "enable", "disable", "unbind",
   "saveSuccess", "verifySuccess", "enableSuccess", "disableSuccess", "unbindSuccess", "actionFailed",
@@ -10,6 +10,7 @@ export type GooglePlayMessageKey = typeof GOOGLE_PLAY_MESSAGE_KEYS[number];
 
 export const GOOGLE_PLAY_MESSAGES: Record<"en" | "zh-CN", Record<GooglePlayMessageKey, string>> = {
   en: {
+    existingPackage: "Choose an existing Android package", manualPackage: "Enter another package name", parsed: "From APK inspection", declared: "From upload details", channel: "From channel settings",
     googleMethod: "Google account",
     packageMissing: "Enter the package name of this app in Play Console. No APK or credential file is needed for Google authorization.",
     authorize: "Authorize with Google",
@@ -36,6 +37,7 @@ export const GOOGLE_PLAY_MESSAGES: Record<"en" | "zh-CN", Record<GooglePlayMessa
     invalidJson: "Choose the complete service-account JSON file downloaded from Google Cloud.",
   },
   "zh-CN": {
+    existingPackage: "选择已有 Android 包名", manualPackage: "手动填写其他包名", parsed: "APK 解析结果", declared: "上传时声明", channel: "渠道设置",
     googleMethod: "Google 账号授权",
     packageMissing: "请填写此应用在 Play Console 的包名。Google 授权无需选择 APK 或凭据文件。",
     authorize: "使用 Google 授权",

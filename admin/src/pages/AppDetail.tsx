@@ -34,6 +34,7 @@ import {
   getAuthMe,
   listApps,
   listChannels,
+  listBuilds,
   createChannel,
   updateChannel,
   deleteChannel,
@@ -78,6 +79,7 @@ import {
 import { useToast } from "../components/Toast";
 import { Operations } from "./Operations";
 import { deviceGroupUpdatePayload } from "../lib/deviceGroupForm";
+import { googlePlayPackageOptions } from "../lib/googlePlayPackages";
 import { googlePlayMessage as gp } from "../lib/googlePlayMessages";
 
 export function AppDetail({ appId }: { appId: string }) {
@@ -905,7 +907,10 @@ export function GooglePlayPanel({ appId }: { appId: string }) {
   const [credentialJson, setCredentialJson] = useState("");
   const [connectionMethod, setConnectionMethod] = useState<"google" | "service">("google");
   const packageChannels = useQuery({ queryKey: ["channels", appId], queryFn: () => listChannels(appId) });
-  const suggestedPackage = packageChannels.data?.channels.find((channel) => channel.slug === "main")?.bundle_id?.trim() ?? "";
+  const packageBuilds = useQuery({ queryKey: ["builds", appId], queryFn: () => listBuilds(appId) });
+  const packageOptions = googlePlayPackageOptions(packageChannels.data?.channels ?? [], packageBuilds.data?.builds ?? []);
+  const mainPackages = packageOptions.filter((option) => option.isMain);
+  const suggestedPackage = mainPackages.length === 1 ? mainPackages[0]!.packageName : "";
   const [packageName, setPackageName] = useState("");
   const [internalTrack, setInternalTrack] = useState("internal");
   const [closedTrack, setClosedTrack] = useState("closed");
@@ -1054,9 +1059,23 @@ export function GooglePlayPanel({ appId }: { appId: string }) {
         <p className="text-xs text-slate-600">{gp(connectionMethod === "google" ? "oauthHelp" : "formHelp")}</p>
         {!packageName.trim() && <p className="text-xs text-slate-500">{gp("packageMissing")}</p>}
         <div className="grid gap-3 md:grid-cols-2">
-          <label className="text-xs text-slate-600">{gp("packageName")}
-            <Input className="mt-1 font-mono" value={packageName} onChange={(event) => setPackageName(event.target.value)} placeholder="com.example.app" />
-          </label>
+          <div>
+            {packageOptions.length > 0 && <>
+              <div className="text-xs text-slate-600">{gp("packageName")}</div>
+              <Select items={Object.fromEntries([...packageOptions.map((option) => [option.packageName, `${option.packageName} · ${gp(option.source)}`]), ["__manual__", gp("manualPackage")]])}
+                value={packageOptions.some((option) => option.packageName === packageName) ? packageName : "__manual__"}
+                onValueChange={(value) => setPackageName(value === "__manual__" ? "" : String(value))}>
+                <SelectTrigger className="mt-1 w-full" aria-label={gp("existingPackage")}><SelectValue /><SelectIcon /></SelectTrigger>
+                <SelectContent>
+                  {packageOptions.map((option) => <SelectItem key={option.packageName} value={option.packageName}>{option.packageName} · {gp(option.source)}</SelectItem>)}
+                  <SelectItem value="__manual__">{gp("manualPackage")}</SelectItem>
+                </SelectContent>
+              </Select>
+            </>}
+            {!packageOptions.some((option) => option.packageName === packageName) && <label className="text-xs text-slate-600">{gp("manualPackage")}
+              <Input aria-label={gp("packageName")} className="mt-1 font-mono" value={packageName} onChange={(event) => setPackageName(event.target.value)} placeholder="com.example.app" />
+            </label>}
+          </div>
           <label className="text-xs text-slate-600">{gp("internalTrack")}
             <Input className="mt-1 font-mono" value={internalTrack} onChange={(event) => setInternalTrack(event.target.value)} />
           </label>

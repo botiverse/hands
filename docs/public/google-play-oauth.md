@@ -70,7 +70,7 @@ https://hands.build/api/google-play/oauth/callback
 
 1. 用真人账号登录 Hands，该账号需是目标应用的管理员。
 2. 打开 Android 应用的 **Settings / 设置 → Google Play**。
-3. 默认使用 Google 账号授权，无需选择 APK 或服务账号 JSON 文件。已设置主渠道包名时会自动带入；否则填写此应用在 Play Console 的准确包名。核对内部测试、封闭测试和正式发布轨道名称。名称应与 Play 中的实际轨道一致；封闭测试轨道常有自定义名称。
+3. 默认使用 Google 账号授权，无需选择 APK 或服务账号 JSON 文件。下拉框会列出已上传 Android 构建中的包名及其来源；主渠道只有一个候选时会自动带入。上传声明不等于 APK 解析验证，仍需核对它对应的 Play 应用。也可选择手动填写其他包名。核对内部测试、封闭测试和正式发布轨道名称。名称应与 Play 中的实际轨道一致；封闭测试轨道常有自定义名称。
 4. 点击 **Authorize with Google / 使用 Google 授权**。
 5. 登录第 1 步中拥有 Play 权限的 Google 账号，授予请求的权限。
 6. 返回应用设置，确认显示该 Google 账号、正确包名和已验证的连接状态。
