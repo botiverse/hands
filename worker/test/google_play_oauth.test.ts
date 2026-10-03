@@ -207,6 +207,23 @@ describe("Google Play OAuth", () => {
     h.setSelected(h.account);
     expect((await h.callback(url!.searchParams.get("state")!)).headers.get("location")).toContain("connected");
   });
+  it.each([false, true])("restores the initiating cross-org account and rechecks its grant (revoked=%s)", async (revoked) => {
+    const h = harness(true); const fetch = google();
+    h.sqlite.prepare("INSERT INTO organizations (id, slug, name, external_id, created_at) VALUES ('target', 'target', 'Target', 'other-server', 1)").run();
+    h.sqlite.prepare("INSERT INTO raft_accounts (id, provider, provider_subject, server_id, principal_type, display_name, raw_profile, created_at, updated_at, last_login_at) VALUES ('linked', 'raft', 'human', 'other-server', 'human', 'User', '{}', 1, 1, 1)").run();
+    h.sqlite.prepare("INSERT INTO org_members (id, org_id, account_id, org_role, joined_at) VALUES ('owner', 'target', 'linked', 'owner', 1)").run();
+    h.sqlite.prepare("UPDATE apps SET org_id='target' WHERE id=?").run(appId);
+    h.sqlite.prepare("INSERT INTO raft_sessions (id, account_id, token_hash, created_at, expires_at, last_seen_at) VALUES ('session', 'human', ?, ?, ?, ?)").run(createHash("sha256").update("browser-session").digest("hex"), Date.now(), Date.now() + 3600000, Date.now());
+    const started = await h.start();
+    expect(started.response.status).toBe(200);
+    if (revoked) h.sqlite.exec("DELETE FROM app_members WHERE account_id='human'");
+    const response = await h.request("/api/google-play/oauth/callback?state=" + started.url!.searchParams.get("state") + "&code=code", {
+      headers: { cookie: started.response.headers.get("set-cookie")!.split(";")[0]! },
+    });
+    expect(response.status).toBe(revoked ? 403 : 303);
+    if (revoked) expect(fetch).not.toHaveBeenCalled();
+    else expect(response.headers.get("location")).toContain("connected");
+  });
   it("consumes a callback atomically when two requests arrive together", async () => {
     const h = harness(); const fetch = google(); const { url } = await h.start();
     const replies = await Promise.all([h.callback(url!.searchParams.get("state")!), h.callback(url!.searchParams.get("state")!)]);
