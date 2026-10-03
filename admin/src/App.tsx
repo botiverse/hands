@@ -36,6 +36,8 @@ import {
   Button,
   Badge,
   CopyableCode,
+  CopyableCodeAction,
+  CopyableCodeRoot,
   DropdownMenu,
   DropdownMenuTrigger,
   DropdownMenuContent,
@@ -907,15 +909,12 @@ function CliCallback({ token }: { token: string }) {
             <p className="text-sm text-slate-500">Signed in with Raft</p>
           </div>
         </div>
-        <CopyableCode
-          className="w-full"
-          ariaLabel="Copy JWT"
-          copiedAriaLabel="Copied JWT"
-          truncate
-          codeClassName="font-mono text-xs text-slate-700"
-        >
-          {token}
-        </CopyableCode>
+        <CopyableCodeRoot className="w-full">
+          <CopyableCode truncate className="font-mono text-xs text-slate-700">
+            {token}
+          </CopyableCode>
+          <CopyableCodeAction aria-label="Copy JWT" />
+        </CopyableCodeRoot>
       </section>
     </main>
   );
