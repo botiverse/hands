@@ -8,6 +8,8 @@ if (!wrangler || !config || !output || !Number.isFinite(Number(hours)) || Number
   throw new Error('Usage: collect-http-responses.mjs <wrangler-cli.js> <config.json> <output.jsonl> [hours]');
 }
 const expires = Date.now() + Number(hours) * 3600000;
+const idleMs = Number(process.env.HANDS_TAIL_IDLE_MS ?? 180000);
+if (!Number.isFinite(idleMs) || idleMs < 100) throw new Error('Invalid tail idle limit');
 const write = boundedLog(output);
 let observedEvents = 0;
 const counts = new Map();
@@ -26,7 +28,12 @@ function connect() {
   if (stopped || Date.now() >= expires) return;
   write({ kind: 'tail_connecting', timestamp: Date.now(), expires_at: expires });
   child = spawn(process.execPath, [wrangler, 'tail', 'hands-worker', '--config', config, '--format', 'json'], { stdio: ['ignore', 'pipe', 'ignore'] });
-  let buffer = '';
+  let buffer = '', lastEventAt = Date.now();
+  const idleWatch = setInterval(() => {
+    if (stopped || Date.now() - lastEventAt < idleMs) return;
+    write({ kind: 'tail_idle_gap', timestamp: Date.now(), last_event_at: lastEventAt });
+    child.kill('SIGTERM');
+  }, Math.min(idleMs, 1000)); idleWatch.unref();
   child.stdout.setEncoding('utf8');
   child.stdout.on('data', (chunk) => {
     buffer += chunk;
@@ -46,7 +53,7 @@ function connect() {
       if (end < 0) { if (buffer.length > 2000000) { buffer = ''; write({ kind: 'tail_parse_gap', timestamp: Date.now() }); } break; }
       const raw = buffer.slice(start, end); buffer = buffer.slice(end);
       let event; try { event = JSON.parse(raw); } catch { write({ kind: 'tail_parse_gap', timestamp: Date.now() }); continue; }
-      observedEvents++;
+      lastEventAt = Date.now(); observedEvents++;
       for (const log of event.logs ?? []) {
         if (!Array.isArray(log.message) || log.message[0] !== 'hands_http_response') continue;
         let r; try { r = typeof log.message[1] === 'string' ? JSON.parse(log.message[1]) : log.message[1]; } catch { continue; }
@@ -58,6 +65,7 @@ function connect() {
   });
   child.on('error', () => {});
   child.on('close', (code) => {
+    clearInterval(idleWatch);
     write({ kind: 'tail_disconnected', timestamp: Date.now(), exit_code: code });
     if (!stopped && Date.now() < expires) { setTimeout(connect, retry); retry = Math.min(retry * 2, 60000); }
   });
