@@ -131,9 +131,10 @@ export async function handleGooglePlayOAuthCallback(c: AdminContext) {
   const finish = (result: string) => { resultUrl.searchParams.set("google_play_oauth", result); return c.redirect(resultUrl.toString(), 303); };
   // Only allowlisted enums and HTTP statuses cross the diagnostic boundary.
   // Never log the callback URL, code, state, provider bodies or credentials.
-  const fail = async (reason: OAuthFailure, status?: number, providerError?: string, exchangeFailure?: ExchangeFailure) => {
+  const fail = async (reason: OAuthFailure, status?: number, providerError?: string, exchangeFailure?: ExchangeFailure, exceptionName?: string) => {
     const safeProviderError = ["invalid_grant", "invalid_client", "access_denied", "temporarily_unavailable"].includes(providerError ?? "") ? providerError : undefined;
-    const payload = { reason, ...(exchangeFailure ? { exchange_failure: exchangeFailure } : {}), ...(status === undefined ? {} : { provider_status: status }),
+    const safeExceptionName = ["Error", "TypeError", "SyntaxError", "RangeError", "ReferenceError", "TimeoutError", "AbortError"].includes(exceptionName ?? "") ? exceptionName : undefined;
+    const payload = { reason, ...(safeExceptionName ? { exception_name: safeExceptionName } : {}), ...(exchangeFailure ? { exchange_failure: exchangeFailure } : {}), ...(status === undefined ? {} : { provider_status: status }),
       ...(safeProviderError ? { provider_error: safeProviderError } : {}) };
     console.warn("google_play.oauth.failed", { app_id: pending.app_id, ...payload });
     try { await insertAuditLog(c.env.DB, c, { app_id: pending.app_id, action: "google_play.oauth.failed", payload }); }
@@ -219,7 +220,7 @@ export async function handleGooglePlayOAuthCallback(c: AdminContext) {
       // Error messages and response bodies may contain credentials. Classify
       // using only local control flow and the two known abort names.
       const timedOut = error instanceof Error && (error.name === "TimeoutError" || error.name === "AbortError");
-      return fail(reason, exchangeStatus, undefined, timedOut ? "timeout" : readingTokenBody ? "response_body" : "transport");
+      return fail(reason, exchangeStatus, undefined, timedOut ? "timeout" : readingTokenBody ? "response_body" : "transport", error instanceof Error ? error.name : undefined);
     }
     return fail(reason);
   }

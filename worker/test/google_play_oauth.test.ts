@@ -137,19 +137,20 @@ describe("Google Play OAuth", () => {
   });
 
   it.each([
-    ['timeout', undefined, () => Promise.reject(new DOMException('private-code', 'TimeoutError'))],
-    ['transport', undefined, () => Promise.reject(new TypeError('private-client-secret'))],
-    ['response_body', 502, () => Promise.resolve(new Response('<html>private-refresh</html>', {status:502}))],
-    ['response_body', 200, () => Promise.resolve(new Response('private-access', {status:200}))],
-    ['invalid_response', 200, () => Promise.resolve(Response.json(null))],
-    ['invalid_response', 200, () => Promise.resolve(Response.json([]))],
-  ] as const)('records safe exchange detail %s with the received HTTP status', async (detail, status, result) => {
+    ['timeout', undefined, 'TimeoutError', () => Promise.reject(new DOMException('private-code', 'TimeoutError'))],
+    ['transport', undefined, undefined, () => Promise.reject(Object.assign(new Error('private-code'), {name:'private-access'}))],
+    ['transport', undefined, 'TypeError', () => Promise.reject(new TypeError('private-client-secret'))],
+    ['response_body', 502, 'SyntaxError', () => Promise.resolve(new Response('<html>private-refresh</html>', {status:502}))],
+    ['response_body', 200, 'SyntaxError', () => Promise.resolve(new Response('private-access', {status:200}))],
+    ['invalid_response', 200, undefined, () => Promise.resolve(Response.json(null))],
+    ['invalid_response', 200, undefined, () => Promise.resolve(Response.json([]))],
+  ] as const)('records safe exchange detail %s with the received HTTP status', async (detail, status, exceptionName, result) => {
     const h = harness(); const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const fetch = vi.spyOn(globalThis, 'fetch').mockImplementation(result);
     const {url} = await h.start(); const state = url!.searchParams.get('state')!;
     const response = await h.callback(state);
     const row = h.sqlite.prepare("SELECT payload FROM audit_logs WHERE action='google_play.oauth.failed'").get() as {payload:string};
-    expect(JSON.parse(row.payload)).toEqual({reason:'token_exchange', exchange_failure:detail, ...(status === undefined ? {} : {provider_status:status})});
+    expect(JSON.parse(row.payload)).toEqual({reason:'token_exchange', exchange_failure:detail, ...(exceptionName ? {exception_name:exceptionName} : {}), ...(status === undefined ? {} : {provider_status:status})});
     const diagnostics = JSON.stringify([row, warning.mock.calls, response.headers.get('location')]);
     for (const secret of ['private-code','private-client-secret','private-refresh','private-access',state]) expect(diagnostics).not.toContain(secret);
     expect(await getGooglePlayBindingMeta(h.env.DB, appId)).toBeNull();
