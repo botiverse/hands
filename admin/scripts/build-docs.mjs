@@ -1,4 +1,4 @@
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { access, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -6,6 +6,36 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(here, "../..");
 const docsRoot = path.join(repoRoot, "docs/public");
 const outRoot = path.join(repoRoot, "admin/public/docs");
+// Chinese sources live beside their English originals as docs/public/zh/<same file name>.
+const zhRoot = path.join(docsRoot, "zh");
+
+// Chinese chrome for the /docs/zh/ tree.
+const ZH_CHROME = {
+  docs: "文档",
+  apiExplorer: "API 浏览器",
+  login: "登录",
+  eyebrow: "Hands 文档",
+  indexTitle: "文档",
+  indexDescription: "Hands 的产品、管理台、CLI 与 API 文档。",
+  markdownIndexTitle: "# Hands 文档",
+  markdownIndexNote:
+    "机器可读索引。下列每个页面都有对应的纯 Markdown 孪生文件（`/docs/zh/<slug>.md`；本索引为 `/docs/zh.md`），可直接抓取，无 HTML 或 JavaScript。",
+  categories: {
+    "Start here": "从这里开始",
+    "For agents": "面向 Agent",
+    "Console": "控制台",
+    "SDKs & API": "SDK 与 API",
+  },
+};
+
+async function fileExists(target) {
+  try {
+    await access(target);
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 // Docs are grouped by audience; CATEGORY_ORDER controls section order in the
 // sidebar and on the index. Hands is agent-native, so "For agents" leads.
@@ -129,6 +159,18 @@ const pages = [
   },
 ];
 
+// Resolve translations once: a page is translated when docs/public/zh/<source>
+// exists; its Chinese title is that file's first heading (falling back to the
+// English title), and its description falls back to the English one.
+for (const page of pages) {
+  const zhPath = path.join(zhRoot, page.source);
+  if (await fileExists(zhPath)) {
+    page.zhMarkdown = await readFile(zhPath, "utf8");
+    page.titleZh = /^#\s+(.+)$/m.exec(page.zhMarkdown)?.[1]?.trim() ?? page.title;
+  }
+}
+const hasTranslations = pages.some((page) => page.zhMarkdown);
+
 function escapeHtml(value) {
   return value
     .replaceAll("&", "&amp;")
@@ -146,7 +188,15 @@ function slugify(value) {
     .slice(0, 80);
 }
 
-function inlineMarkdown(value) {
+// Internal doc links stay language-correct: a Chinese page links to the Chinese
+// twin when it exists and falls back to the English page otherwise.
+function docHref(source, lang) {
+  const target = pages.find((page) => source === page.source || source === `docs/${page.source}`);
+  if (!target) return null;
+  return lang === "zh" && target.zhMarkdown ? `/docs/zh/${target.slug}/` : `/docs/${target.slug}/`;
+}
+
+function inlineMarkdown(value, lang = "en") {
   let html = escapeHtml(value);
   html = html.replace(/`([^`]+)`/g, "<code>$1</code>");
   html = html.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
@@ -155,8 +205,7 @@ function inlineMarkdown(value) {
     /\[([^\]]+)\]\(([^)]+)\)/g,
     (_match, label, href) => {
       const rawHref = String(href);
-      const localDoc = pages.find((page) => rawHref === page.source || rawHref === `docs/${page.source}`);
-      const target = localDoc ? `/docs/${localDoc.slug}/` : rawHref;
+      const target = docHref(rawHref, lang) ?? rawHref;
       const external = /^https?:\/\//.test(target);
       return `<a href="${escapeHtml(target)}"${external ? ' target="_blank" rel="noopener noreferrer"' : ""}>${label}</a>`;
     },
@@ -164,7 +213,7 @@ function inlineMarkdown(value) {
   return html;
 }
 
-function tableHtml(lines) {
+function tableHtml(lines, lang = "en") {
   const rows = lines
     .filter((line) => line.trim().startsWith("|"))
     .map((line) =>
@@ -172,7 +221,7 @@ function tableHtml(lines) {
         .trim()
         .replace(/^\||\|$/g, "")
         .split("|")
-        .map((cell) => inlineMarkdown(cell.trim())),
+        .map((cell) => inlineMarkdown(cell.trim(), lang)),
     );
   if (rows.length < 2) return null;
   const [head, _divider, ...body] = rows;
@@ -183,7 +232,7 @@ function tableHtml(lines) {
     .join("")}</tbody></table></div>`;
 }
 
-function renderMarkdown(markdown) {
+function renderMarkdown(markdown, lang = "en") {
   const lines = markdown.replace(/\r\n/g, "\n").split("\n");
   const html = [];
   let paragraph = [];
@@ -195,19 +244,19 @@ function renderMarkdown(markdown) {
 
   function flushParagraph() {
     if (paragraph.length === 0) return;
-    html.push(`<p>${inlineMarkdown(paragraph.join(" "))}</p>`);
+    html.push(`<p>${inlineMarkdown(paragraph.join(" "), lang)}</p>`);
     paragraph = [];
   }
 
   function flushList() {
     if (list.length === 0) return;
-    html.push(`<${listType}>${list.map((item) => `<li>${inlineMarkdown(item)}</li>`).join("")}</${listType}>`);
+    html.push(`<${listType}>${list.map((item) => `<li>${inlineMarkdown(item, lang)}</li>`).join("")}</${listType}>`);
     list = [];
   }
 
   function flushTable() {
     if (table.length === 0) return;
-    const rendered = tableHtml(table);
+    const rendered = tableHtml(table, lang);
     if (rendered) html.push(rendered);
     table = [];
   }
@@ -244,7 +293,7 @@ function renderMarkdown(markdown) {
       const level = heading[1].length;
       const text = heading[2].replace(/\s+#$/, "");
       const id = slugify(text);
-      html.push(`<h${level} id="${id}">${inlineMarkdown(text)}</h${level}>`);
+      html.push(`<h${level} id="${id}">${inlineMarkdown(text, lang)}</h${level}>`);
       continue;
     }
     const bullet = /^\s*[-*]\s+(.+)$/.exec(line);
@@ -275,9 +324,9 @@ function renderMarkdown(markdown) {
   return html.join("\n");
 }
 
-function pagesByCategory() {
+function pagesByCategory(list = pages) {
   const groups = new Map();
-  for (const page of pages) {
+  for (const page of list) {
     const cat = page.category ?? "Other";
     if (!groups.has(cat)) groups.set(cat, []);
     groups.get(cat).push(page);
@@ -292,23 +341,31 @@ function pagesByCategory() {
   return ordered;
 }
 
-function layout({ title, description, body, activeSlug }) {
-  const nav = pagesByCategory()
+function layout({ title, description, body, activeSlug, lang = "en", langSwitch }) {
+  const isZh = lang === "zh";
+  const navPages = isZh ? pages.filter((page) => page.zhMarkdown) : pages;
+  const nav = pagesByCategory(navPages)
     .map(
       ([category, list]) =>
-        `<div class="nav-group"><div class="nav-cat">${escapeHtml(category)}</div>${list
-          .map(
-            (page) =>
-              `<a class="${page.slug === activeSlug ? "active" : ""}" href="/docs/${page.slug}/">${escapeHtml(page.title)}</a>`,
-          )
+        `<div class="nav-group"><div class="nav-cat">${escapeHtml(
+          isZh ? ZH_CHROME.categories[category] ?? category : category,
+        )}</div>${list
+          .map((page) => {
+            const label = isZh ? page.titleZh ?? page.title : page.title;
+            const href = isZh ? `/docs/zh/${page.slug}/` : `/docs/${page.slug}/`;
+            return `<a class="${page.slug === activeSlug ? "active" : ""}" href="${href}">${escapeHtml(label)}</a>`;
+          })
           .join("")}</div>` +
         (category === "SDKs & API"
-          ? `<a class="nav-external" href="/api-docs" target="_blank" rel="noopener noreferrer">API explorer${EXTERNAL_ICON}</a>`
+          ? `<a class="nav-external" href="/api-docs" target="_blank" rel="noopener noreferrer">${isZh ? ZH_CHROME.apiExplorer : "API explorer"}${EXTERNAL_ICON}</a>`
           : ""),
     )
     .join("");
+  const langLink = langSwitch
+    ? `\n        <a class="lang" href="${escapeHtml(langSwitch.href)}">${escapeHtml(langSwitch.label)}</a>`
+    : "";
   return `<!doctype html>
-<html lang="en">
+<html lang="${isZh ? "zh-CN" : "en"}">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
@@ -373,16 +430,16 @@ function layout({ title, description, body, activeSlug }) {
     <div class="top">
       <a class="brand" href="/"><img src="/favicon.svg" alt="" /> Hands</a>
       <nav>
-        <a href="/docs/">Docs</a>
-        <a href="/api-docs">API explorer</a>
-        <a class="primary" href="/api/auth/login?return=%2F">Login</a>
+        <a href="${isZh ? "/docs/zh/" : "/docs/"}">${isZh ? ZH_CHROME.docs : "Docs"}</a>
+        <a href="/api-docs">${isZh ? ZH_CHROME.apiExplorer : "API explorer"}</a>
+        <a class="primary" href="/api/auth/login?return=%2F">${isZh ? ZH_CHROME.login : "Login"}</a>${langLink}
       </nav>
     </div>
   </header>
   <div class="shell">
     <aside>${nav}</aside>
     <main>
-      <div class="eyebrow">Hands Docs</div>
+      <div class="eyebrow">${isZh ? ZH_CHROME.eyebrow : "Hands Docs"}</div>
       <h1>${escapeHtml(title)}</h1>
       <p class="lede">${escapeHtml(description)}</p>
       ${body}
@@ -409,25 +466,59 @@ function indexPage() {
     description: "Product, admin, CLI, and API documentation for Hands.",
     body,
     activeSlug: "",
+    langSwitch: hasTranslations ? { href: "/docs/zh/", label: "中文" } : undefined,
+  });
+}
+
+function zhIndexPage() {
+  const body = pagesByCategory(pages.filter((page) => page.zhMarkdown))
+    .map(
+      ([category, list]) =>
+        `<h2 class="cat-heading">${escapeHtml(ZH_CHROME.categories[category] ?? category)}</h2><div class="cards">${list
+          .map(
+            (page) =>
+              `<a class="card" href="/docs/zh/${page.slug}/"><strong>${escapeHtml(page.titleZh ?? page.title)}</strong><span>${escapeHtml(page.description)}</span></a>`,
+          )
+          .join("")}</div>`,
+    )
+    .join("");
+  return layout({
+    title: ZH_CHROME.indexTitle,
+    description: ZH_CHROME.indexDescription,
+    body,
+    activeSlug: "",
+    lang: "zh",
+    langSwitch: { href: "/docs/", label: "English" },
   });
 }
 
 // Agent-facing machine index (mirrors exe.dev's /docs.md): every page listed
 // with its description and a link to its raw-markdown twin. Generated from the
 // same pages[] as the HTML, so it never drifts.
-function markdownIndex() {
-  const lines = [
-    "# Hands Documentation",
-    "",
-    "Machine-readable index. Every page below has a raw-markdown twin at",
-    "`/docs/<slug>.md` (this index is `/docs.md`). Fetch those for clean,",
-    "chrome-free content — no HTML or JavaScript.",
-    "",
-  ];
-  for (const [category, list] of pagesByCategory()) {
-    lines.push(`## ${category}`, "");
-    for (const page of list) {
-      lines.push(`- [${page.title}](/docs/${page.slug}.md) — ${page.description}`);
+function markdownIndex(lang = "en") {
+  const isZh = lang === "zh";
+  const list = isZh ? pages.filter((page) => page.zhMarkdown) : pages;
+  const lines = isZh
+    ? [
+        ZH_CHROME.markdownIndexTitle,
+        "",
+        ZH_CHROME.markdownIndexNote,
+        "",
+      ]
+    : [
+        "# Hands Documentation",
+        "",
+        "Machine-readable index. Every page below has a raw-markdown twin at",
+        "`/docs/<slug>.md` (this index is `/docs.md`). Fetch those for clean,",
+        "chrome-free content — no HTML or JavaScript.",
+        "",
+      ];
+  for (const [category, group] of pagesByCategory(list)) {
+    lines.push(`## ${isZh ? ZH_CHROME.categories[category] ?? category : category}`, "");
+    for (const page of group) {
+      const title = isZh ? page.titleZh ?? page.title : page.title;
+      const href = isZh ? `/docs/zh/${page.slug}.md` : `/docs/${page.slug}.md`;
+      lines.push(`- [${title}](${href}) — ${page.description}`);
     }
     lines.push("");
   }
@@ -449,16 +540,43 @@ for (const page of pages) {
       description: page.description,
       body: renderMarkdown(markdown.replace(/^#\s+.+\n/, "")),
       activeSlug: page.slug,
+      langSwitch: page.zhMarkdown ? { href: `/docs/zh/${page.slug}/`, label: "中文" } : undefined,
     }),
   );
   // Raw-markdown twin at /docs/<slug>.md — the exact source, always in sync.
   await writeFile(path.join(outRoot, `${page.slug}.md`), markdown);
+
+  if (page.zhMarkdown) {
+    const zhDir = path.join(outRoot, "zh", page.slug);
+    await mkdir(zhDir, { recursive: true });
+    await writeFile(
+      path.join(zhDir, "index.html"),
+      layout({
+        title: page.titleZh ?? page.title,
+        description: page.description,
+        body: renderMarkdown(page.zhMarkdown.replace(/^#\s+.+\n/, ""), "zh"),
+        activeSlug: page.slug,
+        lang: "zh",
+        langSwitch: { href: `/docs/${page.slug}/`, label: "English" },
+      }),
+    );
+    // Chinese raw-markdown twin at /docs/zh/<slug>.md.
+    await writeFile(path.join(outRoot, "zh", `${page.slug}.md`), page.zhMarkdown);
+  }
 }
 
 // /docs.md machine index lives one level up (admin/public/docs.md) so its URL
 // is /docs.md, alongside the /docs/ HTML tree.
 await writeFile(path.join(outRoot, "..", "docs.md"), markdownIndex());
 
+const translated = pages.filter((page) => page.zhMarkdown).length;
+if (translated > 0) {
+  await writeFile(path.join(outRoot, "zh", "index.html"), zhIndexPage());
+  await writeFile(path.join(outRoot, "zh.md"), markdownIndex("zh"));
+}
+
 console.log(
-  `Built ${pages.length + 1} docs pages + ${pages.length} markdown twins + docs.md index in ${path.relative(repoRoot, outRoot)}`,
+  `Built ${pages.length + 1} docs pages + ${pages.length} markdown twins + docs.md index` +
+    (translated > 0 ? ` + ${translated} zh pages + zh.md index` : "") +
+    ` in ${path.relative(repoRoot, outRoot)}`,
 );

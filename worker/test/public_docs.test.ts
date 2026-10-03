@@ -18,6 +18,11 @@ describe("public docs asset routing", () => {
       htmlPath: "/docs/future-guide/",
       markdownTwinPath: "/docs/future-guide.md",
     });
+    // Chinese docs live one level deeper but resolve through the same rule.
+    expect(publicDocAssetPaths("/docs/zh/google-play-oauth")).toEqual({
+      htmlPath: "/docs/zh/google-play-oauth/",
+      markdownTwinPath: "/docs/zh/google-play-oauth.md",
+    });
   });
 
   it("rejects paths that are not generated article routes", () => {
