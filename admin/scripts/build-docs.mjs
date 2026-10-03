@@ -17,6 +17,8 @@ const ZH_CHROME = {
   eyebrow: "Hands 文档",
   indexTitle: "文档",
   indexDescription: "Hands 的产品、管理台、CLI 与 API 文档。",
+  language: "语言",
+  languageAria: "切换语言",
   markdownIndexTitle: "# Hands 文档",
   markdownIndexNote:
     "机器可读索引。下列每个页面都有对应的纯 Markdown 孪生文件（`/docs/zh/<slug>.md`；本索引为 `/docs/zh.md`），可直接抓取，无 HTML 或 JavaScript。",
@@ -361,8 +363,23 @@ function layout({ title, description, body, activeSlug, lang = "en", langSwitch 
           : ""),
     )
     .join("");
+  // Language control: one icon button (globe + caret) opening a static <details>
+  // menu — same shape as docs.raft.build's switcher, no JavaScript (artin #joint-hands 80964b9c).
+  const currentLabel = isZh ? "中文" : "English";
+  const otherLabel = isZh ? "English" : "中文";
   const langLink = langSwitch
-    ? `\n        <a class="lang" href="${escapeHtml(langSwitch.href)}">${escapeHtml(langSwitch.label)}</a>`
+    ? `
+        <details class="lang-flyout">
+          <summary aria-label="${escapeHtml(isZh ? ZH_CHROME.languageAria : "Switch language")}">
+            <svg class="lang-globe" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 8 6 6M4 14l6-6 2-3M2 5h12M7 2h1M22 22l-5-10-5 10M14 18h6"/></svg>
+            <svg class="lang-caret" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>
+          </summary>
+          <div class="lang-menu">
+            <p class="lang-title">${escapeHtml(isZh ? ZH_CHROME.language : "Language")}</p>
+            <span class="lang-item current" aria-current="true">${currentLabel}<svg class="lang-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg></span>
+            <a class="lang-item" href="${escapeHtml(langSwitch.href)}">${otherLabel}</a>
+          </div>
+        </details>`
     : "";
   return `<!doctype html>
 <html lang="${isZh ? "zh-CN" : "en"}">
@@ -415,8 +432,24 @@ function layout({ title, description, body, activeSlug, lang = "en", langSwitch 
     .card span { color: var(--muted); font-size: 14px; line-height: 1.55; }
     .cat-heading { margin: 28px 0 4px; padding-top: 0; border-top: 0; font-size: 15px; text-transform: uppercase; letter-spacing: .06em; color: #64748b; }
     .cat-heading:first-child { margin-top: 8px; }
+    /* Language flyout: one icon control in the nav, menu lists both locales (no JS). */
+    .lang-flyout { position: relative; margin-left: 4px; }
+    .lang-flyout summary { display: flex; align-items: center; gap: 3px; padding: 8px 8px; border-radius: 6px; color: var(--muted); cursor: pointer; list-style: none; }
+    .lang-flyout summary::-webkit-details-marker { display: none; }
+    .lang-flyout summary:hover, .lang-flyout[open] summary { color: var(--ink); background: #f1f5f9; }
+    .lang-flyout summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+    .lang-globe { width: 16px; height: 16px; }
+    .lang-caret { width: 12px; height: 12px; opacity: .75; }
+    .lang-flyout .lang-menu { position: absolute; top: calc(100% + 8px); right: 0; z-index: 20; min-width: 148px; padding: 12px; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; box-shadow: 0 12px 32px rgba(2, 6, 23, .12); }
+    .lang-title { margin: 0 0 8px; padding: 0 8px; font-size: 12px; font-weight: 700; letter-spacing: .04em; color: #94a3b8; }
+    .lang-item { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 7px 8px; border-radius: 6px; font-size: 14px; color: var(--ink); }
+    a.lang-item:hover { background: #f1f5f9; text-decoration: none; }
+    .lang-item.current { color: var(--ink); font-weight: 600; }
+    .lang-check { width: 14px; height: 14px; }
     @media (max-width: 820px) {
       .top { align-items: flex-start; flex-direction: column; }
+      .top nav { width: 100%; flex-wrap: wrap; }
+      .lang-flyout { margin-left: auto; }
       .shell { grid-template-columns: 1fr; padding: 18px 16px 42px; }
       aside { position: static; }
       main { padding: 20px; }
@@ -466,7 +499,7 @@ function indexPage() {
     description: "Product, admin, CLI, and API documentation for Hands.",
     body,
     activeSlug: "",
-    langSwitch: hasTranslations ? { href: "/docs/zh/", label: "中文" } : undefined,
+    langSwitch: hasTranslations ? { href: "/docs/zh/" } : undefined,
   });
 }
 
@@ -488,7 +521,7 @@ function zhIndexPage() {
     body,
     activeSlug: "",
     lang: "zh",
-    langSwitch: { href: "/docs/", label: "English" },
+    langSwitch: { href: "/docs/" },
   });
 }
 
@@ -540,7 +573,7 @@ for (const page of pages) {
       description: page.description,
       body: renderMarkdown(markdown.replace(/^#\s+.+\n/, "")),
       activeSlug: page.slug,
-      langSwitch: page.zhMarkdown ? { href: `/docs/zh/${page.slug}/`, label: "中文" } : undefined,
+      langSwitch: page.zhMarkdown ? { href: `/docs/zh/${page.slug}/` } : undefined,
     }),
   );
   // Raw-markdown twin at /docs/<slug>.md — the exact source, always in sync.
@@ -557,7 +590,7 @@ for (const page of pages) {
         body: renderMarkdown(page.zhMarkdown.replace(/^#\s+.+\n/, ""), "zh"),
         activeSlug: page.slug,
         lang: "zh",
-        langSwitch: { href: `/docs/${page.slug}/`, label: "English" },
+        langSwitch: { href: `/docs/${page.slug}/` },
       }),
     );
     // Chinese raw-markdown twin at /docs/zh/<slug>.md.
