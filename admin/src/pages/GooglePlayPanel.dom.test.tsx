@@ -5,6 +5,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-libra
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
+  tracks: vi.fn(),
   get: vi.fn(),
   channels: vi.fn(),
   builds: vi.fn(),
@@ -22,6 +23,7 @@ vi.mock("../components/Toast", () => ({
 
 vi.mock("../lib/api", async (importOriginal) => ({
   ...await importOriginal<typeof import("../lib/api")>(),
+  listGooglePlayTracks: mocks.tracks,
   getGooglePlayBinding: mocks.get,
   listChannels: mocks.channels,
   listBuilds: mocks.builds,
@@ -54,11 +56,23 @@ beforeEach(() => {
   vi.clearAllMocks();
   mocks.channels.mockResolvedValue({ channels: [] });
   mocks.builds.mockResolvedValue({ builds: [] });
+  mocks.tracks.mockImplementation(async (_app, body) => ({ package_name: body.package_name, tracks: ["internal", "actual-closed-7", "production"] }));
   mocks.save.mockResolvedValue({ google_play: {} });
   mocks.verify.mockResolvedValue({ ok: true });
   mocks.toggle.mockResolvedValue({ ok: true });
   mocks.remove.mockResolvedValue({ ok: true });
 });
+
+async function selectClosedTrack() {
+  await waitFor(() => expect(screen.getByLabelText("Closed testing track").hasAttribute("disabled")).toBe(false));
+  fireEvent.click(screen.getByLabelText("Closed testing track"));
+  const option = await screen.findByRole("option", { name: "actual-closed-7" });
+  fireEvent.pointerDown(option, { pointerType: "mouse" });
+  fireEvent.mouseDown(option);
+  fireEvent.mouseUp(option);
+  fireEvent.click(option);
+  await waitFor(() => expect(screen.getByLabelText("Closed testing track").textContent).toContain("actual-closed-7"));
+}
 
 describe("GooglePlayConnector", () => {
   const unconfigured = {
@@ -98,12 +112,13 @@ describe("GooglePlayConnector", () => {
     );
     expect(screen.queryByLabelText("Choose JSON file")).toBeNull();
     const save = screen.getByRole("button", { name: "Validate, save & enable" });
+    await selectClosedTrack();
     expect(save.hasAttribute("disabled")).toBe(false);
     fireEvent.click(save);
     await waitFor(() =>
       expect(mocks.save).toHaveBeenCalledWith("app-a", {
         package_name: "build.raft.app",
-        tracks: { internal: "internal", closed: "closed", production: "production" },
+        tracks: { internal: "internal", closed: "actual-closed-7", production: "production" },
       }),
     );
     expect(JSON.stringify(mocks.save.mock.calls[0]?.[1])).not.toContain("service_account_json");
@@ -254,11 +269,12 @@ describe("GooglePlayConnector", () => {
     });
     fireEvent.change(screen.getByLabelText("Choose JSON file"), { target: { files: [file] } });
 
+    await selectClosedTrack();
     await waitFor(() => expect(save.hasAttribute("disabled")).toBe(false));
     fireEvent.click(save);
     await waitFor(() => expect(mocks.save).toHaveBeenCalledWith("app-a", expect.objectContaining({
       package_name: "build.raft.app",
-      tracks: { internal: "internal", closed: "closed", production: "production" },
+      tracks: { internal: "internal", closed: "actual-closed-7", production: "production" },
     })));
     expect(JSON.stringify(mocks.save.mock.calls[0]?.[1])).toContain("service_account");
   });
@@ -313,7 +329,38 @@ describe("GooglePlayConnector", () => {
     renderPanel();
     expect(await screen.findByText("Enabled")).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Unbind" })).toBeNull();
+    expect(mocks.tracks).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole("button", { name: "Expand" }));
     expect(await screen.findByRole("button", { name: "Unbind" })).toBeTruthy();
   });
+  it("keeps save disabled when Play refuses discovery and offers retry", async () => {
+    mocks.get.mockResolvedValue(unconfigured);
+    mocks.channels.mockResolvedValue({ channels: [{ slug: "main", bundle_id: "build.raft.app" }] });
+    mocks.tracks.mockRejectedValue(new Error("Play access denied"));
+    renderPanel();
+    expect(await screen.findByRole("alert")).toHaveProperty("textContent", "Play access denied");
+    expect(screen.getByRole("button", { name: "Validate, save & enable" }).hasAttribute("disabled")).toBe(true);
+    expect(screen.getByLabelText("Closed testing track").hasAttribute("disabled")).toBe(true);
+    fireEvent.click(screen.getByRole("button", { name: "Refresh tracks" }));
+    await waitFor(() => expect(mocks.tracks).toHaveBeenCalledTimes(2));
+  });
+  it("ignores tracks from the previous package after the user switches apps", async () => {
+    mocks.get.mockResolvedValue(unconfigured);
+    let finish!: (result: unknown) => void;
+    mocks.tracks.mockImplementation((_app, body) => body.package_name === "old.play.app"
+      ? new Promise((resolve) => { finish = resolve; })
+      : Promise.resolve({ package_name: body.package_name, tracks: ["internal", "new-closed", "production"] }));
+    renderPanel();
+    const field = await screen.findByLabelText("Android package name");
+    fireEvent.change(field, { target: { value: "old.play.app" } });
+    await waitFor(() => expect(mocks.tracks).toHaveBeenCalledTimes(1));
+    fireEvent.change(field, { target: { value: "new.play.app" } });
+    await waitFor(() => expect(mocks.tracks).toHaveBeenCalledTimes(2));
+    await act(async () => { finish({ package_name: "old.play.app", tracks: ["wrong-closed"] }); });
+    await waitFor(() => expect(screen.getByLabelText("Closed testing track").hasAttribute("disabled")).toBe(false));
+    fireEvent.click(screen.getByLabelText("Closed testing track"));
+    expect(await screen.findByRole("option", { name: "new-closed" })).toBeTruthy();
+    expect(screen.queryByRole("option", { name: "wrong-closed" })).toBeNull();
+  });
+
 });

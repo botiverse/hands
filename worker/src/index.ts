@@ -236,6 +236,7 @@ import {
   handleDisableGooglePlayBinding,
   handleEnableGooglePlayBinding,
   handleGetGooglePlayBinding,
+  handleListGooglePlayTracks,
   handlePutGooglePlayBinding,
   handleVerifyGooglePlayBinding,
 } from "./routes/google_play_bindings";
@@ -1087,6 +1088,7 @@ bindAdmin("post", "/api/apps/:appId/google-play-oauth/start", requireAppRole("ad
 bindAdmin("get", "/api/google-play/oauth/callback", handleGooglePlayOAuthCallback);
 bindAdmin("get", "/api/apps/:appId/google-play-binding", requireAppRole("admin"), handleGetGooglePlayBinding);
 bindAdmin("put", "/api/apps/:appId/google-play-binding", requireAppRole("admin"), handlePutGooglePlayBinding);
+bindAdmin("post", "/api/apps/:appId/google-play-binding/tracks", requireAppRole("admin"), handleListGooglePlayTracks);
 bindAdmin("post", "/api/apps/:appId/google-play-binding/verify", requireAppRole("admin"), handleVerifyGooglePlayBinding);
 bindAdmin("post", "/api/apps/:appId/google-play-binding/enable", requireAppRole("admin"), handleEnableGooglePlayBinding);
 bindAdmin("post", "/api/apps/:appId/google-play-binding/disable", requireAppRole("admin"), handleDisableGooglePlayBinding);

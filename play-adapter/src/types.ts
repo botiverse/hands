@@ -24,7 +24,12 @@ export type GooglePlayCredential = ServiceAccountCredential | GoogleOAuthCredent
 
 export type PlayTracks = Record<HandsTrack, string>;
 
-export interface PlayBindingInput {
+export interface PlayDiscoveryInput {
+  credential: GooglePlayCredential;
+  packageName: string;
+}
+
+export interface PlayBindingInput extends PlayDiscoveryInput {
   credential: GooglePlayCredential;
   packageName: string;
   tracks: PlayTracks;

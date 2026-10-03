@@ -6,6 +6,7 @@ import type {
   HandsTrack,
   PlayAdapterEnv,
   PlayBindingInput,
+  PlayDiscoveryInput,
   PlayTracks,
   PromotionRequest,
   PromotionRpcInput,
@@ -30,7 +31,7 @@ function maxAabSize(env: PlayAdapterEnv): number {
   return value;
 }
 
-function bindingInput(input: PlayBindingInput): PlayBindingInput {
+function discoveryInput(input: PlayDiscoveryInput): PlayDiscoveryInput {
   if (!input || typeof input !== "object") {
     throw new PlayAdapterError(400, "play_binding_invalid", "Google Play binding is invalid");
   }
@@ -38,6 +39,11 @@ function bindingInput(input: PlayBindingInput): PlayBindingInput {
   if (!PACKAGE_NAME.test(packageName)) {
     throw new PlayAdapterError(400, "package_name_invalid", "Google Play package name is invalid");
   }
+  return { credential: parsePlayCredential(input.credential), packageName };
+}
+
+function bindingInput(input: PlayBindingInput): PlayBindingInput {
+  const binding = discoveryInput(input);
   const source = input.tracks as Partial<PlayTracks> | undefined;
   const tracks = {
     internal: typeof source?.internal === "string" ? source.internal.trim() : "",
@@ -47,7 +53,7 @@ function bindingInput(input: PlayBindingInput): PlayBindingInput {
   if (Object.values(tracks).some((track) => !TRACK_NAME.test(track))) {
     throw new PlayAdapterError(400, "track_name_invalid", "Google Play track name is invalid");
   }
-  return { credential: parsePlayCredential(input.credential), packageName, tracks };
+  return { ...binding, tracks };
 }
 
 function trackInput(input: TrackMaximumRpcInput) {
@@ -123,6 +129,14 @@ export function createPlayAdapterService(options: AdapterOptions = {}) {
   }
 
   return {
+    async listTracks(input: PlayDiscoveryInput, env: PlayAdapterEnv): Promise<AdapterResult<{ client_email: string; package_name: string; tracks: string[] }>> {
+      try {
+        const binding = discoveryInput(input);
+        const token = await createAccessToken(binding.credential, fetchImpl, options.nowSeconds?.() ?? Math.floor(Date.now() / 1000));
+        const google = new GooglePlayClient(token, fetchImpl, maxAabSize(env));
+        return { ok: true, value: { client_email: binding.credential.client_email, package_name: binding.packageName, tracks: await google.listTracks(binding.packageName) } };
+      } catch (error) { return failure(error, null); }
+    },
     async verifyBinding(input: PlayBindingInput, env: PlayAdapterEnv): Promise<AdapterResult<{
       client_email: string;
       package_name: string;

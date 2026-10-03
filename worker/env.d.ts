@@ -20,6 +20,7 @@ type GooglePlayAdapterResult<T> =
   | { ok: false; error: { status: number; code: string; message: string } };
 
 interface GooglePlayAdapterService {
+  listTracks(input: Pick<GooglePlayBindingInput, "credential" | "packageName">): Promise<GooglePlayAdapterResult<{ client_email: string; package_name: string; tracks: string[] }>>;
   verifyBinding(input: GooglePlayBindingInput): Promise<GooglePlayAdapterResult<{
     client_email: string;
     package_name: string;

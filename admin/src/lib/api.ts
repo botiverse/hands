@@ -2171,3 +2171,7 @@ export const startGooglePlayOAuth = (appId: string) =>
   request<{ authorization_url: string }>(`/api/apps/${appId}/google-play-oauth/start`, {
     method: "POST", admin: true, body: "{}",
   });
+
+export function listGooglePlayTracks(appId: string, body: { package_name: string; service_account_json?: string }): Promise<{ package_name: string; tracks: string[] }> {
+  return request<{ package_name: string; tracks: string[] }>(`/api/apps/${appId}/google-play-binding/tracks`, { method: "POST", body: JSON.stringify(body) });
+}
