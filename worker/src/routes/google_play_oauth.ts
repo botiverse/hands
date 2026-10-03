@@ -1,6 +1,6 @@
 import type { Context } from "hono";
 import { deleteCookie, getCookie, setCookie } from "hono/cookie";
-import { currentActor, accountForRequestedOrg, accountActor, googlePlayOAuthCookieName, SESSION_COOKIE, type AdminEnv } from "../middleware/auth";
+import { currentActor, accountActor, googlePlayOAuthCookieName, SESSION_COOKIE, type AdminEnv, type AdminAccount } from "../middleware/auth";
 import { currentAccount, ensureAppRole, insertAuditLog } from "../lib/permissions";
 import { businessOrigin, dashboardOrigin, configuredProductionHost, sharedCookieDomain } from "../lib/origin";
 import { decryptGooglePlayValue, encryptGooglePlayValue, getGooglePlayBindingMeta,
@@ -104,8 +104,14 @@ export async function handleGooglePlayOAuthCallback(c: AdminContext) {
   if (!pending || pending.authenticated_account_id !== (c.get("authenticated_account") ?? account).id || pending.expires_at <= Date.now() || pending.consumed_at !== null) {
     return c.json({ error: "Authorization expired or belongs to another account", code: "INVALID_OAUTH_STATE" }, 400);
   }
-  const effective = await accountForRequestedOrg(c.env, c.get("authenticated_account") ?? account, pending.org_id ?? undefined);
-  if (effective.id !== pending.account_id) return c.json({ code: "INVALID_OAUTH_STATE", error: "Authorization account changed" }, 400);
+  const authenticated = c.get("authenticated_account") ?? account;
+  // Restore the exact account recorded at initiation. An app grant can belong
+  // to a different-server account than the app's organization membership;
+  // re-resolving by org would silently switch to that sibling account.
+  const effective = await c.env.DB.prepare(
+    "SELECT * FROM raft_accounts WHERE id=?1 AND provider=?2 AND provider_subject=?3 AND principal_type='human'",
+  ).bind(pending.account_id, authenticated.provider, authenticated.provider_subject).first<AdminAccount>();
+  if (!effective) return c.json({ code: "INVALID_OAUTH_STATE", error: "Authorization account changed" }, 400);
   c.set("admin_account", effective);
   c.set("admin_actor", accountActor(effective));
   const denial = await ensureAppRole(c, pending.app_id, "admin");
