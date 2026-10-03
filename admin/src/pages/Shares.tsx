@@ -9,7 +9,12 @@
  */
 import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Button, Input, Select, SelectTrigger, SelectValue, SelectIcon, SelectContent, SelectItem, Dialog, DialogContent, DialogHeader, DialogTitle, DialogBody, DialogFooter, EmptyState, EmptyStateTitle, EmptyStateDescription, Skeleton } from "raft-ui";
+import {
+  Badge,
+  Card, Button, Input, Select, SelectTrigger, SelectValue, SelectIcon, SelectContent, SelectItem, Dialog, DialogContent, DialogHeader, DialogTitle, DialogBody, DialogFooter, EmptyState, EmptyStateTitle, EmptyStateDescription, Skeleton } from "raft-ui";
+import type { BadgeProps } from "raft-ui";
+
+type BadgeVariant = NonNullable<BadgeProps["variant"]>;
 import {
   AppShare,
   createReleaseShare,
@@ -101,7 +106,7 @@ export function AppShares({ appId }: { appId: string }) {
       <div className="flex items-center justify-between">
         <div>
           <h2 className="text-lg font-bold">Shares</h2>
-          <p className="text-sm text-slate-500">
+          <p className="text-sm text-foreground-muted">
             Public download pages for this app's releases. Links live until
             revoked and their URLs can be re-copied here anytime.
           </p>
@@ -112,7 +117,7 @@ export function AppShares({ appId }: { appId: string }) {
       </div>
 
       {createdUrl && (
-        <div className="card flex items-center gap-3 text-sm">
+        <Card className="flex flex-row items-center gap-3 text-sm">
           <span className="font-mono break-all flex-1">{createdUrl}</span>
           <Button
             variant="outline"
@@ -127,10 +132,10 @@ export function AppShares({ appId }: { appId: string }) {
           <Button variant="outline" className="text-xs" onClick={() => setCreatedUrl(null)}>
             Dismiss
           </Button>
-        </div>
+        </Card>
       )}
 
-      <div className="card overflow-x-auto">
+      <Card className="overflow-x-auto">
         {shares.isLoading && (
           <div className="space-y-2">
             <Skeleton className="h-10 w-full" />
@@ -139,7 +144,7 @@ export function AppShares({ appId }: { appId: string }) {
           </div>
         )}
         {shares.error && (
-          <p className="text-sm text-red-600">
+          <p className="text-sm text-danger">
             Failed to load shares: {(shares.error as Error).message}
           </p>
         )}
@@ -155,7 +160,7 @@ export function AppShares({ appId }: { appId: string }) {
         {rows.length > 0 && (
           <table className="w-full text-sm">
             <thead>
-              <tr className="text-left text-xs text-slate-500 border-b border-slate-200">
+              <tr className="text-left text-xs text-foreground-muted border-b border-line-muted">
                 <th className="py-2 pr-3">Release</th>
                 <th className="py-2 pr-3">Status</th>
                 <th className="py-2 pr-3">Created</th>
@@ -215,7 +220,7 @@ export function AppShares({ appId }: { appId: string }) {
             </tbody>
           </table>
         )}
-      </div>
+      </Card>
 
       {showCreate && (
         <CreateShareModal
@@ -243,13 +248,13 @@ export function AppShares({ appId }: { appId: string }) {
   );
 }
 
-function shareState(share: AppShare): { label: string; className: string } {
-  if (share.revoked_at) return { label: "revoked", className: "bg-slate-200 text-slate-600" };
+function shareState(share: AppShare): { label: string; variant: BadgeVariant } {
+  if (share.revoked_at) return { label: "revoked", variant: "muted" };
   // Legacy shares may still carry an expiry; new ones live until revoked.
   if (share.expires_at != null && share.expires_at <= Date.now()) {
-    return { label: "expired", className: "bg-amber-100 text-amber-800" };
+    return { label: "expired", variant: "warning" };
   }
-  return { label: "active", className: "bg-emerald-100 text-emerald-800" };
+  return { label: "active", variant: "success" };
 }
 
 function ShareRow({
@@ -272,30 +277,30 @@ function ShareRow({
   const state = shareState(share);
   const actionable = !share.revoked_at;
   return (
-    <tr className="border-b border-slate-100 last:border-0">
+    <tr className="border-b border-line-hairline last:border-0">
       <td className="py-2 pr-3">
         <span className="font-medium">
           {share.version_name} ({share.version_code})
         </span>
-        <span className="ml-2 text-xs text-slate-500">{share.channel_slug}</span>
-        <div className="text-xs text-slate-400">by {share.created_by}</div>
+        <span className="ml-2 text-xs text-foreground-muted">{share.channel_slug}</span>
+        <div className="text-xs text-foreground-hint">by {share.created_by}</div>
       </td>
       <td className="py-2 pr-3">
-        <span className={`rounded-sm px-1.5 py-0.5 text-xs font-medium ${state.className}`}>
+        <Badge variant={state.variant}>
           {state.label}
-        </span>
+        </Badge>
         {Boolean(share.has_password) && (
-          <span className="ml-1 rounded-sm bg-sky-100 px-1.5 py-0.5 text-xs font-medium text-sky-800">
+          <Badge variant="information" className="ml-1">
             password
-          </span>
+          </Badge>
         )}
         {share.expires_at != null && !share.revoked_at && share.expires_at > Date.now() && (
-          <div className="mt-0.5 text-xs text-slate-400">
+          <div className="mt-0.5 text-xs text-foreground-hint">
             expires {new Date(share.expires_at).toLocaleString()}
           </div>
         )}
       </td>
-      <td className="py-2 pr-3 text-xs text-slate-600">
+      <td className="py-2 pr-3 text-xs text-foreground">
         {new Date(share.created_at).toLocaleString()}
       </td>
       <td className="py-2 pr-3 text-xs">
@@ -304,18 +309,18 @@ function ShareRow({
             Copy URL
           </Button>
         ) : (
-          <span className="text-slate-400" title="Created before URLs were stored; the link itself still works.">
+          <span className="text-foreground-hint" title="Created before URLs were stored; the link itself still works.">
             unavailable (legacy)
           </span>
         )}
       </td>
       <td className="py-2 pr-3">
         {share.view_count}
-        <span className="text-xs text-slate-400"> ({share.unique_view_count} uniq)</span>
+        <span className="text-xs text-foreground-hint"> ({share.unique_view_count} uniq)</span>
       </td>
       <td className="py-2 pr-3">
         {share.download_count}
-        <span className="text-xs text-slate-400"> ({share.unique_download_count} uniq)</span>
+        <span className="text-xs text-foreground-hint"> ({share.unique_download_count} uniq)</span>
       </td>
       <td className="py-2 text-right text-xs whitespace-nowrap">
         {actionable && (
@@ -329,7 +334,7 @@ function ShareRow({
             <Button variant="link" size="sm" className="mr-2" onClick={onRebind} disabled={busy}>
               Rebind release…
             </Button>
-            <Button variant="link" size="sm" className="text-red-600" onClick={onRevoke} disabled={busy}>
+            <Button variant="link" size="sm" className="text-danger" onClick={onRevoke} disabled={busy}>
               Revoke
             </Button>
           </>
@@ -393,15 +398,15 @@ function RebindShareModal({
       <DialogContent className="max-w-md">
         <DialogHeader><DialogTitle>Rebind share to another release</DialogTitle></DialogHeader>
         <DialogBody className="space-y-3">
-          <p className="text-sm text-slate-600">
+          <p className="text-sm text-foreground">
             The public URL stays the same. Its version, build, download, and checksum will all point to the selected release.
           </p>
-          <div className="rounded-md border border-slate-200 p-3 text-sm">
-            <div className="text-xs text-slate-500">Current release</div>
+          <div className="rounded-md border border-line-muted p-3 text-sm">
+            <div className="text-xs text-foreground-muted">Current release</div>
             <strong>{share.version_name} ({share.version_code})</strong>
-            <span className="ml-2 text-xs text-slate-500">{share.channel_slug}</span>
+            <span className="ml-2 text-xs text-foreground-muted">{share.channel_slug}</span>
           </div>
-          <label className="block text-xs text-slate-600">
+          <label className="block text-xs text-foreground">
             Target active release
             <Select
               items={{
@@ -427,10 +432,10 @@ function RebindShareModal({
           </label>
           {target.isLoading && <Skeleton className="h-20 w-full" />}
           {target.data && (
-            <div className="rounded-md border border-amber-200 bg-amber-50 p-3 text-sm">
+            <div className="rounded-md border border-warning bg-warning-soft p-3 text-sm">
               <div><strong>{target.data.build.version_name}</strong> ({target.data.build.version_code})</div>
-              <div className="mt-1 text-xs text-slate-600">Build: <code>{target.data.build.id}</code></div>
-              <div className="mt-1 break-all text-xs text-slate-600">Checksum: <code>{installable?.file_hash ?? "No installable asset"}</code></div>
+              <div className="mt-1 text-xs text-foreground">Build: <code>{target.data.build.id}</code></div>
+              <div className="mt-1 break-all text-xs text-foreground">Checksum: <code>{installable?.file_hash ?? "No installable asset"}</code></div>
             </div>
           )}
         </DialogBody>
@@ -504,7 +509,7 @@ function CreateShareModal({
           <DialogTitle>New share link</DialogTitle>
         </DialogHeader>
         <DialogBody className="space-y-3">
-          <label className="block text-xs text-slate-600">
+          <label className="block text-xs text-foreground">
             Release
             <Select
               items={{
@@ -530,7 +535,7 @@ function CreateShareModal({
               </SelectContent>
             </Select>
           </label>
-          <label className="block text-xs text-slate-600">
+          <label className="block text-xs text-foreground">
             Expires in days (optional)
             <Input
               type="number"
@@ -541,7 +546,7 @@ function CreateShareModal({
               className="mt-1 py-1.5!"
             />
           </label>
-          <label className="block text-xs text-slate-600">
+          <label className="block text-xs text-foreground">
             Password (optional)
             <Input
               type="text"
