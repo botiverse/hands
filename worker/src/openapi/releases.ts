@@ -144,8 +144,8 @@ const AppServerGrant = z
 
 const UpsertAppServerGrantRequest = z
   .object({
-    server_id: z.string().optional(),
-    server_slug: z.string().optional(),
+    server_id: z.string().nullable().optional(),
+    server_slug: z.string().nullable().optional(),
   })
   .openapi("UpsertAppServerGrantRequest");
 
