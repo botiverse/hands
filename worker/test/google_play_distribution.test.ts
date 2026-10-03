@@ -458,7 +458,7 @@ describe("Android artifact routes", () => {
   });
 });
 
-async function readyRelease(principal: "human" | "agent" = "human", role: "publisher" | "viewer" = "publisher") {
+async function readyRelease(principal: "human" | "agent" = "human", role: "publisher" | "viewer" = "publisher", versionCode = 42) {
   const harness = routeHarness(principal, role);
   harness.env.PLAY_CRED_ENC_KEYS = JSON.stringify({ v1: "test-only-google-play-key-material-1234567890" });
   harness.env.PLAY_CRED_ENC_ACTIVE_KEY_VERSION = "v1";
@@ -478,6 +478,7 @@ async function readyRelease(principal: "human" | "agent" = "human", role: "publi
   const aab = new TextEncoder().encode("exact-aab");
   const apk = new TextEncoder().encode("exact-apk");
   const body = validBundle();
+  body.version_code = versionCode;
   body.artifacts = [
     { kind: "aab", filename: "raft.aab", size_bytes: aab.byteLength, sha256: sha(aab) },
     { kind: "apk", filename: "raft.apk", size_bytes: apk.byteLength, sha256: sha(apk) },
@@ -786,6 +787,43 @@ describe("Play promotion route", () => {
     expect(JSON.stringify(payload)).not.toMatch(/distribution[_-]?cert/i);
   });
 
+  it.each([{ max: 0, candidate: 11300001 }, { max: 41, candidate: 11300001 }])("accepts candidate $candidate above track max $max without consecutive numbering", async ({ max, candidate }) => {
+    const h = await readyRelease("agent", "publisher", candidate);
+    let uploads = 0;
+    h.env.PLAY_RELEASE_SERVICE = playAdapterStub({
+      readTrackMaximum: async () => ({ ok: true, value: { max_version_code: max } }),
+      promote: async (_input, stream) => {
+        uploads++;
+        const bytes = new Uint8Array(await new Response(stream).arrayBuffer());
+        return { ok: true, value: { edit_id: "first-edit", package_name: "build.raft.app", version_code: candidate, track: "internal", sha256: sha(bytes), rollout_percent: 100 } };
+      },
+    });
+    const res = await h.request("/api/apps/app/releases/release/distributions/play/promote", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ track: "internal", expected_revision: 1, approval: { note: "submit signed candidate" } }),
+    });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ version_code: candidate, track: "internal" });
+    expect(uploads).toBe(1);
+  });
+
+  it.each([{ max: 42, candidate: 42 }, { max: 43, candidate: 42 }, { max: 0, candidate: 2100000001 }])("rejects invalid Play candidate $candidate at track max $max before uploading", async ({ max, candidate }) => {
+    const h = await readyRelease("agent", "publisher", candidate);
+    let uploads = 0;
+    h.env.PLAY_RELEASE_SERVICE = playAdapterStub({
+      readTrackMaximum: async () => ({ ok: true, value: { max_version_code: max } }),
+      promote: async () => { uploads++; throw new Error("must not upload"); },
+    });
+    const res = await h.request("/api/apps/app/releases/release/distributions/play/promote", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ track: "internal", expected_revision: 1, approval: { note: "submit" } }),
+    });
+    expect(res.status).toBe(409);
+    expect(await res.json()).toMatchObject({ error: { code: "version_conflict", gate: "version_code" } });
+    expect(uploads).toBe(0);
+    expect(h.sqlite.prepare("SELECT revision FROM releases WHERE id='release'").get()).toEqual({ revision: 1 });
+  });
+
   it("rejects agent viewers before any Play call or promotion receipt", async () => {
     const h = await readyRelease("agent", "viewer");
     let calls = 0;
@@ -966,8 +1004,8 @@ describe("Play promotion route", () => {
       .toEqual({ verdict: "failed-closed", id: failure.error.receipt_id });
   });
 
-  it("validates rollback to_version_code before the fail-closed adapter boundary", async () => {
-    const harness = await readyRelease();
+  it.each(["human", "agent"] as const)("%s validates rollback to_version_code before the fail-closed adapter boundary", async (principal) => {
+    const harness = await readyRelease(principal);
     const missing = await harness.request("/api/apps/app/releases/release/distributions/play/rollback", {
       method: "POST",
       headers: { "content-type": "application/json" },

@@ -457,9 +457,8 @@ export async function handlePromotePlayDistribution(c: AdminContext) {
     if (!Number.isSafeInteger(maxVersionCode) || maxVersionCode < 0) {
       return fail(c, 502, { code: "play_api_error", gate: null, message: "Play track read returned an invalid max_version_code" });
     }
-    const requiredVersionCode = maxVersionCode + 1;
-    if (artifact.version_code !== requiredVersionCode) {
-      return fail(c, 409, { code: "version_conflict", gate: "version_code", message: `artifact versionCode ${artifact.version_code} must equal Play ${input.track} max + 1 (${requiredVersionCode})` });
+    if (artifact.version_code <= maxVersionCode || artifact.version_code > 2_100_000_000) {
+      return fail(c, 409, { code: "version_conflict", gate: "version_code", message: `artifact versionCode ${artifact.version_code} must be greater than Play ${input.track} max (${maxVersionCode}) and no greater than 2100000000` });
     }
     const reserved = await c.env.DB.prepare(
       `UPDATE releases SET revision = revision + 1, updated_at = ?1
@@ -607,8 +606,8 @@ async function unsupportedPlayMutation(c: AdminContext, action: "halt" | "rollba
   } catch {
     return fail(c, 403, { code: "forbidden", gate: "permission", message: `${action} requires a valid JSON approval body` });
   }
-  if (actor.type !== "human" || positiveRevision(body.expected_revision) === null || !body.approval?.note?.trim()) {
-    return fail(c, 403, { code: "forbidden", gate: "permission", message: `${action} requires expected_revision and authenticated human approval` });
+  if ((actor.type !== "human" && actor.type !== "agent") || positiveRevision(body.expected_revision) === null || !body.approval?.note?.trim()) {
+    return fail(c, 403, { code: "forbidden", gate: "permission", message: `${action} requires expected_revision and an authenticated human or agent submission note` });
   }
   if (action === "rollback-republish") {
     const toVersionCode = Number(body.to_version_code);

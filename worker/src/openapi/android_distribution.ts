@@ -294,7 +294,7 @@ export function registerAndroidDistributionRoutes(): RouteConfigList {
     tags: ["Android distribution"],
     summary: "Promote the accepted exact AAB through the server-side Play adapter",
     description:
-      "Requires immutable binding, latest passing AAB acceptance, track max + 1 versionCode, one edit lock, no live hold, and an explicit submission note from an authenticated human or agent publisher. No Play credential reaches this API caller.",
+      "Requires immutable binding, latest passing AAB acceptance, versionCode greater than the target track maximum (at most 2100000000), one edit lock, no live hold, and an explicit submission note from an authenticated human or agent publisher. No Play credential reaches this API caller.",
     security: auth,
     request: {
       params: AppReleaseParams,
@@ -315,7 +315,7 @@ export function registerAndroidDistributionRoutes(): RouteConfigList {
       path: `/api/apps/{appId}/releases/{releaseId}/distributions/play/${action}`,
       tags: ["Android distribution"],
       summary: action === "halt" ? "Halt a Play distribution" : "Rollback by republishing a prior accepted AAB",
-      description: "P0 validates human approval and then fails closed until the server-side Play adapter implements this operation.",
+      description: "Validates publisher authority and an explicit submission note, then returns unavailable until the server-side Play adapter implements this operation.",
       security: auth,
       request: {
         params: AppReleaseParams,
@@ -325,7 +325,7 @@ export function registerAndroidDistributionRoutes(): RouteConfigList {
         },
       },
       responses: {
-        403: error("Human approval or publisher role is missing."),
+        403: error("Authenticated publisher or submission note is missing."),
         502: error("Operation is not implemented by the server-side Play adapter."),
       },
     });
