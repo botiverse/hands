@@ -167,7 +167,7 @@ describe("GooglePlayConnector", () => {
     mocks.get.mockResolvedValue({ google_play: null, oauth_available: true });
     window.history.replaceState(null, "", "/?google_play_oauth=failed&google_play_oauth_error=play_permissions");
     renderPanel();
-    expect(await screen.findByText(/lacks access to this Play app/)).toBeTruthy();
+    expect(await screen.findByText(/Play app verification failed/)).toBeTruthy();
     expect(screen.getByRole("button", { name: "Retry" })).toBeTruthy();
     expect(window.location.search).not.toContain("google_play_oauth");
     expect(window.location.search).not.toContain("play_permissions");
@@ -186,6 +186,24 @@ describe("GooglePlayConnector", () => {
     renderPanel();
     expect(await screen.findByText(/Google authorization failed\./)).toBeTruthy();
     expect(screen.queryByText(/future_code/)).toBeNull();
+  });
+
+  it.each(["__proto__", "toString", "constructor", "hasOwnProperty"])(
+    "keeps the generic fallback for inherited-object keys (%s)",
+    async (code) => {
+      mocks.get.mockResolvedValue({ google_play: null, oauth_available: true });
+      window.history.replaceState(null, "", `/?google_play_oauth=failed&google_play_oauth_error=${code}`);
+      renderPanel();
+      expect(await screen.findByText(/Google authorization failed\./)).toBeTruthy();
+      expect(screen.getByRole("button", { name: "Retry" })).toBeTruthy();
+    },
+  );
+
+  it("describes connection_changed as a Hands-side change", async () => {
+    mocks.get.mockResolvedValue({ google_play: null, oauth_available: true });
+    window.history.replaceState(null, "", "/?google_play_oauth=failed&google_play_oauth_error=connection_changed");
+    renderPanel();
+    expect(await screen.findByText(/changed in Hands during authorization/)).toBeTruthy();
   });
 
   it("labels a human OAuth identity and explains local disconnect", async () => {
