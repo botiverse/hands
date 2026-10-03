@@ -13,6 +13,7 @@ import {
   Input,
   Select,
   SelectContent,
+  SelectList,
   SelectIcon,
   SelectItem,
   SelectTrigger,
@@ -203,8 +204,10 @@ export function GooglePlayConnector({ appId }: { appId: string }) {
             onValueChange={(value) => setPackageName(value === "__manual__" ? "" : String(value))}>
             <SelectTrigger className="mt-1 w-full" aria-label={gp("existingPackage")}><SelectValue /><SelectIcon /></SelectTrigger>
             <SelectContent>
+              <SelectList>
               {packageOptions.map((option) => <SelectItem key={option.packageName} value={option.packageName}>{option.packageName} · {gp(option.source)}</SelectItem>)}
               <SelectItem value="__manual__">{gp("manualPackage")}</SelectItem>
+            </SelectList>
             </SelectContent>
           </Select>
         </>}
@@ -223,7 +226,9 @@ export function GooglePlayConnector({ appId }: { appId: string }) {
       ] as const).map(([label, value, setValue]) => <label key={label} className="text-xs text-foreground">{gp(label)}
         <Select items={Object.fromEntries(availableTracks.map((id) => [id, id]))} value={availableTracks.includes(value) ? value : null} onValueChange={(id) => setValue(id ? String(id) : "")}>
           <SelectTrigger className="mt-1 w-full" aria-label={gp(label)} disabled={tracksLoading || availableTracks.length === 0}><SelectValue placeholder={gp("chooseTrack")} /><SelectIcon /></SelectTrigger>
-          <SelectContent>{availableTracks.map((id) => <SelectItem key={id} value={id}>{id}</SelectItem>)}</SelectContent>
+          <SelectContent>
+            <SelectList>{availableTracks.map((id) => <SelectItem key={id} value={id}>{id}</SelectItem>)}</SelectList>
+          </SelectContent>
         </Select>
       </label>)}
     </div>

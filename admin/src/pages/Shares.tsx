@@ -11,7 +11,7 @@ import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Badge,
-  Card, Button, Input, Select, SelectTrigger, SelectValue, SelectIcon, SelectContent, SelectItem, Dialog, DialogContent, DialogHeader, DialogTitle, DialogBody, DialogFooter, EmptyState, EmptyStateTitle, EmptyStateDescription, Skeleton } from "raft-ui";
+  Card, Button, Input, Select, SelectTrigger, SelectValue, SelectIcon, SelectList, SelectContent, SelectItem, Dialog, DialogContent, DialogHeader, DialogTitle, DialogBody, DialogFooter, EmptyState, EmptyStateTitle, EmptyStateDescription, Skeleton } from "raft-ui";
 import type { BadgeProps } from "raft-ui";
 
 type BadgeVariant = NonNullable<BadgeProps["variant"]>;
@@ -421,12 +421,14 @@ function RebindShareModal({
             >
               <SelectTrigger className="mt-1 py-1.5!"><SelectValue /><SelectIcon /></SelectTrigger>
               <SelectContent>
+                <SelectList>
                 <SelectItem value="">Select an active release…</SelectItem>
                 {options.map((release) => (
                   <SelectItem key={release.id} value={release.id}>
                     {release.version_name ?? release.id.slice(0, 8)} ({release.version_code ?? "—"})
                   </SelectItem>
                 ))}
+              </SelectList>
               </SelectContent>
             </Select>
           </label>
@@ -526,12 +528,14 @@ function CreateShareModal({
                 <SelectIcon />
               </SelectTrigger>
               <SelectContent>
+                <SelectList>
                 <SelectItem value="">Select a release…</SelectItem>
                 {options.map((r: any) => (
                   <SelectItem key={r.id} value={r.id}>
                     {r.version_name ?? r.id.slice(0, 8)} · {r.status}
                   </SelectItem>
                 ))}
+              </SelectList>
               </SelectContent>
             </Select>
           </label>

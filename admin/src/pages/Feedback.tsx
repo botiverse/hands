@@ -44,6 +44,7 @@ import {
   Input,
   Select,
   SelectContent,
+  SelectList,
   SelectIcon,
   SelectItem,
   SelectTrigger,
@@ -181,10 +182,12 @@ export function AppFeedback({ appId }: { appId: string }) {
               <SelectIcon />
             </SelectTrigger>
             <SelectContent>
+              <SelectList>
               <SelectItem value="">All statuses</SelectItem>
               {STATUSES.map((s) => (
                 <SelectItem key={s} value={s}>{s}</SelectItem>
               ))}
+            </SelectList>
             </SelectContent>
           </Select>
           <Select
@@ -197,10 +200,12 @@ export function AppFeedback({ appId }: { appId: string }) {
               <SelectIcon />
             </SelectTrigger>
             <SelectContent>
+              <SelectList>
               <SelectItem value="">All kinds</SelectItem>
               <SelectItem value="feedback">feedback</SelectItem>
               <SelectItem value="bug">bug</SelectItem>
               <SelectItem value="crash">crash</SelectItem>
+            </SelectList>
             </SelectContent>
           </Select>
         </div>
