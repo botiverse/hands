@@ -40,10 +40,10 @@ export type GooglePlayBindingMeta = {
   id: string;
   app_id: string;
   enabled: number;
-  package_name: string;
-  internal_track: string;
-  closed_track: string;
-  production_track: string;
+  package_name: string | null;
+  internal_track: string | null;
+  closed_track: string | null;
+  production_track: string | null;
   credential_kind: "service_account" | "authorized_user";
   service_account_email: string;
   service_account_project_id: string | null;
@@ -60,7 +60,7 @@ export type GooglePlayBindingMeta = {
 
 export type GooglePlayBinding = GooglePlayBindingMeta & {
   credential: GooglePlayCredential;
-  tracks: GooglePlayTracks;
+  tracks: GooglePlayTracks | null;
 };
 
 const PACKAGE_NAME = /^[A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z][A-Za-z0-9_]*)+$/;
@@ -264,7 +264,8 @@ export async function getGooglePlayBinding(
   return {
     ...row,
     credential,
-    tracks: { internal: row.internal_track, closed: row.closed_track, production: row.production_track },
+    tracks: row.internal_track && row.closed_track && row.production_track
+      ? { internal: row.internal_track, closed: row.closed_track, production: row.production_track } : null,
   };
 }
 
@@ -272,8 +273,8 @@ export async function storeGooglePlayBinding(
   db: D1Database,
   args: {
     appId: string;
-    packageName: string;
-    tracks: GooglePlayTracks;
+    packageName: string | null;
+    tracks: GooglePlayTracks | null;
     credential: GooglePlayCredential;
     actor: string;
     keyringJson: string | undefined;
@@ -282,6 +283,8 @@ export async function storeGooglePlayBinding(
     expectedOAuthStateHash?: string;
   },
 ) {
+  const configured = args.packageName !== null && args.tracks !== null;
+  if ((args.packageName === null) !== (args.tracks === null)) throw new Error("Package and tracks must be configured together");
   const encrypted = await encryptGooglePlayCredential(
     args.credential,
     args.appId,
@@ -295,10 +298,10 @@ export async function storeGooglePlayBinding(
      service_account_email, service_account_project_id, private_key_id, credential_fingerprint, credential_kind,
      credential_ciphertext_b64, credential_iv_b64, credential_key_version, verification_state,
      verified_at, created_by_actor, updated_by_actor, created_at, updated_at)
-    SELECT ?1, ?2, 1, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?18, ?11, ?12, ?13, 'verified', ?14, ?15, ?15, ?14, ?14
+    SELECT ?1, ?2, ?20, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?18, ?11, ?12, ?13, ?21, ?22, ?15, ?15, ?14, ?14
     WHERE (?16=0 OR COALESCE((SELECT credential_fingerprint || ':' || updated_at || ':' || enabled FROM app_google_play_bindings WHERE app_id=?2), '')=?17)
       AND (?19 IS NULL OR EXISTS (SELECT 1 FROM google_play_oauth_requests WHERE state_hash=?19 AND app_id=?2 AND consumed_at IS NOT NULL AND expires_at>?14))
-    ON CONFLICT(app_id) DO UPDATE SET enabled=1, package_name=excluded.package_name,
+    ON CONFLICT(app_id) DO UPDATE SET enabled=excluded.enabled, package_name=excluded.package_name,
       internal_track=excluded.internal_track, closed_track=excluded.closed_track,
       production_track=excluded.production_track, service_account_email=excluded.service_account_email,
       credential_kind=?18,
@@ -307,14 +310,14 @@ export async function storeGooglePlayBinding(
       credential_ciphertext_b64=excluded.credential_ciphertext_b64,
       credential_iv_b64=excluded.credential_iv_b64,
       credential_key_version=excluded.credential_key_version,
-      verification_state='verified', verified_at=excluded.verified_at,
+      verification_state=excluded.verification_state, verified_at=excluded.verified_at,
       updated_by_actor=excluded.updated_by_actor, updated_at=MAX(excluded.updated_at, app_google_play_bindings.updated_at+1)`)
     .bind(
-      crypto.randomUUID(), args.appId, args.packageName, args.tracks.internal, args.tracks.closed,
-      args.tracks.production, args.credential.client_email, args.credential.type === "service_account" ? args.credential.project_id ?? null : null,
+      crypto.randomUUID(), args.appId, args.packageName, args.tracks?.internal ?? null, args.tracks?.closed ?? null,
+      args.tracks?.production ?? null, args.credential.client_email, args.credential.type === "service_account" ? args.credential.project_id ?? null : null,
       args.credential.type === "service_account" ? args.credential.private_key_id ?? null : null, fingerprint, encrypted.ciphertext_b64,
       encrypted.iv_b64, encrypted.key_version, now, args.actor,
-      args.expectedBindingVersion === undefined ? 0 : 1, args.expectedBindingVersion ?? "", args.credential.type, args.expectedOAuthStateHash ?? null,
+      args.expectedBindingVersion === undefined ? 0 : 1, args.expectedBindingVersion ?? "", args.credential.type, args.expectedOAuthStateHash ?? null, configured ? 1 : 0, configured ? "verified" : "stale", configured ? now : null,
     ).run();
   if (Number(stored.meta?.changes ?? 0) !== 1) throw new Error("Google Play binding changed during authorization");
   return (await getGooglePlayBindingMeta(db, args.appId))!;
@@ -355,4 +358,8 @@ export async function deleteGooglePlayBinding(db: D1Database, appId: string) {
     db.prepare("DELETE FROM google_play_oauth_requests WHERE app_id=?1").bind(appId),
     db.prepare("DELETE FROM app_google_play_bindings WHERE app_id=?1").bind(appId),
   ]);
+}
+
+export function hasGooglePlayConfiguration(binding: GooglePlayBinding): binding is GooglePlayBinding & { package_name: string; tracks: GooglePlayTracks } {
+  return typeof binding.package_name === "string" && binding.package_name.length > 0 && binding.tracks !== null;
 }

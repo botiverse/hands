@@ -2,7 +2,7 @@ import type { Context } from "hono";
 import { sha256 } from "@noble/hashes/sha256";
 import { bytesToHex } from "@noble/hashes/utils";
 import { currentActor, currentActorInfo, type AdminEnv } from "../middleware/auth";
-import { getGooglePlayBinding } from "../lib/google_play_bindings";
+import { getGooglePlayBinding, hasGooglePlayConfiguration } from "../lib/google_play_bindings";
 
 type AdminContext = Context<AdminEnv & { Bindings: Env }>;
 type PlayTrack = "internal" | "closed" | "production";
@@ -425,7 +425,7 @@ export async function handlePromotePlayDistribution(c: AdminContext) {
   } catch {
     return fail(c, 502, { code: "play_api_error", gate: "permission", message: "Google Play credentials are unavailable for this app" });
   }
-  if (!binding || binding.enabled !== 1 || binding.verification_state !== "verified") {
+  if (!binding || !hasGooglePlayConfiguration(binding) || binding.enabled !== 1 || binding.verification_state !== "verified") {
     return fail(c, 403, { code: "forbidden", gate: "permission", message: "Google Play must be bound, verified, and enabled for this app" });
   }
   if (binding.package_name !== artifact.package_name) {

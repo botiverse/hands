@@ -68,7 +68,7 @@ const GooglePlayBindingInput = z.object({
   service_account_json: z.union([
     z.string().min(1),
     z.record(z.string(), z.unknown()),
-  ]).openapi({ description: "Complete Google service-account JSON; private material is never returned." }),
+  ]).optional().openapi({ description: "Optional service-account JSON. Omit to configure the already connected Google OAuth account; private material is never returned." }),
   package_name: z.string().regex(/^[A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z][A-Za-z0-9_]*)+$/),
   tracks: z.object({
     internal: z.string().min(1).max(128),
@@ -83,7 +83,7 @@ export function registerAndroidDistributionRoutes(): RouteConfigList {
     method: "post", path: "/api/apps/{appId}/google-play-oauth/start",
     tags: ["Android distribution"], summary: "Start human Google Play OAuth authorization",
     security: auth,
-    request: { params: AppIdParam, body: { required: true, content: json(GooglePlayBindingInput.omit({ service_account_json: true })) } },
+    request: { params: AppIdParam, body: { required: false, content: json(GooglePlayBindingInput.omit({ service_account_json: true }).partial()) } },
     responses: { 200: success("Google authorization URL; no credential is returned.", GenericObject),
       400: error("Invalid package or tracks."), 403: error("Human app administrator required."),
       404: error("Android app not found."), 503: error("OAuth or credential encryption unavailable.") },
@@ -93,7 +93,7 @@ export function registerAndroidDistributionRoutes(): RouteConfigList {
     tags: ["Android distribution"], summary: "Consume one Google Play authorization callback",
     security: auth,
     request: { query: z.object({ state: z.string(), code: z.string().optional(), error: z.string().optional() }) },
-    responses: { 303: { description: "Redirect to app settings with a non-secret outcome." },
+    responses: { 303: { description: "Redirect to app Integrations with a non-secret outcome." },
       400: error("Invalid, expired, consumed, or mismatched authorization."),
       403: error("App administrator role required.") },
   });
