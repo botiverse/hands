@@ -61,66 +61,92 @@ beforeEach(() => {
 });
 
 describe("GooglePlayConnector", () => {
-  it("offers the declared main build package through RUI without a parsed APK", async () => {
-    mocks.get.mockResolvedValue({ google_play: null, oauth_available: true });
+  const unconfigured = {
+    google_play: {
+      credential_kind: "authorized_user",
+      enabled: false,
+      verification_state: "stale",
+      package_name: null,
+      service_account_email: "human@example.com",
+      internal_track: null,
+      closed_track: null,
+      production_track: null,
+    },
+    oauth_available: true,
+  };
+
+  it("offers the declared main build package in the post-connect configuration form", async () => {
+    mocks.get.mockResolvedValue(unconfigured);
     mocks.channels.mockResolvedValue({ channels: [{ id: "main-id", slug: "main", bundle_id: null }] });
     mocks.builds.mockResolvedValue({ builds: [{ channel_id: "main-id", status: "succeeded", product_type: "android-apk", parsed_metadata_json: "{}", build_metadata_json: '{"package_name":"build.raft.app"}' }] });
-    mocks.authorize.mockRejectedValue(new Error("fixture rejection"));
     renderPanel();
-    await waitFor(() => expect(screen.getByLabelText("Choose an existing Android package").textContent).toContain("build.raft.app"));
+    await waitFor(() =>
+      expect(screen.getByLabelText("Choose an existing Android package").textContent).toContain("build.raft.app"),
+    );
     expect(screen.getByLabelText("Choose an existing Android package").textContent).toContain("From upload details");
-    fireEvent.click(screen.getByRole("button", { name: "Authorize with Google" }));
-    await waitFor(() => expect(mocks.authorize).toHaveBeenCalledWith("app-a", expect.objectContaining({ package_name: "build.raft.app" })));
+    expect(screen.getByText("Connected")).toBeTruthy();
+    expect(screen.getByText("Needs configuration")).toBeTruthy();
   });
-  it("prefills the main package and hides the credential picker for Google authorization", async () => {
-    mocks.get.mockResolvedValue({ google_play: null, oauth_available: true });
-    mocks.channels.mockResolvedValue({ channels: [{ slug: "preview", bundle_id: "build.raft.preview" }, { slug: "main", bundle_id: "build.raft.app" }] });
-    mocks.authorize.mockRejectedValue(new Error("fixture rejection"));
+
+  it("saves the post-connect configuration with the saved OAuth credential and no JSON key", async () => {
+    mocks.get.mockResolvedValue(unconfigured);
+    mocks.channels.mockResolvedValue({ channels: [{ slug: "main", bundle_id: "build.raft.app" }] });
+    mocks.save.mockResolvedValue({ google_play: {} });
     renderPanel();
-    const button = await screen.findByRole("button", { name: "Authorize with Google" });
-    await waitFor(() => expect(screen.getByLabelText("Choose an existing Android package").textContent).toContain("build.raft.app"));
+    await waitFor(() =>
+      expect(screen.getByLabelText("Choose an existing Android package").textContent).toContain("build.raft.app"),
+    );
     expect(screen.queryByLabelText("Choose JSON file")).toBeNull();
-    fireEvent.click(button);
-    await waitFor(() => expect(mocks.authorize).toHaveBeenCalledWith("app-a", expect.objectContaining({ package_name: "build.raft.app" })));
+    const save = screen.getByRole("button", { name: "Validate, save & enable" });
+    expect(save.hasAttribute("disabled")).toBe(false);
+    fireEvent.click(save);
+    await waitFor(() =>
+      expect(mocks.save).toHaveBeenCalledWith("app-a", {
+        package_name: "build.raft.app",
+        tracks: { internal: "internal", closed: "closed", production: "production" },
+      }),
+    );
+    expect(JSON.stringify(mocks.save.mock.calls[0]?.[1])).not.toContain("service_account_json");
   });
+
   it("keeps a manually entered package when the channel lookup finishes later", async () => {
-    mocks.get.mockResolvedValue({ google_play: null, oauth_available: true });
+    mocks.get.mockResolvedValue(unconfigured);
     let finish!: (value: unknown) => void;
     mocks.channels.mockReturnValue(new Promise((resolve) => { finish = resolve; }));
     renderPanel();
-    await screen.findByRole("button", { name: "Authorize with Google" });
-    fireEvent.change(screen.getByLabelText("Android package name"), { target: { value: "custom.play.app" } });
+    const field = await screen.findByLabelText("Android package name");
+    fireEvent.change(field, { target: { value: "custom.play.app" } });
     await act(async () => { finish({ channels: [{ slug: "main", bundle_id: "build.raft.app" }] }); });
     await waitFor(() => expect((screen.getByLabelText("Android package name") as HTMLInputElement).value).toBe("custom.play.app"));
   });
+
   it("does not use a preview package when main has no identity", async () => {
-    mocks.get.mockResolvedValue({ google_play: null, oauth_available: true });
+    mocks.get.mockResolvedValue(unconfigured);
     mocks.channels.mockResolvedValue({ channels: [{ slug: "preview", bundle_id: "build.raft.preview" }, { slug: "main", bundle_id: null }] });
     renderPanel();
-    const button = await screen.findByRole("button", { name: "Authorize with Google" });
-    expect(button.hasAttribute("disabled")).toBe(true);
-    expect(screen.getByLabelText("Choose an existing Android package").textContent).toContain("Enter another package name");
+    const save = await screen.findByRole("button", { name: "Validate, save & enable" });
+    expect(save.hasAttribute("disabled")).toBe(true);
+    expect(screen.getByLabelText("Android package name")).toBeTruthy();
     expect(screen.getByText(/No APK or credential file/)).toBeTruthy();
   });
-  it("offers OAuth without a JSON key after package entry and keeps it disabled without server configuration", async () => {
+
+  it("connects with a bare authorization call and respects server availability", async () => {
     mocks.get.mockResolvedValue({ google_play: null, oauth_available: true });
     mocks.authorize.mockRejectedValue(new Error("fixture rejection"));
     renderPanel();
-    const button = await screen.findByRole("button", { name: "Authorize with Google" });
-    expect(button.hasAttribute("disabled")).toBe(true);
-    fireEvent.change(screen.getByLabelText("Android package name"), { target: { value: "build.raft.app" } });
-    expect(button.hasAttribute("disabled")).toBe(false);
-    fireEvent.click(button);
-    await waitFor(() => expect(mocks.authorize).toHaveBeenCalledWith("app-a", {
-      package_name: "build.raft.app", tracks: { internal: "internal", closed: "closed", production: "production" },
-    }));
+    const connect = await screen.findByRole("button", { name: "Connect" });
+    await waitFor(() => expect(connect.hasAttribute("disabled")).toBe(false));
+    fireEvent.click(connect);
+    await waitFor(() => expect(mocks.authorize).toHaveBeenCalledWith("app-a"));
     expect(mocks.save).not.toHaveBeenCalled();
     cleanup();
     mocks.get.mockResolvedValue({ google_play: null, oauth_available: false });
     renderPanel();
-    expect((await screen.findByRole("button", { name: "Authorize with Google" })).hasAttribute("disabled")).toBe(true);
+    const disabled = await screen.findByRole("button", { name: "Connect" });
+    await waitFor(() => expect(disabled.hasAttribute("disabled")).toBe(true));
     expect(screen.getByText("Google authorization is not configured on this server.")).toBeTruthy();
   });
+
   it("labels a human OAuth identity and explains local disconnect", async () => {
     mocks.get.mockResolvedValue({ google_play: { credential_kind: "authorized_user", enabled: true, verification_state: "verified", package_name: "build.raft.app", service_account_email: "human@example.com", internal_track: "internal", closed_track: "closed", production_track: "production" } });
     renderPanel();
@@ -210,24 +236,6 @@ describe("GooglePlayConnector", () => {
     await waitFor(() => expect(mocks.get).toHaveBeenCalledTimes(2));
     await waitFor(() => expect(screen.getByTestId("google-play-binding-panel").textContent).toContain("Needs verification"));
     expect(mocks.toast).toHaveBeenCalledWith(expect.objectContaining({ kind: "error" }));
-  });
-
-  it("starts authorization straight from the connector row's Connect button", async () => {
-    mocks.get.mockResolvedValue({ google_play: null, oauth_available: true });
-    mocks.channels.mockResolvedValue({ channels: [{ slug: "main", bundle_id: "build.raft.app" }] });
-    mocks.authorize.mockRejectedValue(new Error("fixture rejection"));
-    renderPanel();
-    const connect = await screen.findByRole("button", { name: "Connect" });
-    await waitFor(() =>
-      expect(screen.getByLabelText("Choose an existing Android package").textContent).toContain("build.raft.app"),
-    );
-    fireEvent.click(connect);
-    await waitFor(() =>
-      expect(mocks.authorize).toHaveBeenCalledWith(
-        "app-a",
-        expect.objectContaining({ package_name: "build.raft.app" }),
-      ),
-    );
   });
 
   it("keeps a connected connector collapsed until expanded", async () => {
