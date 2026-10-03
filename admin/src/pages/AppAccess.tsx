@@ -41,7 +41,9 @@ import {
   resolveGrantPreview,
 } from "../lib/appPermissionDisplay";
 import {
+  Badge,
   Button,
+  Card,
   Input,
   Select,
   SelectTrigger,
@@ -63,6 +65,7 @@ import {
   EmptyStateTitle,
   Checkbox,
   Skeleton,
+  Textarea,
 } from "raft-ui";
 
 export function AppAccess({ appId }: { appId: string }) {
@@ -104,8 +107,8 @@ export function AppAccess({ appId }: { appId: string }) {
     <section aria-labelledby="app-access-heading" className="space-y-4">
       <header className="space-y-2">
         <h2 id="app-access-heading" className="text-lg font-semibold">{appAccessMessage("title")}</h2>
-        <p className="text-sm text-slate-600">{appAccessMessage("description")}</p>
-        <div className="text-xs text-slate-500">
+        <p className="text-sm text-foreground">{appAccessMessage("description")}</p>
+        <div className="text-xs text-foreground-muted">
           Your current access: <span className="font-mono">{currentAccess ?? "—"}</span>{" "}
           {isOwningOrg && <span>(inherited from owning org)</span>}
           {!isOwningOrg && currentServerGrantRole && (
@@ -207,7 +210,7 @@ function AppServerGrantList({
   const visibleRowCount = rows.length + (isOwningOrg ? 1 : 0);
 
   return (
-    <div className="card p-4! text-sm">
+    <Card className="p-4 text-sm">
       {grants.isLoading && (
         <div className="space-y-2">
           <Skeleton className="h-8 w-full" />
@@ -215,12 +218,12 @@ function AppServerGrantList({
         </div>
       )}
       {grants.error && (
-        <p className="text-red-600">Failed: {(grants.error as Error).message}</p>
+        <p className="text-danger">Failed: {(grants.error as Error).message}</p>
       )}
       <div className="flex items-center justify-between mb-3">
         <h3 className="text-base font-semibold">Server access</h3>
         <div className="flex items-center gap-2">
-          <span className="text-xs text-slate-500 whitespace-nowrap">
+          <span className="text-xs text-foreground-muted whitespace-nowrap">
             {visibleRowCount} server{visibleRowCount === 1 ? "" : "s"}
           </span>
           {canManage && (
@@ -238,7 +241,7 @@ function AppServerGrantList({
       {grants.data && visibleRowCount > 0 && (
         <table className="w-full text-sm">
           <thead>
-            <tr className="text-slate-500 text-left border-b border-slate-100">
+            <tr className="text-foreground-muted text-left border-b border-line-hairline">
               <th className="font-normal py-1 pr-2">Server</th>
               <th className="font-normal py-1 pr-2">Access</th>
               <th className="font-normal py-1 pr-2">Source</th>
@@ -247,35 +250,35 @@ function AppServerGrantList({
           </thead>
           <tbody>
             {isOwningOrg && (
-              <tr className="border-b border-slate-50 bg-slate-50/60">
+              <tr className="border-b border-line-hairline bg-layer-canvas-muted/60">
                 <td className="py-2 pr-2">
                   <div className="font-medium">
                     {currentServerSlug || app?.org_id || "Current server"}
-                    <span className="ml-1 text-xs text-slate-500">(current)</span>
+                    <span className="ml-1 text-xs text-foreground-muted">(current)</span>
                   </div>
                 </td>
                 <td className="py-2 pr-2">
                   <span className="text-xs font-medium">Owner server</span>
                 </td>
-                <td className="py-2 pr-2 text-xs text-slate-500">
+                <td className="py-2 pr-2 text-xs text-foreground-muted">
                   Owning org
                 </td>
                 {canManage && (
-                  <td className="py-2 text-xs text-slate-400">Inherited</td>
+                  <td className="py-2 text-xs text-foreground-hint">Inherited</td>
                 )}
               </tr>
             )}
             {rows.map((grant) => (
               <tr
                 key={grant.id}
-                className="border-b border-slate-50 hover:bg-slate-50"
+                className="border-b border-line-hairline hover:bg-fill-muted"
               >
                 <td className="py-2 pr-2">
                   <div className="font-medium">
                     {grant.server_slug || grant.server_id}
                     {(grant.server_id === currentServerId ||
                       (!!grant.server_slug && grant.server_slug === currentServerSlug)) && (
-                      <span className="ml-1 text-xs text-slate-500">(current)</span>
+                      <span className="ml-1 text-xs text-foreground-muted">(current)</span>
                     )}
                   </div>
                 </td>
@@ -286,7 +289,7 @@ function AppServerGrantList({
                       : `Legacy ${grant.app_role}`}
                   </span>
                 </td>
-                <td className="py-2 pr-2 text-xs text-slate-500">
+                <td className="py-2 pr-2 text-xs text-foreground-muted">
                   {grant.access_model === "owner_server"
                     ? "Additional owner"
                     : "Existing role preserved; remove and re-add to adopt owner-server access"}
@@ -296,7 +299,7 @@ function AppServerGrantList({
                     <Button
                       variant="link"
                       size="sm"
-                      className="text-red-600"
+                      className="text-danger"
                       onClick={() => {
                         if (
                           confirm(
@@ -318,11 +321,11 @@ function AppServerGrantList({
         </table>
       )}
       {grants.data && isOwningOrg && rows.length === 0 && (
-        <p className="text-xs text-slate-500 mt-2">
+        <p className="text-xs text-foreground-muted mt-2">
           No additional owner servers yet. The current server owns this app.
         </p>
       )}
-    </div>
+    </Card>
   );
 }
 
@@ -375,7 +378,7 @@ function AddAppServerGrantDialog({
               variant="ghost"
               size="icon-sm"
               aria-label="Close"
-              className="absolute top-3 right-3 text-slate-400 hover:text-slate-700"
+              className="absolute top-3 right-3 text-foreground-hint hover:text-foreground-strong"
             />
           }
         >
@@ -415,7 +418,7 @@ function AddAppServerGrantDialog({
                 placeholder="optional"
               />
             </div>
-            <p className="text-xs text-slate-500">
+            <p className="text-xs text-foreground-muted">
               An additional owner server uses the same role mapping as the server that created the app:
               server owners/admins can publish releases and manage access; members keep the same
               bounded member actions as on the creating server; viewers have read-only access.
@@ -494,7 +497,7 @@ function AppMemberList({
   });
 
   return (
-    <div className="card p-4! text-sm">
+    <Card className="p-4 text-sm">
       {members.isLoading && (
         <div className="space-y-2">
           <Skeleton className="h-8 w-full" />
@@ -502,7 +505,7 @@ function AppMemberList({
         </div>
       )}
       {members.error && (
-        <p className="text-red-600">Failed: {(members.error as Error).message}</p>
+        <p className="text-danger">Failed: {(members.error as Error).message}</p>
       )}
       <div className="flex items-center justify-between mb-3">
         <h3 className="text-base font-semibold">Direct app members</h3>
@@ -531,7 +534,7 @@ function AppMemberList({
               <SelectItem value="agent">Agents only</SelectItem>
             </SelectContent>
           </Select>
-          <span className="text-xs text-slate-500 whitespace-nowrap">
+          <span className="text-xs text-foreground-muted whitespace-nowrap">
             {filteredMembers.length} member{filteredMembers.length === 1 ? "" : "s"}
             {principalFilter !== "all" && (
               <span className="ml-1">({principalFilter})</span>
@@ -556,7 +559,7 @@ function AppMemberList({
       {members.data && filteredMembers.length > 0 && (
         <table className="w-full text-sm">
           <thead>
-            <tr className="text-slate-500 text-left border-b border-slate-100">
+            <tr className="text-foreground-muted text-left border-b border-line-hairline">
               <th className="font-normal py-1 pr-2">Principal</th>
               <th className="font-normal py-1 pr-2">Type</th>
               <th className="font-normal py-1 pr-2">App role</th>
@@ -569,16 +572,16 @@ function AppMemberList({
             {filteredMembers.map((m) => (
               <tr
                 key={m.account_id}
-                className="border-b border-slate-50 hover:bg-slate-50"
+                className="border-b border-line-hairline hover:bg-fill-muted"
               >
                 <td className="py-2 pr-2">
                   <div className="font-medium">
                     {m.display_name}
                     {m.account_id === currentAccountId && (
-                      <span className="ml-1 text-xs text-slate-500">(you)</span>
+                      <span className="ml-1 text-xs text-foreground-muted">(you)</span>
                     )}
                   </div>
-                  <div className="text-xs text-slate-500">
+                  <div className="text-xs text-foreground-muted">
                     {m.username ? (
                       <span className="font-mono">@{m.username}</span>
                     ) : (
@@ -590,7 +593,7 @@ function AppMemberList({
                 </td>
                 <td className="py-2 pr-2">
                   {m.principal_type === "agent" ? (
-                    <span className="badge-purple text-xs">agent</span>
+                    <Badge variant="accent">agent</Badge>
                   ) : (
                     <span className="text-xs">human</span>
                   )}
@@ -624,10 +627,10 @@ function AppMemberList({
                     <span className="text-xs font-medium">{m.app_role}</span>
                   )}
                 </td>
-                <td className="py-2 pr-2 text-xs text-slate-500">
+                <td className="py-2 pr-2 text-xs text-foreground-muted">
                   {new Date(m.joined_at).toISOString().slice(0, 10)}
                 </td>
-                <td className="py-2 pr-2 text-xs text-slate-500">
+                <td className="py-2 pr-2 text-xs text-foreground-muted">
                   {m.last_login_at
                     ? new Date(m.last_login_at).toISOString().slice(0, 10)
                     : "—"}
@@ -638,7 +641,7 @@ function AppMemberList({
                       <Button
                         variant="link"
                         size="sm"
-                        className="text-red-600"
+                        className="text-danger"
                         onClick={() => {
                           if (
                             confirm(
@@ -660,7 +663,7 @@ function AppMemberList({
           </tbody>
         </table>
       )}
-    </div>
+    </Card>
   );
 }
 
@@ -697,7 +700,7 @@ function AppDeployTokenList({
   const rows = tokens.data?.deploy_tokens ?? [];
 
   return (
-    <div className="card p-4! text-sm">
+    <Card className="p-4 text-sm">
       {tokens.isLoading && (
         <div className="space-y-2">
           <Skeleton className="h-8 w-full" />
@@ -705,12 +708,12 @@ function AppDeployTokenList({
         </div>
       )}
       {tokens.error && (
-        <p className="text-red-600">Failed: {(tokens.error as Error).message}</p>
+        <p className="text-danger">Failed: {(tokens.error as Error).message}</p>
       )}
       <div className="flex items-center justify-between mb-3">
         <h3 className="text-base font-semibold">Deploy tokens</h3>
         <div className="flex items-center gap-2">
-          <span className="text-xs text-slate-500 whitespace-nowrap">
+          <span className="text-xs text-foreground-muted whitespace-nowrap">
             {rows.length} token{rows.length === 1 ? "" : "s"}
           </span>
           <Button variant="outline" className="py-1! px-2! text-xs! whitespace-nowrap" onClick={onAdd}>
@@ -726,7 +729,7 @@ function AppDeployTokenList({
       {tokens.data && rows.length > 0 && (
         <table className="w-full text-sm">
           <thead>
-            <tr className="text-slate-500 text-left border-b border-slate-100">
+            <tr className="text-foreground-muted text-left border-b border-line-hairline">
               <th className="font-normal py-1 pr-2">Name</th>
               <th className="font-normal py-1 pr-2">Prefix</th>
               <th className="font-normal py-1 pr-2">Grant</th>
@@ -742,27 +745,27 @@ function AppDeployTokenList({
               return (
                 <tr
                   key={token.id}
-                  className="border-b border-slate-50 hover:bg-slate-50"
+                  className="border-b border-line-hairline hover:bg-fill-muted"
                 >
                 <td className="py-2 pr-2">
                   <div className="font-medium">{token.name}</div>
-                  <div className="text-xs text-slate-500">
+                  <div className="text-xs text-foreground-muted">
                     by {token.created_by_actor}
                   </div>
                 </td>
                 <td className="py-2 pr-2">
-                  <span className="font-mono text-xs text-slate-600">
+                  <span className="font-mono text-xs text-foreground">
                     {token.token_prefix}
                   </span>
                 </td>
                 <td className="py-2 pr-2">
                   <div className="max-w-sm space-y-1">
                     <div className="flex flex-wrap gap-1 text-xs">
-                      <span className="rounded bg-slate-900 px-1.5 py-0.5 font-medium text-white">
+                      <span className="rounded bg-foreground-strong px-1.5 py-0.5 font-medium text-foreground-inverse">
                         {display.roleLabel}
                       </span>
                       {!display.valid && (
-                        <span className="rounded bg-red-100 px-1.5 py-0.5 font-medium text-red-700">
+                        <span className="rounded bg-danger-soft px-1.5 py-0.5 font-medium text-danger">
                           Invalid grant
                         </span>
                       )}
@@ -773,26 +776,26 @@ function AppDeployTokenList({
                           key={permission}
                           title={permission}
                           className={extra
-                            ? "rounded border border-amber-300 bg-amber-50 px-1.5 py-0.5 text-amber-800"
-                            : "rounded border border-slate-200 bg-slate-50 px-1.5 py-0.5 text-slate-600"}
+                            ? "rounded border border-warning bg-warning-soft px-1.5 py-0.5 text-warning-strong"
+                            : "rounded border border-line-muted bg-layer-canvas-muted px-1.5 py-0.5 text-foreground"}
                         >
                           {label}{extra ? " · Extra" : ""}
                         </span>
                       ))}
                       {display.permissions.length > shownPermissions.length && (
-                        <span className="rounded border border-slate-200 px-1.5 py-0.5 text-slate-500">
+                        <span className="rounded border border-line-muted px-1.5 py-0.5 text-foreground-muted">
                           +{display.permissions.length - shownPermissions.length}
                         </span>
                       )}
                     </div>
                   </div>
                 </td>
-                <td className="py-2 pr-2 text-xs text-slate-500">
+                <td className="py-2 pr-2 text-xs text-foreground-muted">
                   {token.expires_at
                     ? new Date(token.expires_at).toISOString().slice(0, 10)
                     : "Never"}
                 </td>
-                <td className="py-2 pr-2 text-xs text-slate-500">
+                <td className="py-2 pr-2 text-xs text-foreground-muted">
                   {token.last_used_at
                     ? new Date(token.last_used_at).toISOString().slice(0, 10)
                     : "—"}
@@ -801,7 +804,7 @@ function AppDeployTokenList({
                   <Button
                     variant="link"
                     size="sm"
-                    className="text-red-600"
+                    className="text-danger"
                     onClick={() => {
                       if (confirm(`Revoke deploy token ${token.name}?`)) {
                         revoke.mutate(token.id);
@@ -818,11 +821,11 @@ function AppDeployTokenList({
           </tbody>
         </table>
       )}
-      <p className="text-xs text-slate-500 mt-2">
+      <p className="text-xs text-foreground-muted mt-2">
         Tokens are app-scoped bearer credentials for CI. The raw token is only
         shown once after creation.
       </p>
-    </div>
+    </Card>
   );
 }
 
@@ -898,7 +901,7 @@ function AddAppDeployTokenDialog({
               variant="ghost"
               size="icon-sm"
               aria-label="Close"
-              className="absolute top-3 right-3 text-slate-400 hover:text-slate-700"
+              className="absolute top-3 right-3 text-foreground-hint hover:text-foreground-strong"
             />
           }
         >
@@ -910,11 +913,11 @@ function AddAppDeployTokenDialog({
         {createdToken ? (
           <>
             <DialogBody className="space-y-3">
-              <p className="text-sm text-slate-600">
+              <p className="text-sm text-foreground">
                 Copy this token now. It will not be shown again.
               </p>
-              <textarea
-                className="input font-mono text-xs min-h-[96px]"
+              <Textarea
+                className="font-mono text-xs min-h-[96px]"
                 value={createdToken}
                 readOnly
                 onFocus={(e) => e.currentTarget.select()}
@@ -1008,18 +1011,18 @@ function AddAppDeployTokenDialog({
                     </Select>
                   </div>
                 </div>
-                <div className="space-y-2 rounded-md border border-slate-200 p-3">
-                  <div className="text-xs font-medium text-slate-700">Additional permissions</div>
+                <div className="space-y-2 rounded-md border border-line-muted p-3">
+                  <div className="text-xs font-medium text-foreground-strong">Additional permissions</div>
                   {permissionModel.isPending && (
-                    <p className="text-xs text-slate-500">Loading permission registry…</p>
+                    <p className="text-xs text-foreground-muted">Loading permission registry…</p>
                   )}
                   {permissionModel.isError && (
-                    <p className="text-xs text-red-600">
+                    <p className="text-xs text-danger">
                       Permission registry could not be loaded. Try again before creating a token.
                     </p>
                   )}
                   {(permissionModel.data?.permissions ?? []).map((permission) => (
-                    <label key={permission.permission} className="flex items-center gap-2 text-sm text-slate-700">
+                    <label key={permission.permission} className="flex items-center gap-2 text-sm text-foreground-strong">
                       <Checkbox
                         checked={grantPreview.bundled.includes(permission.permission)
                           || scopes.includes(permission.permission)}
@@ -1031,15 +1034,15 @@ function AddAppDeployTokenDialog({
                         }}
                       />
                       <span>{permission.description}</span>
-                      <code className="text-xs text-slate-400">{permission.permission}</code>
+                      <code className="text-xs text-foreground-hint">{permission.permission}</code>
                       {grantPreview.bundled.includes(permission.permission) && (
-                        <span className="text-xs text-slate-400">Included by role</span>
+                        <span className="text-xs text-foreground-hint">Included by role</span>
                       )}
                     </label>
                   ))}
                 </div>
-                <div className="space-y-2 rounded-md bg-slate-50 p-3">
-                  <div className="text-xs font-medium text-slate-700">Effective permissions</div>
+                <div className="space-y-2 rounded-md bg-layer-canvas-muted p-3">
+                  <div className="text-xs font-medium text-foreground-strong">Effective permissions</div>
                   <div className="flex flex-wrap gap-1 text-xs">
                     {grantPreview.effective.map((permission) => {
                       const definition = permissionModel.data?.permissions.find(
@@ -1051,8 +1054,8 @@ function AddAppDeployTokenDialog({
                           key={permission}
                           title={permission}
                           className={extra
-                            ? "rounded border border-amber-300 bg-amber-50 px-1.5 py-0.5 text-amber-800"
-                            : "rounded border border-slate-200 bg-white px-1.5 py-0.5 text-slate-600"}
+                            ? "rounded border border-warning bg-warning-soft px-1.5 py-0.5 text-warning-strong"
+                            : "rounded border border-line-muted bg-layer-panel px-1.5 py-0.5 text-foreground"}
                         >
                           {definition?.label ?? permission}{extra ? " · Extra" : ""}
                         </span>
@@ -1060,7 +1063,7 @@ function AddAppDeployTokenDialog({
                     })}
                   </div>
                 </div>
-                <p className="text-xs text-slate-500">
+                <p className="text-xs text-foreground-muted">
                   The role expands to its permission bundle. Additional permissions
                   are unioned into the token's effective permissions.
                 </p>
@@ -1172,7 +1175,7 @@ function AddAppMemberDialog({
               variant="ghost"
               size="icon-sm"
               aria-label="Close"
-              className="absolute top-3 right-3 text-slate-400 hover:text-slate-700"
+              className="absolute top-3 right-3 text-foreground-hint hover:text-foreground-strong"
             />
           }
         >
@@ -1224,12 +1227,12 @@ function AddAppMemberDialog({
                 </Select>
               </div>
             ) : (
-              <p className="text-xs text-slate-500">
+              <p className="text-xs text-foreground-muted">
                 Everyone in this organization already has access or is already listed as a
                 direct app member.
               </p>
             )}
-            <div className="border-t border-slate-200 pt-3">
+            <div className="border-t border-line-muted pt-3">
               <label className="label">Add one account from another Raft server</label>
               <Input
                 value={accountId}
@@ -1242,7 +1245,7 @@ function AddAppMemberDialog({
                 spellCheck={false}
                 className="font-mono"
               />
-              <p className="mt-1 text-xs text-slate-500">
+              <p className="mt-1 text-xs text-foreground-muted">
                 Ask that person or Agent to open Hands once, or run the Hands Raft integration
                 <span className="font-mono"> whoami</span> action, then send you the returned
                 account ID. Cross-server accounts are not listed here because servers are an
@@ -1267,7 +1270,7 @@ function AddAppMemberDialog({
                 </SelectContent>
               </Select>
             </div>
-            <p className="text-xs text-slate-500">
+            <p className="text-xs text-foreground-muted">
               Direct app members receive access only to this app. Owners and org admins already
               inherit app administration.
             </p>
@@ -1333,7 +1336,7 @@ function InviteToAppForm({ appId }: { appId: string }) {
   if (!orgId) return null;
 
   return (
-    <div className="card p-4! text-sm">
+    <Card className="p-4 text-sm">
       <div className="flex items-center justify-between mb-3">
         <h3 className="text-base font-semibold">Create app invite link</h3>
         {!showForm && (
@@ -1381,13 +1384,13 @@ function InviteToAppForm({ appId }: { appId: string }) {
               </SelectContent>
             </Select>
           </div>
-          <textarea
-            className="input text-xs min-h-[40px]"
+          <Textarea
+            className="text-xs min-h-[40px]"
             value={message}
             onChange={(e) => setMessage(e.target.value)}
             placeholder="Optional message"
           />
-          <p className="text-xs text-slate-500">
+          <p className="text-xs text-foreground-muted">
             The invitee needs an account with this email; accepting the
             invite makes them an org viewer (auto) and grants app access
             with the role you pick. The URL is copied to clipboard after creation.
@@ -1412,12 +1415,12 @@ function InviteToAppForm({ appId }: { appId: string }) {
           </div>
         </form>
       ) : (
-        <p className="text-xs text-slate-500">
+        <p className="text-xs text-foreground-muted">
           Create an invite link to grant app access, then share the copied URL
           manually. The invitee is added to the org as a viewer automatically
           when they accept; the picked role controls what they can do on this app.
         </p>
       )}
-    </div>
+    </Card>
   );
 }
