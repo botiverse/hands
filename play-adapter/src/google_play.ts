@@ -115,12 +115,13 @@ export class GooglePlayClient {
     try {
       response = await this.fetchImpl(url, {
         ...init,
+        signal: init.signal ?? AbortSignal.timeout(30_000),
         headers: {
           authorization: `Bearer ${this.accessToken}`,
           ...(init.body === undefined ? {} : { "content-type": "application/json" }),
           ...(init.headers ?? {}),
         },
-        redirect: "error",
+        redirect: "manual",
       });
     } catch {
       throw new PlayAdapterError(502, "play_api_unavailable", "Google Play API request failed");
@@ -141,8 +142,9 @@ export class GooglePlayClient {
     try {
       response = await this.fetchImpl(url, {
         ...init,
+        signal: init.signal ?? AbortSignal.timeout(30_000),
         headers: { authorization: `Bearer ${this.accessToken}`, ...(init.headers ?? {}) },
-        redirect: "error",
+        redirect: "manual",
       });
     } catch {
       throw new PlayAdapterError(502, "play_api_unavailable", "Google Play API request failed");
@@ -177,6 +179,23 @@ export class GooglePlayClient {
     return this.requestJson<TrackResource>(
       `${this.editRoot(packageName, editId)}/tracks/${encodeURIComponent(track)}`,
     );
+  }
+
+  async listTracks(packageName: string): Promise<string[]> {
+    const editId = await this.createEdit(packageName);
+    let tracks: string[];
+    try {
+      const result = await this.requestJson<{ tracks?: TrackResource[] }>(`${this.editRoot(packageName, editId)}/tracks`);
+      if (!Array.isArray(result.tracks) || result.tracks.some((t) => !t || typeof t.track !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(t.track))) {
+        throw new PlayAdapterError(502, "play_tracks_malformed", "Google Play returned malformed tracks");
+      }
+      tracks = [...new Set(result.tracks.map((t) => t.track!))].sort();
+    } catch (error) {
+      await this.cleanupOrThrow(packageName, editId, error);
+      throw error;
+    }
+    await this.deleteEdit(packageName, editId);
+    return tracks;
   }
 
   async readTrackMaximum(packageName: string, track: string): Promise<number> {
@@ -217,7 +236,7 @@ export class GooglePlayClient {
             "content-type": "application/octet-stream",
           },
           body: local.stream,
-          redirect: "error",
+          redirect: "manual",
         },
       );
     } catch (error) {

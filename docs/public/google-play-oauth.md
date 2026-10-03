@@ -72,7 +72,7 @@ https://hands.build/api/google-play/oauth/callback
 2. 打开 Android 应用的 **Integrations / 集成**，点击 Google Play 行右侧的 **Connect / 连接**。无需先填写包名或轨道，也无需服务账号 JSON 文件。
 3. 登录拥有 Play 权限的 Google 账号，授予请求的权限。
 4. 返回 Integrations，确认连接器显示该 Google 账号。此时尚未配置的连接保持停用、待验证，不能用于发布。
-5. 展开 Google Play 连接器，配置包名与内部测试、封闭测试、正式发布轨道。下拉框会列出已上传 Android 构建中的包名及其来源；主渠道只有一个候选时会自动带入。上传声明不等于 APK 解析验证，仍需核对它对应的 Play 应用；也可手动填写包名。轨道名称应与 Play 中的实际名称一致，封闭测试轨道常有自定义名称。
+5. 展开 Google Play 连接器，配置包名与内部测试、封闭测试、正式发布轨道。下拉框会列出已上传 Android 构建中的包名及其来源；主渠道只有一个候选时会自动带入。上传声明不等于 APK 解析验证，仍需核对它对应的 Play 应用；也可手动填写包名。选好包名后，Hands 自动从 Play 读取真实轨道，内部测试与正式发布轨道在存在时自动带入；封闭测试从返回的轨道中选择，不需要手填 ID。读取失败可以刷新重试，未读取到的轨道不能保存。
 6. 保存配置。Hands 使用已保存的授权校验包名与轨道，成功后连接变为已验证、启用，无需再次登录 Google。
 7. 后续可使用 **Test connection / 测试连接** 检查连接仍可用。
 
@@ -106,3 +106,9 @@ Hands 中的上传校验通过，仅证明文件和所声明的摘要一致，�
 **解除绑定**会删除 Hands 为该应用保存的加密凭据和未完成授权。它不会自动撤销 Google 对整个 OAuth 客户端的授权。
 
 若也要撤销 Google 的授权，打开 [Google 账号的第三方连接](https://myaccount.google.com/connections)，找到对应应用并移除。这个操作可能同时影响使用同一 Google 账号和 OAuth 客户端的其他 Hands 应用，操作前确认范围。
+
+### 自动读取轨道 API
+
+应用管理员可调用 `POST /api/apps/:appId/google-play-binding/tracks`，JSON body 为 `{"package_name":"com.example.app"}`。使用已有 Hands 会话鉴权，服务端复用该应用已保存的 Google 授权，返回 `package_name` 与真实轨道 ID 的 `tracks` 数组。读取不保存配置或发布版本；服务端创建临时 Play edit，读取后删除。尚未配置包名的连接也可以调用。
+
+当前流程从 Hands 的构建与渠道选择包名，再验证对应的 Play 应用；并不声称列出了 Google 账号下全部应用。只有没有已知包名时才需补充包名。Google 的 [tracks.list](https://developers.google.com/android-publisher/api-ref/rest/v3/edits.tracks/list) 需要包名与临时 edit ID。

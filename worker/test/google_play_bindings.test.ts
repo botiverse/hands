@@ -67,7 +67,7 @@ describe("app-scoped Google Play bindings", () => {
     const source = readFileSync(new URL("../src/index.ts", import.meta.url), "utf8");
     const routes = source.split("\n")
       .filter((line) => line.includes('"/api/apps/:appId/google-play-binding'));
-    expect(routes).toHaveLength(6);
+    expect(routes).toHaveLength(7);
     expect(routes.every((line) => line.includes('requireAppRole("admin")'))).toBe(true);
     expect(source).toContain('requireAppRole("publisher")');
   });

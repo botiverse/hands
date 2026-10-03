@@ -6,7 +6,7 @@ describe("Google OAuth refresh", () => {
   it("exchanges a refresh token only with Google's fixed endpoint", async () => {
     const fetch = vi.fn(async (url, init) => {
       expect(String(url)).toBe("https://oauth2.googleapis.com/token");
-      expect(init.redirect).toBe("error");
+      expect(init.redirect).toBe("manual");
       expect(init.signal).toBeInstanceOf(AbortSignal);
       expect(new URLSearchParams(String(init.body)).get("grant_type")).toBe("refresh_token");
       return Response.json({ access_token: "short-lived", token_type: "Bearer" });
@@ -37,5 +37,41 @@ describe("Google OAuth refresh", () => {
     expect(result.ok).toBe(true);
     expect(requests.some((r) => r.startsWith("DELETE "))).toBe(true);
     expect(requests.some((r) => r.includes(":commit"))).toBe(false);
+  });
+});
+
+describe("Play track discovery", () => {
+  it("reads actual tracks, uses Workers-supported no-follow requests, and deletes the edit without publishing", async () => {
+    const requests: string[] = [];
+    const service = createPlayAdapterService({ fetchImpl: vi.fn(async (url, init = {}) => {
+      expect(init.redirect).toBe("manual");
+      const path = String(url); requests.push(`${init.method ?? "GET"} ${path}`);
+      if (path.endsWith("/token")) return Response.json({ access_token: "access", token_type: "Bearer" });
+      if (init.method === "POST") return Response.json({ id: "discovery-edit" });
+      if (init.method === "DELETE") return new Response(null, { status: 204 });
+      expect(path.endsWith("/edits/discovery-edit/tracks")).toBe(true);
+      return Response.json({ tracks: [{ track: "internal" }, { track: "production" }, { track: "actual-closed-7" }, { track: "internal" }] });
+    }) } as any);
+    expect(await service.listTracks({ credential, packageName: "build.raft.app" }, { MAX_AAB_SIZE_BYTES: "209715200" }))
+      .toEqual({ ok: true, value: { client_email: credential.client_email, package_name: "build.raft.app", tracks: ["actual-closed-7", "internal", "production"] } });
+    expect(requests.at(-1)).toContain("DELETE ");
+    expect(requests.some((r) => r.includes(":commit") || r.includes("/bundles"))).toBe(false);
+  });
+  it.each(["malformed", "redirect", "denied"])("cleans up failed discovery: %s", async (reason) => {
+    const fetch = vi.fn(async (url, init = {}) => {
+      expect(init.redirect).toBe("manual");
+      if (String(url).endsWith("/token")) return Response.json({ access_token: "access", token_type: "Bearer" });
+      if (init.method === "POST") return Response.json({ id: "edit" });
+      if (init.method === "DELETE") return new Response(null, { status: 204 });
+      if (reason === "redirect") return new Response(null, { status: 302, headers: { location: "https://untrusted.example" } });
+      if (reason === "denied") return Response.json({ error: credential }, { status: 403 });
+      return Response.json({ tracks: [{ track: "bad/track" }] });
+    });
+    const service = createPlayAdapterService({ fetchImpl: fetch } as any);
+    const result = await service.listTracks({ credential, packageName: "build.raft.app" }, { MAX_AAB_SIZE_BYTES: "209715200" });
+    expect(result.ok).toBe(false);
+    expect(JSON.stringify(result)).not.toContain(credential.refresh_token);
+    expect(fetch.mock.calls.at(-1)?.[1]?.method).toBe("DELETE");
+    expect(fetch.mock.calls.some(([url]) => String(url).includes("untrusted"))).toBe(false);
   });
 });

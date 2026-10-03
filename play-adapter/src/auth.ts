@@ -59,7 +59,7 @@ export async function createAccessToken(
     let response: Response;
     try {
       response = await fetchImpl(TOKEN_URL, {
-        method: "POST", redirect: "error", signal: AbortSignal.timeout(30_000),
+        method: "POST", redirect: "manual", signal: AbortSignal.timeout(30_000),
         headers: { "content-type": "application/x-www-form-urlencoded" },
         body: new URLSearchParams({ grant_type: "refresh_token", client_id: credential.client_id,
           client_secret: credential.client_secret, refresh_token: credential.refresh_token }),
@@ -99,7 +99,7 @@ export async function createAccessToken(
         grant_type: "urn:ietf:params:oauth:grant-type:jwt-bearer",
         assertion,
       }),
-      redirect: "error",
+      redirect: "manual",
     });
   } catch {
     throw new PlayAdapterError(502, "play_token_unavailable", "Google OAuth token request failed");

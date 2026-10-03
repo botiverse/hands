@@ -23,6 +23,7 @@ import {
   getGooglePlayBinding,
   listBuilds,
   listChannels,
+  listGooglePlayTracks,
   setGooglePlayBinding,
   setGooglePlayBindingEnabled,
   startGooglePlayOAuth,
@@ -46,16 +47,16 @@ export function GooglePlayConnector({ appId }: { appId: string }) {
   const mainPackages = packageOptions.filter((option) => option.isMain);
   const suggestedPackage = mainPackages.length === 1 ? mainPackages[0]!.packageName : "";
   const [packageName, setPackageName] = useState("");
-  const [internalTrack, setInternalTrack] = useState("internal");
-  const [closedTrack, setClosedTrack] = useState("closed");
-  const [productionTrack, setProductionTrack] = useState("production");
+  const [internalTrack, setInternalTrack] = useState("");
+  const [closedTrack, setClosedTrack] = useState("");
+  const [productionTrack, setProductionTrack] = useState("");
 
   useEffect(() => {
     if (!meta || editing) return;
     setPackageName(meta.package_name ?? "");
-    setInternalTrack(meta.internal_track ?? "internal");
-    setClosedTrack(meta.closed_track ?? "closed");
-    setProductionTrack(meta.production_track ?? "production");
+    setInternalTrack(meta.internal_track ?? "");
+    setClosedTrack(meta.closed_track ?? "");
+    setProductionTrack(meta.production_track ?? "");
   }, [meta, editing]);
 
   useEffect(() => {
@@ -143,6 +144,33 @@ export function GooglePlayConnector({ appId }: { appId: string }) {
   } catch {
     credentialLooksValid = false;
   }
+  const [discovered, setDiscovered] = useState<{ package_name: string; tracks: string[] } | null>(null);
+  const [tracksLoading, setTracksLoading] = useState(false);
+  const [tracksError, setTracksError] = useState<string | null>(null);
+  const [trackReload, setTrackReload] = useState(0);
+  useEffect(() => {
+    setDiscovered(null);
+    setTracksError(null);
+    const suppliedCredential = connectionMethod === "service" && (editing || !meta) ? credentialJson : undefined;
+    if ((meta?.package_name && !editing) || !/^[A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z][A-Za-z0-9_]*)+$/.test(packageName)
+      || (suppliedCredential !== undefined ? !credentialLooksValid : !meta)) { setTracksLoading(false); return; }
+    let cancelled = false;
+    setTracksLoading(true);
+    const timer = window.setTimeout(() => {
+      listGooglePlayTracks(appId, { package_name: packageName, ...(suppliedCredential === undefined ? {} : { service_account_json: suppliedCredential }) })
+        .then((result) => {
+          if (cancelled) return;
+          setDiscovered(result);
+          const ids = result.tracks;
+          setInternalTrack((current) => ids.includes(current) ? current : ids.includes("internal") ? "internal" : "");
+          setProductionTrack((current) => ids.includes(current) ? current : ids.includes("production") ? "production" : "");
+          setClosedTrack((current) => ids.includes(current) ? current : "");
+        }).catch((error) => { if (!cancelled) setTracksError((error as Error).message); })
+        .finally(() => { if (!cancelled) setTracksLoading(false); });
+    }, 300);
+    return () => { cancelled = true; window.clearTimeout(timer); };
+  }, [appId, packageName, meta?.credential_fingerprint, meta?.package_name, credentialJson, credentialLooksValid, connectionMethod, editing, trackReload]);
+  const availableTracks = discovered?.package_name === packageName ? discovered.tracks : [];
   const needsConfig = Boolean(meta && !meta.package_name);
   const showForm = editing || (!meta && !query.isLoading);
   const [userExpanded, setUserExpanded] = useState<boolean | null>(null);
@@ -153,7 +181,7 @@ export function GooglePlayConnector({ appId }: { appId: string }) {
   // a single row with Connect.
   const expanded = userExpanded ?? needsConfig;
   const tracksComplete = Boolean(
-    packageName.trim() && internalTrack.trim() && closedTrack.trim() && productionTrack.trim(),
+    packageName.trim() && [internalTrack, closedTrack, productionTrack].every((track) => availableTracks.includes(track)) && !tracksLoading,
   );
   // The OAuth configuration path reuses the saved credential; only the
   // service-account path must provide one.
@@ -184,15 +212,20 @@ export function GooglePlayConnector({ appId }: { appId: string }) {
           <Input aria-label={gp("packageName")} className="mt-1 font-mono" value={packageName} onChange={(event) => setPackageName(event.target.value)} placeholder="com.example.app" />
         </label>}
       </div>
-      <label className="text-xs text-foreground">{gp("internalTrack")}
-        <Input className="mt-1 font-mono" value={internalTrack} onChange={(event) => setInternalTrack(event.target.value)} />
-      </label>
-      <label className="text-xs text-foreground">{gp("closedTrack")}
-        <Input className="mt-1 font-mono" value={closedTrack} onChange={(event) => setClosedTrack(event.target.value)} />
-      </label>
-      <label className="text-xs text-foreground">{gp("productionTrack")}
-        <Input className="mt-1 font-mono" value={productionTrack} onChange={(event) => setProductionTrack(event.target.value)} />
-      </label>
+      <div className="md:col-span-2 text-xs text-foreground-muted">
+        {tracksLoading ? gp("loadingTracks") : tracksError ? <span role="alert">{tracksError}</span> : discovered && availableTracks.length === 0 ? gp("noTracks") : gp("tracksHelp")}
+        {meta && <Button variant="outline" className="ml-2" disabled={tracksLoading || !packageName} onClick={() => setTrackReload((n) => n + 1)}>{gp("reloadTracks")}</Button>}
+      </div>
+      {([
+        ["internalTrack", internalTrack, setInternalTrack],
+        ["closedTrack", closedTrack, setClosedTrack],
+        ["productionTrack", productionTrack, setProductionTrack],
+      ] as const).map(([label, value, setValue]) => <label key={label} className="text-xs text-foreground">{gp(label)}
+        <Select items={Object.fromEntries(availableTracks.map((id) => [id, id]))} value={availableTracks.includes(value) ? value : null} onValueChange={(id) => setValue(id ? String(id) : "")}>
+          <SelectTrigger className="mt-1 w-full" aria-label={gp(label)} disabled={tracksLoading || availableTracks.length === 0}><SelectValue placeholder={gp("chooseTrack")} /><SelectIcon /></SelectTrigger>
+          <SelectContent>{availableTracks.map((id) => <SelectItem key={id} value={id}>{id}</SelectItem>)}</SelectContent>
+        </Select>
+      </label>)}
     </div>
   );
 

@@ -155,6 +155,15 @@ export function registerAndroidDistributionRoutes(): RouteConfigList {
     },
   });
 
+  routes.push({
+    method: "post", path: "/api/apps/{appId}/google-play-binding/tracks", tags: ["Android distribution"],
+    summary: "Discover the selected app's real Google Play tracks",
+    description: "Uses the saved Google credential (or a supplied service-account credential) to read tracks in a temporary edit, then deletes the edit without publishing or saving configuration.",
+    security: auth,
+    request: { params: AppIdParam, body: { content: json(z.object({ package_name: z.string().optional(), service_account_json: z.unknown().optional() })), required: true } },
+    responses: { 200: success("Actual Play package and track identifiers.", GenericObject), 400: error("Package or connection is missing."), 403: error("App admin role is required."), 409: error("Connection changed during discovery."), 502: error("Play discovery failed."), 503: error("Play adapter unavailable.") },
+  });
+
   for (const action of ["verify", "enable", "disable"] as const) {
     routes.push({
       method: "post",

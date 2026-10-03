@@ -75,6 +75,43 @@ export async function handleGetGooglePlayBinding(c: AdminContext) {
   });
 }
 
+export async function handleListGooglePlayTracks(c: AdminContext) {
+  const invalid = await requireAndroidApp(c);
+  if (invalid) return invalid;
+  const appId = c.req.param("appId") ?? "";
+  let body: { package_name?: unknown; service_account_json?: unknown };
+  try { body = await c.req.json(); } catch { return c.json({ code: "INVALID_PLAY_BINDING", error: "valid JSON body required" }, 400); }
+  if (!body || typeof body !== "object" || Array.isArray(body)) return c.json({ code: "INVALID_PLAY_BINDING", error: "JSON object required" }, 400);
+  let stored;
+  try { stored = body.service_account_json === undefined ? await getGooglePlayBinding(c.env.DB, appId, c.env.PLAY_CRED_ENC_KEYS) : null; }
+  catch { return c.json({ code: "PLAY_CREDENTIAL_UNAVAILABLE", error: "Stored Google Play credential could not be decrypted" }, 500); }
+  let credential;
+  let packageName;
+  try {
+    credential = body.service_account_json === undefined ? stored?.credential : parseGoogleServiceAccount(body.service_account_json);
+    packageName = normalizeGooglePlayPackage(body.package_name ?? stored?.package_name);
+  } catch { return c.json({ code: "INVALID_PLAY_BINDING", error: "Choose a valid Android package and credential" }, 400); }
+  if (!credential) return c.json({ code: "PLAY_BINDING_MISSING", error: "Connect Google before reading tracks" }, 400);
+  if (!c.env.PLAY_RELEASE_SERVICE) return c.json({ code: "PLAY_SERVICE_UNAVAILABLE", error: "Google Play service is unavailable" }, 503);
+  try {
+    const result = await c.env.PLAY_RELEASE_SERVICE.listTracks({ credential, packageName });
+    if (!result?.ok) return c.json({ code: result?.error?.code ?? "PLAY_TRACKS_UNAVAILABLE", error: result?.error?.message ?? "Google Play tracks could not be read" }, 502);
+    if (result.value.package_name !== packageName || result.value.client_email !== credential.client_email
+      || !Array.isArray(result.value.tracks) || result.value.tracks.some((t) => typeof t !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(t))) {
+      return c.json({ code: "PLAY_BINDING_MISMATCH", error: "Google Play returned an invalid app or track identity" }, 502);
+    }
+    const role = await ensureAppRole(c, appId, "admin");
+    if (!role.ok) return role.response;
+    if (body.service_account_json === undefined) {
+      const current = await getGooglePlayBindingMeta(c.env.DB, appId);
+      if (!current || current.credential_fingerprint !== stored?.credential_fingerprint || current.updated_at !== stored?.updated_at) {
+        return c.json({ code: "PLAY_BINDING_CHANGED", error: "Google connection changed; reload and retry" }, 409);
+      }
+    }
+    return c.json({ package_name: packageName, tracks: [...new Set(result.value.tracks)].sort() });
+  } catch { return c.json({ code: "PLAY_SERVICE_UNAVAILABLE", error: "Google Play track request failed" }, 502); }
+}
+
 export async function handlePutGooglePlayBinding(c: AdminContext) {
   const invalid = await requireAndroidApp(c);
   if (invalid) return invalid;

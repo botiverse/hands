@@ -27,6 +27,7 @@ import { requireAppRole } from "../src/lib/permissions";
 import {
   handleEnableGooglePlayBinding,
   handleGetGooglePlayBinding,
+  handleListGooglePlayTracks,
   handlePutGooglePlayBinding,
   handleVerifyGooglePlayBinding,
 } from "../src/routes/google_play_bindings";
@@ -513,6 +514,7 @@ type PlayAdapter = NonNullable<Env["PLAY_RELEASE_SERVICE"]>;
 
 function playAdapterStub(overrides: Partial<PlayAdapter> = {}): PlayAdapter {
   return {
+    listTracks: async (input) => ({ ok: true, value: { client_email: input.credential.client_email, package_name: input.packageName, tracks: ["internal", "production", "alpha"] } }),
     verifyBinding: async (input) => ({
       ok: true,
       value: {
@@ -580,6 +582,7 @@ function googlePlayBindingHarness(role: "admin" | "publisher", withKeyring = tru
     await next();
   });
   app.get("/api/apps/:appId/google-play-binding", requireAppRole("admin"), handleGetGooglePlayBinding);
+  app.post("/api/apps/:appId/google-play-binding/tracks", requireAppRole("admin"), handleListGooglePlayTracks);
   app.put("/api/apps/:appId/google-play-binding", requireAppRole("admin"), handlePutGooglePlayBinding);
   app.post("/api/apps/:appId/google-play-binding/verify", requireAppRole("admin"), handleVerifyGooglePlayBinding);
   app.post("/api/apps/:appId/google-play-binding/enable", requireAppRole("admin"), handleEnableGooglePlayBinding);
@@ -1008,5 +1011,47 @@ describe("Play promotion route", () => {
       "SELECT payload_json FROM release_receipts WHERE artifact_id = ? ORDER BY rowid DESC LIMIT 1",
     ).get(apkAsset.asset_id) as { payload_json: string }).payload_json));
     expect(apkPayload.artifact.type).toBe("apk");
+  });
+});
+
+describe("Google Play track discovery routes", () => {
+  async function seed(harness: ReturnType<typeof googlePlayBindingHarness>) {
+    await storeGooglePlayBinding(harness.env.DB, { appId: "app", packageName: null, tracks: null,
+      credential: { type: "authorized_user", client_id: "client", client_secret: "private-secret", refresh_token: "private-refresh", client_email: "human@example.com" },
+      actor: "test", keyringJson: harness.env.PLAY_CRED_ENC_KEYS, activeKeyVersion: "v1" });
+  }
+  const path = "/api/apps/app/google-play-binding/tracks";
+  const input = { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ package_name: "build.raft.app" }) };
+  it("uses the saved OAuth before configuration, returns only actual tracks and leaves the binding unconfigured", async () => {
+    const h = googlePlayBindingHarness("admin"); await seed(h);
+    const response = await h.request(path, input);
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ package_name: "build.raft.app", tracks: ["alpha", "internal", "production"] });
+    expect(h.sqlite.prepare("SELECT package_name, enabled FROM app_google_play_bindings WHERE app_id='app'").get()).toEqual({ package_name: null, enabled: 0 });
+  });
+  it("denies publishers and cross-app access before calling Play", async () => {
+    const h = googlePlayBindingHarness("publisher");
+    h.env.PLAY_RELEASE_SERVICE = playAdapterStub({ listTracks: async () => { throw new Error("must not be called"); } });
+    expect((await h.request(path, input)).status).toBe(403);
+    expect((await h.request(path.replace('/app/', '/other/'), input)).status).toBe(403);
+  });
+  it("rejects an adapter identity mismatch and never returns credential material", async () => {
+    const h = googlePlayBindingHarness("admin"); await seed(h);
+    h.env.PLAY_RELEASE_SERVICE = playAdapterStub({ listTracks: async () => ({ ok: true, value: { client_email: "other@example.com", package_name: "build.other", tracks: ["alpha"] } }) });
+    const response = await h.request(path, input);
+    expect(response.status).toBe(502);
+    const text = await response.text(); expect(text).toContain("PLAY_BINDING_MISMATCH"); expect(text).not.toContain("private-refresh");
+  });
+  it("does not return discovery from a credential removed during the request", async () => {
+    const h = googlePlayBindingHarness("admin"); await seed(h);
+    h.env.PLAY_RELEASE_SERVICE = playAdapterStub({ listTracks: async (input) => {
+      h.sqlite.prepare("DELETE FROM app_google_play_bindings WHERE app_id='app'").run();
+      return { ok: true, value: { client_email: input.credential.client_email, package_name: input.packageName, tracks: ["alpha"] } };
+    } });
+    expect((await h.request(path, input)).status).toBe(409);
+  });
+  it("rejects malformed body without requiring a connection", async () => {
+    const h = googlePlayBindingHarness("admin");
+    expect((await h.request(path, { ...input, body: "null" })).status).toBe(400);
   });
 });
