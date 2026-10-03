@@ -14,8 +14,8 @@ node scripts/monitoring/collect-http-responses.mjs \
   /path/to/production-config.json /path/to/private/http-responses.jsonl 24
 ```
 
-The collector requests real-time tail sampling at 1 and stops after the configured
-number of hours. It reconnects after disconnection and records connection/parse
+The collector requests an unfiltered real-time tail (no sampling filter) and stops
+after the configured number of hours. It reconnects after disconnection and records connection/parse
  gaps. Raw tail envelopes are never saved. Use a Raft reminder to inspect the
 collector and report unexpected 400/5xx groups to the task thread. Reconcile the
 collector process and gap records before claiming coverage; a tail has platform

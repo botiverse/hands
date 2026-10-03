@@ -18,7 +18,7 @@ setTimeout(end, expires - Date.now()).unref();
 function connect() {
   if (stopped || Date.now() >= expires) return;
   write({ kind: 'tail_connecting', timestamp: Date.now(), expires_at: expires });
-  child = spawn(process.execPath, [wrangler, 'tail', 'hands-worker', '--config', config, '--format', 'json', '--sampling-rate', '1'], { stdio: ['ignore', 'pipe', 'ignore'] });
+  child = spawn(process.execPath, [wrangler, 'tail', 'hands-worker', '--config', config, '--format', 'json'], { stdio: ['ignore', 'pipe', 'ignore'] });
   let buffer = '';
   child.stdout.setEncoding('utf8');
   child.stdout.on('data', (chunk) => {
