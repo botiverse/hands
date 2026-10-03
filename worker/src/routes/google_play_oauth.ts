@@ -161,7 +161,7 @@ export async function handleGooglePlayOAuthCallback(c: AdminContext) {
     if (token.token_type !== "Bearer"
       || typeof token.access_token !== "string" || !token.access_token) return fail("token_exchange", response.status);
     if (typeof token.refresh_token !== "string" || !token.refresh_token) return fail("offline_access");
-    if (typeof token.scope !== "string" || !token.scope.split(/\s+/).includes(SCOPE)) return fail("google_permissions");
+    if (typeof token.scope !== "string" || !token.scope.split(/\s+/).some((scope) => scope === SCOPE)) return fail("google_permissions");
     stage = "account_identity";
     const profileResponse = await fetch("https://openidconnect.googleapis.com/v1/userinfo", {
       headers: { authorization: "Bearer " + token.access_token }, redirect: "error", signal: AbortSignal.timeout(30_000),
