@@ -32,7 +32,9 @@ import {
   AlertDialogFooter,
   AlertDialogHeader,
   AlertDialogTitle,
+  Badge,
   Button,
+  Card,
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
@@ -51,6 +53,7 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "raft-ui";
+import type { BadgeProps } from "raft-ui";
 import type { FeedbackTicket } from "../lib/api";
 
 const STATUSES = ["open", "in_progress", "resolved"] as const;
@@ -74,17 +77,19 @@ function closureReasonLabel(reason: FeedbackTicket["closure_reason"]): string {
     ?? String(reason ?? "Closed");
 }
 
-const STATUS_STYLES: Record<string, string> = {
-  open: "bg-red-100 text-red-800",
-  in_progress: "bg-sky-100 text-sky-800",
-  resolved: "bg-emerald-100 text-emerald-800",
-  closed: "bg-slate-200 text-slate-600",
+type BadgeVariant = NonNullable<BadgeProps["variant"]>;
+
+const STATUS_VARIANTS: Record<string, BadgeVariant> = {
+  open: "danger",
+  in_progress: "information",
+  resolved: "success",
+  closed: "muted",
 };
 
-const KIND_STYLES: Record<string, string> = {
-  feedback: "bg-slate-100 text-slate-700",
-  bug: "bg-amber-100 text-amber-800",
-  crash: "bg-red-100 text-red-800",
+const KIND_VARIANTS: Record<string, BadgeVariant> = {
+  feedback: "muted",
+  bug: "warning",
+  crash: "danger",
 };
 
 export function AppFeedback({ appId }: { appId: string }) {
@@ -128,23 +133,23 @@ export function AppFeedback({ appId }: { appId: string }) {
         />
       )}
       {versionFilter && (
-        <div className="card py-2! px-3! flex items-center justify-between text-sm">
+        <Card className="py-2 px-3 flex flex-row items-center justify-between text-sm">
           <span>
             Filtered to version code <span className="font-mono">{versionFilter}</span>
           </span>
           <Button variant="link" size="sm" className="text-xs" onClick={() => clearScopeFilter("version_code")}>
             clear
           </Button>
-        </div>
+        </Card>
       )}
       {signatureFilter && (
-        <div className="card p-3!">
+        <Card className="p-3">
           <div className="flex items-start justify-between gap-3">
             <div className="min-w-0">
-              <div className="text-xs text-slate-500">Crash signature</div>
+              <div className="text-xs text-foreground-muted">Crash signature</div>
               <code className="text-xs break-all">{signatureFilter}</code>
               {rows.length > 0 && (
-                <div className="mt-1 text-xs text-slate-500">
+                <div className="mt-1 text-xs text-foreground-muted">
                   {rows.length} instance{rows.length === 1 ? "" : "s"} ·{" "}
                   {new Set(rows.map((r) => r.version_code).filter(Boolean)).size} version(s) ·{" "}
                   {new Set(rows.map((r) => r.device_id).filter(Boolean)).size} device(s)
@@ -155,13 +160,13 @@ export function AppFeedback({ appId }: { appId: string }) {
               clear
             </Button>
           </div>
-        </div>
+        </Card>
       )}
       {!deviceFilter && !versionFilter && !signatureFilter && <FeedbackTrends appId={appId} />}
       <div className="flex items-center justify-between flex-wrap gap-2">
         <div>
           <h2 className="text-lg font-semibold">Feedback</h2>
-          <p className="text-sm text-slate-500">
+          <p className="text-sm text-foreground-muted">
             Feedback and crash reports submitted from this app.
           </p>
         </div>
@@ -202,7 +207,7 @@ export function AppFeedback({ appId }: { appId: string }) {
       </div>
 
 
-      <div className="card overflow-x-auto">
+      <Card className="overflow-x-auto">
         {tickets.isLoading && (
           <div className="space-y-2">
             <Skeleton className="h-10 w-full" />
@@ -211,7 +216,7 @@ export function AppFeedback({ appId }: { appId: string }) {
           </div>
         )}
         {tickets.error && (
-          <p className="text-sm text-red-600">
+          <p className="text-sm text-danger">
             Failed to load feedback: {(tickets.error as Error).message}
           </p>
         )}
@@ -223,7 +228,7 @@ export function AppFeedback({ appId }: { appId: string }) {
         {rows.length > 0 && (
           <table className="w-full text-sm">
             <thead>
-              <tr className="text-left text-xs text-slate-500 border-b border-slate-200">
+              <tr className="text-left text-xs text-foreground-muted border-b border-line-muted">
                 <th className="py-2 pr-3">Ticket</th>
                 <th className="py-2 pr-3">Status</th>
                 <th className="py-2 pr-3">Assignee</th>
@@ -238,33 +243,33 @@ export function AppFeedback({ appId }: { appId: string }) {
               {rows.map((t) => (
                 <tr
                   key={t.id}
-                  className="border-b border-slate-100 last:border-0 cursor-pointer hover:bg-slate-50"
+                  className="border-b border-line-hairline last:border-0 cursor-pointer hover:bg-fill-muted"
                   onClick={() => navigate(`/apps/${appId}/feedback/${t.id}`)}
                 >
                   <td className="py-2 pr-3 max-w-md">
-                    <span className={`rounded-sm px-1.5 py-0.5 text-xs font-medium mr-2 ${KIND_STYLES[t.kind]}`}>
+                    <Badge variant={KIND_VARIANTS[t.kind] ?? "muted"} className="mr-2">
                       {t.kind}
-                    </span>
+                    </Badge>
                     {t.crash_type === "anr" && (
-                      <span className="rounded-sm px-1.5 py-0.5 text-xs font-medium mr-2 bg-orange-100 text-orange-800">
+                      <Badge variant="warning" className="mr-2">
                         ANR
-                      </span>
+                      </Badge>
                     )}
                     <span className="align-middle">{t.message.slice(0, 80)}{t.message.length > 80 ? "…" : ""}</span>
                   </td>
                   <td className="py-2 pr-3">
-                    <span className={`rounded-sm px-1.5 py-0.5 text-xs font-medium ${STATUS_STYLES[t.status]}`}>
+                    <Badge variant={STATUS_VARIANTS[t.status] ?? "muted"}>
                       {t.status}
-                    </span>
+                    </Badge>
                   </td>
-                  <td className="py-2 pr-3 text-xs text-slate-600">{t.assignee ?? "—"}</td>
-                  <td className="py-2 pr-3 text-xs text-slate-600">
+                  <td className="py-2 pr-3 text-xs text-foreground">{t.assignee ?? "—"}</td>
+                  <td className="py-2 pr-3 text-xs text-foreground">
                     {t.version_name ?? "—"}{t.version_code ? ` (${t.version_code})` : ""}
                   </td>
-                  <td className="py-2 pr-3 text-xs text-slate-600">
+                  <td className="py-2 pr-3 text-xs text-foreground">
                     {[t.device_model, t.os_version].filter(Boolean).join(" · ") || "—"}
                   </td>
-                  <td className="py-2 pr-3 text-xs text-slate-600">
+                  <td className="py-2 pr-3 text-xs text-foreground">
                     {new Date(t.created_at).toLocaleString()}
                   </td>
                   <td className="py-2 pr-3 text-xs">{t.attachment_count || ""}</td>
@@ -274,7 +279,7 @@ export function AppFeedback({ appId }: { appId: string }) {
             </tbody>
           </table>
         )}
-      </div>
+      </Card>
     </div>
   );
 }
@@ -335,11 +340,11 @@ function CrashLogView({
     sections.find((x) => x.key === active) ?? sections[0];
 
   return (
-    <div className="card">
+    <Card className="">
       <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
         <h4 className="text-sm font-semibold">Crash detail</h4>
         {deobfuscated && (active === "stack" || (activeSection?.key === "stack")) && (
-          <div className="flex overflow-hidden rounded-md border border-slate-200 text-xs">
+          <div className="flex overflow-hidden rounded-md border border-line-muted text-xs">
             <Button
               size="sm"
               variant={showDeobf ? "default" : "ghost"}
@@ -358,12 +363,12 @@ function CrashLogView({
         )}
       </div>
 
-      {log.isLoading && <p className="text-xs text-slate-500">Loading…</p>}
-      {log.error && <p className="text-xs text-red-600">Could not load crash log.</p>}
+      {log.isLoading && <p className="text-xs text-foreground-muted">Loading…</p>}
+      {log.error && <p className="text-xs text-danger">Could not load crash log.</p>}
 
       {sections.length > 0 && (
         <>
-          <div className="mb-2 flex flex-wrap gap-1 border-b border-slate-100 pb-2 text-xs">
+          <div className="mb-2 flex flex-wrap gap-1 border-b border-line-hairline pb-2 text-xs">
             {sections.map((sec) => (
               <Button
                 key={sec.key}
@@ -375,14 +380,14 @@ function CrashLogView({
               </Button>
             ))}
           </div>
-          <pre className="max-h-112 overflow-auto rounded-md bg-slate-950 p-3 text-xs leading-relaxed text-slate-100">
+          <pre className="max-h-112 overflow-auto rounded-md bg-layer-hud p-3 text-xs leading-relaxed text-layer-hud-foreground">
             {activeSection?.key === "stack" && deobfuscated && showDeobf
               ? deobfuscated
               : activeSection?.body}
           </pre>
         </>
       )}
-    </div>
+    </Card>
   );
 }
 
@@ -401,7 +406,7 @@ function DeviceScopeBanner({
   });
   const d = detail.data?.device;
   return (
-    <div className="card p-3!">
+    <Card className="p-3">
       <div className="flex items-center justify-between">
         <h4 className="text-sm font-semibold">
           Device <span className="font-mono text-xs">{deviceId}</span>
@@ -413,28 +418,28 @@ function DeviceScopeBanner({
       {d ? (
         <dl className="mt-2 grid grid-cols-2 gap-x-4 gap-y-1 text-xs sm:grid-cols-4">
           <div>
-            <dt className="text-slate-500">Latest version</dt>
+            <dt className="text-foreground-muted">Latest version</dt>
             <dd>{d.version_name ?? "—"}{d.version_code ? ` (${d.version_code})` : ""}</dd>
           </div>
           <div>
-            <dt className="text-slate-500">Model</dt>
+            <dt className="text-foreground-muted">Model</dt>
             <dd>{d.device_model ?? "—"}</dd>
           </div>
           <div>
-            <dt className="text-slate-500">Platform / OS</dt>
+            <dt className="text-foreground-muted">Platform / OS</dt>
             <dd>{[d.platform, d.os_version].filter(Boolean).join(" · ") || "—"}</dd>
           </div>
           <div>
-            <dt className="text-slate-500">Last seen</dt>
+            <dt className="text-foreground-muted">Last seen</dt>
             <dd>{new Date(d.last_seen).toLocaleString()}</dd>
           </div>
         </dl>
       ) : (
-        <p className="mt-1 text-xs text-slate-500">
+        <p className="mt-1 text-xs text-foreground-muted">
           No analytics ping from this device yet — showing its tickets below.
         </p>
       )}
-    </div>
+    </Card>
   );
 }
 
@@ -458,7 +463,7 @@ function AttachmentList({
   const others = attachments.filter((a) => !isImageAttachment(a));
 
   return (
-    <div className="card">
+    <Card className="">
       <h4 className="text-sm font-semibold mb-2">Attachments</h4>
 
       {images.length > 0 && (
@@ -489,7 +494,7 @@ function AttachmentList({
               >
                 {a.filename}
               </Button>
-              <span className="ml-2 text-xs text-slate-400">
+              <span className="ml-2 text-xs text-foreground-hint">
                 {(a.size_bytes / 1024).toFixed(1)} KB
               </span>
             </li>
@@ -519,7 +524,7 @@ function AttachmentList({
           </Button>
         </div>
       )}
-    </div>
+    </Card>
   );
 }
 
@@ -555,7 +560,7 @@ function AttachmentImage({
         render={
           <button
             type="button"
-            className="group relative h-24 w-24 overflow-hidden rounded-md border border-slate-200 bg-slate-50"
+            className="group relative h-24 w-24 overflow-hidden rounded-md border border-line-muted bg-layer-canvas-muted"
             onClick={() => image.data && onOpen(image.data)}
             disabled={!image.data}
           >
@@ -668,30 +673,30 @@ export function FeedbackTicketPage({
   return (
     <div className="space-y-4 max-w-3xl">
       <div className="flex items-center gap-2 text-sm">
-        <Link to={`/apps/${appId}/feedback`} className="text-blue-600 hover:underline">
+        <Link to={`/apps/${appId}/feedback`} className="text-info-strong hover:underline">
           ← Feedback
         </Link>
       </div>
 
-      {detail.isLoading && <p className="text-sm text-slate-500">Loading…</p>}
+      {detail.isLoading && <p className="text-sm text-foreground-muted">Loading…</p>}
       {detail.error && (
-        <p className="text-sm text-red-600">{(detail.error as Error).message}</p>
+        <p className="text-sm text-danger">{(detail.error as Error).message}</p>
       )}
       {t && (
         <>
           <div className="flex items-start justify-between gap-3 flex-wrap">
             <div>
               <div className="flex items-center gap-2">
-                <span className={`rounded-sm px-1.5 py-0.5 text-xs font-medium ${KIND_STYLES[t.kind]}`}>{t.kind}</span>
-                <span className={`rounded-sm px-1.5 py-0.5 text-xs font-medium ${STATUS_STYLES[t.status]}`}>{t.status}</span>
+                <Badge variant={KIND_VARIANTS[t.kind] ?? "muted"}>{t.kind}</Badge>
+                <Badge variant={STATUS_VARIANTS[t.status] ?? "muted"}>{t.status}</Badge>
                 {t.assignee && (
-                  <span className="rounded-sm bg-violet-100 px-1.5 py-0.5 text-xs font-medium text-violet-800">
+                  <span className="rounded-sm bg-accent-soft px-1.5 py-0.5 text-xs font-medium text-accent-strong">
                     {t.assignee}
                   </span>
                 )}
               </div>
               <h2 className="mt-2 text-lg font-semibold">Ticket {t.id.slice(0, 8)}</h2>
-              <p className="text-xs text-slate-500">
+              <p className="text-xs text-foreground-muted">
                 {new Date(t.created_at).toLocaleString()}
                 {t.contact ? ` · ${t.contact}` : ""}
               </p>
@@ -748,7 +753,7 @@ export function FeedbackTicketPage({
                           )}
                           <span>
                             <strong className="block">{item.label}</strong>
-                            <span className="mt-0.5 block text-xs text-slate-500">
+                            <span className="mt-0.5 block text-xs text-foreground-muted">
                               {item.description}
                             </span>
                           </span>
@@ -762,22 +767,22 @@ export function FeedbackTicketPage({
           </div>
 
           {t.status === "closed" && t.closure_reason && (
-            <div className="card text-sm">
+            <Card className="text-sm">
               <div className="font-semibold">Closed as {closureReasonLabel(t.closure_reason)}</div>
               {t.duplicate_of_ticket_id && (
                 <Link
                   to={`/apps/${appId}/feedback/${t.duplicate_of_ticket_id}`}
-                  className="mt-1 inline-block font-mono text-xs text-blue-600 hover:underline"
+                  className="mt-1 inline-block font-mono text-xs text-info-strong hover:underline"
                 >
                   Original ticket {t.duplicate_of_ticket_id}
                 </Link>
               )}
-            </div>
+            </Card>
           )}
 
-          <div className="card text-sm whitespace-pre-wrap">{t.message}</div>
+          <Card className="text-sm whitespace-pre-wrap">{t.message}</Card>
 
-          <div className="card">
+          <Card className="">
             <h4 className="text-sm font-semibold mb-2">Assignee</h4>
             <div className="flex items-center gap-2 text-sm flex-wrap">
               {assigneeDraft === null ? (
@@ -806,7 +811,7 @@ export function FeedbackTicketPage({
                     <Button
                       variant="link"
                       size="sm"
-                      className="text-xs text-red-600"
+                      className="text-xs text-danger"
                       disabled={update.isPending}
                       onClick={() => update.mutate({ assignee: null })}
                     >
@@ -817,7 +822,7 @@ export function FeedbackTicketPage({
               ) : (
                 <>
                   <Input
-                    className="rounded-sm border border-slate-300 px-2 py-1 text-sm"
+                    className="rounded-sm border border-line-strong px-2 py-1 text-sm"
                     value={assigneeDraft}
                     autoFocus
                     onChange={(e) => setAssigneeDraft(e.target.value)}
@@ -837,9 +842,9 @@ export function FeedbackTicketPage({
                 </>
               )}
             </div>
-          </div>
+          </Card>
 
-          <div className="card">
+          <Card className="">
             <h4 className="text-sm font-semibold mb-2">Environment</h4>
             {(() => {
               // Generic render of every reported environment field (task #105):
@@ -874,7 +879,7 @@ export function FeedbackTicketPage({
                 .sort(([a], [b]) => a.localeCompare(b));
               if (entries.length === 0) {
                 return (
-                  <p className="text-xs text-slate-500">
+                  <p className="text-xs text-foreground-muted">
                     No environment data reported.
                   </p>
                 );
@@ -889,7 +894,7 @@ export function FeedbackTicketPage({
                 <dl className="grid grid-cols-2 gap-x-4 gap-y-1 text-xs">
                   {entries.map(([k, v]) => (
                     <Fragment key={k}>
-                      <dt className="text-slate-500">{label(k)}</dt>
+                      <dt className="text-foreground-muted">{label(k)}</dt>
                       <dd className={mono(k) ? "font-mono break-all" : "break-all"}>
                         {k === "version_code" ? (
                           <Tooltip>
@@ -939,7 +944,7 @@ export function FeedbackTicketPage({
                 </dl>
               );
             })()}
-          </div>
+          </Card>
 
           {(() => {
             let meta: Record<string, unknown> = {};
@@ -952,19 +957,19 @@ export function FeedbackTicketPage({
             const excMsg = typeof meta.exception_message === "string" ? meta.exception_message : null;
             if (!stacktrace && !excClass) return null;
             return (
-              <div className="card">
+              <Card className="">
                 <h4 className="text-sm font-semibold mb-2">Exception</h4>
                 {excClass && (
-                  <p className="text-sm font-mono text-red-700 mb-2 break-all">
+                  <p className="text-sm font-mono text-danger mb-2 break-all">
                     {excClass}{excMsg ? `: ${excMsg}` : ""}
                   </p>
                 )}
                 {stacktrace && (
-                  <pre className="text-xs bg-slate-50 rounded p-3 overflow-x-auto max-h-80 overflow-y-auto whitespace-pre-wrap break-all">
+                  <pre className="text-xs bg-layer-canvas-muted rounded p-3 overflow-x-auto max-h-80 overflow-y-auto whitespace-pre-wrap break-all">
                     {stacktrace}
                   </pre>
                 )}
-              </div>
+              </Card>
             );
           })()}
 
@@ -981,22 +986,22 @@ export function FeedbackTicketPage({
             }
             if (crumbs.length === 0) return null;
             const levelColor = (l?: string) =>
-              l === "error" ? "text-red-600" : l === "warning" ? "text-amber-600" : "text-slate-600";
+              l === "error" ? "text-danger" : l === "warning" ? "text-warning" : "text-foreground";
             return (
-              <div className="card">
+              <Card className="">
                 <h4 className="text-sm font-semibold mb-2">Breadcrumbs ({crumbs.length})</h4>
                 <ol className="space-y-1 text-xs max-h-60 overflow-y-auto">
                   {crumbs.map((bc, i) => (
                     <li key={i} className="flex gap-2 items-baseline">
-                      <span className="text-slate-400 tabular-nums shrink-0">
+                      <span className="text-foreground-hint tabular-nums shrink-0">
                         {bc.timestamp ? new Date(bc.timestamp).toLocaleTimeString() : "—"}
                       </span>
-                      <span className="font-medium text-slate-700 shrink-0">{bc.category ?? "general"}</span>
+                      <span className="font-medium text-foreground-strong shrink-0">{bc.category ?? "general"}</span>
                       <span className={`break-all ${levelColor(bc.level)}`}>{bc.message ?? ""}</span>
                     </li>
                   ))}
                 </ol>
-              </div>
+              </Card>
             );
           })()}
 
@@ -1007,21 +1012,21 @@ export function FeedbackTicketPage({
               );
               const symStatus = t.symbolication_status;
               const symStack = t.symbolicated_stack ?? undefined;
-              const badgeClass =
+              const badgeVariant: BadgeVariant =
                 symStatus === "symbolicated"
-                  ? "bg-green-100 text-green-700"
+                  ? "success"
                   : symStatus === "no_symbols"
-                    ? "bg-amber-100 text-amber-700"
+                    ? "warning"
                     : symStatus === "failed"
-                      ? "bg-red-100 text-red-700"
-                      : "bg-slate-100 text-slate-600";
+                      ? "danger"
+                      : "muted";
               return (
                 <div className="space-y-2">
                   <div className="flex items-center gap-2 text-sm">
                     <span className="font-medium">Symbolication</span>
-                    <span className={`rounded px-1.5 py-0.5 text-xs ${badgeClass}`}>
+                    <Badge variant={badgeVariant}>
                       {symStatus ?? "not run"}
-                    </span>
+                    </Badge>
                     <Button
                       variant="outline"
                       size="sm"
@@ -1039,7 +1044,7 @@ export function FeedbackTicketPage({
                       deobfuscated={symStack}
                     />
                   ) : symStack ? (
-                    <pre className="overflow-x-auto whitespace-pre-wrap rounded border border-slate-200 bg-slate-50 p-3 text-xs">
+                    <pre className="overflow-x-auto whitespace-pre-wrap rounded border border-line-muted bg-layer-canvas-muted p-3 text-xs">
                       {symStack}
                     </pre>
                   ) : null}
@@ -1055,16 +1060,16 @@ export function FeedbackTicketPage({
             />
           )}
 
-          <div className="card">
+          <Card className="">
             <h4 className="text-sm font-semibold mb-1">
               Comments ({detail.data!.comments.length})
             </h4>
             <ul className="space-y-2 text-sm">
               {detail.data!.comments.map((cm) => (
-                <li key={cm.id} className="rounded-sm border border-slate-200 p-2">
-                  <div className="flex items-center justify-between gap-2 text-xs text-slate-500">
+                <li key={cm.id} className="rounded-sm border border-line-muted p-2">
+                  <div className="flex items-center justify-between gap-2 text-xs text-foreground-muted">
                     <span>{cm.author_actor} · {new Date(cm.created_at).toLocaleString()}</span>
-                    <span className="rounded-sm border border-slate-300 px-1.5 py-0.5 font-medium">
+                    <span className="rounded-sm border border-line-strong px-1.5 py-0.5 font-medium">
                       {cm.internal
                         ? feedbackMessage("internalNote")
                         : feedbackMessage("visibleToReporter")}
@@ -1077,7 +1082,7 @@ export function FeedbackTicketPage({
             <div className="mt-2">
               <textarea
                 rows={3}
-                className="w-full resize-y rounded-sm border border-slate-300 px-2 py-1.5 text-sm"
+                className="w-full resize-y rounded-sm border border-line-strong px-2 py-1.5 text-sm"
                 placeholder="Add a comment…"
                 value={comment}
                 onChange={(e) => setComment(e.target.value)}
@@ -1105,7 +1110,7 @@ export function FeedbackTicketPage({
                 </Button>
               </div>
             </div>
-          </div>
+          </Card>
         </>
       )}
       <AlertDialog
