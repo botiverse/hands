@@ -14,9 +14,11 @@
 
 ## 2. 在 Google Cloud 启用 API
 
-打开 Google Cloud Console，选择准备用于接入的项目。
+打开 Google Cloud Console，选择 **Hands 服务端实际使用的 OAuth 客户端所属项目**。不是仅选择 Android 应用自己的项目；在其他项目启用 API 不会替这个客户端启用。使用 Hands 托管服务时，这一步由管理该 OAuth 项目的 Hands 运维完成。
 
-进入「API 和服务 → 库」，搜索并启用 **Google Play Android Developer API**。无需关闭服务账号密钥创建限制。
+进入「API 和服务 → 库」，搜索并启用 **Google Play Android Developer API**（androidpublisher.googleapis.com）。也可打开 [API 启用页面](https://console.developers.google.com/apis/api/androidpublisher.googleapis.com/)，先核对页面顶部选中的项目再点击启用。无需关闭服务账号密钥创建限制。
+
+如果轨道读取返回 SERVICE_DISABLED，先完成这一项并等待 Google 配置生效，再用原来的授权重试读取，无需重新连接 Google。阻塞在 create_edit 时尚未读取轨道，因此不能据此判断应用权限；API 启用后再按真实返回检查。参见 [Google 官方接入步骤](https://developers.google.com/android-publisher/getting_started#enable_the_api)。
 
 ## 3. 配置 Google 授权页面
 
@@ -86,10 +88,23 @@ https://hands.build/api/google-play/oauth/callback
 
 Hands 中的上传校验通过，仅证明文件和所声明的摘要一致，不能代替 Google Play 的签名、应用初始设置或商店审核。先按现有流程完成产物验收和人工审批，再执行明确的发布操作。
 
+### AAB 上传与内部测试提交接口
+
+以下管理 API 的 appId 使用完整应用 UUID，需使用拥有对应应用角色的 Hands 会话或部署令牌。上传和验收要求 publisher；Google Play 提交额外要求已登录的真人 publisher，agent 会话和部署令牌不能代替真人批准。
+
+1. `POST /api/apps/:appId/android-release-artifacts` 声明同一构建的一份 AAB 和一份 APK。请求包含 source（repository、commit_sha、ci_run_id）、package_name、version_name、version_code、upload_key_cert_sha256，以及两项 artifacts（kind、filename、size_bytes、sha256）。
+2. 按响应中每项 `artifacts[].upload` 的 method、url、headers 上传文件，再调用 `POST /api/apps/:appId/android-release-artifacts/:buildId/assets/:assetId/complete` 校验并封存。`GET /api/apps/:appId/android-release-artifacts/:buildId` 返回的两份产物及 bundle 都应为 ready。
+3. 为该 build 创建 release。完成真实验收后，调用 `POST /api/apps/:appId/releases/:releaseId/receipts/acceptance`，提交 AAB 的 artifact_id、verdict:pass、matrix_ref 与 expected_revision；验收结果必须对应这份已封存 AAB。成功写入验收会增加 release revision，下一步先重新读取。
+4. 由已登录的真人 publisher 调用 `POST /api/apps/:appId/releases/:releaseId/distributions/play/promote`，body 包含 `track:"internal"`、最新 expected_revision 和 `approval:{"note":"验收和提交说明"}`。internal 使用绑定中配置的真实内部测试轨道；closed 才使用选择的封闭测试轨道，例如 alpha 或 beta。
+5. 用 `GET /api/apps/:appId/releases/:releaseId/distributions/play` 及 `/receipts` 核对 Google 的包名、版本、轨道和摘要回执，再交给测试人员。读取轨道成功不等于版本上传成功。
+
+当前提交门禁要求候选 AAB 的 versionCode **等于目标轨道最大 versionCode + 1**。准备签名候选前先核目标轨道的已有版本，避免产物做好后才发现冲突。完整请求结构见 [公开 API](../public-api-reference/) 和 [OpenAPI](https://hands.build/openapi.json)。
+
 ## 常见问题
 
 | 现象 | 检查或处理 |
 | --- | --- |
+| 轨道读取报 502 / play_api_rejected，含 403、create_edit、SERVICE_DISABLED | 在 Hands OAuth 客户端所属项目启用 androidpublisher.googleapis.com，等待生效后用原授权重试；不要在另一个项目启用，也不要先改 Play 应用权限 |
 | Google 报 redirect_uri_mismatch | 确认 Web 客户端登记的是完整回调地址，域名、路径和末尾斜杠都一致 |
 | Google 拒绝访问或提示应用未验证 | 检查受众、测试用户名单、组织的第三方应用策略和 Google 授权页面要求 |
 | 返回 Hands 后授权失败 | 查看连接行保留的失败原因，再点击重试；尚未配置包名时不会检查 Play 应用权限 |
