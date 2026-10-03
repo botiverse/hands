@@ -178,7 +178,7 @@ export function GooglePlayConnector({ appId }: { appId: string }) {
               disabled={query.isLoading || authorize.isPending}
               onClick={startConnect}
             >
-              {gp(authorize.isPending ? "testing" : "connect")}
+              {gp(authorize.isPending ? "connecting" : "connect")}
             </Button>
           ) : (
             <Button
