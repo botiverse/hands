@@ -39,3 +39,15 @@ test('collector sums successful statuses, retains errors and never persists raw 
     assert.equal(rows.find(r => r.kind === 'tail_heartbeat').observed_events, 1);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
+test('silent live child is recycled and produces an explicit coverage gap', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'hands-idle-'));
+  try {
+    const file = join(dir, 'responses.jsonl');
+    const result = spawnSync(process.execPath, ['scripts/monitoring/collect-http-responses.mjs', 'scripts/monitoring/tail-fixture.mjs', 'unused', file, '0.0007'], { timeout: 5000, env: { ...process.env, HANDS_TAIL_IDLE_MS: '150' } });
+    assert.equal(result.status, 0, result.stderr.toString());
+    const rows = readFileSync(file, 'utf8').trim().split('\n').map(JSON.parse);
+    assert.ok(rows.some(r => r.kind === 'tail_idle_gap'));
+    assert.ok(rows.filter(r => r.kind === 'tail_connecting').length >= 2);
+    assert.ok(rows.filter(r => r.kind === 'http_response' && r.status === 400).length >= 2);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});

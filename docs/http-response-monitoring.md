@@ -39,3 +39,10 @@ process kill may lose the last minute of counts. Include count records when
 calculating an observed denominator. Read all retained generations and detect
 retention loss before claiming a continuous window. This local disk cap does not
 bound Cloudflare's own log storage or ingestion charges.
+
+A locally live process/heartbeat does not prove the upstream tail is delivering
+requests. After three minutes without any parsed tail event the collector records
+`tail_idle_gap`, terminates that connection and reconnects. Quiet traffic may also
+trigger recycling; treat this as uncertain coverage, not an application failure.
+Use a known request when diagnosing a silent connection. A new heartbeat alone
+cannot close a coverage gap. `HANDS_TAIL_IDLE_MS` overrides the timeout for tests.
