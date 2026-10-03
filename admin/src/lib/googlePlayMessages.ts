@@ -26,9 +26,9 @@ export const GOOGLE_PLAY_MESSAGES: Record<"en" | "zh-CN", Record<GooglePlayMessa
     oauthErrOfflineAccess: "Google didn't grant offline access, so the connection can't be kept. Reconnect and approve access.",
     oauthErrGooglePermissions: "The Google account wasn't granted permission to publish. Grant publishing access and reconnect.",
     oauthErrAccountIdentity: "Couldn't read the connected Google account. Try again.",
-    oauthErrPlayPermissions: "The Google account lacks access to this Play app. Check Play Console permissions and retry.",
+    oauthErrPlayPermissions: "Play app verification failed. Check the package name, tracks, and Play permissions, then retry.",
     oauthErrAccessChanged: "Access changed since the connection was made. Reconnect to refresh it.",
-    oauthErrConnectionChanged: "The Google connection changed. Reconnect to restore it.",
+    oauthErrConnectionChanged: "The connection changed in Hands during authorization. Reconnect to restore it.",
     oauthErrCredentialStorage: "Authorization succeeded, but saving the credential failed. Try again.",
     disconnectHelp: "Unbind deletes the credential stored by Hands. To revoke Google's grant as well, remove Hands in your Google account connections.",
 
@@ -63,9 +63,9 @@ export const GOOGLE_PLAY_MESSAGES: Record<"en" | "zh-CN", Record<GooglePlayMessa
     oauthErrOfflineAccess: "未获得离线授权，连接无法保持。请重新连接并同意授权。",
     oauthErrGooglePermissions: "Google 授权未包含发布权限。请授予发布权限后重新连接。",
     oauthErrAccountIdentity: "读取 Google 账号信息失败，请重试。",
-    oauthErrPlayPermissions: "该 Google 账号没有此 Play 应用的权限。请确认 Play Console 权限后重试。",
+    oauthErrPlayPermissions: "Play 应用验证失败，请检查包名、轨道和 Play 权限后重试。",
     oauthErrAccessChanged: "连接后账号权限发生了变化。请重新连接以刷新。",
-    oauthErrConnectionChanged: "Google 侧的连接状态发生了变化。请重新连接恢复。",
+    oauthErrConnectionChanged: "Hands 中的连接已变更，请重新连接。",
     oauthErrCredentialStorage: "授权成功但凭据保存失败，请重试。",
     disconnectHelp: "解除绑定会删除 Hands 保存的凭据。若也要撤销 Google 的授权，请在 Google 账号的第三方连接中移除 Hands。",
 
@@ -106,7 +106,11 @@ export function googlePlayOAuthFailureMessage(
   errorCode: string | null | undefined,
   languages?: readonly string[],
 ) {
-  const key = errorCode ? OAUTH_FAILURE_MESSAGE_KEYS[errorCode] : undefined;
+  // Object.hasOwn: a plain-object lookup would otherwise resolve inherited
+  // members for inputs like "__proto__" or "toString" and skip the fallback.
+  const key = errorCode && Object.hasOwn(OAUTH_FAILURE_MESSAGE_KEYS, errorCode)
+    ? OAUTH_FAILURE_MESSAGE_KEYS[errorCode]
+    : undefined;
   return key ? googlePlayMessage(key, languages) : googlePlayMessage("oauthFailed", languages);
 }
 
