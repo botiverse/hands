@@ -296,9 +296,11 @@ function Header({ account }: { account: AuthAccount }) {
                       : undefined
                   }
                 >
-                  <span className="flex h-6 w-6 flex-none items-center justify-center rounded-md border border-line-muted bg-layer-inset text-[10px] font-semibold text-foreground-muted">
-                    {(currentOrg?.name ?? account.server_slug ?? "O").slice(0, 1).toUpperCase()}
-                  </span>
+                  <Avatar size="sm" type="human" className="border border-line-muted">
+                    <AvatarFallback>
+                      {(currentOrg?.name ?? account.server_slug ?? "O").slice(0, 1).toUpperCase()}
+                    </AvatarFallback>
+                  </Avatar>
                   {!collapsed && (
                     <>
                       <span className="hidden min-w-0 flex-1 text-left md:block">
@@ -348,9 +350,11 @@ function Header({ account }: { account: AuthAccount }) {
                           : undefined
                       }
                     >
-                      <span className="flex h-6 w-6 flex-none items-center justify-center rounded-md bg-info/10 text-[10px] font-semibold text-info-strong">
-                        {(currentApp?.name ?? "A").slice(0, 1).toUpperCase()}
-                      </span>
+                      <Avatar size="sm" type="human" className="border border-line-muted">
+                        <AvatarFallback>
+                          {(currentApp?.name ?? "A").slice(0, 1).toUpperCase()}
+                        </AvatarFallback>
+                      </Avatar>
                       {!collapsed && (
                         <>
                           <span className="hidden min-w-0 flex-1 text-left md:block">
@@ -588,9 +592,11 @@ function MobileTopNav({ account }: { account: AuthAccount }) {
                 className="flex min-w-0 items-center gap-1.5 rounded-md px-2 py-1.5 text-left hover:bg-fill-muted"
                 aria-label={`Organization ${currentOrg?.name ?? account.server_slug ?? account.server_id}`}
               >
-                <span className="flex h-6 w-6 flex-none items-center justify-center rounded-md border border-line-muted bg-layer-inset text-[10px] font-semibold text-foreground-muted">
-                  {(currentOrg?.name ?? account.server_slug ?? "O").slice(0, 1).toUpperCase()}
-                </span>
+                <Avatar size="xs" type="human" className="border border-line-muted">
+                  <AvatarFallback>
+                    {(currentOrg?.name ?? account.server_slug ?? "O").slice(0, 1).toUpperCase()}
+                  </AvatarFallback>
+                </Avatar>
                 <span className="truncate text-sm font-medium text-foreground-strong">
                   {currentOrg?.name ?? account.server_slug ?? "Organization"}
                 </span>
@@ -618,9 +624,11 @@ function MobileTopNav({ account }: { account: AuthAccount }) {
                   className="flex min-w-0 items-center gap-1.5 rounded-md px-2 py-1.5 text-left hover:bg-fill-muted"
                   aria-label="Switch app"
                 >
-                  <span className="flex h-6 w-6 flex-none items-center justify-center rounded-md bg-info/10 text-[10px] font-semibold text-info-strong">
-                    {(currentApp?.name ?? "A").slice(0, 1).toUpperCase()}
-                  </span>
+                  <Avatar size="xs" type="human" className="border border-line-muted">
+                    <AvatarFallback>
+                      {(currentApp?.name ?? "A").slice(0, 1).toUpperCase()}
+                    </AvatarFallback>
+                  </Avatar>
                   <span className="truncate text-sm font-medium text-foreground-strong">
                     {currentApp?.name ?? appRouteMessage(apps.isPending ? "loading" : "unavailable")}
                   </span>
