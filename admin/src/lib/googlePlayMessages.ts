@@ -1,5 +1,5 @@
 export const GOOGLE_PLAY_MESSAGE_KEYS = [
-  "authorize", "authorizedAccount", "oauthUnavailable", "oauthHelp", "oauthFailed", "oauthCancelled", "disconnectHelp", "title", "description", "configured", "enabled", "disabled", "verified", "stale", "serviceAccount",
+  "existingPackage", "manualPackage", "parsed", "declared", "channel", "googleMethod", "packageMissing", "authorize", "authorizedAccount", "oauthUnavailable", "oauthHelp", "oauthFailed", "oauthCancelled", "disconnectHelp", "title", "description", "configured", "enabled", "disabled", "verified", "stale", "serviceAccount",
   "packageName", "internalTrack", "closedTrack", "productionTrack", "credentialJson", "chooseFile",
   "saveEnable", "replace", "cancel", "test", "testing", "enable", "disable", "unbind",
   "saveSuccess", "verifySuccess", "enableSuccess", "disableSuccess", "unbindSuccess", "actionFailed",
@@ -10,6 +10,9 @@ export type GooglePlayMessageKey = typeof GOOGLE_PLAY_MESSAGE_KEYS[number];
 
 export const GOOGLE_PLAY_MESSAGES: Record<"en" | "zh-CN", Record<GooglePlayMessageKey, string>> = {
   en: {
+    existingPackage: "Choose an existing Android package", manualPackage: "Enter another package name", parsed: "From APK inspection", declared: "From upload details", channel: "From channel settings",
+    googleMethod: "Google account",
+    packageMissing: "Enter the package name of this app in Play Console. No APK or credential file is needed for Google authorization.",
     authorize: "Authorize with Google",
     authorizedAccount: "Google account",
     oauthUnavailable: "Google authorization is not configured on this server.",
@@ -19,7 +22,7 @@ export const GOOGLE_PLAY_MESSAGES: Record<"en" | "zh-CN", Record<GooglePlayMessa
     disconnectHelp: "Unbind deletes the credential stored by Hands. To revoke Google's grant as well, remove Hands in your Google account connections.",
 
     title: "Google Play",
-    description: "Connect this app to Google Play with Google authorization or a service account. Credentials are encrypted and never shown again.",
+    description: "Connect your Google account to this app’s Play Console entry.",
     configured: "Configured", enabled: "Enabled", disabled: "Disabled", verified: "Verified", stale: "Needs verification",
     serviceAccount: "Service account", packageName: "Android package name", internalTrack: "Internal track",
     closedTrack: "Closed testing track", productionTrack: "Production track", credentialJson: "Service account JSON",
@@ -34,6 +37,9 @@ export const GOOGLE_PLAY_MESSAGES: Record<"en" | "zh-CN", Record<GooglePlayMessa
     invalidJson: "Choose the complete service-account JSON file downloaded from Google Cloud.",
   },
   "zh-CN": {
+    existingPackage: "选择已有 Android 包名", manualPackage: "手动填写其他包名", parsed: "APK 解析结果", declared: "上传时声明", channel: "渠道设置",
+    googleMethod: "Google 账号授权",
+    packageMissing: "请填写此应用在 Play Console 的包名。Google 授权无需选择 APK 或凭据文件。",
     authorize: "使用 Google 授权",
     authorizedAccount: "Google 账号",
     oauthUnavailable: "此服务器尚未配置 Google 授权。",
@@ -43,7 +49,7 @@ export const GOOGLE_PLAY_MESSAGES: Record<"en" | "zh-CN", Record<GooglePlayMessa
     disconnectHelp: "解除绑定会删除 Hands 保存的凭据。若也要撤销 Google 的授权，请在 Google 账号的第三方连接中移除 Hands。",
 
     title: "Google Play",
-    description: "通过 Google 授权或服务账号连接此应用的 Google Play。凭据会加密保存，保存后不会再次显示。",
+    description: "授权 Google 账号，将此应用连接到对应的 Play Console 应用。",
     configured: "已配置", enabled: "已启用", disabled: "已停用", verified: "已验证", stale: "需要重新验证",
     serviceAccount: "服务账号", packageName: "Android 包名", internalTrack: "内部测试轨道",
     closedTrack: "封闭测试轨道", productionTrack: "正式发布轨道", credentialJson: "服务账号 JSON",
