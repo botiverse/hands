@@ -17,9 +17,15 @@ const queryClient = new QueryClient({
 
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
-    {/* raft-ui "elegant" theme family (light mode) — sets data-theme so raft-ui
-        components render in the elegant style. Rollout starts here (task #129). */}
-    <ThemeProvider theme="elegant" defaultMode="light">
+    {/* raft-ui theme control plane: Elegant is the default family (light mode);
+        the choice persists per browser and is switchable from Settings →
+        Appearance. The same storage keys are restored before first paint by
+        the inline script in index.html. */}
+    <ThemeProvider
+      defaultTheme="elegant"
+      defaultMode="light"
+      storageKey="hands-admin-theme"
+    >
       <QueryClientProvider client={queryClient}>
         <TooltipProvider>
           <ToastProvider>

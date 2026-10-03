@@ -1,5 +1,13 @@
 import { useQuery } from "@tanstack/react-query";
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "raft-ui";
 import { getAuthMe } from "../lib/api";
+import { AppearanceSettings } from "../components/AppearanceSettings";
 
 export function Settings() {
   const me = useQuery({ queryKey: ["auth-me"], queryFn: () => getAuthMe() });
@@ -50,6 +58,20 @@ export function Settings() {
           </p>
         </div>
       )}
+
+      {/* Appearance: RUI theme family + mode; persisted per browser */}
+      <Card className="mb-4">
+        <CardHeader>
+          <CardTitle>Appearance</CardTitle>
+          <CardDescription>
+            Choose how the dashboard looks. Preferences are saved in this
+            browser.
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <AppearanceSettings />
+        </CardContent>
+      </Card>
 
       {/* Infrastructure (existing static info) */}
       <div className="card space-y-3 text-sm">
