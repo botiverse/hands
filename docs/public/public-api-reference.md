@@ -542,6 +542,9 @@ signature, event id, and delivery id; attempt timestamps and counters live only
 in the delivery ledger. Legacy delivery rows without a logical event id omit
 `X-Hands-Event-Id` while retaining the existing signature/event headers.
 
+For a text-only backend or CLI integration, see
+[Backend & CLI Feedback](server-feedback.md).
+
 For a complete browser → trusted backend → Hands implementation, including
 credential setup, opaque reporter coordinates, the React transport, and a
 production checklist, see [React Feedback Inbox](feedback-react.md).

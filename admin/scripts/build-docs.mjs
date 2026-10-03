@@ -107,6 +107,13 @@ const pages = [
     source: "electron-sdk.md",
   },
   {
+    slug: "server-feedback",
+    title: "Backend & CLI Feedback",
+    category: "SDKs & API",
+    description: "Submit reporter-owned tickets from a trusted backend or CLI, preserve retries, and route replies to your product.",
+    source: "server-feedback.md",
+  },
+  {
     slug: "feedback-react",
     title: "React Feedback Inbox",
     category: "SDKs & API",
