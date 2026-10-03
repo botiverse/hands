@@ -903,6 +903,9 @@ export function GooglePlayPanel({ appId }: { appId: string }) {
   const meta = query.data?.google_play ?? null;
   const [editing, setEditing] = useState(false);
   const [credentialJson, setCredentialJson] = useState("");
+  const [connectionMethod, setConnectionMethod] = useState<"google" | "service">("google");
+  const packageChannels = useQuery({ queryKey: ["channels", appId], queryFn: () => listChannels(appId) });
+  const suggestedPackage = packageChannels.data?.channels.find((channel) => channel.slug === "main")?.bundle_id?.trim() ?? "";
   const [packageName, setPackageName] = useState("");
   const [internalTrack, setInternalTrack] = useState("internal");
   const [closedTrack, setClosedTrack] = useState("closed");
@@ -915,6 +918,10 @@ export function GooglePlayPanel({ appId }: { appId: string }) {
     setClosedTrack(meta.closed_track);
     setProductionTrack(meta.production_track);
   }, [meta, editing]);
+
+  useEffect(() => {
+    if (!meta && suggestedPackage) setPackageName((current) => current || suggestedPackage);
+  }, [meta, suggestedPackage]);
 
   const refresh = () => qc.invalidateQueries({ queryKey: ["google-play-binding", appId] });
   const fail = (error: unknown) => toast.show({ kind: "error", title: gp("actionFailed"), description: (error as Error).message });
@@ -1040,7 +1047,12 @@ export function GooglePlayPanel({ appId }: { appId: string }) {
         <a href="https://myaccount.google.com/connections" target="_blank" rel="noopener noreferrer">{gp("authorizedAccount")}</a>
       </p>}
       {showForm && <div className="mt-3 p-3 border border-slate-200 rounded-md space-y-3">
-        <p className="text-xs text-slate-600">{gp("formHelp")}</p>
+        <div className="flex gap-2">
+          <Button variant={connectionMethod === "google" ? "primary" : "outline"} onClick={() => { setConnectionMethod("google"); setCredentialJson(""); }}>{gp("googleMethod")}</Button>
+          <Button variant={connectionMethod === "service" ? "primary" : "outline"} onClick={() => setConnectionMethod("service")}>{gp("serviceAccount")}</Button>
+        </div>
+        <p className="text-xs text-slate-600">{gp(connectionMethod === "google" ? "oauthHelp" : "formHelp")}</p>
+        {!packageName.trim() && <p className="text-xs text-slate-500">{gp("packageMissing")}</p>}
         <div className="grid gap-3 md:grid-cols-2">
           <label className="text-xs text-slate-600">{gp("packageName")}
             <Input className="mt-1 font-mono" value={packageName} onChange={(event) => setPackageName(event.target.value)} placeholder="com.example.app" />
@@ -1055,19 +1067,22 @@ export function GooglePlayPanel({ appId }: { appId: string }) {
             <Input className="mt-1 font-mono" value={productionTrack} onChange={(event) => setProductionTrack(event.target.value)} />
           </label>
         </div>
-        <p className="text-xs text-slate-600">{gp("oauthHelp")}</p>
+        {connectionMethod === "google" && <>
         <Button variant="primary" disabled={!query.data?.oauth_available || !packageName.trim() || !internalTrack.trim() || !closedTrack.trim() || !productionTrack.trim() || authorize.isPending} onClick={() => authorize.mutate()}>{gp("authorize")}</Button>
         {!query.data?.oauth_available && <p className="text-xs text-slate-500">{gp("oauthUnavailable")}</p>}
+        </>}
+        {connectionMethod === "service" && <>
         <label className="block text-xs font-medium">{gp("credentialJson")}</label>
         <input type="file" accept=".json,application/json" aria-label={gp("chooseFile")} onChange={(event) => {
           const file = event.target.files?.[0];
           if (file) file.text().then(setCredentialJson, fail);
         }} />
         {credentialJson && !credentialLooksValid && <p className="text-xs text-amber-700">{gp("invalidJson")}</p>}
+        </>}
         <p className="text-xs text-slate-500">{gp("noPublish")}</p>
         <div className="flex gap-2 justify-end">
           {meta && <Button variant="outline" onClick={() => { setCredentialJson(""); setEditing(false); }}>{gp("cancel")}</Button>}
-          <Button variant="primary" disabled={!formValid || save.isPending} onClick={() => save.mutate()}>{gp("saveEnable")}</Button>
+          {connectionMethod === "service" && <Button variant="primary" disabled={!formValid || save.isPending} onClick={() => save.mutate()}>{gp("saveEnable")}</Button>}
         </div>
       </div>}
     </div>
@@ -1629,7 +1644,7 @@ export function AppSettings({ appId }: { appId: string }) {
 
         {/* Delta/differential updates — Android apps only */}
         {app.platform === "android" && <DeltaUpdatesToggle appId={appId} app={app} />}
-        {app.platform === "android" && <GooglePlayPanel appId={appId} />}
+        {app.platform === "android" && <GooglePlayPanel key={appId} appId={appId} />}
 
         {/* Release human-approval gate (task #239) — mobile platforms */}
         {["ios", "android", "ohos"].includes(app.platform) && (

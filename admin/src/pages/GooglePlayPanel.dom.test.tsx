@@ -1,11 +1,12 @@
 // @vitest-environment jsdom
 
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
   get: vi.fn(),
+  channels: vi.fn(),
   authorize: vi.fn(),
   save: vi.fn(),
   verify: vi.fn(),
@@ -21,6 +22,7 @@ vi.mock("../components/Toast", () => ({
 vi.mock("../lib/api", async (importOriginal) => ({
   ...await importOriginal<typeof import("../lib/api")>(),
   getGooglePlayBinding: mocks.get,
+  listChannels: mocks.channels,
   startGooglePlayOAuth: mocks.authorize,
   setGooglePlayBinding: mocks.save,
   verifyGooglePlayBinding: mocks.verify,
@@ -43,6 +45,7 @@ function renderPanel() {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  mocks.channels.mockResolvedValue({ channels: [] });
   mocks.save.mockResolvedValue({ google_play: {} });
   mocks.verify.mockResolvedValue({ ok: true });
   mocks.toggle.mockResolvedValue({ ok: true });
@@ -50,6 +53,36 @@ beforeEach(() => {
 });
 
 describe("GooglePlayPanel", () => {
+  it("prefills the main package and hides the credential picker for Google authorization", async () => {
+    mocks.get.mockResolvedValue({ google_play: null, oauth_available: true });
+    mocks.channels.mockResolvedValue({ channels: [{ slug: "preview", bundle_id: "build.raft.preview" }, { slug: "main", bundle_id: "build.raft.app" }] });
+    mocks.authorize.mockRejectedValue(new Error("fixture rejection"));
+    renderPanel();
+    const button = await screen.findByRole("button", { name: "Authorize with Google" });
+    await waitFor(() => expect((screen.getByLabelText("Android package name") as HTMLInputElement).value).toBe("build.raft.app"));
+    expect(screen.queryByLabelText("Choose JSON file")).toBeNull();
+    fireEvent.click(button);
+    await waitFor(() => expect(mocks.authorize).toHaveBeenCalledWith("app-a", expect.objectContaining({ package_name: "build.raft.app" })));
+  });
+  it("keeps a manually entered package when the channel lookup finishes later", async () => {
+    mocks.get.mockResolvedValue({ google_play: null, oauth_available: true });
+    let finish!: (value: unknown) => void;
+    mocks.channels.mockReturnValue(new Promise((resolve) => { finish = resolve; }));
+    renderPanel();
+    await screen.findByRole("button", { name: "Authorize with Google" });
+    fireEvent.change(screen.getByLabelText("Android package name"), { target: { value: "custom.play.app" } });
+    await act(async () => { finish({ channels: [{ slug: "main", bundle_id: "build.raft.app" }] }); });
+    await waitFor(() => expect((screen.getByLabelText("Android package name") as HTMLInputElement).value).toBe("custom.play.app"));
+  });
+  it("does not use a preview package when main has no identity", async () => {
+    mocks.get.mockResolvedValue({ google_play: null, oauth_available: true });
+    mocks.channels.mockResolvedValue({ channels: [{ slug: "preview", bundle_id: "build.raft.preview" }, { slug: "main", bundle_id: null }] });
+    renderPanel();
+    const button = await screen.findByRole("button", { name: "Authorize with Google" });
+    expect(button.hasAttribute("disabled")).toBe(true);
+    expect((screen.getByLabelText("Android package name") as HTMLInputElement).value).toBe("");
+    expect(screen.getByText(/No APK or credential file/)).toBeTruthy();
+  });
   it("offers OAuth without a JSON key after package entry and keeps it disabled without server configuration", async () => {
     mocks.get.mockResolvedValue({ google_play: null, oauth_available: true });
     mocks.authorize.mockRejectedValue(new Error("fixture rejection"));
@@ -101,6 +134,7 @@ describe("GooglePlayPanel", () => {
     mocks.get.mockResolvedValue({ google_play: null });
     renderPanel();
 
+    fireEvent.click(await screen.findByRole("button", { name: "Service account" }));
     const save = await screen.findByRole("button", { name: "Validate, save & enable" });
     expect(save.hasAttribute("disabled")).toBe(true);
     fireEvent.change(screen.getByLabelText("Android package name"), { target: { value: "build.raft.app" } });
