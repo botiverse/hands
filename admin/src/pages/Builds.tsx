@@ -26,7 +26,9 @@ import {
 } from "../lib/api";
 import { useToast } from "../components/Toast";
 import {
+  Badge,
   Button,
+  Card,
   Input,
   Tooltip,
   TooltipTrigger,
@@ -45,6 +47,7 @@ import {
   EmptyStateTitle,
   Skeleton,
 } from "raft-ui";
+import type { BadgeProps } from "raft-ui";
 
 export function Builds({ appId }: { appId: string }) {
   const qc = useQueryClient();
@@ -102,7 +105,7 @@ export function Builds({ appId }: { appId: string }) {
         </div>
       )}
       {builds.error && (
-        <p className="text-red-600">Failed: {(builds.error as Error).message}</p>
+        <p className="text-danger">Failed: {(builds.error as Error).message}</p>
       )}
 
       {builds.data && builds.data.builds.length === 0 && !builds.isLoading && (
@@ -119,33 +122,33 @@ export function Builds({ appId }: { appId: string }) {
           const pt = productTypes.data?.product_types.find((p) => p.name === b.product_type);
           const isExpanded = expandedBuildId === b.id;
           return (
-            <div key={b.id} className="card p-3!">
+            <Card key={b.id} className="p-3">
               <div className="flex items-center gap-3 flex-wrap">
                 <span className="font-mono font-medium">
                   v{b.version_name} ({b.version_code})
                 </span>
-                <span className="badge-gray">{b.product_type}</span>
-                {channel && <span className="badge-blue">{channel.slug}</span>}
+                <Badge variant="muted">{b.product_type}</Badge>
+                {channel && <Badge variant="information">{channel.slug}</Badge>}
                 <BuildStatusBadge status={b.status} />
                 {b.should_force_update ? (
-                  <span className="badge-orange text-xs">⚠ force</span>
+                  <Badge variant="warning">⚠ force</Badge>
                 ) : null}
                 {b.availability_at && b.availability_at > Date.now() ? (
-                  <span className="badge-blue text-xs">
+                  <Badge variant="information">
                     scheduled {new Date(b.availability_at).toISOString().slice(0, 16)}Z
-                  </span>
+                  </Badge>
                 ) : null}
-                <span className="text-xs text-slate-500 ml-auto">
+                <span className="text-xs text-foreground-muted ml-auto">
                   {new Date(b.created_at).toISOString().slice(0, 16)}Z
                 </span>
               </div>
               {b.changelog && (
-                <details className="text-xs text-slate-600 mt-1">
-                  <summary className="cursor-pointer hover:text-slate-800">
+                <details className="text-xs text-foreground mt-1">
+                  <summary className="cursor-pointer hover:text-foreground-strong">
                     {(b.changelog.split("\n")[0] ?? "").slice(0, 80)}
                     {b.changelog.split("\n").length > 1 ? "…" : ""}
                   </summary>
-                  <pre className="mt-1 pl-2 border-l-2 border-slate-100 font-mono whitespace-pre-wrap text-xs max-h-32 overflow-y-auto">
+                  <pre className="mt-1 pl-2 border-l-2 border-line-hairline font-mono whitespace-pre-wrap text-xs max-h-32 overflow-y-auto">
                     {b.changelog}
                   </pre>
                 </details>
@@ -175,7 +178,7 @@ export function Builds({ appId }: { appId: string }) {
                 <AgcTestingPanel appId={appId} build={b} packageName={channel?.bundle_id ?? null} />
               )}
               {isExpanded && <BuildAssetList appId={appId} buildId={b.id} />}
-            </div>
+            </Card>
           );
         })}
       </div>
@@ -231,13 +234,13 @@ function AgcTestingPanel({ appId, build, packageName }: { appId: string; build: 
     onError: (e) => toast.show({ kind: "error", title: "Review submission failed", description: (e as Error).message }),
   });
   const state = submission?.state;
-  const stateClass = state === "failed" || state === "rejected" ? "text-red-700" : state === "stopped" ? "text-slate-500" : state === "ready" || state === "testing_review" || state === "testing_scheduled" || state === "testing_active" ? "text-green-700" : "text-blue-700";
+  const stateClass = state === "failed" || state === "rejected" ? "text-danger" : state === "stopped" ? "text-foreground-muted" : state === "ready" || state === "testing_review" || state === "testing_scheduled" || state === "testing_active" ? "text-success-strong" : "text-info-strong";
   const auditOpinion = typeof submission?.provider_state?.audit_opinion === "string" ? submission.provider_state.audit_opinion : null;
 
   return (
-    <div className="mt-2 pt-2 border-t border-slate-100">
+    <div className="mt-2 pt-2 border-t border-line-hairline">
       <div className="flex items-center gap-2 flex-wrap text-xs">
-        <span className="badge-gray">AppGallery</span>
+        <Badge variant="muted">AppGallery</Badge>
         {!submission || state === "failed" || state === "rejected" || state === "stopped" ? (
           <Tooltip>
             <TooltipTrigger
@@ -271,13 +274,13 @@ function AgcTestingPanel({ appId, build, packageName }: { appId: string; build: 
         )}
         {state && <span className={`font-medium ${stateClass}`}>{state === "processing" ? "Huawei processing build…" : state === "ready" ? "Build uploaded" : state.replaceAll("_", " ")}</span>}
       </div>
-      {submission?.error_message && <p className="mt-1 text-xs text-red-700">{submission.error_message}</p>}
-      {state === "ready" && <p className="mt-1 text-xs text-slate-500">Build compiled and ready. Invitation testing has not been submitted.</p>}
-      {state === "testing_review" && <p className="mt-1 text-xs text-green-700">Submitted to AppGallery invitation testing review. Status refreshes from Huawei each time this panel loads.</p>}
-      {state === "testing_scheduled" && <p className="mt-1 text-xs text-green-700">Approved; invitation testing starts at the scheduled time.</p>}
-      {state === "testing_active" && <p className="mt-1 text-xs text-green-700">Invitation testing is live for the selected test group.</p>}
-      {state === "rejected" && <p className="mt-1 text-xs text-red-700">Huawei rejected the test version{auditOpinion ? `: ${auditOpinion}` : "."}</p>}
-      {state === "stopped" && <p className="mt-1 text-xs text-slate-500">Invitation testing has ended on Huawei&apos;s side.</p>}
+      {submission?.error_message && <p className="mt-1 text-xs text-danger">{submission.error_message}</p>}
+      {state === "ready" && <p className="mt-1 text-xs text-foreground-muted">Build compiled and ready. Invitation testing has not been submitted.</p>}
+      {state === "testing_review" && <p className="mt-1 text-xs text-success-strong">Submitted to AppGallery invitation testing review. Status refreshes from Huawei each time this panel loads.</p>}
+      {state === "testing_scheduled" && <p className="mt-1 text-xs text-success-strong">Approved; invitation testing starts at the scheduled time.</p>}
+      {state === "testing_active" && <p className="mt-1 text-xs text-success-strong">Invitation testing is live for the selected test group.</p>}
+      {state === "rejected" && <p className="mt-1 text-xs text-danger">Huawei rejected the test version{auditOpinion ? `: ${auditOpinion}` : "."}</p>}
+      {state === "stopped" && <p className="mt-1 text-xs text-foreground-muted">Invitation testing has ended on Huawei&apos;s side.</p>}
       {status.data?.sync_error && <p className="mt-1 text-xs text-amber-700">Could not refresh from Huawei: {status.data.sync_error}</p>}
     </div>
   );
@@ -321,15 +324,15 @@ function TestflightUploadPanel({ appId, build }: { appId: string; build: Build }
   const stateName = state?.state;
   const stateColor =
     stateName === "COMPLETE"
-      ? "text-green-700"
+      ? "text-success-strong"
       : stateName === "FAILED"
-        ? "text-red-700"
-        : "text-blue-700";
+        ? "text-danger"
+        : "text-info-strong";
 
   return (
-    <div className="mt-2 pt-2 border-t border-slate-100">
+    <div className="mt-2 pt-2 border-t border-line-hairline">
       <div className="flex items-center gap-2 flex-wrap text-xs">
-        <span className="badge-gray"> TestFlight</span>
+        <Badge variant="muted"> TestFlight</Badge>
         <Tooltip>
           <TooltipTrigger
             render={
@@ -375,7 +378,7 @@ function TestflightUploadPanel({ appId, build }: { appId: string; build: Build }
         )}
       </div>
       {state?.errors && state.errors.length > 0 && (
-        <ul className="mt-1 text-xs text-red-700 list-disc pl-5">
+        <ul className="mt-1 text-xs text-danger list-disc pl-5">
           {state.errors.map((e, i) => (
             <li key={i}>
               {e.code ? `[${e.code}] ` : ""}
@@ -385,7 +388,7 @@ function TestflightUploadPanel({ appId, build }: { appId: string; build: Build }
         </ul>
       )}
       {stateName === "COMPLETE" && (
-        <p className="mt-1 text-xs text-green-700">
+        <p className="mt-1 text-xs text-success-strong">
           Upload processed. Ready for TestFlight group distribution.
         </p>
       )}
@@ -393,23 +396,19 @@ function TestflightUploadPanel({ appId, build }: { appId: string; build: Build }
   );
 }
 
+type BadgeVariant = NonNullable<BadgeProps["variant"]>;
+
 function BuildStatusBadge({ status }: { status: string }) {
-  const colorMap: Record<string, string> = {
-    pending: "bg-gray-200 text-gray-700",
-    building: "bg-blue-200 text-blue-700",
-    succeeded: "bg-green-200 text-green-700",
-    failed: "bg-red-200 text-red-700",
-    smoke_testing: "bg-yellow-200 text-yellow-700",
-    smoke_test_passed: "bg-green-200 text-green-700",
-    smoke_test_failed: "bg-red-200 text-red-700",
+  const variantMap: Record<string, BadgeVariant> = {
+    pending: "muted",
+    building: "information",
+    succeeded: "success",
+    failed: "danger",
+    smoke_testing: "warning",
+    smoke_test_passed: "success",
+    smoke_test_failed: "danger",
   };
-  return (
-    <span
-      className={`text-xs px-2 py-0.5 rounded-sm ${colorMap[status] ?? "bg-gray-200 text-gray-700"}`}
-    >
-      {status}
-    </span>
-  );
+  return <Badge variant={variantMap[status] ?? "muted"}>{status}</Badge>;
 }
 
 function BuildAssetList({ appId, buildId }: { appId: string; buildId: string }) {
@@ -424,15 +423,15 @@ function BuildAssetList({ appId, buildId }: { appId: string; buildId: string }) 
     enabled: !!appId && !!buildId,
   });
   return (
-    <div className="mt-2 pt-2 border-t border-slate-100 text-xs">
-      {assets.isLoading && <p className="text-slate-500">Loading assets…</p>}
+    <div className="mt-2 pt-2 border-t border-line-hairline text-xs">
+      {assets.isLoading && <p className="text-foreground-muted">Loading assets…</p>}
       {assets.data && assets.data.assets.length === 0 && (
-        <p className="text-slate-500">No assets registered.</p>
+        <p className="text-foreground-muted">No assets registered.</p>
       )}
       {assets.data && assets.data.assets.length > 0 && (
         <table className="w-full text-xs font-mono">
           <thead>
-            <tr className="text-slate-500 text-left">
+            <tr className="text-foreground-muted text-left">
               <th className="font-normal pr-2">platform</th>
               <th className="font-normal pr-2">arch</th>
               <th className="font-normal pr-2">filetype</th>

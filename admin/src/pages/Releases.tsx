@@ -31,7 +31,9 @@ import {
   type ProductType,
 } from "../lib/api";
 import {
+  Badge,
   Button,
+  Card,
   Input,
   Select,
   SelectTrigger,
@@ -56,6 +58,7 @@ import {
   EmptyStateDescription,
   Skeleton,
 } from "raft-ui";
+import type { BadgeProps } from "raft-ui";
 import { useToast } from "../components/Toast";
 import { ConfirmActionDialog } from "../components/ConfirmActionDialog";
 import { ReleaseAssetsPanel } from "../components/ReleaseAssetsPanel";
@@ -97,10 +100,10 @@ function AlwaysIncludedDeviceGroups({
   onChange: (next: string[]) => void;
 }) {
   if (groups.length === 0) {
-    return <p className="text-xs text-slate-500">No device groups available.</p>;
+    return <p className="text-xs text-foreground-muted">No device groups available.</p>;
   }
   return (
-    <div className="max-h-36 overflow-y-auto rounded-sm border border-slate-200 divide-y divide-slate-100">
+    <div className="max-h-36 overflow-y-auto rounded-sm border border-line-muted divide-y divide-line-hairline">
       {groups.map((group) => {
         const checked = selectedIds.includes(group.id);
         return (
@@ -115,7 +118,7 @@ function AlwaysIncludedDeviceGroups({
               }}
             />
             <span className="min-w-0 flex-1 truncate">{group.name}</span>
-            <span className="font-mono text-slate-500">{group.member_count}</span>
+            <span className="font-mono text-foreground-muted">{group.member_count}</span>
           </label>
         );
       })}
@@ -142,23 +145,20 @@ function RolloutPercentInput({
           const next = Number(e.target.value);
           if (Number.isFinite(next)) onChange(Math.min(100, Math.max(0, Math.trunc(next))));
         }}
-        className="w-16 rounded-sm border border-slate-300 px-2 py-1 text-right font-mono text-xs"
+        className="w-16 text-right font-mono text-xs"
       />
-      <span className="text-slate-500">%</span>
+      <span className="text-foreground-muted">%</span>
       {ROLLOUT_PRESETS.map((preset) => (
-        <button
+        <Button
           key={preset}
           type="button"
+          size="xs"
+          variant={value === preset ? "primary" : "outline"}
+          aria-pressed={value === preset}
           onClick={() => onChange(preset)}
-          className={
-            "rounded-sm border px-1.5 py-0.5 text-[11px] " +
-            (value === preset
-              ? "border-slate-900 bg-slate-900 text-white"
-              : "border-slate-300 text-slate-600 hover:bg-slate-100")
-          }
         >
           {preset}
-        </button>
+        </Button>
       ))}
     </span>
   );
@@ -225,31 +225,31 @@ export function PendingReleaseApprovals({ appId, gateOn }: { appId: string; gate
   // from the official entry point (task #239 review item 5).
   if (!gateOn && !approvals.isLoading && items.length === 0) return null;
   return (
-    <div className="card p-3! mb-4">
+    <Card className="p-3 mb-4">
       <h3 className="text-sm font-semibold mb-2">Pending release approvals</h3>
       {approvals.isLoading ? (
         <Skeleton className="h-10" />
       ) : items.length === 0 ? (
-        <div className="text-xs text-slate-500">No releases waiting for approval.</div>
+        <div className="text-xs text-foreground-muted">No releases waiting for approval.</div>
       ) : (
         <ul className="space-y-2">
           {items.map((a: ReleaseApproval) => (
             <li
               key={a.id}
-              className="rounded-sm border border-slate-200 p-2 flex items-start justify-between gap-3"
+              className="rounded-sm border border-line-muted p-2 flex items-start justify-between gap-3"
             >
               <div className="text-sm min-w-0">
                 <div className="font-medium">
                   {a.version_name ?? "?"}{" "}
-                  <span className="text-xs text-slate-500">
+                  <span className="text-xs text-foreground-muted">
                     (code {a.version_code ?? "?"}) · {a.channel_slug ?? ""}
                   </span>
                 </div>
                 {a.changelog && (
-                  <div className="text-xs text-slate-600 whitespace-pre-wrap">{a.changelog}</div>
+                  <div className="text-xs text-foreground whitespace-pre-wrap">{a.changelog}</div>
                 )}
                 {a.assets.length > 0 && (
-                  <ul className="text-xs text-slate-600 mt-1 space-y-0.5">
+                  <ul className="text-xs text-foreground mt-1 space-y-0.5">
                     {a.assets.map((asset, i) => (
                       <li key={i} className="font-mono break-all">
                         {asset.artifact_kind} · {asset.platform}
@@ -287,22 +287,22 @@ export function PendingReleaseApprovals({ appId, gateOn }: { appId: string; gate
                   const scopes = parseScopes();
                   const targets = parseTargets();
                   return (
-                    <div className="text-xs text-slate-600 mt-1 flex flex-wrap items-center gap-1">
-                      <span className="text-slate-500">Publishes to</span>
+                    <div className="text-xs text-foreground mt-1 flex flex-wrap items-center gap-1">
+                      <span className="text-foreground-muted">Publishes to</span>
                       {scopes.length === 0 ? (
                         <span className="font-mono">full:all</span>
                       ) : (
                         scopes.map((s, i) => (
-                          <span key={i} className="font-mono rounded-sm bg-slate-100 px-1">
+                          <span key={i} className="font-mono rounded-sm bg-layer-inset px-1">
                             {s.scope_type}:{s.scope_value}
                           </span>
                         ))
                       )}
                       {targets.length > 0 && (
                         <>
-                          <span className="text-slate-500">· requires targets</span>
+                          <span className="text-foreground-muted">· requires targets</span>
                           {targets.map((t, i) => (
-                            <span key={i} className="font-mono rounded-sm bg-slate-100 px-1">
+                            <span key={i} className="font-mono rounded-sm bg-layer-inset px-1">
                               {t}
                             </span>
                           ))}
@@ -311,7 +311,7 @@ export function PendingReleaseApprovals({ appId, gateOn }: { appId: string; gate
                     </div>
                   );
                 })()}
-                <div className="text-xs text-slate-500 mt-1">
+                <div className="text-xs text-foreground-muted mt-1">
                   Requested by {a.requested_by_actor} · {new Date(a.created_at).toLocaleString()}
                 </div>
               </div>
@@ -336,7 +336,7 @@ export function PendingReleaseApprovals({ appId, gateOn }: { appId: string; gate
           ))}
         </ul>
       )}
-    </div>
+    </Card>
   );
 }
 
@@ -410,7 +410,7 @@ export function Releases({ appId }: { appId: string }) {
       <PendingReleaseApprovals appId={appId} gateOn={Boolean(thisApp?.release_requires_human_approval)} />
 
       {/* Filters */}
-      <div className="card p-3! mb-4 flex flex-wrap gap-3 items-center">
+      <Card className="p-3 mb-4 flex flex-row flex-wrap gap-3 items-center">
         <Select
           items={{
             all: "All channels",
@@ -457,7 +457,7 @@ export function Releases({ appId }: { appId: string }) {
             <SelectItem value="cancelled">Cancelled</SelectItem>
           </SelectContent>
         </Select>
-      </div>
+      </Card>
 
       {releases.isLoading && (
         <div className="space-y-2">
@@ -467,7 +467,7 @@ export function Releases({ appId }: { appId: string }) {
         </div>
       )}
       {releases.error && (
-        <p className="text-red-600">Failed: {(releases.error as Error).message}</p>
+        <p className="text-danger">Failed: {(releases.error as Error).message}</p>
       )}
 
       {filtered.length === 0 && !releases.isLoading && (
@@ -514,10 +514,10 @@ export function Releases({ appId }: { appId: string }) {
 
 function Stat({ label, value }: { label: string; value: React.ReactNode }) {
   return (
-    <div className="card p-3!">
-      <div className="text-xs text-slate-500">{label}</div>
+    <Card className="p-3">
+      <div className="text-xs text-foreground-muted">{label}</div>
       <div className="text-2xl font-semibold mt-1">{value}</div>
-    </div>
+    </Card>
   );
 }
 
@@ -655,38 +655,38 @@ function ReleaseRow({
   });
 
   return (
-    <div className="card">
+    <Card>
       <div className="flex items-center gap-3 flex-wrap">
         <ReleaseStatusBadge status={r.status} />
         <span className="font-medium">{channelSlug}</span>
-        <span className="text-xs text-slate-500">{productTypeName}</span>
+        <span className="text-xs text-foreground-muted">{productTypeName}</span>
         {r.is_full ? (
-          <span className="badge-green text-xs">full</span>
+          <Badge variant="success">full</Badge>
         ) : (
-          <span className="badge-orange text-xs">scoped</span>
+          <Badge variant="warning">scoped</Badge>
         )}
         {r.should_force_update ? (
-          <span className="badge-orange text-xs">⚠ force</span>
+          <Badge variant="warning">⚠ force</Badge>
         ) : null}
         {r.rollout_cohort_count != null && r.rollout_cohort_count < 100 && (
-          <span className="badge-orange text-xs">
+          <Badge variant="warning">
             {r.rollout_cohort_count}% rollout
-          </span>
+          </Badge>
         )}
-        <span className="text-xs text-slate-500 ml-auto">
+        <span className="text-xs text-foreground-muted ml-auto">
           {new Date(r.created_at).toISOString().slice(0, 16)}Z
         </span>
       </div>
-      <div className="text-xs text-slate-500 font-mono mt-1 truncate">
+      <div className="text-xs text-foreground-muted font-mono mt-1 truncate">
         {r.id} (build {r.build_id.slice(0, 8)}…)
       </div>
       {(r.offered_count || r.current_count || r.offered_uv || r.current_uv) ? (
-        <div className="mt-1 flex items-center gap-3 text-xs text-slate-500">
+        <div className="mt-1 flex items-center gap-3 text-xs text-foreground-muted">
           <Tooltip>
             <TooltipTrigger
               render={
                 <span>
-                  <strong className="text-slate-700">{r.current_uv ?? 0}</strong> on this version
+                  <strong className="text-foreground-strong">{r.current_uv ?? 0}</strong> on this version
                 </span>
               }
             />
@@ -698,7 +698,7 @@ function ReleaseRow({
             <TooltipTrigger
               render={
                 <span>
-                  <strong className="text-slate-700">{r.offered_uv ?? 0}</strong> offered
+                  <strong className="text-foreground-strong">{r.offered_uv ?? 0}</strong> offered
                 </span>
               }
             />
@@ -707,14 +707,14 @@ function ReleaseRow({
             </TooltipContent>
           </Tooltip>
           {r.last_checked_at ? (
-            <span className="text-slate-400">
+            <span className="text-foreground-hint">
               last check {new Date(r.last_checked_at).toLocaleString()}
             </span>
           ) : null}
         </div>
       ) : null}
       {r.changelog && (
-        <div className="mt-3 border-l-2 border-slate-100 pl-3">
+        <div className="mt-3 border-l-2 border-line-hairline pl-3">
           <ChangelogViewer value={r.changelog} compact />
         </div>
       )}
@@ -782,7 +782,7 @@ function ReleaseRow({
         )}
       </div>
       {showRollout && (
-        <div className="mt-2 pt-2 border-t border-slate-100 flex items-center gap-2 text-xs">
+        <div className="mt-2 pt-2 border-t border-line-hairline flex items-center gap-2 text-xs">
           <label>Rollout %:</label>
           <RolloutPercentInput value={newPercent} onChange={setNewPercent} />
           <Button
@@ -796,20 +796,20 @@ function ReleaseRow({
         </div>
       )}
       {detail.isLoading && (
-        <div className="mt-2 pt-2 border-t border-slate-100 text-xs text-slate-500">
+        <div className="mt-2 pt-2 border-t border-line-hairline text-xs text-foreground-muted">
           Loading release details...
         </div>
       )}
       {detail.data && (
-        <div className="mt-2 pt-2 border-t border-slate-100 text-xs">
-          <div className="text-slate-500 mb-1">Build: {detail.data.build?.version_name} ({detail.data.build?.version_code})</div>
-          <div className="text-slate-500 mb-1">
+        <div className="mt-2 pt-2 border-t border-line-hairline text-xs">
+          <div className="text-foreground-muted mb-1">Build: {detail.data.build?.version_name} ({detail.data.build?.version_code})</div>
+          <div className="text-foreground-muted mb-1">
             Assets: {detail.data.assets.length} · Scopes: {detail.data.scopes.length}
           </div>
           {detail.data.scopes.length > 0 && (
             <table className="w-full text-xs">
               <thead>
-                <tr className="text-slate-500 text-left">
+                <tr className="text-foreground-muted text-left">
                   <th className="font-normal pr-2">type</th>
                   <th className="font-normal pr-2">value</th>
                 </tr>
@@ -826,7 +826,7 @@ function ReleaseRow({
           )}
           {(detail.data.checks ?? []).length > 0 && (
             <div className="mt-2">
-              <div className="text-slate-500 mb-1">Checks (advisory)</div>
+              <div className="text-foreground-muted mb-1">Checks (advisory)</div>
               {detail.data.checks.map((chk) => (
                 <div key={chk.id} className="flex items-center gap-2 mb-0.5">
                   <span
@@ -834,7 +834,7 @@ function ReleaseRow({
                       chk.verdict === "passed"
                         ? "text-emerald-600 font-medium"
                         : chk.verdict === "failed"
-                          ? "text-red-600 font-medium"
+                          ? "text-danger font-medium"
                           : "text-amber-600 font-medium"
                     }
                   >
@@ -842,7 +842,7 @@ function ReleaseRow({
                   </span>
                   <span className="font-mono">{chk.source}</span>
                   {chk.cases_total !== null && (
-                    <span className="text-slate-500">
+                    <span className="text-foreground-muted">
                       {chk.cases_passed ?? 0}/{chk.cases_total} cases
                     </span>
                   )}
@@ -851,13 +851,13 @@ function ReleaseRow({
                       href={chk.run_url}
                       target="_blank"
                       rel="noreferrer"
-                      className="text-blue-600 hover:underline"
+                      className="text-info-strong hover:underline"
                     >
                       run
                     </a>
                   )}
                   {chk.summary && (
-                    <span className="text-slate-500 truncate" title={chk.summary}>
+                    <span className="text-foreground-muted truncate" title={chk.summary}>
                       {chk.summary}
                     </span>
                   )}
@@ -907,24 +907,20 @@ function ReleaseRow({
         onCancel={() => setConfirmCancel(false)}
         onConfirm={() => cancel.mutate()}
       />
-    </div>
+    </Card>
   );
 }
 
+type BadgeVariant = NonNullable<BadgeProps["variant"]>;
+
 function ReleaseStatusBadge({ status }: { status: string }) {
-  const colorMap: Record<string, string> = {
-    draft: "bg-blue-100 text-blue-700",
-    active: "bg-green-200 text-green-700",
-    superseded: "bg-gray-200 text-gray-700",
-    cancelled: "bg-red-200 text-red-700",
+  const variantMap: Record<string, BadgeVariant> = {
+    draft: "information",
+    active: "success",
+    superseded: "muted",
+    cancelled: "danger",
   };
-  return (
-    <span
-      className={`text-xs px-2 py-0.5 rounded-sm ${colorMap[status] ?? "bg-gray-200 text-gray-700"}`}
-    >
-      {status}
-    </span>
-  );
+  return <Badge variant={variantMap[status] ?? "muted"}>{status}</Badge>;
 }
 
 function EditReleaseDialog({
@@ -1019,7 +1015,7 @@ function EditReleaseDialog({
           <DialogClose />
         </DialogHeader>
         <DialogBody>
-          {loading && <p className="text-sm text-slate-500">Loading release details...</p>}
+          {loading && <p className="text-sm text-foreground-muted">Loading release details...</p>}
           <div className="space-y-3">
           <div>
             <label className="label">Release notes</label>
@@ -1334,10 +1330,10 @@ function NewReleaseDialog({
                 <div
                   className={`w-6 h-6 rounded-full flex items-center justify-center text-[10px] font-semibold ${
                     active
-                      ? "bg-blue-600 text-white"
+                      ? "bg-info text-foreground-inverse"
                       : done
-                        ? "bg-green-200 text-green-800"
-                        : "bg-slate-200 text-slate-500"
+                        ? "bg-success text-success-foreground"
+                        : "bg-layer-inset text-foreground-muted"
                   }`}
                 >
                   {done ? "✓" : idx}
@@ -1345,16 +1341,16 @@ function NewReleaseDialog({
                 <span
                   className={
                     active
-                      ? "font-medium text-slate-900"
+                      ? "font-medium text-foreground-strong"
                       : done
-                        ? "text-green-700"
-                        : "text-slate-500"
+                        ? "text-success-strong"
+                        : "text-foreground-muted"
                   }
                 >
                   {label}
                 </span>
                 {i < STEP_LABELS.length - 1 && (
-                  <span className="text-slate-300 mx-1">›</span>
+                  <span className="text-foreground-hint mx-1">›</span>
                 )}
               </div>
             );
@@ -1428,13 +1424,13 @@ function NewReleaseDialog({
                 )}
               </div>
               {!showProductTypePicker && selectedProductType && (
-                <p className="text-xs text-slate-500">
+                <p className="text-xs text-foreground-muted">
                   Package type is set by this app:{" "}
                   <span className="font-medium">{selectedProductType.display_name}</span>.
                 </p>
               )}
               {(!channels.data || channels.data.channels.length === 0) && (
-                <p className="text-xs text-yellow-700">
+                <p className="text-xs text-warning-strong">
                   ⚠ This app has no channels yet. Create one in AppDetail → Channels first.
                 </p>
               )}
@@ -1478,7 +1474,7 @@ function NewReleaseDialog({
           {/* ---------------- Step 3: Assets ---------------- */}
           {step === 3 && (
             <div className="space-y-2">
-              <p className="text-xs text-slate-500">
+              <p className="text-xs text-foreground-muted">
                 Drop one or more binaries. We auto-detect platform / arch /
                 filetype from the filename and keep optional fields blank when
                 they are not needed.
@@ -1494,7 +1490,7 @@ function NewReleaseDialog({
                 productTypeHint={productType || "android-apk"}
                 onFilesChanged={setPendingFiles}
               />
-              <p className="text-[10px] text-slate-400">
+              <p className="text-[10px] text-foreground-hint">
                 Asset upload happens after the release is published. The release
                 is preserved even if individual assets fail.
               </p>
@@ -1504,7 +1500,7 @@ function NewReleaseDialog({
           {/* ---------------- Step 4: Review ---------------- */}
           {step === 4 && (
             <div className="space-y-3 text-sm">
-              <div className="border border-slate-200 rounded-sm p-3 space-y-1">
+              <div className="border border-line-muted rounded-sm p-3 space-y-1">
                 <Row k="Channel" v={channelSlug || "—"} />
                 <Row k="Product type" v={productType || "—"} />
                 <Row k="Version" v={`${versionName || "—"} (${versionCode || "?"})`} />
@@ -1522,11 +1518,11 @@ function NewReleaseDialog({
                 />
                 <Row k="Assets" v={`${pendingFiles.length} file(s) queued`} />
                 {changelog && (
-                  <details className="pt-2 border-t border-slate-100">
-                    <summary className="cursor-pointer text-xs text-slate-500">
+                  <details className="pt-2 border-t border-line-hairline">
+                    <summary className="cursor-pointer text-xs text-foreground-muted">
                       Release notes
                     </summary>
-                    <div className="mt-2 rounded-md bg-slate-50 p-3">
+                    <div className="mt-2 rounded-md bg-layer-canvas-muted p-3">
                       <ChangelogViewer value={changelog} />
                     </div>
                   </details>
@@ -1535,7 +1531,7 @@ function NewReleaseDialog({
 
               <details>
                 <summary
-                  className="cursor-pointer text-xs text-slate-600"
+                  className="cursor-pointer text-xs text-foreground"
                   onClick={(e) => {
                     e.preventDefault();
                     setShowAdvanced((v) => !v);
@@ -1544,7 +1540,7 @@ function NewReleaseDialog({
                   {showAdvanced ? "▾" : "▸"} Advanced options (scope, force update, rollout %)
                 </summary>
                 {showAdvanced && (
-                  <div className="mt-2 p-3 border border-slate-200 rounded-sm space-y-2">
+                  <div className="mt-2 p-3 border border-line-muted rounded-sm space-y-2">
                     <div className="grid grid-cols-2 gap-2">
                       <div>
                         <label className="label">Release scope</label>
@@ -1622,7 +1618,7 @@ function NewReleaseDialog({
                 )}
               </details>
 
-              <p className="text-xs text-slate-500 pt-2 border-t border-slate-100">
+              <p className="text-xs text-foreground-muted pt-2 border-t border-line-hairline">
                 Publishing creates the build, the release row, and uploads all
                 queued assets in order. Asset failures don't roll back the release.
               </p>
@@ -1690,7 +1686,7 @@ function NewReleaseDialog({
 function Row({ k, v }: { k: string; v: React.ReactNode }) {
   return (
     <div className="flex items-center gap-2">
-      <div className="w-32 text-xs text-slate-500">{k}</div>
+      <div className="w-32 text-xs text-foreground-muted">{k}</div>
       <div className="font-mono text-xs">{v}</div>
     </div>
   );
