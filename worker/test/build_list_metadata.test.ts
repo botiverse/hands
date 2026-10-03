@@ -30,7 +30,7 @@ describe("build list package discovery", () => {
       app.get("/api/apps/:appId/builds", handleListBuilds);
       const res = await app.request("/api/apps/app-a/builds", undefined, env);
       expect(res.status).toBe(200);
-      const data = await res.json();
+      const data = await res.json() as { builds: Parameters<typeof googlePlayPackageOptions>[1] };
       expect(data.builds).toHaveLength(1);
       expect(data.builds[0]).toMatchObject({ id: "build-a", build_metadata_json: declared, parsed_metadata_json: parsed });
       expect(googlePlayPackageOptions([{ id: "main-a", slug: "main", bundle_id: null }], data.builds)).toEqual([
