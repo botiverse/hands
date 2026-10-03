@@ -1,6 +1,7 @@
 import { sha256 } from "@noble/hashes/sha256";
 import { bytesToHex } from "@noble/hashes/utils";
 import { PlayAdapterError } from "./errors";
+import { playRejection, playRequestStage } from "./provider_errors";
 import type { PromotionRequest, TrackRelease, TrackResource } from "./types";
 
 const API_ROOT = "https://androidpublisher.googleapis.com/androidpublisher/v3";
@@ -134,8 +135,7 @@ export class GooglePlayClient {
     }
     const body = await response.json().catch(() => null) as T | null;
     if (!response.ok) {
-      const status = [400, 401, 403, 404].includes(response.status) ? 403 : 502;
-      throw new PlayAdapterError(status, "play_api_rejected", `Google Play API request failed with ${response.status}`);
+      throw playRejection(response.status, body, playRequestStage(url, init.method));
     }
     if (!body || typeof body !== "object") {
       throw new PlayAdapterError(502, "play_api_malformed", "Google Play API returned malformed JSON");
@@ -156,8 +156,8 @@ export class GooglePlayClient {
       throw new PlayAdapterError(502, "play_api_unavailable", "Google Play API request failed");
     }
     if (!response.ok) {
-      const status = [400, 401, 403, 404].includes(response.status) ? 403 : 502;
-      throw new PlayAdapterError(status, "play_api_rejected", `Google Play API request failed with ${response.status}`);
+      const body: unknown = await response.json().catch(() => null);
+      throw playRejection(response.status, body, playRequestStage(url, init.method));
     }
   }
 
