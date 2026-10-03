@@ -1,4 +1,4 @@
-import { CopyableCode } from "raft-ui";
+import { CopyableCode, CopyableCodeAction, CopyableCodeRoot } from "raft-ui";
 import type { BuildAsset } from "../lib/api";
 import {
   buildAssetFilename,
@@ -16,15 +16,12 @@ function CopyableAssetValue({
     <>
       <dt className="text-slate-500">{label}</dt>
       <dd className="min-w-0">
-        <CopyableCode
-          size="sm"
-          className="w-full"
-          ariaLabel={`Copy ${label}`}
-          copiedAriaLabel={`Copied ${label}`}
-          codeClassName="min-w-0 font-mono text-[11px] text-slate-700"
-        >
-          {value}
-        </CopyableCode>
+        <CopyableCodeRoot size="sm" className="w-full">
+          <CopyableCode className="min-w-0 font-mono text-[11px] text-slate-700">
+            {value}
+          </CopyableCode>
+          <CopyableCodeAction aria-label={`Copy ${label}`} />
+        </CopyableCodeRoot>
       </dd>
     </>
   );
