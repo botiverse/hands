@@ -18,6 +18,7 @@ import { Hono } from "hono";
 import { OpenAPIHono } from "@hono/zod-openapi";
 import type { Context } from "hono";
 import { cors } from "hono/cors";
+import { httpResponseTelemetry } from "./middleware/http_response_telemetry";
 import { publicDocAssetPaths } from "./lib/public_docs";
 
 import { authMiddleware, currentActor } from "./middleware/auth";
@@ -554,6 +555,8 @@ const app = new OpenAPIHono<{ Bindings: Env }>({
     }
   },
 });
+
+app.use("*", httpResponseTelemetry);
 
 app.use("*", async (c, next) => {
   const redirectUrl = httpsRedirectUrl(c);
