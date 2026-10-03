@@ -17,6 +17,7 @@ function makeDb() {
       webhook_id TEXT NOT NULL,
       event_type TEXT NOT NULL,
       event_id TEXT,
+      external_event_id TEXT,
       feedback_submission_event_id TEXT,
       payload_json TEXT NOT NULL,
       signing_secret TEXT,

@@ -740,6 +740,7 @@ function makeMockDb() {
       webhook_id TEXT NOT NULL REFERENCES webhooks(id) ON DELETE CASCADE,
       event_type TEXT NOT NULL,
       event_id TEXT REFERENCES feedback_events(id) ON DELETE SET NULL,
+      external_event_id TEXT,
       feedback_submission_event_id TEXT REFERENCES feedback_submission_events(id) ON DELETE SET NULL,
       payload_json TEXT NOT NULL,
       signing_secret TEXT,

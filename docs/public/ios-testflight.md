@@ -234,3 +234,64 @@ unsupplied locales and succeeds only after exact Apple readback.
 - [Invite external testers](https://developer.apple.com/help/app-store-connect/test-a-beta-version/invite-external-testers/)
 - [Provide test information](https://developer.apple.com/help/app-store-connect/test-a-beta-version/provide-test-information/)
 - [TestFlight overview](https://developer.apple.com/help/app-store-connect/test-a-beta-version/testflight-overview/)
+
+## App Store Connect webhook notifications
+
+Apple can notify Hands when an App Store version's review state, a TestFlight
+build's external review state, or a build upload's processing state changes.
+This uses [App Store Connect webhooks](https://developer.apple.com/help/app-store-connect/manage-your-team/manage-webhooks/), not in-app-purchase server notifications.
+
+An app admin creates an ingress configuration using the **Hands app UUID**:
+
+```http
+POST /api/apps/{app_id}/apple-webhook
+Authorization: Bearer <Hands session>
+Content-Type: application/json
+
+{"apple_app_id":"<numeric App Store Connect app ID>"}
+```
+
+The response contains `payload_url`, `secret` (shown once), and `event_types`.
+The secret is encrypted at rest with the existing ASC credential encryption
+key; keep it out of chat, logs, and shell arguments. Creating an existing
+configuration returns 409 without rotating its secret. `GET` on the same path
+returns metadata only; `DELETE` invalidates the URL. Recreating it produces a
+new URL and secret; previous event receipts survive rotation.
+
+In App Store Connect, open **Users and Access → Integrations → Additional →
+Webhooks**, create a webhook, paste the returned URL and secret, and select
+**the same Apple app** specified by `apple_app_id`. Select these three triggers:
+
+| Apple trigger | Hands outbound event |
+| --- | --- |
+| `APP_STORE_VERSION_APP_VERSION_STATE_UPDATED` | `app_store:version_state_changed` |
+| `BUILD_BETA_DETAIL_EXTERNAL_BUILD_STATE_UPDATED` | `testflight:external_state_changed` |
+| `BUILD_UPLOAD_STATE_UPDATED` | `app_store:build_upload_state_changed` |
+
+Choose **Test** and check the delivery's successful HTTP response in Apple's
+recent deliveries. Authenticated test pings and unsupported event types are
+acknowledged without a review notification. A test ping proves Apple can reach
+the receiver; it does not prove a real review event reached your chat channel.
+
+Subscribe your existing app-scoped or organization-scoped Hands webhook to the
+outbound events above. The existing queue sends notifications immediately and
+retries failures through its usual delivery ledger. A chat relay must support
+these event types and deduplicate the stable `event_id`. Creating the ingress
+does not itself configure a chat destination.
+
+Outbound `payload` contains `apple_event_id`, `apple_app_id`, `app`
+(`id`, `slug`, `name`), `resource` (`type`, `id`), `previous_state`, `state`,
+`occurred_at`, and `app_store_connect_url`. States are Apple's raw values. Apple
+build-upload events can omit the previous state and timestamp; those fields
+are then null. The resource ID identifies the Apple version/build, not a Hands
+build ID or a human-readable version number. No credentials or full Apple
+payloads are forwarded. Display the event's timestamp and state transition;
+out-of-order delivery must not overwrite an assumed current status.
+
+Hands verifies `x-apple-signature` over the exact request bytes, limits the
+body to 64 KiB, and commits the event receipt and matching outbound deliveries
+atomically. Replayed event IDs do not create extra deliveries; reuse of an ID
+with different bytes returns 409. Invalid signatures return 401 and malformed
+supported events return 400. Apple provides manual redelivery in its delivery
+history. Configure the webhook before relying on future notifications; it does
+not replay review changes that happened before it existed.

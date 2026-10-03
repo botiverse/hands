@@ -25,21 +25,14 @@ import type { Context } from "hono";
 import { currentActorInfo } from "../middleware/auth";
 import type { AdminContext } from "../lib/permissions";
 
-type WebhookEventType =
-  | "feedback:new"
-  | "feedback:comment_created"
-  | "feedback:status_changed"
-  | "crash:new_group"
-  | "crash:spike"
-  | "error:new_group"
-  | "error:spike"
-  | "release:new"
-  | "release:draft_created"
-  | "release:superseded"
-  | "release:rolled_back"
-  | "release:cancelled"
-  | "build:succeeded"
-  | "build:failed";
+const WEBHOOK_EVENT_TYPES = [
+  "app_store:version_state_changed", "testflight:external_state_changed", "app_store:build_upload_state_changed",
+  "feedback:new", "feedback:comment_created", "feedback:status_changed",
+  "crash:new_group", "crash:spike", "error:new_group", "error:spike",
+  "release:new", "release:draft_created", "release:superseded", "release:rolled_back", "release:cancelled",
+  "build:succeeded", "build:failed",
+] as const;
+type WebhookEventType = typeof WEBHOOK_EVENT_TYPES[number];
 
 interface WebhookRow {
   id: string;
@@ -210,23 +203,7 @@ export async function handleListDeliveries(c: AdminContext) {
 // and org-wide webhooks (app_id NULL) are neither listed nor mutable here.
 // ============================================================================
 
-const WEBHOOK_EVENTS: ReadonlySet<string> = new Set<WebhookEventType | "*">([
-  "feedback:new",
-  "feedback:comment_created",
-  "feedback:status_changed",
-  "crash:new_group",
-  "crash:spike",
-  "error:new_group",
-  "error:spike",
-  "release:new",
-  "release:draft_created",
-  "release:superseded",
-  "release:rolled_back",
-  "release:cancelled",
-  "build:succeeded",
-  "build:failed",
-  "*",
-]);
+const WEBHOOK_EVENTS: ReadonlySet<string> = new Set([...WEBHOOK_EVENT_TYPES, "*"]);
 
 function parseAppWebhookEvents(value: unknown): { events: string[] } | { error: string } {
   if (value === undefined) return { events: [] };
@@ -589,7 +566,7 @@ export async function processDeliveryById(
   const now = Date.now();
   const d = await env.DB.prepare(
     `SELECT d.id, d.webhook_id, d.status,
-            COALESCE(d.event_id, d.feedback_submission_event_id) AS event_id,
+            COALESCE(d.external_event_id, d.event_id, d.feedback_submission_event_id) AS event_id,
             d.attempts, d.max_attempts, d.payload_json, d.signing_secret,
             w.id AS resolved_webhook_id, w.url AS webhook_url,
             w.secret AS webhook_secret, w.enabled AS webhook_enabled,
@@ -763,7 +740,7 @@ export async function reapWebhookDeliveries(
   // occupying the oldest slots forever.
   const { results: due } = await env.DB.prepare(
     `SELECT d.id, d.webhook_id,
-            COALESCE(d.event_id, d.feedback_submission_event_id) AS event_id,
+            COALESCE(d.external_event_id, d.event_id, d.feedback_submission_event_id) AS event_id,
             d.attempts, d.max_attempts, d.payload_json, d.signing_secret,
             w.id AS resolved_webhook_id, w.url AS webhook_url,
             w.secret AS webhook_secret, w.enabled AS webhook_enabled,
