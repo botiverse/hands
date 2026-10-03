@@ -3,7 +3,9 @@ import { useQuery } from "@tanstack/react-query";
 import { useParams } from "react-router-dom";
 import { Card, TextHeading, TextSans } from "raft-ui";
 import { listApps } from "../lib/api";
+import { AppGalleryConnector } from "../components/integrations/AppGalleryConnector";
 import { GooglePlayConnector } from "../components/integrations/GooglePlayConnector";
+import { TestFlightConnector } from "../components/integrations/TestFlightConnector";
 
 /**
  * Connector registry. Each entry renders one complete connector row (icon,
@@ -15,7 +17,11 @@ const CONNECTORS: ReadonlyArray<{
   id: string;
   platform?: "android" | "ios" | "ohos" | "electron";
   Component: (props: { appId: string }) => ReactElement;
-}> = [{ id: "google-play", platform: "android", Component: GooglePlayConnector }];
+}> = [
+  { id: "google-play", platform: "android", Component: GooglePlayConnector },
+  { id: "testflight", platform: "ios", Component: TestFlightConnector },
+  { id: "appgallery", platform: "ohos", Component: AppGalleryConnector },
+];
 
 export function Integrations({ appId }: { appId: string }) {
   const apps = useQuery({ queryKey: ["apps"], queryFn: listApps });
@@ -32,7 +38,8 @@ export function Integrations({ appId }: { appId: string }) {
         </TextHeading>
         <TextSans size="small">
           Connect the external services this app publishes or reports to.
-          Google Play is available for Android apps.
+          Integrations follow the app's platform: Google Play for Android,
+          TestFlight for iOS, AppGallery Connect for HarmonyOS.
         </TextSans>
       </div>
       {app && connectors.length > 0 && (
