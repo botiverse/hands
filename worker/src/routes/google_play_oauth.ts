@@ -88,6 +88,7 @@ export async function handleStartGooglePlayOAuth(c: AdminContext) {
   return c.json({ authorization_url: url.toString() });
 }
 type OAuthFailure = "missing_code" | "server_configuration" | "token_exchange" | "offline_access" | "google_permissions" | "account_identity" | "play_permissions" | "access_changed" | "connection_changed" | "credential_storage";
+type ExchangeFailure = "timeout" | "transport" | "response_body" | "invalid_response" | "provider_rejection";
 type Pending = {
   state_hash: string; app_id: string; account_id: string; authenticated_account_id: string; org_id: string | null; client_id: string; package_name: string | null;
   tracks_json: string | null; expected_binding_version: string | null; expires_at: number; consumed_at: number | null;
@@ -130,9 +131,9 @@ export async function handleGooglePlayOAuthCallback(c: AdminContext) {
   const finish = (result: string) => { resultUrl.searchParams.set("google_play_oauth", result); return c.redirect(resultUrl.toString(), 303); };
   // Only allowlisted enums and HTTP statuses cross the diagnostic boundary.
   // Never log the callback URL, code, state, provider bodies or credentials.
-  const fail = async (reason: OAuthFailure, status?: number, providerError?: string) => {
+  const fail = async (reason: OAuthFailure, status?: number, providerError?: string, exchangeFailure?: ExchangeFailure) => {
     const safeProviderError = ["invalid_grant", "invalid_client", "access_denied", "temporarily_unavailable"].includes(providerError ?? "") ? providerError : undefined;
-    const payload = { reason, ...(status === undefined ? {} : { provider_status: status }),
+    const payload = { reason, ...(exchangeFailure ? { exchange_failure: exchangeFailure } : {}), ...(status === undefined ? {} : { provider_status: status }),
       ...(safeProviderError ? { provider_error: safeProviderError } : {}) };
     console.warn("google_play.oauth.failed", { app_id: pending.app_id, ...payload });
     try { await insertAuditLog(c.env.DB, c, { app_id: pending.app_id, action: "google_play.oauth.failed", payload }); }
@@ -144,6 +145,8 @@ export async function handleGooglePlayOAuthCallback(c: AdminContext) {
   if (!c.req.query("code")) return fail("missing_code");
   let stage: OAuthFailure = "server_configuration";
   let stored = false;
+  let exchangeStatus: number | undefined;
+  let readingTokenBody = false;
   try {
     if (!c.env.GOOGLE_PLAY_OAUTH_CLIENT_ID || !c.env.GOOGLE_PLAY_OAUTH_CLIENT_SECRET || pending.client_id !== c.env.GOOGLE_PLAY_OAUTH_CLIENT_ID) return fail("server_configuration");
     const verifier = await decryptGooglePlayValue(pending.verifier_ciphertext_b64, pending.verifier_iv_b64, pending.app_id, pending.verifier_key_version, c.env.PLAY_CRED_ENC_KEYS);
@@ -156,10 +159,17 @@ export async function handleGooglePlayOAuthCallback(c: AdminContext) {
         code_verifier: verifier, redirect_uri: callbackUri(c.env), client_id: c.env.GOOGLE_PLAY_OAUTH_CLIENT_ID,
         client_secret: c.env.GOOGLE_PLAY_OAUTH_CLIENT_SECRET }),
     });
-    const token = await response.json() as Record<string, unknown>;
-    if (!response.ok) return fail("token_exchange", response.status, typeof token.error === "string" ? token.error : undefined);
+    exchangeStatus = response.status;
+    readingTokenBody = true;
+    const tokenBody: unknown = await response.json();
+    readingTokenBody = false;
+    if (!tokenBody || typeof tokenBody !== "object" || Array.isArray(tokenBody)) {
+      return fail("token_exchange", response.status, undefined, "invalid_response");
+    }
+    const token = tokenBody as Record<string, unknown>;
+    if (!response.ok) return fail("token_exchange", response.status, typeof token.error === "string" ? token.error : undefined, "provider_rejection");
     if (token.token_type !== "Bearer"
-      || typeof token.access_token !== "string" || !token.access_token) return fail("token_exchange", response.status);
+      || typeof token.access_token !== "string" || !token.access_token) return fail("token_exchange", response.status, undefined, "invalid_response");
     if (typeof token.refresh_token !== "string" || !token.refresh_token) return fail("offline_access");
     if (typeof token.scope !== "string" || !token.scope.split(/\s+/).some((scope) => scope === SCOPE)) return fail("google_permissions");
     stage = "account_identity";
@@ -205,6 +215,12 @@ export async function handleGooglePlayOAuthCallback(c: AdminContext) {
     }
     const reason = stage === "credential_storage" && error instanceof Error
       && error.message === "Google Play binding changed during authorization" ? "connection_changed" : stage;
+    if (stage === "token_exchange") {
+      // Error messages and response bodies may contain credentials. Classify
+      // using only local control flow and the two known abort names.
+      const timedOut = error instanceof Error && (error.name === "TimeoutError" || error.name === "AbortError");
+      return fail(reason, exchangeStatus, undefined, timedOut ? "timeout" : readingTokenBody ? "response_body" : "transport");
+    }
     return fail(reason);
   }
 }

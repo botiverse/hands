@@ -136,6 +136,28 @@ describe("Google Play OAuth", () => {
     expect(h.verify).not.toHaveBeenCalled();
   });
 
+  it.each([
+    ['timeout', undefined, () => Promise.reject(new DOMException('private-code', 'TimeoutError'))],
+    ['transport', undefined, () => Promise.reject(new TypeError('private-client-secret'))],
+    ['response_body', 502, () => Promise.resolve(new Response('<html>private-refresh</html>', {status:502}))],
+    ['response_body', 200, () => Promise.resolve(new Response('private-access', {status:200}))],
+    ['invalid_response', 200, () => Promise.resolve(Response.json(null))],
+    ['invalid_response', 200, () => Promise.resolve(Response.json([]))],
+  ] as const)('records safe exchange detail %s with the received HTTP status', async (detail, status, result) => {
+    const h = harness(); const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const fetch = vi.spyOn(globalThis, 'fetch').mockImplementation(result);
+    const {url} = await h.start(); const state = url!.searchParams.get('state')!;
+    const response = await h.callback(state);
+    const row = h.sqlite.prepare("SELECT payload FROM audit_logs WHERE action='google_play.oauth.failed'").get() as {payload:string};
+    expect(JSON.parse(row.payload)).toEqual({reason:'token_exchange', exchange_failure:detail, ...(status === undefined ? {} : {provider_status:status})});
+    const diagnostics = JSON.stringify([row, warning.mock.calls, response.headers.get('location')]);
+    for (const secret of ['private-code','private-client-secret','private-refresh','private-access',state]) expect(diagnostics).not.toContain(secret);
+    expect(await getGooglePlayBindingMeta(h.env.DB, appId)).toBeNull();
+    expect(h.verify).not.toHaveBeenCalled();
+    expect((await h.callback(state)).status).toBe(400);
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
   it('keeps an actually stored connection successful when receipt bookkeeping fails', async () => {
     const h = harness(); google(); vi.spyOn(console,'warn').mockImplementation(() => {});
     h.sqlite.exec("CREATE TRIGGER reject_connect_audit BEFORE INSERT ON audit_logs WHEN NEW.action='google_play.oauth.connect' BEGIN SELECT RAISE(ABORT, 'audit unavailable'); END");
