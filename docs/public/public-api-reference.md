@@ -535,6 +535,11 @@ audit-HMAC reporter pseudonym. Responses use `Cache-Control: private, no-store`.
 When the feature is disabled the mint route returns `404` and reporter routes
 retain their deploy-token-only behavior.
 
+For app-admin webhook creation, exact request bodies, permissions, and reporter
+subscription binding, see [Backend & CLI Feedback](server-feedback.md#notify-the-products-user-or-agent).
+The app endpoint is `POST /api/apps/:appId/webhooks`; the organization endpoint
+requires org admin even when an app id is supplied in its body.
+
 Reporter comment and status webhooks carry a stable logical event id in both
 the signed JSON body and `X-Hands-Event-Id`. Each subscription delivery also
 has a stable `X-Hands-Delivery-Id`. Retries reuse the exact same body,

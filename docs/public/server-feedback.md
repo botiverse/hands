@@ -148,11 +148,37 @@ Hands does not automatically send a Raft message to the submitter. You can poll
 the reporter endpoints, or configure a signed webhook to your backend and
 forward the notification through your product's existing user/agent channel.
 
-Create an app webhook for `feedback:comment_created` and
-`feedback:status_changed`, then bind it to the reporter integration using
-`PUT /api/apps/:appId/reporter-integrations/:integrationId/webhooks/:webhookId`
-with app-admin authentication. These subscriptions are separate from a generic
-new-ticket staff alert.
+Use your **app-admin Hands session** to create the webhook. The app creator is
+an app admin; organization-admin privileges are not required for this path.
+The feedback-only reporter token cannot perform these setup operations.
+
+```http
+POST /api/apps/:appId/webhooks
+Authorization: Bearer <app-admin-session>
+Content-Type: application/json
+
+{
+  "url": "https://your-product.example/webhooks/hands",
+  "secret": "<signing-secret-from-backend-storage>",
+  "events": ["feedback:comment_created", "feedback:status_changed"]
+}
+```
+
+A successful `201` returns the webhook `id`, app scope, and `secret_set: true`,
+but never the signing secret. The app is selected by the path's full UUID;
+there is no need for an `app_id` body field. The manifest action is
+`create-app-webhook`; metadata discovery uses `list-app-webhooks`.
+
+With the same app-admin session, bind the returned id using
+`PUT /api/apps/:appId/reporter-integrations/:integrationId/webhooks/:webhookId`.
+No request body is needed. Creation alone does not bind the reporter subscriber.
+These subscriptions are separate from a generic new-ticket staff alert.
+
+The organization path `/api/orgs/:orgId/webhooks` is a separate management
+surface that requires **org admin**, even if its body includes `app_id`.
+The manifest's legacy `create-webhook` action uses that organization path.
+Use the app path above for this integration instead of requesting broader
+organization privileges.
 
 Verify `X-Hands-Signature` (HMAC-SHA256) over the exact request bytes before
 routing. Deduplicate the stable `X-Hands-Event-Id`; each delivery also has an

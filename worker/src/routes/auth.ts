@@ -1802,6 +1802,56 @@ export async function handleAgentManifest(c: Context<{ Bindings: Env }>) {
         },
       },
       {
+        name: "list-app-webhooks",
+        description: "List webhook metadata for this app only. Requires app admin; signing secrets are never returned.",
+        endpoint: { method: "GET", path: "/api/apps/{app_id}/webhooks" },
+        parameters: {
+          app_id: { type: "string", in: "path", required: true, description: "Exact Hands app UUID." },
+        },
+      },
+      {
+        name: "create-app-webhook",
+        description: "Create an app webhook using app-admin authority. No org-admin grant is needed; the URL path fixes the app scope. The signing secret is never returned.",
+        endpoint: { method: "POST", path: "/api/apps/{app_id}/webhooks" },
+        parameters: {
+          app_id: { type: "string", in: "path", required: true, description: "Exact Hands app UUID." },
+          url: { type: "string", in: "body", required: true, description: "Delivery URL." },
+          secret: { type: "string", in: "body", required: true, description: "HMAC signing secret from controlled storage; never returned." },
+          events: { type: "array", in: "body", required: false, description: "Subscribed event names. Use feedback:comment_created and feedback:status_changed for reporter replies." },
+        },
+      },
+      {
+        name: "update-app-webhook",
+        description: "Update an app webhook using app-admin authority.",
+        endpoint: { method: "PATCH", path: "/api/apps/{app_id}/webhooks/{webhook_id}" },
+        parameters: {
+          app_id: { type: "string", in: "path", required: true, description: "Exact Hands app UUID." },
+          webhook_id: { type: "string", in: "path", required: true, description: "Webhook UUID owned by this app." },
+          url: { type: "string", in: "body", required: false, description: "Delivery URL." },
+          secret: { type: "string", in: "body", required: false, description: "HMAC signing secret from controlled storage; never returned." },
+          events: { type: "array", in: "body", required: false, description: "Subscribed event names. Use feedback:comment_created and feedback:status_changed for reporter replies." },
+          enabled: { type: "boolean", in: "body", required: false, description: "Enable or disable delivery." },
+        },
+      },
+      {
+        name: "delete-app-webhook",
+        description: "Archive an app webhook using app-admin authority.",
+        endpoint: { method: "DELETE", path: "/api/apps/{app_id}/webhooks/{webhook_id}" },
+        parameters: {
+          app_id: { type: "string", in: "path", required: true, description: "Exact Hands app UUID." },
+          webhook_id: { type: "string", in: "path", required: true, description: "Webhook UUID owned by this app." },
+        },
+      },
+      {
+        name: "list-app-webhook-deliveries",
+        description: "List this app webhook delivery history. Requires app admin.",
+        endpoint: { method: "GET", path: "/api/apps/{app_id}/webhooks/{webhook_id}/deliveries" },
+        parameters: {
+          app_id: { type: "string", in: "path", required: true, description: "Exact Hands app UUID." },
+          webhook_id: { type: "string", in: "path", required: true, description: "Webhook UUID owned by this app." },
+        },
+      },
+      {
         name: "list-webhooks",
         description:
           "List active webhook metadata for an organization without returning signing secrets. Requires org admin.",
@@ -1813,7 +1863,7 @@ export async function handleAgentManifest(c: Context<{ Bindings: Env }>) {
       {
         name: "create-webhook",
         description:
-          "Create an enabled org/app webhook. Requires org admin; the signing secret is accepted but never returned.",
+          "Create a webhook through the organization-admin endpoint. Requires org admin even when app_id is supplied. App admins should use create-app-webhook instead; the signing secret is never returned.",
         endpoint: { method: "POST", path: "/api/orgs/{org_id}/webhooks" },
         parameters: {
           org_id: { type: "string", in: "path", required: true, description: "Hands organization id." },

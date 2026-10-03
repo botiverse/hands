@@ -1722,6 +1722,8 @@ describe("quiver route handlers — SQL smoke", () => {
       requireAppRole("admin") as any,
       handleListAppWebhookDeliveries as any,
     );
+    const { handleAgentManifest } = await import("../src/routes/auth");
+    testApp.get("/.well-known/raft-agent-manifest.json", handleAgentManifest as any);
     const call = (token: string, method: string, path: string, body?: unknown) =>
       testApp.request(
         `https://quiver-worker.test${path}`,
@@ -1750,8 +1752,14 @@ describe("quiver route handlers — SQL smoke", () => {
     expect(badEvent.status).toBe(400);
     expect(((await badEvent.json()) as any).error).toContain("release:nope");
 
-    // Create: body app_id (null = org-wide, or another app) is ignored.
-    const created = await call(adm, "POST", "/api/apps/wh-app/webhooks", {
+    // Discover the app-admin operation, then execute that exact manifest path.
+    // This account has only org viewer; discovery must not route it to org admin.
+    const manifest = await (await call(adm, "GET", "/.well-known/raft-agent-manifest.json")).json() as any;
+    const createAction = manifest.actions.find((a: any) => a.name === "create-app-webhook");
+    expect(createAction).toBeDefined();
+    // Body app_id (null = org-wide, or another app) is ignored.
+    const created = await call(adm, createAction.endpoint.method,
+      createAction.endpoint.path.replace("{app_id}", "wh-app"), {
       url: "https://bobo.example/hooks/hands", secret: "shh", events: ["release:new"], app_id: null,
     });
     expect(created.status).toBe(201);
