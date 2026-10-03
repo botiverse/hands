@@ -294,7 +294,7 @@ export function registerAndroidDistributionRoutes(): RouteConfigList {
     tags: ["Android distribution"],
     summary: "Promote the accepted exact AAB through the server-side Play adapter",
     description:
-      "Requires immutable binding, latest passing AAB acceptance, track max + 1 versionCode, one edit lock, no live hold, and explicit human approval. No Play credential reaches this API caller.",
+      "Requires immutable binding, latest passing AAB acceptance, track max + 1 versionCode, one edit lock, no live hold, and an explicit submission note from an authenticated human or agent publisher. No Play credential reaches this API caller.",
     security: auth,
     request: {
       params: AppReleaseParams,
@@ -303,7 +303,7 @@ export function registerAndroidDistributionRoutes(): RouteConfigList {
     responses: {
       200: success("Play readback matched and immutable receipt was appended.", GenericObject),
       400: error("A promotion gate failed."),
-      403: error("Human approval, publisher role, or live-hold gate failed."),
+      403: error("Authenticated publisher, submission note, or live-hold gate failed."),
       409: error("Release revision, versionCode, or edit lock conflicts."),
       502: error("Server-side Play adapter failed or returned mismatched readback."),
     },

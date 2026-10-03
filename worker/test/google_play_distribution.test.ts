@@ -319,8 +319,16 @@ const executionContext = {
   props: {},
 } as unknown as ExecutionContext;
 
-function routeHarness() {
+function routeHarness(principal: "human" | "agent" = "human", role: "publisher" | "viewer" = "publisher") {
   const sqlite = fullDatabase();
+  const now = Date.now();
+  sqlite.prepare(`INSERT INTO raft_accounts
+    (id, provider, provider_subject, server_id, server_slug, principal_type, server_role,
+     username, display_name, avatar_url, raw_profile, created_at, updated_at, last_login_at)
+    VALUES (?, 'raft', ?, 'server', 'test', ?, 'member', ?, ?, NULL, '{}', ?, ?, ?)`)
+    .run(principal, principal, principal, principal, principal, now, now, now);
+  sqlite.prepare(`INSERT INTO app_members (id, app_id, account_id, app_role, joined_at)
+    VALUES ('promotion-member', 'app', ?, ?, ?)`).run(principal, role, now);
   const bucket = new MemoryBucket();
   const env = {
     DB: d1(sqlite),
@@ -335,14 +343,14 @@ function routeHarness() {
   const app = new Hono<{ Bindings: Env; Variables: { admin_account: any; admin_actor: string } }>();
   app.use("*", async (c, next) => {
     c.set("admin_account", {
-      id: "human",
+      id: principal,
       provider: "raft",
-      provider_subject: "human",
+      provider_subject: principal,
       server_id: "server",
       server_slug: "test",
-      principal_type: "human",
+      principal_type: principal,
       server_role: "member",
-      username: "human",
+      username: principal,
       display_name: "Human",
       avatar_url: null,
       raw_profile: "{}",
@@ -350,7 +358,7 @@ function routeHarness() {
       updated_at: 1,
       last_login_at: 1,
     });
-    c.set("admin_actor", "raft:human@test");
+    c.set("admin_actor", `raft:${principal}@test`);
     await next();
   });
   app.post("/api/apps/:appId/android-release-artifacts", handleCreateAndroidReleaseArtifacts);
@@ -362,7 +370,7 @@ function routeHarness() {
   app.post("/api/apps/:appId/releases/:releaseId/receipts/acceptance", handleCreateAcceptanceReceipt);
   app.get("/api/apps/:appId/releases/:releaseId/receipts", handleListReleaseReceipts);
   app.get("/api/apps/:appId/releases/:releaseId/distributions", handleListDistributions);
-  app.post("/api/apps/:appId/releases/:releaseId/distributions/play/promote", handlePromotePlayDistribution);
+  app.post("/api/apps/:appId/releases/:releaseId/distributions/play/promote", requireAppRole("publisher"), handlePromotePlayDistribution);
   app.post("/api/apps/:appId/releases/:releaseId/distributions/play/rollback", handleRollbackPlayDistribution);
   const request = (path: string, init?: RequestInit) =>
     app.fetch(new Request(`https://hands.test${path}`, init), env, executionContext);
@@ -450,8 +458,8 @@ describe("Android artifact routes", () => {
   });
 });
 
-async function readyRelease() {
-  const harness = routeHarness();
+async function readyRelease(principal: "human" | "agent" = "human", role: "publisher" | "viewer" = "publisher") {
+  const harness = routeHarness(principal, role);
   harness.env.PLAY_CRED_ENC_KEYS = JSON.stringify({ v1: "test-only-google-play-key-material-1234567890" });
   harness.env.PLAY_CRED_ENC_ACTIVE_KEY_VERSION = "v1";
   await storeGooglePlayBinding(harness.env.DB, {
@@ -722,8 +730,8 @@ describe("Google Play binding routes", () => {
 });
 
 describe("Play promotion route", () => {
-  it("streams the accepted exact AAB once and records matching readback", async () => {
-    const harness = await readyRelease();
+  it.each(["human", "agent"] as const)("%s publisher streams the accepted exact AAB once and records attributed readback", async (principal) => {
+    const harness = await readyRelease(principal);
     let trackReads = 0;
     let edits = 0;
     harness.env.PLAY_RELEASE_SERVICE = playAdapterStub({
@@ -756,6 +764,8 @@ describe("Play promotion route", () => {
     });
     expect(promoted.status).toBe(200);
     expect(await promoted.json()).toMatchObject({ edit_id: "edit-1", track: "internal", version_code: 42 });
+    expect(harness.sqlite.prepare("SELECT created_by FROM release_receipts WHERE kind='play-promotion'").get())
+      .toEqual({ created_by: `raft:${principal}@test` });
     expect(trackReads).toBe(1);
     expect(edits).toBe(1);
     expect(harness.sqlite.prepare("SELECT COUNT(*) AS count FROM play_edit_locks").get()).toEqual({ count: 0 });
@@ -774,6 +784,47 @@ describe("Play promotion route", () => {
       result: { status: "success" },
     });
     expect(JSON.stringify(payload)).not.toMatch(/distribution[_-]?cert/i);
+  });
+
+  it("rejects agent viewers before any Play call or promotion receipt", async () => {
+    const h = await readyRelease("agent", "viewer");
+    let calls = 0;
+    h.env.PLAY_RELEASE_SERVICE = playAdapterStub({
+      readTrackMaximum: async () => { calls++; return { ok: true, value: { max_version_code: 41 } }; },
+      promote: async () => { calls++; throw new Error("must not call Play"); },
+    });
+    const denied = await h.request("/api/apps/app/releases/release/distributions/play/promote", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ track: "internal", expected_revision: 1, approval: { note: "ship" } }),
+    });
+    expect(denied.status).toBe(403);
+    expect(await denied.json()).toMatchObject({ code: "INSUFFICIENT_APP_ROLE" });
+    expect(calls).toBe(0);
+    expect(h.sqlite.prepare("SELECT COUNT(*) AS count FROM release_receipts WHERE kind='play-promotion'").get()).toEqual({ count: 0 });
+  });
+
+  it.each(["acceptance", "revision", "note"] as const)("agent publisher cannot skip the %s gate", async (gate) => {
+    const h = await readyRelease("agent");
+    let calls = 0;
+    h.env.PLAY_RELEASE_SERVICE = playAdapterStub({
+      readTrackMaximum: async () => { calls++; return { ok: true, value: { max_version_code: 41 } }; },
+      promote: async () => { calls++; throw new Error("must not call Play"); },
+    });
+    const body = { track: "internal", expected_revision: gate === "revision" ? 0 : 1, approval: { note: gate === "note" ? " " : "ship" } };
+    if (gate === "acceptance") {
+      h.sqlite.prepare(`INSERT INTO release_receipts
+        (id, app_id, release_id, kind, verdict, artifact_id, artifact_sha256, artifact_size,
+         package_name, source_commit, version_code, payload_json, created_by, created_at)
+        SELECT 'agent-failed-acceptance', app_id, release_id, kind, 'fail', artifact_id, artifact_sha256,
+          artifact_size, package_name, source_commit, version_code, '{}', 'tester', created_at+1
+        FROM release_receipts WHERE kind='acceptance'`).run();
+    }
+    const denied = await h.request("/api/apps/app/releases/release/distributions/play/promote", {
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body),
+    });
+    expect(denied.status).toBe(gate === "revision" ? 409 : 400);
+    expect(calls).toBe(0);
+    expect(h.sqlite.prepare("SELECT COUNT(*) AS count FROM release_receipts WHERE kind='play-promotion'").get()).toEqual({ count: 0 });
   });
 
   it("rejects missing, disabled, unconfigured, and package-mismatched app bindings before any adapter call", async () => {
