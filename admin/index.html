@@ -5,8 +5,36 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <title>Hands</title>
+    <script>
+      // First-paint theme restore: mirrors raft-ui ThemeProvider's document
+      // sync (data-theme + light/dark classes) so the persisted choice applies
+      // before React mounts, without a theme flash. Keep the keys in sync with
+      // src/main.tsx (`storageKey="hands-admin-theme"`).
+      (function () {
+        try {
+          var theme = window.localStorage.getItem("hands-admin-theme");
+          if (theme !== "brutal" && theme !== "elegant") theme = "elegant";
+          var mode = window.localStorage.getItem("hands-admin-theme-mode");
+          if (mode !== "light" && mode !== "dark" && mode !== "system") mode = "light";
+          var resolved = mode;
+          if (mode === "system") {
+            resolved = window.matchMedia("(prefers-color-scheme: dark)").matches
+              ? "dark"
+              : "light";
+          }
+          var root = document.documentElement;
+          root.dataset.theme = theme;
+          root.classList.toggle("light", theme === "elegant" && resolved === "light");
+          root.classList.toggle("dark", theme === "elegant" && resolved === "dark");
+          root.style.colorScheme = theme === "elegant" ? resolved : "light";
+        } catch (error) {
+          // localStorage unavailable (private mode, blocked storage): the
+          // ThemeProvider defaults apply once React mounts.
+        }
+      })();
+    </script>
   </head>
-  <body class="bg-slate-50 text-slate-900 antialiased">
+  <body class="bg-layer-canvas text-foreground antialiased">
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>
