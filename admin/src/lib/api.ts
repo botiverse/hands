@@ -881,10 +881,11 @@ export interface GooglePlayBindingMeta {
   id: string;
   app_id: string;
   enabled: boolean;
-  package_name: string;
-  internal_track: string;
-  closed_track: string;
-  production_track: string;
+  /** Null until the connection is configured (package + tracks). */
+  package_name: string | null;
+  internal_track: string | null;
+  closed_track: string | null;
+  production_track: string | null;
   service_account_email: string;
   service_account_project_id: string | null;
   private_key_id: string | null;
@@ -901,7 +902,9 @@ export const getGooglePlayBinding = (appId: string) =>
 export const setGooglePlayBinding = (
   appId: string,
   input: {
-    service_account_json: string;
+    /** Omitted when configuring an existing OAuth connection — the saved
+     *  credential is reused and validated instead. */
+    service_account_json?: string;
     package_name: string;
     tracks: { internal: string; closed: string; production: string };
   },
@@ -2164,8 +2167,7 @@ export const rotateAppClientKey = (appId: string) =>
     { method: "POST", body: "{}", admin: true },
   );
 
-export const startGooglePlayOAuth = (appId: string, input: {
-  package_name: string; tracks: { internal: string; closed: string; production: string };
-}) => request<{ authorization_url: string }>(`/api/apps/${appId}/google-play-oauth/start`, {
-  method: "POST", admin: true, body: JSON.stringify(input),
-});
+export const startGooglePlayOAuth = (appId: string) =>
+  request<{ authorization_url: string }>(`/api/apps/${appId}/google-play-oauth/start`, {
+    method: "POST", admin: true, body: "{}",
+  });
