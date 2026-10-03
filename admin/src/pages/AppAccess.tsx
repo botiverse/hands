@@ -49,6 +49,7 @@ import {
   SelectTrigger,
   SelectValue,
   SelectIcon,
+  SelectList,
   SelectContent,
   SelectItem,
   Tooltip,
@@ -529,9 +530,11 @@ function AppMemberList({
               <TooltipContent>Filter by principal type</TooltipContent>
             </Tooltip>
             <SelectContent>
+              <SelectList>
               <SelectItem value="all">All types</SelectItem>
               <SelectItem value="human">Humans only</SelectItem>
               <SelectItem value="agent">Agents only</SelectItem>
+            </SelectList>
             </SelectContent>
           </Select>
           <span className="text-xs text-foreground-muted whitespace-nowrap">
@@ -616,11 +619,13 @@ function AppMemberList({
                         <SelectIcon />
                       </SelectTrigger>
                       <SelectContent>
+                        <SelectList>
                         {(["admin", "publisher", "viewer"] as const).map((r) => (
                           <SelectItem key={r} value={r}>
                             {r}
                           </SelectItem>
                         ))}
+                      </SelectList>
                       </SelectContent>
                     </Select>
                   ) : (
@@ -983,9 +988,11 @@ function AddAppDeployTokenDialog({
                         <SelectIcon />
                       </SelectTrigger>
                       <SelectContent>
+                        <SelectList>
                         <SelectItem value="publisher">publisher</SelectItem>
                         <SelectItem value="viewer">viewer</SelectItem>
                         <SelectItem value="none">No role (custom only)</SelectItem>
+                      </SelectList>
                       </SelectContent>
                     </Select>
                   </div>
@@ -1003,10 +1010,12 @@ function AddAppDeployTokenDialog({
                         <SelectIcon />
                       </SelectTrigger>
                       <SelectContent>
+                        <SelectList>
                         <SelectItem value="30d">30 days</SelectItem>
                         <SelectItem value="90d">90 days</SelectItem>
                         <SelectItem value="365d">1 year</SelectItem>
                         <SelectItem value="never">Never</SelectItem>
+                      </SelectList>
                       </SelectContent>
                     </Select>
                   </div>
@@ -1217,12 +1226,14 @@ function AddAppMemberDialog({
                     <SelectIcon />
                   </SelectTrigger>
                   <SelectContent>
+                    <SelectList>
                     <SelectItem value="">— select —</SelectItem>
                     {candidates.map((m) => (
                       <SelectItem key={m.account_id} value={m.account_id}>
                         {m.display_name} ({m.username ?? m.provider_subject.slice(0, 8)})
                       </SelectItem>
                     ))}
+                  </SelectList>
                   </SelectContent>
                 </Select>
               </div>
@@ -1264,9 +1275,11 @@ function AddAppMemberDialog({
                   <SelectIcon />
                 </SelectTrigger>
                 <SelectContent>
+                  <SelectList>
                   <SelectItem value="admin">admin</SelectItem>
                   <SelectItem value="publisher">publisher</SelectItem>
                   <SelectItem value="viewer">viewer</SelectItem>
+                </SelectList>
                 </SelectContent>
               </Select>
             </div>
@@ -1379,8 +1392,10 @@ function InviteToAppForm({ appId }: { appId: string }) {
                 <SelectIcon />
               </SelectTrigger>
               <SelectContent>
+                <SelectList>
                 <SelectItem value="publisher">publisher</SelectItem>
                 <SelectItem value="viewer">viewer</SelectItem>
+              </SelectList>
               </SelectContent>
             </Select>
           </div>

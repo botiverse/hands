@@ -10,6 +10,7 @@ import {
   DialogClose,
   Select,
   SelectContent,
+  SelectList,
   SelectIcon,
   SelectItem,
   SelectTrigger,
@@ -247,11 +248,13 @@ export function AppCreationWizard({
                     <SelectIcon />
                   </SelectTrigger>
                   <SelectContent>
+                    <SelectList>
                     {APP_PLATFORMS.map((value) => (
                       <SelectItem key={value} value={value}>
                         {value}
                       </SelectItem>
                     ))}
+                  </SelectList>
                   </SelectContent>
                 </Select>
               </div>

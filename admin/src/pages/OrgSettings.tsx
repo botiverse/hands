@@ -49,6 +49,7 @@ import {
   SelectTrigger,
   SelectValue,
   SelectIcon,
+  SelectList,
   SelectContent,
   SelectItem,
   Avatar,
@@ -291,9 +292,11 @@ function MembersTab({
               <TooltipContent>Filter by principal type</TooltipContent>
             </Tooltip>
             <SelectContent>
+              <SelectList>
               <SelectItem value="all">All types</SelectItem>
               <SelectItem value="human">Humans only</SelectItem>
               <SelectItem value="agent">Agents only</SelectItem>
+            </SelectList>
             </SelectContent>
           </Select>
           <span className="text-xs text-foreground-muted">
@@ -393,6 +396,7 @@ function MembersTab({
                         <SelectIcon />
                       </SelectTrigger>
                       <SelectContent>
+                        <SelectList>
                         {(["owner", "admin", "member", "viewer"] as const).map(
                           (r) => (
                             <SelectItem key={r} value={r}>
@@ -400,6 +404,7 @@ function MembersTab({
                             </SelectItem>
                           ),
                         )}
+                      </SelectList>
                       </SelectContent>
                     </Select>
                   ) : (
@@ -537,11 +542,13 @@ function InvitesTab({
               <TooltipContent>Filter by invite status</TooltipContent>
             </Tooltip>
             <SelectContent>
+              <SelectList>
               <SelectItem value="all">All statuses</SelectItem>
               <SelectItem value="pending">Pending</SelectItem>
               <SelectItem value="accepted">Accepted</SelectItem>
               <SelectItem value="revoked">Revoked</SelectItem>
               <SelectItem value="expired">Expired</SelectItem>
+            </SelectList>
             </SelectContent>
           </Select>
           {canManage && (
@@ -725,8 +732,10 @@ function CreateInviteDialog({
                   <SelectIcon />
                 </SelectTrigger>
                 <SelectContent>
+                  <SelectList>
                   <SelectItem value="member">member (default)</SelectItem>
                   <SelectItem value="viewer">viewer (read-only)</SelectItem>
+                </SelectList>
                 </SelectContent>
               </Select>
             </div>

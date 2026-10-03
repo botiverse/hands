@@ -10,6 +10,7 @@ import {
   SelectTrigger,
   SelectValue,
   SelectIcon,
+  SelectList,
   SelectContent,
   SelectItem,
   Tooltip,
@@ -1274,7 +1275,9 @@ function AppTransferPanel({ appId, app, orgs }: { appId: string; app: App; orgs:
     onError: (e) => toast.show({ kind: "error", title: "Transfer failed", description: (e as Error).message }),
   });
   const eligible = orgs.filter((o) => !o.archived && o.id !== app.org_id);
-  return <div className="border-t border-line-hairline pt-3"><h3 className="text-sm font-medium text-foreground-strong mb-1">Transfer app</h3><p className="text-xs text-foreground-muted mb-2">Preserves this app ID and all releases, builds, channels, and history. Owners of both organizations must authorize.</p><div className="flex flex-wrap items-center gap-2"><Select value={target || "none"} onValueChange={(value) => setTarget(value === "none" ? "" : String(value))}><SelectTrigger className="w-full sm:w-64" aria-label="Select target organization" disabled={transfer.isPending}><SelectValue /><SelectIcon /></SelectTrigger><SelectContent><SelectItem value="none">Select target organization…</SelectItem>{eligible.map((o) => <SelectItem key={o.id} value={o.id}>{o.name} ({o.slug})</SelectItem>)}</SelectContent></Select><Input className="w-full sm:w-56" value={confirm} onChange={(e) => setConfirm(e.target.value)} placeholder={`Type ${app.slug} to confirm`} disabled={!target || transfer.isPending} /><Button variant="outline" size="xs" disabled={!target || confirm !== app.slug || !app.org_id || transfer.isPending} onClick={() => transfer.mutate()}>{transfer.isPending ? "Transferring…" : "Transfer"}</Button></div></div>;
+  return <div className="border-t border-line-hairline pt-3"><h3 className="text-sm font-medium text-foreground-strong mb-1">Transfer app</h3><p className="text-xs text-foreground-muted mb-2">Preserves this app ID and all releases, builds, channels, and history. Owners of both organizations must authorize.</p><div className="flex flex-wrap items-center gap-2"><Select value={target || "none"} onValueChange={(value) => setTarget(value === "none" ? "" : String(value))}><SelectTrigger className="w-full sm:w-64" aria-label="Select target organization" disabled={transfer.isPending}><SelectValue /><SelectIcon /></SelectTrigger><SelectContent>
+    <SelectList><SelectItem value="none">Select target organization…</SelectItem>{eligible.map((o) => <SelectItem key={o.id} value={o.id}>{o.name} ({o.slug})</SelectItem>)}</SelectList>
+  </SelectContent></Select><Input className="w-full sm:w-56" value={confirm} onChange={(e) => setConfirm(e.target.value)} placeholder={`Type ${app.slug} to confirm`} disabled={!target || transfer.isPending} /><Button variant="outline" size="xs" disabled={!target || confirm !== app.slug || !app.org_id || transfer.isPending} onClick={() => transfer.mutate()}>{transfer.isPending ? "Transferring…" : "Transfer"}</Button></div></div>;
 }
 
 function DefaultChannelPicker({
@@ -1356,12 +1359,14 @@ function DefaultChannelPicker({
             <SelectIcon />
           </SelectTrigger>
           <SelectContent>
+            <SelectList>
             <SelectItem value="">— none (use first channel) —</SelectItem>
             {channels.data?.channels.map((c: Channel) => (
               <SelectItem key={c.id} value={c.id}>
                 {c.slug} ({c.name})
               </SelectItem>
             ))}
+          </SelectList>
           </SelectContent>
         </Select>
         {isOrgAdmin && (

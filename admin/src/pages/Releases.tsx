@@ -39,6 +39,7 @@ import {
   SelectTrigger,
   SelectValue,
   SelectIcon,
+  SelectList,
   SelectContent,
   SelectItem,
   Tooltip,
@@ -426,12 +427,14 @@ export function Releases({ appId }: { appId: string }) {
             <SelectIcon />
           </SelectTrigger>
           <SelectContent>
+            <SelectList>
             <SelectItem value="all">All channels</SelectItem>
             {channels.data?.channels.map((c) => (
               <SelectItem key={c.id} value={c.slug}>
                 {c.slug}
               </SelectItem>
             ))}
+          </SelectList>
           </SelectContent>
         </Select>
         <Select
@@ -450,11 +453,13 @@ export function Releases({ appId }: { appId: string }) {
             <SelectIcon />
           </SelectTrigger>
           <SelectContent>
+            <SelectList>
             <SelectItem value="all">All statuses</SelectItem>
             <SelectItem value="draft">Draft</SelectItem>
             <SelectItem value="active">Active</SelectItem>
             <SelectItem value="superseded">Superseded</SelectItem>
             <SelectItem value="cancelled">Cancelled</SelectItem>
+          </SelectList>
           </SelectContent>
         </Select>
       </Card>
@@ -1044,11 +1049,13 @@ function EditReleaseDialog({
                   <SelectIcon />
                 </SelectTrigger>
                 <SelectContent>
+                  <SelectList>
                   <SelectItem value="full">Full</SelectItem>
                   <SelectItem value="platform">Platform</SelectItem>
                   <SelectItem value="user_cohort">User cohort</SelectItem>
                   <SelectItem value="ip_range">IP range</SelectItem>
                   <SelectItem value="device_group">Device group</SelectItem>
+                </SelectList>
                 </SelectContent>
               </Select>
             </div>
@@ -1062,9 +1069,11 @@ function EditReleaseDialog({
                 >
                   <SelectTrigger><SelectValue placeholder="Choose group" /><SelectIcon /></SelectTrigger>
                   <SelectContent>
+                    <SelectList>
                     {(deviceGroups.data?.groups ?? []).map((group) => (
                       <SelectItem key={group.id} value={group.id}>{group.name} ({group.member_count})</SelectItem>
                     ))}
+                  </SelectList>
                   </SelectContent>
                 </Select>
               ) : (
@@ -1382,12 +1391,14 @@ function NewReleaseDialog({
                       <SelectIcon />
                     </SelectTrigger>
                     <SelectContent>
+                      <SelectList>
                       <SelectItem value="">— pick —</SelectItem>
                       {channels.data?.channels.map((c) => (
                         <SelectItem key={c.id} value={c.slug}>
                           {c.slug}
                         </SelectItem>
                       ))}
+                    </SelectList>
                     </SelectContent>
                   </Select>
                 </div>
@@ -1412,12 +1423,14 @@ function NewReleaseDialog({
                         <SelectIcon />
                       </SelectTrigger>
                       <SelectContent>
+                        <SelectList>
                         <SelectItem value="">— pick —</SelectItem>
                         {targetProductTypes.map((p) => (
                           <SelectItem key={p.name} value={p.name}>
                             {p.display_name}
                           </SelectItem>
                         ))}
+                      </SelectList>
                       </SelectContent>
                     </Select>
                   </div>
@@ -1555,11 +1568,13 @@ function NewReleaseDialog({
                         >
                           <SelectTrigger><SelectValue /><SelectIcon /></SelectTrigger>
                           <SelectContent>
+                            <SelectList>
                             <SelectItem value="full">Full</SelectItem>
                             <SelectItem value="platform">Platform</SelectItem>
                             <SelectItem value="user_cohort">User cohort</SelectItem>
                             <SelectItem value="ip_range">IP range</SelectItem>
                             <SelectItem value="device_group">Device group</SelectItem>
+                          </SelectList>
                           </SelectContent>
                         </Select>
                       </div>
@@ -1573,9 +1588,11 @@ function NewReleaseDialog({
                           >
                             <SelectTrigger><SelectValue placeholder="Choose group" /><SelectIcon /></SelectTrigger>
                             <SelectContent>
+                              <SelectList>
                               {(deviceGroups.data?.groups ?? []).map((group) => (
                                 <SelectItem key={group.id} value={group.id}>{group.name} ({group.member_count})</SelectItem>
                               ))}
+                            </SelectList>
                             </SelectContent>
                           </Select>
                         ) : (

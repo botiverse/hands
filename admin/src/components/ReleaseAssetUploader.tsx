@@ -25,6 +25,7 @@ import {
   SelectTrigger,
   SelectValue,
   SelectIcon,
+  SelectList,
   SelectContent,
   SelectItem,
 } from "raft-ui";
@@ -412,11 +413,13 @@ export function PendingFileRow({
               <SelectIcon />
             </SelectTrigger>
             <SelectContent>
+              <SelectList>
               {KNOWN_PLATFORMS.map((p) => (
                 <SelectItem key={p} value={p}>
                   {p}
                 </SelectItem>
               ))}
+            </SelectList>
             </SelectContent>
           </Select>
           <Input
@@ -435,11 +438,13 @@ export function PendingFileRow({
               <SelectIcon />
             </SelectTrigger>
             <SelectContent>
+              <SelectList>
               {KNOWN_FILETYPES.map((f) => (
                 <SelectItem key={f} value={f}>
                   {f}
                 </SelectItem>
               ))}
+            </SelectList>
             </SelectContent>
           </Select>
         </div>
