@@ -32,7 +32,7 @@ vi.mock("../lib/api", async (importOriginal) => ({
   deleteGooglePlayBinding: mocks.remove,
 }));
 
-import { GooglePlayPanel } from "./AppDetail";
+import { GooglePlayConnector } from "../components/integrations/GooglePlayConnector";
 
 afterEach(cleanup);
 
@@ -40,9 +40,14 @@ function renderPanel() {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
   return render(
     <QueryClientProvider client={client}>
-      <GooglePlayPanel appId="app-a" />
+      <GooglePlayConnector appId="app-a" />
     </QueryClientProvider>,
   );
+}
+
+/** A connected connector starts collapsed; expand it to reach the actions. */
+async function expandConnectedDetail() {
+  fireEvent.click(await screen.findByRole("button", { name: "Expand" }));
 }
 
 beforeEach(() => {
@@ -55,7 +60,7 @@ beforeEach(() => {
   mocks.remove.mockResolvedValue({ ok: true });
 });
 
-describe("GooglePlayPanel", () => {
+describe("GooglePlayConnector", () => {
   it("offers the declared main build package through RUI without a parsed APK", async () => {
     mocks.get.mockResolvedValue({ google_play: null, oauth_available: true });
     mocks.channels.mockResolvedValue({ channels: [{ id: "main-id", slug: "main", bundle_id: null }] });
@@ -119,6 +124,7 @@ describe("GooglePlayPanel", () => {
   it("labels a human OAuth identity and explains local disconnect", async () => {
     mocks.get.mockResolvedValue({ google_play: { credential_kind: "authorized_user", enabled: true, verification_state: "verified", package_name: "build.raft.app", service_account_email: "human@example.com", internal_track: "internal", closed_track: "closed", production_track: "production" } });
     renderPanel();
+    await expandConnectedDetail();
     expect(await screen.findByText("Google account: human@example.com")).toBeTruthy();
     expect(screen.getByText(/Unbind deletes the credential stored by Hands/)).toBeTruthy();
   });
@@ -140,6 +146,7 @@ describe("GooglePlayPanel", () => {
     expect(await screen.findByText("build.raft.app")).toBeTruthy();
     expect(screen.getByText("Disabled")).toBeTruthy();
     expect(screen.getByTestId("google-play-binding-panel").textContent).toContain("Needs verification");
+    await expandConnectedDetail();
     fireEvent.click(screen.getByRole("button", { name: "Enable" }));
     await waitFor(() => expect(mocks.toggle).toHaveBeenCalledWith("app-a", true));
   });
@@ -197,10 +204,49 @@ describe("GooglePlayPanel", () => {
       });
     mocks.verify.mockRejectedValue(new Error("permission denied"));
     renderPanel();
+    await expandConnectedDetail();
 
     fireEvent.click(await screen.findByRole("button", { name: "Test connection" }));
     await waitFor(() => expect(mocks.get).toHaveBeenCalledTimes(2));
     await waitFor(() => expect(screen.getByTestId("google-play-binding-panel").textContent).toContain("Needs verification"));
     expect(mocks.toast).toHaveBeenCalledWith(expect.objectContaining({ kind: "error" }));
+  });
+
+  it("starts authorization straight from the connector row's Connect button", async () => {
+    mocks.get.mockResolvedValue({ google_play: null, oauth_available: true });
+    mocks.channels.mockResolvedValue({ channels: [{ slug: "main", bundle_id: "build.raft.app" }] });
+    mocks.authorize.mockRejectedValue(new Error("fixture rejection"));
+    renderPanel();
+    const connect = await screen.findByRole("button", { name: "Connect" });
+    await waitFor(() =>
+      expect(screen.getByLabelText("Choose an existing Android package").textContent).toContain("build.raft.app"),
+    );
+    fireEvent.click(connect);
+    await waitFor(() =>
+      expect(mocks.authorize).toHaveBeenCalledWith(
+        "app-a",
+        expect.objectContaining({ package_name: "build.raft.app" }),
+      ),
+    );
+  });
+
+  it("keeps a connected connector collapsed until expanded", async () => {
+    mocks.get.mockResolvedValue({
+      google_play: {
+        credential_kind: "authorized_user",
+        enabled: true,
+        verification_state: "verified",
+        package_name: "build.raft.app",
+        service_account_email: "human@example.com",
+        internal_track: "internal",
+        closed_track: "closed",
+        production_track: "production",
+      },
+    });
+    renderPanel();
+    expect(await screen.findByText("Enabled")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Unbind" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Expand" }));
+    expect(await screen.findByRole("button", { name: "Unbind" })).toBeTruthy();
   });
 });

@@ -23,6 +23,7 @@ import {
   PanelLeftClose,
   PanelLeftOpen,
   Plane,
+  Plug,
   Plus,
   Radio,
   Rocket,
@@ -61,6 +62,7 @@ import { AppRouteBoundary } from "./components/AppRouteBoundary";
 import { AppsList } from "./pages/AppsList";
 import { AppChannels, AppDetail, AppSettings, AppStoreReviewPanel } from "./pages/AppDetail";
 import { AuditLog } from "./pages/AuditLog";
+import { Integrations } from "./pages/Integrations";
 import { Settings } from "./pages/Settings";
 import { Builds } from "./pages/Builds";
 import { Testflight } from "./pages/Testflight";
@@ -773,6 +775,12 @@ function ReleasesRoute() {
   return <Releases key={appId} appId={appId} />;
 }
 
+function IntegrationsRoute() {
+  const { appId } = useParams();
+  if (!appId) return null;
+  return <Integrations key={appId} appId={appId} />;
+}
+
 function LegacyPublishRedirect() {
   return <Navigate to="../releases" replace />;
 }
@@ -1344,6 +1352,7 @@ function AuthenticatedApp({ account }: { account: AuthAccount }) {
           <Route path="feedback/:ticketId" element={<FeedbackTicketRoute />} />
           <Route path="access" element={<LegacyAccessRedirect />} />
           <Route path="audit" element={<AuditRoute />} />
+          <Route path="integrations" element={<IntegrationsRoute />} />
           <Route path="settings" element={<AppSettingsRoute />} />
         </Route>
         <Route
@@ -1439,6 +1448,7 @@ const APP_NAV_SECTIONS: Array<{
       { to: "feedback", label: "Feedback", icon: MessageSquare },
       { to: "crashes", label: "Crashes", icon: Bug },
       { to: "errors", label: "Errors", icon: AlertTriangle },
+      { to: "integrations", label: "Integrations", icon: Plug },
       { to: "audit", label: "Audit", icon: ScrollText },
       { to: "settings", label: "Settings", icon: SettingsIcon },
     ],
@@ -1470,6 +1480,7 @@ function AppShell() {
           <Route path="feedback/:ticketId" element={<FeedbackTicketRoute />} />
           <Route path="access" element={<LegacyAccessRedirect />} />
           <Route path="audit" element={<AuditRoute />} />
+          <Route path="integrations" element={<IntegrationsRoute />} />
           <Route path="settings" element={<AppSettingsRoute />} />
         </Routes>
         </main>
