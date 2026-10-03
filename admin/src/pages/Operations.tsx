@@ -8,14 +8,14 @@ import {
   type Operation,
 } from "../lib/api";
 import { useToast } from "../components/Toast";
-import { Button, Progress, ProgressTrack, ProgressIndicator } from "raft-ui";
+import { Badge, Button, Card, CardContent, Progress, ProgressTrack, ProgressIndicator } from "raft-ui";
 
-const STATUS_COLORS: Record<Operation["status"], string> = {
-  pending: "badge-gray",
-  in_progress: "badge-blue",
-  success: "badge-green",
-  failed: "bg-red-100 text-red-800",
-  cancelled: "badge-gray",
+const STATUS_VARIANTS: Record<Operation["status"], "muted" | "information" | "success" | "danger"> = {
+  pending: "muted",
+  in_progress: "information",
+  success: "success",
+  failed: "danger",
+  cancelled: "muted",
 };
 
 export function Operations({ appId }: { appId: string }) {
@@ -93,19 +93,19 @@ export function Operations({ appId }: { appId: string }) {
     <div>
       <div className="flex items-center justify-between mb-3">
         <h2 className="text-lg font-semibold">Operations</h2>
-        <span className="text-xs text-slate-500">
+        <span className="text-xs text-foreground-muted">
           {live.size > 0 ? "live (SSE)" : "polling (5s)"} · {data?.operations.length ?? 0} recent
         </span>
       </div>
 
-      {isLoading && <p className="text-slate-500 text-sm">Loading…</p>}
+      {isLoading && <p className="text-foreground-muted text-sm">Loading…</p>}
       {error && (
-        <p className="text-red-600 text-sm">Failed: {(error as Error).message}</p>
+        <p className="text-danger text-sm">Failed: {(error as Error).message}</p>
       )}
 
       <div className="space-y-2">
         {data?.operations.length === 0 && (
-          <p className="text-slate-500 text-sm">No operations yet. Upload an APK to start.</p>
+          <p className="text-foreground-muted text-sm">No operations yet. Upload an APK to start.</p>
         )}
         {data?.operations.map((op) => (
           <OperationRow
@@ -150,19 +150,16 @@ function OperationRow({
   }
 
   return (
-    <div
-      className={`card p-3! ${isLive ? "ring-2 ring-blue-200" : ""}`}
-    >
+    <Card className={isLive ? "ring-2 ring-info/40" : undefined}>
+      <CardContent className="p-3">
       <div className="flex items-center gap-3">
-        <span className={`${STATUS_COLORS[op.status]} font-medium text-xs`}>
-          {op.status}
-        </span>
+        <Badge variant={STATUS_VARIANTS[op.status]}>{op.status}</Badge>
         <span className="font-mono text-sm">{op.kind}</span>
-        <span className="text-xs text-slate-500">
+        <span className="text-xs text-foreground-muted">
           {timeAgo(op.created_at)}
         </span>
         {op.retry_count > 0 && (
-          <span className="text-xs text-slate-400">retry #{op.retry_count + 1}</span>
+          <span className="text-xs text-foreground-hint">retry #{op.retry_count + 1}</span>
         )}
         <div className="flex-1" />
         {op.status === "failed" && (
@@ -175,33 +172,36 @@ function OperationRow({
             Retry
           </Button>
         )}
-        <button
+        <Button
+          variant="ghost"
+          size="icon-sm"
           onClick={() => setExpanded(!expanded)}
-          className="text-slate-400 hover:text-slate-700 w-7 h-7 flex items-center justify-center rounded-sm"
           aria-label={expanded ? "Collapse" : "Expand"}
         >
           {expanded ? "▲" : "▼"}
-        </button>
-        <button
+        </Button>
+        <Button
+          variant="ghost"
+          size="icon-sm"
+          className="hover:text-danger"
           onClick={onDelete}
           disabled={busy}
-          className="text-slate-400 hover:text-red-600 w-7 h-7 flex items-center justify-center rounded-sm"
           aria-label="Delete"
         >
           ×
-        </button>
+        </Button>
       </div>
 
       {op.status === "in_progress" && (
         <Progress value={Math.round(op.progress * 100)} className="mt-2 gap-0">
-          <ProgressTrack className="h-1 bg-slate-100 rounded-sm overflow-hidden">
-            <ProgressIndicator className="bg-blue-500 transition-all" />
+          <ProgressTrack className="h-1 bg-layer-inset rounded-sm overflow-hidden">
+            <ProgressIndicator className="bg-info transition-all" />
           </ProgressTrack>
         </Progress>
       )}
 
       {op.error && (
-        <div className="mt-2 text-xs text-red-700 bg-red-50 p-2 rounded-sm">
+        <div className="mt-2 text-xs text-danger-strong bg-danger-soft p-2 rounded-sm">
           {op.error}
         </div>
       )}
@@ -209,27 +209,27 @@ function OperationRow({
       {expanded && (
         <div className="mt-3 space-y-2 text-xs">
           <details>
-            <summary className="cursor-pointer text-slate-600 font-medium">
+            <summary className="cursor-pointer text-foreground-muted font-medium">
               Input
             </summary>
-            <pre className="mt-1 bg-slate-50 p-2 rounded-sm overflow-x-auto">
+            <pre className="mt-1 bg-layer-inset p-2 rounded-sm overflow-x-auto">
               {JSON.stringify(inputPayload, null, 2)}
             </pre>
           </details>
           {op.output !== "{}" && (
             <details>
-              <summary className="cursor-pointer text-slate-600 font-medium">
+              <summary className="cursor-pointer text-foreground-muted font-medium">
                 Output
               </summary>
-              <pre className="mt-1 bg-slate-50 p-2 rounded-sm overflow-x-auto">
+              <pre className="mt-1 bg-layer-inset p-2 rounded-sm overflow-x-auto">
                 {JSON.stringify(outputPayload, null, 2)}
               </pre>
             </details>
           )}
-          <div className="text-slate-400 font-mono">id: {op.id}</div>
+          <div className="text-foreground-hint font-mono">id: {op.id}</div>
         </div>
       )}
-    </div>
+      </CardContent></Card>
   );
 }
 

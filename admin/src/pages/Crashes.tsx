@@ -6,6 +6,7 @@
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { getFeedbackStats, listCrashGroups, type CrashType } from "../lib/api";
+import { Badge, Card, CardContent, SegmentedControl, SegmentedControlItem, SegmentedControlLabel, type BadgeProps } from "raft-ui";
 import { CrashByVersion } from "../components/FeedbackTrends";
 
 export const CRASH_TYPE_LABELS: Record<CrashType, string> = {
@@ -14,10 +15,10 @@ export const CRASH_TYPE_LABELS: Record<CrashType, string> = {
   anr: "ANR",
 };
 
-export const CRASH_TYPE_STYLES: Record<CrashType, string> = {
-  exception: "bg-red-100 text-red-800",
-  native: "bg-purple-100 text-purple-800",
-  anr: "bg-orange-100 text-orange-800",
+export const CRASH_TYPE_BADGE_VARIANTS: Record<CrashType, BadgeProps["variant"]> = {
+  exception: "danger",
+  native: "accent",
+  anr: "warning",
 };
 
 const TYPE_FILTERS: Array<{ value: CrashType | ""; label: string }> = [
@@ -56,53 +57,51 @@ export function AppCrashes({ appId }: { appId: string }) {
       <div className="flex items-center justify-between flex-wrap gap-2">
         <div>
           <h2 className="text-lg font-semibold">Crashes</h2>
-          <p className="text-sm text-slate-500">
+          <p className="text-sm text-foreground-muted">
             Grouped by signature (exception class + top app frame; ANRs by the
             main thread's first app frame). Stacks are auto-deobfuscated when
             the build's mapping was uploaded.
           </p>
         </div>
-        <div className="flex gap-1" role="group" aria-label="Crash type">
+        <SegmentedControl
+          value={crashType}
+          onValueChange={(value) => setCrashType(value as CrashType | "")}
+          aria-label="Crash type"
+          className="w-fit"
+        >
           {TYPE_FILTERS.map((f) => (
-            <button
-              key={f.value || "all"}
-              type="button"
-              aria-pressed={crashType === f.value}
-              onClick={() => setCrashType(f.value)}
-              className={`rounded-sm px-2 py-1 text-xs border ${
-                crashType === f.value
-                  ? "bg-slate-800 text-white border-slate-800"
-                  : "bg-white text-slate-600 border-slate-200 hover:bg-slate-50"
-              }`}
-            >
-              {f.label}
-            </button>
+            <SegmentedControlItem key={f.value || "all"} value={f.value}>
+              <SegmentedControlLabel>{f.label}</SegmentedControlLabel>
+            </SegmentedControlItem>
           ))}
-        </div>
+        </SegmentedControl>
       </div>
 
       {(stats.data?.crashes_by_version.length ?? 0) > 0 && (
-        <div className="card p-4! max-w-md">
-          <CrashByVersion rows={stats.data!.crashes_by_version} />
-        </div>
+        <Card className="max-w-md">
+          <CardContent>
+            <CrashByVersion rows={stats.data!.crashes_by_version} />
+          </CardContent>
+        </Card>
       )}
 
-      <div className="card overflow-x-auto">
-        {groups.isLoading && <p className="text-sm text-slate-500">Loading…</p>}
+      <Card>
+        <CardContent className="overflow-x-auto">
+        {groups.isLoading && <p className="text-sm text-foreground-muted">Loading…</p>}
         {groups.error && (
-          <p className="text-sm text-red-600">
+          <p className="text-sm text-danger">
             Failed to load crash groups: {(groups.error as Error).message}
           </p>
         )}
         {!groups.isLoading && rows.length === 0 && (
-          <p className="text-sm text-slate-500">
+          <p className="text-sm text-foreground-muted">
             {crashType ? `No ${CRASH_TYPE_LABELS[crashType]} crashes reported.` : "No crashes reported yet. 🎉"}
           </p>
         )}
         {rows.length > 0 && (
           <table className="w-full text-sm">
             <thead>
-              <tr className="text-left text-xs text-slate-500 border-b border-slate-200">
+              <tr className="text-left text-xs text-foreground-muted border-b border-line-muted">
                 <th className="py-2 pr-3">Type</th>
                 <th className="py-2 pr-3">Signature</th>
                 <th className="py-2 pr-3">Count</th>
@@ -117,7 +116,7 @@ export function AppCrashes({ appId }: { appId: string }) {
               {rows.map((g) => (
                 <tr
                   key={g.signature}
-                  className="border-b border-slate-100 last:border-0 cursor-pointer hover:bg-slate-50"
+                  className="border-b border-line-hairline last:border-0 cursor-pointer hover:bg-fill-muted"
                   onClick={() =>
                     navigate(
                       `/apps/${appId}/feedback?kind=crash&signature=${encodeURIComponent(g.signature)}`,
@@ -125,9 +124,9 @@ export function AppCrashes({ appId }: { appId: string }) {
                   }
                 >
                   <td className="py-2 pr-3">
-                    <span className={`rounded-sm px-1.5 py-0.5 text-xs font-medium ${CRASH_TYPE_STYLES[g.crash_type] ?? CRASH_TYPE_STYLES.exception}`}>
+                    <Badge variant={CRASH_TYPE_BADGE_VARIANTS[g.crash_type] ?? CRASH_TYPE_BADGE_VARIANTS.exception}>
                       {CRASH_TYPE_LABELS[g.crash_type] ?? g.crash_type}
-                    </span>
+                    </Badge>
                   </td>
                   <td className="py-2 pr-3 max-w-lg">
                     <code className="text-xs break-all">{g.signature}</code>
@@ -135,13 +134,13 @@ export function AppCrashes({ appId }: { appId: string }) {
                   <td className="py-2 pr-3 tabular-nums">{g.count}</td>
                   <td className="py-2 pr-3 tabular-nums">{g.device_count}</td>
                   <td className="py-2 pr-3 tabular-nums">{g.open_count}</td>
-                  <td className="py-2 pr-3 text-xs text-slate-600 max-w-40 truncate">
+                  <td className="py-2 pr-3 text-xs text-foreground-muted max-w-40 truncate">
                     {g.versions ?? "—"}
                   </td>
-                  <td className="py-2 pr-3 text-xs text-slate-600">
+                  <td className="py-2 pr-3 text-xs text-foreground-muted">
                     {new Date(g.first_seen).toLocaleDateString()}
                   </td>
-                  <td className="py-2 pr-3 text-xs text-slate-600">
+                  <td className="py-2 pr-3 text-xs text-foreground-muted">
                     {new Date(g.last_seen).toLocaleString()}
                   </td>
                 </tr>
@@ -149,7 +148,8 @@ export function AppCrashes({ appId }: { appId: string }) {
             </tbody>
           </table>
         )}
-      </div>
+        </CardContent>
+      </Card>
     </div>
   );
 }
