@@ -280,7 +280,7 @@ function Header({ account }: { account: AuthAccount }) {
           </button>
         )}
       </div>
-      <nav className="flex min-h-0 w-full flex-1 flex-col items-stretch gap-1 px-2">
+      <nav className="flex min-h-0 w-full flex-1 flex-col items-stretch gap-1 px-3">
         <div className="relative w-full">
           <DropdownMenu>
             <DropdownMenuTrigger
@@ -434,7 +434,7 @@ function Header({ account }: { account: AuthAccount }) {
           </>
         )}
       </nav>
-      <div className="relative mt-auto flex w-full flex-col px-2">
+      <div className="relative mt-auto flex w-full flex-col px-3">
         {collapsed && (
           <button
             type="button"
