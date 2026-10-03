@@ -44,12 +44,16 @@ export async function handleStartGooglePlayOAuth(c: AdminContext) {
   if (!c.env.GOOGLE_PLAY_OAUTH_CLIENT_ID || !c.env.GOOGLE_PLAY_OAUTH_CLIENT_SECRET || !c.env.PLAY_RELEASE_SERVICE) {
     return c.json({ code: "PLAY_OAUTH_UNAVAILABLE", error: "Google Play OAuth is not configured" }, 503);
   }
-  let packageName: string;
-  let tracks: GooglePlayTracks;
+  let packageName: string | null = null;
+  let tracks: GooglePlayTracks | null = null;
   try {
-    const body = await c.req.json();
-    packageName = normalizeGooglePlayPackage(body.package_name);
-    tracks = normalizeGooglePlayTracks(body.tracks);
+    const text = await c.req.text();
+    const body = text.trim() ? JSON.parse(text) : {};
+    if (!body || typeof body !== "object" || Array.isArray(body)) throw new Error("Object required");
+    if (body.package_name !== undefined || body.tracks !== undefined) {
+      packageName = normalizeGooglePlayPackage(body.package_name);
+      tracks = normalizeGooglePlayTracks(body.tracks);
+    }
   } catch { return c.json({ code: "INVALID_PLAY_BINDING", error: "Valid package and tracks are required" }, 400); }
   const domainOption = cookieDomain(c);
   if (new URL(c.req.url).hostname !== new URL(callbackUri(c.env)).hostname && !domainOption.domain) {
@@ -67,7 +71,7 @@ export async function handleStartGooglePlayOAuth(c: AdminContext) {
     c.env.DB.prepare("DELETE FROM google_play_oauth_requests WHERE expires_at<=?1").bind(now),
     c.env.DB.prepare("INSERT INTO google_play_oauth_requests (state_hash, app_id, account_id, authenticated_account_id, org_id, client_id, package_name, tracks_json, expected_binding_version, verifier_ciphertext_b64, verifier_iv_b64, verifier_key_version, expires_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)")
       .bind(await oauthStateHash(state), appId, account.id, authenticated.id, role.org_id, c.env.GOOGLE_PLAY_OAUTH_CLIENT_ID, packageName,
-        JSON.stringify(tracks), meta ? meta.credential_fingerprint + ":" + meta.updated_at + ":" + meta.enabled : null,
+        tracks === null ? null : JSON.stringify(tracks), meta ? meta.credential_fingerprint + ":" + meta.updated_at + ":" + meta.enabled : null,
         encrypted.ciphertext_b64, encrypted.iv_b64, encrypted.key_version, now + 10 * 60_000),
   ]);
   const url = new URL("https://accounts.google.com/o/oauth2/v2/auth");
@@ -84,8 +88,8 @@ export async function handleStartGooglePlayOAuth(c: AdminContext) {
   return c.json({ authorization_url: url.toString() });
 }
 type Pending = {
-  state_hash: string; app_id: string; account_id: string; authenticated_account_id: string; org_id: string | null; client_id: string; package_name: string;
-  tracks_json: string; expected_binding_version: string | null; expires_at: number; consumed_at: number | null;
+  state_hash: string; app_id: string; account_id: string; authenticated_account_id: string; org_id: string | null; client_id: string; package_name: string | null;
+  tracks_json: string | null; expected_binding_version: string | null; expires_at: number; consumed_at: number | null;
   verifier_ciphertext_b64: string; verifier_iv_b64: string; verifier_key_version: string;
 };
 export async function handleGooglePlayOAuthCallback(c: AdminContext) {
@@ -121,7 +125,7 @@ export async function handleGooglePlayOAuthCallback(c: AdminContext) {
   const claimed = await c.env.DB.prepare("UPDATE google_play_oauth_requests SET consumed_at=?3 WHERE state_hash=?1 AND account_id=?2 AND expires_at>?3 AND consumed_at IS NULL RETURNING state_hash")
     .bind(hash, effective.id, Date.now()).first<{ state_hash: string }>();
   if (!claimed) return c.json({ error: "Authorization was already consumed", code: "INVALID_OAUTH_STATE" }, 400);
-  const resultUrl = new URL(dashboardOrigin(c.env) + "/apps/" + pending.app_id + "/settings");
+  const resultUrl = new URL(dashboardOrigin(c.env) + "/apps/" + pending.app_id + "/integrations");
   const finish = (result: string) => { resultUrl.searchParams.set("google_play_oauth", result); return c.redirect(resultUrl.toString(), 303); };
   if (c.req.query("error")) return finish("cancelled");
   if (!c.req.query("code")) return finish("failed");
@@ -149,9 +153,12 @@ export async function handleGooglePlayOAuthCallback(c: AdminContext) {
       type: "authorized_user", client_id: c.env.GOOGLE_PLAY_OAUTH_CLIENT_ID,
       client_secret: c.env.GOOGLE_PLAY_OAUTH_CLIENT_SECRET, refresh_token: token.refresh_token, client_email: profile.email,
     });
-    const tracks = normalizeGooglePlayTracks(JSON.parse(pending.tracks_json));
-    const verified = await verifyBinding(c, { credential, package_name: pending.package_name, tracks });
-    if (!verified.ok) return finish("failed");
+    const tracks = pending.tracks_json === null ? null : normalizeGooglePlayTracks(JSON.parse(pending.tracks_json));
+    if (pending.package_name !== null || tracks !== null) {
+      if (pending.package_name === null || tracks === null) return finish("failed");
+      const verified = await verifyBinding(c, { credential, package_name: pending.package_name, tracks });
+      if (!verified.ok) return finish("failed");
+    }
     // Recheck role after I/O; compare-and-set protects an intervening binding
     // replacement/disable/disconnect from being overwritten.
     const changedRole = await ensureAppRole(c, pending.app_id, "admin");

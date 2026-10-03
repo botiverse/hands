@@ -2,10 +2,11 @@ import { createHash } from "node:crypto";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import Database from "better-sqlite3";
 import { readdirSync, readFileSync } from "node:fs";
-import { Hono } from "hono";
+import { OpenAPIHono } from "@hono/zod-openapi";
+import { registerAndroidDistributionRoutes } from "../src/openapi/android_distribution";
 import { authMiddleware, type AdminEnv, type AdminAccount } from "../src/middleware/auth";
 import { handleStartGooglePlayOAuth, handleGooglePlayOAuthCallback } from "../src/routes/google_play_oauth";
-import { handleDeleteGooglePlayBinding } from "../src/routes/google_play_bindings";
+import { handleDeleteGooglePlayBinding, handlePutGooglePlayBinding, handleGetGooglePlayBinding, handleEnableGooglePlayBinding } from "../src/routes/google_play_bindings";
 import { getGooglePlayBinding, storeGooglePlayBinding, getGooglePlayBindingMeta } from "../src/lib/google_play_bindings";
 function d1(sqlite: Database.Database): D1Database {
   const prepare = (sql: string) => {
@@ -48,11 +49,11 @@ const keyring = JSON.stringify({ v1: "test-key-material-over-thirty-two-bytes" }
 const oauth = { type: "authorized_user" as const, client_id: "client", client_secret: "client-secret",
   refresh_token: "private-refresh-token", client_email: "user@example.com" };
 const input = { package_name: "build.raft.app", tracks: { internal: "internal", closed: "closed", production: "production" } };
-function harness(realAuth = false) {
+function harness(realAuth = false, beforeConnectMigration = false) {
   const sqlite = new Database(":memory:");
   sqlite.pragma("foreign_keys = ON");
   const dir = new URL("../../migrations/sql/", import.meta.url);
-  for (const file of readdirSync(dir).sort()) if (file.endsWith(".sql")) sqlite.exec(readFileSync(new URL(file, dir), "utf8"));
+  for (const file of readdirSync(dir).sort()) if (file.endsWith(".sql") && !(beforeConnectMigration && file === "0080_google_play_connect_first.sql")) sqlite.exec(readFileSync(new URL(file, dir), "utf8"));
   sqlite.prepare("INSERT INTO apps (id, slug, name, platform, created_at) VALUES (?, 'oauth-app', 'App', 'android', 1)").run(appId);
   for (const id of ["human", "other"]) sqlite.prepare("INSERT INTO raft_accounts (id, provider, provider_subject, server_id, principal_type, display_name, raw_profile, created_at, updated_at, last_login_at) VALUES (?, 'raft', ?, 'server', 'human', 'User', '{}', 1, 1, 1)").run(id, id);
   sqlite.prepare("INSERT INTO app_members (id, app_id, account_id, app_role, joined_at) VALUES ('member', ?, 'human', 'admin', 1)").run(appId);
@@ -62,12 +63,15 @@ function harness(realAuth = false) {
     GOOGLE_PLAY_OAUTH_CLIENT_ID: "client", GOOGLE_PLAY_OAUTH_CLIENT_SECRET: "client-secret",
     PLAY_CRED_ENC_KEYS: keyring, PLAY_CRED_ENC_ACTIVE_KEY_VERSION: "v1", PLAY_RELEASE_SERVICE: { verifyBinding: verify } } as unknown as Env;
   let authenticated = account;
-  const app = new Hono<AdminEnv & { Bindings: Env }>();
+  const app = new OpenAPIHono<AdminEnv & { Bindings: Env }>();
   if (realAuth) app.use("*", authMiddleware);
   else app.use("*", async (c, next) => { c.set("admin_account", account); c.set("authenticated_account", authenticated); c.set("admin_actor", "human"); await next(); });
   app.get("/api/other", (c) => c.json({ ok: true }));
-  app.post("/api/apps/:appId/google-play-oauth/start", handleStartGooglePlayOAuth);
+  app.openapi(registerAndroidDistributionRoutes().find((route) => route.path.endsWith("google-play-oauth/start"))!, handleStartGooglePlayOAuth);
   app.get("/api/google-play/oauth/callback", handleGooglePlayOAuthCallback);
+  app.openapi(registerAndroidDistributionRoutes().find((route) => route.method === "put" && route.path.endsWith("google-play-binding"))!, handlePutGooglePlayBinding);
+  app.get("/api/apps/:appId/google-play-binding", handleGetGooglePlayBinding);
+  app.post("/api/apps/:appId/google-play-binding/enable", handleEnableGooglePlayBinding);
   app.delete("/api/apps/:appId/google-play-binding", handleDeleteGooglePlayBinding);
   const request = (path: string, init?: RequestInit, origin = "https://hands.test") => app.fetch(new Request(origin + path, init), env);
   const start = async (origin = "https://hands.test") => {
@@ -92,6 +96,73 @@ function google() {
 }
 afterEach(() => vi.restoreAllMocks());
 describe("Google Play OAuth", () => {
+  it.each(['role', 'disconnect', 'expired'])('does not save an unconfigured connection after %s changes during Google I/O', async (mode) => {
+    const h = harness(); const fetch = google();
+    const response = await h.request('/api/apps/' + appId + '/google-play-oauth/start', {method:'POST',headers:{authorization:'Bearer browser-session'}});
+    const url = new URL((await response.json() as any).authorization_url);
+    fetch.mockImplementationOnce(async () => {
+      if (mode === 'role') h.sqlite.exec('DELETE FROM app_members');
+      if (mode === 'disconnect') await h.request('/api/apps/' + appId + '/google-play-binding', {method:'DELETE'});
+      if (mode === 'expired') h.sqlite.exec('UPDATE google_play_oauth_requests SET expires_at=0');
+      return Response.json({access_token:'access',refresh_token:oauth.refresh_token,token_type:'Bearer',scope:'https://www.googleapis.com/auth/androidpublisher'});
+    });
+    expect((await h.callback(url.searchParams.get('state')!)).headers.get('location')).toContain('google_play_oauth=failed');
+    expect(await getGooglePlayBindingMeta(h.env.DB, appId)).toBeNull();
+    expect(h.verify).not.toHaveBeenCalled();
+  });
+
+  it('preserves existing encrypted bindings and pending requests while migrating and enforces unconfigured safety', async () => {
+    const h = harness(false, true);
+    await storeGooglePlayBinding(h.env.DB, {appId, packageName:input.package_name, tracks:input.tracks, credential:oauth, actor:'human', keyringJson:keyring, activeKeyVersion:'v1'});
+    await h.start();
+    const before = h.sqlite.prepare('SELECT * FROM app_google_play_bindings').get();
+    const pending = h.sqlite.prepare('SELECT * FROM google_play_oauth_requests').get();
+    h.sqlite.exec(readFileSync(new URL('../../migrations/sql/0080_google_play_connect_first.sql', import.meta.url), 'utf8'));
+    expect(h.sqlite.prepare('SELECT * FROM app_google_play_bindings').get()).toEqual(before);
+    expect(h.sqlite.prepare('SELECT * FROM google_play_oauth_requests').get()).toEqual(pending);
+    expect(() => h.sqlite.exec('UPDATE app_google_play_bindings SET package_name=NULL')).toThrow();
+    await storeGooglePlayBinding(h.env.DB, {appId, packageName:null, tracks:null, credential:oauth, actor:'human', keyringJson:keyring, activeKeyVersion:'v1'});
+    expect(() => h.sqlite.exec('UPDATE app_google_play_bindings SET enabled=1')).toThrow();
+    expect(() => h.sqlite.exec("UPDATE app_google_play_bindings SET verification_state='verified'")).toThrow();
+    h.sqlite.prepare('DELETE FROM apps WHERE id=?').run(appId);
+    expect(h.sqlite.prepare('SELECT count(*) n FROM app_google_play_bindings').get()).toEqual({n:0});
+    expect(h.sqlite.prepare('SELECT count(*) n FROM google_play_oauth_requests').get()).toEqual({n:0});
+    expect(h.sqlite.pragma('foreign_key_check')).toEqual([]);
+  });
+
+  it.each([undefined, "{}"])('connects without configuration (%s), then configures using the stored credential', async (body) => {
+    const h = harness(); google();
+    const response = await h.request('/api/apps/' + appId + '/google-play-oauth/start', {method:'POST', headers:{authorization:'Bearer browser-session', ...(body ? {'content-type':'application/json'} : {})}, ...(body === undefined ? {} : {body})});
+    expect(response.status).toBe(200);
+    const url = new URL((await response.json() as any).authorization_url);
+    expect((await h.callback(url.searchParams.get('state')!)).headers.get('location')).toContain('/integrations?google_play_oauth=connected');
+    expect(h.verify).not.toHaveBeenCalled();
+    const meta = (await (await h.request('/api/apps/' + appId + '/google-play-binding')).json() as any).google_play;
+    expect(meta).toMatchObject({package_name:null, internal_track:null, closed_track:null, production_track:null, enabled:false, verification_state:'stale', verified_at:null, credential_kind:'authorized_user'});
+    expect(JSON.stringify(meta)).not.toContain(oauth.refresh_token);
+    expect((await h.request('/api/apps/' + appId + '/google-play-binding/enable', {method:'POST'})).status).toBe(400);
+    expect(h.verify).not.toHaveBeenCalled();
+    const saved = await h.request('/api/apps/' + appId + '/google-play-binding', {method:'PUT', headers:{'content-type':'application/json'}, body:JSON.stringify(input)});
+    expect(saved.status).toBe(200);
+    expect(h.verify).toHaveBeenCalledOnce();
+    expect(h.verify.mock.calls[0]![0].credential).toEqual(oauth);
+    expect((await saved.json() as any).google_play).toMatchObject({package_name:input.package_name, enabled:true, verification_state:'verified'});
+  });
+  it.each([{package_name:input.package_name}, {tracks:input.tracks}, null, [], 'invalid'])('rejects malformed or partial configuration %j', async (body) => {
+    const h = harness();
+    const response = await h.request('/api/apps/' + appId + '/google-play-oauth/start', {method:'POST', headers:{authorization:'Bearer browser-session','content-type':'application/json'}, body:JSON.stringify(body)});
+    expect(response.status).toBe(400);
+    expect(h.sqlite.prepare('SELECT count(*) n FROM google_play_oauth_requests').get()).toEqual({n:0});
+  });
+  it('does not overwrite a disconnected OAuth credential after configuration verification', async () => {
+    const h = harness();
+    await storeGooglePlayBinding(h.env.DB, {appId, packageName:null, tracks:null, credential:oauth, actor:'human', keyringJson:keyring, activeKeyVersion:'v1'});
+    h.verify.mockImplementationOnce(async (binding) => { await h.request('/api/apps/' + appId + '/google-play-binding', {method:'DELETE'}); return {ok:true,value:{client_email:binding.credential.client_email,package_name:binding.packageName}}; });
+    const response = await h.request('/api/apps/' + appId + '/google-play-binding', {method:'PUT', headers:{'content-type':'application/json'}, body:JSON.stringify(input)});
+    expect(response.status).toBe(409);
+    expect(await getGooglePlayBindingMeta(h.env.DB, appId)).toBeNull();
+  });
+
   it("uses offline PKCE with encrypted one-time state and stores only encrypted verified credentials", async () => {
     const h = harness(); const fetch = google();
     const { url } = await h.start();
@@ -102,7 +173,7 @@ describe("Google Play OAuth", () => {
     expect(JSON.stringify(h.sqlite.prepare("SELECT * FROM google_play_oauth_requests").all())).not.toContain(state);
     const response = await h.callback(state);
     expect(response.status).toBe(303);
-    expect(response.headers.get("location")).toBe("https://hands.test/apps/" + appId + "/settings?google_play_oauth=connected");
+    expect(response.headers.get("location")).toBe("https://hands.test/apps/" + appId + "/integrations?google_play_oauth=connected");
     expect(h.verify).toHaveBeenCalledOnce();
     expect((await getGooglePlayBinding(h.env.DB, appId, keyring))!.credential).toEqual(oauth);
     expect(JSON.stringify(h.sqlite.prepare("SELECT * FROM app_google_play_bindings").all())).not.toContain(oauth.refresh_token);

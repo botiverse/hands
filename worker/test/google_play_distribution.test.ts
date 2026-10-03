@@ -773,7 +773,7 @@ describe("Play promotion route", () => {
     expect(JSON.stringify(payload)).not.toMatch(/distribution[_-]?cert/i);
   });
 
-  it("rejects missing, disabled, and package-mismatched app bindings before any adapter call", async () => {
+  it("rejects missing, disabled, unconfigured, and package-mismatched app bindings before any adapter call", async () => {
     const cases = [
       {
         mutate: (db: Database.Database) => db.prepare("DELETE FROM app_google_play_bindings WHERE app_id='app'").run(),
@@ -782,6 +782,11 @@ describe("Play promotion route", () => {
       },
       {
         mutate: (db: Database.Database) => db.prepare("UPDATE app_google_play_bindings SET enabled=0 WHERE app_id='app'").run(),
+        status: 403,
+        gate: "permission",
+      },
+      {
+        mutate: (db: Database.Database) => db.exec("UPDATE app_google_play_bindings SET package_name=NULL, internal_track=NULL, closed_track=NULL, production_track=NULL, enabled=0, verification_state='stale', verified_at=NULL, credential_kind='authorized_user' WHERE app_id='app'"),
         status: 403,
         gate: "permission",
       },

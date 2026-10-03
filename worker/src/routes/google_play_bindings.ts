@@ -1,6 +1,6 @@
 import type { Context } from "hono";
 import { currentActor, type AdminEnv } from "../middleware/auth";
-import { insertAuditLog } from "../lib/permissions";
+import { insertAuditLog, ensureAppRole } from "../lib/permissions";
 import {
   assertGooglePlayCredentialKeyring,
   deleteGooglePlayBinding,
@@ -33,6 +33,9 @@ function safeMeta(meta: Awaited<ReturnType<typeof getGooglePlayBindingMeta>>) {
 }
 
 export async function verifyBinding(c: AdminContext, binding: Pick<GooglePlayBinding, "credential" | "package_name" | "tracks">) {
+  if (!binding.package_name || !binding.tracks) {
+    return { ok: false as const, invalidate: false, status: 400 as const, code: "PLAY_CONFIGURATION_REQUIRED", error: "Configure package and tracks before verifying or enabling Google Play" };
+  }
   if (!c.env.PLAY_RELEASE_SERVICE) {
     return { ok: false as const, invalidate: false, status: 503 as const, code: "PLAY_SERVICE_UNAVAILABLE", error: "Google Play validation service is not configured" };
   }
@@ -81,17 +84,23 @@ export async function handlePutGooglePlayBinding(c: AdminContext) {
   } catch {
     return c.json({ error: "valid JSON body required", code: "INVALID_PLAY_BINDING" }, 400);
   }
+  const appId = c.req.param("appId") ?? "";
+  const snapshot = await getGooglePlayBindingMeta(c.env.DB, appId);
   let credential;
   let packageName;
   let tracks;
   try {
-    credential = parseGoogleServiceAccount(body.service_account_json);
+    if (body.service_account_json !== undefined) credential = parseGoogleServiceAccount(body.service_account_json);
+    else {
+      const stored = await getGooglePlayBinding(c.env.DB, appId, c.env.PLAY_CRED_ENC_KEYS);
+      if (!stored || stored.credential.type !== "authorized_user") return c.json({ error: "Connect a Google account before configuring the app", code: "PLAY_OAUTH_CONNECTION_REQUIRED" }, 400);
+      credential = stored.credential;
+    }
     packageName = normalizeGooglePlayPackage(body.package_name);
     tracks = normalizeGooglePlayTracks(body.tracks);
   } catch (error) {
     return c.json({ error: (error as Error).message, code: "INVALID_PLAY_BINDING" }, 400);
   }
-  const appId = c.req.param("appId") ?? "";
   try {
     assertGooglePlayCredentialKeyring(
       c.env.PLAY_CRED_ENC_KEYS,
@@ -105,6 +114,8 @@ export async function handlePutGooglePlayBinding(c: AdminContext) {
   }
   const verified = await verifyBinding(c, { credential, package_name: packageName, tracks });
   if (!verified.ok) return c.json({ error: verified.error, code: verified.code }, verified.status);
+  const role = await ensureAppRole(c, appId, "admin");
+  if (!role.ok) return role.response;
   let meta;
   try {
     meta = await storeGooglePlayBinding(c.env.DB, {
@@ -115,9 +126,10 @@ export async function handlePutGooglePlayBinding(c: AdminContext) {
       actor: currentActor(c),
       keyringJson: c.env.PLAY_CRED_ENC_KEYS,
       activeKeyVersion: c.env.PLAY_CRED_ENC_ACTIVE_KEY_VERSION,
+      expectedBindingVersion: snapshot ? snapshot.credential_fingerprint + ":" + snapshot.updated_at + ":" + snapshot.enabled : null,
     });
   } catch {
-    return c.json({ error: "Google Play credential encryption is not configured", code: "PLAY_CREDENTIAL_STORAGE_UNAVAILABLE" }, 500);
+    return c.json({ error: "Google Play binding changed during configuration; reload and retry", code: "PLAY_BINDING_CHANGED" }, 409);
   }
   await insertAuditLog(c.env.DB, c, {
     app_id: appId,
