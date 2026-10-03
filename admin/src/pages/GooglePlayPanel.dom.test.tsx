@@ -136,6 +136,10 @@ describe("GooglePlayConnector", () => {
     renderPanel();
     const connect = await screen.findByRole("button", { name: "Connect" });
     await waitFor(() => expect(connect.hasAttribute("disabled")).toBe(false));
+    // Unconnected stays a single row: no authorization tabs or long help.
+    expect(screen.getByRole("button", { name: "Service account" })).toBeTruthy();
+    expect(screen.queryByText("Google account")).toBeNull();
+    expect(screen.queryByText(/Sign in with a Google account/)).toBeNull();
     fireEvent.click(connect);
     await waitFor(() => expect(mocks.authorize).toHaveBeenCalledWith("app-a"));
     expect(mocks.save).not.toHaveBeenCalled();
@@ -145,6 +149,18 @@ describe("GooglePlayConnector", () => {
     const disabled = await screen.findByRole("button", { name: "Connect" });
     await waitFor(() => expect(disabled.hasAttribute("disabled")).toBe(true));
     expect(screen.getByText("Google authorization is not configured on this server.")).toBeTruthy();
+  });
+
+  it("keeps an authorization failure on the row with a retry action", async () => {
+    mocks.get.mockResolvedValue({ google_play: null, oauth_available: true });
+    window.history.replaceState(null, "", "/?google_play_oauth=failed");
+    mocks.authorize.mockRejectedValue(new Error("fixture rejection"));
+    renderPanel();
+    expect(await screen.findByText(/Google authorization failed/)).toBeTruthy();
+    const retry = screen.getByRole("button", { name: "Retry" });
+    fireEvent.click(retry);
+    await waitFor(() => expect(mocks.authorize).toHaveBeenCalledWith("app-a"));
+    expect(window.location.search).not.toContain("google_play_oauth");
   });
 
   it("labels a human OAuth identity and explains local disconnect", async () => {

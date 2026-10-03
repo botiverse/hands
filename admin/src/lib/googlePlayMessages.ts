@@ -2,7 +2,7 @@ export const GOOGLE_PLAY_MESSAGE_KEYS = [
   "existingPackage", "manualPackage", "parsed", "declared", "channel", "googleMethod", "packageMissing", "authorize", "authorizedAccount", "oauthUnavailable", "oauthHelp", "oauthFailed", "oauthCancelled", "disconnectHelp", "title", "description", "configured", "enabled", "disabled", "verified", "stale", "serviceAccount",
   "packageName", "internalTrack", "closedTrack", "productionTrack", "credentialJson", "chooseFile",
   "saveEnable", "replace", "cancel", "test", "testing", "enable", "disable", "unbind",
-  "connect", "connecting", "connected", "needsConfig", "needsConfigHelp", "expand", "collapse", "saveSuccess", "verifySuccess", "enableSuccess", "disableSuccess", "unbindSuccess", "actionFailed",
+  "connect", "connecting", "connected", "retry", "needsConfig", "needsConfigHelp", "expand", "collapse", "saveSuccess", "verifySuccess", "enableSuccess", "disableSuccess", "unbindSuccess", "actionFailed",
   "confirmDisable", "confirmUnbind", "noPublish", "formHelp", "invalidJson",
 ] as const;
 
@@ -27,7 +27,7 @@ export const GOOGLE_PLAY_MESSAGES: Record<"en" | "zh-CN", Record<GooglePlayMessa
     serviceAccount: "Service account", packageName: "Android package name", internalTrack: "Internal track",
     closedTrack: "Closed testing track", productionTrack: "Production track", credentialJson: "Service account JSON",
     chooseFile: "Choose JSON file", saveEnable: "Validate, save & enable", replace: "Replace credential", cancel: "Cancel",
-    connect: "Connect", connecting: "Connecting to Google…", connected: "Connected", needsConfig: "Needs configuration", needsConfigHelp: "The Google account is connected. Add the package name and the three tracks, then save to finish configuring.", expand: "Expand", collapse: "Collapse", test: "Test connection", testing: "Testing…", enable: "Enable", disable: "Disable", unbind: "Unbind",
+    connect: "Connect", connecting: "Connecting to Google…", connected: "Connected", retry: "Retry", needsConfig: "Needs configuration", needsConfigHelp: "The Google account is connected. Add the package name and the three tracks, then save to finish configuring.", expand: "Expand", collapse: "Collapse", test: "Test connection", testing: "Testing…", enable: "Enable", disable: "Disable", unbind: "Unbind",
     saveSuccess: "Google Play binding saved", verifySuccess: "Google Play connection verified",
     enableSuccess: "Google Play enabled", disableSuccess: "Google Play disabled", unbindSuccess: "Google Play unbound",
     actionFailed: "Google Play action failed", confirmDisable: "Disable Google Play promotion for this app?",
@@ -54,7 +54,7 @@ export const GOOGLE_PLAY_MESSAGES: Record<"en" | "zh-CN", Record<GooglePlayMessa
     serviceAccount: "服务账号", packageName: "Android 包名", internalTrack: "内部测试轨道",
     closedTrack: "封闭测试轨道", productionTrack: "正式发布轨道", credentialJson: "服务账号 JSON",
     chooseFile: "选择 JSON 文件", saveEnable: "验证、保存并启用", replace: "更换凭据", cancel: "取消",
-    connect: "连接", connecting: "正在前往 Google 授权…", connected: "已连接", needsConfig: "待配置", needsConfigHelp: "授权已完成，填好包名和三个 track 后保存即可完成配置。", expand: "展开", collapse: "收起", test: "测试连接", testing: "测试中…", enable: "启用", disable: "停用", unbind: "解除绑定",
+    connect: "连接", connecting: "正在前往 Google 授权…", connected: "已连接", retry: "重试", needsConfig: "待配置", needsConfigHelp: "授权已完成，填好包名和三个 track 后保存即可完成配置。", expand: "展开", collapse: "收起", test: "测试连接", testing: "测试中…", enable: "启用", disable: "停用", unbind: "解除绑定",
     saveSuccess: "Google Play 绑定已保存", verifySuccess: "Google Play 连接验证成功",
     enableSuccess: "Google Play 已启用", disableSuccess: "Google Play 已停用", unbindSuccess: "Google Play 已解除绑定",
     actionFailed: "Google Play 操作失败", confirmDisable: "停用此应用的 Google Play 发布功能？",

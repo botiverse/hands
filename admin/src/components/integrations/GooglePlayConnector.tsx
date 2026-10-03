@@ -69,8 +69,11 @@ export function GooglePlayConnector({ appId }: { appId: string }) {
     window.history.replaceState(null, "", url);
     if (result === "connected" && meta?.credential_kind === "authorized_user") {
       toast.show({ kind: "success", title: gp("saveSuccess") });
+      setOauthResult(null);
     } else if (result === "failed" || result === "cancelled") {
-      toast.show({ kind: "error", title: gp(result === "failed" ? "oauthFailed" : "oauthCancelled") });
+      // Keep the failure on the row with a retry action instead of a toast
+      // that disappears (artin, #proj-hands b529da37).
+      setOauthResult(result);
     }
   }, [query.isLoading, meta, toast]);
 
@@ -133,7 +136,10 @@ export function GooglePlayConnector({ appId }: { appId: string }) {
   const needsConfig = Boolean(meta && !meta.package_name);
   const showForm = editing || (!meta && !query.isLoading);
   const [userExpanded, setUserExpanded] = useState<boolean | null>(null);
-  const expanded = userExpanded ?? (!meta || needsConfig);
+  const [oauthResult, setOauthResult] = useState<"failed" | "cancelled" | null>(null);
+  // Only a connected binding opens the detail; an unconfigured connector stays
+  // a single row with Connect.
+  const expanded = userExpanded ?? needsConfig;
   const tracksComplete = Boolean(
     packageName.trim() && internalTrack.trim() && closedTrack.trim() && productionTrack.trim(),
   );
@@ -142,7 +148,10 @@ export function GooglePlayConnector({ appId }: { appId: string }) {
   const credentialSatisfied = connectionMethod === "google" || credentialLooksValid;
   const formValid = credentialSatisfied && tracksComplete;
 
-  const startConnect = () => authorize.mutate();
+  const startConnect = () => {
+    setOauthResult(null);
+    authorize.mutate();
+  };
 
   const packageTrackFields = (
     <div className="grid gap-3 md:grid-cols-2">
@@ -216,13 +225,24 @@ export function GooglePlayConnector({ appId }: { appId: string }) {
         </div>
         <div className="flex shrink-0 items-center gap-2">
           {!meta ? (
-            <Button
-              variant="primary"
-              disabled={query.isLoading || authorize.isPending || !query.data?.oauth_available}
-              onClick={startConnect}
-            >
-              {gp(authorize.isPending ? "connecting" : "connect")}
-            </Button>
+            <>
+              <Button
+                variant="outline"
+                onClick={() => {
+                  setConnectionMethod("service");
+                  setUserExpanded(true);
+                }}
+              >
+                {gp("serviceAccount")}
+              </Button>
+              <Button
+                variant="primary"
+                disabled={query.isLoading || authorize.isPending || !query.data?.oauth_available}
+                onClick={startConnect}
+              >
+                {gp(authorize.isPending ? "connecting" : "connect")}
+              </Button>
+            </>
           ) : (
             <Button
               variant="outline"
@@ -239,6 +259,21 @@ export function GooglePlayConnector({ appId }: { appId: string }) {
           )}
         </div>
       </div>
+      {!meta && !query.isLoading && !query.data?.oauth_available ? (
+        <p className="border-t border-line-hairline px-4 py-2 text-xs text-foreground-muted">
+          {gp("oauthUnavailable")}
+        </p>
+      ) : null}
+      {oauthResult ? (
+        <div className="flex flex-wrap items-center gap-2 border-t border-line-hairline px-4 py-2 text-xs">
+          <span className="min-w-0 flex-1 text-danger">
+            {gp(oauthResult === "failed" ? "oauthFailed" : "oauthCancelled")}
+          </span>
+          <Button size="xs" variant="outline" onClick={startConnect}>
+            {gp("retry")}
+          </Button>
+        </div>
+      ) : null}
       {expanded ? (
         <div className="space-y-3 border-t border-line-hairline p-4">
           {meta ? (
@@ -301,28 +336,18 @@ export function GooglePlayConnector({ appId }: { appId: string }) {
               </div>}
             </>
           ) : (
+            /* Service-account path (secondary entry): reachable from the
+               "Service account" button on the unconnected row. */
             <div className="space-y-3">
-              <div className="flex gap-2">
-                <Button variant={connectionMethod === "google" ? "primary" : "outline"} onClick={() => { setConnectionMethod("google"); setCredentialJson(""); }}>{gp("googleMethod")}</Button>
-                <Button variant={connectionMethod === "service" ? "primary" : "outline"} onClick={() => setConnectionMethod("service")}>{gp("serviceAccount")}</Button>
+              <p className="text-xs text-foreground">{gp("formHelp")}</p>
+              {!packageName.trim() && <p className="text-xs text-foreground-muted">{gp("packageMissing")}</p>}
+              {packageTrackFields}
+              {serviceCredentialField}
+              <p className="text-xs text-foreground-muted">{gp("noPublish")}</p>
+              <div className="flex justify-end gap-2">
+                <Button variant="outline" onClick={() => setUserExpanded(false)}>{gp("cancel")}</Button>
+                <Button variant="primary" disabled={!formValid || save.isPending} onClick={() => save.mutate()}>{gp("saveEnable")}</Button>
               </div>
-              {connectionMethod === "google" ? (
-                <>
-                  <p className="text-xs text-foreground">{gp("oauthHelp")}</p>
-                  {!query.data?.oauth_available && <p className="text-xs text-foreground-muted">{gp("oauthUnavailable")}</p>}
-                </>
-              ) : (
-                <div className="space-y-3">
-                  <p className="text-xs text-foreground">{gp("formHelp")}</p>
-                  {!packageName.trim() && <p className="text-xs text-foreground-muted">{gp("packageMissing")}</p>}
-                  {packageTrackFields}
-                  {serviceCredentialField}
-                  <p className="text-xs text-foreground-muted">{gp("noPublish")}</p>
-                  <div className="flex justify-end gap-2">
-                    <Button variant="primary" disabled={!formValid || save.isPending} onClick={() => save.mutate()}>{gp("saveEnable")}</Button>
-                  </div>
-                </div>
-              )}
             </div>
           )}
         </div>
