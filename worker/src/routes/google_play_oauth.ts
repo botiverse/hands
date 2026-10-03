@@ -154,13 +154,18 @@ export async function handleGooglePlayOAuthCallback(c: AdminContext) {
     if (typeof verifier !== "string" || !/^[a-f0-9]{64}$/.test(verifier)) return fail("server_configuration");
     stage = "token_exchange";
     const response = await fetch("https://oauth2.googleapis.com/token", {
-      method: "POST", redirect: "error", signal: AbortSignal.timeout(30_000),
+      method: "POST", redirect: "manual", signal: AbortSignal.timeout(30_000),
       headers: { "content-type": "application/x-www-form-urlencoded" },
       body: new URLSearchParams({ grant_type: "authorization_code", code: c.req.query("code")!,
         code_verifier: verifier, redirect_uri: callbackUri(c.env), client_id: c.env.GOOGLE_PLAY_OAUTH_CLIENT_ID,
         client_secret: c.env.GOOGLE_PLAY_OAUTH_CLIENT_SECRET }),
     });
     exchangeStatus = response.status;
+    // Workers rejects redirect:"error" at request construction. Manual mode
+    // retains the no-redirect credential boundary without a runtime TypeError.
+    if (response.status >= 300 && response.status < 400) {
+      return fail("token_exchange", response.status, undefined, "provider_rejection");
+    }
     readingTokenBody = true;
     const tokenBody: unknown = await response.json();
     readingTokenBody = false;
@@ -175,8 +180,9 @@ export async function handleGooglePlayOAuthCallback(c: AdminContext) {
     if (typeof token.scope !== "string" || !token.scope.split(/\s+/).some((scope) => scope === SCOPE)) return fail("google_permissions");
     stage = "account_identity";
     const profileResponse = await fetch("https://openidconnect.googleapis.com/v1/userinfo", {
-      headers: { authorization: "Bearer " + token.access_token }, redirect: "error", signal: AbortSignal.timeout(30_000),
+      headers: { authorization: "Bearer " + token.access_token }, redirect: "manual", signal: AbortSignal.timeout(30_000),
     });
+    if (profileResponse.status >= 300 && profileResponse.status < 400) return fail("account_identity", profileResponse.status);
     const profile = await profileResponse.json() as Record<string, unknown>;
     if (!profileResponse.ok || typeof profile.email !== "string" || profile.email_verified !== true) return fail("account_identity", profileResponse.status);
     const credential = parseGooglePlayCredential({
