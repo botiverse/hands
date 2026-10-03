@@ -281,7 +281,7 @@ function AgcTestingPanel({ appId, build, packageName }: { appId: string; build: 
       {state === "testing_active" && <p className="mt-1 text-xs text-success-strong">Invitation testing is live for the selected test group.</p>}
       {state === "rejected" && <p className="mt-1 text-xs text-danger">Huawei rejected the test version{auditOpinion ? `: ${auditOpinion}` : "."}</p>}
       {state === "stopped" && <p className="mt-1 text-xs text-foreground-muted">Invitation testing has ended on Huawei&apos;s side.</p>}
-      {status.data?.sync_error && <p className="mt-1 text-xs text-amber-700">Could not refresh from Huawei: {status.data.sync_error}</p>}
+      {status.data?.sync_error && <p className="mt-1 text-xs text-warning">Could not refresh from Huawei: {status.data.sync_error}</p>}
     </div>
   );
 }

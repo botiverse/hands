@@ -832,10 +832,10 @@ function ReleaseRow({
                   <span
                     className={
                       chk.verdict === "passed"
-                        ? "text-emerald-600 font-medium"
+                        ? "text-success-strong font-medium"
                         : chk.verdict === "failed"
                           ? "text-danger font-medium"
-                          : "text-amber-600 font-medium"
+                          : "text-warning font-medium"
                     }
                   >
                     {chk.verdict}
