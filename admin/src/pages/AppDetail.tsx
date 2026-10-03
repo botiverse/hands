@@ -1,7 +1,11 @@
 import {
   Button,
+  Card,
+  CardContent,
+  Checkbox,
   Input,
   Switch,
+  Textarea,
   Select,
   SelectTrigger,
   SelectValue,
@@ -108,7 +112,7 @@ export function AppDetail({ appId }: { appId: string }) {
         <div className="flex items-center justify-between mb-3">
           <div>
             <h2 className="text-lg font-semibold">App overview</h2>
-            <p className="text-xs text-slate-500">
+            <p className="text-xs text-foreground-muted">
               Releases are managed from the{" "}
               <a href={`/apps/${appId}/releases`} className="underline">
                 Releases
@@ -158,7 +162,7 @@ function AppErrorBanner({
   error?: unknown;
 }) {
   return (
-    <div className="mb-4 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800">
+    <div className="mb-4 rounded-md border border-danger/30 bg-danger-soft px-3 py-2 text-sm text-danger-strong">
       <div className="font-medium">{title}</div>
       <div className="text-xs mt-1">
         {description ?? (error instanceof Error ? error.message : String(error))}
@@ -257,7 +261,7 @@ function AppNamePanel({ appId, app }: { appId: string; app: App }) {
     <div className="flex flex-col gap-2 md:flex-row md:items-center md:gap-3">
       <div className="flex-1 min-w-0">
         <div className="text-sm font-medium">App name</div>
-        <div className="text-xs text-slate-500">
+        <div className="text-xs text-foreground-muted">
           Display name shown in the console and on share pages. The slug (
           <span className="font-mono">{app.slug}</span>) is permanent — SDKs
           and CI reference it.
@@ -301,13 +305,13 @@ function AppDescriptionPanel({ appId, app }: { appId: string; app: App }) {
     <div className="flex flex-col gap-2 md:flex-row md:items-start md:gap-3">
       <div className="flex-1 min-w-0">
         <div className="text-sm font-medium">Description</div>
-        <div className="text-xs text-slate-500">
+        <div className="text-xs text-foreground-muted">
           Internal note about what this app is — shown in the console app
           list, not on public pages.
         </div>
       </div>
-      <textarea
-        className="input w-full md:w-72 text-sm! h-16! resize-y"
+      <Textarea
+        className="w-full resize-y md:w-72 h-16"
         value={description}
         placeholder="What is this app?"
         onChange={(e) => setDescription(e.target.value)}
@@ -346,7 +350,7 @@ function ClientKeyPanel({ appId }: { appId: string }) {
     <div className="flex flex-col gap-2 md:flex-row md:items-center md:gap-3">
       <div className="flex-1 min-w-0">
         <div className="text-sm font-medium">Client key</div>
-        <div className="text-xs text-slate-500">
+        <div className="text-xs text-foreground-muted">
           Required on feedback/crash submissions (X-Hands-Client-Key; legacy
           X-Quiver-Client-Key still accepted). Embedded in client builds; rotate if leaked.
         </div>
@@ -354,7 +358,7 @@ function ClientKeyPanel({ appId }: { appId: string }) {
           <div className="mt-1 font-mono text-xs break-all">{key}</div>
         )}
         {!key && !keyQuery.isLoading && (
-          <div className="mt-1 text-xs text-amber-700">
+          <div className="mt-1 text-xs text-warning-strong">
             No key set — submissions are currently unauthenticated. Rotate to generate one.
           </div>
         )}
@@ -419,10 +423,10 @@ function DeviceGroupsPanel({ appId }: { appId: string }) {
   });
 
   return (
-    <div className="border-t border-slate-100 pt-3 space-y-3">
+    <div className="border-t border-line-hairline pt-3 space-y-3">
       <div>
         <div className="text-sm font-medium">Device groups</div>
-        <p className="text-xs text-slate-500">
+        <p className="text-xs text-foreground-muted">
           Exact rollout groups use the stable installation device id sent by the Hands update SDK.
         </p>
       </div>
@@ -433,8 +437,8 @@ function DeviceGroupsPanel({ appId }: { appId: string }) {
           Create group
         </Button>
       </div>
-      {groups.isLoading && <p className="text-xs text-slate-500">Loading device groups…</p>}
-      {groups.error && <p className="text-xs text-red-700">{(groups.error as Error).message}</p>}
+      {groups.isLoading && <p className="text-xs text-foreground-muted">Loading device groups…</p>}
+      {groups.error && <p className="text-xs text-danger">{(groups.error as Error).message}</p>}
       {(groups.data?.groups ?? []).map((group) => (
         <DeviceGroupCard key={group.id} appId={appId} group={group} />
       ))}
@@ -494,7 +498,7 @@ function DeviceGroupCard({ appId, group }: { appId: string; group: DeviceGroup }
   });
 
   return (
-    <div className="rounded-md border border-slate-200 p-3 space-y-2">
+    <div className="rounded-md border border-line-muted p-3 space-y-2">
       <div className="flex items-start justify-between gap-2">
         <div>
           {editing ? (
@@ -509,10 +513,10 @@ function DeviceGroupCard({ appId, group }: { appId: string; group: DeviceGroup }
           ) : (
             <>
               <div className="text-sm font-medium">{group.name}</div>
-              {group.description && <div className="text-xs text-slate-500">{group.description}</div>}
+              {group.description && <div className="text-xs text-foreground-muted">{group.description}</div>}
             </>
           )}
-          <div className="text-[11px] font-mono text-slate-400">{group.id}</div>
+          <div className="text-[11px] font-mono text-foreground-hint">{group.id}</div>
         </div>
         <div className="flex gap-2">
           {editing ? (
@@ -537,12 +541,12 @@ function DeviceGroupCard({ appId, group }: { appId: string; group: DeviceGroup }
         </div>
       </div>
       <div className="space-y-1">
-        {group.members.length === 0 && <p className="text-xs text-slate-500">No devices yet.</p>}
+        {group.members.length === 0 && <p className="text-xs text-foreground-muted">No devices yet.</p>}
         {group.members.map((member) => (
           <div key={member.device_id} className="flex items-center justify-between gap-2 text-xs">
             <span className="min-w-0 truncate">
               <span className="font-medium">{member.label || "Device"}</span>{" "}
-              <span className="font-mono text-slate-500">{member.device_id}</span>
+              <span className="font-mono text-foreground-muted">{member.device_id}</span>
             </span>
             <Button variant="outline" onClick={() => remove.mutate(member.device_id)} disabled={remove.isPending}>
               Remove
@@ -647,18 +651,18 @@ function TestFlightPanel({ appId }: { appId: string }) {
   const showForm = editing || (!meta && !creds.isLoading);
 
   return (
-    <div className="border-t border-slate-100 pt-3">
+    <div className="border-t border-line-hairline pt-3">
       <div className="flex flex-col gap-2 md:flex-row md:items-center md:gap-3">
         <div className="flex-1 min-w-0">
           <div className="text-sm font-medium">TestFlight</div>
-          <div className="text-xs text-slate-500">
+          <div className="text-xs text-foreground-muted">
             App Store Connect API key used to upload builds of this app to
             TestFlight. Stored encrypted; the private key is never shown again
             after saving.
           </div>
           {meta && (
             <div className="mt-1 text-xs">
-              <span className="text-green-700 font-medium">Configured</span>
+              <span className="text-success-strong font-medium">Configured</span>
               {" — "}
               <span className="font-mono">Key ID {meta.key_id}</span>
               {" · "}
@@ -713,9 +717,9 @@ function TestFlightPanel({ appId }: { appId: string }) {
       </div>
 
       {showForm && (
-        <div className="mt-3 p-3 border border-slate-200 rounded-md space-y-3">
+        <div className="mt-3 p-3 border border-line-muted rounded-md space-y-3">
           {!meta && (
-            <ol className="text-xs text-slate-600 list-decimal pl-4 space-y-1">
+            <ol className="text-xs text-foreground-muted list-decimal pl-4 space-y-1">
               <li>
                 In{" "}
                 <a
@@ -753,7 +757,7 @@ function TestFlightPanel({ appId }: { appId: string }) {
             </ol>
           )}
           <div className="flex flex-col gap-3 md:flex-row">
-            <label className="flex-1 text-xs text-slate-600">
+            <label className="flex-1 text-xs text-foreground-muted">
               Key ID
               <Input
                 className="h-8! w-full text-sm! font-mono mt-1"
@@ -762,7 +766,7 @@ function TestFlightPanel({ appId }: { appId: string }) {
                 onChange={(e) => setKeyId(e.target.value)}
               />
             </label>
-            <label className="flex-1 text-xs text-slate-600">
+            <label className="flex-1 text-xs text-foreground-muted">
               Issuer ID
               <Input
                 className="h-8! w-full text-sm! font-mono mt-1"
@@ -772,17 +776,17 @@ function TestFlightPanel({ appId }: { appId: string }) {
               />
             </label>
           </div>
-          <label className="block text-xs text-slate-600">
+          <label className="block text-xs text-foreground-muted">
             Private key (.p8 contents)
-            <textarea
-              className="input w-full text-xs! font-mono h-24! resize-y mt-1"
+            <Textarea
+              className="w-full font-mono h-24 resize-y mt-1"
               placeholder={"-----BEGIN PRIVATE KEY-----\n…\n-----END PRIVATE KEY-----"}
               value={p8}
               onChange={(e) => setP8(e.target.value)}
             />
           </label>
           <div className="flex items-center gap-2">
-            <label className="btn-secondary py-1! px-2! text-xs! cursor-pointer">
+            <Button variant="outline" size="xs" render={<label className="cursor-pointer" />}>
               Load from .p8 file
               <input
                 type="file"
@@ -790,7 +794,7 @@ function TestFlightPanel({ appId }: { appId: string }) {
                 className="hidden"
                 onChange={(e) => readP8File(e.target.files?.[0])}
               />
-            </label>
+            </Button>
             <div className="flex-1" />
             {editing && (
               <Button
@@ -814,13 +818,13 @@ function TestFlightPanel({ appId }: { appId: string }) {
             </Button>
           </div>
           {p8.trim().length > 0 && !p8.includes("BEGIN PRIVATE KEY") && (
-            <p className="text-xs text-amber-700">
+            <p className="text-xs text-warning-strong">
               This does not look like a .p8 private key — paste the full PEM
               contents of the downloaded AuthKey file, including the BEGIN/END
               lines.
             </p>
           )}
-          <p className="text-xs text-slate-400">
+          <p className="text-xs text-foreground-hint">
             The App Store Connect app record must match the bundle ID your IPAs
             are signed with.
           </p>
@@ -856,13 +860,13 @@ function AppGalleryConnectPanel({ appId }: { appId: string }) {
   });
   const showForm = editing || (!meta && !query.isLoading);
   return (
-    <div className="border-t border-slate-100 pt-3">
+    <div className="border-t border-line-hairline pt-3">
       <div className="flex flex-col gap-2 md:flex-row md:items-center md:gap-3">
         <div className="flex-1 min-w-0">
           <div className="text-sm font-medium">AppGallery Connect</div>
-          <div className="text-xs text-slate-500">Service Account or legacy API client credential used for HarmonyOS testing and publishing. The uploaded JSON is encrypted and private material is never shown again.</div>
+          <div className="text-xs text-foreground-muted">Service Account or legacy API client credential used for HarmonyOS testing and publishing. The uploaded JSON is encrypted and private material is never shown again.</div>
           {meta && <div className="mt-1 text-xs space-y-0.5">
-            <div><span className="text-green-700 font-medium">Configured</span>{" · "}{meta.credential_kind}{" · updated "}{new Date(meta.updated_at).toISOString().slice(0, 10)}</div>
+            <div><span className="text-success-strong font-medium">Configured</span>{" · "}{meta.credential_kind}{" · updated "}{new Date(meta.updated_at).toISOString().slice(0, 10)}</div>
             {meta.credential_kind === "service_account" ? (
               <div className="font-mono break-all">Sub-account {meta.sub_account} · Key {meta.key_id} · Project {meta.project_id || "default"}</div>
             ) : (
@@ -877,10 +881,13 @@ function AppGalleryConnectPanel({ appId }: { appId: string }) {
           <Button variant="danger" disabled={remove.isPending} onClick={() => { if (window.confirm("Remove the AppGallery Connect credential? Publishing stops until a new credential is saved.")) remove.mutate(); }}>{remove.isPending ? "…" : "Remove"}</Button>
         </div>}
       </div>
-      {showForm && <div className="mt-3 p-3 border border-slate-200 rounded-md space-y-3">
+      {showForm && <div className="mt-3 p-3 border border-line-muted rounded-md space-y-3">
         <label className="block text-xs font-medium">AGC Service Account private JSON</label>
-        <input type="file" accept=".json,application/json" onChange={(e) => { const file = e.target.files?.[0]; if (file) file.text().then(setCredentialJson, () => toast.show({ kind: "error", title: "Could not read the credential file" })); }} />
-        <div className="text-xs text-slate-500">Select the private JSON downloaded from AppGallery Connect. Service Account is recommended; legacy API client JSON remains supported during migration.</div>
+        <Button variant="outline" size="xs" className="self-start" render={<label className="cursor-pointer" />}>
+          Choose JSON file
+          <input type="file" accept=".json,application/json" className="hidden" onChange={(e) => { const file = e.target.files?.[0]; if (file) file.text().then(setCredentialJson, () => toast.show({ kind: "error", title: "Could not read the credential file" })); }} />
+        </Button>
+        <div className="text-xs text-foreground-muted">Select the private JSON downloaded from AppGallery Connect. Service Account is recommended; legacy API client JSON remains supported during migration.</div>
         <div className="flex gap-2">
           <Button variant="primary" disabled={!credentialJson || save.isPending} onClick={() => save.mutate()}>{save.isPending ? "Saving…" : "Save credential"}</Button>
           {meta && <Button variant="outline" onClick={() => { setCredentialJson(""); setEditing(false); }}>Cancel</Button>}
@@ -962,7 +969,7 @@ export function AppStoreReviewPanel({ appId }: { appId: string; app: App }) {
   const currentBadge = current ? appStoreStateBadge(current.appStoreState) : null;
 
   return (
-    <div className="border-t border-slate-100 pt-3">
+    <div className="border-t border-line-hairline pt-3">
       <div className="flex items-center gap-3">
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2">
@@ -971,7 +978,7 @@ export function AppStoreReviewPanel({ appId }: { appId: string; app: App }) {
               <Badge variant={currentBadge.variant}>{currentBadge.label}</Badge>
             )}
           </div>
-          <div className="text-xs text-slate-500">
+          <div className="text-xs text-foreground-muted">
             Live review state of this app's recent App Store versions and
             TestFlight builds, from App Store Connect. Read-only.
           </div>
@@ -1009,7 +1016,7 @@ export function AppStoreReviewPanel({ appId }: { appId: string; app: App }) {
             </EmptyStateDescription>
           </EmptyState>
         ) : data?.error ? (
-          <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+          <div className="rounded-md border border-warning/30 bg-warning-soft px-3 py-2 text-xs text-warning-strong">
             Could not load review status from App Store Connect: {data.error}
             {data.bundle_id && (
               <div className="mt-1">
@@ -1029,11 +1036,11 @@ export function AppStoreReviewPanel({ appId }: { appId: string; app: App }) {
         ) : (
           <div className="space-y-4">
             <div>
-              <div className="text-xs font-medium text-slate-600 mb-1">
+              <div className="text-xs font-medium text-foreground-muted mb-1">
                 Recent App Store versions
               </div>
               {versions.length === 0 ? (
-                <div className="text-xs text-slate-400">
+                <div className="text-xs text-foreground-hint">
                   No App Store versions yet.
                 </div>
               ) : (
@@ -1052,7 +1059,7 @@ export function AppStoreReviewPanel({ appId }: { appId: string; app: App }) {
                         {(v.appStoreState === "REJECTED" ||
                           v.appStoreState === "METADATA_REJECTED" ||
                           v.appStoreState === "DEVELOPER_REJECTED") && (
-                          <span className="text-xs text-slate-400">
+                          <span className="text-xs text-foreground-hint">
                             (see App Store Connect for the rejection details)
                           </span>
                         )}
@@ -1064,11 +1071,11 @@ export function AppStoreReviewPanel({ appId }: { appId: string; app: App }) {
             </div>
 
             <div>
-              <div className="text-xs font-medium text-slate-600 mb-1">
+              <div className="text-xs font-medium text-foreground-muted mb-1">
                 Recent TestFlight builds — beta review
               </div>
               {builds.length === 0 ? (
-                <div className="text-xs text-slate-400">
+                <div className="text-xs text-foreground-hint">
                   No builds on App Store Connect yet.
                 </div>
               ) : (
@@ -1084,7 +1091,7 @@ export function AppStoreReviewPanel({ appId }: { appId: string; app: App }) {
                         <Badge variant={b.variant}>{b.label}</Badge>
                         {bld.processingState &&
                           bld.processingState !== "VALID" && (
-                            <span className="text-xs text-slate-400">
+                            <span className="text-xs text-foreground-hint">
                               {bld.processingState.toLowerCase()}
                             </span>
                           )}
@@ -1165,7 +1172,7 @@ function PublicHistoryToggle({ appId, app }: { appId: string; app: App }) {
       <div className="flex items-center gap-3">
         <div className="flex-1">
           <div className="text-sm font-medium">Public version history</div>
-          <div className="text-xs text-slate-500">
+          <div className="text-xs text-foreground-muted">
             {enabled ? (
               <>
                 Anyone can browse and download published versions at{" "}
@@ -1202,17 +1209,17 @@ function PublicHistoryToggle({ appId, app }: { appId: string; app: App }) {
       {enabled && (
         <div className="pl-1 space-y-2 text-sm">
           <div className="flex items-center gap-3">
-            <div className="flex-1 text-xs text-slate-500">
+            <div className="flex-1 text-xs text-foreground-muted">
               Channels shown on the public history pages (none selected = all).
             </div>
             <div className="flex flex-wrap gap-2">
               {(channelsQuery.data?.channels ?? []).map((ch) => (
                 <label key={ch.id} className="flex items-center gap-1 text-xs">
-                  <input
-                    type="checkbox"
+                  <Checkbox
+                    size="sm"
                     checked={selectedChannels.includes(ch.slug)}
                     disabled={channelsMutation.isPending}
-                    onChange={() => toggleChannel(ch.slug)}
+                    onCheckedChange={() => toggleChannel(ch.slug)}
                   />
                   {ch.slug}
                 </label>
@@ -1220,7 +1227,7 @@ function PublicHistoryToggle({ appId, app }: { appId: string; app: App }) {
             </div>
           </div>
           <div className="flex items-center gap-3">
-            <div className="flex-1 text-xs text-slate-500">
+            <div className="flex-1 text-xs text-foreground-muted">
               Show per-version download buttons on the public history, notes and landing pages.
             </div>
             <Switch
@@ -1259,7 +1266,7 @@ function DeltaUpdatesToggle({ appId, app }: { appId: string; app: App }) {
     <div className="flex items-center gap-3">
       <div className="flex-1">
         <div className="text-sm font-medium">Delta updates</div>
-        <div className="text-xs text-slate-500">
+        <div className="text-xs text-foreground-muted">
           {enabled
             ? "On publish, small differential patches are generated from recent versions so users download less to update."
             : "Auto-generate differential update patches when a release is published, shrinking update downloads for users on recent versions."}
@@ -1298,7 +1305,7 @@ function ReleaseApprovalToggle({ appId, app }: { appId: string; app: App }) {
     <div className="flex items-center gap-3">
       <div className="flex-1">
         <div className="text-sm font-medium">Require human approval for agent releases</div>
-        <div className="text-xs text-slate-500">
+        <div className="text-xs text-foreground-muted">
           {enabled
             ? "On. Releases that an agent (deploy token) tries to publish are held for an app admin or org admin to approve or reject before they go live. Releases you publish from this console are unaffected."
             : "When on, agent-initiated releases are held for a human (app admin / org admin) to approve before publishing. Your own console publishes are never gated."}
@@ -1336,7 +1343,7 @@ function AppIconUploader({ appId, slug }: { appId: string; slug: string }) {
         alt=""
         width={44}
         height={44}
-        className="h-11 w-11 rounded-lg border border-slate-200 bg-slate-50 object-cover"
+        className="h-11 w-11 rounded-lg border border-line-muted bg-layer-inset object-cover"
         onError={(e) => {
           (e.target as HTMLImageElement).style.visibility = "hidden";
         }}
@@ -1346,11 +1353,11 @@ function AppIconUploader({ appId, slug }: { appId: string; slug: string }) {
       />
       <div className="min-w-0">
         <div className="text-sm font-medium">App icon</div>
-        <div className="text-xs text-slate-500">
+        <div className="text-xs text-foreground-muted">
           Shown on share/download pages. PNG/WebP/JPEG, max 1MB.
         </div>
       </div>
-      <label className="btn-secondary py-1! px-2! text-xs! ml-auto cursor-pointer">
+      <Button variant="outline" size="xs" className="ml-auto" render={<label className="cursor-pointer" />}>
         {upload.isPending ? "Uploading…" : "Upload"}
         <input
           type="file"
@@ -1362,7 +1369,7 @@ function AppIconUploader({ appId, slug }: { appId: string; slug: string }) {
             e.currentTarget.value = "";
           }}
         />
-      </label>
+      </Button>
     </div>
   );
 }
@@ -1427,7 +1434,8 @@ export function AppSettings({ appId }: { appId: string }) {
   return (
     <div>
 
-      <div className="card p-4! text-sm space-y-3">
+      <Card className="text-sm">
+      <CardContent className="space-y-3">
         <h2 className="text-base font-semibold">Settings</h2>
 
         <AppTransferPanel appId={appId} app={app} orgs={orgs.data?.orgs ?? []} />
@@ -1466,29 +1474,29 @@ export function AppSettings({ appId }: { appId: string }) {
         <DefaultChannelPicker appId={appId} app={app} isOrgAdmin={isOrgAdmin} />
 
         {/* Danger zone: archive / restore */}
-        <div className="border-t border-slate-100 pt-3">
-          <h3 className="text-sm font-medium text-slate-700 mb-2">
+        <div className="border-t border-line-hairline pt-3">
+          <h3 className="text-sm font-medium text-foreground-strong mb-2">
             Danger zone
           </h3>
           {!isOrgAdmin && (
-            <p className="text-xs text-yellow-700 mb-2">
+            <p className="text-xs text-warning-strong mb-2">
               ⚠ Org owner / admin required to archive apps.
             </p>
           )}
 
-          <div className="flex items-center justify-between gap-2 p-3 border border-slate-200 rounded-md">
+          <div className="flex items-center justify-between gap-2 p-3 border border-line-muted rounded-md">
             <div>
               <div className="font-medium">
                 {app.archived ? "App is archived" : "App is active"}
               </div>
-              <div className="text-xs text-slate-500">
+              <div className="text-xs text-foreground-muted">
                 {app.archived
                   ? "Archived apps reject new uploads but remain restorable. " +
                     "Restore the app to resume normal operation."
                   : "Active apps accept uploads + releases normally."}
               </div>
               {app.archived_at && (
-                <div className="text-xs text-slate-400 mt-1">
+                <div className="text-xs text-foreground-hint mt-1">
                   archived_at: {new Date(app.archived_at).toISOString()}
                 </div>
               )}
@@ -1548,11 +1556,11 @@ export function AppSettings({ appId }: { appId: string }) {
             objectHint={`slug: ${app.slug}`}
             objectSummary={
               <div className="grid grid-cols-2 gap-x-3 gap-y-1 font-mono">
-                <div className="text-slate-500">id</div>
+                <div className="text-foreground-muted">id</div>
                 <div>{app.id.slice(0, 8)}…</div>
-                <div className="text-slate-500">slug</div>
+                <div className="text-foreground-muted">slug</div>
                 <div>{app.slug}</div>
-                <div className="text-slate-500">status</div>
+                <div className="text-foreground-muted">status</div>
                 <div>{app.archived ? "archived" : "active"}</div>
               </div>
             }
@@ -1562,7 +1570,7 @@ export function AppSettings({ appId }: { appId: string }) {
                   Restoring returns the app to <strong>active</strong> status.{" "}
                   New uploads and releases will be accepted again.
                   <br />
-                  <span className="text-xs text-slate-500">
+                  <span className="text-xs text-foreground-muted">
                     Existing builds, releases, and assets are kept as-is.
                   </span>
                 </>
@@ -1572,7 +1580,7 @@ export function AppSettings({ appId }: { appId: string }) {
                   The app remains viewable in lists and admin pages, but{" "}
                   <strong>new uploads are rejected</strong>.
                   <br />
-                  <span className="text-xs text-slate-500">
+                  <span className="text-xs text-foreground-muted">
                     This is reversible: existing builds, releases, and assets
                     are kept as-is. Archiving does not free up storage.
                   </span>
@@ -1589,12 +1597,12 @@ export function AppSettings({ appId }: { appId: string }) {
               setConfirmArchive(false);
             }}
           />
-          <p className="text-xs text-slate-500 mt-2">
+          <p className="text-xs text-foreground-muted mt-2">
             Future: signing credential binding, custom domains, app
             ownership transfer.
           </p>
         </div>
-      </div>
+      </CardContent></Card>
     </div>
   );
 }
@@ -1609,7 +1617,7 @@ function AppTransferPanel({ appId, app, orgs }: { appId: string; app: App; orgs:
     onError: (e) => toast.show({ kind: "error", title: "Transfer failed", description: (e as Error).message }),
   });
   const eligible = orgs.filter((o) => !o.archived && o.id !== app.org_id);
-  return <div className="border-t border-slate-100 pt-3"><h3 className="text-sm font-medium text-slate-700 mb-1">Transfer app</h3><p className="text-xs text-slate-500 mb-2">Preserves this app ID and all releases, builds, channels, and history. Owners of both organizations must authorize.</p><div className="flex flex-wrap gap-2"><select className="input text-sm" value={target} onChange={(e) => setTarget(e.target.value)} disabled={transfer.isPending}><option value="">Select target organization…</option>{eligible.map((o) => <option key={o.id} value={o.id}>{o.name} ({o.slug})</option>)}</select><input className="input text-sm" value={confirm} onChange={(e) => setConfirm(e.target.value)} placeholder={`Type ${app.slug} to confirm`} disabled={!target || transfer.isPending} /><button className="btn-secondary text-xs" disabled={!target || confirm !== app.slug || !app.org_id || transfer.isPending} onClick={() => transfer.mutate()}>{transfer.isPending ? "Transferring…" : "Transfer"}</button></div></div>;
+  return <div className="border-t border-line-hairline pt-3"><h3 className="text-sm font-medium text-foreground-strong mb-1">Transfer app</h3><p className="text-xs text-foreground-muted mb-2">Preserves this app ID and all releases, builds, channels, and history. Owners of both organizations must authorize.</p><div className="flex flex-wrap items-center gap-2"><Select value={target || "none"} onValueChange={(value) => setTarget(value === "none" ? "" : String(value))}><SelectTrigger className="w-full sm:w-64" aria-label="Select target organization" disabled={transfer.isPending}><SelectValue /><SelectIcon /></SelectTrigger><SelectContent><SelectItem value="none">Select target organization…</SelectItem>{eligible.map((o) => <SelectItem key={o.id} value={o.id}>{o.name} ({o.slug})</SelectItem>)}</SelectContent></Select><Input className="w-full sm:w-56" value={confirm} onChange={(e) => setConfirm(e.target.value)} placeholder={`Type ${app.slug} to confirm`} disabled={!target || transfer.isPending} /><Button variant="outline" size="xs" disabled={!target || confirm !== app.slug || !app.org_id || transfer.isPending} onClick={() => transfer.mutate()}>{transfer.isPending ? "Transferring…" : "Transfer"}</Button></div></div>;
 }
 
 function DefaultChannelPicker({
@@ -1663,11 +1671,11 @@ function DefaultChannelPicker({
   const dirty = selected !== (app?.default_channel_id ?? null);
 
   return (
-    <div className="border-t border-slate-100 pt-3">
-      <h3 className="text-sm font-medium text-slate-700 mb-2">
+    <div className="border-t border-line-hairline pt-3">
+      <h3 className="text-sm font-medium text-foreground-strong mb-2">
         Default release channel
       </h3>
-      <p className="text-xs text-slate-500 mb-2">
+      <p className="text-xs text-foreground-muted mb-2">
         Pre-fills the channel dropdown in the New Release dialog. Falls
         back to the first channel (by created_at) if unset.
       </p>
@@ -1701,7 +1709,8 @@ function DefaultChannelPicker({
         </Select>
         {isOrgAdmin && (
           <Button
-            className="btn-primary text-xs"
+            variant="primary"
+            size="xs"
             onClick={() => save.mutate()}
             disabled={!dirty || save.isPending}
           >
@@ -1710,7 +1719,7 @@ function DefaultChannelPicker({
         )}
       </div>
       {!isOrgAdmin && (
-        <p className="text-xs text-yellow-700 mt-2">
+        <p className="text-xs text-warning-strong mt-2">
           ⚠ Org owner / admin required to change settings.
         </p>
       )}
@@ -1800,7 +1809,7 @@ function CreateChannelDialog({
           <Button
             type="submit"
             form="create-channel-form"
-            className="btn-primary"
+            variant="primary"
             disabled={create.isPending}
           >
             {create.isPending ? "Creating..." : "Create"}
@@ -1821,18 +1830,18 @@ function ChannelRow({
   busy: boolean;
 }) {
   return (
-    <div className="card p-3! flex items-center gap-3">
+    <Card><CardContent className="flex items-center gap-3 p-3">
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-2 flex-wrap">
           <span className="font-medium">{c.name}</span>
-          <span className="text-xs font-mono text-slate-500">{c.slug}</span>
+          <span className="text-xs font-mono text-foreground-muted">{c.slug}</span>
           {c.bundle_id && (
             <Tooltip>
               <TooltipTrigger
                 render={
-                  <span className="badge-blue text-xs font-mono">
+                  <Badge variant="information" className="font-mono">
                     {c.bundle_id}
-                  </span>
+                  </Badge>
                 }
               />
               <TooltipContent>Bundle ID override</TooltipContent>
@@ -1842,7 +1851,7 @@ function ChannelRow({
             <Tooltip>
               <TooltipTrigger
                 render={
-                  <span className="badge-orange text-xs">🔒 gated</span>
+                  <Badge variant="warning">🔒 gated</Badge>
                 }
               />
               <TooltipContent>Downloads require password</TooltipContent>
@@ -1853,7 +1862,7 @@ function ChannelRow({
               <TooltipTrigger
                 render={
                   <a
-                    className="text-xs text-blue-600 hover:underline font-mono truncate max-w-xs"
+                    className="text-xs text-info-strong hover:underline font-mono truncate max-w-xs"
                     href={c.git_url}
                     target="_blank"
                     rel="noreferrer"
@@ -1874,7 +1883,7 @@ function ChannelRow({
       >
         Edit
       </Button>
-    </div>
+    </CardContent></Card>
   );
 }
 
@@ -1965,7 +1974,7 @@ function EditChannelDialog({
               <div>
                 <label className="label">Slug (immutable)</label>
                 <Input
-                  className="font-mono text-xs bg-slate-50"
+                  className="font-mono text-xs bg-layer-inset"
                   value={channel.slug}
                   readOnly
                 />
@@ -2010,7 +2019,7 @@ function EditChannelDialog({
           <DialogFooter className="justify-between">
             <Button
               type="button"
-              className="text-red-600 text-sm hover:underline"
+              variant="danger-outline"
               onClick={() => setConfirmDelete(true)}
               disabled={save.isPending || remove.isPending}
             >
@@ -2019,7 +2028,7 @@ function EditChannelDialog({
             <div className="flex gap-2">
               <Button
                 type="button"
-                className="btn-secondary"
+                variant="outline"
                 onClick={onClose}
               >
                 Cancel
@@ -2027,7 +2036,7 @@ function EditChannelDialog({
               <Button
                 type="submit"
                 form="edit-channel-form"
-                className="btn-primary"
+                variant="primary"
                 disabled={save.isPending}
               >
                 {save.isPending ? "Saving…" : "Save"}
@@ -2045,11 +2054,11 @@ function EditChannelDialog({
         objectHint={`id: ${channel.id.slice(0, 8)}…`}
         objectSummary={
           <div className="grid grid-cols-2 gap-x-3 gap-y-1 font-mono">
-            <div className="text-slate-500">slug</div>
+            <div className="text-foreground-muted">slug</div>
             <div>{channel.slug}</div>
-            <div className="text-slate-500">name</div>
+            <div className="text-foreground-muted">name</div>
             <div>{channel.name}</div>
-            <div className="text-slate-500">bundle_id</div>
+            <div className="text-foreground-muted">bundle_id</div>
             <div>{channel.bundle_id ?? "—"}</div>
           </div>
         }
@@ -2062,7 +2071,7 @@ function EditChannelDialog({
             </strong>{" "}
             — otherwise the public API will start 404'ing your clients.
             {app?.default_channel_id === channel.id && (
-              <div className="mt-2 p-2 bg-yellow-50 border border-yellow-200 rounded-sm text-xs text-yellow-900">
+              <div className="mt-2 p-2 bg-warning-soft border border-warning/30 rounded-sm text-xs text-warning-strong">
                 ⚠ This is the app's <strong>default release channel</strong>.
                 After deletion, the New Release wizard will fall back to the
                 first channel by created_at.
