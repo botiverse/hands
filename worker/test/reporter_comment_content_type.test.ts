@@ -6,7 +6,7 @@ const path = "https://hands.test/api/apps/11111111-1111-4111-8111-111111111111/r
 const submissionId = "33333333-3333-4333-8333-333333333333";
 const ctx = { waitUntil() {}, passThroughOnException() {} };
 const fetch = (body?: BodyInit, contentType?: string) => worker.fetch(new Request(path, {
-  method: "POST", body,
+  method: "POST", body: body ?? null,
   headers: { "X-Hands-Reporter-Id": "reporter-identity-123", ...(contentType ? { "content-type": contentType } : {}) },
 }), {} as Env, ctx as any);
 
