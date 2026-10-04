@@ -770,7 +770,10 @@ app.openapi(openapiLookup(feedbackRoutes, "listReporter"), handleListReporterFee
 app.openapi(openapiLookup(feedbackRoutes, "mintReporterSession"), handleMintReporterSession as any);
 app.openapi(openapiLookup(feedbackRoutes, "bindReporterRouteSubject"), handleBindReporterRouteSubject as any);
 app.openapi(openapiLookup(feedbackRoutes, "getReporter"), handleGetReporterFeedback as any);
-app.openapi(openapiLookup(feedbackRoutes, "addReporterComment"), handleAddReporterComment as any);
+// This route accepts both JSON and multipart. Use the shared mixed-body
+// dispatcher so JSON validators do not run against multipart input. The
+// handler authenticates and validates either representation itself.
+bindApp("post", "/api/apps/:appId/reporter-feedback/:ticketId/comments", handleAddReporterComment);
 app.openapi(openapiLookup(feedbackRoutes, "closeReporter"), handleCloseReporterFeedback as any);
 app.openapi(openapiLookup(feedbackRoutes, "downloadReporterAttachment"), handleDownloadReporterAttachment as any);
 
