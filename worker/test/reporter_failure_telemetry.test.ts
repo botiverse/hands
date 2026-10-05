@@ -18,8 +18,9 @@ describe("reporter failure telemetry", () => {
       method, headers: { authorization: "Bearer qvdt_secret-token", "X-Hands-Reporter-Id": "secret-reporter-identity", "content-type": "application/json" },
       ...(method === "PUT" ? { body: JSON.stringify({ route_subject: "rfr_v1_secret_subject" }) } : {}),
     }), env, ctx as any);
-    expect(r.status).toBe(500);
-    expect(await r.text()).toBe("Internal Server Error");
+    expect(r.status).toBe(503);
+    expect(await r.json()).toEqual({ error: "reporter backend temporarily unavailable", code: "REPORTER_BACKEND_UNAVAILABLE" });
+    expect(r.headers.get("Retry-After")).toBe("1");
     expect(errorLog).not.toHaveBeenCalled();
     const sealed = log.mock.calls.filter(call => call[0] === "hands_reporter_failure_detail");
     expect(sealed).toHaveLength(1);
@@ -27,7 +28,7 @@ describe("reporter failure telemetry", () => {
     expect(JSON.parse(sealed[0]![1] as string)).toMatchObject({ algorithm: "RSA-OAEP-SHA256+AES-256-GCM", failure_stage: "token_lookup" });
     const records = log.mock.calls.filter(call => call[0] === "hands_http_response").map(call => JSON.parse(call[1] as string));
     expect(records).toHaveLength(1);
-    expect(records[0]).toMatchObject({ status: 500, failure_stage: "token_lookup", failure_code: "d1_unavailable" });
+    expect(records[0]).toMatchObject({ status: 503, failure_stage: "token_lookup", failure_code: "d1_unavailable" });
     expect(JSON.stringify(records)).not.toContain("secret");
     expect(JSON.stringify(records)).not.toContain(appId);
   });
