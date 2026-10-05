@@ -10,6 +10,10 @@ on:
         description: End Unix millisecond timestamp
         required: true
         type: string
+      exception_request_id:
+        description: Optional exact request reference; exception fields are encrypted for the incident owner
+        required: false
+        type: string
 permissions:
   contents: read
 jobs:
@@ -30,4 +34,5 @@ jobs:
           HANDS_WORKER_NAME: ${{ vars.HANDS_WORKER_NAME }}
           QUERY_FROM_MS: ${{ inputs.from_ms }}
           QUERY_TO_MS: ${{ inputs.to_ms }}
+          QUERY_EXCEPTION_REQUEST_ID: ${{ inputs.exception_request_id }}
         run: node scripts/monitoring/query-reporter-errors.mjs
