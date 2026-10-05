@@ -49,7 +49,7 @@ export async function completeTestflightOperation(db: D1Database, appId: string,
         build_number: result.build_number ?? (identity.version_code == null ? null : String(identity.version_code)),
         app_store_connect_url: `https://appstoreconnect.apple.com/apps/${result.asc_app_id}`,
       } });
-    statements.push(db.prepare(`INSERT OR IGNORE INTO webhook_deliveries
+    statements.push(db.prepare(`INSERT INTO webhook_deliveries
       (id,webhook_id,event_type,payload_json,status,attempts,max_attempts,next_attempt_at,
        created_at,updated_at,external_event_id)
       SELECT lower(hex(randomblob(16))),w.id,?1,?2,'pending',0,3,?3,?3,?3,?4
@@ -59,7 +59,8 @@ export async function completeTestflightOperation(db: D1Database, appId: string,
         AND json_valid(w.events_json) AND EXISTS (
           SELECT 1 FROM json_each(w.events_json) WHERE value IN (?1,'*')
           UNION ALL SELECT 1 WHERE w.events_json='[]')
-        AND o.kind=?8 AND o.status='success' AND o.output=?9`)
+        AND o.kind=?8 AND o.status='success' AND o.output=?9
+      ON CONFLICT(webhook_id,external_event_id) WHERE external_event_id IS NOT NULL DO NOTHING`)
       .bind(event.event, body, now, eventId, operationId, appId, app.org_id, kind, output));
   }
   const receipts = await db.batch(statements);
