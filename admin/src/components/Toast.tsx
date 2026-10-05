@@ -64,9 +64,9 @@ function buildDescription(
         <span className="wrap-break-word">{description}</span>
       ) : null}
       {hasProgress ? (
-        <span className="mt-2 block h-1.5 bg-slate-100 rounded-sm overflow-hidden">
+        <span className="mt-2 block h-1.5 bg-layer-inset rounded-sm overflow-hidden">
           <span
-            className="block h-full bg-blue-500 transition-all"
+            className="block h-full bg-info transition-all"
             style={{ width: `${Math.round((progress as number) * 100)}%` }}
           />
         </span>

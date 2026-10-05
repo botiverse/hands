@@ -30,6 +30,7 @@ import {
   Button,
   Card,
   Input,
+  Label,
   Tooltip,
   TooltipTrigger,
   TooltipContent,
@@ -572,7 +573,7 @@ function PrepareReleaseDialog({
         <DialogBody>
         <div className="space-y-3">
           <div>
-            <label className="label">Release scope</label>
+            <Label>Release scope</Label>
             <RadioGroup
               className="space-y-1"
               value={scopeType}
@@ -590,7 +591,7 @@ function PrepareReleaseDialog({
           </div>
           {scopeType === "platform" && (
             <div>
-              <label className="label">Platforms (comma-separated)</label>
+              <Label>Platforms (comma-separated)</Label>
               <Input
                 className="text-xs font-mono"
                 value={platforms}
@@ -601,7 +602,7 @@ function PrepareReleaseDialog({
           )}
           {scopeType === "ip_range" && (
             <div>
-              <label className="label">IP ranges (comma-separated CIDR)</label>
+              <Label>IP ranges (comma-separated CIDR)</Label>
               <Input
                 className="text-xs font-mono"
                 value={ipRanges}

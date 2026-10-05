@@ -35,6 +35,7 @@ import {
   Button,
   Card,
   Input,
+  Label,
   Select,
   SelectTrigger,
   SelectValue,
@@ -1023,12 +1024,12 @@ function EditReleaseDialog({
           {loading && <p className="text-sm text-foreground-muted">Loading release details...</p>}
           <div className="space-y-3">
           <div>
-            <label className="label">Release notes</label>
+            <Label>Release notes</Label>
             <ChangelogEditor value={changelog} onChange={setChangelog} />
           </div>
           <div className="grid grid-cols-2 gap-3">
             <div>
-              <label className="label">Scope type</label>
+              <Label>Scope type</Label>
               <Select
                 items={{
                   full: "Full",
@@ -1060,7 +1061,7 @@ function EditReleaseDialog({
               </Select>
             </div>
             <div>
-              <label className="label">Scope value</label>
+              <Label>Scope value</Label>
               {scopeType === "device_group" ? (
                 <Select
                   items={Object.fromEntries((deviceGroups.data?.groups ?? []).map((group) => [group.id, group.name]))}
@@ -1088,7 +1089,7 @@ function EditReleaseDialog({
           </div>
           {scopeType === "full" && (
             <div>
-              <label className="label">Always included device groups</label>
+              <Label>Always included device groups</Label>
               <AlwaysIncludedDeviceGroups
                 groups={deviceGroups.data?.groups ?? []}
                 selectedIds={alwaysIncludedGroupIds}
@@ -1372,7 +1373,7 @@ function NewReleaseDialog({
             <div className="space-y-3">
               <div className={showProductTypePicker ? "grid grid-cols-2 gap-3" : "grid grid-cols-1 gap-3"}>
                 <div>
-                  <label className="label">Channel</label>
+                  <Label>Channel</Label>
                   <Select
                     items={{
                       "": "— pick —",
@@ -1404,7 +1405,7 @@ function NewReleaseDialog({
                 </div>
                 {showProductTypePicker && (
                   <div>
-                    <label className="label">Package type</label>
+                    <Label>Package type</Label>
                     <Select
                       items={{
                         "": "— pick —",
@@ -1455,7 +1456,7 @@ function NewReleaseDialog({
             <div className="space-y-3">
               <div className="grid grid-cols-2 gap-3">
                 <div>
-                  <label className="label">Version name (e.g. 1.2.3)</label>
+                  <Label>Version name (e.g. 1.2.3)</Label>
                   <Input
                     value={versionName}
                     onChange={(e) => setVersionName(e.target.value)}
@@ -1464,7 +1465,7 @@ function NewReleaseDialog({
                   />
                 </div>
                 <div>
-                  <label className="label">Version code (integer)</label>
+                  <Label>Version code (integer)</Label>
                   <Input
                     type="number"
                     value={versionCode}
@@ -1474,7 +1475,7 @@ function NewReleaseDialog({
                 </div>
               </div>
               <div>
-                <label className="label">Release notes</label>
+                <Label>Release notes</Label>
                 <ChangelogEditor
                   value={changelog}
                   onChange={setChangelog}
@@ -1556,7 +1557,7 @@ function NewReleaseDialog({
                   <div className="mt-2 p-3 border border-line-muted rounded-sm space-y-2">
                     <div className="grid grid-cols-2 gap-2">
                       <div>
-                        <label className="label">Release scope</label>
+                        <Label>Release scope</Label>
                         <Select
                           items={{ full: "Full", platform: "Platform", user_cohort: "User cohort", ip_range: "IP range", device_group: "Device group" }}
                           value={scopeType}
@@ -1579,7 +1580,7 @@ function NewReleaseDialog({
                         </Select>
                       </div>
                       <div>
-                        <label className="label">Scope value</label>
+                        <Label>Scope value</Label>
                         {scopeType === "device_group" ? (
                           <Select
                             items={Object.fromEntries((deviceGroups.data?.groups ?? []).map((group) => [group.id, group.name]))}
@@ -1607,7 +1608,7 @@ function NewReleaseDialog({
                     </div>
                     {scopeType === "full" && (
                       <div>
-                        <label className="label">Always included device groups</label>
+                        <Label>Always included device groups</Label>
                         <AlwaysIncludedDeviceGroups
                           groups={deviceGroups.data?.groups ?? []}
                           selectedIds={alwaysIncludedGroupIds}

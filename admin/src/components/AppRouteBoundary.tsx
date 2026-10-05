@@ -2,6 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
 import { useEffect, type ReactNode } from "react";
 import { listApps } from "../lib/api";
+import { Card } from "raft-ui";
 import { appRouteMessage } from "../lib/appRouteMessages";
 
 export function AppRouteBoundary({ appId, children }: { appId: string; children: ReactNode }) {
@@ -13,11 +14,11 @@ export function AppRouteBoundary({ appId, children }: { appId: string; children:
       try { window.localStorage.setItem("quiver:last-app-id", appId); } catch { /* storage disabled */ }
     }
   }, [available, appId]);
-  if (valid && apps.isPending) return <div role="status" className="card p-6">{appRouteMessage("loading")}</div>;
+  if (valid && apps.isPending) return <Card role="status" className="p-6">{appRouteMessage("loading")}</Card>;
   if (available) return children;
-  return <section role="alert" className="card p-6 space-y-3">
+  return <Card role="alert" className="p-6 space-y-3">
     <h1 className="text-lg font-semibold">{appRouteMessage(valid ? "unavailable" : "invalid")}</h1>
-    <p className="text-sm text-slate-600">{appRouteMessage(valid ? (apps.isError ? "loadFailed" : "accessHint") : "uuidHint")}</p>
-    <Link className="text-blue-600 underline" to="/apps">{appRouteMessage("back")}</Link>
-  </section>;
+    <p className="text-sm text-foreground-muted">{appRouteMessage(valid ? (apps.isError ? "loadFailed" : "accessHint") : "uuidHint")}</p>
+    <Link className="text-info-strong underline" to="/apps">{appRouteMessage("back")}</Link>
+  </Card>;
 }

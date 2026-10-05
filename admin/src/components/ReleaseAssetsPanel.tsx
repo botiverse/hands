@@ -24,7 +24,7 @@ export function ReleaseAssetsPanel({
   productTypeHint,
 }: Props) {
   return (
-    <div className="mt-2 pt-2 border-t border-slate-100">
+    <div className="mt-2 pt-2 border-t border-line-hairline">
       <ReleaseAssetUploader
         variant="panel"
         appId={appId}

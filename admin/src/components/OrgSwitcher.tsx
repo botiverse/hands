@@ -36,10 +36,10 @@ export function OrgSwitcher({
     <>
       <DropdownMenuLabel>{buttonLabel}</DropdownMenuLabel>
       {orgs.isLoading && (
-        <p className="text-xs text-slate-400 px-3 py-2">Loading…</p>
+        <p className="text-xs text-foreground-hint px-3 py-2">Loading…</p>
       )}
       {orgs.error && (
-        <p className="text-xs text-red-600 px-3 py-2">
+        <p className="text-xs text-danger px-3 py-2">
           Failed: {(orgs.error as Error).message}
         </p>
       )}
@@ -48,7 +48,7 @@ export function OrgSwitcher({
         return (
           <DropdownMenuItem
             key={o.id}
-            className={isCurrent ? "bg-slate-50 font-medium" : ""}
+            className={isCurrent ? "bg-fill-muted font-medium" : ""}
             onClick={() => {
               if (onSwitch && !isCurrent) onSwitch(o);
             }}
@@ -61,7 +61,7 @@ export function OrgSwitcher({
               }}
             />
             <span className="flex-1 truncate">{o.name}</span>
-            {isCurrent && <Check className="h-4 w-4 text-slate-700" aria-hidden="true" />}
+            {isCurrent && <Check className="h-4 w-4 text-foreground-strong" aria-hidden="true" />}
           </DropdownMenuItem>
         );
       })}
