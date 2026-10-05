@@ -1,3 +1,4 @@
+import { recoverIdempotentD1Lookup } from "./d1_lookup_recovery";
 import {
   APP_ROLE_PERMISSIONS,
   isAppPermission,
@@ -92,6 +93,7 @@ export async function hashDeployToken(token: string): Promise<string> {
 export async function loadDeployToken(
   env: Env,
   token: string | undefined,
+  recoverTransientLookup = false,
 ): Promise<AppDeployToken | null> {
   if (!token?.startsWith(`${TOKEN_PREFIX}_`)) return null;
   const tokenHash = await hashDeployToken(token);
@@ -125,7 +127,10 @@ export async function loadDeployToken(
      WHERE token_hash = ?2 AND revoked_at IS NULL
        AND (expires_at IS NULL OR expires_at > ?1)`,
   ).bind(now, tokenHash);
-  const [lookupResult] = await env.DB.batch([lookup, touch]);
+  // Both statements are safe to replay with these same bindings: the SELECT
+  // rechecks revocation, and last_used_at is set to the same fixed timestamp.
+  const execute = () => env.DB.batch([lookup, touch]);
+  const [lookupResult] = await (recoverTransientLookup ? recoverIdempotentD1Lookup(execute) : execute());
   const row = lookupResult?.results[0] as
     | (Omit<AppDeployToken, "scopes"> & { scopes_json: string | null })
     | undefined;

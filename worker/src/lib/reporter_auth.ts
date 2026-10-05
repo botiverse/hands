@@ -1,3 +1,4 @@
+import { isTransientD1LookupError } from "./d1_lookup_recovery";
 import { setReporterFailureStage } from "./reporter_failure";
 import type { Context } from "hono";
 import {
@@ -89,7 +90,17 @@ export async function authenticateReporter(
     };
   }
   setReporterFailureStage(c, "token_lookup");
-  const token = await loadDeployToken(c.env, bearer);
+  let token: AppDeployToken | null;
+  try {
+    token = await loadDeployToken(c.env, bearer, true);
+  } catch (error) {
+    if (!isTransientD1LookupError(error)) throw error;
+    // Fail closed: no principal is admitted and no downstream mutation runs.
+    // Keep the original exception available for sealed diagnostic capture.
+    if (error instanceof Error) c.error = error;
+    c.header("Retry-After", "1");
+    return { ok: false, response: c.json({ error: "reporter backend temporarily unavailable", code: "REPORTER_BACKEND_UNAVAILABLE" }, 503) };
+  }
   if (!token) {
     return { ok: false, response: c.json({ error: "invalid or missing bearer token" }, 401) };
   }
