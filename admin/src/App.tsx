@@ -281,58 +281,6 @@ function Header({ account }: { account: AuthAccount }) {
         )}
       </div>
       <nav className="flex min-h-0 w-full flex-1 flex-col items-stretch gap-1 px-3">
-        <div className="relative w-full">
-          <DropdownMenu>
-            <DropdownMenuTrigger
-              render={
-                <SidebarItem
-                  active={location.pathname.startsWith("/orgs/")}
-                  aria-label={`Organization ${currentOrg?.name ?? account.server_slug ?? account.server_id}`}
-                  title={collapsed ? currentOrg?.name ?? "Switch organization" : undefined}
-                  render={<button type="button" />}
-                  className={
-                    collapsed
-                      ? "flex-col gap-0.5 px-1 py-1 text-[11px] leading-none"
-                      : undefined
-                  }
-                >
-                  <Avatar size="sm" type="human" className="border border-line-muted">
-                    <AvatarFallback>
-                      {(currentOrg?.name ?? account.server_slug ?? "O").slice(0, 1).toUpperCase()}
-                    </AvatarFallback>
-                  </Avatar>
-                  {!collapsed && (
-                    <>
-                      <span className="hidden min-w-0 flex-1 text-left md:block">
-                        <span className="block truncate font-medium text-foreground-strong">
-                          {currentOrg?.name ?? account.server_slug ?? "Organization"}
-                        </span>
-                        <span className="block truncate text-xs text-foreground-hint">
-                          {account.org_role ?? "member"}
-                        </span>
-                      </span>
-                      <ChevronDown className="hidden h-4 w-4 text-foreground-hint md:block" aria-hidden="true" />
-                    </>
-                  )}
-                </SidebarItem>
-              }
-            />
-            <DropdownMenuContent
-              side={collapsed ? "right" : "bottom"}
-              align="start"
-              className="w-72"
-            >
-              <OrgSwitcher
-                currentOrgId={account.org_id ?? null}
-                buttonLabel="Switch organization"
-                onSwitch={(org) => {
-                  switchOrg(org);
-                  window.location.assign("/apps");
-                }}
-              />
-            </DropdownMenuContent>
-          </DropdownMenu>
-        </div>
         {appId && appBase && (
           <>
             <div className="relative w-full border-t border-line-hairline pt-2 theme-brutal:border-t-2 theme-brutal:border-black">
@@ -507,6 +455,20 @@ function Header({ account }: { account: AuthAccount }) {
                 {account.principal_type === "agent" ? "Raft agent" : "Raft user"}
               </div>
             </DropdownMenuLabel>
+            <DropdownMenuSeparator />
+            <DropdownMenuSubmenu>
+              <DropdownMenuSubmenuTrigger>Switch organization</DropdownMenuSubmenuTrigger>
+              <DropdownMenuContent side="right" align="start" className="w-72">
+                <OrgSwitcher
+                  currentOrgId={account.org_id ?? null}
+                  buttonLabel="Switch organization"
+                  onSwitch={(org) => {
+                    switchOrg(org);
+                    window.location.assign("/apps");
+                  }}
+                />
+              </DropdownMenuContent>
+            </DropdownMenuSubmenu>
             <DropdownMenuSeparator />
             <DropdownMenuSubmenu>
               <DropdownMenuSubmenuTrigger>Appearance</DropdownMenuSubmenuTrigger>
