@@ -1,3 +1,4 @@
+import { setReporterFailureStage } from "../lib/reporter_failure";
 import type { Context } from "hono";
 import { authenticateReporter, type ReporterPrincipal } from "../lib/reporter_auth";
 import { computeReporterAuditHash } from "../lib/reporter_audit";
@@ -141,10 +142,12 @@ async function authorize(
 ) {
   const auth = await authenticateReporter(c, permission);
   if (!auth.ok) return auth;
+  setReporterFailureStage(c, "audit_hash");
   const pseudonym = await reporterHash(c, auth.principal);
   if (!pseudonym) {
     return { ok: false as const, response: c.json({ error: "reporter audit is not configured" }, 503) };
   }
+  setReporterFailureStage(c, "rate_limit");
   const rate = await consumeRateLimit(c, auth.principal, pseudonym, endpoint);
   if (!rate.ok) return rate;
   return { ok: true as const, principal: auth.principal, pseudonym };
@@ -353,6 +356,7 @@ export async function handleListReporterFeedback(c: ReporterContext) {
     cursorId,
     limit + 1,
   );
+  setReporterFailureStage(c, "list_query");
   const [ticketResult, unreadResult] = await c.env.DB.batch([
     ticketStatement,
     unreadTotalStatement(c, authorized.principal),

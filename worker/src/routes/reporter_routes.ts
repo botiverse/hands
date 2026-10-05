@@ -1,3 +1,4 @@
+import { setReporterFailureStage } from "../lib/reporter_failure";
 import type { Context } from "hono";
 import type { AdminContext } from "../lib/permissions";
 import { authenticateReporter } from "../lib/reporter_auth";
@@ -24,6 +25,7 @@ export async function handleBindReporterRouteSubject(c: ReporterContext) {
   const now = Date.now();
   const auditKey = c.env.FEEDBACK_AUDIT_HMAC_KEY;
   const auditKeyVersion = c.env.FEEDBACK_AUDIT_KEY_VERSION?.trim();
+  setReporterFailureStage(c, "audit_hash");
   const reporterHash = auditKey && auditKeyVersion
     ? await computeReporterAuditHash({
         key: auditKey,
@@ -40,6 +42,7 @@ export async function handleBindReporterRouteSubject(c: ReporterContext) {
     reporter_hash: reporterHash,
     audit_key_version: auditKeyVersion,
   });
+  setReporterFailureStage(c, "route_bind");
   const [result] = await c.env.DB.batch([
     c.env.DB.prepare(
       `INSERT OR IGNORE INTO app_reporter_routes
@@ -77,6 +80,7 @@ export async function handleBindReporterRouteSubject(c: ReporterContext) {
       subject,
     ),
   ]);
+  setReporterFailureStage(c, "route_readback");
   const row = await c.env.DB.prepare(
     `SELECT r.route_subject FROM app_reporter_routes r
      JOIN apps a ON a.id = r.app_id AND a.archived = 0
