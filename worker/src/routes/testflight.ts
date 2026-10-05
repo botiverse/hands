@@ -56,6 +56,8 @@ import {
   type BuildBetaDetailResource,
 } from "../lib/asc_api";
 import { createOperation, updateOperation } from "./operations";
+import { completeTestflightOperation } from "../lib/testflight_events";
+import { triggerDeliveryNow } from "./webhooks";
 import { insertAuditLog } from "../lib/permissions";
 
 type AdminContext = Context<AdminEnv & { Bindings: Env }>;
@@ -1435,12 +1437,8 @@ export async function handleTestflightPublish(c: AdminContext) {
       ascBuild,
       input,
     });
-    await updateOperation(c.env.DB, op.id, {
-      status: "success",
-      progress: 100,
-      output: JSON.stringify(result),
-      completed_at: Date.now(),
-    });
+    const receiptAt = await completeTestflightOperation(c.env.DB, appId, op.id, op.kind, result);
+    triggerDeliveryNow(c, c.env, receiptAt);
     await insertAuditLog(c.env.DB, c, {
       app_id: appId,
       action: "testflight.publish",
@@ -1591,12 +1589,8 @@ export async function handleTestflightUpload(c: AdminContext) {
         });
       },
     });
-    await updateOperation(c.env.DB, op.id, {
-      status: "success",
-      progress: 100,
-      output: JSON.stringify(result),
-      completed_at: Date.now(),
-    });
+    const receiptAt = await completeTestflightOperation(c.env.DB, appId, op.id, op.kind, result);
+    triggerDeliveryNow(c, c.env, receiptAt);
     return c.json({ operation_id: op.id, ...result });
   } catch (e) {
     const detail =
