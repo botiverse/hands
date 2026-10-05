@@ -1,3 +1,10 @@
+---
+title: "React Feedback Inbox"
+description: "Embed a reporter-owned ticket inbox and conversation UI with a secure server-side Hands proxy."
+category: "SDKs & API"
+order: 15
+---
+
 # Embed a feedback inbox in a React app
 
 `@botiverse/hands-feedback-react` provides a reporter-facing ticket inbox,

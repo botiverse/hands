@@ -1,3 +1,10 @@
+---
+title: "Electron SDK"
+description: "Crashpad minidump crash reporting for Electron apps (main + renderer) via @botiverse/hands-electron."
+category: "SDKs & API"
+order: 13
+---
+
 # Electron SDK
 
 `@botiverse/hands-electron` adds crash reporting to Electron apps. Electron's

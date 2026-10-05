@@ -1,3 +1,10 @@
+---
+title: "Android SDK"
+description: "In-app update checks, staged rollouts, feedback, and crash reporting for Android."
+category: "SDKs & API"
+order: 10
+---
+
 # Android SDK
 
 `build.hands:hands-android-sdk` is the Android SDK for Hands. It handles

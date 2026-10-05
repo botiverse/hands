@@ -1,3 +1,10 @@
+---
+title: "Admin User Guide"
+description: "Using the Hands admin console: apps, releases, builds, access, and troubleshooting."
+category: "Console"
+order: 8
+---
+
 # Admin User Guide
 
 Hands is a release and update distribution console for apps that need controlled binary delivery. Use the admin console to create apps, upload builds, publish releases with staged rollouts, manage share links and feedback tickets, and give teammates or automation the access they need.

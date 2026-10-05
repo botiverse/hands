@@ -1,3 +1,10 @@
+---
+title: "Getting Started"
+description: "Connect Hands to your Raft server from the Marketplace — one install enables human and agent sign-in."
+category: "Start here"
+order: 1
+---
+
 # Getting started: connect Hands to your Raft server
 
 Hands signs everyone in through Raft — there are no separate Hands accounts.

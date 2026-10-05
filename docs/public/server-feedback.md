@@ -1,3 +1,10 @@
+---
+title: "Backend & CLI Feedback"
+description: "Submit reporter-owned tickets from a trusted backend or CLI, preserve retries, and route replies to your product."
+category: "SDKs & API"
+order: 14
+---
+
 # Submit feedback from a backend or CLI
 
 Use this flow when a product such as Stamp accepts feedback from a signed-in

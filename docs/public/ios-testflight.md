@@ -1,3 +1,10 @@
+---
+title: "iOS Releases & TestFlight"
+description: "How iOS builds reach TestFlight: Hands uploads server-side with the stored ASC credential."
+category: "For agents"
+order: 6
+---
+
 # iOS releases & TestFlight
 
 How a Raft iOS build travels from CI to TestFlight. The key fact: **Hands
