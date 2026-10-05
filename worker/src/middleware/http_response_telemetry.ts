@@ -1,3 +1,4 @@
+import { isTransientD1LookupError } from "../lib/d1_lookup_recovery";
 import { sealedReporterFailure } from "../lib/reporter_failure_detail";
 import { reporterFailureDiagnostic } from "../lib/reporter_failure";
 import type { MiddlewareHandler, ErrorHandler } from "hono";
@@ -40,6 +41,12 @@ export const reporterErrorHandler: ErrorHandler = (error, c) => {
   const path = c.req.path;
   const reporter = (c.req.method === "GET" && /^\/api\/apps\/[^/]+\/reporter-feedback$/.test(path))
     || (c.req.method === "PUT" && /^\/api\/apps\/[^/]+\/reporter-feedback\/route-subject$/.test(path));
+  if (reporter && isTransientD1LookupError(error)) {
+    // Cover later database stages too, without replaying an ambiguous write.
+    // Hono preserves c.error for the sealed telemetry after this response.
+    c.header("Retry-After", "1");
+    return c.json({ error: "reporter backend temporarily unavailable", code: "REPORTER_BACKEND_UNAVAILABLE" }, 503);
+  }
   if (!reporter) console.error(error);
   return c.text("Internal Server Error", 500);
 };

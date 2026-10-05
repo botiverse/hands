@@ -48,8 +48,8 @@ describe("reporter error boundary", () => {
     const log = vi.spyOn(console, "error").mockImplementation(() => {});
     const info = vi.spyOn(console, "info").mockImplementation(() => {});
     const app = new Hono(); app.onError(reporterErrorHandler); app.use("*", httpResponseTelemetry);
-    app.get("/api/other", () => { throw new Error("other failure"); });
-    app.get("/api/apps/:appId/reporter-feedback", () => { throw new HTTPException(401, { res: new Response("denied", { status: 401, headers: { "X-Error": "retained" } }) }); });
+    app.get("/api/other", () => { throw new Error("Network connection lost"); });
+    app.get("/api/apps/:appId/reporter-feedback", () => { throw new HTTPException(401, { message: "Network connection lost", res: new Response("denied", { status: 401, headers: { "X-Error": "retained" } }) }); });
     expect((await app.request("/api/other")).status).toBe(500);
     expect(log).toHaveBeenCalledTimes(1);
     const response = await app.request("/api/apps/app/reporter-feedback");

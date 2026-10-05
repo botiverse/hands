@@ -4,12 +4,12 @@ const { default: worker } = await import("../src/index");
 afterEach(() => vi.restoreAllMocks());
 const appId = "11111111-1111-4111-8111-111111111111";
 const ctx = { waitUntil() {}, passThroughOnException() {} };
-function fixture(failures: number, error = new Error("D1_ERROR: backend request failed", { cause: new Error("Network connection lost") }), revoked = false, rateError?: Error) {
-  const calls = { lookup: 0, rate: 0, business: 0, touches: [] as unknown[][] };
+function fixture(failures: number, error = new Error("D1_ERROR: backend request failed", { cause: new Error("Network connection lost") }), revoked = false, rateError?: Error, laterFailure?: { stage: "route_bind" | "route_readback" | "list_query"; error: Error }) {
+  const calls = { lookup: 0, rate: 0, business: 0, readback: 0, touches: [] as unknown[][] };
   const row = { id: "token", app_id: appId, app_slug: "test", name: "reporter", token_prefix: "qvdt", app_role: null, scopes_json: JSON.stringify(["feedback:read", "feedback:route"]), reporter_integration_id: "integration", reporter_integration_active: 1, revoked_at: null, expires_at: null };
   const result = (results: unknown[] = [], changes = 0) => ({ success: true, results, meta: { changes } });
   const DB = {
-    prepare(sql: string) { return { sql, params: [] as unknown[], bind(...params: unknown[]) { this.params = params; return this; }, async first() { return { route_subject: "rfr_v1_test_subject" }; } }; },
+    prepare(sql: string) { return { sql, params: [] as unknown[], bind(...params: unknown[]) { this.params = params; return this; }, async first() { calls.readback++; if (laterFailure?.stage === "route_readback") throw laterFailure.error; return { route_subject: "rfr_v1_test_subject" }; } }; },
     async batch(statements: { sql: string; params: unknown[] }[]) {
       const first = statements[0]!.sql;
       if (first.includes("FROM app_deploy_tokens")) {
@@ -19,6 +19,7 @@ function fixture(failures: number, error = new Error("D1_ERROR: backend request 
       }
       if (first.includes("INSERT INTO feedback_reporter_rate_windows")) { calls.rate++; if (rateError && calls.rate === 1) throw rateError; return [result([{ request_count: 1 }]), result([{ request_count: 1 }])]; }
       calls.business++;
+      if (laterFailure && laterFailure.stage !== "route_readback") throw laterFailure.error;
       return statements.map((_, index) => result([], first.includes("INSERT OR IGNORE INTO app_reporter_routes") && index === 0 ? 1 : 0));
     },
   };
@@ -90,5 +91,30 @@ describe("reporter rate batch outage handling", () => {
     const response = await worker.fetch(request("GET"), env, ctx as any);
     expect(response.status).toBe(500); expect(response.headers.get("Retry-After")).toBeNull();
     expect(calls.lookup).toBe(1); expect(calls.rate).toBe(1); expect(calls.business).toBe(0);
+  });
+});
+
+
+describe("later reporter database failures", () => {
+  it.each(["route_bind", "route_readback", "list_query"] as const)("returns an actionable outage at %s without replaying completed stages", async stage => {
+    const log = vi.spyOn(console, "info").mockImplementation(() => {});
+    const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+    const { env, calls } = fixture(0, undefined, false, undefined, { stage, error: new Error("D1_ERROR: Network connection lost", { cause: new Error("Network connection lost") }) });
+    const response = await worker.fetch(request(stage === "list_query" ? "GET" : "PUT"), env, ctx as any);
+    expect(response.status).toBe(503); expect(response.headers.get("Retry-After")).toBe("1");
+    expect(await response.json()).toEqual({ error: "reporter backend temporarily unavailable", code: "REPORTER_BACKEND_UNAVAILABLE" });
+    expect(calls.lookup).toBe(1); expect(calls.rate).toBe(stage === "list_query" ? 1 : 0);
+    expect(calls.business).toBe(1); expect(calls.readback).toBe(stage === "route_readback" ? 1 : 0);
+    expect(errors).not.toHaveBeenCalled();
+    const sealed = log.mock.calls.filter(call => call[0] === "hands_reporter_failure_detail");
+    expect(sealed).toHaveLength(1); expect(JSON.parse(sealed[0]![1] as string)).toMatchObject({ failure_stage: stage });
+    expect(JSON.stringify(sealed)).not.toContain("Network connection lost");
+  });
+  it.each(["SQLITE_CONSTRAINT foreign key", "no such column: private", "unknown database failure"])("preserves a nontransient binding failure: %s", async message => {
+    vi.spyOn(console, "info").mockImplementation(() => {}); vi.spyOn(console, "error").mockImplementation(() => {});
+    const { env, calls } = fixture(0, undefined, false, undefined, { stage: "route_bind", error: new Error(message) });
+    const response = await worker.fetch(request("PUT"), env, ctx as any);
+    expect(response.status).toBe(500); expect(response.headers.get("Retry-After")).toBeNull();
+    expect(calls.business).toBe(1); expect(calls.readback).toBe(0);
   });
 });
