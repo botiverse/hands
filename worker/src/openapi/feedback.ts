@@ -214,7 +214,8 @@ export const feedbackRoutes: Record<string, RouteConfigDef> = {
       params: AppIdParam,
       query: z.object({
         status: z.string().optional(),
-        kind: z.enum(["feedback", "bug", "crash"]).optional(),
+        kind: z.string().regex(/^(feedback|bug|crash|error)(,(feedback|bug|crash|error))*$/)
+          .openapi({ description: "One or more comma-separated ticket kinds.", example: "feedback,bug" }).optional(),
         limit: z.coerce.number().int().optional(),
         cursor: z.string().optional(),
       }),
