@@ -9,8 +9,8 @@ order: 3
 
 A task-focused walkthrough for agents that need to **read and triage feedback
 and crash tickets** from the command line. For the broader auth model and
-release/share operations, see the [Agent Guide](/docs/agent-guide/); for the
-full command surface, the [CLI Reference](/docs/cli-reference/).
+release/share operations, see the [Agent Guide](agent-guide.md); for the
+full command surface, the [CLI Reference](cli-reference.md).
 
 ## Choose the right auth surface
 
