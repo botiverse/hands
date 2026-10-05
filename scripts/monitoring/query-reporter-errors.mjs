@@ -1,4 +1,6 @@
 import { pathToFileURL } from 'node:url';
+import { readFileSync } from 'node:fs';
+import { createCipheriv, publicEncrypt, randomBytes, constants } from 'node:crypto';
 const sites = ['authenticateReporter', 'loadDeployToken', 'handleListReporterFeedback', 'handleBindReporterRouteSubject', 'consumeRateLimit', 'computeReporterAuditHash', 'auditReadStatement', 'httpResponseTelemetry', 'reporterHash', 'authorize'];
 const tables = ['app_reporter_integrations', 'app_reporter_routes', 'app_deploy_tokens', 'feedback_reporter_rate_windows', 'feedback_reporter_access_audits', 'feedback_reporter_ticket_reads', 'feedback_tickets', 'feedback_comments', 'feedback_attachments', 'apps', 'audit_logs'];
 const properties = ['results', 'changes', 'batch', 'prepare', 'message', 'scopes', 'meta', 'id', 'first', 'trim'];
@@ -42,6 +44,20 @@ export function summarizeEvent(event) {
   if (Number.isSafeInteger(event?.timestamp)) diagnostic.timestamp = event.timestamp;
   return diagnostic;
 }
+export function sealException(event, publicKey) {
+  const source = event?.source;
+  // Deliberately exclude request, headers, bindings and the Workers envelope.
+  const detail = { error: event?.$metadata?.error, message: event?.$metadata?.message,
+    source: typeof source === 'string' ? source : { message: source?.message, error: source?.error, stack: source?.stack, exceptions: source?.exceptions } };
+  const plaintext = Buffer.from(JSON.stringify(detail));
+  if (plaintext.length > 65536) throw new Error('Exception exceeds sealed diagnostic limit');
+  const key = randomBytes(32), iv = randomBytes(12);
+  const cipher = createCipheriv('aes-256-gcm', key, iv);
+  const ciphertext = Buffer.concat([cipher.update(plaintext), cipher.final()]);
+  return { ...requestReference(event), algorithm: 'RSA-OAEP-SHA256+AES-256-GCM',
+    encrypted_key: publicEncrypt({ key: publicKey, padding: constants.RSA_PKCS1_OAEP_PADDING, oaepHash: 'sha256' }, key).toString('base64'),
+    iv: iv.toString('base64'), tag: cipher.getAuthTag().toString('base64'), ciphertext: ciphertext.toString('base64') };
+}
 export function queryBody(from, to, worker) {
   if (!Number.isSafeInteger(from) || !Number.isSafeInteger(to) || from < 0 || to <= from || to - from > 300_000) throw new Error('Query must be a valid window of at most five minutes');
   if (!/^[a-zA-Z0-9_-]{1,63}$/.test(worker)) throw new Error('Configured Worker name is invalid');
@@ -60,7 +76,13 @@ export async function main(env = process.env, fetcher = fetch) {
   const events = data.result?.events?.events;
   if (!Array.isArray(events)) throw new Error('Cloudflare historical query returned an unsupported response shape');
   const diagnostics = events.map(summarizeEvent).filter(Boolean);
-  console.log(JSON.stringify({ from: body.timeframe.from, to: body.timeframe.to, returned_events: events.length, possibly_truncated: events.length >= body.limit, error_events: diagnostics.length, diagnostics, failed_requests: events.map(summarizeResponse).filter(Boolean) }));
+  const reference = env.QUERY_EXCEPTION_REQUEST_ID;
+  if (reference && !/^[a-f0-9-]{16,64}$/i.test(reference)) throw new Error('Invalid exception request reference');
+  const matchedErrors = reference ? events.filter(event => requestReference(event).request_id === reference && summarizeEvent(event)) : [];
+  if (matchedErrors.length > 10) throw new Error('Too many exceptions for sealed diagnostic');
+  const publicKey = reference ? readFileSync(new URL('./reporter-query-public.pem', import.meta.url)) : null;
+  const sealed_exceptions = matchedErrors.map(event => sealException(event, publicKey));
+  console.log(JSON.stringify({ from: body.timeframe.from, to: body.timeframe.to, returned_events: events.length, possibly_truncated: events.length >= body.limit, error_events: diagnostics.length, diagnostics, sealed_exceptions, failed_requests: events.map(summarizeResponse).filter(Boolean) }));
 }
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   main().catch(error => {
