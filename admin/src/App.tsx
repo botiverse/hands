@@ -530,7 +530,7 @@ function Header({ account }: { account: AuthAccount }) {
             <DropdownMenuItem render={<Link to="/settings" />}>
               Settings
             </DropdownMenuItem>
-            <DropdownMenuItem className="text-red-600" onClick={onLogout}>
+            <DropdownMenuItem className="text-danger" onClick={onLogout}>
               <span>Logout</span>
               <span aria-hidden="true">↗</span>
             </DropdownMenuItem>
@@ -705,7 +705,7 @@ function MobileTopNav({ account }: { account: AuthAccount }) {
               <DropdownMenuItem render={<Link to="/settings" />}>
                 Settings
               </DropdownMenuItem>
-              <DropdownMenuItem className="text-red-600" onClick={onLogout}>
+              <DropdownMenuItem className="text-danger" onClick={onLogout}>
                 <span>Logout</span>
                 <span aria-hidden="true">↗</span>
               </DropdownMenuItem>
@@ -827,7 +827,7 @@ function AppStoreReviewRoute() {
       {app && app.platform === "ios" ? (
         <AppStoreReviewPanel appId={appId} app={app} />
       ) : app ? (
-        <p className="text-sm text-slate-500">
+        <p className="text-sm text-foreground-muted">
           This is only available for iOS apps.
         </p>
       ) : null}
@@ -992,10 +992,10 @@ function AuthGate() {
 
 function AuthError({ onRetry }: { onRetry: () => void }) {
   return (
-    <main className="min-h-screen flex items-center justify-center bg-slate-50 px-4">
-      <section role="alert" className="w-full max-w-md rounded-md border border-red-200 bg-white p-6 shadow-xs">
-        <h1 className="text-lg font-semibold text-slate-950">Unable to check your Raft session</h1>
-        <p className="mt-2 text-sm text-slate-600">
+    <main className="min-h-screen flex items-center justify-center bg-layer-canvas-muted px-4">
+      <section role="alert" className="w-full max-w-md rounded-md border border-danger/30 bg-layer-panel p-6 shadow-xs">
+        <h1 className="text-lg font-semibold text-foreground-strong">Unable to check your Raft session</h1>
+        <p className="mt-2 text-sm text-foreground-muted">
           Hands could not reach the authentication service. Check your connection and try again.
         </p>
         <Button className="mt-4" onClick={onRetry}>Retry</Button>
@@ -1009,8 +1009,8 @@ function BrowserReplace({ to }: { to: string }) {
     window.location.replace(to);
   }, [to]);
   return (
-    <div className="min-h-screen flex items-center justify-center bg-slate-50">
-      <div className="text-sm text-slate-500">Opening Hands console...</div>
+    <div className="min-h-screen flex items-center justify-center bg-layer-canvas-muted">
+      <div className="text-sm text-foreground-muted">Opening Hands console...</div>
     </div>
   );
 }
@@ -1470,9 +1470,9 @@ function AppsListWithNav() {
     if (resolver.kind === "error") {
       return (
         <StandardPageShell>
-          <div role="alert" className="rounded-md border border-red-200 bg-red-50 p-4 text-sm text-red-800">
+          <div role="alert" className="rounded-md border border-danger/30 bg-danger-soft p-4 text-sm text-danger-strong">
             <p className="font-medium">Could not load apps</p>
-            <p className="mt-1 text-red-700">Check your connection and try again.</p>
+            <p className="mt-1 text-danger-strong">Check your connection and try again.</p>
             <Button className="mt-3" variant="outline" onClick={() => void apps.refetch()}>
               Retry
             </Button>
