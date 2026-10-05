@@ -1,3 +1,10 @@
+---
+title: "CLI Reference"
+description: "Install and use @botiverse/hands-cli from local scripts or CI."
+category: "SDKs & API"
+order: 9
+---
+
 # CLI Reference
 
 `@botiverse/hands-cli` is the command-line client for Hands. Use it from local scripts or CI to inspect apps, upload Android builds, and publish releases.

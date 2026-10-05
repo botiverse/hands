@@ -1,3 +1,10 @@
+---
+title: "Public API Reference"
+description: "Public update-check, latest-release, and client integration contracts."
+category: "SDKs & API"
+order: 16
+---
+
 # Public API Reference
 
 > **Interactive API explorer:** the full request/response schemas live in

@@ -1,3 +1,10 @@
+---
+title: "Designing State for Agents"
+description: "How to expose changing state to an agent that polls: exact cursors instead of timestamps, material-change semantics, and what must never reach a cursor."
+category: "For agents"
+order: 5
+---
+
 # Designing state for agents to consume
 
 Hands is agent-native: an agent is expected to poll for what changed and act on

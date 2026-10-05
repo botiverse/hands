@@ -1,3 +1,10 @@
+---
+title: "iOS SDK"
+description: "Feedback tickets and store-then-send crash reporting for iOS (the Hands CocoaPod)."
+category: "SDKs & API"
+order: 11
+---
+
 # iOS SDK
 
 `Hands` is the iOS SDK for Hands: in-app **feedback tickets** and

@@ -1,3 +1,10 @@
+---
+title: "Agent CLI: Feedback Triage"
+description: "Read and triage feedback/crash tickets from the command line with @botiverse/hands-cli."
+category: "For agents"
+order: 3
+---
+
 # Agent CLI: feedback & crash triage
 
 A task-focused walkthrough for agents that need to **read and triage feedback

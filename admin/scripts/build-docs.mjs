@@ -1,4 +1,4 @@
-import { access, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { access, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -46,120 +46,53 @@ const CATEGORY_ORDER = ["Start here", "For agents", "Console", "SDKs & API"];
 // Lucide "external-link" (24x24), used for the OpenAPI explorer nav entry.
 const EXTERNAL_ICON = ` <svg class="ext-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 3h6v6"/><path d="M10 14 21 3"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/></svg>`;
 
-const pages = [
-  {
-    slug: "getting-started",
-    source: "getting-started.md",
-    title: "Getting Started",
-    category: "Start here",
-    description: "Connect Hands to your Raft server from the Marketplace — one install enables human and agent sign-in.",
-  },
-  {
-    slug: "agent-guide",
-    title: "Agent Guide",
-    category: "For agents",
-    description: "How AI agents authenticate (Raft Agent Login, deploy tokens) and run releases, tickets, and shares.",
-    source: "agent-guide.md",
-  },
-  {
-    slug: "agent-cli-feedback",
-    title: "Agent CLI: Feedback Triage",
-    category: "For agents",
-    description: "Read and triage feedback/crash tickets from the command line with @botiverse/hands-cli.",
-    source: "agent-cli-feedback.md",
-  },
-  {
-    slug: "permissions",
-    title: "Roles & Permissions",
-    category: "For agents",
-    description: "What each app role and permission actually grants \u2014 including the six feedback endpoints that accept a permission instead of a role, why a token's reach comes from its binding rather than the permission name, and why permissions add to a role instead of narrowing it.",
-    source: "permissions.md",
-  },
-  {
-    slug: "agent-native-state-delta",
-    title: "Designing State for Agents",
-    category: "For agents",
-    description: "How to expose changing state to an agent that polls: exact cursors instead of timestamps, material-change semantics, and what must never reach a cursor.",
-    source: "agent-native-state-delta.md",
-  },
-  {
-    slug: "ios-testflight",
-    source: "ios-testflight.md",
-    title: "iOS Releases & TestFlight",
-    category: "For agents",
-    description: "How iOS builds reach TestFlight: Hands uploads server-side with the stored ASC credential.",
-  },
-  {
-    slug: "google-play-oauth",
-    source: "google-play-oauth.md",
-    title: "Google Play Authorization",
-    category: "Console",
-    description: "通过 Google 授权连接 Play：创建 Web 客户端、配置、验证和撤销，无需服务账号密钥。",
-  },
-  {
-    slug: "admin-user-guide",
-    title: "Admin User Guide",
-    category: "Console",
-    description: "Using the Hands admin console: apps, releases, builds, access, and troubleshooting.",
-    source: "admin-user-guide.md",
-  },
-  {
-    slug: "cli-reference",
-    title: "CLI Reference",
-    category: "SDKs & API",
-    description: "Install and use @botiverse/hands-cli from local scripts or CI.",
-    source: "cli-reference.md",
-  },
-  {
-    slug: "android-sdk",
-    title: "Android SDK",
-    category: "SDKs & API",
-    description: "In-app update checks, staged rollouts, feedback, and crash reporting for Android.",
-    source: "android-sdk.md",
-  },
-  {
-    slug: "ios-sdk",
-    title: "iOS SDK",
-    category: "SDKs & API",
-    description: "Feedback tickets and store-then-send crash reporting for iOS (the Hands CocoaPod).",
-    source: "ios-sdk.md",
-  },
-  {
-    slug: "ohos-sdk",
-    title: "HarmonyOS SDK",
-    category: "SDKs & API",
-    description: "Feedback tickets and crash reporting for HarmonyOS (the @oranix/quiver ohpm package).",
-    source: "ohos-sdk.md",
-  },
-  {
-    slug: "electron-sdk",
-    title: "Electron SDK",
-    category: "SDKs & API",
-    description: "Crashpad minidump crash reporting for Electron apps (main + renderer) via @botiverse/hands-electron.",
-    source: "electron-sdk.md",
-  },
-  {
-    slug: "server-feedback",
-    title: "Backend & CLI Feedback",
-    category: "SDKs & API",
-    description: "Submit reporter-owned tickets from a trusted backend or CLI, preserve retries, and route replies to your product.",
-    source: "server-feedback.md",
-  },
-  {
-    slug: "feedback-react",
-    title: "React Feedback Inbox",
-    category: "SDKs & API",
-    description: "Embed a reporter-owned ticket inbox and conversation UI with a secure server-side Hands proxy.",
-    source: "feedback-react.md",
-  },
-  {
-    slug: "public-api-reference",
-    title: "Public API Reference",
-    category: "SDKs & API",
-    description: "Public update-check, latest-release, and client integration contracts.",
-    source: "public-api-reference.md",
-  },
-];
+// Frontmatter is the single source of truth for navigation metadata: each
+// page carries its title/description/category/order in the file itself. The
+// pages[] manifest this replaces drifted silently whenever a file was added.
+const FRONTMATTER_RE = /^---\n([\s\S]*?)\n---\n\n?/;
+
+function parseFrontmatter(markdown, source) {
+  const match = FRONTMATTER_RE.exec(markdown);
+  if (!match) {
+    throw new Error(`${source}: missing frontmatter (title/description/category/order)`);
+  }
+  const data = {};
+  for (const line of match[1].split("\n")) {
+    const m = /^([A-Za-z0-9_-]+):\s*(.*)$/.exec(line);
+    if (!m) continue;
+    data[m[1]] = m[2].replace(/^['"]|['"]$/g, "");
+  }
+  for (const key of ["title", "description", "category"]) {
+    if (!data[key]) throw new Error(`${source}: frontmatter needs ${key}`);
+  }
+  const order = Number(data.order);
+  if (!Number.isInteger(order)) throw new Error(`${source}: frontmatter needs a numeric order`);
+  return { ...data, order };
+}
+
+function stripFrontmatter(markdown) {
+  return markdown.replace(FRONTMATTER_RE, "");
+}
+
+const enSources = (await readdir(docsRoot, { withFileTypes: true }))
+  .filter((entry) => entry.isFile() && entry.name.endsWith(".md"))
+  .map((entry) => entry.name);
+
+const pages = [];
+for (const source of enSources) {
+  const markdown = await readFile(path.join(docsRoot, source), "utf8");
+  const meta = parseFrontmatter(markdown, source);
+  pages.push({
+    slug: source.replace(/\.md$/, ""),
+    source,
+    title: meta.title,
+    description: meta.description,
+    category: meta.category,
+    order: meta.order,
+    markdown,
+  });
+}
+pages.sort((a, b) => a.order - b.order || a.source.localeCompare(b.source));
 
 // Resolve translations once: a page is translated when docs/public/zh/<source>
 // exists; its Chinese title is that file's first heading (falling back to the
@@ -167,8 +100,9 @@ const pages = [
 for (const page of pages) {
   const zhPath = path.join(zhRoot, page.source);
   if (await fileExists(zhPath)) {
-    page.zhMarkdown = await readFile(zhPath, "utf8");
-    page.titleZh = /^#\s+(.+)$/m.exec(page.zhMarkdown)?.[1]?.trim() ?? page.title;
+    const zhMarkdown = await readFile(zhPath, "utf8");
+    page.zhMarkdown = zhMarkdown;
+    page.titleZh = parseFrontmatter(zhMarkdown, `zh/${page.source}`).title;
   }
 }
 const hasTranslations = pages.some((page) => page.zhMarkdown);
@@ -571,7 +505,7 @@ for (const page of pages) {
     layout({
       title: page.title,
       description: page.description,
-      body: renderMarkdown(markdown.replace(/^#\s+.+\n/, "")),
+      body: renderMarkdown(stripFrontmatter(markdown).replace(/^#\s+.+\n/, "")),
       activeSlug: page.slug,
       langSwitch: page.zhMarkdown ? { href: `/docs/zh/${page.slug}/` } : undefined,
     }),
@@ -587,7 +521,7 @@ for (const page of pages) {
       layout({
         title: page.titleZh ?? page.title,
         description: page.description,
-        body: renderMarkdown(page.zhMarkdown.replace(/^#\s+.+\n/, ""), "zh"),
+        body: renderMarkdown(stripFrontmatter(page.zhMarkdown).replace(/^#\s+.+\n/, ""), "zh"),
         activeSlug: page.slug,
         lang: "zh",
         langSwitch: { href: `/docs/${page.slug}/` },

@@ -1,3 +1,10 @@
+---
+title: "连接 Google Play"
+description: "通过 Google 授权连接 Play：创建 Web 客户端、配置、验证和撤销，无需服务账号密钥。"
+category: "Console"
+order: 7
+---
+
 # 连接 Google Play
 
 连接你的 Google 账号，通过 Hands 发布 Android 应用。无需服务账号 JSON 密钥。

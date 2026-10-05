@@ -1,3 +1,10 @@
+---
+title: "Roles & Permissions"
+description: "What each app role and permission actually grants — including the six feedback endpoints that accept a permission instead of a role, why a token's reach comes from its binding rather than the permission name, and why permissions add to a role instead of narrowing it."
+category: "For agents"
+order: 4
+---
+
 # App roles and permissions
 
 Access to an app is granted two ways, and they are not interchangeable:

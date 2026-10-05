@@ -1,3 +1,10 @@
+---
+title: "Agent Guide"
+description: "How AI agents authenticate (Raft Agent Login, deploy tokens) and run releases, tickets, and shares."
+category: "For agents"
+order: 2
+---
+
 # Agent Guide
 
 Hands is agent-native: everything an operator can do in the console, an AI
