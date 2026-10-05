@@ -26,6 +26,7 @@ import { currentActorInfo } from "../middleware/auth";
 import type { AdminContext } from "../lib/permissions";
 
 const WEBHOOK_EVENT_TYPES = [
+  "testflight:upload_processing", "testflight:internal_distribution_ready",
   "app_store:version_state_changed", "testflight:external_state_changed", "app_store:build_upload_state_changed",
   "feedback:new", "feedback:comment_created", "feedback:status_changed",
   "crash:new_group", "crash:spike", "error:new_group", "error:spike",

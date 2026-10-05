@@ -317,3 +317,26 @@ with different bytes returns 409. Invalid signatures return 401 and malformed
 supported events return 400. Apple provides manual redelivery in its delivery
 history. Configure the webhook before relying on future notifications; it does
 not replay review changes that happened before it existed.
+
+### Upload processing and internal TestFlight notifications
+
+Apple currently exposes an external TestFlight state webhook, but not an
+internal TestFlight state webhook. For operations performed through Hands,
+Hands also emits two events from Apple's verified operation readback:
+
+- `testflight:upload_processing`: the upload response reports `PROCESSING`.
+- `testflight:internal_distribution_ready`: the internal publish readback
+  reports `IN_BETA_TESTING` and access for every requested internal group.
+
+Subscribe to these events on an app or organization webhook. They use the
+existing `event` / `event_id` / `payload` envelope. The payload includes
+`source: hands_operation_receipt`, `operation_id`, app and Apple resource
+identities, version, build number, platform, state, and an App Store Connect
+link. Internal distribution also includes selected groups and
+`auto_notify_enabled`. This confirms internal availability, not that a tester
+received an email. The operation success receipt and delivery rows commit
+atomically; repeating the same operation receipt does not duplicate deliveries.
+
+These are distinct from Apple callback events. A terminal upload readback
+does not invent an earlier `PROCESSING` transition. Changes made directly in
+App Store Connect are not covered by these Hands operation events.
