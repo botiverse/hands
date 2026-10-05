@@ -327,6 +327,7 @@ export async function handleListReporterFeedback(c: ReporterContext) {
   const decodedCursor = decodeCursor(c.req.query("cursor"));
   if (!decodedCursor) return c.json({ error: "invalid cursor" }, 400);
   const [cursorCreatedAt, cursorId] = decodedCursor;
+  setReporterFailureStage(c, "list_query");
   const ticketStatement = c.env.DB.prepare(
     `SELECT t.id, t.kind, t.status, t.closure_reason, t.duplicate_of_ticket_id,
             t.message, t.version_name, t.version_code,
@@ -356,7 +357,6 @@ export async function handleListReporterFeedback(c: ReporterContext) {
     cursorId,
     limit + 1,
   );
-  setReporterFailureStage(c, "list_query");
   const [ticketResult, unreadResult] = await c.env.DB.batch([
     ticketStatement,
     unreadTotalStatement(c, authorized.principal),

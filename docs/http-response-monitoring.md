@@ -46,3 +46,10 @@ requests. After three minutes without any parsed tail event the collector record
 trigger recycling; treat this as uncertain coverage, not an application failure.
 Use a known request when diagnosing a silent connection. A new heartbeat alone
 cannot close a coverage gap. `HANDS_TAIL_IDLE_MS` overrides the timeout for tests.
+
+Reporter ticket-list GET and route-subject PUT failures additionally record
+`failure_stage` and `failure_code` using fixed labels. These narrow down the
+failing step (such as token lookup or route binding) and distinguish schema,
+constraint, busy, unavailable, other database, type, and unknown errors. They do
+not establish the cause of older 500 responses. Both labels must pass the
+collector's allowlist; exception messages, causes and stack traces are discarded.
