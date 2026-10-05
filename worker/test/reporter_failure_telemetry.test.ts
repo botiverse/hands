@@ -9,7 +9,7 @@ const ctx = { waitUntil() {}, passThroughOnException() {} };
 describe("reporter failure telemetry", () => {
   it.each(["GET", "PUT"])("captures a real %s token-lookup failure without exception or credential text", async (method) => {
     const log = vi.spyOn(console, "info").mockImplementation(() => {});
-    vi.spyOn(console, "error").mockImplementation(() => {});
+    const errorLog = vi.spyOn(console, "error").mockImplementation(() => {});
     const statement = { bind() { return this; } };
     const env = { DB: { prepare: () => statement, batch: async () => {
       throw new Error("D1_ERROR: request failed secret-token", { cause: new Error("Network connection lost secret-body") });
@@ -19,6 +19,12 @@ describe("reporter failure telemetry", () => {
       ...(method === "PUT" ? { body: JSON.stringify({ route_subject: "rfr_v1_secret_subject" }) } : {}),
     }), env, ctx as any);
     expect(r.status).toBe(500);
+    expect(await r.text()).toBe("Internal Server Error");
+    expect(errorLog).not.toHaveBeenCalled();
+    const sealed = log.mock.calls.filter(call => call[0] === "hands_reporter_failure_detail");
+    expect(sealed).toHaveLength(1);
+    expect(JSON.stringify(sealed)).not.toContain("secret");
+    expect(JSON.parse(sealed[0]![1] as string)).toMatchObject({ algorithm: "RSA-OAEP-SHA256+AES-256-GCM", failure_stage: "token_lookup" });
     const records = log.mock.calls.filter(call => call[0] === "hands_http_response").map(call => JSON.parse(call[1] as string));
     expect(records).toHaveLength(1);
     expect(records[0]).toMatchObject({ status: 500, failure_stage: "token_lookup", failure_code: "d1_unavailable" });
