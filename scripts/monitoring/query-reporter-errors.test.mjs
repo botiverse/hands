@@ -55,3 +55,17 @@ test('seals only exception fields, with authenticated encryption for the fixed r
   assert.throws(() => privateDecrypt({ key: wrongKey, padding: constants.RSA_PKCS1_OAEP_PADDING, oaepHash: 'sha256' }, Buffer.from(sealed.encrypted_key, 'base64')));
   assert.throws(() => sealException({ $metadata: { error: 'x'.repeat(65537) } }, publicKey));
 });
+
+test('opt-in seals only errors for the exact request and caps matched records', async () => {
+  const env = { CLOUDFLARE_API_TOKEN: 'private-token', CLOUDFLARE_ACCOUNT_ID: 'a'.repeat(32), HANDS_WORKER_NAME: 'hands-worker', QUERY_FROM_MS: '0', QUERY_TO_MS: '5', QUERY_EXCEPTION_REQUEST_ID: 'a'.repeat(32) };
+  const error = { $metadata: { level: 'error', requestId: 'a'.repeat(32), error: 'private-error' } };
+  const other = { $metadata: { level: 'error', requestId: 'b'.repeat(32), error: 'other-private-error' } };
+  const original = console.log; const output = []; console.log = value => output.push(JSON.parse(value));
+  try {
+    await main(env, async () => Response.json({ success: true, result: { events: { events: [error, other, { $metadata: { level: 'info', requestId: 'a'.repeat(32), message: 'private-info' } }] } } }));
+    assert.equal(output[0].sealed_exceptions.length, 1);
+    assert.equal(output[0].sealed_exceptions[0].request_id, 'a'.repeat(32));
+    assert.ok(!JSON.stringify(output).includes('private-'));
+    await assert.rejects(main(env, async () => Response.json({ success: true, result: { events: { events: Array(11).fill(error) } } })), /Too many exceptions/);
+  } finally { console.log = original; }
+});
