@@ -152,7 +152,7 @@ missing org `viewer` membership and the selected app-scoped role atomically.
 
 Deploy tokens are app-scoped bearer tokens. Create them for automation instead of reusing a human browser session. Copy the token when it is created; Hands only shows the raw token once. Each token records who created it, and actions performed with it are attributed as `deploy-token:<name>@<app>` in audit logs and release provenance.
 
-Roles range from `viewer` (read) through `member` (collaborate — e.g. triage feedback), `publisher` (ship builds/releases), to `admin` (configure, manage members, hold secrets). See the [permissions reference](../rbac-permissions.md) for the full role model and the endpoint→role matrix.
+Roles range from `viewer` (read) through `member` (collaborate — e.g. triage feedback), `publisher` (ship builds/releases), to `admin` (configure, manage members, hold secrets). See the [permissions reference](permissions.md) for the full role model and the endpoint→role matrix.
 
 ## Common Issues
 
@@ -186,7 +186,7 @@ Note: creating an app (`POST /api/apps`) requires an **org member or higher** �
 
 ## Connect Google Play without a service-account key
 
-See the [Google Play authorization setup guide](/docs/google-play-oauth/) for the complete setup and troubleshooting steps.
+See the [Google Play authorization setup guide](google-play-oauth.md) for the complete setup and troubleshooting steps.
 
 For an Android app, open Settings and find Google Play. Enter the package name
 and the internal, closed testing and production track names, then choose

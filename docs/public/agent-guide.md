@@ -376,7 +376,7 @@ Crash tickets carry a grouping signature and, when the build's
 Triage is a **member-level** operation: reading tickets needs `viewer`, and
 updating status/assignee or adding comments needs org **member** (or an app
 `publisher` — e.g. a publisher deploy token). See the
-[permissions reference](../rbac-permissions.md) for the full role matrix.
+[permissions reference](permissions.md) for the full role matrix.
 
 ### Share links
 
