@@ -1,3 +1,4 @@
+import { isTransientD1LookupError } from "../lib/d1_lookup_recovery";
 import { setReporterFailureStage } from "../lib/reporter_failure";
 import type { Context } from "hono";
 import { authenticateReporter, type ReporterPrincipal } from "../lib/reporter_auth";
@@ -182,10 +183,21 @@ async function consumeRateLimit(
   );
   // RETURNING makes the atomic increment its own authoritative limit read;
   // a separate SELECT would add latency and create another observable race.
-  const [reporterResult, integrationResult] = await c.env.DB.batch([
-    upsert(pseudonym.hash),
-    upsert("integration-total"),
-  ]);
+  let results: D1Result[];
+  try {
+    results = await c.env.DB.batch([
+      upsert(pseudonym.hash),
+      upsert("integration-total"),
+    ]);
+  } catch (error) {
+    if (!isTransientD1LookupError(error)) throw error;
+    // An interrupted batch may have committed its increments. Do not replay
+    // counters or continue to feedback reads/writes without a confirmed limit.
+    if (error instanceof Error) c.error = error;
+    c.header("Retry-After", "1");
+    return { ok: false as const, response: c.json({ error: "reporter backend temporarily unavailable", code: "REPORTER_BACKEND_UNAVAILABLE" }, 503) };
+  }
+  const [reporterResult, integrationResult] = results;
   const reporterCount = (reporterResult?.results[0] as { request_count?: number } | undefined)
     ?.request_count ?? 0;
   const integrationCount = (integrationResult?.results[0] as { request_count?: number } | undefined)
