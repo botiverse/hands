@@ -1,0 +1,33 @@
+name: Query Hands Reporter Errors
+on:
+  workflow_dispatch:
+    inputs:
+      from_ms:
+        description: Start Unix millisecond timestamp (at most five minutes per query)
+        required: true
+        type: string
+      to_ms:
+        description: End Unix millisecond timestamp
+        required: true
+        type: string
+permissions:
+  contents: read
+jobs:
+  query:
+    # Reuse the production environment's external main-only branch policy.
+    # This query reads logs; it does not deploy or expose the configured token.
+    environment: reporter-session-production
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '22'
+      - name: Query bounded window and print allowlisted diagnostics
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_BOTIVERSE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_BOTIVERSE_ACCOUNT_ID }}
+          HANDS_WORKER_NAME: ${{ vars.HANDS_WORKER_NAME }}
+          QUERY_FROM_MS: ${{ inputs.from_ms }}
+          QUERY_TO_MS: ${{ inputs.to_ms }}
+        run: node scripts/monitoring/query-reporter-errors.mjs
