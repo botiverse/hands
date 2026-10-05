@@ -15,6 +15,8 @@ import {
   SelectItem,
   SelectTrigger,
   SelectValue,
+  Label,
+  Textarea,
 } from "raft-ui";
 import { createApp } from "../lib/api";
 import { useToast } from "./Toast";
@@ -187,24 +189,24 @@ export function AppCreationWizard({
         <DialogBody>
 
         {/* Step indicator */}
-        <div className="flex items-center gap-2 mb-6 text-xs text-slate-500">
+        <div className="flex items-center gap-2 mb-6 text-xs text-foreground-muted">
           {[1, 2, 3].map((n) => (
             <div key={n} className="flex items-center gap-2">
               <div
                 className={`w-6 h-6 rounded-full flex items-center justify-center font-medium ${
                   n === step
-                    ? "bg-blue-600 text-white"
+                    ? "bg-accent text-foreground-inverse"
                     : n < step
-                      ? "bg-blue-100 text-blue-700"
-                      : "bg-slate-100 text-slate-500"
+                      ? "bg-accent-soft text-accent-strong"
+                      : "bg-fill-muted text-foreground-muted"
                 }`}
               >
                 {n < step ? "✓" : n}
               </div>
-              <span className={n === step ? "font-medium text-slate-700" : ""}>
+              <span className={n === step ? "font-medium text-foreground-strong" : ""}>
                 {n === 1 ? "Basics" : n === 2 ? "Product types" : "Channels"}
               </span>
-              {n < 3 && <span className="text-slate-300 mx-2">→</span>}
+              {n < 3 && <span className="text-foreground-hint mx-2">→</span>}
             </div>
           ))}
         </div>
@@ -214,7 +216,7 @@ export function AppCreationWizard({
             <h2 className="text-lg font-bold mb-4">Create app — Basics</h2>
             <div className="space-y-3">
               <div>
-                <label className="label">Name *</label>
+                <Label>Name *</Label>
                 <Input
                   value={name}
                   onChange={(e) => {
@@ -226,7 +228,7 @@ export function AppCreationWizard({
                 />
               </div>
               <div>
-                <label className="label">Slug (kebab-case, auto-generated from name)</label>
+                <Label>Slug (kebab-case, auto-generated from name)</Label>
                 <Input
                   className="font-mono text-xs"
                   value={slug}
@@ -238,7 +240,7 @@ export function AppCreationWizard({
                 />
               </div>
               <div>
-                <label className="label">Platform *</label>
+                <Label>Platform *</Label>
                 <Select
                   value={platform}
                   onValueChange={(value) => setPlatform(value as AppPlatform)}
@@ -259,9 +261,9 @@ export function AppCreationWizard({
                 </Select>
               </div>
               <div>
-                <label className="label">Description (optional)</label>
-                <textarea
-                  className="input min-h-[60px]"
+                <Label>Description (optional)</Label>
+                <Textarea
+                  className="min-h-[60px]"
                   value={description}
                   onChange={(e) => setDescription(e.target.value)}
                   placeholder="What does this app do?"
@@ -274,23 +276,23 @@ export function AppCreationWizard({
         {step === 2 && (
           <div>
             <h2 className="text-lg font-bold mb-4">Create app — Product types</h2>
-            <p className="text-sm text-slate-500 mb-4">
+            <p className="text-sm text-foreground-muted mb-4">
               These product families will be seeded for the app. They define parsers
               and release flows; concrete platform artifacts are picked later when
               you upload assets for a release.
             </p>
             <div className="space-y-3 max-h-96 overflow-y-auto">
               {DEFAULT_PRODUCT_TYPES.map((pt) => (
-                <div key={pt.name} className="border border-slate-200 rounded-lg p-3">
+                <div key={pt.name} className="border border-line-muted rounded-lg p-3">
                   <div className="flex items-start gap-3">
-                    <div className="mt-0.5 h-5 w-5 rounded-full bg-blue-100 text-blue-700 flex items-center justify-center text-xs font-medium">
+                    <div className="mt-0.5 h-5 w-5 rounded-full bg-accent-soft text-accent-strong flex items-center justify-center text-xs font-medium">
                       ✓
                     </div>
                     <div className="flex-1 min-w-0">
                       <div className="font-medium">{pt.display_name}</div>
-                      <div className="text-xs font-mono text-slate-500">{pt.name}</div>
-                      <div className="text-xs text-slate-600 mt-1">{pt.description}</div>
-                      <div className="text-xs text-slate-500 mt-2">
+                      <div className="text-xs font-mono text-foreground-muted">{pt.name}</div>
+                      <div className="text-xs text-foreground mt-1">{pt.description}</div>
+                      <div className="text-xs text-foreground-muted mt-2">
                         {pt.artifact_note}
                       </div>
                     </div>
@@ -304,25 +306,25 @@ export function AppCreationWizard({
         {step === 3 && (
           <div>
             <h2 className="text-lg font-bold mb-4">Create app — Channels</h2>
-            <p className="text-sm text-slate-500 mb-4">
+            <p className="text-sm text-foreground-muted mb-4">
               Channels are the delivery lanes clients use to fetch updates.
               Hands keeps maturity simple: publish to main for stable users,
               preview for validation, and nightly for fast internal iteration.
             </p>
 
             <div className="pt-1">
-              <div className="text-xs font-medium text-slate-700 mb-2">
+              <div className="text-xs font-medium text-foreground-strong mb-2">
                 Default distribution channels (will be seeded):
               </div>
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
                 {DEFAULT_CHANNELS.map((c) => (
                   <div
                     key={c.slug}
-                    className="border border-slate-200 rounded-md p-2 bg-slate-50"
+                    className="border border-line-muted rounded-md p-2 bg-layer-canvas-muted"
                   >
                     <div className="font-medium text-sm">{c.name}</div>
-                    <div className="text-xs font-mono text-slate-500">{c.slug}</div>
-                    <div className="text-xs text-slate-600 mt-1">
+                    <div className="text-xs font-mono text-foreground-muted">{c.slug}</div>
+                    <div className="text-xs text-foreground mt-1">
                       {c.description}
                     </div>
                   </div>

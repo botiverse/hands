@@ -188,7 +188,7 @@ export function ReleaseAssetUploader(props: Props) {
   return (
     <div>
       {props.variant === "panel" && existing.length > 0 && (
-        <div className="mb-3 text-xs text-slate-500">
+        <div className="mb-3 text-xs text-foreground-muted">
           {existing.length} asset{existing.length === 1 ? "" : "s"} ·{" "}
           {formatBuildAssetSize(totalBytes)} total
         </div>
@@ -198,7 +198,7 @@ export function ReleaseAssetUploader(props: Props) {
         <div className="mb-3 overflow-x-auto">
           <table className="w-full min-w-[760px] text-xs">
             <thead>
-              <tr className="border-b border-slate-100 text-left text-slate-500">
+              <tr className="border-b border-line-hairline text-left text-foreground-muted">
                 <th className="py-1 pr-3 font-normal">Asset</th>
                 <th className="py-1 pr-3 font-normal">Kind</th>
                 <th className="py-1 pr-3 font-normal">Platform</th>
@@ -211,18 +211,18 @@ export function ReleaseAssetUploader(props: Props) {
               {existing.map((a: BuildAsset) => {
                 const filename = buildAssetFilename(a);
                 return (
-                  <tr key={a.id} className="border-b border-slate-50 align-top">
+                  <tr key={a.id} className="border-b border-line-hairline align-top">
                     <td className="min-w-[16rem] py-2 pr-3">
-                      <div className="break-all font-mono text-slate-800">
+                      <div className="break-all font-mono text-foreground-strong">
                         {filename}
                       </div>
-                      <div className="mt-0.5 break-all font-mono text-[10px] text-slate-400">
+                      <div className="mt-0.5 break-all font-mono text-[10px] text-foreground-hint">
                         {a.id}
                       </div>
                     </td>
                     <td className="py-2 pr-3 font-mono">
                       <div>{a.artifact_kind}</div>
-                      <div className="text-[10px] text-slate-400">
+                      <div className="text-[10px] text-foreground-hint">
                         {a.filetype}
                       </div>
                     </td>
@@ -261,8 +261,8 @@ export function ReleaseAssetUploader(props: Props) {
         onClick={() => fileInputRef.current?.click()}
         className={`cursor-pointer rounded border-2 border-dashed p-4 text-center text-xs transition-colors ${
           dragOver
-            ? "border-blue-500 bg-blue-50 text-blue-700"
-            : "border-slate-200 text-slate-500 hover:border-slate-400"
+            ? "border-info bg-info-soft text-info-strong"
+            : "border-line-muted text-foreground-muted hover:border-line-strong"
         }`}
       >
         Drop APK / dmg / deb / exe here, or click to choose.
@@ -357,21 +357,21 @@ export function PendingFileRow({
   ].filter(Boolean).join(" / ");
 
   return (
-    <div className="text-xs bg-slate-50 rounded-sm p-2">
+    <div className="text-xs bg-layer-canvas-muted rounded-sm p-2">
       <div className="flex items-center gap-2">
         <span
           className={`w-2 h-2 rounded-full shrink-0 ${
             pending.status === "done"
-              ? "bg-green-500"
+              ? "bg-success"
               : pending.status === "error"
-                ? "bg-red-500"
-                : "bg-blue-500 animate-pulse"
+                ? "bg-danger"
+                : "bg-info animate-pulse"
           }`}
         />
         <span className="font-mono truncate flex-1 min-w-0">
           {pending.file.name}
         </span>
-        <span className="font-mono text-[11px] text-slate-600 whitespace-nowrap">
+        <span className="font-mono text-[11px] text-foreground whitespace-nowrap">
           {detectedSummary}
         </span>
         {canEdit && (
@@ -386,14 +386,14 @@ export function PendingFileRow({
           </Button>
         )}
         {pending.status === "error" && (
-          <span className="text-red-600 text-[10px] truncate max-w-[20ch]">
+          <span className="text-danger text-[10px] truncate max-w-[20ch]">
             {pending.error}
           </span>
         )}
         <Button
           variant="ghost"
           size="icon-sm"
-          className="text-slate-400 hover:text-red-600 text-xs"
+          className="text-foreground-hint hover:text-danger text-xs"
           onClick={onRemove}
           aria-label="Dismiss"
         >
