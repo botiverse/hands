@@ -48,7 +48,9 @@ export function sealException(event, publicKey) {
   const source = event?.source;
   // Deliberately exclude request, headers, bindings and the Workers envelope.
   const detail = { error: event?.$metadata?.error, message: event?.$metadata?.message,
-    source: typeof source === 'string' ? source : { message: source?.message, error: source?.error, stack: source?.stack, exceptions: source?.exceptions } };
+    source: typeof source === 'string' ? source : { message: source?.message, error: source?.error, stack: source?.stack, exceptions: source?.exceptions },
+    exceptions: event?.$workers?.exceptions, logs: event?.$workers?.logs,
+    structure: { keys: Object.keys(event ?? {}), source_keys: source && typeof source === 'object' ? Object.keys(source) : [], worker_keys: Object.keys(event?.$workers ?? {}) } };
   const plaintext = Buffer.from(JSON.stringify(detail));
   if (plaintext.length > 65536) throw new Error('Exception exceeds sealed diagnostic limit');
   const key = randomBytes(32), iv = randomBytes(12);
@@ -78,7 +80,7 @@ export async function main(env = process.env, fetcher = fetch) {
   const diagnostics = events.map(summarizeEvent).filter(Boolean);
   const reference = env.QUERY_EXCEPTION_REQUEST_ID;
   if (reference && !/^[a-f0-9-]{16,64}$/i.test(reference)) throw new Error('Invalid exception request reference');
-  const matchedErrors = reference ? events.filter(event => requestReference(event).request_id === reference && summarizeEvent(event)) : [];
+  const matchedErrors = reference ? events.filter(event => requestReference(event).request_id === reference) : [];
   if (matchedErrors.length > 10) throw new Error('Too many exceptions for sealed diagnostic');
   const publicKey = reference ? readFileSync(new URL('./reporter-query-public.pem', import.meta.url)) : null;
   const sealed_exceptions = matchedErrors.map(event => sealException(event, publicKey));
