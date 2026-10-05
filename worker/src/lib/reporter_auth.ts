@@ -1,3 +1,4 @@
+import { setReporterFailureStage } from "./reporter_failure";
 import type { Context } from "hono";
 import {
   isFeedbackTokenPermission,
@@ -53,6 +54,7 @@ export async function authenticateReporter(
   }
   if (isReporterSessionToken(bearer)) {
     const verifyStartedAt = performance.now();
+    setReporterFailureStage(c, "session_verify");
     const verified = await verifyReporterSession(c.env, bearer);
     const sessionVerifyDurationMs = Math.max(0, performance.now() - verifyStartedAt);
     if (!verified.ok) {
@@ -86,6 +88,7 @@ export async function authenticateReporter(
       },
     };
   }
+  setReporterFailureStage(c, "token_lookup");
   const token = await loadDeployToken(c.env, bearer);
   if (!token) {
     return { ok: false, response: c.json({ error: "invalid or missing bearer token" }, 401) };

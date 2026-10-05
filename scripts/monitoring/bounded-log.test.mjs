@@ -51,3 +51,18 @@ test('silent live child is recycled and produces an explicit coverage gap', () =
     assert.ok(rows.filter(r => r.kind === 'http_response' && r.status === 400).length >= 2);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
+
+test('collector retains only allowlisted 5xx diagnostics and discards exception payloads', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'hands-diagnostic-'));
+  try {
+    const file = join(dir, 'responses.jsonl');
+    const result = spawnSync(process.execPath, ['scripts/monitoring/collect-http-responses.mjs', 'scripts/monitoring/tail-fixture.mjs', 'unused', file, '0.0002'], { timeout: 5000, env: { ...process.env, HANDS_DIAGNOSTIC_FIXTURE: '1' } });
+    assert.equal(result.status, 0, result.stderr.toString());
+    const raw = readFileSync(file, 'utf8');
+    assert.ok(!raw.includes('private-body'));
+    const rows = raw.trim().split('\n').map(JSON.parse).filter(r => r.kind === 'http_response');
+    assert.equal(rows[0].failure_stage, 'token_lookup');
+    assert.equal(rows[0].failure_code, 'd1_unavailable');
+    for (const row of rows.slice(1)) { assert.ok(!('failure_stage' in row)); assert.ok(!('failure_code' in row)); }
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});

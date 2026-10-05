@@ -1,3 +1,4 @@
+import { reporterFailureDiagnostic } from "../lib/reporter_failure";
 import type { MiddlewareHandler } from "hono";
 
 // Emit final statuses, including validators/auth short-circuiting before handlers.
@@ -10,7 +11,12 @@ export const httpResponseTelemetry: MiddlewareHandler = async (c, next) => {
   const route = [...c.req.matchedRoutes].reverse()
     .find((r) => !r.path.includes("*"))?.path ?? "unmatched";
   const ray = c.req.header("cf-ray") ?? "";
+  const diagnostic = c.res.status >= 500 && (
+    (c.req.method === "GET" && route === "/api/apps/:appId/reporter-feedback")
+    || (c.req.method === "PUT" && route === "/api/apps/:appId/reporter-feedback/route-subject")
+  ) ? reporterFailureDiagnostic(c, c.error) : {};
   console.info("hands_http_response", JSON.stringify({
+    ...diagnostic,
     timestamp: Date.now(),
     method: c.req.method,
     route,

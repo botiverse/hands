@@ -13,6 +13,12 @@ if (!Number.isFinite(idleMs) || idleMs < 100) throw new Error('Invalid tail idle
 const write = boundedLog(output);
 let observedEvents = 0;
 const counts = new Map();
+function diagnosticFields(r) {
+  if (r.status < 500
+    || !['unknown', 'authentication', 'token_lookup', 'session_verify', 'audit_hash', 'rate_limit', 'list_query', 'route_bind', 'route_readback'].includes(r.failure_stage)
+    || !['unknown', 'sqlite_constraint', 'sqlite_schema', 'sqlite_busy', 'd1_unavailable', 'database_error', 'type_error'].includes(r.failure_code)) return {};
+  return { failure_stage: r.failure_stage, failure_code: r.failure_code };
+}
 function flushCounts() {
   const timestamp = Date.now();
   write({ kind: 'tail_heartbeat', timestamp, observed_events: observedEvents }); observedEvents = 0;
@@ -59,7 +65,7 @@ function connect() {
         let r; try { r = typeof log.message[1] === 'string' ? JSON.parse(log.message[1]) : log.message[1]; } catch { continue; }
         if (!r || !Number.isFinite(r.timestamp) || !Number.isFinite(r.duration_ms) || r.duration_ms < 0 || !Number.isInteger(r.status) || r.status < 100 || r.status > 599 || typeof r.route !== 'string' || !/^(unmatched|\/api\/[A-Za-z0-9_:/.-]+)$/.test(r.route)) continue;
         if (r.status < 400) { counts.set(r.status, (counts.get(r.status) ?? 0) + 1); continue; }
-        write({ kind: 'http_response', timestamp: r.timestamp, method: /^(GET|POST|PUT|PATCH|DELETE|OPTIONS|HEAD)$/.test(r.method) ? r.method : 'OTHER', route: r.route, status: r.status, duration_ms: r.duration_ms, request_id: /^[a-f0-9]{16}-[A-Z]{3}$/.test(r.request_id ?? '') ? r.request_id : null });
+        write({ ...diagnosticFields(r), kind: 'http_response', timestamp: r.timestamp, method: /^(GET|POST|PUT|PATCH|DELETE|OPTIONS|HEAD)$/.test(r.method) ? r.method : 'OTHER', route: r.route, status: r.status, duration_ms: r.duration_ms, request_id: /^[a-f0-9]{16}-[A-Z]{3}$/.test(r.request_id ?? '') ? r.request_id : null });
       }
     }
   });
