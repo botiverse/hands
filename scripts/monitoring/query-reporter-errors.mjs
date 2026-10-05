@@ -23,7 +23,8 @@ export function summarizeResponse(event) {
 }
 export function summarizeEvent(event) {
   const metadata = event?.$metadata ?? {};
-  const text = strings([metadata.error, metadata.message, event?.source, event?.$workers]).join('\n');
+  const source = event?.source;
+  const text = strings([metadata.error, metadata.message, typeof source === 'string' ? source : [source?.message, source?.error, source?.stack, source?.exceptions]]).join('\n');
   const isError = metadata.level === 'error' || typeof metadata.error === 'string';
   if (!isError) return null;
   let category = 'unknown';
@@ -36,8 +37,8 @@ export function summarizeEvent(event) {
   const diagnostic = { ...requestReference(event), category, sites: sites.filter(site => text.includes(site)) };
   // Only known repository table/property names survive, never arbitrary SQL,
   // query parameters, message text, URLs, stack traces or request identities.
-  if (category === 'sqlite_schema') diagnostic.schema_objects = tables.filter(table => new RegExp(`\\b${table}\\b`).test(text));
-  if (category === 'type_error') diagnostic.properties = properties.filter(property => text.includes(`'${property}'`) || text.includes(`"${property}"`));
+  if (category === 'sqlite_schema') diagnostic.schema_objects = tables.filter(table => new RegExp(`no such table:\\s*${table}\\b`, 'i').test(text));
+  if (category === 'type_error') diagnostic.properties = properties.filter(property => text.includes(`reading '${property}'`) || text.includes(`reading "${property}"`));
   if (Number.isSafeInteger(event?.timestamp)) diagnostic.timestamp = event.timestamp;
   return diagnostic;
 }

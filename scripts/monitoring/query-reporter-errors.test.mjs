@@ -32,3 +32,8 @@ test('correlates only target failures with fixed origin/route labels', () => {
   assert.ok(!JSON.stringify(row).includes('private'));
   assert.equal(summarizeResponse({ $metadata: { statusCode: 200, url: 'https://hands.build/api/apps/x/reporter-feedback' } }), null);
 });
+
+test('request headers and payload cannot impersonate an exception cause', () => {
+  const row = summarizeEvent({ $metadata: { level: 'error', error: "TypeError: Cannot read properties of undefined (reading 'results')" }, source: { request: { body: 'SQLITE_CONSTRAINT loadDeployToken', authorization: 'Network connection lost' } }, $workers: { request: { body: 'no such table: app_reporter_routes' } } });
+  assert.deepEqual(row, { category: 'type_error', sites: [], properties: ['results'] });
+});
