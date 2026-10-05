@@ -15,7 +15,7 @@ import { useMutation, useQuery } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
 import { acceptInvite, getAuthMe, loginUrl, type Invite } from "../lib/api";
 import { useToast } from "../components/Toast";
-import { Button } from "raft-ui";
+import { Button, Card } from "raft-ui";
 
 export function AcceptInvite({ token }: { token: string }) {
   const navigate = useNavigate();
@@ -67,7 +67,7 @@ export function AcceptInvite({ token }: { token: string }) {
 
   if (loading) {
     return (
-      <div className="max-w-md mx-auto mt-20 p-4 text-center text-slate-500">
+      <div className="max-w-md mx-auto mt-20 p-4 text-center text-foreground-muted">
         Loading invite…
       </div>
     );
@@ -76,9 +76,9 @@ export function AcceptInvite({ token }: { token: string }) {
   if (error) {
     return (
       <div className="max-w-md mx-auto mt-20 p-4">
-        <div className="card p-4! text-red-600 text-sm">
+        <Card className="p-4 text-danger text-sm">
           <strong>Invite error:</strong> {error}
-        </div>
+        </Card>
       </div>
     );
   }
@@ -91,9 +91,9 @@ export function AcceptInvite({ token }: { token: string }) {
 
   return (
     <div className="max-w-md mx-auto mt-20 p-4">
-      <div className="card p-6!">
+      <Card className="p-6">
         <h1 className="text-xl font-bold mb-2">You've been invited</h1>
-        <p className="text-sm text-slate-600 mb-4">
+        <p className="text-sm text-foreground mb-4">
           <strong>{invite.invited_by_display_name ?? "Someone"}</strong> invited
           you to join <strong>{invite.org_name ?? invite.org_id}</strong>
           {invite.app_name ? (
@@ -110,25 +110,25 @@ export function AcceptInvite({ token }: { token: string }) {
         </p>
 
         {invite.message && (
-          <blockquote className="border-l-2 border-slate-200 pl-3 my-4 text-sm text-slate-600 italic">
+          <blockquote className="border-l-2 border-line-muted pl-3 my-4 text-sm text-foreground italic">
             {invite.message}
           </blockquote>
         )}
 
         {isExpired && (
-          <p className="text-sm text-red-600 my-4">
+          <p className="text-sm text-danger my-4">
             This invite expired on{" "}
             {new Date(invite.expires_at).toISOString().slice(0, 16)}Z. Ask the
             inviter to create a new link.
           </p>
         )}
         {isAccepted && (
-          <p className="text-sm text-green-600 my-4">
+          <p className="text-sm text-success-strong my-4">
             ✓ You've already accepted this invite.
           </p>
         )}
         {isRevoked && (
-          <p className="text-sm text-red-600 my-4">
+          <p className="text-sm text-danger my-4">
             This invite was revoked by the inviter.
           </p>
         )}
@@ -157,11 +157,11 @@ export function AcceptInvite({ token }: { token: string }) {
             </Button>
           )}
 
-        <p className="text-xs text-slate-400 mt-4">
+        <p className="text-xs text-foreground-hint mt-4">
           Token: <code>{token.slice(0, 12)}…</code> · Expires{" "}
           {new Date(invite.expires_at).toISOString().slice(0, 16)}Z
         </p>
-      </div>
+      </Card>
     </div>
   );
 }

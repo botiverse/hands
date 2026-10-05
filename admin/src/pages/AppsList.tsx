@@ -9,7 +9,9 @@ import {
 } from "../lib/api";
 import { AppCreationWizard } from "../components/AppCreationWizard";
 import {
+  Badge,
   Button,
+  Card,
   Tooltip,
   TooltipTrigger,
   TooltipContent,
@@ -37,7 +39,7 @@ export function AppsList({ onSelectApp, initialShowCreate }: { onSelectApp: (id:
       <div className="flex items-center justify-between mb-6">
         <h1 className="text-2xl font-bold">Apps</h1>
         <div className="flex items-center gap-3">
-          <label className="flex items-center gap-2 text-sm text-slate-600 cursor-pointer">
+          <label className="flex items-center gap-2 text-sm text-foreground cursor-pointer">
             <Checkbox
               checked={showArchived}
               onCheckedChange={(v) => setShowArchived(Boolean(v))}
@@ -59,7 +61,7 @@ export function AppsList({ onSelectApp, initialShowCreate }: { onSelectApp: (id:
         </div>
       )}
       {error && (
-        <p className="text-red-600">Failed: {(error as Error).message}</p>
+        <p className="text-danger">Failed: {(error as Error).message}</p>
       )}
 
       {visible.length === 0 && !isLoading && (
@@ -113,12 +115,12 @@ function AppRow({ app, onSelect }: { app: App; onSelect: () => void }) {
   const chCount = channels.data?.channels.length ?? 0;
 
   return (
-    <button
-      onClick={onSelect}
-      className={`card text-left transition-colors w-full ${
+    <Card
+      render={<button onClick={onSelect} />}
+      className={`text-left transition-colors w-full ${
         isArchived
-          ? "opacity-60 hover:border-slate-400"
-          : "hover:border-blue-300"
+          ? "opacity-60 hover:border-line-strong"
+          : "hover:border-info"
       }`}
     >
       <div className="flex items-center justify-between">
@@ -126,13 +128,13 @@ function AppRow({ app, onSelect }: { app: App; onSelect: () => void }) {
           <div className="flex items-center gap-2">
             <div className="text-lg font-medium">{app.name}</div>
             {isArchived && (
-              <span className="badge-gray text-xs">📦 Archived</span>
+              <Badge variant="muted">📦 Archived</Badge>
             )}
             {!sameOrg && app.org_id && (
               <Tooltip>
                 <TooltipTrigger
                   render={
-                    <span className="badge-orange text-xs">⚠ other org</span>
+                    <Badge variant="warning">⚠ other org</Badge>
                   }
                 />
                 <TooltipContent>
@@ -141,9 +143,9 @@ function AppRow({ app, onSelect }: { app: App; onSelect: () => void }) {
               </Tooltip>
             )}
           </div>
-          <div className="text-sm text-slate-500 font-mono">{app.slug}</div>
+          <div className="text-sm text-foreground-muted font-mono">{app.slug}</div>
           {app.description && (
-            <div className="text-sm text-slate-600 mt-1 line-clamp-2">
+            <div className="text-sm text-foreground mt-1 line-clamp-2">
               {app.description}
             </div>
           )}
@@ -151,9 +153,9 @@ function AppRow({ app, onSelect }: { app: App; onSelect: () => void }) {
             <Tooltip>
               <TooltipTrigger
                 render={
-                  <span className="badge-blue">
+                  <Badge variant="information">
                     📦 {ptCount} product type{ptCount === 1 ? "" : "s"}
-                  </span>
+                  </Badge>
                 }
               />
               <TooltipContent>Product types (what we ship)</TooltipContent>
@@ -161,9 +163,9 @@ function AppRow({ app, onSelect }: { app: App; onSelect: () => void }) {
             <Tooltip>
               <TooltipTrigger
                 render={
-                  <span className="badge-gray">
+                  <Badge variant="muted">
                     🚀 {chCount} channel{chCount === 1 ? "" : "s"}
-                  </span>
+                  </Badge>
                 }
               />
               <TooltipContent>
@@ -172,8 +174,8 @@ function AppRow({ app, onSelect }: { app: App; onSelect: () => void }) {
             </Tooltip>
           </div>
         </div>
-        <span className="badge-blue ml-3">{app.platform}</span>
+        <Badge variant="information" className="ml-3">{app.platform}</Badge>
       </div>
-    </button>
+    </Card>
   );
 }

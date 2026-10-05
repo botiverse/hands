@@ -8,6 +8,7 @@
  * recorded as `testflight-publish` operations.
  */
 import { useQuery } from "@tanstack/react-query";
+import { Badge, Card } from "raft-ui";
 import {
   listOperations,
   getTestflightPublishStatus,
@@ -59,7 +60,7 @@ export function Testflight({ appId }: { appId: string }) {
     <div>
       <div className="mb-4">
         <h2 className="text-lg font-semibold">TestFlight</h2>
-        <p className="text-xs text-slate-500 mt-1">
+        <p className="text-xs text-foreground-muted mt-1">
           Hands→Apple uploads, processing, beta-group distribution, and review
           state. Configure the key in{" "}
           <a className="underline" href={`/apps/${appId}/settings`}>
@@ -73,9 +74,9 @@ export function Testflight({ appId }: { appId: string }) {
         </p>
       </div>
 
-      {ops.isLoading && <p className="text-slate-500 text-sm">Loading…</p>}
+      {ops.isLoading && <p className="text-foreground-muted text-sm">Loading…</p>}
       {!ops.isLoading && uploads.length === 0 && publishes.length === 0 && (
-        <p className="text-slate-500 text-sm">
+        <p className="text-foreground-muted text-sm">
           No TestFlight activity yet.
         </p>
       )}
@@ -134,17 +135,17 @@ function UploadRow({ appId, op }: { appId: string; op: Operation }) {
   const uploadFailed = op.status === "failed";
 
   return (
-    <div className="card p-3!">
+    <Card className="p-3">
       <div className="flex items-center gap-3 flex-wrap text-sm">
         <span className="font-mono font-medium">
           {input.version_name ? `v${input.version_name}` : "—"}
           {input.version_code ? ` (${input.version_code})` : ""}
         </span>
-        {input.bundle_id && <span className="badge-gray">{input.bundle_id}</span>}
+        {input.bundle_id && <Badge variant="muted">{input.bundle_id}</Badge>}
         <StateBadge uploadFailed={uploadFailed} appleState={appleState} />
         {!uploadFailed && (
           <a
-            className="text-xs underline text-blue-700"
+            className="text-xs underline text-info-strong"
             href={ascTestflightUrl(output.asc_app_id)}
             target="_blank"
             rel="noopener noreferrer"
@@ -152,18 +153,18 @@ function UploadRow({ appId, op }: { appId: string; op: Operation }) {
             View in App Store Connect ↗
           </a>
         )}
-        <span className="text-xs text-slate-500 ml-auto">
+        <span className="text-xs text-foreground-muted ml-auto">
           {new Date(op.created_at).toISOString().slice(0, 16)}Z
         </span>
       </div>
 
       {uploadFailed && op.error && (
-        <p className="mt-1 text-xs text-red-700 font-mono break-all">
+        <p className="mt-1 text-xs text-danger font-mono break-all">
           {friendlyError(op.error)}
         </p>
       )}
       {appleState?.errors && appleState.errors.length > 0 && (
-        <ul className="mt-1 text-xs text-red-700 list-disc pl-5">
+        <ul className="mt-1 text-xs text-danger list-disc pl-5">
           {appleState.errors.map((e, i) => (
             <li key={i}>
               {e.code ? `[${e.code}] ` : ""}
@@ -173,7 +174,7 @@ function UploadRow({ appId, op }: { appId: string; op: Operation }) {
         </ul>
       )}
       {appleState?.state === "COMPLETE" && (
-        <p className="mt-1 text-xs text-green-700">
+        <p className="mt-1 text-xs text-success-strong">
           Upload processed. Ready for group distribution. Inspect the build in{" "}
           <a
             className="underline"
@@ -186,7 +187,7 @@ function UploadRow({ appId, op }: { appId: string; op: Operation }) {
           .
         </p>
       )}
-    </div>
+    </Card>
   );
 }
 
@@ -253,18 +254,18 @@ function PublishRow({ appId, op }: { appId: string; op: Operation }) {
     state === "processing_failed" ||
     state === "blocked_export_compliance" ||
     state === "not_applicable";
-  const badge =
+  const badgeVariant =
     failed || blocked
-      ? "badge-red"
+      ? "danger"
       : state === "testing"
-        ? "badge-green"
-        : "badge-blue";
+        ? "success"
+        : "information";
   const localizationLocales = (current.localizations ?? [])
     .map((item) => item.locale)
     .filter((locale): locale is string => Boolean(locale));
 
   return (
-    <div className="card p-3!">
+    <Card className="p-3">
       <div className="flex items-center gap-3 flex-wrap text-sm">
         <span className="font-mono font-medium">
           {current.version
@@ -273,52 +274,52 @@ function PublishRow({ appId, op }: { appId: string; op: Operation }) {
           {current.build_number ? ` (${current.build_number})` : ""}
         </span>
         {input.distribution && (
-          <span className="badge-gray text-xs">{input.distribution}</span>
+          <Badge variant="muted">{input.distribution}</Badge>
         )}
-        <span className={`${badge} text-xs`}>{state}</span>
+        <Badge variant={badgeVariant}>{state}</Badge>
         {current.beta_review?.state && (
-          <span className="badge-gray text-xs">
+          <Badge variant="muted">
             review: {current.beta_review.state}
-          </span>
+          </Badge>
         )}
         {current.beta_detail?.auto_notify_enabled && (
-          <span className="badge-gray text-xs">auto notify on</span>
+          <Badge variant="muted">auto notify on</Badge>
         )}
-        <span className="text-xs text-slate-500 ml-auto">
+        <span className="text-xs text-foreground-muted ml-auto">
           {new Date(op.created_at).toISOString().slice(0, 16)}Z
         </span>
       </div>
       {current.assigned_groups && current.assigned_groups.length > 0 && (
-        <p className="mt-1 text-xs text-slate-600">
+        <p className="mt-1 text-xs text-foreground">
           Groups: {current.assigned_groups.map((group) => group.name ?? group.id).join(", ")}
         </p>
       )}
       {localizationLocales.length > 0 && (
-        <p className="mt-1 text-xs text-slate-600">
+        <p className="mt-1 text-xs text-foreground">
           What to Test: {localizationLocales.join(", ")}
         </p>
       )}
       {current.expiration_date && (
-        <p className="mt-1 text-xs text-slate-500">
+        <p className="mt-1 text-xs text-foreground-muted">
           Expires: {new Date(current.expiration_date).toISOString().slice(0, 10)}
         </p>
       )}
       {output.notification && (
-        <p className="mt-1 text-xs text-slate-600">
+        <p className="mt-1 text-xs text-foreground">
           Notification action: {output.notification}
         </p>
       )}
       {failed && op.error && (
-        <p className="mt-1 text-xs text-red-700 font-mono break-all">
+        <p className="mt-1 text-xs text-danger font-mono break-all">
           {friendlyError(op.error)}
         </p>
       )}
       {liveStatus.isError && !failed && (
-        <p className="mt-1 text-xs text-red-700">
+        <p className="mt-1 text-xs text-danger">
           Live state refresh failed: {friendlyError(liveStatus.error)}
         </p>
       )}
-    </div>
+    </Card>
   );
 }
 
@@ -330,15 +331,15 @@ function StateBadge({
   appleState: AscUploadState | null | undefined;
 }) {
   if (uploadFailed) {
-    return <span className="badge-red text-xs">upload failed</span>;
+    return <Badge variant="danger">upload failed</Badge>;
   }
   const s = appleState?.state;
-  if (!s) return <span className="badge-gray text-xs">uploaded</span>;
+  if (!s) return <Badge variant="muted">uploaded</Badge>;
   if (s === "COMPLETE")
-    return <span className="badge-green text-xs">complete</span>;
+    return <Badge variant="success">complete</Badge>;
   if (s === "FAILED")
-    return <span className="badge-red text-xs">Apple rejected</span>;
-  return <span className="badge-blue text-xs">Apple processing…</span>;
+    return <Badge variant="danger">Apple rejected</Badge>;
+  return <Badge variant="information">Apple processing…</Badge>;
 }
 
 function friendlyError(raw: unknown): string {
