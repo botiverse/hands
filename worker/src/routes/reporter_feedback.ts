@@ -905,6 +905,9 @@ export async function handleAddReporterComment(c: ReporterContext) {
     }
     throw error;
   }
+  // Kick off only the committed comment deliveries; replay and rollback paths
+  // return above. The cron reaper remains the fallback if enqueue fails.
+  triggerDeliveryNow(c, c.env, now);
   const committedAt = performance.now();
   setCommentTiming(committedAt);
   return c.json({ id: commentId, ticket_id: ticketId, created_at: now, idempotent_replay: false }, 201);
