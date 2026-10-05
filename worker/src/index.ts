@@ -19,7 +19,7 @@ import { OpenAPIHono } from "@hono/zod-openapi";
 import type { Context } from "hono";
 import { cors } from "hono/cors";
 import { httpResponseTelemetry, reporterErrorHandler } from "./middleware/http_response_telemetry";
-import { publicDocAssetPaths } from "./lib/public_docs";
+import { publicDocAssetPaths, publicDocStaticAssetPath } from "./lib/public_docs";
 
 import { authMiddleware, currentActor } from "./middleware/auth";
 import { requireHandsAdmin } from "./middleware/hands_admin";
@@ -673,6 +673,17 @@ bindApp("get", "/api-docs", (c) => c.html(`<!doctype html>
 </html>`));
 async function handlePublicDocs(c: Context<{ Bindings: Env }>) {
   const path = new URL(c.req.url).pathname;
+  // VitePress emits CSS, scripts, fonts and search chunks without Markdown
+  // twins. Fetch only the generated static namespace, retaining SPA fallback
+  // rejection so an absent asset cannot become an HTML success response.
+  const staticPath = publicDocStaticAssetPath(path);
+  if (staticPath) {
+    const asset = await c.env.ASSETS.fetch(new Request(new URL(staticPath, c.req.url), c.req.raw));
+    if (asset.status === 404 || (asset.headers.get("content-type") ?? "").includes("text/html")) {
+      return c.text("Not found", 404);
+    }
+    return asset;
+  }
   // Raw-markdown twins: /docs.md (machine index) and /docs/<slug>.md. The build
   // (admin/scripts/build-docs.mjs) emits these from the same source as the HTML,
   // so they stay in lockstep. Serve the asset as-is (ASSETS 404s for unknown

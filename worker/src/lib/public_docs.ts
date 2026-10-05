@@ -24,3 +24,12 @@ export function publicDocAssetPaths(pathname: string): PublicDocAssetPaths | nul
     markdownTwinPath: `/docs/${relativePath}.md`,
   };
 }
+
+/** Static files emitted by VitePress; never normalize these as article URLs. */
+export function publicDocStaticAssetPath(pathname: string): string | null {
+  if (pathname === "/docs/vp-icons.css" || pathname === "/docs/hashmap.json") return pathname;
+  if (!pathname.startsWith("/docs/assets/")) return null;
+  const segments = pathname.slice("/docs/assets/".length).split("/");
+  if (segments.some((segment) => !segment || segment === "." || segment === "..")) return null;
+  return pathname;
+}
