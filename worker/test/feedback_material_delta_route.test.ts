@@ -291,6 +291,8 @@ describe("feedback material delta production routes", () => {
        VALUES ('app-a', ?, ?, ?, 'v1', 1)`,
     ).run(integrationId, reporterId, `rfr_v1_${"A".repeat(64)}`);
 
+    const sendBatch = vi.fn(async () => undefined);
+    env.WEBHOOK_QUEUE = { sendBatch } as unknown as Queue;
     const reporterContext = (
       input: unknown = {},
       queries: Record<string, string> = {},
@@ -299,6 +301,7 @@ describe("feedback material delta production routes", () => {
       const responseHeaders = new Headers();
       return {
         env,
+        executionCtx,
         req: {
           param: (name: string) => name === "appId"
             ? "app-a"
@@ -324,14 +327,26 @@ describe("feedback material delta production routes", () => {
       body: "reporter follow-up",
       submission_id: "22222222-2222-4222-8222-222222222222",
     };
-    const reporterResponse = await handleAddReporterComment(reporterContext(reporterInput));
+    const reporterForm = new FormData();
+    reporterForm.set("body", reporterInput.body);
+    reporterForm.set("submission_id", reporterInput.submission_id);
+    const reporterResponse = await handleAddReporterComment(reporterContext(reporterForm));
     expect(reporterResponse.status).toBe(201);
+    await Promise.all(pending);
+    const deliveryIds = sqlite.prepare(
+      "SELECT id FROM webhook_deliveries WHERE event_id IN (SELECT id FROM feedback_events WHERE json_extract(payload_json, '$.payload.comment.id') IN (SELECT id FROM feedback_comments WHERE submission_id = ?)) ORDER BY id",
+    ).all(reporterInput.submission_id) as { id: string }[];
+    expect(deliveryIds).toHaveLength(1);
+    expect(sendBatch).toHaveBeenCalledTimes(1);
+    expect(sendBatch).toHaveBeenCalledWith(
+      deliveryIds.map(({ id }) => ({ body: { delivery_id: id } })),
+    );
     expect(material(sqlite, ticketId)).toBe(7);
     expect(sqlite.prepare(
       "SELECT high_water FROM feedback_material_sequence_state WHERE app_id = 'app-a'",
     ).get()).toEqual({ high_water: 7 });
 
-    const replay = await handleAddReporterComment(reporterContext(reporterInput));
+    const replay = await handleAddReporterComment(reporterContext(reporterForm));
     expect(replay.status).toBe(200);
     expect(await replay.json()).toMatchObject({ idempotent_replay: true });
     expect(material(sqlite, ticketId)).toBe(7);
@@ -380,6 +395,8 @@ describe("feedback material delta production routes", () => {
       "SELECT COUNT(*) AS count FROM feedback_comments WHERE submission_id='23232323-2323-4232-8232-232323232323'",
     ).get()).toEqual({ count: 0 });
     expect(rollbackCounts()).toEqual(beforeFailedBatch);
+    await Promise.all(pending);
+    expect(sendBatch).toHaveBeenCalledTimes(1);
     expect(sqlite.prepare(
       "SELECT COUNT(*) AS count FROM feedback_reporter_r2_cleanup",
     ).get()).toEqual({ count: 0 });
