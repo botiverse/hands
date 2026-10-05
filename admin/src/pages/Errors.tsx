@@ -6,6 +6,7 @@
 import { useNavigate } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { listCrashGroups } from "../lib/api";
+import { Card } from "raft-ui";
 
 export function AppErrors({ appId }: { appId: string }) {
   const navigate = useNavigate();
@@ -20,7 +21,7 @@ export function AppErrors({ appId }: { appId: string }) {
       <div className="flex items-center justify-between flex-wrap gap-2">
         <div>
           <h2 className="text-lg font-semibold">Errors</h2>
-          <p className="text-sm text-slate-500">
+          <p className="text-sm text-foreground-muted">
             Errors reported by this app, grouped by signature so recurring
             problems are easier to identify. A signature combines the type of
             error with where it happened in your code.
@@ -28,20 +29,20 @@ export function AppErrors({ appId }: { appId: string }) {
         </div>
       </div>
 
-      <div className="card overflow-x-auto">
-        {groups.isLoading && <p className="text-sm text-slate-500">Loading…</p>}
+      <Card className="overflow-x-auto">
+        {groups.isLoading && <p className="text-sm text-foreground-muted">Loading…</p>}
         {groups.error && (
-          <p className="text-sm text-red-600">
+          <p className="text-sm text-danger">
             Failed to load error groups: {(groups.error as Error).message}
           </p>
         )}
         {!groups.isLoading && rows.length === 0 && (
-          <p className="text-sm text-slate-500">No captured errors yet. 🎉</p>
+          <p className="text-sm text-foreground-muted">No captured errors yet. 🎉</p>
         )}
         {rows.length > 0 && (
           <table className="w-full text-sm">
             <thead>
-              <tr className="text-left text-xs text-slate-500 border-b border-slate-200">
+              <tr className="text-left text-xs text-foreground-muted border-b border-line-muted">
                 <th className="py-2 pr-3">Signature</th>
                 <th className="py-2 pr-3">Count</th>
                 <th className="py-2 pr-3">Devices</th>
@@ -55,7 +56,7 @@ export function AppErrors({ appId }: { appId: string }) {
               {rows.map((g) => (
                 <tr
                   key={g.signature}
-                  className="border-b border-slate-100 last:border-0 cursor-pointer hover:bg-slate-50"
+                  className="border-b border-line-hairline last:border-0 cursor-pointer hover:bg-fill-muted"
                   onClick={() =>
                     navigate(
                       `/apps/${appId}/feedback?kind=error&signature=${encodeURIComponent(g.signature)}`,
@@ -68,13 +69,13 @@ export function AppErrors({ appId }: { appId: string }) {
                   <td className="py-2 pr-3 tabular-nums">{g.count}</td>
                   <td className="py-2 pr-3 tabular-nums">{g.device_count}</td>
                   <td className="py-2 pr-3 tabular-nums">{g.open_count}</td>
-                  <td className="py-2 pr-3 text-xs text-slate-600 max-w-40 truncate">
+                  <td className="py-2 pr-3 text-xs text-foreground max-w-40 truncate">
                     {g.versions ?? "—"}
                   </td>
-                  <td className="py-2 pr-3 text-xs text-slate-600">
+                  <td className="py-2 pr-3 text-xs text-foreground">
                     {new Date(g.first_seen).toLocaleDateString()}
                   </td>
-                  <td className="py-2 pr-3 text-xs text-slate-600">
+                  <td className="py-2 pr-3 text-xs text-foreground">
                     {new Date(g.last_seen).toLocaleString()}
                   </td>
                 </tr>
@@ -82,7 +83,7 @@ export function AppErrors({ appId }: { appId: string }) {
             </tbody>
           </table>
         )}
-      </div>
+      </Card>
     </div>
   );
 }
