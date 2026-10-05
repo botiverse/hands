@@ -1017,17 +1017,17 @@ function BrowserReplace({ to }: { to: string }) {
 
 function CliCallback({ token }: { token: string }) {
   return (
-    <main className="flex min-h-screen items-center justify-center bg-slate-50 px-4">
-      <section className="w-full max-w-xl rounded-md border border-slate-200 bg-white p-6 shadow-xs">
+    <main className="flex min-h-screen items-center justify-center bg-layer-canvas-muted px-4">
+      <section className="w-full max-w-xl rounded-md border border-line-muted bg-layer-panel p-6 shadow-xs">
         <div className="mb-5 flex items-center gap-3">
           <QuiverMark className="h-9 w-9" />
           <div>
-            <h1 className="text-lg font-semibold text-slate-950">Hands CLI login</h1>
-            <p className="text-sm text-slate-500">Signed in with Raft</p>
+            <h1 className="text-lg font-semibold text-foreground-strong">Hands CLI login</h1>
+            <p className="text-sm text-foreground-muted">Signed in with Raft</p>
           </div>
         </div>
         <CopyableCodeRoot className="w-full">
-          <CopyableCode truncate className="font-mono text-xs text-slate-700">
+          <CopyableCode truncate className="font-mono text-xs text-foreground-strong">
             {token}
           </CopyableCode>
           <CopyableCodeAction aria-label="Copy JWT" />
@@ -1043,8 +1043,8 @@ function PublicLanding({ account }: { account?: AuthAccount }) {
   }, []);
 
   return (
-    <div className="min-h-screen bg-slate-50 text-slate-950">
-      <header className="border-b border-slate-200 bg-white">
+    <div className="min-h-screen bg-layer-canvas-muted text-foreground-strong">
+      <header className="border-b border-line-muted bg-layer-panel">
         <div className="mx-auto flex h-16 max-w-6xl items-center justify-between px-4">
           <a href="/" className="inline-flex items-center gap-2 font-medium">
             <QuiverMark className="h-9 w-9 flex-none" />
@@ -1053,13 +1053,13 @@ function PublicLanding({ account }: { account?: AuthAccount }) {
           <nav className="flex items-center gap-2 text-sm">
             <a
               href="/docs"
-              className="hidden h-10 items-center rounded-md px-3 text-slate-600 hover:bg-slate-100 hover:text-slate-950 sm:inline-flex"
+              className="hidden h-10 items-center rounded-md px-3 text-foreground-muted hover:bg-fill-muted hover:text-foreground-strong sm:inline-flex"
             >
               Docs
             </a>
             <a
               href="/api-docs"
-              className="hidden h-10 items-center rounded-md px-3 text-slate-600 hover:bg-slate-100 hover:text-slate-950 sm:inline-flex"
+              className="hidden h-10 items-center rounded-md px-3 text-foreground-muted hover:bg-fill-muted hover:text-foreground-strong sm:inline-flex"
             >
               API explorer
             </a>
@@ -1072,7 +1072,7 @@ function PublicLanding({ account }: { account?: AuthAccount }) {
       </header>
 
       <main>
-        <section className="border-b border-slate-200 bg-white">
+        <section className="border-b border-line-muted bg-layer-panel">
           <div className="mx-auto grid max-w-6xl gap-10 px-4 pt-7 pb-14 md:grid-cols-[1.1fr_0.9fr] md:items-center md:pt-10 md:pb-20">
             <div className="max-w-2xl">
               <Badge className="mb-4">
@@ -1081,7 +1081,7 @@ function PublicLanding({ account }: { account?: AuthAccount }) {
               <h1 className="text-4xl font-bold leading-tight sm:text-5xl">
                 Ship it, roll it out, hear it break, fix it.
               </h1>
-              <p className="mt-5 text-lg leading-8 text-slate-600">
+              <p className="mt-5 text-lg leading-8 text-foreground-muted">
                 Hands runs the whole release loop: builds land as drafts,
                 humans and agents review and publish with bilingual
                 changelogs, staged rollouts meter exposure, and in-app
@@ -1089,13 +1089,13 @@ function PublicLanding({ account }: { account?: AuthAccount }) {
                 deobfuscated, and actionable from the console, CLI, and API.
               </p>
               <div className="mt-6 flex flex-wrap items-center gap-2">
-                <span className="text-xs font-medium text-slate-500">
+                <span className="text-xs font-medium text-foreground-muted">
                   Client stacks:
                 </span>
                 {["Android", "iOS", "HarmonyOS", "Electron", "Tauri"].map((p) => (
                   <span
                     key={p}
-                    className="inline-flex items-center rounded-full border border-slate-200 bg-white px-3 py-1 text-sm font-medium text-slate-600"
+                    className="inline-flex items-center rounded-full border border-line-muted bg-layer-panel px-3 py-1 text-sm font-medium text-foreground-muted"
                   >
                     {p}
                   </span>
@@ -1148,11 +1148,11 @@ function PublicLanding({ account }: { account?: AuthAccount }) {
           />
         </section>
 
-        <section id="integrations" className="border-t border-slate-200 bg-white">
+        <section id="integrations" className="border-t border-line-muted bg-layer-panel">
           <div className="mx-auto max-w-6xl px-4 py-10">
             <div className="max-w-2xl">
               <h2 className="text-xl font-semibold">Choose an integration path.</h2>
-              <p className="mt-2 text-sm leading-6 text-slate-600">
+              <p className="mt-2 text-sm leading-6 text-foreground-muted">
                 Start with the stack you ship, then use the CLI and Console
                 guides to automate draft-first delivery and operate releases.
               </p>
@@ -1190,14 +1190,14 @@ function PublicLanding({ account }: { account?: AuthAccount }) {
           </div>
         </section>
       </main>
-      <footer className="bg-slate-950 text-slate-100">
+      <footer className="bg-layer-hud text-layer-hud-foreground">
         <div className="mx-auto max-w-6xl px-4 py-10">
           <div className="grid grid-cols-2 gap-8 lg:grid-cols-[2fr_repeat(4,1fr)]">
             <div className="col-span-2 lg:col-span-1">
               <a href="/" className="inline-flex items-center gap-2 text-xl font-medium">
                 <QuiverMark className="h-9 w-9 flex-none" />Hands
               </a>
-              <p className="mt-4 max-w-xs text-sm leading-6 text-slate-400">{legalMessage("tagline")}</p>
+              <p className="mt-4 max-w-xs text-sm leading-6 text-layer-hud-foreground/70">{legalMessage("tagline")}</p>
             </div>
             {[
               { title: legalMessage("product"), links: [
@@ -1223,7 +1223,7 @@ function PublicLanding({ account }: { account?: AuthAccount }) {
               ] },
             ].map((group) => (
               <nav key={group.title} aria-label={group.title}>
-                <h2 className="text-xs font-semibold uppercase tracking-widest text-slate-400">{group.title}</h2>
+                <h2 className="text-xs font-semibold uppercase tracking-widest text-layer-hud-foreground/70">{group.title}</h2>
                 <ul className="mt-4 space-y-3 text-sm">
                   {group.links.map((link) => (
                     <li key={link.href}><a href={link.href} className="hover:text-sky-300">{link.label}</a></li>
@@ -1232,7 +1232,7 @@ function PublicLanding({ account }: { account?: AuthAccount }) {
               </nav>
             ))}
           </div>
-          <div className="mt-8 border-t border-slate-800 pt-6 text-xs text-slate-400">
+          <div className="mt-8 border-t border-layer-hud-foreground/15 pt-6 text-xs text-layer-hud-foreground/70">
             © {new Date().getFullYear()} Botiverse, Inc. {legalMessage("copyright")}
           </div>
         </div>
@@ -1303,17 +1303,19 @@ function LandingTerminal() {
   const [active, setActive] = useState(DEFAULT_TERMINAL_DEMO.key);
   const demo =
     TERMINAL_DEMOS.find((d) => d.key === active) ?? DEFAULT_TERMINAL_DEMO;
+  // Status accents on the fixed dark pane keep literal hues (theme-independent
+  // decoration, same policy as chart categorical colors — gzj, b529da37).
   const toneClass = (tone?: TerminalLine["tone"]) =>
     tone === "ok"
       ? "text-emerald-300"
       : tone === "warn"
         ? "text-amber-300"
         : tone === "muted"
-          ? "text-slate-500"
-          : "text-slate-200";
+          ? "text-layer-hud-foreground/50"
+          : "text-layer-hud-foreground";
   return (
-    <div className="min-w-0 max-w-full overflow-hidden rounded-lg border border-slate-200 bg-slate-950 p-5 text-sm text-slate-100 shadow-xs">
-      <div className="mb-4 flex items-center justify-between border-b border-slate-700 pb-3">
+    <div className="min-w-0 max-w-full overflow-hidden rounded-lg border border-line-muted bg-layer-hud p-5 text-sm text-layer-hud-foreground shadow-xs">
+      <div className="mb-4 flex items-center justify-between border-b border-layer-hud-foreground/20 pb-3">
         <div className="flex flex-wrap gap-1">
           {TERMINAL_DEMOS.map((d) => (
             <Button
@@ -1324,13 +1326,14 @@ function LandingTerminal() {
               className={
                 d.key === active
                   ? "bg-white text-slate-900 hover:bg-white hover:text-slate-900"
-                  : "text-slate-400 hover:bg-white/10 hover:text-slate-100"
+                  : "text-layer-hud-foreground/70 hover:bg-layer-hud-foreground/10 hover:text-layer-hud-foreground"
               }
             >
               {d.label}
             </Button>
           ))}
         </div>
+        {/* Accent chip on the dark pane: hue stays literal by the same policy. */}
         <span className="rounded-sm bg-sky-400/15 px-2 py-0.5 text-xs text-sky-200">
           {demo.badge}
         </span>
@@ -1348,9 +1351,9 @@ function LandingTerminal() {
 
 function LandingFeature({ title, body }: { title: string; body: string }) {
   return (
-    <div className="rounded-lg border border-slate-200 bg-white p-4 shadow-xs">
+    <div className="rounded-lg border border-line-muted bg-layer-panel p-4 shadow-xs">
       <h2 className="text-sm font-semibold">{title}</h2>
-      <p className="mt-2 text-sm leading-6 text-slate-600">{body}</p>
+      <p className="mt-2 text-sm leading-6 text-foreground-muted">{body}</p>
     </div>
   );
 }
@@ -1365,27 +1368,27 @@ function LandingIntegrationCard({
   links: Array<{ label: string; detail: string; href: string }>;
 }) {
   return (
-    <div className="rounded-xl border border-slate-200 bg-slate-50 p-5">
-      <h3 className="text-sm font-semibold text-slate-950">{title}</h3>
-      <p className="mt-2 min-h-12 text-sm leading-6 text-slate-600">{body}</p>
-      <div className="mt-4 divide-y divide-slate-200 border-y border-slate-200">
+    <div className="rounded-xl border border-line-muted bg-layer-canvas-muted p-5">
+      <h3 className="text-sm font-semibold text-foreground-strong">{title}</h3>
+      <p className="mt-2 min-h-12 text-sm leading-6 text-foreground-muted">{body}</p>
+      <div className="mt-4 divide-y divide-line-muted border-y border-line-muted">
         {links.map((link) => (
           <a
             key={link.href}
-            className="group flex items-center justify-between gap-3 py-3 text-sm hover:text-sky-700"
+            className="group flex items-center justify-between gap-3 py-3 text-sm hover:text-info-strong"
             href={link.href}
           >
             <span className="min-w-0">
-              <span className="block font-medium text-slate-900 group-hover:text-sky-700">
+              <span className="block font-medium text-foreground-strong group-hover:text-info-strong">
                 {link.label}
               </span>
-              <span className="mt-0.5 block text-xs leading-5 text-slate-500">
+              <span className="mt-0.5 block text-xs leading-5 text-foreground-muted">
                 {link.detail}
               </span>
             </span>
             <span
               aria-hidden="true"
-              className="flex-none text-base text-slate-400 transition-transform group-hover:translate-x-0.5 group-hover:text-sky-600"
+              className="flex-none text-base text-foreground-hint transition-transform group-hover:translate-x-0.5 group-hover:text-info-strong"
             >
               →
             </span>
