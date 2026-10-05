@@ -32,8 +32,8 @@ importers:
         specifier: ^1.23.0
         version: 1.23.0(react@19.2.7)
       raft-ui:
-        specifier: ^0.5.18
-        version: 0.5.18(@types/react@19.2.17)(react-dom@19.2.7(react@19.2.7))(react@19.2.7)(tailwindcss@4.3.2)
+        specifier: ^0.5.20
+        version: 0.5.20(@types/react@19.2.17)(react-dom@19.2.7(react@19.2.7))(react@19.2.7)(tailwindcss@4.3.2)
       react:
         specifier: ^19.2.7
         version: 19.2.7
@@ -2610,8 +2610,8 @@ packages:
       react: ^19
       react-dom: ^19
 
-  raft-ui@0.5.18:
-    resolution: {integrity: sha512-y0BCxSlq1HaU86r2i/T5qIqt50pkN78fpxCDneYqcIqkqY9bID+8iXsaNTkrMuUB0uf0FbZ4u7AzP7R3YgOP0w==}
+  raft-ui@0.5.20:
+    resolution: {integrity: sha512-UiVyeQ9v1QAV7Uvo29vs/nLLULf1fkNZdqxjCuMuJhUth+gfLEbrrX60eXfhx3PaGDvDdD9qwO6J3wvJDdLvHQ==}
     peerDependencies:
       react: ^19
       react-dom: ^19
@@ -5591,7 +5591,7 @@ snapshots:
       - date-fns
       - tailwindcss
 
-  raft-ui@0.5.18(@types/react@19.2.17)(react-dom@19.2.7(react@19.2.7))(react@19.2.7)(tailwindcss@4.3.2):
+  raft-ui@0.5.20(@types/react@19.2.17)(react-dom@19.2.7(react@19.2.7))(react@19.2.7)(tailwindcss@4.3.2):
     dependencies:
       '@base-ui/react': 1.8.0(@types/react@19.2.17)(react-dom@19.2.7(react@19.2.7))(react@19.2.7)
       '@dnd-kit/core': 6.3.1(react-dom@19.2.7(react@19.2.7))(react@19.2.7)
