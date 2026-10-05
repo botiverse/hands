@@ -38,6 +38,7 @@ import {
   AlertDialogAction,
   Button,
   Input,
+  Label,
 } from "raft-ui";
 
 export interface ConfirmActionDialogProps {
@@ -112,7 +113,7 @@ export function ConfirmActionDialog({
               {objectLabel}
             </span>
             {objectHint && (
-              <span className="min-w-0 max-w-full break-words font-mono text-xs text-slate-500">
+              <span className="min-w-0 max-w-full break-words font-mono text-xs text-foreground-muted">
                 {objectHint}
               </span>
             )}
@@ -121,12 +122,12 @@ export function ConfirmActionDialog({
 
         <AlertDialogBody className="max-h-[70vh] overflow-y-auto">
           {objectSummary && (
-            <div className="mb-3 p-3 border border-slate-200 rounded-sm bg-slate-50 text-xs">
+            <div className="mb-3 p-3 border border-line-muted rounded-sm bg-layer-inset text-xs">
               {objectSummary}
             </div>
           )}
 
-          <div className="text-sm text-slate-600 mb-4 leading-relaxed">
+          <div className="text-sm text-foreground-muted mb-4 leading-relaxed">
             {body}
           </div>
 
@@ -182,13 +183,13 @@ export function TypedConfirmField({
 }) {
   return (
     <div className="mb-3">
-      <label className="label">
+      <Label>
         Type{" "}
-        <code className="font-mono text-xs bg-slate-100 px-1 py-0.5 rounded-sm">
+        <code className="font-mono text-xs bg-layer-inset px-1 py-0.5 rounded-sm">
           {required}
         </code>{" "}
         to confirm
-      </label>
+      </Label>
       <Input
         value={value}
         onChange={(e) => onChange(e.target.value)}

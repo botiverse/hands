@@ -45,6 +45,7 @@ import {
   Button,
   Card,
   Input,
+  Label,
   Select,
   SelectTrigger,
   SelectValue,
@@ -403,7 +404,7 @@ function AddAppServerGrantDialog({
             }}
           >
             <div>
-              <label className="label">Server slug</label>
+              <Label>Server slug</Label>
               <Input
                 value={serverSlug}
                 onChange={(e) => setServerSlug(e.target.value)}
@@ -412,7 +413,7 @@ function AddAppServerGrantDialog({
               />
             </div>
             <div>
-              <label className="label">Server ID</label>
+              <Label>Server ID</Label>
               <Input
                 value={serverId}
                 onChange={(e) => setServerId(e.target.value)}
@@ -956,7 +957,7 @@ function AddAppDeployTokenDialog({
                 }}
               >
                 <div>
-                  <label className="label">Name</label>
+                  <Label>Name</Label>
                   <Input
                     value={name}
                     onChange={(e) => setName(e.target.value)}
@@ -966,7 +967,7 @@ function AddAppDeployTokenDialog({
                 </div>
                 <div className="grid grid-cols-2 gap-3">
                   <div>
-                    <label className="label">Role bundle</label>
+                    <Label>Role bundle</Label>
                     <Select
                       items={{ publisher: "publisher", viewer: "viewer", none: "No role" }}
                       value={role}
@@ -997,7 +998,7 @@ function AddAppDeployTokenDialog({
                     </Select>
                   </div>
                   <div>
-                    <label className="label">Expires</label>
+                    <Label>Expires</Label>
                     <Select
                       items={{ "30d": "30 days", "90d": "90 days", "365d": "1 year", never: "Never" }}
                       value={expiry}
@@ -1204,7 +1205,7 @@ function AddAppMemberDialog({
           >
             {candidates.length > 0 ? (
               <div>
-                <label className="label">Choose someone from this organization</label>
+                <Label>Choose someone from this organization</Label>
                 <Select
                   items={{
                     "": "— select —",
@@ -1244,7 +1245,7 @@ function AddAppMemberDialog({
               </p>
             )}
             <div className="border-t border-line-muted pt-3">
-              <label className="label">Add one account from another Raft server</label>
+              <Label>Add one account from another Raft server</Label>
               <Input
                 value={accountId}
                 onChange={(e) => {
@@ -1264,7 +1265,7 @@ function AddAppMemberDialog({
               </p>
             </div>
             <div>
-              <label className="label">Role</label>
+              <Label>Role</Label>
               <Select
                 items={{ admin: "admin", publisher: "publisher", viewer: "viewer" }}
                 value={role}

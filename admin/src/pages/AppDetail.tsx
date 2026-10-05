@@ -4,6 +4,7 @@ import {
   CardContent,
   Checkbox,
   Input,
+  Label,
   Switch,
   Textarea,
   Select,
@@ -1438,7 +1439,7 @@ function CreateChannelDialog({
             className="space-y-3"
           >
             <div>
-              <label className="label">Slug</label>
+              <Label>Slug</Label>
               <Input
                 value={slug}
                 onChange={(e) => setSlug(e.target.value)}
@@ -1446,7 +1447,7 @@ function CreateChannelDialog({
               />
             </div>
             <div>
-              <label className="label">Name</label>
+              <Label>Name</Label>
               <Input
                 value={name}
                 onChange={(e) => setName(e.target.value)}
@@ -1454,7 +1455,7 @@ function CreateChannelDialog({
               />
             </div>
             <div>
-              <label className="label">Bundle ID override (optional)</label>
+              <Label>Bundle ID override (optional)</Label>
               <Input
                 className="font-mono text-xs"
                 value={bundleId}
@@ -1634,7 +1635,7 @@ function EditChannelDialog({
               className="space-y-3"
             >
               <div>
-                <label className="label">Slug (immutable)</label>
+                <Label>Slug (immutable)</Label>
                 <Input
                   className="font-mono text-xs bg-layer-inset"
                   value={channel.slug}
@@ -1642,7 +1643,7 @@ function EditChannelDialog({
                 />
               </div>
               <div>
-                <label className="label">Name</label>
+                <Label>Name</Label>
                 <Input
                   value={name}
                   onChange={(e) => setName(e.target.value)}
@@ -1650,7 +1651,7 @@ function EditChannelDialog({
                 />
               </div>
               <div>
-                <label className="label">Bundle ID override</label>
+                <Label>Bundle ID override</Label>
                 <Input
                   className="font-mono text-xs"
                   value={bundleId}
@@ -1659,7 +1660,7 @@ function EditChannelDialog({
                 />
               </div>
               <div>
-                <label className="label">Download password</label>
+                <Label>Download password</Label>
                 <Input
                   type="password"
                   value={password}
@@ -1668,7 +1669,7 @@ function EditChannelDialog({
                 />
               </div>
               <div>
-                <label className="label">Git URL</label>
+                <Label>Git URL</Label>
                 <Input
                   className="font-mono text-xs"
                   value={gitUrl}

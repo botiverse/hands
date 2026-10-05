@@ -14,10 +14,10 @@ function CopyableAssetValue({
 }) {
   return (
     <>
-      <dt className="text-slate-500">{label}</dt>
+      <dt className="text-foreground-muted">{label}</dt>
       <dd className="min-w-0">
         <CopyableCodeRoot size="sm" className="w-full">
-          <CopyableCode className="min-w-0 font-mono text-[11px] text-slate-700">
+          <CopyableCode className="min-w-0 font-mono text-[11px] text-foreground-strong">
             {value}
           </CopyableCode>
           <CopyableCodeAction aria-label={`Copy ${label}`} />
@@ -30,8 +30,8 @@ function CopyableAssetValue({
 function AssetValue({ label, value }: { label: string; value: string }) {
   return (
     <>
-      <dt className="text-slate-500">{label}</dt>
-      <dd className="min-w-0 break-words font-mono text-slate-800">{value}</dd>
+      <dt className="text-foreground-muted">{label}</dt>
+      <dd className="min-w-0 break-words font-mono text-foreground-strong">{value}</dd>
     </>
   );
 }

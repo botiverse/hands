@@ -52,7 +52,7 @@ export function Modal({
                 variant="ghost"
                 size="icon-sm"
                 aria-label="Close"
-                className="text-slate-400 hover:text-slate-700 -mr-2 -mt-1"
+                className="text-foreground-hint hover:text-foreground-strong -mr-2 -mt-1"
               />
             }
           >
