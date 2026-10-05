@@ -66,5 +66,5 @@ export default defineDocsConfig({
   search: true,
   coverage: { mode: 'report' },
   artifacts: { llms: false, headers: false },
-  output: { contentDir: 'docs/public', outDir: 'admin/public/docs' },
+  output: { contentDir: 'docs/public', outDir: 'admin/public/docs', contentExclude: ['agc-market-packages'] },
 })

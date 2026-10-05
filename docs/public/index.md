@@ -1,8 +1,6 @@
 ---
 title: "Documentation"
 description: "Product, admin, CLI, and API documentation for Hands."
-category: "Start here"
-order: 1
 ---
 
 # Hands Documentation
