@@ -20,17 +20,17 @@ const MarkdownPreview = lazy(() =>
 
 function MarkdownContent({ markdown }: { markdown: string }) {
   if (!markdown.trim()) {
-    return <p className="text-sm text-slate-400">No release notes for this language.</p>;
+    return <p className="text-sm text-foreground-hint">No release notes for this language.</p>;
   }
   return (
     <div data-color-mode="light">
-      <Suspense fallback={<p className="text-sm text-slate-400">Loading preview…</p>}>
+      <Suspense fallback={<p className="text-sm text-foreground-hint">Loading preview…</p>}>
         <MarkdownPreview
           source={markdown}
           skipHtml
           allowedElements={PUBLIC_MARKDOWN_ELEMENTS}
           unwrapDisallowed
-          className="!bg-transparent !text-sm !text-slate-700"
+          className="!bg-transparent !text-sm !text-foreground-strong"
           style={{ padding: 0, overflowWrap: "anywhere" }}
         />
       </Suspense>
@@ -141,8 +141,8 @@ export function ChangelogEditor({
   };
 
   return (
-    <div className="overflow-hidden rounded-lg border border-slate-300 bg-white shadow-xs">
-      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 bg-slate-50 px-2 py-2">
+    <div className="overflow-hidden rounded-lg border border-line-strong bg-layer-panel shadow-xs">
+      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-line-muted bg-layer-canvas-muted px-2 py-2">
         <LanguageTabs document={document} activeLanguage={activeLanguage} onChange={setActiveLanguage} />
         <div className="flex shrink-0 items-center gap-1">
           <Button type="button" size="sm" variant={mode === "edit" ? "default" : "ghost"} onClick={() => setMode("edit")}>Edit</Button>
@@ -152,7 +152,7 @@ export function ChangelogEditor({
 
       {mode === "edit" ? (
         <div data-color-mode="light" className="changelog-markdown-editor">
-          <Suspense fallback={<div className="px-3 py-4 text-sm text-slate-400" style={{ minHeight }}>Loading editor…</div>}>
+          <Suspense fallback={<div className="px-3 py-4 text-sm text-foreground-hint" style={{ minHeight }}>Loading editor…</div>}>
             <MarkdownEditor
               value={markdown}
               onChange={(next) => setMarkdown(next ?? "")}
@@ -181,10 +181,10 @@ export function ChangelogEditor({
         </div>
       )}
 
-      <div className="flex flex-wrap items-center justify-between gap-2 border-t border-slate-200 bg-slate-50 px-2 py-2">
+      <div className="flex flex-wrap items-center justify-between gap-2 border-t border-line-muted bg-layer-canvas-muted px-2 py-2">
         <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
           <Input
-            className="max-w-44 bg-white text-xs"
+            className="max-w-44 bg-layer-panel text-xs"
             value={newLanguage}
             onChange={(event) => setNewLanguage(event.target.value)}
             onKeyDown={(event) => {
@@ -200,16 +200,16 @@ export function ChangelogEditor({
             Add language
           </Button>
           {document.localized && document.entries.length > 1 && (
-            <Button type="button" size="sm" variant="ghost" className="text-xs text-red-600" onClick={removeLanguage}>
+            <Button type="button" size="sm" variant="ghost" className="text-xs text-danger" onClick={removeLanguage}>
               Remove {activeLanguage}
             </Button>
           )}
         </div>
-        <span className="shrink-0 text-xs text-slate-400">
+        <span className="shrink-0 text-xs text-foreground-hint">
           {document.localized ? `${document.entries.length} languages` : "single language"} · {Array.from(markdown).length} chars
         </span>
       </div>
-      <p className="border-t border-slate-200 bg-white px-3 py-2 text-[11px] text-slate-400">
+      <p className="border-t border-line-muted bg-layer-panel px-3 py-2 text-[11px] text-foreground-hint">
         Public preview supports paragraphs, bullets, <strong>**bold**</strong>, and <code>`code`</code>. Raw HTML and unsupported elements are not shown.
       </p>
     </div>
