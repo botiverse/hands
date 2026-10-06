@@ -124,8 +124,8 @@ importers:
   container:
     dependencies:
       '@hono/node-server':
-        specifier: ^1.13.7
-        version: 1.19.14(hono@4.13.7)
+        specifier: 1.19.17
+        version: 1.19.17(hono@4.13.7)
       hono:
         specifier: 4.13.7
         version: 4.13.7
@@ -1100,8 +1100,8 @@ packages:
   '@floating-ui/utils@0.2.12':
     resolution: {integrity: sha512-HpCo8tmWzLVad5s2d19EhAz5zqrrQ6s69qd6moPMQvkOuSwDT1YgRfWSVuc4ennqrgv3OHppiOGMQ7oC13yIww==}
 
-  '@hono/node-server@1.19.14':
-    resolution: {integrity: sha512-GwtvgtXxnWsucXvbQXkRgqksiH2Qed37H9xHZocE5sA3N8O8O8/8FA3uclQXxXVzc9XBZuEOMK7+r02FmSpHtw==}
+  '@hono/node-server@1.19.17':
+    resolution: {integrity: sha512-dSneS5qhiauZWGDCeK4o695Xd9nUNjviSZCMQrj10eetr8Uln1ucn6bbphOM6UynAMMtNIzZNSpL9vnASJwrPQ==}
     engines: {node: '>=18.14.1'}
     peerDependencies:
       hono: 4.13.7
@@ -4243,7 +4243,7 @@ snapshots:
 
   '@floating-ui/utils@0.2.12': {}
 
-  '@hono/node-server@1.19.14(hono@4.13.7)':
+  '@hono/node-server@1.19.17(hono@4.13.7)':
     dependencies:
       hono: 4.13.7
 
