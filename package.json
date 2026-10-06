@@ -33,7 +33,10 @@
     "overrides": {
       "undici": "7.29.1",
       "brace-expansion": "1.1.21",
-      "electron": "43.5.0"
+      "electron": "43.5.0",
+      "tinypool": "2.1.2",
+      "source-map-js": "1.2.2",
+      "hono": "4.13.7"
     }
   }
 }
