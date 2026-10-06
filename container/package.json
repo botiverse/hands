@@ -11,7 +11,7 @@
     "test": "tsx --test src/native-symbols.test.ts"
   },
   "dependencies": {
-    "@hono/node-server": "^1.13.7",
+    "@hono/node-server": "1.19.17",
     "hono": "^4.13.7"
   },
   "devDependencies": {
