@@ -11,15 +11,17 @@ import { AppCreationWizard } from "../components/AppCreationWizard";
 import {
   Badge,
   Button,
-  Card,
   Tooltip,
   TooltipTrigger,
   TooltipContent,
   Checkbox,
   EmptyState,
+  EmptyStateContent,
+  EmptyStateIcon,
   EmptyStateTitle,
   Skeleton,
 } from "raft-ui";
+import { AlertTriangle, Archive, LayoutGrid, Package, Rocket } from "lucide-react";
 
 export function AppsList({ onSelectApp, initialShowCreate }: { onSelectApp: (id: string) => void; initialShowCreate?: boolean }) {
   const qc = useQueryClient();
@@ -66,6 +68,10 @@ export function AppsList({ onSelectApp, initialShowCreate }: { onSelectApp: (id:
 
       {visible.length === 0 && !isLoading && (
         <EmptyState>
+          <EmptyStateContent>
+          <EmptyStateIcon>
+            <LayoutGrid aria-hidden="true" />
+          </EmptyStateIcon>
           <EmptyStateTitle>
             {showArchived
               ? "No apps yet. Click \"+ New app\" to create your first one."
@@ -73,10 +79,11 @@ export function AppsList({ onSelectApp, initialShowCreate }: { onSelectApp: (id:
                 ? "All apps are archived. Toggle \"Show archived\" to view them."
                 : "No apps yet. Click \"+ New app\" to create your first one."}
           </EmptyStateTitle>
+          </EmptyStateContent>
         </EmptyState>
       )}
 
-      <div className="grid gap-3">
+      <div>
         {visible.map((app) => (
           <AppRow key={app.id} app={app} onSelect={() => onSelectApp(app.id)} />
         ))}
@@ -115,26 +122,28 @@ function AppRow({ app, onSelect }: { app: App; onSelect: () => void }) {
   const chCount = channels.data?.channels.length ?? 0;
 
   return (
-    <Card
-      render={<button onClick={onSelect} />}
-      className={`text-left transition-colors w-full ${
-        isArchived
-          ? "opacity-60 hover:border-line-strong"
-          : "hover:border-info"
+    <button
+      onClick={onSelect}
+      className={`w-full rounded-md border-t border-line-hairline px-3 pt-4 pb-3 text-left transition-colors hover:bg-fill-muted/60 ${
+        isArchived ? "opacity-60" : ""
       }`}
     >
       <div className="flex items-center justify-between">
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2">
-            <div className="text-lg font-medium">{app.name}</div>
+            <div className="text-base font-medium">{app.name}</div>
             {isArchived && (
-              <Badge variant="muted">📦 Archived</Badge>
+              <Badge variant="muted">
+                <Archive className="size-3.5" aria-hidden="true" /> Archived
+              </Badge>
             )}
             {!sameOrg && app.org_id && (
               <Tooltip>
                 <TooltipTrigger
                   render={
-                    <Badge variant="warning">⚠ other org</Badge>
+                    <Badge variant="warning">
+                      <AlertTriangle className="size-3.5" aria-hidden="true" /> other org
+                    </Badge>
                   }
                 />
                 <TooltipContent>
@@ -154,7 +163,7 @@ function AppRow({ app, onSelect }: { app: App; onSelect: () => void }) {
               <TooltipTrigger
                 render={
                   <Badge variant="information">
-                    📦 {ptCount} product type{ptCount === 1 ? "" : "s"}
+                    <Package className="size-3.5" aria-hidden="true" /> {ptCount} product type{ptCount === 1 ? "" : "s"}
                   </Badge>
                 }
               />
@@ -164,7 +173,7 @@ function AppRow({ app, onSelect }: { app: App; onSelect: () => void }) {
               <TooltipTrigger
                 render={
                   <Badge variant="muted">
-                    🚀 {chCount} channel{chCount === 1 ? "" : "s"}
+                    <Rocket className="size-3.5" aria-hidden="true" /> {chCount} channel{chCount === 1 ? "" : "s"}
                   </Badge>
                 }
               />
@@ -176,6 +185,6 @@ function AppRow({ app, onSelect }: { app: App; onSelect: () => void }) {
         </div>
         <Badge variant="information" className="ml-3">{app.platform}</Badge>
       </div>
-    </Card>
+    </button>
   );
 }

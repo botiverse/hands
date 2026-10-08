@@ -10,6 +10,22 @@
    dividers that follow Raft's hard-edged Brutal recipe. */
 @custom-variant theme-brutal (&:where([data-theme="brutal"], [data-theme="brutal"] *));
 
+/* Chart series tokens. Light surfaces use darkened amber/green so every
+   series keeps >= 3:1 against the canvas; dark surfaces keep the brighter
+   originals (validated 3.5-9.6:1). Blue/red pass on both. */
+:root {
+  --chart-feedback: #2a78d6;
+  --chart-bug: #047857;
+  --chart-crash: #a16207;
+  --chart-error: #e05252;
+}
+.dark {
+  --chart-feedback: #2a78d6;
+  --chart-bug: #1baf7a;
+  --chart-crash: #eda100;
+  --chart-error: #e05252;
+}
+
 /* Sidebar navigation scroller: subtle themed scrollbar, present only on real
    overflow (short viewports). */
 .sidebar-scroll {

@@ -25,6 +25,7 @@ import {
   type BuildAsset,
 } from "../lib/api";
 import { useToast } from "../components/Toast";
+import { Package } from "lucide-react";
 import {
   Badge,
   Button,
@@ -44,6 +45,8 @@ import {
   DialogFooter,
   DialogClose,
   EmptyState,
+  EmptyStateContent,
+  EmptyStateIcon,
   EmptyStateTitle,
   Skeleton,
 } from "raft-ui";
@@ -110,9 +113,14 @@ export function Builds({ appId }: { appId: string }) {
 
       {builds.data && builds.data.builds.length === 0 && !builds.isLoading && (
         <EmptyState>
+          <EmptyStateContent>
+          <EmptyStateIcon>
+            <Package aria-hidden="true" />
+          </EmptyStateIcon>
           <EmptyStateTitle>
             No builds yet. Create a release from the Releases tab to upload assets.
           </EmptyStateTitle>
+          </EmptyStateContent>
         </EmptyState>
       )}
 
