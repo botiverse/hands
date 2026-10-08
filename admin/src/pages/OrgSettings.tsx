@@ -43,7 +43,6 @@ type BadgeVariant = NonNullable<BadgeProps["variant"]>;
 import {
   Badge,
   Button,
-  Card,
   Input,
   Select,
   SelectTrigger,
@@ -127,10 +126,10 @@ export function OrgSettings({
       {me.isLoading && <p className="text-foreground-muted">Loading…</p>}
 
       {!isCurrentOrg && currentOrgId && (
-        <Card className="p-4 bg-warning-soft border-warning text-warning-strong text-sm mb-4">
+        <div className="rounded-md bg-warning-soft px-4 py-3 text-warning-strong text-sm mb-4">
           ⚠ The org in the URL ({orgId}) doesn't match your current org (
           {currentOrgId}). Multi-org support deferred to v2.
-        </Card>
+        </div>
       )}
 
       {/* Visual-only Tabs: navigation stays with NavLink; the controlled
@@ -152,7 +151,7 @@ export function OrgSettings({
       </Tabs>
 
       {tab === "general" && (
-        <Card className="p-4 text-sm space-y-2">
+        <div className="text-sm space-y-2">
           <Row k="External provider" v={account?.provider ?? "?"} />
           <Row k="External ID (Raft server_id)" v={account?.server_id ?? "?"} />
           <Row k="Server slug" v={account?.server_slug ?? "—"} />
@@ -186,7 +185,7 @@ export function OrgSettings({
             Future: editable org name + slug, danger zone (archive org),
             sign-up mode (open vs invite-only).
           </p>
-        </Card>
+        </div>
       )}
 
       {tab === "members" && (
@@ -265,9 +264,9 @@ function MembersTab({
   });
 
   return (
-    <Card className="p-4 text-sm">
+    <section className="border-t border-line-hairline pt-5">
       <div className="flex items-center justify-between mb-3">
-        <h3 className="text-base font-semibold">Members</h3>
+        <h3 className="text-sm font-medium text-foreground-strong">Members</h3>
         <div className="flex items-center gap-2">
           <Select
             items={{
@@ -459,7 +458,7 @@ function MembersTab({
           </tbody>
         </table>
       )}
-    </Card>
+    </section>
   );
 }
 
@@ -515,9 +514,9 @@ function InvitesTab({
   });
 
   return (
-    <Card className="p-4 text-sm">
+    <section className="border-t border-line-hairline pt-5">
       <div className="flex items-center justify-between mb-3">
-        <h3 className="text-base font-semibold">Invites</h3>
+        <h3 className="text-sm font-medium text-foreground-strong">Invites</h3>
         <div className="flex items-center gap-2">
           <Select
             items={{
@@ -651,7 +650,7 @@ function InvitesTab({
           }}
         />
       )}
-    </Card>
+    </section>
   );
 }
 
@@ -794,8 +793,8 @@ function AuditTab({
     enabled: canView,
   });
   return (
-    <Card className="p-4 text-sm">
-      <h3 className="text-base font-semibold mb-3">Audit log</h3>
+    <section className="border-t border-line-hairline pt-5">
+      <h3 className="text-sm font-medium text-foreground-strong mb-3">Audit log</h3>
       {!canView && (
         <p className="text-xs text-warning mb-2">
           ⚠ Org member required to view audit log.
@@ -879,7 +878,7 @@ function AuditTab({
         </table>
         </div>
       )}
-    </Card>
+    </section>
   );
 }
 
@@ -951,11 +950,11 @@ function WebhooksTab({
   });
 
   return (
-    <div className="space-y-3">
-      <Card className="p-4 text-sm">
+    <div className="space-y-6">
+      <section className="border-t border-line-hairline pt-5">
         <div className="flex items-center justify-between mb-3">
           <div>
-            <h3 className="text-base font-semibold">Webhooks</h3>
+            <h3 className="text-sm font-medium text-foreground-strong">Webhooks</h3>
             <p className="text-xs text-foreground-muted">
               Subscribe external HTTP endpoints to release and build events.
               Deliveries are signed with HMAC SHA-256
@@ -1018,10 +1017,10 @@ function WebhooksTab({
             ))}
           </div>
         )}
-      </Card>
+      </section>
 
-      <Card className="p-4 text-xs text-foreground">
-        <h4 className="font-semibold mb-1">Delivery semantics</h4>
+      <section className="border-t border-line-hairline pt-5 text-xs text-foreground">
+        <h4 className="text-sm font-medium text-foreground-strong mb-1">Delivery semantics</h4>
         <ul className="list-disc pl-5 space-y-1">
           <li>
             Pending deliveries are retried every 5 minutes.
@@ -1037,7 +1036,7 @@ function WebhooksTab({
             <code className="font-mono">X-Quiver-Signature</code> is still sent too).
           </li>
         </ul>
-      </Card>
+      </section>
 
       {showCreate && (
         <CreateWebhookDialog
@@ -1082,7 +1081,7 @@ function WebhookRow({
     enabled: expanded,
   });
   return (
-    <div className="border border-line-muted rounded-sm p-3">
+    <div className="rounded-md bg-fill-muted p-3">
       <div className="flex items-center justify-between gap-3">
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2">

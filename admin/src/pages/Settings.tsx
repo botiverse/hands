@@ -1,11 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import {
   Badge,
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
   DescriptionDetails,
   DescriptionItem,
   DescriptionList,
@@ -38,11 +33,11 @@ export function Settings() {
 
       {/* Current account + org context */}
       {account && (
-        <Card>
-          <CardHeader>
-            <CardTitle>Current account</CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-4">
+        <section className="border-t border-line-hairline pt-5">
+          <h3 className="mb-3 text-sm font-medium text-foreground-strong">
+            Current account
+          </h3>
+          <div className="space-y-4">
             <DescriptionList direction="horizontal">
               <DescriptionItem>
                 <DescriptionTerm>Display name</DescriptionTerm>
@@ -90,30 +85,28 @@ export function Settings() {
               Signed in with Raft. To change role, ask an organization owner or
               admin in Organization settings.
             </TextSans>
-          </CardContent>
-        </Card>
+          </div>
+        </section>
       )}
 
       {/* Appearance: RUI theme family + mode; persisted per browser */}
-      <Card>
-        <CardHeader>
-          <CardTitle>Appearance</CardTitle>
-          <CardDescription>
-            Choose how the dashboard looks. Preferences are saved in this
-            browser.
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          <AppearanceSettings />
-        </CardContent>
-      </Card>
+      <section className="border-t border-line-hairline pt-5">
+        <h3 className="mb-1 text-sm font-medium text-foreground-strong">
+          Appearance
+        </h3>
+        <p className="mb-3 text-sm text-foreground-muted">
+          Choose how the dashboard looks. Preferences are saved in this
+          browser.
+        </p>
+        <AppearanceSettings />
+      </section>
 
       {/* Infrastructure (existing static info) */}
-      <Card>
-        <CardHeader>
-          <CardTitle>Infrastructure</CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-3">
+      <section className="border-t border-line-hairline pt-5">
+        <h3 className="mb-3 text-sm font-medium text-foreground-strong">
+          Infrastructure
+        </h3>
+        <div className="space-y-3">
           <TextSans size="small">
             Admin access uses Login with Raft. Access follows your Raft
             organization membership and role.
@@ -124,8 +117,8 @@ export function Settings() {
               {raftCallbackUrl}
             </TextMono>
           </div>
-        </CardContent>
-      </Card>
+        </div>
+      </section>
     </div>
   );
 }

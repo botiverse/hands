@@ -33,7 +33,6 @@ import {
 import {
   Badge,
   Button,
-  Card,
   Input,
   Label,
   Select,
@@ -227,8 +226,8 @@ export function PendingReleaseApprovals({ appId, gateOn }: { appId: string; gate
   // from the official entry point (task #239 review item 5).
   if (!gateOn && !approvals.isLoading && items.length === 0) return null;
   return (
-    <Card className="p-3 mb-4">
-      <h3 className="text-sm font-semibold mb-2">Pending release approvals</h3>
+    <section className="border-t border-line-hairline pt-5 mb-4">
+      <h3 className="text-sm font-medium text-foreground-strong mb-2">Pending release approvals</h3>
       {approvals.isLoading ? (
         <Skeleton className="h-10" />
       ) : items.length === 0 ? (
@@ -238,7 +237,7 @@ export function PendingReleaseApprovals({ appId, gateOn }: { appId: string; gate
           {items.map((a: ReleaseApproval) => (
             <li
               key={a.id}
-              className="rounded-sm border border-line-muted p-2 flex items-start justify-between gap-3"
+              className="rounded-md bg-fill-muted p-2.5 flex items-start justify-between gap-3"
             >
               <div className="text-sm min-w-0">
                 <div className="font-medium">
@@ -338,7 +337,7 @@ export function PendingReleaseApprovals({ appId, gateOn }: { appId: string; gate
           ))}
         </ul>
       )}
-    </Card>
+    </section>
   );
 }
 
@@ -412,7 +411,7 @@ export function Releases({ appId }: { appId: string }) {
       <PendingReleaseApprovals appId={appId} gateOn={Boolean(thisApp?.release_requires_human_approval)} />
 
       {/* Filters */}
-      <Card className="p-3 mb-4 flex flex-row flex-wrap gap-3 items-center">
+      <div className="mb-4 flex flex-row flex-wrap gap-3 items-center">
         <Select
           items={{
             all: "All channels",
@@ -463,7 +462,7 @@ export function Releases({ appId }: { appId: string }) {
           </SelectList>
           </SelectContent>
         </Select>
-      </Card>
+      </div>
 
       {releases.isLoading && (
         <div className="space-y-2">
@@ -485,7 +484,7 @@ export function Releases({ appId }: { appId: string }) {
         </EmptyState>
       )}
 
-      <div className="space-y-2">
+      <div className="space-y-6">
         {filtered.map((r) => {
           const channel = channels.data?.channels.find((c) => c.id === r.channel_id);
           const pt = productTypes.data?.product_types.find((p) => p.name === r.product_type);
@@ -520,10 +519,10 @@ export function Releases({ appId }: { appId: string }) {
 
 function Stat({ label, value }: { label: string; value: React.ReactNode }) {
   return (
-    <Card className="p-3">
+    <div>
       <div className="text-xs text-foreground-muted">{label}</div>
       <div className="text-2xl font-semibold mt-1">{value}</div>
-    </Card>
+    </div>
   );
 }
 
@@ -661,7 +660,7 @@ function ReleaseRow({
   });
 
   return (
-    <Card>
+    <section className="border-t border-line-hairline pt-5">
       <div className="flex items-center gap-3 flex-wrap">
         <ReleaseStatusBadge status={r.status} />
         <span className="font-medium">{channelSlug}</span>
@@ -913,7 +912,7 @@ function ReleaseRow({
         onCancel={() => setConfirmCancel(false)}
         onConfirm={() => cancel.mutate()}
       />
-    </Card>
+    </section>
   );
 }
 
