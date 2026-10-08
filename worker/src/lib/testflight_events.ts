@@ -10,14 +10,16 @@ export function testflightOperationEvent(kind: string, result: Record<string, un
   if (kind !== "testflight-publish" || result.distribution !== "internal"
       || typeof result.asc_build_id !== "string") return null;
   const detail = result.beta_detail as { internal_build_state?: unknown; auto_notify_enabled?: unknown } | null;
-  const groups = result.assigned_groups as Array<{ id: string; is_internal: boolean }> | null;
+  const groups = result.assigned_groups as Array<{ id: string; name?: string; is_internal: boolean }> | null;
   const requested = result.requested_group_ids as string[] | null;
   if (detail?.internal_build_state !== "IN_BETA_TESTING" || !Array.isArray(groups)
       || !Array.isArray(requested) || requested.length === 0
       || !requested.every(id => groups.some(g => g.id === id && g.is_internal === true))) return null;
+  const selectedGroups = groups.filter(g => requested.includes(g.id));
   return { event: "testflight:internal_distribution_ready", state: "IN_BETA_TESTING",
     resource: { type: "builds", id: result.asc_build_id },
-    groups: groups.filter(g => requested.includes(g.id)),
+    groups: selectedGroups,
+    groups_display: `测试组：${selectedGroups.map(g => g.name?.trim() || g.id).join("、")}`,
     auto_notify_enabled: detail.auto_notify_enabled === true };
 }
 

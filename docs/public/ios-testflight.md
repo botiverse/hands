@@ -333,7 +333,11 @@ existing `event` / `event_id` / `payload` envelope. The payload includes
 `source: hands_operation_receipt`, `operation_id`, app and Apple resource
 identities, version, build number, platform, state, and an App Store Connect
 link. Internal distribution also includes selected groups and
-`auto_notify_enabled`. This confirms internal availability, not that a tester
+`auto_notify_enabled`. The optional `groups_display` field is a complete
+Chinese notification line (for example, `测试组：Botiverse、Team B`) containing
+all selected group names; an unnamed group falls back to its ID. It is absent
+on upload and Apple callback events, so scalar notification templates can
+leave the line blank. This confirms internal availability, not that a tester
 received an email. The operation success receipt and delivery rows commit
 atomically; repeating the same operation receipt does not duplicate deliveries.
 
