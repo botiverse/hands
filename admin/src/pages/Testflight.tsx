@@ -8,7 +8,8 @@
  * recorded as `testflight-publish` operations.
  */
 import { useQuery } from "@tanstack/react-query";
-import { Badge, EmptyState, EmptyStateTitle } from "raft-ui";
+import { Badge, EmptyState, EmptyStateContent, EmptyStateIcon, EmptyStateTitle } from "raft-ui";
+import { Plane } from "lucide-react";
 import {
   listOperations,
   getTestflightPublishStatus,
@@ -77,7 +78,12 @@ export function Testflight({ appId }: { appId: string }) {
       {ops.isLoading && <p className="text-foreground-muted text-sm">Loading…</p>}
       {!ops.isLoading && uploads.length === 0 && publishes.length === 0 && (
         <EmptyState>
-          <EmptyStateTitle>No TestFlight activity yet.</EmptyStateTitle>
+          <EmptyStateContent>
+            <EmptyStateIcon>
+              <Plane aria-hidden="true" />
+            </EmptyStateIcon>
+            <EmptyStateTitle>No TestFlight activity yet</EmptyStateTitle>
+          </EmptyStateContent>
         </EmptyState>
       )}
 

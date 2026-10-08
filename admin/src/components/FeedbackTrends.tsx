@@ -2,11 +2,14 @@
  * Trend charts for the Feedback page: tickets/day stacked by kind (30 days)
  * and crash counts by version. Inline SVG, no chart library.
  *
- * Colors are the validated categorical slots (blue/aqua/yellow, adjacent CVD
- * ΔE 47); aqua and yellow sit under 3:1 on the surface, so the relief rule
- * applies — a table view toggle carries every value, and tooltips + the
- * legend cover identity. Marks: ≤24px bars, 2px surface gaps between stacked
- * segments and bars, 4px rounded data-end on the top segment only.
+ * Series colors come from the chart tokens (`--chart-*`, defined in
+ * index.css): light surfaces use darkened amber/green variants so every
+ * series keeps >= 3:1 against the canvas; dark surfaces keep the brighter
+ * originals. Adjacent hues keep the CVD separation (ΔE 47) of the original
+ * categorical slots; the table view toggle still carries every value, and
+ * tooltips + the legend cover identity. Marks: <=24px bars, surface gaps
+ * between stacked segments and bars, 4px rounded data-end on the top segment
+ * only.
  */
 import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
@@ -15,12 +18,14 @@ import { getFeedbackStats } from "../lib/api";
 
 const KINDS = ["feedback", "bug", "crash", "error"] as const;
 const KIND_COLOR: Record<(typeof KINDS)[number], string> = {
-  feedback: "#2a78d6",
-  bug: "#1baf7a",
-  crash: "#eda100",
-  error: "#e05252",
+  feedback: "var(--chart-feedback)",
+  bug: "var(--chart-bug)",
+  crash: "var(--chart-crash)",
+  error: "var(--chart-error)",
 };
-const SURFACE = "#ffffff"; // card surface — used for the 2px spacers
+const SURFACE = "var(--layer-canvas)"; // chart surface — 2px segment spacers + hover band, theme-aware
+const GRIDLINE = "var(--line-hairline)";
+const HOVER_BAND = "var(--fill-muted)";
 
 export function FeedbackTrends({ appId }: { appId: string }) {
   const stats = useQuery({
@@ -124,8 +129,8 @@ function StackedDaily({
     <div className="relative">
       <svg viewBox={`0 0 ${W} ${H}`} className="w-full" role="img" aria-label="Tickets per day, stacked by kind">
         {/* recessive hairline gridlines at 0 and the top tick */}
-        <line x1={0} y1={plotH} x2={W} y2={plotH} stroke="#e2e8f0" strokeWidth={1} />
-        <line x1={0} y1={plotH - (plotH - 8)} x2={W} y2={plotH - (plotH - 8)} stroke="#f1f5f9" strokeWidth={1} />
+        <line x1={0} y1={plotH} x2={W} y2={plotH} stroke={GRIDLINE} strokeWidth={1} />
+        <line x1={0} y1={plotH - (plotH - 8)} x2={W} y2={plotH - (plotH - 8)} stroke={GRIDLINE} strokeWidth={1} />
         <text x={0} y={10} className="fill-foreground-hint" fontSize={9}>
           {yTop}
         </text>
@@ -162,7 +167,7 @@ function StackedDaily({
               <rect x={i * band} y={0} width={band} height={plotH} fill="transparent" />
               {rects}
               {hover === i && (
-                <rect x={x - 1} y={0} width={barW + 2} height={plotH} fill="#0f172a" opacity={0.04} />
+                <rect x={x - 1} y={0} width={barW + 2} height={plotH} fill={HOVER_BAND} opacity={0.5} />
               )}
               {(i === 0 || i === days.length - 1 || i === Math.floor(days.length / 2)) && (
                 <text x={i * band + band / 2} y={H - 4} textAnchor="middle" className="fill-foreground-hint" fontSize={9}>
@@ -224,7 +229,7 @@ export function CrashByVersion({
               <ProgressTrack className="h-3.5 bg-transparent rounded-none">
                 <ProgressIndicator
                   className="rounded-r-[4px]"
-                  style={{ background: "#2a78d6", minWidth: 2 }}
+                  style={{ background: "var(--chart-feedback)", minWidth: 2 }}
                 />
               </ProgressTrack>
             </Progress>

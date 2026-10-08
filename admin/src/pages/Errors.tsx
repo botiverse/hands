@@ -6,7 +6,8 @@
 import { useNavigate } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { listCrashGroups } from "../lib/api";
-import { EmptyState, EmptyStateTitle } from "raft-ui";
+import { EmptyState, EmptyStateContent, EmptyStateIcon, EmptyStateTitle } from "raft-ui";
+import { AlertTriangle } from "lucide-react";
 
 export function AppErrors({ appId }: { appId: string }) {
   const navigate = useNavigate();
@@ -38,7 +39,12 @@ export function AppErrors({ appId }: { appId: string }) {
         )}
         {!groups.isLoading && rows.length === 0 && (
           <EmptyState>
-            <EmptyStateTitle>No captured errors yet. 🎉</EmptyStateTitle>
+            <EmptyStateContent>
+              <EmptyStateIcon>
+                <AlertTriangle aria-hidden="true" />
+              </EmptyStateIcon>
+              <EmptyStateTitle>No captured errors yet</EmptyStateTitle>
+            </EmptyStateContent>
           </EmptyState>
         )}
         {rows.length > 0 && (

@@ -226,7 +226,7 @@ export function TestFlightConnector({ appId }: { appId: string }) {
   return (
     <section data-testid="testflight-connector" className="border-t border-line-hairline pt-5">
       <div className="flex items-start gap-3">
-        <span className="flex size-9 shrink-0 items-center justify-center rounded-md border border-line-muted bg-layer-inset text-foreground-muted">
+        <span className="flex size-9 shrink-0 items-center justify-center rounded-md bg-fill-muted text-foreground-muted">
           <Apple className="size-4" aria-hidden="true" />
         </span>
         <div className="min-w-0 flex-1">

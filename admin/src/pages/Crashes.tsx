@@ -6,7 +6,8 @@
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { getFeedbackStats, listCrashGroups, type CrashType } from "../lib/api";
-import { Badge, EmptyState, EmptyStateTitle, SegmentedControl, SegmentedControlItem, SegmentedControlLabel, type BadgeProps } from "raft-ui";
+import { Badge, EmptyState, EmptyStateContent, EmptyStateIcon, EmptyStateTitle, SegmentedControl, SegmentedControlItem, SegmentedControlLabel, type BadgeProps } from "raft-ui";
+import { Bug } from "lucide-react";
 import { CrashByVersion } from "../components/FeedbackTrends";
 
 export const CRASH_TYPE_LABELS: Record<CrashType, string> = {
@@ -92,9 +93,14 @@ export function AppCrashes({ appId }: { appId: string }) {
         )}
         {!groups.isLoading && rows.length === 0 && (
           <EmptyState>
-            <EmptyStateTitle>
-              {crashType ? `No ${CRASH_TYPE_LABELS[crashType]} crashes reported.` : "No crashes reported yet. 🎉"}
-            </EmptyStateTitle>
+            <EmptyStateContent>
+              <EmptyStateIcon>
+                <Bug aria-hidden="true" />
+              </EmptyStateIcon>
+              <EmptyStateTitle>
+                {crashType ? `No ${CRASH_TYPE_LABELS[crashType]} crashes reported` : "No crashes reported yet"}
+              </EmptyStateTitle>
+            </EmptyStateContent>
           </EmptyState>
         )}
         {rows.length > 0 && (

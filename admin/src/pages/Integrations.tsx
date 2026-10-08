@@ -70,13 +70,16 @@ export function Integrations({ appId }: { appId: string }) {
         </TextSans>
       </div>
       {app && (
+        // Connector chips: soft fill, no outline (option B). Brand-colored
+        // glyphs are deferred — brand hues would compete with the status
+        // colors used in the same rows. See admin/ICONS.md.
         <div className="space-y-3">
           {CONNECTORS.map(({ id, label, platform, platformLabel, Icon, Component }) =>
             app.platform === platform ? (
               <Component key={id} appId={appId} />
             ) : (
               <div key={id} data-testid={`connector-inactive-${id}`} className="flex items-center gap-3 rounded-md bg-fill-muted/60 px-3 py-2.5 text-sm">
-                <span className="flex size-9 shrink-0 items-center justify-center rounded-md border border-line-muted bg-layer-inset text-foreground-hint">
+                <span className="flex size-9 shrink-0 items-center justify-center rounded-md bg-fill-muted text-foreground-muted">
                   <Icon className="size-4" aria-hidden="true" />
                 </span>
                 <div className="min-w-0 flex-1">

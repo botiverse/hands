@@ -11,7 +11,8 @@ import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Badge,
-  Button, Input, Select, SelectTrigger, SelectValue, SelectIcon, SelectList, SelectContent, SelectItem, Dialog, DialogContent, DialogHeader, DialogTitle, DialogBody, DialogFooter, EmptyState, EmptyStateTitle, EmptyStateDescription, Skeleton } from "raft-ui";
+  Button, Input, Select, SelectTrigger, SelectValue, SelectIcon, SelectList, SelectContent, SelectItem, Dialog, DialogContent, DialogHeader, DialogTitle, DialogBody, DialogFooter, EmptyState, EmptyStateContent, EmptyStateIcon, EmptyStateTitle, EmptyStateDescription, Skeleton } from "raft-ui";
+import { Share2 } from "lucide-react";
 import type { BadgeProps } from "raft-ui";
 
 type BadgeVariant = NonNullable<BadgeProps["variant"]>;
@@ -150,11 +151,16 @@ export function AppShares({ appId }: { appId: string }) {
         )}
         {!shares.isLoading && rows.length === 0 && (
           <EmptyState>
-            <EmptyStateTitle>No shares yet.</EmptyStateTitle>
-            <EmptyStateDescription>
-              Create one here, from the CLI (<code>hands releases share</code>),
-              or from the release workflow.
-            </EmptyStateDescription>
+            <EmptyStateContent>
+              <EmptyStateIcon>
+                <Share2 aria-hidden="true" />
+              </EmptyStateIcon>
+              <EmptyStateTitle>No shares yet</EmptyStateTitle>
+              <EmptyStateDescription>
+                Create one here, from the CLI (<code>hands releases share</code>),
+                or from the release workflow.
+              </EmptyStateDescription>
+            </EmptyStateContent>
           </EmptyState>
         )}
         {rows.length > 0 && (
