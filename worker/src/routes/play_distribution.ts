@@ -1,3 +1,5 @@
+import { enqueueDueDeliveries } from "./webhooks";
+import { playDeliveryStatement } from "../lib/play_notifications";
 import type { Context } from "hono";
 import { sha256 } from "@noble/hashes/sha256";
 import { bytesToHex } from "@noble/hashes/utils";
@@ -204,7 +206,8 @@ async function insertReceipt(
     actor: string;
   },
 ) {
-  await db.prepare(
+  const now = Date.now();
+  const statement = db.prepare(
     `INSERT INTO release_receipts
      (id, app_id, release_id, kind, verdict, artifact_id, artifact_sha256,
       artifact_size, package_name, source_commit, version_code, action, track,
@@ -215,8 +218,24 @@ async function insertReceipt(
     args.artifact.asset_id, args.artifact.file_hash, args.artifact.size_bytes,
     args.artifact.package_name, args.artifact.source_commit, args.artifact.version_code,
     args.action ?? null, args.track ?? null, args.editId ?? null,
-    JSON.stringify(args.payload), args.actor, Date.now(),
-  ).run();
+    JSON.stringify(args.payload), args.actor, now,
+  );
+  if (args.kind !== "play-promotion") { await statement.run(); return; }
+  const success = args.verdict === "success";
+  const event = success ? "google_play:submission_succeeded" : "google_play:submission_failed";
+  const raw = args.payload as { result?: { failure_code?: string }; play?: { rollout_percent?: number } };
+  await db.batch([statement, playDeliveryStatement(db, args.appId, event,
+    `hands-play-receipt:${args.id}`, {
+      receipt_id: args.id, release_id: args.releaseId,
+      source: "hands_operation_receipt", platform: "ANDROID",
+      version: args.artifact.version_name, version_code: args.artifact.version_code,
+      package_name: args.artifact.package_name, track: args.track,
+      state: success ? "SUBMISSION_SUCCEEDED" : "SUBMISSION_FAILED",
+      state_label: success ? "提交到 Google Play 成功（非审核结论）" : "提交失败或被安全检查阻止",
+      reason: raw.result?.failure_code ?? null,
+      rollout_percent: raw.play?.rollout_percent ?? null,
+      occurred_at: new Date(now).toISOString(),
+    }, now, "SELECT 1 FROM release_receipts WHERE id=?6 AND app_id=?5 AND kind='play-promotion'", [args.id])]);
 }
 
 export async function handleCreateAcceptanceReceipt(c: AdminContext) {
@@ -379,10 +398,12 @@ async function failedPromotionReceipt(
       },
       result: {
         status: "failed-closed",
+        failure_code: reason,
         failure_reason: `${reason}: ${JSON.stringify(details)}`,
       },
     }, actor,
   });
+  c.executionCtx.waitUntil(enqueueDueDeliveries(c.env, Date.now()).catch(() => 0));
   return id;
 }
 
@@ -545,6 +566,7 @@ export async function handlePromotePlayDistribution(c: AdminContext) {
       },
       actor,
     });
+    c.executionCtx.waitUntil(enqueueDueDeliveries(c.env, Date.now()).catch(() => 0));
     await c.env.DB.prepare(
       `INSERT INTO play_distribution_state
        (app_id, release_id, package_name, track, version_code, rollout_percent,

@@ -77,3 +77,11 @@ export interface PromotionRequest {
   operationId: string;
   body: ReadableStream<Uint8Array>;
 }
+
+/** Read-only release summaries; lifecycle is distinct from edits.tracks status. */
+export interface ReleaseSummary {
+  releaseName: string;
+  track: string;
+  activeArtifacts: Array<{ versionCode: number }>;
+  releaseLifecycleState: string;
+}

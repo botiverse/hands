@@ -50,3 +50,28 @@ Use a new version code for each new build. Your first upload can use your app's 
 **Disable** stops publishing through this connection while keeping its settings for later use.
 
 **Unbind** removes this app's saved Google Play connection from Hands. To revoke access to the Google account itself, visit [Google account connections](https://myaccount.google.com/connections) and remove the associated application. This can affect other Hands apps using the same Google account and connection.
+
+## Release notifications
+
+App webhooks can subscribe to `google_play:submission_succeeded`,
+`google_play:submission_failed`, and `google_play:release_state_changed`.
+Submission events come from immutable Hands promotion receipts and include the
+package, version code, Hands track, and receipt ID. A successful submission is
+not an approval or availability announcement. Failures before Hands can create
+a promotion receipt remain API errors rather than release notifications.
+
+Hands reads Google's live release lifecycle for enabled, verified connections
+on the configured tracks. Queries run every five minutes, at most four apps per
+run; larger sets rotate through subsequent runs. The first observation is a
+current-state snapshot (`observation: initial_snapshot`); later changed states
+are transitions. Unchanged states produce no new notification. State and pending
+delivery records commit together. Provider failures leave the previous
+observation intact and are retried on a later scheduled run.
+
+`RELEASE_LIFECYCLE_STATE_PUBLISHED` means the version is available on the track;
+it may be partially rolled out or halted, and does not mean 100% rollout.
+Unknown states are preserved verbatim. A removed or changed connection cannot
+publish an old in-flight response. This uses a read-only API, not a Google
+webhook, and does not upload, commit an edit, or release a version.
+
+See [Google release lifecycle documentation](https://developers.google.com/android-publisher/api-ref/rest/v3/applications.tracks.releases).

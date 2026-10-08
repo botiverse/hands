@@ -15,6 +15,7 @@ export function playRequestStage(url: string, method = "GET"): string {
   if (path.endsWith("/edits") && method === "POST") return "create_edit";
   if (path.endsWith(":commit")) return "commit_edit";
   if (path.endsWith("/bundles")) return "upload_bundle";
+  if (path.endsWith("/releases") && path.includes("/tracks/")) return "list_release_states";
   if (path.endsWith("/tracks")) return "list_tracks";
   if (path.includes("/tracks/")) return method === "PUT" ? "update_track" : "get_track";
   if (method === "DELETE") return "delete_edit";

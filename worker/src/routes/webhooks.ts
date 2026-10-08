@@ -30,6 +30,7 @@ const WEBHOOK_EVENT_TYPES = [
   "app_store:version_state_changed", "testflight:external_state_changed", "app_store:build_upload_state_changed",
   "feedback:new", "feedback:comment_created", "feedback:status_changed",
   "crash:new_group", "crash:spike", "error:new_group", "error:spike",
+  "google_play:submission_succeeded", "google_play:submission_failed", "google_play:release_state_changed",
   "release:new", "release:draft_created", "release:superseded", "release:rolled_back", "release:cancelled",
   "build:succeeded", "build:failed",
 ] as const;
