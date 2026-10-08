@@ -4,15 +4,11 @@ import { insertAuditLog } from "../lib/permissions";
 import { resolveAgcAuth } from "./agc_testing";
 import { addAgcMarketPackage, AGC_PACKAGE_FAILED, AGC_PACKAGE_OK, getAgcCompileStatus, requestAgcUpload, resolveAgcAppId, uploadAgcObject } from "../lib/agc_api";
 
+import { recordAgcPackageTransition, type AgcMarketPackage } from "../lib/agc_package_events";
+
 type Ctx = Context<AdminEnv & { Bindings: Env }>;
-type Package = {
-  id: string; app_id: string; build_id: string; package_name: string;
-  state: "uploading" | "processing" | "ready" | "failed";
-  external_app_id: string | null; external_package_id: string | null;
-  error_message: string | null; created_at: number; updated_at: number;
-};
 const lookup = (c: Ctx) => c.env.DB.prepare("SELECT * FROM agc_market_packages WHERE app_id=?1 AND build_id=?2")
-  .bind(c.req.param("appId") ?? "", c.req.param("buildId") ?? "").first<Package>();
+  .bind(c.req.param("appId") ?? "", c.req.param("buildId") ?? "").first<AgcMarketPackage>();
 
 /** Upload only: never creates a test version, binds a release or submits review. */
 export async function handleUploadAgcMarketPackage(c: Ctx) {
@@ -65,15 +61,15 @@ export async function handleUploadAgcMarketPackage(c: Ctx) {
       throw error;
     }
     const packageId = await addAgcMarketPackage(auth, externalAppId, fileName, upload.objectId);
-    await c.env.DB.prepare("UPDATE agc_market_packages SET state='processing', external_package_id=?1, updated_at=?2 WHERE id=?3")
-      .bind(packageId, Date.now(), id).run();
+    const old = await lookup(c);
+    if (old) await recordAgcPackageTransition(c.env.DB, old, "processing", { packageId });
     await insertAuditLog(c.env.DB, c, { app_id: appId, action: "agc_market_package.upload", payload: { build_id: buildId, package_id: packageId, package_name: packageName } });
     return c.json({ package: await lookup(c) }, 202);
   } catch {
     // Do not persist raw provider/auth errors (may include signed URLs/keys).
     const message = "AppGallery package upload failed; reconcile this attempt before retrying";
-    await c.env.DB.prepare("UPDATE agc_market_packages SET state='failed',error_message=?1,updated_at=?2 WHERE id=?3 AND state='uploading'")
-      .bind(message, Date.now(), id).run();
+    const old = await lookup(c);
+    if (old?.state === "uploading") await recordAgcPackageTransition(c.env.DB, old, "failed");
     return c.json({ error: message, package: await lookup(c) }, 502);
   }
 }
@@ -88,8 +84,7 @@ export async function handleGetAgcMarketPackage(c: Ctx) {
       const code = typeof raw === "number" ? raw : typeof raw === "string" && raw.trim() ? Number(raw) : NaN;
       const state = code === AGC_PACKAGE_OK ? "ready" : code === AGC_PACKAGE_FAILED ? "failed" : null;
       if (state) {
-        await c.env.DB.prepare("UPDATE agc_market_packages SET state=?1,error_message=?2,updated_at=?3 WHERE id=?4 AND state='processing'")
-          .bind(state, state === "failed" ? "AppGallery package parsing failed" : null, Date.now(), pkg.id).run();
+        await recordAgcPackageTransition(c.env.DB, pkg, state);
       }
     } catch { return c.json({ package: pkg, sync_error: "AppGallery package status is unavailable" }); }
   }

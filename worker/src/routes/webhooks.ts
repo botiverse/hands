@@ -31,6 +31,7 @@ const WEBHOOK_EVENT_TYPES = [
   "feedback:new", "feedback:comment_created", "feedback:status_changed",
   "crash:new_group", "crash:spike", "error:new_group", "error:spike",
   "appgallery:invitation_state_changed",
+  "appgallery:package_state_changed",
   "google_play:submission_succeeded", "google_play:submission_failed", "google_play:release_state_changed",
   "release:new", "release:draft_created", "release:superseded", "release:rolled_back", "release:cancelled",
   "build:succeeded", "build:failed",

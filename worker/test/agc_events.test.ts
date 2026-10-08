@@ -2,11 +2,12 @@ import Database from "better-sqlite3";
 import { readFileSync,readdirSync } from "node:fs";
 import { afterEach, describe,expect,it,vi } from "vitest";
 import { recordAgcTransition, type AgcSubmission } from "../src/lib/agc_events";
+import { recordAgcPackageTransition, type AgcMarketPackage } from "../src/lib/agc_package_events";
 import { pollAgcInvitations } from "../src/lib/agc_poll";
 vi.mock("../src/routes/agc_testing", () => ({ resolveAgcAppAuth: async () => ({accessToken:"secret-token"}) }));
-import { getAgcTestVersionStatus } from "../src/lib/agc_api";
-vi.mock("../src/lib/agc_api", async orig => ({...await orig<typeof import("../src/lib/agc_api")>(),getAgcTestVersionStatus:vi.fn()}));
-afterEach(()=>{vi.restoreAllMocks();vi.mocked(getAgcTestVersionStatus).mockReset();});
+import { getAgcCompileStatus, getAgcTestVersionStatus } from "../src/lib/agc_api";
+vi.mock("../src/lib/agc_api", async orig => ({...await orig<typeof import("../src/lib/agc_api")>(),getAgcCompileStatus:vi.fn(),getAgcTestVersionStatus:vi.fn()}));
+afterEach(()=>{vi.restoreAllMocks();vi.mocked(getAgcTestVersionStatus).mockReset();vi.mocked(getAgcCompileStatus).mockReset();});
 function setup() {
   const sql = new Database(":memory:");
   sql.pragma("foreign_keys = ON");
@@ -88,5 +89,44 @@ describe("AGC atomic invitation notifications",()=>{
   const row=sql.prepare("SELECT state,provider_state_json FROM market_submissions").get() as {state:string;provider_state_json:string};
   expect(row.state).toBe("testing_review");expect(JSON.parse(row.provider_state_json).release_state).toBe(99);
   expect(sql.prepare("SELECT count(*) n FROM webhook_deliveries").get()).toEqual({n:0});
+ });
+});
+
+describe("AGC market package outbox",()=>{
+ function packageSetup() {
+  const h=setup();h.sql.exec(`DELETE FROM market_submissions;
+    INSERT INTO agc_market_packages(id,app_id,build_id,package_name,state,external_app_id,external_package_id,created_at,updated_at)
+      VALUES('pkg','app','build','example.app','processing','external-app','external-pkg',0,0);
+    UPDATE webhooks SET events_json='["appgallery:package_state_changed"]' WHERE id='matching';`);
+  return {...h,old:h.sql.prepare("SELECT * FROM agc_market_packages").get() as AgcMarketPackage};
+ }
+ it("commits only matching app deliveries, suppresses stale and same-timestamp replays, and excludes provider details",async()=>{
+  const {db,sql,old}=packageSetup();
+  expect(await recordAgcPackageTransition(db,old,"ready",{observed:true},300611)).toBe(true);
+  const rows=sql.prepare("SELECT payload_json FROM webhook_deliveries").all() as Array<{payload_json:string}>;
+  expect(rows).toHaveLength(2);
+  expect(JSON.parse(rows[0]!.payload_json)).toMatchObject({event:"appgallery:package_state_changed",payload:{version:"1.13.0",build_number:"11300006",state:"ready",state_label:"市场包解析成功（未提审）"}});
+  expect(rows[0]!.payload_json).not.toContain("external-pkg");
+  expect(await recordAgcPackageTransition(db,old,"ready",{},300611)).toBe(false);
+  expect(await recordAgcPackageTransition(db,old,"failed",{},300612)).toBe(false);
+  expect(sql.prepare("SELECT count(*) n FROM webhook_deliveries").get()).toEqual({n:2});
+ });
+ it("rolls back package state if the outbox fails",async()=>{
+  const {db,sql,old}=packageSetup();
+  sql.exec("CREATE TRIGGER fail_delivery BEFORE INSERT ON webhook_deliveries BEGIN SELECT RAISE(ABORT,'delivery failed'); END");
+  await expect(recordAgcPackageTransition(db,old,"failed",{},300611)).rejects.toThrow();
+  expect(sql.prepare("SELECT state FROM agc_market_packages").get()).toEqual({state:"processing"});
+ });
+ it("polls compile status read-only once per slot, retains unknown states, then emits a terminal result",async()=>{
+  const {db,sql}=packageSetup();const env={DB:db,AGC_CRED_ENC_KEY:"key",WEBHOOK_QUEUE:{sendBatch:async()=>{}}} as unknown as Env;
+  vi.mocked(getAgcCompileStatus).mockResolvedValue({successStatus:99});
+  await pollAgcInvitations(env,300611);await pollAgcInvitations(env,300900);
+  expect(getAgcCompileStatus).toHaveBeenCalledTimes(1);
+  expect(sql.prepare("SELECT state FROM agc_market_packages").get()).toEqual({state:"processing"});
+  vi.mocked(getAgcCompileStatus).mockResolvedValue({successStatus:0});
+  await pollAgcInvitations(env,600373);
+  expect(getAgcCompileStatus).toHaveBeenCalledWith({accessToken:"secret-token"},"external-app","external-pkg");
+  expect(sql.prepare("SELECT state FROM agc_market_packages").get()).toEqual({state:"ready"});
+  expect(sql.prepare("SELECT count(*) n FROM webhook_deliveries").get()).toEqual({n:2});
  });
 });
