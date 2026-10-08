@@ -43,7 +43,6 @@ import {
 import {
   Badge,
   Button,
-  Card,
   Input,
   Label,
   Select,
@@ -212,7 +211,7 @@ function AppServerGrantList({
   const visibleRowCount = rows.length + (isOwningOrg ? 1 : 0);
 
   return (
-    <Card className="p-4 text-sm">
+    <section className="border-t border-line-hairline pt-5">
       {grants.isLoading && (
         <div className="space-y-2">
           <Skeleton className="h-8 w-full" />
@@ -223,7 +222,7 @@ function AppServerGrantList({
         <p className="text-danger">Failed: {(grants.error as Error).message}</p>
       )}
       <div className="flex items-center justify-between mb-3">
-        <h3 className="text-base font-semibold">Server access</h3>
+        <h3 className="text-sm font-medium text-foreground-strong">Server access</h3>
         <div className="flex items-center gap-2">
           <span className="text-xs text-foreground-muted whitespace-nowrap">
             {visibleRowCount} server{visibleRowCount === 1 ? "" : "s"}
@@ -327,7 +326,7 @@ function AppServerGrantList({
           No additional owner servers yet. The current server owns this app.
         </p>
       )}
-    </Card>
+    </section>
   );
 }
 
@@ -499,7 +498,7 @@ function AppMemberList({
   });
 
   return (
-    <Card className="p-4 text-sm">
+    <section className="border-t border-line-hairline pt-5">
       {members.isLoading && (
         <div className="space-y-2">
           <Skeleton className="h-8 w-full" />
@@ -510,7 +509,7 @@ function AppMemberList({
         <p className="text-danger">Failed: {(members.error as Error).message}</p>
       )}
       <div className="flex items-center justify-between mb-3">
-        <h3 className="text-base font-semibold">Direct app members</h3>
+        <h3 className="text-sm font-medium text-foreground-strong">Direct app members</h3>
         <div className="flex items-center gap-2">
           <Select
             items={{ all: "All types", human: "Humans only", agent: "Agents only" }}
@@ -669,7 +668,7 @@ function AppMemberList({
           </tbody>
         </table>
       )}
-    </Card>
+    </section>
   );
 }
 
@@ -706,7 +705,7 @@ function AppDeployTokenList({
   const rows = tokens.data?.deploy_tokens ?? [];
 
   return (
-    <Card className="p-4 text-sm">
+    <section className="border-t border-line-hairline pt-5">
       {tokens.isLoading && (
         <div className="space-y-2">
           <Skeleton className="h-8 w-full" />
@@ -717,7 +716,7 @@ function AppDeployTokenList({
         <p className="text-danger">Failed: {(tokens.error as Error).message}</p>
       )}
       <div className="flex items-center justify-between mb-3">
-        <h3 className="text-base font-semibold">Deploy tokens</h3>
+        <h3 className="text-sm font-medium text-foreground-strong">Deploy tokens</h3>
         <div className="flex items-center gap-2">
           <span className="text-xs text-foreground-muted whitespace-nowrap">
             {rows.length} token{rows.length === 1 ? "" : "s"}
@@ -831,7 +830,7 @@ function AppDeployTokenList({
         Tokens are app-scoped bearer credentials for CI. The raw token is only
         shown once after creation.
       </p>
-    </Card>
+    </section>
   );
 }
 
@@ -1350,9 +1349,9 @@ function InviteToAppForm({ appId }: { appId: string }) {
   if (!orgId) return null;
 
   return (
-    <Card className="p-4 text-sm">
+    <section className="border-t border-line-hairline pt-5">
       <div className="flex items-center justify-between mb-3">
-        <h3 className="text-base font-semibold">Create app invite link</h3>
+        <h3 className="text-sm font-medium text-foreground-strong">Create app invite link</h3>
         {!showForm && (
           <Button
             variant="outline"
@@ -1437,6 +1436,6 @@ function InviteToAppForm({ appId }: { appId: string }) {
           when they accept; the picked role controls what they can do on this app.
         </p>
       )}
-    </Card>
+    </section>
   );
 }
