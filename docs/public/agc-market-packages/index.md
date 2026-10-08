@@ -26,3 +26,29 @@ retain the last known state and return `sync_error`.
 
 Huawei contract: [Add package](https://developer.huawei.com/consumer/cn/doc/app/agc-help-test-api-add-test-package-0000002236201330).
 The existing `hands agc upload` remains invitation testing (`distributeMode: 1`).
+
+## Invitation-test notifications
+
+An app administrator can subscribe to `appgallery:invitation_state_changed`
+using the app's webhook settings. This event covers invitation-package upload
+completion or failure, parsing completion or failure, review submission, and
+subsequent invitation-test state changes. It does not announce a formal store
+release. Existing upload and submit commands retain their publishing behavior.
+
+Hands checks up to four submitted invitation versions per five-minute cron
+invocation. These provider calls only read status; they never upload packages,
+bind a package, submit review, or invite testers. Provider failures retain the
+last known state. Unknown provider values remain in the stored status and are
+not relabeled as approval or rejection. `ready` can mean withdrawal of review;
+provider state `11` is explicitly labeled as developer withdrawal.
+
+The webhook uses a single envelope with `event`, `event_id`, `app_id`, `org_id`,
+`delivered_at`, and `payload`. Payload fields include `app` (`id`, `name`, `slug`),
+`platform: OHOS`, `lane: invitation_test`, `submission_id`, `build_id`, `version`,
+`build_number`, `previous_state`, `state`, `state_label`, `provider_state`, and
+`occurred_at`. `groups_display`, when present, explicitly lists selected test
+group IDs, not inferred group names. `observation_display` marks cron readbacks
+as observations rather than claiming the review changed at that instant.
+Provider messages, tester identities, signed upload URLs and credentials are
+excluded from the notification. State, local history and notification enqueue
+commit together; delivery retries never repeat a provider operation.

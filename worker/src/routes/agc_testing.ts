@@ -1,3 +1,4 @@
+import { recordAgcTransition } from "../lib/agc_events";
 import type { Context } from "hono";
 import { currentActor, type AdminEnv } from "../middleware/auth";
 import { insertAuditLog } from "../lib/permissions";
@@ -10,8 +11,11 @@ function publicSubmission(sub: Submission) {
   return { ...sub, provider_state: JSON.parse(sub.provider_state_json || "{}"), provider_state_json: undefined };
 }
 export async function resolveAgcAuth(c: AdminContext) {
-  if (!c.env.AGC_CRED_ENC_KEY) throw new Error("server is missing AGC_CRED_ENC_KEY");
-  const credential = await getAgcCredentials(c.env.DB, c.env.AGC_CRED_ENC_KEY, c.req.param("appId") ?? "");
+  return resolveAgcAppAuth(c.env, c.req.param("appId") ?? "");
+}
+export async function resolveAgcAppAuth(env: Env, appId: string) {
+  if (!env.AGC_CRED_ENC_KEY) throw new Error("server is missing AGC_CRED_ENC_KEY");
+  const credential = await getAgcCredentials(env.DB, env.AGC_CRED_ENC_KEY, appId);
   if (!credential) throw new Error("no AGC credentials configured for this app");
   if (agcCredentialKind(credential) === "service_account") {
     return { accessToken: await createAgcServiceAccountJwt(credential as AgcServiceAccountCredential) };
@@ -20,23 +24,19 @@ export async function resolveAgcAuth(c: AdminContext) {
   const token = await exchangeAgcApiClientToken(api);
   return { clientId: api.client_id, accessToken: token.access_token };
 }
-async function event(db: D1Database, submissionId: string, state: string, detail: object = {}) {
-  const now = Date.now();
-  await db.batch([
-    db.prepare("UPDATE market_submissions SET state=?1, provider_state_json=?2, error_message=NULL, updated_at=?3 WHERE id=?4").bind(state, JSON.stringify(detail), now, submissionId),
-    db.prepare("INSERT INTO market_submission_events (id, submission_id, state, detail_json, created_at) VALUES (?1,?2,?3,?4,?5)").bind(crypto.randomUUID(), submissionId, state, JSON.stringify(detail), now),
-  ]);
+async function event(db: D1Database, submissionId: string, state: string, detail: Record<string, unknown> = {}) {
+  const old = await db.prepare("SELECT * FROM market_submissions WHERE id=?1").bind(submissionId).first<Submission>();
+  if (!old) throw new Error("AGC submission not found");
+  return recordAgcTransition(db, old, state, detail);
 }
 /** Terminal states from which a new upload of the same build may start. */
 const RETRYABLE_STATES = new Set(["failed", "rejected", "stopped"]);
 /** States whose outcome is decided on Huawei's side and must be re-read. */
 const TRACKED_REVIEW_STATES = new Set(["testing_review", "testing_scheduled", "testing_active"]);
-async function failSubmission(db: D1Database, submissionId: string, message: string, detail: object = {}) {
-  const now = Date.now();
-  await db.batch([
-    db.prepare("UPDATE market_submissions SET state='failed', provider_state_json=?1, error_message=?2, updated_at=?3 WHERE id=?4").bind(JSON.stringify(detail), message, now, submissionId),
-    db.prepare("INSERT INTO market_submission_events (id, submission_id, state, detail_json, created_at) VALUES (?1,?2,'failed',?3,?4)").bind(crypto.randomUUID(), submissionId, JSON.stringify({ ...detail, error: message }), now),
-  ]);
+async function failSubmission(db: D1Database, submissionId: string, message: string, detail: Record<string, unknown> = {}) {
+  const old = await db.prepare("SELECT * FROM market_submissions WHERE id=?1").bind(submissionId).first<Submission>();
+  if (!old) throw new Error("AGC submission not found");
+  return recordAgcTransition(db, old, "failed", detail, message);
 }
 /**
  * Read-only AppGallery listing-review status. Mirrors the App Store review
@@ -150,8 +150,8 @@ export async function handleStartAgcInvitationTest(c: AdminContext) {
     await insertAuditLog(c.env.DB, c, { app_id: appId, action: "agc_test.upload", payload: { build_id: buildId, submission_id: id, package_name: packageName } });
     return c.json({ submission_id: id, state: "processing", external_app_id: externalAppId, version_id: versionId, package_id: packageId }, 202);
   } catch (e) {
-    await c.env.DB.prepare("UPDATE market_submissions SET state='failed', error_message=?1, updated_at=?2 WHERE id=?3").bind((e as Error).message, Date.now(), id).run();
-    return c.json({ error: (e as Error).message, submission_id: id }, 502);
+    await failSubmission(c.env.DB, id, "AppGallery invitation upload failed; inspect this attempt before retrying");
+    return c.json({ error: "AppGallery invitation upload failed", submission_id: id }, 502);
   }
 }
 export async function handleGetAgcBuildSubmission(c: AdminContext) {
@@ -191,9 +191,9 @@ export async function handleGetAgcSubmission(c: AdminContext) {
       const previous = JSON.parse(sub.provider_state_json || "{}") as Record<string, unknown>;
       const snapshot = { ...previous, release_state: remote.release_state, audit_opinion: remote.audit_opinion, open_test_info: remote.open_test_info, synced_at: Date.now() };
       if (next && next !== sub.state) {
-        await event(c.env.DB, id, next, snapshot); sub.state = next;
+        if (await recordAgcTransition(c.env.DB, sub, next, snapshot)) sub.state = next;
       } else {
-        await c.env.DB.prepare("UPDATE market_submissions SET provider_state_json=?1, updated_at=?2 WHERE id=?3").bind(JSON.stringify(snapshot), Date.now(), id).run();
+        await c.env.DB.prepare("UPDATE market_submissions SET provider_state_json=?1, updated_at=?2 WHERE id=?3 AND state=?4 AND updated_at=?5").bind(JSON.stringify(snapshot), Date.now(), id, sub.state, sub.updated_at).run();
       }
       sub.provider_state_json = JSON.stringify(snapshot);
     }
@@ -254,7 +254,7 @@ export async function handleSubmitAgcInvitationTest(c: AdminContext) {
   }
 
   await submitAgcTestVersion(agcAuth, sub.external_app_id, sub.external_version_id, undefined, undefined, effectiveGroupIds);
-  await event(c.env.DB, id, "testing_review", { submitted: true, group_ids: effectiveGroupIds });
+  await event(c.env.DB, id, "testing_review", { submitted: true, group_ids: effectiveGroupIds, release_state: null });
   await insertAuditLog(c.env.DB, c, { app_id: appId, action: "agc_test.submit", payload: { submission_id: id, build_id: sub.build_id, group_ids: effectiveGroupIds } });
   return c.json({ ok: true, submission_id: id, state: "testing_review", group_ids: effectiveGroupIds });
 }
