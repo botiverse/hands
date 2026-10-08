@@ -420,7 +420,7 @@ reuse the same body, signature, event id, and delivery id.
 
 For the complete wire contract, limits, and response behavior, see the
 [Public API Reference](public-api-reference.md) and the interactive
-[/api-docs](/api-docs).
+[/api-docs](https://hands.build/api-docs).
 
 For text-only backend or CLI integrations without React, see
 [Backend & CLI Feedback](server-feedback.md).
