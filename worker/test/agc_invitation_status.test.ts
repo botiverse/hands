@@ -68,7 +68,7 @@ function fakeDb(submission: Row) {
   function apply(sql: string, args: unknown[]) {
     updates.push({ sql, args });
     if (sql.startsWith("UPDATE market_submissions SET state=?1")) {
-      submission.state = args[0]; submission.provider_state_json = args[1];
+      submission.state = args[0]; submission.provider_state_json = args[1]; submission.error_message = args[2]; submission.updated_at = args[3];
     } else if (sql.startsWith("UPDATE market_submissions SET state='failed'")) {
       submission.state = "failed"; submission.provider_state_json = args[0]; submission.error_message = args[1];
     } else if (sql.startsWith("UPDATE market_submissions SET provider_state_json")) {
@@ -79,7 +79,7 @@ function fakeDb(submission: Row) {
   }
   const db = {
     prepare: (sql: string) => stmt(sql),
-    async batch(list: Array<ReturnType<typeof stmt>>) { for (const s of list) await s.run(); return []; },
+    async batch(list: Array<ReturnType<typeof stmt>>) { for (const s of list) await s.run(); return list.map(() => ({meta:{changes:1}})); },
   };
   return { db, events, updates, submission };
 }
@@ -225,6 +225,10 @@ describe("handleStartAgcInvitationTest retry", () => {
         async run() { writes.push(sql); return {}; },
       }),
     };
+    Object.assign(db, { batch: async (list: Array<{ run(): Promise<unknown> }>) => {
+      for (const stmt of list) await stmt.run();
+      return list.map(() => ({ meta: { changes: 1 } }));
+    } });
     // No AGC credentials → the new attempt fails fast after claiming the key.
     await routes.handleStartAgcInvitationTest(ctx(db, { appId: "app-1", buildId: "b-1" }, { package_name: "build.raft.mobile" }));
     expect(writes.some((w) => w.startsWith("DELETE"))).toBe(false);
