@@ -15,7 +15,7 @@ import { useMutation, useQuery } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
 import { acceptInvite, getAuthMe, loginUrl, type Invite } from "../lib/api";
 import { useToast } from "../components/Toast";
-import { Button, Card } from "raft-ui";
+import { Button } from "raft-ui";
 
 export function AcceptInvite({ token }: { token: string }) {
   const navigate = useNavigate();
@@ -76,9 +76,9 @@ export function AcceptInvite({ token }: { token: string }) {
   if (error) {
     return (
       <div className="max-w-md mx-auto mt-20 p-4">
-        <Card className="p-4 text-danger text-sm">
+        <div className="rounded-md bg-danger-soft p-4 text-sm text-danger-strong">
           <strong>Invite error:</strong> {error}
-        </Card>
+        </div>
       </div>
     );
   }
@@ -91,7 +91,7 @@ export function AcceptInvite({ token }: { token: string }) {
 
   return (
     <div className="max-w-md mx-auto mt-20 p-4">
-      <Card className="p-6">
+      <div>
         <h1 className="text-xl font-bold mb-2">You've been invited</h1>
         <p className="text-sm text-foreground mb-4">
           <strong>{invite.invited_by_display_name ?? "Someone"}</strong> invited
@@ -161,7 +161,7 @@ export function AcceptInvite({ token }: { token: string }) {
           Token: <code>{token.slice(0, 12)}…</code> · Expires{" "}
           {new Date(invite.expires_at).toISOString().slice(0, 16)}Z
         </p>
-      </Card>
+      </div>
     </div>
   );
 }

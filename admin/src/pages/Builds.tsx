@@ -28,7 +28,6 @@ import { useToast } from "../components/Toast";
 import {
   Badge,
   Button,
-  Card,
   Input,
   Label,
   Tooltip,
@@ -117,13 +116,13 @@ export function Builds({ appId }: { appId: string }) {
         </EmptyState>
       )}
 
-      <div className="space-y-2">
+      <div className="space-y-6">
         {builds.data?.builds.map((b) => {
           const channel = channels.data?.channels.find((c) => c.id === b.channel_id);
           const pt = productTypes.data?.product_types.find((p) => p.name === b.product_type);
           const isExpanded = expandedBuildId === b.id;
           return (
-            <Card key={b.id} className="p-3">
+            <section key={b.id} className="border-t border-line-hairline pt-5">
               <div className="flex items-center gap-3 flex-wrap">
                 <span className="font-mono font-medium">
                   v{b.version_name} ({b.version_code})
@@ -179,7 +178,7 @@ export function Builds({ appId }: { appId: string }) {
                 <AgcTestingPanel appId={appId} build={b} packageName={channel?.bundle_id ?? null} />
               )}
               {isExpanded && <BuildAssetList appId={appId} buildId={b.id} />}
-            </Card>
+            </section>
           );
         })}
       </div>

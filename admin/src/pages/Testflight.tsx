@@ -8,7 +8,7 @@
  * recorded as `testflight-publish` operations.
  */
 import { useQuery } from "@tanstack/react-query";
-import { Badge, Card } from "raft-ui";
+import { Badge, EmptyState, EmptyStateTitle } from "raft-ui";
 import {
   listOperations,
   getTestflightPublishStatus,
@@ -76,15 +76,15 @@ export function Testflight({ appId }: { appId: string }) {
 
       {ops.isLoading && <p className="text-foreground-muted text-sm">Loading…</p>}
       {!ops.isLoading && uploads.length === 0 && publishes.length === 0 && (
-        <p className="text-foreground-muted text-sm">
-          No TestFlight activity yet.
-        </p>
+        <EmptyState>
+          <EmptyStateTitle>No TestFlight activity yet.</EmptyStateTitle>
+        </EmptyState>
       )}
 
       {uploads.length > 0 && (
         <section className="mb-6">
-          <h3 className="text-sm font-semibold mb-2">Uploads</h3>
-          <div className="space-y-2">
+          <h3 className="text-sm font-medium text-foreground-strong mb-2">Uploads</h3>
+          <div className="space-y-6">
             {uploads.map((op) => (
               <UploadRow key={op.id} appId={appId} op={op} />
             ))}
@@ -94,8 +94,8 @@ export function Testflight({ appId }: { appId: string }) {
 
       {publishes.length > 0 && (
         <section>
-          <h3 className="text-sm font-semibold mb-2">Distributions</h3>
-          <div className="space-y-2">
+          <h3 className="text-sm font-medium text-foreground-strong mb-2">Distributions</h3>
+          <div className="space-y-6">
             {publishes.map((op) => (
               <PublishRow key={op.id} appId={appId} op={op} />
             ))}
@@ -135,7 +135,7 @@ function UploadRow({ appId, op }: { appId: string; op: Operation }) {
   const uploadFailed = op.status === "failed";
 
   return (
-    <Card className="p-3">
+    <section className="border-t border-line-hairline pt-5">
       <div className="flex items-center gap-3 flex-wrap text-sm">
         <span className="font-mono font-medium">
           {input.version_name ? `v${input.version_name}` : "—"}
@@ -187,7 +187,7 @@ function UploadRow({ appId, op }: { appId: string; op: Operation }) {
           .
         </p>
       )}
-    </Card>
+    </section>
   );
 }
 
@@ -265,7 +265,7 @@ function PublishRow({ appId, op }: { appId: string; op: Operation }) {
     .filter((locale): locale is string => Boolean(locale));
 
   return (
-    <Card className="p-3">
+    <section className="border-t border-line-hairline pt-5">
       <div className="flex items-center gap-3 flex-wrap text-sm">
         <span className="font-mono font-medium">
           {current.version
@@ -319,7 +319,7 @@ function PublishRow({ appId, op }: { appId: string; op: Operation }) {
           Live state refresh failed: {friendlyError(liveStatus.error)}
         </p>
       )}
-    </Card>
+    </section>
   );
 }
 

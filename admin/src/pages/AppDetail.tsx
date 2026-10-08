@@ -1,7 +1,5 @@
 import {
   Button,
-  Card,
-  CardContent,
   Checkbox,
   Input,
   Label,
@@ -156,7 +154,7 @@ function AppErrorBanner({
   error?: unknown;
 }) {
   return (
-    <div className="mb-4 rounded-md border border-danger/30 bg-danger-soft px-3 py-2 text-sm text-danger-strong">
+    <div className="mb-4 rounded-md bg-danger-soft px-3 py-2 text-sm text-danger-strong">
       <div className="font-medium">{title}</div>
       <div className="text-xs mt-1">
         {description ?? (error instanceof Error ? error.message : String(error))}
@@ -195,7 +193,7 @@ export function AppChannels({ appId }: { appId: string }) {
             <Skeleton className="h-12 w-full" />
           </div>
         )}
-        <div className="space-y-2">
+        <div className="space-y-4">
           {channels.data?.channels.length === 0 && (
             <EmptyState>
               <EmptyStateTitle>No channels yet.</EmptyStateTitle>
@@ -492,7 +490,7 @@ function DeviceGroupCard({ appId, group }: { appId: string; group: DeviceGroup }
   });
 
   return (
-    <div className="rounded-md border border-line-muted p-3 space-y-2">
+    <div className="rounded-md bg-fill-muted p-3 space-y-2">
       <div className="flex items-start justify-between gap-2">
         <div>
           {editing ? (
@@ -677,7 +675,7 @@ export function AppStoreReviewPanel({ appId }: { appId: string; app: App }) {
             </EmptyStateDescription>
           </EmptyState>
         ) : data?.error ? (
-          <div className="rounded-md border border-warning/30 bg-warning-soft px-3 py-2 text-xs text-warning-strong">
+          <div className="rounded-md bg-warning-soft px-3 py-2 text-xs text-warning-strong">
             Could not load review status from App Store Connect: {data.error}
             {data.bundle_id && (
               <div className="mt-1">
@@ -1095,9 +1093,8 @@ export function AppSettings({ appId }: { appId: string }) {
   return (
     <div>
 
-      <Card className="text-sm">
-      <CardContent className="space-y-3">
-        <h2 className="text-base font-semibold">Settings</h2>
+    <div className="space-y-3 text-sm">
+        <h2 className="text-sm font-medium text-foreground-strong">Settings</h2>
 
         <AppTransferPanel appId={appId} app={app} orgs={orgs.data?.orgs ?? []} />
 
@@ -1143,7 +1140,7 @@ export function AppSettings({ appId }: { appId: string }) {
             </p>
           )}
 
-          <div className="flex items-center justify-between gap-2 p-3 border border-line-muted rounded-md">
+          <div className="flex items-center justify-between gap-2 rounded-md bg-fill-muted p-3">
             <div>
               <div className="font-medium">
                 {app.archived ? "App is archived" : "App is active"}
@@ -1261,7 +1258,7 @@ export function AppSettings({ appId }: { appId: string }) {
             ownership transfer.
           </p>
         </div>
-      </CardContent></Card>
+      </div>
     </div>
   );
 }
@@ -1493,7 +1490,7 @@ function ChannelRow({
   busy: boolean;
 }) {
   return (
-    <Card><CardContent className="flex items-center gap-3 p-3">
+    <section className="border-t border-line-hairline pt-3 flex items-center gap-3">
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-2 flex-wrap">
           <span className="font-medium">{c.name}</span>
@@ -1546,7 +1543,7 @@ function ChannelRow({
       >
         Edit
       </Button>
-    </CardContent></Card>
+    </section>
   );
 }
 

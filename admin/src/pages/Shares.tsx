@@ -11,7 +11,7 @@ import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Badge,
-  Card, Button, Input, Select, SelectTrigger, SelectValue, SelectIcon, SelectList, SelectContent, SelectItem, Dialog, DialogContent, DialogHeader, DialogTitle, DialogBody, DialogFooter, EmptyState, EmptyStateTitle, EmptyStateDescription, Skeleton } from "raft-ui";
+  Button, Input, Select, SelectTrigger, SelectValue, SelectIcon, SelectList, SelectContent, SelectItem, Dialog, DialogContent, DialogHeader, DialogTitle, DialogBody, DialogFooter, EmptyState, EmptyStateTitle, EmptyStateDescription, Skeleton } from "raft-ui";
 import type { BadgeProps } from "raft-ui";
 
 type BadgeVariant = NonNullable<BadgeProps["variant"]>;
@@ -117,7 +117,7 @@ export function AppShares({ appId }: { appId: string }) {
       </div>
 
       {createdUrl && (
-        <Card className="flex flex-row items-center gap-3 text-sm">
+        <div className="flex flex-row items-center gap-3 rounded-md bg-fill-muted p-3 text-sm">
           <span className="font-mono break-all flex-1">{createdUrl}</span>
           <Button
             variant="outline"
@@ -132,10 +132,10 @@ export function AppShares({ appId }: { appId: string }) {
           <Button variant="outline" className="text-xs" onClick={() => setCreatedUrl(null)}>
             Dismiss
           </Button>
-        </Card>
+        </div>
       )}
 
-      <Card className="overflow-x-auto">
+      <div className="overflow-x-auto">
         {shares.isLoading && (
           <div className="space-y-2">
             <Skeleton className="h-10 w-full" />
@@ -220,7 +220,7 @@ export function AppShares({ appId }: { appId: string }) {
             </tbody>
           </table>
         )}
-      </Card>
+      </div>
 
       {showCreate && (
         <CreateShareModal

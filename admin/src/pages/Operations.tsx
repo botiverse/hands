@@ -8,7 +8,7 @@ import {
   type Operation,
 } from "../lib/api";
 import { useToast } from "../components/Toast";
-import { Badge, Button, Card, CardContent, Progress, ProgressTrack, ProgressIndicator } from "raft-ui";
+import { Badge, Button, Progress, ProgressTrack, ProgressIndicator } from "raft-ui";
 
 const STATUS_VARIANTS: Record<Operation["status"], "muted" | "information" | "success" | "danger"> = {
   pending: "muted",
@@ -103,7 +103,7 @@ export function Operations({ appId }: { appId: string }) {
         <p className="text-danger text-sm">Failed: {(error as Error).message}</p>
       )}
 
-      <div className="space-y-2">
+      <div className="space-y-6">
         {data?.operations.length === 0 && (
           <p className="text-foreground-muted text-sm">No operations yet. Upload an APK to start.</p>
         )}
@@ -150,8 +150,7 @@ function OperationRow({
   }
 
   return (
-    <Card className={isLive ? "ring-2 ring-info/40" : undefined}>
-      <CardContent className="p-3">
+    <section className="border-t border-line-hairline pt-5">
       <div className="flex items-center gap-3">
         <Badge variant={STATUS_VARIANTS[op.status]}>{op.status}</Badge>
         <span className="font-mono text-sm">{op.kind}</span>
@@ -229,7 +228,7 @@ function OperationRow({
           <div className="text-foreground-hint font-mono">id: {op.id}</div>
         </div>
       )}
-      </CardContent></Card>
+      </section>
   );
 }
 
