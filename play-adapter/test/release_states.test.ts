@@ -24,11 +24,29 @@ describe("read-only Google release lifecycle", () => {
     expect(await fixture({ releases: [{ ...row, releaseLifecycleState: "FUTURE_STATE" }] }).client.listReleaseStates("build.raft.app", track)).toEqual([{ ...row, releaseLifecycleState: "FUTURE_STATE" }]);
     expect(await fixture({}).client.listReleaseStates("build.raft.app", track)).toEqual([]);
   });
+  it("normalizes omitted ProtoJSON defaults without losing other release versions", async () => {
+    const omitted = { track, releaseLifecycleState: "RELEASE_LIFECYCLE_STATE_DRAFT" };
+    expect(await fixture({ releases: [omitted, row] }).client.listReleaseStates("build.raft.app", track))
+      .toEqual([{ ...omitted, releaseName: "", activeArtifacts: [] }, row]);
+    const unnamed = { track, activeArtifacts: row.activeArtifacts, releaseLifecycleState: row.releaseLifecycleState };
+    expect(await fixture({ releases: [unnamed] }).client.listReleaseStates("build.raft.app", track))
+      .toEqual([{ ...unnamed, releaseName: "" }]);
+  });
+  it.each(["", "null", '"private-response"'])("keeps non-object responses as failures with safe parsing flags", async body => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const client = new GooglePlayClient("private-access-token", vi.fn(async () => new Response(body)) as typeof fetch, 1024);
+    await expect(client.listReleaseStates("build.raft.app", track)).rejects.toMatchObject({ code: "play_api_malformed" });
+    expect(warn).toHaveBeenCalledWith("hands_play_response_shape", JSON.stringify({ stage: "list_release_states",
+      status: 200, jsonObject: false, bodyEmpty: body === "", jsonParsed: body !== "" }));
+    expect(JSON.stringify(warn.mock.calls)).not.toContain("private-");
+  });
   it.each([
     { releases: [{ ...row, track: "production" }] },
     { releases: [{ ...row, activeArtifacts: [{ versionCode: "11300005" }] }] },
     { releases: [{ ...row, activeArtifacts: [{ versionCode: 0 }] }] },
     { releases: [{ ...row, releaseLifecycleState: null }] },
+    { releases: [{ ...row, releaseName: null }] },
+    { releases: [{ ...row, activeArtifacts: null }] },
     { releases: {} },
     { releases: Array.from({ length: 21 }, () => row) },
   ])("rejects malformed or mismatched provider data", async response => {
@@ -40,7 +58,7 @@ describe("read-only Google release lifecycle", () => {
       releaseLifecycleState: "private-state", activeArtifacts: [{ versionCode: "private-version" }] }] };
     await expect(fixture(response).client.listReleaseStates("build.raft.app", track)).rejects.toMatchObject({ code: "play_releases_malformed" });
     expect(warn).toHaveBeenCalledWith("hands_play_release_shape", JSON.stringify({ rowObject: true,
-      trackMatches: false, nameString: true, stateString: true, artifactsArray: true, artifactVersionsValid: false }));
+      trackMatches: false, nameString: true, namePresent: true, stateString: true, artifactsArray: true, artifactsPresent: true, artifactVersionsValid: false }));
     expect(JSON.stringify(warn.mock.calls)).not.toContain("private-");
   });
   it("diagnoses invalid JSON without logging the response", async () => {
@@ -48,7 +66,7 @@ describe("read-only Google release lifecycle", () => {
     const fetchImpl = vi.fn(async () => new Response("private-response", { status: 200 }));
     const client = new GooglePlayClient("private-access-token", fetchImpl as typeof fetch, 1024);
     await expect(client.listReleaseStates("build.raft.app", track)).rejects.toMatchObject({ code: "play_api_malformed" });
-    expect(warn).toHaveBeenCalledWith("hands_play_response_shape", JSON.stringify({ stage: "list_release_states", status: 200, jsonObject: false }));
+    expect(warn).toHaveBeenCalledWith("hands_play_response_shape", JSON.stringify({ stage: "list_release_states", status: 200, jsonObject: false, bodyEmpty: false, jsonParsed: false }));
     expect(JSON.stringify(warn.mock.calls)).not.toContain("private-");
   });
   it("keeps provider permission errors as failures, not approval or an empty release", async () => {

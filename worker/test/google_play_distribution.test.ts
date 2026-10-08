@@ -1189,8 +1189,8 @@ describe("durable Google Play notifications", () => {
     await observePlayRelease(h.env.DB, "app", "build.raft.app", "qa", changed, 42, b.updated_at, 3);
     expect(h.sqlite.prepare("SELECT count(*) n FROM webhook_deliveries").get()).toEqual({ n: 4 });
     const rows = h.sqlite.prepare("SELECT payload_json FROM webhook_deliveries WHERE webhook_id='match' ORDER BY created_at").all() as Array<{ payload_json: string }>;
-    expect(JSON.parse(rows[0]!.payload_json).payload).toMatchObject({ observation: "initial_snapshot", previous_state: null });
-    expect(JSON.parse(rows[1]!.payload_json).payload).toMatchObject({ observation: "transition", previous_state: stateSummary.releaseLifecycleState, state: changed.releaseLifecycleState });
+    expect(JSON.parse(rows[0]!.payload_json).payload).toMatchObject({ observation: "initial_snapshot", observation_display: "首次查询快照（不是刚发生的审核变化）", previous_state: null });
+    expect(JSON.parse(rows[1]!.payload_json).payload).toMatchObject({ observation: "transition", observation_display: "状态变化", previous_state: stateSummary.releaseLifecycleState, state: changed.releaseLifecycleState });
   });
   it("concurrent polls write once, and a late older response cannot reverse a newer observation", async () => {
     const h = await readyRelease(); notificationSubscriptions(h.sqlite);

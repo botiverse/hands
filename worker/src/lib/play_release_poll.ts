@@ -31,7 +31,8 @@ export async function observePlayRelease(db: D1Database, appId: string, packageN
     track, version: release.releaseName, version_code: versionCode,
     previous_state: old?.state ?? null, state: release.releaseLifecycleState,
     state_label: playStateLabel(release.releaseLifecycleState),
-    observation: old ? "transition" : "initial_snapshot", occurred_at: new Date(now).toISOString(),
+    observation: old ? "transition" : "initial_snapshot",
+    observation_display: old ? "状态变化" : "首次查询快照（不是刚发生的审核变化）", occurred_at: new Date(now).toISOString(),
   }, now, `SELECT 1 FROM google_play_release_observations WHERE app_id=?5
     AND package_name=?6 AND play_track=?7 AND version_code=?8 AND nonce=?9`,
     [packageName, track, versionCode, nonce])]);

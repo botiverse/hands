@@ -133,13 +133,16 @@ export class GooglePlayClient {
     } catch {
       throw new PlayAdapterError(502, "play_api_unavailable", "Google Play API request failed");
     }
-    const body = await response.json().catch(() => null) as T | null;
+    const responseText = await response.text();
+    let body: T | null = null;
+    let jsonParsed = true;
+    try { body = JSON.parse(responseText) as T; } catch { jsonParsed = false; }
     if (!response.ok) {
       throw playRejection(response.status, body, playRequestStage(url, init.method));
     }
     if (!body || typeof body !== "object") {
       console.warn("hands_play_response_shape", JSON.stringify({ stage: playRequestStage(url, init.method),
-        status: response.status, jsonObject: false }));
+        status: response.status, jsonObject: false, bodyEmpty: responseText.trim().length === 0, jsonParsed }));
       throw new PlayAdapterError(502, "play_api_malformed", "Google Play API returned malformed JSON");
     }
     return body;
@@ -175,27 +178,31 @@ export class GooglePlayClient {
     }
     return result.releases.map((value: unknown) => {
       const row = value as Partial<ReleaseSummary> | null;
-      if (!row || row.track !== track || typeof row.releaseName !== "string"
+      // ProtoJSON omits default scalar/repeated fields. Empty artifact lists
+      // produce no version observations; explicit invalid types still fail.
+      const releaseName = row?.releaseName === undefined ? "" : row.releaseName;
+      const activeArtifacts = row?.activeArtifacts === undefined ? [] : row.activeArtifacts;
+      if (!row || row.track !== track || typeof releaseName !== "string"
           || typeof row.releaseLifecycleState !== "string" || !row.releaseLifecycleState
-          || !Array.isArray(row.activeArtifacts)
-          || row.activeArtifacts.some(item => !item || typeof item.versionCode !== "number"
+          || !Array.isArray(activeArtifacts)
+          || activeArtifacts.some(item => !item || typeof item.versionCode !== "number"
             || !Number.isSafeInteger(item.versionCode) || item.versionCode <= 0)) {
         // Fixed booleans only: never log provider names, states, versions,
         // URLs or response contents while diagnosing a contract mismatch.
         console.warn("hands_play_release_shape", JSON.stringify({
           rowObject: !!row && typeof row === "object",
           trackMatches: row?.track === track,
-          nameString: typeof row?.releaseName === "string",
+          nameString: typeof row?.releaseName === "string", namePresent: row?.releaseName !== undefined,
           stateString: typeof row?.releaseLifecycleState === "string" && !!row.releaseLifecycleState,
-          artifactsArray: Array.isArray(row?.activeArtifacts),
+          artifactsArray: Array.isArray(row?.activeArtifacts), artifactsPresent: row?.activeArtifacts !== undefined,
           artifactVersionsValid: Array.isArray(row?.activeArtifacts) && row.activeArtifacts.every(item =>
             !!item && typeof item.versionCode === "number" && Number.isSafeInteger(item.versionCode) && item.versionCode > 0),
         }));
         throw new PlayAdapterError(502, "play_releases_malformed", "Google Play returned invalid release summaries");
       }
-      return { releaseName: row.releaseName, track: row.track,
+      return { releaseName, track: row.track,
         releaseLifecycleState: row.releaseLifecycleState,
-        activeArtifacts: row.activeArtifacts.map(item => ({ versionCode: item.versionCode })) };
+        activeArtifacts: activeArtifacts.map(item => ({ versionCode: item.versionCode })) };
     });
   }
 
