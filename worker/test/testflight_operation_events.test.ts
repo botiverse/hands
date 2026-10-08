@@ -63,7 +63,22 @@ describe("verified TestFlight operation notifications", () => {
     await completeTestflightOperation(db, "app", "operation", "testflight-publish", publish);
     const row = sql.prepare("SELECT payload_json FROM webhook_deliveries LIMIT 1").get() as { payload_json: string };
     expect(JSON.parse(row.payload_json).payload).toMatchObject({ state: "IN_BETA_TESTING", auto_notify_enabled: true,
-      groups: [{ id: "group", name: "Botiverse" }], resource: { type: "builds", id: "asc-build" } });
+      groups: [{ id: "group", name: "Botiverse" }], groups_display: "测试组：Botiverse", resource: { type: "builds", id: "asc-build" } });
+  });
+  it("serializes all selected internal group names for scalar templates and excludes other groups", async () => {
+    const { db, sql } = setup("testflight-publish");
+    await completeTestflightOperation(db, "app", "operation", "testflight-publish", {
+      ...publish, requested_group_ids: ["group", "second", "unnamed"],
+      assigned_groups: [...publish.assigned_groups,
+        { id: "second", name: "Team B", is_internal: true },
+        { id: "unnamed", name: "", is_internal: true },
+        { id: "unselected", name: "Other team", is_internal: true }],
+    });
+    const row = sql.prepare("SELECT payload_json FROM webhook_deliveries LIMIT 1").get() as { payload_json: string };
+    const payload = JSON.parse(row.payload_json).payload;
+    expect(payload.groups_display).toBe("测试组：Botiverse、Team B、unnamed");
+    expect(payload.groups.map((g: { id: string }) => g.id)).toEqual(["group", "second", "unnamed"]);
+    expect(testflightOperationEvent("testflight-upload", upload)).not.toHaveProperty("groups_display");
   });
   it("does not invent PROCESSING from commit, null, terminal, or failed readbacks", () => {
     for (const state of [null, { state: "COMPLETE" }, { state: "FAILED" }])
