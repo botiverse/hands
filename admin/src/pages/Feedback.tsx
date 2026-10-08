@@ -34,7 +34,6 @@ import {
   AlertDialogTitle,
   Badge,
   Button,
-  Card,
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
@@ -134,17 +133,17 @@ export function AppFeedback({ appId }: { appId: string }) {
         />
       )}
       {versionFilter && (
-        <Card className="py-2 px-3 flex flex-row items-center justify-between text-sm">
-          <span>
-            Filtered to version code <span className="font-mono">{versionFilter}</span>
+        <div className="flex flex-row items-center justify-between rounded-md bg-fill-muted px-3 py-1.5 text-sm">
+          <span className="text-foreground-muted">
+            Filtered to version code <span className="font-mono text-foreground">{versionFilter}</span>
           </span>
           <Button variant="link" size="sm" className="text-xs" onClick={() => clearScopeFilter("version_code")}>
             clear
           </Button>
-        </Card>
+        </div>
       )}
       {signatureFilter && (
-        <Card className="p-3">
+        <div className="rounded-md bg-fill-muted p-3">
           <div className="flex items-start justify-between gap-3">
             <div className="min-w-0">
               <div className="text-xs text-foreground-muted">Crash signature</div>
@@ -161,7 +160,7 @@ export function AppFeedback({ appId }: { appId: string }) {
               clear
             </Button>
           </div>
-        </Card>
+        </div>
       )}
       {!deviceFilter && !versionFilter && !signatureFilter && <FeedbackTrends appId={appId} />}
       <div className="flex items-center justify-between flex-wrap gap-2">
@@ -212,7 +211,7 @@ export function AppFeedback({ appId }: { appId: string }) {
       </div>
 
 
-      <Card className="overflow-x-auto">
+      <div className="overflow-x-auto">
         {tickets.isLoading && (
           <div className="space-y-2">
             <Skeleton className="h-10 w-full" />
@@ -284,7 +283,7 @@ export function AppFeedback({ appId }: { appId: string }) {
             </tbody>
           </table>
         )}
-      </Card>
+      </div>
     </div>
   );
 }
@@ -345,11 +344,11 @@ function CrashLogView({
     sections.find((x) => x.key === active) ?? sections[0];
 
   return (
-    <Card className="">
+    <section className="border-t border-line-hairline pt-5">
       <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
-        <h4 className="text-sm font-semibold">Crash detail</h4>
+        <h4 className="text-sm font-medium text-foreground-strong">Crash detail</h4>
         {deobfuscated && (active === "stack" || (activeSection?.key === "stack")) && (
-          <div className="flex overflow-hidden rounded-md border border-line-muted text-xs">
+          <div className="flex overflow-hidden rounded-md bg-fill-muted text-xs">
             <Button
               size="sm"
               variant={showDeobf ? "default" : "ghost"}
@@ -392,7 +391,7 @@ function CrashLogView({
           </pre>
         </>
       )}
-    </Card>
+    </section>
   );
 }
 
@@ -411,7 +410,7 @@ function DeviceScopeBanner({
   });
   const d = detail.data?.device;
   return (
-    <Card className="p-3">
+    <div className="rounded-md bg-fill-muted p-3">
       <div className="flex items-center justify-between">
         <h4 className="text-sm font-semibold">
           Device <span className="font-mono text-xs">{deviceId}</span>
@@ -444,7 +443,7 @@ function DeviceScopeBanner({
           No analytics ping from this device yet — showing its tickets below.
         </p>
       )}
-    </Card>
+    </div>
   );
 }
 
@@ -468,8 +467,8 @@ function AttachmentList({
   const others = attachments.filter((a) => !isImageAttachment(a));
 
   return (
-    <Card className="">
-      <h4 className="text-sm font-semibold mb-2">Attachments</h4>
+    <section className="border-t border-line-hairline pt-5">
+      <h4 className="mb-3 text-sm font-medium text-foreground-strong">Attachments</h4>
 
       {images.length > 0 && (
         <div className="flex flex-wrap gap-2 mb-2">
@@ -529,7 +528,7 @@ function AttachmentList({
           </Button>
         </div>
       )}
-    </Card>
+    </section>
   );
 }
 
@@ -565,7 +564,7 @@ function AttachmentImage({
         render={
           <button
             type="button"
-            className="group relative h-24 w-24 overflow-hidden rounded-md border border-line-muted bg-layer-canvas-muted"
+            className="group relative h-24 w-24 overflow-hidden rounded-md bg-layer-canvas-muted"
             onClick={() => image.data && onOpen(image.data)}
             disabled={!image.data}
           >
@@ -676,7 +675,7 @@ export function FeedbackTicketPage({
   };
 
   return (
-    <div className="space-y-4 max-w-3xl">
+    <div className="space-y-6 max-w-3xl">
       <div className="flex items-center gap-2 text-sm">
         <Link to={`/apps/${appId}/feedback`} className="text-info-strong hover:underline">
           ← Feedback
@@ -772,8 +771,8 @@ export function FeedbackTicketPage({
           </div>
 
           {t.status === "closed" && t.closure_reason && (
-            <Card className="text-sm">
-              <div className="font-semibold">Closed as {closureReasonLabel(t.closure_reason)}</div>
+            <div className="rounded-md bg-fill-muted p-3 text-sm">
+              <div className="font-medium text-foreground-strong">Closed as {closureReasonLabel(t.closure_reason)}</div>
               {t.duplicate_of_ticket_id && (
                 <Link
                   to={`/apps/${appId}/feedback/${t.duplicate_of_ticket_id}`}
@@ -782,13 +781,13 @@ export function FeedbackTicketPage({
                   Original ticket {t.duplicate_of_ticket_id}
                 </Link>
               )}
-            </Card>
+            </div>
           )}
 
-          <Card className="text-sm whitespace-pre-wrap">{t.message}</Card>
+          <p className="text-sm leading-relaxed whitespace-pre-wrap">{t.message}</p>
 
-          <Card className="">
-            <h4 className="text-sm font-semibold mb-2">Assignee</h4>
+          <section className="border-t border-line-hairline pt-5">
+            <h4 className="mb-2 text-sm font-medium text-foreground-strong">Assignee</h4>
             <div className="flex items-center gap-2 text-sm flex-wrap">
               {assigneeDraft === null ? (
                 <>
@@ -827,7 +826,7 @@ export function FeedbackTicketPage({
               ) : (
                 <>
                   <Input
-                    className="rounded-sm border border-line-strong px-2 py-1 text-sm"
+                    className="max-w-64 text-sm"
                     value={assigneeDraft}
                     autoFocus
                     onChange={(e) => setAssigneeDraft(e.target.value)}
@@ -847,10 +846,10 @@ export function FeedbackTicketPage({
                 </>
               )}
             </div>
-          </Card>
+          </section>
 
-          <Card className="">
-            <h4 className="text-sm font-semibold mb-2">Environment</h4>
+          <section className="border-t border-line-hairline pt-5">
+            <h4 className="mb-2 text-sm font-medium text-foreground-strong">Environment</h4>
             {(() => {
               // Generic render of every reported environment field (task #105):
               // no hardcoded property allowlist — parse the ticket metadata and
@@ -949,7 +948,7 @@ export function FeedbackTicketPage({
                 </dl>
               );
             })()}
-          </Card>
+          </section>
 
           {(() => {
             let meta: Record<string, unknown> = {};
@@ -962,8 +961,8 @@ export function FeedbackTicketPage({
             const excMsg = typeof meta.exception_message === "string" ? meta.exception_message : null;
             if (!stacktrace && !excClass) return null;
             return (
-              <Card className="">
-                <h4 className="text-sm font-semibold mb-2">Exception</h4>
+              <section className="border-t border-line-hairline pt-5">
+                <h4 className="mb-2 text-sm font-medium text-foreground-strong">Exception</h4>
                 {excClass && (
                   <p className="text-sm font-mono text-danger mb-2 break-all">
                     {excClass}{excMsg ? `: ${excMsg}` : ""}
@@ -974,7 +973,7 @@ export function FeedbackTicketPage({
                     {stacktrace}
                   </pre>
                 )}
-              </Card>
+              </section>
             );
           })()}
 
@@ -993,8 +992,8 @@ export function FeedbackTicketPage({
             const levelColor = (l?: string) =>
               l === "error" ? "text-danger" : l === "warning" ? "text-warning" : "text-foreground";
             return (
-              <Card className="">
-                <h4 className="text-sm font-semibold mb-2">Breadcrumbs ({crumbs.length})</h4>
+              <section className="border-t border-line-hairline pt-5">
+                <h4 className="mb-2 text-sm font-medium text-foreground-strong">Breadcrumbs ({crumbs.length})</h4>
                 <ol className="space-y-1 text-xs max-h-60 overflow-y-auto">
                   {crumbs.map((bc, i) => (
                     <li key={i} className="flex gap-2 items-baseline">
@@ -1006,7 +1005,7 @@ export function FeedbackTicketPage({
                     </li>
                   ))}
                 </ol>
-              </Card>
+              </section>
             );
           })()}
 
@@ -1049,7 +1048,7 @@ export function FeedbackTicketPage({
                       deobfuscated={symStack}
                     />
                   ) : symStack ? (
-                    <pre className="overflow-x-auto whitespace-pre-wrap rounded border border-line-muted bg-layer-canvas-muted p-3 text-xs">
+                    <pre className="overflow-x-auto whitespace-pre-wrap rounded-md bg-layer-canvas-muted p-3 text-xs">
                       {symStack}
                     </pre>
                   ) : null}
@@ -1065,29 +1064,35 @@ export function FeedbackTicketPage({
             />
           )}
 
-          <Card className="">
-            <h4 className="text-sm font-semibold mb-1">
+          <section className="border-t border-line-hairline pt-5">
+            <h4 className="mb-3 text-sm font-medium text-foreground-strong">
               Comments ({detail.data!.comments.length})
             </h4>
-            <ul className="space-y-2 text-sm">
-              {detail.data!.comments.map((cm) => (
-                <li key={cm.id} className="rounded-sm border border-line-muted p-2">
+            <ul className="space-y-4 text-sm">
+              {detail.data!.comments.map((cm, index) => (
+                <li
+                  key={cm.id}
+                  className={index === 0 ? "" : "border-t border-line-hairline pt-4"}
+                >
                   <div className="flex items-center justify-between gap-2 text-xs text-foreground-muted">
-                    <span>{cm.author_actor} · {new Date(cm.created_at).toLocaleString()}</span>
-                    <span className="rounded-sm border border-line-strong px-1.5 py-0.5 font-medium">
-                      {cm.internal
-                        ? feedbackMessage("internalNote")
-                        : feedbackMessage("visibleToReporter")}
+                    <span>
+                      <span className="font-medium text-foreground-strong">{cm.author_actor}</span> ·{" "}
+                      {new Date(cm.created_at).toLocaleString()}
                     </span>
+                    {cm.internal ? (
+                      <Badge variant="warning">{feedbackMessage("internalNote")}</Badge>
+                    ) : (
+                      <Badge variant="muted">{feedbackMessage("visibleToReporter")}</Badge>
+                    )}
                   </div>
-                  <div className="whitespace-pre-wrap">{cm.body}</div>
+                  <div className="mt-1.5 whitespace-pre-wrap leading-relaxed">{cm.body}</div>
                 </li>
               ))}
             </ul>
-            <div className="mt-2">
+            <div className="mt-4">
               <textarea
                 rows={3}
-                className="w-full resize-y rounded-sm border border-line-strong px-2 py-1.5 text-sm"
+                className="w-full resize-y rounded-md border border-line-muted bg-layer-panel px-2 py-1.5 text-sm"
                 placeholder="Add a comment…"
                 value={comment}
                 onChange={(e) => setComment(e.target.value)}
@@ -1115,7 +1120,7 @@ export function FeedbackTicketPage({
                 </Button>
               </div>
             </div>
-          </Card>
+          </section>
         </>
       )}
       <AlertDialog
