@@ -20,15 +20,15 @@ describe("formal package provider contract", () => {
 
 function harness(row: Record<string, unknown> | null, asset = true) {
   const mutations: string[] = [];
-  const db = { prepare(sql: string) {
+  const db = { async batch(stmts: Array<{run(): Promise<unknown>}>) { return Promise.all(stmts.map(s => s.run())); }, prepare(sql: string) {
     let args: unknown[] = [];
     return { bind(...v: unknown[]) { args = v; return this; },
       async first() { return sql.includes("FROM agc_market_packages") ? row : asset ? { r2_key: "a", file_hash: "hash", size_bytes: 4 } : null; },
       async run() { mutations.push(sql);
-        if (sql.includes("INSERT OR IGNORE")) row = { id: args[0], package_name: args[3], state: "uploading" };
+        if (sql.includes("INSERT OR IGNORE")) row = { id: args[0], app_id: args[1], build_id: args[2], package_name: args[3], state: "uploading", updated_at: args[4] };
         if (row && sql.includes("SET external_app_id")) row.external_app_id = args[0];
         if (row && sql.includes("SET state='processing'")) { row.state = "processing"; row.external_package_id = args[0]; }
-        if (row && sql.includes("SET state='failed'")) row.state = "failed"; if (row && sql.includes("SET state=?1")) { row.state = args[0]; row.error_message = args[1]; } return { meta: { changes: 1 } }; }
+        if (row && sql.includes("SET state='failed'")) row.state = "failed"; if (row && sql.includes("SET state=?1")) { row.state = args[0]; row.error_message = args[1]; row.updated_at=args[2]; if(args[3]) row.external_package_id=args[3]; } return { meta: { changes: 1 } }; }
     };
   }};
   const c = { req: { param: (k: string) => k === "appId" ? "app" : "build", json: async () => ({ package_name: "build.raft.mobile" }) },

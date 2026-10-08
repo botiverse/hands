@@ -52,3 +52,18 @@ as observations rather than claiming the review changed at that instant.
 Provider messages, tester identities, signed upload URLs and credentials are
 excluded from the notification. State, local history and notification enqueue
 commit together; delivery retries never repeat a provider operation.
+
+### Market package notifications
+
+Subscribe to `appgallery:package_state_changed` for market package upload
+success, upload failure, and parsing success or failure. Notifications include
+app identity, version, build number, previous/new state and a display label.
+`ready` means the market package was parsed successfully; it does **not** mean
+store review passed or that the app is published. Unknown provider states and
+query failures do not become failure notifications.
+
+The scheduled job also queries up to four processing market packages per
+five-minute interval. These calls only read compile status; they do not upload,
+bind a version, submit review or invite testers. Scheduled observations carry
+an explicit observation label. Existing duplicate-upload reconciliation and
+application permissions continue to apply.
