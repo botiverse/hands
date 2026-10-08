@@ -1,3 +1,4 @@
+import { pollGooglePlayReleases } from "./lib/play_release_poll";
 import { handleAppleWebhook, handleCreateAppleWebhook, handleGetAppleWebhook, handleDeleteAppleWebhook, handleRegisterAppleWebhook } from "./routes/apple_webhooks";
 import { handleStartGooglePlayOAuth, handleGooglePlayOAuthCallback } from "./routes/google_play_oauth";
 import { handleUploadAgcMarketPackage, handleGetAgcMarketPackage } from "./routes/agc_market_packages";
@@ -1404,6 +1405,7 @@ export async function scheduled(
   });
   ctx.waitUntil(Promise.all([
     reaper,
+    pollGooglePlayReleases(env),
     cleanupReporterFeedbackData(env),
     cleanupExpiredBuildAssetUploads(env),
   ]).then(() => undefined));

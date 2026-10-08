@@ -2,7 +2,7 @@ import { sha256 } from "@noble/hashes/sha256";
 import { bytesToHex } from "@noble/hashes/utils";
 import { PlayAdapterError } from "./errors";
 import { playRejection, playRequestStage } from "./provider_errors";
-import type { PromotionRequest, TrackRelease, TrackResource } from "./types";
+import type { PromotionRequest, TrackRelease, TrackResource, ReleaseSummary } from "./types";
 
 const API_ROOT = "https://androidpublisher.googleapis.com/androidpublisher/v3";
 const UPLOAD_ROOT = "https://androidpublisher.googleapis.com/upload/androidpublisher/v3";
@@ -159,6 +159,29 @@ export class GooglePlayClient {
       const body: unknown = await response.json().catch(() => null);
       throw playRejection(response.status, body, playRequestStage(url, init.method));
     }
+  }
+
+  async listReleaseStates(packageName: string, track: string): Promise<ReleaseSummary[]> {
+    const result = await this.requestJson<{ releases?: unknown }>(
+      `${API_ROOT}/applications/${encodeURIComponent(packageName)}/tracks/${encodeURIComponent(track)}/releases`,
+    );
+    if (result.releases === undefined) return [];
+    if (!Array.isArray(result.releases) || result.releases.length > 20) {
+      throw new PlayAdapterError(502, "play_releases_malformed", "Google Play returned invalid release summaries");
+    }
+    return result.releases.map((value: unknown) => {
+      const row = value as Partial<ReleaseSummary> | null;
+      if (!row || row.track !== track || typeof row.releaseName !== "string"
+          || typeof row.releaseLifecycleState !== "string" || !row.releaseLifecycleState
+          || !Array.isArray(row.activeArtifacts)
+          || row.activeArtifacts.some(item => !item || typeof item.versionCode !== "number"
+            || !Number.isSafeInteger(item.versionCode) || item.versionCode <= 0)) {
+        throw new PlayAdapterError(502, "play_releases_malformed", "Google Play returned invalid release summaries");
+      }
+      return { releaseName: row.releaseName, track: row.track,
+        releaseLifecycleState: row.releaseLifecycleState,
+        activeArtifacts: row.activeArtifacts.map(item => ({ versionCode: item.versionCode })) };
+    });
   }
 
   private editRoot(packageName: string, editId?: string): string {

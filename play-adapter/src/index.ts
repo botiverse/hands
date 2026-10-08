@@ -158,6 +158,14 @@ export function createPlayAdapterService(options: AdapterOptions = {}) {
       }
     },
 
+    async listReleaseStates(input: TrackMaximumRpcInput, env: PlayAdapterEnv): Promise<AdapterResult<import("./types").ReleaseSummary[]>> {
+      try {
+        const track = trackInput(input);
+        const resolved = await client(track, env);
+        return { ok: true, value: await resolved.client.listReleaseStates(track.packageName, track.playTrack) };
+      } catch (error) { return failure(error, null); }
+    },
+
     async readTrackMaximum(input: TrackMaximumRpcInput, env: PlayAdapterEnv): Promise<AdapterResult<{
       max_version_code: number;
     }>> {

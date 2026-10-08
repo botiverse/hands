@@ -26,6 +26,9 @@ interface GooglePlayAdapterService {
     package_name: string;
     tracks: GooglePlayTracks;
   }>>;
+  listReleaseStates(input: GooglePlayBindingInput & { handsTrack: keyof GooglePlayTracks }): Promise<GooglePlayAdapterResult<Array<{
+    releaseName: string; track: string; activeArtifacts: Array<{ versionCode: number }>; releaseLifecycleState: string;
+  }>>>;
   readTrackMaximum(input: GooglePlayBindingInput & { handsTrack: keyof GooglePlayTracks }): Promise<
     GooglePlayAdapterResult<{ max_version_code: number }>
   >;

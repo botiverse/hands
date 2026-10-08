@@ -17,6 +17,10 @@ export default class GooglePlayAdapter extends WorkerEntrypoint<PlayAdapterEnv> 
     return this.service.verifyBinding(input, this.env);
   }
 
+  listReleaseStates(input: TrackMaximumRpcInput) {
+    return this.service.listReleaseStates(input, this.env);
+  }
+
   readTrackMaximum(input: TrackMaximumRpcInput) {
     return this.service.readTrackMaximum(input, this.env);
   }

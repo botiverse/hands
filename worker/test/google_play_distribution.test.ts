@@ -1,4 +1,9 @@
-import { describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it } from "vitest";
+import { exportPKCS8, generateKeyPair } from "jose";
+let generatedPrivateKey: string;
+beforeAll(async () => {
+  generatedPrivateKey = await exportPKCS8((await generateKeyPair("RS256", { extractable: true })).privateKey);
+});
 import Database from "better-sqlite3";
 import { readdirSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -469,7 +474,7 @@ async function readyRelease(principal: "human" | "agent" = "human", role: "publi
     credential: {
       type: "service_account",
       client_email: "app@example.iam.gserviceaccount.com",
-      private_key: "-----BEGIN PRIVATE KEY-----\ntest\n-----END PRIVATE KEY-----",
+      private_key: generatedPrivateKey,
     },
     actor: "raft:human@test",
     keyringJson: harness.env.PLAY_CRED_ENC_KEYS,
@@ -532,6 +537,7 @@ function playAdapterStub(overrides: Partial<PlayAdapter> = {}): PlayAdapter {
         tracks: input.tracks,
       },
     }),
+    listReleaseStates: async () => ({ ok: true, value: [] }),
     readTrackMaximum: async () => ({ ok: true, value: { max_version_code: 41 } }),
     promote: async () => {
       throw new Error("unexpected promote call");
@@ -607,7 +613,7 @@ function validBindingBody() {
       project_id: "tenant-project",
       private_key_id: "tenant-key",
       client_email: "tenant@example.iam.gserviceaccount.com",
-      private_key: "-----BEGIN PRIVATE KEY-----\nprivate-tenant-material\n-----END PRIVATE KEY-----",
+      private_key: generatedPrivateKey,
     },
     package_name: "build.raft.app",
     tracks: { internal: "qa", closed: "closed", production: "production" },
@@ -633,17 +639,17 @@ describe("Google Play binding routes", () => {
     });
     expect(stored.status).toBe(200);
     const responseText = await stored.text();
-    expect(responseText).not.toContain("private-tenant-material");
+    expect(responseText).not.toContain(generatedPrivateKey.split("\n")[1]);
     expect(responseText).not.toContain("BEGIN PRIVATE KEY");
     expect(JSON.parse(responseText)).toMatchObject({
       google_play: { app_id: "app", enabled: true, package_name: "build.raft.app" },
     });
     const row = admin.sqlite.prepare(`SELECT credential_ciphertext_b64, credential_iv_b64,
       credential_key_version FROM app_google_play_bindings WHERE app_id='app'`).get() as Record<string, string>;
-    expect(JSON.stringify(row)).not.toContain("private-tenant-material");
+    expect(JSON.stringify(row)).not.toContain(generatedPrivateKey.split("\n")[1]);
     expect(row.credential_key_version).toBe("v1");
     const audit = admin.sqlite.prepare("SELECT payload FROM audit_logs WHERE action='google_play.binding.set'").get() as { payload: string };
-    expect(audit.payload).not.toContain("private-tenant-material");
+    expect(audit.payload).not.toContain(generatedPrivateKey.split("\n")[1]);
 
     const readback = await admin.request("/api/apps/app/google-play-binding");
     expect(readback.status).toBe(200);
@@ -716,7 +722,7 @@ describe("Google Play binding routes", () => {
       ok: false,
       code: "PLAY_PERMISSION_DENIED",
     });
-    expect(deniedAudit.payload).not.toContain("private-tenant-material");
+    expect(deniedAudit.payload).not.toContain(generatedPrivateKey.split("\n")[1]);
 
     harness.env.PLAY_RELEASE_SERVICE = playAdapterStub();
     const enabled = await harness.request("/api/apps/app/google-play-binding/enable", { method: "POST" });
@@ -1142,5 +1148,82 @@ describe("Google Play track discovery routes", () => {
   it("rejects malformed body without requiring a connection", async () => {
     const h = googlePlayBindingHarness("admin");
     expect((await h.request(path, { ...input, body: "null" })).status).toBe(400);
+  });
+});
+
+import { observePlayRelease, pollGooglePlayReleases } from "../src/lib/play_release_poll";
+function notificationSubscriptions(sql: Database.Database) {
+  sql.exec(`INSERT INTO organizations(id,slug,name,external_id,created_at) VALUES('org','org','Org','org',0);
+    UPDATE apps SET org_id='org' WHERE id='app';
+    INSERT INTO apps(id,slug,name,platform,created_at,org_id) VALUES('other','other','Other','android',0,'org');`);
+  for (const [id, app, enabled] of [["match", "app", 1], ["org", null, 1], ["other", "other", 1], ["disabled", "app", 0]])
+    sql.prepare(`INSERT INTO webhooks(id,org_id,app_id,url,enabled,events_json,secret,created_by,created_at,updated_at)
+      VALUES(?,'org',?,'https://receiver.example',?,'["google_play:submission_succeeded","google_play:submission_failed","google_play:release_state_changed"]','secret','human',0,0)`).run(id, app, enabled);
+}
+const stateSummary = { releaseName: "1.2.3", track: "qa", activeArtifacts: [{ versionCode: 42 }], releaseLifecycleState: "RELEASE_LIFECYCLE_STATE_IN_REVIEW" };
+describe("durable Google Play notifications", () => {
+  it.each([true, false])("atomically records actual submission (%s) and isolates subscribers", async success => {
+    const h = await readyRelease(); notificationSubscriptions(h.sqlite);
+    h.env.PLAY_RELEASE_SERVICE = playAdapterStub({ promote: async (_input, stream) => {
+      const bytes = new Uint8Array(await new Response(stream).arrayBuffer());
+      return success ? { ok: true, value: { edit_id: "edit", package_name: "build.raft.app", version_code: 42, track: "internal", sha256: sha(bytes), rollout_percent: 100 } }
+        : { ok: false, error: { code: "play_api_unavailable", status: 502, message: "failed" } };
+    } });
+    const response = await h.request("/api/apps/app/releases/release/distributions/play/promote", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ track: "internal", expected_revision: 1, approval: { note: "test" } }) });
+    expect(response.status).toBe(success ? 200 : 502);
+    const rows = h.sqlite.prepare("SELECT webhook_id,payload_json FROM webhook_deliveries ORDER BY webhook_id").all() as Array<{ webhook_id: string; payload_json: string }>;
+    expect(rows.map(r => r.webhook_id)).toEqual(["match", "org"]);
+    expect(JSON.parse(rows[0]!.payload_json)).toMatchObject({ org_id: "org", event: success ? "google_play:submission_succeeded" : "google_play:submission_failed", payload: {
+      app: { slug: "raft-android" }, version: "1.2.3", version_code: 42, track: "internal",
+      state: success ? "SUBMISSION_SUCCEEDED" : "SUBMISSION_FAILED" } });
+    expect(h.sqlite.prepare("SELECT count(*) n FROM release_receipts WHERE kind='play-promotion'").get()).toEqual({ n: 1 });
+  });
+  it("dedupes snapshots and changes, with raw state and exact version/track", async () => {
+    const h = await readyRelease(); notificationSubscriptions(h.sqlite);
+    const b = h.sqlite.prepare("SELECT updated_at FROM app_google_play_bindings").get() as { updated_at: number };
+    await observePlayRelease(h.env.DB, "app", "build.raft.app", "qa", stateSummary, 42, b.updated_at, 1);
+    await observePlayRelease(h.env.DB, "app", "build.raft.app", "qa", stateSummary, 42, b.updated_at, 2);
+    const changed = { ...stateSummary, releaseLifecycleState: "RELEASE_LIFECYCLE_STATE_PUBLISHED" };
+    await observePlayRelease(h.env.DB, "app", "build.raft.app", "qa", changed, 42, b.updated_at, 3);
+    expect(h.sqlite.prepare("SELECT count(*) n FROM webhook_deliveries").get()).toEqual({ n: 4 });
+    const rows = h.sqlite.prepare("SELECT payload_json FROM webhook_deliveries WHERE webhook_id='match' ORDER BY created_at").all() as Array<{ payload_json: string }>;
+    expect(JSON.parse(rows[0]!.payload_json).payload).toMatchObject({ observation: "initial_snapshot", previous_state: null });
+    expect(JSON.parse(rows[1]!.payload_json).payload).toMatchObject({ observation: "transition", previous_state: stateSummary.releaseLifecycleState, state: changed.releaseLifecycleState });
+  });
+  it("concurrent polls write once, and a late older response cannot reverse a newer observation", async () => {
+    const h = await readyRelease(); notificationSubscriptions(h.sqlite);
+    const b = h.sqlite.prepare("SELECT updated_at FROM app_google_play_bindings").get() as { updated_at: number };
+    await Promise.all([1, 2].map(() => observePlayRelease(h.env.DB, "app", "build.raft.app", "qa", stateSummary, 42, b.updated_at, 10)));
+    expect(h.sqlite.prepare("SELECT count(*) n FROM webhook_deliveries").get()).toEqual({ n: 2 });
+    const newer = { ...stateSummary, releaseLifecycleState: "RELEASE_LIFECYCLE_STATE_APPROVED_NOT_PUBLISHED" };
+    await observePlayRelease(h.env.DB, "app", "build.raft.app", "qa", newer, 42, b.updated_at, 20);
+    await observePlayRelease(h.env.DB, "app", "build.raft.app", "qa", stateSummary, 42, b.updated_at, 15);
+    expect(h.sqlite.prepare("SELECT state,revision FROM google_play_release_observations").get()).toEqual({ state: newer.releaseLifecycleState, revision: 2 });
+    expect(h.sqlite.prepare("SELECT count(*) n FROM webhook_deliveries").get()).toEqual({ n: 4 });
+  });
+  it("rolls back failed outbox writes and discards responses after binding revocation", async () => {
+    const h = await readyRelease(); notificationSubscriptions(h.sqlite);
+    const b = h.sqlite.prepare("SELECT updated_at FROM app_google_play_bindings").get() as { updated_at: number };
+    h.sqlite.exec("CREATE TRIGGER fail_delivery BEFORE INSERT ON webhook_deliveries BEGIN SELECT RAISE(ABORT,'outbox unavailable'); END");
+    await expect(observePlayRelease(h.env.DB, "app", "build.raft.app", "qa", stateSummary, 42, b.updated_at, 1)).rejects.toThrow("outbox unavailable");
+    expect(h.sqlite.prepare("SELECT count(*) n FROM google_play_release_observations").get()).toEqual({ n: 0 });
+    h.sqlite.exec("DROP TRIGGER fail_delivery; UPDATE app_google_play_bindings SET enabled=0,updated_at=updated_at+1");
+    await observePlayRelease(h.env.DB, "app", "build.raft.app", "qa", stateSummary, 42, b.updated_at, 2);
+    expect(h.sqlite.prepare("SELECT count(*) n FROM webhook_deliveries").get()).toEqual({ n: 0 });
+  });
+  it("polls enabled bindings only, retains state on API failure, and respects schedule", async () => {
+    const h = await readyRelease(); notificationSubscriptions(h.sqlite); let calls = 0;
+    h.env.PLAY_RELEASE_SERVICE = playAdapterStub({ listReleaseStates: async input => {
+      calls++;
+      return input.handsTrack === "internal" ? { ok: true, value: [stateSummary] }
+        : { ok: false, error: { status: 403, code: "play_api_rejected", message: "not authorized" } };
+    } });
+    await pollGooglePlayReleases(h.env, 1000); expect(calls).toBe(3);
+    expect(h.sqlite.prepare("SELECT count(*) n FROM google_play_release_observations").get()).toEqual({ n: 1 });
+    await pollGooglePlayReleases(h.env, 2000); expect(calls).toBe(3);
+    h.sqlite.exec("UPDATE app_google_play_bindings SET enabled=0");
+    await pollGooglePlayReleases(h.env, 400000); expect(calls).toBe(3);
   });
 });
