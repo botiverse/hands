@@ -93,10 +93,12 @@ export default defineConfig({
   },
   themeConfig: {
     docsKit: { translated },
-    nav: docsConfig.brand.headerNav.map((item: { label: string; href: string }) => ({
-      text: item.label,
-      link: item.href,
-    })),
+    nav: docsConfig.brand.headerNav
+      .filter((item: { label: string; href: string; primary?: boolean }) => !item.primary)
+      .map((item: { label: string; href: string }) => ({
+        text: item.label,
+        link: item.href,
+      })),
     sidebar: { '/': sidebarFor(''), '/zh/': sidebarFor('zh') },
     search: { provider: 'local' },
   },
