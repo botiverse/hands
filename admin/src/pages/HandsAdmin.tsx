@@ -1,5 +1,4 @@
 import { useQuery } from "@tanstack/react-query";
-import { Card, CardContent, CardHeader, CardTitle } from "raft-ui";
 import { ApiError, getHandsAdminOverview } from "../lib/api";
 
 const formatBytes = (value: number) => {
@@ -12,14 +11,14 @@ const formatBytes = (value: number) => {
 
 function Table({ title, rows }: { title: string; rows: Array<[string, number]> }) {
   return (
-    <Card>
-      <CardHeader><CardTitle>{title}</CardTitle></CardHeader>
-      <CardContent className="divide-y divide-line-hairline text-sm">
+    <section className="border-t border-line-hairline pt-5">
+      <h2 className="mb-2 text-sm font-medium text-foreground-strong">{title}</h2>
+      <div className="divide-y divide-line-hairline text-sm">
         {rows.map(([label, count]) => (
           <div className="flex justify-between py-2" key={label}><span>{label}</span><strong>{count}</strong></div>
         ))}
-      </CardContent>
-    </Card>
+      </div>
+    </section>
   );
 }
 
@@ -44,7 +43,7 @@ export function HandsAdmin() {
       <p className="text-xs font-semibold uppercase tracking-[0.18em] text-info-strong">Hands admin</p>
       <h1 className="mt-1 text-3xl font-semibold">Observability</h1>
       <p className="mt-2 text-sm text-foreground-muted">Global, read-only product and storage inventory.</p>
-      <div className="mt-7 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">{cards.map(([label, value]) => <Card key={label}><CardContent><div className="text-sm text-foreground-muted">{label}</div><div className="mt-2 text-3xl font-semibold">{value}</div></CardContent></Card>)}</div>
+      <div className="mt-7 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">{cards.map(([label, value]) => <div key={label}><div className="text-sm text-foreground-muted">{label}</div><div className="mt-2 text-3xl font-semibold">{value}</div></div>)}</div>
       <p className="mt-5 text-xs text-foreground-muted">{data.storage.note} Measured {new Date(data.measured_at).toISOString()}.</p>
       <div className="mt-5 grid gap-4 md:grid-cols-2">
         <Table title="Users by type" rows={data.users_by_type.map((row) => [row.type, row.count])} />

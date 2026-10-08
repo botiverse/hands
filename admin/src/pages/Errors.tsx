@@ -6,7 +6,7 @@
 import { useNavigate } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { listCrashGroups } from "../lib/api";
-import { Card } from "raft-ui";
+import { EmptyState, EmptyStateTitle } from "raft-ui";
 
 export function AppErrors({ appId }: { appId: string }) {
   const navigate = useNavigate();
@@ -29,7 +29,7 @@ export function AppErrors({ appId }: { appId: string }) {
         </div>
       </div>
 
-      <Card className="overflow-x-auto">
+      <div className="overflow-x-auto">
         {groups.isLoading && <p className="text-sm text-foreground-muted">Loading…</p>}
         {groups.error && (
           <p className="text-sm text-danger">
@@ -37,7 +37,9 @@ export function AppErrors({ appId }: { appId: string }) {
           </p>
         )}
         {!groups.isLoading && rows.length === 0 && (
-          <p className="text-sm text-foreground-muted">No captured errors yet. 🎉</p>
+          <EmptyState>
+            <EmptyStateTitle>No captured errors yet. 🎉</EmptyStateTitle>
+          </EmptyState>
         )}
         {rows.length > 0 && (
           <table className="w-full text-sm">
@@ -83,7 +85,7 @@ export function AppErrors({ appId }: { appId: string }) {
             </tbody>
           </table>
         )}
-      </Card>
+      </div>
     </div>
   );
 }

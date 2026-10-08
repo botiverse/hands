@@ -6,7 +6,7 @@
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { getFeedbackStats, listCrashGroups, type CrashType } from "../lib/api";
-import { Badge, Card, CardContent, SegmentedControl, SegmentedControlItem, SegmentedControlLabel, type BadgeProps } from "raft-ui";
+import { Badge, EmptyState, EmptyStateTitle, SegmentedControl, SegmentedControlItem, SegmentedControlLabel, type BadgeProps } from "raft-ui";
 import { CrashByVersion } from "../components/FeedbackTrends";
 
 export const CRASH_TYPE_LABELS: Record<CrashType, string> = {
@@ -78,15 +78,12 @@ export function AppCrashes({ appId }: { appId: string }) {
       </div>
 
       {(stats.data?.crashes_by_version.length ?? 0) > 0 && (
-        <Card className="max-w-md">
-          <CardContent>
-            <CrashByVersion rows={stats.data!.crashes_by_version} />
-          </CardContent>
-        </Card>
+        <div className="max-w-md">
+          <CrashByVersion rows={stats.data!.crashes_by_version} />
+        </div>
       )}
 
-      <Card>
-        <CardContent className="overflow-x-auto">
+      <div className="overflow-x-auto">
         {groups.isLoading && <p className="text-sm text-foreground-muted">Loading…</p>}
         {groups.error && (
           <p className="text-sm text-danger">
@@ -94,9 +91,11 @@ export function AppCrashes({ appId }: { appId: string }) {
           </p>
         )}
         {!groups.isLoading && rows.length === 0 && (
-          <p className="text-sm text-foreground-muted">
-            {crashType ? `No ${CRASH_TYPE_LABELS[crashType]} crashes reported.` : "No crashes reported yet. 🎉"}
-          </p>
+          <EmptyState>
+            <EmptyStateTitle>
+              {crashType ? `No ${CRASH_TYPE_LABELS[crashType]} crashes reported.` : "No crashes reported yet. 🎉"}
+            </EmptyStateTitle>
+          </EmptyState>
         )}
         {rows.length > 0 && (
           <table className="w-full text-sm">
@@ -148,8 +147,7 @@ export function AppCrashes({ appId }: { appId: string }) {
             </tbody>
           </table>
         )}
-        </CardContent>
-      </Card>
+        </div>
     </div>
   );
 }

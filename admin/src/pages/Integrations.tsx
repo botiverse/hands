@@ -3,17 +3,7 @@ import type { LucideIcon } from "lucide-react";
 import { Apple, Play, Smartphone } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 import { useParams } from "react-router-dom";
-import {
-  Badge,
-  Card,
-  CardDescription,
-  CardHeader,
-  CardLeading,
-  CardTitle,
-  CardTrailing,
-  TextHeading,
-  TextSans,
-} from "raft-ui";
+import { Badge, TextHeading, TextSans } from "raft-ui";
 import { listApps } from "../lib/api";
 import { AppGalleryConnector } from "../components/integrations/AppGalleryConnector";
 import { GooglePlayConnector } from "../components/integrations/GooglePlayConnector";
@@ -85,22 +75,18 @@ export function Integrations({ appId }: { appId: string }) {
             app.platform === platform ? (
               <Component key={id} appId={appId} />
             ) : (
-              <Card key={id} data-testid={`connector-inactive-${id}`}>
-                <CardHeader>
-                  <CardLeading>
-                    <span className="flex size-9 shrink-0 items-center justify-center rounded-md border border-line-muted bg-layer-inset text-foreground-hint">
-                      <Icon className="size-4" aria-hidden="true" />
-                    </span>
-                  </CardLeading>
-                  <CardTitle className="text-foreground-muted">{label}</CardTitle>
-                  <CardDescription>
+              <div key={id} data-testid={`connector-inactive-${id}`} className="flex items-center gap-3 rounded-md bg-fill-muted/60 px-3 py-2.5 text-sm">
+                <span className="flex size-9 shrink-0 items-center justify-center rounded-md border border-line-muted bg-layer-inset text-foreground-hint">
+                  <Icon className="size-4" aria-hidden="true" />
+                </span>
+                <div className="min-w-0 flex-1">
+                  <div className="font-medium text-foreground-muted">{label}</div>
+                  <div className="text-xs text-foreground-muted">
                     Available for {platformLabel} apps.
-                  </CardDescription>
-                  <CardTrailing>
-                    <Badge variant="muted">Only for {platformLabel} apps</Badge>
-                  </CardTrailing>
-                </CardHeader>
-              </Card>
+                  </div>
+                </div>
+                <Badge variant="muted">Only for {platformLabel} apps</Badge>
+              </div>
             ),
           )}
         </div>

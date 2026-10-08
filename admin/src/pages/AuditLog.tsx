@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { Avatar, AvatarImage, AvatarFallback, Badge, Card } from "raft-ui";
+import { Avatar, AvatarImage, AvatarFallback, Badge } from "raft-ui";
 import { listAuditLogs, type AuditLogEntry } from "../lib/api";
 
 export function AuditLog({ appId }: { appId: string }) {
@@ -18,7 +18,7 @@ export function AuditLog({ appId }: { appId: string }) {
       {data && data.logs.length === 0 && (
         <p className="text-foreground-muted text-sm">No audit log entries yet.</p>
       )}
-      <div className="space-y-2">
+      <div className="space-y-6">
         {data?.logs.map((entry) => (
           <AuditEntry key={entry.id} entry={entry} />
         ))}
@@ -39,7 +39,7 @@ function AuditEntry({ entry }: { entry: AuditLogEntry }) {
     (entry.actor_username ? `@${entry.actor_username}` : null) ||
     entry.actor;
   return (
-    <Card>
+    <section className="border-t border-line-hairline pt-5">
       <div className="flex items-center justify-between mb-2 flex-wrap gap-2">
         <div className="flex items-center gap-2 flex-wrap min-w-0">
           <Badge variant="information">{entry.action}</Badge>
@@ -57,7 +57,7 @@ function AuditEntry({ entry }: { entry: AuditLogEntry }) {
       <pre className="text-xs bg-layer-canvas-muted p-2 rounded-sm overflow-x-auto max-w-full whitespace-pre">
         {JSON.stringify(payload, null, 2)}
       </pre>
-    </Card>
+    </section>
   );
 }
 
