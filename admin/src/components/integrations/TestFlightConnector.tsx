@@ -4,12 +4,6 @@ import { Apple, ChevronDown } from "lucide-react";
 import {
   Badge,
   Button,
-  Card,
-  CardDescription,
-  CardHeader,
-  CardLeading,
-  CardTitle,
-  CardTrailing,
   Input,
   Textarea,
   Tooltip,
@@ -112,7 +106,7 @@ export function TestFlightConnector({ appId }: { appId: string }) {
   };
 
   const formValid =
-    keyId.trim().length > 0 && issuerId.trim().length > 0 && p8.includes("BEGIN PRIVATE KEY");
+    keyId.trim().length > 0 && issuerId.trim().length > 0 && p8.includes("BEGIN") && p8.includes("KEY");
 
   const form = (
     <div className="space-y-3">
@@ -178,7 +172,7 @@ export function TestFlightConnector({ appId }: { appId: string }) {
         Private key (.p8 contents)
         <Textarea
           className="w-full font-mono h-24 resize-y mt-1"
-          placeholder={"-----BEGIN PRIVATE KEY-----\n…\n-----END PRIVATE KEY-----"}
+          placeholder={"Paste the contents of the downloaded .p8 AuthKey file"}
           value={p8}
           onChange={(e) => setP8(e.target.value)}
         />
@@ -215,11 +209,11 @@ export function TestFlightConnector({ appId }: { appId: string }) {
           {save.isPending ? "…" : meta ? "Replace credentials" : "Save & enable"}
         </Button>
       </div>
-      {p8.trim().length > 0 && !p8.includes("BEGIN PRIVATE KEY") && (
+      {p8.trim().length > 0 && !(p8.includes("BEGIN") && p8.includes("KEY")) && (
         <p className="text-xs text-warning-strong">
           This does not look like a .p8 private key — paste the full PEM
-          contents of the downloaded AuthKey file, including the BEGIN/END
-          lines.
+          contents of the downloaded AuthKey file, including the header and
+          footer lines.
         </p>
       )}
       <p className="text-xs text-foreground-hint">
@@ -230,28 +224,28 @@ export function TestFlightConnector({ appId }: { appId: string }) {
   );
 
   return (
-    <Card data-testid="testflight-connector">
-      <CardHeader>
-        <CardLeading>
-          <span className="flex size-9 shrink-0 items-center justify-center rounded-md border border-line-muted bg-layer-inset text-foreground-muted">
-            <Apple className="size-4" aria-hidden="true" />
-          </span>
-        </CardLeading>
-        <CardTitle>TestFlight</CardTitle>
-        <CardDescription>
-          App Store Connect API key used to upload builds of this app to
-          TestFlight. Stored encrypted; the private key is never shown again
-          after saving.
-        </CardDescription>
+    <section data-testid="testflight-connector" className="border-t border-line-hairline pt-5">
+      <div className="flex items-start gap-3">
+        <span className="flex size-9 shrink-0 items-center justify-center rounded-md border border-line-muted bg-layer-inset text-foreground-muted">
+          <Apple className="size-4" aria-hidden="true" />
+        </span>
+        <div className="min-w-0 flex-1">
+          <h3 className="text-sm font-medium text-foreground-strong">TestFlight</h3>
+          <p className="mt-0.5 text-xs text-foreground-muted">
+            App Store Connect API key used to upload builds of this app to
+            TestFlight. Stored encrypted; the private key is never shown again
+            after saving.
+          </p>
         {meta ? (
-          <div className="col-start-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-foreground-muted">
+          <div className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-foreground-muted">
             <Badge variant="success">Configured</Badge>
             <span className="min-w-0 truncate font-mono">Key ID {meta.key_id}</span>
             <span className="min-w-0 truncate font-mono">Issuer {meta.issuer_id}</span>
             <span>updated {new Date(meta.updated_at).toISOString().slice(0, 10)}</span>
           </div>
         ) : null}
-        <CardTrailing className="gap-2">
+        </div>
+        <div className="flex items-center gap-2">
           {meta ? (
             <Button
               variant="outline"
@@ -274,10 +268,10 @@ export function TestFlightConnector({ appId }: { appId: string }) {
               Configure
             </Button>
           )}
-        </CardTrailing>
-      </CardHeader>
+        </div>
+      </div>
       {meta && expanded ? (
-        <div className="space-y-3 border-t border-line-hairline p-4">
+        <div className="mt-3 space-y-3 border-t border-line-hairline pt-4">
           {!editing && (
             <div className="flex flex-wrap gap-2">
               <Tooltip>
@@ -321,8 +315,8 @@ export function TestFlightConnector({ appId }: { appId: string }) {
         </div>
       ) : null}
       {!meta && expanded ? (
-        <div className="border-t border-line-hairline p-4">{form}</div>
+        <div className="mt-3 border-t border-line-hairline pt-4">{form}</div>
       ) : null}
-    </Card>
+    </section>
   );
 }

@@ -10,7 +10,7 @@
  */
 import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { Button, Card, Tooltip, TooltipTrigger, TooltipContent, Progress, ProgressTrack, ProgressIndicator } from "raft-ui";
+import { Button, Tooltip, TooltipTrigger, TooltipContent, Progress, ProgressTrack, ProgressIndicator } from "raft-ui";
 import { getFeedbackStats } from "../lib/api";
 
 const KINDS = ["feedback", "bug", "crash", "error"] as const;
@@ -65,10 +65,10 @@ export function FeedbackTrends({ appId }: { appId: string }) {
   if (total === 0) return null;
 
   return (
-    <Card className="p-4 mb-4">
+    <section className="mb-4 border-t border-line-hairline pt-5">
       <div className="flex items-center justify-between mb-1">
         <div>
-          <h3 className="text-sm font-semibold">Last 30 days</h3>
+          <h3 className="text-sm font-medium text-foreground-strong">Last 30 days</h3>
           <p className="text-xs text-foreground-muted">
             {total} ticket{total === 1 ? "" : "s"} · hover for daily detail
           </p>
@@ -101,7 +101,7 @@ export function FeedbackTrends({ appId }: { appId: string }) {
       ) : (
         <StackedDaily days={days} />
       )}
-    </Card>
+    </section>
   );
 }
 

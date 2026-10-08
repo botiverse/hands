@@ -4,12 +4,6 @@ import { ChevronDown, Play } from "lucide-react";
 import {
   Badge,
   Button,
-  Card,
-  CardDescription,
-  CardHeader,
-  CardLeading,
-  CardTitle,
-  CardTrailing,
   Input,
   Select,
   SelectContent,
@@ -246,17 +240,16 @@ export function GooglePlayConnector({ appId }: { appId: string }) {
   );
 
   return (
-    <Card data-testid="google-play-binding-panel">
-      <CardHeader>
-        <CardLeading>
-          <span className="flex size-9 shrink-0 items-center justify-center rounded-md border border-line-muted bg-layer-inset text-foreground-muted">
-            <Play className="size-4" aria-hidden="true" />
-          </span>
-        </CardLeading>
-        <CardTitle>{gp("title")}</CardTitle>
-        <CardDescription>{gp("description")}</CardDescription>
+    <section data-testid="google-play-binding-panel" className="border-t border-line-hairline pt-5">
+      <div className="flex items-start gap-3">
+        <span className="flex size-9 shrink-0 items-center justify-center rounded-md border border-line-muted bg-layer-inset text-foreground-muted">
+          <Play className="size-4" aria-hidden="true" />
+        </span>
+        <div className="min-w-0 flex-1">
+          <h3 className="text-sm font-medium text-foreground-strong">{gp("title")}</h3>
+          <p className="mt-0.5 text-xs text-foreground-muted">{gp("description")}</p>
         {meta ? (
-            <div className="col-start-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-foreground-muted">
+            <div className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-foreground-muted">
               {needsConfig ? (
                 <>
                   <Badge variant="success">{gp("connected")}</Badge>
@@ -273,7 +266,8 @@ export function GooglePlayConnector({ appId }: { appId: string }) {
               )}
             </div>
           ) : null}
-        <CardTrailing className="gap-2">
+        </div>
+        <div className="flex items-center gap-2">
           {!meta ? (
             <>
               <Button
@@ -307,15 +301,15 @@ export function GooglePlayConnector({ appId }: { appId: string }) {
               />
             </Button>
           )}
-        </CardTrailing>
-      </CardHeader>
+        </div>
+      </div>
       {!meta && !query.isLoading && !query.data?.oauth_available ? (
-        <p className="border-t border-line-hairline px-4 py-2 text-xs text-foreground-muted">
+        <p className="mt-3 border-t border-line-hairline pt-2 text-xs text-foreground-muted">
           {gp("oauthUnavailable")}
         </p>
       ) : null}
       {oauthResult ? (
-        <div className="flex flex-wrap items-center gap-2 border-t border-line-hairline px-4 py-2 text-xs">
+        <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-line-hairline pt-2 text-xs">
           <span className="min-w-0 flex-1 text-danger">
             {oauthResult.kind === "failed"
               ? googlePlayOAuthFailureMessage(oauthResult.errorCode)
@@ -327,7 +321,7 @@ export function GooglePlayConnector({ appId }: { appId: string }) {
         </div>
       ) : null}
       {expanded ? (
-        <div className="space-y-3 border-t border-line-hairline p-4">
+        <div className="mt-3 space-y-3 border-t border-line-hairline pt-4">
           {meta ? (
             <div className="space-y-0.5 text-xs text-foreground-muted">
               <div className="break-all font-mono">
@@ -376,7 +370,7 @@ export function GooglePlayConnector({ appId }: { appId: string }) {
               {meta.credential_kind === "authorized_user" && <p className="text-xs text-foreground-muted">{gp("disconnectHelp")}{" "}
                 <a className="text-info-strong hover:underline" href="https://myaccount.google.com/connections" target="_blank" rel="noopener noreferrer">{gp("authorizedAccount")}</a>
               </p>}
-              {showForm && <div className="space-y-3 rounded-md border border-line-muted p-3">
+              {showForm && <div className="space-y-3 rounded-md bg-fill-muted p-3">
                 <p className="text-xs text-foreground">{gp("formHelp")}</p>
                 {packageTrackFields}
                 {serviceCredentialField}
@@ -404,6 +398,6 @@ export function GooglePlayConnector({ appId }: { appId: string }) {
           )}
         </div>
       ) : null}
-    </Card>
+    </section>
   );
 }

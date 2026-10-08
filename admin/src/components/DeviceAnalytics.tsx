@@ -5,7 +5,7 @@
  */
 import { useQuery } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
-import { Card, CardContent, Tooltip, TooltipTrigger, TooltipContent, Progress, ProgressTrack, ProgressIndicator } from "raft-ui";
+import { Tooltip, TooltipTrigger, TooltipContent, Progress, ProgressTrack, ProgressIndicator } from "raft-ui";
 import { getDeviceAnalytics, getVersionMetrics } from "../lib/api";
 
 const BAR_COLOR = "#2a78d6";
@@ -28,10 +28,9 @@ export function DeviceAnalytics({ appId }: { appId: string }) {
   const maxVersion = Math.max(1, ...data.by_version.map((v) => v.devices));
 
   return (
-    <Card>
-      <CardContent>
+    <section className="border-t border-line-hairline pt-5">
       <div className="flex items-baseline justify-between mb-3">
-        <h3 className="text-sm font-semibold">Active devices</h3>
+        <h3 className="text-sm font-medium text-foreground-strong">Active devices</h3>
         <span className="text-xs text-foreground-muted">reported in last 30 days</span>
       </div>
 
@@ -162,6 +161,6 @@ export function DeviceAnalytics({ appId }: { appId: string }) {
           </div>
         </div>
       )}
-      </CardContent></Card>
+      </section>
   );
 }

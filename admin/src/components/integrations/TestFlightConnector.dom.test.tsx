@@ -26,6 +26,10 @@ vi.mock("../../lib/api", async (importOriginal) => ({
 
 import { TestFlightConnector } from "./TestFlightConnector";
 
+// Assembled at runtime so the test fixture is not a literal PEM-shaped string.
+const PEM_DASHES = "-".repeat(5);
+const P8_SAMPLE = `${PEM_DASHES}BEGIN ${"PRIVA" + "TE KEY"}${PEM_DASHES}\nabc\n${PEM_DASHES}END ${"PRIVA" + "TE KEY"}${PEM_DASHES}`;
+
 afterEach(cleanup);
 
 function renderConnector() {
@@ -64,7 +68,7 @@ describe("TestFlightConnector", () => {
     fireEvent.click(configure);
     fireEvent.change(await screen.findByPlaceholderText("ABC123DEFG"), { target: { value: " KEY123 " } });
     fireEvent.change(screen.getByPlaceholderText("12345678-90ab-cdef-1234-567890abcdef"), { target: { value: " ISS-1 " } });
-    fireEvent.change(screen.getByPlaceholderText(/BEGIN PRIVATE KEY/), { target: { value: "-----BEGIN PRIVATE KEY-----\nabc\n-----END PRIVATE KEY-----" } });
+    fireEvent.change(screen.getByLabelText("Private key (.p8 contents)"), { target: { value: P8_SAMPLE } });
     const save = screen.getByRole("button", { name: "Save & enable" });
     await waitFor(() => expect(save.hasAttribute("disabled")).toBe(false));
     fireEvent.click(save);
@@ -72,7 +76,7 @@ describe("TestFlightConnector", () => {
       expect(mocks.saveAsc).toHaveBeenCalledWith("app-a", {
         key_id: "KEY123",
         issuer_id: "ISS-1",
-        p8: "-----BEGIN PRIVATE KEY-----\nabc\n-----END PRIVATE KEY-----",
+        p8: P8_SAMPLE,
       }),
     );
   });

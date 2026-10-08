@@ -4,12 +4,6 @@ import { ChevronDown, Smartphone } from "lucide-react";
 import {
   Badge,
   Button,
-  Card,
-  CardDescription,
-  CardHeader,
-  CardLeading,
-  CardTitle,
-  CardTrailing,
 } from "raft-ui";
 import {
   deleteAgcCredentials,
@@ -118,21 +112,20 @@ export function AppGalleryConnector({ appId }: { appId: string }) {
   );
 
   return (
-    <Card data-testid="appgallery-connector">
-      <CardHeader>
-        <CardLeading>
-          <span className="flex size-9 shrink-0 items-center justify-center rounded-md border border-line-muted bg-layer-inset text-foreground-muted">
-            <Smartphone className="size-4" aria-hidden="true" />
-          </span>
-        </CardLeading>
-        <CardTitle>AppGallery Connect</CardTitle>
-        <CardDescription>
-          Service Account or legacy API client credential used for HarmonyOS
-          testing and publishing. The uploaded JSON is encrypted and private
-          material is never shown again.
-        </CardDescription>
+    <section data-testid="appgallery-connector" className="border-t border-line-hairline pt-5">
+      <div className="flex items-start gap-3">
+        <span className="flex size-9 shrink-0 items-center justify-center rounded-md border border-line-muted bg-layer-inset text-foreground-muted">
+          <Smartphone className="size-4" aria-hidden="true" />
+        </span>
+        <div className="min-w-0 flex-1">
+          <h3 className="text-sm font-medium text-foreground-strong">AppGallery Connect</h3>
+          <p className="mt-0.5 text-xs text-foreground-muted">
+            Service Account or legacy API client credential used for HarmonyOS
+            testing and publishing. The uploaded JSON is encrypted and private
+            material is never shown again.
+          </p>
         {meta ? (
-          <div className="col-start-2 space-y-0.5 text-xs text-foreground-muted">
+          <div className="mt-1.5 space-y-0.5 text-xs text-foreground-muted">
             <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
               <Badge variant="success">Configured</Badge>
               <span>{meta.credential_kind}</span>
@@ -152,7 +145,8 @@ export function AppGalleryConnector({ appId }: { appId: string }) {
             </div>
           </div>
         ) : null}
-        <CardTrailing className="gap-2">
+        </div>
+        <div className="flex items-center gap-2">
           {meta ? (
             <Button
               variant="outline"
@@ -175,10 +169,10 @@ export function AppGalleryConnector({ appId }: { appId: string }) {
               Configure
             </Button>
           )}
-        </CardTrailing>
-      </CardHeader>
+        </div>
+      </div>
       {meta && expanded ? (
-        <div className="space-y-3 border-t border-line-hairline p-4">
+        <div className="mt-3 space-y-3 border-t border-line-hairline pt-4">
           {!editing && (
             <div className="flex flex-wrap gap-2">
               <Button variant="outline" disabled={test.isPending} onClick={() => test.mutate()}>
@@ -208,8 +202,8 @@ export function AppGalleryConnector({ appId }: { appId: string }) {
         </div>
       ) : null}
       {!meta && expanded ? (
-        <div className="border-t border-line-hairline p-4">{form}</div>
+        <div className="mt-3 border-t border-line-hairline pt-4">{form}</div>
       ) : null}
-    </Card>
+    </section>
   );
 }
