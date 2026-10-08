@@ -1221,6 +1221,16 @@ describe("durable Google Play notifications", () => {
     expect(h.sqlite.prepare("SELECT count(*) n FROM google_play_release_observations").get()).toEqual({ n: 0 });
     expect(h.sqlite.prepare("SELECT count(*) n FROM webhook_deliveries").get()).toEqual({ n: 0 });
   });
+  it("does not skip the next cron slot when its invocation arrives slightly earlier", async () => {
+    const h = await readyRelease(); let calls = 0;
+    h.env.PLAY_RELEASE_SERVICE = playAdapterStub({ listReleaseStates: async () => {
+      calls++; return { ok: true, value: [] };
+    } });
+    await pollGooglePlayReleases(h.env, 300_611); expect(calls).toBe(3);
+    await pollGooglePlayReleases(h.env, 300_900); expect(calls).toBe(3);
+    await pollGooglePlayReleases(h.env, 600_373); expect(calls).toBe(6);
+    await pollGooglePlayReleases(h.env, 600_611); expect(calls).toBe(6);
+  });
   it("polls enabled bindings only, retains state on API failure, and respects schedule", async () => {
     const h = await readyRelease(); notificationSubscriptions(h.sqlite); let calls = 0;
     h.env.PLAY_RELEASE_SERVICE = playAdapterStub({ listReleaseStates: async input => {
