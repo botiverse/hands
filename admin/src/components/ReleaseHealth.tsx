@@ -1,5 +1,4 @@
 import { useQuery } from "@tanstack/react-query";
-import { Card, CardContent } from "raft-ui";
 import { getReleaseHealth } from "../lib/api";
 
 function Rate({ value }: { value: number | null }) {
@@ -18,22 +17,21 @@ export function ReleaseHealth({ appId }: { appId: string }) {
   if (query.isLoading || !data || data.totals.sessions === 0) return null;
 
   return (
-    <Card className="mb-4">
-      <CardContent>
+    <section className="mb-4 border-t border-line-hairline pt-5">
       <div className="flex items-baseline justify-between mb-4">
-        <h3 className="text-sm font-semibold">Release health</h3>
+        <h3 className="text-sm font-medium text-foreground-strong">Release health</h3>
         <span className="text-xs text-foreground-muted">last {data.window_days} days</span>
       </div>
 
       <div className="grid gap-3 sm:grid-cols-2 mb-5">
-        <div className="rounded-md border border-line-hairline p-3">
+        <div className="rounded-md bg-fill-muted p-3">
           <div className="text-xs text-foreground-muted mb-1">Crash-free sessions</div>
           <div className="text-2xl"><Rate value={data.totals.crash_free_sessions_pct} /></div>
           <div className="text-xs text-foreground-muted mt-1 tabular-nums">
             {data.totals.sessions - data.totals.crashed_sessions} of {data.totals.sessions} sessions
           </div>
         </div>
-        <div className="rounded-md border border-line-hairline p-3">
+        <div className="rounded-md bg-fill-muted p-3">
           <div className="text-xs text-foreground-muted mb-1">Crash-free devices</div>
           <div className="text-2xl"><Rate value={data.totals.crash_free_devices_pct} /></div>
           <div className="text-xs text-foreground-muted mt-1 tabular-nums">
@@ -76,6 +74,6 @@ export function ReleaseHealth({ appId }: { appId: string }) {
           </tbody>
         </table>
       </div>
-      </CardContent></Card>
+    </section>
   );
 }

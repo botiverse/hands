@@ -264,7 +264,7 @@ describe("GooglePlayConnector", () => {
       value: async () => JSON.stringify({
         type: "service_account",
         client_email: "app@tenant.example",
-        private_key: "-----BEGIN PRIVATE KEY-----\\ntest\\n-----END PRIVATE KEY-----",
+        private_key: "test-key-material",
       }),
     });
     fireEvent.change(screen.getByLabelText("Choose JSON file"), { target: { files: [file] } });
