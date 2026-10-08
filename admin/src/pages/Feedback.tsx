@@ -1048,7 +1048,7 @@ export function FeedbackTicketPage({
                       deobfuscated={symStack}
                     />
                   ) : symStack ? (
-                    <pre className="overflow-x-auto whitespace-pre-wrap rounded border border-line-muted bg-layer-canvas-muted p-3 text-xs">
+                    <pre className="overflow-x-auto whitespace-pre-wrap rounded-md bg-layer-canvas-muted p-3 text-xs">
                       {symStack}
                     </pre>
                   ) : null}
