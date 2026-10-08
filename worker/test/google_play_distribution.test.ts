@@ -1213,6 +1213,14 @@ describe("durable Google Play notifications", () => {
     await observePlayRelease(h.env.DB, "app", "build.raft.app", "qa", stateSummary, 42, b.updated_at, 2);
     expect(h.sqlite.prepare("SELECT count(*) n FROM webhook_deliveries").get()).toEqual({ n: 0 });
   });
+  it("rejects a prior connection's response after reconnect while the binding remains enabled and verified", async () => {
+    const h = await readyRelease(); notificationSubscriptions(h.sqlite);
+    const b = h.sqlite.prepare("SELECT updated_at FROM app_google_play_bindings").get() as { updated_at: number };
+    h.sqlite.exec("UPDATE app_google_play_bindings SET updated_at=updated_at+1");
+    await observePlayRelease(h.env.DB, "app", "build.raft.app", "qa", stateSummary, 42, b.updated_at, 1);
+    expect(h.sqlite.prepare("SELECT count(*) n FROM google_play_release_observations").get()).toEqual({ n: 0 });
+    expect(h.sqlite.prepare("SELECT count(*) n FROM webhook_deliveries").get()).toEqual({ n: 0 });
+  });
   it("polls enabled bindings only, retains state on API failure, and respects schedule", async () => {
     const h = await readyRelease(); notificationSubscriptions(h.sqlite); let calls = 0;
     h.env.PLAY_RELEASE_SERVICE = playAdapterStub({ listReleaseStates: async input => {
