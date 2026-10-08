@@ -58,9 +58,15 @@ export default defineDocsConfig({
     logo: '/favicon.svg',
     home: '/',
     headerNav: [
-      { label: 'Docs', href: '/docs/' },
-      { label: 'API explorer', href: '/api-docs' },
-      { label: 'Login', href: '/api/auth/login?return=%2F', primary: true },
+      // VitePress prefixes every nav `link` with `base` ('/docs/'), so the
+      // in-docs entries are written base-relative ('/' resolves to /docs/);
+      // destinations outside the docs site use absolute URLs so the prefix
+      // cannot turn them into /docs/<path> 404s (API explorer, Login CTA).
+      { label: 'Docs', href: '/' },
+      { label: 'SDKs & API', href: '/cli-reference/' },
+      { label: 'API explorer', href: 'https://hands.build/api-docs' },
+      // `primary` items are rendered as the rightmost CTA (not a nav tab).
+      { label: 'Login', href: 'https://app.hands.build/', primary: true },
     ],
   },
   search: true,
