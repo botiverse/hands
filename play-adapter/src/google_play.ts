@@ -138,6 +138,8 @@ export class GooglePlayClient {
       throw playRejection(response.status, body, playRequestStage(url, init.method));
     }
     if (!body || typeof body !== "object") {
+      console.warn("hands_play_response_shape", JSON.stringify({ stage: playRequestStage(url, init.method),
+        status: response.status, jsonObject: false }));
       throw new PlayAdapterError(502, "play_api_malformed", "Google Play API returned malformed JSON");
     }
     return body;
@@ -167,6 +169,8 @@ export class GooglePlayClient {
     );
     if (result.releases === undefined) return [];
     if (!Array.isArray(result.releases) || result.releases.length > 20) {
+      console.warn("hands_play_release_shape", JSON.stringify({ collectionArray: Array.isArray(result.releases),
+        collectionTooLarge: Array.isArray(result.releases) && result.releases.length > 20 }));
       throw new PlayAdapterError(502, "play_releases_malformed", "Google Play returned invalid release summaries");
     }
     return result.releases.map((value: unknown) => {
@@ -176,6 +180,17 @@ export class GooglePlayClient {
           || !Array.isArray(row.activeArtifacts)
           || row.activeArtifacts.some(item => !item || typeof item.versionCode !== "number"
             || !Number.isSafeInteger(item.versionCode) || item.versionCode <= 0)) {
+        // Fixed booleans only: never log provider names, states, versions,
+        // URLs or response contents while diagnosing a contract mismatch.
+        console.warn("hands_play_release_shape", JSON.stringify({
+          rowObject: !!row && typeof row === "object",
+          trackMatches: row?.track === track,
+          nameString: typeof row?.releaseName === "string",
+          stateString: typeof row?.releaseLifecycleState === "string" && !!row.releaseLifecycleState,
+          artifactsArray: Array.isArray(row?.activeArtifacts),
+          artifactVersionsValid: Array.isArray(row?.activeArtifacts) && row.activeArtifacts.every(item =>
+            !!item && typeof item.versionCode === "number" && Number.isSafeInteger(item.versionCode) && item.versionCode > 0),
+        }));
         throw new PlayAdapterError(502, "play_releases_malformed", "Google Play returned invalid release summaries");
       }
       return { releaseName: row.releaseName, track: row.track,

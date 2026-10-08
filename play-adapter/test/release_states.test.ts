@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { GooglePlayClient } from "../src/google_play";
 
 const track = "closed.alpha";
@@ -14,6 +14,7 @@ function fixture(response: unknown, status = 200) {
   return { requests, client: new GooglePlayClient("test-token", fetchImpl as typeof fetch, 1024) };
 }
 describe("read-only Google release lifecycle", () => {
+  afterEach(() => vi.restoreAllMocks());
   it("queries the live track without creating, changing, or committing an edit", async () => {
     const f = fixture({ releases: [row] });
     expect(await f.client.listReleaseStates("build.raft.app", track)).toEqual([row]);
@@ -32,6 +33,23 @@ describe("read-only Google release lifecycle", () => {
     { releases: Array.from({ length: 21 }, () => row) },
   ])("rejects malformed or mismatched provider data", async response => {
     await expect(fixture(response).client.listReleaseStates("build.raft.app", track)).rejects.toMatchObject({ code: "play_releases_malformed" });
+  });
+  it("diagnoses malformed rows with fixed flags without disclosing provider data", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const response = { releases: [{ ...row, track: "private-track", releaseName: "private-name",
+      releaseLifecycleState: "private-state", activeArtifacts: [{ versionCode: "private-version" }] }] };
+    await expect(fixture(response).client.listReleaseStates("build.raft.app", track)).rejects.toMatchObject({ code: "play_releases_malformed" });
+    expect(warn).toHaveBeenCalledWith("hands_play_release_shape", JSON.stringify({ rowObject: true,
+      trackMatches: false, nameString: true, stateString: true, artifactsArray: true, artifactVersionsValid: false }));
+    expect(JSON.stringify(warn.mock.calls)).not.toContain("private-");
+  });
+  it("diagnoses invalid JSON without logging the response", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const fetchImpl = vi.fn(async () => new Response("private-response", { status: 200 }));
+    const client = new GooglePlayClient("private-access-token", fetchImpl as typeof fetch, 1024);
+    await expect(client.listReleaseStates("build.raft.app", track)).rejects.toMatchObject({ code: "play_api_malformed" });
+    expect(warn).toHaveBeenCalledWith("hands_play_response_shape", JSON.stringify({ stage: "list_release_states", status: 200, jsonObject: false }));
+    expect(JSON.stringify(warn.mock.calls)).not.toContain("private-");
   });
   it("keeps provider permission errors as failures, not approval or an empty release", async () => {
     await expect(fixture({ error: { message: "permission denied" } }, 403).client.listReleaseStates("build.raft.app", track)).rejects.toMatchObject({ code: "play_api_rejected" });

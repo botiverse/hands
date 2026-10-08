@@ -49,8 +49,10 @@ export async function pollGooglePlayReleases(env: Env, now = Date.now()) {
     AND b.enabled=1 AND b.verification_state='verified' AND b.package_name IS NOT NULL
     ORDER BY s.next_poll_at,s.app_id LIMIT 4`).bind(now).all<{ app_id: string; next_poll_at: number }>();
   for (const row of results) {
+    // Anchor cooldown to cron slots: a few milliseconds of invocation jitter
+    // must not suppress the next five-minute tick. The CAS still claims once.
     const claim = await env.DB.prepare(`UPDATE google_play_poll_schedule SET next_poll_at=?1
-      WHERE app_id=?2 AND next_poll_at=?3`).bind(now + 300_000, row.app_id, row.next_poll_at).run();
+      WHERE app_id=?2 AND next_poll_at=?3`).bind((Math.floor(now / 300_000) + 1) * 300_000, row.app_id, row.next_poll_at).run();
     if (claim.meta.changes !== 1) continue;
     try {
       const binding = await getGooglePlayBinding(env.DB, row.app_id, env.PLAY_CRED_ENC_KEYS);
