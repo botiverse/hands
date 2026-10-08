@@ -7,6 +7,7 @@ it.each([
   ["list_tracks", { error: { errors: [{ reason: "insufficientPermissions" }], message: "hidden-refresh" } }, "insufficientPermissions"],
   ["delete_edit", { error: { errors: [{ reason: "hidden-secret" }], message: "hidden-refresh" } }, "unspecified"],
 ])("reports safe Google reason and actual failed step: %s", async (stage, body, reason) => {
+  const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
   const calls: string[] = [];
   const service = createPlayAdapterService({ fetchImpl: vi.fn(async (url, init = {}) => {
     const path = String(url); const method = init.method ?? "GET"; calls.push(method);
@@ -18,6 +19,9 @@ it.each([
   }) });
   const result = await service.listTracks({ credential, packageName: "build.test.app" }, { MAX_AAB_SIZE_BYTES: "209715200" });
   expect(result).toMatchObject({ ok: false, error: { status: 403, code: "play_api_rejected", message: `Google Play API request failed with 403 (stage=${stage}; reason=${reason})` } });
+  expect(warn).toHaveBeenCalledWith("hands_play_rejection", JSON.stringify({ stage, status: 403, reason }));
+  expect(JSON.stringify(warn.mock.calls)).not.toMatch(/hidden-secret|hidden-refresh|private-project|person@example/);
+  warn.mockRestore();
   expect(JSON.stringify(result)).not.toMatch(/hidden-secret|hidden-refresh|private-project|person@example/);
   if (stage === "list_tracks") expect(calls.at(-1)).toBe("DELETE");
   if (stage === "create_edit") expect(calls).toEqual(["POST", "POST"]);

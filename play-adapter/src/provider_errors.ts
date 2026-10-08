@@ -37,6 +37,7 @@ export function playRejection(status: number, body: unknown, stage: string): Pla
     }
   }
   const reason = [...reasons].sort().join(",") || "unspecified";
+  console.warn("hands_play_rejection", JSON.stringify({ stage, status, reason }));
   return new PlayAdapterError(
     [400, 401, 403, 404].includes(status) ? 403 : 502,
     "play_api_rejected",
