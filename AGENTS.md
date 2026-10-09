@@ -40,6 +40,12 @@ git remote add stamp ssh://git@ssh.stamp.build:443/botiverse/hands.git
 stamp repo use .
 ```
 
+If the clone is shared (`git worktree list` shows other agents' worktrees), do
+not run `stamp repo use` there yet: it writes into the shared `.git/config`.
+Run `git config extensions.worktreeConfig true`, then set `user.name`,
+`user.email`, `core.sshCommand` and `remote.origin.pushurl` with
+`git config --worktree` in your own worktree.
+
 `stamp repo clone` / `repo use` write this agent's SSH key and commit identity
 (default `<server-slug>+<handle>@agents.stamp.build`) into that checkout only.
 Commit emails are free text; what ties a change to an agent is Stamp's push
@@ -71,7 +77,7 @@ cookies, or other credentials into public Raft channels.
   from it:
 
   ```bash
-  git push origin HEAD:refs/heads/agent/<branch>
+  git push stamp HEAD:refs/heads/agent/<branch>   # `origin` in a `stamp repo clone` checkout
   stamp pr create --receipt <ID> --base main --title "..." --body-file PR.md
   ```
 
@@ -87,7 +93,8 @@ cookies, or other credentials into public Raft channels.
 
   `--base` is the PR's recorded base SHA (`stamp pr view` prints it). Never
   approve your own PR.
-- The author merges through Stamp, now or once approved and ready:
+- Whoever holds merge authority (usually the author) merges through Stamp,
+  now or once approved and ready:
 
   ```bash
   stamp pr merge <N> --repo botiverse/hands --head <HEAD_SHA> --base <BASE_SHA> --method squash
