@@ -3,14 +3,14 @@
 ## Workflow rules
 
 1. **Always use worktrees** for coding work. Don't pollute `main`.
-2. **Never push to remote `main` directly**. Merge into local main only; only designated release managers push remote main.
+2. **Never push to remote `main` directly**. Agents push branches, open PRs, approve and merge through Stamp; see "Workflow Rules" in `AGENTS.md`.
 3. After completing work on a worktree branch, run `pnpm -w build` + `pnpm -w test` + `pnpm -w lint` before requesting merge.
 
 ## Local dev setup
 
 ```sh
 # clone
-gh repo clone botiverse/hands
+stamp repo clone botiverse/hands   # agents; see AGENTS.md for Stamp setup
 cd hands
 
 # install

@@ -8,43 +8,48 @@ R2.
 ## Start Here
 
 1. Read this file and `CONTRIBUTING.md`.
-2. On a new machine, verify GitHub CLI and git SSH access before cloning,
-   creating worktrees, or pushing branches.
+2. Before cloning, creating worktrees, or pushing branches, set up Stamp
+   (below). Agents use their own Stamp identity, not the machine's GitHub
+   login.
 3. Check the task thread that brought you here, then claim the task before
    doing any work.
 4. Create or reuse an isolated worktree for code changes.
 5. Report progress in the task thread, not as a new root message.
 
-## New Machine GitHub Setup
+## Git Access Through Stamp
 
-Check GitHub CLI:
+Agents clone, push, open PRs, review and merge through Stamp
+(<https://stamp.build/llms.txt>) under their own agent identity. Do not use the
+machine's shared `gh` login, a key in `~/.ssh`, or another agent's checkout or
+SSH key: a push made with another agent's key is that agent's push.
 
-```bash
-gh auth status
-```
-
-If it is not logged in, use the normal GitHub CLI flow:
-
-```bash
-gh auth login
-```
-
-Prefer SSH for git operations. Confirm SSH access:
+Setup, once per agent:
 
 ```bash
-ssh -T git@github.com
+raft integration login --service stamp
+npm i -g @botiverse/stamp-cli@latest
+stamp login && stamp whoami        # principalType=agent, your own name
 ```
 
-Expected result is GitHub accepting the key and saying shell access is not
-provided. If SSH fails, create or register a key before cloning/pushing:
+Get a checkout that pushes through Stamp:
 
 ```bash
-ssh-keygen -t ed25519 -C "<your-email-or-agent>@mail.build"
-eval "$(ssh-agent -s)"
-ssh-add ~/.ssh/id_ed25519
-gh ssh-key add ~/.ssh/id_ed25519.pub --title "$(hostname)-quiver"
-ssh -T git@github.com
+stamp repo clone botiverse/hands
+# or, in an existing clone:
+git remote add stamp ssh://git@ssh.stamp.build:443/botiverse/hands.git
+stamp repo use .
 ```
+
+If the clone is shared (`git worktree list` shows other agents' worktrees), do
+not run `stamp repo use` there yet: it writes into the shared `.git/config`.
+Run `git config extensions.worktreeConfig true`, then set `user.name`,
+`user.email`, `core.sshCommand` and `remote.origin.pushurl` with
+`git config --worktree` in your own worktree.
+
+`stamp repo clone` / `repo use` write this agent's SSH key and commit identity
+(default `<server-slug>+<handle>@agents.stamp.build`) into that checkout only.
+Commit emails are free text; what ties a change to an agent is Stamp's push
+receipt and its approval / merge records.
 
 Do not paste SSH private keys, GitHub tokens, `NPM_TOKEN`,
 `CLOUDFLARE_API_TOKEN`, Hands deploy tokens, Raft client secrets, session
@@ -54,7 +59,7 @@ cookies, or other credentials into public Raft channels.
 
 | Purpose | Local path / package | Notes |
 | --- | --- | --- |
-| Hands canonical checkout | `/Users/artin/0Workspace/github.com/oranix-io/quiver` | `github.com/oranix-io/quiver` |
+| Your checkout | `stamp repo clone botiverse/hands` | Pushes through Stamp with your own key |
 | Worker | `worker/` | Hono Worker, API routes, Login with Raft, D1/R2 access |
 | Admin UI | `admin/` | React + Vite + Tailwind admin SPA and docs shell |
 | APK parser container | `container/` | Cloudflare Container using `aapt` / `apksigner` |
@@ -65,24 +70,42 @@ cookies, or other credentials into public Raft channels.
 
 ## Workflow Rules
 
-- Always use worktrees for coding work. Do not create new commits directly on
-  the canonical `main` checkout.
-- Never push remote `main` directly unless the owner explicitly authorizes that
-  push for the specific task. Merge finished work into local `main` only after
-  validation.
-- Do not revert or clean unrelated dirty files. If the canonical checkout is
-  dirty, inspect carefully and preserve other agents' changes.
-- Every meaningful progress or completion report must say whether the work is
-  branch/worktree-only, merged into local `main`, pushed to remote `main`, or
-  not applicable. If merged, include the local `main` commit hash.
+- Always use worktrees or a task branch for coding work, created from current
+  `origin/main` in your own Stamp checkout. Never push remote `main` directly.
+- Do not revert or clean unrelated dirty files. Preserve other agents' changes.
+- Push the branch through Stamp, keep the receipt ID it prints, and open the PR
+  from it:
 
-Create a worktree from the canonical checkout:
+  ```bash
+  git push stamp HEAD:refs/heads/agent/<branch>   # `origin` in a `stamp repo clone` checkout
+  stamp pr create --receipt <ID> --base main --title "..." --body-file PR.md
+  ```
 
-```bash
-cd /Users/artin/0Workspace/github.com/oranix-io/quiver
-git worktree add -b feat/<lane>-<slice> ../quiver-<slice> main
-cd ../quiver-<slice>
-```
+  Refer to the PR by its Stamp page
+  (`https://stamp.build/github/botiverse/hands/pull/<N>`).
+- A reviewer who is not the author reads the exact head and approves it in
+  Stamp; that approval is the GO, not a Raft message or PR comment:
+
+  ```bash
+  stamp pr review <N> --repo botiverse/hands
+  stamp pr approve <N> --repo botiverse/hands --head <HEAD_SHA> --base <BASE_SHA>
+  ```
+
+  `--base` is the PR's recorded base SHA (`stamp pr view` prints it). Never
+  approve your own PR.
+- Whoever holds merge authority (usually the author) merges through Stamp,
+  now or once approved and ready:
+
+  ```bash
+  stamp pr merge <N> --repo botiverse/hands --head <HEAD_SHA> --base <BASE_SHA> --method squash
+  stamp pr merge <N> --repo botiverse/hands --head <HEAD_SHA> --base <BASE_SHA> --auto --method squash
+  ```
+
+  Do not merge with the GitHub Merge button or `gh pr merge`. A new push voids
+  the approval and the auto-merge registration; review, approve and register
+  again on the new head.
+- Every meaningful progress or completion report names the PR (Stamp link) and
+  whether it is open, approved, or merged; if merged, include the merge commit.
 
 ## Build And Validation
 
@@ -197,13 +220,14 @@ curl -s -H "Authorization: Bearer $QUIVER_BEARER_TOKEN" \
 
 ## First-Day Checklist
 
-- Confirm `gh auth status` works.
-- Confirm `ssh -T git@github.com` works.
+- Confirm `stamp whoami` shows your own agent.
+- Confirm your checkout pushes through Stamp (`git remote -v` shows
+  `ssh.stamp.build`).
 - Confirm you know the task channel and thread target.
 - Run `git status --short --branch` in the repo you will touch.
 - Create or reuse a task-specific worktree.
 - Run focused validation before reporting.
-- Report local-main / remote-main status explicitly.
+- Report PR status (open / approved / merged) explicitly.
 
 ## Third-party code & licenses
 
