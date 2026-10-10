@@ -234,7 +234,7 @@ describe("FeedbackProvider", () => {
       /\.hands-feedback-close-main::before\s*\{[^}]*display:\s*none/,
     );
     expect(css).toMatch(
-      /\.hands-feedback-close-split\[data-menu-open\],[\s\S]*\.hands-feedback-close-split:has\(\.hands-feedback-close-main:active\),[\s\S]*\.hands-feedback-close-split:has\(\.hands-feedback-close-caret:active\)\s*\{[^}]*box-shadow:\s*4px 4px 0 var\(--line-strong\)[^}]*translate:\s*0 -1px/,
+      /\.hands-feedback-close-split\[data-menu-open\],[\s\S]*\.hands-feedback-close-split:has\(\.hands-feedback-close-main:active\),[\s\S]*\.hands-feedback-close-split:has\(\.hands-feedback-close-caret:active\)\s*\{[^}]*box-shadow:\s*var\(--theme-shadow-md, 4px 4px 0 var\(--line-strong\)\)[^}]*translate:\s*0 -1px/,
     );
     expect(css).toMatch(
       /\.hands-feedback-close-caret\[data-popup-open\]\s*\{[^}]*box-shadow:\s*none !important[^}]*translate:\s*0 !important/,

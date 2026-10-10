@@ -473,7 +473,7 @@
 .hands-feedback-close-split[data-menu-open],
 .hands-feedback-close-split:has(.hands-feedback-close-main:active),
 .hands-feedback-close-split:has(.hands-feedback-close-caret:active) {
-  box-shadow: 4px 4px 0 var(--line-strong);
+  box-shadow: var(--theme-shadow-md, 4px 4px 0 var(--line-strong));
   translate: 0 -1px;
 }
 
