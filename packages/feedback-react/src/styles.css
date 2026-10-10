@@ -219,7 +219,7 @@
 .hands-feedback-empty-icon {
   background: var(--color-brutal-cream, var(--hf-surface));
   border: 2px solid var(--hf-border-strong);
-  box-shadow: 2px 2px 0 var(--hf-border-strong);
+  box-shadow: var(--theme-shadow-sm, 2px 2px 0 var(--hf-border-strong));
   color: var(--hf-text);
   height: 44px;
   margin-bottom: 14px;

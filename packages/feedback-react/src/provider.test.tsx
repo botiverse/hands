@@ -194,7 +194,7 @@ describe("FeedbackProvider", () => {
       /\.hands-feedback-empty\s*\{[^}]*align-self:\s*stretch[^}]*border:\s*2px dashed[^}]*height:\s*auto[^}]*justify-content:\s*center[^}]*justify-self:\s*stretch[^}]*min-height:\s*0[^}]*padding:\s*40px 24px 48px/,
     );
     expect(css).toMatch(
-      /\.hands-feedback-empty-icon\s*\{[^}]*border:\s*2px solid[^}]*box-shadow:\s*2px 2px 0[^}]*height:\s*44px[^}]*width:\s*44px/,
+      /\.hands-feedback-empty-icon\s*\{[^}]*border:\s*2px solid[^}]*box-shadow:\s*var\(--theme-shadow-sm, 2px 2px 0[^}]*height:\s*44px[^}]*width:\s*44px/,
     );
     expect(css).toMatch(
       /\.hands-feedback-reply-footer[^}]*padding-bottom:\s*calc\(18px \+ env\(safe-area-inset-bottom\)\)/,
