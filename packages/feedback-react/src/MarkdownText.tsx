@@ -1,94 +1,33 @@
 /**
  * Markdown rendering for human-written feedback text (ticket bodies and
- * comments), shared by the reporter workspace and the Hands admin.
- * Analysis + spec: feedback detail page markdown pass (artin, 2026-10-11).
+ * comments) — on-demand variant.
  *
- * - Styling comes from the raft-ui Markdown* parts so all three themes stay
- *   consistent (no component-local styles here).
- * - Raw HTML is skipped entirely (`skipHtml`) and the AST is sanitized with
- *   rehype-sanitize's default allowlist; `javascript:` links are stripped.
- * - Images render as links: feedback images have their own attachment
- *   channel, and mixing the two would be confusing.
- * - If rendering throws, we fall back to plain text so the page never goes
- *   blank.
+ * The react-markdown pipeline lives in `MarkdownRenderer` and is pulled in
+ * via dynamic import, so the standalone feedback entry's first paint never
+ * waits on (or includes) the markdown stack. Until the chunk is ready — and
+ * if it fails to load or render — the text renders as plain text, so the
+ * page never blanks.
+ *
+ * Known behaviours (review notes):
+ * - `lazy` caches a failed import promise at module level: after one load
+ *   failure every MarkdownText on the page stays plain text until reload.
+ *   Accepted as the fallback of last resort.
+ * - The first frame shows the raw markdown source until the chunk arrives
+ *   (a brief swap). A preload when a ticket detail opens can remove the
+ *   flash later.
+ *
+ * Styling comes from the raft-ui Markdown* parts (see MarkdownRenderer) so
+ * all three themes stay consistent.
  */
-import { Component, type ErrorInfo, type ReactNode } from "react";
-import ReactMarkdown, { type Components } from "react-markdown";
-import remarkBreaks from "remark-breaks";
-import remarkGfm from "remark-gfm";
-import rehypeSanitize from "rehype-sanitize";
 import {
-  MarkdownBlockquote,
-  MarkdownCell,
-  MarkdownHeaderCell,
-  MarkdownHeading,
-  MarkdownInlineCode,
-  MarkdownLink,
-  MarkdownList,
-  MarkdownListItem,
-  MarkdownOrderedList,
-  MarkdownParagraph,
-  MarkdownRule,
-  MarkdownTable,
-  MarkdownTableRow,
-  MarkdownTableScroll,
-} from "raft-ui";
+  Component,
+  Suspense,
+  lazy,
+  type ErrorInfo,
+  type ReactNode,
+} from "react";
 
-const LINK_PROPS = {
-  target: "_blank",
-  rel: "noreferrer noopener",
-} as const;
-
-const BLOCK_CODE_CLASS =
-  "block overflow-x-auto rounded-md bg-layer-canvas-muted p-3 text-xs";
-
-const components: Components = {
-  p: ({ node: _node, ...props }) => <MarkdownParagraph {...props} />,
-  h1: ({ node: _node, ...props }) => <MarkdownHeading level={1} {...props} />,
-  h2: ({ node: _node, ...props }) => <MarkdownHeading level={2} {...props} />,
-  h3: ({ node: _node, ...props }) => <MarkdownHeading level={3} {...props} />,
-  h4: ({ node: _node, ...props }) => <MarkdownHeading level={4} {...props} />,
-  h5: ({ node: _node, ...props }) => <MarkdownHeading level={5} {...props} />,
-  h6: ({ node: _node, ...props }) => <MarkdownHeading level={6} {...props} />,
-  a: ({ node: _node, ...props }) => <MarkdownLink {...LINK_PROPS} {...props} />,
-  ul: ({ node: _node, ...props }) => <MarkdownList {...props} />,
-  ol: ({ node: _node, ...props }) => <MarkdownOrderedList {...props} />,
-  li: ({ node: _node, ...props }) => <MarkdownListItem {...props} />,
-  blockquote: ({ node: _node, ...props }) => <MarkdownBlockquote {...props} />,
-  hr: ({ node: _node, ...props }) => <MarkdownRule {...props} />,
-  table: ({ node: _node, ...props }) => (
-    <MarkdownTableScroll>
-      <MarkdownTable {...props} />
-    </MarkdownTableScroll>
-  ),
-  tr: ({ node: _node, ...props }) => <MarkdownTableRow {...props} />,
-  th: ({ node: _node, ...props }) => <MarkdownHeaderCell {...props} />,
-  td: ({ node: _node, ...props }) => <MarkdownCell {...props} />,
-  code: ({ node: _node, className, children, ...props }) => {
-    // Note: a one-line fenced block without a language has no newline and no
-    // language class, so it renders as inline code — acceptable for v1.
-    const isBlock =
-      (className?.startsWith("language-") ?? false) ||
-      String(children).includes("\n");
-    if (isBlock) {
-      return (
-        <code className={className} {...props}>
-          {children}
-        </code>
-      );
-    }
-    return <MarkdownInlineCode {...props}>{children}</MarkdownInlineCode>;
-  },
-  pre: ({ node: _node, ...props }) => (
-    <pre className={BLOCK_CODE_CLASS} {...props} />
-  ),
-  // Images render as links; the attachment channel owns actual images.
-  img: ({ node: _node, src, alt }) => (
-    <MarkdownLink href={typeof src === "string" ? src : ""} {...LINK_PROPS}>
-      {alt || (typeof src === "string" ? src : "image")}
-    </MarkdownLink>
-  ),
-};
+const MarkdownRenderer = lazy(() => import("./MarkdownRenderer.js"));
 
 interface MarkdownTextBoundaryProps {
   source: string;
@@ -100,7 +39,18 @@ interface MarkdownTextBoundaryState {
   failed: boolean;
 }
 
-/** Plain-text fallback so a markdown render failure never blanks the page. */
+/** Plain-text rendering used before the chunk loads and on any failure. */
+function PlainText({
+  source,
+  className,
+}: {
+  source: string;
+  className?: string | undefined;
+}) {
+  return <p className={`${className ?? ""} whitespace-pre-wrap`}>{source}</p>;
+}
+
+/** Plain-text fallback so a load or render failure never blanks the page. */
 class MarkdownTextBoundary extends Component<
   MarkdownTextBoundaryProps,
   MarkdownTextBoundaryState
@@ -122,9 +72,7 @@ class MarkdownTextBoundary extends Component<
   render(): ReactNode {
     if (this.state.failed) {
       return (
-        <p className={`${this.props.className ?? ""} whitespace-pre-wrap`}>
-          {this.props.source}
-        </p>
+        <PlainText source={this.props.source} className={this.props.className} />
       );
     }
     return this.props.children;
@@ -140,16 +88,11 @@ export function MarkdownText({
 }) {
   return (
     <MarkdownTextBoundary source={source} className={className}>
-      <div className={className}>
-        <ReactMarkdown
-          remarkPlugins={[remarkGfm, remarkBreaks]}
-          rehypePlugins={[rehypeSanitize]}
-          components={components}
-          skipHtml
-        >
-          {source}
-        </ReactMarkdown>
-      </div>
+      <Suspense fallback={<PlainText source={source} className={className} />}>
+        <div className={className}>
+          <MarkdownRenderer source={source} />
+        </div>
+      </Suspense>
     </MarkdownTextBoundary>
   );
 }
