@@ -255,6 +255,9 @@ export async function handleBindAgcPublicTestBuild(c: AdminContext) {
   const pkg = await c.env.DB.prepare("SELECT * FROM agc_market_packages WHERE app_id=?1 AND build_id=?2").bind(appId, buildId).first<{ state: string; external_app_id: string | null; external_package_id: string | null }>();
   if (!pkg) return c.json({ error: "no AGC market package exists for this build" }, 404);
   if (pkg.state !== "ready" || !pkg.external_app_id || !pkg.external_package_id) return c.json({ error: "AGC market package is not ready; reconcile it before binding", package: pkg }, 409);
+  if (parsed.packageId && parsed.packageId !== pkg.external_package_id) {
+    return c.json({ error: "package_id must match the ready Hands market package" }, 400);
+  }
   try {
     const auth = await resolveAgcAuth(c);
     await bindAgcTestPackage(auth, pkg.external_app_id, parsed.versionId, parsed.packageId ?? pkg.external_package_id);
