@@ -91,7 +91,7 @@ describe("AGC invitation testing API", () => {
     expect(requests[2]?.method).toBe("POST");
   });
   it("updates a public-test draft through the dedicated open-test endpoint", async () => {
-    const requests: Array<{ url: string; init?: RequestInit }> = [];
+    const requests: Array<{ url: string; init: RequestInit | undefined }> = [];
     const mockFetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       requests.push({ url: String(input), init });
       return new Response(JSON.stringify({ ret: { code: 0 } }), { status: 200 });
