@@ -364,6 +364,21 @@ export async function getAgcCompileStatus(auth: AgcAuth, appId: string, packageI
 export async function bindAgcTestPackage(auth: AgcAuth, appId: string, versionId: string, packageId: string, fetchImpl: typeof fetch = fetch) {
   await agcJson(auth, `/api/publish/v2/test/app/version?appId=${encodeURIComponent(appId)}`, { method: "PUT", body: JSON.stringify({ versionId, pkgId: packageId }) }, fetchImpl);
 }
+export type AgcOpenTestUpdate = {
+  versionId: string;
+  startTime?: number;
+  endTime?: number;
+  publicTestInstallLimit?: number;
+  newBindGroupIds?: string[];
+};
+
+/** Update the open/public-testing configuration on an existing AGC draft. */
+export async function updateAgcOpenTest(auth: AgcAuth, appId: string, body: AgcOpenTestUpdate, fetchImpl: typeof fetch = fetch) {
+  return agcJson(auth, `/api/publish/v2/test/version/open-test?appId=${encodeURIComponent(appId)}`, {
+    method: "PUT",
+    body: JSON.stringify(body),
+  }, fetchImpl);
+}
 export async function setAgcInvitationTestWindow(auth: AgcAuth, appId: string, versionId: string, fetchImpl: typeof fetch = fetch, now = Date.now(), groupIds: string[] = []) {
   const window = invitationTestWindow(now, groupIds);
   await agcJson(auth, `/api/publish/v2/test/app/version?appId=${encodeURIComponent(appId)}`, { method: "PUT", body: JSON.stringify({ versionId, openTestInfo: window }) }, fetchImpl);

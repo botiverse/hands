@@ -3,7 +3,7 @@ import type { Context } from "hono";
 import { currentActor, type AdminEnv } from "../middleware/auth";
 import { insertAuditLog } from "../lib/permissions";
 import { agcCredentialKind, getAgcCredentials, type AgcApiClientCredential, type AgcServiceAccountCredential } from "../lib/agc_credentials";
-import { addAgcTestPackage, AgcApiError, bindAgcTestPackage, createAgcInvitationVersion, createAgcServiceAccountJwt, exchangeAgcApiClientToken, AGC_PACKAGE_FAILED, AGC_PACKAGE_OK, getAgcCompileStatus, getAgcReviewStatus, getAgcTestVersionStatus, assessAgcTestVersionStatus, agcTestVersionSnapshot, loadAgcBuildExpectation, listAgcTestGroups, requestAgcUpload, resolveAgcAppId, submitAgcTestVersion, uploadAgcObject } from "../lib/agc_api";
+import { addAgcTestPackage, AgcApiError, bindAgcTestPackage, createAgcInvitationVersion, createAgcServiceAccountJwt, exchangeAgcApiClientToken, AGC_PACKAGE_FAILED, AGC_PACKAGE_OK, getAgcCompileStatus, getAgcReviewStatus, getAgcTestVersionStatus, mapAgcTestReleaseState, listAgcTestGroups, requestAgcUpload, resolveAgcAppId, submitAgcTestVersion, updateAgcOpenTest, uploadAgcObject } from "../lib/agc_api";
 
 type AdminContext = Context<AdminEnv & { Bindings: Env }>;
 type Submission = { id: string; app_id: string; build_id: string; state: string; external_app_id: string; external_version_id: string; external_package_id: string; provider_state_json: string; error_message: string | null; created_at: number; updated_at: number };
@@ -12,6 +12,17 @@ function publicSubmission(sub: Submission) {
 }
 export async function resolveAgcAuth(c: AdminContext) {
   return resolveAgcAppAuth(c.env, c.req.param("appId") ?? "");
+}
+
+async function resolveAgcExternalApp(c: AdminContext) {
+  const appId = c.req.param("appId") ?? "";
+  const packageRow = await c.env.DB.prepare(
+    "SELECT bundle_id FROM channels WHERE app_id = ?1 AND slug = 'main' LIMIT 1",
+  ).bind(appId).first<{ bundle_id: string | null }>();
+  const packageName = (packageRow?.bundle_id ?? "").trim();
+  if (!packageName) throw new AgcApiError(400, "No AppGallery package name is set on the main channel.");
+  const auth = await resolveAgcAuth(c);
+  return { auth, externalAppId: await resolveAgcAppId(auth, packageName) };
 }
 export async function resolveAgcAppAuth(env: Env, appId: string) {
   if (!env.AGC_CRED_ENC_KEY) throw new Error("server is missing AGC_CRED_ENC_KEY");
@@ -162,6 +173,100 @@ export async function handleGetAgcBuildSubmission(c: AdminContext) {
     .first<Submission>();
   return c.json({ submission: sub ? publicSubmission(sub) : null });
 }
+
+type PublicTestBody = {
+  version_id?: unknown;
+  package_id?: unknown;
+  start_time?: unknown;
+  end_time?: unknown;
+  install_limit?: unknown;
+  group_ids?: unknown;
+};
+
+function parsePublicTestBody(body: PublicTestBody) {
+  const versionId = typeof body.version_id === "string" ? body.version_id.trim() : "";
+  if (!versionId) return { error: "version_id is required" } as const;
+  const numberField = (value: unknown, name: string) => {
+    if (value === undefined) return undefined;
+    if (typeof value !== "number" || !Number.isFinite(value) || value < 0) throw new Error(`${name} must be a non-negative number`);
+    return value;
+  };
+  const groups = body.group_ids === undefined ? undefined : Array.isArray(body.group_ids)
+    ? body.group_ids.filter((id): id is string => typeof id === "string" && id.trim() !== "").map((id) => id.trim())
+    : null;
+  if (groups === null) return { error: "group_ids must be an array of strings" } as const;
+  const packageId = typeof body.package_id === "string" && body.package_id.trim() ? body.package_id.trim() : undefined;
+  const startTime = numberField(body.start_time, "start_time");
+  const endTime = numberField(body.end_time, "end_time");
+  const installLimit = numberField(body.install_limit, "install_limit");
+  return {
+    versionId,
+    packageId,
+    update: {
+      versionId,
+      ...(startTime === undefined ? {} : { startTime }),
+      ...(endTime === undefined ? {} : { endTime }),
+      ...(installLimit === undefined ? {} : { publicTestInstallLimit: installLimit }),
+      ...(groups === undefined ? {} : { newBindGroupIds: groups }),
+    },
+  } as const;
+}
+
+/** Read an existing Huawei public/open-test draft and its live review state. */
+export async function handleGetAgcPublicTest(c: AdminContext) {
+  const versionId = (c.req.query("version_id") ?? "").trim();
+  if (!versionId) return c.json({ error: "version_id is required" }, 400);
+  try {
+    const { auth, externalAppId } = await resolveAgcExternalApp(c);
+    const status = await getAgcTestVersionStatus(auth, externalAppId, versionId);
+    return c.json({ public_test: { version_id: versionId, state: mapAgcTestReleaseState(status.release_state), provider_state: status } });
+  } catch (error) {
+    const message = error instanceof AgcApiError ? error.message : "AppGallery public-test status is unavailable";
+    return c.json({ error: message }, (error instanceof AgcApiError ? error.status : 502) as any);
+  }
+}
+
+/** Edit an existing public-test draft. This never submits it for review. */
+export async function handleUpdateAgcPublicTest(c: AdminContext) {
+  const body = await c.req.json().catch(() => ({})) as PublicTestBody;
+  let parsed: ReturnType<typeof parsePublicTestBody>;
+  try { parsed = parsePublicTestBody(body); } catch (error) { return c.json({ error: error instanceof Error ? error.message : "invalid public-test configuration" }, 400); }
+  if ("error" in parsed) return c.json(parsed, 400);
+  try {
+    const { auth, externalAppId } = await resolveAgcExternalApp(c);
+    await updateAgcOpenTest(auth, externalAppId, parsed.update);
+    const status = await getAgcTestVersionStatus(auth, externalAppId, parsed.versionId);
+    await insertAuditLog(c.env.DB, c, { app_id: c.req.param("appId") ?? "", action: "agc_public_test.update", payload: { version_id: parsed.versionId, ...parsed.update } });
+    return c.json({ public_test: { version_id: parsed.versionId, state: mapAgcTestReleaseState(status.release_state), provider_state: status } });
+  } catch (error) {
+    const message = error instanceof AgcApiError ? error.message : "AppGallery public-test update failed";
+    return c.json({ error: message }, (error instanceof AgcApiError ? error.status : 502) as any);
+  }
+}
+
+/** Bind a ready Hands market package to an existing public-test draft. */
+export async function handleBindAgcPublicTestBuild(c: AdminContext) {
+  const appId = c.req.param("appId") ?? "";
+  const buildId = c.req.param("buildId") ?? "";
+  const body = await c.req.json().catch(() => ({})) as PublicTestBody;
+  let parsed: ReturnType<typeof parsePublicTestBody>;
+  try { parsed = parsePublicTestBody(body); } catch (error) { return c.json({ error: error instanceof Error ? error.message : "invalid public-test configuration" }, 400); }
+  if ("error" in parsed) return c.json(parsed, 400);
+  const pkg = await c.env.DB.prepare("SELECT * FROM agc_market_packages WHERE app_id=?1 AND build_id=?2").bind(appId, buildId).first<{ state: string; external_app_id: string | null; external_package_id: string | null }>();
+  if (!pkg) return c.json({ error: "no AGC market package exists for this build" }, 404);
+  if (pkg.state !== "ready" || !pkg.external_app_id || !pkg.external_package_id) return c.json({ error: "AGC market package is not ready; reconcile it before binding", package: pkg }, 409);
+  try {
+    const auth = await resolveAgcAuth(c);
+    await bindAgcTestPackage(auth, pkg.external_app_id, parsed.versionId, parsed.packageId ?? pkg.external_package_id);
+    if (Object.keys(parsed.update).length > 1) await updateAgcOpenTest(auth, pkg.external_app_id, parsed.update);
+    const status = await getAgcTestVersionStatus(auth, pkg.external_app_id, parsed.versionId);
+    await insertAuditLog(c.env.DB, c, { app_id: appId, action: "agc_public_test.bind", payload: { build_id: buildId, version_id: parsed.versionId, package_id: parsed.packageId ?? pkg.external_package_id } });
+    return c.json({ public_test: { version_id: parsed.versionId, state: mapAgcTestReleaseState(status.release_state), provider_state: status }, package_id: parsed.packageId ?? pkg.external_package_id });
+  } catch (error) {
+    const message = error instanceof AgcApiError ? error.message : "AppGallery public-test package binding failed";
+    return c.json({ error: message }, (error instanceof AgcApiError ? error.status : 502) as any);
+  }
+}
 export async function handleGetAgcSubmission(c: AdminContext) {
   const id = c.req.param("submissionId") ?? "";
   const sub = await c.env.DB.prepare("SELECT * FROM market_submissions WHERE id=?1 AND app_id=?2").bind(id, c.req.param("appId") ?? "").first<Submission>();
@@ -187,12 +292,9 @@ export async function handleGetAgcSubmission(c: AdminContext) {
       // test version and record a transition only when the state changes.
       const agcAuth = await resolveAgcAuth(c);
       const remote = await getAgcTestVersionStatus(agcAuth, sub.external_app_id, sub.external_version_id);
-      // Same fail-closed rule as the poll loop: no transition unless the
-      // response is confirmed to describe this build in the test lane.
-      const assessment = assessAgcTestVersionStatus(remote, await loadAgcBuildExpectation(c.env.DB, sub));
-      const next = assessment.next;
+      const next = mapAgcTestReleaseState(remote.release_state);
       const previous = JSON.parse(sub.provider_state_json || "{}") as Record<string, unknown>;
-      const snapshot = { ...previous, ...agcTestVersionSnapshot(remote, assessment, Date.now()) };
+      const snapshot = { ...previous, release_state: remote.release_state, audit_opinion: remote.audit_opinion, open_test_info: remote.open_test_info, synced_at: Date.now() };
       if (next && next !== sub.state) {
         if (await recordAgcTransition(c.env.DB, sub, next, snapshot)) sub.state = next;
       } else {
