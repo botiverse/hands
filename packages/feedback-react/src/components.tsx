@@ -118,6 +118,7 @@ import {
 } from "raft-ui";
 import type { FeedbackMessageKey, FeedbackMessageValues } from "./locale.js";
 import { useHandsFeedback } from "./provider.js";
+import { MarkdownText } from "./MarkdownText.js";
 import { usePullToRefresh } from "./usePullToRefresh.js";
 import { FeedbackTransportError } from "./types.js";
 import type {
@@ -1513,7 +1514,9 @@ function FeedbackConversationMessage({
           <MessageItemSender>{sender}</MessageItemSender>
           <MessageItemTime>{formatDate(createdAt)}</MessageItemTime>
         </MessageItemHeader>
-        <MessageItemBody>{body}</MessageItemBody>
+        <MessageItemBody>
+          <MarkdownText source={body} />
+        </MessageItemBody>
         {attachments.length > 0 && (
           <MessageItemAttachments>
             <MessageImageGallery>
