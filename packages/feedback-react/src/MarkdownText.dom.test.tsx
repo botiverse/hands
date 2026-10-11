@@ -1,10 +1,18 @@
 // @vitest-environment jsdom
 
 import { cleanup, render, waitFor } from "@testing-library/react";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeAll, describe, expect, it } from "vitest";
 import { MarkdownText } from "./MarkdownText.js";
 
 afterEach(cleanup);
+
+// Warm the lazily imported renderer once: on a cold CI cache the first
+// transform of the markdown stack can take longer than the default 1s
+// waitFor timeout, which made the first test flaky while the later tests
+// (module cached) passed.
+beforeAll(async () => {
+  await import("./MarkdownRenderer.js");
+}, 20_000);
 
 const RICH = [
   "**bold** and _em_ and `inline`",
@@ -24,7 +32,9 @@ const RICH = [
 describe("MarkdownText", () => {
   it("renders the common markdown features once the chunk loads", async () => {
     const { container } = render(<MarkdownText source={RICH} />);
-    await waitFor(() => expect(container.querySelector("strong")).toBeTruthy());
+    await waitFor(() => expect(container.querySelector("strong")).toBeTruthy(), {
+      timeout: 5_000,
+    });
     expect(container.querySelector("strong")?.textContent).toBe("bold");
     expect(container.querySelector("em")?.textContent).toBe("em");
     expect(container.querySelectorAll("ul li")).toHaveLength(2);
@@ -40,7 +50,9 @@ describe("MarkdownText", () => {
 
   it("keeps single newlines (chat semantics)", async () => {
     const { container } = render(<MarkdownText source={"line one\nline two"} />);
-    await waitFor(() => expect(container.querySelector("br")).toBeTruthy());
+    await waitFor(() => expect(container.querySelector("br")).toBeTruthy(), {
+      timeout: 5_000,
+    });
     expect(container.textContent).toContain("line one");
     expect(container.textContent).toContain("line two");
   });
@@ -55,7 +67,9 @@ describe("MarkdownText", () => {
     // produces): the plain-text fallback also contains "boom", so waiting on
     // the text alone would make the script/javascript: assertions run against
     // the fallback, which trivially has no script.
-    await waitFor(() => expect(container.querySelector("div a")).toBeTruthy());
+    await waitFor(() => expect(container.querySelector("div a")).toBeTruthy(), {
+      timeout: 5_000,
+    });
     expect(container.textContent).toContain("boom");
     expect(container.querySelector("script")).toBeNull();
     expect(container.innerHTML).not.toContain("javascript:");
@@ -75,7 +89,9 @@ describe("MarkdownText", () => {
     const { container } = render(
       <MarkdownText source={"![screenshot](https://example.com/shot.png)"} />,
     );
-    await waitFor(() => expect(container.querySelector("a")).toBeTruthy());
+    await waitFor(() => expect(container.querySelector("a")).toBeTruthy(), {
+      timeout: 5_000,
+    });
     expect(container.querySelector("img")).toBeNull();
     const link = container.querySelector("a");
     expect(link?.textContent).toBe("screenshot");
@@ -96,7 +112,9 @@ describe("MarkdownText", () => {
     const { container } = render(
       <MarkdownText source={"```js\nconst x = 1;\n```"} />,
     );
-    await waitFor(() => expect(container.querySelector("pre")).toBeTruthy());
+    await waitFor(() => expect(container.querySelector("pre")).toBeTruthy(), {
+      timeout: 5_000,
+    });
     const pre = container.querySelector("pre");
     expect(pre?.textContent).toContain("const x = 1;");
     expect(pre?.querySelector("code")).toBeTruthy();
