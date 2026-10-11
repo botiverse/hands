@@ -313,8 +313,8 @@ export class GooglePlayClient {
 
   private async updateTrack(request: PromotionRequest, editId: string, current: TrackResource): Promise<void> {
     const currentMax = maxTrackVersionCode(current);
-    if (request.versionCode !== currentMax + 1) {
-      throw new PlayAdapterError(409, "play_version_conflict", "AAB versionCode is no longer the live track maximum plus one");
+    if (request.versionCode <= currentMax || request.versionCode > 2_100_000_000) {
+      throw new PlayAdapterError(409, "play_version_conflict", "AAB versionCode must exceed the live track maximum and be at most 2100000000");
     }
     if ((current.releases ?? []).some((release) => release.status === "inProgress" || release.status === "halted")) {
       throw new PlayAdapterError(409, "play_rollout_conflict", "The track already has a staged or halted release");

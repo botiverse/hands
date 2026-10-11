@@ -55,6 +55,7 @@ function promotion(overrides: Partial<PromotionRpcInput> = {}): PromotionRpcInpu
 
 interface GoogleFixtureOptions {
   uploadSha?: string;
+  uploadVersionCode?: number;
   trackMaximum?: number;
   tokenStatus?: number;
   commitThrows?: boolean;
@@ -62,9 +63,12 @@ interface GoogleFixtureOptions {
 
 function googleFixture(options: GoogleFixtureOptions = {}) {
   let nextEdit = 1;
+  const trackMaximum = options.trackMaximum ?? 41;
   let track: TrackResource = {
     track: "qa",
-    releases: [{ name: "existing", versionCodes: [String(options.trackMaximum ?? 41)], status: "completed" }],
+    releases: trackMaximum === 0
+      ? []
+      : [{ name: "existing", versionCodes: [String(trackMaximum)], status: "completed" }],
   };
   const requests: Array<{ url: string; method: string; body: unknown }> = [];
   let assertion = "";
@@ -91,7 +95,7 @@ function googleFixture(options: GoogleFixtureOptions = {}) {
     if (method === "GET" && url.includes("/tracks/")) return Response.json(track);
     if (url.includes("/bundles?uploadType=media")) {
       const uploaded = new Uint8Array(await new Response(init.body).arrayBuffer());
-      return Response.json({ versionCode: 42, sha256: options.uploadSha ?? bytesToHex(sha256(uploaded)) });
+      return Response.json({ versionCode: options.uploadVersionCode ?? 42, sha256: options.uploadSha ?? bytesToHex(sha256(uploaded)) });
     }
     if (method === "PUT" && url.includes("/tracks/")) {
       track = requestBody as TrackResource;
@@ -174,6 +178,49 @@ describe("Google Play adapter RPC service", () => {
     const result = await service.promote(promotion(), body(), environment());
     expect(result).toMatchObject({ ok: false, error: { code: "play_bundle_mismatch" } });
     expect(fixture.requests.filter((request) => request.method === "PUT")).toHaveLength(0);
+    expect(fixture.requests.filter((request) => request.method === "DELETE")).toHaveLength(1);
+  });
+
+  it.each([
+    { trackMaximum: 0, versionCode: 11301005 },
+    { trackMaximum: 100, versionCode: 11301005 },
+    { trackMaximum: 2099999999, versionCode: 2100000000 },
+  ])("promotes $versionCode above track maximum $trackMaximum", async ({ trackMaximum, versionCode }) => {
+    const fixture = googleFixture({ trackMaximum, uploadVersionCode: versionCode });
+    const service = createPlayAdapterService({ fetchImpl: fixture.fetchImpl, nowSeconds: () => NOW });
+    expect(await service.promote(promotion({ versionCode }), body(), environment())).toEqual({
+      ok: true,
+      value: {
+        edit_id: "edit-1",
+        package_name: PACKAGE,
+        version_code: versionCode,
+        track: "internal",
+        sha256: digest,
+        rollout_percent: 100,
+      },
+    });
+    expect(fixture.track().releases).toEqual([
+      ...(trackMaximum === 0 ? [] : [{ name: "existing", versionCodes: [String(trackMaximum)], status: "completed" }]),
+      { versionCodes: [String(versionCode)], status: "completed" },
+    ]);
+    expect(fixture.requests.filter((request) => request.url.includes("/bundles?uploadType=media"))).toHaveLength(1);
+    expect(fixture.requests.filter((request) => request.method === "PUT")).toHaveLength(1);
+    expect(fixture.requests.filter((request) => request.url.includes(":commit?"))).toHaveLength(1);
+  });
+
+  it.each([
+    { trackMaximum: 11301005, versionCode: 11301005 },
+    { trackMaximum: 11301005, versionCode: 11301004 },
+    { trackMaximum: 2100000000, versionCode: 2100000001 },
+  ])("rejects version $versionCode against track maximum $trackMaximum before changing the track", async ({ trackMaximum, versionCode }) => {
+    const fixture = googleFixture({ trackMaximum, uploadVersionCode: versionCode });
+    const service = createPlayAdapterService({ fetchImpl: fixture.fetchImpl, nowSeconds: () => NOW });
+    expect(await service.promote(promotion({ versionCode }), body(), environment())).toMatchObject({
+      ok: false,
+      error: { code: "play_version_conflict" },
+    });
+    expect(fixture.requests.filter((request) => request.method === "PUT")).toHaveLength(0);
+    expect(fixture.requests.filter((request) => request.url.includes(":commit?"))).toHaveLength(0);
     expect(fixture.requests.filter((request) => request.method === "DELETE")).toHaveLength(1);
   });
 
