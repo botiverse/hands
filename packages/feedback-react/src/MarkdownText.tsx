@@ -65,6 +65,8 @@ const components: Components = {
   th: ({ node: _node, ...props }) => <MarkdownHeaderCell {...props} />,
   td: ({ node: _node, ...props }) => <MarkdownCell {...props} />,
   code: ({ node: _node, className, children, ...props }) => {
+    // Note: a one-line fenced block without a language has no newline and no
+    // language class, so it renders as inline code — acceptable for v1.
     const isBlock =
       (className?.startsWith("language-") ?? false) ||
       String(children).includes("\n");
