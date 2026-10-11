@@ -610,6 +610,34 @@ Body: `{ "files": [{ "filename": "...", "content_type": "...", "size": <bytes> }
 Returns `501` if direct upload isn't configured on the server. Total
 attachments (inline + presigned) may not exceed 9.
 
+### Submission validation errors
+
+`POST /public/v2/apps/:appSlug/feedback` returns HTTP **400** with
+`{ "code": "<stable_code>", "error": "<human-readable message>" }` when an
+attachment reference fails validation. Branch on `code`, not the message text.
+Older servers may return only `error`.
+
+| Code | Cause |
+| --- | --- |
+| `presigned_invalid` | Invalid JSON/non-array `presigned`, invalid array entry, or an `r2_key` outside this app's `feedback/{app_id}/presigned/` prefix. |
+| `presigned_not_found` | The referenced R2 object does not exist. |
+| `presigned_size_mismatch` | `size` is missing/nonpositive or differs from the stored object's actual byte size. |
+| `attachments_limit_exceeded` | More than 9 attachments in total (inline plus presigned). |
+
+These checks run before creating the ticket or its attachment records; no
+partial ticket is created, even if an earlier attachment passed validation.
+If the `submission_id` has not been used, the user may remove the diagnostic
+attachment and submit again with a new `submission_id`. If that id already
+created a ticket, the same validation failure returns `409` with
+`submission_id already used with a different payload`; do not create a second
+ticket with that id. This guarantee applies to the listed validation failures,
+not network timeouts or other responses.
+
+The upload URL expires after 15 minutes; this does not expire the uploaded
+object. Unreferenced objects have no automatic cleanup guarantee. References
+are app-scoped, but are not reporter-bound or consumed only once. Uploaded
+references appear and download as ordinary ticket attachments.
+
 Pure ArkTS clients that cannot send a file as a raw request body may add
 `"upload_mode": "r2_multipart_proxy"`. The response then contains
 `upload_id` and `part_size` instead of `upload_url`. Upload each sequential raw
