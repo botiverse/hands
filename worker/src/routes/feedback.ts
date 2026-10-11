@@ -491,6 +491,13 @@ export async function handlePublicFeedbackSubmit(c: Context<{ Bindings: Env }>) 
     }
   }
 
+  const attachmentValidationError = (error: string, code: string) => {
+    if (existingSubmission) {
+      return c.json({ error: "submission_id already used with a different payload" }, 409);
+    }
+    return c.json({ error, code }, 400);
+  };
+
   // Collect attachments before writing anything.
   const files: File[] = [];
   for (const entry of form.getAll("attachments")) {
@@ -498,7 +505,7 @@ export async function handlePublicFeedbackSubmit(c: Context<{ Bindings: Env }>) 
     const file = entry as File;
     if (file.size === 0) continue;
     if (files.length >= MAX_ATTACHMENTS) {
-      return c.json({ error: `too many attachments (max ${MAX_ATTACHMENTS})`, code: "attachments_limit_exceeded" }, 400);
+      return attachmentValidationError(`too many attachments (max ${MAX_ATTACHMENTS})`, "attachments_limit_exceeded");
     }
     if (file.size > MAX_ATTACHMENT_BYTES) {
       return c.json(
@@ -518,12 +525,6 @@ export async function handlePublicFeedbackSubmit(c: Context<{ Bindings: Env }>) 
     inlineFile?: File;
     fingerprint: Record<string, unknown>;
   }> = [];
-  const attachmentValidationError = (error: string, code: string) => {
-    if (existingSubmission) {
-      return c.json({ error: "submission_id already used with a different payload" }, 409);
-    }
-    return c.json({ error, code }, 400);
-  };
   for (const [index, file] of files.entries()) {
     const safeName = file.name.replace(/[^A-Za-z0-9._-]/g, "_").slice(0, 120) || `attachment-${index}`;
     attachmentRows.push({

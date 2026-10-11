@@ -11699,11 +11699,14 @@ describe("quiver public API v2 — scope resolution", () => {
     };
     const { handlePublicFeedbackSubmit } = await import("../src/routes/feedback");
 
-    const submit = (presigned: unknown, submissionId?: string) => {
+    const submit = (presigned: unknown, submissionId?: string, inlineCount = 0) => {
       const form = new FormData();
       form.set("message", "big upload");
       form.set("presigned", JSON.stringify(presigned));
       if (submissionId) form.set("submission_id", submissionId);
+      for (let index = 0; index < inlineCount; index += 1) {
+        form.append("attachments", new File([new Uint8Array([index])], `inline-${index}.txt`, { type: "text/plain" }));
+      }
       return handlePublicFeedbackSubmit({
         env,
         executionCtx: { waitUntil: () => {} },
@@ -11753,6 +11756,13 @@ describe("quiver public API v2 — scope resolution", () => {
     expect(await responseJson(replayWithInvalidAttachment)).toEqual({
       error: "submission_id already used with a different payload",
     });
+
+    const replayWithTooManyInlineAttachments = await submit([], submissionId, 10);
+    expect(replayWithTooManyInlineAttachments.status).toBe(409);
+    expect(await responseJson(replayWithTooManyInlineAttachments)).toEqual({
+      error: "submission_id already used with a different payload",
+    });
+
     const tickets = await env.DB.prepare("SELECT COUNT(*) AS count FROM feedback_tickets").first();
     expect(tickets?.count).toBe(1);
   });
