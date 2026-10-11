@@ -491,6 +491,13 @@ export async function handlePublicFeedbackSubmit(c: Context<{ Bindings: Env }>) 
     }
   }
 
+  const attachmentValidationError = (error: string, code: string) => {
+    if (existingSubmission) {
+      return c.json({ error: "submission_id already used with a different payload" }, 409);
+    }
+    return c.json({ error, code }, 400);
+  };
+
   // Collect attachments before writing anything.
   const files: File[] = [];
   for (const entry of form.getAll("attachments")) {
@@ -498,7 +505,7 @@ export async function handlePublicFeedbackSubmit(c: Context<{ Bindings: Env }>) 
     const file = entry as File;
     if (file.size === 0) continue;
     if (files.length >= MAX_ATTACHMENTS) {
-      return c.json({ error: `too many attachments (max ${MAX_ATTACHMENTS})` }, 400);
+      return attachmentValidationError(`too many attachments (max ${MAX_ATTACHMENTS})`, "attachments_limit_exceeded");
     }
     if (file.size > MAX_ATTACHMENT_BYTES) {
       return c.json(
@@ -545,26 +552,30 @@ export async function handlePublicFeedbackSubmit(c: Context<{ Bindings: Env }>) 
     let presigned: Array<{ r2_key?: string; filename?: string; content_type?: string; size?: number }>;
     try {
       const parsed = JSON.parse(presignedRaw);
-      presigned = Array.isArray(parsed) ? parsed : [];
+      if (!Array.isArray(parsed)) throw new Error("invalid presigned array");
+      presigned = parsed;
     } catch {
-      return c.json({ error: "presigned must be a JSON array" }, 400);
+      return attachmentValidationError("presigned must be a JSON array", "presigned_invalid");
     }
     for (const item of presigned) {
+      if (!item || typeof item !== "object" || Array.isArray(item)) {
+        return attachmentValidationError("invalid presigned r2_key", "presigned_invalid");
+      }
       if (attachmentRows.length >= MAX_ATTACHMENTS) {
-        return c.json({ error: `too many attachments (max ${MAX_ATTACHMENTS})` }, 400);
+        return attachmentValidationError(`too many attachments (max ${MAX_ATTACHMENTS})`, "attachments_limit_exceeded");
       }
       const r2Key = String(item.r2_key ?? "");
       // Namespace guard: only this app's presigned prefix.
       if (!r2Key.startsWith(`feedback/${app.id}/presigned/`)) {
-        return c.json({ error: "invalid presigned r2_key" }, 400);
+        return attachmentValidationError("invalid presigned r2_key", "presigned_invalid");
       }
       const head = await c.env.APK_BUCKET.head(r2Key);
       if (!head) {
-        return c.json({ error: `presigned upload not found: ${r2Key}` }, 400);
+        return attachmentValidationError(`presigned upload not found: ${r2Key}`, "presigned_not_found");
       }
       const declaredSize = typeof item.size === "number" ? item.size : 0;
       if (declaredSize <= 0 || head.size !== declaredSize) {
-        return c.json({ error: `presigned upload size mismatch: ${r2Key}` }, 400);
+        return attachmentValidationError(`presigned upload size mismatch: ${r2Key}`, "presigned_size_mismatch");
       }
       const filename =
         String(item.filename ?? "").replace(/[^A-Za-z0-9._-]/g, "_").slice(0, 120) ||

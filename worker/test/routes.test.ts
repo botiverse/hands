@@ -11699,10 +11699,14 @@ describe("quiver public API v2 — scope resolution", () => {
     };
     const { handlePublicFeedbackSubmit } = await import("../src/routes/feedback");
 
-    const submit = (presigned: unknown) => {
+    const submit = (presigned: unknown, submissionId?: string, inlineCount = 0) => {
       const form = new FormData();
       form.set("message", "big upload");
       form.set("presigned", JSON.stringify(presigned));
+      if (submissionId) form.set("submission_id", submissionId);
+      for (let index = 0; index < inlineCount; index += 1) {
+        form.append("attachments", new File([new Uint8Array([index])], `inline-${index}.txt`, { type: "text/plain" }));
+      }
       return handlePublicFeedbackSubmit({
         env,
         executionCtx: { waitUntil: () => {} },
@@ -11717,21 +11721,50 @@ describe("quiver public API v2 — scope resolution", () => {
       } as any);
     };
 
-    // wrong namespace -> 400
-    expect((await submit([{ r2_key: "feedback/other-app/presigned/x.bin" }])).status).toBe(400);
-    // missing object -> 400
-    expect((await submit([{ r2_key: "feedback/app-scope/presigned/missing.bin" }])).status).toBe(400);
-    // declared and stored size mismatch -> 400 (detects truncated/framed uploads)
-    expect((await submit([
-      { r2_key: "feedback/app-scope/presigned/good-file.bin", filename: "good-file.bin", content_type: "application/octet-stream", size: 999 },
-    ])).status).toBe(400);
+    const good = { r2_key: "feedback/app-scope/presigned/good-file.bin", size: 1024 };
+    const rejected: Array<[unknown, string, string]> = [
+      [{}, "presigned_invalid", "presigned must be a JSON array"],
+      [[null], "presigned_invalid", "invalid presigned r2_key"],
+      [[{ r2_key: "feedback/other-app/presigned/x.bin" }], "presigned_invalid", "invalid presigned r2_key"],
+      [[{ r2_key: "feedback/app-scope/presigned/missing.bin" }], "presigned_not_found", "presigned upload not found: feedback/app-scope/presigned/missing.bin"],
+      [[{ ...good, size: 999 }], "presigned_size_mismatch", "presigned upload size mismatch: feedback/app-scope/presigned/good-file.bin"],
+      [[good, { r2_key: "feedback/other-app/presigned/x.bin" }], "presigned_invalid", "invalid presigned r2_key"],
+      [Array(10).fill(good), "attachments_limit_exceeded", "too many attachments (max 9)"],
+    ];
+    for (const [input, code, error] of rejected) {
+      const response = await submit(input);
+      expect(response.status).toBe(400);
+      expect(await responseJson(response)).toEqual({ error, code });
+      const tickets = await env.DB.prepare("SELECT COUNT(*) AS count FROM feedback_tickets").first();
+      const attachments = await env.DB.prepare("SELECT COUNT(*) AS count FROM feedback_attachments").first();
+      expect(tickets?.count).toBe(0);
+      expect(attachments?.count).toBe(0);
+    }
     // valid presigned object -> 201, recorded with the exact size from head
+    const submissionId = "22222222-2222-4222-8222-222222222222";
     const ok = await submit([
       { r2_key: "feedback/app-scope/presigned/good-file.bin", filename: "good-file.bin", content_type: "application/octet-stream", size: 1024 },
-    ]);
+    ], submissionId);
     expect(ok.status).toBe(201);
     const body = await responseJson<any>(ok);
     expect(body.attachments).toBe(1);
+
+    const replayWithInvalidAttachment = await submit([
+      { r2_key: "feedback/app-scope/presigned/missing.bin", size: 1024 },
+    ], submissionId);
+    expect(replayWithInvalidAttachment.status).toBe(409);
+    expect(await responseJson(replayWithInvalidAttachment)).toEqual({
+      error: "submission_id already used with a different payload",
+    });
+
+    const replayWithTooManyInlineAttachments = await submit([], submissionId, 10);
+    expect(replayWithTooManyInlineAttachments.status).toBe(409);
+    expect(await responseJson(replayWithTooManyInlineAttachments)).toEqual({
+      error: "submission_id already used with a different payload",
+    });
+
+    const tickets = await env.DB.prepare("SELECT COUNT(*) AS count FROM feedback_tickets").first();
+    expect(tickets?.count).toBe(1);
   });
 
   it("feedback: submission_id replays the original ticket and rejects payload conflicts", async () => {
