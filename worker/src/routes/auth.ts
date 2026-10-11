@@ -1515,6 +1515,43 @@ export async function handleAgentManifest(c: Context<{ Bindings: Env }>) {
         },
       },
       {
+        name: "get-agc-public-test",
+        description: "Read an existing Huawei AppGallery public-test draft and current review state. Read-only; does not submit review.",
+        endpoint: { method: "GET", path: "/api/apps/{app_id}/agc-public-test" },
+        parameters: {
+          app_id: { type: "string", in: "path", required: true, description: "OHOS app UUID." },
+          version_id: { type: "string", in: "query", required: true, description: "Huawei public-test draft version id." },
+        },
+      },
+      {
+        name: "update-agc-public-test",
+        description: "Edit a Huawei AppGallery public-test draft's window, install limit, or tester groups. Never submits review.",
+        endpoint: { method: "PUT", path: "/api/apps/{app_id}/agc-public-test" },
+        parameters: {
+          app_id: { type: "string", in: "path", required: true, description: "OHOS app UUID." },
+          version_id: { type: "string", in: "body", required: true, description: "Huawei public-test draft version id." },
+          start_time: { type: "number", in: "body", required: false, description: "Public-test start timestamp in milliseconds." },
+          end_time: { type: "number", in: "body", required: false, description: "Public-test end timestamp in milliseconds." },
+          install_limit: { type: "number", in: "body", required: false, description: "Maximum public-test installs." },
+          group_ids: { type: "array", in: "body", required: false, description: "Huawei tester group ids." },
+        },
+      },
+      {
+        name: "bind-agc-public-test-build",
+        description: "Bind a ready Hands market package to an existing Huawei public-test draft and optionally edit its metadata. Never submits review.",
+        endpoint: { method: "POST", path: "/api/apps/{app_id}/builds/{build_id}/agc-public-test" },
+        parameters: {
+          app_id: { type: "string", in: "path", required: true, description: "OHOS app UUID." },
+          build_id: { type: "string", in: "path", required: true, description: "Hands build UUID." },
+          version_id: { type: "string", in: "body", required: true, description: "Huawei public-test draft version id." },
+          package_id: { type: "string", in: "body", required: false, description: "Huawei package id; defaults to the ready Hands market package." },
+          start_time: { type: "number", in: "body", required: false, description: "Public-test start timestamp in milliseconds." },
+          end_time: { type: "number", in: "body", required: false, description: "Public-test end timestamp in milliseconds." },
+          install_limit: { type: "number", in: "body", required: false, description: "Maximum public-test installs." },
+          group_ids: { type: "array", in: "body", required: false, description: "Huawei tester group ids." },
+        },
+      },
+      {
         name: "get-testflight-beta-app-description",
         description:
           "Read live app-level Beta App Description localizations (betaAppLocalizations.description) from App Store Connect. This is separate from every build's What to Test text. Read-only; requires app viewer.",

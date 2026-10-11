@@ -62,7 +62,7 @@ import {
   handleSetAgcCredentials,
   handleVerifyAgcCredentials,
 } from "./routes/agc_credentials";
-import { handleAppGalleryReview, handleGetAgcBuildSubmission, handleGetAgcSubmission, handleListAgcTestGroups, handleStartAgcInvitationTest, handleSubmitAgcInvitationTest } from "./routes/agc_testing";
+import { handleAppGalleryReview, handleGetAgcBuildSubmission, handleGetAgcSubmission, handleListAgcTestGroups, handleStartAgcInvitationTest, handleSubmitAgcInvitationTest, handleGetAgcPublicTest, handleUpdateAgcPublicTest, handleBindAgcPublicTestBuild } from "./routes/agc_testing";
 import {
   handleListApps,
   handleCreateApp,
@@ -1355,6 +1355,9 @@ bindAdmin("post", "/api/apps/:appId/builds/:buildId/agc-market-package", require
 bindAdmin("get", "/api/apps/:appId/builds/:buildId/agc-market-package", requireAppRole("admin"), handleGetAgcMarketPackage);
 bindAdmin("get", "/api/apps/:appId/builds/:buildId/agc-invitation-test", requireAppRole("admin"), handleGetAgcBuildSubmission);
 bindAdmin("post", "/api/apps/:appId/builds/:buildId/agc-invitation-test", requireAppRole("admin"), handleStartAgcInvitationTest);
+bindAdmin("get", "/api/apps/:appId/agc-public-test", requireAppRole("admin"), handleGetAgcPublicTest);
+bindAdmin("put", "/api/apps/:appId/agc-public-test", requireAppRole("admin"), handleUpdateAgcPublicTest);
+bindAdmin("post", "/api/apps/:appId/builds/:buildId/agc-public-test", requireAppRole("admin"), handleBindAgcPublicTestBuild);
 bindAdmin("get", "/api/apps/:appId/agc-submissions/:submissionId", requireAppRole("admin"), handleGetAgcSubmission);
 bindAdmin("post", "/api/apps/:appId/agc-submissions/:submissionId/submit", requireAppRole("admin"), handleSubmitAgcInvitationTest);
 bindAdmin("post", "/api/apps/:appId/builds/:buildId/generate-delta-patches",

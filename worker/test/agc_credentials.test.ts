@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { decodeProtectedHeader, exportPKCS8, generateKeyPair, jwtVerify } from "jose";
 import { decryptAgcCredential, encryptAgcCredential, fingerprintAgcCredential, parseAgcCredential, type AgcApiClientCredential } from "../src/lib/agc_credentials";
-import { AgcApiError, addAgcTestPackage, bindAgcTestPackage, createAgcInvitationVersion, createAgcServiceAccountJwt, exchangeAgcApiClientToken, getAgcCompileStatus, invitationTestWindow, listAgcTestGroups, requestAgcUpload, resolveAgcAppId, setAgcInvitationTestWindow, submitAgcTestVersion } from "../src/lib/agc_api";
+import { AgcApiError, addAgcTestPackage, bindAgcTestPackage, createAgcInvitationVersion, createAgcServiceAccountJwt, exchangeAgcApiClientToken, getAgcCompileStatus, invitationTestWindow, listAgcTestGroups, requestAgcUpload, resolveAgcAppId, setAgcInvitationTestWindow, submitAgcTestVersion, updateAgcOpenTest } from "../src/lib/agc_api";
 
 const raw = JSON.stringify({ type: "api_client", developer_id: "dev", project_id: "project", client_id: "client", client_secret: "secret", configuration_version: "1.0", region: "CN" });
 
@@ -89,6 +89,29 @@ describe("AGC invitation testing API", () => {
     const submitPut = JSON.parse(String(requests[1]?.body ?? "{}"));
     expect(submitPut.openTestInfo).toEqual(firstPut.openTestInfo);
     expect(requests[2]?.method).toBe("POST");
+  });
+  it("updates a public-test draft through the dedicated open-test endpoint", async () => {
+    const requests: Array<{ url: string; init?: RequestInit }> = [];
+    const mockFetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      requests.push({ url: String(input), init });
+      return new Response(JSON.stringify({ ret: { code: 0 } }), { status: 200 });
+    });
+    await updateAgcOpenTest(auth, "agc-app", {
+      versionId: "public-version",
+      startTime: 1000,
+      endTime: 2000,
+      publicTestInstallLimit: 25,
+      newBindGroupIds: ["group-1"],
+    }, mockFetch as typeof fetch);
+    expect(requests[0]?.url).toBe("https://connect-api.cloud.huawei.com/api/publish/v2/test/version/open-test?appId=agc-app");
+    expect(requests[0]?.init?.method).toBe("PUT");
+    expect(JSON.parse(String(requests[0]?.init?.body))).toEqual({
+      versionId: "public-version",
+      startTime: 1000,
+      endTime: 2000,
+      publicTestInstallLimit: 25,
+      newBindGroupIds: ["group-1"],
+    });
   });
   it("includes groupInfos in OpenTestInfo when groupIds are specified", async () => {
     const now = 1_704_211_200_000;
