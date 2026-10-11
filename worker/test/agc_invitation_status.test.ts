@@ -47,6 +47,15 @@ describe("getAgcTestVersionStatus", () => {
   });
 });
 
+describe("public-test route error mapping", () => {
+  it("does not return HTTP success for a provider business error reported in HTTP 200", async () => {
+    const { agcRouteErrorStatus } = await import("../src/routes/agc_testing");
+    const { AgcApiError } = await import("../src/lib/agc_api");
+    expect(agcRouteErrorStatus(new AgcApiError(200, "provider rejected"))).toBe(502);
+    expect(agcRouteErrorStatus(new AgcApiError(429, "rate limited"))).toBe(429);
+  });
+});
+
 describe("mapAgcTestReleaseState", () => {
   it("maps every documented releaseType=6 value", () => {
     expect(mapAgcTestReleaseState(0)).toBe("testing_active");
