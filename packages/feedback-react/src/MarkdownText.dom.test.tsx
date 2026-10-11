@@ -51,7 +51,12 @@ describe("MarkdownText", () => {
         source={"<script>alert(1)</script>\n\n[boom](javascript:alert(1))"}
       />,
     );
-    await waitFor(() => expect(container.textContent).toContain("boom"));
+    // Wait for a renderer-only marker (the anchor the markdown parser
+    // produces): the plain-text fallback also contains "boom", so waiting on
+    // the text alone would make the script/javascript: assertions run against
+    // the fallback, which trivially has no script.
+    await waitFor(() => expect(container.querySelector("div a")).toBeTruthy());
+    expect(container.textContent).toContain("boom");
     expect(container.querySelector("script")).toBeNull();
     expect(container.innerHTML).not.toContain("javascript:");
     expect(container.innerHTML).not.toContain("alert(1)");

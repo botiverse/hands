@@ -8,6 +8,14 @@
  * if it fails to load or render — the text renders as plain text, so the
  * page never blanks.
  *
+ * Known behaviours (review notes):
+ * - `lazy` caches a failed import promise at module level: after one load
+ *   failure every MarkdownText on the page stays plain text until reload.
+ *   Accepted as the fallback of last resort.
+ * - The first frame shows the raw markdown source until the chunk arrives
+ *   (a brief swap). A preload when a ticket detail opens can remove the
+ *   flash later.
+ *
  * Styling comes from the raft-ui Markdown* parts (see MarkdownRenderer) so
  * all three themes stay consistent.
  */
