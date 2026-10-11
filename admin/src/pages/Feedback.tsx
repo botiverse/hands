@@ -22,6 +22,7 @@ import {
 import { feedbackMessage } from "../lib/feedbackMessages";
 import { useToast } from "../components/Toast";
 import { FeedbackTrends } from "../components/FeedbackTrends";
+import { MarkdownText } from "../components/MarkdownText";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -784,7 +785,7 @@ export function FeedbackTicketPage({
             </div>
           )}
 
-          <p className="text-sm leading-relaxed whitespace-pre-wrap">{t.message}</p>
+          <MarkdownText source={t.message} className="text-sm leading-relaxed" />
 
           <section className="border-t border-line-hairline pt-5">
             <h4 className="mb-2 text-sm font-medium text-foreground-strong">Assignee</h4>
@@ -1085,7 +1086,7 @@ export function FeedbackTicketPage({
                       <Badge variant="muted">{feedbackMessage("visibleToReporter")}</Badge>
                     )}
                   </div>
-                  <div className="mt-1.5 whitespace-pre-wrap leading-relaxed">{cm.body}</div>
+                  <MarkdownText source={cm.body} className="mt-1.5 leading-relaxed" />
                 </li>
               ))}
             </ul>
