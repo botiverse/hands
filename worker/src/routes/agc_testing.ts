@@ -14,6 +14,11 @@ export async function resolveAgcAuth(c: AdminContext) {
   return resolveAgcAppAuth(c.env, c.req.param("appId") ?? "");
 }
 
+export function agcRouteErrorStatus(error: unknown) {
+  if (error instanceof AgcApiError && error.status >= 400 && error.status < 600) return error.status;
+  return 502;
+}
+
 async function resolveAgcExternalApp(c: AdminContext) {
   const appId = c.req.param("appId") ?? "";
   const packageRow = await c.env.DB.prepare(
@@ -219,10 +224,10 @@ export async function handleGetAgcPublicTest(c: AdminContext) {
   try {
     const { auth, externalAppId } = await resolveAgcExternalApp(c);
     const status = await getAgcTestVersionStatus(auth, externalAppId, versionId);
-    return c.json({ public_test: { version_id: versionId, state: mapAgcTestReleaseState(status.release_state), provider_state: status } });
+    return c.json({ public_test: { version_id: versionId, agc_app_id: externalAppId, provider_query: { app_id: externalAppId, version_id: versionId, release_type: 6 }, state: mapAgcTestReleaseState(status.release_state), provider_state: status } });
   } catch (error) {
     const message = error instanceof AgcApiError ? error.message : "AppGallery public-test status is unavailable";
-    return c.json({ error: message }, (error instanceof AgcApiError ? error.status : 502) as any);
+    return c.json({ error: message }, agcRouteErrorStatus(error) as any);
   }
 }
 
@@ -237,10 +242,10 @@ export async function handleUpdateAgcPublicTest(c: AdminContext) {
     await updateAgcOpenTest(auth, externalAppId, parsed.update);
     const status = await getAgcTestVersionStatus(auth, externalAppId, parsed.versionId);
     await insertAuditLog(c.env.DB, c, { app_id: c.req.param("appId") ?? "", action: "agc_public_test.update", payload: { version_id: parsed.versionId, ...parsed.update } });
-    return c.json({ public_test: { version_id: parsed.versionId, state: mapAgcTestReleaseState(status.release_state), provider_state: status } });
+    return c.json({ public_test: { version_id: parsed.versionId, agc_app_id: externalAppId, provider_query: { app_id: externalAppId, version_id: parsed.versionId, release_type: 6 }, state: mapAgcTestReleaseState(status.release_state), provider_state: status } });
   } catch (error) {
     const message = error instanceof AgcApiError ? error.message : "AppGallery public-test update failed";
-    return c.json({ error: message }, (error instanceof AgcApiError ? error.status : 502) as any);
+    return c.json({ error: message }, agcRouteErrorStatus(error) as any);
   }
 }
 
@@ -264,10 +269,10 @@ export async function handleBindAgcPublicTestBuild(c: AdminContext) {
     if (Object.keys(parsed.update).length > 1) await updateAgcOpenTest(auth, pkg.external_app_id, parsed.update);
     const status = await getAgcTestVersionStatus(auth, pkg.external_app_id, parsed.versionId);
     await insertAuditLog(c.env.DB, c, { app_id: appId, action: "agc_public_test.bind", payload: { build_id: buildId, version_id: parsed.versionId, package_id: parsed.packageId ?? pkg.external_package_id } });
-    return c.json({ public_test: { version_id: parsed.versionId, state: mapAgcTestReleaseState(status.release_state), provider_state: status }, package_id: parsed.packageId ?? pkg.external_package_id });
+    return c.json({ public_test: { version_id: parsed.versionId, agc_app_id: pkg.external_app_id, provider_query: { app_id: pkg.external_app_id, version_id: parsed.versionId, release_type: 6 }, state: mapAgcTestReleaseState(status.release_state), provider_state: status }, package_id: parsed.packageId ?? pkg.external_package_id });
   } catch (error) {
     const message = error instanceof AgcApiError ? error.message : "AppGallery public-test package binding failed";
-    return c.json({ error: message }, (error instanceof AgcApiError ? error.status : 502) as any);
+    return c.json({ error: message }, agcRouteErrorStatus(error) as any);
   }
 }
 export async function handleGetAgcSubmission(c: AdminContext) {
