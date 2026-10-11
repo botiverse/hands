@@ -1,13 +1,13 @@
 // @vitest-environment jsdom
 
-// Regression for the error-boundary fallback (gzj review note): when the
-// markdown renderer throws, the component must fall back to plain text
-// instead of blanking the page. The renderer module is mocked to throw.
+// Regression for the error-boundary fallback: when the markdown renderer
+// throws, the component must fall back to plain text instead of blanking the
+// page. The renderer module is mocked to throw while rendering.
 
-import { cleanup, render } from "@testing-library/react";
+import { cleanup, render, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-vi.mock("react-markdown", () => ({
+vi.mock("./MarkdownRenderer.js", () => ({
   default: () => {
     throw new Error("renderer boom");
   },
@@ -21,16 +21,18 @@ afterEach(() => {
 });
 
 describe("MarkdownText fallback", () => {
-  it("falls back to plain text when the renderer throws", () => {
+  it("falls back to plain text when the renderer throws", async () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     // React also logs the caught error to console.error; keep the output clean.
     const error = vi.spyOn(console, "error").mockImplementation(() => {});
     const { container } = render(
       <MarkdownText source={"*still* readable\ntext"} />,
     );
-    expect(container.textContent).toContain("*still* readable");
+    await waitFor(() =>
+      expect(container.textContent).toContain("*still* readable"),
+    );
     expect(container.textContent).toContain("text");
-    expect(warn).toHaveBeenCalled();
+    await waitFor(() => expect(warn).toHaveBeenCalled());
     warn.mockRestore();
     error.mockRestore();
   });
