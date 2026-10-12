@@ -4,7 +4,7 @@
  * submit route must not silently pick a test group when several exist.
  */
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { getAgcTestVersionStatus, mapAgcTestReleaseState } from "../src/lib/agc_api";
+import { assessAgcTestVersionStatus, getAgcTestVersionStatus, mapAgcTestReleaseState } from "../src/lib/agc_api";
 
 const auth = { accessToken: "token-1" };
 const json = (body: unknown) => new Response(JSON.stringify(body), { status: 200 });
@@ -21,7 +21,22 @@ describe("getAgcTestVersionStatus", () => {
     const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
     expect(url).toBe("https://connect-api.cloud.huawei.com/api/publish/v3/app-info?appId=app-1&releaseType=6&versionId=ver-9");
     expect(init.method ?? "GET").toBe("GET");
-    expect(status).toEqual({ release_state: 4, audit_opinion: null, open_test_info: { start_time: 1, end_time: 2 } });
+    expect(status).toEqual({
+      release_state: 4, audit_opinion: null, open_test_info: { start_time: 1, end_time: 2 },
+      version_number: null, release_type: null, update_time: null, identity_keys: [],
+    });
+  });
+
+  it("captures the version identity Huawei echoes, names only for unknown version keys", async () => {
+    const fetchMock = vi.fn(async () => json({
+      ret: { code: 0 },
+      appInfo: { releaseState: 0, versionNumber: "1.13.0", releaseType: "6", updateTime: "2026-10-11 02:30:00", someVersionCode: 11301004 },
+    }));
+    const status = await getAgcTestVersionStatus(auth, "a", "v", fetchMock as unknown as typeof fetch);
+    expect(status.version_number).toBe("1.13.0");
+    expect(status.release_type).toBe(6);
+    expect(status.update_time).toBe("2026-10-11 02:30:00");
+    expect(status.identity_keys).toEqual(["someVersionCode", "versionNumber"]);
   });
 
   it("reports an absent state as null rather than 0", async () => {
@@ -49,6 +64,39 @@ describe("mapAgcTestReleaseState", () => {
   });
 });
 
+describe("assessAgcTestVersionStatus (fail-closed identity guard)", () => {
+  const reading = (over: Partial<Awaited<ReturnType<typeof getAgcTestVersionStatus>>>) => ({
+    release_state: 0, audit_opinion: null, open_test_info: null,
+    version_number: null, release_type: null, update_time: null, identity_keys: [], ...over,
+  });
+
+  it("field case: releaseState 0 with a listing-review opinion and no version identity does not open the test", () => {
+    // build 11301004, 2026-10-11: API said 0 / "应用上架审核通过" while the console still showed the test under review.
+    const out = assessAgcTestVersionStatus(reading({ audit_opinion: "应用上架审核通过" }), { version_name: "1.13.0" });
+    expect(out.next).toBeNull();
+    expect(out.identity_status).toBe("unconfirmed");
+    expect(out.identity_reasons).toEqual(["no_version_identity_in_response", "listing_review_opinion_in_test_lane"]);
+  });
+
+  it("moves only when the response names the expected version in the test lane", () => {
+    const out = assessAgcTestVersionStatus(reading({ version_number: "1.13.0", release_type: 6 }), { version_name: "1.13.0" });
+    expect(out).toEqual({ next: "testing_active", identity_status: "confirmed", identity_reasons: [] });
+  });
+
+  it("a version mismatch or a non-test releaseType keeps the state", () => {
+    expect(assessAgcTestVersionStatus(reading({ version_number: "1.12.0" }), { version_name: "1.13.0" }).identity_reasons).toEqual(["version_mismatch"]);
+    expect(assessAgcTestVersionStatus(reading({ version_number: "1.13.0", release_type: 1 }), { version_name: "1.13.0" }).identity_reasons)
+      .toEqual(["response_release_type_not_test_lane"]);
+    expect(assessAgcTestVersionStatus(reading({ version_number: "1.13.0" }), { version_name: null }).identity_reasons).toEqual(["no_expected_version_on_build"]);
+  });
+
+  it("rejections are held to the same identity bar", () => {
+    const out = assessAgcTestVersionStatus(reading({ release_state: 1 }), { version_name: "1.13.0" });
+    expect(out.next).toBeNull();
+    expect(mapAgcTestReleaseState(1)).toBe("rejected");
+  });
+});
+
 // ---- route-level behaviour with a tiny in-memory D1 stand-in ----
 
 type Row = Record<string, unknown>;
@@ -60,6 +108,7 @@ function fakeDb(submission: Row) {
     bind(...args: unknown[]) { this.args = args; return this; },
     async first() {
       if (sql.includes("FROM market_submissions")) return { ...submission };
+      if (sql.includes("FROM builds")) return { version_name: "1.13.0", version_code: 11301004 };
       return null;
     },
     async all() { return { results: events }; },
@@ -121,18 +170,30 @@ afterEach(() => { vi.unstubAllGlobals(); vi.doUnmock("../src/lib/agc_credentials
 
 describe("handleGetAgcSubmission sync", () => {
   it("moves testing_review to testing_active when Huawei approves", async () => {
-    const { routes, calls } = await loadRoutes([{ ret: { code: 0 }, appInfo: { releaseState: 0 } }]);
+    const { routes, calls } = await loadRoutes([{ ret: { code: 0 }, appInfo: { releaseState: 0, versionNumber: "1.13.0" } }]);
     const f = fakeDb({ ...base, state: "testing_review", provider_state_json: JSON.stringify({ submitted: true, group_ids: ["g1"] }) });
     const res = await routes.handleGetAgcSubmission(ctx(f.db, { appId: "app-1", submissionId: "sub-1" }));
     const body = await res.json() as { submission: { state: string; provider_state: Row } };
     expect(calls.some((u) => u.includes("releaseType=6") && u.includes("versionId=ver-1"))).toBe(true);
     expect(body.submission.state).toBe("testing_active");
-    expect(body.submission.provider_state).toMatchObject({ group_ids: ["g1"], release_state: 0 });
+    expect(body.submission.provider_state).toMatchObject({ group_ids: ["g1"], release_state: 0, version_number: "1.13.0", identity_status: "confirmed" });
     expect(f.events).toHaveLength(1);
   });
 
+  it("keeps testing_review when Huawei answers 0 without naming the version (field case, build 11301004)", async () => {
+    const { routes } = await loadRoutes([{ ret: { code: 0 }, appInfo: { releaseState: 0 }, auditInfo: { auditOpinion: "应用上架审核通过" } }]);
+    const f = fakeDb({ ...base, state: "testing_review", provider_state_json: JSON.stringify({ submitted: true }) });
+    const body = await (await routes.handleGetAgcSubmission(ctx(f.db, { appId: "app-1", submissionId: "sub-1" }))).json() as { submission: { state: string; provider_state: Row } };
+    expect(body.submission.state).toBe("testing_review");
+    expect(f.events).toHaveLength(0);
+    expect(body.submission.provider_state).toMatchObject({
+      submitted: true, release_state: 0, audit_opinion: "应用上架审核通过", identity_status: "unconfirmed",
+      identity_reasons: ["no_version_identity_in_response", "listing_review_opinion_in_test_lane"],
+    });
+  });
+
   it("records the audit opinion on rejection", async () => {
-    const { routes } = await loadRoutes([{ ret: { code: 0 }, appInfo: { releaseState: 1 }, auditInfo: { auditOpinion: "图标不合规" } }]);
+    const { routes } = await loadRoutes([{ ret: { code: 0 }, appInfo: { releaseState: 1, versionNumber: "1.13.0" }, auditInfo: { auditOpinion: "图标不合规" } }]);
     const f = fakeDb({ ...base, state: "testing_review", provider_state_json: "{}" });
     const body = await (await routes.handleGetAgcSubmission(ctx(f.db, { appId: "app-1", submissionId: "sub-1" }))).json() as { submission: { state: string; provider_state: Row } };
     expect(body.submission.state).toBe("rejected");

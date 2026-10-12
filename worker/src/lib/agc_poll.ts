@@ -1,5 +1,5 @@
 import { recordAgcPackageTransition, type AgcMarketPackage } from "./agc_package_events";
-import { getAgcCompileStatus, AGC_PACKAGE_OK, AGC_PACKAGE_FAILED, getAgcTestVersionStatus, mapAgcTestReleaseState } from "./agc_api";
+import { getAgcCompileStatus, AGC_PACKAGE_OK, AGC_PACKAGE_FAILED, getAgcTestVersionStatus, assessAgcTestVersionStatus, agcTestVersionSnapshot, loadAgcBuildExpectation } from "./agc_api";
 import { recordAgcTransition, type AgcSubmission } from "./agc_events";
 import { resolveAgcAppAuth } from "../routes/agc_testing";
 import { enqueueDueDeliveries } from "../routes/webhooks";
@@ -19,9 +19,12 @@ export async function pollAgcInvitations(env: Env, now = Date.now()) {
     sub.updated_at = now;
     try {
       const remote = await getAgcTestVersionStatus(await resolveAgcAppAuth(env, sub.app_id), sub.external_app_id, sub.external_version_id);
-      const next = mapAgcTestReleaseState(remote.release_state);
-      const detail = { notification_source: "provider_poll", release_state: remote.release_state, audit_opinion: remote.audit_opinion,
-        open_test_info: remote.open_test_info, synced_at: now };
+      // Fail-closed: the reading moves the submission only when the response
+      // names this build's version and reads as the test lane; otherwise the
+      // state stays and the snapshot says why (identity_status/identity_reasons).
+      const assessment = assessAgcTestVersionStatus(remote, await loadAgcBuildExpectation(env.DB, sub.build_id, sub.app_id));
+      const next = assessment.next;
+      const detail = { notification_source: "provider_poll", ...agcTestVersionSnapshot(remote, assessment, now) };
       if (next && next !== sub.state) await recordAgcTransition(env.DB, sub, next, detail, null, now);
       else {
         const snapshot = { ...JSON.parse(sub.provider_state_json || "{}"), ...detail };

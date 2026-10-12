@@ -3,7 +3,7 @@ import type { Context } from "hono";
 import { currentActor, type AdminEnv } from "../middleware/auth";
 import { insertAuditLog } from "../lib/permissions";
 import { agcCredentialKind, getAgcCredentials, type AgcApiClientCredential, type AgcServiceAccountCredential } from "../lib/agc_credentials";
-import { addAgcTestPackage, AgcApiError, bindAgcTestPackage, createAgcInvitationVersion, createAgcServiceAccountJwt, exchangeAgcApiClientToken, AGC_PACKAGE_FAILED, AGC_PACKAGE_OK, getAgcCompileStatus, getAgcReviewStatus, getAgcTestVersionStatus, mapAgcTestReleaseState, listAgcTestGroups, requestAgcUpload, resolveAgcAppId, submitAgcTestVersion, uploadAgcObject } from "../lib/agc_api";
+import { addAgcTestPackage, AgcApiError, bindAgcTestPackage, createAgcInvitationVersion, createAgcServiceAccountJwt, exchangeAgcApiClientToken, AGC_PACKAGE_FAILED, AGC_PACKAGE_OK, getAgcCompileStatus, getAgcReviewStatus, getAgcTestVersionStatus, assessAgcTestVersionStatus, agcTestVersionSnapshot, loadAgcBuildExpectation, listAgcTestGroups, requestAgcUpload, resolveAgcAppId, submitAgcTestVersion, uploadAgcObject } from "../lib/agc_api";
 
 type AdminContext = Context<AdminEnv & { Bindings: Env }>;
 type Submission = { id: string; app_id: string; build_id: string; state: string; external_app_id: string; external_version_id: string; external_package_id: string; provider_state_json: string; error_message: string | null; created_at: number; updated_at: number };
@@ -187,9 +187,12 @@ export async function handleGetAgcSubmission(c: AdminContext) {
       // test version and record a transition only when the state changes.
       const agcAuth = await resolveAgcAuth(c);
       const remote = await getAgcTestVersionStatus(agcAuth, sub.external_app_id, sub.external_version_id);
-      const next = mapAgcTestReleaseState(remote.release_state);
+      // Same fail-closed rule as the poll loop: no transition unless the
+      // response is confirmed to describe this build in the test lane.
+      const assessment = assessAgcTestVersionStatus(remote, await loadAgcBuildExpectation(c.env.DB, sub.build_id, sub.app_id));
+      const next = assessment.next;
       const previous = JSON.parse(sub.provider_state_json || "{}") as Record<string, unknown>;
-      const snapshot = { ...previous, release_state: remote.release_state, audit_opinion: remote.audit_opinion, open_test_info: remote.open_test_info, synced_at: Date.now() };
+      const snapshot = { ...previous, ...agcTestVersionSnapshot(remote, assessment, Date.now()) };
       if (next && next !== sub.state) {
         if (await recordAgcTransition(c.env.DB, sub, next, snapshot)) sub.state = next;
       } else {
