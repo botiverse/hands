@@ -300,9 +300,9 @@ export async function handleGetAgcSubmission(c: AdminContext) {
       // test version and record a transition only when the state changes.
       const agcAuth = await resolveAgcAuth(c);
       const remote = await getAgcTestVersionStatus(agcAuth, sub.external_app_id, sub.external_version_id);
-      const next = mapAgcTestReleaseState(remote.release_state);
+      const next = remote.identity_confirmed ? mapAgcTestReleaseState(remote.release_state) : null;
       const previous = JSON.parse(sub.provider_state_json || "{}") as Record<string, unknown>;
-      const snapshot = { ...previous, release_state: remote.release_state, audit_opinion: remote.audit_opinion, open_test_info: remote.open_test_info, synced_at: Date.now() };
+      const snapshot = { ...previous, release_state: remote.release_state, audit_opinion: remote.audit_opinion, audit_info: remote.audit_info, open_test_info: remote.open_test_info, provider_identity: remote.provider_identity, identity_confirmed: remote.identity_confirmed, unconfirmed: !remote.identity_confirmed, synced_at: Date.now() };
       if (next && next !== sub.state) {
         if (await recordAgcTransition(c.env.DB, sub, next, snapshot)) sub.state = next;
       } else {

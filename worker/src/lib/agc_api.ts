@@ -114,10 +114,32 @@ export async function getAgcReviewStatus(
   };
 }
 
+export type AgcTestVersionIdentity = {
+  app_id: string | null;
+  version_id: string | null;
+  release_type: number | null;
+  package_name: string | null;
+  version_code: string | null;
+  package_id: string | null;
+};
+
 export type AgcTestVersionStatus = {
   release_state: number | null;
   audit_opinion: string | null;
+  audit_info: {
+    audit_opinion: string | null;
+    audit_result: string | null;
+    audit_status: string | null;
+    copyright_audit_result: string | null;
+    copyright_audit_opinion: string | null;
+    copyright_code_audit_result: string | null;
+    copyright_code_audit_opinion: string | null;
+    record_audit_result: string | null;
+    record_audit_opinion: string | null;
+  };
   open_test_info: { start_time: number | null; end_time: number | null } | null;
+  provider_identity: AgcTestVersionIdentity;
+  identity_confirmed: boolean;
 };
 
 /**
@@ -135,17 +157,56 @@ export async function getAgcTestVersionStatus(
 ): Promise<AgcTestVersionStatus> {
   const query = new URLSearchParams({ appId, releaseType: "6", versionId });
   const body = await agcJson(auth, `/api/publish/v3/app-info?${query}`, {}, fetchImpl);
-  const releaseState = body?.appInfo?.releaseState;
+  const appInfo = body?.appInfo ?? {};
+  const releaseState = appInfo.releaseState;
   const numeric = typeof releaseState === "number"
     ? releaseState
     : typeof releaseState === "string" && releaseState.trim() !== "" ? Number(releaseState) : NaN;
-  const opinion = body?.auditInfo?.auditOpinion;
+  const text = (value: unknown) => typeof value === "string" && value.trim() ? value.trim() : null;
+  const enumValue = (value: unknown) => {
+    if (typeof value === "number" && Number.isFinite(value)) return value;
+    if (typeof value === "string" && value.trim() !== "") {
+      const parsed = Number(value);
+      return Number.isFinite(parsed) ? parsed : null;
+    }
+    return null;
+  };
+  const identity: AgcTestVersionIdentity = {
+    app_id: text(appInfo.appId ?? appInfo.app_id ?? body?.appId),
+    version_id: text(appInfo.versionId ?? appInfo.version_id ?? body?.versionId),
+    release_type: enumValue(appInfo.releaseType ?? appInfo.release_type ?? body?.releaseType),
+    package_name: text(appInfo.packageName ?? appInfo.package_name),
+    version_code: text(appInfo.versionCode ?? appInfo.version_code),
+    package_id: text(appInfo.pkgId ?? appInfo.packageId ?? appInfo.package_id),
+  };
+  const hasIdentity = Object.values(identity).some((value) => value !== null);
+  const identityConfirmed = hasIdentity
+    && identity.version_id !== null
+    && identity.version_id === versionId
+    && (identity.app_id === null || identity.app_id === appId)
+    && (identity.release_type === null || identity.release_type === 6);
+  const auditInfo = body?.auditInfo ?? {};
+  const opinion = text(auditInfo.auditOpinion);
+  const auditDetails = {
+    audit_opinion: opinion,
+    audit_result: text(auditInfo.auditResult),
+    audit_status: text(auditInfo.auditStatus),
+    copyright_audit_result: text(auditInfo.copyRightAuditResult),
+    copyright_audit_opinion: text(auditInfo.copyRightAuditOpinion),
+    copyright_code_audit_result: text(auditInfo.copyRightCodeAuditResult),
+    copyright_code_audit_opinion: text(auditInfo.copyRightCodeAuditOpinion),
+    record_audit_result: text(auditInfo.recordAuditResult),
+    record_audit_opinion: text(auditInfo.recordAuditOpinion),
+  };
   const openTest = body?.openTestInfo;
   const ms = (value: unknown) => (typeof value === "number" && Number.isFinite(value) ? value : null);
   return {
     release_state: Number.isFinite(numeric) ? numeric : null,
-    audit_opinion: typeof opinion === "string" && opinion.trim() ? opinion : null,
+    audit_opinion: opinion,
+    audit_info: auditDetails,
     open_test_info: openTest ? { start_time: ms(openTest.startTime), end_time: ms(openTest.endTime) } : null,
+    provider_identity: identity,
+    identity_confirmed: identityConfirmed,
   };
 }
 

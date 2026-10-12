@@ -19,9 +19,10 @@ export async function pollAgcInvitations(env: Env, now = Date.now()) {
     sub.updated_at = now;
     try {
       const remote = await getAgcTestVersionStatus(await resolveAgcAppAuth(env, sub.app_id), sub.external_app_id, sub.external_version_id);
-      const next = mapAgcTestReleaseState(remote.release_state);
-      const detail = { notification_source: "provider_poll", release_state: remote.release_state, audit_opinion: remote.audit_opinion,
-        open_test_info: remote.open_test_info, synced_at: now };
+      const next = remote.identity_confirmed ? mapAgcTestReleaseState(remote.release_state) : null;
+      const detail = { notification_source: "provider_poll", release_state: remote.release_state, audit_opinion: remote.audit_opinion, audit_info: remote.audit_info,
+        open_test_info: remote.open_test_info, provider_identity: remote.provider_identity, identity_confirmed: remote.identity_confirmed,
+        unconfirmed: !remote.identity_confirmed, synced_at: now };
       if (next && next !== sub.state) await recordAgcTransition(env.DB, sub, next, detail, null, now);
       else {
         const snapshot = { ...JSON.parse(sub.provider_state_json || "{}"), ...detail };

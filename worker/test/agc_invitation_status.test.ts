@@ -13,7 +13,7 @@ describe("getAgcTestVersionStatus", () => {
   it("reads the test lane with the version id and stays read-only", async () => {
     const fetchMock = vi.fn(async () => json({
       ret: { code: 0 },
-      appInfo: { releaseState: 4 },
+      appInfo: { releaseState: 4, appId: "app-1", versionId: "ver-9", releaseType: 6 },
       auditInfo: { auditOpinion: "" },
       openTestInfo: { startTime: 1, endTime: 2 },
     }));
@@ -21,7 +21,22 @@ describe("getAgcTestVersionStatus", () => {
     const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
     expect(url).toBe("https://connect-api.cloud.huawei.com/api/publish/v3/app-info?appId=app-1&releaseType=6&versionId=ver-9");
     expect(init.method ?? "GET").toBe("GET");
-    expect(status).toEqual({ release_state: 4, audit_opinion: null, open_test_info: { start_time: 1, end_time: 2 } });
+    expect(status).toEqual({
+      release_state: 4,
+      audit_opinion: null,
+      audit_info: { audit_opinion: null, audit_result: null, audit_status: null, copyright_audit_result: null, copyright_audit_opinion: null, copyright_code_audit_result: null, copyright_code_audit_opinion: null, record_audit_result: null, record_audit_opinion: null },
+      open_test_info: { start_time: 1, end_time: 2 },
+      provider_identity: { app_id: "app-1", version_id: "ver-9", release_type: 6, package_name: null, version_code: null, package_id: null },
+      identity_confirmed: true,
+    });
+  });
+
+  it("rejects a provider response for a different version", async () => {
+    const fetchMock = vi.fn(async () => json({ ret: { code: 0 }, appInfo: { releaseState: 0, versionId: "other-version", releaseType: 6 } }));
+    const status = await getAgcTestVersionStatus(auth, "a", "v", fetchMock as unknown as typeof fetch);
+    expect(status.release_state).toBe(0);
+    expect(status.identity_confirmed).toBe(false);
+    expect(status.provider_identity.version_id).toBe("other-version");
   });
 
   it("reports an absent state as null rather than 0", async () => {
@@ -130,7 +145,7 @@ afterEach(() => { vi.unstubAllGlobals(); vi.doUnmock("../src/lib/agc_credentials
 
 describe("handleGetAgcSubmission sync", () => {
   it("moves testing_review to testing_active when Huawei approves", async () => {
-    const { routes, calls } = await loadRoutes([{ ret: { code: 0 }, appInfo: { releaseState: 0 } }]);
+    const { routes, calls } = await loadRoutes([{ ret: { code: 0 }, appInfo: { releaseState: 0, appId: "agc-app", versionId: "ver-1", releaseType: 6 } }]);
     const f = fakeDb({ ...base, state: "testing_review", provider_state_json: JSON.stringify({ submitted: true, group_ids: ["g1"] }) });
     const res = await routes.handleGetAgcSubmission(ctx(f.db, { appId: "app-1", submissionId: "sub-1" }));
     const body = await res.json() as { submission: { state: string; provider_state: Row } };
@@ -140,8 +155,17 @@ describe("handleGetAgcSubmission sync", () => {
     expect(f.events).toHaveLength(1);
   });
 
+  it("keeps the prior state when provider identity is absent", async () => {
+    const { routes } = await loadRoutes([{ ret: { code: 0 }, appInfo: { releaseState: 0 } }]);
+    const f = fakeDb({ ...base, state: "testing_review", provider_state_json: "{}" });
+    const body = await (await routes.handleGetAgcSubmission(ctx(f.db, { appId: "app-1", submissionId: "sub-1" }))).json() as { submission: { state: string; provider_state: Row } };
+    expect(body.submission.state).toBe("testing_review");
+    expect(body.submission.provider_state).toMatchObject({ release_state: 0, identity_confirmed: false, unconfirmed: true });
+    expect(f.events).toHaveLength(0);
+  });
+
   it("records the audit opinion on rejection", async () => {
-    const { routes } = await loadRoutes([{ ret: { code: 0 }, appInfo: { releaseState: 1 }, auditInfo: { auditOpinion: "图标不合规" } }]);
+    const { routes } = await loadRoutes([{ ret: { code: 0 }, appInfo: { releaseState: 1, appId: "agc-app", versionId: "ver-1", releaseType: 6 }, auditInfo: { auditOpinion: "图标不合规" } }]);
     const f = fakeDb({ ...base, state: "testing_review", provider_state_json: "{}" });
     const body = await (await routes.handleGetAgcSubmission(ctx(f.db, { appId: "app-1", submissionId: "sub-1" }))).json() as { submission: { state: string; provider_state: Row } };
     expect(body.submission.state).toBe("rejected");

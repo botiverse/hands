@@ -70,7 +70,7 @@ describe("AGC atomic invitation notifications",()=>{
  it("polls read-only once per slot, catches transition and never turns an outage into rejection",async()=>{
   const {db,sql}=setup();
   const env={DB:db,AGC_CRED_ENC_KEY:"key",WEBHOOK_QUEUE:{sendBatch:async()=>{}}} as unknown as Env;
-  vi.mocked(getAgcTestVersionStatus).mockResolvedValue({release_state:0,audit_opinion:null,open_test_info:null});
+  vi.mocked(getAgcTestVersionStatus).mockResolvedValue({release_state:0,audit_opinion:null,audit_info:{audit_opinion:null,audit_result:null,audit_status:null,copyright_audit_result:null,copyright_audit_opinion:null,copyright_code_audit_result:null,copyright_code_audit_opinion:null,record_audit_result:null,record_audit_opinion:null},open_test_info:null,provider_identity:{app_id:"agc-app",version_id:"agc-version",release_type:6,package_name:null,version_code:null,package_id:null},identity_confirmed:true});
   await pollAgcInvitations(env,300611);await pollAgcInvitations(env,300900);
   expect(getAgcTestVersionStatus).toHaveBeenCalledTimes(1);
   expect(getAgcTestVersionStatus).toHaveBeenCalledWith({accessToken:"secret-token"},"agc-app","agc-version");
@@ -84,7 +84,7 @@ describe("AGC atomic invitation notifications",()=>{
   expect(JSON.stringify(warn.mock.calls)).not.toContain("secret-");
  });
  it("keeps unknown provider values without inventing approval or rejection",async()=>{
-  const {db,sql}=setup();vi.mocked(getAgcTestVersionStatus).mockResolvedValue({release_state:99,audit_opinion:null,open_test_info:null});
+  const {db,sql}=setup();vi.mocked(getAgcTestVersionStatus).mockResolvedValue({release_state:99,audit_opinion:null,audit_info:{audit_opinion:null,audit_result:null,audit_status:null,copyright_audit_result:null,copyright_audit_opinion:null,copyright_code_audit_result:null,copyright_code_audit_opinion:null,record_audit_result:null,record_audit_opinion:null},open_test_info:null,provider_identity:{app_id:null,version_id:null,release_type:null,package_name:null,version_code:null,package_id:null},identity_confirmed:false});
   await pollAgcInvitations({DB:db,AGC_CRED_ENC_KEY:"key",WEBHOOK_QUEUE:{sendBatch:async()=>{}}} as unknown as Env,300611);
   const row=sql.prepare("SELECT state,provider_state_json FROM market_submissions").get() as {state:string;provider_state_json:string};
   expect(row.state).toBe("testing_review");expect(JSON.parse(row.provider_state_json).release_state).toBe(99);
