@@ -47,6 +47,15 @@ describe("getAgcTestVersionStatus", () => {
   });
 });
 
+describe("public-test route error mapping", () => {
+  it("does not return HTTP success for a provider business error reported in HTTP 200", async () => {
+    const { agcRouteErrorStatus } = await import("../src/routes/agc_testing");
+    const { AgcApiError } = await import("../src/lib/agc_api");
+    expect(agcRouteErrorStatus(new AgcApiError(200, "provider rejected"))).toBe(502);
+    expect(agcRouteErrorStatus(new AgcApiError(429, "rate limited"))).toBe(429);
+  });
+});
+
 describe("mapAgcTestReleaseState", () => {
   it("maps every documented releaseType=6 value", () => {
     expect(mapAgcTestReleaseState(0)).toBe("testing_active");
@@ -115,7 +124,7 @@ describe("assessAgcTestVersionStatus (fail-closed identity guard)", () => {
 // ---- route-level behaviour with a tiny in-memory D1 stand-in ----
 
 type Row = Record<string, unknown>;
-function fakeDb(submission: Row) {
+function fakeDb(submission: Row, options: { marketPackage?: Row; channelBundleId?: string } = {}) {
   const events: Row[] = [];
   const updates: Array<{ sql: string; args: unknown[] }> = [];
   const stmt = (sql: string) => ({
@@ -124,6 +133,8 @@ function fakeDb(submission: Row) {
     async first() {
       if (sql.includes("FROM market_submissions")) return { ...submission };
       if (sql.includes("FROM builds")) return { version_name: "1.13.0", version_code: 10100001 };
+      if (sql.includes("FROM channels")) return { bundle_id: options.channelBundleId ?? "build.raft.mobile" };
+      if (sql.includes("FROM agc_market_packages")) return options.marketPackage ? { ...options.marketPackage } : null;
       return null;
     },
     async all() { return { results: events }; },
@@ -151,7 +162,7 @@ function fakeDb(submission: Row) {
 function ctx(db: unknown, params: Record<string, string>, body: unknown = {}) {
   return {
     env: { DB: db, AGC_CRED_ENC_KEY: "k" },
-    req: { param: (n: string) => params[n] ?? "", json: async () => body },
+    req: { param: (n: string) => params[n] ?? "", query: (n: string) => params[n] ?? "", json: async () => body },
     json: (b: unknown, status = 200) => new Response(JSON.stringify(b), { status }),
     get: (key: string) => (key === "user" ? { id: "u-1", email: "t@example.com" } : undefined),
   } as never;
@@ -246,6 +257,61 @@ describe("handleGetAgcSubmission sync", () => {
     const f = fakeDb({ ...base, state: "processing", provider_state_json: "{}" });
     const body = await (await routes.handleGetAgcSubmission(ctx(f.db, { appId: "app-1", submissionId: "sub-1" }))).json() as { submission: { state: string } };
     expect(body.submission.state).toBe("processing");
+  });
+});
+
+describe("AGC public-test draft routes", () => {
+  const readyPackage = { state: "ready", external_app_id: "agc-app", external_package_id: "pkg-1" };
+
+  it("keeps all public routes unconfirmed when only a version number is echoed", async () => {
+    const response = { ret: { code: 0 }, appInfo: { releaseState: 0, versionNumber: "1.13.0" } };
+
+    const read = await loadRoutes([{ appids: [{ key: "build.raft.mobile", value: "agc-app" }] }, response]);
+    const readDb = fakeDb({});
+    const readBody = await (await read.routes.handleGetAgcPublicTest(ctx(readDb.db, { appId: "app-1", version_id: "ver-1" }))).json() as { public_test: Row };
+    expect(readBody.public_test.state).toBeNull();
+    expect(readBody.public_test.provider_state).toMatchObject({ identity_status: "unconfirmed", identity_reasons: ["no_expected_version_on_build"] });
+
+    const update = await loadRoutes([{ appids: [{ key: "build.raft.mobile", value: "agc-app" }] }, { ret: { code: 0 } }, response]);
+    const updateDb = fakeDb({});
+    const updateBody = await (await update.routes.handleUpdateAgcPublicTest(ctx(updateDb.db, { appId: "app-1" }, { version_id: "ver-1", start_time: 1 }))).json() as { public_test: Row & { provider_state: Row } };
+    expect(updateBody.public_test.state).toBeNull();
+    expect(updateBody.public_test.provider_state.identity_status).toBe("unconfirmed");
+
+    const bind = await loadRoutes([{ ret: { code: 0 } }, response]);
+    const bindDb = fakeDb({}, { marketPackage: readyPackage });
+    const bindBody = await (await bind.routes.handleBindAgcPublicTestBuild(ctx(bindDb.db, { appId: "app-1", buildId: "b-1" }, { version_id: "ver-1" }))).json() as { public_test: Row & { provider_state: Row } };
+    expect(bindBody.public_test.state).toBeNull();
+    expect(bindBody.public_test.provider_state.identity_status).toBe("unconfirmed");
+  });
+
+  it("rejects a package that is not ready or whose id differs", async () => {
+    const notReady = await loadRoutes([]);
+    const notReadyBody = await (await notReady.routes.handleBindAgcPublicTestBuild(
+      ctx(fakeDb({}, { marketPackage: { ...readyPackage, state: "processing" } }).db, { appId: "app-1", buildId: "b-1" }, { version_id: "ver-1" }),
+    )).json() as Row;
+    expect(notReadyBody).toMatchObject({ error: expect.stringContaining("not ready") });
+
+    const mismatch = await loadRoutes([]);
+    const mismatchRes = await mismatch.routes.handleBindAgcPublicTestBuild(
+      ctx(fakeDb({}, { marketPackage: readyPackage }).db, { appId: "app-1", buildId: "b-1" }, { version_id: "ver-1", package_id: "other-pkg" }),
+    );
+    expect(mismatchRes.status).toBe(400);
+  });
+
+  it("binds first, then updates optional configuration, then reads status", async () => {
+    const { routes, calls } = await loadRoutes([{ ret: { code: 0 } }, { ret: { code: 0 } }, { ret: { code: 0 }, appInfo: { releaseState: 0, versionId: "ver-1" } }]);
+    const body = await (await routes.handleBindAgcPublicTestBuild(
+      ctx(fakeDb({}, { marketPackage: readyPackage }).db, { appId: "app-1", buildId: "b-1" }, { version_id: "ver-1", start_time: 1 }),
+    )).json() as { public_test: Row & { provider_state: Row } };
+    expect(calls.map((url) => url.split("?")[0])).toEqual([
+      "https://connect-api.cloud.huawei.com/api/oauth2/v1/token",
+      "https://connect-api.cloud.huawei.com/api/publish/v2/test/app/version",
+      "https://connect-api.cloud.huawei.com/api/publish/v2/test/version/open-test",
+      "https://connect-api.cloud.huawei.com/api/publish/v3/app-info",
+    ]);
+    expect(body.public_test.state).toBe("testing_active");
+    expect(body.public_test.provider_state.identity_status).toBe("confirmed");
   });
 });
 
