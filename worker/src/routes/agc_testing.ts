@@ -32,10 +32,10 @@ async function resolveAgcExternalApp(c: AdminContext) {
 
 function assessPublicTestStatus(status: Awaited<ReturnType<typeof getAgcTestVersionStatus>>, versionId: string, appId: string) {
   // Public-test draft routes have no Hands build row, so the queried provider
-  // version id is the expected identity and the echoed version number is only
-  // checked when the provider supplies it.
+  // version id is the only expected identity. A returned version number alone
+  // cannot prove which provider version answered the query.
   return assessAgcTestVersionStatus(status, {
-    version_name: status.version_number,
+    version_name: null,
     version_id: versionId,
     app_id: appId,
   });
