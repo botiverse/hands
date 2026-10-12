@@ -190,14 +190,15 @@ export type AgcTestVersionAssessment = {
 /**
  * Decide whether a releaseType=6 reading may move a Hands submission.
  *
- * Field case (2026-10-11, #proj-mobile-release:fa1a72f8): the test-lane query
- * for build 11301004 returned `releaseState=0` with the listing-review opinion
- * "应用上架审核通过" while the console still showed the invitation test under
- * review. Reading `releaseState` alone therefore advanced the submission to
- * `testing_active` on a response that may describe another version or another
- * lane. This stays fail-closed: a transition needs the response to name the
- * version Hands asked about, and the opinion must not read as the listing
- * (上架) lane. Anything else keeps the current state and records why.
+ * Observed in production: a test-lane query returned `releaseState=0` with
+ * the listing-review opinion "应用上架审核通过" while the AppGallery console
+ * still showed the invitation test under review. Reading `releaseState` alone
+ * therefore advanced the submission to `testing_active` on a response that may
+ * describe another version or another lane. This stays fail-closed: a
+ * transition needs the response to name the version Hands asked about, every
+ * identity field the response does carry must agree with it, and the opinion
+ * must not read as the listing (上架) lane. Anything else keeps the current
+ * state and records why.
  */
 export function assessAgcTestVersionStatus(
   remote: AgcTestVersionStatus,
@@ -207,16 +208,18 @@ export function assessAgcTestVersionStatus(
   const expectedVersion = expected.version_name?.trim() || null;
   const expectedVersionId = expected.version_id?.trim() || null;
   const expectedAppId = expected.app_id?.trim() || null;
-  // Identity: the echoed versionId (the id Hands queried with) is the strongest
-  // proof; the human version number against the build is the fallback. Either
-  // one matching confirms; any present field that contradicts us rejects.
+  // Identity: every field the response carries must agree with what Hands
+  // asked about (a contradiction rejects on its own), and at least one of the
+  // echoed versionId or the human version number must positively match.
   if (remote.version_id !== null && expectedVersionId !== null && remote.version_id !== expectedVersionId) reasons.push("version_id_mismatch");
   if (remote.app_id !== null && expectedAppId !== null && remote.app_id !== expectedAppId) reasons.push("app_id_mismatch");
+  if (remote.version_number !== null && expectedVersion !== null && remote.version_number !== expectedVersion) reasons.push("version_mismatch");
   const versionIdConfirms = remote.version_id !== null && expectedVersionId !== null && remote.version_id === expectedVersionId;
-  if (!versionIdConfirms) {
-    if (remote.version_number === null) reasons.push("no_version_identity_in_response");
-    else if (expectedVersion === null) reasons.push("no_expected_version_on_build");
-    else if (remote.version_number !== expectedVersion) reasons.push("version_mismatch");
+  const versionNumberConfirms = remote.version_number !== null && expectedVersion !== null && remote.version_number === expectedVersion;
+  if (!versionIdConfirms && !versionNumberConfirms) {
+    if (remote.version_number === null && remote.version_id === null) reasons.push("no_version_identity_in_response");
+    else if (remote.version_number !== null && expectedVersion === null) reasons.push("no_expected_version_on_build");
+    else if (remote.version_id !== null && expectedVersionId === null) reasons.push("no_expected_version_id_on_submission");
   }
   if (remote.release_type !== null && remote.release_type !== 6) reasons.push("response_release_type_not_test_lane");
   if (remote.audit_opinion && /上架|listing/iu.test(remote.audit_opinion)) reasons.push("listing_review_opinion_in_test_lane");

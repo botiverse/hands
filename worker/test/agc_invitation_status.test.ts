@@ -73,8 +73,8 @@ describe("assessAgcTestVersionStatus (fail-closed identity guard)", () => {
   });
   const expected = { version_name: "1.13.0", version_id: "ver-1", app_id: "agc-app" };
 
-  it("field case: releaseState 0 with a listing-review opinion and no version identity does not open the test", () => {
-    // build 11301004, 2026-10-11: API said 0 / "应用上架审核通过" while the console still showed the test under review.
+  it("production case: releaseState 0 with a listing-review opinion and no version identity does not open the test", () => {
+    // API said 0 / "应用上架审核通过" while the console still showed the test under review.
     const out = assessAgcTestVersionStatus(reading({ audit_opinion: "应用上架审核通过" }), expected);
     expect(out.next).toBeNull();
     expect(out.identity_status).toBe("unconfirmed");
@@ -90,6 +90,12 @@ describe("assessAgcTestVersionStatus (fail-closed identity guard)", () => {
     expect(assessAgcTestVersionStatus(reading({ version_id: "ver-1" }), expected)).toEqual({ next: "testing_active", identity_status: "confirmed", identity_reasons: [] });
     expect(assessAgcTestVersionStatus(reading({ version_id: "ver-2", version_number: "1.13.0" }), expected).identity_reasons).toEqual(["version_id_mismatch"]);
     expect(assessAgcTestVersionStatus(reading({ version_id: "ver-1", app_id: "other-app" }), expected).identity_reasons).toEqual(["app_id_mismatch"]);
+  });
+
+  it("a matching versionId does not excuse a conflicting version number", () => {
+    const out = assessAgcTestVersionStatus(reading({ version_id: "ver-1", version_number: "1.12.0" }), expected);
+    expect(out.next).toBeNull();
+    expect(out.identity_reasons).toEqual(["version_mismatch"]);
   });
 
   it("a version mismatch or a non-test releaseType keeps the state", () => {
@@ -189,7 +195,7 @@ describe("handleGetAgcSubmission sync", () => {
     expect(f.events).toHaveLength(1);
   });
 
-  it("keeps testing_review when Huawei answers 0 without naming the version (field case, build 11301004)", async () => {
+  it("keeps testing_review when Huawei answers 0 without naming the version (production case)", async () => {
     const { routes } = await loadRoutes([{ ret: { code: 0 }, appInfo: { releaseState: 0 }, auditInfo: { auditOpinion: "应用上架审核通过" } }]);
     const f = fakeDb({ ...base, state: "testing_review", provider_state_json: JSON.stringify({ submitted: true }) });
     const body = await (await routes.handleGetAgcSubmission(ctx(f.db, { appId: "app-1", submissionId: "sub-1" }))).json() as { submission: { state: string; provider_state: Row } };

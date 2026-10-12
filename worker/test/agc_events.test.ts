@@ -92,7 +92,7 @@ describe("AGC atomic invitation notifications",()=>{
   expect(row.state).toBe("testing_review");expect(JSON.parse(row.provider_state_json).release_state).toBe(99);
   expect(sql.prepare("SELECT count(*) n FROM webhook_deliveries").get()).toEqual({n:0});
  });
- it("fail-closed: a 0 reading that names no version keeps the state, records why and notifies nobody (build 11301004 field case)",async()=>{
+ it("fail-closed: a 0 reading that names no version keeps the state, records why and notifies nobody",async()=>{
   const {db,sql}=setup();vi.mocked(getAgcTestVersionStatus).mockResolvedValue({release_state:0,audit_opinion:"应用上架审核通过",open_test_info:null,
     version_number:null,version_id:null,app_id:null,release_type:null,update_time:null,identity_keys:[]});
   await pollAgcInvitations({DB:db,AGC_CRED_ENC_KEY:"key",WEBHOOK_QUEUE:{sendBatch:async()=>{}}} as unknown as Env,300611);
