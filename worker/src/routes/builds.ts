@@ -1555,7 +1555,28 @@ export async function handleDeleteBuildAsset(c: Context<{ Bindings: Env }>) {
       `DELETE FROM build_assets
        WHERE id = ?1 AND build_id = ?2 AND artifact_kind = ?3 AND r2_key = ?4`,
     ).bind(assetId, buildId, asset.artifact_kind, asset.r2_key);
-  const results = await c.env.DB.batch([auditStatement, deleteStatement]);
+  let results: D1Result<unknown>[];
+  try {
+    results = await c.env.DB.batch([auditStatement, deleteStatement]);
+  } catch (error) {
+    // release_receipts.artifact_id is intentionally ON DELETE RESTRICT: an
+    // accepted/promotion receipt is immutable evidence and must outlive the
+    // artifact metadata it names. Surface that product invariant as a
+    // conflict instead of leaking D1's raw constraint failure as a 500.
+    const message = error instanceof Error ? error.message : String(error);
+    if (/foreign key constraint failed|sqlite_constraint_trigger/i.test(message)) {
+      return c.json(
+        {
+          error: "build asset is referenced by an immutable release receipt",
+          code: "ASSET_DELETE_BLOCKED_BY_RELEASE_RECEIPT",
+          asset_id: assetId,
+          build_id: buildId,
+        },
+        409,
+      );
+    }
+    throw error;
+  }
   const auditWrite = results[0];
   const deletion = results[1];
   if (!auditWrite || !deletion) {

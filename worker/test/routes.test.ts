@@ -9836,6 +9836,44 @@ describe("quiver public API v2 — scope resolution", () => {
     });
   });
 
+  it("returns a conflict when immutable release evidence references the asset", async () => {
+    const env = makeEnv();
+    const { handleDeleteBuildAsset } = await import("../src/routes/builds");
+    await seedRelease(env, "rel-delete-receipt", "build-delete-receipt", [["full", "all"]], {
+      versionCode: 15,
+      versionName: "1.0.15",
+    });
+    await seedAsset(env, "build-delete-receipt", "asset-delete-receipt", {
+      artifactKind: "metadata-file",
+      filetype: "json",
+      sizeBytes: 12,
+      r2Key: "apps/app-scope/delete-receipt.json",
+    });
+    await env.DB.prepare(
+      `CREATE TABLE release_receipts (
+        id TEXT PRIMARY KEY,
+        artifact_id TEXT REFERENCES build_assets(id) ON DELETE RESTRICT
+      )`,
+    ).run();
+    await env.DB.prepare(
+      "INSERT INTO release_receipts (id, artifact_id) VALUES (?, ?)",
+    ).bind("receipt-delete-receipt", "asset-delete-receipt").run();
+
+    const response = await handleDeleteBuildAsset(
+      makeBuildAssetDownloadContext(env, "build-delete-receipt", "asset-delete-receipt"),
+    );
+
+    expect(response.status).toBe(409);
+    await expect(responseJson<any>(response)).resolves.toMatchObject({
+      code: "ASSET_DELETE_BLOCKED_BY_RELEASE_RECEIPT",
+      asset_id: "asset-delete-receipt",
+      build_id: "build-delete-receipt",
+    });
+    await expect(
+      env.DB.prepare("SELECT id FROM build_assets WHERE id = ?").bind("asset-delete-receipt").first(),
+    ).resolves.toEqual({ id: "asset-delete-receipt" });
+  });
+
   it("rolls back metadata deletion when the atomic audit insert fails", async () => {
     const env = makeEnv();
     const { handleDeleteBuildAsset } = await import("../src/routes/builds");
