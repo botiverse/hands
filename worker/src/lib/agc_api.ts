@@ -118,6 +118,19 @@ export type AgcTestVersionStatus = {
   release_state: number | null;
   audit_opinion: string | null;
   open_test_info: { start_time: number | null; end_time: number | null } | null;
+  /**
+   * Version identity Huawei echoed for the queried version, or null when the
+   * response named none. `version_number` is the human version (e.g. 1.13.0);
+   * `identity_keys` lists which `appInfo` keys mentioning "version" were
+   * present (names only) so an unexpected response shape is diagnosable
+   * without storing the whole provider payload.
+   */
+  version_number: string | null;
+  version_id: string | null;
+  app_id: string | null;
+  release_type: number | null;
+  update_time: string | null;
+  identity_keys: string[];
 };
 
 /**
@@ -142,10 +155,104 @@ export async function getAgcTestVersionStatus(
   const opinion = body?.auditInfo?.auditOpinion;
   const openTest = body?.openTestInfo;
   const ms = (value: unknown) => (typeof value === "number" && Number.isFinite(value) ? value : null);
+  const appInfo = body?.appInfo && typeof body.appInfo === "object" ? body.appInfo as Record<string, unknown> : {};
+  const text = (value: unknown): string | null => {
+    if (typeof value === "string") return value.trim() ? value.trim() : null;
+    if (typeof value === "number" && Number.isFinite(value)) return String(value);
+    return null;
+  };
+  const releaseTypeRaw = appInfo.releaseType;
+  const releaseType = typeof releaseTypeRaw === "number" ? releaseTypeRaw
+    : typeof releaseTypeRaw === "string" && releaseTypeRaw.trim() !== "" ? Number(releaseTypeRaw) : NaN;
   return {
     release_state: Number.isFinite(numeric) ? numeric : null,
     audit_opinion: typeof opinion === "string" && opinion.trim() ? opinion : null,
     open_test_info: openTest ? { start_time: ms(openTest.startTime), end_time: ms(openTest.endTime) } : null,
+    version_number: text(appInfo.versionNumber),
+    version_id: text(appInfo.versionId ?? body?.versionId),
+    app_id: text(appInfo.appId ?? body?.appId),
+    release_type: Number.isFinite(releaseType) ? releaseType : null,
+    update_time: text(appInfo.updateTime),
+    identity_keys: Object.keys(appInfo).filter((key) => /version/iu.test(key)).sort(),
+  };
+}
+
+export type AgcTestVersionExpectation = { version_name: string | null; version_id?: string | null; app_id?: string | null };
+
+export type AgcTestVersionAssessment = {
+  /** Next Hands state when the provider reading is confirmed to be about this version, else null. */
+  next: string | null;
+  /** "confirmed" only when every reason check passed; the snapshot records the rest verbatim. */
+  identity_status: "confirmed" | "unconfirmed";
+  identity_reasons: string[];
+};
+
+/**
+ * Decide whether a releaseType=6 reading may move a Hands submission.
+ *
+ * Observed in production: a test-lane query returned `releaseState=0` with
+ * the listing-review opinion "应用上架审核通过" while the AppGallery console
+ * still showed the invitation test under review. Reading `releaseState` alone
+ * therefore advanced the submission to `testing_active` on a response that may
+ * describe another version or another lane. This stays fail-closed: a
+ * transition needs the response to name the version Hands asked about, every
+ * identity field the response does carry must agree with it, and the opinion
+ * must not read as the listing (上架) lane. Anything else keeps the current
+ * state and records why.
+ */
+export function assessAgcTestVersionStatus(
+  remote: AgcTestVersionStatus,
+  expected: AgcTestVersionExpectation,
+): AgcTestVersionAssessment {
+  const reasons: string[] = [];
+  const expectedVersion = expected.version_name?.trim() || null;
+  const expectedVersionId = expected.version_id?.trim() || null;
+  const expectedAppId = expected.app_id?.trim() || null;
+  // Identity: every field the response carries must agree with what Hands
+  // asked about (a contradiction rejects on its own), and at least one of the
+  // echoed versionId or the human version number must positively match.
+  if (remote.version_id !== null && expectedVersionId !== null && remote.version_id !== expectedVersionId) reasons.push("version_id_mismatch");
+  if (remote.app_id !== null && expectedAppId !== null && remote.app_id !== expectedAppId) reasons.push("app_id_mismatch");
+  if (remote.version_number !== null && expectedVersion !== null && remote.version_number !== expectedVersion) reasons.push("version_mismatch");
+  const versionIdConfirms = remote.version_id !== null && expectedVersionId !== null && remote.version_id === expectedVersionId;
+  const versionNumberConfirms = remote.version_number !== null && expectedVersion !== null && remote.version_number === expectedVersion;
+  if (!versionIdConfirms && !versionNumberConfirms) {
+    if (remote.version_number === null && remote.version_id === null) reasons.push("no_version_identity_in_response");
+    else if (remote.version_number !== null && expectedVersion === null) reasons.push("no_expected_version_on_build");
+    else if (remote.version_id !== null && expectedVersionId === null) reasons.push("no_expected_version_id_on_submission");
+  }
+  if (remote.release_type !== null && remote.release_type !== 6) reasons.push("response_release_type_not_test_lane");
+  if (remote.audit_opinion && /上架|listing/iu.test(remote.audit_opinion)) reasons.push("listing_review_opinion_in_test_lane");
+  const mapped = mapAgcTestReleaseState(remote.release_state);
+  if (reasons.length > 0) return { next: null, identity_status: "unconfirmed", identity_reasons: reasons };
+  return { next: mapped, identity_status: "confirmed", identity_reasons: [] };
+}
+
+/** The version Hands expects Huawei to echo for this submission's build. */
+export async function loadAgcBuildExpectation(
+  db: D1Database,
+  sub: { build_id: string; app_id: string; external_app_id: string | null; external_version_id: string | null },
+): Promise<AgcTestVersionExpectation> {
+  const build = await db.prepare("SELECT version_name FROM builds WHERE id=?1 AND app_id=?2")
+    .bind(sub.build_id, sub.app_id).first<{ version_name: string | null }>().catch(() => null);
+  return { version_name: build?.version_name ?? null, version_id: sub.external_version_id, app_id: sub.external_app_id };
+}
+
+/** Provider snapshot fields shared by the poll loop and the admin refresh route. */
+export function agcTestVersionSnapshot(remote: AgcTestVersionStatus, assessment: AgcTestVersionAssessment, syncedAt: number) {
+  return {
+    release_state: remote.release_state,
+    audit_opinion: remote.audit_opinion,
+    open_test_info: remote.open_test_info,
+    version_number: remote.version_number,
+    response_version_id: remote.version_id,
+    response_app_id: remote.app_id,
+    response_release_type: remote.release_type,
+    response_update_time: remote.update_time,
+    response_identity_keys: remote.identity_keys,
+    identity_status: assessment.identity_status,
+    identity_reasons: assessment.identity_reasons,
+    synced_at: syncedAt,
   };
 }
 
