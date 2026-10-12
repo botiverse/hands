@@ -871,7 +871,7 @@ export function registerBuildRoutes(): RouteConfigList {
       400: error("Guarded delete preconditions were malformed or incomplete."),
       403: error("Current principal cannot delete build assets."),
       404: error("Build asset was not found."),
-      409: error("Guarded delete preconditions failed or the asset is installable."),
+      409: error("Guarded delete preconditions failed, the asset is installable, or immutable release evidence still references it."),
       503: error("R2 readback was unavailable. Post-commit failures return metadata_absent, r2_preserved=null, and the durable audit_id."),
     },
   });
