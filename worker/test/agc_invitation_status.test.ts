@@ -23,20 +23,22 @@ describe("getAgcTestVersionStatus", () => {
     expect(init.method ?? "GET").toBe("GET");
     expect(status).toEqual({
       release_state: 4, audit_opinion: null, open_test_info: { start_time: 1, end_time: 2 },
-      version_number: null, release_type: null, update_time: null, identity_keys: [],
+      version_number: null, version_id: null, app_id: null, release_type: null, update_time: null, identity_keys: [],
     });
   });
 
   it("captures the version identity Huawei echoes, names only for unknown version keys", async () => {
     const fetchMock = vi.fn(async () => json({
       ret: { code: 0 },
-      appInfo: { releaseState: 0, versionNumber: "1.13.0", releaseType: "6", updateTime: "2026-10-11 02:30:00", someVersionCode: 11301004 },
+      appInfo: { releaseState: 0, versionNumber: "1.13.0", versionId: "v", appId: "a", releaseType: "6", updateTime: "2026-10-11 02:30:00", someVersionCode: 11301004 },
     }));
     const status = await getAgcTestVersionStatus(auth, "a", "v", fetchMock as unknown as typeof fetch);
     expect(status.version_number).toBe("1.13.0");
+    expect(status.version_id).toBe("v");
+    expect(status.app_id).toBe("a");
     expect(status.release_type).toBe(6);
     expect(status.update_time).toBe("2026-10-11 02:30:00");
-    expect(status.identity_keys).toEqual(["someVersionCode", "versionNumber"]);
+    expect(status.identity_keys).toEqual(["someVersionCode", "versionId", "versionNumber"]);
   });
 
   it("reports an absent state as null rather than 0", async () => {
@@ -67,31 +69,38 @@ describe("mapAgcTestReleaseState", () => {
 describe("assessAgcTestVersionStatus (fail-closed identity guard)", () => {
   const reading = (over: Partial<Awaited<ReturnType<typeof getAgcTestVersionStatus>>>) => ({
     release_state: 0, audit_opinion: null, open_test_info: null,
-    version_number: null, release_type: null, update_time: null, identity_keys: [], ...over,
+    version_number: null, version_id: null, app_id: null, release_type: null, update_time: null, identity_keys: [], ...over,
   });
+  const expected = { version_name: "1.13.0", version_id: "ver-1", app_id: "agc-app" };
 
   it("field case: releaseState 0 with a listing-review opinion and no version identity does not open the test", () => {
     // build 11301004, 2026-10-11: API said 0 / "应用上架审核通过" while the console still showed the test under review.
-    const out = assessAgcTestVersionStatus(reading({ audit_opinion: "应用上架审核通过" }), { version_name: "1.13.0" });
+    const out = assessAgcTestVersionStatus(reading({ audit_opinion: "应用上架审核通过" }), expected);
     expect(out.next).toBeNull();
     expect(out.identity_status).toBe("unconfirmed");
     expect(out.identity_reasons).toEqual(["no_version_identity_in_response", "listing_review_opinion_in_test_lane"]);
   });
 
   it("moves only when the response names the expected version in the test lane", () => {
-    const out = assessAgcTestVersionStatus(reading({ version_number: "1.13.0", release_type: 6 }), { version_name: "1.13.0" });
+    const out = assessAgcTestVersionStatus(reading({ version_number: "1.13.0", release_type: 6 }), expected);
     expect(out).toEqual({ next: "testing_active", identity_status: "confirmed", identity_reasons: [] });
   });
 
+  it("an echoed versionId that matches the queried one confirms on its own; one that differs rejects even with a matching version number", () => {
+    expect(assessAgcTestVersionStatus(reading({ version_id: "ver-1" }), expected)).toEqual({ next: "testing_active", identity_status: "confirmed", identity_reasons: [] });
+    expect(assessAgcTestVersionStatus(reading({ version_id: "ver-2", version_number: "1.13.0" }), expected).identity_reasons).toEqual(["version_id_mismatch"]);
+    expect(assessAgcTestVersionStatus(reading({ version_id: "ver-1", app_id: "other-app" }), expected).identity_reasons).toEqual(["app_id_mismatch"]);
+  });
+
   it("a version mismatch or a non-test releaseType keeps the state", () => {
-    expect(assessAgcTestVersionStatus(reading({ version_number: "1.12.0" }), { version_name: "1.13.0" }).identity_reasons).toEqual(["version_mismatch"]);
-    expect(assessAgcTestVersionStatus(reading({ version_number: "1.13.0", release_type: 1 }), { version_name: "1.13.0" }).identity_reasons)
+    expect(assessAgcTestVersionStatus(reading({ version_number: "1.12.0" }), expected).identity_reasons).toEqual(["version_mismatch"]);
+    expect(assessAgcTestVersionStatus(reading({ version_number: "1.13.0", release_type: 1 }), expected).identity_reasons)
       .toEqual(["response_release_type_not_test_lane"]);
-    expect(assessAgcTestVersionStatus(reading({ version_number: "1.13.0" }), { version_name: null }).identity_reasons).toEqual(["no_expected_version_on_build"]);
+    expect(assessAgcTestVersionStatus(reading({ version_number: "1.13.0" }), { ...expected, version_name: null }).identity_reasons).toEqual(["no_expected_version_on_build"]);
   });
 
   it("rejections are held to the same identity bar", () => {
-    const out = assessAgcTestVersionStatus(reading({ release_state: 1 }), { version_name: "1.13.0" });
+    const out = assessAgcTestVersionStatus(reading({ release_state: 1 }), expected);
     expect(out.next).toBeNull();
     expect(mapAgcTestReleaseState(1)).toBe("rejected");
   });

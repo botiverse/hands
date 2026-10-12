@@ -71,7 +71,7 @@ describe("AGC atomic invitation notifications",()=>{
   const {db,sql}=setup();
   const env={DB:db,AGC_CRED_ENC_KEY:"key",WEBHOOK_QUEUE:{sendBatch:async()=>{}}} as unknown as Env;
   vi.mocked(getAgcTestVersionStatus).mockResolvedValue({release_state:0,audit_opinion:null,open_test_info:null,
-    version_number:"1.13.0",release_type:6,update_time:null,identity_keys:["versionNumber"]});
+    version_number:"1.13.0",version_id:null,app_id:null,release_type:6,update_time:null,identity_keys:["versionNumber"]});
   await pollAgcInvitations(env,300611);await pollAgcInvitations(env,300900);
   expect(getAgcTestVersionStatus).toHaveBeenCalledTimes(1);
   expect(getAgcTestVersionStatus).toHaveBeenCalledWith({accessToken:"secret-token"},"agc-app","agc-version");
@@ -86,7 +86,7 @@ describe("AGC atomic invitation notifications",()=>{
  });
  it("keeps unknown provider values without inventing approval or rejection",async()=>{
   const {db,sql}=setup();vi.mocked(getAgcTestVersionStatus).mockResolvedValue({release_state:99,audit_opinion:null,open_test_info:null,
-    version_number:"1.13.0",release_type:6,update_time:null,identity_keys:["versionNumber"]});
+    version_number:"1.13.0",version_id:null,app_id:null,release_type:6,update_time:null,identity_keys:["versionNumber"]});
   await pollAgcInvitations({DB:db,AGC_CRED_ENC_KEY:"key",WEBHOOK_QUEUE:{sendBatch:async()=>{}}} as unknown as Env,300611);
   const row=sql.prepare("SELECT state,provider_state_json FROM market_submissions").get() as {state:string;provider_state_json:string};
   expect(row.state).toBe("testing_review");expect(JSON.parse(row.provider_state_json).release_state).toBe(99);
@@ -94,7 +94,7 @@ describe("AGC atomic invitation notifications",()=>{
  });
  it("fail-closed: a 0 reading that names no version keeps the state, records why and notifies nobody (build 11301004 field case)",async()=>{
   const {db,sql}=setup();vi.mocked(getAgcTestVersionStatus).mockResolvedValue({release_state:0,audit_opinion:"应用上架审核通过",open_test_info:null,
-    version_number:null,release_type:null,update_time:null,identity_keys:[]});
+    version_number:null,version_id:null,app_id:null,release_type:null,update_time:null,identity_keys:[]});
   await pollAgcInvitations({DB:db,AGC_CRED_ENC_KEY:"key",WEBHOOK_QUEUE:{sendBatch:async()=>{}}} as unknown as Env,300611);
   const row=sql.prepare("SELECT state,provider_state_json FROM market_submissions").get() as {state:string;provider_state_json:string};
   expect(row.state).toBe("testing_review");
@@ -103,7 +103,7 @@ describe("AGC atomic invitation notifications",()=>{
   expect(sql.prepare("SELECT count(*) n FROM webhook_deliveries").get()).toEqual({n:0});
   // A later reading that names the version is allowed to move it.
   vi.mocked(getAgcTestVersionStatus).mockResolvedValue({release_state:0,audit_opinion:null,open_test_info:null,
-    version_number:"1.13.0",release_type:6,update_time:null,identity_keys:["versionNumber"]});
+    version_number:"1.13.0",version_id:null,app_id:null,release_type:6,update_time:null,identity_keys:["versionNumber"]});
   await pollAgcInvitations({DB:db,AGC_CRED_ENC_KEY:"key",WEBHOOK_QUEUE:{sendBatch:async()=>{}}} as unknown as Env,600611);
   expect(sql.prepare("SELECT state FROM market_submissions").get()).toEqual({state:"testing_active"});
  });

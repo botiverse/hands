@@ -22,7 +22,7 @@ export async function pollAgcInvitations(env: Env, now = Date.now()) {
       // Fail-closed: the reading moves the submission only when the response
       // names this build's version and reads as the test lane; otherwise the
       // state stays and the snapshot says why (identity_status/identity_reasons).
-      const assessment = assessAgcTestVersionStatus(remote, await loadAgcBuildExpectation(env.DB, sub.build_id, sub.app_id));
+      const assessment = assessAgcTestVersionStatus(remote, await loadAgcBuildExpectation(env.DB, sub));
       const next = assessment.next;
       const detail = { notification_source: "provider_poll", ...agcTestVersionSnapshot(remote, assessment, now) };
       if (next && next !== sub.state) await recordAgcTransition(env.DB, sub, next, detail, null, now);

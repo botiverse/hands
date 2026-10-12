@@ -189,7 +189,7 @@ export async function handleGetAgcSubmission(c: AdminContext) {
       const remote = await getAgcTestVersionStatus(agcAuth, sub.external_app_id, sub.external_version_id);
       // Same fail-closed rule as the poll loop: no transition unless the
       // response is confirmed to describe this build in the test lane.
-      const assessment = assessAgcTestVersionStatus(remote, await loadAgcBuildExpectation(c.env.DB, sub.build_id, sub.app_id));
+      const assessment = assessAgcTestVersionStatus(remote, await loadAgcBuildExpectation(c.env.DB, sub));
       const next = assessment.next;
       const previous = JSON.parse(sub.provider_state_json || "{}") as Record<string, unknown>;
       const snapshot = { ...previous, ...agcTestVersionSnapshot(remote, assessment, Date.now()) };

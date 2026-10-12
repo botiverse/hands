@@ -126,6 +126,8 @@ export type AgcTestVersionStatus = {
    * without storing the whole provider payload.
    */
   version_number: string | null;
+  version_id: string | null;
+  app_id: string | null;
   release_type: number | null;
   update_time: string | null;
   identity_keys: string[];
@@ -167,13 +169,15 @@ export async function getAgcTestVersionStatus(
     audit_opinion: typeof opinion === "string" && opinion.trim() ? opinion : null,
     open_test_info: openTest ? { start_time: ms(openTest.startTime), end_time: ms(openTest.endTime) } : null,
     version_number: text(appInfo.versionNumber),
+    version_id: text(appInfo.versionId ?? body?.versionId),
+    app_id: text(appInfo.appId ?? body?.appId),
     release_type: Number.isFinite(releaseType) ? releaseType : null,
     update_time: text(appInfo.updateTime),
     identity_keys: Object.keys(appInfo).filter((key) => /version/iu.test(key)).sort(),
   };
 }
 
-export type AgcTestVersionExpectation = { version_name: string | null };
+export type AgcTestVersionExpectation = { version_name: string | null; version_id?: string | null; app_id?: string | null };
 
 export type AgcTestVersionAssessment = {
   /** Next Hands state when the provider reading is confirmed to be about this version, else null. */
@@ -201,9 +205,19 @@ export function assessAgcTestVersionStatus(
 ): AgcTestVersionAssessment {
   const reasons: string[] = [];
   const expectedVersion = expected.version_name?.trim() || null;
-  if (remote.version_number === null) reasons.push("no_version_identity_in_response");
-  else if (expectedVersion === null) reasons.push("no_expected_version_on_build");
-  else if (remote.version_number !== expectedVersion) reasons.push("version_mismatch");
+  const expectedVersionId = expected.version_id?.trim() || null;
+  const expectedAppId = expected.app_id?.trim() || null;
+  // Identity: the echoed versionId (the id Hands queried with) is the strongest
+  // proof; the human version number against the build is the fallback. Either
+  // one matching confirms; any present field that contradicts us rejects.
+  if (remote.version_id !== null && expectedVersionId !== null && remote.version_id !== expectedVersionId) reasons.push("version_id_mismatch");
+  if (remote.app_id !== null && expectedAppId !== null && remote.app_id !== expectedAppId) reasons.push("app_id_mismatch");
+  const versionIdConfirms = remote.version_id !== null && expectedVersionId !== null && remote.version_id === expectedVersionId;
+  if (!versionIdConfirms) {
+    if (remote.version_number === null) reasons.push("no_version_identity_in_response");
+    else if (expectedVersion === null) reasons.push("no_expected_version_on_build");
+    else if (remote.version_number !== expectedVersion) reasons.push("version_mismatch");
+  }
   if (remote.release_type !== null && remote.release_type !== 6) reasons.push("response_release_type_not_test_lane");
   if (remote.audit_opinion && /上架|listing/iu.test(remote.audit_opinion)) reasons.push("listing_review_opinion_in_test_lane");
   const mapped = mapAgcTestReleaseState(remote.release_state);
@@ -212,10 +226,13 @@ export function assessAgcTestVersionStatus(
 }
 
 /** The version Hands expects Huawei to echo for this submission's build. */
-export async function loadAgcBuildExpectation(db: D1Database, buildId: string, appId: string): Promise<AgcTestVersionExpectation> {
+export async function loadAgcBuildExpectation(
+  db: D1Database,
+  sub: { build_id: string; app_id: string; external_app_id: string | null; external_version_id: string | null },
+): Promise<AgcTestVersionExpectation> {
   const build = await db.prepare("SELECT version_name FROM builds WHERE id=?1 AND app_id=?2")
-    .bind(buildId, appId).first<{ version_name: string | null }>().catch(() => null);
-  return { version_name: build?.version_name ?? null };
+    .bind(sub.build_id, sub.app_id).first<{ version_name: string | null }>().catch(() => null);
+  return { version_name: build?.version_name ?? null, version_id: sub.external_version_id, app_id: sub.external_app_id };
 }
 
 /** Provider snapshot fields shared by the poll loop and the admin refresh route. */
@@ -225,6 +242,8 @@ export function agcTestVersionSnapshot(remote: AgcTestVersionStatus, assessment:
     audit_opinion: remote.audit_opinion,
     open_test_info: remote.open_test_info,
     version_number: remote.version_number,
+    response_version_id: remote.version_id,
+    response_app_id: remote.app_id,
     response_release_type: remote.release_type,
     response_update_time: remote.update_time,
     response_identity_keys: remote.identity_keys,
