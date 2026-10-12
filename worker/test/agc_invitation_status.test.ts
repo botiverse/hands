@@ -30,7 +30,7 @@ describe("getAgcTestVersionStatus", () => {
   it("captures the version identity Huawei echoes, names only for unknown version keys", async () => {
     const fetchMock = vi.fn(async () => json({
       ret: { code: 0 },
-      appInfo: { releaseState: 0, versionNumber: "1.13.0", versionId: "v", appId: "a", releaseType: "6", updateTime: "2026-10-11 02:30:00", someVersionCode: 11301004 },
+      appInfo: { releaseState: 0, versionNumber: "1.13.0", versionId: "v", appId: "a", releaseType: "6", updateTime: "2026-10-11 02:30:00", someVersionCode: 10100001 },
     }));
     const status = await getAgcTestVersionStatus(auth, "a", "v", fetchMock as unknown as typeof fetch);
     expect(status.version_number).toBe("1.13.0");
@@ -123,7 +123,7 @@ function fakeDb(submission: Row) {
     bind(...args: unknown[]) { this.args = args; return this; },
     async first() {
       if (sql.includes("FROM market_submissions")) return { ...submission };
-      if (sql.includes("FROM builds")) return { version_name: "1.13.0", version_code: 11301004 };
+      if (sql.includes("FROM builds")) return { version_name: "1.13.0", version_code: 10100001 };
       return null;
     },
     async all() { return { results: events }; },
