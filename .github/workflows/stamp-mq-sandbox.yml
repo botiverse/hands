@@ -1,0 +1,55 @@
+# Stamp merge-queue sandbox (staging retest only). Runs on the
+# stamp-mq-sandbox branch and the PRs into it; nothing else.
+#
+# Mirrors slock's shape: an ordinary PR passes `full` without enforcing the
+# base switch; a push to the branch and a queue candidate (stamp-mq/*) enforce
+# it. So a PR adding sandbox/BASE_RED passes its own checks, then the branch's
+# push run is red until a PR removes the file.
+# sandbox/CANDIDATE_SLEEP (seconds) holds a candidate in testing, so the base
+# can be moved outside the queue while a batch tests.
+name: Stamp MQ Sandbox
+
+on:
+  pull_request:
+    branches: [stamp-mq-sandbox]
+  push:
+    branches: [stamp-mq-sandbox]
+
+permissions:
+  contents: read
+
+jobs:
+  light:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: test -f sandbox/README.md
+
+  full:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Base switch
+        env:
+          EVENT: ${{ github.event_name }}
+          HEAD_REF: ${{ github.head_ref }}
+        run: |
+          enforce=false
+          if [ "$EVENT" = push ]; then enforce=true; fi
+          case "$HEAD_REF" in stamp-mq/*) enforce=true ;; esac
+          if [ -f sandbox/BASE_RED ]; then
+            if [ "$enforce" = true ]; then
+              echo "sandbox/BASE_RED is present: failing ($EVENT $HEAD_REF)"; exit 1
+            fi
+            echo "sandbox/BASE_RED is present; not enforced on an ordinary PR"
+          fi
+      - name: Candidate hold
+        env:
+          HEAD_REF: ${{ github.head_ref }}
+        run: |
+          case "$HEAD_REF" in stamp-mq/*)
+            s=$(cat sandbox/CANDIDATE_SLEEP 2>/dev/null || echo 0)
+            case "$s" in ''|*[!0-9]*) s=0 ;; esac
+            [ "$s" -gt 1200 ] && s=1200
+            echo "holding candidate for ${s}s"; sleep "$s" ;;
+          esac
