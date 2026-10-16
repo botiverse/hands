@@ -40,8 +40,11 @@ interface GooglePlayAdapterService {
       expectedSize: number;
       rolloutPercent: number;
       operationId: string;
+      /** Declared identity of the optional native debug symbols zip. */
+      symbols?: { expectedSha256: string; expectedSize: number } | null;
     },
     body: ReadableStream<Uint8Array>,
+    symbolsBody: ReadableStream<Uint8Array> | null,
   ): Promise<GooglePlayAdapterResult<{
     edit_id: string;
     package_name: string;

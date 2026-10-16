@@ -20,8 +20,11 @@ const AppReleaseParams = AppIdParam.merge(ReleaseIdParam);
 const Sha256 = z.string().regex(/^[0-9a-f]{64}$/);
 const SourceCommit = z.string().regex(/^[0-9a-f]{40}$/);
 const AndroidArtifactDeclaration = z.object({
-  kind: z.enum(["aab", "apk"]),
+  kind: z.enum(["aab", "apk", "symbols"]),
   filename: z.string().min(1).max(255),
+  // Runtime normalization enforces the tighter per-kind bound: symbols zips are
+  // capped at 2,097,152,000 bytes (Google mediaUpload.maxSize for
+  // edits.deobfuscationfiles.upload, androidpublisher v3 discovery document).
   size_bytes: z.number().int().positive().max(4 * 1024 * 1024 * 1024),
   sha256: Sha256,
 }).passthrough();
@@ -37,8 +40,8 @@ const AndroidReleaseArtifactInput = z.object({
   version_name: z.string().min(1).max(128),
   version_code: z.number().int().positive(),
   upload_key_cert_sha256: Sha256,
-  artifacts: z.array(AndroidArtifactDeclaration).length(2).openapi({
-    description: "Exactly one AAB and one APK; duplicate or missing kinds are rejected.",
+  artifacts: z.array(AndroidArtifactDeclaration).min(2).max(3).openapi({
+    description: "Exactly one AAB and one APK, plus at most one optional native debug symbols zip (kind=symbols, filename ends with .zip); duplicate or missing kinds are rejected.",
   }),
 }).passthrough().openapi("AndroidReleaseArtifactInput");
 

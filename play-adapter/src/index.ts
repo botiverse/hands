@@ -1,6 +1,6 @@
 import { createAccessToken, parsePlayCredential } from "./auth";
 import { PlayAdapterError } from "./errors";
-import { GooglePlayClient } from "./google_play";
+import { GooglePlayClient, MAX_SYMBOLS_SIZE_BYTES } from "./google_play";
 import type {
   AdapterResult,
   HandsTrack,
@@ -65,7 +65,12 @@ function trackInput(input: TrackMaximumRpcInput) {
   return { ...binding, handsTrack, playTrack: binding.tracks[handsTrack] };
 }
 
-function promotionInput(input: PromotionRpcInput, body: ReadableStream<Uint8Array>, env: PlayAdapterEnv): PromotionRequest {
+function promotionInput(
+  input: PromotionRpcInput,
+  body: ReadableStream<Uint8Array>,
+  symbolsBody: ReadableStream<Uint8Array> | null,
+  env: PlayAdapterEnv,
+): PromotionRequest {
   const track = trackInput(input);
   const versionCode = positiveInteger(input.versionCode);
   const expectedSize = positiveInteger(input.expectedSize);
@@ -89,6 +94,26 @@ function promotionInput(input: PromotionRpcInput, body: ReadableStream<Uint8Arra
   if (expectedSize > maxAabSize(env)) {
     throw new PlayAdapterError(413, "aab_too_large", "AAB exceeds the configured maximum size");
   }
+  const declared = input.symbols ?? null;
+  let symbols: PromotionRequest["symbols"] = null;
+  if (declared !== null) {
+    const symbolsSize = positiveInteger(declared.expectedSize);
+    const symbolsSha256 = typeof declared.expectedSha256 === "string" ? declared.expectedSha256.toLowerCase() : "";
+    if (
+      symbolsSize === null
+      || !SHA256.test(symbolsSha256)
+      || !(symbolsBody instanceof ReadableStream)
+    ) {
+      throw new PlayAdapterError(400, "promotion_request_invalid", "Hands promotion request is invalid");
+    }
+    if (symbolsSize > MAX_SYMBOLS_SIZE_BYTES) {
+      throw new PlayAdapterError(413, "symbols_too_large", "Native debug symbols exceed the Google Play maximum size");
+    }
+    symbols = { body: symbolsBody, expectedSha256: symbolsSha256, expectedSize: symbolsSize };
+  } else if (symbolsBody !== null) {
+    // An undeclared stream is a contract violation, not a silent extra upload.
+    throw new PlayAdapterError(400, "promotion_request_invalid", "Hands promotion request is invalid");
+  }
   return {
     packageName: track.packageName,
     handsTrack: track.handsTrack,
@@ -99,6 +124,7 @@ function promotionInput(input: PromotionRpcInput, body: ReadableStream<Uint8Arra
     rolloutPercent,
     operationId,
     body,
+    symbols,
   };
 }
 function failure(error: unknown, operationId: string | null): AdapterResult<never> {
@@ -182,11 +208,12 @@ export function createPlayAdapterService(options: AdapterOptions = {}) {
     async promote(
       input: PromotionRpcInput,
       body: ReadableStream<Uint8Array>,
+      symbolsBody: ReadableStream<Uint8Array> | null,
       env: PlayAdapterEnv,
     ): Promise<AdapterResult<Awaited<ReturnType<GooglePlayClient["promote"]>>>> {
       const operationId = OPERATION_ID.test(input?.operationId ?? "") ? input.operationId : null;
       try {
-        const promotion = promotionInput(input, body, env);
+        const promotion = promotionInput(input, body, symbolsBody, env);
         const resolved = await client(input, env);
         return { ok: true, value: await resolved.client.promote(promotion) };
       } catch (error) {

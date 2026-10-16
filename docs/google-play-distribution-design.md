@@ -39,14 +39,23 @@ All routes use the existing Hands bearer/session authentication and app roles.
   "upload_key_cert_sha256": "64 lowercase hex characters",
   "artifacts": [
     { "kind": "aab", "filename": "raft.aab", "size_bytes": 1, "sha256": "64 lowercase hex characters" },
-    { "kind": "apk", "filename": "raft.apk", "size_bytes": 1, "sha256": "64 lowercase hex characters" }
+    { "kind": "apk", "filename": "raft.apk", "size_bytes": 1, "sha256": "64 lowercase hex characters" },
+    { "kind": "symbols", "filename": "raft-symbols.zip", "size_bytes": 1, "sha256": "64 lowercase hex characters" }
   ]
 }
 ```
 
-The response contains one `build_id`, two asset declarations, and one
-presigned `PUT` plus `complete_url` per asset. Upload URLs and headers are
-ephemeral secrets and must not be logged.
+The third `symbols` artifact is optional (schema `hands.android-release-artifacts.v2`);
+requests without it keep the v1 contract and byte-identical responses. The
+filename must end with `.zip`, and `size_bytes` is capped at 2,097,152,000 —
+the `mediaUpload.maxSize` Google's androidpublisher v3 discovery document
+publishes for `edits.deobfuscationfiles.upload`. Symbols assets are stored
+under `artifact_kind='debug-symbols'` and never surface on public download
+paths.
+
+The response contains one `build_id`, one asset declaration per declared
+artifact, and one presigned `PUT` plus `complete_url` per asset. Upload URLs
+and headers are ephemeral secrets and must not be logged.
 
 ### Complete and read
 
@@ -54,10 +63,12 @@ ephemeral secrets and must not be logged.
   (`publisher`) hashes and seals the exact R2 stream. The caller does not
   resubmit identity fields.
 - `GET /api/apps/:appId/android-release-artifacts/:buildId` (`viewer`) returns
-  the shared identity and the two declarations/readbacks.
+  the shared identity and the declarations/readbacks (two, or three when
+  symbols were declared).
 
 Per-asset states are `pending_upload`, `verifying`, `sealed`, or `failed`.
-Parent states are `uploading`, `ready`, or `failed`.
+Parent states are `uploading`, `ready`, or `failed`; the parent flips to
+`ready` only after every declared artifact — including symbols — is sealed.
 
 Typed errors are `INVALID_RELEASE_ARTIFACTS`,
 `ARTIFACT_UPLOAD_UNAVAILABLE`, `ARTIFACT_NOT_FOUND`, `INTEGRITY_MISMATCH`,
@@ -92,13 +103,25 @@ Promotion requires:
 4. artifact versionCode equals the live Play track maximum plus one;
 5. no other edit lock exists for the app/package; there is no automatic retry;
 6. no open release distribution hold;
-7. an authenticated human publisher and a nonblank approval note.
+7. an authenticated human publisher and a nonblank approval note;
+8. when the build declared a native debug symbols zip, that zip must also be
+   sealed to its declared SHA-256 and size. A declared-but-unsealed symbols
+   asset fails closed at the `immutable_binding` gate; it is never silently
+   skipped.
 
 The server reads track state once, reserves the release revision, streams the
-exact AAB once, and compares the adapter readback package/version/track/SHA.
+exact AAB once (plus the exact symbols zip when declared), and compares the
+adapter readback package/version/track/SHA.
 Only an exact match records a successful immutable receipt. Any post-reserve
 error records `failed-closed` where possible. Halt and rollback remain typed
 fail-closed until the server-side Play adapter explicitly implements them.
+
+The success receipt carries a `symbols` block — `{sha256, size_bytes,
+uploaded: true, provider_ack: "deobfuscationFile.symbolType=nativeCode",
+post_commit_get: false}` — or `null` when none was declared. Google exposes no
+post-commit GET for deobfuscation files, so the in-edit upload response is the
+only provider acknowledgement that exists; the receipt says so explicitly
+instead of implying a later readback.
 
 ## Server-side Play adapter protocol
 
@@ -115,8 +138,12 @@ binding together with typed operation input:
 - `verifyBinding({credential, packageName, tracks})` validates the app binding;
 - `readTrackMaximum({credential, packageName, tracks, handsTrack})` returns the
   live maximum versionCode;
-- `promote(input, aabStream)` transfers the AAB stream and returns exact
+- `promote(input, aabStream, symbolsStream)` transfers the AAB stream — and,
+  when `input.symbols` declares one, the native debug symbols zip as a second
+  stream — and returns exact
   `{edit_id, package_name, version_code, track, sha256, rollout_percent}`.
+  A symbols declaration without a stream (or a stream without a declaration)
+  is rejected as `promotion_request_invalid` before any Google call.
 
 No call is retried automatically. Adapter absence, non-2xx, or malformed/mismatched
 readback is a typed `play_api_error` and never becomes success.
@@ -127,10 +154,17 @@ track mapping. Package and track scope comes only from the authenticated app's
 encrypted binding. Neither Worker returns or logs private credential material.
 
 Each mutation creates one Google edit, streams the AAB without buffering it,
-compares both the local SHA-256 and Google's bundle SHA-256/versionCode, reads
+compares both the local SHA-256 and Google's bundle SHA-256/versionCode,
+uploads the declared symbols zip (when present) to
+`apks/{versionCode}/deobfuscationFiles/nativeCode` inside the same edit before
+the track update, reads
 the live track again inside that edit, preserves its active releases, updates
 the requested release, and commits once with
-`changesInReviewBehavior=ERROR_IF_IN_REVIEW`. A fresh edit verifies the committed
+`changesInReviewBehavior=ERROR_IF_IN_REVIEW`. The symbols upload stream is
+hashed while it flows and must match the declared SHA-256/size exactly; the
+upload response must acknowledge `deobfuscationFile.symbolType=nativeCode`.
+Symbols rejections surface the documented stage `upload_symbols` in the typed
+error message. A fresh edit verifies the committed
 track before the adapter returns success. Pre-commit failures delete the edit;
 an ambiguous commit outcome is not retried or deleted. Partial rollout is
 allowed only for `production`; internal and closed-test promotion is 100%.

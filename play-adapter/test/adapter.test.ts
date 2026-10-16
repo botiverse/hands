@@ -12,6 +12,16 @@ const PACKAGE = "build.raft.app";
 const NOW = 1_780_000_000;
 const bytes = new TextEncoder().encode("exact-aab-bytes");
 const digest = bytesToHex(sha256(bytes));
+const symbolsBytes = new TextEncoder().encode("exact-native-symbols-zip");
+const symbolsDigest = bytesToHex(sha256(symbolsBytes));
+
+function symbolsBody() {
+  return new Blob([symbolsBytes]).stream();
+}
+
+function symbolsDeclaration(overrides: Partial<{ expectedSha256: string; expectedSize: number }> = {}) {
+  return { expectedSha256: symbolsDigest, expectedSize: symbolsBytes.byteLength, ...overrides };
+}
 
 let binding: PlayBindingInput;
 let publicKey: CryptoKey | KeyLike;
@@ -59,6 +69,8 @@ interface GoogleFixtureOptions {
   trackMaximum?: number;
   tokenStatus?: number;
   commitThrows?: boolean;
+  symbolsStatus?: number;
+  symbolsMalformed?: boolean;
 }
 
 function googleFixture(options: GoogleFixtureOptions = {}) {
@@ -71,6 +83,7 @@ function googleFixture(options: GoogleFixtureOptions = {}) {
       : [{ name: "existing", versionCodes: [String(trackMaximum)], status: "completed" }],
   };
   const requests: Array<{ url: string; method: string; body: unknown }> = [];
+  const symbolsUploads: Array<{ sha256: string; size: number }> = [];
   let assertion = "";
   const fetchImpl = vi.fn(async (input: RequestInfo | URL, init: RequestInit = {}) => {
     const url = String(input);
@@ -97,6 +110,18 @@ function googleFixture(options: GoogleFixtureOptions = {}) {
       const uploaded = new Uint8Array(await new Response(init.body).arrayBuffer());
       return Response.json({ versionCode: options.uploadVersionCode ?? 42, sha256: options.uploadSha ?? bytesToHex(sha256(uploaded)) });
     }
+    if (url.includes("/deobfuscationFiles/nativeCode")) {
+      const uploaded = new Uint8Array(await new Response(init.body).arrayBuffer());
+      symbolsUploads.push({ sha256: bytesToHex(sha256(uploaded)), size: uploaded.byteLength });
+      if (options.symbolsStatus) {
+        return Response.json(
+          { error: { errors: [{ reason: "insufficientPermissions" }], code: 403, message: "redacted-provider-text" } },
+          { status: options.symbolsStatus },
+        );
+      }
+      if (options.symbolsMalformed) return Response.json({});
+      return Response.json({ deobfuscationFile: { symbolType: "nativeCode" } });
+    }
     if (method === "PUT" && url.includes("/tracks/")) {
       track = requestBody as TrackResource;
       return Response.json(track);
@@ -110,6 +135,7 @@ function googleFixture(options: GoogleFixtureOptions = {}) {
   return {
     fetchImpl: fetchImpl as unknown as typeof fetch,
     requests,
+    symbolsUploads,
     assertion: () => assertion,
     track: () => track,
   };
@@ -152,7 +178,7 @@ describe("Google Play adapter RPC service", () => {
   it("streams once, preserves releases, commits once, and reads back exact identity", async () => {
     const fixture = googleFixture();
     const service = createPlayAdapterService({ fetchImpl: fixture.fetchImpl, nowSeconds: () => NOW });
-    const result = await service.promote(promotion(), body(), environment());
+    const result = await service.promote(promotion(), body(), null, environment());
     expect(result).toEqual({
       ok: true,
       value: {
@@ -170,12 +196,100 @@ describe("Google Play adapter RPC service", () => {
     ]);
     expect(fixture.requests.filter((request) => request.url.includes(":commit?"))).toHaveLength(1);
     expect(fixture.requests.filter((request) => request.url.includes("/bundles?uploadType=media"))).toHaveLength(1);
+    expect(fixture.requests.filter((request) => request.url.includes("/deobfuscationFiles/"))).toHaveLength(0);
+  });
+
+  it("uploads declared native symbols inside the edit before the track update and commits once", async () => {
+    const fixture = googleFixture();
+    const service = createPlayAdapterService({ fetchImpl: fixture.fetchImpl, nowSeconds: () => NOW });
+    const result = await service.promote(
+      promotion({ symbols: symbolsDeclaration() }),
+      body(),
+      symbolsBody(),
+      environment(),
+    );
+    expect(result).toMatchObject({ ok: true, value: { edit_id: "edit-1", version_code: 42, track: "internal" } });
+    expect(fixture.symbolsUploads).toEqual([{ sha256: symbolsDigest, size: symbolsBytes.byteLength }]);
+    const order = fixture.requests.map((request) => {
+      if (request.url.includes("/bundles?uploadType=media")) return "bundle";
+      if (request.url.includes("/deobfuscationFiles/nativeCode")) return "symbols";
+      if (request.method === "PUT" && request.url.includes("/tracks/")) return "track";
+      if (request.url.includes(":commit?")) return "commit";
+      return null;
+    }).filter(Boolean);
+    expect(order).toEqual(["bundle", "symbols", "track", "commit"]);
+    expect(fixture.requests.find((request) => request.url.includes("/deobfuscationFiles/nativeCode"))!.url)
+      .toContain(`/apks/42/deobfuscationFiles/nativeCode?uploadType=media`);
+  });
+
+  it("fails closed and deletes the edit when Google rejects the symbols upload", async () => {
+    const fixture = googleFixture({ symbolsStatus: 403 });
+    const service = createPlayAdapterService({ fetchImpl: fixture.fetchImpl, nowSeconds: () => NOW });
+    const result = await service.promote(promotion({ symbols: symbolsDeclaration() }), body(), symbolsBody(), environment());
+    expect(result).toMatchObject({ ok: false, error: { code: "play_api_rejected" } });
+    expect(result.ok || result.error.message).toContain("stage=upload_symbols");
+    expect(result.ok || result.error.message).not.toContain("redacted-provider-text");
+    expect(fixture.requests.filter((request) => request.method === "PUT")).toHaveLength(0);
+    expect(fixture.requests.filter((request) => request.url.includes(":commit?"))).toHaveLength(0);
+    expect(fixture.requests.filter((request) => request.method === "DELETE")).toHaveLength(1);
+  });
+
+  it("fails closed on symbols exact-byte mismatch without touching the track", async () => {
+    const fixture = googleFixture();
+    const service = createPlayAdapterService({ fetchImpl: fixture.fetchImpl, nowSeconds: () => NOW });
+    const result = await service.promote(
+      promotion({ symbols: symbolsDeclaration({ expectedSha256: "e".repeat(64) }) }),
+      body(),
+      symbolsBody(),
+      environment(),
+    );
+    expect(result).toMatchObject({ ok: false, error: { code: "symbols_integrity_mismatch" } });
+    expect(fixture.requests.filter((request) => request.method === "PUT")).toHaveLength(0);
+    expect(fixture.requests.filter((request) => request.url.includes(":commit?"))).toHaveLength(0);
+    expect(fixture.requests.filter((request) => request.method === "DELETE")).toHaveLength(1);
+  });
+
+  it("fails closed when Google does not acknowledge a nativeCode symbol type", async () => {
+    const fixture = googleFixture({ symbolsMalformed: true });
+    const service = createPlayAdapterService({ fetchImpl: fixture.fetchImpl, nowSeconds: () => NOW });
+    const result = await service.promote(promotion({ symbols: symbolsDeclaration() }), body(), symbolsBody(), environment());
+    expect(result).toMatchObject({ ok: false, error: { code: "play_symbols_malformed" } });
+    expect(fixture.requests.filter((request) => request.url.includes(":commit?"))).toHaveLength(0);
+    expect(fixture.requests.filter((request) => request.method === "DELETE")).toHaveLength(1);
+  });
+
+  it("rejects malformed symbols declarations and undeclared streams before OAuth", async () => {
+    const fixture = googleFixture();
+    const service = createPlayAdapterService({ fetchImpl: fixture.fetchImpl, nowSeconds: () => NOW });
+    // declared but no stream
+    expect(await service.promote(promotion({ symbols: symbolsDeclaration() }), body(), null, environment())).toMatchObject({
+      ok: false,
+      error: { code: "promotion_request_invalid" },
+    });
+    // stream without declaration
+    expect(await service.promote(promotion(), body(), symbolsBody(), environment())).toMatchObject({
+      ok: false,
+      error: { code: "promotion_request_invalid" },
+    });
+    // bad digest
+    expect(await service.promote(promotion({ symbols: { expectedSha256: "nothex", expectedSize: 10 } }), body(), symbolsBody(), environment())).toMatchObject({
+      ok: false,
+      error: { code: "promotion_request_invalid" },
+    });
+    // over the Google mediaUpload bound (2,097,152,000 bytes)
+    expect(await service.promote(
+      promotion({ symbols: symbolsDeclaration({ expectedSize: 2_097_152_001 }) }),
+      body(),
+      symbolsBody(),
+      environment(),
+    )).toMatchObject({ ok: false, error: { code: "symbols_too_large" } });
+    expect(fixture.fetchImpl).not.toHaveBeenCalled();
   });
 
   it("deletes an uncommitted edit on exact-byte mismatch", async () => {
     const fixture = googleFixture({ uploadSha: "f".repeat(64) });
     const service = createPlayAdapterService({ fetchImpl: fixture.fetchImpl, nowSeconds: () => NOW });
-    const result = await service.promote(promotion(), body(), environment());
+    const result = await service.promote(promotion(), body(), null, environment());
     expect(result).toMatchObject({ ok: false, error: { code: "play_bundle_mismatch" } });
     expect(fixture.requests.filter((request) => request.method === "PUT")).toHaveLength(0);
     expect(fixture.requests.filter((request) => request.method === "DELETE")).toHaveLength(1);
@@ -188,7 +302,7 @@ describe("Google Play adapter RPC service", () => {
   ])("promotes $versionCode above track maximum $trackMaximum", async ({ trackMaximum, versionCode }) => {
     const fixture = googleFixture({ trackMaximum, uploadVersionCode: versionCode });
     const service = createPlayAdapterService({ fetchImpl: fixture.fetchImpl, nowSeconds: () => NOW });
-    expect(await service.promote(promotion({ versionCode }), body(), environment())).toEqual({
+    expect(await service.promote(promotion({ versionCode }), body(), null, environment())).toEqual({
       ok: true,
       value: {
         edit_id: "edit-1",
@@ -215,7 +329,7 @@ describe("Google Play adapter RPC service", () => {
   ])("rejects version $versionCode against track maximum $trackMaximum before changing the track", async ({ trackMaximum, versionCode }) => {
     const fixture = googleFixture({ trackMaximum, uploadVersionCode: versionCode });
     const service = createPlayAdapterService({ fetchImpl: fixture.fetchImpl, nowSeconds: () => NOW });
-    expect(await service.promote(promotion({ versionCode }), body(), environment())).toMatchObject({
+    expect(await service.promote(promotion({ versionCode }), body(), null, environment())).toMatchObject({
       ok: false,
       error: { code: "play_version_conflict" },
     });
@@ -227,7 +341,7 @@ describe("Google Play adapter RPC service", () => {
   it("stops a version race and does not undo an ambiguous commit", async () => {
     const race = googleFixture({ trackMaximum: 42 });
     const raceService = createPlayAdapterService({ fetchImpl: race.fetchImpl, nowSeconds: () => NOW });
-    expect(await raceService.promote(promotion(), body(), environment())).toMatchObject({
+    expect(await raceService.promote(promotion(), body(), null, environment())).toMatchObject({
       ok: false,
       error: { code: "play_version_conflict" },
     });
@@ -236,7 +350,7 @@ describe("Google Play adapter RPC service", () => {
 
     const ambiguous = googleFixture({ commitThrows: true });
     const ambiguousService = createPlayAdapterService({ fetchImpl: ambiguous.fetchImpl, nowSeconds: () => NOW });
-    expect(await ambiguousService.promote(promotion(), body(), environment())).toMatchObject({
+    expect(await ambiguousService.promote(promotion(), body(), null, environment())).toMatchObject({
       ok: false,
       error: { code: "play_api_unavailable" },
     });
@@ -251,7 +365,7 @@ describe("Google Play adapter RPC service", () => {
       ok: false,
       error: { code: "package_name_invalid" },
     });
-    expect(await service.promote(promotion({ expectedSize: 16 }), body(), environment({ MAX_AAB_SIZE_BYTES: "15" }))).toMatchObject({
+    expect(await service.promote(promotion({ expectedSize: 16 }), body(), null, environment({ MAX_AAB_SIZE_BYTES: "15" }))).toMatchObject({
       ok: false,
       error: { code: "aab_too_large" },
     });

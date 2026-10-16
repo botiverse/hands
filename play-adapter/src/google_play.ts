@@ -6,6 +6,12 @@ import type { PromotionRequest, TrackRelease, TrackResource, ReleaseSummary } fr
 
 const API_ROOT = "https://androidpublisher.googleapis.com/androidpublisher/v3";
 const UPLOAD_ROOT = "https://androidpublisher.googleapis.com/upload/androidpublisher/v3";
+/**
+ * Google Play mediaUpload.maxSize for edits.deobfuscationfiles.upload, taken
+ * from the androidpublisher v3 discovery document (2,097,152,000 bytes).
+ * Native debug symbols zips above this bound are rejected before streaming.
+ */
+export const MAX_SYMBOLS_SIZE_BYTES = 2_097_152_000;
 
 interface GoogleBundle {
   versionCode?: number;
@@ -76,7 +82,11 @@ function requestedRelease(request: PromotionRequest): TrackRelease {
   return { versionCodes: [String(request.versionCode)], status: "completed" };
 }
 
-function hashingBody(body: ReadableStream<Uint8Array>, maxBytes: number) {
+function hashingBody(
+  body: ReadableStream<Uint8Array>,
+  maxBytes: number,
+  limits = { tooLargeCode: "aab_too_large", tooLargeMessage: "AAB exceeds the configured maximum size", incompleteCode: "aab_integrity_mismatch", incompleteMessage: "Google Play did not consume the complete AAB stream" },
+) {
   const hasher = sha256.create();
   let size = 0;
   let finished = false;
@@ -84,7 +94,7 @@ function hashingBody(body: ReadableStream<Uint8Array>, maxBytes: number) {
     transform(chunk, controller) {
       size += chunk.byteLength;
       if (size > maxBytes) {
-        throw new PlayAdapterError(413, "aab_too_large", "AAB exceeds the configured maximum size");
+        throw new PlayAdapterError(413, limits.tooLargeCode, limits.tooLargeMessage);
       }
       hasher.update(chunk);
       controller.enqueue(chunk);
@@ -97,7 +107,7 @@ function hashingBody(body: ReadableStream<Uint8Array>, maxBytes: number) {
     stream,
     digest() {
       if (!finished) {
-        throw new PlayAdapterError(409, "aab_integrity_mismatch", "Google Play did not consume the complete AAB stream");
+        throw new PlayAdapterError(409, limits.incompleteCode, limits.incompleteMessage);
       }
       return { size, sha256: bytesToHex(hasher.digest()) };
     },
@@ -311,6 +321,48 @@ export class GooglePlayClient {
     return body;
   }
 
+  private async uploadSymbols(request: PromotionRequest, editId: string): Promise<void> {
+    const symbols = request.symbols;
+    if (!symbols) return;
+    const local = hashingBody(symbols.body, MAX_SYMBOLS_SIZE_BYTES, {
+      tooLargeCode: "symbols_too_large",
+      tooLargeMessage: "Native debug symbols exceed the Google Play maximum size",
+      incompleteCode: "symbols_integrity_mismatch",
+      incompleteMessage: "Google Play did not consume the complete native debug symbols stream",
+    });
+    let response: Response;
+    try {
+      response = await this.fetchImpl(
+        `${UPLOAD_ROOT}/applications/${encodeURIComponent(request.packageName)}/edits/${encodeURIComponent(editId)}/apks/${request.versionCode}/deobfuscationFiles/nativeCode?uploadType=media`,
+        {
+          method: "POST",
+          headers: {
+            authorization: `Bearer ${this.accessToken}`,
+            "content-type": "application/octet-stream",
+          },
+          body: local.stream,
+          redirect: "manual",
+        },
+      );
+    } catch (error) {
+      if (error instanceof PlayAdapterError) throw error;
+      throw new PlayAdapterError(502, "play_symbols_unavailable", "Google Play native debug symbols upload failed");
+    }
+    const body = await response.json().catch(() => null) as { deobfuscationFile?: { symbolType?: string } } | null;
+    if (!response.ok) {
+      throw playRejection(response.status, body, "upload_symbols");
+    }
+    const hashResult = local.digest();
+    if (hashResult.size !== symbols.expectedSize || hashResult.sha256 !== symbols.expectedSha256) {
+      throw new PlayAdapterError(409, "symbols_integrity_mismatch", "Streamed native debug symbols did not match the Hands identity");
+    }
+    // Discovery documents no post-commit GET for deobfuscation files: this
+    // upload response is the only provider-side acknowledgement available.
+    if (body?.deobfuscationFile?.symbolType !== "nativeCode") {
+      throw new PlayAdapterError(502, "play_symbols_malformed", "Google Play did not acknowledge a nativeCode deobfuscation file");
+    }
+  }
+
   private async updateTrack(request: PromotionRequest, editId: string, current: TrackResource): Promise<void> {
     const currentMax = maxTrackVersionCode(current);
     if (request.versionCode <= currentMax || request.versionCode > 2_100_000_000) {
@@ -375,6 +427,10 @@ export class GooglePlayClient {
     let commitAttempted = false;
     try {
       await this.uploadBundle(request, editId);
+      await this.uploadSymbols(request, editId);
+      // Symbols attach to the bundle's versionCode inside the same edit and
+      // must land before the track update; any failure here runs the existing
+      // cleanupOrThrow path, so a rejected zip can never half-commit.
       const current = await this.getTrack(request.packageName, editId, request.playTrack);
       await this.updateTrack(request, editId, current);
       commitAttempted = true;

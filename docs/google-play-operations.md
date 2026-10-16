@@ -96,10 +96,10 @@ Hands 中的上传校验通过，仅证明文件和所声明的摘要一致，�
 
 以下管理 API 的 appId 使用完整应用 UUID，需使用拥有对应应用角色的 Hands 会话或部署令牌。上传、验收与 Google Play 提交都要求应用 publisher 权限。真人或 agent 均可明确提交；应用部署令牌还需具备该发布操作所需权限。CI 上传产物不会自动触发 Play 发布，提交说明与真实验收仍需明确提供。
 
-1. `POST /api/apps/:appId/android-release-artifacts` 声明同一构建的一份 AAB 和一份 APK。请求包含 source（repository、commit_sha、ci_run_id）、package_name、version_name、version_code、upload_key_cert_sha256，以及两项 artifacts（kind、filename、size_bytes、sha256）。
-2. 按响应中每项 `artifacts[].upload` 的 method、url、headers 上传文件，再调用 `POST /api/apps/:appId/android-release-artifacts/:buildId/assets/:assetId/complete` 校验并封存。`GET /api/apps/:appId/android-release-artifacts/:buildId` 返回的 bundle 应为 ready，两个 artifacts 的 status 均应为 sealed。
+1. `POST /api/apps/:appId/android-release-artifacts` 声明同一构建的一份 AAB 和一份 APK，可选再加一份 native debug symbols zip（kind:"symbols"，filename 以 .zip 结尾，size_bytes 上限 2,097,152,000，即 Google deobfuscationFiles mediaUpload 上限）。请求包含 source（repository、commit_sha、ci_run_id）、package_name、version_name、version_code、upload_key_cert_sha256，以及 artifacts（kind、filename、size_bytes、sha256）。不带 symbols 的请求保持 v1 契约与响应逐字节不变；声明 symbols 后 schema 升为 v2。
+2. 按响应中每项 `artifacts[].upload` 的 method、url、headers 上传文件，再调用 `POST /api/apps/:appId/android-release-artifacts/:buildId/assets/:assetId/complete` 校验并封存。`GET /api/apps/:appId/android-release-artifacts/:buildId` 返回的 bundle 应为 ready，全部已声明 artifacts（含 symbols）的 status 均应为 sealed；声明了 symbols 但未封存时 bundle 不会 ready，promote 会在 immutable_binding 门 fail-closed，不会静默跳过。
 3. 为该 build 创建 release。完成真实验收后，调用 `POST /api/apps/:appId/releases/:releaseId/receipts/acceptance`，提交 AAB 的 artifact_id、verdict:pass、matrix_ref 与 expected_revision；验收结果必须对应这份已封存 AAB。成功写入验收会增加 release revision，下一步先重新读取。
-4. 由已认证且具有应用 publisher 权限的真人或 agent 调用 `POST /api/apps/:appId/releases/:releaseId/distributions/play/promote`，body 包含 `track:"internal"`、最新 expected_revision 和 `approval:{"note":"验收和提交说明"}`。internal 使用绑定中配置的真实内部测试轨道；closed 才使用选择的封闭测试轨道，例如 alpha 或 beta。
+4. 由已认证且具有应用 publisher 权限的真人或 agent 调用 `POST /api/apps/:appId/releases/:releaseId/distributions/play/promote`，body 包含 `track:"internal"`、最新 expected_revision 和 `approval:{"note":"验收和提交说明"}`。internal 使用绑定中配置的真实内部测试轨道；closed 才使用选择的封闭测试轨道，例如 alpha 或 beta。已封存的 symbols zip 会在同一个 Google edit 内、轨道更新之前自动上传到 `deobfuscationFiles/nativeCode`；上传失败则删除 edit、整体 fail-closed，不会半提交。成功回执包含 symbols 的 sha256/size；Google 对 deobfuscation 文件没有事后 GET，回执中的 provider 确认仅为 edit 内上传响应（post_commit_get:false）。
 5. 用 `GET /api/apps/:appId/releases/:releaseId/distributions/play` 及 `/receipts` 核对 Google 的包名、版本、轨道和摘要回执，再交给测试人员。读取轨道成功不等于版本上传成功。
 
 提交要求候选 AAB 的 versionCode **大于目标轨道已有最大值，且不超过 2100000000**；空轨道不要求从 1 开始。准备签名候选前先核目标轨道的已有版本，避免产物做好后才发现冲突。完整请求结构见 [公开 API](../public-api-reference/) 和 [OpenAPI](https://hands.build/openapi.json)。
