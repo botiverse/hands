@@ -25,7 +25,11 @@ export default class GooglePlayAdapter extends WorkerEntrypoint<PlayAdapterEnv> 
     return this.service.readTrackMaximum(input, this.env);
   }
 
-  promote(input: PromotionRpcInput, body: ReadableStream<Uint8Array>) {
-    return this.service.promote(input, body, this.env);
+  promote(
+    input: PromotionRpcInput,
+    body: ReadableStream<Uint8Array>,
+    symbolsBody: ReadableStream<Uint8Array> | null,
+  ) {
+    return this.service.promote(input, body, symbolsBody ?? null, this.env);
   }
 }

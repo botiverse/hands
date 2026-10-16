@@ -39,12 +39,24 @@ export interface TrackMaximumRpcInput extends PlayBindingInput {
   handsTrack: HandsTrack;
 }
 
+/**
+ * Declared identity of the optional native debug symbols zip. Google's
+ * edits.deobfuscationfiles.upload mediaUpload.maxSize is 2,097,152,000 bytes
+ * (v3 discovery document); Hands enforces the same bound before streaming.
+ */
+export interface SymbolsRpcInput {
+  expectedSha256: string;
+  expectedSize: number;
+}
+
 export interface PromotionRpcInput extends TrackMaximumRpcInput {
   versionCode: number;
   expectedSha256: string;
   expectedSize: number;
   rolloutPercent: number;
   operationId: string;
+  /** Optional native debug symbols declaration; the zip bytes arrive as a separate stream. */
+  symbols?: SymbolsRpcInput | null;
 }
 
 export type AdapterResult<T> =
@@ -66,6 +78,12 @@ export interface TrackResource {
   releases?: TrackRelease[];
 }
 
+export interface PromotionSymbolsRequest {
+  body: ReadableStream<Uint8Array>;
+  expectedSha256: string;
+  expectedSize: number;
+}
+
 export interface PromotionRequest {
   packageName: string;
   handsTrack: HandsTrack;
@@ -76,6 +94,8 @@ export interface PromotionRequest {
   rolloutPercent: number;
   operationId: string;
   body: ReadableStream<Uint8Array>;
+  /** Present only when Hands declared symbols for this promotion. */
+  symbols?: PromotionSymbolsRequest | null;
 }
 
 /** Read-only release summaries; lifecycle is distinct from edits.tracks status. */

@@ -102,6 +102,30 @@ export function playReadbackMatches(
     && readback.sha256.toLowerCase() === artifact.file_hash.toLowerCase();
 }
 
+interface ReleaseSymbolsRow {
+  asset_id: string;
+  bundle_state: string;
+  r2_key: string;
+  file_hash: string;
+  size_bytes: number;
+  metadata_json: string;
+}
+
+/** Optional sealed native debug symbols zip stored alongside the AAB/APK bundle. */
+async function getReleaseSymbols(db: D1Database, appId: string, releaseId: string): Promise<ReleaseSymbolsRow | null> {
+  return db.prepare(
+    `SELECT ba.id AS asset_id, arb.state AS bundle_state,
+            ba.r2_key, ba.file_hash, ba.size_bytes, ba.metadata_json
+     FROM releases r
+     JOIN builds b ON b.id = r.build_id AND b.app_id = r.app_id
+     JOIN android_release_artifact_bundles arb ON arb.build_id = b.id AND arb.app_id = r.app_id
+     JOIN build_assets ba ON ba.build_id = b.id
+     WHERE r.app_id = ?1 AND r.id = ?2
+       AND ba.artifact_kind = 'debug-symbols' AND ba.platform = 'android' AND ba.filetype = 'symbols'
+     LIMIT 1`,
+  ).bind(appId, releaseId).first<ReleaseSymbolsRow>();
+}
+
 async function getReleaseArtifact(db: D1Database, appId: string, releaseId: string): Promise<ReleaseArtifactRow | null> {
   return db.prepare(
     `SELECT r.id AS release_id, r.revision AS release_revision, r.status AS release_status,
@@ -434,6 +458,20 @@ export async function handlePromotePlayDistribution(c: AdminContext) {
   if (!acceptanceMatches(artifact, acceptance)) {
     return fail(c, 400, { code: "gate_failed", gate: "acceptance_receipt", message: "latest Hands acceptance receipt does not pass for the exact AAB" });
   }
+  // Declared native debug symbols must be sealed to their exact bytes too; a
+  // declared-but-unsealed zip fails closed instead of being silently skipped.
+  const symbolsAsset = await getReleaseSymbols(c.env.DB, appId, releaseId);
+  if (symbolsAsset) {
+    const symbolsMetadata = jsonObject(symbolsAsset.metadata_json);
+    if (
+      symbolsAsset.bundle_state !== "ready"
+      || symbolsMetadata.upload_state !== "ready"
+      || symbolsMetadata.verified_sha256 !== symbolsAsset.file_hash
+      || symbolsMetadata.verified_size_bytes !== symbolsAsset.size_bytes
+    ) {
+      return fail(c, 400, { code: "gate_failed", gate: "immutable_binding", message: "native debug symbols are not sealed to their declared exact bytes" });
+    }
+  }
   const hold = await c.env.DB.prepare(
     "SELECT id FROM release_distribution_holds WHERE app_id = ?1 AND release_id = ?2 AND closed_at IS NULL LIMIT 1",
   ).bind(appId, releaseId).first();
@@ -499,7 +537,21 @@ export async function handlePromotePlayDistribution(c: AdminContext) {
       const receiptId = await failedPromotionReceipt(c, artifact, actor, input.track, input.approval.note, "immutable_binding", { object_size: object?.size ?? null });
       return fail(c, 400, { code: "gate_failed", gate: "immutable_binding", message: "stored AAB size changed", receipt_id: receiptId });
     }
+    let symbolsObject: R2ObjectBody | null = null;
+    if (symbolsAsset) {
+      try {
+        symbolsObject = await c.env.APK_BUCKET.get(symbolsAsset.r2_key);
+      } catch {
+        const receiptId = await failedPromotionReceipt(c, artifact, actor, input.track, input.approval.note, "immutable_binding", { symbols_object_read: "failed" });
+        return fail(c, 400, { code: "gate_failed", gate: "immutable_binding", message: "stored native debug symbols could not be read", receipt_id: receiptId });
+      }
+      if (!symbolsObject || symbolsObject.size !== symbolsAsset.size_bytes) {
+        const receiptId = await failedPromotionReceipt(c, artifact, actor, input.track, input.approval.note, "immutable_binding", { symbols_object_size: symbolsObject?.size ?? null });
+        return fail(c, 400, { code: "gate_failed", gate: "immutable_binding", message: "stored native debug symbols size changed", receipt_id: receiptId });
+      }
+    }
     const [hashBranch, uploadBranch] = object.body.tee();
+    const [symbolsHashBranch, symbolsUploadBranch] = symbolsObject ? symbolsObject.body.tee() : [null, null];
     const uploadResponsePromise = Promise.resolve().then(() => c.env.PLAY_RELEASE_SERVICE!.promote({
       credential: binding.credential,
       packageName: binding.package_name,
@@ -510,11 +562,20 @@ export async function handlePromotePlayDistribution(c: AdminContext) {
       expectedSize: artifact.size_bytes,
       rolloutPercent: input.rollout_percent ?? 100,
       operationId,
-    }, uploadBranch));
-    const [localResult, uploadResult] = await Promise.allSettled([hashStream(hashBranch), uploadResponsePromise]);
+      symbols: symbolsAsset ? { expectedSha256: symbolsAsset.file_hash, expectedSize: symbolsAsset.size_bytes } : null,
+    }, uploadBranch, symbolsUploadBranch));
+    const [localResult, symbolsLocalResult, uploadResult] = await Promise.allSettled([
+      hashStream(hashBranch),
+      symbolsHashBranch ? hashStream(symbolsHashBranch) : null,
+      uploadResponsePromise,
+    ]);
     if (localResult.status === "rejected") {
       const receiptId = await failedPromotionReceipt(c, artifact, actor, input.track, input.approval.note, "immutable_binding", { stream_read: "failed" });
       return fail(c, 400, { code: "gate_failed", gate: "immutable_binding", message: "stored AAB stream could not be verified", receipt_id: receiptId });
+    }
+    if (symbolsAsset && symbolsLocalResult.status === "rejected") {
+      const receiptId = await failedPromotionReceipt(c, artifact, actor, input.track, input.approval.note, "immutable_binding", { symbols_stream_read: "failed" });
+      return fail(c, 400, { code: "gate_failed", gate: "immutable_binding", message: "stored native debug symbols stream could not be verified", receipt_id: receiptId });
     }
     if (uploadResult.status === "rejected") {
       const receiptId = await failedPromotionReceipt(c, artifact, actor, input.track, input.approval.note, "play_api_error", { request: "failed" });
@@ -525,6 +586,13 @@ export async function handlePromotePlayDistribution(c: AdminContext) {
     if (local.sha256 !== artifact.file_hash || local.size !== artifact.size_bytes) {
       const receiptId = await failedPromotionReceipt(c, artifact, actor, input.track, input.approval.note, "immutable_binding", { actual: local });
       return fail(c, 400, { code: "gate_failed", gate: "immutable_binding", message: "streamed AAB did not match the accepted artifact", receipt_id: receiptId });
+    }
+    if (symbolsAsset) {
+      const symbolsLocal = symbolsLocalResult.status === "fulfilled" ? symbolsLocalResult.value : null;
+      if (!symbolsLocal || symbolsLocal.sha256 !== symbolsAsset.file_hash || symbolsLocal.size !== symbolsAsset.size_bytes) {
+        const receiptId = await failedPromotionReceipt(c, artifact, actor, input.track, input.approval.note, "immutable_binding", { symbols_actual: symbolsLocal });
+        return fail(c, 400, { code: "gate_failed", gate: "immutable_binding", message: "streamed native debug symbols did not match the accepted artifact", receipt_id: receiptId });
+      }
     }
     if (!uploadResponse?.ok) {
       const receiptId = await failedPromotionReceipt(c, artifact, actor, input.track, input.approval.note, "play_api_error", { code: uploadResponse?.error?.code ?? "unknown" });
@@ -550,6 +618,16 @@ export async function handlePromotePlayDistribution(c: AdminContext) {
         actor,
         action: "promote",
         approvals: [{ approver: actor, at: new Date().toISOString(), scope: input.track }],
+        // Google exposes no post-commit GET for deobfuscation files; the only
+        // provider acknowledgement is the in-edit upload response, checked by
+        // the adapter (deobfuscationFile.symbolType == "nativeCode").
+        symbols: symbolsAsset ? {
+          sha256: symbolsAsset.file_hash,
+          size_bytes: symbolsAsset.size_bytes,
+          uploaded: true,
+          provider_ack: "deobfuscationFile.symbolType=nativeCode",
+          post_commit_get: false,
+        } : null,
         play: {
           edit_id: readback.edit_id,
           track: input.track,

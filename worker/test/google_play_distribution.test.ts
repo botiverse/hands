@@ -93,6 +93,60 @@ describe("Android release artifact declaration", () => {
     path.artifacts[0]!.filename = "../escape.aab";
     expect(() => normalizeAndroidReleaseArtifactInput(path)).toThrow(/safe basename/);
   });
+
+  it("accepts an optional symbols zip and keeps the aab/apk pair canonical", () => {
+    const withSymbols = validBundle();
+    withSymbols.artifacts = [
+      ...withSymbols.artifacts,
+      { kind: "symbols", filename: "raft-symbols.zip", size_bytes: 123, sha256: A },
+    ];
+    const normalized = normalizeAndroidReleaseArtifactInput(withSymbols);
+    expect(normalized.artifacts.map((artifact) => artifact.kind)).toEqual(["aab", "apk"]);
+    expect(normalized.symbols).toMatchObject({ kind: "symbols", filename: "raft-symbols.zip", sizeBytes: 123, sha256: A, contentType: "application/zip" });
+
+    const withoutSymbols = normalizeAndroidReleaseArtifactInput(validBundle());
+    expect(withoutSymbols.symbols).toBeNull();
+  });
+
+  it("fails closed on malformed symbols declarations", () => {
+    const wrongExtension = validBundle();
+    wrongExtension.artifacts = [
+      ...wrongExtension.artifacts,
+      { kind: "symbols", filename: "raft-symbols.aab", size_bytes: 123, sha256: A },
+    ];
+    expect(() => normalizeAndroidReleaseArtifactInput(wrongExtension)).toThrow(/safe basename ending with \.zip/);
+
+    const duplicate = validBundle();
+    duplicate.artifacts = [
+      ...duplicate.artifacts,
+      { kind: "symbols", filename: "one.zip", size_bytes: 10, sha256: A },
+      { kind: "symbols", filename: "two.zip", size_bytes: 10, sha256: A },
+    ];
+    // four artifacts trip the length gate before duplicate detection
+    expect(() => normalizeAndroidReleaseArtifactInput(duplicate)).toThrow(/exactly one AAB and one APK/);
+
+    const oversized = validBundle();
+    oversized.artifacts = [
+      ...oversized.artifacts,
+      { kind: "symbols", filename: "big.zip", size_bytes: 2_097_152_001, sha256: A },
+    ];
+    expect(() => normalizeAndroidReleaseArtifactInput(oversized)).toThrow(/no larger than 2097152000/);
+
+    const badDigest = validBundle();
+    badDigest.artifacts = [
+      ...badDigest.artifacts,
+      { kind: "symbols", filename: "bad.zip", size_bytes: 10, sha256: "nothex" },
+    ];
+    expect(() => normalizeAndroidReleaseArtifactInput(badDigest)).toThrow(/lowercase hex/);
+
+    const fourArtifacts = validBundle();
+    fourArtifacts.artifacts = [
+      ...fourArtifacts.artifacts,
+      { kind: "symbols", filename: "one.zip", size_bytes: 10, sha256: A },
+      { kind: "symbols", filename: "two.zip", size_bytes: 10, sha256: B },
+    ];
+    expect(() => normalizeAndroidReleaseArtifactInput(fourArtifacts)).toThrow(/exactly one AAB and one APK/);
+  });
 });
 
 describe("Play promotion gates", () => {
@@ -461,9 +515,75 @@ describe("Android artifact routes", () => {
     const bundle = await (await request(`/api/apps/app/android-release-artifacts/${declared.build_id}`)).json() as { status: string };
     expect(bundle.status).toBe("failed");
   });
+
+  it("keeps v1 two-artifact requests on the v1 schema byte-identically", async () => {
+    const { request } = routeHarness();
+    const aab = new TextEncoder().encode("exact-aab");
+    const apk = new TextEncoder().encode("exact-apk");
+    const body = validBundle();
+    body.artifacts = [
+      { kind: "aab", filename: "raft.aab", size_bytes: aab.byteLength, sha256: sha(aab) },
+      { kind: "apk", filename: "raft.apk", size_bytes: apk.byteLength, sha256: sha(apk) },
+    ];
+    const declared = await (await request("/api/apps/app/android-release-artifacts", {
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body),
+    })).json() as { schema: string; artifacts: Array<{ kind: string }> };
+    expect(declared.schema).toBe("hands.android-release-artifacts.v1");
+    expect(declared.artifacts.map((artifact) => artifact.kind)).toEqual(["aab", "apk"]);
+  });
+
+  it("seals a declared symbols zip on the v2 schema and gates bundle readiness on it", async () => {
+    const { sqlite, bucket, request } = routeHarness();
+    const aab = new TextEncoder().encode("exact-aab");
+    const apk = new TextEncoder().encode("exact-apk");
+    const symbols = new TextEncoder().encode("exact-native-symbols-zip");
+    const body = validBundle();
+    body.artifacts = [
+      { kind: "aab", filename: "raft.aab", size_bytes: aab.byteLength, sha256: sha(aab) },
+      { kind: "apk", filename: "raft.apk", size_bytes: apk.byteLength, sha256: sha(apk) },
+      { kind: "symbols", filename: "raft-symbols.zip", size_bytes: symbols.byteLength, sha256: sha(symbols) },
+    ];
+    const declared = await (await request("/api/apps/app/android-release-artifacts", {
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body),
+    })).json() as {
+      schema: string;
+      build_id: string;
+      artifacts: Array<{ asset_id: string; kind: string; upload: { url: string } }>;
+    };
+    expect(declared.schema).toBe("hands.android-release-artifacts.v2");
+    expect(declared.artifacts.map((artifact) => artifact.kind)).toEqual(["aab", "apk", "symbols"]);
+    expect(declared.artifacts.every((artifact) => artifact.upload.url.startsWith("https://r2.test/"))).toBe(true);
+    // symbols must never be stored as an installable artifact
+    const symbolsRow = sqlite.prepare("SELECT artifact_kind, filetype FROM build_assets WHERE filetype='symbols'").get();
+    expect(symbolsRow).toEqual({ artifact_kind: "debug-symbols", filetype: "symbols" });
+
+    const bytesFor = (kind: string) => (kind === "aab" ? aab : kind === "apk" ? apk : symbols);
+    for (const artifact of declared.artifacts) {
+      const row = sqlite.prepare("SELECT r2_key FROM build_assets WHERE id = ?").get(artifact.asset_id) as { r2_key: string };
+      bucket.objects.set(row.r2_key, bytesFor(artifact.kind));
+      const completed = await request(
+        `/api/apps/app/android-release-artifacts/${declared.build_id}/assets/${artifact.asset_id}/complete`,
+        { method: "POST" },
+      );
+      expect(completed.status).toBe(200);
+      const completedBody = await completed.json() as { status: string };
+      // bundle flips to ready only after the LAST declared artifact (incl. symbols) seals
+      const sealedCount = sqlite.prepare(
+        "SELECT COUNT(*) AS n FROM build_assets WHERE build_id=? AND json_extract(metadata_json,'$.upload_state')='ready'",
+      ).get(declared.build_id) as { n: number };
+      expect(completedBody.status).toBe(sealedCount.n === 3 ? "ready" : "uploading");
+    }
+    const readback = await (await request(`/api/apps/app/android-release-artifacts/${declared.build_id}`)).json() as {
+      schema: string; status: string; artifacts: Array<{ kind: string; status: string; verified_sha256: string }>;
+    };
+    expect(readback.schema).toBe("hands.android-release-artifacts.v2");
+    expect(readback.status).toBe("ready");
+    expect(readback.artifacts.map((artifact) => artifact.kind)).toEqual(["aab", "apk", "symbols"]);
+    expect(readback.artifacts.map((artifact) => artifact.verified_sha256)).toEqual([sha(aab), sha(apk), sha(symbols)]);
+  });
 });
 
-async function readyRelease(principal: "human" | "agent" = "human", role: "publisher" | "viewer" = "publisher", versionCode = 42) {
+async function readyRelease(principal: "human" | "agent" = "human", role: "publisher" | "viewer" = "publisher", versionCode = 42, withSymbols = false) {
   const harness = routeHarness(principal, role);
   harness.env.PLAY_CRED_ENC_KEYS = JSON.stringify({ v1: "test-only-google-play-key-material-1234567890" });
   harness.env.PLAY_CRED_ENC_ACTIVE_KEY_VERSION = "v1";
@@ -482,20 +602,24 @@ async function readyRelease(principal: "human" | "agent" = "human", role: "publi
   });
   const aab = new TextEncoder().encode("exact-aab");
   const apk = new TextEncoder().encode("exact-apk");
+  const symbols = new TextEncoder().encode("exact-native-symbols-zip");
   const body = validBundle();
   body.version_code = versionCode;
   body.artifacts = [
     { kind: "aab", filename: "raft.aab", size_bytes: aab.byteLength, sha256: sha(aab) },
     { kind: "apk", filename: "raft.apk", size_bytes: apk.byteLength, sha256: sha(apk) },
+    ...(withSymbols
+      ? [{ kind: "symbols" as const, filename: "raft-symbols.zip", size_bytes: symbols.byteLength, sha256: sha(symbols) }]
+      : []),
   ];
   const declared = await (await harness.request("/api/apps/app/android-release-artifacts", {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(body),
-  })).json() as { build_id: string; artifacts: Array<{ asset_id: string; kind: "aab" | "apk" }> };
+  })).json() as { build_id: string; artifacts: Array<{ asset_id: string; kind: "aab" | "apk" | "symbols" }> };
   for (const artifact of declared.artifacts) {
     const row = harness.sqlite.prepare("SELECT r2_key FROM build_assets WHERE id = ?").get(artifact.asset_id) as { r2_key: string };
-    harness.bucket.objects.set(row.r2_key, artifact.kind === "aab" ? aab : apk);
+    harness.bucket.objects.set(row.r2_key, artifact.kind === "aab" ? aab : artifact.kind === "apk" ? apk : symbols);
     const completed = await harness.request(
       `/api/apps/app/android-release-artifacts/${declared.build_id}/assets/${artifact.asset_id}/complete`,
       { method: "POST" },
@@ -521,7 +645,7 @@ async function readyRelease(principal: "human" | "agent" = "human", role: "publi
     }),
   });
   expect(acceptance.status).toBe(201);
-  return { ...harness, aab, aabAsset, declared };
+  return { ...harness, aab, aabAsset, declared, symbols };
 }
 
 type PlayAdapter = NonNullable<Env["PLAY_RELEASE_SERVICE"]>;
@@ -791,6 +915,150 @@ describe("Play promotion route", () => {
       result: { status: "success" },
     });
     expect(JSON.stringify(payload)).not.toMatch(/distribution[_-]?cert/i);
+    expect(payload.symbols).toBeNull();
+  });
+
+  it("attaches sealed native symbols to the same promote edit and records them in the receipt", async () => {
+    const harness = await readyRelease("human", "publisher", 42, true);
+    let seenSymbolsDecl: unknown = "unset";
+    let seenSymbolsBytes: Uint8Array | null = null;
+    harness.env.PLAY_RELEASE_SERVICE = playAdapterStub({
+      readTrackMaximum: async () => ({ ok: true, value: { max_version_code: 41 } }),
+      promote: async (input, stream, symbolsStream) => {
+        seenSymbolsDecl = input.symbols;
+        const bytes = new Uint8Array(await new Response(stream).arrayBuffer());
+        seenSymbolsBytes = symbolsStream ? new Uint8Array(await new Response(symbolsStream).arrayBuffer()) : null;
+        return { ok: true, value: {
+          edit_id: "edit-1", package_name: "build.raft.app", version_code: 42,
+          track: "internal", sha256: sha(bytes), rollout_percent: 100,
+        } };
+      },
+    });
+    const promoted = await harness.request("/api/apps/app/releases/release/distributions/play/promote", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ track: "internal", expected_revision: 1, approval: { note: "promote with symbols" } }),
+    });
+    expect(promoted.status).toBe(200);
+    expect(seenSymbolsDecl).toEqual({ expectedSha256: sha(harness.symbols), expectedSize: harness.symbols.byteLength });
+    expect(seenSymbolsBytes ? sha(seenSymbolsBytes) : null).toBe(sha(harness.symbols));
+    const payload = JSON.parse(String((harness.sqlite.prepare(
+      "SELECT payload_json FROM release_receipts WHERE kind='play-promotion' AND verdict='success'",
+    ).get() as { payload_json: string }).payload_json));
+    expect(payload.symbols).toEqual({
+      sha256: sha(harness.symbols),
+      size_bytes: harness.symbols.byteLength,
+      uploaded: true,
+      provider_ack: "deobfuscationFile.symbolType=nativeCode",
+      post_commit_get: false,
+    });
+  });
+
+  it("fails closed before any Play call when declared symbols are not sealed", async () => {
+    const harness = await readyRelease("human", "publisher", 42, true);
+    harness.sqlite.prepare(
+      "UPDATE build_assets SET metadata_json = json_set(metadata_json, '$.upload_state', 'pending_upload') WHERE filetype='symbols'",
+    ).run();
+    let calls = 0;
+    harness.env.PLAY_RELEASE_SERVICE = playAdapterStub({
+      readTrackMaximum: async () => { calls++; return { ok: true, value: { max_version_code: 41 } }; },
+      promote: async () => { calls++; throw new Error("must not call Play"); },
+    });
+    const res = await harness.request("/api/apps/app/releases/release/distributions/play/promote", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ track: "internal", expected_revision: 1, approval: { note: "ship" } }),
+    });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toMatchObject({ error: { code: "gate_failed", gate: "immutable_binding" } });
+    expect(calls).toBe(0);
+    expect(harness.sqlite.prepare("SELECT revision FROM releases WHERE id='release'").get()).toEqual({ revision: 1 });
+    expect(harness.sqlite.prepare("SELECT COUNT(*) AS count FROM release_receipts WHERE kind='play-promotion'").get()).toEqual({ count: 0 });
+  });
+
+  it("fails closed with a receipt when stored symbols bytes were tampered", async () => {
+    const harness = await readyRelease("human", "publisher", 42, true);
+    const row = harness.sqlite.prepare("SELECT r2_key FROM build_assets WHERE filetype='symbols'").get() as { r2_key: string };
+    harness.bucket.objects.set(row.r2_key, new TextEncoder().encode("tampered-longer-bytes"));
+    let uploads = 0;
+    harness.env.PLAY_RELEASE_SERVICE = playAdapterStub({
+      readTrackMaximum: async () => ({ ok: true, value: { max_version_code: 41 } }),
+      promote: async () => { uploads++; throw new Error("must not upload"); },
+    });
+    const res = await harness.request("/api/apps/app/releases/release/distributions/play/promote", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ track: "internal", expected_revision: 1, approval: { note: "ship" } }),
+    });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toMatchObject({ error: { code: "gate_failed", gate: "immutable_binding" } });
+    expect(uploads).toBe(0);
+    const failed = harness.sqlite.prepare(
+      "SELECT verdict, payload_json FROM release_receipts WHERE kind='play-promotion'",
+    ).get() as { verdict: string; payload_json: string };
+    expect(failed.verdict).toBe("failed-closed");
+    expect(JSON.parse(failed.payload_json).result).toMatchObject({ status: "failed-closed", failure_code: "immutable_binding" });
+  });
+
+  it("fails closed when streamed symbols bytes do not match the sealed identity", async () => {
+    const harness = await readyRelease("human", "publisher", 42, true);
+    const row = harness.sqlite.prepare("SELECT r2_key, size_bytes FROM build_assets WHERE filetype='symbols'").get() as { r2_key: string; size_bytes: number };
+    const sameLengthDifferentBytes = new TextEncoder().encode("X".repeat(row.size_bytes));
+    harness.bucket.objects.set(row.r2_key, sameLengthDifferentBytes);
+    let seenSymbols = false;
+    harness.env.PLAY_RELEASE_SERVICE = playAdapterStub({
+      readTrackMaximum: async () => ({ ok: true, value: { max_version_code: 41 } }),
+      promote: async (_input, stream, symbolsStream) => {
+        const bytes = new Uint8Array(await new Response(stream).arrayBuffer());
+        if (symbolsStream) {
+          seenSymbols = true;
+          await new Response(symbolsStream).arrayBuffer();
+        }
+        return { ok: true, value: {
+          edit_id: "edit-1", package_name: "build.raft.app", version_code: 42,
+          track: "internal", sha256: sha(bytes), rollout_percent: 100,
+        } };
+      },
+    });
+    const res = await harness.request("/api/apps/app/releases/release/distributions/play/promote", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ track: "internal", expected_revision: 1, approval: { note: "ship" } }),
+    });
+    expect(seenSymbols).toBe(true);
+    expect(res.status).toBe(400);
+    expect(await res.json()).toMatchObject({ error: { code: "gate_failed", gate: "immutable_binding" } });
+    const failed = harness.sqlite.prepare(
+      "SELECT verdict, payload_json FROM release_receipts WHERE kind='play-promotion'",
+    ).get() as { verdict: string; payload_json: string };
+    expect(failed.verdict).toBe("failed-closed");
+    expect(JSON.parse(failed.payload_json).result.failure_reason).toContain("symbols_actual");
+    expect(harness.sqlite.prepare("SELECT COUNT(*) AS count FROM play_distribution_state WHERE track='internal' AND version_code=42").get()).toEqual({ count: 0 });
+  });
+
+  it("surfaces the adapter symbols rejection fail-closed with a receipt", async () => {
+    const harness = await readyRelease("human", "publisher", 42, true);
+    harness.env.PLAY_RELEASE_SERVICE = playAdapterStub({
+      readTrackMaximum: async () => ({ ok: true, value: { max_version_code: 41 } }),
+      promote: async (_input, stream, symbolsStream) => {
+        const bytes = new Uint8Array(await new Response(stream).arrayBuffer());
+        if (symbolsStream) await new Response(symbolsStream).arrayBuffer();
+        return { ok: false, error: {
+          status: 502,
+          code: "play_api_rejected",
+          message: "Google Play API request failed with 403 (stage=upload_symbols; reason=insufficientPermissions)",
+        } };
+      },
+    });
+    const res = await harness.request("/api/apps/app/releases/release/distributions/play/promote", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ track: "internal", expected_revision: 1, approval: { note: "ship" } }),
+    });
+    expect(res.status).toBe(502);
+    const body = await res.json() as { error: { code: string; message: string; receipt_id: string } };
+    expect(body.error.code).toBe("play_api_error");
+    expect(body.error.message).toContain("stage=upload_symbols");
+    const failed = harness.sqlite.prepare(
+      "SELECT verdict, payload_json FROM release_receipts WHERE id=?",
+    ).get(body.error.receipt_id) as { verdict: string; payload_json: string };
+    expect(failed.verdict).toBe("failed-closed");
+    expect(JSON.parse(failed.payload_json).result).toMatchObject({ failure_code: "play_api_error" });
   });
 
   it.each([{ max: 0, candidate: 11300001 }, { max: 41, candidate: 11300001 }])("accepts candidate $candidate above track max $max without consecutive numbering", async ({ max, candidate }) => {

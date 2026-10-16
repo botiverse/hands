@@ -8,11 +8,17 @@ import { autoParseInstallableAsset, createBuild, createBuildAsset, resolveChanne
 
 type AdminContext = Context<AdminEnv & { Bindings: Env }>;
 type JsonObject = Record<string, unknown>;
-type ArtifactKind = "aab" | "apk";
+type ArtifactKind = "aab" | "apk" | "symbols";
 type UploadState = "pending_upload" | "verifying" | "ready" | "failed";
 
 const SCHEMA = "hands.android-release-artifacts.v1";
+const SCHEMA_V2 = "hands.android-release-artifacts.v2";
 const MAX_ARTIFACT_BYTES = 4 * 1024 * 1024 * 1024;
+/**
+ * Google Play mediaUpload.maxSize for edits.deobfuscationfiles.upload
+ * (androidpublisher v3 discovery document): 2,097,152,000 bytes.
+ */
+const MAX_SYMBOLS_BYTES = 2_097_152_000;
 const UPLOAD_TTL_SECONDS = 3600;
 
 export interface AndroidReleaseArtifactInput {
@@ -50,6 +56,8 @@ export interface NormalizedAndroidReleaseArtifactInput {
   versionCode: number;
   uploadKeyCertSha256: string;
   artifacts: [NormalizedArtifact, NormalizedArtifact];
+  /** Optional native debug symbols zip; null keeps the v1 two-artifact contract. */
+  symbols: NormalizedArtifact | null;
 }
 
 interface AndroidAssetRow {
@@ -92,16 +100,18 @@ function digest(value: unknown, field: string): string {
 
 function filename(value: unknown, kind: ArtifactKind): string {
   const normalized = requiredString(value, `artifacts.${kind}.filename`, 255);
-  if (!/^[A-Za-z0-9][A-Za-z0-9._ -]*$/.test(normalized) || !normalized.toLowerCase().endsWith(`.${kind}`)) {
-    throw new Error(`artifacts.${kind}.filename must be a safe basename ending with .${kind}`);
+  const suffix = kind === "symbols" ? ".zip" : `.${kind}`;
+  if (!/^[A-Za-z0-9][A-Za-z0-9._ -]*$/.test(normalized) || !normalized.toLowerCase().endsWith(suffix)) {
+    throw new Error(`artifacts.${kind}.filename must be a safe basename ending with ${suffix}`);
   }
   return normalized;
 }
 
 function size(value: unknown, kind: ArtifactKind): number {
   const normalized = Number(value);
-  if (!Number.isSafeInteger(normalized) || normalized <= 0 || normalized > MAX_ARTIFACT_BYTES) {
-    throw new Error(`artifacts.${kind}.size_bytes must be a positive integer no larger than 4 GiB`);
+  const maxBytes = kind === "symbols" ? MAX_SYMBOLS_BYTES : MAX_ARTIFACT_BYTES;
+  if (!Number.isSafeInteger(normalized) || normalized <= 0 || normalized > maxBytes) {
+    throw new Error(`artifacts.${kind}.size_bytes must be a positive integer no larger than ${maxBytes}`);
   }
   return normalized;
 }
@@ -123,13 +133,13 @@ export function normalizeAndroidReleaseArtifactInput(
   if (!/^[A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z][A-Za-z0-9_]*)+$/.test(packageName)) {
     throw new Error("package_name must be a reverse-DNS Android application id");
   }
-  if (!Array.isArray(input.artifacts) || input.artifacts.length !== 2) {
+  if (!Array.isArray(input.artifacts) || input.artifacts.length < 2 || input.artifacts.length > 3) {
     throw new Error("artifacts must contain exactly one AAB and one APK");
   }
   const byKind = new Map<ArtifactKind, AndroidReleaseArtifactInput["artifacts"][number]>();
   for (const artifact of input.artifacts) {
-    if (!artifact || (artifact.kind !== "aab" && artifact.kind !== "apk")) {
-      throw new Error("artifact kind must be aab or apk");
+    if (!artifact || (artifact.kind !== "aab" && artifact.kind !== "apk" && artifact.kind !== "symbols")) {
+      throw new Error("artifact kind must be aab, apk or symbols");
     }
     if (byKind.has(artifact.kind)) throw new Error(`duplicate ${artifact.kind} artifact`);
     byKind.set(artifact.kind, artifact);
@@ -137,16 +147,22 @@ export function normalizeAndroidReleaseArtifactInput(
   if (!byKind.has("aab") || !byKind.has("apk")) {
     throw new Error("artifacts must contain exactly one AAB and one APK");
   }
-  const artifacts = (["aab", "apk"] as const).map((kind) => {
+  const normalizeOne = (kind: ArtifactKind): NormalizedArtifact => {
     const artifact = byKind.get(kind)!;
     return {
       kind,
       filename: filename(artifact.filename, kind),
       sizeBytes: size(artifact.size_bytes, kind),
       sha256: digest(artifact.sha256, `artifacts.${kind}.sha256`),
-      contentType: kind === "apk" ? "application/vnd.android.package-archive" : "application/octet-stream",
+      contentType: kind === "apk"
+        ? "application/vnd.android.package-archive"
+        : kind === "symbols"
+          ? "application/zip"
+          : "application/octet-stream",
     };
-  }) as [NormalizedArtifact, NormalizedArtifact];
+  };
+  const artifacts = [normalizeOne("aab"), normalizeOne("apk")] as [NormalizedArtifact, NormalizedArtifact];
+  const symbols = byKind.has("symbols") ? normalizeOne("symbols") : null;
   return {
     channel: input.channel_id ? requiredString(input.channel_id, "channel_id", 128) : null,
     source: {
@@ -159,6 +175,7 @@ export function normalizeAndroidReleaseArtifactInput(
     versionCode,
     uploadKeyCertSha256: digest(input.upload_key_cert_sha256, "upload_key_cert_sha256"),
     artifacts,
+    symbols,
   };
 }
 
@@ -201,9 +218,10 @@ async function rowsForBuild(db: D1Database, appId: string, buildId: string): Pro
      FROM android_release_artifact_bundles arb
      JOIN build_assets ba ON ba.build_id = arb.build_id
      WHERE arb.app_id = ?1 AND arb.build_id = ?2
-       AND ba.artifact_kind = 'installable' AND ba.platform = 'android'
-       AND ba.filetype IN ('aab', 'apk')
-     ORDER BY CASE ba.filetype WHEN 'aab' THEN 0 ELSE 1 END`,
+       AND ba.platform = 'android'
+       AND ((ba.artifact_kind = 'installable' AND ba.filetype IN ('aab', 'apk'))
+         OR (ba.artifact_kind = 'debug-symbols' AND ba.filetype = 'symbols'))
+     ORDER BY CASE ba.filetype WHEN 'aab' THEN 0 WHEN 'apk' THEN 1 ELSE 2 END`,
   ).bind(appId, buildId).all<AndroidAssetRow>();
   return result.results;
 }
@@ -211,8 +229,11 @@ async function rowsForBuild(db: D1Database, appId: string, buildId: string): Pro
 function bundleResponse(c: Context<any>, rows: AndroidAssetRow[]) {
   const first = rows[0]!;
   const origin = requestOrigin(c);
+  // v1 responses stay byte-identical; only a declared symbols artifact moves
+  // the bundle onto the v2 schema.
+  const schema = rows.some((row) => row.filetype === "symbols") ? SCHEMA_V2 : SCHEMA;
   return {
-    schema: SCHEMA,
+    schema,
     build_id: first.build_id,
     status: first.bundle_state,
     source: {
@@ -266,12 +287,13 @@ export async function handleCreateAndroidReleaseArtifacts(c: AdminContext) {
   }
 
   const buildId = crypto.randomUUID();
-  const declared = input.artifacts.map((artifact) => {
+  const declared = [...input.artifacts, ...(input.symbols ? [input.symbols] : [])].map((artifact) => {
     const assetId = crypto.randomUUID();
     const stagingKey = `apps/${appId}/android-release/pending/${buildId}/${assetId}/${safeFilename(artifact.filename)}`;
     const finalKey = `apps/${appId}/android-release/verified/${buildId}/${assetId}/${safeFilename(artifact.filename)}`;
     return { ...artifact, assetId, stagingKey, finalKey };
   });
+  const requestSchema = input.symbols ? SCHEMA_V2 : SCHEMA;
   const uploadUrls = await Promise.all(
     declared.map((artifact) => presignR2UploadUrl(c.env, artifact.stagingKey, artifact.contentType, UPLOAD_TTL_SECONDS)),
   );
@@ -293,13 +315,13 @@ export async function handleCreateAndroidReleaseArtifacts(c: AdminContext) {
       source: "mobile-ci",
       status: "pending",
       build_metadata_json: {
-        schema: SCHEMA,
+        schema: requestSchema,
         package_name: input.packageName,
         upload_key_cert_sha256: input.uploadKeyCertSha256,
-        required_artifacts: ["aab", "apk"],
+        required_artifacts: input.symbols ? ["aab", "apk", "symbols"] : ["aab", "apk"],
       },
       provenance_json: {
-        schema: SCHEMA,
+        schema: requestSchema,
         source_repository: input.source.repository,
         source_commit: input.source.commitSha,
         ci_run_id: input.source.ciRunId,
@@ -318,7 +340,9 @@ export async function handleCreateAndroidReleaseArtifacts(c: AdminContext) {
     ).run();
     for (const artifact of declared) {
       await createBuildAsset(c.env.DB, appId, buildId, {
-        artifact_kind: "installable",
+        // Symbols are not installable and must never surface on the public
+        // download paths, which all select artifact_kind = 'installable'.
+        artifact_kind: artifact.kind === "symbols" ? "debug-symbols" : "installable",
         platform: "android",
         arch: null,
         variant: "release",
@@ -327,7 +351,7 @@ export async function handleCreateAndroidReleaseArtifacts(c: AdminContext) {
         file_hash: artifact.sha256,
         size_bytes: artifact.sizeBytes,
         metadata_json: {
-          schema: SCHEMA,
+          schema: requestSchema,
           upload_state: "pending_upload",
           filename: artifact.filename,
           content_type: artifact.contentType,
@@ -479,8 +503,9 @@ export async function handleCompleteAndroidReleaseArtifact(c: AdminContext) {
   await c.env.APK_BUCKET.delete(row.r2_key);
   const remaining = await c.env.DB.prepare(
     `SELECT COUNT(*) AS count FROM build_assets
-     WHERE build_id = ?1 AND artifact_kind = 'installable' AND platform = 'android'
-       AND filetype IN ('aab','apk')
+     WHERE build_id = ?1 AND platform = 'android'
+       AND ((artifact_kind = 'installable' AND filetype IN ('aab','apk'))
+         OR (artifact_kind = 'debug-symbols' AND filetype = 'symbols'))
        AND json_extract(metadata_json, '$.upload_state') <> 'ready'`,
   ).bind(buildId).first<{ count: number }>();
   if (Number(remaining?.count ?? 1) === 0) {
@@ -515,6 +540,9 @@ export async function handleGetAndroidReleaseArtifacts(c: Context<{ Bindings: En
     c.req.param("appId") ?? "",
     c.req.param("buildId") ?? "",
   );
-  if (rows.length !== 2) return c.json({ error: "artifact bundle not found", code: "ARTIFACT_NOT_FOUND" }, 404);
+  const hasPair = rows.some((row) => row.filetype === "aab") && rows.some((row) => row.filetype === "apk");
+  if (!hasPair || rows.length < 2 || rows.length > 3) {
+    return c.json({ error: "artifact bundle not found", code: "ARTIFACT_NOT_FOUND" }, 404);
+  }
   return c.json(bundleResponse(c, rows));
 }
