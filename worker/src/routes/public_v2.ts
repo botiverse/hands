@@ -514,7 +514,9 @@ export async function handlePublicV2Latest(c: Context<{ Bindings: Env }>) {
     ).filter((a) => {
       if (!requested.platform) return true;
       if (a.platform !== requested.platform) return false;
-      return requested.arch === null || a.arch === requested.arch;
+      // Keep generic assets available to ABI-reporting clients. The shared
+      // selector prefers an exact architecture and falls back to arch=null.
+      return requested.arch === null || a.arch === requested.arch || a.arch === null;
     });
 
 

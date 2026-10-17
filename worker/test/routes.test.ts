@@ -12713,6 +12713,34 @@ describe("quiver public API v2 — scope resolution", () => {
     expect(JSON.stringify(body)).not.toContain("asset-symbols");
   });
 
+  it("updates/check falls back to a generic APK when the client reports an ABI", async () => {
+    const env = makeEnv();
+    const { handlePublicV2UpdateCheck } = await import("../src/routes/public_v2");
+    await seedRelease(env, "rel-generic-apk", "build-generic-apk", [["full", "all"]], {
+      versionCode: 11,
+    });
+    await seedAsset(env, "build-generic-apk", "asset-generic-apk", {
+      arch: null,
+      filetype: "apk",
+    });
+
+    const response = await handlePublicV2UpdateCheck(
+      makePublicContext(env, {
+        channel: "production",
+        product_type: "android-apk",
+        current_version_code: "10",
+        platform: "android",
+        arch: "arm64-v8a",
+        filetype: "apk",
+      }),
+    );
+    expect(response.status).toBe(200);
+    const body = await responseJson<any>(response);
+    expect(body.update_available).toBe(true);
+    expect(body.asset.arch).toBeNull();
+    expect(body.asset.download_url).toContain("asset-generic-apk.apk");
+  });
+
   it("updates/check returns 404 when an update has no compatible requested filetype", async () => {
     const env = makeEnv();
     const { handlePublicV2UpdateCheck } = await import("../src/routes/public_v2");

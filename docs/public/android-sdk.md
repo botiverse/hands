@@ -113,6 +113,10 @@ the server can bucket the device for **staged rollouts**
 — a release published at 25% only installs on the matching fraction of
 devices, and each device keeps its bucket as you raise the percentage.
 
+The SDK reports the first value from `Build.SUPPORTED_ABIS`. Hands prefers an
+ABI-specific APK when one is published and otherwise falls back to a generic
+universal APK (`arch: null`).
+
 To check without installing (e.g. to render your own "update available" UI),
 call `HandsClient(baseUrl).checkForUpdate(..., languageTag = ...)` and act on
 the result.
