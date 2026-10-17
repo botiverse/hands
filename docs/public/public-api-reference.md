@@ -42,6 +42,12 @@ GET /public/v2/apps/:appSlug/updates/check?channel=main&product_type=android-apk
 | `lang` | No | Preferred changelog language, such as `zh-CN` or `en`. Also read from `X-Hands-Lang` or `Accept-Language`. |
 | `device_id` | No | Stable per-install identifier. Also read from `X-Hands-Device-Id`. Required to participate in staged rollouts. |
 
+When `arch` is supplied, Hands first selects an asset with the exact
+platform and architecture. If no exact architecture asset exists, it falls
+back to the platform's generic asset (`arch: null`), such as a universal
+Android APK. This lets ABI-reporting clients use releases published as a
+single universal package.
+
 ### Staged rollouts
 
 Releases can be published to a percentage of devices. The server buckets
