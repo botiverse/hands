@@ -1,6 +1,6 @@
 {
   "name": "@botiverse/hands-feedback-react",
-  "version": "0.4.3",
+  "version": "0.4.4",
   "description": "Embeddable reporter-facing Hands feedback inbox components.",
   "author": {
     "name": "jiacheng",
