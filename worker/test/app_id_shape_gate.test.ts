@@ -89,3 +89,95 @@ describe("app id shape gate (requireAppRole / ensureAppRole)", () => {
     }
   });
 });
+
+// The denial copy must name BOTH ways in (app role, or org role in the owning
+// org) and the caller's REAL role in that org. Before this, the message read as
+// "an app role is mandatory", which hid the most common real cause: the caller
+// is an admin of a different organization and only a viewer (or not a member)
+// in the owning one. See the 2026-10-18 incident where two org admins were
+// locked out of a release rollback for exactly this reason.
+describe("app role denial copy (forbiddenRole, app scope)", () => {
+  const APP_ID = "a80be069-0d0f-40d3-b8bf-bf3cfbe647fc";
+  const ORG_ID = "org-owning";
+
+  /**
+   * @param callerOrgRole role the caller holds in the app's owning org
+   * @param withOrgRow    whether the organizations row exists (name resolved)
+   */
+  async function hitWithOrg(callerOrgRole: string | null, withOrgRow = true) {
+    const app = new Hono<any>();
+    app.use("*", async (c, next) => { c.set("admin_account", account); await next(); });
+    app.use("/api/apps/:appId/*", requireAppRole("publisher"));
+    app.get("/api/apps/:appId/thing", (c) => c.json({ ok: true }));
+    const db = {
+      prepare: (sql: string) => ({
+        bind: () => ({
+          first: async () => {
+            // Match on the query's stable fragments. Keep the org_members check
+            // before the organizations one (both contain "org").
+            if (/FROM org_members/.test(sql) && /org_role/.test(sql) && !/FROM organizations/.test(sql)) {
+              return callerOrgRole ? { org_role: callerOrgRole } : null;
+            }
+            if (/FROM organizations/.test(sql)) {
+              return withOrgRow ? { name: "slock-android" } : null;
+            }
+            if (/FROM apps/.test(sql)) return { id: APP_ID, org_id: ORG_ID };
+            return null;
+          },
+          all: async () => ({ results: [] }),
+          run: async () => ({ meta: { changes: 0 }, success: true }),
+        }),
+      }),
+    } as unknown as D1Database;
+    const env = { DB: db, DASHBOARD_ORIGIN: "https://dashboard.example" } as unknown as Env;
+    return app.request(`https://app.hands.build/api/apps/${APP_ID}/thing`, {}, env);
+  }
+
+  it("states the owning org, the caller's real org role, and both ways in", async () => {
+    const res = await hitWithOrg("viewer");
+    expect(res.status).toBe(403);
+    const body = await res.json<{ next_action: string; org_name: string | null; org_role: string | null }>();
+    expect(body.org_name).toBe("slock-android");
+    expect(body.org_role).toBe("viewer");
+    // Naming the org is what makes "I'm an admin elsewhere" visible.
+    expect(body.next_action).toContain("slock-android");
+    // Both paths must be advertised.
+    expect(body.next_action).toContain("'publisher' role on this app");
+    expect(body.next_action).toContain("'admin' in slock-android");
+    // And the caller's real standing, not a bare "none".
+    expect(body.next_action).toContain("'viewer' in slock-android");
+    expect(body.next_action).toContain("Ask an app or organization admin");
+  });
+
+  it("says the caller is not a member when they hold no role in the owning org", async () => {
+    const res = await hitWithOrg(null);
+    const body = await res.json<{ next_action: string; org_role: string | null }>();
+    expect(body.org_role).toBeNull();
+    expect(body.next_action).toContain("not a member of slock-android");
+  });
+
+  it("falls back to a generic phrase when the org name cannot be resolved", async () => {
+    const res = await hitWithOrg("viewer", false);
+    const body = await res.json<{ next_action: string; org_name: string | null }>();
+    expect(body.org_name).toBeNull();
+    expect(body.next_action).toContain("the organization that owns this app");
+  });
+
+  it("admits an org admin without any app role (the second way in is real)", async () => {
+    // This is the property the copy now advertises: an org admin must never
+    // reach this denial at all. If it regressed, the message would be claiming
+    // a route that does not work.
+    const res = await hitWithOrg("admin");
+    expect(res.status).toBe(200);
+  });
+
+  it("keeps the stable machine fields unchanged for existing clients", async () => {
+    const res = await hitWithOrg("viewer");
+    const body = await res.json<Record<string, unknown>>();
+    expect(body.code).toBe("INSUFFICIENT_APP_ROLE");
+    expect(body.error).toBe("insufficient_app_role");
+    expect(body.required_role).toBe("publisher");
+    expect(body.admin_can_grant).toBe(true);
+    expect(body.app_role).toBeNull();
+  });
+});

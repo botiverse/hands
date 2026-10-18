@@ -181,6 +181,23 @@ export async function getAppOrgId(db: D1Database, appId: string): Promise<string
   return row?.org_id ?? null;
 }
 
+/**
+ * The owning organization's display name, for error copy only. Best effort: a
+ * missing row must never turn a 403 into a 500, so callers get null and the
+ * message falls back to a generic phrase.
+ */
+async function getOrgDisplayName(
+  db: D1Database,
+  orgId: string | null,
+): Promise<string | null> {
+  if (!orgId) return null;
+  const row = await db
+    .prepare("SELECT name FROM organizations WHERE id = ?1 LIMIT 1")
+    .bind(orgId)
+    .first<{ name: string | null }>();
+  return row?.name ?? null;
+}
+
 export async function getEffectiveRole(
   db: D1Database,
   accountId: string,
@@ -228,6 +245,14 @@ export async function getEffectiveRole(
 // (required vs current role, a stable resource string, and manage_url pointing
 // an admin to where the role is bumped) instead of parsing a message. Legacy
 // org_role/app_role fields are kept for back-compat.
+//
+// App scope has TWO independent ways in — the app role, or admin in the
+// organization that owns the app (see ensureAppRole: `orgAllows || appAllows`).
+// The message used to name only the app role, which reads as "an app role is
+// mandatory" and hides the single most common real cause: the caller is an
+// admin of a DIFFERENT organization and holds a lower role (often viewer) in
+// the owning one. `actor` carries what was actually resolved so the sentence
+// can name both paths, the owning org, and the caller's real role there.
 function forbiddenRole(
   c: AdminContext,
   scope: "org" | "app",
@@ -237,6 +262,12 @@ function forbiddenRole(
     org_id?: string | null;
     app_id?: string | null;
     current_permissions?: AppPermission[];
+    /** Owning organization's display name, when known (app scope). */
+    org_name?: string | null;
+    /** Caller's actual org role in the owning org, when resolved. */
+    org_role?: OrgRole | null;
+    /** Org role the caller's request required, when resolved. */
+    org_minimum?: OrgRole | null;
   },
 ) {
   let resource = "";
@@ -256,15 +287,33 @@ function forbiddenRole(
   // perform the action on their behalf — instead of a bare "forbidden". Code is
   // a stable UPPER_SNAKE machine token; next_action is a ready-to-print
   // sentence. admin_can_grant signals an admin path exists.
-  const target = scope === "org" ? "this org" : "this app";
+  const orgLabel = ids.org_name ?? "the organization that owns this app";
   const nextAction =
-    `You have role '${currentRole ?? "none"}' but '${requiredRole}' is required for ${target}. ` +
-    `Ask an admin of ${target} to grant you the '${requiredRole}' role` +
-    (manageUrl ? ` (manage roles at ${manageUrl})` : "") +
-    `, or have an admin perform this action for you.` +
-    (scope === "app" && ids.app_id && !UUID_RE.test(ids.app_id)
-      ? " App API paths require the full app UUID, not a name or slug. Resolve it with `hands apps get <slug>` and retry with the returned id."
-      : "");
+    scope === "org"
+      ? `You have role '${currentRole ?? "none"}' but '${requiredRole}' is required for this org. ` +
+        `Ask an org admin to grant you the '${requiredRole}' role` +
+        (manageUrl ? ` (manage roles at ${manageUrl})` : "") +
+        `, or have an admin perform this action for you.`
+      : // Naming the caller's real role in the owning org is what turns a
+        // confusing 403 into a one-step fix: "I'm an admin elsewhere" becomes
+        // visible instead of being silently outranked by a viewer row here.
+        // NOTE: this only runs when the org role did NOT satisfy the bar
+        // (ensureAppRole passes on `orgAllows || appAllows`), so the text must
+        // not add a "but your org role should have sufficed" clause — that
+        // branch is unreachable and would be untestable dead copy.
+        `This app belongs to the organization ${orgLabel}. ` +
+        `You need either the '${requiredRole}' role on this app, or '${ids.org_minimum ?? "admin"}' in ${orgLabel}` +
+        ` (an organization admin can perform it). You are currently ` +
+        (ids.org_role
+          ? `'${ids.org_role}' in ${orgLabel}`
+          : `not a member of ${orgLabel}`) +
+        (currentRole ? ` and '${currentRole}' on this app` : " and have no role on this app") +
+        `. Ask an app or organization admin to grant you access` +
+        (manageUrl ? ` (manage roles at ${manageUrl})` : "") +
+        `, or have an admin perform this action for you.` +
+        (ids.app_id && !UUID_RE.test(ids.app_id)
+          ? " App API paths require the full app UUID, not a name or slug. Resolve it with `hands apps get <slug>` and retry with the returned id."
+          : "");
   return c.json(
     {
       error: scope === "org" ? "insufficient_org_role" : "insufficient_app_role",
@@ -276,6 +325,9 @@ function forbiddenRole(
       resource,
       org_id: ids.org_id ?? null,
       app_id: ids.app_id ?? null,
+      ...(scope === "app"
+        ? { org_name: ids.org_name ?? null, org_role: ids.org_role ?? null }
+        : {}),
       ...(ids.current_permissions
         ? { current_permissions: ids.current_permissions }
         : {}),
@@ -394,6 +446,9 @@ export async function ensureAppRole(
       response: forbiddenRole(c, "app", minimum, role.app_role, {
         app_id: appId,
         org_id: role.org_id,
+        org_role: role.org_role,
+        org_minimum: orgMinimum,
+        org_name: await getOrgDisplayName(c.env.DB, role.org_id),
       }),
     };
   }
