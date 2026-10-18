@@ -38,6 +38,7 @@ import { appAccessMessage } from "../lib/appAccessMessages";
 import {
   collidingPrincipalLabels,
   needsServerBadge,
+  principalOptionLabel,
   principalServer,
 } from "../lib/principalIdentity";
 import { useToast } from "../components/Toast";
@@ -1184,6 +1185,14 @@ function AddAppMemberDialog({
       m.org_role !== "admin",
     ) ??
     [];
+  // Same rule as the member tables: the server is only shown when the name
+  // would otherwise be ambiguous, computed over the whole candidate list (a
+  // single option cannot know whether its label collides).
+  const collidingLabels = collidingPrincipalLabels(candidates);
+
+  // `name (username)`, plus ` · server` only when the name collides.
+  const candidateLabel = (m: (typeof candidates)[number]) =>
+    principalOptionLabel(m, collidingLabels);
 
   return (
     <Dialog
@@ -1224,10 +1233,7 @@ function AddAppMemberDialog({
                   items={{
                     "": "— select —",
                     ...Object.fromEntries(
-                      candidates.map((m) => [
-                        m.account_id,
-                        `${m.display_name} (${m.username ?? m.provider_subject.slice(0, 8)})`,
-                      ]),
+                      candidates.map((m) => [m.account_id, candidateLabel(m)]),
                     ),
                   }}
                   value={selectedAccount}
@@ -1245,7 +1251,7 @@ function AddAppMemberDialog({
                     <SelectItem value="">— select —</SelectItem>
                     {candidates.map((m) => (
                       <SelectItem key={m.account_id} value={m.account_id}>
-                        {m.display_name} ({m.username ?? m.provider_subject.slice(0, 8)})
+                        {candidateLabel(m)}
                       </SelectItem>
                     ))}
                   </SelectList>
