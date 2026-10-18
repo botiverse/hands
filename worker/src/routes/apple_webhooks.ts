@@ -374,8 +374,10 @@ export async function handleAppleWebhook(c: Context<{ Bindings: Env }>) {
   const now = Date.now();
   const eventId = `apple:${config.app_id}:${d.id}`;
   // Enrich with the version this event is about. Resolved BEFORE the delivery
-  // payload is built, but its failure is swallowed: `build` stays null and the
-  // notification is byte-identical to the pre-enrichment shape.
+  // payload is built, but its failure is swallowed: `build` is then null and
+  // every pre-existing field is unchanged. Note the payload always carries the
+  // `build` key, so a consumer must treat null as "version unknown" rather
+  // than as an absent field (match the previous shape if you compare payloads).
   const buildIdentity = await resolveBuildIdentityForEvent(
     c.env,
     c.env.ASC_CRED_ENC_KEY,

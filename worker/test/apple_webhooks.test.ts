@@ -603,6 +603,22 @@ describe("Apple ingress — build identity enrichment", () => {
     ).toEqual({ n: 1 });
   });
 
+  it("always emits the build key, so null is distinguishable from absent", async () => {
+    const { sql, send } = await setup();
+    await withAscCredentials(sql);
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response("boom", { status: 500 })),
+    );
+
+    expect((await send(betaEvent())).status).toBe(200);
+
+    // A consumer that checks for the key's presence rather than its value
+    // would otherwise read "unresolved" as "old payload shape".
+    expect("build" in latestPayload(sql).payload).toBe(true);
+    expect(latestPayload(sql).payload.build).toBeNull();
+  });
+
   it("delivers with build=null when the app has no ASC credentials", async () => {
     const { sql, send } = await setup();
     const fetchSpy = vi.fn();

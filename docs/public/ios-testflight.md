@@ -363,8 +363,9 @@ interchangeable.
 
 The field is **best effort and never blocks a notification**. If the app has
 no App Store Connect credentials, Apple is slow (>5s) or errors, or the
-response is an unexpected shape, `build` is `null` and the event is delivered
-exactly as before. Treat `null` as "version unknown, open the link" rather
-than as an error. Events whose resource is not a build (e.g.
+response is an unexpected shape, `build` is `null` and the event is still
+delivered with every other field unchanged. The `build` key itself is always
+present, so a consumer must treat `null` as "version unknown, open the link"
+rather than as an absent field. Events whose resource is not a build (e.g.
 `app_store:version_state_changed`) always report `build: null` and cost no
 Apple request.
