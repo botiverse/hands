@@ -149,14 +149,23 @@ describe("app role denial copy (forbiddenRole, app scope)", () => {
     expect(body.next_action).toContain("Ask an app or organization admin");
   });
 
-  it("says the caller is not a member when they hold no role in the owning org", async () => {
+  it("withholds the org name from a caller who has no role in it (privacy gate)", async () => {
     const res = await hitWithOrg(null);
-    const body = await res.json<{ next_action: string; org_role: string | null }>();
+    const body = await res.json<{
+      next_action: string;
+      org_name: string | null;
+      org_role: string | null;
+    }>();
     expect(body.org_role).toBeNull();
-    expect(body.next_action).toContain("not a member of slock-android");
+    // artin's decision: non-members must not learn which org owns the app.
+    expect(body.org_name).toBeNull();
+    expect(body.next_action).not.toContain("slock-android");
+    expect(body.next_action).toContain(
+      "not a member of the organization that owns this app",
+    );
   });
 
-  it("drops the org clause entirely when the name cannot be resolved (no doubled noun)", async () => {
+  it("drops the org clause entirely when the name is withheld (no doubled noun)", async () => {
     const res = await hitWithOrg("viewer", false);
     const body = await res.json<{ next_action: string; org_name: string | null }>();
     expect(body.org_name).toBeNull();

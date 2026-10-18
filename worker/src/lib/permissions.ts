@@ -287,20 +287,24 @@ function forbiddenRole(
   // perform the action on their behalf — instead of a bare "forbidden". Code is
   // a stable UPPER_SNAKE machine token; next_action is a ready-to-print
   // sentence. admin_can_grant signals an admin path exists.
-  const orgLabel = ids.org_name ?? null;
-  // App scope: build the sentence from optional parts so an unknown org name
-  // DROPS the clause instead of substituting a noun phrase into a slot that
-  // already contains one (that produced "belongs to the organization the
-  // organization that owns this app").
-  const where = orgLabel ? `the ${orgLabel} organization` : null;
   const orgBar = ids.org_minimum ?? "admin";
+  // PRIVACY GATE (artin, 2026-10-18; same fix proposed independently by
+  // Sentinel and Kirby): a caller who holds NO role in the owning org may not
+  // learn which organization owns the app. It is only a small increment over
+  // the org_id already echoed here, but the rule is "disclose to members
+  // only" — so the name is withheld from non-members and the sentence is
+  // built from optional parts.
+  // Known-to-the-caller = they hold a role in that org. That single condition
+  // also keeps the sentence grammatical in both shapes: a non-member never
+  // needs a referent for "your role there", so "that organization" suffices.
+  const discloseOrgName = ids.org_role != null;
+  const orgName = discloseOrgName ? (ids.org_name ?? null) : null;
+  const where = orgName ? `the ${orgName} organization` : null;
   const callerStanding = ids.org_role
-    ? orgLabel
-      ? `'${ids.org_role}' in ${orgLabel}`
+    ? orgName
+      ? `'${ids.org_role}' in ${orgName}`
       : `'${ids.org_role}' in that organization`
-    : orgLabel
-      ? `not a member of ${orgLabel}`
-      : `not a member of that organization`;
+    : "not a member of the organization that owns this app";
   const appStanding = currentRole
     ? `'${currentRole}' on this app`
     : "no role on this app";
@@ -339,7 +343,7 @@ function forbiddenRole(
       org_id: ids.org_id ?? null,
       app_id: ids.app_id ?? null,
       ...(scope === "app"
-        ? { org_name: ids.org_name ?? null, org_role: ids.org_role ?? null }
+        ? { org_name: orgName, org_role: ids.org_role ?? null }
         : {}),
       ...(ids.current_permissions
         ? { current_permissions: ids.current_permissions }
