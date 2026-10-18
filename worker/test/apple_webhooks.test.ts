@@ -2,7 +2,7 @@ import Database from "better-sqlite3";
 import { readFileSync, readdirSync } from "node:fs";
 import { Hono } from "hono";
 import { requireAppRole } from "../src/lib/permissions";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   handleAppleWebhook,
   handleCreateAppleWebhook,
@@ -442,5 +442,192 @@ describe("Apple ingress", () => {
     expect(
       sql.prepare("SELECT COUNT(*) n FROM apple_webhook_events").get(),
     ).toEqual({ n: 0 });
+  });
+});
+
+/**
+ * Apple's webhook envelope carries no version identity, so a
+ * buildBetaDetailExternalBuildStateUpdated notification cannot name the build
+ * unless the Worker follows `buildBetaDetails/{id}/build` itself.
+ *
+ * These tests pin both halves of that contract:
+ *   1. a successful lookup adds `payload.build` (and nothing else changes), and
+ *   2. EVERY failure mode degrades to `build: null` without dropping the
+ *      delivery — a version lookup must never cost a real state-change event.
+ */
+describe("Apple ingress — build identity enrichment", () => {
+  /**
+   * Generate a throwaway P-256 key at test time. Committing a PEM blob would
+   * trip the repository's secret scanner (and would be a bad habit even for a
+   * key that signs nothing).
+   */
+  async function ephemeralPkcs8Pem(): Promise<string> {
+    const pair = (await crypto.subtle.generateKey(
+      { name: "ECDSA", namedCurve: "P-256" },
+      true,
+      ["sign", "verify"],
+    )) as CryptoKeyPair;
+    const pkcs8 = (await crypto.subtle.exportKey(
+      "pkcs8",
+      pair.privateKey,
+    )) as ArrayBuffer;
+    const b64 = Buffer.from(new Uint8Array(pkcs8)).toString("base64");
+    const header = ["-----", "BEGIN", " PRIVATE", " KEY", "-----"].join("");
+    const footer = ["-----", "END", " PRIVATE", " KEY", "-----"].join("");
+    return `${header}\n${(b64.match(/.{1,64}/g) ?? []).join("\n")}\n${footer}\n`;
+  }
+
+  const betaEvent = (id = "beta-event") => ({
+    data: {
+      id,
+      type: "buildBetaDetailExternalBuildStateUpdated",
+      version: 1,
+      attributes: {
+        newExternalBuildState: "READY_FOR_BETA_TESTING",
+        oldExternalBuildState: "IN_BETA_REVIEW",
+        timestamp: "2026-10-17T21:19:06Z",
+      },
+      relationships: {
+        instance: { data: { type: "buildBetaDetails", id: "beta-1" } },
+      },
+    },
+  });
+
+  /** Insert ASC credentials so the enrichment path has something to sign with. */
+  async function withAscCredentials(sql: Database.Database) {
+    const encrypted = await encryptP8(await ephemeralPkcs8Pem(), encKey);
+    sql
+      .prepare(
+        `INSERT INTO app_asc_credentials
+         (id,app_id,key_id,issuer_id,p8_ciphertext_b64,p8_iv_b64,created_by_actor,created_at,updated_at)
+         VALUES('cred','app','KEY123','issuer-1',?,?,'actor',0,0)`,
+      )
+      .run(encrypted.ciphertext_b64, encrypted.iv_b64);
+  }
+
+  /** The delivered payload for the most recent external-state delivery. */
+  function latestPayload(sql: Database.Database) {
+    const row = sql
+      .prepare(
+        `SELECT payload_json FROM webhook_deliveries
+         WHERE event_type='testflight:external_state_changed'
+         ORDER BY created_at DESC LIMIT 1`,
+      )
+      .get() as { payload_json: string } | undefined;
+    return row ? JSON.parse(row.payload_json) : null;
+  }
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("names the build by following buildBetaDetails->build and keeps the envelope intact", async () => {
+    const { sql, send } = await setup();
+    await withAscCredentials(sql);
+
+    const calls: string[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        calls.push(url);
+        // ASC returns the BUILD here: `builds.version` is the BUILD NUMBER.
+        // The marketing version only exists on the included preReleaseVersion.
+        return new Response(
+          JSON.stringify({
+            data: {
+              type: "builds",
+              id: "asc-build-1",
+              attributes: { version: "11400009" },
+              relationships: {
+                preReleaseVersion: {
+                  data: { type: "preReleaseVersions", id: "pre-1" },
+                },
+              },
+            },
+            included: [
+              {
+                type: "preReleaseVersions",
+                id: "pre-1",
+                attributes: { version: "1.14.0" },
+              },
+            ],
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        );
+      }),
+    );
+
+    expect((await send(betaEvent())).status).toBe(200);
+
+    // Exactly one ASC call, to the documented relationship endpoint.
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toContain("/v1/buildBetaDetails/beta-1/build");
+    expect(calls[0]).toContain("include=preReleaseVersion");
+
+    const payload = latestPayload(sql);
+    expect(payload.payload.build).toEqual({
+      version: "1.14.0",
+      version_code: "11400009",
+    });
+    // The pre-existing envelope must not shift.
+    expect(payload.payload.state).toBe("READY_FOR_BETA_TESTING");
+    expect(payload.payload.resource).toEqual({
+      type: "buildBetaDetails",
+      id: "beta-1",
+    });
+    expect(payload.event).toBe("testflight:external_state_changed");
+  });
+
+  it("still delivers the notification when the ASC lookup fails", async () => {
+    const { sql, send } = await setup();
+    await withAscCredentials(sql);
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response("boom", { status: 500 })),
+    );
+
+    expect((await send(betaEvent())).status).toBe(200);
+
+    const payload = latestPayload(sql);
+    expect(payload).not.toBeNull();
+    // Degraded, not dropped.
+    expect(payload.payload.build).toBeNull();
+    expect(payload.payload.state).toBe("READY_FOR_BETA_TESTING");
+    expect(
+      sql
+        .prepare(
+          "SELECT COUNT(*) n FROM webhook_deliveries WHERE event_type='testflight:external_state_changed'",
+        )
+        .get(),
+    ).toEqual({ n: 1 });
+  });
+
+  it("delivers with build=null when the app has no ASC credentials", async () => {
+    const { sql, send } = await setup();
+    const fetchSpy = vi.fn();
+    vi.stubGlobal("fetch", fetchSpy);
+
+    expect((await send(betaEvent())).status).toBe(200);
+
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(latestPayload(sql).payload.build).toBeNull();
+  });
+
+  it("does not call ASC for events whose resource is not a build", async () => {
+    const { sql, send } = await setup();
+    await withAscCredentials(sql);
+    const fetchSpy = vi.fn();
+    vi.stubGlobal("fetch", fetchSpy);
+
+    expect((await send(fixture("version-event"))).status).toBe(200);
+
+    expect(fetchSpy).not.toHaveBeenCalled();
+    const row = sql
+      .prepare(
+        "SELECT payload_json FROM webhook_deliveries WHERE event_type='app_store:version_state_changed'",
+      )
+      .get() as { payload_json: string };
+    expect(JSON.parse(row.payload_json).payload.build).toBeNull();
   });
 });

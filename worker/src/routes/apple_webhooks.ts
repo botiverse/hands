@@ -1,12 +1,19 @@
 import type { Context } from "hono";
 import type { AdminContext } from "../lib/permissions";
 import { getAscCredentials, encryptP8, decryptP8 } from "../lib/asc_credentials";
-import { ascRequest, AscApiError } from "../lib/asc_api";
+import { ascRequest, AscApiError, type AscApiCredentials } from "../lib/asc_api";
 import { insertAuditLog } from "../lib/permissions";
 import { businessOrigin } from "../lib/origin";
 import { triggerDeliveryNow } from "./webhooks";
 
 const LIMIT = 64 * 1024;
+/**
+ * Which Apple resource each forwarded event points at, and which attribute
+ * pairs carry the state transition. The event's resource is also what the
+ * optional build-identity lookup keys off (see BUILD_LOOKUP): Apple's webhook
+ * envelope carries no version or build number of its own, so naming the
+ * affected build means following that resource's relationship explicitly.
+ */
 const EVENT_MAP = {
   appStoreVersionAppVersionStateUpdated: [
     "app_store:version_state_changed",
@@ -39,6 +46,133 @@ interface Config {
   slug: string;
   name: string;
 }
+/**
+ * Event types whose resource can be resolved to a `builds` resource. Kept
+ * separate from EVENT_MAP so the tuple stays a flat, indexable shape.
+ */
+const BUILD_LOOKUP: Partial<Record<string, string>> = {
+  buildBetaDetailExternalBuildStateUpdated: "/build",
+};
+
+/**
+ * Version identity resolved from an Apple event's resource. `null` when the
+ * lookup is unavailable, fails, or Apple returns an unexpected shape — the
+ * notification is still delivered in that case (see resolveBuildIdentity).
+ */
+export interface BuildIdentity {
+  /** Marketing version, e.g. "1.14.0" (ASC `preReleaseVersion.version`). */
+  version: string | null;
+  /** Build number, e.g. "11400009" (ASC `builds.version`). */
+  version_code: string | null;
+}
+
+/**
+ * Resolve the version identity behind an Apple event.
+ *
+ * Best-effort by design: the webhook is already verified and its delivery is
+ * already durably queued. A failed or malformed ASC lookup must not turn a real
+ * TestFlight state change into a lost notification, so every failure path
+ * returns null identity and the caller forwards the event without version.
+ *
+ * Field mapping is not guesswork — App Store Connect splits the two numbers
+ * across resources, and `resolveAscBuild` in `lib/asc_api.ts` encodes the same
+ * split (`filter[version]` = build number, `filter[preReleaseVersion.version]`
+ * = marketing version):
+ *   - `builds.version`               = the BUILD NUMBER ("11400009")
+ *   - `preReleaseVersion.version`    = the MARKETING VERSION ("1.14.0")
+ * Reading `buildNumber` off the builds resource silently yields undefined,
+ * which is why the marketing version needs its own `include`.
+ */
+async function resolveBuildIdentity(
+  creds: AscApiCredentials | null,
+  resourceType: string,
+  resourceId: string,
+  lookupPath: string | undefined,
+): Promise<BuildIdentity | null> {
+  if (!creds || !lookupPath || resourceType !== "buildBetaDetails")
+    return null;
+  try {
+    const res = await ascRequest<{
+      data?: {
+        attributes?: { version?: unknown };
+        relationships?: {
+          preReleaseVersion?: { data?: { id?: unknown } };
+        };
+      };
+      included?: Array<{
+        type?: unknown;
+        id?: unknown;
+        attributes?: { version?: unknown };
+      }>;
+    }>(
+      creds,
+      "GET",
+      `/v1/${resourceType}/${encodeURIComponent(resourceId)}${lookupPath}?include=preReleaseVersion`,
+      undefined,
+      AbortSignal.timeout(5000),
+    );
+    const buildNumberRaw = res?.data?.attributes?.version;
+    const buildNumber =
+      typeof buildNumberRaw === "string" && text(buildNumberRaw, 64)
+        ? buildNumberRaw
+        : null;
+    // Prefer the included preReleaseVersion whose id matches the build's own
+    // relationship, so a differently-typed `included` entry cannot supply the
+    // wrong version string.
+    const wantedId = res?.data?.relationships?.preReleaseVersion?.data?.id;
+    const candidates = Array.isArray(res?.included) ? res.included : [];
+    const match = candidates.find(
+      (item) =>
+        item?.type === "preReleaseVersions" &&
+        (typeof wantedId !== "string" || item?.id === wantedId),
+    );
+    const versionRaw = match?.attributes?.version;
+    const version =
+      typeof versionRaw === "string" && text(versionRaw, 64)
+        ? versionRaw
+        : null;
+    if (version === null && buildNumber === null) return null;
+    return { version, version_code: buildNumber };
+  } catch {
+    // Swallowed here as well as in the caller: a lookup failure must never
+    // propagate. Kept in both places deliberately — the caller also guards
+    // credential decryption, which happens before this function is reached.
+    return null;
+  }
+}
+
+/**
+ * Single entry point for enriching an event with its build identity.
+ *
+ * Contract: NEVER throws and NEVER returns a partial object. Every failure —
+ * no credentials row, a decryption error, a timeout, a non-2xx from Apple, an
+ * unexpected payload shape — collapses to `null`, so the caller can queue the
+ * notification unconditionally. This is the ONE place the "a version lookup
+ * must not cost a real state-change event" guarantee lives.
+ */
+async function resolveBuildIdentityForEvent(
+  env: Env,
+  encKey: string,
+  appId: string,
+  eventType: string,
+  resourceType: string,
+  resourceId: string,
+): Promise<BuildIdentity | null> {
+  const candidatePath = Object.hasOwn(BUILD_LOOKUP, eventType)
+    ? BUILD_LOOKUP[eventType]
+    : undefined;
+  if (!candidatePath) return null;
+  // Bind after the guard: the closure below would otherwise widen it back to
+  // `string | undefined`.
+  const lookupPath: string = candidatePath;
+  try {
+    const creds = await getAscCredentials(env.DB, encKey, appId);
+    return await resolveBuildIdentity(creds, resourceType, resourceId, lookupPath);
+  } catch {
+    return null;
+  }
+}
+
 const text = (v: unknown, max = 256): v is string =>
   typeof v === "string" &&
   v.length > 0 &&
@@ -228,10 +362,28 @@ export async function handleAppleWebhook(c: Context<{ Bindings: Env }>) {
         !Number.isFinite(Date.parse(attrs.timestamp))))
   )
     return c.json({ error: "Invalid event" }, 400);
+  // Narrowed explicitly: `text(...)` inside the compound condition above does
+  // not narrow these afterwards, so re-assert the two fields we forward.
+  if (typeof instance.type !== "string" || typeof instance.id !== "string") {
+    return c.json({ error: "Invalid event" }, 400);
+  }
+  const resourceType: string = instance.type;
+  const resourceId: string = instance.id;
   const digest = hex(await crypto.subtle.digest("SHA-256", raw));
   const nonce = crypto.randomUUID();
   const now = Date.now();
   const eventId = `apple:${config.app_id}:${d.id}`;
+  // Enrich with the version this event is about. Resolved BEFORE the delivery
+  // payload is built, but its failure is swallowed: `build` stays null and the
+  // notification is byte-identical to the pre-enrichment shape.
+  const buildIdentity = await resolveBuildIdentityForEvent(
+    c.env,
+    c.env.ASC_CRED_ENC_KEY,
+    config.app_id,
+    d.type,
+    resourceType,
+    resourceId,
+  );
   const payload = JSON.stringify({
     event: spec[0],
     event_id: eventId,
@@ -242,11 +394,13 @@ export async function handleAppleWebhook(c: Context<{ Bindings: Env }>) {
       apple_event_id: d.id,
       apple_app_id: config.apple_app_id,
       app: { id: config.app_id, slug: config.slug, name: config.name },
-      resource: { type: instance.type, id: instance.id },
+      resource: { type: resourceType, id: resourceId },
       previous_state: attrs[spec[3]] ?? null,
       state: attrs[spec[2]],
       occurred_at: attrs.timestamp ?? null,
       app_store_connect_url: `https://appstoreconnect.apple.com/apps/${config.apple_app_id}`,
+      /** Version this event is about, or null when it could not be resolved. */
+      build: buildIdentity,
     },
   });
   // One atomic batch: concurrent/replayed requests cannot insert additional deliveries,

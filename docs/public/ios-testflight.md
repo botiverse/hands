@@ -344,3 +344,27 @@ atomically; repeating the same operation receipt does not duplicate deliveries.
 These are distinct from Apple callback events. A terminal upload readback
 does not invent an earlier `PROCESSING` transition. Changes made directly in
 App Store Connect are not covered by these Hands operation events.
+
+### `build` on Apple callback events
+
+Apple's own webhook envelope identifies the affected build only by its
+`buildBetaDetails` id — it carries no version or build number. So for
+`testflight:external_state_changed`, Hands follows
+`buildBetaDetails/{id}/build` once and adds a `build` field to the payload:
+
+```json
+"build": { "version": "1.14.0", "version_code": "11400009" }
+```
+
+`version` is the marketing version (`preReleaseVersion.version` on Apple's
+side) and `version_code` the build number (`builds.version`) — App Store
+Connect stores those two in different resources, so they are not
+interchangeable.
+
+The field is **best effort and never blocks a notification**. If the app has
+no App Store Connect credentials, Apple is slow (>5s) or errors, or the
+response is an unexpected shape, `build` is `null` and the event is delivered
+exactly as before. Treat `null` as "version unknown, open the link" rather
+than as an error. Events whose resource is not a build (e.g.
+`app_store:version_state_changed`) always report `build: null` and cost no
+Apple request.
