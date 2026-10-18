@@ -24,6 +24,7 @@ interface AuditRow {
   actor_display_name: string | null;
   actor_username: string | null;
   actor_avatar_url: string | null;
+  actor_server_slug: string | null;
   payload: string;
   created_at: number;
 }
@@ -68,6 +69,7 @@ export async function handleListAuditLogs(c: AdminContext) {
             a.display_name AS actor_display_name,
             a.username AS actor_username,
             a.avatar_url AS actor_avatar_url,
+            a.server_slug AS actor_server_slug,
             l.payload, l.created_at
      FROM audit_logs l
      LEFT JOIN raft_accounts a ON a.id = l.actor_id
@@ -123,6 +125,7 @@ export async function handleListUserAudit(c: AdminContext) {
             acc.display_name AS actor_display_name,
             acc.username AS actor_username,
             acc.avatar_url AS actor_avatar_url,
+            acc.server_slug AS actor_server_slug,
             l.payload, l.created_at
      FROM audit_logs l
      LEFT JOIN apps a ON a.id = l.app_id
