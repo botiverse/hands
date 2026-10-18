@@ -3,6 +3,7 @@ import qrcode from "qrcode-generator";
 import { requestOrigin } from "../lib/origin";
 import { currentActor, type AdminEnv } from "../middleware/auth";
 import { generateSignedR2Url, resolveChangelog , changelogToHtml, requestedLang } from "./public_v2";
+import { INSTALLABLE_ORDER_BY } from "../lib/installable_precedence";
 
 // UI-chrome localization for the public share/password/error pages. Detection
 // reuses requestedLang() (Accept-Language / ?lang=); anything not Chinese falls
@@ -640,7 +641,7 @@ async function findLatestActiveInstallableKey(env: Env, appId: string): Promise<
        AND r.status = 'active'
        AND r.hidden = 0
        AND ba.artifact_kind = 'installable'
-     ORDER BY r.activated_at DESC, r.id ASC, ba.filetype = 'apk' DESC, ba.created_at ASC
+     ORDER BY r.activated_at DESC, r.id ASC, ${INSTALLABLE_ORDER_BY}
      LIMIT 5`,
   )
     .bind(appId)
@@ -798,7 +799,7 @@ async function findActiveShare(db: D1Database, token: string): Promise<SharePage
        -- created serves until the user revokes it (or its optional expiry
        -- passes), even after the release is superseded or cancelled.
        AND ba.artifact_kind = 'installable'
-     ORDER BY ba.filetype = 'apk' DESC, ba.created_at ASC
+     ORDER BY ${INSTALLABLE_ORDER_BY}
      LIMIT 1`,
   )
     .bind(tokenHash, Date.now())

@@ -8,6 +8,7 @@ import { requestOrigin } from "../lib/origin";
 import { parseReleaseNotes } from "../lib/release_notes";
 import { generateSignedR2Url, resolveChangelog, changelogToHtml, requestedLang } from "./public_v2";
 import { resolvePublicChannelSlug } from "../lib/public_channel";
+import { INSTALLABLE_ORDER_BY } from "../lib/installable_precedence";
 
 // UI-chrome localization (task: localize surrounding chrome, not just the
 // changelog). Detection reuses requestedLang() (Accept-Language / ?lang=);
@@ -183,7 +184,7 @@ const LATEST_LANDING_SQL = `
     AND (?3 IS NULL OR ch.slug IN (SELECT value FROM json_each(?3)))
   ORDER BY CASE WHEN ?2 IS NULL AND ch.slug = 'main' THEN 0 ELSE 1 END,
            b.version_code DESC, released_at DESC,
-           ba.filetype = 'apk' DESC, ba.created_at ASC
+           ${INSTALLABLE_ORDER_BY}
   LIMIT 1`;
 
 async function loadLatestLanding(
@@ -256,7 +257,7 @@ const VERSION_LANDING_SQL = `
     AND (?4 IS NULL OR ch.slug IN (SELECT value FROM json_each(?4)))
   ORDER BY CASE WHEN ?3 IS NULL AND ch.slug = 'main' THEN 0 ELSE 1 END,
            b.version_code DESC, released_at DESC,
-           ba.filetype = 'apk' DESC, ba.created_at ASC
+           ${INSTALLABLE_ORDER_BY}
   LIMIT 1`;
 
 /** Version-pinned public landing page: `/apps/<slug>/v/<version_name>`.
