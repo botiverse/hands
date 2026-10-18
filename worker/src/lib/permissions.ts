@@ -287,7 +287,27 @@ function forbiddenRole(
   // perform the action on their behalf — instead of a bare "forbidden". Code is
   // a stable UPPER_SNAKE machine token; next_action is a ready-to-print
   // sentence. admin_can_grant signals an admin path exists.
-  const orgLabel = ids.org_name ?? "the organization that owns this app";
+  const orgLabel = ids.org_name ?? null;
+  // App scope: build the sentence from optional parts so an unknown org name
+  // DROPS the clause instead of substituting a noun phrase into a slot that
+  // already contains one (that produced "belongs to the organization the
+  // organization that owns this app").
+  const where = orgLabel ? `the ${orgLabel} organization` : null;
+  const orgBar = ids.org_minimum ?? "admin";
+  const callerStanding = ids.org_role
+    ? orgLabel
+      ? `'${ids.org_role}' in ${orgLabel}`
+      : `'${ids.org_role}' in that organization`
+    : orgLabel
+      ? `not a member of ${orgLabel}`
+      : `not a member of that organization`;
+  const appStanding = currentRole
+    ? `'${currentRole}' on this app`
+    : "no role on this app";
+  // NOTE: this only runs when the org role did NOT satisfy the bar
+  // (ensureAppRole passes on `orgAllows || appAllows`), so the text must not
+  // add a "but your org role should have sufficed" clause — that branch is
+  // unreachable and would be untestable dead copy.
   const nextAction =
     scope === "org"
       ? `You have role '${currentRole ?? "none"}' but '${requiredRole}' is required for this org. ` +
@@ -297,18 +317,11 @@ function forbiddenRole(
       : // Naming the caller's real role in the owning org is what turns a
         // confusing 403 into a one-step fix: "I'm an admin elsewhere" becomes
         // visible instead of being silently outranked by a viewer row here.
-        // NOTE: this only runs when the org role did NOT satisfy the bar
-        // (ensureAppRole passes on `orgAllows || appAllows`), so the text must
-        // not add a "but your org role should have sufficed" clause — that
-        // branch is unreachable and would be untestable dead copy.
-        `This app belongs to the organization ${orgLabel}. ` +
-        `You need either the '${requiredRole}' role on this app, or '${ids.org_minimum ?? "admin"}' in ${orgLabel}` +
-        ` (an organization admin can perform it). You are currently ` +
-        (ids.org_role
-          ? `'${ids.org_role}' in ${orgLabel}`
-          : `not a member of ${orgLabel}`) +
-        (currentRole ? ` and '${currentRole}' on this app` : " and have no role on this app") +
-        `. Ask an app or organization admin to grant you access` +
+        (where ? `This app belongs to ${where}. ` : "") +
+        `You need either the '${requiredRole}' role on this app, or '${orgBar}' ` +
+        `${where ? `in ${where}` : "in the organization that owns it"}. ` +
+        `You are currently ${callerStanding} and have ${appStanding}. ` +
+        `Ask an app or organization admin to grant you access` +
         (manageUrl ? ` (manage roles at ${manageUrl})` : "") +
         `, or have an admin perform this action for you.` +
         (ids.app_id && !UUID_RE.test(ids.app_id)

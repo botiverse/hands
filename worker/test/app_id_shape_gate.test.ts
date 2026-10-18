@@ -143,7 +143,7 @@ describe("app role denial copy (forbiddenRole, app scope)", () => {
     expect(body.next_action).toContain("slock-android");
     // Both paths must be advertised.
     expect(body.next_action).toContain("'publisher' role on this app");
-    expect(body.next_action).toContain("'admin' in slock-android");
+    expect(body.next_action).toContain("'admin' in the slock-android organization");
     // And the caller's real standing, not a bare "none".
     expect(body.next_action).toContain("'viewer' in slock-android");
     expect(body.next_action).toContain("Ask an app or organization admin");
@@ -156,11 +156,27 @@ describe("app role denial copy (forbiddenRole, app scope)", () => {
     expect(body.next_action).toContain("not a member of slock-android");
   });
 
-  it("falls back to a generic phrase when the org name cannot be resolved", async () => {
+  it("drops the org clause entirely when the name cannot be resolved (no doubled noun)", async () => {
     const res = await hitWithOrg("viewer", false);
     const body = await res.json<{ next_action: string; org_name: string | null }>();
     expect(body.org_name).toBeNull();
-    expect(body.next_action).toContain("the organization that owns this app");
+    // Assert the WHOLE sentence: a `toContain` check missed the original bug,
+    // where a fallback noun phrase was substituted into a slot that already
+    // held one ("belongs to the organization the organization that owns this app").
+    expect(body.next_action).toBe(
+      "You need either the 'publisher' role on this app, or 'admin' in the organization that owns it. " +
+        "You are currently 'viewer' in that organization and have no role on this app. " +
+        "Ask an app or organization admin to grant you access " +
+        `(manage roles at https://dashboard.example/apps/${APP_ID}/settings)` +
+        ", or have an admin perform this action for you.",
+    );
+  });
+
+  it("never renders a doubled article/noun in the resolved-org sentence", async () => {
+    const res = await hitWithOrg("viewer");
+    const body = await res.json<{ next_action: string }>();
+    expect(body.next_action).not.toContain("organization the organization");
+    expect(body.next_action).toContain("This app belongs to the slock-android organization.");
   });
 
   it("admits an org admin without any app role (the second way in is real)", async () => {
