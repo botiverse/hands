@@ -3,6 +3,7 @@ import {
   collidingPrincipalLabels,
   needsServerBadge,
   principalLabel,
+  principalOptionLabel,
   principalServer,
 } from "./principalIdentity";
 
@@ -146,5 +147,37 @@ describe("pagination trap (why the set is computed for the whole collection)", (
     const whole = collidingPrincipalLabels(all);
     expect(needsServerBadge(diRenJieAndroid, whole)).toBe(true);
     expect(needsServerBadge(diRenJieRaft, whole)).toBe(true);
+  });
+});
+
+describe("principalOptionLabel (pickers)", () => {
+  it("keeps the existing name (username) shape when the name is unique", () => {
+    const unique = { account_id: "u", display_name: "archer", username: "archer", server_slug: "botiverse" };
+    const colliding = collidingPrincipalLabels([unique]);
+    expect(principalOptionLabel(unique, colliding)).toBe("archer (archer)");
+  });
+
+  it("appends · server only for a colliding name", () => {
+    const colliding = collidingPrincipalLabels([diRenJieAndroid, diRenJieRaft]);
+    expect(principalOptionLabel(diRenJieAndroid, colliding)).toBe(
+      "DiRenJie (DiRenJie) · slock-android",
+    );
+    expect(principalOptionLabel(diRenJieRaft, colliding)).toBe(
+      "DiRenJie (DiRenJie) · raft",
+    );
+  });
+
+  it("falls back to a truncated subject and still disambiguates", () => {
+    const a = { account_id: "1", provider_subject: "abcdefghijklmnop", server_slug: "s1" };
+    const b = { account_id: "2", provider_subject: "abcdefghijklmnop", server_slug: "s2" };
+    const colliding = collidingPrincipalLabels([a, b]);
+    // principalLabel truncates the display fallback at 16 chars + ellipsis;
+    // the short subject fragment in parentheses is the picker's own fallback.
+    expect(principalOptionLabel(a, colliding)).toBe(
+      "abcdefghijklmnop… (abcdefgh) · s1",
+    );
+    expect(principalOptionLabel(b, colliding)).toBe(
+      "abcdefghijklmnop… (abcdefgh) · s2",
+    );
   });
 });

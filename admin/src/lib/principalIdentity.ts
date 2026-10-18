@@ -98,3 +98,23 @@ export function needsServerBadge(
   const label = principalLabel(p);
   return label !== "" && colliding.has(label);
 }
+
+/**
+ * Option label for a picker/selector.
+ *
+ * Keeps the existing `name (username)` shape and appends ` · server` ONLY when
+ * the label collides within the candidate list. Pickers are a different surface
+ * from tables (no column to lean on), so the disambiguator rides inline — but
+ * the trigger is the same collection-wide collision set, so the two surfaces
+ * can never disagree about who is ambiguous.
+ */
+export function principalOptionLabel(
+  p: PrincipalRow,
+  colliding: ReadonlySet<string>,
+): string {
+  const username = (p.username ?? "").trim();
+  const fallback = (p.provider_subject ?? "").trim().slice(0, 8);
+  const base = `${principalLabel(p)} (${username || fallback})`;
+  const server = principalServer(p);
+  return needsServerBadge(p, colliding) && server ? `${base} · ${server}` : base;
+}
