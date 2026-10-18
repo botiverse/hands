@@ -37,6 +37,11 @@ import {
   type WebhookDelivery,
   type WebhookEventType,
 } from "../lib/api";
+import {
+  collidingPrincipalLabels,
+  needsServerBadge,
+  principalServer,
+} from "../lib/principalIdentity";
 import { useToast } from "../components/Toast";
 
 type BadgeVariant = NonNullable<BadgeProps["variant"]>;
@@ -233,6 +238,9 @@ function MembersTab({
       ? true
       : m.principal_type === principalFilter,
   );
+  // Computed over the whole filtered collection, never per row: a row cannot see
+  // its peers (see lib/principalIdentity.ts).
+  const collidingLabels = collidingPrincipalLabels(filteredMembers);
 
   const update = useMutation({
     mutationFn: ({ accountId, role }: { accountId: string; role: OrgMember["org_role"] }) =>
@@ -352,6 +360,11 @@ function MembersTab({
                 <td className="py-2 pr-2">
                   <div className="font-medium">
                     {m.display_name}
+                    {needsServerBadge(m, collidingLabels) && principalServer(m) && (
+                      <Badge variant="muted" className="ml-1.5 align-middle">
+                        {principalServer(m)}
+                      </Badge>
+                    )}
                     {m.account_id === currentAccountId && (
                       <span className="ml-1 text-xs text-foreground-muted">(you)</span>
                     )}

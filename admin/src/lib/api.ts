@@ -305,6 +305,8 @@ export interface AuditLogEntry {
   actor_display_name?: string | null;
   actor_username?: string | null;
   actor_avatar_url?: string | null;
+  /** Raft server the actor belongs to; distinguishes same-named principals. */
+  actor_server_slug?: string | null;
   payload: string;
   created_at: number;
 }

@@ -35,6 +35,11 @@ import {
   type App,
 } from "../lib/api";
 import { appAccessMessage } from "../lib/appAccessMessages";
+import {
+  collidingPrincipalLabels,
+  needsServerBadge,
+  principalServer,
+} from "../lib/principalIdentity";
 import { useToast } from "../components/Toast";
 import {
   buildTokenGrantDisplay,
@@ -467,6 +472,11 @@ function AppMemberList({
       ? true
       : m.principal_type === principalFilter,
   );
+  // Computed over the WHOLE filtered collection, never per row: a row cannot
+  // see its peers, and a per-page computation would label one row and not the
+  // other (see principalIdentity.ts). Filtering first is intentional — the
+  // badge answers "can I tell these rows apart on screen right now?".
+  const collidingLabels = collidingPrincipalLabels(filteredMembers);
 
   const update = useMutation({
     mutationFn: ({ accountId, role }: { accountId: string; role: AppMember["app_role"] }) =>
@@ -580,6 +590,11 @@ function AppMemberList({
                 <td className="py-2 pr-2">
                   <div className="font-medium">
                     {m.display_name}
+                    {needsServerBadge(m, collidingLabels) && principalServer(m) && (
+                      <Badge variant="muted" className="ml-1.5 align-middle">
+                        {principalServer(m)}
+                      </Badge>
+                    )}
                     {m.account_id === currentAccountId && (
                       <span className="ml-1 text-xs text-foreground-muted">(you)</span>
                     )}
