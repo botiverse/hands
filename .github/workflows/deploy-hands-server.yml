@@ -442,6 +442,9 @@ jobs:
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_BOTIVERSE_API_TOKEN }}
           APPLY_OUTCOME: ${{ steps.apply.outcome }}
+          # Whether this run actually applied migrations. `apply` sets this before it
+          # runs, so it is known even when the apply later fails.
+          MIGRATIONS_APPLIED: ${{ steps.apply.outputs.changes_schema }}
           # Bump this only together with re-measuring the failure behaviour on the new
           # version. The number is a claim about what was tested, not a preference.
           MEASURED_WRANGLER: "4.105.0"
@@ -569,7 +572,15 @@ jobs:
           #
           # A refusal is therefore no longer an expected outcome to tolerate; it means
           # something changed about what D1 permits, which is worth stopping for.
-          if orphans=$(q "PRAGMA foreign_key_check" 2>/tmp/fkc.err | jq -r 'length'); then
+          # This pragma walks every row in the database: measured at ~4.47M rows and
+          # 4-20s on this D1, which is enough to drift into D1's queue/timeout limits
+          # and fail a deploy for a reason that has nothing to do with the release.
+          # When no migration was applied it cannot change either - the database was
+          # not written to by this run - so it is skipped, loudly. A silent skip would
+          # let a later reader believe foreign-key checking still runs on every deploy.
+          if [[ "${MIGRATIONS_APPLIED}" != "true" ]]; then
+            skip "foreign_key_check is empty" "no migration applied this run, so no row can have changed"
+          elif orphans=$(q "PRAGMA foreign_key_check" 2>/tmp/fkc.err | jq -r 'length'); then
             check "foreign_key_check is empty" "$orphans" "0"
           else
             # Not `check ... FAIL`: nothing was measured, so there is no violation to
