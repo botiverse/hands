@@ -29,6 +29,19 @@ type ShareStrings = {
   errMissingToken: string;
   errUnavailable: string;
   goToLatest: string;
+  /** Disclosure summary for the "all formats" section. */
+  allFormats: string;
+  /** Column headers inside the disclosure. */
+  fmtType: string;
+  fmtPurpose: string;
+  fmtSize: string;
+  fmtChecksum: string;
+  fmtDownload: string;
+  /** Purpose values. Store-only artifacts cannot be installed directly. */
+  purposeSideload: string;
+  purposeStoreOnly: string;
+  /** Shown under the disclosure when an artifact is store-only. */
+  storeOnlyNote: string;
 };
 
 const SHARE_I18N: { en: ShareStrings; zh: ShareStrings } = {
@@ -52,6 +65,16 @@ const SHARE_I18N: { en: ShareStrings; zh: ShareStrings } = {
     errMissingToken: "Missing share token",
     errUnavailable: "This share link is expired, revoked, or unavailable.",
     goToLatest: "Open the latest release",
+    allFormats: "All formats",
+    fmtType: "Type",
+    fmtPurpose: "Purpose",
+    fmtSize: "Size",
+    fmtChecksum: "SHA-256",
+    fmtDownload: "Download",
+    purposeSideload: "Sideload — install directly",
+    purposeStoreOnly: "Store upload — can't be installed directly",
+    storeOnlyNote:
+      "Store-upload artifacts (such as .aab or HarmonyOS .app) are for uploading to an app store; they can't be installed on a device directly.",
   },
   zh: {
     htmlLang: "zh",
@@ -73,6 +96,15 @@ const SHARE_I18N: { en: ShareStrings; zh: ShareStrings } = {
     errMissingToken: "缺少分享令牌",
     errUnavailable: "此分享链接已过期、被撤销或不可用。",
     goToLatest: "打开最新版本",
+    allFormats: "全部格式",
+    fmtType: "类型",
+    fmtPurpose: "用途",
+    fmtSize: "大小",
+    fmtChecksum: "SHA-256",
+    fmtDownload: "下载",
+    purposeSideload: "侧载 — 可直接安装",
+    purposeStoreOnly: "商店上传 — 不能直接安装",
+    storeOnlyNote: "商店上传用的产物（如 .aab 或鸿蒙 .app）是给应用商店用的，不能直接装到设备上。",
   },
 };
 
@@ -117,6 +149,24 @@ type SharePageRow = {
   filetype: string;
   size_bytes: number;
   r2_key: string;
+  file_hash: string;
+};
+
+/**
+ * One downloadable artifact of the shared release, as shown in the "all
+ * formats" disclosure. Carries everything the page needs to describe it
+ * (type, purpose, size, digest) and to build a per-artifact download link.
+ * Identified by asset id, NOT filetype: a release may carry two assets of the
+ * same type (e.g. ABI-split apks), where filetype alone is ambiguous.
+ */
+type ShareArtifactRow = {
+  asset_id: string;
+  filetype: string;
+  platform: string;
+  arch: string | null;
+  variant: string | null;
+  distribution: string | null;
+  size_bytes: number;
   file_hash: string;
 };
 
@@ -585,7 +635,18 @@ export async function handlePublicReleaseShare(c: Context<{ Bindings: Env }>) {
   const shareUrl = new URL(`/share/${token}`, origin).toString();
   const lang = (c.req.header("accept-language") ?? "").split(",")[0]?.trim().split(";")[0] ?? null;
   const localized = { ...row, changelog: resolveChangelog(row.changelog, lang) };
-  return htmlResponse(renderSharePage(t, localized, downloadUrl, shareUrl, token));
+  // Only fetch the artifact list when the page can actually show it. Signed
+  // URLs are generated lazily on click (?asset=<id>), so rendering the list
+  // costs one query and no signatures.
+  const artifacts = await listShareArtifacts(c.env.DB, row.share_id);
+  const artifactUrl = (assetId: string) =>
+    new URL(
+      `/share/${encodeURIComponent(token)}/download?asset=${encodeURIComponent(assetId)}`,
+      origin,
+    ).toString();
+  return htmlResponse(
+    renderSharePage(t, localized, downloadUrl, shareUrl, token, artifacts, artifactUrl),
+  );
 }
 
 export async function handlePublicReleaseShareDownload(c: Context<{ Bindings: Env }>) {
@@ -601,6 +662,28 @@ export async function handlePublicReleaseShareDownload(c: Context<{ Bindings: En
 
   if (row.password_hash && !(await hasValidUnlockCookie(c, row))) {
     return c.redirect(`/share/${token}`, 302);
+  }
+
+  // Per-artifact download from the "all formats" list: ?asset=<assetId>.
+  // Identified by id rather than filetype because one release can carry several
+  // assets of the same type (ABI-split apks). The id is resolved against THIS
+  // share's release, so a crafted id cannot reach another release's artifact.
+  const requestedAssetId = (c.req.query("asset") ?? "").trim();
+  if (requestedAssetId) {
+    const artifact = await findShareArtifact(c.env.DB, row.share_id, requestedAssetId);
+    if (!artifact) return htmlResponse(renderErrorPage(t, t.errUnavailable), 404);
+    if (!(await c.env.APK_BUCKET.head(artifact.r2_key))) {
+      return htmlResponse(renderErrorPage(t, t.errUnavailable), 404);
+    }
+    await recordShareEvent(c, row.share_id, "download");
+    const ttlSeconds = Number(c.env.SIGNED_URL_TTL_SECONDS ?? "3600");
+    const artifactUrl = await generateSignedR2Url(
+      c.env,
+      artifact.r2_key,
+      ttlSeconds,
+      publicRequestOrigin(c),
+    );
+    return c.redirect(artifactUrl, 302);
   }
 
   // The bound asset may have been deleted from R2 (e.g. its release was pruned/superseded).
@@ -747,6 +830,62 @@ async function hasValidUnlockCookie(
     if (value === (await shareUnlockProof(row, bucket))) return true;
   }
   return false;
+}
+
+/**
+ * Every installable artifact of the release behind an ACTIVE share, ordered by
+ * the same precedence the primary download button uses (#757), so the first
+ * row is always what the big button serves.
+ *
+ * Scoped to the share's own release: a share link never advertises artifacts
+ * from another release, even of the same app.
+ */
+async function listShareArtifacts(
+  db: D1Database,
+  shareId: string,
+): Promise<ShareArtifactRow[]> {
+  const { results } = await db.prepare(
+    `SELECT ba.id AS asset_id,
+            ba.filetype AS filetype,
+            ba.platform AS platform,
+            ba.arch AS arch,
+            ba.variant AS variant,
+            coalesce(json_extract(ba.metadata_json, '$.distribution'), ba.variant) AS distribution,
+            ba.size_bytes AS size_bytes,
+            ba.file_hash AS file_hash
+       FROM release_shares rs
+       JOIN releases r ON r.id = rs.release_id
+       JOIN builds b ON b.id = r.build_id
+       JOIN build_assets ba ON ba.build_id = b.id AND ba.artifact_kind = 'installable'
+      WHERE rs.id = ?1
+      ORDER BY ${INSTALLABLE_ORDER_BY}`,
+  )
+    .bind(shareId)
+    .all<ShareArtifactRow>();
+  return results ?? [];
+}
+
+/**
+ * Resolve one artifact id within a share's OWN release. Returns null when the
+ * asset is not an installable of that release, which is also the guard against
+ * a caller swapping in an id from somewhere else.
+ */
+async function findShareArtifact(
+  db: D1Database,
+  shareId: string,
+  assetId: string,
+): Promise<{ r2_key: string; filetype: string } | null> {
+  return db.prepare(
+    `SELECT ba.r2_key AS r2_key, ba.filetype AS filetype
+       FROM release_shares rs
+       JOIN releases r ON r.id = rs.release_id
+       JOIN builds b ON b.id = r.build_id
+       JOIN build_assets ba ON ba.build_id = b.id AND ba.artifact_kind = 'installable'
+      WHERE rs.id = ?1 AND ba.id = ?2
+      LIMIT 1`,
+  )
+    .bind(shareId, assetId)
+    .first<{ r2_key: string; filetype: string }>();
 }
 
 async function findActiveShare(db: D1Database, token: string): Promise<SharePageRow | null> {
@@ -926,12 +1065,60 @@ function htmlResponse(html: string, status = 200): Response {
   });
 }
 
+/**
+ * Whether an artifact can be installed on a device directly, or exists only to
+ * be uploaded to a store. Store uploads (.aab, HarmonyOS .app) cannot be
+ * installed, and saying so is the point of listing them.
+ */
+function isStoreOnlyArtifact(a: ShareArtifactRow): boolean {
+  const filetype = a.filetype.toLowerCase();
+  if (filetype === "aab") return true;
+  if (filetype === "app") {
+    const dist = (a.distribution ?? a.variant ?? "").toLowerCase();
+    return dist !== "sideload";
+  }
+  return false;
+}
+
+function renderAllFormats(
+  t: ShareStrings,
+  artifacts: ShareArtifactRow[],
+  artifactUrl: (assetId: string) => string,
+): string {
+  const rows = artifacts
+    .map((a) => {
+      const storeOnly = isStoreOnlyArtifact(a);
+      const purpose = storeOnly ? t.purposeStoreOnly : t.purposeSideload;
+      const label = escapeHtml(
+        [a.filetype.toUpperCase(), a.arch, a.variant].filter(Boolean).join(" · "),
+      );
+      return `<tr>
+        <td>${label}</td>
+        <td class="${storeOnly ? "storeonly" : ""}">${purpose}</td>
+        <td>${formatBytes(a.size_bytes)}</td>
+        <td class="mono">${escapeHtml(a.file_hash)}</td>
+        <td><a href="${escapeAttribute(artifactUrl(a.asset_id))}">${t.fmtDownload}</a></td>
+      </tr>`;
+    })
+    .join("");
+  const anyStoreOnly = artifacts.some(isStoreOnlyArtifact);
+  return `<table class="formats">
+      <thead><tr>
+        <th>${t.fmtType}</th><th>${t.fmtPurpose}</th><th>${t.fmtSize}</th><th>${t.fmtChecksum}</th><th></th>
+      </tr></thead>
+      <tbody>${rows}</tbody>
+    </table>
+    ${anyStoreOnly ? `<p class="storenote">${t.storeOnlyNote}</p>` : ""}`;
+}
+
 function renderSharePage(
   t: ShareStrings,
   row: SharePageRow,
   downloadUrl: string,
   shareUrl: string,
   shareToken: string,
+  artifacts: ShareArtifactRow[],
+  artifactUrl: (assetId: string) => string,
 ): string {
   const title = `${row.app_slug} ${row.version_name} (${row.version_code})`;
   const qrSvg = renderShareQrSvg(shareUrl);
@@ -955,6 +1142,15 @@ function renderSharePage(
     dd { margin: 0; font-weight: 600; overflow-wrap: anywhere; }
     a.download { display: inline-flex; align-items: center; justify-content: center; min-height: 44px; padding: 0 18px; border-radius: 6px; background: #176f5d; color: white; text-decoration: none; font-weight: 700; }
     .get-it { display: flex; align-items: center; gap: 20px; flex-wrap: wrap; }
+    details.formats { margin-top: 20px; border-top: 1px solid #e3e3df; padding-top: 14px; }
+    details.formats > summary { cursor: pointer; font-weight: 600; color: #176f5d; }
+    table.formats { width: 100%; border-collapse: collapse; margin-top: 12px; font-size: 13px; }
+    table.formats th, table.formats td { text-align: left; padding: 8px 6px; border-bottom: 1px solid #ecece8; vertical-align: top; }
+    table.formats th { color: #707782; font-weight: 500; }
+    table.formats td.mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; overflow-wrap: anywhere; }
+    table.formats a { color: #176f5d; font-weight: 600; }
+    .storeonly { color: #9a3412; }
+    .storenote { margin-top: 10px; font-size: 12px; color: #707782; }
     .qr { display: none; }
     .qr svg { display: block; width: 128px; height: 128px; border-radius: 8px; background: white; padding: 6px; box-sizing: border-box; }
     .qr span { display: block; margin-top: 6px; color: #707782; font-size: 12px; text-align: center; }
@@ -995,6 +1191,7 @@ function renderSharePage(
       <a class="download" href="${escapeAttribute(downloadUrl)}">${t.downloadApk}</a>
       <div class="qr">${qrSvg}<span>${t.scanHint}</span></div>
     </div>
+    ${artifacts.length > 1 ? `<details class="formats"><summary>${t.allFormats} (${artifacts.length})</summary>${renderAllFormats(t, artifacts, artifactUrl)}</details>` : ""}
     ${row.changelog ? `<div class="notes">${changelogToHtml(row.changelog)}</div>` : ""}
   </main>
 </body>
