@@ -6336,6 +6336,21 @@ describe("quiver public API v2 — scope resolution", () => {
     } as any;
   }
 
+  /** Same context, but with a query string (needed for ?asset=<id>). */
+  function makeSharePublicContextWithQuery(
+    env: MockEnv,
+    token: string,
+    query: string,
+  ) {
+    const ctx = makeSharePublicContext(env, token);
+    const url = `https://quiver-worker.test/share/${token}${query}`;
+    const parsed = new URL(url);
+    return {
+      ...ctx,
+      req: { ...ctx.req, url, query: (k: string) => parsed.searchParams.get(k) ?? undefined },
+    } as any;
+  }
+
   function makeElectronContext(
     env: MockEnv,
     file: string,
@@ -6428,6 +6443,9 @@ describe("quiver public API v2 — scope resolution", () => {
       req: {
         url: `https://quiver-worker.test/share/${token}`,
         param: (name: string) => (name === "token" ? token : ""),
+        // Query support mirrors Hono's c.req.query; defaults to empty so the
+        // plain-context helpers keep working unchanged.
+        query: (_name: string) => undefined,
         header: (name: string) => headers[name.toLowerCase()] ?? headers[name],
         raw: { cf: { clientIp: "203.0.113.10" } },
       },
@@ -7741,6 +7759,110 @@ describe("quiver public API v2 — scope resolution", () => {
     expect(res.status).toBe(302);
     // The NEWER release's asset. An apk-first ordering would return the old release's apk here.
     expect(res.headers.get("location")).toContain("new-aab");
+  });
+
+  it("share page lists every artifact but the button still serves the sideload one", async () => {
+    // Mirrors the OHOS shape: a store bundle (.app) and a sideload bundle (.hap)
+    // in the same release. Before #757 the primary download picked .app; the
+    // listing must show BOTH while the button keeps serving .hap.
+    const env = makeEnv();
+    const { handleCreateReleaseShare, handlePublicReleaseShare, handlePublicReleaseShareDownload } =
+      await import("../src/routes/shares");
+    const base = 1_700_000_000_000;
+    await seedRelease(env, "rel-fmt", "build-fmt", [["full", "all"]], {
+      createdAt: base, activatedAt: base, versionCode: 12,
+    });
+    await seedAsset(env, "build-fmt", "asset-hap", {
+      filetype: "hap", r2Key: "hosted/dl.hap", fileHash: "b".repeat(64),
+    });
+    await seedAsset(env, "build-fmt", "asset-app", {
+      filetype: "app", r2Key: "hosted/store.app", fileHash: "c".repeat(64),
+    });
+    env.APK_BUCKET = {
+      put: async () => undefined,
+      head: async (key: string) => ({ key }),
+      get: async () => null,
+    } as any;
+
+    const created = await responseJson<any>(
+      await handleCreateReleaseShare(
+        makeShareAdminContext(env, { appId: "app-scope", releaseId: "rel-fmt" }),
+      ),
+    );
+    const token = new URL(created.share_url).pathname.replace("/share/", "");
+
+    const html = await (await handlePublicReleaseShare(makeSharePublicContext(env, token))).text();
+
+    // Both artifacts are listed, each linked by ASSET ID (not filetype).
+    expect(html).toContain("asset-hap");
+    expect(html).toContain("asset-app");
+    // The store bundle is called out as not installable; the hap is not.
+    expect(html).toContain("Store upload — can't be installed directly");
+    // Primary button still points at the bare download (which serves .hap).
+    expect(html).toContain(`/share/${token}/download"`);
+
+    const res = await handlePublicReleaseShareDownload(makeSharePublicContext(env, token));
+    expect(res.status).toBe(302);
+    expect(res.headers.get("location")).toContain("dl.hap");
+  });
+
+  it("share page hides the disclosure when the release has a single artifact", async () => {
+    const env = makeEnv();
+    const { handleCreateReleaseShare, handlePublicReleaseShare } = await import("../src/routes/shares");
+    await seedRelease(env, "rel-one", "build-one", [["full", "all"]]);
+    await seedAsset(env, "build-one", "asset-one", { filetype: "apk", r2Key: "hosted/one.apk" });
+    env.APK_BUCKET = {
+      put: async () => undefined,
+      head: async (key: string) => ({ key }),
+      get: async () => null,
+    } as any;
+    const created = await responseJson<any>(
+      await handleCreateReleaseShare(
+        makeShareAdminContext(env, { appId: "app-scope", releaseId: "rel-one" }),
+      ),
+    );
+    const token = new URL(created.share_url).pathname.replace("/share/", "");
+    const html = await (await handlePublicReleaseShare(makeSharePublicContext(env, token))).text();
+    expect(html).not.toContain("<details class=\"formats\"");
+  });
+
+  it("download?asset= refuses an asset that belongs to a different release", async () => {
+    // A crafted ?asset= must not reach outside the share's own release.
+    const env = makeEnv();
+    const { handleCreateReleaseShare, handlePublicReleaseShareDownload } = await import("../src/routes/shares");
+    const base = 1_700_000_000_000;
+    await seedRelease(env, "rel-mine", "build-mine", [["full", "all"]], {
+      createdAt: base, activatedAt: base + 1, versionCode: 20,
+    });
+    await seedAsset(env, "build-mine", "asset-mine", { filetype: "apk", r2Key: "hosted/mine.apk" });
+    await seedRelease(env, "rel-other", "build-other", [["full", "all"]], {
+      createdAt: base, activatedAt: base + 2, versionCode: 21,
+    });
+    await seedAsset(env, "build-other", "asset-other", { filetype: "apk", r2Key: "hosted/other.apk" });
+    env.APK_BUCKET = {
+      put: async () => undefined,
+      head: async (key: string) => ({ key }),
+      get: async () => null,
+    } as any;
+
+    const created = await responseJson<any>(
+      await handleCreateReleaseShare(
+        makeShareAdminContext(env, { appId: "app-scope", releaseId: "rel-mine" }),
+      ),
+    );
+    const token = new URL(created.share_url).pathname.replace("/share/", "");
+
+    const res = await handlePublicReleaseShareDownload(
+      makeSharePublicContextWithQuery(env, token, "?asset=asset-other"),
+    );
+    expect(res.status).toBe(404);
+
+    // The share's OWN asset still resolves.
+    const ok = await handlePublicReleaseShareDownload(
+      makeSharePublicContextWithQuery(env, token, "?asset=asset-mine"),
+    );
+    expect(ok.status).toBe(302);
+    expect(ok.headers.get("location")).toContain("mine.apk");
   });
 
   it("shares: no ttl never expires, url is re-copyable, expiry semantics on update", async () => {
