@@ -173,9 +173,11 @@ App Store review-state surface (`GET /api/apps/{app_id}/appstore-review`).
 Hands is the credential's only home — CI never needs a copy, so rotation
 stays single-source.
 
-Hands roles are intentionally split: uploading to Apple requires app admin,
-expiring an exact beta build requires app admin, distribution requires app
-publisher, and status/group reads require app viewer. Apple's own role boundary still applies to the stored key: external
+Hands roles are intentionally split: uploading a build to Apple and
+distributing it both require app publisher (upload is a publishing action on
+your own app, and a publisher-scoped CI token must be able to drive it),
+expiring an exact beta build requires app admin, and status/group reads
+require app viewer. Apple's own role boundary still applies to the stored key: external
 testing requires Account Holder, Admin, or App Manager; internal testing also
 permits Developer or Marketing.
 

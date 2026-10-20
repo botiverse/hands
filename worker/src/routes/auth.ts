@@ -1583,7 +1583,7 @@ export async function handleAgentManifest(c: Context<{ Bindings: Env }>) {
       {
         name: "upload-testflight-build",
         description:
-          "Upload one existing signed Hands IPA to App Store Connect/TestFlight using the app's encrypted server-side ASC credential. This upload-only action never assigns beta groups, notifies testers, activates a Hands release, or touches App Store production publishing. Requires app admin.",
+          "Upload one existing signed Hands IPA to App Store Connect/TestFlight using the app's encrypted server-side ASC credential. This upload-only action never assigns beta groups, notifies testers, activates a Hands release, or touches App Store production publishing. Requires app publisher.",
         endpoint: {
           method: "POST",
           path: "/api/apps/{app_id}/builds/{build_id}/testflight-upload",
