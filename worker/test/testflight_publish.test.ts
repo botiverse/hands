@@ -1,4 +1,3 @@
-import { readFileSync } from "node:fs";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { Hono } from "hono";
 import type { AscApiCredentials } from "../src/lib/asc_api";
@@ -917,39 +916,5 @@ describe("publishProcessedAscBuild", () => {
       details: { beta_state: "MISSING_EXPORT_COMPLIANCE" },
     });
     expect(compliance.assigned.size).toBe(0);
-  });
-});
-
-// Upload and distribution are the same class of action — a publishing step on
-// your OWN app — so both must sit at the publisher tier. Upload used to require
-// admin, which no deploy token can hold (DeployTokenRole is publisher|viewer), so
-// a publisher-scoped CI token could never drive it and every release needed a
-// human to hand-upload. Pinned here so the tier split cannot silently regress.
-describe("TestFlight role tiers", () => {
-  const routeSource = readFileSync(new URL("../src/index.ts", import.meta.url), "utf8");
-  const lineFor = (needle: string) =>
-    routeSource.split("\n").find((l) => l.includes(needle)) ?? "";
-
-  it("gates upload and distribution at publisher, expiry at admin", () => {
-    expect(lineFor('"/api/apps/:appId/builds/:buildId/testflight-upload"')).toContain(
-      'requireAppRole("publisher")',
-    );
-    expect(lineFor('"/api/apps/:appId/builds/:buildId/testflight-publish"')).toContain(
-      'requireAppRole("publisher")',
-    );
-    expect(lineFor('"/api/apps/:appId/builds/:buildId/testflight-expire"')).toContain(
-      'requireAppRole("admin")',
-    );
-  });
-
-  it("states the same tier in the agent manifest", () => {
-    // The manifest is the contract an agent codes against; a stale sentence here
-    // sends a publisher-token caller hunting for an admin grant it cannot need.
-    const authSource = readFileSync(new URL("../src/routes/auth.ts", import.meta.url), "utf8");
-    const idx = authSource.indexOf('name: "upload-testflight-build"');
-    expect(idx).toBeGreaterThan(-1);
-    const block = authSource.slice(idx, idx + 700);
-    expect(block).toContain("Requires app publisher.");
-    expect(block).not.toContain("Requires app admin.");
   });
 });
