@@ -243,3 +243,79 @@ describe("manifest: actions retained + deprecated, migration-help added", () => 
     expect(body.login.agents).toMatch(/hands login/);
   });
 });
+
+// The agent manifest is the ONLY contract an agent codes against. A body field the
+// handler accepts but the manifest omits is effectively invisible: `update-feedback`
+// shipped that way (`closure_reason`, `duplicate_of_ticket_id` were implemented and
+// enforced, but undeclared), so mark-as-duplicate could only be expressed in a
+// comment. These cases fail if the declared body contract drifts from the handler's.
+describe("manifest: update-feedback body contract matches the handler", () => {
+  async function manifestAction(name: string) {
+    const app = new Hono();
+    app.get("/.well-known/raft-agent-manifest.json", handleAgentManifest as any);
+    const res = await app.request(
+      "/.well-known/raft-agent-manifest.json",
+      {},
+      { RAFT_CLIENT_ID: "hands-4cc7a2" } as any,
+    );
+    const body = (await res.json()) as any;
+    return body.actions.find((a: any) => a.name === name);
+  }
+
+  it("declares every body field handleUpdateFeedback reads", async () => {
+    const action = await manifestAction("update-feedback");
+    expect(action).toBeTruthy();
+    const bodyParams = Object.entries(action.parameters ?? {})
+      .filter(([, p]: [string, any]) => p.in === "body")
+      .map(([key]) => key)
+      .sort();
+
+    // Derived from the handler's SOURCE, not a hand-copied list: a literal here
+    // would only catch the manifest losing a field, while the bug that actually
+    // happened was the handler gaining one that the manifest never declared.
+    // Reading the handler means the test fails in BOTH directions.
+    const handlerSource = readFileSync(
+      new URL("../src/routes/feedback.ts", import.meta.url),
+      "utf8",
+    );
+    // Bound to THIS function: slicing to the end of the file would sweep in the
+    // neighbouring handlers' body reads (e.g. `body.internal` from comments).
+    const start = handlerSource.indexOf("export async function handleUpdateFeedback");
+    const nextExport = handlerSource.indexOf("\nexport ", start + 1);
+    const handleBody = handlerSource.slice(
+      start,
+      nextExport === -1 ? undefined : nextExport,
+    );
+    const handlerBodyFields = [
+      ...new Set(
+        (handleBody.match(/body\.[a-zA-Z_]+/g) ?? []).map((m) => m.slice("body.".length)),
+      ),
+    ].sort();
+
+    expect(handlerBodyFields.length).toBeGreaterThan(0); // the derivation itself must work
+
+    // The derivation only sees `body.<name>` dot-reads. A bracket read
+    // (`body["x"]`) or destructuring (`const { x } = body`) would HIDE a field
+    // from it, so the set could shrink while a real contract field exists —
+    // an invisible miss, not a loud failure. Kirby flagged this during review
+    // (#301). Neither form is used today; this guard keeps it that way so the
+    // blind spot cannot open silently.
+    expect({ bracketReads: /body\s*\[/.test(handleBody), destructured: /\}\s*=\s*body\b/.test(handleBody) }).toEqual({
+      bracketReads: false,
+      destructured: false,
+    });
+
+    expect(bodyParams).toEqual(handlerBodyFields);
+  });
+
+  it("describes the closure contract an agent cannot otherwise discover", async () => {
+    const action = await manifestAction("update-feedback");
+    // The values must be the real enum, not prose that drifts from the handler.
+    expect(action.parameters.closure_reason.description).toContain("duplicate");
+    expect(action.parameters.closure_reason.description).toContain("completed");
+    // The duplicate field must say when it is required AND when it is rejected;
+    // both rules are enforced by the handler.
+    expect(action.parameters.duplicate_of_ticket_id.description).toContain("Required");
+    expect(action.parameters.duplicate_of_ticket_id.description).toContain("rejected");
+  });
+});
