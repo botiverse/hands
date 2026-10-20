@@ -603,7 +603,7 @@ function makeMockDb() {
     CREATE TABLE audit_logs (
       id TEXT PRIMARY KEY, app_id TEXT NOT NULL, action TEXT NOT NULL,
       actor TEXT NOT NULL, payload TEXT NOT NULL, created_at INTEGER NOT NULL,
-      actor_id TEXT, actor_type TEXT,
+      actor_id TEXT REFERENCES raft_accounts(id), actor_type TEXT,
       FOREIGN KEY (app_id) REFERENCES apps(id) ON DELETE CASCADE
     );
     CREATE TABLE raft_accounts (
@@ -15129,5 +15129,62 @@ describe("Hands iOS simulator QA artifacts", () => {
       "reporter_integration.archive",
       "reporter_integration.unarchive",
     ]);
+  });
+});
+
+// Regression for the 2026-10-20 TestFlight upload outage: a deploy token writes
+// audit rows with its own id, which lives in app_deploy_tokens and never in
+// raft_accounts. audit_logs.actor_id has a FOREIGN KEY to raft_accounts(id), so
+// writing the token id there fails the insert and 500s the whole request. The
+// failure only reproduced in production because no test schema declared that
+// constraint; this block keeps the constraint AND the deploy-token path together.
+describe("audit log actor identity", () => {
+  it("accepts a deploy-token actor without violating actor_id's raft_accounts FK", async () => {
+    const env = makeMockEnv();
+    await env.DB.prepare("INSERT INTO apps (id, slug, name, platform, created_at) VALUES (?, ?, ?, ?, ?)")
+      .bind("app-audit", "audit-app", "Audit", "ios", Date.now())
+      .run();
+
+    const deployToken = {
+      id: "dt-audit-token",
+      app_id: "app-audit",
+      app_slug: "audit-app",
+      name: "ci",
+      token_prefix: "qvdt_test",
+      app_role: "publisher",
+      scopes: null,
+      created_by: null,
+      created_by_actor: "raft:owner@server",
+      created_at: 1,
+      expires_at: null,
+      last_used_at: null,
+      revoked_at: null,
+    };
+    const tokenCtx = {
+      env,
+      get: (key: string) => (key === "admin_deploy_token" ? deployToken : undefined),
+      json: (body: unknown, status = 200) => new Response(JSON.stringify(body), { status }),
+    };
+
+    const { insertAuditLog } = await import("../src/lib/permissions");
+    // The token id is deliberately NOT in raft_accounts. This must not throw.
+    await expect(
+      insertAuditLog(env.DB as any, tokenCtx as any, {
+        app_id: "app-audit",
+        action: "testflight.upload",
+        payload: { build_id: "build-1" },
+      }),
+    ).resolves.toBeUndefined();
+
+    const row = await env.DB.prepare(
+      "SELECT actor, actor_id, actor_type FROM audit_logs WHERE app_id = ? ORDER BY created_at DESC LIMIT 1",
+    )
+      .bind("app-audit")
+      .first() as { actor: string; actor_id: string | null; actor_type: string } | null;
+    expect(row).not.toBeNull();
+    // WHO acted is still recorded in full; only the FK-bound column is unset.
+    expect(row!.actor).toContain("ci");
+    expect(row!.actor_type).toBe("agent");
+    expect(row!.actor_id).toBeNull();
   });
 });

@@ -632,6 +632,13 @@ export async function insertAuditLog(
   },
 ) {
   const actor = currentActorInfo(c);
+  // actor_id carries a FOREIGN KEY to raft_accounts(id) (0016_account_org_team.sql).
+  // A deploy token authenticates as an agent but its id lives in app_deploy_tokens,
+  // never in raft_accounts, so writing it here violates the constraint and the whole
+  // request 500s. Only a session account id can satisfy that reference; for every
+  // other identity record WHO acted in `actor`, and WHAT KIND in actor_type, and leave
+  // actor_id unset rather than inventing a raft_accounts row that does not exist.
+  const accountId = c.get("admin_account") ? actor.id : null;
   await db
     .prepare(
       `INSERT INTO audit_logs
@@ -643,7 +650,7 @@ export async function insertAuditLog(
       input.app_id,
       input.action,
       actor.display_name,
-      actor.id,
+      accountId,
       actor.type,
       JSON.stringify(input.payload),
       input.created_at ?? Date.now(),
