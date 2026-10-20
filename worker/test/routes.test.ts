@@ -15177,14 +15177,23 @@ describe("audit log actor identity", () => {
     ).resolves.toBeUndefined();
 
     const row = await env.DB.prepare(
-      "SELECT actor, actor_id, actor_type FROM audit_logs WHERE app_id = ? ORDER BY created_at DESC LIMIT 1",
+      "SELECT actor, actor_id, actor_type, payload FROM audit_logs WHERE app_id = ? ORDER BY created_at DESC LIMIT 1",
     )
       .bind("app-audit")
-      .first() as { actor: string; actor_id: string | null; actor_type: string } | null;
+      .first() as
+      | { actor: string; actor_id: string | null; actor_type: string; payload: string }
+      | null;
     expect(row).not.toBeNull();
     // WHO acted is still recorded in full; only the FK-bound column is unset.
     expect(row!.actor).toContain("ci");
     expect(row!.actor_type).toBe("agent");
     expect(row!.actor_id).toBeNull();
+    // app_deploy_tokens is unique only on token_hash, so a name is not a credential
+    // identity across rotations. The prefix keeps the row traceable to one token, and
+    // the caller's own payload must survive alongside it.
+    expect(JSON.parse(row!.payload)).toMatchObject({
+      build_id: "build-1",
+      deploy_token_prefix: "qvdt_test",
+    });
   });
 });

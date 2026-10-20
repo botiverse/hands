@@ -639,6 +639,16 @@ export async function insertAuditLog(
   // other identity record WHO acted in `actor`, and WHAT KIND in actor_type, and leave
   // actor_id unset rather than inventing a raft_accounts row that does not exist.
   const accountId = c.get("admin_account") ? actor.id : null;
+  // Leaving actor_id unset must not cost traceability. app_deploy_tokens has UNIQUE
+  // only on token_hash (0048), so two tokens can share a name and the display name
+  // alone cannot tell a rotated token from its predecessor. Carry the token's stable
+  // prefix in the payload so an audit row still names the exact credential without a
+  // schema change; the prefix is already the console-visible identifier.
+  const deployToken = c.get("admin_deploy_token") as AppDeployToken | undefined;
+  const payload =
+    deployToken && !accountId
+      ? { ...(input.payload as Record<string, unknown> | null ?? {}), deploy_token_prefix: deployToken.token_prefix }
+      : input.payload;
   await db
     .prepare(
       `INSERT INTO audit_logs
@@ -652,7 +662,7 @@ export async function insertAuditLog(
       actor.display_name,
       accountId,
       actor.type,
-      JSON.stringify(input.payload),
+      JSON.stringify(payload),
       input.created_at ?? Date.now(),
     )
     .run();
