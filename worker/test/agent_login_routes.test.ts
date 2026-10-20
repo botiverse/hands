@@ -270,15 +270,30 @@ describe("manifest: update-feedback body contract matches the handler", () => {
       .map(([key]) => key)
       .sort();
 
-    // Derived from the handler: handleUpdateFeedback parses exactly these fields off
-    // the JSON body (worker/src/routes/feedback.ts). Adding a field to the handler
-    // without declaring it here is the bug this test exists to catch.
-    expect(bodyParams).toEqual([
-      "assignee",
-      "closure_reason",
-      "duplicate_of_ticket_id",
-      "status",
-    ]);
+    // Derived from the handler's SOURCE, not a hand-copied list: a literal here
+    // would only catch the manifest losing a field, while the bug that actually
+    // happened was the handler gaining one that the manifest never declared.
+    // Reading the handler means the test fails in BOTH directions.
+    const handlerSource = readFileSync(
+      new URL("../src/routes/feedback.ts", import.meta.url),
+      "utf8",
+    );
+    // Bound to THIS function: slicing to the end of the file would sweep in the
+    // neighbouring handlers' body reads (e.g. `body.internal` from comments).
+    const start = handlerSource.indexOf("export async function handleUpdateFeedback");
+    const nextExport = handlerSource.indexOf("\nexport ", start + 1);
+    const handleBody = handlerSource.slice(
+      start,
+      nextExport === -1 ? undefined : nextExport,
+    );
+    const handlerBodyFields = [
+      ...new Set(
+        (handleBody.match(/body\.[a-zA-Z_]+/g) ?? []).map((m) => m.slice("body.".length)),
+      ),
+    ].sort();
+
+    expect(handlerBodyFields.length).toBeGreaterThan(0); // the derivation itself must work
+    expect(bodyParams).toEqual(handlerBodyFields);
   });
 
   it("describes the closure contract an agent cannot otherwise discover", async () => {
