@@ -293,6 +293,18 @@ describe("manifest: update-feedback body contract matches the handler", () => {
     ].sort();
 
     expect(handlerBodyFields.length).toBeGreaterThan(0); // the derivation itself must work
+
+    // The derivation only sees `body.<name>` dot-reads. A bracket read
+    // (`body["x"]`) or destructuring (`const { x } = body`) would HIDE a field
+    // from it, so the set could shrink while a real contract field exists —
+    // an invisible miss, not a loud failure. Kirby flagged this during review
+    // (#301). Neither form is used today; this guard keeps it that way so the
+    // blind spot cannot open silently.
+    expect({ bracketReads: /body\s*\[/.test(handleBody), destructured: /\}\s*=\s*body\b/.test(handleBody) }).toEqual({
+      bracketReads: false,
+      destructured: false,
+    });
+
     expect(bodyParams).toEqual(handlerBodyFields);
   });
 
