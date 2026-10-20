@@ -203,7 +203,7 @@ build's What to Test text. The integration exposes eight actions:
   app-level locales and require exact Apple readback. Run this live metadata
   mutation only with explicit authorization.
 
-- `upload-testflight-build` (app admin): stream the existing signed Hands IPA
+- `upload-testflight-build` (app publisher): stream the existing signed Hands IPA
   to Apple's Build Upload API.
 - `get-testflight-upload-status` (viewer): poll the returned Apple upload id to
   `state.state=COMPLETE|FAILED`, retaining Apple's errors/warnings/infos.

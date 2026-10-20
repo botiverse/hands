@@ -1312,7 +1312,13 @@ bindAdmin("patch", "/api/apps/:appId/reporter-integrations/:integrationId",
 // App Store Connect API credentials (for Hands-orchestrated TestFlight uploads).
 bindAdmin("get", "/api/apps/:appId/asc-credentials", requireAppRole("admin"), handleGetAscCredentials);
 bindAdmin("post", "/api/apps/:appId/asc-credentials/verify", requireAppRole("admin"), handleVerifyAscCredentials);
-bindAdmin("post", "/api/apps/:appId/builds/:buildId/testflight-upload", requireAppRole("admin"), handleTestflightUpload);
+// Uploading a build to TestFlight is a publishing action on your own app, the
+  // same class as testflight-publish (already publisher). It was gated at admin,
+  // which no deploy token can hold — publisher|viewer only — so a CI token could
+  // never drive it and releases needed a human in the loop. The upload-only
+  // action still cannot assign beta groups, notify testers, activate a Hands
+  // release, or touch App Store production publishing.
+  bindAdmin("post", "/api/apps/:appId/builds/:buildId/testflight-upload", requireAppRole("publisher"), handleTestflightUpload);
 bindAdmin("get", "/api/apps/:appId/testflight-uploads/:buildUploadId", requireAppRole("viewer"), handleTestflightUploadStatus);
 bindAdmin("get", "/api/apps/:appId/builds/:buildId/testflight-groups", requireAppRole("viewer"), handleListTestflightGroups);
 bindAdmin("post", "/api/apps/:appId/builds/:buildId/testflight-expire", requireAppRole("admin"), handleTestflightExpire);

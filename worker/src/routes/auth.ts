@@ -884,7 +884,7 @@ export async function handleAgentHelp(c: Context<{ Bindings: Env }>) {
       "3. Triage as you work: update-feedback (change status/assignee, e.g. close a fixed ticket) and comment-feedback (attribution note, internal=true for staff-only). Requires org member (or app publisher).",
       "4. Release management (app publisher): create-release from an existing build (DRAFT by default) → update-release with bilingual release_notes → after explicit human authorization, publish-release. See docs.release_guide.",
       "5. iOS simulator QA fixtures: create-ios-simulator-artifact → PUT the .app.zip to upload.url with the returned headers → complete-ios-simulator-artifact → get/presign the durable exact-byte artifact. QA artifacts can never become releases or update offers.",
-      "6. TestFlight: get/update-testflight-beta-app-description manage app-level invitation copy separately from build-level What to Test. An app admin runs upload-testflight-build and polls get-testflight-upload-status to COMPLETE; an app viewer lists beta groups, then an app publisher runs publish-testflight-build and polls distribution status. These actions never activate a Hands release or submit an App Store production release.",
+      "6. TestFlight: get/update-testflight-beta-app-description manage app-level invitation copy separately from build-level What to Test. An app publisher runs upload-testflight-build and polls get-testflight-upload-status to COMPLETE; an app viewer lists beta groups, then an app publisher runs publish-testflight-build and polls distribution status. These actions never activate a Hands release or submit an App Store production release.",
     ],
     auth: {
       raft_agents:
@@ -914,7 +914,7 @@ export async function handleAgentHelp(c: Context<{ Bindings: Env }>) {
       complete_ios_simulator_artifact:
         "POST /api/apps/{app_id}/qa-artifacts/ios-simulator/{asset_id}/complete — publisher; one-shot stream verification of size/SHA-256 followed by immutable storage sealing",
       upload_testflight_build:
-        "POST /api/apps/{app_id}/builds/{build_id}/testflight-upload — admin; streams the stored signed IPA to Apple's Build Upload API without distributing it",
+        "POST /api/apps/{app_id}/builds/{build_id}/testflight-upload — publisher; streams the stored signed IPA to Apple's Build Upload API without distributing it",
       publish_testflight_build:
         "POST /api/apps/{app_id}/builds/{build_id}/testflight-publish — publisher; assigns processed builds to beta groups and optionally submits external Beta App Review",
       expire_testflight_build:
@@ -1583,7 +1583,7 @@ export async function handleAgentManifest(c: Context<{ Bindings: Env }>) {
       {
         name: "upload-testflight-build",
         description:
-          "Upload one existing signed Hands IPA to App Store Connect/TestFlight using the app's encrypted server-side ASC credential. This upload-only action never assigns beta groups, notifies testers, activates a Hands release, or touches App Store production publishing. Requires app admin.",
+          "Upload one existing signed Hands IPA to App Store Connect/TestFlight using the app's encrypted server-side ASC credential. This upload-only action never assigns beta groups, notifies testers, activates a Hands release, or touches App Store production publishing. Requires app publisher.",
         endpoint: {
           method: "POST",
           path: "/api/apps/{app_id}/builds/{build_id}/testflight-upload",

@@ -218,7 +218,7 @@ Workflow:
    ```sh
    hands builds publish-ios --ipa build/App.ipa --dsym build/App.dSYM.zip --draft
    ```
-9. An authorized app admin invokes Hands `testflight-upload`; the Worker
+9. An authorized app publisher invokes Hands `testflight-upload`; the Worker
    streams the exact stored IPA to Apple's official Build Upload API.
 10. Poll the returned Build Upload id to
     `state.state=COMPLETE|FAILED`, then resolve the exact app/version/build
