@@ -1966,6 +1966,25 @@ export async function handleAgentManifest(c: Context<{ Bindings: Env }>) {
           ticket_id: { type: "string", in: "path", required: true, description: "Ticket UUID or unique short-id prefix." },
           status: { type: "string", in: "body", required: false, description: "open|in_progress|resolved|closed" },
           assignee: { type: "string", in: "body", required: false, description: "Assignee actor id; empty string unassigns." },
+          // These two were implemented and accepted by the handler but missing
+          // from this manifest, so an agent reading the declared contract would
+          // not discover them and could only ever mark a duplicate with a
+          // comment. Declared here so the machine-readable contract matches what
+          // the route actually accepts.
+          closure_reason: {
+            type: "string",
+            in: "body",
+            required: false,
+            description:
+              "completed|not_planned|cannot_reproduce|duplicate. Only valid together with status=closed, and required when closing a ticket.",
+          },
+          duplicate_of_ticket_id: {
+            type: "string",
+            in: "body",
+            required: false,
+            description:
+              "Ticket UUID or short-id prefix of the ticket this one duplicates. Required when closure_reason=duplicate, and rejected for any other closure reason.",
+          },
         },
       },
       {
