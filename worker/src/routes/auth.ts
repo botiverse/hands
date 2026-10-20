@@ -972,7 +972,11 @@ export async function handleAgentManifest(c: Context<{ Bindings: Env }>) {
   // Deprecation notice prepended to every EXISTING action (all but the two new ones):
   // keep the machine contract unchanged, just point callers at `migration-help`.
   const service = c.env.RAFT_CLIENT_ID || "hands-4cc7a2";
-  const DEPRECATION_PREFIX = `Deprecated — run raft integration invoke --service ${service} --action migration-help for Hands CLI installation and migration guidance. `;
+  // Kept deliberately terse: this string is repeated on every deprecated action, so
+  // its length multiplies by ~82. At 139 bytes it consumed ~11 KB of a manifest that
+  // has a hard 64 KiB ceiling set by the consumer (exceeding it takes every
+  // agent-facing action offline). The pointer still names the exact command.
+  const DEPRECATION_PREFIX = `Deprecated — see migration-help (raft integration invoke --service ${service} --action migration-help). `;
   const NEW_ACTIONS = new Set(["agent-login", "migration-help"]);
   const applyDeprecation = (
     list: Array<{ name: string; description: string; [k: string]: unknown }>,
@@ -1009,7 +1013,7 @@ export async function handleAgentManifest(c: Context<{ Bindings: Env }>) {
         // client-side rather than relying on the manifest for output enforcement.
         name: "agent-login",
         description:
-          "Agent CLI bootstrap (RFC 057). Send raft-cli-agent-login-request.v1 with a PKCE S256 code_challenge; receive a one-time, <=5 min raft-cli-agent-login-grant.v1 grant bound to your authenticated agent identity, then exchange it (with your code_verifier) at POST /api/auth/agent/exchange for a raft-cli-agent-session.v1 (short access token + rotating refresh). Non-idempotent create; no readback; not rollbackable. Requires an authenticated agent session; humans/CI keep the browser/deploy-token login.",
+          "Agent CLI bootstrap (RFC 057). Send raft-cli-agent-login-request.v1 with PKCE S256 code_challenge; get a one-time <=5 min raft-cli-agent-login-grant.v1 bound to your agent identity; exchange it plus code_verifier at POST /api/auth/agent/exchange for raft-cli-agent-session.v1 (short access token + rotating refresh). Non-idempotent; no readback; not rollbackable. Requires an agent session.",
         endpoint: { method: "POST", path: "/api/auth/agent/login" },
         parameters: {
           schema: { type: "string", in: "body", required: true, description: "Must be \"raft-cli-agent-login-request.v1\". Closed input: extension fields are rejected." },
@@ -1197,7 +1201,7 @@ export async function handleAgentManifest(c: Context<{ Bindings: Env }>) {
       },
       {
         name: "list-device-groups",
-        description: "List app-scoped rollout device groups and their installation device ids. Requires app publisher.",
+        description: "List app-scoped rollout device groups and their installation device ids. (App publisher.)",
         endpoint: { method: "GET", path: "/api/apps/{app_id}/device-groups" },
         parameters: {
           app_id: { type: "string", in: "path", required: true, description: "App UUID." },
@@ -1322,7 +1326,7 @@ export async function handleAgentManifest(c: Context<{ Bindings: Env }>) {
       },
       {
         name: "cancel-release",
-        description: "Disable one draft or active release without deleting its build, assets, or audit history. If the release never activated, the cancelled row stops reserving its version so a corrected build may use that coordinate. If the release ever activated (reached clients), its version coordinate stays permanently reserved and this is enforced: corrected client bits require a higher version code. Restoring the original shipped release is done by un-cancelling it (rollback), not by publishing a new release at that version. Requires app publisher.",
+        description: ("Disable a draft or active release; build/assets/audit are kept. Never-activated: the version is freed for a corrected build. Ever-activated: the version stays reserved, so corrected bits need a higher version code. Restore by un-cancelling (rollback), not by republishing that version. (App publisher.)"),
         endpoint: { method: "DELETE", path: "/api/apps/{app_id}/releases/{release_id}" },
         parameters: {
           app_id: { type: "string", in: "path", required: true, description: "App UUID." },
@@ -1620,7 +1624,7 @@ export async function handleAgentManifest(c: Context<{ Bindings: Env }>) {
       {
         name: "expire-testflight-build",
         description:
-          "Expire one exact App Store Connect Build from TestFlight availability. Requires the resolved ASC build id plus exact immutable version/build confirmations, persists a redacted operation intent before Apple mutation, terminalizes PATCH/readback outcome, is idempotent with immediate readback, and never mutates App Store production or a Hands release. Requires app admin and explicit human authorization for the live-facing mutation.",
+          "Expire one exact App Store Connect Build from TestFlight availability. Requires the resolved ASC build id plus exact immutable version/build confirmations, persists a redacted intent before the Apple mutation, terminalizes PATCH/readback, is idempotent with immediate readback, and never mutates App Store production or a Hands release. Requires app admin.",
         endpoint: {
           method: "POST",
           path: "/api/apps/{app_id}/builds/{build_id}/testflight-expire",
@@ -1694,7 +1698,7 @@ export async function handleAgentManifest(c: Context<{ Bindings: Env }>) {
       {
         name: "delete-build-asset",
         description:
-          "Delete one non-installable build-asset metadata row while preserving its R2 object. Requires app admin, exact app/build/asset binding, and immutable SHA-256/size preconditions. Audit and deletion commit atomically; an absent-row retry succeeds only by recovering the matching audit and rechecking R2. Installable assets, arbitrary absent ids, and missing/mismatched stored objects fail closed.",
+          "Delete one non-installable build-asset metadata row; its R2 object is preserved. Requires app admin, exact app/build/asset binding, and immutable SHA-256/size preconditions. Audit and deletion commit atomically; an absent-row retry succeeds only by recovering the matching audit and rechecking R2. Installable assets, arbitrary absent ids, and missing/mismatched objects fail closed.",
         endpoint: {
           method: "DELETE",
           path: "/api/apps/{app_id}/builds/{build_id}/assets/{asset_id}",

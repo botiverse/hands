@@ -224,7 +224,7 @@ describe("manifest: actions retained + deprecated, migration-help added", () => 
     const names = body.actions.map((a: any) => a.name);
     // existing actions retained + the two new ones present
     for (const n of ["help", "whoami", "list-apps", "agent-login", "migration-help"]) expect(names).toContain(n);
-    const prefix = "Deprecated — run raft integration invoke --service hands-4cc7a2 --action migration-help";
+    const prefix = "Deprecated — see migration-help (raft integration invoke --service hands-4cc7a2 --action migration-help)";
     // every OLD action is prefixed; the two NEW actions are not
     expect(body.actions.find((a: any) => a.name === "help").description.startsWith(prefix)).toBe(true);
     expect(body.actions.find((a: any) => a.name === "whoami").description.startsWith(prefix)).toBe(true);
@@ -317,5 +317,39 @@ describe("manifest: update-feedback body contract matches the handler", () => {
     // both rules are enforced by the handler.
     expect(action.parameters.duplicate_of_ticket_id.description).toContain("Required");
     expect(action.parameters.duplicate_of_ticket_id.description).toContain("rejected");
+  });
+});
+
+// The agent manifest is fetched and parsed by every agent runtime that talks to
+// Hands, and at least one of them (Raft) refuses a manifest above 64 KiB with
+// INTEGRATION_MANIFEST_INVALID ("manifest response is too large") — which takes
+// EVERY agent-facing Hands action offline at once, not just the action that grew.
+//
+// That limit was invisible: not in the diff, not asserted anywhere, so a change
+// that added two truthful field declarations (#761) pushed the payload 18 bytes
+// over the ceiling and broke all agent access for ~2 hours. A hard external limit
+// needs a test that fails before the limit is crossed, not an operator who
+// remembers to measure bytes.
+describe("manifest: stays under the consumer payload limit", () => {
+  // 64 KiB is the ceiling Raft enforces on the response body.
+  const LIMIT = 64 * 1024;
+  // Leave room for honest growth between checks: crossing this fails loudly while
+  // there is still headroom to fix it deliberately rather than in an incident.
+  const BUDGET = LIMIT - 512;
+
+  it("serializes below the budget", async () => {
+    const app = new Hono();
+    app.get("/.well-known/raft-agent-manifest.json", handleAgentManifest as any);
+    const res = await app.request(
+      "/.well-known/raft-agent-manifest.json",
+      {},
+      { RAFT_CLIENT_ID: "hands-4cc7a2" } as any,
+    );
+    const body = await res.text();
+    const bytes = Buffer.byteLength(body, "utf8");
+
+    // Guard the guard: an empty/erroring response would trivially pass a size test.
+    expect(body).toContain("update-feedback");
+    expect(bytes).toBeLessThanOrEqual(BUDGET);
   });
 });
