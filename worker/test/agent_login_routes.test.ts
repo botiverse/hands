@@ -353,3 +353,44 @@ describe("manifest: stays under the consumer payload limit", () => {
     expect(bytes).toBeLessThanOrEqual(BUDGET);
   });
 });
+
+// The manifest is the contract an agent codes against, so an authorization or
+// confirmation rule that exists in the handler must be stated here. #762's
+// byte-trim removed the confirmation requirement from expire-testflight-build;
+// Kirby caught it (task #301 follow-up). Pinned so a future size trim cannot
+// silently drop a rule again: if the description shrinks past this, the test says
+// which rule went missing instead of a reviewer having to diff prose.
+describe("manifest: expire-testflight-build states its confirmation rule", () => {
+  it("keeps the exact-confirmation requirement the handler enforces", async () => {
+    const app = new Hono();
+    app.get("/.well-known/raft-agent-manifest.json", handleAgentManifest as any);
+    const res = await app.request(
+      "/.well-known/raft-agent-manifest.json",
+      {},
+      { RAFT_CLIENT_ID: "hands-4cc7a2" } as any,
+    );
+    const body = (await res.json()) as any;
+    const action = body.actions.find((a: any) => a.name === "expire-testflight-build");
+    expect(action).toBeTruthy();
+
+    // assertExpireConfirmation() rejects a mismatch with EXPIRE_CONFIRMATION_MISMATCH
+    // (409) and the route requires app admin; the manifest must say both.
+    // Assert the SENTENCE, not loose keywords: the surrounding text already
+    // mentions "confirmations" and "app admin", so a keyword match passes even
+    // when the requirement clause itself was deleted (caught by mutation).
+    expect(action.description).toContain(
+      "Requires app admin plus exact version/build confirmation of the immutable build",
+    );
+    // The three body confirmations the handler actually reads must stay declared.
+    const bodyParams = Object.entries(action.parameters ?? {})
+      .filter(([, p]: [string, any]) => p.in === "body")
+      .map(([k]) => k)
+      .sort();
+    expect(bodyParams).toEqual([
+      "asc_build_id",
+      "bundle_id",
+      "confirm_build_number",
+      "confirm_version",
+    ]);
+  });
+});
