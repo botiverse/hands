@@ -484,7 +484,6 @@ function FeedbackStatusChip({
   return (
     <Badge
       appearance="solid"
-      uppercase={false}
       variant={config.variant}
       data-feedback-status={status}
       data-feedback-display-status={displayStatus}
@@ -1301,7 +1300,6 @@ export function FeedbackInbox({
                           <Badge
                             appearance="solid"
                             variant="accent"
-                            uppercase={false}
                             className="hands-feedback-unread-count"
                             data-feedback-unread-count={Math.max(
                               1,
@@ -2440,7 +2438,6 @@ export function FeedbackWorkspace({
   hideHeaderTitle = false,
   ref,
 }: FeedbackWorkspaceProps) {
-  const { theme } = useHandsFeedback();
   const initial = useMemo<FeedbackWorkspaceRoute>(
     () =>
       initialTicketId
@@ -2545,7 +2542,6 @@ export function FeedbackWorkspace({
   return (
     <div
       className="hands-feedback-root"
-      data-hands-feedback-theme={theme}
       ref={rootRef}
     >
       <FeedbackInbox

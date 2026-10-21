@@ -1,6 +1,5 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { readFileSync } from "node:fs";
-import { useThemeFamily } from "raft-ui";
 import { describe, expect, it } from "vitest";
 import {
   FeedbackWorkspace,
@@ -26,24 +25,20 @@ const transport = {} as HandsFeedbackTransport;
 
 function Probe() {
   const value = useHandsFeedback();
-  const raftTheme = useThemeFamily();
-  return (
-    <span data-theme={value.theme} data-raft-theme={raftTheme}>
-      {value.unreadTotal ?? "unknown"}
-    </span>
-  );
+  return <span>{value.unreadTotal ?? "unknown"}</span>;
 }
 
 describe("FeedbackProvider", () => {
-  it("exposes theme without accepting credentials or reporter identity", () => {
+  it("renders without requiring a theme or leaking a theme attribute", () => {
+    // raft-ui 0.6 has one look, so the provider no longer takes or forwards a theme
+    // family. The host page owns the colour mode; this provider must not stamp one.
     const html = renderToStaticMarkup(
-      <FeedbackProvider transport={transport} theme="brutal">
+      <FeedbackProvider transport={transport}>
         <Probe />
       </FeedbackProvider>,
     );
-    expect(html).toMatch(/data-theme="brutal"/);
-    expect(html).toMatch(/data-raft-theme="brutal"/);
     expect(html).toMatch(/>unknown/);
+    expect(html).not.toMatch(/data-theme=/);
   });
 
   it("supports explicit locale and has deterministic browser fallback", () => {
@@ -85,11 +80,11 @@ describe("FeedbackProvider", () => {
 
   it("renders the ticket inbox as the landing surface", () => {
     const html = renderToStaticMarkup(
-      <FeedbackProvider transport={transport} theme="brutal">
+      <FeedbackProvider transport={transport}>
         <FeedbackWorkspace />
       </FeedbackProvider>,
     );
-    expect(html).toContain('data-hands-feedback-theme="brutal"');
+    expect(html).not.toContain("data-hands-feedback-theme");
     expect(html).toContain("Feedback");
     expect(html).toContain("New feedback");
     expect(html).not.toContain("dashboard");

@@ -114,7 +114,7 @@ describe("FeedbackWorkspace browser behavior", () => {
     };
     adapter.closeTicket = vi.fn(async () => closedDetail);
     const { container } = render(
-      <FeedbackProvider transport={adapter} locale="zh-CN" theme="brutal">
+      <FeedbackProvider transport={adapter} locale="zh-CN">
         <FeedbackWorkspace />
       </FeedbackProvider>,
     );
@@ -184,7 +184,7 @@ describe("FeedbackWorkspace browser behavior", () => {
       },
     }));
     const { container } = render(
-      <FeedbackProvider transport={adapter} theme="brutal">
+      <FeedbackProvider transport={adapter}>
         <FeedbackWorkspace />
       </FeedbackProvider>,
     );
@@ -311,7 +311,7 @@ describe("FeedbackWorkspace browser behavior", () => {
       unreadTotal: 3,
     }));
     const { container } = render(
-      <FeedbackProvider transport={adapter} theme="brutal">
+      <FeedbackProvider transport={adapter}>
         <FeedbackWorkspace />
       </FeedbackProvider>,
     );
@@ -334,7 +334,7 @@ describe("FeedbackWorkspace browser behavior", () => {
   it("pull-refreshes list and conversation only from scroll-top", async () => {
     const adapter = transport();
     render(
-      <FeedbackProvider transport={adapter} theme="brutal">
+      <FeedbackProvider transport={adapter}>
         <FeedbackWorkspace enablePullToRefresh />
       </FeedbackProvider>,
     );
@@ -368,7 +368,7 @@ describe("FeedbackWorkspace browser behavior", () => {
     const adapter = transport();
     const onRouteChange = vi.fn();
     render(
-      <FeedbackProvider transport={adapter} theme="brutal">
+      <FeedbackProvider transport={adapter}>
         <FeedbackWorkspace onRouteChange={onRouteChange} />
       </FeedbackProvider>,
     );
@@ -433,16 +433,14 @@ describe("FeedbackWorkspace browser behavior", () => {
     const { container } = render(
       <FeedbackProvider
         transport={adapter}
-        theme="brutal"
         onUnreadChanged={onUnreadChanged}
       >
         <FeedbackWorkspace />
       </FeedbackProvider>,
     );
 
-    expect(
-      container.querySelector("[data-hands-feedback-theme='brutal']"),
-    ).not.toBeNull();
+    // raft-ui 0.6 has a single look; the workspace must not stamp a theme attribute.
+    expect(container.querySelector("[data-hands-feedback-theme]")).toBeNull();
     expect(await screen.findByText(ticket.message)).toBeTruthy();
     expect(adapter.listTickets).toHaveBeenCalledWith(
       expect.objectContaining({ limit: 20 }),
@@ -496,7 +494,7 @@ describe("FeedbackWorkspace browser behavior", () => {
       unreadTotal: 0,
     }));
     const { container } = render(
-      <FeedbackProvider transport={adapter} theme="brutal">
+      <FeedbackProvider transport={adapter}>
         <FeedbackWorkspace />
       </FeedbackProvider>,
     );
@@ -505,8 +503,13 @@ describe("FeedbackWorkspace browser behavior", () => {
     const taskCard = container.querySelector<HTMLElement>(
       "[data-slot='task-card']",
     );
-    expect(taskCard?.className).toContain("border-2");
-    expect(taskCard?.className).toContain("shadow-raft-sm");
+    // raft-ui 0.6 is the single "Raft" look: TaskCard now draws a hairline
+    // (`border border-line-muted`) and no float shadow, instead of the old
+    // chunky `border-2` + `shadow-raft-sm`. Pin the new palette so a future
+    // raft-ui bump cannot silently bring the old weights back.
+    expect(taskCard?.className).toContain("border-line-muted");
+    expect(taskCard?.className).not.toContain("border-2");
+    expect(taskCard?.className).toContain("shadow-none");
     expect(screen.getByRole("tab", { name: "Active" })).toBeTruthy();
     expect(screen.getByRole("tab", { name: "Ended" })).toBeTruthy();
     expect(
@@ -550,7 +553,9 @@ describe("FeedbackWorkspace browser behavior", () => {
     );
     expect(problemChip?.textContent).toContain("Bug");
     expect(problemChip?.className).toContain("hands-feedback-problem-chip");
-    expect(problemChip?.className).toContain("bg-brutal-stone/25");
+    // Bug/feedback chips now use the neutral semantic token instead of the old
+    // theme-family palette (bg-brutal-stone/25 vs bg-brutal-pink/30).
+    expect(problemChip?.className).toContain("bg-inactive-soft");
     expect(problemChip?.className).not.toContain("bg-brutal-pink/30");
     const closeActions = screen.getAllByRole("button", {
       name: "Close ticket",
@@ -679,7 +684,7 @@ describe("FeedbackWorkspace browser behavior", () => {
       unreadTotal: 0,
     }));
     const { container } = render(
-      <FeedbackProvider transport={adapter} theme="brutal">
+      <FeedbackProvider transport={adapter}>
         <FeedbackWorkspace />
       </FeedbackProvider>,
     );
@@ -757,7 +762,7 @@ describe("FeedbackWorkspace browser behavior", () => {
   it("keeps one page title and one create entry across list, empty, and compose states", async () => {
     const adapter = transport();
     const view = render(
-      <FeedbackProvider transport={adapter} theme="brutal">
+      <FeedbackProvider transport={adapter}>
         <FeedbackWorkspace />
       </FeedbackProvider>,
     );
@@ -766,7 +771,8 @@ describe("FeedbackWorkspace browser behavior", () => {
       await screen.findByRole("heading", { name: "My Feedback" }),
     ).toBeTruthy();
     const createButton = screen.getByRole("button", { name: "New feedback" });
-    expect(createButton.className).toContain("h-6");
+    // raft-ui 0.6 collapsed the size scale: `sm` now renders at the `md` height (h-8).
+    expect(createButton.className).toContain("h-8");
     expect(
       screen.getByRole("tablist", { name: "Status filter" }),
     ).toBeTruthy();
@@ -779,7 +785,7 @@ describe("FeedbackWorkspace browser behavior", () => {
       unreadTotal: 0,
     }));
     const empty = render(
-      <FeedbackProvider transport={emptyAdapter} theme="brutal">
+      <FeedbackProvider transport={emptyAdapter}>
         <FeedbackWorkspace />
       </FeedbackProvider>,
     );
@@ -820,8 +826,9 @@ describe("FeedbackWorkspace browser behavior", () => {
     expect(cancel.closest(".hands-feedback-header")).toBeNull();
     const submit = screen.getByRole("button", { name: "Submit" });
     expect(submit).toBeTruthy();
-    expect(cancel.className).toContain("h-7");
-    expect(submit.className).toContain("h-7");
+    // `sm` renders at the `md` height in raft-ui 0.6 (h-8, was h-7).
+    expect(cancel.className).toContain("h-8");
+    expect(submit.className).toContain("h-8");
   });
 
   it("keeps filtered empty states next to the tabs with accurate semantics", async () => {
@@ -832,7 +839,7 @@ describe("FeedbackWorkspace browser behavior", () => {
       unreadTotal: 0,
     }));
     const endedView = render(
-      <FeedbackProvider transport={endedAdapter} theme="brutal">
+      <FeedbackProvider transport={endedAdapter}>
         <FeedbackWorkspace />
       </FeedbackProvider>,
     );
@@ -853,7 +860,7 @@ describe("FeedbackWorkspace browser behavior", () => {
     endedView.unmount();
     const activeAdapter = transport();
     const activeView = render(
-      <FeedbackProvider transport={activeAdapter} theme="brutal">
+      <FeedbackProvider transport={activeAdapter}>
         <FeedbackWorkspace />
       </FeedbackProvider>,
     );
@@ -880,7 +887,7 @@ describe("FeedbackWorkspace browser behavior", () => {
         }),
     );
     const { container } = render(
-      <FeedbackProvider transport={adapter} theme="brutal">
+      <FeedbackProvider transport={adapter}>
         <FeedbackWorkspace />
       </FeedbackProvider>,
     );

@@ -48,7 +48,6 @@ export type {
   FeedbackKind,
   FeedbackLocale,
   FeedbackStatus,
-  FeedbackTheme,
   FeedbackTicketSummary,
   FeedbackTicketDetail,
   FeedbackTicketPage,
