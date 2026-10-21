@@ -1032,6 +1032,46 @@ describe("Play promotion route", () => {
     expect(harness.sqlite.prepare("SELECT COUNT(*) AS count FROM play_distribution_state WHERE track='internal' AND version_code=42").get()).toEqual({ count: 0 });
   });
 
+  it("persists only the two known cause fields, even if the adapter returns more", async () => {
+    // The receipt is durable and outward-facing, and validation upstream is not a
+    // guarantee about what reaches it: a future adapter field must not ride in just
+    // by being returned, and a malformed value must be dropped rather than stored.
+    const harness = await readyRelease("human", "publisher", 42, true);
+    harness.env.PLAY_RELEASE_SERVICE = playAdapterStub({
+      readTrackMaximum: async () => ({ ok: true, value: { max_version_code: 41 } }),
+      promote: async (_input, stream, symbolsStream) => {
+        await new Response(stream).arrayBuffer();
+        if (symbolsStream) await new Response(symbolsStream).arrayBuffer();
+        return { ok: false, error: {
+          status: 502,
+          code: "play_api_rejected",
+          message: "Google Play API request failed with 400 (stage=update_track; reason=unspecified)",
+          cause: {
+            stage: "update_track",
+            provider_cause: "MULTIPLE_COMPLETED",
+            leaked_from_adapter: "must not reach the receipt",
+            detail: "not-an-identifier at all!",
+          },
+        } };
+      },
+    });
+    const res = await harness.request("/api/apps/app/releases/release/distributions/play/promote", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ track: "internal", expected_revision: 1, approval: { note: "ship" } }),
+    });
+    expect(res.status).toBe(502);
+    const body = await res.json() as { error: { receipt_id: string } };
+    const failed = harness.sqlite.prepare(
+      "SELECT payload_json FROM release_receipts WHERE id=?",
+    ).get(body.error.receipt_id) as { payload_json: string };
+    const failedResult = JSON.parse(failed.payload_json).result as { failure_reason: string };
+    const details = JSON.parse(failedResult.failure_reason.replace(/^play_api_error: /, ""));
+    expect(details.cause).toEqual({ stage: "update_track", provider_cause: "MULTIPLE_COMPLETED" });
+    const serialised = JSON.stringify(details);
+    expect(serialised).not.toContain("must not reach the receipt");
+    expect(serialised).not.toContain("not-an-identifier");
+  });
+
   it("surfaces the adapter symbols rejection fail-closed with a receipt", async () => {
     const harness = await readyRelease("human", "publisher", 42, true);
     harness.env.PLAY_RELEASE_SERVICE = playAdapterStub({
