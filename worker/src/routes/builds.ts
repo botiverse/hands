@@ -95,7 +95,8 @@ interface BuildRow {
   //
   //   'web'          - created from the console; this is the DEFAULT (see createBuild)
   //   'cli'          - created by the CLI publish commands (packages/cli)
-  //   'qa-artifact'  - created by the QA artifact route (qa_artifacts.ts)
+  //   'qa-artifact'  - written only by the (now removed) iOS simulator QA artifact route;
+  //                    retained so legacy rows keep a valid, non-empty source value
   //   'external'     - created by external publish-version (builds.ts)
   //   'mobile-ci'    - created by the Android release-artifact route
   //                    (android_release_artifacts.ts). No production row carries this value
