@@ -19,10 +19,47 @@ it.each([
   }) });
   const result = await service.listTracks({ credential, packageName: "build.test.app" }, { MAX_AAB_SIZE_BYTES: "209715200" });
   expect(result).toMatchObject({ ok: false, error: { status: 403, code: "play_api_rejected", message: `Google Play API request failed with 403 (stage=${stage}; reason=${reason})` } });
-  expect(warn).toHaveBeenCalledWith("hands_play_rejection", JSON.stringify({ stage, status: 403, reason }));
+  // The log now carries Google's diagnostic envelope alongside the sanitised reason.
+  expect(warn).toHaveBeenCalledWith(
+    "hands_play_rejection",
+    expect.stringContaining(JSON.stringify({ stage, status: 403, reason }).slice(1, -1)),
+  );
   expect(JSON.stringify(warn.mock.calls)).not.toMatch(/hidden-secret|hidden-refresh|private-project|person@example/);
   warn.mockRestore();
   expect(JSON.stringify(result)).not.toMatch(/hidden-secret|hidden-refresh|private-project|person@example/);
   if (stage === "list_tracks") expect(calls.at(-1)).toBe("DELETE");
   if (stage === "create_edit") expect(calls).toEqual(["POST", "POST"]);
+});
+
+it("logs Google's validation reasons, which is the case the whitelist drops", async () => {
+  // A validation rejection is exactly what "reason=unspecified" hides: badRequest /
+  // releaseValidationError are not in REASONS, so the operator gets nothing to act on.
+  const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+  const service = createPlayAdapterService({ fetchImpl: vi.fn(async (url, init = {}) => {
+    const path = String(url);
+    if (path.endsWith("/token")) return Response.json({ access_token: "access", token_type: "Bearer" });
+    if (path.endsWith("/edits")) {
+      return Response.json({ error: {
+        code: 400, status: "INVALID_ARGUMENT",
+        message: "Track has more than one completed release",
+        errors: [{ reason: "badRequest", message: "one completed per track" }],
+        details: [{ reason: "releaseValidationError" }],
+      } }, { status: 400 });
+    }
+    return Response.json({ id: "edit" });
+  }) });
+  const result = await service.listTracks({ credential, packageName: "build.test.app" }, { MAX_AAB_SIZE_BYTES: "209715200" });
+  const logged = JSON.stringify(warn.mock.calls);
+  expect(logged).toContain("badRequest");
+  expect(logged).toContain("releaseValidationError");
+  expect(logged).toContain("INVALID_ARGUMENT");
+  // The caller's contract is unchanged: still the sanitised code and stage only.
+  expect(result).toMatchObject({ ok: false, error: { code: "play_api_rejected" } });
+  expect(JSON.stringify(result)).not.toContain("releaseValidationError");
+  // Provider prose is never logged verbatim; only its length.
+  expect(logged).not.toContain("Track has more than one completed release");
+  expect(logged).not.toContain("one completed per track");
+  // And no credential, even though this body could echo one.
+  expect(logged).not.toMatch(/hidden-secret|hidden-refresh|private-project|person@example/);
+  warn.mockRestore();
 });
