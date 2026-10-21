@@ -63,3 +63,37 @@ it("logs Google's validation reasons, which is the case the whitelist drops", as
   expect(logged).not.toMatch(/hidden-secret|hidden-refresh|private-project|person@example/);
   warn.mockRestore();
 });
+
+it("names the likely cause from Google's prose without echoing the prose", async () => {
+  // A validation rejection's reason is only `badRequest`; the discriminating detail
+  // lives in `message`, which must never be logged verbatim. Classifying it keeps the
+  // investigation one-shot without turning the log into a credential channel.
+  const cases: Array<[string, string]> = [
+    ["Track 'internal' has more than one completed release.", "MULTIPLE_COMPLETED"],
+    ["Only one completed release is allowed per track.", "MULTIPLE_COMPLETED"],
+    ["Draft apps can only receive draft releases.", "DRAFT_APP_RESTRICTION"],
+    ["Version code 11500010 has already been used.", "DUPLICATE_VERSION"],
+    ["Unknown track: internal", "NOT_FOUND"],
+    ["Something nobody has classified: hidden-secret-abc", "OTHER"],
+  ];
+  for (const [message, expected] of cases) {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const service = createPlayAdapterService({ fetchImpl: vi.fn(async (url) => {
+      const path = String(url);
+      if (path.endsWith("/token")) return Response.json({ access_token: "access", token_type: "Bearer" });
+      if (path.endsWith("/edits")) {
+        return Response.json({ error: { code: 400, status: "INVALID_ARGUMENT", message, errors: [{ reason: "badRequest", message }] } }, { status: 400 });
+      }
+      return Response.json({ id: "edit" });
+    }) });
+    const result = await service.listTracks({ credential, packageName: "build.test.app" }, { MAX_AAB_SIZE_BYTES: "209715200" });
+    const logged = JSON.stringify(warn.mock.calls);
+    expect(logged).toContain(expected);
+    // The prose itself never reaches the log, in either position.
+    expect(logged).not.toContain("hidden-secret-abc");
+    expect(logged).not.toMatch(/Track '|Draft apps can|Version code 11500010|Unknown track:/);
+    // And the caller still only sees the sanitised code.
+    expect(result).toMatchObject({ ok: false, error: { code: "play_api_rejected" } });
+    warn.mockRestore();
+  }
+});

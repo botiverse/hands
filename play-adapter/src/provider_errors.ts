@@ -76,10 +76,15 @@ function providerDiagnostic(body: unknown): Record<string, unknown> | null {
       out[key] = typeof value === "string" ? clip(value) : value;
     }
   }
-  // Arbitrary provider prose: report only that it exists and how long it is. A
-  // credential can be reflected into this field, and the reason identifiers below
-  // carry the diagnostic value.
-  if (typeof e.message === "string") out.message_length = e.message.length;
+  // Arbitrary provider prose: never echoed. A credential can be reflected into it,
+  // yet for a validation rejection the reason is only `badRequest` and the actual
+  // cause lives right here. So the text is matched against known causes and only the
+  // category name is logged -- no provider text, no credential, still one-shot
+  // diagnosable.
+  if (typeof e.message === "string") {
+    out.message_length = e.message.length;
+    out.message_cause = classifyProviderMessage(e.message);
+  }
   for (const key of ["errors", "details"]) {
     const items = e[key];
     if (!Array.isArray(items)) continue;
@@ -89,8 +94,15 @@ function providerDiagnostic(body: unknown): Record<string, unknown> | null {
         for (const [k, v] of Object.entries(item as Record<string, unknown>)) {
           // Same rule one level down: keep identifiers and scalars, never the prose
           // that could carry a reflected secret or private project metadata.
-          if (k === "message" || k === "metadata") {
-            if (typeof v === "string") entry[`${k}_length`] = v.length;
+          if (k === "message") {
+            if (typeof v === "string") {
+              entry.message_length = v.length;
+              entry.message_cause = classifyProviderMessage(v);
+            }
+            continue;
+          }
+          if (k === "metadata") {
+            if (typeof v === "string") entry.metadata_length = v.length;
             continue;
           }
           if (typeof v === "string") entry[k] = k === "reason" ? reasonLike(v) : clip(v);
@@ -108,6 +120,33 @@ function providerDiagnostic(body: unknown): Record<string, unknown> | null {
 function clip(value: string): string {
   const flat = value.replace(/[\u0000-\u001f\u007f]+/g, " ").trim();
   return flat.length > 300 ? `${flat.slice(0, 300)}…` : flat;
+}
+
+/**
+ * Map a provider message onto a known cause, without ever emitting its text.
+ *
+ * Every pattern here answers a question an operator would otherwise have to guess
+ * at, and each is narrow enough that a credential cannot accidentally match and be
+ * echoed: only the constant category string reaches the log. `OTHER` is the honest
+ * answer when nothing matches -- it says "we still do not know", it does not dress
+ * the message up as understood.
+ */
+// Order matters: the first match wins, so the more specific causes precede the
+// broader ones. "Version code X has already been used" must read as DUPLICATE_VERSION
+// rather than VERSION_CODE_CONFLICT, because the two have different remedies.
+const PROVIDER_CAUSES: Array<[RegExp, string]> = [
+  [/multiple.*completed|more than one completed|only one (?:completed|release)/i, "MULTIPLE_COMPLETED"],
+  [/draft/i, "DRAFT_APP_RESTRICTION"],
+  [/already been (?:used|uploaded)|duplicate/i, "DUPLICATE_VERSION"],
+  [/version ?code/i, "VERSION_CODE_CONFLICT"],
+  [/not ?found|does not exist|unknown (?:track|package)/i, "NOT_FOUND"],
+];
+
+function classifyProviderMessage(message: string): string {
+  for (const [pattern, cause] of PROVIDER_CAUSES) {
+    if (pattern.test(message)) return cause;
+  }
+  return "OTHER";
 }
 
 /**
