@@ -19,11 +19,20 @@
 import type { Context } from "hono";
 
 /**
- * Stable, non-reversible per-visitor key. Deliberately the same inputs and
- * precedence as shareVisitorHash (shares.ts) so the two public surfaces agree
- * on what "the same visitor" means.
+ * Stable, non-reversible per-visitor key.
  *
- * No raw IP is stored anywhere: only the HMAC digest reaches the database.
+ * Takes the same inputs and uses the same header precedence as shareVisitorHash
+ * (shares.ts), so "the same visitor" means the same thing on both public
+ * surfaces.
+ *
+ * The two digests are NOT equal for the same visitor, and that is deliberate:
+ * shareVisitorHash computes sha256(`${salt}\n${ip}\n${ua}\n${lang}`) while this
+ * one computes HMAC-SHA256 keyed by the salt. Different constructions, so a
+ * value from one table cannot be matched against the other even with both
+ * salts in hand. Do not "unify" them; cross-table unlinkability is a feature.
+ *
+ * No raw IP is stored anywhere: only the HMAC digest reaches the database, and
+ * nothing reads the digest back out (it is only compared for dedupe).
  */
 async function downloadVisitorHash(c: Context<{ Bindings: Env }>): Promise<string> {
   const ip =
