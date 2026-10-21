@@ -1,3 +1,23 @@
+/**
+ * Desktop installers were originally seeded as `electron-installer`, which stopped
+ * describing them once a non-Electron desktop target (a jpackage .dmg) existed.
+ * `desktop-installer` is the name new apps use; the old one keeps resolving because
+ * every release that already exists carries it, and a client in the field still asks
+ * for it. Both are the same product, so anything comparing product_type directly must
+ * go through equivalentsOf() rather than string equality.
+ */
+export const DESKTOP_INSTALLER = "desktop-installer";
+export const LEGACY_ELECTRON_INSTALLER = "electron-installer";
+
+/** Every product_type string that denotes the same product as `name`. */
+export function equivalentsOf(name: string | null | undefined): string[] {
+  if (!name) return [];
+  if (name === DESKTOP_INSTALLER || name === LEGACY_ELECTRON_INSTALLER) {
+    return [DESKTOP_INSTALLER, LEGACY_ELECTRON_INSTALLER];
+  }
+  return [name];
+}
+
 export type ActiveReleaseCandidate = {
   id: string;
   build_id: string;
@@ -14,6 +34,10 @@ export async function loadActiveReleaseCandidates(
   args: { appId: string; channelId: string; productType?: string | null | undefined },
 ): Promise<ActiveReleaseCandidate[]> {
   const withProduct = Boolean(args.productType);
+  // Match every equivalent name at once: a channel may hold releases seeded before the
+  // rename and after it, and the resolver must see both or it will report "no active
+  // release" for a product that plainly has one.
+  const productNames = equivalentsOf(args.productType);
   const statement = db.prepare(
     `SELECT r.id, r.build_id, r.created_at,
             COALESCE(r.activated_at, r.created_at) AS activated_at,
@@ -21,7 +45,7 @@ export async function loadActiveReleaseCandidates(
      FROM releases r
      JOIN builds b ON b.id = r.build_id
      WHERE r.app_id = ?1 AND r.channel_id = ?2
-       ${withProduct ? "AND r.product_type = ?3" : ""}
+       ${withProduct ? `AND r.product_type IN (${productNames.map((_, i) => `?${i + 3}`).join(",")})` : ""}
        AND r.status = 'active'
        AND b.product_type != 'ios-simulator-qa' AND b.release_type != 'qa'
      -- Total order, deliberately: without the id tie-break two releases activated in the same
@@ -30,7 +54,7 @@ export async function loadActiveReleaseCandidates(
      ORDER BY COALESCE(r.activated_at, r.created_at) DESC, r.id ASC`,
   );
   const result = await (withProduct
-    ? statement.bind(args.appId, args.channelId, args.productType)
+    ? statement.bind(args.appId, args.channelId, ...productNames)
     : statement.bind(args.appId, args.channelId)
   ).all<ActiveReleaseCandidate>();
   return result.results;

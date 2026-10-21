@@ -184,7 +184,7 @@ export async function handleCreateApp(c: AdminContext) {
         `INSERT INTO product_types (id, app_id, name, display_name, description, supported_platforms_json, default_assets_json, parser_kind, schema_json, created_at, updated_at) VALUES (?, ?, 'android-apk', 'Android APK', 'Android application package', '[]', '[{"platform":"android","filetype":"apk"}]', 'apk-aapt', '{"requires_native_codes":true}', ?, ?)`,
       ).bind(crypto.randomUUID(), id, now, now),
       c.env.DB.prepare(
-        `INSERT INTO product_types (id, app_id, name, display_name, description, supported_platforms_json, default_assets_json, parser_kind, schema_json, created_at, updated_at) VALUES (?, ?, 'electron-installer', 'Electron desktop app', 'Cross-platform desktop app', '["darwin-arm64","darwin-x64","linux-x64","linux-arm64","win32-x64","win32-arm64"]', '[{"platform":"darwin-arm64","filetype":"dmg"}]', 'electron-asar', '{}', ?, ?)`,
+        `INSERT INTO product_types (id, app_id, name, display_name, description, supported_platforms_json, default_assets_json, parser_kind, schema_json, created_at, updated_at) VALUES (?, ?, 'desktop-installer', 'Desktop app', 'Cross-platform desktop installer, Electron or native', '["darwin-arm64","darwin-x64","linux-x64","linux-arm64","win32-x64","win32-arm64"]', '[{"platform":"darwin-arm64","filetype":"dmg"}]', 'electron-asar', '{}', ?, ?)`,
       ).bind(crypto.randomUUID(), id, now, now),
       c.env.DB.prepare(
         `INSERT INTO product_types (id, app_id, name, display_name, description, supported_platforms_json, default_assets_json, parser_kind, schema_json, created_at, updated_at) VALUES (?, ?, 'ios-ipa', 'iOS app', 'iOS IPA distributed through TestFlight, ad-hoc, or enterprise lanes', '["ios"]', '[{"platform":"ios","filetype":"ipa"},{"platform":"ios","filetype":"dsym.zip","artifact_kind":"dsym"}]', 'ipa-info', '{"distribution_profile_required":true}', ?, ?)`,
@@ -210,13 +210,13 @@ export async function handleCreateApp(c: AdminContext) {
       // Making it enforce is a separate change: it would start rejecting uploads
       // that succeed today.
       c.env.DB.prepare(
-        `INSERT INTO channels (id, app_id, slug, name, bundle_id, password, git_url, enabled_product_types_json, metadata_json, created_at) VALUES (?, ?, 'main', 'Main', NULL, NULL, NULL, '["android-apk","electron-installer","ios-ipa","ohos-app","cli-binary"]', '{}', ?)`,
+        `INSERT INTO channels (id, app_id, slug, name, bundle_id, password, git_url, enabled_product_types_json, metadata_json, created_at) VALUES (?, ?, 'main', 'Main', NULL, NULL, NULL, '["android-apk","desktop-installer","ios-ipa","ohos-app","cli-binary"]', '{}', ?)`,
       ).bind(crypto.randomUUID(), id, now),
       c.env.DB.prepare(
-        `INSERT INTO channels (id, app_id, slug, name, bundle_id, password, git_url, enabled_product_types_json, metadata_json, created_at) VALUES (?, ?, 'preview', 'Preview', ?, NULL, NULL, '["android-apk","electron-installer","ios-ipa","ohos-app","cli-binary"]', '{}', ?)`,
+        `INSERT INTO channels (id, app_id, slug, name, bundle_id, password, git_url, enabled_product_types_json, metadata_json, created_at) VALUES (?, ?, 'preview', 'Preview', ?, NULL, NULL, '["android-apk","desktop-installer","ios-ipa","ohos-app","cli-binary"]', '{}', ?)`,
       ).bind(crypto.randomUUID(), id, body.slug + ".preview", now),
       c.env.DB.prepare(
-        `INSERT INTO channels (id, app_id, slug, name, bundle_id, password, git_url, enabled_product_types_json, metadata_json, created_at) VALUES (?, ?, 'nightly', 'Nightly', ?, NULL, NULL, '["android-apk","electron-installer","ios-ipa","ohos-app","cli-binary"]', '{}', ?)`,
+        `INSERT INTO channels (id, app_id, slug, name, bundle_id, password, git_url, enabled_product_types_json, metadata_json, created_at) VALUES (?, ?, 'nightly', 'Nightly', ?, NULL, NULL, '["android-apk","desktop-installer","ios-ipa","ohos-app","cli-binary"]', '{}', ?)`,
       ).bind(crypto.randomUUID(), id, body.slug + ".nightly", now),
       // Creator becomes this app's admin (see the note above).
       // Skipped when there is no account: `dev-token` satisfies the org-role gate

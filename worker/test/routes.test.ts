@@ -4319,6 +4319,49 @@ describe("quiver releases — draft lifecycle", () => {
     return (await response.json()) as T;
   }
 
+  it("supersedes an active release across the desktop product rename", async () => {
+    // Releases created before the rename are `electron-installer`; new ones are
+    // `desktop-installer`. They are the same product, so activating one must retire
+    // the other -- otherwise a channel ends up with two active releases of one product
+    // and the admin list, supersede chain and rollback all disagree with reality.
+    const { createRelease } = await import("../src/routes/releases");
+    const t0 = Date.now();
+    const older = await env.DB
+      .prepare(`INSERT INTO builds (id, app_id, channel_id, product_type, release_type, version_name, version_code,
+                 source, status, build_metadata_json, parsed_metadata_json, should_force_update,
+                 provenance_json, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      .bind("build-old-desk", "app-release", "ch-main", "electron-installer", "stable", "9.0.0", 900,
+        "web", "succeeded", "{}", "{}", 0, "{}", t0, t0)
+      .run();
+    expect(older.success).toBe(true);
+    const newer = await env.DB
+      .prepare(`INSERT INTO builds (id, app_id, channel_id, product_type, release_type, version_name, version_code,
+                 source, status, build_metadata_json, parsed_metadata_json, should_force_update,
+                 provenance_json, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      .bind("build-new-desk", "app-release", "ch-main", "desktop-installer", "stable", "10.0.0", 1000,
+        "web", "succeeded", "{}", "{}", 0, "{}", t0 + 1, t0 + 1)
+      .run();
+    expect(newer.success).toBe(true);
+
+    await createRelease(env.DB as any, "app-release", {
+      build_id: "build-old-desk",
+      status: "active",
+    }, "tester", "rel-desk-old");
+    await createRelease(env.DB as any, "app-release", {
+      build_id: "build-new-desk",
+      status: "active",
+    }, "tester", "rel-desk-new");
+
+    const row = await env.DB
+      .prepare("SELECT status, superseded_by_release_id FROM releases WHERE id = ?")
+      .bind("rel-desk-old")
+      .first() as { status: string; superseded_by_release_id: string | null };
+    // Cross-era: the old name must be retired by the new name's activation.
+    expect(row).toEqual({ status: "superseded", superseded_by_release_id: "rel-desk-new" });
+  });
+
   it("creates draft releases without superseding the active release", async () => {
     const { createRelease } = await import("../src/routes/releases");
     await createRelease(env.DB as any, "app-release", {
@@ -9574,6 +9617,42 @@ describe("quiver public API v2 — scope resolution", () => {
     expect(location.searchParams.get("X-Amz-Expires")).toBe("600");
     expect(location.searchParams.get("X-Amz-Signature")).toMatch(/^[0-9a-f]{64}$/);
     expect(location.searchParams.get("response-content-disposition")).toContain("scope-app-1.0.0-11.apk");
+  });
+
+  it("resolves a desktop installer release seeded under either product name", async () => {
+    // Releases created before the desktop rename carry `electron-installer`; new ones
+    // carry `desktop-installer`. A channel holding both must still resolve, and a
+    // client asking for either name must find the active one. Without the equivalence
+    // this returns "no active release" for a product that plainly has one.
+    for (const seeded of ["electron-installer", "desktop-installer"]) {
+      const env = makeEnv();
+      const { handleElectronGenericAsset } = await import("../src/routes/electron");
+      env.APK_BUCKET = {
+        put: async () => undefined,
+        get: async () => ({ body: new Uint8Array([1, 2, 3]), httpEtag: '"e"', writeHttpMetadata: () => {} }),
+        head: async (key: string) => ({ key }),
+      };
+      await seedRelease(env, `rel-${seeded}`, `build-${seeded}`, [["full", "all"]], {
+        productType: seeded,
+        versionName: "2.0.0",
+      });
+      await seedAsset(env, `build-${seeded}`, `asset-${seeded}`, {
+        artifactKind: "electron-metadata",
+        platform: "win32",
+        filetype: "yml",
+        variant: "latest.yml",
+        r2Key: `apps/scope-app/electron/${seeded}-latest.yml`,
+        sizeBytes: 3,
+        metadata: { filename: "latest.yml" },
+      });
+
+      for (const asked of ["electron-installer", "desktop-installer"]) {
+        const response = await handleElectronGenericAsset(
+          makeElectronContext(env, "latest.yml", { product_type: asked }),
+        );
+        expect(response.status, `seeded=${seeded} asked=${asked}`).toBe(200);
+      }
+    }
   });
 
   it("serves electron-updater generic metadata from the active release", async () => {

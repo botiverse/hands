@@ -34,7 +34,8 @@ Hands ships and updates software for multiple product types:
 | `android-apk` | Full APK download | `app-release.apk` |
 | `android-aab` | Play Store dynamic delivery | `app-release.aab` |
 | `ios-ipa` | TestFlight / direct install | `MyApp.ipa` |
-| `electron-installer` | Squirrel auto-update via platform binary | `MyApp-1.2.3-arm64.dmg` |
+| `desktop-installer` | Desktop installer — Electron or a native build (jpackage .dmg) | `MyApp-1.2.3-arm64.dmg` |
+| `electron-installer` | **Legacy alias** of `desktop-installer`, still accepted everywhere | `MyApp-1.2.3-arm64.dmg` |
 | ~~`rn-bundle`~~ | JS bundle hot-reload — **retired, not supported** | — |
 | `cli-binary` | Self-update binary | `mycli-1.2.3-linux-x64.tar.gz` |
 
@@ -89,7 +90,7 @@ User-defined per app. Created during app creation wizard or added later.
 product_types
   id                          TEXT PRIMARY KEY
   app_id                      TEXT NOT NULL REFERENCES apps(id) ON DELETE CASCADE
-  name                        TEXT NOT NULL         -- 'android-apk' | 'electron-installer' | | ...
+  name                        TEXT NOT NULL         -- 'android-apk' | 'desktop-installer' | ...
   display_name                TEXT NOT NULL
   description                 TEXT
   parser_kind                 TEXT NOT NULL         -- 'apk-aapt' | 'electron-asar' | 'ipa-info' | 'unknown'
@@ -105,7 +106,7 @@ product_types
 - `android-apk` (parser: apk-aapt)
 - `android-aab` (parser: aapt)
 - `ios-ipa` (parser: ipa-info)
-- `electron-installer` (parser: electron-asar)
+- `desktop-installer` (parser: electron-asar); the legacy name `electron-installer` resolves identically
 - `cli-binary` (parser: unknown)
 
 User can add custom product_types (e.g. `firmware-esp32`, `vscode-extension`, `docker-image`, ...) or hide the defaults they don't need.

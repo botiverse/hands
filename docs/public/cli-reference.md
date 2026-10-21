@@ -467,7 +467,7 @@ autoUpdater.setFeedURL({
 
 Hands hosts electron-builder output **as-is**. Use
 `builds publish-electron` to upload the files from `dist/` as build assets on
-an `electron-installer` build/release, then create a draft release for review:
+a `desktop-installer` build/release (legacy name `electron-installer` also works), then create a draft release for review:
 
 ```bash
 hands builds publish-electron raft-desktop \
