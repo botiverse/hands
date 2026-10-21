@@ -1504,6 +1504,13 @@ export async function handlePublicR2Download(c: Context<{ Bindings: Env }>) {
     return c.json({ error: "invalid download signature", code: "invalid_signature" }, 403);
   }
 
+  // `superseded` is included on purpose. The HMAC check above already proves this URL was
+  // issued by us, so the signature IS the authorisation, and what it authorises is this
+  // exact key. Excluding superseded releases made every share link 404 the moment a newer
+  // version published, even though the object was still in R2: the share route checks the
+  // object exists, then redirects here, and only this query rejected it. A historical
+  // build staying downloadable is intended. Taking bytes down is a separate act -- cancelling
+  // the release or deleting the object -- and rollback does neither: it only re-marks status.
   const asset = await c.env.DB.prepare(
     `SELECT ba.filetype, ba.size_bytes, ba.variant,
             b.version_name, b.version_code,
@@ -1519,7 +1526,7 @@ export async function handlePublicR2Download(c: Context<{ Bindings: Env }>) {
        )
        AND b.product_type != 'ios-simulator-qa' AND b.release_type != 'qa'
        AND r.product_type != 'ios-simulator-qa' AND r.release_type != 'qa'
-       AND r.status IN ('active', 'draft')
+       AND r.status IN ('active', 'draft', 'superseded')
      LIMIT 1`,
   )
     .bind(key)

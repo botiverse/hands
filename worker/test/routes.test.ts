@@ -6293,6 +6293,38 @@ describe("quiver public API v2 — scope resolution", () => {
     }
   }
 
+  it("serves a signed download for a superseded release", async () => {
+    // Publishing a newer version flips the old release to `superseded`. Every share
+    // link pointing at it then 404'd with object_not_found even though the object was
+    // still in R2: the share route HEADs the object, redirects to a signed URL, and
+    // only the signed-download query rejected it. The signature is the authorisation,
+    // so a historical build must stay downloadable.
+    const { generateSignedR2Url, handlePublicR2Download } = await import("../src/routes/public_v2");
+    const env = makeEnv();
+    await seedRelease(env, "rel-old", "build-old", [["full", "all"]], { versionCode: 7 });
+    await seedAsset(env, "build-old", "asset-old", { r2Key: "apps/scope-app/old.apk" });
+    await env.DB.prepare("UPDATE releases SET status = 'superseded' WHERE id = ?").bind("rel-old").run();
+
+    env.APK_BUCKET = {
+      put: async () => undefined,
+      get: async () => ({ body: new Uint8Array([1, 2, 3]), httpEtag: '"e"', writeHttpMetadata: () => {} }),
+      head: async (key: string) => ({ key }),
+    } as any;
+
+    const url = await generateSignedR2Url(env as any, "apps/scope-app/old.apk", 3600, "https://hands.test");
+    const parsed = new URL(url);
+    const response = await handlePublicR2Download({
+      env,
+      req: {
+        param: () => decodeURIComponent(parsed.pathname.replace("/public/r2/", "")),
+        query: (name: string) => parsed.searchParams.get(name) ?? undefined,
+      },
+      json: (body: unknown, status = 200) => new Response(JSON.stringify(body), { status }),
+      header: () => undefined,
+    } as any);
+    expect(response.status).toBe(200);
+  });
+
   async function seedAsset(
     env: any,
     buildId: string,
