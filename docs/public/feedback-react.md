@@ -42,7 +42,7 @@ use the explicit source export. A full commit SHA makes installs reproducible.
 
 ```bash
 pnpm add "github:botiverse/hands#<full-commit-sha>&path:packages/feedback-react"
-pnpm add react react-dom raft-ui lucide-react
+pnpm add react react-dom @botiverse/raft-ui lucide-react
 ```
 
 ```tsx
@@ -52,7 +52,7 @@ import {
   FeedbackTransportError,
   type HandsFeedbackTransport,
 } from "@botiverse/hands-feedback-react/source";
-import "raft-ui/styles.css";
+import "@botiverse/raft-ui/styles.css";
 import "@botiverse/hands-feedback-react/source/styles.css";
 ```
 
@@ -61,7 +61,7 @@ dependencies. After the npm package is published, install and import its
 compiled root export instead:
 
 ```bash
-pnpm add @botiverse/hands-feedback-react raft-ui lucide-react
+pnpm add @botiverse/hands-feedback-react @botiverse/raft-ui lucide-react
 ```
 
 ```tsx
@@ -69,7 +69,7 @@ import {
   FeedbackProvider,
   FeedbackWorkspace,
 } from "@botiverse/hands-feedback-react";
-import "raft-ui/styles.css";
+import "@botiverse/raft-ui/styles.css";
 import "@botiverse/hands-feedback-react/styles.css";
 ```
 
@@ -77,7 +77,7 @@ If Tailwind v4 removes library classes, include both compiled packages as
 sources:
 
 ```css
-@source '../node_modules/raft-ui/dist';
+@source '../node_modules/@botiverse/raft-ui/dist';
 @source '../node_modules/@botiverse/hands-feedback-react/dist';
 ```
 

@@ -7,7 +7,7 @@ import {
   useRef,
   useState,
 } from "react";
-import { ThemeProvider } from "raft-ui";
+import { ThemeProvider } from "@botiverse/raft-ui";
 import type {
   FeedbackLocale,
   FeedbackUnreadChange,

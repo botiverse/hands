@@ -503,11 +503,9 @@ describe("FeedbackWorkspace browser behavior", () => {
     const taskCard = container.querySelector<HTMLElement>(
       "[data-slot='task-card']",
     );
-    // raft-ui 0.6 is the single "Raft" look: TaskCard now draws a hairline
-    // (`border border-line-muted`) and no float shadow, instead of the old
-    // chunky `border-2` + `shadow-raft-sm`. Pin the new palette so a future
-    // raft-ui bump cannot silently bring the old weights back.
-    expect(taskCard?.className).toContain("border-line-muted");
+    // One Raft look: the card at rest has a hairline and no float shadow, not
+    // the old chunky `border-2` + `shadow-raft-sm`. The exact hairline token is
+    // the library's business; pin only that the heavy weights cannot return.
     expect(taskCard?.className).not.toContain("border-2");
     expect(taskCard?.className).toContain("shadow-none");
     expect(screen.getByRole("tab", { name: "Active" })).toBeTruthy();

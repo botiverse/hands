@@ -2,8 +2,8 @@
 
 Reporter-facing Hands feedback components. The package renders a ticket inbox,
 conversation detail, reply composer, and new-feedback form using the Raft design
-system (`raft-ui`). There is a single Raft look: the old `elegant` / `brutal`
-theme families were removed in `raft-ui` 0.6 and are no longer selectable here.
+system (`@botiverse/raft-ui`, from botiverse/raft-design). There is a single Raft look:
+the old `elegant` / `brutal` theme families are gone and are no longer selectable here.
 
 ```tsx
 import {
@@ -11,7 +11,7 @@ import {
   FeedbackWorkspace,
   type HandsFeedbackTransport,
 } from "@botiverse/hands-feedback-react";
-import "raft-ui/styles.css";
+import "@botiverse/raft-ui/styles.css";
 import "@botiverse/hands-feedback-react/styles.css";
 
 // Implement this in your app. It calls your authenticated same-origin proxy;
@@ -159,7 +159,7 @@ Consumers using Tailwind v4 should include the compiled package as a source if
 their build purges library classes:
 
 ```css
-@source '../node_modules/raft-ui/dist';
+@source '../node_modules/@botiverse/raft-ui/dist';
 @source '../node_modules/@botiverse/hands-feedback-react/dist';
 ```
 
@@ -169,7 +169,7 @@ explicit source exports:
 
 ```bash
 pnpm add "github:botiverse/hands#<full-commit-sha>&path:packages/feedback-react"
-pnpm add react react-dom raft-ui lucide-react
+pnpm add react react-dom @botiverse/raft-ui lucide-react
 ```
 
 ```tsx

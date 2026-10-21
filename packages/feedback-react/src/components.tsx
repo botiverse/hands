@@ -115,7 +115,7 @@ import {
   TaskCardRow,
   TaskCardTitle,
   TextareaCounter,
-} from "raft-ui";
+} from "@botiverse/raft-ui";
 import type { FeedbackMessageKey, FeedbackMessageValues } from "./locale.js";
 import { useHandsFeedback } from "./provider.js";
 import { MarkdownText } from "./MarkdownText.js";
