@@ -1,8 +1,9 @@
 # `@botiverse/hands-feedback-react`
 
 Reporter-facing Hands feedback components. The package renders a ticket inbox,
-conversation detail, reply composer, and new-feedback form with `elegant` and
-`brutal` themes.
+conversation detail, reply composer, and new-feedback form using the Raft design
+system (`raft-ui`). There is a single Raft look: the old `elegant` / `brutal`
+theme families were removed in `raft-ui` 0.6 and are no longer selectable here.
 
 ```tsx
 import {
@@ -20,7 +21,6 @@ const transport: HandsFeedbackTransport =
 
 <FeedbackProvider
   transport={transport}
-  theme="brutal"
   // Optional. Without this override the SDK maps browser `zh*` to `zh-CN`
   // and falls back to English. Pass the host app's selected locale when set.
   locale="en"

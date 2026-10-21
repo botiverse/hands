@@ -434,9 +434,11 @@
 }
 
 .hands-feedback-problem-chip {
-  --reference-icon: var(--hf-danger, var(--color-brutal-red));
+  --reference-icon: var(--hf-danger, var(--color-danger));
 
-  background-color: var(--danger-muted, var(--color-brutal-red-200));
+  /* `--danger-muted` is the raft-ui 0.6 semantic token; the old
+     `--color-brutal-red-200` fallback no longer exists in that version. */
+  background-color: var(--danger-muted, var(--color-danger-soft));
 }
 
 .hands-feedback-reference-chip-content {

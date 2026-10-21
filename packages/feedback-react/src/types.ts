@@ -1,4 +1,3 @@
-export type FeedbackTheme = "elegant" | "brutal";
 export type FeedbackLocale = "en" | "zh-CN";
 export type FeedbackKind = "feedback" | "bug";
 export type FeedbackStatus = "open" | "in_progress" | "resolved" | "closed";

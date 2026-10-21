@@ -345,7 +345,6 @@ export function FeedbackPage() {
   return (
     <FeedbackProvider
       transport={transport}
-      theme="elegant"
       locale="en"
       onUnreadChanged={({ total }) => updateFeedbackBadge(total)}
     >
