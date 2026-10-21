@@ -407,9 +407,12 @@ export async function handleListReporterFeedback(c: ReporterContext) {
                    ORDER BY fc.created_at DESC, fc.reporter_sequence DESC LIMIT 1)`;
   const ticketStatement = decodedCursor.mode === "activity"
     // Rank on the activity time alone first, then read the full row (counts,
-    // unread, latest comment) only for the page that is returned.
+    // unread, latest comment) only for the page that is returned. Ranking
+    // reads one covering-index probe (idx_feedback_comments_internal_created)
+    // per ticket the reporter owns; MATERIALIZED keeps SQLite from inlining
+    // the CTE and repeating that probe for each reference in the cursor test.
     ? c.env.DB.prepare(
-      `WITH ranked AS (
+      `WITH ranked AS MATERIALIZED (
          SELECT t.id,
                 COALESCE((SELECT MAX(fc.created_at) FROM feedback_comments fc
                           WHERE fc.ticket_id = t.id AND fc.internal = 0),
