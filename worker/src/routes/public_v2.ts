@@ -1509,8 +1509,8 @@ export async function handlePublicR2Download(c: Context<{ Bindings: Env }>) {
   // exact key. Excluding superseded releases made every share link 404 the moment a newer
   // version published, even though the object was still in R2: the share route checks the
   // object exists, then redirects here, and only this query rejected it. A historical
-  // build staying downloadable is intended; removing a shipped package is what revoke and
-  // rollback are for.
+  // build staying downloadable is intended. Taking bytes down is a separate act -- cancelling
+  // the release or deleting the object -- and rollback does neither: it only re-marks status.
   const asset = await c.env.DB.prepare(
     `SELECT ba.filetype, ba.size_bytes, ba.variant,
             b.version_name, b.version_code,
