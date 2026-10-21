@@ -358,7 +358,29 @@ Your proxy may return the SDK's camel-case DTO directly. If it forwards Hands
 JSON unchanged, map `created_at`, `updated_at`, `attachment_count`,
 `comment_count`, `unread_count`, `author_type`, `content_type`, `size_bytes`,
 `next_cursor`, `next_comment_cursor`, and `unread_total` to the corresponding
-camel-case SDK fields.
+camel-case SDK fields. Map a list ticket's `latest_comment` to `latestComment`
+(`{ authorType, bodyPreview, createdAt }`, or `null`): each list row shows it
+under the title. Leave `latestComment` out when your proxy doesn't have it;
+the row then has no preview line.
+
+### Page header
+
+The inbox can sit under your own page title: pass `hideHeaderTitle` and the
+inbox starts at its filter row. A ticket and New Feedback are pages of their
+own, with their own 56px header (Back, the title, the ticket's status), so
+hide your page header while the workspace is on them instead of stacking two
+headers. Track the view with `onRouteChange` (it fires whether or not you
+control `route`):
+
+```tsx
+const [view, setView] = useState<FeedbackWorkspaceRoute["view"]>("inbox");
+
+{view === "inbox" && <MyPageHeader title="Feedback" />}
+<FeedbackWorkspace
+  hideHeaderTitle
+  onRouteChange={(route) => setView(route.view)}
+/>
+```
 
 The workspace owns list pagination, focus and scroll restoration, reply drafts,
 IME-safe Enter handling, attachment progress/retry/cancel, recoverable cursor
@@ -386,8 +408,9 @@ back to English. Hosts can override individual messages and formatters:
 </FeedbackProvider>
 ```
 
-Themes are `elegant` and `brutal`. All visible copy, error copy, dates, file
-sizes, and accessibility labels use the resolved SDK locale.
+Every part is drawn by `@botiverse/raft-ui` (the Raft Design System), in its
+one look, light and dark; there is no theme prop. All visible copy, error
+copy, dates, file sizes, and accessibility labels use the resolved SDK locale.
 
 ## Webhooks and unread state
 
