@@ -39,10 +39,17 @@ export function playRejection(status: number, body: unknown, stage: string): Pla
   }
   const reason = [...reasons].sort().join(",") || "unspecified";
   console.warn("hands_play_rejection", JSON.stringify({ stage, status, reason, provider: providerDiagnostic(body) }));
+  // `reason` is only a documented identifier, and a validation rejection reports
+  // `badRequest` for causes as different as a duplicate completed release and a
+  // reused version code. The classified cause travels with the error so the caller
+  // -- and the receipt it writes -- carries it too, without needing log access.
+  const envelopeMessage = error && typeof error === "object" ? (error as Record<string, unknown>).message : null;
+  const providerCause = typeof envelopeMessage === "string" ? classifyProviderMessage(envelopeMessage) : undefined;
   return new PlayAdapterError(
     [400, 401, 403, 404].includes(status) ? 403 : 502,
     "play_api_rejected",
     `Google Play API request failed with ${status} (stage=${stage}; reason=${reason})`,
+    { stage, ...(providerCause ? { provider_cause: providerCause } : {}) },
   );
 }
 

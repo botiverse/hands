@@ -146,3 +146,31 @@ it("does not echo provider fields it does not recognise", async () => {
   expect(logged).toContain("extendedHelp_length");
   warn.mockRestore();
 });
+
+it("returns the classified cause to the caller so a receipt can carry it", async () => {
+  // The operator log is not readable by everyone who can read a receipt. The cause
+  // therefore has to travel in the response: whoever triggers the next failure can
+  // then see it in the receipt without needing observability scope elsewhere.
+  vi.spyOn(console, "warn").mockImplementation(() => {});
+  const service = createPlayAdapterService({ fetchImpl: vi.fn(async (url) => {
+    const p = String(url);
+    if (p.endsWith("/token")) return Response.json({ access_token: "access", token_type: "Bearer" });
+    if (path(p)) {
+      return Response.json({ error: { code: 400, status: "INVALID_ARGUMENT",
+        message: "Track has more than one completed release.",
+        errors: [{ reason: "badRequest" }] } }, { status: 400 });
+    }
+    return Response.json({ id: "edit" });
+  }) });
+  function path(p: string) { return p.endsWith("/edits"); }
+  const result = await service.listTracks({ credential, packageName: "build.test.app" }, { MAX_AAB_SIZE_BYTES: "209715200" });
+  expect(result).toMatchObject({
+    ok: false,
+    error: {
+      code: "play_api_rejected",
+      cause: { stage: "create_edit", provider_cause: "MULTIPLE_COMPLETED" },
+    },
+  });
+  // The Google text itself must not travel with it.
+  expect(JSON.stringify(result)).not.toContain("more than one completed");
+});

@@ -595,7 +595,15 @@ export async function handlePromotePlayDistribution(c: AdminContext) {
       }
     }
     if (!uploadResponse?.ok) {
-      const receiptId = await failedPromotionReceipt(c, artifact, actor, input.track, input.approval.note, "play_api_error", { code: uploadResponse?.error?.code ?? "unknown" });
+      // Carry the adapter's classified cause into the receipt. The log line is not
+      // reachable by everyone who can read a receipt, so the cause has to travel
+      // with the failure itself: whoever triggers the next one can see why without
+      // needing observability scope on someone else's machine.
+      const adapterCause = (uploadResponse as { error?: { cause?: unknown } } | undefined)?.error?.cause;
+      const receiptId = await failedPromotionReceipt(c, artifact, actor, input.track, input.approval.note, "play_api_error", {
+        code: uploadResponse?.error?.code ?? "unknown",
+        ...(adapterCause ? { cause: adapterCause } : {}),
+      });
       return fail(c, 502, { code: "play_api_error", gate: null, message: uploadResponse?.error?.message ?? "Play edit failed", receipt_id: receiptId });
     }
     const readback: PlayReadback = uploadResponse.value;

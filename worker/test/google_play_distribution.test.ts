@@ -1043,6 +1043,7 @@ describe("Play promotion route", () => {
           status: 502,
           code: "play_api_rejected",
           message: "Google Play API request failed with 403 (stage=upload_symbols; reason=insufficientPermissions)",
+          cause: { stage: "update_track", provider_cause: "MULTIPLE_COMPLETED" },
         } };
       },
     });
@@ -1058,7 +1059,14 @@ describe("Play promotion route", () => {
       "SELECT verdict, payload_json FROM release_receipts WHERE id=?",
     ).get(body.error.receipt_id) as { verdict: string; payload_json: string };
     expect(failed.verdict).toBe("failed-closed");
-    expect(JSON.parse(failed.payload_json).result).toMatchObject({ failure_code: "play_api_error" });
+    // The adapter's classified cause must reach the receipt: whoever triggers the
+    // next failure can read it from the receipt instead of needing observability
+    // scope on the adapter to fetch a log line.
+    const failedResult = JSON.parse(failed.payload_json).result as { failure_code: string; failure_reason: string };
+    expect(failedResult.failure_code).toBe("play_api_error");
+    // `details` is serialised into failure_reason, which is what a reader actually gets.
+    const details = JSON.parse(failedResult.failure_reason.replace(/^play_api_error: /, ""));
+    expect(details).toMatchObject({ cause: { stage: "update_track", provider_cause: "MULTIPLE_COMPLETED" } });
   });
 
   it.each([{ max: 0, candidate: 11300001 }, { max: 41, candidate: 11300001 }])("accepts candidate $candidate above track max $max without consecutive numbering", async ({ max, candidate }) => {

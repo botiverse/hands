@@ -133,7 +133,12 @@ function failure(error: unknown, operationId: string | null): AdapterResult<neve
   const code = known ? error.code : "play_adapter_error";
   const message = known ? error.message : "Google Play adapter request failed";
   console.error(JSON.stringify({ event: "google_play_adapter_error", operation_id: operationId, code, status }));
-  return { ok: false, error: { status, code, message } };
+  // Carry the provider-safe cause out to the caller. Every value is a constant this
+  // adapter chose, so it is safe to transport and to persist in a receipt -- which is
+  // where whoever triggers the next failure can actually read it, without needing
+  // observability scope on the adapter's logs.
+  const cause = known ? error.cause_detail : undefined;
+  return { ok: false, error: { status, code, message, ...(cause ? { cause } : {}) } };
 }
 
 export interface AdapterOptions {
