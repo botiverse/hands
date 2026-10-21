@@ -628,7 +628,10 @@ export async function handlePromotePlayDistribution(c: AdminContext) {
       // The RECEIPT is the outward-facing surface, so the guard belongs here and not
       // only in the adapter: pick the two known fields and validate each shape, so a
       // future adapter field cannot ride into a receipt just by being returned.
-      const cause = receiptCause((uploadResponse as { error?: { cause?: unknown } } | undefined)?.error?.cause);
+      // No cast: the adapter's AdapterResult now DECLARES `cause`, so a rename or
+      // reshape upstream fails to compile here instead of silently stopping the
+      // receipt from carrying it.
+      const cause = receiptCause(uploadResponse.error.cause);
       const receiptId = await failedPromotionReceipt(c, artifact, actor, input.track, input.approval.note, "play_api_error", {
         code: uploadResponse?.error?.code ?? "unknown",
         ...(cause ? { cause } : {}),

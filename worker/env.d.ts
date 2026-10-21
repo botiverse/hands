@@ -17,7 +17,13 @@ type GooglePlayBindingInput = {
 
 type GooglePlayAdapterResult<T> =
   | { ok: true; value: T }
-  | { ok: false; error: { status: number; code: string; message: string } };
+  | {
+      ok: false;
+      // Mirrors AdapterResult in play-adapter/src/types.ts. Kept in step by the
+      // promote route's use of `error.cause`: if the adapter renames or reshapes it,
+      // the worker stops compiling instead of silently writing a receipt without it.
+      error: { status: number; code: string; message: string; cause?: { stage?: string; provider_cause?: string } };
+    };
 
 interface GooglePlayAdapterService {
   listTracks(input: Pick<GooglePlayBindingInput, "credential" | "packageName">): Promise<GooglePlayAdapterResult<{ client_email: string; package_name: string; tracks: string[] }>>;
