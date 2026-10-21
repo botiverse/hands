@@ -1,3 +1,4 @@
+import type { PlayErrorCause } from "./errors";
 export type HandsTrack = "internal" | "closed" | "production";
 
 export interface PlayAdapterEnv {
@@ -61,7 +62,14 @@ export interface PromotionRpcInput extends TrackMaximumRpcInput {
 
 export type AdapterResult<T> =
   | { ok: true; value: T }
-  | { ok: false; error: { status: number; code: string; message: string } };
+  | {
+      ok: false;
+      // `cause` is part of the declared contract, not an extra: callers persist it,
+      // and without a named field each consumer would have to cast the error to reach
+      // it -- which is how a rename upstream becomes a silent behavioural change
+      // instead of a compile error.
+      error: { status: number; code: string; message: string; cause?: PlayErrorCause };
+    };
 
 export interface TrackRelease {
   name?: string;

@@ -384,6 +384,31 @@ async function releaseLock(db: D1Database, operationId: string) {
   await db.prepare("DELETE FROM play_edit_locks WHERE operation_id = ?1").bind(operationId).run();
 }
 
+/**
+ * Narrow an adapter-supplied cause to the two fields a receipt may carry, each
+ * validated as an identifier. Anything else is dropped rather than persisted: a
+ * receipt is durable and outward-facing, so an unexpected key must not survive just
+ * because some upstream chose to include it.
+ */
+function receiptCause(value: unknown): { stage: string; provider_cause: string } | null {
+  if (!value || typeof value !== "object") return null;
+  const source = value as Record<string, unknown>;
+  const pick = (field: string): string | null => {
+    const raw = source[field];
+    return typeof raw === "string" && IDENTIFIER_RE.test(raw) ? raw : null;
+  };
+  const stage = pick("stage");
+  const provider_cause = pick("provider_cause");
+  if (!stage && !provider_cause) return null;
+  return {
+    ...(stage ? { stage } : {}),
+    ...(provider_cause ? { provider_cause } : {}),
+  } as { stage: string; provider_cause: string };
+}
+
+/** Google's identifiers: camelCase or UPPER_SNAKE, bounded length. */
+const IDENTIFIER_RE = /^[A-Za-z][A-Za-z0-9._]{0,60}$/;
+
 async function failedPromotionReceipt(
   c: AdminContext,
   artifact: ReleaseArtifactRow,
@@ -595,7 +620,22 @@ export async function handlePromotePlayDistribution(c: AdminContext) {
       }
     }
     if (!uploadResponse?.ok) {
-      const receiptId = await failedPromotionReceipt(c, artifact, actor, input.track, input.approval.note, "play_api_error", { code: uploadResponse?.error?.code ?? "unknown" });
+      // Carry the adapter's classified cause into the receipt. The log line is not
+      // reachable by everyone who can read a receipt, so the cause has to travel
+      // with the failure itself: whoever triggers the next one can see why without
+      // needing observability scope on someone else's machine.
+      //
+      // The RECEIPT is the outward-facing surface, so the guard belongs here and not
+      // only in the adapter: pick the two known fields and validate each shape, so a
+      // future adapter field cannot ride into a receipt just by being returned.
+      // No cast: the adapter's AdapterResult now DECLARES `cause`, so a rename or
+      // reshape upstream fails to compile here instead of silently stopping the
+      // receipt from carrying it.
+      const cause = receiptCause(uploadResponse.error.cause);
+      const receiptId = await failedPromotionReceipt(c, artifact, actor, input.track, input.approval.note, "play_api_error", {
+        code: uploadResponse?.error?.code ?? "unknown",
+        ...(cause ? { cause } : {}),
+      });
       return fail(c, 502, { code: "play_api_error", gate: null, message: uploadResponse?.error?.message ?? "Play edit failed", receipt_id: receiptId });
     }
     const readback: PlayReadback = uploadResponse.value;
