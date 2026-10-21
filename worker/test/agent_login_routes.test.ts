@@ -227,8 +227,11 @@ describe("manifest: actions retained + deprecated, migration-help added", () => 
 
     // Deprecation is ONE service-level fact, stated once at the top level, instead of
     // a 108-byte prefix repeated on 82 actions (which cost 8,856 B of a 64 KiB budget).
-    expect(body.deprecation_notice).toContain("deprecated");
-    expect(body.deprecation_notice).toContain("migration-help");
+    // Must be in `description`: raft-source's validateAgentManifestV0 rebuilds the
+    // object from a fixed allowlist and DROPS unknown top-level keys, so a bespoke
+    // field would never reach an agent. `description` is in that allowlist.
+    expect(body.description).toContain("deprecated");
+    expect(body.description).toContain("migration-help");
 
     // No action carries the notice in its description any more -- neither the old
     // ones (which used to be prefixed) nor the two new ones.

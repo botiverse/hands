@@ -990,7 +990,14 @@ export async function handleAgentManifest(c: Context<{ Bindings: Env }>) {
     service: c.env.RAFT_CLIENT_ID || "quiver",
     docs_url: `${origin}/`,
     // Stated once for the whole service instead of once per deprecated action.
-    deprecation_notice: migrationHelpNotice,
+    //
+    // This must live in `description`, NOT in a new bespoke field: raft-source's
+    // validateAgentManifestV0 (packages/cli/src/commands/integration/manifest.ts)
+    // rebuilds the object from a fixed allowlist and drops unknown keys, so a
+    // custom `deprecation_notice` would never reach an agent. `description` IS in
+    // that allowlist (optionalString(value.description)), so the notice survives
+    // normalization and shows up in `raft integration invoke --list-actions`.
+    description: migrationHelpNotice,
     execution: {
       mode: "http_api",
       base_url: origin,
@@ -1003,9 +1010,9 @@ export async function handleAgentManifest(c: Context<{ Bindings: Env }>) {
     // Paths are relative to execution.base_url. Actions cover release,
     // TestFlight/AppGallery, exact QA artifacts, and feedback triage without
     // returning provider credentials or interpreting raw attachments.
-    // All EXISTING actions are retained with unchanged machine contracts; their
-    // descriptions are prefixed `Deprecated — … migration-help …` (see applyDeprecation).
-    // Only `agent-login` and `migration-help` are new and un-prefixed.
+    // All EXISTING actions are retained with unchanged machine contracts.
+    // Deprecation is NOT repeated per action any more: it is stated once in the
+    // top-level `description` above. Only `agent-login` and `migration-help` are new.
     actions: [
       {
         // NOTE: kept as valid raft-agent-manifest.v0 (name/description/endpoint/parameters
