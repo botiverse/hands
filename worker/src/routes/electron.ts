@@ -115,10 +115,26 @@ export async function handleElectronGenericAsset(c: Context<{ Bindings: Env }>) 
   // which is the current behaviour and is safe. Clients that need differential downloads
   // must set useMultipleRangeRequest=false so each block is its own request.
   headers.set("accept-ranges", "bytes");
-  const range = parseSingleByteRange(c.req.header("range"), asset.size_bytes);
+  // If-Range guards a resumed download against the representation changing underneath it.
+  // A client mid-transfer has a partial file for one etag; if the channel now points at a
+  // different object, honouring the Range would splice two files together. Anything but an
+  // exact etag match therefore drops the Range and answers 200 with the whole current
+  // object (RFC 9110). Note the limit: this covers a resume, not two independent requests
+  // around a channel switch, which only the client's own checksum can catch.
+  const ifRange = c.req.header("if-range")?.trim();
+  const rangeHeader =
+    ifRange && ifRange !== object.httpEtag ? undefined : c.req.header("range");
+  const range = parseSingleByteRange(rangeHeader, asset.size_bytes);
   if (range === "unsatisfiable") {
-    headers.set("content-range", `bytes */${asset.size_bytes}`);
-    return new Response(null, { status: 416, headers });
+    // A 416 has no body, so it must not carry the object's Content-Length (set above
+    // from asset.size_bytes) nor the representation headers. Reusing that Headers object
+    // would promise bytes that never arrive: a client that trusts Content-Length waits
+    // for a body until it times out instead of handling the 416. Build a fresh header
+    // set for the error response.
+    return new Response(null, {
+      status: 416,
+      headers: { "content-range": `bytes */${asset.size_bytes}` },
+    });
   }
   if (range) {
     const partial = await c.env.APK_BUCKET.get(asset.r2_key, {

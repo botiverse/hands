@@ -106,6 +106,52 @@ describe("electron download route — Range", () => {
     expect(res.headers.get("content-range")).toBe(`bytes */${FILE_BYTES.length}`);
   });
 
+  it("416 carries no Content-Length, because it promises no body", async () => {
+    // Reusing the representation headers here set Content-Length to the whole object size
+    // while the body was empty. A client that trusts Content-Length then waits for bytes
+    // that never arrive instead of handling the 416, so the response has to be built with
+    // its own header set rather than the one prepared for the object.
+    const { app, env } = makeApp();
+    const res = await app.request(
+      "/electron/raft-desktop/main/installer.exe",
+      { headers: { range: "bytes=5000-5999" } },
+      env as any,
+    );
+    expect(res.status).toBe(416);
+    const body = new Uint8Array(await res.arrayBuffer());
+    expect(body.length).toBe(0);
+    const contentLength = res.headers.get("content-length");
+    // Either absent, or honestly "0" -- never the object size.
+    expect(contentLength === null || contentLength === "0").toBe(true);
+    expect(contentLength).not.toBe(String(FILE_BYTES.length));
+  });
+
+  it("ignores Range when If-Range names a different representation", async () => {
+    // A resumed download must not splice a new object onto bytes from an old one.
+    const seen = { value: undefined as RangeArg };
+    const { app, env } = makeApp(seen);
+    const res = await app.request(
+      "/electron/raft-desktop/main/installer.exe",
+      { headers: { range: "bytes=100-199", "if-range": '"some-other-etag"' } },
+      env as any,
+    );
+    expect(res.status).toBe(200);
+    expect(seen.value).toBeUndefined();
+    expect(new Uint8Array(await res.arrayBuffer()).length).toBe(FILE_BYTES.length);
+  });
+
+  it("honours Range when If-Range matches the current etag", async () => {
+    const seen = { value: undefined as RangeArg };
+    const { app, env } = makeApp(seen);
+    const res = await app.request(
+      "/electron/raft-desktop/main/installer.exe",
+      { headers: { range: "bytes=100-199", "if-range": '"etag-test"' } },
+      env as any,
+    );
+    expect(res.status).toBe(206);
+    expect(seen.value).toEqual({ offset: 100, length: 100 });
+  });
+
   it("serves the full body for a multi-interval request instead of a wrong slice", async () => {
     const seen = { value: undefined as RangeArg };
     const { app, env } = makeApp(seen);
