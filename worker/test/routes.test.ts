@@ -438,6 +438,8 @@ function makeMockDb() {
       visitor_hash TEXT NOT NULL,
       created_at INTEGER NOT NULL
     );
+    CREATE UNIQUE INDEX idx_build_asset_download_events_asset_visitor
+      ON build_asset_download_events(asset_id, visitor_hash);
     CREATE TABLE operation_logs (
       id TEXT PRIMARY KEY,
       app_id TEXT,
