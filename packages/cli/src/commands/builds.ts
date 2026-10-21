@@ -665,6 +665,60 @@ export function registerBuildCommands(program: Command): void {
     );
 
   builds
+    .command("presign-asset <appIdOrSlug> <buildId> <assetId>")
+    .description(
+      "Return a short-lived direct download URL for an authenticated build asset. " +
+        "Fetch it outside the CLI transport for binary verification.",
+    )
+    .option("--json", "Output JSON.", false)
+    .action(
+      async (
+        appIdOrSlug: string,
+        buildId: string,
+        assetId: string,
+        opts: { json?: boolean },
+      ) => {
+        const id = await resolveAppId(appIdOrSlug);
+        const result = await apiRequest<Record<string, unknown>>(
+          `/api/apps/${id}/builds/${buildId}/assets/${assetId}/download?presign=1`,
+        );
+        if (shouldOutputJson(program, opts.json)) {
+          console.log(JSON.stringify(result, null, 2));
+          return;
+        }
+        const url = typeof result.url === "string" ? result.url : undefined;
+        console.log(url ?? JSON.stringify(result));
+      },
+    );
+
+  builds
+    .command("delete-asset <appIdOrSlug> <buildId> <assetId>")
+    .description(
+      "Delete one non-installable build-asset metadata row; the R2 object is preserved. " +
+        "Requires app admin and fails closed on installable assets or mismatched objects.",
+    )
+    .option("--json", "Output JSON.", false)
+    .action(
+      async (
+        appIdOrSlug: string,
+        buildId: string,
+        assetId: string,
+        opts: { json?: boolean },
+      ) => {
+        const id = await resolveAppId(appIdOrSlug);
+        const result = await apiRequest<Record<string, unknown>>(
+          `/api/apps/${id}/builds/${buildId}/assets/${assetId}`,
+          { method: "DELETE" },
+        );
+        if (shouldOutputJson(program, opts.json)) {
+          console.log(JSON.stringify(result, null, 2));
+          return;
+        }
+        console.log(`Deleted asset ${assetId} from build ${buildId}.`);
+      },
+    );
+
+  builds
     .command("publish-version <appIdOrSlug>")
     .description("Register an immutable externally hosted Node/CLI build target.")
     .requiredOption("--version-name <version>", "Release version name.")
