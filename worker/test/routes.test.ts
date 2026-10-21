@@ -431,6 +431,13 @@ function makeMockDb() {
       visitor_hash TEXT NOT NULL,
       created_at INTEGER NOT NULL
     );
+    CREATE TABLE build_asset_download_events (
+      id TEXT PRIMARY KEY,
+      asset_id TEXT NOT NULL REFERENCES build_assets(id) ON DELETE CASCADE,
+      build_id TEXT NOT NULL,
+      visitor_hash TEXT NOT NULL,
+      created_at INTEGER NOT NULL
+    );
     CREATE TABLE operation_logs (
       id TEXT PRIMARY KEY,
       app_id TEXT,
@@ -8180,6 +8187,83 @@ describe("quiver public API v2 — scope resolution", () => {
       "SELECT COUNT(*) AS count FROM audit_logs WHERE action = 'release_share.rebind'",
     ).first() as { count: number };
     expect(auditCount.count).toBe(0);
+  });
+
+  it("public latest download: counts once per visitor (task #48)", async () => {
+    // build_assets.download_count only ever counted admin/QA downloads; the path
+    // real clients use is this public one, which used to 302 without counting.
+    const env = makeEnv();
+    env.SIGNED_URL_SECRET = "test-signing-secret";
+    await env.DB.prepare("UPDATE apps SET public_history = 1, history_show_downloads = 1 WHERE id = ?")
+      .bind("app-scope")
+      .run();
+    await seedRelease(env, "rel-dl-1", "build-dl-1", [["full", "all"]], {
+      createdAt: 100,
+      versionCode: 1,
+      versionName: "1.0.0",
+    });
+    await seedAsset(env, "build-dl-1", "asset-dl-1", { r2Key: "apks/dl-1.apk" });
+    const { handlePublicLatestReleaseDownload } = await import("../src/routes/history");
+
+    // The same visitor means the same cf-connecting-ip + user-agent, which is
+    // what the visitor hash is derived from.
+    const makeContext = (ua = "test-agent/1.0") => ({
+      env,
+      req: {
+        url: "https://hands.build/apps/scope-app/latest/download",
+        raw: new Request("https://hands.build/apps/scope-app/latest/download"),
+        param: (name: string) => (name === "slug" ? "scope-app" : ""),
+        query: () => undefined,
+        header: (name: string) => {
+          switch (name.toLowerCase()) {
+            case "cf-connecting-ip": return "203.0.113.7";
+            case "user-agent": return ua;
+            case "accept-language": return "en-US";
+            default: return undefined;
+          }
+        },
+      },
+      json: (data: unknown, status = 200) =>
+        new Response(JSON.stringify(data), {
+          status,
+          headers: { "content-type": "application/json" },
+        }),
+      redirect: (url: string, status = 302) => new Response(null, { status, headers: { location: url } }),
+    } as any);
+
+    const countEvents = async () => {
+      const row = await env.DB.prepare(
+        "SELECT COUNT(*) AS count FROM build_asset_download_events WHERE asset_id = ?1",
+      ).bind("asset-dl-1").first() as { count: number };
+      return row.count;
+    };
+
+    // 1. A download still redirects, and is counted.
+    const first = await handlePublicLatestReleaseDownload(makeContext());
+    expect(first.status).toBe(302);
+    expect(await countEvents()).toBe(1);
+
+    // 2. The same visitor downloading again does not increment again.
+    await handlePublicLatestReleaseDownload(makeContext());
+    await handlePublicLatestReleaseDownload(makeContext());
+    expect(await countEvents()).toBe(1);
+
+    // 3. A different visitor is counted.
+    await handlePublicLatestReleaseDownload(makeContext("other-agent/2.0"));
+    expect(await countEvents()).toBe(2);
+
+    // 4. The pre-existing admin-side counter is untouched by the public path,
+    //    so it keeps its old meaning instead of silently changing.
+    const adminCount = await env.DB.prepare(
+      "SELECT download_count FROM build_assets WHERE id = ?",
+    ).bind("asset-dl-1").first() as { download_count: number };
+    expect(adminCount.download_count).toBe(0);
+
+    // 5. If counting fails (e.g. migration not yet applied), the download must
+    //    still work: a measurement failure must not break the product.
+    await env.DB.prepare("DROP TABLE build_asset_download_events").run();
+    const afterDrop = await handlePublicLatestReleaseDownload(makeContext("third-agent/3.0"));
+    expect(afterDrop.status).toBe(302);
   });
 
   it("latest landing: stable app URL renders the highest active published release", async () => {
