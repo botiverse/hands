@@ -4,6 +4,7 @@ import {
   type ReactNode,
   type Ref,
   type RefObject,
+  Fragment,
   useCallback,
   useEffect,
   useImperativeHandle,
@@ -23,6 +24,7 @@ import {
   MessageSquare,
   Paperclip,
   Send,
+  User,
   X,
 } from "lucide-react";
 import {
@@ -95,6 +97,7 @@ import {
   MessageItemSender,
   MessageItemTime,
   MessageList,
+  MessageListDateDivider,
   MessageReferenceChip,
   MessageReferenceLabel,
   SegmentedControl,
@@ -1454,6 +1457,23 @@ function FeedbackImageAttachment({
   );
 }
 
+function sameDay(a: number, b: number): boolean {
+  return new Date(a).toDateString() === new Date(b).toDateString();
+}
+
+/** The day between messages, as Raft Chat's timeline draws it. */
+function FeedbackDateDivider({ at }: { at: number }) {
+  const { locale } = useHandsFeedback();
+  const day = new Date(at);
+  return (
+    <MessageListDateDivider>
+      <time dateTime={day.toISOString().slice(0, 10)}>
+        {new Intl.DateTimeFormat(locale, { dateStyle: "medium" }).format(day)}
+      </time>
+    </MessageListDateDivider>
+  );
+}
+
 function FeedbackConversationMessage({
   authorType,
   body,
@@ -1463,7 +1483,8 @@ function FeedbackConversationMessage({
   onOpenAttachment,
   footer,
 }: FeedbackConversationMessageProps) {
-  const { formatDate, formatFileSize, message } = useHandsFeedback();
+  const { formatDate, formatFileSize, locale, message } = useHandsFeedback();
+  const sentAt = new Date(createdAt);
   const sender =
     authorType === "reporter"
       ? message("you")
@@ -1480,13 +1501,21 @@ function FeedbackConversationMessage({
           size="md"
           type={authorType === "reporter" ? "human" : "agent"}
         >
-          <AvatarFallback>{sender.slice(0, 1).toUpperCase()}</AvatarFallback>
+          <AvatarFallback>
+            {authorType === "reporter" ? <User aria-hidden="true" /> : <MessageSquare aria-hidden="true" />}
+          </AvatarFallback>
         </Avatar>
       </MessageItemAvatarSlot>
       <MessageItemContent>
         <MessageItemHeader>
           <MessageItemSender>{sender}</MessageItemSender>
-          <MessageItemTime>{formatDate(createdAt)}</MessageItemTime>
+          {/* As in Raft Chat: the clock time in the header, the day in the
+              list's date lines, the full date and time on hover. */}
+          <MessageItemTime
+            render={<time dateTime={sentAt.toISOString()} title={formatDate(createdAt)} />}
+          >
+            {new Intl.DateTimeFormat(locale, { timeStyle: "short" }).format(sentAt)}
+          </MessageItemTime>
         </MessageItemHeader>
         <MessageItemBody>
           <MarkdownText source={body} />
@@ -1924,6 +1953,7 @@ export function FeedbackTicket({
                 label={message("refreshing")}
                 state={pullToRefresh.state}
               />
+              <FeedbackDateDivider at={detail.ticket.createdAt} />
               <FeedbackConversationMessage
                 authorType="reporter"
                 body={detail.ticket.message}
@@ -1956,15 +1986,20 @@ export function FeedbackTicket({
                   </>
                 }
               />
-              {detail.comments.map((comment) => (
-                <FeedbackConversationMessage
-                  key={comment.id}
-                  authorType={comment.authorType}
-                  body={comment.body}
-                  createdAt={comment.createdAt}
-                  ticketId={ticketId}
-                />
-              ))}
+              {detail.comments.map((comment, index) => {
+                const previous = index === 0 ? detail.ticket.createdAt : detail.comments[index - 1]!.createdAt;
+                return (
+                  <Fragment key={comment.id}>
+                    {!sameDay(previous, comment.createdAt) && <FeedbackDateDivider at={comment.createdAt} />}
+                    <FeedbackConversationMessage
+                      authorType={comment.authorType}
+                      body={comment.body}
+                      createdAt={comment.createdAt}
+                      ticketId={ticketId}
+                    />
+                  </Fragment>
+                );
+              })}
             </MessageList>
             {newReplies && (
               <Button
