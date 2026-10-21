@@ -190,8 +190,11 @@ describe("Google Play adapter RPC service", () => {
         rollout_percent: 100,
       },
     });
+    // The previous completed release is superseded, not carried alongside: Play
+    // rejects a track body with two completed releases. Before this fix the body was
+    // exactly the two-entry array above, which is what produced the production
+    // failure (receipt f3686db1, provider_cause=MULTIPLE_COMPLETED).
     expect(fixture.track().releases).toEqual([
-      { name: "existing", versionCodes: ["41"], status: "completed" },
       { versionCodes: ["42"], status: "completed" },
     ]);
     expect(fixture.requests.filter((request) => request.url.includes(":commit?"))).toHaveLength(1);
@@ -313,13 +316,37 @@ describe("Google Play adapter RPC service", () => {
         rollout_percent: 100,
       },
     });
+    // Only the new completed release remains, whether or not the track already had
+    // one; a second completed in the same body is what Play rejects.
     expect(fixture.track().releases).toEqual([
-      ...(trackMaximum === 0 ? [] : [{ name: "existing", versionCodes: [String(trackMaximum)], status: "completed" }]),
       { versionCodes: [String(versionCode)], status: "completed" },
     ]);
     expect(fixture.requests.filter((request) => request.url.includes("/bundles?uploadType=media"))).toHaveLength(1);
     expect(fixture.requests.filter((request) => request.method === "PUT")).toHaveLength(1);
     expect(fixture.requests.filter((request) => request.url.includes(":commit?"))).toHaveLength(1);
+  });
+
+  it("sends only one completed release when the track already had one", async () => {
+    // Production failure: a track that had already shipped carried its completed
+    // release forward and appended another, and Play rejected the body with
+    // "Track has more than one completed release" (receipt f3686db1,
+    // provider_cause=MULTIPLE_COMPLETED). Inspect the body actually PUT, not just the
+    // resulting fixture state, so a future refactor cannot quietly reintroduce it.
+    const fixture = googleFixture({ trackMaximum: 41, uploadVersionCode: 42 });
+    const service = createPlayAdapterService({ fetchImpl: fixture.fetchImpl, nowSeconds: () => NOW });
+    expect((await service.promote(promotion({ versionCode: 42 }), body(), null, environment())).ok).toBe(true);
+
+    const put = fixture.requests.filter(
+      (request) => request.method === "PUT" && request.url.includes("/tracks/"),
+    );
+    expect(put).toHaveLength(1);
+    const raw = put[0]!.body;
+    const sent = (typeof raw === "string" ? JSON.parse(raw) : raw) as {
+      releases: Array<{ status?: string; versionCodes?: string[] }>;
+    };
+    const completed = sent.releases.filter((release) => release.status === "completed");
+    expect(completed).toHaveLength(1);
+    expect(completed[0]!.versionCodes).toEqual(["42"]);
   });
 
   it.each([
