@@ -14283,6 +14283,98 @@ describe("Hands iOS simulator QA artifacts", () => {
     expect(disabledUse.headers.get("server-timing")).toBeNull();
   });
 
+  it("reporter feedback list orders by latest public activity and carries the newest public comment", async () => {
+    const { env } = makeEnv() as any;
+    env.FEEDBACK_AUDIT_HMAC_KEY = "test-audit-key-with-enough-entropy";
+    env.FEEDBACK_AUDIT_KEY_VERSION = "test-v1";
+    const { generateDeployToken, hashDeployToken } = await import("../src/lib/deploy_tokens");
+    const { handleListReporterFeedback } = await import("../src/routes/reporter_feedback");
+    const now = Date.now() - 100_000;
+    const reporterId = "q".repeat(64);
+    const integration = "33333333-3333-4333-8333-333333333333";
+    // Ids run opposite to the expected order, so an id tie-break can't pass
+    // for an activity order.
+    const quiet = "c3c3c3c3-c3c3-4c3c-8c3c-c3c3c3c3c3c3";
+    const replied = "c1c1c1c1-c1c1-4c1c-8c1c-c1c1c1c1c1c1";
+    const newer = "c2c2c2c2-c2c2-4c2c-8c2c-c2c2c2c2c2c2";
+    const credential = generateDeployToken();
+    await env.DB.prepare(
+      `INSERT INTO app_reporter_integrations (id, app_id, name, created_at, updated_at)
+       VALUES (?1, 'app-ios', 'A', ?2, ?2)`,
+    ).bind(integration, now).run();
+    await env.DB.prepare(
+      `INSERT INTO app_deploy_tokens
+       (id, app_id, name, token_prefix, token_hash, app_role, scopes_json,
+        created_by_actor, created_at, reporter_integration_id)
+       VALUES ('token-activity', 'app-ios', 'token-activity', ?1, ?2, NULL,
+               '["feedback:read"]', 'test', ?3, ?4)`,
+    ).bind(credential.token_prefix, await hashDeployToken(credential.token), now, integration).run();
+    // Created oldest to newest: quiet, replied, newer. Only `replied` has a
+    // public reply, and it is newer than every creation time.
+    await env.DB.prepare(
+      `INSERT INTO feedback_tickets
+       (id, app_id, kind, status, message, metadata_json, reporter_id,
+        reporter_integration_id, created_at, updated_at)
+       VALUES (?1, 'app-ios', 'feedback', 'open', 'Quiet', '{}', ?4, ?5, ?6, ?6),
+              (?2, 'app-ios', 'feedback', 'open', 'Replied', '{}', ?4, ?5, ?7, ?7),
+              (?3, 'app-ios', 'feedback', 'open', 'Newer', '{}', ?4, ?5, ?8, ?8)`,
+    ).bind(quiet, replied, newer, reporterId, integration, now, now + 10, now + 20).run();
+    const longReply = `We reproduced it. ${"x".repeat(400)}`;
+    await env.DB.prepare(
+      `INSERT INTO feedback_comments
+       (id, ticket_id, author_actor, author_type, body, internal, created_at)
+       VALUES ('reply-public', ?1, 'staff-1', 'staff', ?2, 0, ?3),
+              ('reply-internal', ?1, 'staff-1', 'staff', 'internal note', 1, ?4),
+              ('note-on-quiet', ?5, 'staff-1', 'staff', 'internal only', 1, ?4)`,
+    ).bind(replied, longReply, now + 30, now + 40, quiet).run();
+
+    const context = (queries: Record<string, string>) => ({
+      env,
+      header: () => {},
+      req: {
+        param: (name: string) => name === "appId" ? "app-ios" : undefined,
+        header: (name: string) => name === "X-Hands-Reporter-Id"
+          ? reporterId
+          : name === "authorization" ? `Bearer ${credential.token}` : undefined,
+        query: (name: string) => queries[name],
+      },
+      json: (data: unknown, status = 200) => new Response(JSON.stringify(data), { status }),
+    }) as any;
+    const list = async (queries: Record<string, string>) => {
+      const response = await handleListReporterFeedback(context(queries));
+      expect(response.status).toBe(200);
+      return await response.json() as any;
+    };
+
+    const all = await list({ limit: "50" });
+    // An internal note neither moves a ticket nor shows as its latest comment.
+    expect(all.tickets.map((ticket: any) => ticket.id)).toEqual([replied, newer, quiet]);
+    expect(all.tickets[0].latest_comment).toEqual({
+      author_type: "staff",
+      body_preview: longReply.slice(0, 280),
+      created_at: now + 30,
+    });
+    expect(all.tickets[1].latest_comment).toBeNull();
+    expect(all.tickets[2].latest_comment).toBeNull();
+    expect(all.tickets[0]).not.toHaveProperty("activity_at");
+
+    // Paging one at a time walks the same order without repeats.
+    const seen: string[] = [];
+    let cursor: string | null = null;
+    do {
+      const page: any = await list(cursor ? { limit: "1", cursor } : { limit: "1" });
+      seen.push(...page.tickets.map((ticket: any) => ticket.id));
+      cursor = page.next_cursor;
+    } while (cursor);
+    expect(seen).toEqual([replied, newer, quiet]);
+
+    // A cursor issued before this order existed keeps its creation order.
+    const legacyCursor = btoa(JSON.stringify([now + 20, newer]))
+      .replaceAll("+", "-").replaceAll("/", "_").replaceAll("=", "");
+    const legacy = await list({ limit: "50", cursor: legacyCursor });
+    expect(legacy.tickets.map((ticket: any) => ticket.id)).toEqual([replied, quiet]);
+  });
+
   it("reporter feedback bearer routes isolate integrations and converge comment replay", async () => {
     const { env } = makeEnv() as any;
     env.FEEDBACK_AUDIT_HMAC_KEY = "test-audit-key-with-enough-entropy";

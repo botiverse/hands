@@ -76,15 +76,44 @@ function encodeCursor(createdAt: unknown, id: unknown): string {
   return encodeCursorValue([createdAt, id]);
 }
 
-function decodeCursor(value: string | undefined): [number, string] | null {
-  if (!value) return [Number.MAX_SAFE_INTEGER, "~"];
-  try {
-    const decoded = decodeCursorValue(value) as [number, string];
-    if (!Number.isSafeInteger(decoded[0]) || !UUID_RE.test(decoded[1])) return null;
-    return [decoded[0], decoded[1].toLowerCase()];
-  } catch {
-    return null;
+function encodeActivityCursor(activityAt: unknown, id: unknown): string {
+  return encodeCursorValue(["activity-v1", activityAt, id]);
+}
+
+/**
+ * The reporter list is ordered by latest conversation activity: the time of
+ * the newest public comment, or the ticket's creation time before anyone has
+ * replied. Cursors issued before that order existed are `[created_at, id]`;
+ * a client that is mid-scroll across a deploy keeps paging in the order it
+ * started with instead of getting an error or a page from the other order.
+ */
+type TicketCursor =
+  | { mode: "activity"; activityAt: number; id: string }
+  | { mode: "created"; createdAt: number; id: string };
+
+function decodeCursor(value: string | undefined): TicketCursor | null {
+  if (!value) return { mode: "activity", activityAt: Number.MAX_SAFE_INTEGER, id: "~" };
+  const decoded = decodeCursorValue(value);
+  if (
+    Array.isArray(decoded)
+    && decoded.length === 3
+    && decoded[0] === "activity-v1"
+    && Number.isSafeInteger(decoded[1])
+    && typeof decoded[2] === "string"
+    && UUID_RE.test(decoded[2])
+  ) {
+    return { mode: "activity", activityAt: decoded[1], id: decoded[2].toLowerCase() };
   }
+  if (
+    Array.isArray(decoded)
+    && decoded.length === 2
+    && Number.isSafeInteger(decoded[0])
+    && typeof decoded[1] === "string"
+    && UUID_RE.test(decoded[1])
+  ) {
+    return { mode: "created", createdAt: decoded[0], id: decoded[1].toLowerCase() };
+  }
+  return null;
 }
 
 type CommentCursor =
@@ -291,10 +320,24 @@ function ticketDto(row: Record<string, unknown>) {
     attachment_count: row.attachment_count,
     comment_count: row.comment_count,
     latest_comment_at: row.latest_comment_at,
+    ...("latest_comment_created_at" in row
+      ? {
+        latest_comment: row.latest_comment_created_at == null
+          ? null
+          : {
+            author_type: row.latest_comment_author_type,
+            body_preview: row.latest_comment_body_preview,
+            created_at: row.latest_comment_created_at,
+          },
+      }
+      : {}),
     unread: unreadCount > 0,
     unread_count: unreadCount,
   };
 }
+
+/** Enough of the newest public comment for one or two lines in a list row. */
+const LATEST_COMMENT_PREVIEW_LENGTH = 280;
 
 const unreadCountSql = `(SELECT COUNT(*) FROM feedback_comments unread_comment
   WHERE unread_comment.ticket_id = t.id
@@ -338,10 +381,8 @@ export async function handleListReporterFeedback(c: ReporterContext) {
   const limit = Math.min(50, Math.max(1, Number(c.req.query("limit") ?? "20") || 20));
   const decodedCursor = decodeCursor(c.req.query("cursor"));
   if (!decodedCursor) return c.json({ error: "invalid cursor" }, 400);
-  const [cursorCreatedAt, cursorId] = decodedCursor;
   setReporterFailureStage(c, "list_query");
-  const ticketStatement = c.env.DB.prepare(
-    `SELECT t.id, t.kind, t.status, t.closure_reason, t.duplicate_of_ticket_id,
+  const ticketColumns = `t.id, t.kind, t.status, t.closure_reason, t.duplicate_of_ticket_id,
             t.message, t.version_name, t.version_code,
             t.channel, t.created_at, t.updated_at,
             (SELECT COUNT(*) FROM feedback_attachments fa
@@ -351,24 +392,63 @@ export async function handleListReporterFeedback(c: ReporterContext) {
              WHERE fc.ticket_id = t.id AND fc.internal = 0) AS comment_count,
             (SELECT MAX(fc.created_at) FROM feedback_comments fc
              WHERE fc.ticket_id = t.id AND fc.internal = 0) AS latest_comment_at,
-            ${unreadCountSql} AS unread_count
-     FROM feedback_tickets t
-     LEFT JOIN feedback_reporter_ticket_reads rr
+            lc.author_type AS latest_comment_author_type,
+            substr(lc.body, 1, ${LATEST_COMMENT_PREVIEW_LENGTH}) AS latest_comment_body_preview,
+            lc.created_at AS latest_comment_created_at,
+            ${unreadCountSql} AS unread_count`;
+  const ticketJoins = `LEFT JOIN feedback_reporter_ticket_reads rr
        ON rr.app_id = t.app_id
       AND rr.reporter_integration_id = t.reporter_integration_id
       AND rr.reporter_id = t.reporter_id
       AND rr.ticket_id = t.id
-     WHERE t.app_id = ?1 AND t.reporter_integration_id = ?2 AND t.reporter_id = ?3
-       AND (t.created_at < ?4 OR (t.created_at = ?4 AND t.id < ?5))
-     ORDER BY t.created_at DESC, t.id DESC LIMIT ?6`,
-  ).bind(
-    authorized.principal.appId,
-    authorized.principal.integrationId,
-    authorized.principal.reporterId,
-    cursorCreatedAt,
-    cursorId,
-    limit + 1,
-  );
+     LEFT JOIN feedback_comments lc
+       ON lc.id = (SELECT fc.id FROM feedback_comments fc
+                   WHERE fc.ticket_id = t.id AND fc.internal = 0
+                   ORDER BY fc.created_at DESC, fc.reporter_sequence DESC LIMIT 1)`;
+  const ticketStatement = decodedCursor.mode === "activity"
+    // Rank on the activity time alone first, then read the full row (counts,
+    // unread, latest comment) only for the page that is returned.
+    ? c.env.DB.prepare(
+      `WITH ranked AS (
+         SELECT t.id,
+                COALESCE((SELECT MAX(fc.created_at) FROM feedback_comments fc
+                          WHERE fc.ticket_id = t.id AND fc.internal = 0),
+                         t.created_at) AS activity_at
+         FROM feedback_tickets t
+         WHERE t.app_id = ?1 AND t.reporter_integration_id = ?2 AND t.reporter_id = ?3
+       ),
+       page AS (
+         SELECT id, activity_at FROM ranked
+         WHERE activity_at < ?4 OR (activity_at = ?4 AND id < ?5)
+         ORDER BY activity_at DESC, id DESC LIMIT ?6
+       )
+       SELECT ${ticketColumns}, page.activity_at
+       FROM page JOIN feedback_tickets t ON t.id = page.id
+       ${ticketJoins}
+       ORDER BY page.activity_at DESC, t.id DESC`,
+    ).bind(
+      authorized.principal.appId,
+      authorized.principal.integrationId,
+      authorized.principal.reporterId,
+      decodedCursor.activityAt,
+      decodedCursor.id,
+      limit + 1,
+    )
+    : c.env.DB.prepare(
+      `SELECT ${ticketColumns}
+       FROM feedback_tickets t
+       ${ticketJoins}
+       WHERE t.app_id = ?1 AND t.reporter_integration_id = ?2 AND t.reporter_id = ?3
+         AND (t.created_at < ?4 OR (t.created_at = ?4 AND t.id < ?5))
+       ORDER BY t.created_at DESC, t.id DESC LIMIT ?6`,
+    ).bind(
+      authorized.principal.appId,
+      authorized.principal.integrationId,
+      authorized.principal.reporterId,
+      decodedCursor.createdAt,
+      decodedCursor.id,
+      limit + 1,
+    );
   const [ticketResult, unreadResult] = await c.env.DB.batch([
     ticketStatement,
     unreadTotalStatement(c, authorized.principal),
@@ -381,7 +461,9 @@ export async function handleListReporterFeedback(c: ReporterContext) {
   const page = results.slice(0, limit);
   const last = page.at(-1);
   const nextCursor = results.length > limit && last
-    ? encodeCursor(last.created_at, last.id)
+    ? decodedCursor.mode === "activity"
+      ? encodeActivityCursor(last.activity_at, last.id)
+      : encodeCursor(last.created_at, last.id)
     : null;
   c.header("Server-Timing", [
     ...sessionVerifyTiming(authorized.principal),
@@ -389,7 +471,10 @@ export async function handleListReporterFeedback(c: ReporterContext) {
     `hands_list;dur=${timingDuration(authorizedAt, queriedAt)}`,
   ].join(", "));
   return c.json({
-    tickets: page.map(ticketDto),
+    tickets: page.map((row) => {
+      const { activity_at: _activityAt, ...ticket } = row;
+      return ticketDto(ticket);
+    }),
     next_cursor: nextCursor,
     unread_total: totalUnread,
   });
