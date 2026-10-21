@@ -97,3 +97,52 @@ it("names the likely cause from Google's prose without echoing the prose", async
     warn.mockRestore();
   }
 });
+
+it("keeps UPPER_SNAKE reasons, which the whitelist recognises", async () => {
+  // The first version of reasonLike accepted only [A-Za-z0-9.], so SERVICE_DISABLED
+  // and PERMISSION_DENIED -- the very reasons the whitelist already keeps -- were
+  // logged as <non-identifier:16>. That made the change worse for auth failures, the
+  // case it exists to help.
+  const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+  const service = createPlayAdapterService({ fetchImpl: vi.fn(async (url) => {
+    const p = String(url);
+    if (p.endsWith("/token")) return Response.json({ access_token: "access", token_type: "Bearer" });
+    if (p.endsWith("/edits")) {
+      return Response.json({ error: { code: 403, status: "PERMISSION_DENIED",
+        errors: [{ reason: "SERVICE_DISABLED", domain: "googleapis.com" }],
+        details: [{ reason: "PERMISSION_DENIED" }] } }, { status: 403 });
+    }
+    return Response.json({ id: "edit" });
+  }) });
+  await service.listTracks({ credential, packageName: "build.test.app" }, { MAX_AAB_SIZE_BYTES: "209715200" });
+  const logged = JSON.stringify(warn.mock.calls);
+  expect(logged).toContain("SERVICE_DISABLED");
+  expect(logged).toContain("PERMISSION_DENIED");
+  expect(logged).not.toContain("non-identifier");
+  warn.mockRestore();
+});
+
+it("does not echo provider fields it does not recognise", async () => {
+  // Redacting only the field names seen so far left the rest open: location,
+  // detail, extendedHelp and anything Google adds later reached the log verbatim.
+  // The rule is now an allowlist of identifier-shaped keys; every other string is
+  // reported by length only.
+  const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+  const service = createPlayAdapterService({ fetchImpl: vi.fn(async (url) => {
+    const p = String(url);
+    if (p.endsWith("/token")) return Response.json({ access_token: "access", token_type: "Bearer" });
+    if (p.endsWith("/edits")) {
+      return Response.json({ error: { code: 400, status: "INVALID_ARGUMENT",
+        errors: [{ reason: "badRequest", location: "hidden-secret-LOC", extendedHelp: "https://x/?k=hidden-secret-U" }],
+        details: [{ reason: "releaseValidationError", detail: "hidden-secret-DETAIL", description: "hidden-secret-D" }] } }, { status: 400 });
+    }
+    return Response.json({ id: "edit" });
+  }) });
+  await service.listTracks({ credential, packageName: "build.test.app" }, { MAX_AAB_SIZE_BYTES: "209715200" });
+  const logged = JSON.stringify(warn.mock.calls);
+  expect(logged).not.toMatch(/hidden-secret/);
+  // The identifiers still come through, and their lengths are still recorded.
+  expect(logged).toContain("releaseValidationError");
+  expect(logged).toContain("extendedHelp_length");
+  warn.mockRestore();
+});

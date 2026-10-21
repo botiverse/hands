@@ -72,9 +72,9 @@ function providerDiagnostic(body: unknown): Record<string, unknown> | null {
   const out: Record<string, unknown> = {};
   for (const key of ["code", "status"]) {
     const value = e[key];
-    if (typeof value === "string" || typeof value === "number") {
-      out[key] = typeof value === "string" ? clip(value) : value;
-    }
+    // `status` is a Google enum string (INVALID_ARGUMENT, PERMISSION_DENIED, ...).
+    if (typeof value === "number") out[key] = value;
+    else if (typeof value === "string") out[key] = key === "status" ? reasonLike(value) : clip(value);
   }
   // Arbitrary provider prose: never echoed. A credential can be reflected into it,
   // yet for a validation rejection the reason is only `badRequest` and the actual
@@ -92,21 +92,24 @@ function providerDiagnostic(body: unknown): Record<string, unknown> | null {
       const entry: Record<string, unknown> = {};
       if (item && typeof item === "object") {
         for (const [k, v] of Object.entries(item as Record<string, unknown>)) {
-          // Same rule one level down: keep identifiers and scalars, never the prose
-          // that could carry a reflected secret or private project metadata.
-          if (k === "message") {
-            if (typeof v === "string") {
+          // An ALLOWLIST, not a denylist. Naming the fields to redact (message,
+          // metadata) only covered the shapes seen so far: location, detail,
+          // extendedHelp, description and anything Google adds later would have
+          // carried a reflected secret straight into the log. Only fields whose
+          // value is an identifier by construction are echoed, and each is still
+          // shape-checked.
+          if (typeof v === "string") {
+            if (k === "message") {
               entry.message_length = v.length;
               entry.message_cause = classifyProviderMessage(v);
+            } else if (itemKeyIsIdentifier(k, v)) {
+              entry[k] = reasonLike(v);
+            } else {
+              entry[`${k}_length`] = v.length;
             }
             continue;
           }
-          if (k === "metadata") {
-            if (typeof v === "string") entry.metadata_length = v.length;
-            continue;
-          }
-          if (typeof v === "string") entry[k] = k === "reason" ? reasonLike(v) : clip(v);
-          else if (typeof v === "number" || typeof v === "boolean") entry[k] = v;
+          if (typeof v === "number" || typeof v === "boolean") entry[k] = v;
         }
       }
       return entry;
@@ -120,6 +123,17 @@ function providerDiagnostic(body: unknown): Record<string, unknown> | null {
 function clip(value: string): string {
   const flat = value.replace(/[\u0000-\u001f\u007f]+/g, " ").trim();
   return flat.length > 300 ? `${flat.slice(0, 300)}…` : flat;
+}
+
+/**
+ * Fields whose value is an identifier by construction, so echoing it is safe:
+ * Google's declared error-info keys plus the `@type` discriminator. Everything
+ * else a provider sends is prose, a URL or metadata and is reported by length.
+ */
+function itemKeyIsIdentifier(key: string, value: string): boolean {
+  if (key === "reason" || key === "domain" || key === "type") return true;
+  if (key === "location" || key === "locationType") return true;
+  return key.startsWith("at") && /^[A-Za-z]+$/.test(key) && value.length < 80;
 }
 
 /**
@@ -157,5 +171,8 @@ function classifyProviderMessage(message: string): string {
  * reach the log verbatim, whatever it contains.
  */
 function reasonLike(value: string): string {
-  return /^[A-Za-z][A-Za-z0-9.]{0,60}$/.test(value) ? value : `<non-identifier:${value.length}>`;
+  // Google uses both camelCase (`badRequest`) and UPPER_SNAKE (`SERVICE_DISABLED`,
+  // `PERMISSION_DENIED`), so underscores must be accepted: without them the very
+  // reasons the whitelist recognises would be logged as unrecognisable.
+  return /^[A-Za-z][A-Za-z0-9._]{0,60}$/.test(value) ? value : `<non-identifier:${value.length}>`;
 }
