@@ -31,7 +31,13 @@ CREATE TABLE IF NOT EXISTS build_asset_download_events (
 -- the check and the insert cannot interleave; the unique index makes the
 -- invariant structural instead of dependent on that assumption, and it doubles
 -- as the covering index for the dedupe probe.
-CREATE UNIQUE INDEX IF NOT EXISTS idx_build_asset_download_events_asset_visitor
+-- DROP then CREATE, not CREATE IF NOT EXISTS: SQLite matches IF NOT EXISTS on the
+-- NAME, not the definition, so an environment that already applied an earlier
+-- non-unique version of this index would silently keep the non-unique one and
+-- the guarantee would quietly not hold. Dropping first makes the statement
+-- idempotent AND self-correcting regardless of what is already there.
+DROP INDEX IF EXISTS idx_build_asset_download_events_asset_visitor;
+CREATE UNIQUE INDEX idx_build_asset_download_events_asset_visitor
   ON build_asset_download_events(asset_id, visitor_hash);
 
 -- Reporting by build (per-version download totals).
