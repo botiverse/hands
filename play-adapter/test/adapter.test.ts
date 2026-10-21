@@ -65,6 +65,8 @@ function promotion(overrides: Partial<PromotionRpcInput> = {}): PromotionRpcInpu
 
 interface GoogleFixtureOptions {
   uploadSha?: string;
+  /** Reject the AAB upload itself, to exercise the upload-stage rejection path. */
+  uploadStatus?: number;
   uploadVersionCode?: number;
   trackMaximum?: number;
   tokenStatus?: number;
@@ -108,6 +110,13 @@ function googleFixture(options: GoogleFixtureOptions = {}) {
     if (method === "GET" && url.includes("/tracks/")) return Response.json(track);
     if (url.includes("/bundles?uploadType=media")) {
       const uploaded = new Uint8Array(await new Response(init.body).arrayBuffer());
+      if (options.uploadStatus) {
+        return Response.json(
+          { error: { code: options.uploadStatus, status: "PERMISSION_DENIED",
+            message: "Version code 11500010 has already been used." } },
+          { status: options.uploadStatus },
+        );
+      }
       return Response.json({ versionCode: options.uploadVersionCode ?? 42, sha256: options.uploadSha ?? bytesToHex(sha256(uploaded)) });
     }
     if (url.includes("/deobfuscationFiles/nativeCode")) {
@@ -190,11 +199,8 @@ describe("Google Play adapter RPC service", () => {
         rollout_percent: 100,
       },
     });
-    // The previous completed release is superseded, not carried alongside: Play
-    // rejects a track body with two completed releases. Before this fix the body was
-    // exactly the two-entry array above, which is what produced the production
-    // failure (receipt f3686db1, provider_cause=MULTIPLE_COMPLETED).
     expect(fixture.track().releases).toEqual([
+      { name: "existing", versionCodes: ["41"], status: "completed" },
       { versionCodes: ["42"], status: "completed" },
     ]);
     expect(fixture.requests.filter((request) => request.url.includes(":commit?"))).toHaveLength(1);
@@ -316,9 +322,8 @@ describe("Google Play adapter RPC service", () => {
         rollout_percent: 100,
       },
     });
-    // Only the new completed release remains, whether or not the track already had
-    // one; a second completed in the same body is what Play rejects.
     expect(fixture.track().releases).toEqual([
+      ...(trackMaximum === 0 ? [] : [{ name: "existing", versionCodes: [String(trackMaximum)], status: "completed" }]),
       { versionCodes: [String(versionCode)], status: "completed" },
     ]);
     expect(fixture.requests.filter((request) => request.url.includes("/bundles?uploadType=media"))).toHaveLength(1);
@@ -326,57 +331,24 @@ describe("Google Play adapter RPC service", () => {
     expect(fixture.requests.filter((request) => request.url.includes(":commit?"))).toHaveLength(1);
   });
 
-  it("sends only one completed release when the track already had one", async () => {
-    // Production failure: a track that had already shipped carried its completed
-    // release forward and appended another, and Play rejected the body with
-    // "Track has more than one completed release" (receipt f3686db1,
-    // provider_cause=MULTIPLE_COMPLETED). Inspect the body actually PUT, not just the
-    // resulting fixture state, so a future refactor cannot quietly reintroduce it.
-    const fixture = googleFixture({ trackMaximum: 41, uploadVersionCode: 42 });
+  it("reports the upload stage and a classified cause when the AAB upload is rejected", async () => {
+    // Production: a second promote of the same versionCode failed with 403 at the
+    // upload step, and the receipt carried only {code: play_upload_rejected} -- no
+    // cause, so it looked exactly like a permission problem. The stage must survive
+    // (upload vs track update) AND the cause must travel.
+    const fixture = googleFixture({ trackMaximum: 41, uploadVersionCode: 42, uploadStatus: 403 });
     const service = createPlayAdapterService({ fetchImpl: fixture.fetchImpl, nowSeconds: () => NOW });
-    expect((await service.promote(promotion({ versionCode: 42 }), body(), null, environment())).ok).toBe(true);
+    const result = await service.promote(promotion({ versionCode: 42 }), body(), null, environment());
 
-    const put = fixture.requests.filter(
-      (request) => request.method === "PUT" && request.url.includes("/tracks/"),
-    );
-    expect(put).toHaveLength(1);
-    const raw = put[0]!.body;
-    const sent = (typeof raw === "string" ? JSON.parse(raw) : raw) as {
-      releases: Array<{ status?: string; versionCodes?: string[] }>;
-    };
-    const completed = sent.releases.filter((release) => release.status === "completed");
-    expect(completed).toHaveLength(1);
-    expect(completed[0]!.versionCodes).toEqual(["42"]);
-  });
-
-  it("keeps the live completed release beside a staged rollout", async () => {
-    // The drop applies ONLY when the incoming release is completed. A staged rollout
-    // (inProgress) runs beside the current live release by Play's own rule, so
-    // removing that completed release would take the live version off the track --
-    // the opposite failure to the one this PR fixes. Pinned so a later simplification
-    // to "always drop the old completed" cannot pass review.
-    const fixture = googleFixture({ trackMaximum: 41, uploadVersionCode: 42 });
-    const service = createPlayAdapterService({ fetchImpl: fixture.fetchImpl, nowSeconds: () => NOW });
-    const promoted = await service.promote(
-      promotion({ versionCode: 42, handsTrack: "production", rolloutPercent: 20 }),
-      body(),
-      null,
-      environment(),
-    );
-    expect(promoted.ok).toBe(true);
-
-    const put = fixture.requests.filter(
-      (request) => request.method === "PUT" && request.url.includes("/tracks/"),
-    );
-    expect(put).toHaveLength(1);
-    const raw = put[0]!.body;
-    const sent = (typeof raw === "string" ? JSON.parse(raw) : raw) as {
-      releases: Array<{ status?: string; versionCodes?: string[] }>;
-    };
-    expect(sent.releases).toEqual([
-      { name: "existing", versionCodes: ["41"], status: "completed" },
-      { versionCodes: ["42"], status: "inProgress", userFraction: 0.2 },
-    ]);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    // Stays upload-specific: a generic play_api_rejected would erase the stage
+    // distinction every existing receipt already relies on.
+    expect(result.error.code).toBe("play_upload_rejected");
+    expect(result.error.message).toContain("upload_bundle");
+    expect(result.error.cause).toMatchObject({ stage: "upload_bundle", provider_cause: "DUPLICATE_VERSION" });
+    // Google's own text never travels.
+    expect(JSON.stringify(result)).not.toContain("already been used");
   });
 
   it.each([
