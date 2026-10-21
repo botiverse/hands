@@ -1070,7 +1070,9 @@ export function FeedbackInbox({
   return (
     <section
       className="hands-feedback-inbox"
-      aria-labelledby="hands-feedback-inbox-title"
+      {...(hideHeaderTitle
+        ? { "aria-label": message("workspaceTitle") }
+        : { "aria-labelledby": "hands-feedback-inbox-title" })}
       hidden={hidden}
     >
       {/* The host may own the page title (hideHeaderTitle); then the inbox
@@ -1084,11 +1086,6 @@ export function FeedbackInbox({
           </PanelHeading>
         </PanelHeaderContent>
       </PanelHeader>
-      {hideHeaderTitle && (
-        <h2 id="hands-feedback-inbox-title" className="hands-feedback-sr-only">
-          {message("workspaceTitle")}
-        </h2>
-      )}
       {/* One row: the status tabs once there is something to filter, and
           the screen's one pink button, which is there from the first paint. */}
       {(
