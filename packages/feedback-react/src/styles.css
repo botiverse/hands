@@ -280,13 +280,11 @@
   margin-top: 5px;
 }
 
+/* The unread count is raft-ui's pink count sticker as drawn; only its place
+   in the card row is ours. */
 .hands-feedback-unread-count {
-  border-radius: 6px;
-  color: var(--foreground-inverse, #fff);
   flex: none;
-  justify-content: center;
   margin-left: auto;
-  min-width: 20px;
 }
 
 .hands-feedback-error-banner {

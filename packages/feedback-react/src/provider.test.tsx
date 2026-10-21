@@ -193,9 +193,8 @@ describe("FeedbackProvider", () => {
     expect(css).toMatch(
       /\.hands-feedback-reply-footer[^}]*padding-bottom:\s*calc\(18px \+ env\(safe-area-inset-bottom\)\)/,
     );
-    expect(css).toMatch(
-      /\.hands-feedback-unread-count\s*\{[^}]*border-radius:\s*6px[^}]*color:\s*var\(--foreground-inverse[^}]*min-width:\s*20px/,
-    );
+    expect(css).toMatch(/\.hands-feedback-unread-count\s*\{[^}]*margin-left:\s*auto/);
+    expect(css).not.toMatch(/\.hands-feedback-unread-count\s*\{[^}]*(?:border-radius|color):/);
     expect(css).not.toMatch(/\.hands-feedback-unread-dot\s*\{/);
     expect(css).not.toMatch(/\.hands-feedback-problem-chip\s*\{/);
     expect(css).toMatch(
