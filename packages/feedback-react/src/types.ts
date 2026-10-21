@@ -21,6 +21,16 @@ export type FeedbackTicketSummary = {
   unreadCount: number;
   attachmentCount: number;
   commentCount: number;
+  /**
+   * The newest visible comment, as the list shows it under the title. Hands
+   * returns it on list pages only; absent on a detail response and from
+   * transports that predate it, `null` when nobody has commented yet.
+   */
+  latestComment?: {
+    authorType: FeedbackComment["authorType"];
+    bodyPreview: string;
+    createdAt: number;
+  } | null;
 };
 
 export type FeedbackComment = {
