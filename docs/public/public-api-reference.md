@@ -494,6 +494,16 @@ detail read advances a monotonic receipt through the latest visible reply in
 the returned comment page; concurrent or later replies remain unread;
 reporter comments and internal staff notes never create unread state.
 
+The list is ordered by latest conversation activity: the time of the newest
+visible comment (from anyone, reporter included), or the ticket's creation
+time before anyone has commented, newest first. Each listed ticket also has
+`latest_comment`, the newest visible comment as `{ author_type, body_preview,
+created_at }` (`body_preview` is the first 280 characters of the body), or
+`null` when there is none. Internal staff notes never move a ticket or appear
+as its latest comment. `latest_comment` is a list field; the detail response
+does not include it. Cursors from the previous creation-time order stay valid
+and keep paging in that order.
+
 Before a trusted reporter creates its first ticket, bind its immutable opaque
 route subject with `feedback:route` permission:
 

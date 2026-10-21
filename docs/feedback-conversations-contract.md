@@ -187,8 +187,12 @@ bytes are not treated as deploy tokens, and no session timing names are emitted.
 GET /api/apps/{appId}/reporter-feedback?limit=20&cursor=<opaque>
 ```
 
-The server clamps `limit` to `1..50`. The opaque cursor orders by
-`(created_at DESC, id DESC)`. The response contains only reporter-safe fields:
+The server clamps `limit` to `1..50`. The opaque cursor orders by latest
+conversation activity, `(COALESCE(latest visible comment created_at,
+ticket created_at) DESC, id DESC)`, so a ticket with a new reply comes first.
+Cursors issued under the earlier `(created_at DESC, id DESC)` order are still
+accepted and keep paging in that order. The response contains only
+reporter-safe fields:
 
 ```json
 {
@@ -205,6 +209,11 @@ The server clamps `limit` to `1..50`. The opaque cursor orders by
       "attachment_count": 1,
       "comment_count": 2,
       "latest_comment_at": 0,
+      "latest_comment": {
+        "author_type": "staff",
+        "body_preview": "first 280 characters of the newest visible comment",
+        "created_at": 0
+      },
       "unread": true,
       "unread_count": 2
     }
@@ -214,7 +223,8 @@ The server clamps `limit` to `1..50`. The opaque cursor orders by
 }
 ```
 
-`comment_count` counts only non-internal comments. The response excludes
+`comment_count` counts only non-internal comments. `latest_comment` is the
+newest non-internal comment, or `null` when there is none. The response excludes
 contact data, assignee, client hashes, device identifiers, raw metadata,
 symbolication internals, and internal comment counts. `unread_total` counts
 owned tickets with at least one unread visible staff/system comment.
