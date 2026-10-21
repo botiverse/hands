@@ -6366,6 +6366,9 @@ describe("quiver public API v2 — scope resolution", () => {
           return "";
         },
         query: (name: string) => query[name],
+        // The route reads `range` to serve 206; these cases send none, so the
+        // whole object is served exactly as before Range support existed.
+        header: (_name: string) => undefined,
       },
       json: (data: unknown, status = 200) =>
         new Response(JSON.stringify(data), {

@@ -102,7 +102,79 @@ export async function handleElectronGenericAsset(c: Context<{ Bindings: Env }>) 
   headers.set("content-type", contentTypeForElectronAsset(asset));
   headers.set("content-length", String(asset.size_bytes));
   headers.set("content-disposition", contentDispositionForElectronAsset(file, asset));
+
+  // electron-updater fetches only the blocks whose checksums changed (differential
+  // download) by sending `Range`. Without a 206 it falls back to the whole file, which
+  // for this route means 157 MB instead of ~27 MB on macOS. Advertise support always,
+  // then answer a satisfiable single range with 206.
+  //
+  // Only ONE interval is honoured. R2's range option takes a single offset/length, and a
+  // multi-interval request would need a multipart/byteranges body to be correct. Rather
+  // than emit a wrong 206, fall through to the full 200: electron-updater's own
+  // checkIsRangesSupported treats a 200 as "no range support" and re-downloads in full,
+  // which is the current behaviour and is safe. Clients that need differential downloads
+  // must set useMultipleRangeRequest=false so each block is its own request.
+  headers.set("accept-ranges", "bytes");
+  const range = parseSingleByteRange(c.req.header("range"), asset.size_bytes);
+  if (range === "unsatisfiable") {
+    headers.set("content-range", `bytes */${asset.size_bytes}`);
+    return new Response(null, { status: 416, headers });
+  }
+  if (range) {
+    const partial = await c.env.APK_BUCKET.get(asset.r2_key, {
+      range: { offset: range.start, length: range.length },
+    });
+    if (!partial) return c.json({ error: "object not found" }, 404);
+    // Length must describe the bytes actually returned, not the whole object.
+    headers.set("content-length", String(range.length));
+    headers.set(
+      "content-range",
+      `bytes ${range.start}-${range.start + range.length - 1}/${asset.size_bytes}`,
+    );
+    return new Response(partial.body, { status: 206, headers });
+  }
   return new Response(object.body, { headers });
+}
+
+/**
+ * Parse a single `bytes=` range against an object of `size` bytes.
+ *
+ * Returns null when the request is absent, malformed, or asks for more than one
+ * interval — the caller then serves the full object, which is what an unsupported
+ * Range request is defined to receive. Returns "unsatisfiable" only when the syntax
+ * is understood and the range cannot be met, which is a 416.
+ */
+export function parseSingleByteRange(
+  header: string | undefined,
+  size: number,
+): { start: number; length: number } | "unsatisfiable" | null {
+  if (!header) return null;
+  const match = /^bytes=(\d*)-(\d*)$/.exec(header.trim());
+  if (!match) return null; // includes multi-interval `a-b,c-d` and any other unit
+  const [, rawStart, rawEnd] = match;
+  if (rawStart === "" && rawEnd === "") return null;
+
+  if (rawStart === "") {
+    // `bytes=-N`: the final N bytes.
+    const suffix = Number(rawEnd);
+    if (!Number.isSafeInteger(suffix) || suffix <= 0) return "unsatisfiable";
+    if (size === 0) return "unsatisfiable";
+    const start = Math.max(0, size - suffix);
+    return { start, length: size - start };
+  }
+
+  const start = Number(rawStart);
+  if (!Number.isSafeInteger(start)) return null;
+  if (start >= size) return "unsatisfiable";
+
+  // `bytes=a-` runs to the end of the object.
+  if (rawEnd === "") return { start, length: size - start };
+
+  const end = Number(rawEnd);
+  if (!Number.isSafeInteger(end)) return null;
+  if (end < start) return null; // syntactically invalid; serve full rather than 416
+  // A range reaching past the end is clamped, not rejected.
+  return { start, length: Math.min(end, size - 1) - start + 1 };
 }
 
 function normalizeFileName(raw: string | undefined): string {
