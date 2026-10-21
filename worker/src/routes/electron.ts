@@ -1,5 +1,6 @@
 import type { Context } from "hono";
 import { resolvePublicChannelSlug } from "../lib/public_channel";
+import { DESKTOP_INSTALLER, equivalentsOf } from "../lib/release_resolver";
 
 type ElectronAssetRow = {
   id: string;
@@ -13,7 +14,10 @@ type ElectronAssetRow = {
   metadata_json: string;
 };
 
-const DEFAULT_PRODUCT_TYPE = "electron-installer";
+// A request without product_type means "the desktop installer", whatever it is
+// currently called. The resolver matches both names, so a channel holding releases
+// from either era resolves.
+const DEFAULT_PRODUCT_TYPE = DESKTOP_INSTALLER;
 const ELECTRON_METADATA_KINDS = new Set([
   "electron-metadata",
   "update-metadata",
@@ -40,6 +44,10 @@ export async function handleElectronGenericAsset(c: Context<{ Bindings: Env }>) 
     ? await resolvePublicChannelSlug(c.env.DB, appRow.id, requestedChannel)
     : requestedChannel;
 
+  // This route resolves the release itself rather than through the shared resolver,
+  // so it needs the same name equivalence: a channel may hold releases seeded before
+  // the desktop rename and after it.
+  const productNames = equivalentsOf(productType);
   const build = await c.env.DB.prepare(
     `SELECT b.id AS build_id
      FROM apps a
@@ -48,12 +56,12 @@ export async function handleElectronGenericAsset(c: Context<{ Bindings: Env }>) 
      JOIN builds b ON b.id = r.build_id
      WHERE a.slug = ?1
        AND ch.slug = ?2
-       AND r.product_type = ?3
+       AND r.product_type IN (${productNames.map((_, i) => `?${i + 3}`).join(",")})
        AND r.status = 'active'
      ORDER BY r.activated_at DESC, r.id ASC
      LIMIT 1`,
   )
-    .bind(slug, channel, productType)
+    .bind(slug, channel, ...productNames)
     .first<{ build_id: string }>();
 
   if (!build) {

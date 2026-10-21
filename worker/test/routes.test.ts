@@ -9576,6 +9576,42 @@ describe("quiver public API v2 — scope resolution", () => {
     expect(location.searchParams.get("response-content-disposition")).toContain("scope-app-1.0.0-11.apk");
   });
 
+  it("resolves a desktop installer release seeded under either product name", async () => {
+    // Releases created before the desktop rename carry `electron-installer`; new ones
+    // carry `desktop-installer`. A channel holding both must still resolve, and a
+    // client asking for either name must find the active one. Without the equivalence
+    // this returns "no active release" for a product that plainly has one.
+    for (const seeded of ["electron-installer", "desktop-installer"]) {
+      const env = makeEnv();
+      const { handleElectronGenericAsset } = await import("../src/routes/electron");
+      env.APK_BUCKET = {
+        put: async () => undefined,
+        get: async () => ({ body: new Uint8Array([1, 2, 3]), httpEtag: '"e"', writeHttpMetadata: () => {} }),
+        head: async (key: string) => ({ key }),
+      };
+      await seedRelease(env, `rel-${seeded}`, `build-${seeded}`, [["full", "all"]], {
+        productType: seeded,
+        versionName: "2.0.0",
+      });
+      await seedAsset(env, `build-${seeded}`, `asset-${seeded}`, {
+        artifactKind: "electron-metadata",
+        platform: "win32",
+        filetype: "yml",
+        variant: "latest.yml",
+        r2Key: `apps/scope-app/electron/${seeded}-latest.yml`,
+        sizeBytes: 3,
+        metadata: { filename: "latest.yml" },
+      });
+
+      for (const asked of ["electron-installer", "desktop-installer"]) {
+        const response = await handleElectronGenericAsset(
+          makeElectronContext(env, "latest.yml", { product_type: asked }),
+        );
+        expect(response.status, `seeded=${seeded} asked=${asked}`).toBe(200);
+      }
+    }
+  });
+
   it("serves electron-updater generic metadata from the active release", async () => {
     const env = makeEnv();
     const { handleElectronGenericAsset } = await import("../src/routes/electron");
