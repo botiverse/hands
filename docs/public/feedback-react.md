@@ -42,7 +42,7 @@ use the explicit source export. A full commit SHA makes installs reproducible.
 
 ```bash
 pnpm add "github:botiverse/hands#<full-commit-sha>&path:packages/feedback-react"
-pnpm add react react-dom raft-ui lucide-react
+pnpm add react react-dom @botiverse/raft-ui lucide-react
 ```
 
 ```tsx
@@ -52,7 +52,7 @@ import {
   FeedbackTransportError,
   type HandsFeedbackTransport,
 } from "@botiverse/hands-feedback-react/source";
-import "raft-ui/styles.css";
+import "@botiverse/raft-ui/styles.css";
 import "@botiverse/hands-feedback-react/source/styles.css";
 ```
 
@@ -61,7 +61,7 @@ dependencies. After the npm package is published, install and import its
 compiled root export instead:
 
 ```bash
-pnpm add @botiverse/hands-feedback-react raft-ui lucide-react
+pnpm add @botiverse/hands-feedback-react @botiverse/raft-ui lucide-react
 ```
 
 ```tsx
@@ -69,7 +69,7 @@ import {
   FeedbackProvider,
   FeedbackWorkspace,
 } from "@botiverse/hands-feedback-react";
-import "raft-ui/styles.css";
+import "@botiverse/raft-ui/styles.css";
 import "@botiverse/hands-feedback-react/styles.css";
 ```
 
@@ -77,7 +77,7 @@ If Tailwind v4 removes library classes, include both compiled packages as
 sources:
 
 ```css
-@source '../node_modules/raft-ui/dist';
+@source '../node_modules/@botiverse/raft-ui/dist';
 @source '../node_modules/@botiverse/hands-feedback-react/dist';
 ```
 
@@ -345,7 +345,6 @@ export function FeedbackPage() {
   return (
     <FeedbackProvider
       transport={transport}
-      theme="elegant"
       locale="en"
       onUnreadChanged={({ total }) => updateFeedbackBadge(total)}
     >
@@ -359,7 +358,29 @@ Your proxy may return the SDK's camel-case DTO directly. If it forwards Hands
 JSON unchanged, map `created_at`, `updated_at`, `attachment_count`,
 `comment_count`, `unread_count`, `author_type`, `content_type`, `size_bytes`,
 `next_cursor`, `next_comment_cursor`, and `unread_total` to the corresponding
-camel-case SDK fields.
+camel-case SDK fields. Map a list ticket's `latest_comment` to `latestComment`
+(`{ authorType, bodyPreview, createdAt }`, or `null`): each list row shows it
+under the title. Leave `latestComment` out when your proxy doesn't have it;
+the row then has no preview line.
+
+### Page header
+
+The inbox can sit under your own page title: pass `hideHeaderTitle` and the
+inbox starts at its filter row. A ticket and New Feedback are pages of their
+own, with their own 56px header (Back, the title, the ticket's status), so
+hide your page header while the workspace is on them instead of stacking two
+headers. Track the view with `onRouteChange` (it fires whether or not you
+control `route`):
+
+```tsx
+const [view, setView] = useState<FeedbackWorkspaceRoute["view"]>("inbox");
+
+{view === "inbox" && <MyPageHeader title="Feedback" />}
+<FeedbackWorkspace
+  hideHeaderTitle
+  onRouteChange={(route) => setView(route.view)}
+/>
+```
 
 The workspace owns list pagination, focus and scroll restoration, reply drafts,
 IME-safe Enter handling, attachment progress/retry/cancel, recoverable cursor
@@ -387,8 +408,9 @@ back to English. Hosts can override individual messages and formatters:
 </FeedbackProvider>
 ```
 
-Themes are `elegant` and `brutal`. All visible copy, error copy, dates, file
-sizes, and accessibility labels use the resolved SDK locale.
+Every part is drawn by `@botiverse/raft-ui` (the Raft Design System), in its
+one look, light and dark; there is no theme prop. All visible copy, error
+copy, dates, file sizes, and accessibility labels use the resolved SDK locale.
 
 ## Webhooks and unread state
 

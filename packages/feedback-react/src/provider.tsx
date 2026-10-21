@@ -7,10 +7,9 @@ import {
   useRef,
   useState,
 } from "react";
-import { ThemeProvider } from "raft-ui";
+import { ThemeProvider } from "@botiverse/raft-ui";
 import type {
   FeedbackLocale,
-  FeedbackTheme,
   FeedbackUnreadChange,
   HandsFeedbackTransport,
 } from "./types.js";
@@ -24,7 +23,6 @@ import {
 
 type FeedbackContextValue = {
   transport: HandsFeedbackTransport;
-  theme: FeedbackTheme;
   locale: FeedbackLocale;
   message(key: FeedbackMessageKey, values?: FeedbackMessageValues): string;
   formatDate(value: number): string;
@@ -47,7 +45,6 @@ export function nextUnreadReport(
 
 export type FeedbackProviderProps = {
   transport: HandsFeedbackTransport;
-  theme?: FeedbackTheme;
   /** Defaults to browser language (`zh*` -> `zh-CN`, otherwise `en`). */
   locale?: FeedbackLocale;
   /** Partial copy override; missing keys fall back to the selected SDK locale. */
@@ -65,7 +62,6 @@ export type FeedbackProviderProps = {
 
 export function FeedbackProvider({
   transport,
-  theme = "elegant",
   locale: localeOverride,
   messages,
   formatDate: formatDateOverride,
@@ -123,7 +119,6 @@ export function FeedbackProvider({
   const value = useMemo(
     () => ({
       transport,
-      theme,
       locale,
       message,
       formatDate,
@@ -133,7 +128,6 @@ export function FeedbackProvider({
     }),
     [
       transport,
-      theme,
       locale,
       message,
       formatDate,
@@ -143,7 +137,10 @@ export function FeedbackProvider({
     ],
   );
   return (
-    <ThemeProvider theme={theme} syncDom={false}>
+    // raft-ui 0.6 dropped the elegant/brutal theme families: Raft has a single look and
+    // ThemeProvider now takes only a colour mode. `syncDom={false}` stays because this
+    // provider is embedded in a host page (Slock) whose own mode it must not override.
+    <ThemeProvider syncDom={false}>
       <FeedbackContext.Provider value={value}>
         {children}
       </FeedbackContext.Provider>

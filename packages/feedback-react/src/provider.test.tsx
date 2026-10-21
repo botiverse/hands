@@ -1,6 +1,5 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { readFileSync } from "node:fs";
-import { useThemeFamily } from "raft-ui";
 import { describe, expect, it } from "vitest";
 import {
   FeedbackWorkspace,
@@ -26,24 +25,20 @@ const transport = {} as HandsFeedbackTransport;
 
 function Probe() {
   const value = useHandsFeedback();
-  const raftTheme = useThemeFamily();
-  return (
-    <span data-theme={value.theme} data-raft-theme={raftTheme}>
-      {value.unreadTotal ?? "unknown"}
-    </span>
-  );
+  return <span>{value.unreadTotal ?? "unknown"}</span>;
 }
 
 describe("FeedbackProvider", () => {
-  it("exposes theme without accepting credentials or reporter identity", () => {
+  it("renders without requiring a theme or leaking a theme attribute", () => {
+    // raft-ui 0.6 has one look, so the provider no longer takes or forwards a theme
+    // family. The host page owns the colour mode; this provider must not stamp one.
     const html = renderToStaticMarkup(
-      <FeedbackProvider transport={transport} theme="brutal">
+      <FeedbackProvider transport={transport}>
         <Probe />
       </FeedbackProvider>,
     );
-    expect(html).toMatch(/data-theme="brutal"/);
-    expect(html).toMatch(/data-raft-theme="brutal"/);
     expect(html).toMatch(/>unknown/);
+    expect(html).not.toMatch(/data-theme=/);
   });
 
   it("supports explicit locale and has deterministic browser fallback", () => {
@@ -85,13 +80,13 @@ describe("FeedbackProvider", () => {
 
   it("renders the ticket inbox as the landing surface", () => {
     const html = renderToStaticMarkup(
-      <FeedbackProvider transport={transport} theme="brutal">
+      <FeedbackProvider transport={transport}>
         <FeedbackWorkspace />
       </FeedbackProvider>,
     );
-    expect(html).toContain('data-hands-feedback-theme="brutal"');
+    expect(html).not.toContain("data-hands-feedback-theme");
     expect(html).toContain("Feedback");
-    expect(html).toContain("New feedback");
+    expect(html).toContain("New Feedback");
     expect(html).not.toContain("dashboard");
   });
 
@@ -168,99 +163,35 @@ describe("FeedbackProvider", () => {
 
   it("ships package-owned layout without restyling raft-ui primitives", () => {
     const css = readFileSync(new URL("./styles.css", import.meta.url), "utf8");
-    expect(css).toMatch(/\.hands-feedback-skeleton-row[^}]*height:\s*4rem/);
-    expect(css).toMatch(/\.hands-feedback-skeleton-detail[^}]*height:\s*10rem/);
+    // Layout only: no rule reaches into a raft-ui part, and none of our own
+    // colours, radii, shadows or Tailwind-shaped classes stand in for one.
+    expect(css).not.toMatch(/\[data-slot=/);
     expect(css).not.toMatch(/\.h-16\b|\.h-40\b|\.w-full\b/);
-    expect(css).toMatch(/@media \(max-width: 640px\)/);
-    expect(css).toMatch(/\.hands-feedback-middle[^}]*overflow-y:\s*auto/);
-    expect(css).toMatch(/env\(safe-area-inset-bottom\)/);
-    expect(css).toMatch(/prefers-reduced-motion:\s*reduce/);
-    expect(css).toMatch(
-      /\.hands-feedback-header h2\s*\{[^}]*font-size:\s*17px[^}]*font-weight:\s*700/,
-    );
-    expect(css).toMatch(
-      /\.hands-feedback-list-scroll\[data-feedback-empty-scroll="true"\]\s*\{[^}]*align-content:\s*stretch[^}]*gap:\s*0[^}]*grid-template-rows:\s*auto minmax\(0, 1fr\)[^}]*padding:\s*6px 2px 0/,
-    );
-    expect(css).toMatch(
-      /\.hands-feedback-list-scroll\[data-feedback-empty-scroll="true"\][^{]*> \.hands-feedback-pull-indicator\s*\{[^}]*margin-bottom:\s*0/,
-    );
-    expect(css).toMatch(
-      /\.hands-feedback-inbox-content\s*\{[^}]*padding:\s*18px 18px calc\(18px \+ env\(safe-area-inset-bottom, 0px\)\)/,
-    );
-    expect(css).toMatch(
-      /@media \(max-width: 640px\)[\s\S]*?\.hands-feedback-inbox-content\s*\{[^}]*padding:\s*18px 16px calc\(18px \+ env\(safe-area-inset-bottom, 0px\)\)/,
-    );
-    expect(css).toMatch(
-      /\.hands-feedback-empty\s*\{[^}]*align-self:\s*stretch[^}]*border:\s*2px dashed[^}]*height:\s*auto[^}]*justify-content:\s*center[^}]*justify-self:\s*stretch[^}]*min-height:\s*0[^}]*padding:\s*40px 24px 48px/,
-    );
-    expect(css).toMatch(
-      /\.hands-feedback-empty-icon\s*\{[^}]*border:\s*2px solid[^}]*box-shadow:\s*var\(--theme-shadow-sm, 2px 2px 0[^}]*height:\s*44px[^}]*width:\s*44px/,
-    );
-    expect(css).toMatch(
-      /\.hands-feedback-reply-footer[^}]*padding-bottom:\s*calc\(18px \+ env\(safe-area-inset-bottom\)\)/,
-    );
-    expect(css).toMatch(
-      /\.hands-feedback-unread-count\s*\{[^}]*border-radius:\s*6px[^}]*color:\s*var\(--foreground-inverse[^}]*min-width:\s*20px/,
-    );
+    expect(css).not.toMatch(/2px dashed/);
+    expect(css).not.toMatch(/--theme-shadow/);
+    expect(css).not.toMatch(/box-shadow|translate\(|border-radius/);
+    expect(css).not.toMatch(/\.hands-feedback-unread-count\s*\{/);
     expect(css).not.toMatch(/\.hands-feedback-unread-dot\s*\{/);
+    expect(css).not.toMatch(/\.hands-feedback-problem-chip\s*\{/);
+    expect(css).not.toMatch(/display:\s*none[^}]*hands-feedback-conversation/);
+    // One content margin: 20px on desktop, 16px on a phone; a message row
+    // sits 12px in so the message's own 8px lands its avatar on 20px.
+    expect(css).toMatch(/\.hands-feedback-root\s*\{[^}]*--hf-margin:\s*20px/);
     expect(css).toMatch(
-      /\.hands-feedback-problem-chip\s*\{[^}]*--reference-icon:\s*var\(--hf-danger[^}]*background-color:\s*var\(--danger-muted/,
+      /@media \(max-width: 767px\)\s*\{\s*\.hands-feedback-root\s*\{[^}]*--hf-margin:\s*16px/,
     );
+    expect(css).toMatch(/\.hands-feedback-toolbar\s*\{[^}]*padding:\s*12px var\(--hf-margin\)/);
+    expect(css).toMatch(/\.hands-feedback-message-row\s*\{[^}]*padding:\s*0 12px/);
+    expect(css).toMatch(/\.hands-feedback-middle[^}]*overflow-y:\s*auto/);
+    expect(css).toMatch(/\.hands-feedback-skeleton-detail[^}]*height:\s*10rem/);
     expect(css).toMatch(
-      /\.hands-feedback-reference-chip\s*\{[^}]*font-size:\s*10\.5px[^}]*height:\s*20px[^}]*min-height:\s*20px[^}]*padding:\s*0 6px/,
+      /\.hands-feedback-reply-footer\s*\{[^}]*env\(safe-area-inset-bottom, 0px\)/,
     );
-    expect(css).toMatch(
-      /\.hands-feedback-reference-chip-content svg\s*\{[^}]*height:\s*10px[^}]*width:\s*10px/,
-    );
-    expect(css).toMatch(
-      /\.hands-feedback-ticket-title\s*\{[^}]*overflow:\s*hidden[^}]*text-overflow:\s*ellipsis[^}]*white-space:\s*nowrap/,
-    );
-    expect(css).toMatch(
-      /\.hands-feedback-ticket-date\s*\{[^}]*line-height:\s*1\.4[^}]*margin-top:\s*4px/,
-    );
-    expect(css).toMatch(
-      /\.hands-feedback-ticket-content\s*\{[^}]*pointer-events:\s*auto[^}]*z-index:\s*1/,
-    );
-    expect(css).toMatch(
-      /\.hands-feedback-close-split\s*\{[^}]*height:\s*20px/,
-    );
-    expect(css).toMatch(
-      /\.hands-feedback-close-caret\s*\{[^}]*min-width:\s*20px/,
-    );
-    expect(css).toMatch(
-      /\.hands-feedback-close-main\s*\{[^}]*padding-left:\s*8px/,
-    );
-    expect(css).toMatch(
-      /\.hands-feedback-close-main::before\s*\{[^}]*display:\s*none/,
-    );
-    expect(css).toMatch(
-      /\.hands-feedback-close-split\[data-menu-open\],[\s\S]*\.hands-feedback-close-split:has\(\.hands-feedback-close-main:active\),[\s\S]*\.hands-feedback-close-split:has\(\.hands-feedback-close-caret:active\)\s*\{[^}]*box-shadow:\s*var\(--theme-shadow-md, 4px 4px 0 var\(--line-strong\)\)[^}]*translate:\s*0 -1px/,
-    );
-    expect(css).toMatch(
-      /\.hands-feedback-close-caret\[data-popup-open\]\s*\{[^}]*box-shadow:\s*none !important[^}]*translate:\s*0 !important/,
-    );
-    expect(css).toMatch(
-      /\.hands-feedback-close-main:active,[\s\S]*\.hands-feedback-close-caret:active\s*\{[^}]*box-shadow:\s*none !important[^}]*translate:\s*0 !important/,
-    );
-    expect(css).toMatch(
-      /\.hands-feedback-close-menu-item \[data-slot="dropdown-menu-item-label"\],[\s\S]*\.hands-feedback-close-menu-item \[data-slot="dropdown-menu-item-label"\] span\s*\{[^}]*overflow:\s*visible[^}]*text-overflow:\s*clip[^}]*white-space:\s*normal/,
-    );
-    expect(css).toMatch(
-      /\.hands-feedback-close-menu\s*\{[^}]*max-width:\s*calc\(100vw - 24px\)[^}]*min-width:\s*max-content[^}]*width:\s*max-content/,
-    );
-    expect(css).toMatch(
-      /\.hands-feedback-close-menu-item\s*\{[^}]*width:\s*100%/,
-    );
-    expect(css).not.toMatch(
-      /@media \(max-width: 640px\)[\s\S]*\.hands-feedback-close-main,[\s\S]*\.hands-feedback-close-caret\s*\{/,
-    );
+    expect(css).toMatch(/\.hands-feedback-new-fields\s*\{[^}]*max-width:\s*640px/);
     expect(css).toMatch(
       /\.hands-feedback-pull-indicator\s*\{[^}]*transition:\s*height 160ms ease-out/,
     );
-    expect(css).not.toMatch(
-      /\[data-slot=["'](?:badge|composer|message-item|tabs|task-card)/,
-    );
-    expect(css).not.toMatch(/display:\s*none[^}]*hands-feedback-conversation/);
+    expect(css).toMatch(/prefers-reduced-motion:\s*reduce/);
   });
 
   it("classifies the conversation follow threshold deterministically", () => {

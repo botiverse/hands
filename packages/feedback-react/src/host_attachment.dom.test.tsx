@@ -117,8 +117,8 @@ async function openNew(adapter = transport()) {
       <FeedbackWorkspace ref={ref} />
     </FeedbackProvider>,
   );
-  fireEvent.click(await screen.findByText("New feedback"));
-  await screen.findByLabelText("What would you like us to know?");
+  fireEvent.click(await screen.findByText("New Feedback"));
+  await screen.findByLabelText(/What would you like us to know/);
   return { ref, adapter };
 }
 
@@ -156,10 +156,10 @@ describe("FeedbackWorkspace host pending-attachment API", () => {
     expect(asUser(() => ref.current!.attachPendingFile({ file }))).toEqual({ ok: true });
     expect(adapter.createTicket).not.toHaveBeenCalled();
 
-    fireEvent.change(screen.getByLabelText("What would you like us to know?"), {
+    fireEvent.change(screen.getByLabelText(/What would you like us to know/), {
       target: { value: "Unread badge is wrong" },
     });
-    fireEvent.click(screen.getByRole("button", { name: "Submit" }));
+    fireEvent.click(screen.getByRole("button", { name: "Send Feedback" }));
     await waitFor(() => expect(adapter.createTicket).toHaveBeenCalledTimes(1));
     expect(vi.mocked(adapter.createTicket).mock.calls[0]![0].attachments).toEqual([file]);
   });
@@ -224,7 +224,7 @@ describe("FeedbackWorkspace host pending-attachment API", () => {
         <NewFeedback ref={ref} onCancel={() => {}} onCreated={() => {}} />
       </FeedbackProvider>,
     );
-    await screen.findByLabelText("What would you like us to know?");
+    await screen.findByLabelText(/What would you like us to know/);
     let result;
     act(() => {
       result = ref.current!.attachPendingFile({ file: diagnostic() });
@@ -243,7 +243,7 @@ describe("FeedbackWorkspace host pending-attachment API", () => {
         <FeedbackWorkspace ref={ref} />
       </FeedbackProvider>,
     );
-    await screen.findByText("New feedback");
+    await screen.findByText("New Feedback");
     expect(asUser(() => ref.current!.attachPendingFile({ file: diagnostic() }))).toEqual({
       ok: false,
       reason: "composer_closed",
@@ -255,8 +255,8 @@ describe("FeedbackWorkspace host pending-attachment API", () => {
     const adapter = transport();
     adapter.createTicket = vi.fn(() => new Promise<FeedbackTicketDetail>(() => {}));
     const { ref } = await openNew(adapter);
-    fireEvent.change(screen.getByLabelText("What would you like us to know?"), { target: { value: "x" } });
-    fireEvent.click(screen.getByRole("button", { name: "Submit" }));
+    fireEvent.change(screen.getByLabelText(/What would you like us to know/), { target: { value: "x" } });
+    fireEvent.click(screen.getByRole("button", { name: "Send Feedback" }));
     await waitFor(() => expect(adapter.createTicket).toHaveBeenCalledTimes(1));
     expect(asUser(() => ref.current!.attachPendingFile({ file: diagnostic() }))).toEqual({
       ok: false,
@@ -280,7 +280,7 @@ describe("FeedbackWorkspace host pending-attachment API", () => {
         />
       </FeedbackProvider>,
     );
-    await screen.findByLabelText("What would you like us to know?");
+    await screen.findByLabelText(/What would you like us to know/);
     await new Promise((resolve) => setTimeout(resolve, 20));
     expect(pendingNames()).toEqual([]);
     expect(adapter.createTicket).not.toHaveBeenCalled();
@@ -295,7 +295,7 @@ describe("FeedbackWorkspace host pending-attachment API", () => {
           <FeedbackWorkspace ref={ref} />
         </FeedbackProvider>,
       );
-      await screen.findByText("New feedback");
+      await screen.findByText("New Feedback");
       return { ref, adapter };
     }
 
@@ -306,15 +306,15 @@ describe("FeedbackWorkspace host pending-attachment API", () => {
         asUser(() => ref.current!.openNewFeedbackWithPendingFile({ file })),
       ).toEqual({ ok: true });
       // Activation is already gone here; the file must still be pending.
-      expect(screen.getByLabelText("What would you like us to know?")).toBeTruthy();
+      expect(screen.getByLabelText(/What would you like us to know/)).toBeTruthy();
       expect(pendingNames()).toEqual(["Remove unread-activity.json"]);
       await new Promise((resolve) => setTimeout(resolve, 20));
       expect(adapter.createTicket).not.toHaveBeenCalled();
 
-      fireEvent.change(screen.getByLabelText("What would you like us to know?"), {
+      fireEvent.change(screen.getByLabelText(/What would you like us to know/), {
         target: { value: "Unread badge is wrong" },
       });
-      fireEvent.click(screen.getByRole("button", { name: "Submit" }));
+      fireEvent.click(screen.getByRole("button", { name: "Send Feedback" }));
       await waitFor(() => expect(adapter.createTicket).toHaveBeenCalledTimes(1));
       expect(vi.mocked(adapter.createTicket).mock.calls[0]![0].attachments).toEqual([file]);
     });
@@ -326,7 +326,7 @@ describe("FeedbackWorkspace host pending-attachment API", () => {
         result = ref.current!.openNewFeedbackWithPendingFile({ file: diagnostic() });
       });
       expect(result).toEqual({ ok: false, reason: "user_activation_required" });
-      expect(screen.queryByLabelText("What would you like us to know?")).toBeNull();
+      expect(screen.queryByLabelText(/What would you like us to know/)).toBeNull();
       expect(pendingNames()).toEqual([]);
       expect(adapter.createTicket).not.toHaveBeenCalled();
     });
@@ -342,7 +342,7 @@ describe("FeedbackWorkspace host pending-attachment API", () => {
           asUser(() => ref.current!.openNewFeedbackWithPendingFile(input as never)),
         ).toEqual({ ok: false, reason });
       }
-      expect(screen.queryByLabelText("What would you like us to know?")).toBeNull();
+      expect(screen.queryByLabelText(/What would you like us to know/)).toBeNull();
       expect(screen.queryByRole("alert")).toBeNull();
     });
 
@@ -362,8 +362,8 @@ describe("FeedbackWorkspace host pending-attachment API", () => {
       asUser(() => ref.current!.openNewFeedbackWithPendingFile({ file: diagnostic() }));
       expect(pendingNames()).toHaveLength(1);
       fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
-      fireEvent.click(await screen.findByText("New feedback"));
-      await screen.findByLabelText("What would you like us to know?");
+      fireEvent.click(await screen.findByText("New Feedback"));
+      await screen.findByLabelText(/What would you like us to know/);
       expect(pendingNames()).toEqual([]);
     });
 
@@ -380,7 +380,7 @@ describe("FeedbackWorkspace host pending-attachment API", () => {
           <Host />
         </FeedbackProvider>,
       );
-      await screen.findByText("New feedback");
+      await screen.findByText("New Feedback");
       expect(
         asUser(() => ref.current!.openNewFeedbackWithPendingFile({ file: diagnostic() })),
       ).toEqual({ ok: true });
@@ -396,7 +396,7 @@ describe("FeedbackWorkspace host pending-attachment API", () => {
           <FeedbackWorkspace ref={ref} onOpenPendingAttachment={onOpenPendingAttachment} />
         </FeedbackProvider>,
       );
-      await screen.findByText("New feedback");
+      await screen.findByText("New Feedback");
       const file = diagnostic();
       asUser(() => ref.current!.openNewFeedbackWithPendingFile({ file }));
       const chip = screen.getByRole("button", { name: "Open attachment unread-activity.json" });

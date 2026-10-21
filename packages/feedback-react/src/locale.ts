@@ -94,7 +94,22 @@ export type FeedbackMessageKey =
   | "uploadProgress"
   | "uploadOverall"
   | "workspaceTitle"
-  | "you";
+  | "you"
+  | "closeDialogDescription"
+  | "closeChoiceCompleted"
+  | "closeChoiceCompletedHint"
+  | "closeChoiceNoLongerNeeded"
+  | "closeChoiceNoLongerNeededHint"
+  | "newCount"
+  | "newMeta"
+  | "replyCountOne"
+  | "replyCountOther"
+  | "resolvedNotice"
+  | "screenshotsOptional"
+  | "sendFeedback"
+  | "showAll"
+  | "today"
+  | "yesterday";
 
 export type FeedbackMessages = Record<FeedbackMessageKey, string>;
 export type FeedbackMessageValues = Record<string, string | number>;
@@ -108,13 +123,13 @@ const messages: Record<FeedbackLocale, FeedbackMessages> = {
     attachmentTooMany: "Choose no more than {count} screenshots.",
     attachmentUnsupported: "{name} is not a supported image.",
     attachmentSummary: "{name} · {size}",
-    attachmentHint: "Up to {count} images.",
+    attachmentHint: "Up to {count} images, 10 MB each.",
     attachments: "Attachments",
-    attachFile: "Attach file",
-    attachImage: "Attach image",
+    attachFile: "Attach File",
+    attachImage: "Attach Image",
     back: "Back",
     cancel: "Cancel",
-    closeTicket: "Close ticket",
+    closeTicket: "Close Ticket",
     closeTicketCompletedConfirm: "Issue resolved — close this ticket?",
     closeTicketCompletedDescription:
       "You won’t be able to reply after closing. If the issue comes back, submit new feedback.",
@@ -154,12 +169,12 @@ const messages: Record<FeedbackLocale, FeedbackMessages> = {
     feedbackType: "Feedback type",
     idea: "Idea",
     inboxDescription: "Your feedback and replies from the team.",
-    loadMore: "Load more",
-    loadMoreReplies: "Load more replies",
+    loadMore: "Load More",
+    loadMoreReplies: "Load More Replies",
     loading: "Loading feedback",
     loadingMore: "Loading…",
     newDescription: "Share an idea or report a bug.",
-    newFeedback: "New feedback",
+    newFeedback: "New Feedback",
     newReplies: "New replies",
     noReplies: "No replies yet",
     openAttachment: "Open attachment {name}",
@@ -170,10 +185,10 @@ const messages: Record<FeedbackLocale, FeedbackMessages> = {
     remove: "Remove",
     reply: "Reply",
     replyPlaceholder: "Write a reply…",
-    retry: "Try again",
-    retryUpload: "Retry upload",
+    retry: "Try Again",
+    retryUpload: "Retry Upload",
     screenshots: "Screenshots (up to {count})",
-    sendReply: "Send reply",
+    sendReply: "Send Reply",
     sending: "Sending…",
     submit: "Submit",
     submitting: "Submitting…",
@@ -197,6 +212,21 @@ const messages: Record<FeedbackLocale, FeedbackMessages> = {
     uploadOverall: "Uploading {progress}%",
     workspaceTitle: "My Feedback",
     you: "You",
+    closeDialogDescription: "You won’t be able to reply after it’s closed. If the problem comes back, send new feedback.",
+    closeChoiceCompleted: "It works now",
+    closeChoiceCompletedHint: "The fix or the answer solved it.",
+    closeChoiceNoLongerNeeded: "No longer needed",
+    closeChoiceNoLongerNeededHint: "Close it without a fix.",
+    newCount: "{count} new",
+    newMeta: "The team replies in the ticket.",
+    replyCountOne: "1 reply",
+    replyCountOther: "{count} replies",
+    resolvedNotice: "The team marked this resolved. If it works for you now, close the ticket.",
+    screenshotsOptional: "Screenshots (optional)",
+    sendFeedback: "Send Feedback",
+    showAll: "Show All",
+    today: "Today",
+    yesterday: "Yesterday",
   },
   "zh-CN": {
     active: "活跃",
@@ -206,7 +236,7 @@ const messages: Record<FeedbackLocale, FeedbackMessages> = {
     attachmentTooMany: "最多选择 {count} 张截图。",
     attachmentUnsupported: "{name} 不是支持的图片格式。",
     attachmentSummary: "{name} · {size}",
-    attachmentHint: "最多添加 {count} 张图片。",
+    attachmentHint: "最多 {count} 张，每张不超过 10 MB。",
     attachments: "附件",
     attachFile: "添加文件",
     attachImage: "添加图片",
@@ -291,6 +321,21 @@ const messages: Record<FeedbackLocale, FeedbackMessages> = {
     uploadOverall: "正在上传 {progress}%",
     workspaceTitle: "我的反馈",
     you: "你",
+    closeDialogDescription: "关闭后不能再回复。如果问题再次出现，请发新的反馈。",
+    closeChoiceCompleted: "现在正常了",
+    closeChoiceCompletedHint: "修复或回答解决了问题。",
+    closeChoiceNoLongerNeeded: "不再需要",
+    closeChoiceNoLongerNeededHint: "不需要修复，直接关闭。",
+    newCount: "{count} 条新回复",
+    newMeta: "团队会在工单里回复你。",
+    replyCountOne: "1 条回复",
+    replyCountOther: "{count} 条回复",
+    resolvedNotice: "团队已将这条标记为已解决。如果现在正常了，可以关闭工单。",
+    screenshotsOptional: "截图（选填）",
+    sendFeedback: "发送反馈",
+    showAll: "查看全部",
+    today: "今天",
+    yesterday: "昨天",
   },
 };
 

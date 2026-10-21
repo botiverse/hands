@@ -64,6 +64,10 @@ const ticket = {
   commentCount: 1,
 };
 
+// The row's open button is named by the ticket's first line, then its unread
+// count when there is one ("…, 2 unread").
+const ticketRowName = /^A reporter-visible ticket(, .+)?$/;
+
 const page: FeedbackTicketPage = {
   tickets: [ticket],
   nextCursor: null,
@@ -101,6 +105,61 @@ describe("FeedbackWorkspace browser behavior", () => {
     fireEvent.touchEnd(element, { changedTouches: [{ clientY: distance }] });
   };
 
+  it("shows each ticket's latest comment under its title and merges a sender's run in the conversation", async () => {
+    const adapter = transport();
+    adapter.listTickets = vi.fn(async () => ({
+      ...page,
+      tickets: [
+        {
+          ...ticket,
+          latestComment: {
+            authorType: "staff" as const,
+            bodyPreview: "Fixed in **1.21.30** — see [notes](https://example.test)",
+            createdAt: 5,
+          },
+        },
+        {
+          ...ticket,
+          id: "ticket-quiet",
+          message: "Nobody replied yet",
+          unread: false,
+          unreadCount: 0,
+          commentCount: 0,
+          latestComment: null,
+        },
+      ],
+    }));
+    adapter.getTicket = vi.fn(async () => ({
+      ...detail,
+      comments: [
+        { id: "c1", authorType: "staff" as const, body: "First", createdAt: 3 },
+        { id: "c2", authorType: "staff" as const, body: "Second", createdAt: 4 },
+        { id: "c3", authorType: "reporter" as const, body: "Mine", createdAt: 5 },
+      ],
+    }));
+    const { container } = render(
+      <FeedbackProvider transport={adapter}>
+        <FeedbackWorkspace />
+      </FeedbackProvider>,
+    );
+    await screen.findByText(ticket.message);
+    const previews = container.querySelectorAll<HTMLElement>(".hands-feedback-ticket-preview");
+    // One preview line, as plain text with its sender; none for a ticket
+    // nobody has replied to.
+    expect(previews).toHaveLength(1);
+    expect(previews[0]!.textContent).toBe("Team: Fixed in 1.21.30 — see notes");
+
+    fireEvent.click(screen.getByRole("button", { name: ticketRowName }));
+    await screen.findByText("Second");
+    const items = Array.from(
+      container.querySelectorAll<HTMLElement>("[data-slot='message-item']"),
+    );
+    // Ticket message (you), First (team), Second (team, merged), Mine (you).
+    expect(items).toHaveLength(4);
+    expect(items.map((item) => item.querySelector("[data-slot='message-item-sender']")?.textContent ?? null))
+      .toEqual(["You", "Team", null, "You"]);
+  });
+
   it("confirms and closes only through an available host capability", async () => {
     const adapter = transport();
     const closedDetail: FeedbackTicketDetail = {
@@ -114,42 +173,38 @@ describe("FeedbackWorkspace browser behavior", () => {
     };
     adapter.closeTicket = vi.fn(async () => closedDetail);
     const { container } = render(
-      <FeedbackProvider transport={adapter} locale="zh-CN" theme="brutal">
+      <FeedbackProvider transport={adapter} locale="zh-CN">
         <FeedbackWorkspace />
       </FeedbackProvider>,
     );
 
     fireEvent.click(
-      await screen.findByRole("button", { name: ticket.message }),
+      await screen.findByRole("button", { name: ticketRowName }),
     );
-    const closeButton = await screen.findByRole("button", { name: "关闭工单" });
-    const messageFooter = closeButton.closest("[data-slot='message-item-footer']");
-    expect(messageFooter).toBeTruthy();
-    const kindChip = messageFooter?.querySelector<HTMLElement>(
-      "[data-feedback-kind='feedback']",
-    );
-    expect(kindChip).toBeTruthy();
-    expect(kindChip?.className).toContain("hands-feedback-reference-chip");
+    // Close is the ticket page's own action: an icon button at the end of
+    // its header, beside the status on the title's line.
+    const header = await waitFor(() => {
+      const element = container.querySelector<HTMLElement>(
+        ".hands-feedback-detail [data-slot='panel-header']",
+      );
+      expect(element).toBeTruthy();
+      return element!;
+    });
+    const closeButton = within(header).getByRole("button", { name: "关闭工单" });
+    expect(header.querySelector("[data-slot='panel-status'] [data-feedback-status='open']")).toBeTruthy();
     expect(
-      Array.from(kindChip?.children ?? []).some(
-        (child) => child.tagName.toLowerCase() === "svg",
-      ),
-    ).toBe(false);
-    expect(messageFooter?.querySelector("[data-feedback-status='open']")).toBeTruthy();
-    expect(closeButton.className).toContain("hands-feedback-close-main");
-    expect(
-      closeButton.closest("[data-slot='message-item']")
-        ?.querySelector("[data-slot='message-item-header'] [data-feedback-status]"),
+      container.querySelector("[data-slot='message-item'] [data-feedback-status]"),
     ).toBeNull();
     fireEvent.click(closeButton);
     const dialog = await screen.findByRole("alertdialog");
-    expect(within(dialog).getByText("不再需要处理，关闭工单？")).toBeTruthy();
+    expect(within(dialog).getByRole("heading", { name: "关闭工单" })).toBeTruthy();
     expect(
-      within(dialog).getByText(
-        "即使问题尚未解决，也会直接关闭工单。如果仍需帮助，可以重新提交反馈。",
-      ),
+      within(dialog).getByText("关闭后不能再回复。如果问题再次出现，请发新的反馈。"),
     ).toBeTruthy();
-    expect(dialog.querySelector(".hands-feedback-close-reason-summary")).toBeNull();
+    // An open ticket defaults to "no longer needed": nothing has been fixed.
+    expect(
+      within(dialog).getByRole("radio", { name: /不再需要/ }).getAttribute("aria-checked"),
+    ).toBe("true");
     expect(adapter.closeTicket).not.toHaveBeenCalled();
     fireEvent.click(within(dialog).getByRole("button", { name: "关闭工单" }));
 
@@ -167,59 +222,81 @@ describe("FeedbackWorkspace browser behavior", () => {
       ).toBeTruthy(),
     );
     expect(screen.queryByRole("alertdialog")).toBeNull();
+    // Closed: the reply box gives way to a line saying so, and the header
+    // loses its close action.
     expect(screen.queryByLabelText("回复")).toBeNull();
+    expect(container.querySelector(".hands-feedback-closed-note")?.textContent).toContain(
+      "该工单已关闭",
+    );
+    expect(within(header).queryByRole("button", { name: "关闭工单" })).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "返回" }));
     await waitFor(() => expect(screen.getByText("已关闭")).toBeTruthy());
   });
 
-  it("keeps list-item open and close actions independent", async () => {
+  it("asks a resolved ticket's reporter to close it, defaulting to fixed", async () => {
     const adapter = transport();
+    const resolved = { ...detail.ticket, status: "resolved" as const };
+    adapter.listTickets = vi.fn(async () => ({
+      ...page,
+      tickets: [{ ...ticket, status: "resolved" as const }],
+    }));
+    adapter.getTicket = vi.fn(async () => ({ ...detail, ticket: resolved }));
     adapter.closeTicket = vi.fn(async () => ({
       ...detail,
-      ticket: {
-        ...detail.ticket,
-        status: "closed",
-        closureReason: "no_longer_needed",
-        updatedAt: 4,
-      },
+      ticket: { ...resolved, status: "closed" as const, closureReason: "completed" as const },
     }));
     const { container } = render(
-      <FeedbackProvider transport={adapter} theme="brutal">
+      <FeedbackProvider transport={adapter}>
+        <FeedbackWorkspace />
+      </FeedbackProvider>,
+    );
+    fireEvent.click(await screen.findByRole("button", { name: ticketRowName }));
+    const notice = await waitFor(() => {
+      const element = container.querySelector<HTMLElement>("[data-slot='panel-notice']");
+      expect(element).toBeTruthy();
+      return element!;
+    });
+    expect(notice.textContent).toContain("The team marked this resolved");
+    // The notice carries the one close action; the header doesn't repeat it.
+    expect(
+      container.querySelector("[data-slot='panel-header'] [aria-label='Close Ticket']"),
+    ).toBeNull();
+    fireEvent.click(within(notice).getByRole("button", { name: "Close Ticket" }));
+    const dialog = await screen.findByRole("alertdialog");
+    expect(
+      within(dialog).getByRole("radio", { name: /It works now/ }).getAttribute("aria-checked"),
+    ).toBe("true");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Close Ticket" }));
+    await waitFor(() =>
+      expect(adapter.closeTicket).toHaveBeenCalledWith(
+        expect.objectContaining({ ticketId: ticket.id, reason: "completed" }),
+      ),
+    );
+  });
+
+  it("opens a ticket from its row, which has no close action of its own", async () => {
+    const adapter = transport();
+    adapter.closeTicket = vi.fn(async () => detail);
+    const { container } = render(
+      <FeedbackProvider transport={adapter}>
         <FeedbackWorkspace />
       </FeedbackProvider>,
     );
 
     const openTicket = await screen.findByRole("button", {
-      name: ticket.message,
+      name: ticketRowName,
     });
-    const card = openTicket.closest<HTMLElement>("[data-slot='task-card']")!;
-    const closeTicket = within(card).getByRole("button", {
-      name: "Close ticket",
-    });
-
-    fireEvent.click(closeTicket);
-    expect(adapter.getTicket).not.toHaveBeenCalled();
+    const row = openTicket.closest<HTMLElement>("[data-slot='inbox-item']")!;
+    expect(row).toBeTruthy();
+    // A list where every row carries a button reads as a wall of buttons;
+    // the row itself is the target (raft-design InboxItem).
+    expect(within(row).getAllByRole("button")).toEqual([openTicket]);
+    fireEvent.click(openTicket);
+    await waitFor(() => expect(adapter.getTicket).toHaveBeenCalledTimes(1));
     expect(adapter.closeTicket).not.toHaveBeenCalled();
-    const dialog = await screen.findByRole("alertdialog");
-    fireEvent.click(
-      within(dialog).getByRole("button", { name: "Close ticket" }),
-    );
-
-    await waitFor(() => expect(adapter.closeTicket).toHaveBeenCalledTimes(1));
-    expect(adapter.closeTicket).toHaveBeenCalledWith(
-      expect.objectContaining({
-        ticketId: ticket.id,
-        reason: "no_longer_needed",
-        signal: expect.any(AbortSignal),
-      }),
-    );
     await waitFor(() =>
-      expect(
-        card.querySelector("[data-feedback-status='closed']"),
-      ).toBeTruthy(),
+      expect(container.querySelector(".hands-feedback-detail")).toBeTruthy(),
     );
-    expect(within(card).queryByRole("button", { name: "Close ticket" })).toBeNull();
-    expect(container.querySelector(".hands-feedback-detail")).toBeNull();
   });
 
   it("supports host copy and date localization overrides through one provider contract", async () => {
@@ -263,14 +340,25 @@ describe("FeedbackWorkspace browser behavior", () => {
     expect(
       screen.getByRole("tablist", { name: "Ticket state" }),
     ).toBeTruthy();
-    expect(container.querySelector("[data-slot='task-card']")).toBeTruthy();
-    const unreadCount = screen.getByLabelText("2 new items");
-    expect(unreadCount.textContent).toBe("2");
+    expect(container.querySelector("[data-slot='inbox-item']")).toBeTruthy();
+    // The unread count is in the row's name (host copy), and shown as a
+    // count beside the status.
+    expect(
+      screen.getByRole("button", { name: `${ticket.message}, 2 new items` }),
+    ).toBeTruthy();
+    const unreadCount = container.querySelector<HTMLElement>(
+      ".hands-feedback-unread-count",
+    )!;
+    expect(unreadCount.textContent).toBe("2 new");
     expect(unreadCount.getAttribute("data-feedback-unread-count")).toBe("2");
-    const listDate = screen.getByText("DATE:en:2", { exact: false });
-    expect(listDate.closest(".hands-feedback-ticket-date")).toBeTruthy();
-    expect(listDate.closest(".hands-feedback-ticket-meta")).toBeNull();
-    fireEvent.click(listTitle);
+    // The row's time is the latest activity; the host's date format is its
+    // full-date tooltip.
+    const listTime = container.querySelector<HTMLElement>(
+      "[data-slot='inbox-item-timestamp'] time",
+    )!;
+    expect(listTime.getAttribute("title")).toBe("DATE:en:1");
+    expect(listTime.closest(".hands-feedback-ticket-meta")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: `${ticket.message}, 2 new items` }));
     expect(await screen.findByText("proof.png")).toBeTruthy();
     expect(screen.getByText("SIZE:en:2048")).toBeTruthy();
     expect(screen.getByLabelText("OPEN proof.png")).toBeTruthy();
@@ -297,7 +385,7 @@ describe("FeedbackWorkspace browser behavior", () => {
     );
   });
 
-  it("renders every unread value as a rounded rectangular numeric badge", async () => {
+  it("shows each unread count as a pink count and in the row name", async () => {
     const adapter = transport();
     adapter.listTickets = vi.fn(async () => ({
       tickets: [1, 2, 120].map((unreadCount) => ({
@@ -311,7 +399,7 @@ describe("FeedbackWorkspace browser behavior", () => {
       unreadTotal: 3,
     }));
     const { container } = render(
-      <FeedbackProvider transport={adapter} theme="brutal">
+      <FeedbackProvider transport={adapter}>
         <FeedbackWorkspace />
       </FeedbackProvider>,
     );
@@ -322,19 +410,25 @@ describe("FeedbackWorkspace browser behavior", () => {
         ".hands-feedback-unread-count",
       ),
     );
-    expect(badges.map((badge) => badge.textContent)).toEqual(["1", "2", "99+"]);
-    expect(badges.map((badge) => badge.getAttribute("aria-label"))).toEqual([
-      "1 unread",
-      "2 unread",
-      "120 unread",
+    expect(badges.map((badge) => badge.textContent)).toEqual([
+      "1 new",
+      "2 new",
+      "99+ new",
     ]);
+    // A count that wait for the person is raft-ui's pink badge.
+    expect(badges.every((badge) => badge.dataset.slot === "badge")).toBe(true);
+    // The exact count is in each row's accessible name.
+    expect(
+      screen.getAllByRole("button", { name: /^Unread \d+, \d+ unread$/ })
+        .map((button) => button.getAttribute("aria-label")),
+    ).toEqual(["Unread 1, 1 unread", "Unread 2, 2 unread", "Unread 120, 120 unread"]);
     expect(container.querySelector(".hands-feedback-unread-dot")).toBeNull();
   });
 
   it("pull-refreshes list and conversation only from scroll-top", async () => {
     const adapter = transport();
     render(
-      <FeedbackProvider transport={adapter} theme="brutal">
+      <FeedbackProvider transport={adapter}>
         <FeedbackWorkspace enablePullToRefresh />
       </FeedbackProvider>,
     );
@@ -347,7 +441,7 @@ describe("FeedbackWorkspace browser behavior", () => {
     pullDown(listViewport);
     await waitFor(() => expect(adapter.listTickets).toHaveBeenCalledTimes(2));
 
-    fireEvent.click(screen.getByRole("button", { name: ticket.message }));
+    fireEvent.click(screen.getByRole("button", { name: ticketRowName }));
     await screen.findByText("Thanks");
     const conversation = screen.getByLabelText("Conversation");
     Object.defineProperty(conversation, "scrollTop", {
@@ -368,19 +462,19 @@ describe("FeedbackWorkspace browser behavior", () => {
     const adapter = transport();
     const onRouteChange = vi.fn();
     render(
-      <FeedbackProvider transport={adapter} theme="brutal">
+      <FeedbackProvider transport={adapter}>
         <FeedbackWorkspace onRouteChange={onRouteChange} />
       </FeedbackProvider>,
     );
 
-    fireEvent.click(await screen.findByRole("button", { name: "New feedback" }));
+    fireEvent.click(await screen.findByRole("button", { name: "New Feedback" }));
     fireEvent.change(
       screen.getByRole("textbox", {
-        name: "What would you like us to know?",
+        name: /What would you like us to know/,
       }),
       { target: { value: "Route this ticket" } },
     );
-    fireEvent.click(screen.getByRole("button", { name: "Submit" }));
+    fireEvent.click(screen.getByRole("button", { name: "Send Feedback" }));
 
     await waitFor(() => expect(adapter.createTicket).toHaveBeenCalledTimes(1));
     await waitFor(() =>
@@ -417,7 +511,7 @@ describe("FeedbackWorkspace browser behavior", () => {
         <FeedbackWorkspace />
       </FeedbackProvider>,
     );
-    fireEvent.click(await screen.findByText("New feedback"));
+    fireEvent.click(await screen.findByText("New Feedback"));
     const file = new File(["text"], "notes.txt", { type: "text/plain" });
     fireEvent.change(screen.getByLabelText("Screenshots (up to 3)"), {
       target: { files: [file] },
@@ -433,16 +527,14 @@ describe("FeedbackWorkspace browser behavior", () => {
     const { container } = render(
       <FeedbackProvider
         transport={adapter}
-        theme="brutal"
         onUnreadChanged={onUnreadChanged}
       >
         <FeedbackWorkspace />
       </FeedbackProvider>,
     );
 
-    expect(
-      container.querySelector("[data-hands-feedback-theme='brutal']"),
-    ).not.toBeNull();
+    // raft-ui 0.6 has a single look; the workspace must not stamp a theme attribute.
+    expect(container.querySelector("[data-hands-feedback-theme]")).toBeNull();
     expect(await screen.findByText(ticket.message)).toBeTruthy();
     expect(adapter.listTickets).toHaveBeenCalledWith(
       expect.objectContaining({ limit: 20 }),
@@ -456,7 +548,7 @@ describe("FeedbackWorkspace browser behavior", () => {
       source: "list",
     });
 
-    fireEvent.click(screen.getByRole("button", { name: ticket.message }));
+    fireEvent.click(screen.getByRole("button", { name: ticketRowName }));
     expect(await screen.findByText("Thanks")).toBeTruthy();
     expect(adapter.getTicket).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -496,17 +588,15 @@ describe("FeedbackWorkspace browser behavior", () => {
       unreadTotal: 0,
     }));
     const { container } = render(
-      <FeedbackProvider transport={adapter} theme="brutal">
+      <FeedbackProvider transport={adapter}>
         <FeedbackWorkspace />
       </FeedbackProvider>,
     );
 
     await screen.findByText("Ticket open");
-    const taskCard = container.querySelector<HTMLElement>(
-      "[data-slot='task-card']",
-    );
-    expect(taskCard?.className).toContain("border-2");
-    expect(taskCard?.className).toContain("shadow-raft-sm");
+    // Each ticket is an InboxItem row, the same row Raft's Activity uses.
+    const rows = container.querySelectorAll<HTMLElement>("[data-slot='inbox-item']");
+    expect(rows).toHaveLength(4);
     expect(screen.getByRole("tab", { name: "Active" })).toBeTruthy();
     expect(screen.getByRole("tab", { name: "Ended" })).toBeTruthy();
     expect(
@@ -527,118 +617,32 @@ describe("FeedbackWorkspace browser behavior", () => {
       { backgroundColor: "", slot: "badge" },
       { backgroundColor: "", slot: "badge" },
     ]);
-    expect(
-      Array.from(
-        container.querySelectorAll<HTMLElement>("[data-feedback-status]"),
-      ).map((badge) => badge.querySelector("svg")?.getAttribute("class")),
-    ).toEqual([
-      "lucide lucide-circle",
-      "lucide lucide-play",
-      "lucide lucide-circle-check-big",
-      "lucide lucide-ban",
-    ]);
+    // Each status chip leads with the design system's status pixel, not an icon.
+    for (const badge of container.querySelectorAll<HTMLElement>("[data-feedback-status]")) {
+      expect(badge.querySelector("[data-slot='status']")).toBeTruthy();
+      expect(badge.querySelector("svg")).toBeNull();
+    }
     expect(
       Array.from(
         container.querySelectorAll<HTMLElement>("[data-feedback-status]"),
       ).every((badge) => badge.closest(".hands-feedback-ticket-meta")),
     ).toBe(true);
-    expect(
-      container.querySelectorAll(".hands-feedback-ticket-meta [data-feedback-kind]"),
-    ).toHaveLength(4);
-    const problemChip = container.querySelector<HTMLElement>(
-      "[data-feedback-kind='bug']",
+    // The kind is the title's icon, named for screen readers; colour stays
+    // with status.
+    const titles = container.querySelectorAll<HTMLElement>(
+      ".hands-feedback-ticket-title[data-feedback-kind]",
     );
-    expect(problemChip?.textContent).toContain("Bug");
-    expect(problemChip?.className).toContain("hands-feedback-problem-chip");
-    expect(problemChip?.className).toContain("bg-brutal-stone/25");
-    expect(problemChip?.className).not.toContain("bg-brutal-pink/30");
-    const closeActions = screen.getAllByRole("button", {
-      name: "Close ticket",
-    });
-    expect(closeActions).toHaveLength(3);
+    expect(Array.from(titles).map((title) => title.dataset.feedbackKind)).toEqual([
+      "feedback",
+      "feedback",
+      "bug",
+      "feedback",
+    ]);
+    expect(titles[2]?.querySelector("svg")?.getAttribute("aria-label")).toBe("Bug");
+    expect(titles[0]?.querySelector("svg")?.getAttribute("aria-label")).toBe("Idea");
+    // No row carries a close action: closing lives on the ticket's page.
+    expect(screen.queryByRole("button", { name: "Close Ticket" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Reopen ticket" })).toBeNull();
-    const reasonMenus = screen.getAllByRole("button", {
-      name: "Choose a close reason",
-    });
-    expect(reasonMenus).toHaveLength(3);
-    expect(closeActions.every((button) =>
-      button.className.includes("hands-feedback-reference-chip")
-    )).toBe(true);
-    expect(reasonMenus.every((button) =>
-      button.className.includes("hands-feedback-reference-chip")
-    )).toBe(true);
-    expect(closeActions.every((button) =>
-      button.className.includes("hands-feedback-close-main")
-    )).toBe(true);
-    expect(reasonMenus.every((button) =>
-      button.className.includes("hands-feedback-close-caret")
-    )).toBe(true);
-    expect(reasonMenus.every((button) =>
-      button.querySelector(":scope > .hands-feedback-close-caret-content > svg") &&
-      !button.matches(":has(> svg)")
-    )).toBe(true);
-    expect(
-      closeActions.every((action) =>
-        action.closest(".hands-feedback-ticket-meta"),
-      ),
-    ).toBe(true);
-    fireEvent.click(closeActions[0]!);
-    const dialog = await screen.findByRole("alertdialog");
-    expect(
-      within(dialog).getByText("No longer need help — close this ticket?"),
-    ).toBeTruthy();
-    expect(
-      within(dialog).getByText(
-        "This will close the ticket even if the issue isn’t resolved. If you still need help, submit new feedback.",
-      ),
-    ).toBeTruthy();
-    expect(dialog.querySelector(".hands-feedback-close-reason-summary")).toBeNull();
-    expect(adapter.closeTicket).not.toHaveBeenCalled();
-    fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
-    expect(screen.queryByRole("alertdialog")).toBeNull();
-
-    fireEvent.click(reasonMenus[0]!);
-    const reasonMenu = await screen.findByRole("menu");
-    const closeSplit = reasonMenus[0]!.closest(".hands-feedback-close-split");
-    expect(closeSplit?.getAttribute("data-menu-open")).toBe("");
-    expect(reasonMenus[0]?.getAttribute("data-popup-open")).toBe("");
-    expect(within(reasonMenu).getByText("Completed")).toBeTruthy();
-    expect(
-      within(reasonMenu).getByText(
-        "Confirm resolved and close.",
-      ),
-    ).toBeTruthy();
-    expect(within(reasonMenu).getByText("No longer needed")).toBeTruthy();
-    expect(
-      within(reasonMenu).getByText(
-        "Close — no further action needed.",
-      ),
-    ).toBeTruthy();
-    fireEvent.click(within(reasonMenu).getByText("Completed"));
-    const alternateDialog = await screen.findByRole("alertdialog");
-    expect(
-      within(alternateDialog).getByText(
-        "Issue resolved — close this ticket?",
-      ),
-    ).toBeTruthy();
-    expect(
-      within(alternateDialog).getByText(
-        "You won’t be able to reply after closing. If the issue comes back, submit new feedback.",
-      ),
-    ).toBeTruthy();
-    expect(within(alternateDialog).queryByText("Completed")).toBeNull();
-    fireEvent.click(
-      within(alternateDialog).getByRole("button", { name: "Cancel" }),
-    );
-
-    fireEvent.click(closeActions[2]!);
-    const resolvedDialog = await screen.findByRole("alertdialog");
-    expect(
-      within(resolvedDialog).getByText("Issue resolved — close this ticket?"),
-    ).toBeTruthy();
-    expect(
-      within(resolvedDialog).getByRole("button", { name: "Close ticket" }),
-    ).toBeTruthy();
   });
 
   it("presents a completed closed ticket as resolved without reopening it", async () => {
@@ -679,7 +683,7 @@ describe("FeedbackWorkspace browser behavior", () => {
       unreadTotal: 0,
     }));
     const { container } = render(
-      <FeedbackProvider transport={adapter} theme="brutal">
+      <FeedbackProvider transport={adapter}>
         <FeedbackWorkspace />
       </FeedbackProvider>,
     );
@@ -687,16 +691,14 @@ describe("FeedbackWorkspace browser behavior", () => {
     await screen.findByText("Completed closed ticket");
     const completedCard = screen
       .getByRole("button", { name: "Completed closed ticket" })
-      .closest<HTMLElement>("[data-slot='task-card']")!;
+      .closest<HTMLElement>("[data-slot='inbox-item']")!;
     const completedStatus = completedCard.querySelector<HTMLElement>(
       "[data-feedback-status='closed']",
     )!;
     expect(completedStatus.dataset.feedbackDisplayStatus).toBe("resolved");
     expect(completedStatus.style.backgroundColor).toBe("");
     expect(completedStatus.textContent).toContain("Resolved");
-    expect(completedStatus.querySelector("svg")?.getAttribute("class")).toBe(
-      "lucide lucide-circle-check-big",
-    );
+    expect(completedStatus.querySelector("[data-slot='status']")).toBeTruthy();
     fireEvent.click(
       screen.getByRole("button", { name: "Completed closed ticket" }),
     );
@@ -712,18 +714,16 @@ describe("FeedbackWorkspace browser behavior", () => {
 
     const noLongerNeededCard = screen
       .getByRole("button", { name: "No longer needed ticket" })
-      .closest<HTMLElement>("[data-slot='task-card']")!;
+      .closest<HTMLElement>("[data-slot='inbox-item']")!;
     const noLongerNeededStatus = noLongerNeededCard.querySelector<HTMLElement>(
       "[data-feedback-status='closed']",
     )!;
     expect(noLongerNeededStatus.dataset.feedbackDisplayStatus).toBe("closed");
     expect(noLongerNeededStatus.style.backgroundColor).toBe("");
     expect(noLongerNeededStatus.textContent).toContain("Closed");
-    expect(noLongerNeededStatus.querySelector("svg")?.getAttribute("class")).toBe(
-      "lucide lucide-ban",
-    );
+    expect(noLongerNeededStatus.querySelector("[data-slot='status']")).toBeTruthy();
 
-    expect(screen.queryByRole("button", { name: "Close ticket" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Close Ticket" })).toBeNull();
     expect(container.querySelectorAll("[data-feedback-status='closed']")).toHaveLength(2);
   });
 
@@ -757,7 +757,7 @@ describe("FeedbackWorkspace browser behavior", () => {
   it("keeps one page title and one create entry across list, empty, and compose states", async () => {
     const adapter = transport();
     const view = render(
-      <FeedbackProvider transport={adapter} theme="brutal">
+      <FeedbackProvider transport={adapter}>
         <FeedbackWorkspace />
       </FeedbackProvider>,
     );
@@ -765,8 +765,8 @@ describe("FeedbackWorkspace browser behavior", () => {
     expect(
       await screen.findByRole("heading", { name: "My Feedback" }),
     ).toBeTruthy();
-    const createButton = screen.getByRole("button", { name: "New feedback" });
-    expect(createButton.className).toContain("h-6");
+    const createButton = screen.getByRole("button", { name: "New Feedback" });
+    expect(createButton.closest(".hands-feedback-toolbar")).toBeTruthy();
     expect(
       screen.getByRole("tablist", { name: "Status filter" }),
     ).toBeTruthy();
@@ -779,7 +779,7 @@ describe("FeedbackWorkspace browser behavior", () => {
       unreadTotal: 0,
     }));
     const empty = render(
-      <FeedbackProvider transport={emptyAdapter} theme="brutal">
+      <FeedbackProvider transport={emptyAdapter}>
         <FeedbackWorkspace />
       </FeedbackProvider>,
     );
@@ -791,7 +791,7 @@ describe("FeedbackWorkspace browser behavior", () => {
       ),
     ).toBeTruthy();
     expect(
-      screen.getAllByRole("button", { name: "New feedback" }),
+      screen.getAllByRole("button", { name: "New Feedback" }),
     ).toHaveLength(1);
     expect(screen.queryByRole("tablist", { name: "Status filter" })).toBeNull();
     expect(empty.container.querySelector(".hands-feedback-empty")).not.toBeNull();
@@ -799,12 +799,12 @@ describe("FeedbackWorkspace browser behavior", () => {
       empty.container.querySelector("[data-feedback-empty-kind='all']"),
     ).not.toBeNull();
 
-    fireEvent.click(screen.getByRole("button", { name: "New feedback" }));
+    fireEvent.click(screen.getByRole("button", { name: "New Feedback" }));
     expect(
-      screen.getByRole("heading", { name: "New feedback" }),
+      screen.getByRole("heading", { name: "New Feedback" }),
     ).toBeTruthy();
     expect(screen.getByRole("button", { name: "Back" })).toBeTruthy();
-    const kind = screen.getByRole("radiogroup", { name: "Feedback type" });
+    const kind = screen.getByRole("radiogroup", { name: "Type" });
     expect(kind).toBeTruthy();
     expect(kind.getAttribute("data-slot")).toBe("segmented-control");
     expect(screen.getByRole("radio", { name: "Idea" })).toBeTruthy();
@@ -812,16 +812,19 @@ describe("FeedbackWorkspace browser behavior", () => {
     expect(screen.getByRole("radio", { name: "Idea" }).className).toContain(
       "hands-feedback-kind-item",
     );
-    expect(screen.getByRole("button", { name: "Attach image" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Attach file" })).toBeTruthy();
-    expect(screen.getByText("0/10000")).toBeTruthy();
+    // A page form (raft-design Forms): the message is a field of its own,
+    // screenshots are optional, and Cancel and the one pink button end it.
+    expect(screen.getByRole("textbox", { name: /What would you like us to know/ }).dataset.slot).toBe("textarea");
+    expect(screen.getByRole("button", { name: "Attach Image" })).toBeTruthy();
+    expect(screen.getByText("Screenshots (optional)")).toBeTruthy();
     const cancel = screen.getByRole("button", { name: "Cancel" });
-    expect(cancel.closest(".hands-feedback-composer-toolbar")).not.toBeNull();
+    expect(cancel.closest(".hands-feedback-form-actions")).not.toBeNull();
     expect(cancel.closest(".hands-feedback-header")).toBeNull();
-    const submit = screen.getByRole("button", { name: "Submit" });
-    expect(submit).toBeTruthy();
-    expect(cancel.className).toContain("h-7");
-    expect(submit.className).toContain("h-7");
+    const submit = screen.getByRole("button", { name: "Send Feedback" });
+    expect(submit.closest(".hands-feedback-form-actions")).toBe(
+      cancel.closest(".hands-feedback-form-actions"),
+    );
+    expect(submit.getAttribute("type")).toBe("submit");
   });
 
   it("keeps filtered empty states next to the tabs with accurate semantics", async () => {
@@ -832,7 +835,7 @@ describe("FeedbackWorkspace browser behavior", () => {
       unreadTotal: 0,
     }));
     const endedView = render(
-      <FeedbackProvider transport={endedAdapter} theme="brutal">
+      <FeedbackProvider transport={endedAdapter}>
         <FeedbackWorkspace />
       </FeedbackProvider>,
     );
@@ -853,7 +856,7 @@ describe("FeedbackWorkspace browser behavior", () => {
     endedView.unmount();
     const activeAdapter = transport();
     const activeView = render(
-      <FeedbackProvider transport={activeAdapter} theme="brutal">
+      <FeedbackProvider transport={activeAdapter}>
         <FeedbackWorkspace />
       </FeedbackProvider>,
     );
@@ -880,7 +883,7 @@ describe("FeedbackWorkspace browser behavior", () => {
         }),
     );
     const { container } = render(
-      <FeedbackProvider transport={adapter} theme="brutal">
+      <FeedbackProvider transport={adapter}>
         <FeedbackWorkspace />
       </FeedbackProvider>,
     );
@@ -917,7 +920,7 @@ describe("FeedbackWorkspace browser behavior", () => {
     );
 
     fireEvent.click(
-      await screen.findByRole("button", { name: ticket.message }),
+      await screen.findByRole("button", { name: ticketRowName }),
     );
     expect(await screen.findByText("Thanks")).toBeTruthy();
     expect(onUnreadChanged).toHaveBeenCalledTimes(1);
@@ -1003,13 +1006,13 @@ describe("FeedbackWorkspace browser behavior", () => {
     );
 
     fireEvent.click(
-      await screen.findByRole("button", { name: ticket.message }),
+      await screen.findByRole("button", { name: ticketRowName }),
     );
     const firstDraft = await screen.findByLabelText("Reply");
     expect(firstDraft.closest(".hands-feedback-composer")).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Attach image" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Attach file" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Send reply" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Attach Image" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Attach File" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Send Reply" })).toBeTruthy();
     fireEvent.change(firstDraft, { target: { value: "draft one" } });
     fireEvent.keyDown(firstDraft, { key: "Enter", isComposing: true });
     fireEvent.keyDown(firstDraft, { key: "Enter", shiftKey: true });
@@ -1023,7 +1026,7 @@ describe("FeedbackWorkspace browser behavior", () => {
     });
     fireEvent.click(screen.getByRole("button", { name: "Back" }));
     fireEvent.click(
-      await screen.findByRole("button", { name: ticket.message }),
+      await screen.findByRole("button", { name: ticketRowName }),
     );
     const restored = (await screen.findByLabelText(
       "Reply",
@@ -1052,7 +1055,7 @@ describe("FeedbackWorkspace browser behavior", () => {
       </FeedbackProvider>,
     );
 
-    fireEvent.click(await screen.findByText("New feedback"));
+    fireEvent.click(await screen.findByText("New Feedback"));
     const attachment = new File([new Uint8Array(128)], "proof.png", {
       type: "image/png",
     });
@@ -1108,7 +1111,7 @@ describe("FeedbackWorkspace browser behavior", () => {
     fireEvent.change(screen.getByLabelText("Reply"), {
       target: { value: "Reply with a screenshot" },
     });
-    fireEvent.click(screen.getByRole("button", { name: "Send reply" }));
+    fireEvent.click(screen.getByRole("button", { name: "Send Reply" }));
 
     await waitFor(() => expect(adapter.addComment).toHaveBeenCalledTimes(1));
     const input = vi.mocked(adapter.addComment).mock.calls[0]![0];
@@ -1132,8 +1135,8 @@ describe("FeedbackWorkspace browser behavior", () => {
       </FeedbackProvider>,
     );
 
-    fireEvent.click(await screen.findByText("New feedback"));
-    fireEvent.change(screen.getByLabelText("What would you like us to know?"), {
+    fireEvent.click(await screen.findByText("New Feedback"));
+    fireEvent.change(screen.getByLabelText(/What would you like us to know/), {
       target: { value: "Show upload progress" },
     });
     fireEvent.change(screen.getByLabelText("Screenshots (up to 3)"), {
@@ -1141,7 +1144,7 @@ describe("FeedbackWorkspace browser behavior", () => {
         files: [new File(["image"], "progress.png", { type: "image/png" })],
       },
     });
-    const submit = screen.getByRole("button", { name: "Submit" });
+    const submit = screen.getByRole("button", { name: "Send Feedback" });
     fireEvent.click(submit);
     fireEvent.click(submit);
 
@@ -1189,7 +1192,7 @@ describe("FeedbackWorkspace browser behavior", () => {
 
     const editor = await screen.findByLabelText("Reply");
     fireEvent.change(editor, { target: { value: "A persisted preview reply" } });
-    fireEvent.click(screen.getByRole("button", { name: "Send reply" }));
+    fireEvent.click(screen.getByRole("button", { name: "Send Reply" }));
 
     expect(await screen.findByText("A persisted preview reply")).toBeTruthy();
     expect((editor as HTMLTextAreaElement).value).toBe("");
@@ -1220,7 +1223,7 @@ describe("FeedbackWorkspace browser behavior", () => {
     );
     const editor = (await screen.findByLabelText("Reply")) as HTMLTextAreaElement;
     fireEvent.change(editor, { target: { value: "Preserve this draft" } });
-    fireEvent.click(screen.getByRole("button", { name: "Send reply" }));
+    fireEvent.click(screen.getByRole("button", { name: "Send Reply" }));
     expect(first.addComment).toHaveBeenCalledTimes(1);
 
     view.rerender(
@@ -1232,7 +1235,7 @@ describe("FeedbackWorkspace browser behavior", () => {
     expect(editor.value).toBe("Preserve this draft");
     expect(
       (screen.getByRole("button", {
-        name: "Send reply",
+        name: "Send Reply",
       }) as HTMLButtonElement).disabled,
     ).toBe(false);
     resolveFirst?.(detail);
@@ -1254,9 +1257,9 @@ describe("FeedbackWorkspace browser behavior", () => {
         <FeedbackWorkspace />
       </FeedbackProvider>,
     );
-    fireEvent.click(await screen.findByText("New feedback"));
+    fireEvent.click(await screen.findByText("New Feedback"));
     const editor = screen.getByLabelText(
-      "What would you like us to know?",
+      /What would you like us to know/,
     ) as HTMLTextAreaElement;
     fireEvent.change(editor, { target: { value: "Keep this text" } });
     const file = new File(["image"], "proof.png", {
@@ -1266,11 +1269,11 @@ describe("FeedbackWorkspace browser behavior", () => {
     fireEvent.change(screen.getByLabelText("Screenshots (up to 3)"), {
       target: { files: [file] },
     });
-    fireEvent.click(screen.getByText("Submit"));
+    fireEvent.click(screen.getByText("Send Feedback"));
     expect(await screen.findByText("Upload failed")).toBeTruthy();
     expect(editor.value).toBe("Keep this text");
     expect(screen.getByTitle("proof.png · image/png")).toBeTruthy();
-    fireEvent.click(screen.getByText("Retry upload"));
+    fireEvent.click(screen.getByText("Retry Upload"));
     expect(await screen.findByText("Thanks")).toBeTruthy();
     const calls = vi.mocked(adapter.createTicket).mock.calls;
     expect(calls).toHaveLength(2);
@@ -1292,11 +1295,11 @@ describe("FeedbackWorkspace browser behavior", () => {
     );
 
     expect(await screen.findByText("No feedback yet")).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "New feedback" }));
-    fireEvent.change(screen.getByLabelText("What would you like us to know?"), {
+    fireEvent.click(screen.getByRole("button", { name: "New Feedback" }));
+    fireEvent.change(screen.getByLabelText(/What would you like us to know/), {
       target: { value: "A newly-created ticket" },
     });
-    fireEvent.click(screen.getByText("Submit"));
+    fireEvent.click(screen.getByText("Send Feedback"));
     expect(await screen.findByText("Thanks")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Back" }));
 
@@ -1323,12 +1326,12 @@ describe("FeedbackWorkspace browser behavior", () => {
         <FeedbackWorkspace />
       </FeedbackProvider>,
     );
-    fireEvent.click(await screen.findByText("New feedback"));
+    fireEvent.click(await screen.findByText("New Feedback"));
     const editor = screen.getByLabelText(
-      "What would you like us to know?",
+      /What would you like us to know/,
     ) as HTMLTextAreaElement;
     fireEvent.change(editor, { target: { value: "Only once" } });
-    const submit = screen.getByText("Submit");
+    const submit = screen.getByText("Send Feedback");
     fireEvent.click(submit);
     fireEvent.click(submit);
     expect(adapter.createTicket).toHaveBeenCalledTimes(1);
@@ -1338,7 +1341,7 @@ describe("FeedbackWorkspace browser behavior", () => {
     fireEvent.click(cancelButtons.at(-1)!);
     expect(uploadSignal?.aborted).toBe(true);
     expect(editor.value).toBe("Only once");
-    expect(screen.getByText("Submit")).toBeTruthy();
+    expect(screen.getByText("Send Feedback")).toBeTruthy();
   });
 
   it("aborts and resets an in-flight create when the reporter transport changes", async () => {
@@ -1358,12 +1361,12 @@ describe("FeedbackWorkspace browser behavior", () => {
         <FeedbackWorkspace />
       </FeedbackProvider>,
     );
-    fireEvent.click(await screen.findByText("New feedback"));
+    fireEvent.click(await screen.findByText("New Feedback"));
     const editor = screen.getByLabelText(
-      "What would you like us to know?",
+      /What would you like us to know/,
     ) as HTMLTextAreaElement;
     fireEvent.change(editor, { target: { value: "Preserve across session" } });
-    fireEvent.click(screen.getByText("Submit"));
+    fireEvent.click(screen.getByText("Send Feedback"));
     expect(await screen.findByText("Submitting…")).toBeTruthy();
 
     view.rerender(
@@ -1373,11 +1376,11 @@ describe("FeedbackWorkspace browser behavior", () => {
     );
     await waitFor(() => expect(firstSignal?.aborted).toBe(true));
     expect(editor.value).toBe("Preserve across session");
-    expect(screen.getByText("Submit")).toBeTruthy();
+    expect(screen.getByText("Send Feedback")).toBeTruthy();
     resolveFirst?.(detail);
     await Promise.resolve();
     expect(
-      screen.getByRole("heading", { name: "New feedback" }),
+      screen.getByRole("heading", { name: "New Feedback" }),
     ).toBeTruthy();
     expect(second.createTicket).not.toHaveBeenCalled();
   });
@@ -1442,13 +1445,13 @@ describe("FeedbackWorkspace browser behavior", () => {
     );
 
     expect(await screen.findByText("Reply 100")).toBeTruthy();
-    fireEvent.click(screen.getByText("Load more replies"));
+    fireEvent.click(screen.getByText("Load More Replies"));
     expect(await screen.findByText("Reply 101")).toBeTruthy();
     expect(screen.getAllByText("Reply 100")).toHaveLength(1);
     expect(adapter.getTicket).toHaveBeenLastCalledWith(
       expect.objectContaining({ commentCursor: "page-2" }),
     );
-    expect(screen.queryByText("Load more replies")).toBeNull();
+    expect(screen.queryByText("Load More Replies")).toBeNull();
   });
 
   it("preserves historical reading position and exposes a new-reply affordance away from bottom", async () => {
@@ -1509,7 +1512,7 @@ describe("FeedbackWorkspace browser behavior", () => {
       </FeedbackProvider>,
     );
 
-    fireEvent.click(await screen.findByText("Load more replies"));
+    fireEvent.click(await screen.findByText("Load More Replies"));
     fireEvent.click(screen.getByRole("button", { name: "Back" }));
     expect(pageSignal?.aborted).toBe(true);
     resolvePage?.({
@@ -1567,11 +1570,11 @@ describe("FeedbackWorkspace browser behavior", () => {
         <FeedbackWorkspace />
       </FeedbackProvider>,
     );
-    fireEvent.click(await screen.findByText("New feedback"));
-    fireEvent.change(screen.getByLabelText("What would you like us to know?"), {
+    fireEvent.click(await screen.findByText("New Feedback"));
+    fireEvent.change(screen.getByLabelText(/What would you like us to know/), {
       target: { value: "Idea" },
     });
-    fireEvent.click(screen.getByText("Submit"));
+    fireEvent.click(screen.getByText("Send Feedback"));
     expect((await screen.findByRole("alert")).textContent).toContain(
       "Couldn't load feedback. Try again.",
     );
@@ -1590,7 +1593,7 @@ describe("FeedbackWorkspace browser behavior", () => {
     fireEvent.change(await screen.findByLabelText("Reply"), {
       target: { value: "Hello" },
     });
-    fireEvent.click(screen.getByText("Send reply"));
+    fireEvent.click(screen.getByText("Send Reply"));
     expect((await screen.findByRole("alert")).textContent).toContain(
       "Couldn't load feedback. Try again.",
     );
@@ -1618,7 +1621,7 @@ describe("FeedbackWorkspace browser behavior", () => {
 
     const alert = await screen.findByRole("alert");
     expect(alert.textContent).toContain("Couldn't load feedback. Try again.");
-    fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+    fireEvent.click(screen.getByRole("button", { name: "Try Again" }));
     expect(screen.getByRole("alert")).toBe(alert);
     expect(container.querySelector(".hands-feedback-skeleton-row")).toBeNull();
     expect(
@@ -1667,13 +1670,13 @@ describe("FeedbackWorkspace browser behavior", () => {
         <FeedbackWorkspace />
       </FeedbackProvider>,
     );
-    fireEvent.click(await screen.findByText("New feedback"));
-    fireEvent.change(screen.getByLabelText("What would you like us to know?"), {
+    fireEvent.click(await screen.findByText("New Feedback"));
+    fireEvent.change(screen.getByLabelText(/What would you like us to know/), {
       target: { value: "Retry me" },
     });
-    fireEvent.click(screen.getByText("Submit"));
+    fireEvent.click(screen.getByText("Send Feedback"));
     expect(await screen.findByRole("alert")).toBeTruthy();
-    fireEvent.click(screen.getByText("Submit"));
+    fireEvent.click(screen.getByText("Send Feedback"));
     expect(await screen.findByText("Thanks")).toBeTruthy();
     const createCalls = vi.mocked(createAdapter.createTicket).mock.calls;
     expect(createCalls).toHaveLength(2);
@@ -1697,9 +1700,9 @@ describe("FeedbackWorkspace browser behavior", () => {
     fireEvent.change(await screen.findByLabelText("Reply"), {
       target: { value: "Same reply" },
     });
-    fireEvent.click(screen.getByText("Send reply"));
+    fireEvent.click(screen.getByText("Send Reply"));
     expect(await screen.findByRole("alert")).toBeTruthy();
-    fireEvent.click(screen.getByText("Send reply"));
+    fireEvent.click(screen.getByText("Send Reply"));
     await waitFor(() =>
       expect(vi.mocked(commentAdapter.addComment).mock.calls).toHaveLength(2),
     );
@@ -1737,7 +1740,7 @@ describe("FeedbackWorkspace browser behavior", () => {
         <FeedbackWorkspace />
       </FeedbackProvider>,
     );
-    fireEvent.click(await screen.findByText("New feedback"));
+    fireEvent.click(await screen.findByText("New Feedback"));
     const feedback = screen.getByRole("radio", { name: "Idea" });
     const problem = screen.getByRole("radio", { name: "Bug" });
     expect(feedback.getAttribute("aria-checked")).toBe("true");

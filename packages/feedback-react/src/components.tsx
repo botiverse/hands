@@ -4,6 +4,7 @@ import {
   type ReactNode,
   type Ref,
   type RefObject,
+  Fragment,
   useCallback,
   useEffect,
   useImperativeHandle,
@@ -14,24 +15,18 @@ import {
 } from "react";
 import {
   ArrowLeft,
-  Ban,
   Bug,
-  Check,
-  CheckCircle,
-  Circle,
-  Clock,
-  ChevronDown,
+  CircleCheck,
   ImagePlus,
   Lightbulb,
   MessageSquare,
+  MessageSquarePlus,
   Paperclip,
-  Play,
   Send,
+  User,
   X,
 } from "lucide-react";
 import {
-  Avatar,
-  AvatarFallback,
   AlertDialog,
   AlertDialogAction,
   AlertDialogBody,
@@ -41,10 +36,12 @@ import {
   AlertDialogFooter,
   AlertDialogHeader,
   AlertDialogTitle,
+  Avatar,
+  AvatarFallback,
+  Badge,
   Banner,
   BannerAction,
   BannerDescription,
-  Badge,
   Button,
   Composer,
   ComposerActions,
@@ -63,20 +60,20 @@ import {
   ComposerInput,
   ComposerMeta,
   ComposerRoot,
+  ComposerSubmit,
   ComposerToolbar,
   ConversationPanelBody,
   ConversationPanelContent,
   ConversationPanelFooter,
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuItemLabel,
-  DropdownMenuTrigger,
   EmptyState,
   EmptyStateContent,
   EmptyStateDescription,
   EmptyStateIcon,
   EmptyStateTitle,
+  Field,
+  FieldDescription,
+  FieldLabel,
+  Label,
   FileContent,
   FileMeta,
   FileMetaItem,
@@ -86,6 +83,16 @@ import {
   FileRow,
   FileRowOpen,
   FileThumbnail,
+  InboxItem,
+  InboxItemBody,
+  InboxItemContent,
+  InboxItemHeading,
+  InboxItemMetadata,
+  InboxItemSender,
+  InboxItemTimestamp,
+  InboxItemTitle,
+  InboxItemTrailing,
+  InboxItemTrigger,
   MessageImageGallery,
   MessageImageGalleryItem,
   MessageImageGalleryMedia,
@@ -94,28 +101,41 @@ import {
   MessageItemAvatarSlot,
   MessageItemBody,
   MessageItemContent,
-  MessageItemFooter,
+  MessageItemContinuationTime,
+  MessageItemGutter,
   MessageItemHeader,
   MessageItemSender,
   MessageItemTime,
   MessageList,
-  MessageReferenceChip,
-  MessageReferenceLabel,
+  MessageListDateDivider,
+  PanelAction,
+  PanelActions,
+  PanelHeader,
+  PanelHeaderContent,
+  PanelHeading,
+  PanelMeta,
+  PanelNotice,
+  PanelNoticeActions,
+  PanelNoticeContent,
+  PanelStatus,
+  PanelTitle,
+  RadioGroup,
+  RadioGroupItem,
   SegmentedControl,
   SegmentedControlItem,
   SegmentedControlLabel,
   Skeleton,
   Spinner,
+  Status,
+  SystemMessage,
+  SystemMessageContent,
+  SystemMessageTime,
   Tabs,
   TabsLabel,
   TabsList,
   TabsTab,
-  TaskCard,
-  TaskCardBody,
-  TaskCardRow,
-  TaskCardTitle,
-  TextareaCounter,
-} from "raft-ui";
+  Textarea,
+} from "@botiverse/raft-ui";
 import type { FeedbackMessageKey, FeedbackMessageValues } from "./locale.js";
 import { useHandsFeedback } from "./provider.js";
 import { MarkdownText } from "./MarkdownText.js";
@@ -430,26 +450,6 @@ function feedbackStatusLabel(
   );
 }
 
-function FeedbackKindChip({ kind }: { kind: FeedbackTicketSummary["kind"] }) {
-  const { message } = useHandsFeedback();
-  const isProblem = kind === "bug";
-  const Icon = isProblem ? Bug : Lightbulb;
-  return (
-    <MessageReferenceChip
-      className={`hands-feedback-reference-chip${isProblem ? " hands-feedback-problem-chip" : ""}`}
-      data-feedback-kind={kind}
-      variant={isProblem ? "muted" : "info"}
-    >
-      <span className="hands-feedback-reference-chip-content">
-        <Icon aria-hidden="true" />
-        <MessageReferenceLabel>
-          {message(isProblem ? "problem" : "idea")}
-        </MessageReferenceLabel>
-      </span>
-    </MessageReferenceChip>
-  );
-}
-
 function FeedbackStatusChip({
   closureReason,
   status,
@@ -462,34 +462,22 @@ function FeedbackStatusChip({
     status === "closed" && closureReason === "completed"
       ? "resolved"
       : status;
-  const config = {
-    open: {
-      Icon: Circle,
-      variant: "warning" as const,
-    },
-    in_progress: {
-      Icon: Play,
-      variant: "information" as const,
-    },
-    resolved: {
-      Icon: CheckCircle,
-      variant: "success" as const,
-    },
-    closed: {
-      Icon: Ban,
-      variant: "muted" as const,
-    },
+  // Raft Design System: a status chip is a soft Badge with a Status pixel
+  // (badge.md); `solid` is the sticker for counts that wait for the person.
+  const variant = {
+    open: "warning" as const,
+    in_progress: "information" as const,
+    resolved: "success" as const,
+    closed: "muted" as const,
   }[displayStatus];
-  const StatusIcon = config.Icon;
   return (
     <Badge
-      appearance="solid"
-      uppercase={false}
-      variant={config.variant}
+      appearance="soft"
+      variant={variant}
       data-feedback-status={status}
       data-feedback-display-status={displayStatus}
     >
-      <StatusIcon aria-hidden="true" size={10} />
+      <Status variant={variant} size="md" aria-hidden="true" />
       {feedbackStatusLabel(displayStatus, message)}
     </Badge>
   );
@@ -511,7 +499,10 @@ function FeedbackErrorBanner({
   return (
     <Banner
       className="hands-feedback-error-banner"
-      status="destructive"
+      // Orange, as raft-design colours what went wrong; still announced as
+      // an alert, because each of these stops what the reporter was doing.
+      status="warning"
+      role="alert"
       size="sm"
     >
       <BannerDescription>{error}</BannerDescription>
@@ -536,19 +527,42 @@ function FeedbackErrorBanner({
 function FeedbackCloseDialog({
   busy,
   error,
-  reason,
+  initialReason,
   onConfirm,
   onOpenChange,
   open,
 }: {
   busy: boolean;
   error: string | null;
-  reason: ReporterClosureReason;
-  onConfirm(): void;
+  initialReason: ReporterClosureReason;
+  onConfirm(reason: ReporterClosureReason): void;
   onOpenChange(open: boolean): void;
   open: boolean;
 }) {
   const { message } = useHandsFeedback();
+  const [reason, setReason] = useState<ReporterClosureReason>(initialReason);
+  useEffect(() => {
+    if (open) setReason(initialReason);
+  }, [initialReason, open]);
+  const choices: Array<{
+    reason: ReporterClosureReason;
+    label: FeedbackMessageKey;
+    hint: FeedbackMessageKey;
+  }> = [
+    {
+      reason: "completed",
+      label: "closeChoiceCompleted",
+      hint: "closeChoiceCompletedHint",
+    },
+    {
+      reason: "no_longer_needed",
+      label: "closeChoiceNoLongerNeeded",
+      hint: "closeChoiceNoLongerNeededHint",
+    },
+  ];
+  // Closing ends the conversation for the reporter, so it is confirmed
+  // (raft-design Feedback: confirm what can't be put back where it happened),
+  // and the confirm button repeats the action's name.
   return (
     <AlertDialog
       open={open}
@@ -558,35 +572,50 @@ function FeedbackCloseDialog({
     >
       <AlertDialogContent>
         <AlertDialogHeader>
-          <AlertDialogTitle>
-            {message(
-              reason === "completed"
-                ? "closeTicketCompletedConfirm"
-                : "closeTicketNoLongerNeededConfirm",
-            )}
-          </AlertDialogTitle>
+          <AlertDialogTitle>{message("closeTicket")}</AlertDialogTitle>
         </AlertDialogHeader>
-        <AlertDialogBody>
+        <AlertDialogBody className="hands-feedback-close-body">
           <AlertDialogDescription>
-            {message(
-              reason === "completed"
-                ? "closeTicketCompletedDescription"
-                : "closeTicketNoLongerNeededDescription",
-            )}
+            {message("closeDialogDescription")}
           </AlertDialogDescription>
+          <RadioGroup<ReporterClosureReason>
+            className="hands-feedback-close-reasons"
+            aria-label={message("closeReasonMenu")}
+            value={reason}
+            onValueChange={(value) => setReason(value)}
+            disabled={busy}
+          >
+            {choices.map((choice) => (
+              <label
+                key={choice.reason}
+                className="hands-feedback-close-reason"
+                data-feedback-close-reason={choice.reason}
+              >
+                <RadioGroupItem value={choice.reason} />
+                <span className="hands-feedback-close-reason-text">
+                  <span className="hands-feedback-close-reason-label">
+                    {message(choice.label)}
+                  </span>
+                  <span className="hands-feedback-close-reason-hint">
+                    {message(choice.hint)}
+                  </span>
+                </span>
+              </label>
+            ))}
+          </RadioGroup>
           {open && error && <FeedbackErrorBanner error={error} />}
         </AlertDialogBody>
         <AlertDialogFooter>
-          <AlertDialogCancel size="sm" disabled={busy}>
+          <AlertDialogCancel size="md" disabled={busy}>
             {message("cancel")}
           </AlertDialogCancel>
           <AlertDialogAction
-            size="sm"
-            variant="accent"
+            size="md"
+            variant="primary"
             loading={busy}
             loadingLabel={message("closingTicket")}
             disabled={busy}
-            onClick={onConfirm}
+            onClick={() => onConfirm(reason)}
           >
             {message("closeTicket")}
           </AlertDialogAction>
@@ -600,96 +629,6 @@ function defaultReporterClosureReason(
   status: FeedbackTicketSummary["status"],
 ): ReporterClosureReason {
   return status === "resolved" ? "completed" : "no_longer_needed";
-}
-
-function ReporterCloseSplitButton({
-  disabled = false,
-  onChoose,
-  status,
-}: {
-  disabled?: boolean;
-  onChoose(reason: ReporterClosureReason): void;
-  status: FeedbackTicketSummary["status"];
-}) {
-  const { message } = useHandsFeedback();
-  const [reasonMenuOpen, setReasonMenuOpen] = useState(false);
-  const defaultReason = defaultReporterClosureReason(status);
-  const options: Array<{
-    description: FeedbackMessageKey;
-    label: FeedbackMessageKey;
-    reason: ReporterClosureReason;
-  }> = [
-    {
-      reason: "completed",
-      label: "closeReasonCompleted",
-      description: "closeReasonCompletedDescription",
-    },
-    {
-      reason: "no_longer_needed",
-      label: "closeReasonNoLongerNeeded",
-      description: "closeReasonNoLongerNeededDescription",
-    },
-  ];
-  return (
-    <div
-      className="hands-feedback-close-split"
-      data-menu-open={reasonMenuOpen ? "" : undefined}
-    >
-      <MessageReferenceChip
-        render={
-          <button
-            type="button"
-            disabled={disabled}
-            onClick={() => onChoose(defaultReason)}
-          />
-        }
-        variant="accent"
-        className="hands-feedback-reference-chip hands-feedback-close-main"
-      >
-        <MessageReferenceLabel>{message("closeTicket")}</MessageReferenceLabel>
-      </MessageReferenceChip>
-      <DropdownMenu open={reasonMenuOpen} onOpenChange={setReasonMenuOpen}>
-        <DropdownMenuTrigger
-          render={
-            <MessageReferenceChip
-              render={
-                <button
-                  type="button"
-                  disabled={disabled}
-                  aria-label={message("closeReasonMenu")}
-                />
-              }
-              variant="accent"
-              className="hands-feedback-reference-chip hands-feedback-close-caret"
-            />
-          }
-        >
-          <span className="hands-feedback-close-caret-content">
-            <ChevronDown aria-hidden="true" />
-          </span>
-        </DropdownMenuTrigger>
-        <DropdownMenuContent align="end" className="hands-feedback-close-menu">
-          {options.map((option) => (
-            <DropdownMenuItem
-              key={option.reason}
-              className="hands-feedback-close-menu-item"
-              onClick={() => onChoose(option.reason)}
-            >
-              {option.reason === defaultReason ? (
-                <Check aria-hidden="true" className="hands-feedback-close-menu-check" />
-              ) : (
-                <span className="hands-feedback-close-menu-check" aria-hidden="true" />
-              )}
-              <DropdownMenuItemLabel>
-                <strong>{message(option.label)}</strong>
-                <span>{message(option.description)}</span>
-              </DropdownMenuItemLabel>
-            </DropdownMenuItem>
-          ))}
-        </DropdownMenuContent>
-      </DropdownMenu>
-    </div>
-  );
 }
 
 function ReporterClosureReasonLabel({
@@ -811,30 +750,19 @@ function FeedbackPendingAttachmentImage({
   );
 }
 
-function FeedbackComposer({
-  id,
-  label,
-  value,
-  onChange,
-  textareaRef,
+function PendingAttachmentList({
   attachments,
-  onAttachmentsChange,
-  onRemoveAttachment,
-  onOpenAttachment,
   busy,
-  error,
-  onKeyDown,
-  placeholder,
-  showCounter = false,
-  imageInputLabel,
-  testIdPrefix,
-  actions,
-}: FeedbackComposerProps) {
+  onRemove,
+  onOpenAttachment,
+}: {
+  attachments: PendingAttachment[];
+  busy: boolean;
+  onRemove(id: string): void;
+  onOpenAttachment?: (input: FeedbackPendingAttachmentOpenInput) => void;
+}) {
   const { message } = useHandsFeedback();
-  const imageInputRef = useRef<HTMLInputElement | null>(null);
-  const fileInputRef = useRef<HTMLInputElement | null>(null);
-  const attachmentsDisabled =
-    busy || attachments.length >= MAX_FEEDBACK_ATTACHMENTS;
+  const onRemoveAttachment = onRemove;
   const totalUploadProgress = attachments.length
     ? Math.round(
         (attachments.reduce((sum, item) => sum + item.progress, 0) /
@@ -842,36 +770,8 @@ function FeedbackComposer({
           100,
       )
     : 0;
-
   return (
-    <ComposerRoot
-      className="hands-feedback-composer-root"
-      onSubmit={(event) => event.preventDefault()}
-    >
-      <label className="hands-feedback-sr-only" htmlFor={id}>
-        {label}
-      </label>
-      <input
-        ref={imageInputRef}
-        data-testid={`hands-feedback-${testIdPrefix}-image-input`}
-        className="hands-feedback-sr-only"
-        aria-label={imageInputLabel}
-        type="file"
-        accept={FEEDBACK_ATTACHMENT_TYPES.join(",")}
-        multiple
-        disabled={attachmentsDisabled}
-        onChange={onAttachmentsChange}
-      />
-      <input
-        ref={fileInputRef}
-        data-testid={`hands-feedback-${testIdPrefix}-file-input`}
-        className="hands-feedback-sr-only"
-        type="file"
-        accept={FEEDBACK_ATTACHMENT_TYPES.join(",")}
-        multiple
-        disabled={attachmentsDisabled}
-        onChange={onAttachmentsChange}
-      />
+    <>
       {attachments.length > 0 && (
         <ComposerAttachments aria-label={message("attachments")}>
           {attachments.map((item) => (
@@ -916,6 +816,70 @@ function FeedbackComposer({
           {message("uploadOverall", { progress: totalUploadProgress })}
         </div>
       )}
+    </>
+  );
+}
+
+function FeedbackComposer({
+  id,
+  label,
+  value,
+  onChange,
+  textareaRef,
+  attachments,
+  onAttachmentsChange,
+  onRemoveAttachment,
+  onOpenAttachment,
+  busy,
+  error,
+  onKeyDown,
+  placeholder,
+  showCounter = false,
+  imageInputLabel,
+  testIdPrefix,
+  actions,
+}: FeedbackComposerProps) {
+  const { message } = useHandsFeedback();
+  const imageInputRef = useRef<HTMLInputElement | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const attachmentsDisabled =
+    busy || attachments.length >= MAX_FEEDBACK_ATTACHMENTS;
+
+  return (
+    <ComposerRoot
+      className="hands-feedback-composer-root"
+      onSubmit={(event) => event.preventDefault()}
+    >
+      <label className="hands-feedback-sr-only" htmlFor={id}>
+        {label}
+      </label>
+      <input
+        ref={imageInputRef}
+        data-testid={`hands-feedback-${testIdPrefix}-image-input`}
+        className="hands-feedback-sr-only"
+        aria-label={imageInputLabel}
+        type="file"
+        accept={FEEDBACK_ATTACHMENT_TYPES.join(",")}
+        multiple
+        disabled={attachmentsDisabled}
+        onChange={onAttachmentsChange}
+      />
+      <input
+        ref={fileInputRef}
+        data-testid={`hands-feedback-${testIdPrefix}-file-input`}
+        className="hands-feedback-sr-only"
+        type="file"
+        accept={FEEDBACK_ATTACHMENT_TYPES.join(",")}
+        multiple
+        disabled={attachmentsDisabled}
+        onChange={onAttachmentsChange}
+      />
+      <PendingAttachmentList
+        attachments={attachments}
+        busy={busy}
+        onRemove={onRemoveAttachment}
+        {...(onOpenAttachment ? { onOpenAttachment } : {})}
+      />
       {error && (
         <FeedbackErrorBanner error={error} />
       )}
@@ -931,14 +895,14 @@ function FeedbackComposer({
           rows={showCounter ? 5 : 1}
         />
         <ComposerToolbar className="hands-feedback-composer-toolbar">
-          <ComposerMeta>
+          <ComposerActions>
             <ComposerIconButton
               aria-label={message("attachImage")}
               title={message("attachImage")}
               disabled={attachmentsDisabled}
               onClick={() => imageInputRef.current?.click()}
             >
-              <ImagePlus aria-hidden="true" size={14} />
+              <ImagePlus aria-hidden="true" />
             </ComposerIconButton>
             <ComposerIconButton
               aria-label={message("attachFile")}
@@ -946,19 +910,12 @@ function FeedbackComposer({
               disabled={attachmentsDisabled}
               onClick={() => fileInputRef.current?.click()}
             >
-              <Paperclip aria-hidden="true" size={14} />
+              <Paperclip aria-hidden="true" />
             </ComposerIconButton>
-            {showCounter && (
-              <TextareaCounter
-                className="hands-feedback-composer-counter"
-                value={value}
-                limit={10_000}
-              />
-            )}
-          </ComposerMeta>
-          <ComposerActions className="hands-feedback-composer-actions">
-            {actions}
           </ComposerActions>
+          <ComposerMeta className="hands-feedback-composer-actions">
+            {actions}
+          </ComposerMeta>
         </ComposerToolbar>
       </Composer>
     </ComposerRoot>
@@ -995,7 +952,8 @@ export function FeedbackInbox({
   enablePullToRefresh = false,
   hideHeaderTitle = false,
 }: FeedbackInboxProps) {
-  const { formatDate, message, reportUnread, transport } = useHandsFeedback();
+  const { formatDate, locale, message, reportUnread, transport } =
+    useHandsFeedback();
   const safeError = useSafeError();
   const [tickets, setTickets] = useState<FeedbackTicketSummary[]>([]);
   const [filter, setFilter] = useState<"all" | "open" | "resolved">("all");
@@ -1005,16 +963,8 @@ export function FeedbackInbox({
   const [retrying, setRetrying] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [retryCursor, setRetryCursor] = useState<string | undefined>(undefined);
-  const [ticketToClose, setTicketToClose] =
-    useState<FeedbackTicketSummary | null>(null);
-  const [closeReason, setCloseReason] =
-    useState<ReporterClosureReason>("no_longer_needed");
-  const [closingTicket, setClosingTicket] = useState(false);
-  const [closeError, setCloseError] = useState<string | null>(null);
-  const [announcement, setAnnouncement] = useState("");
   const request = useRef(0);
   const controllerRef = useRef<AbortController | null>(null);
-  const closeControllerRef = useRef<AbortController | null>(null);
 
   const load = useCallback(
     async (nextCursor?: string, refresh = false, retry = false) => {
@@ -1064,7 +1014,6 @@ export function FeedbackInbox({
     void initialLoad.current();
     return () => {
       controllerRef.current?.abort();
-      closeControllerRef.current?.abort();
       request.current += 1;
     };
   }, [pageSize, transport]);
@@ -1082,10 +1031,19 @@ export function FeedbackInbox({
 
   useEffect(() => {
     if (!upsertTicket) return;
-    setTickets((current) => [
-      upsertTicket,
-      ...current.filter((ticket) => ticket.id !== upsertTicket.id),
-    ]);
+    setTickets((current) => {
+      // A ticket changed elsewhere (created, replied to, closed) keeps the
+      // latest comment the list already showed for it unless it brings one.
+      const previous = current.find((ticket) => ticket.id === upsertTicket.id);
+      const merged =
+        upsertTicket.latestComment === undefined && previous
+          ? { ...upsertTicket, latestComment: previous.latestComment ?? null }
+          : upsertTicket;
+      return [
+        merged,
+        ...current.filter((ticket) => ticket.id !== upsertTicket.id),
+      ];
+    });
   }, [upsertTicket]);
 
   const visibleTickets = tickets.filter(
@@ -1096,12 +1054,6 @@ export function FeedbackInbox({
         : ticket.status === "resolved" || ticket.status === "closed"),
   );
   const emptyKind = tickets.length === 0 ? "all" : filter;
-  const EmptyIcon =
-    emptyKind === "open"
-      ? Clock
-      : emptyKind === "resolved"
-        ? Check
-        : MessageSquare;
   const emptyTitleKey =
     emptyKind === "open"
       ? "emptyActiveTitle"
@@ -1115,99 +1067,97 @@ export function FeedbackInbox({
         ? "emptyEndedBody"
         : "emptyAllBody";
 
-  const closeSelectedTicket = async () => {
-    if (!ticketToClose || !transport.closeTicket || closingTicket) return;
-    setClosingTicket(true);
-    setCloseError(null);
-    closeControllerRef.current?.abort();
-    const controller = new AbortController();
-    closeControllerRef.current = controller;
-    try {
-      const result = await transport.closeTicket({
-        ticketId: ticketToClose.id,
-        reason: closeReason,
-        signal: controller.signal,
-      });
-      if (controller.signal.aborted) return;
-      reportUnread({ total: result.unreadTotal, source: "close" });
-      setTickets((current) =>
-        current.map((ticket) =>
-          ticket.id === result.ticket.id ? result.ticket : ticket,
-        ),
-      );
-      setTicketToClose(null);
-      setAnnouncement(message("ticketClosed"));
-    } catch (cause) {
-      if (!controller.signal.aborted) setCloseError(safeError(cause));
-    } finally {
-      if (!controller.signal.aborted) setClosingTicket(false);
-    }
-  };
-
   return (
     <section
       className="hands-feedback-inbox"
-      aria-labelledby="hands-feedback-inbox-title"
+      {...(hideHeaderTitle
+        ? { "aria-label": message("workspaceTitle") }
+        : { "aria-labelledby": "hands-feedback-inbox-title" })}
       hidden={hidden}
     >
-      <header className="hands-feedback-header">
-        <div className="hands-feedback-header-title" hidden={hideHeaderTitle}>
-          <span className="hands-feedback-header-icon" aria-hidden="true">
-            <MessageSquare size={16} />
-          </span>
-          <h2 id="hands-feedback-inbox-title">{message("workspaceTitle")}</h2>
-        </div>
-        <Button size="xs" onClick={onNewFeedback}>
-          {message("newFeedback")}
-        </Button>
-      </header>
-      <div className="hands-feedback-content hands-feedback-inbox-content">
-        {tickets.length > 0 && (
-          <Tabs<"all" | "open" | "resolved">
-            className="hands-feedback-filter"
-            value={filter}
-            onValueChange={setFilter}
-          >
-            <TabsList aria-label={message("statusFilter")}>
-              {(["all", "open", "resolved"] as const).map((value) => (
-                <TabsTab key={value} value={value}>
-                  <TabsLabel>
-                    {value === "all"
-                      ? message("all")
-                      : message(value === "open" ? "active" : "ended")}
-                  </TabsLabel>
-                </TabsTab>
-              ))}
-            </TabsList>
-          </Tabs>
-        )}
-        <div
-          className="hands-feedback-middle hands-feedback-list-scroll"
-          data-feedback-list-scroll
-          data-feedback-empty-scroll={
-            !loading && !error && visibleTickets.length === 0
-              ? "true"
-              : undefined
-          }
-          ref={pullToRefresh.scrollRef}
-          tabIndex={-1}
-        >
-          <PullToRefreshIndicator
-            distance={pullToRefresh.distance}
-            label={message("refreshing")}
-            state={pullToRefresh.state}
-          />
-          {loading && (
-            <div
-              className="hands-feedback-stack"
-              aria-label={message("loading")}
+      {/* The host may own the page title (hideHeaderTitle); then the inbox
+          starts at its filter row. */}
+      <PanelHeader className="hands-feedback-header" hidden={hideHeaderTitle}>
+        <PanelHeaderContent>
+          <PanelHeading>
+            <PanelTitle render={<h2 id="hands-feedback-inbox-title" />}>
+              {message("workspaceTitle")}
+            </PanelTitle>
+          </PanelHeading>
+        </PanelHeaderContent>
+      </PanelHeader>
+      {/* One row: the status tabs once there is something to filter, and
+          the screen's one pink button, which is there from the first paint. */}
+      {(
+        <div className="hands-feedback-toolbar">
+          {tickets.length > 0 ? (
+            <Tabs<"all" | "open" | "resolved">
+              className="hands-feedback-filter"
+              value={filter}
+              onValueChange={setFilter}
             >
-              <Skeleton className="hands-feedback-skeleton-row" />
-              <Skeleton className="hands-feedback-skeleton-row" />
-              <Skeleton className="hands-feedback-skeleton-row" />
-            </div>
+              <TabsList aria-label={message("statusFilter")}>
+                {(["all", "open", "resolved"] as const).map((value) => (
+                  <TabsTab key={value} value={value}>
+                    <TabsLabel>
+                      {value === "all"
+                        ? message("all")
+                        : message(value === "open" ? "active" : "ended")}
+                    </TabsLabel>
+                  </TabsTab>
+                ))}
+              </TabsList>
+            </Tabs>
+          ) : (
+            <span />
           )}
-          {error && (
+          <Button
+            size="sm"
+            variant="primary"
+            className="hands-feedback-toolbar-action"
+            onClick={onNewFeedback}
+          >
+            <MessageSquarePlus aria-hidden="true" />
+            {message("newFeedback")}
+          </Button>
+        </div>
+      )}
+      <div
+        className="hands-feedback-middle hands-feedback-list-scroll"
+        data-feedback-list-scroll
+        data-feedback-empty-scroll={
+          !loading && !error && visibleTickets.length === 0 ? "true" : undefined
+        }
+        ref={pullToRefresh.scrollRef}
+        tabIndex={-1}
+      >
+        <PullToRefreshIndicator
+          distance={pullToRefresh.distance}
+          label={message("refreshing")}
+          state={pullToRefresh.state}
+        />
+        {loading && (
+          <div
+            className="hands-feedback-ticket-list"
+            aria-label={message("loading")}
+            aria-busy="true"
+          >
+            {["60%", "48%", "40%"].map((width) => (
+              <InboxItem key={width} aria-hidden disabled>
+                <InboxItemContent className="hands-feedback-skeleton-row">
+                  <Skeleton variant="line" style={{ width }} />
+                  <Skeleton variant="line" style={{ width: "80%" }} />
+                  <Skeleton variant="line" style={{ width: "9rem" }} />
+                </InboxItemContent>
+                <InboxItemTrailing>
+                  <Skeleton variant="line" style={{ width: "3rem" }} />
+                </InboxItemTrailing>
+              </InboxItem>
+            ))}
+          </div>
+        )}
+        {error && (
+          <div className="hands-feedback-inset">
             <FeedbackErrorBanner
               busy={retrying}
               busyLabel={message("loading")}
@@ -1215,115 +1165,50 @@ export function FeedbackInbox({
               retryLabel={message("retry")}
               onRetry={() => void load(retryCursor, true, true)}
             />
-          )}
-          {!loading && !error && visibleTickets.length === 0 && (
-            <EmptyState
-              className="hands-feedback-empty"
-              data-feedback-empty-kind={emptyKind}
-            >
+          </div>
+        )}
+        {!loading && !error && visibleTickets.length === 0 && (
+          <EmptyState
+            className="hands-feedback-empty"
+            data-feedback-empty-kind={emptyKind}
+          >
+            <EmptyStateContent>
               <EmptyStateIcon className="hands-feedback-empty-icon">
-                <EmptyIcon aria-hidden="true" size={20} />
+                <MessageSquare aria-hidden="true" />
               </EmptyStateIcon>
-              <EmptyStateContent>
-                <EmptyStateTitle className="hands-feedback-empty-title">
-                  {message(emptyTitleKey)}
-                </EmptyStateTitle>
-                <EmptyStateDescription className="hands-feedback-empty-description">
-                  {message(emptyBodyKey)}
-                </EmptyStateDescription>
-              </EmptyStateContent>
-            </EmptyState>
-          )}
-          {visibleTickets.length > 0 && (
-            <ul
-              className="hands-feedback-ticket-list"
-              aria-label={message("workspaceTitle")}
-            >
-              {visibleTickets.map((ticket) => {
-                const ticketTitle = ticket.message.split("\n", 1)[0];
-                return (
-                  <li key={ticket.id}>
-                    <TaskCard className="hands-feedback-ticket-card">
-                      <button
-                        type="button"
-                        className="hands-feedback-ticket-open"
-                        data-ticket-id={ticket.id}
-                        data-unread={ticket.unread || undefined}
-                        aria-label={ticketTitle}
-                        onClick={() => onSelectTicket(ticket.id, ticket)}
-                      />
-                      <TaskCardRow
-                        className="hands-feedback-ticket-content"
-                        onClick={(event) => {
-                          const target = event.target;
-                          if (
-                            target instanceof Element &&
-                            target.closest(
-                              "button, a, input, textarea, select, [role='button'], [role='menuitem']",
-                            )
-                          ) {
-                            return;
-                          }
-                          onSelectTicket(ticket.id, ticket);
-                        }}
-                      >
-                        <TaskCardBody className="hands-feedback-ticket-body">
-                          <TaskCardTitle
-                            className="hands-feedback-ticket-title"
-                            title={ticketTitle}
-                          >
-                            {ticketTitle}
-                          </TaskCardTitle>
-                          <div className="hands-feedback-ticket-date">
-                            {formatDate(ticket.updatedAt)}
-                          </div>
-                          <div className="hands-feedback-ticket-meta">
-                            <FeedbackKindChip kind={ticket.kind} />
-                            <FeedbackStatusChip
-                              status={ticket.status}
-                              closureReason={ticket.closureReason}
-                            />
-                            {transport.closeTicket &&
-                              ticket.status !== "closed" && (
-                                <ReporterCloseSplitButton
-                                  status={ticket.status}
-                                  disabled={closingTicket}
-                                  onChoose={(reason) => {
-                                    setCloseError(null);
-                                    setCloseReason(reason);
-                                    setTicketToClose(ticket);
-                                  }}
-                                />
-                              )}
-                          </div>
-                        </TaskCardBody>
-                        {ticket.unread ? (
-                          <Badge
-                            appearance="solid"
-                            variant="accent"
-                            uppercase={false}
-                            className="hands-feedback-unread-count"
-                            data-feedback-unread-count={Math.max(
-                              1,
-                              ticket.unreadCount,
-                            )}
-                            aria-label={message("unreadCount", {
-                              count: Math.max(1, ticket.unreadCount),
-                            })}
-                          >
-                            {ticket.unreadCount > 99
-                              ? "99+"
-                              : Math.max(1, ticket.unreadCount)}
-                          </Badge>
-                        ) : null}
-                      </TaskCardRow>
-                    </TaskCard>
-                  </li>
-                );
-              })}
-            </ul>
-          )}
-          {cursor && (
+              <EmptyStateTitle className="hands-feedback-empty-title">
+                {message(emptyTitleKey)}
+              </EmptyStateTitle>
+              <EmptyStateDescription className="hands-feedback-empty-description">
+                {message(emptyBodyKey)}
+              </EmptyStateDescription>
+              {emptyKind !== "all" && (
+                <Button variant="outline" onClick={() => setFilter("all")}>
+                  {message("showAll")}
+                </Button>
+              )}
+            </EmptyStateContent>
+          </EmptyState>
+        )}
+        {visibleTickets.length > 0 && (
+          <ul
+            className="hands-feedback-ticket-list"
+            aria-label={message("workspaceTitle")}
+          >
+            {visibleTickets.map((ticket) => (
+              <FeedbackTicketRow
+                key={ticket.id}
+                ticket={ticket}
+                formatDate={formatDate}
+                locale={locale}
+                message={message}
+                onSelect={() => onSelectTicket(ticket.id, ticket)}
+              />
+            ))}
+          </ul>
+        )}
+        {cursor && (
+          <div className="hands-feedback-inset">
             <Button
               variant="outline"
               disabled={loadingMore}
@@ -1331,32 +1216,159 @@ export function FeedbackInbox({
             >
               {loadingMore ? message("loadingMore") : message("loadMore")}
             </Button>
-          )}
-        </div>
+          </div>
+        )}
       </div>
       <div className="hands-feedback-live" aria-live="polite">
         {pullToRefresh.refreshing
           ? message("refreshing")
           : loadingMore
             ? message("loadingMore")
-            : (error ?? announcement)}
+            : (error ?? "")}
       </div>
-      {transport.closeTicket && (
-        <FeedbackCloseDialog
-          open={ticketToClose !== null}
-          busy={closingTicket}
-          error={closeError}
-          reason={closeReason}
-          onOpenChange={(open) => {
-            if (!open) {
-              setCloseError(null);
-              setTicketToClose(null);
-            }
-          }}
-          onConfirm={() => void closeSelectedTicket()}
-        />
-      )}
     </section>
+  );
+}
+
+/** Today: the clock time; yesterday: "Yesterday"; earlier: the date. */
+function formatListTime(
+  value: number,
+  locale: string,
+  message: ReturnType<typeof useHandsFeedback>["message"],
+) {
+  const at = new Date(value);
+  const now = new Date();
+  if (sameDay(value, now.getTime()))
+    return new Intl.DateTimeFormat(locale, { timeStyle: "short" }).format(at);
+  const yesterday = new Date(now);
+  yesterday.setDate(now.getDate() - 1);
+  if (sameDay(value, yesterday.getTime())) return message("yesterday");
+  return new Intl.DateTimeFormat(locale, {
+    month: "short",
+    day: "numeric",
+    ...(at.getFullYear() === now.getFullYear() ? {} : { year: "numeric" }),
+  }).format(at);
+}
+
+/** The text of a comment as one plain line, for the list preview. */
+function previewLine(body: string) {
+  return body
+    .replace(/```[\s\S]*?```/g, " ")
+    .replace(/!\[[^\]]*\]\([^)]*\)/g, " ")
+    .replace(/\[([^\]]+)\]\([^)]*\)/g, "$1")
+    .replace(/[`*_~>#]+/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function commentSender(
+  authorType: FeedbackComment["authorType"],
+  message: ReturnType<typeof useHandsFeedback>["message"],
+) {
+  return authorType === "reporter"
+    ? message("you")
+    : authorType === "staff"
+      ? message("team")
+      : message("update");
+}
+
+function FeedbackTicketRow({
+  ticket,
+  formatDate,
+  locale,
+  message,
+  onSelect,
+}: {
+  ticket: FeedbackTicketSummary;
+  formatDate: (value: number) => string;
+  locale: string;
+  message: ReturnType<typeof useHandsFeedback>["message"];
+  onSelect(): void;
+}) {
+  const title = ticket.message.split("\n", 1)[0];
+  const latest = ticket.latestComment;
+  const preview = latest ? previewLine(latest.bodyPreview) : "";
+  // The list orders by the latest conversation activity; show that time.
+  const activityAt = latest?.createdAt ?? ticket.createdAt;
+  const replies = ticket.commentCount;
+  const unreadCount = ticket.unread ? Math.max(1, ticket.unreadCount) : 0;
+  const KindIcon = ticket.kind === "bug" ? Bug : Lightbulb;
+  return (
+    <li className="hands-feedback-ticket-item">
+      <InboxItem
+        className="hands-feedback-ticket-row"
+        data-ticket-row={ticket.id}
+        data-unread={ticket.unread || undefined}
+      >
+        <InboxItemTrigger
+          className="hands-feedback-ticket-open"
+          data-ticket-id={ticket.id}
+          data-unread={ticket.unread || undefined}
+          aria-label={
+            unreadCount
+              ? `${title}, ${message("unreadCount", { count: unreadCount })}`
+              : title
+          }
+          onClick={onSelect}
+        />
+        <InboxItemContent>
+          <InboxItemHeading>
+            <InboxItemTitle
+              className="hands-feedback-ticket-title"
+              title={title}
+              data-feedback-kind={ticket.kind}
+            >
+              <KindIcon
+                aria-label={message(ticket.kind === "bug" ? "problem" : "idea")}
+              />
+              {title}
+            </InboxItemTitle>
+          </InboxItemHeading>
+          {latest && preview && (
+            <InboxItemBody className="hands-feedback-ticket-preview">
+              <InboxItemSender>
+                {commentSender(latest.authorType, message)}:{" "}
+              </InboxItemSender>
+              {preview}
+            </InboxItemBody>
+          )}
+          <InboxItemMetadata className="hands-feedback-ticket-meta">
+            <FeedbackStatusChip
+              status={ticket.status}
+              closureReason={ticket.closureReason}
+            />
+            <Badge appearance="outline" variant="muted">
+              {replies === 0
+                ? message("noReplies")
+                : replies === 1
+                  ? message("replyCountOne")
+                  : message("replyCountOther", { count: replies })}
+            </Badge>
+            {unreadCount > 0 && (
+              <Badge
+                variant="accent"
+                className="hands-feedback-unread-count"
+                data-feedback-unread-count={unreadCount}
+              >
+                {message("newCount", {
+                  count: unreadCount > 99 ? "99+" : unreadCount,
+                })}
+              </Badge>
+            )}
+          </InboxItemMetadata>
+        </InboxItemContent>
+        <InboxItemTrailing>
+          <InboxItemTimestamp>
+            <time
+              dateTime={new Date(activityAt).toISOString()}
+              title={formatDate(activityAt)}
+            >
+              {formatListTime(activityAt, locale, message)}
+            </time>
+          </InboxItemTimestamp>
+        </InboxItemTrailing>
+      </InboxItem>
+    </li>
   );
 }
 
@@ -1401,7 +1413,8 @@ type FeedbackConversationMessageProps = {
   ticketId: string;
   attachments?: FeedbackTicketDetail["attachments"];
   onOpenAttachment?: (input: FeedbackAttachmentOpenInput) => void;
-  footer?: ReactNode;
+  /** A later message from the same sender on the same day. */
+  continuation?: boolean;
 };
 
 function FeedbackImageAttachment({
@@ -1480,6 +1493,39 @@ function FeedbackImageAttachment({
   );
 }
 
+function sameDay(a: number, b: number): boolean {
+  return new Date(a).toDateString() === new Date(b).toDateString();
+}
+
+/**
+ * The day between messages, as Raft Chat's timeline draws it: Today,
+ * Yesterday, then the weekday and date.
+ */
+function FeedbackDateDivider({ at }: { at: number }) {
+  const { locale, message } = useHandsFeedback();
+  const day = new Date(at);
+  const now = new Date();
+  const yesterday = new Date(now);
+  yesterday.setDate(now.getDate() - 1);
+  const label = sameDay(at, now.getTime())
+    ? message("today")
+    : sameDay(at, yesterday.getTime())
+      ? message("yesterday")
+      : new Intl.DateTimeFormat(locale, {
+          weekday: "long",
+          month: "long",
+          day: "numeric",
+          ...(day.getFullYear() === now.getFullYear()
+            ? {}
+            : { year: "numeric" }),
+        }).format(day);
+  return (
+    <MessageListDateDivider>
+      <time dateTime={day.toISOString().slice(0, 10)}>{label}</time>
+    </MessageListDateDivider>
+  );
+}
+
 function FeedbackConversationMessage({
   authorType,
   body,
@@ -1487,87 +1533,128 @@ function FeedbackConversationMessage({
   ticketId,
   attachments = [],
   onOpenAttachment,
-  footer,
+  continuation = false,
 }: FeedbackConversationMessageProps) {
-  const { formatDate, formatFileSize, message } = useHandsFeedback();
-  const sender =
-    authorType === "reporter"
-      ? message("you")
-      : authorType === "staff"
-        ? message("team")
-        : message("update");
+  const { formatDate, formatFileSize, locale, message } = useHandsFeedback();
+  const sentAt = new Date(createdAt);
+  const time = new Intl.DateTimeFormat(locale, { timeStyle: "short" }).format(
+    sentAt,
+  );
   const openAttachment = (attachmentId: string) =>
     onOpenAttachment?.({ ticketId, attachmentId });
 
-  return (
-    <MessageItem data-author={authorType}>
-      <MessageItemAvatarSlot>
-        <Avatar
-          size="md"
-          type={authorType === "reporter" ? "human" : "agent"}
-        >
-          <AvatarFallback>{sender.slice(0, 1).toUpperCase()}</AvatarFallback>
-        </Avatar>
-      </MessageItemAvatarSlot>
-      <MessageItemContent>
-        <MessageItemHeader>
-          <MessageItemSender>{sender}</MessageItemSender>
-          <MessageItemTime>{formatDate(createdAt)}</MessageItemTime>
-        </MessageItemHeader>
-        <MessageItemBody>
-          <MarkdownText source={body} />
-        </MessageItemBody>
-        {attachments.length > 0 && (
-          <MessageItemAttachments>
-            <MessageImageGallery>
-              {attachments
-                .filter((attachment) =>
-                  attachment.contentType.startsWith("image/"),
-                )
-                .map((attachment) => (
-                  <FeedbackImageAttachment
-                    key={attachment.id}
-                    attachment={attachment}
-                    ticketId={ticketId}
-                    {...(onOpenAttachment ? { onOpenAttachment } : {})}
-                  />
-                ))}
-            </MessageImageGallery>
+  const content = (
+    <>
+      <MessageItemBody>
+        <MarkdownText source={body} />
+      </MessageItemBody>
+      {attachments.length > 0 && (
+        <MessageItemAttachments>
+          <MessageImageGallery>
             {attachments
-              .filter(
-                (attachment) =>
-                  !attachment.contentType.startsWith("image/"),
-              )
+              .filter((attachment) => attachment.contentType.startsWith("image/"))
               .map((attachment) => (
-                <FileRow key={attachment.id}>
-                  <FileRowOpen
-                    disabled={!onOpenAttachment}
-                    aria-label={message("openAttachment", {
-                      name: attachment.filename,
-                    })}
-                    onClick={() => openAttachment(attachment.id)}
-                  >
-                    <FileThumbnail>
-                      <FilePreview>
-                        <FilePreviewFile />
-                      </FilePreview>
-                    </FileThumbnail>
-                    <FileContent>
-                      <FileName>{attachment.filename}</FileName>
-                      <FileMeta>
-                        <FileMetaItem>
-                          {formatFileSize(attachment.sizeBytes)}
-                        </FileMetaItem>
-                      </FileMeta>
-                    </FileContent>
-                  </FileRowOpen>
-                </FileRow>
+                <FeedbackImageAttachment
+                  key={attachment.id}
+                  attachment={attachment}
+                  ticketId={ticketId}
+                  {...(onOpenAttachment ? { onOpenAttachment } : {})}
+                />
               ))}
-          </MessageItemAttachments>
-        )}
-        {footer && <MessageItemFooter>{footer}</MessageItemFooter>}
-      </MessageItemContent>
-    </MessageItem>
+          </MessageImageGallery>
+          {attachments
+            .filter((attachment) => !attachment.contentType.startsWith("image/"))
+            .map((attachment) => (
+              <FileRow key={attachment.id}>
+                <FileRowOpen
+                  disabled={!onOpenAttachment}
+                  aria-label={message("openAttachment", {
+                    name: attachment.filename,
+                  })}
+                  onClick={() => openAttachment(attachment.id)}
+                >
+                  <FileThumbnail>
+                    <FilePreview>
+                      <FilePreviewFile />
+                    </FilePreview>
+                  </FileThumbnail>
+                  <FileContent>
+                    <FileName>{attachment.filename}</FileName>
+                    <FileMeta>
+                      <FileMetaItem>
+                        {formatFileSize(attachment.sizeBytes)}
+                      </FileMetaItem>
+                    </FileMeta>
+                  </FileContent>
+                </FileRowOpen>
+              </FileRow>
+            ))}
+        </MessageItemAttachments>
+      )}
+    </>
+  );
+
+  // The next message from the same sender on the same day merges under the
+  // first one (raft-design Conversation: dates and grouping).
+  if (continuation) {
+    return (
+      <div className="hands-feedback-message-row">
+        <MessageItem compact data-author={authorType}>
+          <MessageItemGutter>
+            <MessageItemContinuationTime
+              render={
+                <time
+                  dateTime={sentAt.toISOString()}
+                  title={formatDate(createdAt)}
+                />
+              }
+            >
+              {time.replace(/\s?[AP]M$/i, "")}
+            </MessageItemContinuationTime>
+          </MessageItemGutter>
+          <MessageItemContent>{content}</MessageItemContent>
+        </MessageItem>
+      </div>
+    );
+  }
+
+  return (
+    <div className="hands-feedback-message-row">
+      <MessageItem data-author={authorType}>
+        <MessageItemAvatarSlot>
+          <Avatar
+            size="md"
+            type={authorType === "reporter" ? "human" : "server"}
+          >
+            <AvatarFallback>
+              {authorType === "reporter" ? (
+                <User aria-hidden="true" />
+              ) : (
+                <MessageSquare aria-hidden="true" />
+              )}
+            </AvatarFallback>
+          </Avatar>
+        </MessageItemAvatarSlot>
+        <MessageItemContent>
+          <MessageItemHeader>
+            <MessageItemSender>{commentSender(authorType, message)}</MessageItemSender>
+            {/* As in Raft Chat: the clock time right after the sender, the day
+                in the list's date lines, the full date and time on hover. */}
+            <MessageItemTime
+              render={
+                <time
+                  dateTime={sentAt.toISOString()}
+                  title={formatDate(createdAt)}
+                />
+              }
+            >
+              {time}
+            </MessageItemTime>
+          </MessageItemHeader>
+          {content}
+        </MessageItemContent>
+      </MessageItem>
+    </div>
   );
 }
 
@@ -1583,7 +1670,7 @@ export function FeedbackTicket({
   onTicketUpdated,
   enablePullToRefresh = false,
 }: FeedbackTicketProps) {
-  const { message, reportUnread, transport } = useHandsFeedback();
+  const { locale, message, reportUnread, transport } = useHandsFeedback();
   const safeError = useSafeError();
   const [detail, setDetail] = useState<FeedbackTicketDetail | null>(() =>
     previewTicketDetail(
@@ -1599,8 +1686,6 @@ export function FeedbackTicket({
   const [sending, setSending] = useState(false);
   const [closing, setClosing] = useState(false);
   const [confirmingClose, setConfirmingClose] = useState(false);
-  const [closeReason, setCloseReason] =
-    useState<ReporterClosureReason>("no_longer_needed");
   const [replyAttachments, setReplyAttachments] = useState<PendingAttachment[]>(
     [],
   );
@@ -1824,7 +1909,7 @@ export function FeedbackTicket({
     }
   };
 
-  const closeTicket = async () => {
+  const closeTicket = async (reason: ReporterClosureReason) => {
     if (!detail || !transport.closeTicket || closing) return;
     setClosing(true);
     setActionError(null);
@@ -1834,7 +1919,7 @@ export function FeedbackTicket({
     try {
       const result = await transport.closeTicket({
         ticketId,
-        reason: closeReason,
+        reason,
         signal: controller.signal,
       });
       if (controller.signal.aborted) return;
@@ -1891,132 +1976,217 @@ export function FeedbackTicket({
     void send();
   };
 
+  const ticket = detail?.ticket;
+  const canClose =
+    Boolean(transport.closeTicket) && ticket !== undefined && ticket.status !== "closed";
+  const openClose = () => {
+    setActionError(null);
+    setConfirmingClose(true);
+  };
+  const title = ticket?.message.split("\n", 1)[0] || message("workspaceTitle");
+
   return (
     <section
       className="hands-feedback-detail"
       aria-labelledby="hands-feedback-ticket-heading"
     >
-      <header className="hands-feedback-header">
-        <div className="hands-feedback-header-title">
-          <Button
-            aria-label={message("back")}
-            title={message("back")}
-            size="icon-sm"
-            variant="outline"
-            onClick={onBack}
-          >
-            <ArrowLeft aria-hidden="true" size={16} />
-          </Button>
-          <h2 id="hands-feedback-ticket-heading" tabIndex={-1}>
-            {message("workspaceTitle")}
-          </h2>
-        </div>
-      </header>
+      {/* A pushed page: Back, the ticket's first line, its status on the
+          title's line; kind and closure underneath. When the host embeds the
+          workspace in a page with its own header, this header replaces it. */}
+      <PanelHeader className="hands-feedback-header">
+        <PanelAction
+          aria-label={message("back")}
+          title={message("back")}
+          onClick={onBack}
+        >
+          <ArrowLeft aria-hidden="true" />
+        </PanelAction>
+        <PanelHeaderContent>
+          <PanelHeading>
+            <PanelTitle
+              render={<h2 id="hands-feedback-ticket-heading" tabIndex={-1} />}
+              title={title}
+            >
+              {title}
+            </PanelTitle>
+            {ticket && (
+              <PanelStatus>
+                <FeedbackStatusChip
+                  status={ticket.status}
+                  closureReason={ticket.closureReason}
+                />
+              </PanelStatus>
+            )}
+          </PanelHeading>
+          {ticket && (
+            <PanelMeta data-feedback-kind={ticket.kind}>
+              {message(ticket.kind === "bug" ? "problem" : "idea")}
+              {ticket.status === "closed" && ticket.closureReason && (
+                <>
+                  {" · "}
+                  <ReporterClosureReasonLabel reason={ticket.closureReason} />
+                </>
+              )}
+            </PanelMeta>
+          )}
+        </PanelHeaderContent>
+        {canClose && ticket?.status !== "resolved" && (
+          <PanelActions>
+            <PanelAction
+              aria-label={message("closeTicket")}
+              title={message("closeTicket")}
+              disabled={closing}
+              onClick={openClose}
+            >
+              <CircleCheck aria-hidden="true" />
+            </PanelAction>
+          </PanelActions>
+        )}
+      </PanelHeader>
+      {/* Resolved by the team: ask the reporter the one question left. */}
+      {canClose && ticket?.status === "resolved" && (
+        <PanelNotice status="success" className="hands-feedback-resolved-notice">
+          <PanelNoticeContent>{message("resolvedNotice")}</PanelNoticeContent>
+          <PanelNoticeActions>
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={closing}
+              onClick={openClose}
+            >
+              {message("closeTicket")}
+            </Button>
+          </PanelNoticeActions>
+        </PanelNotice>
+      )}
       <ConversationPanelContent className="hands-feedback-detail-content">
         <ConversationPanelBody className="hands-feedback-detail-body">
           {loading && !detail && (
             <Skeleton className="hands-feedback-skeleton-detail" />
           )}
           {loadError && (
-            <FeedbackErrorBanner
-              busy={retryingLoad}
-              busyLabel={message("loading")}
-              error={loadError}
-              retryLabel={message("retry")}
-              onRetry={() =>
-                void load(retryLoad.cursor, retryLoad.refresh, true)
-              }
-            />
+            <div className="hands-feedback-inset">
+              <FeedbackErrorBanner
+                busy={retryingLoad}
+                busyLabel={message("loading")}
+                error={loadError}
+                retryLabel={message("retry")}
+                onRetry={() =>
+                  void load(retryLoad.cursor, retryLoad.refresh, true)
+                }
+              />
+            </div>
           )}
           {detail && (
             <>
-            <MessageList
-              rootClassName="hands-feedback-conversation-root"
-              className="hands-feedback-conversation"
-              aria-label={message("conversation")}
-              ref={setConversationViewport}
-              onScroll={() => {
-                if (
-                  conversationRef.current &&
-                  isNearConversationBottom(conversationRef.current)
-                )
-                  setNewReplies(false);
-              }}
-            >
-              <PullToRefreshIndicator
-                distance={pullToRefresh.distance}
-                label={message("refreshing")}
-                state={pullToRefresh.state}
-              />
-              <FeedbackConversationMessage
-                authorType="reporter"
-                body={detail.ticket.message}
-                createdAt={detail.ticket.createdAt}
-                ticketId={ticketId}
-                attachments={detail.attachments}
-                {...(onOpenAttachment ? { onOpenAttachment } : {})}
-                footer={
-                  <>
-                    <FeedbackKindChip kind={detail.ticket.kind} />
-                    <FeedbackStatusChip
-                      status={detail.ticket.status}
-                      closureReason={detail.ticket.closureReason}
-                    />
-                    <ReporterClosureReasonLabel
-                      reason={detail.ticket.closureReason}
-                    />
-                    {transport.closeTicket &&
-                      detail.ticket.status !== "closed" && (
-                        <ReporterCloseSplitButton
-                          status={detail.ticket.status}
-                          disabled={closing}
-                          onChoose={(reason) => {
-                            setActionError(null);
-                            setCloseReason(reason);
-                            setConfirmingClose(true);
-                          }}
-                        />
-                      )}
-                  </>
-                }
-              />
-              {detail.comments.map((comment) => (
-                <FeedbackConversationMessage
-                  key={comment.id}
-                  authorType={comment.authorType}
-                  body={comment.body}
-                  createdAt={comment.createdAt}
-                  ticketId={ticketId}
-                />
-              ))}
-            </MessageList>
-            {newReplies && (
-              <Button
-                className="hands-feedback-new-replies"
-                onClick={() => {
-                  if (conversationRef.current)
-                    conversationRef.current.scrollTop =
-                      conversationRef.current.scrollHeight;
-                  setNewReplies(false);
+              <MessageList
+                rootClassName="hands-feedback-conversation-root"
+                className="hands-feedback-conversation"
+                aria-label={message("conversation")}
+                ref={setConversationViewport}
+                onScroll={() => {
+                  if (
+                    conversationRef.current &&
+                    isNearConversationBottom(conversationRef.current)
+                  )
+                    setNewReplies(false);
                 }}
               >
-                {message("newReplies")}
-              </Button>
-            )}
-            {detail.nextCommentCursor && (
-              <Button
-                variant="outline"
-                disabled={loadingMore}
-                onClick={() => void load(detail.nextCommentCursor!)}
-              >
-                {loadingMore
-                  ? message("loadingMore")
-                  : message("loadMoreReplies")}
-              </Button>
-            )}
+                <PullToRefreshIndicator
+                  distance={pullToRefresh.distance}
+                  label={message("refreshing")}
+                  state={pullToRefresh.state}
+                />
+                <FeedbackDateDivider at={detail.ticket.createdAt} />
+                <FeedbackConversationMessage
+                  authorType="reporter"
+                  body={detail.ticket.message}
+                  createdAt={detail.ticket.createdAt}
+                  ticketId={ticketId}
+                  attachments={detail.attachments}
+                  {...(onOpenAttachment ? { onOpenAttachment } : {})}
+                />
+                {detail.comments.map((comment, index) => {
+                  const previous =
+                    index === 0
+                      ? {
+                          authorType: "reporter" as const,
+                          createdAt: detail.ticket.createdAt,
+                        }
+                      : detail.comments[index - 1]!;
+                  const newDay = !sameDay(previous.createdAt, comment.createdAt);
+                  return (
+                    <Fragment key={comment.id}>
+                      {newDay && <FeedbackDateDivider at={comment.createdAt} />}
+                      {comment.authorType === "system" ? (
+                        <SystemMessage data-author="system">
+                          <SystemMessageContent>
+                            {previewLine(comment.body)}
+                          </SystemMessageContent>
+                          <SystemMessageTime
+                            render={
+                              <time
+                                dateTime={new Date(comment.createdAt).toISOString()}
+                              />
+                            }
+                          >
+                            {new Intl.DateTimeFormat(locale, {
+                              timeStyle: "short",
+                            }).format(new Date(comment.createdAt))}
+                          </SystemMessageTime>
+                        </SystemMessage>
+                      ) : (
+                        <FeedbackConversationMessage
+                          authorType={comment.authorType}
+                          body={comment.body}
+                          createdAt={comment.createdAt}
+                          ticketId={ticketId}
+                          continuation={
+                            !newDay && previous.authorType === comment.authorType
+                          }
+                        />
+                      )}
+                    </Fragment>
+                  );
+                })}
+              </MessageList>
+              {newReplies && (
+                <Button
+                  variant="outline"
+                  className="hands-feedback-new-replies"
+                  onClick={() => {
+                    if (conversationRef.current)
+                      conversationRef.current.scrollTop =
+                        conversationRef.current.scrollHeight;
+                    setNewReplies(false);
+                  }}
+                >
+                  {message("newReplies")}
+                </Button>
+              )}
+              {detail.nextCommentCursor && (
+                <div className="hands-feedback-inset">
+                  <Button
+                    variant="outline"
+                    disabled={loadingMore}
+                    onClick={() => void load(detail.nextCommentCursor!)}
+                  >
+                    {loadingMore
+                      ? message("loadingMore")
+                      : message("loadMoreReplies")}
+                  </Button>
+                </div>
+              )}
             </>
           )}
         </ConversationPanelBody>
+        {detail && detail.ticket.status === "closed" && (
+          <ConversationPanelFooter className="hands-feedback-closed-footer">
+            <p className="hands-feedback-closed-note">
+              {message("closedDescription")}
+            </p>
+          </ConversationPanelFooter>
+        )}
         {detail && detail.ticket.status !== "closed" && (
           <ConversationPanelFooter className="hands-feedback-reply-footer">
             <FeedbackComposer
@@ -2036,26 +2206,25 @@ export function FeedbackTicket({
                 ? { onOpenAttachment: onOpenPendingAttachment }
                 : {})}
               busy={sending}
-              error={actionError}
+              error={confirmingClose ? null : actionError}
               onKeyDown={onReplyKeyDown}
               placeholder={message("replyPlaceholder")}
               testIdPrefix="reply"
               actions={
-                <Button
+                <ComposerSubmit
                   aria-label={
                     sending ? message("sending") : message("sendReply")
                   }
                   title={sending ? message("sending") : message("sendReply")}
                   size="icon-sm"
-                  variant="accent"
                   disabled={!reply.trim() || sending}
                   onClick={() => void send()}
                 >
-                  <Send aria-hidden="true" size={14} />
+                  <Send aria-hidden="true" />
                   <span className="hands-feedback-sr-only">
                     {sending ? message("sending") : message("sendReply")}
                   </span>
-                </Button>
+                </ComposerSubmit>
               }
             />
           </ConversationPanelFooter>
@@ -2068,16 +2237,16 @@ export function FeedbackTicket({
       >
         {pullToRefresh.refreshing ? message("refreshing") : announcement}
       </div>
-      {transport.closeTicket && (
+      {transport.closeTicket && ticket && (
         <FeedbackCloseDialog
           open={confirmingClose}
           busy={closing}
           error={confirmingClose ? actionError : null}
-          reason={closeReason}
+          initialReason={defaultReporterClosureReason(ticket.status)}
           onOpenChange={(open) => {
             if (!closing) setConfirmingClose(open);
           }}
-          onConfirm={() => void closeTicket()}
+          onConfirm={(reason) => void closeTicket(reason)}
         />
       )}
     </section>
@@ -2294,103 +2463,151 @@ function NewFeedbackForm({
     setAnnouncement(copy("uploadCanceled"));
   };
 
+  const imageInputRef = useRef<HTMLInputElement | null>(null);
+  const attachmentsDisabled =
+    sending || attachments.length >= MAX_FEEDBACK_ATTACHMENTS;
+
   return (
     <section
       className="hands-feedback-new"
       aria-labelledby="hands-feedback-new-title"
     >
-      <header className="hands-feedback-header">
-        <div className="hands-feedback-header-title">
-          <Button
-            aria-label={copy("back")}
-            title={copy("back")}
-            size="icon-sm"
-            variant="outline"
-            onClick={onCancel}
-          >
-            <ArrowLeft aria-hidden="true" size={16} />
-          </Button>
-          <h2 id="hands-feedback-new-title" tabIndex={-1}>
-            {copy("newFeedback")}
-          </h2>
-        </div>
-      </header>
-      <div className="hands-feedback-middle hands-feedback-new-fields">
-        <span className="hands-feedback-field-label">{copy("type")}</span>
-        <SegmentedControl<FeedbackKind>
-          className="hands-feedback-kind"
-          value={kind}
-          onValueChange={(value) => {
-            if (value) setKind(value);
-          }}
-          aria-label={copy("feedbackType")}
+      <PanelHeader className="hands-feedback-header">
+        <PanelAction
+          aria-label={copy("back")}
+          title={copy("back")}
+          onClick={sending ? cancelUpload : onCancel}
         >
-          <SegmentedControlItem
-            className="hands-feedback-kind-item"
-            value="feedback"
-          >
-            <SegmentedControlLabel>{copy("idea")}</SegmentedControlLabel>
-          </SegmentedControlItem>
-          <SegmentedControlItem
-            className="hands-feedback-kind-item"
-            value="bug"
-          >
-            <SegmentedControlLabel>{copy("problem")}</SegmentedControlLabel>
-          </SegmentedControlItem>
-        </SegmentedControl>
-        <span className="hands-feedback-field-label">{copy("question")}</span>
-        <FeedbackComposer
-          id="hands-feedback-message"
-          value={message}
-          label={copy("question")}
-          onChange={setMessage}
-          textareaRef={textareaRef}
-          attachments={attachments}
-          onAttachmentsChange={choose}
-          onRemoveAttachment={(id) =>
-            setAttachments((current) =>
-              current.filter((item) => item.id !== id),
-            )
-          }
-          {...(onOpenPendingAttachment
-            ? { onOpenAttachment: onOpenPendingAttachment }
-            : {})}
-          busy={sending}
-          error={error}
-          placeholder={copy("describePlaceholder")}
-          showCounter
-          imageInputLabel={copy("screenshots", {
-            count: MAX_FEEDBACK_ATTACHMENTS,
-          })}
-          testIdPrefix="new"
-          actions={
-            <>
-              <Button
-                size="sm"
-                variant="ghost"
-                onClick={sending ? cancelUpload : onCancel}
+          <ArrowLeft aria-hidden="true" />
+        </PanelAction>
+        <PanelHeaderContent>
+          <PanelHeading>
+            <PanelTitle render={<h2 id="hands-feedback-new-title" tabIndex={-1} />}>
+              {copy("newFeedback")}
+            </PanelTitle>
+          </PanelHeading>
+          <PanelMeta>{copy("newMeta")}</PanelMeta>
+        </PanelHeaderContent>
+      </PanelHeader>
+      <div className="hands-feedback-middle">
+        <form
+          className="hands-feedback-new-fields"
+          onSubmit={(event) => {
+            event.preventDefault();
+            void submit();
+          }}
+        >
+          {/* A group, not a field control: a Field label would name only the
+              first option. */}
+          <div className="hands-feedback-field">
+            <Label render={<span id="hands-feedback-kind-label" />}>
+              {copy("type")}
+            </Label>
+            <SegmentedControl<FeedbackKind>
+              aria-labelledby="hands-feedback-kind-label"
+              className="hands-feedback-kind"
+              value={kind}
+              onValueChange={(value) => {
+                if (value) setKind(value);
+              }}
+            >
+              <SegmentedControlItem
+                className="hands-feedback-kind-item"
+                value="feedback"
               >
-                {copy("cancel")}
-              </Button>
-              <Button
-                size="sm"
-                variant="accent"
-                disabled={!message.trim() || sending}
-                onClick={() => void submit()}
+                <Lightbulb aria-hidden="true" />
+                <SegmentedControlLabel>{copy("idea")}</SegmentedControlLabel>
+              </SegmentedControlItem>
+              <SegmentedControlItem
+                className="hands-feedback-kind-item"
+                value="bug"
               >
-                <Send aria-hidden="true" size={14} />
-                {sending
-                  ? copy("submitting")
-                  : attachments.some(({ state }) => state === "failed")
-                    ? copy("retryUpload")
-                    : copy("submit")}
+                <Bug aria-hidden="true" />
+                <SegmentedControlLabel>{copy("problem")}</SegmentedControlLabel>
+              </SegmentedControlItem>
+            </SegmentedControl>
+          </div>
+          <Field>
+            <FieldLabel htmlFor="hands-feedback-message" required>
+              {copy("question")}
+            </FieldLabel>
+            <Textarea
+              ref={textareaRef}
+              id="hands-feedback-message"
+              className="hands-feedback-message-input"
+              maxLength={10_000}
+              value={message}
+              placeholder={copy("describePlaceholder")}
+              onChange={(event) => setMessage(event.target.value)}
+            />
+          </Field>
+          <Field>
+            <FieldLabel>{copy("screenshotsOptional")}</FieldLabel>
+            <input
+              ref={imageInputRef}
+              data-testid="hands-feedback-new-image-input"
+              className="hands-feedback-sr-only"
+              aria-label={copy("screenshots", {
+                count: MAX_FEEDBACK_ATTACHMENTS,
+              })}
+              type="file"
+              accept={FEEDBACK_ATTACHMENT_TYPES.join(",")}
+              multiple
+              disabled={attachmentsDisabled}
+              onChange={choose}
+            />
+            <PendingAttachmentList
+              attachments={attachments}
+              busy={sending}
+              onRemove={(id) =>
+                setAttachments((current) =>
+                  current.filter((item) => item.id !== id),
+                )
+              }
+              {...(onOpenPendingAttachment
+                ? { onOpenAttachment: onOpenPendingAttachment }
+                : {})}
+            />
+            <div className="hands-feedback-attach-row">
+              <Button
+                type="button"
+                variant="outline"
+                size="md"
+                disabled={attachmentsDisabled}
+                onClick={() => imageInputRef.current?.click()}
+              >
+                <ImagePlus aria-hidden="true" />
+                {copy("attachImage")}
               </Button>
-            </>
-          }
-        />
-        <p className="hands-feedback-form-note">
-          {copy("attachmentHint", { count: MAX_FEEDBACK_ATTACHMENTS })}
-        </p>
+            </div>
+            <FieldDescription>
+              {copy("attachmentHint", { count: MAX_FEEDBACK_ATTACHMENTS })}
+            </FieldDescription>
+          </Field>
+          {error && <FeedbackErrorBanner error={error} />}
+          <div className="hands-feedback-form-actions">
+            <Button
+              type="button"
+              size="lg"
+              variant="outline"
+              onClick={sending ? cancelUpload : onCancel}
+            >
+              {copy("cancel")}
+            </Button>
+            <Button
+              type="submit"
+              size="lg"
+              variant="primary"
+              disabled={!message.trim() || sending}
+            >
+              {sending
+                ? copy("submitting")
+                : attachments.some(({ state }) => state === "failed")
+                  ? copy("retryUpload")
+                  : copy("sendFeedback")}
+            </Button>
+          </div>
+        </form>
       </div>
       <div
         className="hands-feedback-live"
@@ -2440,7 +2657,6 @@ export function FeedbackWorkspace({
   hideHeaderTitle = false,
   ref,
 }: FeedbackWorkspaceProps) {
-  const { theme } = useHandsFeedback();
   const initial = useMemo<FeedbackWorkspaceRoute>(
     () =>
       initialTicketId
@@ -2545,7 +2761,6 @@ export function FeedbackWorkspace({
   return (
     <div
       className="hands-feedback-root"
-      data-hands-feedback-theme={theme}
       ref={rootRef}
     >
       <FeedbackInbox
