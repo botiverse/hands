@@ -1,3 +1,4 @@
+import { DESKTOP_INSTALLER, LEGACY_ELECTRON_INSTALLER } from "../lib/release_resolver";
 import type { Context } from "hono";
 import { currentActor, type AdminEnv } from "../middleware/auth";
 import { currentAccount, currentDeployToken } from "../lib/permissions";
@@ -453,6 +454,23 @@ export async function getReleaseForApp(
     .first<ReleaseRow>();
 }
 
+/**
+ * The other name for the same product, for the supersede/identity queries.
+ *
+ * Activating a release must retire any active release of the SAME product, and a
+ * version coordinate must stay unique within a product. Comparing product_type as a
+ * string would treat `electron-installer` and `desktop-installer` as different
+ * products, which lets two active releases of one product coexist on a channel --
+ * the invariant every one of these statements exists to keep. The read paths already
+ * accept both names; these write paths have to agree or the data drifts out of a
+ * shape the read paths assume.
+ */
+function siblingProductType(productType: string): string {
+  if (productType === DESKTOP_INSTALLER) return LEGACY_ELECTRON_INSTALLER;
+  if (productType === LEGACY_ELECTRON_INSTALLER) return DESKTOP_INSTALLER;
+  return productType;
+}
+
 async function findReleaseForVersionIdentity(
   db: D1Database,
   appId: string,
@@ -465,14 +483,14 @@ async function findReleaseForVersionIdentity(
     `SELECT r.id, r.build_id, r.status, b.version_name, b.version_code
      FROM releases r
      JOIN builds b ON b.id = r.build_id
-     WHERE r.app_id = ?1 AND r.channel_id = ?2 AND r.product_type = ?3
+     WHERE r.app_id = ?1 AND r.channel_id = ?2 AND r.product_type IN (?3, ?6)
        AND r.release_type = ?4 AND b.version_code = ?5
        AND (r.status <> 'cancelled' OR r.activated_at IS NOT NULL)
      ORDER BY CASE r.status
        WHEN 'active' THEN 0 WHEN 'draft' THEN 1 WHEN 'superseded' THEN 2 ELSE 3
      END, r.created_at ASC, r.id ASC
      LIMIT 1`,
-  ).bind(appId, channelId, productType, releaseType, versionCode).first<ReleaseVersionIdentity>();
+  ).bind(appId, channelId, productType, releaseType, versionCode, siblingProductType(productType)).first<ReleaseVersionIdentity>();
 }
 
 function releaseVersionConflictResponse(c: AdminContext, error: ReleaseVersionAlreadyExistsError) {
@@ -592,10 +610,10 @@ export async function createRelease(
           `UPDATE releases
            SET status = 'superseded', superseded_by_release_id = ?1,
                revision = revision + 1, updated_at = ?2
-           WHERE app_id = ?3 AND channel_id = ?4 AND product_type = ?5
+           WHERE app_id = ?3 AND channel_id = ?4 AND product_type IN (?5, ?8)
              AND release_type = ?6 AND status = 'active' AND id <> ?7`,
         )
-        .bind(id, now, appId, channelId, productType, releaseType, id),
+        .bind(id, now, appId, channelId, productType, releaseType, id, siblingProductType(productType)),
     );
   }
 
@@ -774,7 +792,7 @@ async function updateReleaseFields(
           `UPDATE releases
            SET status = 'superseded', superseded_by_release_id = ?1,
                revision = revision + 1, updated_at = ?2
-           WHERE app_id = ?3 AND channel_id = ?4 AND product_type = ?5
+           WHERE app_id = ?3 AND channel_id = ?4 AND product_type IN (?5, ?9)
              AND release_type = ?6 AND status = 'active' AND id <> ?7
              AND EXISTS (SELECT 1 FROM audit_logs WHERE id = ?8)`,
         ).bind(
@@ -786,6 +804,7 @@ async function updateReleaseFields(
           release.release_type,
           release.id,
           auditId,
+          siblingProductType(release.product_type),
         ),
       );
     } else {
@@ -2124,7 +2143,7 @@ async function executeReleasePublish(
         `UPDATE releases
          SET status = 'superseded', superseded_by_release_id = ?1,
              revision = revision + 1, updated_at = ?2
-         WHERE app_id = ?3 AND channel_id = ?4 AND product_type = ?5
+         WHERE app_id = ?3 AND channel_id = ?4 AND product_type IN (?5, ?8)
            AND release_type = ?6 AND status = 'active' AND id <> ?1
            AND EXISTS (
              SELECT 1 FROM releases next
@@ -2145,6 +2164,7 @@ async function executeReleasePublish(
         existing.product_type,
         existing.release_type,
         auditId,
+        siblingProductType(existing.product_type),
       ),
   );
   const activationResultIndex = statements.length;
@@ -2464,7 +2484,7 @@ export async function handleRollbackRelease(c: AdminContext) {
         `UPDATE releases
          SET status = 'superseded', superseded_by_release_id = ?1,
              revision = revision + 1, updated_at = ?2
-         WHERE app_id = ?3 AND channel_id = ?4 AND product_type = ?5
+         WHERE app_id = ?3 AND channel_id = ?4 AND product_type IN (?5, ?8)
            AND release_type = ?6 AND status = 'active' AND id <> ?1
            AND EXISTS (SELECT 1 FROM audit_logs WHERE id = ?7)`,
       ).bind(
@@ -2475,6 +2495,7 @@ export async function handleRollbackRelease(c: AdminContext) {
         existing.product_type,
         existing.release_type,
         auditId,
+        siblingProductType(existing.product_type),
       ));
     } else if (!restoresDraft) {
       statements.push(c.env.DB.prepare(
@@ -2619,7 +2640,7 @@ export async function handleBumpRollout(c: AdminContext) {
         `UPDATE releases
          SET status = 'superseded', superseded_by_release_id = ?1,
              revision = revision + 1, updated_at = ?2
-         WHERE app_id = ?3 AND channel_id = ?4 AND product_type = ?5
+         WHERE app_id = ?3 AND channel_id = ?4 AND product_type IN (?5, ?8)
            AND release_type = ?6 AND status = 'active' AND id <> ?1
            AND EXISTS (SELECT 1 FROM audit_logs WHERE id = ?7)`,
       ).bind(
@@ -2630,6 +2651,7 @@ export async function handleBumpRollout(c: AdminContext) {
         existing.product_type,
         existing.release_type,
         auditId,
+        siblingProductType(existing.product_type),
       ));
     } else {
       statements.push(c.env.DB.prepare(

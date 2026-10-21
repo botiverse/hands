@@ -466,7 +466,9 @@ export function registerPublicRoutes(): RouteConfigList {
         }),
       }),
       query: z.object({
-        product_type: z.string().default("electron-installer").optional(),
+        // The documented default is the current name; the resolver treats the legacy
+        // `electron-installer` as equivalent, so an older client is not broken by it.
+        product_type: z.string().default("desktop-installer").optional(),
       }),
     },
     responses: {

@@ -210,13 +210,13 @@ export async function handleCreateApp(c: AdminContext) {
       // Making it enforce is a separate change: it would start rejecting uploads
       // that succeed today.
       c.env.DB.prepare(
-        `INSERT INTO channels (id, app_id, slug, name, bundle_id, password, git_url, enabled_product_types_json, metadata_json, created_at) VALUES (?, ?, 'main', 'Main', NULL, NULL, NULL, '["android-apk","electron-installer","ios-ipa","ohos-app","cli-binary"]', '{}', ?)`,
+        `INSERT INTO channels (id, app_id, slug, name, bundle_id, password, git_url, enabled_product_types_json, metadata_json, created_at) VALUES (?, ?, 'main', 'Main', NULL, NULL, NULL, '["android-apk","desktop-installer","ios-ipa","ohos-app","cli-binary"]', '{}', ?)`,
       ).bind(crypto.randomUUID(), id, now),
       c.env.DB.prepare(
-        `INSERT INTO channels (id, app_id, slug, name, bundle_id, password, git_url, enabled_product_types_json, metadata_json, created_at) VALUES (?, ?, 'preview', 'Preview', ?, NULL, NULL, '["android-apk","electron-installer","ios-ipa","ohos-app","cli-binary"]', '{}', ?)`,
+        `INSERT INTO channels (id, app_id, slug, name, bundle_id, password, git_url, enabled_product_types_json, metadata_json, created_at) VALUES (?, ?, 'preview', 'Preview', ?, NULL, NULL, '["android-apk","desktop-installer","ios-ipa","ohos-app","cli-binary"]', '{}', ?)`,
       ).bind(crypto.randomUUID(), id, body.slug + ".preview", now),
       c.env.DB.prepare(
-        `INSERT INTO channels (id, app_id, slug, name, bundle_id, password, git_url, enabled_product_types_json, metadata_json, created_at) VALUES (?, ?, 'nightly', 'Nightly', ?, NULL, NULL, '["android-apk","electron-installer","ios-ipa","ohos-app","cli-binary"]', '{}', ?)`,
+        `INSERT INTO channels (id, app_id, slug, name, bundle_id, password, git_url, enabled_product_types_json, metadata_json, created_at) VALUES (?, ?, 'nightly', 'Nightly', ?, NULL, NULL, '["android-apk","desktop-installer","ios-ipa","ohos-app","cli-binary"]', '{}', ?)`,
       ).bind(crypto.randomUUID(), id, body.slug + ".nightly", now),
       // Creator becomes this app's admin (see the note above).
       // Skipped when there is no account: `dev-token` satisfies the org-role gate
