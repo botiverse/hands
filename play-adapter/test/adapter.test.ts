@@ -349,6 +349,36 @@ describe("Google Play adapter RPC service", () => {
     expect(completed[0]!.versionCodes).toEqual(["42"]);
   });
 
+  it("keeps the live completed release beside a staged rollout", async () => {
+    // The drop applies ONLY when the incoming release is completed. A staged rollout
+    // (inProgress) runs beside the current live release by Play's own rule, so
+    // removing that completed release would take the live version off the track --
+    // the opposite failure to the one this PR fixes. Pinned so a later simplification
+    // to "always drop the old completed" cannot pass review.
+    const fixture = googleFixture({ trackMaximum: 41, uploadVersionCode: 42 });
+    const service = createPlayAdapterService({ fetchImpl: fixture.fetchImpl, nowSeconds: () => NOW });
+    const promoted = await service.promote(
+      promotion({ versionCode: 42, handsTrack: "production", rolloutPercent: 20 }),
+      body(),
+      null,
+      environment(),
+    );
+    expect(promoted.ok).toBe(true);
+
+    const put = fixture.requests.filter(
+      (request) => request.method === "PUT" && request.url.includes("/tracks/"),
+    );
+    expect(put).toHaveLength(1);
+    const raw = put[0]!.body;
+    const sent = (typeof raw === "string" ? JSON.parse(raw) : raw) as {
+      releases: Array<{ status?: string; versionCodes?: string[] }>;
+    };
+    expect(sent.releases).toEqual([
+      { name: "existing", versionCodes: ["41"], status: "completed" },
+      { versionCodes: ["42"], status: "inProgress", userFraction: 0.2 },
+    ]);
+  });
+
   it.each([
     { trackMaximum: 11301005, versionCode: 11301005 },
     { trackMaximum: 11301005, versionCode: 11301004 },
