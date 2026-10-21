@@ -371,13 +371,26 @@ export class GooglePlayClient {
     if ((current.releases ?? []).some((release) => release.status === "inProgress" || release.status === "halted")) {
       throw new PlayAdapterError(409, "play_rollout_conflict", "The track already has a staged or halted release");
     }
+    // Google Play rejects a track body carrying more than one `completed` release:
+    // "Track has more than one completed release". Carrying every existing release
+    // forward and appending another completed one therefore fails on any track that
+    // has already shipped once -- which, for a real app, is every track.
+    //
+    // A new completed release SUPERSEDES the previous one, so the old ones are not
+    // preserved alongside it; they remain in Play's release history regardless. Only
+    // `completed` is dropped: `draft` and `inProgress` are rejected earlier by the
+    // conflict check above, and any other status is not ours to rewrite.
+    const nextRelease = requestedRelease(request);
+    const carried = (current.releases ?? [])
+      .map(cleanRelease)
+      .filter((release) => !(nextRelease.status === "completed" && release.status === "completed"));
     await this.requestJson<TrackResource>(
       `${this.editRoot(request.packageName, editId)}/tracks/${encodeURIComponent(request.playTrack)}`,
       {
         method: "PUT",
         body: JSON.stringify({
           track: request.playTrack,
-          releases: [...(current.releases ?? []).map(cleanRelease), requestedRelease(request)],
+          releases: [...carried, nextRelease],
         }),
       },
     );
