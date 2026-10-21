@@ -36,7 +36,7 @@
       "electron": "43.5.0",
       "tinypool": "2.1.2",
       "source-map-js": "1.2.2",
-      "hono": "4.13.7"
+      "hono": "4.13.11"
     }
   }
 }
