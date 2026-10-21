@@ -14,18 +14,14 @@ import {
 } from "react";
 import {
   ArrowLeft,
-  Ban,
   Bug,
   Check,
-  CheckCircle,
-  Circle,
   Clock,
   ChevronDown,
   ImagePlus,
   Lightbulb,
   MessageSquare,
   Paperclip,
-  Play,
   Send,
   X,
 } from "lucide-react";
@@ -106,6 +102,7 @@ import {
   SegmentedControlLabel,
   Skeleton,
   Spinner,
+  Status,
   Tabs,
   TabsLabel,
   TabsList,
@@ -434,19 +431,13 @@ function FeedbackKindChip({ kind }: { kind: FeedbackTicketSummary["kind"] }) {
   const { message } = useHandsFeedback();
   const isProblem = kind === "bug";
   const Icon = isProblem ? Bug : Lightbulb;
+  // A category tag, so neutral: colour in the design system carries meaning
+  // (status), not kind.
   return (
-    <MessageReferenceChip
-      className={`hands-feedback-reference-chip${isProblem ? " hands-feedback-problem-chip" : ""}`}
-      data-feedback-kind={kind}
-      variant={isProblem ? "muted" : "info"}
-    >
-      <span className="hands-feedback-reference-chip-content">
-        <Icon aria-hidden="true" />
-        <MessageReferenceLabel>
-          {message(isProblem ? "problem" : "idea")}
-        </MessageReferenceLabel>
-      </span>
-    </MessageReferenceChip>
+    <Badge appearance="soft" variant="muted" data-feedback-kind={kind}>
+      <Icon aria-hidden="true" />
+      {message(isProblem ? "problem" : "idea")}
+    </Badge>
   );
 }
 
@@ -462,33 +453,22 @@ function FeedbackStatusChip({
     status === "closed" && closureReason === "completed"
       ? "resolved"
       : status;
-  const config = {
-    open: {
-      Icon: Circle,
-      variant: "warning" as const,
-    },
-    in_progress: {
-      Icon: Play,
-      variant: "information" as const,
-    },
-    resolved: {
-      Icon: CheckCircle,
-      variant: "success" as const,
-    },
-    closed: {
-      Icon: Ban,
-      variant: "muted" as const,
-    },
+  // Raft Design System: a status chip is a soft Badge with a Status pixel
+  // (badge.md); `solid` is the sticker for counts that wait for the person.
+  const variant = {
+    open: "warning" as const,
+    in_progress: "information" as const,
+    resolved: "success" as const,
+    closed: "muted" as const,
   }[displayStatus];
-  const StatusIcon = config.Icon;
   return (
     <Badge
-      appearance="solid"
-      variant={config.variant}
+      appearance="soft"
+      variant={variant}
       data-feedback-status={status}
       data-feedback-display-status={displayStatus}
     >
-      <StatusIcon aria-hidden="true" size={10} />
+      <Status variant={variant} size="md" aria-hidden="true" />
       {feedbackStatusLabel(displayStatus, message)}
     </Badge>
   );
@@ -634,38 +614,32 @@ function ReporterCloseSplitButton({
       className="hands-feedback-close-split"
       data-menu-open={reasonMenuOpen ? "" : undefined}
     >
-      <MessageReferenceChip
-        render={
-          <button
-            type="button"
-            disabled={disabled}
-            onClick={() => onChoose(defaultReason)}
-          />
-        }
-        variant="accent"
-        className="hands-feedback-reference-chip hands-feedback-close-main"
+      {/* A secondary action on a card: ghost buttons (the card has its own
+          edge), never the accent colour, which is for the primary action. */}
+      <Button
+        type="button"
+        size="xs"
+        variant="ghost"
+        disabled={disabled}
+        className="hands-feedback-close-main"
+        onClick={() => onChoose(defaultReason)}
       >
-        <MessageReferenceLabel>{message("closeTicket")}</MessageReferenceLabel>
-      </MessageReferenceChip>
+        {message("closeTicket")}
+      </Button>
       <DropdownMenu open={reasonMenuOpen} onOpenChange={setReasonMenuOpen}>
         <DropdownMenuTrigger
           render={
-            <MessageReferenceChip
-              render={
-                <button
-                  type="button"
-                  disabled={disabled}
-                  aria-label={message("closeReasonMenu")}
-                />
-              }
-              variant="accent"
-              className="hands-feedback-reference-chip hands-feedback-close-caret"
+            <Button
+              type="button"
+              size="icon-xs"
+              variant="ghost"
+              disabled={disabled}
+              aria-label={message("closeReasonMenu")}
+              className="hands-feedback-close-caret"
             />
           }
         >
-          <span className="hands-feedback-close-caret-content">
-            <ChevronDown aria-hidden="true" />
-          </span>
+          <ChevronDown aria-hidden="true" />
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end" className="hands-feedback-close-menu">
           {options.map((option) => (
@@ -1149,18 +1123,16 @@ export function FeedbackInbox({
       aria-labelledby="hands-feedback-inbox-title"
       hidden={hidden}
     >
-      <header className="hands-feedback-header">
-        <div className="hands-feedback-header-title" hidden={hideHeaderTitle}>
-          <span className="hands-feedback-header-icon" aria-hidden="true">
-            <MessageSquare size={16} />
-          </span>
+      {/* The host may own the page title (hideHeaderTitle); then the inbox has
+          no header bar of its own, only one toolbar row: the status tabs and
+          the create entry. */}
+      <header className="hands-feedback-header" hidden={hideHeaderTitle}>
+        <div className="hands-feedback-header-title">
           <h2 id="hands-feedback-inbox-title">{message("workspaceTitle")}</h2>
         </div>
-        <Button size="xs" onClick={onNewFeedback}>
-          {message("newFeedback")}
-        </Button>
       </header>
       <div className="hands-feedback-content hands-feedback-inbox-content">
+        <div className="hands-feedback-toolbar">
         {tickets.length > 0 && (
           <Tabs<"all" | "open" | "resolved">
             className="hands-feedback-filter"
@@ -1180,6 +1152,10 @@ export function FeedbackInbox({
             </TabsList>
           </Tabs>
         )}
+          <Button size="sm" variant="outline" className="hands-feedback-toolbar-action" onClick={onNewFeedback}>
+            {message("newFeedback")}
+          </Button>
+        </div>
         <div
           className="hands-feedback-middle hands-feedback-list-scroll"
           data-feedback-list-scroll
@@ -1900,13 +1876,15 @@ export function FeedbackTicket({
             aria-label={message("back")}
             title={message("back")}
             size="icon-sm"
-            variant="outline"
+            variant="ghost"
             onClick={onBack}
           >
             <ArrowLeft aria-hidden="true" size={16} />
           </Button>
+          {/* The page says which ticket it is (its first line), as a pushed
+              page names its subject; the host already names the section. */}
           <h2 id="hands-feedback-ticket-heading" tabIndex={-1}>
-            {message("workspaceTitle")}
+            {detail?.ticket.message.split("\n", 1)[0] || message("workspaceTitle")}
           </h2>
         </div>
       </header>
@@ -2303,7 +2281,7 @@ function NewFeedbackForm({
             aria-label={copy("back")}
             title={copy("back")}
             size="icon-sm"
-            variant="outline"
+            variant="ghost"
             onClick={onCancel}
           >
             <ArrowLeft aria-hidden="true" size={16} />

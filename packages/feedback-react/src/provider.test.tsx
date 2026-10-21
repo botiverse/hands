@@ -86,7 +86,7 @@ describe("FeedbackProvider", () => {
     );
     expect(html).not.toContain("data-hands-feedback-theme");
     expect(html).toContain("Feedback");
-    expect(html).toContain("New feedback");
+    expect(html).toContain("New Feedback");
     expect(html).not.toContain("dashboard");
   });
 
@@ -171,7 +171,7 @@ describe("FeedbackProvider", () => {
     expect(css).toMatch(/env\(safe-area-inset-bottom\)/);
     expect(css).toMatch(/prefers-reduced-motion:\s*reduce/);
     expect(css).toMatch(
-      /\.hands-feedback-header h2\s*\{[^}]*font-size:\s*17px[^}]*font-weight:\s*700/,
+      /\.hands-feedback-header h2\s*\{[^}]*font-size:\s*var\(--text-headline[^}]*font-weight:\s*600/,
     );
     expect(css).toMatch(
       /\.hands-feedback-list-scroll\[data-feedback-empty-scroll="true"\]\s*\{[^}]*align-content:\s*stretch[^}]*gap:\s*0[^}]*grid-template-rows:\s*auto minmax\(0, 1fr\)[^}]*padding:\s*6px 2px 0/,
@@ -185,12 +185,11 @@ describe("FeedbackProvider", () => {
     expect(css).toMatch(
       /@media \(max-width: 640px\)[\s\S]*?\.hands-feedback-inbox-content\s*\{[^}]*padding:\s*18px 16px calc\(18px \+ env\(safe-area-inset-bottom, 0px\)\)/,
     );
-    expect(css).toMatch(
-      /\.hands-feedback-empty\s*\{[^}]*align-self:\s*stretch[^}]*border:\s*2px dashed[^}]*height:\s*auto[^}]*justify-content:\s*center[^}]*justify-self:\s*stretch[^}]*min-height:\s*0[^}]*padding:\s*40px 24px 48px/,
-    );
-    expect(css).toMatch(
-      /\.hands-feedback-empty-icon\s*\{[^}]*border:\s*2px solid[^}]*box-shadow:\s*var\(--theme-shadow-sm, 2px 2px 0[^}]*height:\s*44px[^}]*width:\s*44px/,
-    );
+    // The empty state is raft-ui's EmptyState as drawn: no dashed frame and
+    // no offset-shadow sticker of our own (the old two-theme look).
+    expect(css).toMatch(/\.hands-feedback-empty\s*\{[^}]*align-self:\s*stretch/);
+    expect(css).not.toMatch(/2px dashed/);
+    expect(css).not.toMatch(/--theme-shadow/);
     expect(css).toMatch(
       /\.hands-feedback-reply-footer[^}]*padding-bottom:\s*calc\(18px \+ env\(safe-area-inset-bottom\)\)/,
     );
@@ -198,9 +197,7 @@ describe("FeedbackProvider", () => {
       /\.hands-feedback-unread-count\s*\{[^}]*border-radius:\s*6px[^}]*color:\s*var\(--foreground-inverse[^}]*min-width:\s*20px/,
     );
     expect(css).not.toMatch(/\.hands-feedback-unread-dot\s*\{/);
-    expect(css).toMatch(
-      /\.hands-feedback-problem-chip\s*\{[^}]*--reference-icon:\s*var\(--hf-danger[^}]*background-color:\s*var\(--danger-muted/,
-    );
+    expect(css).not.toMatch(/\.hands-feedback-problem-chip\s*\{/);
     expect(css).toMatch(
       /\.hands-feedback-reference-chip\s*\{[^}]*font-size:\s*10\.5px[^}]*height:\s*20px[^}]*min-height:\s*20px[^}]*padding:\s*0 6px/,
     );
@@ -216,27 +213,9 @@ describe("FeedbackProvider", () => {
     expect(css).toMatch(
       /\.hands-feedback-ticket-content\s*\{[^}]*pointer-events:\s*auto[^}]*z-index:\s*1/,
     );
-    expect(css).toMatch(
-      /\.hands-feedback-close-split\s*\{[^}]*height:\s*20px/,
-    );
-    expect(css).toMatch(
-      /\.hands-feedback-close-caret\s*\{[^}]*min-width:\s*20px/,
-    );
-    expect(css).toMatch(
-      /\.hands-feedback-close-main\s*\{[^}]*padding-left:\s*8px/,
-    );
-    expect(css).toMatch(
-      /\.hands-feedback-close-main::before\s*\{[^}]*display:\s*none/,
-    );
-    expect(css).toMatch(
-      /\.hands-feedback-close-split\[data-menu-open\],[\s\S]*\.hands-feedback-close-split:has\(\.hands-feedback-close-main:active\),[\s\S]*\.hands-feedback-close-split:has\(\.hands-feedback-close-caret:active\)\s*\{[^}]*box-shadow:\s*var\(--theme-shadow-md, 4px 4px 0 var\(--line-strong\)\)[^}]*translate:\s*0 -1px/,
-    );
-    expect(css).toMatch(
-      /\.hands-feedback-close-caret\[data-popup-open\]\s*\{[^}]*box-shadow:\s*none !important[^}]*translate:\s*0 !important/,
-    );
-    expect(css).toMatch(
-      /\.hands-feedback-close-main:active,[\s\S]*\.hands-feedback-close-caret:active\s*\{[^}]*box-shadow:\s*none !important[^}]*translate:\s*0 !important/,
-    );
+    // The close split is two raft-ui ghost Buttons: no lifted offset shadow
+    // and no translate on press of our own (one Raft look; a press is a wash).
+    expect(css).not.toMatch(/\.hands-feedback-close-[a-z-]+[^{]*\{[^}]*(?:box-shadow|translate):/);
     expect(css).toMatch(
       /\.hands-feedback-close-menu-item \[data-slot="dropdown-menu-item-label"\],[\s\S]*\.hands-feedback-close-menu-item \[data-slot="dropdown-menu-item-label"\] span\s*\{[^}]*overflow:\s*visible[^}]*text-overflow:\s*clip[^}]*white-space:\s*normal/,
     );

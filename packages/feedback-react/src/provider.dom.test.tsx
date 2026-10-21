@@ -129,12 +129,9 @@ describe("FeedbackWorkspace browser behavior", () => {
       "[data-feedback-kind='feedback']",
     );
     expect(kindChip).toBeTruthy();
-    expect(kindChip?.className).toContain("hands-feedback-reference-chip");
-    expect(
-      Array.from(kindChip?.children ?? []).some(
-        (child) => child.tagName.toLowerCase() === "svg",
-      ),
-    ).toBe(false);
+    // The kind is a neutral tag (a soft Badge), not a coloured reference chip:
+    // colour carries status in the design system, not category.
+    expect(kindChip?.dataset.slot).toBe("badge");
     expect(messageFooter?.querySelector("[data-feedback-status='open']")).toBeTruthy();
     expect(closeButton.className).toContain("hands-feedback-close-main");
     expect(
@@ -194,7 +191,7 @@ describe("FeedbackWorkspace browser behavior", () => {
     });
     const card = openTicket.closest<HTMLElement>("[data-slot='task-card']")!;
     const closeTicket = within(card).getByRole("button", {
-      name: "Close ticket",
+      name: "Close Ticket",
     });
 
     fireEvent.click(closeTicket);
@@ -202,7 +199,7 @@ describe("FeedbackWorkspace browser behavior", () => {
     expect(adapter.closeTicket).not.toHaveBeenCalled();
     const dialog = await screen.findByRole("alertdialog");
     fireEvent.click(
-      within(dialog).getByRole("button", { name: "Close ticket" }),
+      within(dialog).getByRole("button", { name: "Close Ticket" }),
     );
 
     await waitFor(() => expect(adapter.closeTicket).toHaveBeenCalledTimes(1));
@@ -218,7 +215,7 @@ describe("FeedbackWorkspace browser behavior", () => {
         card.querySelector("[data-feedback-status='closed']"),
       ).toBeTruthy(),
     );
-    expect(within(card).queryByRole("button", { name: "Close ticket" })).toBeNull();
+    expect(within(card).queryByRole("button", { name: "Close Ticket" })).toBeNull();
     expect(container.querySelector(".hands-feedback-detail")).toBeNull();
   });
 
@@ -373,7 +370,7 @@ describe("FeedbackWorkspace browser behavior", () => {
       </FeedbackProvider>,
     );
 
-    fireEvent.click(await screen.findByRole("button", { name: "New feedback" }));
+    fireEvent.click(await screen.findByRole("button", { name: "New Feedback" }));
     fireEvent.change(
       screen.getByRole("textbox", {
         name: "What would you like us to know?",
@@ -417,7 +414,7 @@ describe("FeedbackWorkspace browser behavior", () => {
         <FeedbackWorkspace />
       </FeedbackProvider>,
     );
-    fireEvent.click(await screen.findByText("New feedback"));
+    fireEvent.click(await screen.findByText("New Feedback"));
     const file = new File(["text"], "notes.txt", { type: "text/plain" });
     fireEvent.change(screen.getByLabelText("Screenshots (up to 3)"), {
       target: { files: [file] },
@@ -528,16 +525,11 @@ describe("FeedbackWorkspace browser behavior", () => {
       { backgroundColor: "", slot: "badge" },
       { backgroundColor: "", slot: "badge" },
     ]);
-    expect(
-      Array.from(
-        container.querySelectorAll<HTMLElement>("[data-feedback-status]"),
-      ).map((badge) => badge.querySelector("svg")?.getAttribute("class")),
-    ).toEqual([
-      "lucide lucide-circle",
-      "lucide lucide-play",
-      "lucide lucide-circle-check-big",
-      "lucide lucide-ban",
-    ]);
+    // Each status chip leads with the design system's status pixel, not an icon.
+    for (const badge of container.querySelectorAll<HTMLElement>("[data-feedback-status]")) {
+      expect(badge.querySelector("[data-slot='status']")).toBeTruthy();
+      expect(badge.querySelector("svg")).toBeNull();
+    }
     expect(
       Array.from(
         container.querySelectorAll<HTMLElement>("[data-feedback-status]"),
@@ -550,13 +542,12 @@ describe("FeedbackWorkspace browser behavior", () => {
       "[data-feedback-kind='bug']",
     );
     expect(problemChip?.textContent).toContain("Bug");
-    expect(problemChip?.className).toContain("hands-feedback-problem-chip");
-    // Bug/feedback chips now use the neutral semantic token instead of the old
-    // theme-family palette (bg-brutal-stone/25 vs bg-brutal-pink/30).
-    expect(problemChip?.className).toContain("bg-inactive-soft");
-    expect(problemChip?.className).not.toContain("bg-brutal-pink/30");
+    // A bug and an idea are the same neutral tag; only the icon and word differ.
+    const ideaChip = container.querySelector<HTMLElement>("[data-feedback-kind='feedback']");
+    expect(problemChip?.dataset.slot).toBe("badge");
+    expect(problemChip?.className).toBe(ideaChip?.className);
     const closeActions = screen.getAllByRole("button", {
-      name: "Close ticket",
+      name: "Close Ticket",
     });
     expect(closeActions).toHaveLength(3);
     expect(screen.queryByRole("button", { name: "Reopen ticket" })).toBeNull();
@@ -564,22 +555,15 @@ describe("FeedbackWorkspace browser behavior", () => {
       name: "Choose a close reason",
     });
     expect(reasonMenus).toHaveLength(3);
-    expect(closeActions.every((button) =>
-      button.className.includes("hands-feedback-reference-chip")
-    )).toBe(true);
-    expect(reasonMenus.every((button) =>
-      button.className.includes("hands-feedback-reference-chip")
-    )).toBe(true);
+    // Close is a secondary action: ghost buttons, never the accent colour.
+    expect(closeActions.every((button) => button.dataset.slot === "button")).toBe(true);
     expect(closeActions.every((button) =>
       button.className.includes("hands-feedback-close-main")
     )).toBe(true);
     expect(reasonMenus.every((button) =>
       button.className.includes("hands-feedback-close-caret")
     )).toBe(true);
-    expect(reasonMenus.every((button) =>
-      button.querySelector(":scope > .hands-feedback-close-caret-content > svg") &&
-      !button.matches(":has(> svg)")
-    )).toBe(true);
+    expect(reasonMenus.every((button) => button.querySelector("svg") !== null)).toBe(true);
     expect(
       closeActions.every((action) =>
         action.closest(".hands-feedback-ticket-meta"),
@@ -640,7 +624,7 @@ describe("FeedbackWorkspace browser behavior", () => {
       within(resolvedDialog).getByText("Issue resolved — close this ticket?"),
     ).toBeTruthy();
     expect(
-      within(resolvedDialog).getByRole("button", { name: "Close ticket" }),
+      within(resolvedDialog).getByRole("button", { name: "Close Ticket" }),
     ).toBeTruthy();
   });
 
@@ -697,9 +681,7 @@ describe("FeedbackWorkspace browser behavior", () => {
     expect(completedStatus.dataset.feedbackDisplayStatus).toBe("resolved");
     expect(completedStatus.style.backgroundColor).toBe("");
     expect(completedStatus.textContent).toContain("Resolved");
-    expect(completedStatus.querySelector("svg")?.getAttribute("class")).toBe(
-      "lucide lucide-circle-check-big",
-    );
+    expect(completedStatus.querySelector("[data-slot='status']")).toBeTruthy();
     fireEvent.click(
       screen.getByRole("button", { name: "Completed closed ticket" }),
     );
@@ -722,11 +704,9 @@ describe("FeedbackWorkspace browser behavior", () => {
     expect(noLongerNeededStatus.dataset.feedbackDisplayStatus).toBe("closed");
     expect(noLongerNeededStatus.style.backgroundColor).toBe("");
     expect(noLongerNeededStatus.textContent).toContain("Closed");
-    expect(noLongerNeededStatus.querySelector("svg")?.getAttribute("class")).toBe(
-      "lucide lucide-ban",
-    );
+    expect(noLongerNeededStatus.querySelector("[data-slot='status']")).toBeTruthy();
 
-    expect(screen.queryByRole("button", { name: "Close ticket" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Close Ticket" })).toBeNull();
     expect(container.querySelectorAll("[data-feedback-status='closed']")).toHaveLength(2);
   });
 
@@ -768,7 +748,7 @@ describe("FeedbackWorkspace browser behavior", () => {
     expect(
       await screen.findByRole("heading", { name: "My Feedback" }),
     ).toBeTruthy();
-    const createButton = screen.getByRole("button", { name: "New feedback" });
+    const createButton = screen.getByRole("button", { name: "New Feedback" });
     // raft-ui 0.6 collapsed the size scale: `sm` now renders at the `md` height (h-8).
     expect(createButton.className).toContain("h-8");
     expect(
@@ -795,7 +775,7 @@ describe("FeedbackWorkspace browser behavior", () => {
       ),
     ).toBeTruthy();
     expect(
-      screen.getAllByRole("button", { name: "New feedback" }),
+      screen.getAllByRole("button", { name: "New Feedback" }),
     ).toHaveLength(1);
     expect(screen.queryByRole("tablist", { name: "Status filter" })).toBeNull();
     expect(empty.container.querySelector(".hands-feedback-empty")).not.toBeNull();
@@ -803,9 +783,9 @@ describe("FeedbackWorkspace browser behavior", () => {
       empty.container.querySelector("[data-feedback-empty-kind='all']"),
     ).not.toBeNull();
 
-    fireEvent.click(screen.getByRole("button", { name: "New feedback" }));
+    fireEvent.click(screen.getByRole("button", { name: "New Feedback" }));
     expect(
-      screen.getByRole("heading", { name: "New feedback" }),
+      screen.getByRole("heading", { name: "New Feedback" }),
     ).toBeTruthy();
     expect(screen.getByRole("button", { name: "Back" })).toBeTruthy();
     const kind = screen.getByRole("radiogroup", { name: "Feedback type" });
@@ -816,8 +796,8 @@ describe("FeedbackWorkspace browser behavior", () => {
     expect(screen.getByRole("radio", { name: "Idea" }).className).toContain(
       "hands-feedback-kind-item",
     );
-    expect(screen.getByRole("button", { name: "Attach image" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Attach file" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Attach Image" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Attach File" })).toBeTruthy();
     expect(screen.getByText("0/10000")).toBeTruthy();
     const cancel = screen.getByRole("button", { name: "Cancel" });
     expect(cancel.closest(".hands-feedback-composer-toolbar")).not.toBeNull();
@@ -1012,9 +992,9 @@ describe("FeedbackWorkspace browser behavior", () => {
     );
     const firstDraft = await screen.findByLabelText("Reply");
     expect(firstDraft.closest(".hands-feedback-composer")).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Attach image" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Attach file" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Send reply" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Attach Image" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Attach File" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Send Reply" })).toBeTruthy();
     fireEvent.change(firstDraft, { target: { value: "draft one" } });
     fireEvent.keyDown(firstDraft, { key: "Enter", isComposing: true });
     fireEvent.keyDown(firstDraft, { key: "Enter", shiftKey: true });
@@ -1057,7 +1037,7 @@ describe("FeedbackWorkspace browser behavior", () => {
       </FeedbackProvider>,
     );
 
-    fireEvent.click(await screen.findByText("New feedback"));
+    fireEvent.click(await screen.findByText("New Feedback"));
     const attachment = new File([new Uint8Array(128)], "proof.png", {
       type: "image/png",
     });
@@ -1113,7 +1093,7 @@ describe("FeedbackWorkspace browser behavior", () => {
     fireEvent.change(screen.getByLabelText("Reply"), {
       target: { value: "Reply with a screenshot" },
     });
-    fireEvent.click(screen.getByRole("button", { name: "Send reply" }));
+    fireEvent.click(screen.getByRole("button", { name: "Send Reply" }));
 
     await waitFor(() => expect(adapter.addComment).toHaveBeenCalledTimes(1));
     const input = vi.mocked(adapter.addComment).mock.calls[0]![0];
@@ -1137,7 +1117,7 @@ describe("FeedbackWorkspace browser behavior", () => {
       </FeedbackProvider>,
     );
 
-    fireEvent.click(await screen.findByText("New feedback"));
+    fireEvent.click(await screen.findByText("New Feedback"));
     fireEvent.change(screen.getByLabelText("What would you like us to know?"), {
       target: { value: "Show upload progress" },
     });
@@ -1194,7 +1174,7 @@ describe("FeedbackWorkspace browser behavior", () => {
 
     const editor = await screen.findByLabelText("Reply");
     fireEvent.change(editor, { target: { value: "A persisted preview reply" } });
-    fireEvent.click(screen.getByRole("button", { name: "Send reply" }));
+    fireEvent.click(screen.getByRole("button", { name: "Send Reply" }));
 
     expect(await screen.findByText("A persisted preview reply")).toBeTruthy();
     expect((editor as HTMLTextAreaElement).value).toBe("");
@@ -1225,7 +1205,7 @@ describe("FeedbackWorkspace browser behavior", () => {
     );
     const editor = (await screen.findByLabelText("Reply")) as HTMLTextAreaElement;
     fireEvent.change(editor, { target: { value: "Preserve this draft" } });
-    fireEvent.click(screen.getByRole("button", { name: "Send reply" }));
+    fireEvent.click(screen.getByRole("button", { name: "Send Reply" }));
     expect(first.addComment).toHaveBeenCalledTimes(1);
 
     view.rerender(
@@ -1237,7 +1217,7 @@ describe("FeedbackWorkspace browser behavior", () => {
     expect(editor.value).toBe("Preserve this draft");
     expect(
       (screen.getByRole("button", {
-        name: "Send reply",
+        name: "Send Reply",
       }) as HTMLButtonElement).disabled,
     ).toBe(false);
     resolveFirst?.(detail);
@@ -1259,7 +1239,7 @@ describe("FeedbackWorkspace browser behavior", () => {
         <FeedbackWorkspace />
       </FeedbackProvider>,
     );
-    fireEvent.click(await screen.findByText("New feedback"));
+    fireEvent.click(await screen.findByText("New Feedback"));
     const editor = screen.getByLabelText(
       "What would you like us to know?",
     ) as HTMLTextAreaElement;
@@ -1275,7 +1255,7 @@ describe("FeedbackWorkspace browser behavior", () => {
     expect(await screen.findByText("Upload failed")).toBeTruthy();
     expect(editor.value).toBe("Keep this text");
     expect(screen.getByTitle("proof.png · image/png")).toBeTruthy();
-    fireEvent.click(screen.getByText("Retry upload"));
+    fireEvent.click(screen.getByText("Retry Upload"));
     expect(await screen.findByText("Thanks")).toBeTruthy();
     const calls = vi.mocked(adapter.createTicket).mock.calls;
     expect(calls).toHaveLength(2);
@@ -1297,7 +1277,7 @@ describe("FeedbackWorkspace browser behavior", () => {
     );
 
     expect(await screen.findByText("No feedback yet")).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "New feedback" }));
+    fireEvent.click(screen.getByRole("button", { name: "New Feedback" }));
     fireEvent.change(screen.getByLabelText("What would you like us to know?"), {
       target: { value: "A newly-created ticket" },
     });
@@ -1328,7 +1308,7 @@ describe("FeedbackWorkspace browser behavior", () => {
         <FeedbackWorkspace />
       </FeedbackProvider>,
     );
-    fireEvent.click(await screen.findByText("New feedback"));
+    fireEvent.click(await screen.findByText("New Feedback"));
     const editor = screen.getByLabelText(
       "What would you like us to know?",
     ) as HTMLTextAreaElement;
@@ -1363,7 +1343,7 @@ describe("FeedbackWorkspace browser behavior", () => {
         <FeedbackWorkspace />
       </FeedbackProvider>,
     );
-    fireEvent.click(await screen.findByText("New feedback"));
+    fireEvent.click(await screen.findByText("New Feedback"));
     const editor = screen.getByLabelText(
       "What would you like us to know?",
     ) as HTMLTextAreaElement;
@@ -1382,7 +1362,7 @@ describe("FeedbackWorkspace browser behavior", () => {
     resolveFirst?.(detail);
     await Promise.resolve();
     expect(
-      screen.getByRole("heading", { name: "New feedback" }),
+      screen.getByRole("heading", { name: "New Feedback" }),
     ).toBeTruthy();
     expect(second.createTicket).not.toHaveBeenCalled();
   });
@@ -1447,13 +1427,13 @@ describe("FeedbackWorkspace browser behavior", () => {
     );
 
     expect(await screen.findByText("Reply 100")).toBeTruthy();
-    fireEvent.click(screen.getByText("Load more replies"));
+    fireEvent.click(screen.getByText("Load More Replies"));
     expect(await screen.findByText("Reply 101")).toBeTruthy();
     expect(screen.getAllByText("Reply 100")).toHaveLength(1);
     expect(adapter.getTicket).toHaveBeenLastCalledWith(
       expect.objectContaining({ commentCursor: "page-2" }),
     );
-    expect(screen.queryByText("Load more replies")).toBeNull();
+    expect(screen.queryByText("Load More Replies")).toBeNull();
   });
 
   it("preserves historical reading position and exposes a new-reply affordance away from bottom", async () => {
@@ -1514,7 +1494,7 @@ describe("FeedbackWorkspace browser behavior", () => {
       </FeedbackProvider>,
     );
 
-    fireEvent.click(await screen.findByText("Load more replies"));
+    fireEvent.click(await screen.findByText("Load More Replies"));
     fireEvent.click(screen.getByRole("button", { name: "Back" }));
     expect(pageSignal?.aborted).toBe(true);
     resolvePage?.({
@@ -1572,7 +1552,7 @@ describe("FeedbackWorkspace browser behavior", () => {
         <FeedbackWorkspace />
       </FeedbackProvider>,
     );
-    fireEvent.click(await screen.findByText("New feedback"));
+    fireEvent.click(await screen.findByText("New Feedback"));
     fireEvent.change(screen.getByLabelText("What would you like us to know?"), {
       target: { value: "Idea" },
     });
@@ -1595,7 +1575,7 @@ describe("FeedbackWorkspace browser behavior", () => {
     fireEvent.change(await screen.findByLabelText("Reply"), {
       target: { value: "Hello" },
     });
-    fireEvent.click(screen.getByText("Send reply"));
+    fireEvent.click(screen.getByText("Send Reply"));
     expect((await screen.findByRole("alert")).textContent).toContain(
       "Couldn't load feedback. Try again.",
     );
@@ -1623,7 +1603,7 @@ describe("FeedbackWorkspace browser behavior", () => {
 
     const alert = await screen.findByRole("alert");
     expect(alert.textContent).toContain("Couldn't load feedback. Try again.");
-    fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+    fireEvent.click(screen.getByRole("button", { name: "Try Again" }));
     expect(screen.getByRole("alert")).toBe(alert);
     expect(container.querySelector(".hands-feedback-skeleton-row")).toBeNull();
     expect(
@@ -1672,7 +1652,7 @@ describe("FeedbackWorkspace browser behavior", () => {
         <FeedbackWorkspace />
       </FeedbackProvider>,
     );
-    fireEvent.click(await screen.findByText("New feedback"));
+    fireEvent.click(await screen.findByText("New Feedback"));
     fireEvent.change(screen.getByLabelText("What would you like us to know?"), {
       target: { value: "Retry me" },
     });
@@ -1702,9 +1682,9 @@ describe("FeedbackWorkspace browser behavior", () => {
     fireEvent.change(await screen.findByLabelText("Reply"), {
       target: { value: "Same reply" },
     });
-    fireEvent.click(screen.getByText("Send reply"));
+    fireEvent.click(screen.getByText("Send Reply"));
     expect(await screen.findByRole("alert")).toBeTruthy();
-    fireEvent.click(screen.getByText("Send reply"));
+    fireEvent.click(screen.getByText("Send Reply"));
     await waitFor(() =>
       expect(vi.mocked(commentAdapter.addComment).mock.calls).toHaveLength(2),
     );
@@ -1742,7 +1722,7 @@ describe("FeedbackWorkspace browser behavior", () => {
         <FeedbackWorkspace />
       </FeedbackProvider>,
     );
-    fireEvent.click(await screen.findByText("New feedback"));
+    fireEvent.click(await screen.findByText("New Feedback"));
     const feedback = screen.getByRole("radio", { name: "Idea" });
     const problem = screen.getByRole("radio", { name: "Bug" });
     expect(feedback.getAttribute("aria-checked")).toBe("true");
