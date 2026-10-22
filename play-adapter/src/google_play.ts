@@ -468,13 +468,29 @@ export class GooglePlayClient {
     // reported request.expectedSha256 -- an unverified "Hands-certified bytes are
     // live" claim. The upload path already enforces this binding (:330-333), so the
     // skip path must too.
+    //
+    // No query parameters: edits.bundles.list does not document versionCode/maxResults,
+    // and a silently ignored filter would return an empty list for every edit -- which
+    // reads as "not present" and sends us back down the upload path, exactly the bug
+    // this check exists to prevent. Filter client-side over the full list instead.
     const result = await this.requestJson<{
       bundles?: Array<{ versionCode?: unknown; sha256?: unknown }>;
-    }>(`${this.editRoot(packageName, editId)}/bundles?versionCode=${encodeURIComponent(String(request.versionCode))}&maxResults=10`);
+    }>(`${this.editRoot(packageName, editId)}/bundles`);
     if (result.bundles !== undefined && !Array.isArray(result.bundles)) {
       throw new PlayAdapterError(502, "play_bundles_malformed", "Google Play returned a malformed bundle list");
     }
-    const match = (result.bundles ?? []).find(
+    const bundles = result.bundles ?? [];
+    // Log what Google actually returned. The skip decision is only sound if this
+    // list really contains previously-uploaded bundles; if it comes back empty the
+    // check silently degrades to "always upload", which looks identical to the bug
+    // it was meant to fix. Recorded rather than inferred.
+    console.warn("hands_play_bundles_seen", JSON.stringify({
+      stage: "bundle_lookup",
+      count: bundles.length,
+      version_codes: bundles.map((bundle) => exactVersionCode(bundle.versionCode)).filter((v) => v !== null),
+      wanted: request.versionCode,
+    }));
+    const match = bundles.find(
       (bundle) => exactVersionCode(bundle.versionCode) === request.versionCode,
     );
     if (!match) return false;

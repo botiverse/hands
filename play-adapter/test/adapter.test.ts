@@ -116,7 +116,8 @@ function googleFixture(options: GoogleFixtureOptions = {}) {
     // The bare /tracks list is what promote consults before deciding whether the
     // bundle still needs uploading; /tracks/<name> is the per-track read.
     // The skip decision asks Google which bytes it holds for this versionCode.
-    if (method === "GET" && url.includes("/bundles?")) {
+    // Matches the GET bundle list, whether or not a query string is present.
+    if (method === "GET" && /\/bundles(\?|$)/.test(url)) {
       return Response.json({
         bundles: alreadyOnPlayVersion === null
           ? []
