@@ -363,6 +363,21 @@ describe("Google Play adapter RPC service", () => {
     expect(fixture.requests.filter((r) => r.method === "PUT")).toHaveLength(0);
   });
 
+  it("reports each promote's own versionCode, in sequence", async () => {
+    // NOTE: this passes with or without the explicit per-promote reset, because every
+    // promote assigns lastBundleLookup before anything reads it. It is a behavioural
+    // check, NOT proof that the reset is load-bearing -- that would need a promote
+    // that fails before the lookup runs, which is a different test.
+    const fixture = googleFixture({ trackMaximum: 0, uploadVersionCode: 11301005, uploadStatus: 400 });
+    const service = createPlayAdapterService({ fetchImpl: fixture.fetchImpl, nowSeconds: () => NOW });
+    const first = await service.promote(promotion({ versionCode: 11301005 }), body(), null, environment());
+    expect(first).toMatchObject({ ok: false, error: { cause: { bundle_lookup: { wanted: 11301005 } } } });
+
+    // Second call with a different versionCode must report ITS value, not the first's.
+    const second = await service.promote(promotion({ versionCode: 11301006 }), body(), null, environment());
+    expect(second).toMatchObject({ ok: false, error: { cause: { bundle_lookup: { wanted: 11301006 } } } });
+  });
+
   it("puts the bundle lookup into the receipt cause when the upload is rejected", async () => {
     // 'Google returned nothing' and 'we failed to match what Google returned' produce
     // the same user-visible failure. Only this distinguishes them, and the operator

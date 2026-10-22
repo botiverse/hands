@@ -461,6 +461,14 @@ export class GooglePlayClient {
    * broken read can never skip an upload that was actually needed.
    */
   /** What the last bundle lookup saw; attached to an upload rejection's cause. */
+  /**
+   * What the last bundle lookup saw.
+   *
+   * Scoped to one promote() call: promote() always assigns it before any upload, so
+   * a stale value cannot survive into another app's receipt. A client is constructed
+   * per invocation (index.ts), which is the only reason instance state is safe here;
+   * if the client is ever reused or cached, pass this through the call chain instead.
+   */
   private lastBundleLookup: {
     count: number;
     version_codes: number[];
@@ -500,7 +508,10 @@ export class GooglePlayClient {
         count: -1,
         version_codes: [],
         wanted: request.versionCode,
-        error: error instanceof Error ? error.message.slice(0, 200) : String(error).slice(0, 200),
+        // Our own constant, never Google's text: PlayAdapterError.code is chosen by
+        // this adapter, and anything else collapses to a fixed label. errors.ts
+        // requires that no provider text reaches a cause.
+        error: error instanceof PlayAdapterError ? error.code : "lookup_failed",
       };
       throw error;
     }
@@ -542,6 +553,8 @@ export class GooglePlayClient {
     const editId = await this.createEdit(request.packageName);
     let commitAttempted = false;
     let bundleUploaded = true;
+    // Reset per promote: a reused client must never report a previous app's lookup.
+    this.lastBundleLookup = null;
     try {
       // Google Play rejects re-uploading a versionCode it already holds, which made
       // the second promote of one build (internal -> closed -> production) fail with
