@@ -112,6 +112,28 @@ jobs:
           pnpm --filter @botiverse/hands-play-adapter exec wrangler deploy \
             --dry-run --strict --config wrangler.generated.jsonc
 
+  cli:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      # The CLI imports the workspace packages, so they must be built before its
+      # typecheck or tests can resolve them.
+      - name: Build workspace dependencies
+        run: pnpm --filter @botiverse/hands-node build && pnpm --filter @botiverse/agent-session-store build
+      - name: Typecheck and test the CLI
+        # Until now no job ran these: worker-tests.yml tested only worker/, the
+        # play-adapter job only the adapter, and publish-cli.yml only built and
+        # packed. CLI changes therefore shipped on locally-run tests alone.
+        run: |
+          pnpm --filter @botiverse/hands-cli exec tsc --noEmit
+          pnpm --filter @botiverse/hands-cli test
+
   windows-device-id:
     runs-on: windows-latest
     steps:
