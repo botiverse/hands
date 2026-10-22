@@ -521,6 +521,92 @@ describe("Apple ingress — build identity enrichment", () => {
     vi.unstubAllGlobals();
   });
 
+  it("names the build for a buildUploads event from the resource's own attributes", async () => {
+    // buildUploads carries cfBundleShortVersionString / cfBundleVersion directly, so
+    // no relationship is followed. Before this, that event type was absent from
+    // BUILD_LOOKUP and the resolver also refused any resource that was not
+    // buildBetaDetails -- two gates, and opening only one would have changed nothing.
+    const { sql, send } = await setup();
+    await withAscCredentials(sql);
+
+    const calls: string[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        calls.push(String(input));
+        return new Response(
+          JSON.stringify({
+            data: {
+              type: "buildUploads",
+              id: "upload-1",
+              attributes: {
+                cfBundleShortVersionString: "1.15.3",
+                cfBundleVersion: "11503001",
+              },
+            },
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        );
+      }),
+    );
+
+    const res = await send({
+      data: {
+        id: "upload-event",
+        type: "buildUploadStateUpdated",
+        version: 1,
+        attributes: { newState: "COMPLETE" },
+        relationships: { instance: { data: { type: "buildUploads", id: "upload-1" } } },
+      },
+    });
+    expect(res.status).toBe(200);
+
+    const row = sql
+      .prepare(
+        `SELECT payload_json FROM webhook_deliveries
+         WHERE event_type='app_store:build_upload_state_changed' ORDER BY created_at DESC LIMIT 1`,
+      )
+      .get() as { payload_json: string } | undefined;
+    expect(JSON.parse(row!.payload_json).payload.build).toEqual({
+      version: "1.15.3",
+      version_code: "11503001",
+    });
+    // The include is only meaningful for buildBetaDetails; asking for it here could
+    // be rejected by Apple.
+    expect(calls.some((u) => u.includes("include=preReleaseVersion"))).toBe(false);
+  });
+
+  it("leaves build null when an upload event has no version yet", async () => {
+    // Upload events can fire before Apple populates these fields. Naming a version
+    // that is not established yet would be worse than leaving the notification blank.
+    const { sql, send } = await setup();
+    await withAscCredentials(sql);
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        new Response(JSON.stringify({ data: { type: "buildUploads", id: "upload-1", attributes: {} } }), {
+          status: 200, headers: { "content-type": "application/json" },
+        })),
+    );
+    const res = await send({
+      data: {
+        id: "upload-empty",
+        type: "buildUploadStateUpdated",
+        version: 1,
+        attributes: { newState: "PROCESSING" },
+        relationships: { instance: { data: { type: "buildUploads", id: "upload-1" } } },
+      },
+    });
+    expect(res.status).toBe(200);
+    const row = sql
+      .prepare(
+        `SELECT payload_json FROM webhook_deliveries
+         WHERE event_type='app_store:build_upload_state_changed' ORDER BY created_at DESC LIMIT 1`,
+      )
+      .get() as { payload_json: string } | undefined;
+    expect(JSON.parse(row!.payload_json).payload.build).toBeNull();
+  });
+
   it("names the build by following buildBetaDetails->build and keeps the envelope intact", async () => {
     const { sql, send } = await setup();
     await withAscCredentials(sql);

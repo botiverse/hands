@@ -52,6 +52,10 @@ interface Config {
  */
 const BUILD_LOOKUP: Partial<Record<string, string>> = {
   buildBetaDetailExternalBuildStateUpdated: "/build",
+  // Unlike buildBetaDetails, a buildUploads resource carries the version strings on
+  // itself, so no relationship has to be followed: the empty path means "read this
+  // resource's own attributes".
+  buildUploadStateUpdated: "",
 };
 
 /**
@@ -89,12 +93,22 @@ async function resolveBuildIdentity(
   resourceId: string,
   lookupPath: string | undefined,
 ): Promise<BuildIdentity | null> {
-  if (!creds || !lookupPath || resourceType !== "buildBetaDetails")
+  // buildUploads is accepted alongside buildBetaDetails because its attributes
+  // already hold cfBundleShortVersionString / cfBundleVersion. Reading the wrong
+  // resource shape must still fail closed, which is why the types stay an explicit
+  // allowlist rather than "anything goes".
+  const supportedResource =
+    resourceType === "buildBetaDetails" || resourceType === "buildUploads";
+  if (!creds || lookupPath === undefined || !supportedResource)
     return null;
   try {
     const res = await ascRequest<{
       data?: {
-        attributes?: { version?: unknown };
+        attributes?: {
+          version?: unknown;
+          cfBundleVersion?: unknown;
+          cfBundleShortVersionString?: unknown;
+        };
         relationships?: {
           preReleaseVersion?: { data?: { id?: unknown } };
         };
@@ -107,15 +121,33 @@ async function resolveBuildIdentity(
     }>(
       creds,
       "GET",
-      `/v1/${resourceType}/${encodeURIComponent(resourceId)}${lookupPath}?include=preReleaseVersion`,
+      // buildUploads has no preReleaseVersion relationship to include; asking for it
+      // would be a request Apple may reject, so the include is only added for the
+      // resource that actually has one.
+      `/v1/${resourceType}/${encodeURIComponent(resourceId)}${lookupPath}` +
+        (resourceType === "buildBetaDetails" ? "?include=preReleaseVersion" : ""),
       undefined,
       AbortSignal.timeout(5000),
     );
-    const buildNumberRaw = res?.data?.attributes?.version;
+    // buildUploads names the same two values directly; buildBetaDetails calls the
+    // build number "version" and needs the included preReleaseVersion for the
+    // marketing string.
+    const attributes = res?.data?.attributes;
+    const buildNumberRaw =
+      resourceType === "buildUploads" ? attributes?.cfBundleVersion : attributes?.version;
     const buildNumber =
       typeof buildNumberRaw === "string" && text(buildNumberRaw, 64)
         ? buildNumberRaw
         : null;
+    if (resourceType === "buildUploads") {
+      const marketing = attributes?.cfBundleShortVersionString;
+      const version = typeof marketing === "string" && text(marketing, 64) ? marketing : null;
+      // An upload event can fire before Apple has filled these in. Returning null is
+      // the honest answer then: the notification still goes out with no build
+      // identity, rather than naming a version that is not established yet.
+      if (version === null && buildNumber === null) return null;
+      return { version, version_code: buildNumber };
+    }
     // Prefer the included preReleaseVersion whose id matches the build's own
     // relationship, so a differently-typed `included` entry cannot supply the
     // wrong version string.
@@ -161,7 +193,10 @@ async function resolveBuildIdentityForEvent(
   const candidatePath = Object.hasOwn(BUILD_LOOKUP, eventType)
     ? BUILD_LOOKUP[eventType]
     : undefined;
-  if (!candidatePath) return null;
+  // An empty path is a real entry meaning "read this resource's own attributes", so
+  // the guard must test for absence, not falsiness. `!candidatePath` rejected the
+  // buildUploads entry before the resolver ever saw it.
+  if (candidatePath === undefined) return null;
   // Bind after the guard: the closure below would otherwise widen it back to
   // `string | undefined`.
   const lookupPath: string = candidatePath;
