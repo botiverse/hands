@@ -216,7 +216,7 @@ describe("agent-login route (real authMiddleware)", () => {
 });
 
 describe("manifest: actions retained + deprecated, migration-help added", () => {
-  it("keeps existing actions, adds agent-login + migration-help, prefixes old actions", async () => {
+  it("keeps existing actions, adds agent-login + migration-help, states deprecation once", async () => {
     const app = new Hono();
     app.get("/.well-known/raft-agent-manifest.json", handleAgentManifest as any);
     const res = await app.request("/.well-known/raft-agent-manifest.json", {}, { RAFT_CLIENT_ID: "hands-4cc7a2" } as any);
@@ -224,14 +224,39 @@ describe("manifest: actions retained + deprecated, migration-help added", () => 
     const names = body.actions.map((a: any) => a.name);
     // existing actions retained + the two new ones present
     for (const n of ["help", "whoami", "list-apps", "agent-login", "migration-help"]) expect(names).toContain(n);
-    const prefix = "Deprecated — see migration-help (raft integration invoke --service hands-4cc7a2 --action migration-help)";
-    // every OLD action is prefixed; the two NEW actions are not
-    expect(body.actions.find((a: any) => a.name === "help").description.startsWith(prefix)).toBe(true);
-    expect(body.actions.find((a: any) => a.name === "whoami").description.startsWith(prefix)).toBe(true);
-    expect(body.actions.find((a: any) => a.name === "agent-login").description.startsWith("Deprecated")).toBe(false);
-    expect(body.actions.find((a: any) => a.name === "migration-help").description.startsWith("Deprecated")).toBe(false);
+
+    // Deprecation is ONE service-level fact, stated once at the top level, instead of
+    // a 108-byte prefix repeated on 82 actions (which cost 8,856 B of a 64 KiB budget).
+    // Must be in `description`: raft-source's validateAgentManifestV0 rebuilds the
+    // object from a fixed allowlist and DROPS unknown top-level keys, so a bespoke
+    // field would never reach an agent. `description` is in that allowlist.
+    expect(body.description).toContain("deprecated");
+    expect(body.description).toContain("migration-help");
+
+    // No action carries the notice in its description any more -- neither the old
+    // ones (which used to be prefixed) nor the two new ones.
+    for (const name of ["help", "whoami", "list-apps", "agent-login", "migration-help"]) {
+      const action = body.actions.find((a: any) => a.name === name);
+      expect(action.description.startsWith("Deprecated")).toBe(false);
+    }
+
     // machine contract unchanged: help still GET /api/agent/help
     expect(body.actions.find((a: any) => a.name === "help").endpoint).toEqual({ method: "GET", path: "/api/agent/help" });
+  });
+
+  it("stays inside the 64 KiB manifest budget with room to grow", async () => {
+    const app = new Hono();
+    app.get("/.well-known/raft-agent-manifest.json", handleAgentManifest as any);
+    const res = await app.request("/.well-known/raft-agent-manifest.json", {}, { RAFT_CLIENT_ID: "hands-4cc7a2" } as any);
+    const raw = await res.text();
+    const bytes = new TextEncoder().encode(raw).length;
+    // The consumer enforces a hard 64 KiB ceiling; exceeding it takes EVERY
+    // agent-facing action offline, so this is the assertion that actually matters.
+    const BUDGET = 65536;
+    expect(bytes).toBeLessThan(BUDGET);
+    // Before this change the headroom was ~4.6% (3,021 B). Removing the repeated
+    // prefix must restore a comfortable margin, not merely squeak under the cap.
+    expect(BUDGET - bytes).toBeGreaterThan(8000);
   });
 
   it("migration-help endpoint returns install + login guidance", async () => {

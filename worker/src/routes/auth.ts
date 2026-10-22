@@ -969,22 +969,35 @@ export async function handleAgentManifest(c: Context<{ Bindings: Env }>) {
   // Never edge-cache the manifest — the integration daemon must always see the
   // current action list (a stale cached copy makes schema changes invisible).
   c.header("Cache-Control", "no-store");
-  // Deprecation notice prepended to every EXISTING action (all but the two new ones):
-  // keep the machine contract unchanged, just point callers at `migration-help`.
+  // Every action in this manifest except `agent-login` and `migration-help` is
+  // deprecated: callers should install the Hands CLI and use its native commands.
+  // That is ONE service-level fact, so it is stated once here rather than
+  // repeated on all 82 deprecated actions.
+  //
+  // Why it moved out of the per-action descriptions: the old approach prepended a
+  // 108-byte notice to every deprecated action, which cost 8,856 B of a manifest
+  // with a hard 64 KiB ceiling set by the consumer (exceeding it takes every
+  // agent-facing action offline). No machine contract changes either way -- the
+  // deprecation state is not a structured field, and descriptions still carry each
+  // action's own text.
   const service = c.env.RAFT_CLIENT_ID || "hands-4cc7a2";
-  // Kept deliberately terse: this string is repeated on every deprecated action, so
-  // its length multiplies by ~82. At 139 bytes it consumed ~11 KB of a manifest that
-  // has a hard 64 KiB ceiling set by the consumer (exceeding it takes every
-  // agent-facing action offline). The pointer still names the exact command.
-  const DEPRECATION_PREFIX = `Deprecated — see migration-help (raft integration invoke --service ${service} --action migration-help). `;
-  const NEW_ACTIONS = new Set(["agent-login", "migration-help"]);
-  const applyDeprecation = (
-    list: Array<{ name: string; description: string; [k: string]: unknown }>,
-  ) => list.map((a) => (NEW_ACTIONS.has(a.name) ? a : { ...a, description: DEPRECATION_PREFIX + a.description }));
+  const migrationHelpNotice =
+    `All actions except agent-login and migration-help are deprecated: ` +
+    `run \`raft integration invoke --service ${service} --action migration-help\`, ` +
+    `or install the Hands CLI.`;
   return c.json({
     schema: "raft-agent-manifest.v0",
     service: c.env.RAFT_CLIENT_ID || "quiver",
     docs_url: `${origin}/`,
+    // Stated once for the whole service instead of once per deprecated action.
+    //
+    // This must live in `description`, NOT in a new bespoke field: raft-source's
+    // validateAgentManifestV0 (packages/cli/src/commands/integration/manifest.ts)
+    // rebuilds the object from a fixed allowlist and drops unknown keys, so a
+    // custom `deprecation_notice` would never reach an agent. `description` IS in
+    // that allowlist (optionalString(value.description)), so the notice survives
+    // normalization and shows up in `raft integration invoke --list-actions`.
+    description: migrationHelpNotice,
     execution: {
       mode: "http_api",
       base_url: origin,
@@ -997,10 +1010,10 @@ export async function handleAgentManifest(c: Context<{ Bindings: Env }>) {
     // Paths are relative to execution.base_url. Actions cover release,
     // TestFlight/AppGallery, exact QA artifacts, and feedback triage without
     // returning provider credentials or interpreting raw attachments.
-    // All EXISTING actions are retained with unchanged machine contracts; their
-    // descriptions are prefixed `Deprecated — … migration-help …` (see applyDeprecation).
-    // Only `agent-login` and `migration-help` are new and un-prefixed.
-    actions: applyDeprecation([
+    // All EXISTING actions are retained with unchanged machine contracts.
+    // Deprecation is NOT repeated per action any more: it is stated once in the
+    // top-level `description` above. Only `agent-login` and `migration-help` are new.
+    actions: [
       {
         // NOTE: kept as valid raft-agent-manifest.v0 (name/description/endpoint/parameters
         // only). The RFC 057 action semantics (authority.principal=agent_session,
@@ -2010,6 +2023,6 @@ export async function handleAgentManifest(c: Context<{ Bindings: Env }>) {
           "How to install the Hands CLI, authenticate once (`hands login`), and migrate each deprecated action to its native `hands` command. Read this if you are still calling actions via `raft integration invoke`.",
         endpoint: { method: "GET", path: "/api/agent/migration-help" },
       },
-    ]),
+    ],
   });
 }
