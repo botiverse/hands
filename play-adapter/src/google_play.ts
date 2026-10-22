@@ -320,7 +320,12 @@ export class GooglePlayClient {
         rejection.status,
         "play_upload_rejected",
         rejection.message,
-        rejection.cause_detail,
+        // Carry the lookup alongside the provider cause: it distinguishes "Google
+        // said it has nothing" from "we failed to match what it returned", which are
+        // otherwise the same failure to the reader of a receipt.
+        this.lastBundleLookup
+          ? { ...rejection.cause_detail, bundle_lookup: this.lastBundleLookup }
+          : rejection.cause_detail,
       );
     }
     if (!body || typeof body !== "object") {
@@ -455,6 +460,23 @@ export class GooglePlayClient {
    * a malformed track read throws rather than silently claiming "not present", so a
    * broken read can never skip an upload that was actually needed.
    */
+  /** What the last bundle lookup saw; attached to an upload rejection's cause. */
+  /**
+   * What the last bundle lookup saw.
+   *
+   * Scoped to one promote() call: promote() always assigns it before any upload, so
+   * a stale value cannot survive into another app's receipt. A client is constructed
+   * per invocation (index.ts), which is the only reason instance state is safe here;
+   * if the client is ever reused or cached, pass this through the call chain instead.
+   */
+  private lastBundleLookup: {
+    count: number;
+    version_codes: number[];
+    wanted: number;
+    /** -1 count plus this string when the list call itself failed. */
+    error?: string;
+  } | null = null;
+
   private async bundleAlreadyOnPlay(
     packageName: string,
     editId: string,
@@ -468,13 +490,56 @@ export class GooglePlayClient {
     // reported request.expectedSha256 -- an unverified "Hands-certified bytes are
     // live" claim. The upload path already enforces this binding (:330-333), so the
     // skip path must too.
-    const result = await this.requestJson<{
-      bundles?: Array<{ versionCode?: unknown; sha256?: unknown }>;
-    }>(`${this.editRoot(packageName, editId)}/bundles?versionCode=${encodeURIComponent(String(request.versionCode))}&maxResults=10`);
+    //
+    // No query parameters: edits.bundles.list does not document versionCode/maxResults,
+    // and a silently ignored filter would return an empty list for every edit -- which
+    // reads as "not present" and sends us back down the upload path, exactly the bug
+    // this check exists to prevent. Filter client-side over the full list instead.
+    const bundlesUrl = `${this.editRoot(packageName, editId)}/bundles`;
+    let result: { bundles?: Array<{ versionCode?: unknown; sha256?: unknown }> };
+    try {
+      result = await this.requestJson<{ bundles?: Array<{ versionCode?: unknown; sha256?: unknown }> }>(bundlesUrl);
+    } catch (error) {
+      // Throw a purpose-built error rather than setting instance state and rethrowing.
+      // The upload-rejection path is the only place that reads lastBundleLookup, and a
+      // lookup failure never reaches it -- so recording the attempt there produced a
+      // receipt with no bundle_lookup at all, and one whose stage said "upload_bundle"
+      // when the listing is what actually failed. Both point the reader at the wrong
+      // place, which is worse than reporting nothing.
+      const lookup = {
+        count: -1,
+        version_codes: [] as number[],
+        wanted: request.versionCode,
+        // Our own constant, never Google's text: PlayAdapterError.code is chosen by
+        // this adapter, and anything else collapses to a fixed label. errors.ts
+        // requires that no provider text reaches a cause.
+        error: error instanceof PlayAdapterError ? error.code : "lookup_failed",
+      };
+      this.lastBundleLookup = lookup;
+      throw new PlayAdapterError(
+        502,
+        "play_bundle_lookup_failed",
+        "Could not list the app's Android App Bundles; the skip decision is unavailable",
+        { stage: "bundle_lookup", bundle_lookup: lookup },
+      );
+    }
     if (result.bundles !== undefined && !Array.isArray(result.bundles)) {
       throw new PlayAdapterError(502, "play_bundles_malformed", "Google Play returned a malformed bundle list");
     }
-    const match = (result.bundles ?? []).find(
+    const bundles = result.bundles ?? [];
+    // Log what Google actually returned. The skip decision is only sound if this
+    // list really contains previously-uploaded bundles; if it comes back empty the
+    // check silently degrades to "always upload", which looks identical to the bug
+    // it was meant to fix. Recorded rather than inferred.
+    const seen = {
+      count: bundles.length,
+      version_codes: bundles.map((bundle) => exactVersionCode(bundle.versionCode)).filter((v): v is number => v !== null),
+      wanted: request.versionCode,
+    };
+    this.lastBundleLookup = seen;
+    // Also logged, but the receipt is what an operator can actually read.
+    console.warn("hands_play_bundles_seen", JSON.stringify({ stage: "bundle_lookup", ...seen }));
+    const match = bundles.find(
       (bundle) => exactVersionCode(bundle.versionCode) === request.versionCode,
     );
     if (!match) return false;
@@ -496,6 +561,8 @@ export class GooglePlayClient {
     const editId = await this.createEdit(request.packageName);
     let commitAttempted = false;
     let bundleUploaded = true;
+    // Reset per promote: a reused client must never report a previous app's lookup.
+    this.lastBundleLookup = null;
     try {
       // Google Play rejects re-uploading a versionCode it already holds, which made
       // the second promote of one build (internal -> closed -> production) fail with

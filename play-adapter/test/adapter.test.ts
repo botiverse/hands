@@ -116,7 +116,8 @@ function googleFixture(options: GoogleFixtureOptions = {}) {
     // The bare /tracks list is what promote consults before deciding whether the
     // bundle still needs uploading; /tracks/<name> is the per-track read.
     // The skip decision asks Google which bytes it holds for this versionCode.
-    if (method === "GET" && url.includes("/bundles?")) {
+    // Matches the GET bundle list, whether or not a query string is present.
+    if (method === "GET" && /\/bundles(\?|$)/.test(url)) {
       return Response.json({
         bundles: alreadyOnPlayVersion === null
           ? []
@@ -360,6 +361,58 @@ describe("Google Play adapter RPC service", () => {
     expect(result).toMatchObject({ ok: false, error: { code: "aab_integrity_mismatch" } });
     expect(fixture.requests.filter((r) => String(r.url).includes("/bundles?uploadType=media"))).toHaveLength(0);
     expect(fixture.requests.filter((r) => r.method === "PUT")).toHaveLength(0);
+  });
+
+  it("reports each promote's own versionCode, in sequence", async () => {
+    // NOTE: this passes with or without the explicit per-promote reset, because every
+    // promote assigns lastBundleLookup before anything reads it. It is a behavioural
+    // check, NOT proof that the reset is load-bearing -- that would need a promote
+    // that fails before the lookup runs, which is a different test.
+    const fixture = googleFixture({ trackMaximum: 0, uploadVersionCode: 11301005, uploadStatus: 400 });
+    const service = createPlayAdapterService({ fetchImpl: fixture.fetchImpl, nowSeconds: () => NOW });
+    const first = await service.promote(promotion({ versionCode: 11301005 }), body(), null, environment());
+    expect(first).toMatchObject({ ok: false, error: { cause: { bundle_lookup: { wanted: 11301005 } } } });
+
+    // Second call with a different versionCode must report ITS value, not the first's.
+    const second = await service.promote(promotion({ versionCode: 11301006 }), body(), null, environment());
+    expect(second).toMatchObject({ ok: false, error: { cause: { bundle_lookup: { wanted: 11301006 } } } });
+  });
+
+  it("puts the bundle lookup into the receipt cause when the upload is rejected", async () => {
+    // 'Google returned nothing' and 'we failed to match what Google returned' produce
+    // the same user-visible failure. Only this distinguishes them, and the operator
+    // log is not reachable from a receipt.
+    const fixture = googleFixture({ trackMaximum: 0, uploadVersionCode: 11301005, uploadStatus: 400 });
+    const service = createPlayAdapterService({ fetchImpl: fixture.fetchImpl, nowSeconds: () => NOW });
+    const result = await service.promote(promotion({ versionCode: 11301005 }), body(), null, environment());
+    expect(result).toMatchObject({
+      ok: false,
+      error: { code: "play_upload_rejected", cause: { bundle_lookup: { count: 0, version_codes: [], wanted: 11301005 } } },
+    });
+  });
+
+  it("reports a failed bundle listing as bundle_lookup, not as an upload failure", async () => {
+    // Review probe turned into a test. Before the fix the listing threw, the receipt
+    // said stage=upload_bundle, and bundle_lookup was absent entirely -- pointing the
+    // reader at the wrong stage and at a list they could not tell was ever fetched.
+    const fixture = googleFixture({ trackMaximum: 0, uploadVersionCode: 11301005 });
+    const original = fixture.fetchImpl;
+    const wrapped = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if ((init?.method ?? "GET") === "GET" && /\/bundles(\?|$)/.test(url)) {
+        return new Response(JSON.stringify({ error: { code: 502, message: "backend error" } }), { status: 502 });
+      }
+      return original(input as never, init as never);
+    });
+    const service = createPlayAdapterService({ fetchImpl: wrapped as unknown as typeof fetch, nowSeconds: () => NOW });
+    const result = await service.promote(promotion({ versionCode: 11301005 }), body(), null, environment());
+    expect(result).toMatchObject({
+      ok: false,
+      error: {
+        code: "play_bundle_lookup_failed",
+        cause: { stage: "bundle_lookup", bundle_lookup: { count: -1, version_codes: [], wanted: 11301005 } },
+      },
+    });
   });
 
   it("still uploads when the versionCode is not on any track", async () => {

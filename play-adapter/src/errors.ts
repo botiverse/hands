@@ -11,6 +11,22 @@
 export type PlayErrorCause = {
   stage?: string;
   provider_cause?: string;
+  /**
+   * What the bundle lookup saw, when the failure depends on it.
+   *
+   * Only integers and versionCode values we derived ourselves -- never Google's
+   * text. Present because the skip-upload decision is unverifiable from a receipt
+   * otherwise: "we decided Google did not have it" and "Google returned nothing"
+   * produce the same user-visible failure, and only this tells them apart.
+   */
+  bundle_lookup?: {
+    /** -1 when the list call failed before returning anything. */
+    count: number;
+    version_codes: number[];
+    wanted: number;
+    /** Present only when count is -1: why the list call failed. */
+    error?: string;
+  };
 };
 
 export class PlayAdapterError extends Error {
