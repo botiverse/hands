@@ -447,6 +447,30 @@ export class GooglePlayClient {
     }
   }
 
+  /**
+   * True when Google Play already holds this versionCode on any track.
+   *
+   * Uploading a duplicate versionCode is rejected, and the bundle is immutable once
+   * accepted, so a repeat promote only needs the track edit. Deliberately generous:
+   * a malformed track read throws rather than silently claiming "not present", so a
+   * broken read can never skip an upload that was actually needed.
+   */
+  private async versionCodeAlreadyOnPlay(
+    packageName: string,
+    editId: string,
+    versionCode: number,
+  ): Promise<boolean> {
+    const result = await this.requestJson<{ tracks?: TrackResource[] }>(
+      `${this.editRoot(packageName, editId)}/tracks`,
+    );
+    if (!Array.isArray(result.tracks)) {
+      throw new PlayAdapterError(502, "play_tracks_malformed", "Google Play returned no track list");
+    }
+    return result.tracks.some((track) =>
+      (track.releases ?? []).some((release) =>
+        (release.versionCodes ?? []).some((value) => exactVersionCode(value) === versionCode)));
+  }
+
   async promote(request: PromotionRequest) {
     if (request.expectedSize > this.maxAabSize) {
       throw new PlayAdapterError(413, "aab_too_large", "AAB exceeds the configured maximum size");
@@ -454,8 +478,15 @@ export class GooglePlayClient {
     const editId = await this.createEdit(request.packageName);
     let commitAttempted = false;
     try {
-      await this.uploadBundle(request, editId);
-      await this.uploadSymbols(request, editId);
+      // Google Play rejects re-uploading a versionCode it already holds, which made
+      // the second promote of one build (internal -> closed -> production) fail with
+      // 403. The bundle does not need re-uploading in that case: the track update is
+      // the whole operation. Check every track first and skip the upload when this
+      // versionCode is already present anywhere.
+      if (!(await this.versionCodeAlreadyOnPlay(request.packageName, editId, request.versionCode))) {
+        await this.uploadBundle(request, editId);
+        await this.uploadSymbols(request, editId);
+      }
       // Symbols attach to the bundle's versionCode inside the same edit and
       // must land before the track update; any failure here runs the existing
       // cleanupOrThrow path, so a rejected zip can never half-commit.
