@@ -363,6 +363,19 @@ describe("Google Play adapter RPC service", () => {
     expect(fixture.requests.filter((r) => r.method === "PUT")).toHaveLength(0);
   });
 
+  it("puts the bundle lookup into the receipt cause when the upload is rejected", async () => {
+    // 'Google returned nothing' and 'we failed to match what Google returned' produce
+    // the same user-visible failure. Only this distinguishes them, and the operator
+    // log is not reachable from a receipt.
+    const fixture = googleFixture({ trackMaximum: 0, uploadVersionCode: 11301005, uploadStatus: 400 });
+    const service = createPlayAdapterService({ fetchImpl: fixture.fetchImpl, nowSeconds: () => NOW });
+    const result = await service.promote(promotion({ versionCode: 11301005 }), body(), null, environment());
+    expect(result).toMatchObject({
+      ok: false,
+      error: { code: "play_upload_rejected", cause: { bundle_lookup: { count: 0, version_codes: [], wanted: 11301005 } } },
+    });
+  });
+
   it("still uploads when the versionCode is not on any track", async () => {
     const fixture = googleFixture({ trackMaximum: 0, uploadVersionCode: 11301005 });
     const service = createPlayAdapterService({ fetchImpl: fixture.fetchImpl, nowSeconds: () => NOW });
