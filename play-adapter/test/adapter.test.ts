@@ -65,6 +65,8 @@ function promotion(overrides: Partial<PromotionRpcInput> = {}): PromotionRpcInpu
 
 interface GoogleFixtureOptions {
   uploadSha?: string;
+  /** Reject the AAB upload itself, to exercise the upload-stage rejection path. */
+  uploadStatus?: number;
   uploadVersionCode?: number;
   trackMaximum?: number;
   tokenStatus?: number;
@@ -108,6 +110,13 @@ function googleFixture(options: GoogleFixtureOptions = {}) {
     if (method === "GET" && url.includes("/tracks/")) return Response.json(track);
     if (url.includes("/bundles?uploadType=media")) {
       const uploaded = new Uint8Array(await new Response(init.body).arrayBuffer());
+      if (options.uploadStatus) {
+        return Response.json(
+          { error: { code: options.uploadStatus, status: "PERMISSION_DENIED",
+            message: "Version code 11500010 has already been used." } },
+          { status: options.uploadStatus },
+        );
+      }
       return Response.json({ versionCode: options.uploadVersionCode ?? 42, sha256: options.uploadSha ?? bytesToHex(sha256(uploaded)) });
     }
     if (url.includes("/deobfuscationFiles/nativeCode")) {
@@ -347,6 +356,26 @@ describe("Google Play adapter RPC service", () => {
     const completed = sent.releases.filter((release) => release.status === "completed");
     expect(completed).toHaveLength(1);
     expect(completed[0]!.versionCodes).toEqual(["42"]);
+  });
+
+  it("reports the upload stage and a classified cause when the AAB upload is rejected", async () => {
+    // Production: a second promote of the same versionCode failed with 403 at the
+    // upload step, and the receipt carried only {code: play_upload_rejected} -- no
+    // cause, so it looked exactly like a permission problem. The stage must survive
+    // (upload vs track update) AND the cause must travel.
+    const fixture = googleFixture({ trackMaximum: 41, uploadVersionCode: 42, uploadStatus: 403 });
+    const service = createPlayAdapterService({ fetchImpl: fixture.fetchImpl, nowSeconds: () => NOW });
+    const result = await service.promote(promotion({ versionCode: 42 }), body(), null, environment());
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    // Stays upload-specific: a generic play_api_rejected would erase the stage
+    // distinction every existing receipt already relies on.
+    expect(result.error.code).toBe("play_upload_rejected");
+    expect(result.error.message).toContain("upload_bundle");
+    expect(result.error.cause).toMatchObject({ stage: "upload_bundle", provider_cause: "DUPLICATE_VERSION" });
+    // Google's own text never travels.
+    expect(JSON.stringify(result)).not.toContain("already been used");
   });
 
   it("keeps the live completed release beside a staged rollout", async () => {

@@ -306,7 +306,22 @@ export class GooglePlayClient {
     }
     const body = await response.json().catch(() => null) as GoogleBundle | null;
     if (!response.ok) {
-      throw new PlayAdapterError(502, "play_upload_rejected", `Google Play AAB upload failed with ${response.status}`);
+      // Same treatment as every other provider rejection: the caller keeps a stable
+      // code plus the stage, and gains a classified cause, so a failed upload is
+      // diagnosable from the receipt instead of needing someone with observability
+      // scope to read the adapter's log.
+      //
+      // The code stays `play_upload_rejected` rather than becoming a generic
+      // `play_api_rejected`: the stage is what tells an operator this failed while
+      // uploading rather than while moving a track, and folding the two together
+      // would lose that in every existing receipt's history.
+      const rejection = playRejection(response.status, body, "upload_bundle");
+      throw new PlayAdapterError(
+        rejection.status,
+        "play_upload_rejected",
+        rejection.message,
+        rejection.cause_detail,
+      );
     }
     if (!body || typeof body !== "object") {
       throw new PlayAdapterError(502, "play_upload_malformed", "Google Play returned malformed AAB metadata");
