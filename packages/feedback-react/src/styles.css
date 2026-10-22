@@ -305,6 +305,11 @@
   min-height: 120px;
 }
 
+/* raft-ui's composer file card sizes its document preview to the card. */
+.hands-feedback-pending-file-preview {
+  height: 46px;
+}
+
 .hands-feedback-pending-image,
 .hands-feedback-pending-image-button {
   padding: 0;

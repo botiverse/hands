@@ -75,6 +75,8 @@ import {
   FileMeta,
   FileMetaItem,
   FileName,
+  FilePreviewBadge,
+  FilePreviewDocument,
   FilePreview,
   FilePreviewFile,
   FileRow,
@@ -672,6 +674,12 @@ type FeedbackComposerProps = {
   actions: ReactNode;
 };
 
+/** A short type label for a file card: its extension, or its MIME subtype. */
+function fileBadge(file: File) {
+  const extension = /\.([A-Za-z0-9]{1,5})$/.exec(file.name)?.[1];
+  return (extension ?? file.type.split("/")[1] ?? "file").slice(0, 5).toUpperCase();
+}
+
 function FeedbackPendingAttachmentImage({
   file,
   onOpenAttachment,
@@ -679,7 +687,7 @@ function FeedbackPendingAttachmentImage({
   file: File;
   onOpenAttachment?: (input: FeedbackPendingAttachmentOpenInput) => void;
 }) {
-  const { message } = useHandsFeedback();
+  const { formatFileSize, message } = useHandsFeedback();
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
 
   const isImage = file.type.startsWith("image/");
@@ -708,16 +716,15 @@ function FeedbackPendingAttachmentImage({
           onOpenAttachment ? () => onOpenAttachment({ file }) : undefined
         }
       >
-        {isImage ? (
-          <ImagePlus aria-hidden="true" />
-        ) : (
-          <Paperclip aria-hidden="true" />
-        )}
+        {/* A file card as raft-ui's Composer draws one: a document preview
+            with the file's type, then its name and size. */}
+        <FilePreview className="hands-feedback-pending-file-preview">
+          <FilePreviewDocument className="hands-feedback-pending-file-preview" />
+          <FilePreviewBadge>{fileBadge(file)}</FilePreviewBadge>
+        </FilePreview>
         <ComposerAttachmentBody>
           <ComposerAttachmentTitle>{file.name}</ComposerAttachmentTitle>
-          <ComposerAttachmentMeta>
-            {file.type || message("attachments")}
-          </ComposerAttachmentMeta>
+          <ComposerAttachmentMeta>{formatFileSize(file.size)}</ComposerAttachmentMeta>
         </ComposerAttachmentBody>
       </ComposerAttachmentFile>
     );
