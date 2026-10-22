@@ -175,6 +175,61 @@ export async function assertGzipAndroidDeltaPatch(filePath: string): Promise<voi
   }
 }
 
+/**
+ * Asset slots declared when an Android build is created.
+ *
+ * The server refuses to move a protocol-v1 build to `succeeded` until EVERY declared
+ * slot has a verified asset (builds.ts: REQUIRED_ASSETS_INCOMPLETE), so this list has
+ * to mirror exactly what publish-android uploads -- no more, no less.
+ *
+ * Declaring the ProGuard mapping here is what allows it to be uploaded by direct
+ * streaming instead of POST /upload: an R8 mapping is routinely hundreds of MB, which
+ * exceeds the 200 MB body cap and would also be buffered entirely in memory.
+ */
+function androidRequiredAssetSlots(args: {
+  arch: string;
+  mapping?: string;
+  symbols?: string;
+  dsym?: string;
+  metadata?: string;
+  deltaPatch?: string[];
+}): Array<{
+  artifact_kind: string;
+  platform: string;
+  arch: string | null;
+  variant: string | null;
+  filetype: string;
+}> {
+  type Slot = {
+    artifact_kind: string;
+    platform: string;
+    arch: string | null;
+    variant: string | null;
+    filetype: string;
+  };
+  const slots: Slot[] = [
+    { artifact_kind: "installable", platform: "android", arch: args.arch, variant: null, filetype: "apk" },
+  ];
+  for (const _ of args.deltaPatch ?? []) {
+    slots.push({ artifact_kind: "delta-patch", platform: "android", arch: args.arch, variant: null, filetype: "patch" });
+  }
+  if (args.mapping) {
+    slots.push({ artifact_kind: "proguard-mapping", platform: "android", arch: null, variant: null, filetype: "mapping.txt" });
+  }
+  if (args.symbols) {
+    slots.push({ artifact_kind: "native-symbols", platform: "android", arch: null, variant: null, filetype: "symbols.zip" });
+  }
+  // publish-android registers any --dsym under platform "ios" with an inferred
+  // filetype, so the slot must match that, not a guessed android/dSYM shape.
+  if (args.dsym) {
+    slots.push({ artifact_kind: "dsym", platform: "ios", arch: null, variant: null, filetype: inferIosFiletype(args.dsym) });
+  }
+  if (args.metadata) {
+    slots.push({ artifact_kind: "metadata-file", platform: "android", arch: null, variant: null, filetype: inferIosFiletype(args.metadata) });
+  }
+  return slots;
+}
+
 async function preflightAndroidDeltaPatches(
   specs: string[] = [],
 ): Promise<AndroidDeltaPatchSpec[]> {
@@ -1162,7 +1217,14 @@ export function registerBuildCommands(program: Command): void {
             version_code: versionCode,
             changelog,
             source: "cli",
-            status: "succeeded",
+            // The build starts pending and is activated once every declared asset has
+            // been uploaded and verified. A ProGuard mapping is routinely hundreds of
+            // megabytes, which cannot travel through POST /upload (200 MB cap, and the
+            // whole body is buffered in memory); declaring it as a direct-upload slot is
+            // what lets it stream straight to R2 instead.
+            status: "pending",
+            asset_ingest_protocol_version: 1,
+            required_asset_slots_json: androidRequiredAssetSlots(opts),
             build_metadata_json: metadataJson,
             provenance_json: provenance,
             should_force_update: Boolean(opts.forceUpdate),
@@ -1215,8 +1277,11 @@ export function registerBuildCommands(program: Command): void {
           assets.push(...generated);
         }
         if (opts.mapping) {
+          // Direct streaming upload, not POST /upload: an R8 mapping is routinely
+          // hundreds of MB, which exceeds that route's 200 MB body cap and would also
+          // be buffered entirely in memory before hashing.
           assets.push(
-            await uploadAndRegisterAsset(appId, build.id, opts.mapping, {
+            await uploadDirectBuildAsset(appId, build.id, opts.mapping, {
               artifact_kind: "proguard-mapping",
               platform: "android",
               arch: null,
@@ -1256,6 +1321,15 @@ export function registerBuildCommands(program: Command): void {
             }),
           );
         }
+
+        // Every declared slot is uploaded and verified now, so the build can be
+        // activated. The server re-checks each slot and returns
+        // REQUIRED_ASSETS_INCOMPLETE if any is missing, so this failing is a real
+        // signal rather than a formality.
+        await apiRequest(`/api/apps/${appId}/builds/${build.id}`, {
+          method: "PATCH",
+          body: { status: "succeeded" },
+        });
 
         const release = await createReleaseOrTerminalizeVersionConflict({
           appId,
