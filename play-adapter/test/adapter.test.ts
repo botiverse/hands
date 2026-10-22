@@ -391,6 +391,30 @@ describe("Google Play adapter RPC service", () => {
     });
   });
 
+  it("reports a failed bundle listing as bundle_lookup, not as an upload failure", async () => {
+    // Review probe turned into a test. Before the fix the listing threw, the receipt
+    // said stage=upload_bundle, and bundle_lookup was absent entirely -- pointing the
+    // reader at the wrong stage and at a list they could not tell was ever fetched.
+    const fixture = googleFixture({ trackMaximum: 0, uploadVersionCode: 11301005 });
+    const original = fixture.fetchImpl;
+    const wrapped = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if ((init?.method ?? "GET") === "GET" && /\/bundles(\?|$)/.test(url)) {
+        return new Response(JSON.stringify({ error: { code: 502, message: "backend error" } }), { status: 502 });
+      }
+      return original(input as never, init as never);
+    });
+    const service = createPlayAdapterService({ fetchImpl: wrapped as unknown as typeof fetch, nowSeconds: () => NOW });
+    const result = await service.promote(promotion({ versionCode: 11301005 }), body(), null, environment());
+    expect(result).toMatchObject({
+      ok: false,
+      error: {
+        code: "play_bundle_lookup_failed",
+        cause: { stage: "bundle_lookup", bundle_lookup: { count: -1, version_codes: [], wanted: 11301005 } },
+      },
+    });
+  });
+
   it("still uploads when the versionCode is not on any track", async () => {
     const fixture = googleFixture({ trackMaximum: 0, uploadVersionCode: 11301005 });
     const service = createPlayAdapterService({ fetchImpl: fixture.fetchImpl, nowSeconds: () => NOW });

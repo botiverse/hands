@@ -500,20 +500,28 @@ export class GooglePlayClient {
     try {
       result = await this.requestJson<{ bundles?: Array<{ versionCode?: unknown; sha256?: unknown }> }>(bundlesUrl);
     } catch (error) {
-      // Record the attempt even when the call fails. Without this a thrown list
-      // leaves lastBundleLookup null, the receipt shows no bundle_lookup at all, and
-      // the reader cannot tell whether the list was empty or never arrived -- the
-      // exact ambiguity this instrumentation exists to remove.
-      this.lastBundleLookup = {
+      // Throw a purpose-built error rather than setting instance state and rethrowing.
+      // The upload-rejection path is the only place that reads lastBundleLookup, and a
+      // lookup failure never reaches it -- so recording the attempt there produced a
+      // receipt with no bundle_lookup at all, and one whose stage said "upload_bundle"
+      // when the listing is what actually failed. Both point the reader at the wrong
+      // place, which is worse than reporting nothing.
+      const lookup = {
         count: -1,
-        version_codes: [],
+        version_codes: [] as number[],
         wanted: request.versionCode,
         // Our own constant, never Google's text: PlayAdapterError.code is chosen by
         // this adapter, and anything else collapses to a fixed label. errors.ts
         // requires that no provider text reaches a cause.
         error: error instanceof PlayAdapterError ? error.code : "lookup_failed",
       };
-      throw error;
+      this.lastBundleLookup = lookup;
+      throw new PlayAdapterError(
+        502,
+        "play_bundle_lookup_failed",
+        "Could not list the app's Android App Bundles; the skip decision is unavailable",
+        { stage: "bundle_lookup", bundle_lookup: lookup },
+      );
     }
     if (result.bundles !== undefined && !Array.isArray(result.bundles)) {
       throw new PlayAdapterError(502, "play_bundles_malformed", "Google Play returned a malformed bundle list");
