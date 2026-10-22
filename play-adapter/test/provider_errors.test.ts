@@ -188,6 +188,9 @@ const commitEditCases: Array<[string, string]> = [
     // commitEdit sends changesInReviewBehavior=ERROR_IF_IN_REVIEW, so this state is
     // the expected rejection whenever a review is already open.
     ["Cannot commit the edit because another change is already in review.", "EDIT_IN_REVIEW"],
+    // Both phrases in one message: the in-review state is what actually blocks the
+    // commit, so it must win. Pinned because review found the order reversed.
+    ["Changes not sent for review because another edit is in review.", "EDIT_IN_REVIEW"],
   ];
 it.each(commitEditCases)("classifies commit_edit rejection as %s -> %s", async (message, expected) => {
   const { playRejection } = await import("../src/provider_errors");
