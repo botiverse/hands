@@ -159,25 +159,6 @@ const ExternalBuildVersionInput = z
   })
   .openapi("ExternalBuildVersionInput");
 
-const IosSimulatorQaArtifactInput = z
-  .object({
-    channel_id: z.string().optional(),
-    filename: z.string().regex(/\.app\.zip$/i),
-    size_bytes: z.number().int().positive().max(500 * 1024 * 1024),
-    sha256: z.string().regex(/^[a-f0-9]{64}$/i),
-    source_commit: z.string().regex(/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/i),
-    version_name: z.string().min(1),
-    build_number: z.union([z.string().min(1), z.number().int().nonnegative()]),
-    bundle_id: z.string().min(3),
-    github_run_id: z.union([z.string().min(1), z.number().int().nonnegative()]),
-    github_artifact_id: z.union([z.string().min(1), z.number().int().nonnegative()]).nullable().optional(),
-    github_repository: z.string().nullable().optional(),
-    github_job_id: z.union([z.string().min(1), z.number().int().nonnegative()]).nullable().optional(),
-    source_ref: z.string().nullable().optional(),
-    metadata_json: z.record(z.string(), z.unknown()).optional(),
-  })
-  .openapi("IosSimulatorQaArtifactInput");
-
 const TestflightBundleAssertion = z.object({
   bundle_id: z.string().min(3).optional().openapi({
     description:
