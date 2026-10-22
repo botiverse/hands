@@ -122,6 +122,28 @@ async function assertOwnedSubmission(
   }
 }
 
+/**
+ * Record an audit row AFTER an external effect has already happened.
+ *
+ * Failing the request here would report failure for a submission or withdrawal
+ * Apple has already accepted, inviting a retry that does the work twice. The
+ * effect is real; the audit is a record of it, so a write failure is logged and
+ * surfaced in the response instead of replacing a success with a 500.
+ */
+async function auditAfterEffect(
+  c: AdminContext,
+  appId: string,
+  action: string,
+  payload: Record<string, unknown>,
+): Promise<boolean> {
+  try {
+    await insertAuditLog(c.env.DB, c, { app_id: appId, action, payload });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function fail(c: AdminContext, error: unknown) {
   if (error instanceof AppStoreReleaseError) {
     return c.json({ error: error.message, code: error.code }, error.status as 400);
@@ -295,12 +317,8 @@ export async function handleSubmitAppStoreVersion(c: AdminContext) {
     // version and silently claim the wrong one.
     const target = await findAppStoreVersionById(creds, ascAppId, versionId);
     const { submissionId } = await submitVersionForReview(creds, ascAppId, versionId, target?.platform ?? "IOS");
-    await insertAuditLog(c.env.DB, c, {
-      app_id: appId,
-      action: "app_store.submit",
-      payload: { version_id: versionId, submission_id: submissionId },
-    });
-    return c.json({ version_id: versionId, submission_id: submissionId, submitted: true });
+    const audited = await auditAfterEffect(c, appId, "app_store.submit", { version_id: versionId, submission_id: submissionId });
+    return c.json({ version_id: versionId, submission_id: submissionId, submitted: true, audited });
   } catch (error) {
     return fail(c, error);
   }
@@ -316,12 +334,8 @@ export async function handleWithdrawAppStoreVersion(c: AdminContext) {
     if (submissionId) {
       await assertOwnedSubmission(creds, await ascAppIdFor(c, appId), submissionId);
       await cancelReviewSubmission(creds, submissionId);
-      await insertAuditLog(c.env.DB, c, {
-        app_id: appId,
-        action: "app_store.withdraw",
-        payload: { submission_id: submissionId },
-      });
-      return c.json({ submission_id: submissionId, canceled: true });
+      const audited = await auditAfterEffect(c, appId, "app_store.withdraw", { submission_id: submissionId });
+      return c.json({ submission_id: submissionId, canceled: true, audited });
     }
     const versionId = typeof body.version_id === "string" ? body.version_id : "";
     if (!versionId) {
@@ -333,12 +347,8 @@ export async function handleWithdrawAppStoreVersion(c: AdminContext) {
       if (!submission.state || !IN_REVIEW_STATES.has(submission.state)) continue;
       if ((await getReviewSubmissionVersionId(creds, submission.id)) !== versionId) continue;
       await cancelReviewSubmission(creds, submission.id);
-      await insertAuditLog(c.env.DB, c, {
-        app_id: appId,
-        action: "app_store.withdraw",
-        payload: { submission_id: submission.id, version_id: versionId },
-      });
-      return c.json({ submission_id: submission.id, version_id: versionId, canceled: true });
+      const audited = await auditAfterEffect(c, appId, "app_store.withdraw", { submission_id: submission.id, version_id: versionId });
+      return c.json({ submission_id: submission.id, version_id: versionId, canceled: true, audited });
     }
     return c.json({ error: "no pending submission found for that version", code: "NO_PENDING_SUBMISSION" }, 404);
   } catch (error) {

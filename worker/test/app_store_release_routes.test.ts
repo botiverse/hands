@@ -158,6 +158,46 @@ describe("App Store submission guards", () => {
     expect((await res.json() as any).code).toBe("VERSION_NOT_IN_APP");
   });
 
+  it("refuses an asc_build_id belonging to another app, and attaches nothing", async () => {
+    // M3 in review: the guard existed but no test would notice its removal.
+    vi.stubGlobal("fetch", vi.fn(async (url: unknown, init?: RequestInit) => {
+      const u = String(url);
+      if (u.includes("/appStoreVersions?")) return new Response(JSON.stringify({ data: [] }));
+      if (u.includes("/v1/builds?")) {
+        return new Response(JSON.stringify({ data: [{ id: "build-mine" }] }));
+      }
+      if ((init?.method ?? "GET") === "POST" && u.endsWith("/v1/appStoreVersions")) {
+        return new Response(JSON.stringify({ data: { id: "ver-new" } }));
+      }
+      // Any attach/patch would be a bug.
+      if ((init?.method ?? "GET") !== "GET") throw new Error(`unexpected write to ${u}`);
+      return new Response(JSON.stringify({ data: [] }));
+    }));
+    const res = await handlePrepareAppStoreVersion(
+      await makeContext({ version_string: "1.15.2", asc_build_id: "build-theirs" }),
+    );
+    expect(res.status).toBe(404);
+    expect((await res.json() as any).code).toBe("ASC_BUILD_NOT_IN_APP");
+  });
+
+  it("refuses to withdraw by a version_id belonging to another app, and cancels nothing", async () => {
+    // M4 in review: same shape -- guard present, test absent.
+    vi.stubGlobal("fetch", vi.fn(async (url: unknown, init?: RequestInit) => {
+      const u = String(url);
+      if (u.includes("/appStoreVersions?")) {
+        return new Response(JSON.stringify({ data: [{ id: "ver-mine" }] }));
+      }
+      if (u.includes("/reviewSubmissions?")) throw new Error("must not read submissions before the ownership check");
+      if ((init?.method ?? "GET") !== "GET") throw new Error(`unexpected write to ${u}`);
+      return new Response(JSON.stringify({ data: [] }));
+    }));
+    const res = await handleWithdrawAppStoreVersion(
+      await makeContext({ version_id: "ver-theirs" }),
+    );
+    expect(res.status).toBe(404);
+    expect((await res.json() as any).code).toBe("VERSION_NOT_IN_APP");
+  });
+
   it("rejects an invalid release_type instead of sending it to Apple", async () => {
     const res = await handlePrepareAppStoreVersion(
       await makeContext({ version_string: "1.15.2", release_type: "EVERYONE" }),
