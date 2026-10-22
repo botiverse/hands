@@ -215,13 +215,6 @@ import {
   handleUpdateBuild,
 } from "./routes/builds";
 import {
-  handleCompleteIosSimulatorArtifact,
-  handleCreateIosSimulatorArtifact,
-  handleDownloadIosSimulatorArtifact,
-  handleGetIosSimulatorArtifact,
-  handleListIosSimulatorArtifacts,
-} from "./routes/qa_artifacts";
-import {
   handleCompleteAndroidReleaseArtifact,
   handleCreateAndroidReleaseArtifacts,
   handleGetAndroidReleaseArtifacts,
@@ -1022,29 +1015,6 @@ bindAdmin("get", "/api/apps/:appId/builds/:buildId/assets/:assetId/download",
 bindAdmin("delete", "/api/apps/:appId/builds/:buildId/assets/:assetId",
   requireAppRole("admin"),
   handleDeleteBuildAsset,
-);
-
-// QA-only iOS simulator artifacts. These are immutable exact-byte fixtures
-// for agent/device validation and are deliberately outside the release model.
-bindAdmin("get", "/api/apps/:appId/qa-artifacts/ios-simulator",
-  requireAppRole("viewer"),
-  handleListIosSimulatorArtifacts,
-);
-bindAdmin("post", "/api/apps/:appId/qa-artifacts/ios-simulator",
-  requireAppRole("publisher"),
-  handleCreateIosSimulatorArtifact,
-);
-bindAdmin("get", "/api/apps/:appId/qa-artifacts/ios-simulator/:assetId",
-  requireAppRole("viewer"),
-  handleGetIosSimulatorArtifact,
-);
-bindAdmin("post", "/api/apps/:appId/qa-artifacts/ios-simulator/:assetId/complete",
-  requireAppRole("publisher"),
-  handleCompleteIosSimulatorArtifact,
-);
-bindAdmin("get", "/api/apps/:appId/qa-artifacts/ios-simulator/:assetId/download",
-  requireAppRole("viewer"),
-  handleDownloadIosSimulatorArtifact,
 );
 
 // Mobile CI declares one Android release build with exactly one AAB and one

@@ -34,13 +34,18 @@ import { describe, expect, it } from "vitest";
 const DOCUMENTED_WRITERS: Record<string, string[]> = {
   web: ["worker/src/routes/builds.ts"], // createBuild default
   cli: ["packages/cli/src/commands/builds.ts"], // CLI publish commands (outside worker/src)
-  "qa-artifact": ["worker/src/routes/qa_artifacts.ts"],
   external: ["worker/src/routes/builds.ts"],
   "mobile-ci": ["worker/src/routes/android_release_artifacts.ts"],
 };
 
 /** Documented in older material as valid, but written by nothing anywhere. */
-const NEVER_WRITTEN = ["ci"];
+const NEVER_WRITTEN = [
+  "ci",
+  // 'qa-artifact' was written only by the iOS simulator QA artifact route, removed
+  // together with that feature. Legacy rows may still carry it, so the value stays
+  // in the documented domain; it just has no writer any more.
+  "qa-artifact",
+];
 
 function tsFilesUnder(dir: string): string[] {
   const out: string[] = [];
@@ -176,7 +181,6 @@ describe("builds.source documented domain", () => {
     );
     const proseFiles = [
       "worker/src/routes/builds.ts",
-      "worker/src/routes/qa_artifacts.ts",
       "worker/src/routes/releases.ts",
       "worker/src/routes/external_dl.ts",
       "worker/src/routes/android_release_artifacts.ts",

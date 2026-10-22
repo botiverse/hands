@@ -883,8 +883,7 @@ export async function handleAgentHelp(c: Context<{ Bindings: Env }>) {
       "2. Crash triage: list-feedback (kind=crash) → get-feedback (device context + attachments) → presign-feedback-attachment, then curl the returned download_url yourself (raw-bytes endpoints get corrupted through agent transports).",
       "3. Triage as you work: update-feedback (change status/assignee, e.g. close a fixed ticket) and comment-feedback (attribution note, internal=true for staff-only). Requires org member (or app publisher).",
       "4. Release management (app publisher): create-release from an existing build (DRAFT by default) → update-release with bilingual release_notes → after explicit human authorization, publish-release. See docs.release_guide.",
-      "5. iOS simulator QA fixtures: create-ios-simulator-artifact → PUT the .app.zip to upload.url with the returned headers → complete-ios-simulator-artifact → get/presign the durable exact-byte artifact. QA artifacts can never become releases or update offers.",
-      "6. TestFlight: get/update-testflight-beta-app-description manage app-level invitation copy separately from build-level What to Test. An app publisher runs upload-testflight-build and polls get-testflight-upload-status to COMPLETE; an app viewer lists beta groups, then an app publisher runs publish-testflight-build and polls distribution status. These actions never activate a Hands release or submit an App Store production release.",
+      "5. TestFlight: get/update-testflight-beta-app-description manage app-level invitation copy separately from build-level What to Test. An app publisher runs upload-testflight-build and polls get-testflight-upload-status to COMPLETE; an app viewer lists beta groups, then an app publisher runs publish-testflight-build and polls distribution status. These actions never activate a Hands release or submit an App Store production release.",
     ],
     auth: {
       raft_agents:
@@ -909,10 +908,6 @@ export async function handleAgentHelp(c: Context<{ Bindings: Env }>) {
         "PATCH /api/apps/{app_id}/releases/{release_id} — body: {expected_revision?, changelog?, release_notes?, hidden?} — publisher; stale revision returns 409 without side effects",
       publish_release:
         "POST /api/apps/{app_id}/releases/{release_id}/publish — body: {expected_revision?, expected_scopes} — publisher; live-facing, needs explicit human authorization",
-      create_ios_simulator_artifact:
-        "POST /api/apps/{app_id}/qa-artifacts/ios-simulator — publisher; declares filename/size/SHA/source/version/build/bundle/GitHub run and returns a presigned PUT URL",
-      complete_ios_simulator_artifact:
-        "POST /api/apps/{app_id}/qa-artifacts/ios-simulator/{asset_id}/complete — publisher; one-shot stream verification of size/SHA-256 followed by immutable storage sealing",
       upload_testflight_build:
         "POST /api/apps/{app_id}/builds/{build_id}/testflight-upload — publisher; streams the stored signed IPA to Apple's Build Upload API without distributing it",
       publish_testflight_build:
@@ -1722,70 +1717,6 @@ export async function handleAgentManifest(c: Context<{ Bindings: Env }>) {
           asset_id: { type: "string", in: "path", required: true, description: "Non-installable build asset UUID." },
           expected_file_hash: { type: "string", in: "query", required: true, description: "Expected lowercase or uppercase SHA-256 hex digest from a fresh list-build-assets read." },
           expected_size_bytes: { type: "integer", in: "query", required: true, description: "Expected immutable byte size from the same fresh read." },
-        },
-      },
-      {
-        name: "list-ios-simulator-artifacts",
-        description:
-          "List exact-byte iOS simulator .app.zip QA fixtures. Optional source_commit, github_run_id, and sha256 filters select the exact provenance coordinate. Requires app viewer.",
-        endpoint: { method: "GET", path: "/api/apps/{app_id}/qa-artifacts/ios-simulator" },
-        parameters: {
-          app_id: { type: "string", in: "path", required: true, description: "App UUID." },
-          source_commit: { type: "string", in: "query", required: false, description: "Full source commit." },
-          github_run_id: { type: "string", in: "query", required: false, description: "GitHub Actions run id." },
-          sha256: { type: "string", in: "query", required: false, description: "Exact artifact SHA-256." },
-        },
-      },
-      {
-        name: "create-ios-simulator-artifact",
-        description:
-          "Create a QA-only iOS simulator artifact declaration and one-hour direct R2 PUT URL. Upload only a .app.zip using upload.method/url/headers, then call complete-ios-simulator-artifact. Requires app publisher.",
-        endpoint: { method: "POST", path: "/api/apps/{app_id}/qa-artifacts/ios-simulator" },
-        parameters: {
-          app_id: { type: "string", in: "path", required: true, description: "App UUID." },
-          channel_id: { type: "string", in: "body", required: false, description: "Channel UUID or slug for ledger grouping; defaults to the app default/main channel." },
-          filename: { type: "string", in: "body", required: true, description: "Original filename ending in .app.zip." },
-          size_bytes: { type: "number", in: "body", required: true, description: "Exact ZIP byte length." },
-          sha256: { type: "string", in: "body", required: true, description: "Exact ZIP SHA-256 hex digest." },
-          source_commit: { type: "string", in: "body", required: true, description: "Full 40- or 64-character git object id." },
-          version_name: { type: "string", in: "body", required: true, description: "CFBundleShortVersionString." },
-          build_number: { type: "string", in: "body", required: true, description: "CFBundleVersion." },
-          bundle_id: { type: "string", in: "body", required: true, description: "Simulator app bundle identifier." },
-          github_run_id: { type: "string", in: "body", required: true, description: "GitHub Actions run id." },
-          github_artifact_id: { type: "string", in: "body", required: false, description: "GitHub Actions artifact id." },
-          github_repository: { type: "string", in: "body", required: false, description: "owner/repository source." },
-          github_job_id: { type: "string", in: "body", required: false, description: "GitHub Actions verifier/build job id." },
-          source_ref: { type: "string", in: "body", required: false, description: "Branch or tag ref." },
-        },
-      },
-      {
-        name: "complete-ios-simulator-artifact",
-        description:
-          "After the presigned PUT finishes, stream the stored object through SHA-256 and seal it under an immutable key only if size and digest exactly match. Completion is one-shot. Requires app publisher.",
-        endpoint: { method: "POST", path: "/api/apps/{app_id}/qa-artifacts/ios-simulator/{asset_id}/complete" },
-        parameters: {
-          app_id: { type: "string", in: "path", required: true, description: "App UUID." },
-          asset_id: { type: "string", in: "path", required: true, description: "QA build asset UUID." },
-        },
-      },
-      {
-        name: "get-ios-simulator-artifact",
-        description:
-          "Read a QA artifact by asset id, including kind/qa_only, build id, exact filename/size/server SHA-256, source commit, version/version_code/bundle/build run, verification state, and durable download_api. Requires app viewer.",
-        endpoint: { method: "GET", path: "/api/apps/{app_id}/qa-artifacts/ios-simulator/{asset_id}" },
-        parameters: {
-          app_id: { type: "string", in: "path", required: true, description: "App UUID." },
-          asset_id: { type: "string", in: "path", required: true, description: "QA build asset UUID." },
-        },
-      },
-      {
-        name: "presign-ios-simulator-artifact",
-        description:
-          "Return a short-lived anonymous download URL plus exact filename/size/SHA-256 for a ready simulator QA artifact. The authenticated endpoint itself is the durable reference. Requires app viewer.",
-        endpoint: { method: "GET", path: "/api/apps/{app_id}/qa-artifacts/ios-simulator/{asset_id}/download?presign=1" },
-        parameters: {
-          app_id: { type: "string", in: "path", required: true, description: "App UUID." },
-          asset_id: { type: "string", in: "path", required: true, description: "QA build asset UUID." },
         },
       },
       {

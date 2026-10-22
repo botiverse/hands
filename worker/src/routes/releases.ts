@@ -518,7 +518,11 @@ export async function createRelease(
   if (build.asset_ingest_protocol_version === 1 && build.status !== "succeeded") {
     throw new Error("direct asset ingest build is not complete");
   }
-  if (build.product_type === "ios-simulator-qa" || build.release_type === "qa") {
+  // product_type 'ios-simulator-qa' can no longer be created (the QA artifact
+  // route is gone), but release_type 'qa' rows may still exist, and attaching one
+  // to a release would turn a QA fixture into something users can receive. Keep
+  // the guard so legacy rows stay inert.
+  if (build.release_type === "qa") {
     throw new Error("QA-only builds cannot be attached to releases");
   }
 
