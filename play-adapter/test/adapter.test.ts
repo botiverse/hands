@@ -87,6 +87,12 @@ function googleFixture(options: GoogleFixtureOptions = {}) {
   const requests: Array<{ url: string; method: string; body: unknown }> = [];
   const symbolsUploads: Array<{ sha256: string; size: number }> = [];
   let assertion = "";
+  // Set by alreadyOnPlay(): makes the /tracks LIST report this versionCode as present,
+  // which is what promote() consults before deciding to upload the bundle.
+  let alreadyOnPlayVersion: string | null = null;
+  // sha256 Google reports for that bundle; the skip is only safe when it matches.
+  let alreadyOnPlaySha = "";
+  const ALREADY_SHA = "a".repeat(64);
   const fetchImpl = vi.fn(async (input: RequestInfo | URL, init: RequestInit = {}) => {
     const url = String(input);
     const method = init.method ?? "GET";
@@ -107,6 +113,22 @@ function googleFixture(options: GoogleFixtureOptions = {}) {
       return Response.json({ id: `edit-${nextEdit++}` });
     }
     if (method === "DELETE") return new Response(null, { status: 204 });
+    // The bare /tracks list is what promote consults before deciding whether the
+    // bundle still needs uploading; /tracks/<name> is the per-track read.
+    // The skip decision asks Google which bytes it holds for this versionCode.
+    if (method === "GET" && url.includes("/bundles?")) {
+      return Response.json({
+        bundles: alreadyOnPlayVersion === null
+          ? []
+          : [{ versionCode: Number(alreadyOnPlayVersion), sha256: alreadyOnPlaySha }],
+      });
+    }
+    if (method === "GET" && /\/tracks(\?|$)/.test(url)) {
+      const releases = alreadyOnPlayVersion === null
+        ? track.releases
+        : [...(track.releases ?? []), { name: "elsewhere", versionCodes: [alreadyOnPlayVersion], status: "completed" }];
+      return Response.json({ tracks: [{ track: track.track, releases }] });
+    }
     if (method === "GET" && url.includes("/tracks/")) return Response.json(track);
     if (url.includes("/bundles?uploadType=media")) {
       const uploaded = new Uint8Array(await new Response(init.body).arrayBuffer());
@@ -147,6 +169,11 @@ function googleFixture(options: GoogleFixtureOptions = {}) {
     symbolsUploads,
     assertion: () => assertion,
     track: () => track,
+    /** Pretend Google Play already holds this versionCode (as after an earlier promote). */
+    alreadyOnPlay: (versionCode: number, sha256: string = ALREADY_SHA) => {
+      alreadyOnPlayVersion = String(versionCode);
+      alreadyOnPlaySha = sha256;
+    },
   };
 }
 
@@ -194,6 +221,7 @@ describe("Google Play adapter RPC service", () => {
         edit_id: "edit-1",
         package_name: PACKAGE,
         version_code: 42,
+        bundle_uploaded: true,
         track: "internal",
         sha256: digest,
         rollout_percent: 100,
@@ -307,6 +335,41 @@ describe("Google Play adapter RPC service", () => {
     expect(fixture.requests.filter((request) => request.method === "DELETE")).toHaveLength(1);
   });
 
+  it("skips the bundle upload when Play already holds this versionCode", async () => {
+    // Pushing one build internal -> closed -> production used to re-upload the same
+    // AAB each time and get 403 for a duplicate versionCode. Once the version is on
+    // any track, only the track edit is needed.
+    const fixture = googleFixture({ trackMaximum: 0, uploadVersionCode: 11301005 });
+    // Play already holds this versionCode AND the same bytes, so only the track edit runs.
+    fixture.alreadyOnPlay(11301005, digest);
+    const service = createPlayAdapterService({ fetchImpl: fixture.fetchImpl, nowSeconds: () => NOW });
+    const result = await service.promote(promotion({ versionCode: 11301005 }), body(), null, environment());
+    expect(result).toMatchObject({ ok: true });
+    expect(fixture.requests.filter((r) => String(r.url).includes("/bundles?uploadType=media"))).toHaveLength(0);
+    expect(fixture.requests.filter((r) => r.method === "PUT")).toHaveLength(1);
+  });
+
+  it("refuses when Play holds the same versionCode with DIFFERENT bytes", async () => {
+    // A versionCode match alone is not proof the bytes are ours: the console may have
+    // received a different build under the same code. Shipping those while the receipt
+    // claims expectedSha256 would be an unverified certification.
+    const fixture = googleFixture({ trackMaximum: 0, uploadVersionCode: 11301005 });
+    fixture.alreadyOnPlay(11301005, "b".repeat(64)); // Play holds someone else's bytes
+    const service = createPlayAdapterService({ fetchImpl: fixture.fetchImpl, nowSeconds: () => NOW });
+    const result = await service.promote(promotion({ versionCode: 11301005 }), body(), null, environment());
+    expect(result).toMatchObject({ ok: false, error: { code: "aab_integrity_mismatch" } });
+    expect(fixture.requests.filter((r) => String(r.url).includes("/bundles?uploadType=media"))).toHaveLength(0);
+    expect(fixture.requests.filter((r) => r.method === "PUT")).toHaveLength(0);
+  });
+
+  it("still uploads when the versionCode is not on any track", async () => {
+    const fixture = googleFixture({ trackMaximum: 0, uploadVersionCode: 11301005 });
+    const service = createPlayAdapterService({ fetchImpl: fixture.fetchImpl, nowSeconds: () => NOW });
+    expect(await service.promote(promotion({ versionCode: 11301005 }), body(), null, environment()))
+      .toMatchObject({ ok: true });
+    expect(fixture.requests.filter((r) => String(r.url).includes("/bundles?uploadType=media"))).toHaveLength(1);
+  });
+
   it.each([
     { trackMaximum: 0, versionCode: 11301005 },
     { trackMaximum: 100, versionCode: 11301005 },
@@ -320,6 +383,7 @@ describe("Google Play adapter RPC service", () => {
         edit_id: "edit-1",
         package_name: PACKAGE,
         version_code: versionCode,
+        bundle_uploaded: true,
         track: "internal",
         sha256: digest,
         rollout_percent: 100,

@@ -447,15 +447,66 @@ export class GooglePlayClient {
     }
   }
 
+  /**
+   * True when Google Play already holds this versionCode on any track.
+   *
+   * Uploading a duplicate versionCode is rejected, and the bundle is immutable once
+   * accepted, so a repeat promote only needs the track edit. Deliberately generous:
+   * a malformed track read throws rather than silently claiming "not present", so a
+   * broken read can never skip an upload that was actually needed.
+   */
+  private async bundleAlreadyOnPlay(
+    packageName: string,
+    editId: string,
+    request: PromotionRequest,
+  ): Promise<boolean> {
+    // Ask Google for the bundle it actually holds, not just whether a track mentions
+    // this versionCode. Play stores one bundle per versionCode, so a versionCode match
+    // alone is NOT proof that the bytes are ours: the same versionCode may have been
+    // uploaded by hand in the console or repackaged elsewhere. Skipping the upload on
+    // a versionCode match would ship those bytes while the receipt below still
+    // reported request.expectedSha256 -- an unverified "Hands-certified bytes are
+    // live" claim. The upload path already enforces this binding (:330-333), so the
+    // skip path must too.
+    const result = await this.requestJson<{
+      bundles?: Array<{ versionCode?: unknown; sha256?: unknown }>;
+    }>(`${this.editRoot(packageName, editId)}/bundles?versionCode=${encodeURIComponent(String(request.versionCode))}&maxResults=10`);
+    if (result.bundles !== undefined && !Array.isArray(result.bundles)) {
+      throw new PlayAdapterError(502, "play_bundles_malformed", "Google Play returned a malformed bundle list");
+    }
+    const match = (result.bundles ?? []).find(
+      (bundle) => exactVersionCode(bundle.versionCode) === request.versionCode,
+    );
+    if (!match) return false;
+    if (typeof match.sha256 !== "string" || match.sha256.toLowerCase() !== request.expectedSha256) {
+      // Present but different bytes. Loud, and the same code the upload path uses.
+      throw new PlayAdapterError(
+        409,
+        "aab_integrity_mismatch",
+        "Google Play already holds this versionCode with different bytes; refusing to promote unverified content",
+      );
+    }
+    return true;
+  }
+
   async promote(request: PromotionRequest) {
     if (request.expectedSize > this.maxAabSize) {
       throw new PlayAdapterError(413, "aab_too_large", "AAB exceeds the configured maximum size");
     }
     const editId = await this.createEdit(request.packageName);
     let commitAttempted = false;
+    let bundleUploaded = true;
     try {
-      await this.uploadBundle(request, editId);
-      await this.uploadSymbols(request, editId);
+      // Google Play rejects re-uploading a versionCode it already holds, which made
+      // the second promote of one build (internal -> closed -> production) fail with
+      // 403. The bundle does not need re-uploading in that case: the track update is
+      // the whole operation. Check every track first and skip the upload when this
+      // versionCode is already present anywhere.
+      bundleUploaded = !(await this.bundleAlreadyOnPlay(request.packageName, editId, request));
+      if (bundleUploaded) {
+        await this.uploadBundle(request, editId);
+        await this.uploadSymbols(request, editId);
+      }
       // Symbols attach to the bundle's versionCode inside the same edit and
       // must land before the track update; any failure here runs the existing
       // cleanupOrThrow path, so a rejected zip can never half-commit.
@@ -472,6 +523,9 @@ export class GooglePlayClient {
       edit_id: editId,
       package_name: request.packageName,
       version_code: request.versionCode,
+      // false when Google already held this exact versionCode+sha256 and only the
+      // track was edited, so a caller can tell a real upload from a re-promote.
+      bundle_uploaded: bundleUploaded,
       track: request.handsTrack,
       sha256: request.expectedSha256,
       rollout_percent: request.rolloutPercent,
