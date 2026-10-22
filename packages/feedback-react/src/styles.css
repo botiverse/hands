@@ -294,19 +294,20 @@
   width: auto;
 }
 
-.hands-feedback-message-input {
-  min-height: 160px;
+.hands-feedback-form-note {
+  color: var(--hf-muted);
+  font-size: 12px;
+  line-height: 20px;
 }
 
-.hands-feedback-attach-row {
-  display: flex;
+/* A new message gets room to write before it grows. */
+.hands-feedback-new .hands-feedback-composer textarea {
+  min-height: 120px;
 }
 
-.hands-feedback-form-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  justify-content: flex-end;
+/* raft-ui's composer file card sizes its document preview to the card. */
+.hands-feedback-pending-file-preview {
+  height: 46px;
 }
 
 .hands-feedback-pending-image,

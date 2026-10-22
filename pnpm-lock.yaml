@@ -208,8 +208,8 @@ importers:
         version: 4.0.1
     devDependencies:
       '@botiverse/raft-ui':
-        specifier: 0.18.0
-        version: 0.18.0(@types/react@19.2.17)(react-dom@19.2.7(react@19.2.7))(react@19.2.7)(tailwindcss@4.3.2)
+        specifier: 0.20.0
+        version: 0.20.0(@types/react@19.2.17)(react-dom@19.2.7(react@19.2.7))(react@19.2.7)(tailwindcss@4.3.2)
       '@testing-library/react':
         specifier: ^16.3.0
         version: 16.3.2(@testing-library/dom@10.4.1)(@types/react-dom@19.2.3(@types/react@19.2.17))(@types/react@19.2.17)(react-dom@19.2.7(react@19.2.7))(react@19.2.7)
@@ -565,8 +565,8 @@ packages:
       vitepress-plugin-tabs: ^0.9.0
       vue: ^3.4.0
 
-  '@botiverse/raft-ui@0.18.0':
-    resolution: {integrity: sha512-PhPEaZxZFZ3jhs4MVSi71hvc8/1yfY51VqD+xCYLeIhIQzeDChcfFwWK7riQPNixTTqS5nw/7d/dhDVcGrln1w==}
+  '@botiverse/raft-ui@0.20.0':
+    resolution: {integrity: sha512-wjT2cjclVW1tOdOM8DISffbOPxe+9GqBSJgax76SymCf64HWDrISZqEKs7FsQiy8usdpKPGDbNQs8HhbblZy6A==}
     peerDependencies:
       react: ^19
       react-dom: ^19
@@ -3824,7 +3824,7 @@ snapshots:
       vitepress-plugin-tabs: 0.9.1(vitepress@1.6.4(@algolia/client-search@5.59.0)(@types/node@22.20.0)(lightningcss@1.32.0)(postcss@8.5.29)(search-insights@2.17.3)(typescript@5.9.3))(vue@3.5.43(typescript@5.9.3))
       vue: 3.5.43(typescript@5.9.3)
 
-  '@botiverse/raft-ui@0.18.0(@types/react@19.2.17)(react-dom@19.2.7(react@19.2.7))(react@19.2.7)(tailwindcss@4.3.2)':
+  '@botiverse/raft-ui@0.20.0(@types/react@19.2.17)(react-dom@19.2.7(react@19.2.7))(react@19.2.7)(tailwindcss@4.3.2)':
     dependencies:
       '@base-ui/react': 1.8.0(@types/react@19.2.17)(react-dom@19.2.7(react@19.2.7))(react@19.2.7)
       '@dnd-kit/core': 6.3.1(react-dom@19.2.7(react@19.2.7))(react@19.2.7)

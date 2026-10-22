@@ -361,7 +361,7 @@ describe("FeedbackWorkspace host pending-attachment API", () => {
       const { ref } = await mountInbox();
       asUser(() => ref.current!.openNewFeedbackWithPendingFile({ file: diagnostic() }));
       expect(pendingNames()).toHaveLength(1);
-      fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+      fireEvent.click(screen.getByRole("button", { name: "Back" }));
       fireEvent.click(await screen.findByText("New Feedback"));
       await screen.findByLabelText(/What would you like us to know/);
       expect(pendingNames()).toEqual([]);

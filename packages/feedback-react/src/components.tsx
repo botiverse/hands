@@ -70,14 +70,13 @@ import {
   EmptyStateDescription,
   EmptyStateIcon,
   EmptyStateTitle,
-  Field,
-  FieldDescription,
-  FieldLabel,
   Label,
   FileContent,
   FileMeta,
   FileMetaItem,
   FileName,
+  FilePreviewBadge,
+  FilePreviewDocument,
   FilePreview,
   FilePreviewFile,
   FileRow,
@@ -134,7 +133,6 @@ import {
   TabsLabel,
   TabsList,
   TabsTab,
-  Textarea,
 } from "@botiverse/raft-ui";
 import type { FeedbackMessageKey, FeedbackMessageValues } from "./locale.js";
 import { useHandsFeedback } from "./provider.js";
@@ -676,6 +674,12 @@ type FeedbackComposerProps = {
   actions: ReactNode;
 };
 
+/** A short type label for a file card: its extension, or its MIME subtype. */
+function fileBadge(file: File) {
+  const extension = /\.([A-Za-z0-9]{1,5})$/.exec(file.name)?.[1];
+  return (extension ?? file.type.split("/")[1] ?? "file").slice(0, 5).toUpperCase();
+}
+
 function FeedbackPendingAttachmentImage({
   file,
   onOpenAttachment,
@@ -683,7 +687,7 @@ function FeedbackPendingAttachmentImage({
   file: File;
   onOpenAttachment?: (input: FeedbackPendingAttachmentOpenInput) => void;
 }) {
-  const { message } = useHandsFeedback();
+  const { formatFileSize, message } = useHandsFeedback();
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
 
   const isImage = file.type.startsWith("image/");
@@ -712,16 +716,15 @@ function FeedbackPendingAttachmentImage({
           onOpenAttachment ? () => onOpenAttachment({ file }) : undefined
         }
       >
-        {isImage ? (
-          <ImagePlus aria-hidden="true" />
-        ) : (
-          <Paperclip aria-hidden="true" />
-        )}
+        {/* A file card as raft-ui's Composer draws one: a document preview
+            with the file's type, then its name and size. */}
+        <FilePreview className="hands-feedback-pending-file-preview">
+          <FilePreviewDocument className="hands-feedback-pending-file-preview" />
+          <FilePreviewBadge>{fileBadge(file)}</FilePreviewBadge>
+        </FilePreview>
         <ComposerAttachmentBody>
           <ComposerAttachmentTitle>{file.name}</ComposerAttachmentTitle>
-          <ComposerAttachmentMeta>
-            {file.type || message("attachments")}
-          </ComposerAttachmentMeta>
+          <ComposerAttachmentMeta>{formatFileSize(file.size)}</ComposerAttachmentMeta>
         </ComposerAttachmentBody>
       </ComposerAttachmentFile>
     );
@@ -2463,10 +2466,6 @@ function NewFeedbackForm({
     setAnnouncement(copy("uploadCanceled"));
   };
 
-  const imageInputRef = useRef<HTMLInputElement | null>(null);
-  const attachmentsDisabled =
-    sending || attachments.length >= MAX_FEEDBACK_ATTACHMENTS;
-
   return (
     <section
       className="hands-feedback-new"
@@ -2490,13 +2489,7 @@ function NewFeedbackForm({
         </PanelHeaderContent>
       </PanelHeader>
       <div className="hands-feedback-middle">
-        <form
-          className="hands-feedback-new-fields"
-          onSubmit={(event) => {
-            event.preventDefault();
-            void submit();
-          }}
-        >
+        <div className="hands-feedback-new-fields">
           {/* A group, not a field control: a Field label would name only the
               first option. */}
           <div className="hands-feedback-field">
@@ -2527,87 +2520,55 @@ function NewFeedbackForm({
               </SegmentedControlItem>
             </SegmentedControl>
           </div>
-          <Field>
-            <FieldLabel htmlFor="hands-feedback-message" required>
-              {copy("question")}
-            </FieldLabel>
-            <Textarea
-              ref={textareaRef}
-              id="hands-feedback-message"
-              className="hands-feedback-message-input"
-              maxLength={10_000}
-              value={message}
-              placeholder={copy("describePlaceholder")}
-              onChange={(event) => setMessage(event.target.value)}
-            />
-          </Field>
-          <Field>
-            <FieldLabel>{copy("screenshotsOptional")}</FieldLabel>
-            <input
-              ref={imageInputRef}
-              data-testid="hands-feedback-new-image-input"
-              className="hands-feedback-sr-only"
-              aria-label={copy("screenshots", {
-                count: MAX_FEEDBACK_ATTACHMENTS,
-              })}
-              type="file"
-              accept={FEEDBACK_ATTACHMENT_TYPES.join(",")}
-              multiple
-              disabled={attachmentsDisabled}
-              onChange={choose}
-            />
-            <PendingAttachmentList
-              attachments={attachments}
-              busy={sending}
-              onRemove={(id) =>
-                setAttachments((current) =>
-                  current.filter((item) => item.id !== id),
-                )
-              }
-              {...(onOpenPendingAttachment
-                ? { onOpenAttachment: onOpenPendingAttachment }
-                : {})}
-            />
-            <div className="hands-feedback-attach-row">
-              <Button
-                type="button"
-                variant="outline"
-                size="md"
-                disabled={attachmentsDisabled}
-                onClick={() => imageInputRef.current?.click()}
+          {/* The same composer as a reply: the message, then the attach
+              buttons at its bottom left and the pink send at its bottom
+              right. Back leaves (or cancels an upload in flight). */}
+          <FeedbackComposer
+            id="hands-feedback-message"
+            label={copy("question")}
+            value={message}
+            onChange={setMessage}
+            textareaRef={textareaRef}
+            attachments={attachments}
+            onAttachmentsChange={choose}
+            onRemoveAttachment={(id) =>
+              setAttachments((current) =>
+                current.filter((item) => item.id !== id),
+              )
+            }
+            {...(onOpenPendingAttachment
+              ? { onOpenAttachment: onOpenPendingAttachment }
+              : {})}
+            busy={sending}
+            error={error}
+            placeholder={copy("describePlaceholder")}
+            showCounter
+            imageInputLabel={copy("screenshots", {
+              count: MAX_FEEDBACK_ATTACHMENTS,
+            })}
+            testIdPrefix="new"
+            actions={
+              <ComposerSubmit
+                size="icon-sm"
+                aria-label={
+                  sending
+                    ? copy("submitting")
+                    : attachments.some(({ state }) => state === "failed")
+                      ? copy("retryUpload")
+                      : copy("sendFeedback")
+                }
+                title={copy("sendFeedback")}
+                disabled={!message.trim() || sending}
+                onClick={() => void submit()}
               >
-                <ImagePlus aria-hidden="true" />
-                {copy("attachImage")}
-              </Button>
-            </div>
-            <FieldDescription>
-              {copy("attachmentHint", { count: MAX_FEEDBACK_ATTACHMENTS })}
-            </FieldDescription>
-          </Field>
-          {error && <FeedbackErrorBanner error={error} />}
-          <div className="hands-feedback-form-actions">
-            <Button
-              type="button"
-              size="lg"
-              variant="outline"
-              onClick={sending ? cancelUpload : onCancel}
-            >
-              {copy("cancel")}
-            </Button>
-            <Button
-              type="submit"
-              size="lg"
-              variant="primary"
-              disabled={!message.trim() || sending}
-            >
-              {sending
-                ? copy("submitting")
-                : attachments.some(({ state }) => state === "failed")
-                  ? copy("retryUpload")
-                  : copy("sendFeedback")}
-            </Button>
-          </div>
-        </form>
+                <Send aria-hidden="true" />
+              </ComposerSubmit>
+            }
+          />
+          <p className="hands-feedback-form-note">
+            {copy("attachmentHint", { count: MAX_FEEDBACK_ATTACHMENTS })}
+          </p>
+        </div>
       </div>
       <div
         className="hands-feedback-live"
