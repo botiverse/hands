@@ -350,7 +350,9 @@ export function registerReleaseCommands(program: Command): void {
     .description(
       "Disable a draft or active release; build, assets and audit are kept. " +
         "A never-activated version is freed for a corrected build; an ever-activated one stays " +
-        "reserved, so corrected bits need a higher version code.",
+        "reserved, so corrected bits need a higher version code. " +
+        "Cancelling an ACTIVE release puts the release it superseded back to active, " +
+        "so clients immediately start receiving that older version again.",
     )
     .option("--json", "Output JSON.", false)
     .action(async (appIdOrSlug: string, releaseId: string, opts: { json?: boolean }) => {
