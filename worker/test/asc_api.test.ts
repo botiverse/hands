@@ -298,3 +298,68 @@ describe("TestFlight build resolution", () => {
     expect(fetchMock).toHaveBeenCalledOnce();
   });
 });
+
+describe("App Store submission", () => {
+  /** Records every call so a test can assert the sequence, not just the result. */
+  async function withFetch(handler: (url: string, method: string, body: any) => unknown) {
+    const { creds } = await generateTestCreds();
+    const calls: Array<{ url: string; method: string; body: any }> = [];
+    vi.stubGlobal("fetch", vi.fn(async (url: unknown, init?: RequestInit) => {
+      const method = (init?.method ?? "GET").toUpperCase();
+      const parsed = init?.body ? JSON.parse(String(init.body)) : undefined;
+      calls.push({ url: String(url), method, body: parsed });
+      return new Response(JSON.stringify(handler(String(url), method, parsed) ?? {}), { status: 200 });
+    }));
+    return { creds, calls };
+  }
+
+  it("creates a version with MANUAL release so approval does not ship it", async () => {
+    const { createAppStoreVersion } = await import("../src/lib/asc_api");
+    const { creds, calls } = await withFetch(() => ({ data: { id: "ver-1" } }));
+    const version = await createAppStoreVersion(creds, "app-1", "1.15.2", "IOS", "MANUAL");
+    expect(version.id).toBe("ver-1");
+    expect(calls[0]!.url).toContain("/v1/appStoreVersions");
+    expect(calls[0]!.body.data.attributes).toMatchObject({
+      versionString: "1.15.2", platform: "IOS", releaseType: "MANUAL",
+    });
+  });
+
+  it("withdraws by cancelling the review submission, not by setting appStoreState", async () => {
+    // appStoreState is a read-only lifecycle enum; cancelling the submission is the
+    // documented mechanism, and the deprecated DELETE endpoint must not be used.
+    const { cancelReviewSubmission } = await import("../src/lib/asc_api");
+    const { creds, calls } = await withFetch(() => ({ data: { id: "sub-1" } }));
+    await cancelReviewSubmission(creds, "sub-1");
+    expect(calls[0]!.url).toContain("/v1/reviewSubmissions/sub-1");
+    expect(calls[0]!.method).toBe("PATCH");
+    expect(calls[0]!.body.data.attributes).toEqual({ canceled: true });
+    expect(calls.some((c) => c.url.includes("appStoreVersionSubmissions"))).toBe(false);
+  });
+
+  it("submits in the documented three steps, ending with submitted:true", async () => {
+    const { submitVersionForReview } = await import("../src/lib/asc_api");
+    const { creds, calls } = await withFetch((url, method) =>
+      method === "POST" && url.endsWith("/v1/reviewSubmissions") ? { data: { id: "sub-9" } } : {});
+    const result = await submitVersionForReview(creds, "app-1", "ver-1", "IOS");
+    expect(result.submissionId).toBe("sub-9");
+    expect(calls[0]!.method).toBe("POST");
+    expect(calls[0]!.url).toContain("/v1/reviewSubmissions");
+    expect(calls[1]!.url).toContain("/v1/reviewSubmissionItems");
+    expect(calls[1]!.body.data.relationships.appStoreVersionForReview.data.id).toBe("ver-1");
+    expect(calls[2]!.method).toBe("PATCH");
+    expect(calls[2]!.body.data.attributes).toEqual({ submitted: true });
+  });
+
+  it("patches an existing localization instead of creating a duplicate", async () => {
+    const { setVersionLocalization } = await import("../src/lib/asc_api");
+    const { creds, calls } = await withFetch((url, method) => {
+      if (method === "GET") return { data: [{ id: "loc-zh", attributes: { locale: "zh-Hans" } }] };
+      return {};
+    });
+    await setVersionLocalization(creds, "ver-1", "zh-Hans", "修复若干问题");
+    expect(calls.some((c) => c.method === "POST")).toBe(false);
+    expect(calls[1]!.method).toBe("PATCH");
+    expect(calls[1]!.url).toContain("/appStoreVersionLocalizations/loc-zh");
+    expect(calls[1]!.body.data.attributes).toEqual({ whatsNew: "修复若干问题" });
+  });
+});
