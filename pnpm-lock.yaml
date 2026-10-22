@@ -10,7 +10,7 @@ overrides:
   electron: 43.5.0
   tinypool: 2.1.2
   source-map-js: 1.2.2
-  hono: 4.13.7
+  hono: 4.13.11
 
 importers:
 
@@ -99,7 +99,7 @@ importers:
         specifier: ^5.7.2
         version: 5.9.3
       vite:
-        specifier: ^5.4.11
+        specifier: ^5.4.21
         version: 5.4.21(@types/node@24.13.2)(lightningcss@1.32.0)
       vitest:
         specifier: ^2.1.9
@@ -137,10 +137,10 @@ importers:
     dependencies:
       '@hono/node-server':
         specifier: 1.19.17
-        version: 1.19.17(hono@4.13.7)
+        version: 1.19.17(hono@4.13.11)
       hono:
-        specifier: 4.13.7
-        version: 4.13.7
+        specifier: 4.13.11
+        version: 4.13.11
     devDependencies:
       '@types/node':
         specifier: ^22.10.0
@@ -282,7 +282,7 @@ importers:
         version: 0.0.30
       '@hono/zod-openapi':
         specifier: ^1.4.0
-        version: 1.4.0(hono@4.13.7)(zod@4.4.3)
+        version: 1.4.0(hono@4.13.11)(zod@4.4.3)
       '@noble/hashes':
         specifier: ^1.8.0
         version: 1.8.0
@@ -290,8 +290,8 @@ importers:
         specifier: 1.0.20
         version: 1.0.20
       hono:
-        specifier: 4.13.7
-        version: 4.13.7
+        specifier: 4.13.11
+        version: 4.13.11
       jose:
         specifier: ^5.9.6
         version: 5.10.0
@@ -1108,19 +1108,19 @@ packages:
     resolution: {integrity: sha512-dSneS5qhiauZWGDCeK4o695Xd9nUNjviSZCMQrj10eetr8Uln1ucn6bbphOM6UynAMMtNIzZNSpL9vnASJwrPQ==}
     engines: {node: '>=18.14.1'}
     peerDependencies:
-      hono: 4.13.7
+      hono: 4.13.11
 
   '@hono/zod-openapi@1.4.0':
     resolution: {integrity: sha512-AFchqR1N/NxfI4hUOSGI2/g8zLROxA1OE7Oh5JJFlTaGxhrdRyH+93gd0tIBpb0z8s9r8hUoNnaOBfHbdb4NMw==}
     engines: {node: '>=16.0.0'}
     peerDependencies:
-      hono: 4.13.7
+      hono: 4.13.11
       zod: ^4.0.0
 
   '@hono/zod-validator@0.8.0':
     resolution: {integrity: sha512-5uS4S1/LKtZQYvD4BtpPUFkOv8d1wNxHHrChm26buMiEYc1FrHWvDUaKVBwkiVtvSExHSpLGDvcnpI2Copyj9w==}
     peerDependencies:
-      hono: 4.13.7
+      hono: 4.13.11
       zod: ^3.25.0 || ^4.0.0
 
   '@humanfs/core@0.19.2':
@@ -2329,8 +2329,8 @@ packages:
   hastscript@9.0.1:
     resolution: {integrity: sha512-g7df9rMFX/SPi34tyGCyUBREQoKkapwdY/T04Qn9TDWfHhAYt4/I0gMVirzK5wEzeUqIjEB+LXC/ypb7Aqno5w==}
 
-  hono@4.13.7:
-    resolution: {integrity: sha512-c8/gF9ac8Y78/agExVocyLevgR+JlpNB444Py0FSX8pJoPdYUfUzRcXtYEYGwt6l19qIlVZPN5Mfsw9jFShmQQ==}
+  hono@4.13.11:
+    resolution: {integrity: sha512-/SMX/RQNJn7oNmFwH6DtwDqcrzZU2otm1FD6OJe2cWF6cfy/F8hq0XVBv7xW3FTJshRQwuBnXHDq2kNsdZnshg==}
     engines: {node: '>=16.9.0'}
 
   hookable@5.5.3:
@@ -4208,21 +4208,21 @@ snapshots:
 
   '@floating-ui/utils@0.2.12': {}
 
-  '@hono/node-server@1.19.17(hono@4.13.7)':
+  '@hono/node-server@1.19.17(hono@4.13.11)':
     dependencies:
-      hono: 4.13.7
+      hono: 4.13.11
 
-  '@hono/zod-openapi@1.4.0(hono@4.13.7)(zod@4.4.3)':
+  '@hono/zod-openapi@1.4.0(hono@4.13.11)(zod@4.4.3)':
     dependencies:
       '@asteasolutions/zod-to-openapi': 8.5.0(zod@4.4.3)
-      '@hono/zod-validator': 0.8.0(hono@4.13.7)(zod@4.4.3)
-      hono: 4.13.7
+      '@hono/zod-validator': 0.8.0(hono@4.13.11)(zod@4.4.3)
+      hono: 4.13.11
       openapi3-ts: 4.6.0
       zod: 4.4.3
 
-  '@hono/zod-validator@0.8.0(hono@4.13.7)(zod@4.4.3)':
+  '@hono/zod-validator@0.8.0(hono@4.13.11)(zod@4.4.3)':
     dependencies:
-      hono: 4.13.7
+      hono: 4.13.11
       zod: 4.4.3
 
   '@humanfs/core@0.19.2':
@@ -5498,7 +5498,7 @@ snapshots:
       property-information: 7.2.0
       space-separated-tokens: 2.0.2
 
-  hono@4.13.7: {}
+  hono@4.13.11: {}
 
   hookable@5.5.3: {}
 
@@ -6860,7 +6860,7 @@ snapshots:
   vite@5.4.21(@types/node@22.20.0)(lightningcss@1.32.0):
     dependencies:
       esbuild: 0.21.5
-      postcss: 8.5.15
+      postcss: 8.5.29
       rollup: 4.62.2
     optionalDependencies:
       '@types/node': 22.20.0
@@ -6870,7 +6870,7 @@ snapshots:
   vite@5.4.21(@types/node@24.13.2)(lightningcss@1.32.0):
     dependencies:
       esbuild: 0.21.5
-      postcss: 8.5.15
+      postcss: 8.5.29
       rollup: 4.62.2
     optionalDependencies:
       '@types/node': 24.13.2
