@@ -1616,6 +1616,47 @@ export function registerBuildCommands(program: Command): void {
     );
 
   builds
+    .command("attach-symbols <appIdOrSlug> <buildId> <file>")
+    .description(
+      "Attach a debug-symbol file (ProGuard mapping, native symbols or dSYM) to an existing build, " +
+        "including one that has already published. Add-only: an existing asset for the same slot is not replaced.",
+    )
+    .option(
+      "--kind <kind>",
+      "proguard-mapping | native-symbols | dsym. Inferred from the filename when omitted.",
+    )
+    .option("--json", "Output JSON.", false)
+    .action(
+      async (
+        appIdOrSlug: string,
+        buildId: string,
+        filePath: string,
+        opts: { kind?: string; json?: boolean },
+      ) => {
+        if (!existsSync(filePath)) throw new Error(`missing file: ${filePath}`);
+        const kind = opts.kind ?? inferSymbolKind(filePath);
+        if (!SYMBOL_KINDS.has(kind)) {
+          throw new Error(
+            `--kind must be one of ${[...SYMBOL_KINDS].join(", ")}; got ${kind}. ` +
+              "Only debug symbols can be attached to an existing build.",
+          );
+        }
+        const appId = await resolveAppId(appIdOrSlug);
+        const asset = await uploadDirectBuildAsset(appId, buildId, filePath, {
+          artifact_kind: kind,
+          platform: inferSymbolPlatform(filePath),
+          arch: null,
+          filetype: SYMBOL_FILETYPE[kind] ?? "mapping.txt",
+        });
+        if (shouldOutputJson(program, opts.json)) {
+          console.log(JSON.stringify(asset, null, 2));
+          return;
+        }
+        console.log(`Attached ${kind} to build ${buildId} (sha256 ${asset.file_hash}).`);
+      },
+    );
+
+  builds
     .command("testflight-groups <appIdOrSlug> <buildId>")
     .description(
       "List App Store Connect internal/external beta groups for an existing Hands iOS build.",
@@ -2364,6 +2405,26 @@ async function uploadAndRegisterAsset(
     file_hash: uploaded.file_hash,
     size_bytes: uploaded.size_bytes,
   };
+}
+
+/** Debug-symbol kinds the server accepts for appending. */
+const SYMBOL_KINDS = new Set(["proguard-mapping", "native-symbols", "dsym"]);
+const SYMBOL_FILETYPE: Record<string, string> = {
+  "proguard-mapping": "mapping.txt",
+  "native-symbols": "symbols.zip",
+  dsym: "dSYM.zip",
+};
+
+function inferSymbolKind(filePath: string): string {
+  const name = basename(filePath).toLowerCase();
+  if (name.includes("mapping")) return "proguard-mapping";
+  if (name.includes("dsym")) return "dsym";
+  return "native-symbols";
+}
+
+/** A ProGuard mapping describes Android code; dSYM and native symbols are Apple-side. */
+function inferSymbolPlatform(filePath: string): string {
+  return inferSymbolKind(filePath) === "proguard-mapping" ? "android" : "ios";
 }
 
 async function uploadDirectBuildAsset(

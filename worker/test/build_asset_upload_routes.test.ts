@@ -191,6 +191,55 @@ describe("direct build asset upload routes", () => {
     }, env);
   }
 
+  // Debug symbols may be appended to an already-published build; installables may not.
+  async function declareSymbol(kind: string, filetype: string, buildId = "build-1") {
+    return app.request(`http://hands.test/api/apps/app-1/builds/${buildId}/assets/uploads`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        idempotency_key: `sym-${kind}-${filetype}`, artifact_kind: kind, platform: "android",
+        arch: null, variant: null, filetype, sha256: createHash("sha256").update(`${kind}${filetype}`).digest("hex"),
+        size_bytes: 7, filename: "f", content_type: "application/octet-stream",
+      }),
+    }, env);
+  }
+
+  function markBuildSucceeded() {
+    sqlite.prepare("UPDATE builds SET status='succeeded', artifact_mode='hands_r2' WHERE id='build-1'").run();
+  }
+
+  it("accepts a proguard mapping on a published build", async () => {
+    markBuildSucceeded();
+    const res = await declareSymbol("proguard-mapping", "mapping.txt");
+    expect(res.status).toBe(201);
+  });
+
+  it("rejects an installable artifact on a published build", async () => {
+    markBuildSucceeded();
+    // Same shape as the pre-existing declare() helper, which is an installable.
+    const res = await declare(createHash("sha256").update("apk").digest("hex"), 3, "run-apk-after-publish");
+    expect(res.status).toBe(409);
+    expect((await res.json() as any).code).toBe("BUILD_NOT_UPLOADABLE");
+  });
+
+  it("refuses to shadow an existing asset for the same slot", async () => {
+    markBuildSucceeded();
+    sqlite.prepare(
+      // slot_arch / slot_variant are generated from arch / variant, so insert the base columns.
+      `INSERT INTO build_assets (id, build_id, artifact_kind, platform, arch, variant, filetype, r2_key, file_hash, size_bytes, metadata_json, download_count, created_at)
+       VALUES ('existing', 'build-1', 'proguard-mapping', 'android', NULL, NULL, 'mapping.txt', 'k', ?, 1, '{}', 0, 1)`,
+    ).run(createHash("sha256").update("old").digest("hex"));
+    const res = await declareSymbol("proguard-mapping", "mapping.txt");
+    expect(res.status).toBe(409);
+    expect((await res.json() as any).code).toBe("ASSET_APPEND_CONFLICT");
+  });
+
+  it("refuses a non-symbol filetype smuggled through the symbol path", async () => {
+    markBuildSucceeded();
+    const res = await declareSymbol("proguard-mapping", "release.apk");
+    expect(res.status).toBe(409);
+  });
+
   it("exposes a verifier deadline and takes over an expired lease on the same bytes", async () => {
     const bytes = Buffer.from("stale-verifier-recovery");
     const declared = await declare(createHash("sha256").update(bytes).digest("hex"), bytes.length);

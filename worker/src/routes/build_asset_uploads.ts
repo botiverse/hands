@@ -133,6 +133,36 @@ function normalizedInput(value: DirectBuildAssetUploadInput) {
   };
 }
 
+/**
+ * Debug-symbol artifacts that may be appended to an ALREADY-PUBLISHED build.
+ *
+ * A ProGuard mapping, native symbol archive or dSYM describes code that has
+ * already shipped; it is not part of the installed binary. Play and Firebase both
+ * accept these after release, and requiring a full re-publish just to attach
+ * symbols loses the build's identity for no safety benefit.
+ *
+ * This list is the ONLY reason a succeeded build may be written to. Installable
+ * artifacts (apk/ipa/aab/patch binaries) are deliberately absent and stay
+ * immutable, so this cannot be used to swap what users download.
+ */
+const APPENDABLE_ARTIFACT_KINDS = new Set([
+  "proguard-mapping",
+  "native-symbols",
+  "dsym",
+]);
+
+/** A filetype allowed for each appendable kind, so a symbol slot cannot be used to smuggle a binary. */
+const APPENDABLE_FILETYPES: Record<string, Set<string>> = {
+  "proguard-mapping": new Set(["mapping.txt"]),
+  "native-symbols": new Set(["symbols.zip"]),
+  dsym: new Set(["dSYM.zip", "dsym.zip", "zip"]),
+};
+
+function isAppendableSymbolAsset(kind: string, filetype: string): boolean {
+  const allowed = APPENDABLE_FILETYPES[kind];
+  return allowed !== undefined && allowed.has(filetype);
+}
+
 function slotKey(slot: {
   artifactKind: string;
   platform: string;
@@ -307,21 +337,48 @@ export async function handleDeclareBuildAssetUpload(c: AdminContext) {
   if (!build) return c.json({ error: "build not found", code: "BUILD_NOT_FOUND" }, 404);
   const newBuildUpload = build.status === "pending" && build.artifact_mode === "hands_r2";
   const migrationUpload = build.status === "succeeded" && build.artifact_mode === "external";
-  if (!newBuildUpload && !migrationUpload) {
-    return c.json({ error: "direct asset uploads require a pending Hands-hosted build or an initialized external-build migration", code: "BUILD_NOT_UPLOADABLE" }, 409);
+  // A published build may still receive debug symbols (see
+  // APPENDABLE_ARTIFACT_KINDS): the installed bytes never change, only the record
+  // needed to read them. Anything else still requires a pending build.
+  const symbolAppend =
+    build.status === "succeeded" &&
+    build.artifact_mode !== "external" &&
+    isAppendableSymbolAsset(input.artifactKind, input.filetype);
+  if (!newBuildUpload && !migrationUpload && !symbolAppend) {
+    return c.json({ error: "direct asset uploads require a pending Hands-hosted build or an initialized external-build migration; a published build accepts debug symbols only", code: "BUILD_NOT_UPLOADABLE" }, 409);
   }
-  if (build.asset_ingest_protocol_version !== DIRECT_UPLOAD_PROTOCOL) {
-    return c.json({ error: "build does not use direct asset ingest protocol v1", code: "ASSET_INGEST_PROTOCOL_REQUIRED" }, 409);
-  }
-  let required: Set<string>;
-  try {
-    required = requiredSlotKeys(build.required_asset_slots_json);
-  } catch (error) {
-    return c.json({ error: (error as Error).message, code: "INVALID_REQUIRED_ASSET_SLOTS" }, 500);
+  if (!migrationUpload && build.asset_ingest_protocol_version !== DIRECT_UPLOAD_PROTOCOL) {
+    // A symbol append on an older build is still allowed: the protocol flag governs
+    // whether the build waited for its required slots, which an append never changes.
+    if (!symbolAppend) {
+      return c.json({ error: "build does not use direct asset ingest protocol v1", code: "ASSET_INGEST_PROTOCOL_REQUIRED" }, 409);
+    }
   }
   const declaredSlot = slotKey(input);
-  if (!required.has(declaredSlot)) {
-    return c.json({ error: "asset slot was not declared when the build was created", code: "ASSET_SLOT_NOT_REQUIRED" }, 409);
+  if (!symbolAppend) {
+    let required: Set<string>;
+    try {
+      required = requiredSlotKeys(build.required_asset_slots_json);
+    } catch (error) {
+      return c.json({ error: (error as Error).message, code: "INVALID_REQUIRED_ASSET_SLOTS" }, 500);
+    }
+    if (!required.has(declaredSlot)) {
+      return c.json({ error: "asset slot was not declared when the build was created", code: "ASSET_SLOT_NOT_REQUIRED" }, 409);
+    }
+  } else {
+    // Append only: refuse to shadow an existing row for the same slot, so this
+    // path can add a mapping but can never replace one (or anything else).
+    const existing = await c.env.DB.prepare(
+      `SELECT id FROM build_assets
+        WHERE build_id = ?1 AND artifact_kind = ?2 AND platform = ?3
+          AND slot_arch = COALESCE(?4, '-') AND slot_variant = COALESCE(?5, '-')
+          AND filetype = ?6 LIMIT 1`,
+    )
+      .bind(buildId, input.artifactKind, input.platform, input.arch ?? null, input.variant ?? null, input.filetype)
+      .first<{ id: string }>();
+    if (existing) {
+      return c.json({ error: "an asset for this slot already exists; appended debug symbols are add-only and cannot replace it", code: "ASSET_APPEND_CONFLICT", asset_id: existing.id }, 409);
+    }
   }
 
   const assetId = crypto.randomUUID();
@@ -727,7 +784,14 @@ export async function handleCompleteBuildAssetUpload(c: AdminContext) {
   }
   const newBuildUpload = row.build_status === "pending" && row.artifact_mode === "hands_r2";
   const migrationUpload = row.build_status === "succeeded" && row.artifact_mode === "external";
-  if (!newBuildUpload && !migrationUpload) {
+  // Must mirror the declaration gate: a debug-symbol append that was accepted at
+  // declare time has to be completable, or the client is left with a verified R2
+  // object it can never commit.
+  const symbolAppend =
+    row.build_status === "succeeded" &&
+    row.artifact_mode !== "external" &&
+    isAppendableSymbolAsset(row.artifact_kind, row.filetype);
+  if (!newBuildUpload && !migrationUpload && !symbolAppend) {
     return c.json({ error: "build is no longer uploadable", code: "BUILD_NOT_UPLOADABLE" }, 409);
   }
   const now = Date.now();
