@@ -455,20 +455,38 @@ export class GooglePlayClient {
    * a malformed track read throws rather than silently claiming "not present", so a
    * broken read can never skip an upload that was actually needed.
    */
-  private async versionCodeAlreadyOnPlay(
+  private async bundleAlreadyOnPlay(
     packageName: string,
     editId: string,
-    versionCode: number,
+    request: PromotionRequest,
   ): Promise<boolean> {
-    const result = await this.requestJson<{ tracks?: TrackResource[] }>(
-      `${this.editRoot(packageName, editId)}/tracks`,
-    );
-    if (!Array.isArray(result.tracks)) {
-      throw new PlayAdapterError(502, "play_tracks_malformed", "Google Play returned no track list");
+    // Ask Google for the bundle it actually holds, not just whether a track mentions
+    // this versionCode. Play stores one bundle per versionCode, so a versionCode match
+    // alone is NOT proof that the bytes are ours: the same versionCode may have been
+    // uploaded by hand in the console or repackaged elsewhere. Skipping the upload on
+    // a versionCode match would ship those bytes while the receipt below still
+    // reported request.expectedSha256 -- an unverified "Hands-certified bytes are
+    // live" claim. The upload path already enforces this binding (:330-333), so the
+    // skip path must too.
+    const result = await this.requestJson<{
+      bundles?: Array<{ versionCode?: unknown; sha256?: unknown }>;
+    }>(`${this.editRoot(packageName, editId)}/bundles?versionCode=${encodeURIComponent(String(request.versionCode))}&maxResults=10`);
+    if (result.bundles !== undefined && !Array.isArray(result.bundles)) {
+      throw new PlayAdapterError(502, "play_bundles_malformed", "Google Play returned a malformed bundle list");
     }
-    return result.tracks.some((track) =>
-      (track.releases ?? []).some((release) =>
-        (release.versionCodes ?? []).some((value) => exactVersionCode(value) === versionCode)));
+    const match = (result.bundles ?? []).find(
+      (bundle) => exactVersionCode(bundle.versionCode) === request.versionCode,
+    );
+    if (!match) return false;
+    if (typeof match.sha256 !== "string" || match.sha256.toLowerCase() !== request.expectedSha256) {
+      // Present but different bytes. Loud, and the same code the upload path uses.
+      throw new PlayAdapterError(
+        409,
+        "aab_integrity_mismatch",
+        "Google Play already holds this versionCode with different bytes; refusing to promote unverified content",
+      );
+    }
+    return true;
   }
 
   async promote(request: PromotionRequest) {
@@ -477,13 +495,15 @@ export class GooglePlayClient {
     }
     const editId = await this.createEdit(request.packageName);
     let commitAttempted = false;
+    let bundleUploaded = true;
     try {
       // Google Play rejects re-uploading a versionCode it already holds, which made
       // the second promote of one build (internal -> closed -> production) fail with
       // 403. The bundle does not need re-uploading in that case: the track update is
       // the whole operation. Check every track first and skip the upload when this
       // versionCode is already present anywhere.
-      if (!(await this.versionCodeAlreadyOnPlay(request.packageName, editId, request.versionCode))) {
+      bundleUploaded = !(await this.bundleAlreadyOnPlay(request.packageName, editId, request));
+      if (bundleUploaded) {
         await this.uploadBundle(request, editId);
         await this.uploadSymbols(request, editId);
       }
@@ -503,6 +523,9 @@ export class GooglePlayClient {
       edit_id: editId,
       package_name: request.packageName,
       version_code: request.versionCode,
+      // false when Google already held this exact versionCode+sha256 and only the
+      // track was edited, so a caller can tell a real upload from a re-promote.
+      bundle_uploaded: bundleUploaded,
       track: request.handsTrack,
       sha256: request.expectedSha256,
       rollout_percent: request.rolloutPercent,
