@@ -461,7 +461,13 @@ export class GooglePlayClient {
    * broken read can never skip an upload that was actually needed.
    */
   /** What the last bundle lookup saw; attached to an upload rejection's cause. */
-  private lastBundleLookup: { count: number; version_codes: number[]; wanted: number } | null = null;
+  private lastBundleLookup: {
+    count: number;
+    version_codes: number[];
+    wanted: number;
+    /** -1 count plus this string when the list call itself failed. */
+    error?: string;
+  } | null = null;
 
   private async bundleAlreadyOnPlay(
     packageName: string,
@@ -481,9 +487,23 @@ export class GooglePlayClient {
     // and a silently ignored filter would return an empty list for every edit -- which
     // reads as "not present" and sends us back down the upload path, exactly the bug
     // this check exists to prevent. Filter client-side over the full list instead.
-    const result = await this.requestJson<{
-      bundles?: Array<{ versionCode?: unknown; sha256?: unknown }>;
-    }>(`${this.editRoot(packageName, editId)}/bundles`);
+    const bundlesUrl = `${this.editRoot(packageName, editId)}/bundles`;
+    let result: { bundles?: Array<{ versionCode?: unknown; sha256?: unknown }> };
+    try {
+      result = await this.requestJson<{ bundles?: Array<{ versionCode?: unknown; sha256?: unknown }> }>(bundlesUrl);
+    } catch (error) {
+      // Record the attempt even when the call fails. Without this a thrown list
+      // leaves lastBundleLookup null, the receipt shows no bundle_lookup at all, and
+      // the reader cannot tell whether the list was empty or never arrived -- the
+      // exact ambiguity this instrumentation exists to remove.
+      this.lastBundleLookup = {
+        count: -1,
+        version_codes: [],
+        wanted: request.versionCode,
+        error: error instanceof Error ? error.message.slice(0, 200) : String(error).slice(0, 200),
+      };
+      throw error;
+    }
     if (result.bundles !== undefined && !Array.isArray(result.bundles)) {
       throw new PlayAdapterError(502, "play_bundles_malformed", "Google Play returned a malformed bundle list");
     }

@@ -20,9 +20,12 @@ export type PlayErrorCause = {
    * produce the same user-visible failure, and only this tells them apart.
    */
   bundle_lookup?: {
+    /** -1 when the list call failed before returning anything. */
     count: number;
     version_codes: number[];
     wanted: number;
+    /** Present only when count is -1: why the list call failed. */
+    error?: string;
   };
 };
 
