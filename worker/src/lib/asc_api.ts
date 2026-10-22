@@ -1039,3 +1039,246 @@ export async function deleteBetaFeedbackSubmission(
     `/v1/${FEEDBACK_RESOURCE[kind]}/${encodeURIComponent(submissionId)}`,
   );
 }
+
+// ---------- App Store version submission ----------
+
+/**
+ * An App Store version in a shape the submission flow needs. `id` is the ASC
+ * resource id; it is what every write below is addressed by, so callers must not
+ * confuse it with the marketing version string.
+ */
+export interface AscAppStoreVersion {
+  id: string;
+  versionString: string | null;
+  state: string | null;
+  platform: string | null;
+  buildId: string | null;
+}
+
+/** Resolve one App Store version by marketing string (and platform when given). */
+export async function findAppStoreVersion(
+  creds: AscApiCredentials,
+  ascAppId: string,
+  versionString: string,
+  platform?: string | null,
+): Promise<AscAppStoreVersion | null> {
+  const query = platform
+    ? `&filter[platform]=${encodeURIComponent(platform)}`
+    : "";
+  const res = await ascRequest<{
+    data?: Array<{
+      id?: string;
+      attributes?: { versionString?: unknown; appStoreState?: unknown; appVersionState?: unknown; platform?: unknown };
+      relationships?: { build?: { data?: { id?: unknown } } };
+    }>;
+  }>(creds, "GET", `/v1/apps/${encodeURIComponent(ascAppId)}/appStoreVersions?limit=50${query}`);
+  const match = (res.data ?? []).find(
+    (v) => typeof v.attributes?.versionString === "string" && v.attributes.versionString === versionString,
+  );
+  if (!match?.id) return null;
+  const state =
+    typeof match.attributes?.appStoreState === "string"
+      ? match.attributes.appStoreState
+      : typeof match.attributes?.appVersionState === "string"
+        ? match.attributes.appVersionState
+        : null;
+  return {
+    id: match.id,
+    versionString: typeof match.attributes?.versionString === "string" ? match.attributes.versionString : null,
+    state,
+    platform: typeof match.attributes?.platform === "string" ? match.attributes.platform : null,
+    buildId: typeof match.relationships?.build?.data?.id === "string" ? match.relationships.build.data.id : null,
+  };
+}
+
+/**
+ * Attach a build to a version. Required before submission: a version with no
+ * build cannot be reviewed, and ASC rejects the submission rather than this call.
+ */
+export async function attachBuildToVersion(
+  creds: AscApiCredentials,
+  versionId: string,
+  ascBuildId: string,
+): Promise<void> {
+  await ascRequest(creds, "PATCH", `/v1/appStoreVersions/${encodeURIComponent(versionId)}`, {
+    data: {
+      type: "appStoreVersions",
+      id: versionId,
+      relationships: { build: { data: { type: "builds", id: ascBuildId } } },
+    },
+  });
+}
+
+/**
+ * Upsert the per-locale "What's New" text.
+ *
+ * Locales are independent resources; one call per locale, and an existing
+ * localization is patched rather than created so re-running a submission after a
+ * rejection updates the copy instead of failing on a duplicate.
+ */
+export async function setVersionLocalization(
+  creds: AscApiCredentials,
+  versionId: string,
+  locale: string,
+  whatsNew: string,
+): Promise<void> {
+  const existing = await ascRequest<{
+    data?: Array<{ id?: string; attributes?: { locale?: unknown } }>;
+  }>(creds, "GET", `/v1/appStoreVersions/${encodeURIComponent(versionId)}/appStoreVersionLocalizations?limit=50`);
+  const match = (existing.data ?? []).find(
+    (l) => typeof l.attributes?.locale === "string" && l.attributes.locale === locale,
+  );
+  if (match?.id) {
+    await ascRequest(creds, "PATCH", `/v1/appStoreVersionLocalizations/${encodeURIComponent(match.id)}`, {
+      data: {
+        type: "appStoreVersionLocalizations",
+        id: match.id,
+        attributes: { whatsNew },
+      },
+    });
+    return;
+  }
+  await ascRequest(creds, "POST", "/v1/appStoreVersionLocalizations", {
+    data: {
+      type: "appStoreVersionLocalizations",
+      attributes: { locale, whatsNew },
+      relationships: { appStoreVersion: { data: { type: "appStoreVersions", id: versionId } } },
+    },
+  });
+}
+
+/**
+ * Create an App Store version for a platform.
+ *
+ * `releaseType` decides what happens after approval:
+ *   - MANUAL: approval parks the app at PENDING_DEVELOPER_RELEASE and waits for a
+ *     human (or a later call). Required when artin wants to choose the moment.
+ *   - AFTER_APPROVAL: ships automatically once approved.
+ *   - SCHEDULED: ships at `earliestReleaseDate`; not used here.
+ *
+ * ASC only allows one editable version per platform, so a version still in review
+ * must be withdrawn first, not overwritten.
+ */
+export async function createAppStoreVersion(
+  creds: AscApiCredentials,
+  ascAppId: string,
+  versionString: string,
+  platform: string,
+  releaseType: "MANUAL" | "AFTER_APPROVAL" | "SCHEDULED",
+): Promise<{ id: string }> {
+  const res = await ascRequest<{ data?: { id?: string } }>(creds, "POST", "/v1/appStoreVersions", {
+    data: {
+      type: "appStoreVersions",
+      attributes: { versionString, platform, releaseType },
+      relationships: { app: { data: { type: "apps", id: ascAppId } } },
+    },
+  });
+  const id = res.data?.id;
+  if (typeof id !== "string" || !id) {
+    throw new AscApiError(502, "app_store_version_malformed", "App Store Connect did not return a version id");
+  }
+  return { id };
+}
+
+
+/**
+ * Review submissions.
+ *
+ * ASC models "submit for review" as three steps rather than one call:
+ *   1. POST /v1/reviewSubmissions                      (platform)
+ *   2. POST /v1/reviewSubmissionItems                  (attach the appStoreVersion)
+ *   3. PATCH /v1/reviewSubmissions/{id} {submitted:true}
+ *
+ * Withdrawal is `canceled: true` on the same resource. The older
+ * `DELETE /v1/appStoreVersionSubmissions/{id}` is deprecated and is not used.
+ */
+export interface AscReviewSubmission {
+  id: string;
+  state: string | null;
+  platform: string | null;
+}
+
+export async function listReviewSubmissions(
+  creds: AscApiCredentials,
+  ascAppId: string,
+): Promise<AscReviewSubmission[]> {
+  const res = await ascRequest<{
+    data?: Array<{ id?: string; attributes?: { state?: unknown; platform?: unknown } }>;
+  }>(creds, "GET", `/v1/apps/${encodeURIComponent(ascAppId)}/reviewSubmissions?limit=50`);
+  return (res.data ?? [])
+    .filter((s): s is { id: string; attributes?: { state?: unknown; platform?: unknown } } => typeof s.id === "string")
+    .map((s) => ({
+      id: s.id,
+      state: typeof s.attributes?.state === "string" ? s.attributes.state : null,
+      platform: typeof s.attributes?.platform === "string" ? s.attributes.platform : null,
+    }));
+}
+
+/** Which appStoreVersion a submission carries. Used to decide whether it is the one to cancel. */
+export async function getReviewSubmissionVersionId(
+  creds: AscApiCredentials,
+  submissionId: string,
+): Promise<string | null> {
+  const res = await ascRequest<{
+    data?: Array<{ relationships?: { appStoreVersionForReview?: { data?: { id?: unknown } } } }>;
+  }>(creds, "GET", `/v1/reviewSubmissions/${encodeURIComponent(submissionId)}/items?limit=50`);
+  for (const item of res.data ?? []) {
+    const id = item.relationships?.appStoreVersionForReview?.data?.id;
+    if (typeof id === "string" && id) return id;
+  }
+  return null;
+}
+
+/**
+ * Withdraw a submission. ASC has no "withdraw" verb: cancelling the review
+ * submission is what returns the version to an editable state.
+ */
+export async function cancelReviewSubmission(
+  creds: AscApiCredentials,
+  submissionId: string,
+): Promise<void> {
+  await ascRequest(creds, "PATCH", `/v1/reviewSubmissions/${encodeURIComponent(submissionId)}`, {
+    data: {
+      type: "reviewSubmissions",
+      id: submissionId,
+      attributes: { canceled: true },
+    },
+  });
+}
+
+/** Create, populate and submit a review in one call so a half-submitted review cannot linger. */
+export async function submitVersionForReview(
+  creds: AscApiCredentials,
+  ascAppId: string,
+  versionId: string,
+  platform: string,
+): Promise<{ submissionId: string }> {
+  const created = await ascRequest<{ data?: { id?: string } }>(creds, "POST", "/v1/reviewSubmissions", {
+    data: {
+      type: "reviewSubmissions",
+      attributes: { platform },
+      relationships: { app: { data: { type: "apps", id: ascAppId } } },
+    },
+  });
+  const submissionId = created.data?.id;
+  if (typeof submissionId !== "string" || !submissionId) {
+    throw new AscApiError(502, "review_submission_malformed", "App Store Connect did not return a submission id");
+  }
+  await ascRequest(creds, "POST", "/v1/reviewSubmissionItems", {
+    data: {
+      type: "reviewSubmissionItems",
+      relationships: {
+        reviewSubmission: { data: { type: "reviewSubmissions", id: submissionId } },
+        appStoreVersionForReview: { data: { type: "appStoreVersions", id: versionId } },
+      },
+    },
+  });
+  await ascRequest(creds, "PATCH", `/v1/reviewSubmissions/${encodeURIComponent(submissionId)}`, {
+    data: {
+      type: "reviewSubmissions",
+      id: submissionId,
+      attributes: { submitted: true },
+    },
+  });
+  return { submissionId };
+}
