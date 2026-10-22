@@ -812,19 +812,17 @@ describe("FeedbackWorkspace browser behavior", () => {
     expect(screen.getByRole("radio", { name: "Idea" }).className).toContain(
       "hands-feedback-kind-item",
     );
-    // A page form (raft-design Forms): the message is a field of its own,
-    // screenshots are optional, and Cancel and the one pink button end it.
-    expect(screen.getByRole("textbox", { name: /What would you like us to know/ }).dataset.slot).toBe("textarea");
-    expect(screen.getByRole("button", { name: "Attach Image" })).toBeTruthy();
-    expect(screen.getByText("Screenshots (optional)")).toBeTruthy();
-    const cancel = screen.getByRole("button", { name: "Cancel" });
-    expect(cancel.closest(".hands-feedback-form-actions")).not.toBeNull();
-    expect(cancel.closest(".hands-feedback-header")).toBeNull();
-    const submit = screen.getByRole("button", { name: "Send Feedback" });
-    expect(submit.closest(".hands-feedback-form-actions")).toBe(
-      cancel.closest(".hands-feedback-form-actions"),
-    );
-    expect(submit.getAttribute("type")).toBe("submit");
+    // The same composer as a reply: attach buttons inside it at the bottom
+    // left, the pink send at the bottom right, and no separate Cancel (Back
+    // leaves).
+    const editor = screen.getByRole("textbox", { name: /What would you like us to know/ });
+    expect(editor.dataset.slot).toBe("composer-input");
+    const composer = editor.closest<HTMLElement>("[data-slot='composer']")!;
+    expect(within(composer).getByRole("button", { name: "Attach Image" })).toBeTruthy();
+    expect(within(composer).getByRole("button", { name: "Attach File" })).toBeTruthy();
+    const submit = within(composer).getByRole("button", { name: "Send Feedback" });
+    expect(submit.closest("[data-slot='composer-toolbar']")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Cancel" })).toBeNull();
   });
 
   it("keeps filtered empty states next to the tabs with accurate semantics", async () => {
@@ -1269,11 +1267,11 @@ describe("FeedbackWorkspace browser behavior", () => {
     fireEvent.change(screen.getByLabelText("Screenshots (up to 3)"), {
       target: { files: [file] },
     });
-    fireEvent.click(screen.getByText("Send Feedback"));
+    fireEvent.click(screen.getByRole("button", { name: "Send Feedback" }));
     expect(await screen.findByText("Upload failed")).toBeTruthy();
     expect(editor.value).toBe("Keep this text");
     expect(screen.getByTitle("proof.png · image/png")).toBeTruthy();
-    fireEvent.click(screen.getByText("Retry Upload"));
+    fireEvent.click(screen.getByRole("button", { name: "Retry Upload" }));
     expect(await screen.findByText("Thanks")).toBeTruthy();
     const calls = vi.mocked(adapter.createTicket).mock.calls;
     expect(calls).toHaveLength(2);
@@ -1299,7 +1297,7 @@ describe("FeedbackWorkspace browser behavior", () => {
     fireEvent.change(screen.getByLabelText(/What would you like us to know/), {
       target: { value: "A newly-created ticket" },
     });
-    fireEvent.click(screen.getByText("Send Feedback"));
+    fireEvent.click(screen.getByRole("button", { name: "Send Feedback" }));
     expect(await screen.findByText("Thanks")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Back" }));
 
@@ -1331,17 +1329,15 @@ describe("FeedbackWorkspace browser behavior", () => {
       /What would you like us to know/,
     ) as HTMLTextAreaElement;
     fireEvent.change(editor, { target: { value: "Only once" } });
-    const submit = screen.getByText("Send Feedback");
+    const submit = screen.getByRole("button", { name: "Send Feedback" });
     fireEvent.click(submit);
     fireEvent.click(submit);
     expect(adapter.createTicket).toHaveBeenCalledTimes(1);
-    const cancelButtons = await screen.findAllByRole("button", {
-      name: "Cancel",
-    });
-    fireEvent.click(cancelButtons.at(-1)!);
+    // Back cancels an upload in flight and keeps what was written.
+    fireEvent.click(screen.getByRole("button", { name: "Back" }));
     expect(uploadSignal?.aborted).toBe(true);
     expect(editor.value).toBe("Only once");
-    expect(screen.getByText("Send Feedback")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Send Feedback" })).toBeTruthy();
   });
 
   it("aborts and resets an in-flight create when the reporter transport changes", async () => {
@@ -1366,8 +1362,8 @@ describe("FeedbackWorkspace browser behavior", () => {
       /What would you like us to know/,
     ) as HTMLTextAreaElement;
     fireEvent.change(editor, { target: { value: "Preserve across session" } });
-    fireEvent.click(screen.getByText("Send Feedback"));
-    expect(await screen.findByText("Submitting…")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Send Feedback" }));
+    expect(await screen.findByRole("button", { name: "Submitting…" })).toBeTruthy();
 
     view.rerender(
       <FeedbackProvider transport={second}>
@@ -1376,7 +1372,7 @@ describe("FeedbackWorkspace browser behavior", () => {
     );
     await waitFor(() => expect(firstSignal?.aborted).toBe(true));
     expect(editor.value).toBe("Preserve across session");
-    expect(screen.getByText("Send Feedback")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Send Feedback" })).toBeTruthy();
     resolveFirst?.(detail);
     await Promise.resolve();
     expect(
@@ -1574,7 +1570,7 @@ describe("FeedbackWorkspace browser behavior", () => {
     fireEvent.change(screen.getByLabelText(/What would you like us to know/), {
       target: { value: "Idea" },
     });
-    fireEvent.click(screen.getByText("Send Feedback"));
+    fireEvent.click(screen.getByRole("button", { name: "Send Feedback" }));
     expect((await screen.findByRole("alert")).textContent).toContain(
       "Couldn't load feedback. Try again.",
     );
@@ -1674,9 +1670,9 @@ describe("FeedbackWorkspace browser behavior", () => {
     fireEvent.change(screen.getByLabelText(/What would you like us to know/), {
       target: { value: "Retry me" },
     });
-    fireEvent.click(screen.getByText("Send Feedback"));
+    fireEvent.click(screen.getByRole("button", { name: "Send Feedback" }));
     expect(await screen.findByRole("alert")).toBeTruthy();
-    fireEvent.click(screen.getByText("Send Feedback"));
+    fireEvent.click(screen.getByRole("button", { name: "Send Feedback" }));
     expect(await screen.findByText("Thanks")).toBeTruthy();
     const createCalls = vi.mocked(createAdapter.createTicket).mock.calls;
     expect(createCalls).toHaveLength(2);
