@@ -1089,6 +1089,11 @@ describe("Android delta patch metadata", () => {
       if (req.method === "POST" && req.url === "/api/apps/app-1/builds/build-1/assets") {
         return res.end(JSON.stringify({ id: `asset-${uploadCount}` }));
       }
+      // The Android build now starts pending and is activated once every declared
+      // asset slot is uploaded and verified.
+      if (req.method === "PATCH" && req.url === "/api/apps/app-1/builds/build-1") {
+        return res.end(JSON.stringify({ id: "build-1", status: "succeeded" }));
+      }
       if (req.method === "POST" && req.url === "/api/apps/app-1/releases") {
         return res.end(JSON.stringify({ id: "release-1" }));
       }
@@ -1326,11 +1331,26 @@ describe("publish lane release-version admission", () => {
           entry.startsWith("GET /api/apps/app-1/releases?"));
         const buildIndex = sequence.indexOf("POST /api/apps/app-1/builds");
         const releaseIndex = sequence.indexOf("POST /api/apps/app-1/releases");
-        const terminalIndex = sequence.findIndex((entry) =>
-          entry.startsWith("PATCH /api/apps/app-1/builds/build-race-"));
+        // publish-android sends an activation PATCH (status=succeeded) before the
+        // release attempt, so the terminalization is the LAST such PATCH.
+        const terminalIndex = sequence.reduce(
+          (found, entry, index) =>
+            entry.startsWith("PATCH /api/apps/app-1/builds/build-race-") ? index : found,
+          -1,
+        );
         expect(preflightIndex, lane.name).toBeGreaterThanOrEqual(0);
         expect(buildIndex, lane.name).toBeGreaterThan(preflightIndex);
         expect(releaseIndex, lane.name).toBeGreaterThan(buildIndex);
+        // publish-android declares asset slots and activates the build (PATCH
+        // status=succeeded) BEFORE creating the release, because the server refuses
+        // to attach an unverified protocol-v1 build to a release. The other lanes
+        // create their builds already-succeeded, so their only PATCH is the
+        // terminalization that must follow the release attempt.
+        // Order is the same for every lane: the release attempt comes after the
+        // build (and, for android, after the activation PATCH), and the
+        // terminalization is last. Assert that generally rather than special-casing
+        // the android lane, so this stays true if another lane adopts slot
+        // declaration later.
         expect(terminalIndex, lane.name).toBeGreaterThan(releaseIndex);
         expect(requests[buildIndex]?.body, lane.name).toMatchObject({
           channel_id: "channel-1",

@@ -175,6 +175,39 @@ export async function assertGzipAndroidDeltaPatch(filePath: string): Promise<voi
   }
 }
 
+/**
+ * Asset slots declared when an Android build is created.
+ *
+ * ONLY the ProGuard mapping is declared, and only when --mapping is given.
+ *
+ * Why not every asset: the server refuses to move a protocol-v1 build to
+ * `succeeded` until every declared slot has a verified asset, so declaring more
+ * than necessary adds failure modes without adding capability. Two concrete ones
+ * that a "mirror everything" version hit during review:
+ *   - the slot key is kind/platform/arch/variant/filetype, which cannot express
+ *     fromVersionCode, so two --delta-patch flags produced two identical keys and
+ *     the build was rejected with "duplicate slot" (builds.ts:457);
+ *   - --generate-deltas uploads patches through the legacy path that never touched
+ *     the declared slots, so "declare every uploaded asset" was not actually true.
+ *
+ * The mapping is the one asset that NEEDS this: an R8 mapping is routinely hundreds
+ * of megabytes, which exceeds the 200 MB cap on POST /upload and was the whole
+ * reason for this change. Every other asset stays on the legacy registration path,
+ * which is already exercised in production.
+ */
+function androidRequiredAssetSlots(args: { mapping?: string }): Array<{
+  artifact_kind: string;
+  platform: string;
+  arch: string | null;
+  variant: string | null;
+  filetype: string;
+}> {
+  if (!args.mapping) return [];
+  return [
+    { artifact_kind: "proguard-mapping", platform: "android", arch: null, variant: null, filetype: "mapping.txt" },
+  ];
+}
+
 async function preflightAndroidDeltaPatches(
   specs: string[] = [],
 ): Promise<AndroidDeltaPatchSpec[]> {
@@ -1162,7 +1195,18 @@ export function registerBuildCommands(program: Command): void {
             version_code: versionCode,
             changelog,
             source: "cli",
-            status: "succeeded",
+            // With --mapping the build is created pending so the mapping can stream to
+            // R2 through the direct-upload path (POST /upload would cap the body at
+            // 200 MB and buffer the whole file in memory). Without --mapping there is
+            // nothing to stream, so the build is created succeeded exactly as before
+            // and no protocol fields are sent at all.
+            ...(opts.mapping
+              ? {
+                  status: "pending",
+                  asset_ingest_protocol_version: 1,
+                  required_asset_slots_json: androidRequiredAssetSlots(opts),
+                }
+              : { status: "succeeded" }),
             build_metadata_json: metadataJson,
             provenance_json: provenance,
             should_force_update: Boolean(opts.forceUpdate),
@@ -1215,8 +1259,11 @@ export function registerBuildCommands(program: Command): void {
           assets.push(...generated);
         }
         if (opts.mapping) {
+          // Direct streaming upload, not POST /upload: an R8 mapping is routinely
+          // hundreds of MB, which exceeds that route's 200 MB body cap and would also
+          // be buffered entirely in memory before hashing.
           assets.push(
-            await uploadAndRegisterAsset(appId, build.id, opts.mapping, {
+            await uploadDirectBuildAsset(appId, build.id, opts.mapping, {
               artifact_kind: "proguard-mapping",
               platform: "android",
               arch: null,
@@ -1255,6 +1302,18 @@ export function registerBuildCommands(program: Command): void {
               metadata_json: { filename: basename(opts.metadata) },
             }),
           );
+        }
+
+        // Only a build created pending needs activating; when there is no --mapping it
+        // was already created succeeded above.
+        if (opts.mapping) {
+          // Every declared slot is uploaded and verified now. The server re-checks
+          // each one and returns REQUIRED_ASSETS_INCOMPLETE if any is missing, so a
+          // failure here is a real signal rather than a formality.
+          await apiRequest(`/api/apps/${appId}/builds/${build.id}`, {
+            method: "PATCH",
+            body: { status: "succeeded" },
+          });
         }
 
         const release = await createReleaseOrTerminalizeVersionConflict({
