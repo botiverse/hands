@@ -139,7 +139,16 @@ async function auditAfterEffect(
   try {
     await insertAuditLog(c.env.DB, c, { app_id: appId, action, payload });
     return true;
-  } catch {
+  } catch (error) {
+    // The comment above promises this is visible, so it must actually be visible:
+    // the caller is usually an agent that will not read `audited:false` in a 200.
+    // Same shape as asset_upload_seal_intent_reset_failed in build_asset_uploads.ts.
+    console.error("app_store_audit_write_failed", {
+      action,
+      app_id: appId,
+      ...payload,
+      error: error instanceof Error ? error.message : String(error),
+    });
     return false;
   }
 }
@@ -226,13 +235,12 @@ export async function handlePrepareAppStoreVersion(c: AdminContext) {
       }
       await attachBuildToVersion(creds, version.id, ascBuildId);
     }
-    await insertAuditLog(c.env.DB, c, {
-      app_id: appId,
-      action: "app_store.prepare_version",
-      payload: { version_id: version.id, version_string: versionString, release_type: releaseType,
-        ...(ascBuildId ? { asc_build_id: ascBuildId } : {}) },
+    const audited = await auditAfterEffect(c, appId, "app_store.prepare_version", {
+      version_id: version.id, version_string: versionString, release_type: releaseType,
+      ...(ascBuildId ? { asc_build_id: ascBuildId } : {}),
     });
     return c.json({
+      audited,
       version_id: version.id,
       version_string: versionString,
       platform,
@@ -274,12 +282,8 @@ export async function handleSetAppStoreReleaseNotes(c: AdminContext) {
       await setVersionLocalization(creds, versionId, locale, text);
       written.push(locale);
     }
-    await insertAuditLog(c.env.DB, c, {
-      app_id: appId,
-      action: "app_store.release_notes",
-      payload: { version_id: versionId, locales: written },
-    });
-    return c.json({ version_id: versionId, locales: written });
+    const audited = await auditAfterEffect(c, appId, "app_store.release_notes", { version_id: versionId, locales: written });
+    return c.json({ version_id: versionId, locales: written, audited });
   } catch (error) {
     return fail(c, error);
   }
