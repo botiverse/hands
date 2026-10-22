@@ -1,5 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
-import { handleSubmitAppStoreVersion, handlePrepareAppStoreVersion } from "../src/routes/app_store_release";
+import {
+  handleSubmitAppStoreVersion,
+  handlePrepareAppStoreVersion,
+  handleSetAppStoreReleaseNotes,
+  handleWithdrawAppStoreVersion,
+} from "../src/routes/app_store_release";
 
 /**
  * These assert the guards, not the happy path. Submitting is the one action with an
@@ -50,6 +55,11 @@ describe("App Store submission guards", () => {
     // to guess that a pending submission is the reason.
     vi.stubGlobal("fetch", vi.fn(async (url: unknown) => {
       const u = String(url);
+      // The version-binding check runs first now, so the mock must serve the app's
+      // version list before the submission lookup is reached.
+      if (u.includes("/appStoreVersions?")) {
+        return new Response(JSON.stringify({ data: [{ id: "ver-1", attributes: { versionString: "1.15.2" } }] }));
+      }
       if (u.includes("/reviewSubmissions?")) {
         return new Response(JSON.stringify({ data: [{ id: "sub-9", attributes: { state: "WAITING_FOR_REVIEW" } }] }));
       }
@@ -100,6 +110,52 @@ describe("App Store submission guards", () => {
     const body = (await res.json()) as any;
     expect(body.code).toBe("VERSION_NOT_EDITABLE");
     expect(body.next_action).toContain("approved and waiting to be released");
+  });
+
+  it("refuses a version id belonging to another app, with no write", async () => {
+    // ASC team keys are not app-scoped, so without this a publisher of app A can
+    // rewrite app B's release notes by passing B's version id.
+    vi.stubGlobal("fetch", vi.fn(async (url: unknown, init?: RequestInit) => {
+      const u = String(url);
+      if (u.includes("/appStoreVersions?")) {
+        return new Response(JSON.stringify({ data: [{ id: "ver-mine", attributes: { versionString: "1.15.2" } }] }));
+      }
+      if ((init?.method ?? "GET") !== "GET") throw new Error(`unexpected write to ${u}`);
+      return new Response(JSON.stringify({ data: [] }));
+    }));
+    const res = await handleSetAppStoreReleaseNotes(
+      await makeContext({ notes: { "en-US": "hijacked" } }),
+    );
+    expect(res.status).toBe(404);
+    expect((await res.json() as any).code).toBe("VERSION_NOT_IN_APP");
+  });
+
+  it("refuses a submission id belonging to another app, with no write", async () => {
+    vi.stubGlobal("fetch", vi.fn(async (url: unknown, init?: RequestInit) => {
+      const u = String(url);
+      if (u.includes("/reviewSubmissions?")) {
+        return new Response(JSON.stringify({ data: [{ id: "sub-mine", attributes: { state: "WAITING_FOR_REVIEW" } }] }));
+      }
+      if ((init?.method ?? "GET") !== "GET") throw new Error(`unexpected write to ${u}`);
+      return new Response(JSON.stringify({ data: [] }));
+    }));
+    const res = await handleWithdrawAppStoreVersion(
+      await makeContext({ submission_id: "sub-theirs" }),
+    );
+    expect(res.status).toBe(404);
+    expect((await res.json() as any).code).toBe("SUBMISSION_NOT_IN_APP");
+  });
+
+  it("refuses to submit a version id belonging to another app", async () => {
+    vi.stubGlobal("fetch", vi.fn(async (url: unknown, init?: RequestInit) => {
+      const u = String(url);
+      if (u.includes("/appStoreVersions?")) return new Response(JSON.stringify({ data: [{ id: "ver-mine" }] }));
+      if ((init?.method ?? "GET") !== "GET") throw new Error(`unexpected write to ${u}`);
+      return new Response(JSON.stringify({ data: [] }));
+    }));
+    const res = await handleSubmitAppStoreVersion(await makeContext({}));
+    expect(res.status).toBe(404);
+    expect((await res.json() as any).code).toBe("VERSION_NOT_IN_APP");
   });
 
   it("rejects an invalid release_type instead of sending it to Apple", async () => {

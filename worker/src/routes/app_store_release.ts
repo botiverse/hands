@@ -10,6 +10,7 @@
 import type { Context } from "hono";
 import type { AdminEnv } from "../middleware/auth";
 import { getAscCredentials } from "../lib/asc_credentials";
+import { insertAuditLog } from "../lib/permissions";
 import {
   AscApiError,
   type AscApiCredentials,
@@ -17,8 +18,10 @@ import {
   cancelReviewSubmission,
   createAppStoreVersion,
   findAppStoreVersion,
+  findAppStoreVersionById,
   getReviewSubmissionVersionId,
   listReviewSubmissions,
+  ascRequest,
   resolveAscAppId,
   setVersionLocalization,
   submitVersionForReview,
@@ -77,6 +80,46 @@ async function ascAppIdFor(c: AdminContext, appId: string): Promise<string> {
     throw new AppStoreReleaseError(404, "ASC_APP_NOT_FOUND", `no App Store Connect app matches bundle id ${bundleId}`);
   }
   return resolved;
+}
+
+/**
+ * Assert an Apple resource id belongs to THIS app before using it.
+ *
+ * App Store Connect team keys are not scoped per app: the same credential can act
+ * on every app the team owns. `testflight.ts` already treats this as a rule
+ * (:1258 build id must match the Hands tuple, :596 group ids must be in the app's
+ * list). These routes must hold the same invariant, or a publisher of app A can
+ * cancel app B's review, rewrite B's release notes, or submit B's version by
+ * passing B's id.
+ *
+ * Unmatched ids return 404 rather than 403: the caller has no business learning
+ * whether that id exists elsewhere.
+ */
+async function assertOwnedVersion(
+  creds: AscApiCredentials,
+  ascAppId: string,
+  versionId: string,
+): Promise<void> {
+  const versions = await ascRequest<{ data?: Array<{ id?: unknown }> }>(
+    creds,
+    "GET",
+    `/v1/apps/${encodeURIComponent(ascAppId)}/appStoreVersions?limit=200`,
+  );
+  const owned = (versions.data ?? []).some((v) => v.id === versionId);
+  if (!owned) {
+    throw new AppStoreReleaseError(404, "VERSION_NOT_IN_APP", "app store version does not belong to this app");
+  }
+}
+
+async function assertOwnedSubmission(
+  creds: AscApiCredentials,
+  ascAppId: string,
+  submissionId: string,
+): Promise<void> {
+  const submissions = await listReviewSubmissions(creds, ascAppId);
+  if (!submissions.some((s) => s.id === submissionId)) {
+    throw new AppStoreReleaseError(404, "SUBMISSION_NOT_IN_APP", "review submission does not belong to this app");
+  }
 }
 
 function fail(c: AdminContext, error: unknown) {
@@ -148,12 +191,34 @@ export async function handlePrepareAppStoreVersion(c: AdminContext) {
       platform,
       releaseType as "MANUAL" | "AFTER_APPROVAL" | "SCHEDULED",
     ));
-    if (ascBuildId) await attachBuildToVersion(creds, version.id, ascBuildId);
+    if (ascBuildId) {
+      // The build must be one of this app's, resolved from Apple's own list — same
+      // rule testflight.ts applies to asc_build_id.
+      const builds = await ascRequest<{ data?: Array<{ id?: unknown }> }>(
+        creds,
+        "GET",
+        `/v1/builds?filter[app]=${encodeURIComponent(ascAppId)}&limit=200`,
+      );
+      if (!(builds.data ?? []).some((b) => b.id === ascBuildId)) {
+        return c.json({ error: "asc_build_id does not belong to this app", code: "ASC_BUILD_NOT_IN_APP" }, 404);
+      }
+      await attachBuildToVersion(creds, version.id, ascBuildId);
+    }
+    await insertAuditLog(c.env.DB, c, {
+      app_id: appId,
+      action: "app_store.prepare_version",
+      payload: { version_id: version.id, version_string: versionString, release_type: releaseType,
+        ...(ascBuildId ? { asc_build_id: ascBuildId } : {}) },
+    });
     return c.json({
       version_id: version.id,
       version_string: versionString,
       platform,
-      release_type: releaseType,
+      // When an existing version is reused, its stored releaseType keeps governing
+      // app behaviour -- echoing the requested value would claim MANUAL on a version
+      // that actually ships AFTER_APPROVAL.
+      release_type: existing ? (existing.releaseType ?? null) : releaseType,
+      requested_release_type: releaseType,
       state: "state" in version ? version.state : null,
       reused: existing !== null,
       build_attached: Boolean(ascBuildId),
@@ -178,6 +243,7 @@ export async function handleSetAppStoreReleaseNotes(c: AdminContext) {
   }
   try {
     const creds = await loadCredentials(c, appId);
+    await assertOwnedVersion(creds, await ascAppIdFor(c, appId), versionId);
     const written: string[] = [];
     for (const [locale, text] of entries) {
       if (typeof text !== "string") {
@@ -186,6 +252,11 @@ export async function handleSetAppStoreReleaseNotes(c: AdminContext) {
       await setVersionLocalization(creds, versionId, locale, text);
       written.push(locale);
     }
+    await insertAuditLog(c.env.DB, c, {
+      app_id: appId,
+      action: "app_store.release_notes",
+      payload: { version_id: versionId, locales: written },
+    });
     return c.json({ version_id: versionId, locales: written });
   } catch (error) {
     return fail(c, error);
@@ -205,6 +276,7 @@ export async function handleSubmitAppStoreVersion(c: AdminContext) {
   try {
     const creds = await loadCredentials(c, appId);
     const ascAppId = await ascAppIdFor(c, appId);
+    await assertOwnedVersion(creds, ascAppId, versionId);
     const submissions = await listReviewSubmissions(creds, ascAppId);
     for (const submission of submissions) {
       if (submission.state && IN_REVIEW_STATES.has(submission.state)) {
@@ -219,7 +291,15 @@ export async function handleSubmitAppStoreVersion(c: AdminContext) {
         }, 409);
       }
     }
-    const { submissionId } = await submitVersionForReview(creds, ascAppId, versionId, "IOS");
+    // Submit on the version's own platform; hardcoding IOS would fail for a MAC_OS
+    // version and silently claim the wrong one.
+    const target = await findAppStoreVersionById(creds, ascAppId, versionId);
+    const { submissionId } = await submitVersionForReview(creds, ascAppId, versionId, target?.platform ?? "IOS");
+    await insertAuditLog(c.env.DB, c, {
+      app_id: appId,
+      action: "app_store.submit",
+      payload: { version_id: versionId, submission_id: submissionId },
+    });
     return c.json({ version_id: versionId, submission_id: submissionId, submitted: true });
   } catch (error) {
     return fail(c, error);
@@ -234,7 +314,13 @@ export async function handleWithdrawAppStoreVersion(c: AdminContext) {
     const creds = await loadCredentials(c, appId);
     const submissionId = typeof body.submission_id === "string" ? body.submission_id : null;
     if (submissionId) {
+      await assertOwnedSubmission(creds, await ascAppIdFor(c, appId), submissionId);
       await cancelReviewSubmission(creds, submissionId);
+      await insertAuditLog(c.env.DB, c, {
+        app_id: appId,
+        action: "app_store.withdraw",
+        payload: { submission_id: submissionId },
+      });
       return c.json({ submission_id: submissionId, canceled: true });
     }
     const versionId = typeof body.version_id === "string" ? body.version_id : "";
@@ -242,10 +328,16 @@ export async function handleWithdrawAppStoreVersion(c: AdminContext) {
       return c.json({ error: "version_id or submission_id is required", code: "TARGET_REQUIRED" }, 400);
     }
     const ascAppId = await ascAppIdFor(c, appId);
+    await assertOwnedVersion(creds, ascAppId, versionId);
     for (const submission of await listReviewSubmissions(creds, ascAppId)) {
       if (!submission.state || !IN_REVIEW_STATES.has(submission.state)) continue;
       if ((await getReviewSubmissionVersionId(creds, submission.id)) !== versionId) continue;
       await cancelReviewSubmission(creds, submission.id);
+      await insertAuditLog(c.env.DB, c, {
+        app_id: appId,
+        action: "app_store.withdraw",
+        payload: { submission_id: submission.id, version_id: versionId },
+      });
       return c.json({ submission_id: submission.id, version_id: versionId, canceled: true });
     }
     return c.json({ error: "no pending submission found for that version", code: "NO_PENDING_SUBMISSION" }, 404);

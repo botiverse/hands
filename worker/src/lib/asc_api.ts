@@ -1052,6 +1052,8 @@ export interface AscAppStoreVersion {
   versionString: string | null;
   state: string | null;
   platform: string | null;
+  /** MANUAL / AFTER_APPROVAL / SCHEDULED; governs what happens after approval. */
+  releaseType: string | null;
   buildId: string | null;
 }
 
@@ -1087,6 +1089,36 @@ export async function findAppStoreVersion(
     versionString: typeof match.attributes?.versionString === "string" ? match.attributes.versionString : null,
     state,
     platform: typeof match.attributes?.platform === "string" ? match.attributes.platform : null,
+    releaseType: typeof (match.attributes as { releaseType?: unknown } | undefined)?.releaseType === "string"
+      ? (match.attributes as { releaseType: string }).releaseType
+      : null,
+    buildId: typeof match.relationships?.build?.data?.id === "string" ? match.relationships.build.data.id : null,
+  };
+}
+
+/** Resolve one App Store version by ASC resource id, scoped to this app. */
+export async function findAppStoreVersionById(
+  creds: AscApiCredentials,
+  ascAppId: string,
+  versionId: string,
+): Promise<AscAppStoreVersion | null> {
+  const res = await ascRequest<{
+    data?: Array<{
+      id?: string;
+      attributes?: { versionString?: unknown; appStoreState?: unknown; appVersionState?: unknown; platform?: unknown; releaseType?: unknown };
+      relationships?: { build?: { data?: { id?: unknown } } };
+    }>;
+  }>(creds, "GET", `/v1/apps/${encodeURIComponent(ascAppId)}/appStoreVersions?limit=200`);
+  const match = (res.data ?? []).find((v) => v.id === versionId);
+  if (!match?.id) return null;
+  return {
+    id: match.id,
+    versionString: typeof match.attributes?.versionString === "string" ? match.attributes.versionString : null,
+    state: typeof match.attributes?.appStoreState === "string"
+      ? match.attributes.appStoreState
+      : typeof match.attributes?.appVersionState === "string" ? match.attributes.appVersionState : null,
+    platform: typeof match.attributes?.platform === "string" ? match.attributes.platform : null,
+    releaseType: typeof match.attributes?.releaseType === "string" ? match.attributes.releaseType : null,
     buildId: typeof match.relationships?.build?.data?.id === "string" ? match.relationships.build.data.id : null,
   };
 }
