@@ -9,6 +9,7 @@ import { parseReleaseNotes } from "../lib/release_notes";
 import { generateSignedR2Url, resolveChangelog, changelogToHtml, requestedLang } from "./public_v2";
 import { resolvePublicChannelSlug } from "../lib/public_channel";
 import { INSTALLABLE_ORDER_BY } from "../lib/installable_precedence";
+import { recordPublicAssetDownload } from "../lib/download_stats";
 
 // UI-chrome localization (task: localize surrounding chrome, not just the
 // changelog). Detection reuses requestedLang() (Accept-Language / ?lang=);
@@ -97,6 +98,9 @@ type HistoryRow = {
 };
 
 type LatestLandingRow = HistoryRow & {
+  /** Present on LATEST_LANDING_SQL rows (the public download path). */
+  asset_id?: string;
+  build_id?: string;
   package_id: string | null;
   platform: string;
   arch: string | null;
@@ -172,6 +176,8 @@ const LATEST_LANDING_SQL = `
            json_extract(b.build_metadata_json, '$.package_name'),
            json_extract(b.build_metadata_json, '$.android.package_id')
          ) AS package_id,
+         b.id AS build_id,
+         ba.id AS asset_id,
          ba.platform, ba.arch, ba.variant, ba.filetype,
          ba.size_bytes, ba.r2_key, ba.file_hash
   FROM releases r
@@ -316,6 +322,12 @@ export async function handlePublicLatestReleaseDownload(c: Context<{ Bindings: E
     Number(c.env.SIGNED_URL_TTL_SECONDS ?? "3600"),
     requestOrigin(c),
   );
+  // Count the download only after a signed URL exists, so a failed mint never
+  // records a download that could not have happened. recordPublicAssetDownload
+  // never throws: an analytics failure must not break a working download.
+  if (row.asset_id && row.build_id) {
+    await recordPublicAssetDownload(c, row.asset_id, row.build_id);
+  }
   return c.redirect(url, 302);
 }
 
