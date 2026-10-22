@@ -1,0 +1,242 @@
+/**
+ * App Store release actions: create a version, attach a build, write localized
+ * release notes, submit for review, and read back review state.
+ *
+ * Scope note: submitting for review and reporting the outcome are automated here.
+ * Acting on a rejection is deliberately NOT automated -- a rejection usually needs
+ * a human to decide whether the fix is copy or code, so the reason is surfaced and
+ * the decision is left to a person.
+ */
+import type { Context } from "hono";
+import type { AdminEnv } from "../middleware/auth";
+import { getAscCredentials } from "../lib/asc_credentials";
+import {
+  type AscApiCredentials,
+  attachBuildToVersion,
+  cancelReviewSubmission,
+  createAppStoreVersion,
+  findAppStoreVersion,
+  getReviewSubmissionVersionId,
+  listReviewSubmissions,
+  resolveAscAppId,
+  setVersionLocalization,
+  submitVersionForReview,
+} from "../lib/asc_api";
+
+type AdminContext = Context<AdminEnv & { Bindings: Env }>;
+
+/** Review states at which Apple will not accept a new submission for the platform. */
+const IN_REVIEW_STATES = new Set(["WAITING_FOR_REVIEW", "IN_REVIEW"]);
+
+class AppStoreReleaseError extends Error {
+  constructor(
+    readonly status: number,
+    readonly code: string,
+    message: string,
+  ) {
+    super(message);
+  }
+}
+
+async function loadCredentials(c: AdminContext, appId: string): Promise<AscApiCredentials> {
+  const encKey = c.env.ASC_CRED_ENC_KEY;
+  if (!encKey) throw new AppStoreReleaseError(500, "ASC_CRED_ENC_KEY_MISSING", "server is missing ASC_CRED_ENC_KEY");
+  const creds = await getAscCredentials(c.env.DB, encKey, appId);
+  if (!creds) {
+    throw new AppStoreReleaseError(400, "ASC_CREDENTIALS_REQUIRED", "no ASC credentials configured for this app");
+  }
+  return creds;
+}
+
+async function ascAppIdFor(c: AdminContext, appId: string): Promise<string> {
+  const row = await c.env.DB.prepare(
+    "SELECT bundle_id, asc_app_id FROM apps WHERE id = ?1",
+  ).bind(appId).first<{ bundle_id: string | null; asc_app_id: string | null }>();
+  if (!row) throw new AppStoreReleaseError(404, "APP_NOT_FOUND", "app not found");
+  if (row.asc_app_id) return row.asc_app_id;
+  if (!row.bundle_id) throw new AppStoreReleaseError(400, "BUNDLE_ID_REQUIRED", "app has no bundle id");
+  const bundleId: string = row.bundle_id;
+  // resolveAscAppId returns null when Apple has no app with that bundle id, which
+  // is a configuration problem rather than an empty result worth caching.
+  const resolved = await resolveAscAppId(await loadCredentials(c, appId), bundleId);
+  if (!resolved) {
+    throw new AppStoreReleaseError(404, "ASC_APP_NOT_FOUND", `no App Store Connect app matches bundle id ${bundleId}`);
+  }
+  return resolved;
+}
+
+function fail(c: AdminContext, error: unknown) {
+  if (error instanceof AppStoreReleaseError) {
+    return c.json({ error: error.message, code: error.code }, error.status as 400);
+  }
+  const message = error instanceof Error ? error.message : String(error);
+  return c.json({ error: message, code: "APP_STORE_RELEASE_FAILED" }, 502);
+}
+
+/**
+ * Create (or reuse) the App Store version for a build and attach the build to it.
+ *
+ * Reusing an existing editable version rather than creating a second one matters:
+ * App Store Connect allows one editable version per platform, so a blind create
+ * fails when a version is already prepared.
+ */
+export async function handlePrepareAppStoreVersion(c: AdminContext) {
+  const appId = c.req.param("appId") ?? "";
+  const body = (await c.req.json().catch(() => null)) as
+    | { version_string?: unknown; platform?: unknown; release_type?: unknown; asc_build_id?: unknown }
+    | null;
+  const versionString = typeof body?.version_string === "string" ? body.version_string.trim() : "";
+  const platform = typeof body?.platform === "string" ? body.platform.trim() : "IOS";
+  const releaseType = typeof body?.release_type === "string" ? body.release_type.trim() : "MANUAL";
+  const ascBuildId = typeof body?.asc_build_id === "string" ? body.asc_build_id.trim() : "";
+  if (!versionString) {
+    return c.json({ error: "version_string is required", code: "VERSION_STRING_REQUIRED" }, 400);
+  }
+  if (!["MANUAL", "AFTER_APPROVAL", "SCHEDULED"].includes(releaseType)) {
+    return c.json({ error: "release_type must be MANUAL, AFTER_APPROVAL or SCHEDULED", code: "INVALID_RELEASE_TYPE" }, 400);
+  }
+  try {
+    const creds = await loadCredentials(c, appId);
+    const ascAppId = await ascAppIdFor(c, appId);
+    const existing = await findAppStoreVersion(creds, ascAppId, versionString, platform);
+    const version = existing ?? (await createAppStoreVersion(
+      creds,
+      ascAppId,
+      versionString,
+      platform,
+      releaseType as "MANUAL" | "AFTER_APPROVAL" | "SCHEDULED",
+    ));
+    if (ascBuildId) await attachBuildToVersion(creds, version.id, ascBuildId);
+    return c.json({
+      version_id: version.id,
+      version_string: versionString,
+      platform,
+      release_type: releaseType,
+      state: "state" in version ? version.state : null,
+      reused: existing !== null,
+      build_attached: Boolean(ascBuildId),
+    });
+  } catch (error) {
+    return fail(c, error);
+  }
+}
+
+/** Upsert per-locale What's New, one locale per entry. */
+export async function handleSetAppStoreReleaseNotes(c: AdminContext) {
+  const appId = c.req.param("appId") ?? "";
+  const versionId = c.req.param("versionId") ?? "";
+  const body = (await c.req.json().catch(() => null)) as { notes?: unknown } | null;
+  const notes = body?.notes;
+  if (!notes || typeof notes !== "object" || Array.isArray(notes)) {
+    return c.json({ error: "notes must be a locale-to-text object", code: "INVALID_NOTES" }, 400);
+  }
+  const entries = Object.entries(notes as Record<string, unknown>);
+  if (entries.length === 0) {
+    return c.json({ error: "notes must contain at least one locale", code: "INVALID_NOTES" }, 400);
+  }
+  try {
+    const creds = await loadCredentials(c, appId);
+    const written: string[] = [];
+    for (const [locale, text] of entries) {
+      if (typeof text !== "string") {
+        return c.json({ error: `notes.${locale} must be a string`, code: "INVALID_NOTES" }, 400);
+      }
+      await setVersionLocalization(creds, versionId, locale, text);
+      written.push(locale);
+    }
+    return c.json({ version_id: versionId, locales: written });
+  } catch (error) {
+    return fail(c, error);
+  }
+}
+
+/**
+ * Submit a prepared version for review.
+ *
+ * Refuses when another submission for the platform is already waiting or in
+ * review: App Store Connect would reject it anyway, but a named error tells the
+ * caller to withdraw first instead of guessing.
+ */
+export async function handleSubmitAppStoreVersion(c: AdminContext) {
+  const appId = c.req.param("appId") ?? "";
+  const versionId = c.req.param("versionId") ?? "";
+  try {
+    const creds = await loadCredentials(c, appId);
+    const ascAppId = await ascAppIdFor(c, appId);
+    const submissions = await listReviewSubmissions(creds, ascAppId);
+    for (const submission of submissions) {
+      if (submission.state && IN_REVIEW_STATES.has(submission.state)) {
+        const owner = await getReviewSubmissionVersionId(creds, submission.id);
+        return c.json({
+          error: "another review submission is already pending for this platform",
+          code: "REVIEW_ALREADY_PENDING",
+          submission_id: submission.id,
+          submission_state: submission.state,
+          version_id: owner,
+          next_action: "withdraw it first with withdraw-app-store-version, or wait for the outcome",
+        }, 409);
+      }
+    }
+    const { submissionId } = await submitVersionForReview(creds, ascAppId, versionId, "IOS");
+    return c.json({ version_id: versionId, submission_id: submissionId, submitted: true });
+  } catch (error) {
+    return fail(c, error);
+  }
+}
+
+/** Withdraw the pending submission for a version (or by submission id when given). */
+export async function handleWithdrawAppStoreVersion(c: AdminContext) {
+  const appId = c.req.param("appId") ?? "";
+  const body = (await c.req.json().catch(() => ({}) )) as { version_id?: unknown; submission_id?: unknown };
+  try {
+    const creds = await loadCredentials(c, appId);
+    const submissionId = typeof body.submission_id === "string" ? body.submission_id : null;
+    if (submissionId) {
+      await cancelReviewSubmission(creds, submissionId);
+      return c.json({ submission_id: submissionId, canceled: true });
+    }
+    const versionId = typeof body.version_id === "string" ? body.version_id : "";
+    if (!versionId) {
+      return c.json({ error: "version_id or submission_id is required", code: "TARGET_REQUIRED" }, 400);
+    }
+    const ascAppId = await ascAppIdFor(c, appId);
+    for (const submission of await listReviewSubmissions(creds, ascAppId)) {
+      if (!submission.state || !IN_REVIEW_STATES.has(submission.state)) continue;
+      if ((await getReviewSubmissionVersionId(creds, submission.id)) !== versionId) continue;
+      await cancelReviewSubmission(creds, submission.id);
+      return c.json({ submission_id: submission.id, version_id: versionId, canceled: true });
+    }
+    return c.json({ error: "no pending submission found for that version", code: "NO_PENDING_SUBMISSION" }, 404);
+  } catch (error) {
+    return fail(c, error);
+  }
+}
+
+/** Read back the review state of one version. Read-only. */
+export async function handleGetAppStoreReleaseStatus(c: AdminContext) {
+  const appId = c.req.param("appId") ?? "";
+  const versionString = c.req.query("version_string")?.trim();
+  const platform = c.req.query("platform")?.trim() || "IOS";
+  if (!versionString) {
+    return c.json({ error: "version_string is required", code: "VERSION_STRING_REQUIRED" }, 400);
+  }
+  try {
+    const creds = await loadCredentials(c, appId);
+    const ascAppId = await ascAppIdFor(c, appId);
+    const version = await findAppStoreVersion(creds, ascAppId, versionString, platform);
+    if (!version) {
+      return c.json({ error: "version not found", code: "VERSION_NOT_FOUND" }, 404);
+    }
+    const submissions = await listReviewSubmissions(creds, ascAppId);
+    const pending = submissions.find((s) => s.state && IN_REVIEW_STATES.has(s.state)) ?? null;
+    return c.json({
+      version_id: version.id,
+      version_string: version.versionString,
+      state: version.state,
+      build_attached: version.buildId !== null,
+      pending_submission: pending ? { id: pending.id, state: pending.state } : null,
+    });
+  } catch (error) {
+    return fail(c, error);
+  }
+}

@@ -169,6 +169,13 @@ import {
   handleTestflightUpload,
   handleTestflightUploadStatus,
 } from "./routes/testflight";
+import {
+  handleGetAppStoreReleaseStatus,
+  handlePrepareAppStoreVersion,
+  handleSetAppStoreReleaseNotes,
+  handleSubmitAppStoreVersion,
+  handleWithdrawAppStoreVersion,
+} from "./routes/app_store_release";
 import { handleAppStoreReview } from "./routes/appstore_review";
 import {
   handleGetBetaAppDescription,
@@ -1289,6 +1296,15 @@ bindAdmin("post", "/api/apps/:appId/asc-credentials/verify", requireAppRole("adm
   // action still cannot assign beta groups, notify testers, activate a Hands
   // release, or touch App Store production publishing.
   bindAdmin("post", "/api/apps/:appId/builds/:buildId/testflight-upload", requireAppRole("publisher"), handleTestflightUpload);
+
+// App Store release: create version -> attach build -> localized notes -> submit.
+// Publisher-gated throughout; submit is the only step with an external, hard-to-undo
+// effect, and it refuses while another submission is already pending.
+bindAdmin("post", "/api/apps/:appId/app-store/versions", requireAppRole("publisher"), handlePrepareAppStoreVersion);
+bindAdmin("post", "/api/apps/:appId/app-store/versions/:versionId/notes", requireAppRole("publisher"), handleSetAppStoreReleaseNotes);
+bindAdmin("post", "/api/apps/:appId/app-store/versions/:versionId/submit", requireAppRole("publisher"), handleSubmitAppStoreVersion);
+bindAdmin("post", "/api/apps/:appId/app-store/withdraw", requireAppRole("publisher"), handleWithdrawAppStoreVersion);
+bindAdmin("get", "/api/apps/:appId/app-store/status", requireAppRole("viewer"), handleGetAppStoreReleaseStatus);
 bindAdmin("get", "/api/apps/:appId/testflight-uploads/:buildUploadId", requireAppRole("viewer"), handleTestflightUploadStatus);
 bindAdmin("get", "/api/apps/:appId/builds/:buildId/testflight-groups", requireAppRole("viewer"), handleListTestflightGroups);
 bindAdmin("post", "/api/apps/:appId/builds/:buildId/testflight-expire", requireAppRole("admin"), handleTestflightExpire);

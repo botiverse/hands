@@ -1665,6 +1665,62 @@ export async function handleAgentManifest(c: Context<{ Bindings: Env }>) {
         },
       },
       {
+        name: "prepare-app-store-version",
+        description:
+          "Create (or reuse) the App Store version for a marketing version and attach an already-processed build to it. release_type MANUAL parks it at PENDING_DEVELOPER_RELEASE after approval instead of shipping automatically. Requires app publisher.",
+        endpoint: { method: "POST", path: "/api/apps/{app_id}/app-store/versions" },
+        parameters: {
+          app_id: { type: "string", in: "path", required: true, description: "Hands app UUID." },
+          version_string: { type: "string", in: "body", required: true, description: "Marketing version, e.g. 1.15.2." },
+          platform: { type: "string", in: "body", required: false, description: "IOS (default) or MAC_OS." },
+          release_type: { type: "string", in: "body", required: false, description: "MANUAL (default) | AFTER_APPROVAL | SCHEDULED." },
+          asc_build_id: { type: "string", in: "body", required: false, description: "App Store Connect build id to attach. A version with no build cannot be reviewed." },
+        },
+      },
+      {
+        name: "set-app-store-release-notes",
+        description:
+          "Upsert the localized What's New text for an App Store version. Pass one entry per locale; an existing localization is updated rather than duplicated, so this is safe to re-run after a rejection. Requires app publisher.",
+        endpoint: { method: "POST", path: "/api/apps/{app_id}/app-store/versions/{version_id}/notes" },
+        parameters: {
+          app_id: { type: "string", in: "path", required: true, description: "Hands app UUID." },
+          version_id: { type: "string", in: "path", required: true, description: "App Store version id from prepare-app-store-version." },
+          notes: { type: "object", in: "body", required: true, description: "Locale-to-text map, e.g. {\"zh-Hans\":\"修复若干问题\",\"en-US\":\"Bug fixes\",\"ja\":\"不具合を修正\"}." },
+        },
+      },
+      {
+        name: "submit-app-store-version",
+        description:
+          "Submit a prepared App Store version for review. Refuses with REVIEW_ALREADY_PENDING when another submission for this platform is waiting or in review, naming the submission and version so the caller can withdraw first. Requires app publisher.",
+        endpoint: { method: "POST", path: "/api/apps/{app_id}/app-store/versions/{version_id}/submit" },
+        parameters: {
+          app_id: { type: "string", in: "path", required: true, description: "Hands app UUID." },
+          version_id: { type: "string", in: "path", required: true, description: "App Store version id." },
+        },
+      },
+      {
+        name: "withdraw-app-store-version",
+        description:
+          "Withdraw a pending App Store review. Apple has no withdraw verb: this cancels the review submission, which returns the version to an editable state. Identify the target by version_id or submission_id. Requires app publisher.",
+        endpoint: { method: "POST", path: "/api/apps/{app_id}/app-store/withdraw" },
+        parameters: {
+          app_id: { type: "string", in: "path", required: true, description: "Hands app UUID." },
+          version_id: { type: "string", in: "body", required: false, description: "Withdraw the pending submission holding this version." },
+          submission_id: { type: "string", in: "body", required: false, description: "Withdraw this exact submission. Either this or version_id is required." },
+        },
+      },
+      {
+        name: "get-app-store-release-status",
+        description:
+          "Read back one App Store version's review state, whether a build is attached, and whether a submission is pending. Read-only; requires app viewer.",
+        endpoint: { method: "GET", path: "/api/apps/{app_id}/app-store/status" },
+        parameters: {
+          app_id: { type: "string", in: "path", required: true, description: "Hands app UUID." },
+          version_string: { type: "string", in: "query", required: true, description: "Marketing version to look up." },
+          platform: { type: "string", in: "query", required: false, description: "IOS (default) or MAC_OS." },
+        },
+      },
+      {
         name: "get-testflight-publish-status",
         description:
           "Refresh live App Store Connect processing, expiration, assigned groups, localizations, internal/external build state, and Beta App Review state for a Hands build. Read-only; requires app viewer.",

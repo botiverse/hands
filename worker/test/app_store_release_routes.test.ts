@@ -1,0 +1,76 @@
+import { describe, expect, it, vi } from "vitest";
+import { handleSubmitAppStoreVersion, handlePrepareAppStoreVersion } from "../src/routes/app_store_release";
+
+/**
+ * These assert the guards, not the happy path. Submitting is the one action with an
+ * external, hard-to-undo effect, so the cases that matter are the ones where it must
+ * REFUSE.
+ */
+async function makeContext(body: unknown, opts: { submissions?: Array<{ id: string; state: string }> } = {}) {
+  const appId = "app-1";
+  const db = {
+    prepare: () => ({
+      bind: () => ({
+        first: async () => ({ bundle_id: "build.raft.app", asc_app_id: "asc-app-1" }),
+      }),
+    }),
+  };
+  return {
+    env: { DB: db, ASC_CRED_ENC_KEY: "k" },
+    req: {
+      param: (name: string) => (name === "appId" ? appId : name === "versionId" ? "ver-1" : ""),
+      query: () => undefined,
+      json: async () => body,
+    },
+    get: () => "test:publisher",
+    json: (data: unknown, status = 200) => new Response(JSON.stringify(data), { status }),
+  } as any;
+}
+
+// A real P-256 key: ascRequest signs a JWT before every call, so a placeholder PEM
+// fails before the guard under test is ever reached.
+async function realCreds() {
+  const pair = (await crypto.subtle.generateKey(
+    { name: "ECDSA", namedCurve: "P-256" }, true, ["sign", "verify"],
+  )) as CryptoKeyPair;
+  const pkcs8 = new Uint8Array((await crypto.subtle.exportKey("pkcs8", pair.privateKey)) as ArrayBuffer);
+  let bin = "";
+  for (const b of pkcs8) bin += String.fromCharCode(b);
+  return { key_id: "TESTKEY123", issuer_id: "issuer-uuid-1234",
+    p8: `-----BEGIN PRIVATE KEY-----\n${btoa(bin)}\n-----END PRIVATE KEY-----` };
+}
+let cachedCreds: any = null;
+vi.mock("../src/lib/asc_credentials", () => ({
+  getAscCredentials: async () => (cachedCreds ??= await realCreds()),
+}));
+
+describe("App Store submission guards", () => {
+  it("refuses to submit while another submission is pending, and names it", async () => {
+    // Without this guard the caller gets an opaque App Store Connect rejection and has
+    // to guess that a pending submission is the reason.
+    vi.stubGlobal("fetch", vi.fn(async (url: unknown) => {
+      const u = String(url);
+      if (u.includes("/reviewSubmissions?")) {
+        return new Response(JSON.stringify({ data: [{ id: "sub-9", attributes: { state: "WAITING_FOR_REVIEW" } }] }));
+      }
+      if (u.includes("/reviewSubmissions/sub-9/items")) {
+        return new Response(JSON.stringify({ data: [{ relationships: { appStoreVersionForReview: { data: { id: "ver-old" } } } }] }));
+      }
+      return new Response(JSON.stringify({ data: {} }));
+    }));
+    const res = await handleSubmitAppStoreVersion(await makeContext({}));
+    expect(res.status).toBe(409);
+    const body = (await res.json()) as any;
+    expect(body.code).toBe("REVIEW_ALREADY_PENDING");
+    expect(body.submission_id).toBe("sub-9");
+    expect(body.version_id).toBe("ver-old");
+  });
+
+  it("rejects an invalid release_type instead of sending it to Apple", async () => {
+    const res = await handlePrepareAppStoreVersion(
+      await makeContext({ version_string: "1.15.2", release_type: "EVERYONE" }),
+    );
+    expect(res.status).toBe(400);
+    expect((await res.json() as any).code).toBe("INVALID_RELEASE_TYPE");
+  });
+});
