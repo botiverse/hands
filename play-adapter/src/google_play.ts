@@ -320,7 +320,12 @@ export class GooglePlayClient {
         rejection.status,
         "play_upload_rejected",
         rejection.message,
-        rejection.cause_detail,
+        // Carry the lookup alongside the provider cause: it distinguishes "Google
+        // said it has nothing" from "we failed to match what it returned", which are
+        // otherwise the same failure to the reader of a receipt.
+        this.lastBundleLookup
+          ? { ...rejection.cause_detail, bundle_lookup: this.lastBundleLookup }
+          : rejection.cause_detail,
       );
     }
     if (!body || typeof body !== "object") {
@@ -455,6 +460,9 @@ export class GooglePlayClient {
    * a malformed track read throws rather than silently claiming "not present", so a
    * broken read can never skip an upload that was actually needed.
    */
+  /** What the last bundle lookup saw; attached to an upload rejection's cause. */
+  private lastBundleLookup: { count: number; version_codes: number[]; wanted: number } | null = null;
+
   private async bundleAlreadyOnPlay(
     packageName: string,
     editId: string,
@@ -484,12 +492,14 @@ export class GooglePlayClient {
     // list really contains previously-uploaded bundles; if it comes back empty the
     // check silently degrades to "always upload", which looks identical to the bug
     // it was meant to fix. Recorded rather than inferred.
-    console.warn("hands_play_bundles_seen", JSON.stringify({
-      stage: "bundle_lookup",
+    const seen = {
       count: bundles.length,
-      version_codes: bundles.map((bundle) => exactVersionCode(bundle.versionCode)).filter((v) => v !== null),
+      version_codes: bundles.map((bundle) => exactVersionCode(bundle.versionCode)).filter((v): v is number => v !== null),
       wanted: request.versionCode,
-    }));
+    };
+    this.lastBundleLookup = seen;
+    // Also logged, but the receipt is what an operator can actually read.
+    console.warn("hands_play_bundles_seen", JSON.stringify({ stage: "bundle_lookup", ...seen }));
     const match = bundles.find(
       (bundle) => exactVersionCode(bundle.versionCode) === request.versionCode,
     );
