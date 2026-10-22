@@ -174,3 +174,20 @@ it("returns the classified cause to the caller so a receipt can carry it", async
   // The Google text itself must not travel with it.
   expect(JSON.stringify(result)).not.toContain("more than one completed");
 });
+
+// commit_edit rejections must be classified, not left as OTHER.
+  // Review listed the three realistic commit failures. Each has a different remedy,
+  // so collapsing them to OTHER tells the caller nothing actionable.
+const commitEditCases: Array<[string, string]> = [
+    ["This app has changes that have not been sent for review. Set changesNotSentForReview to true.", "CHANGES_NOT_SENT_FOR_REVIEW"],
+    ["Track alpha has no testers or countries configured.", "TRACK_NOT_CONFIGURED"],
+    ["Invalid release: userFraction is not allowed when status is completed", "RELEASE_VALIDATION"],
+    // A missing track is NOT one of the three new classes: NOT_FOUND matches first.
+    // Pinned so the description and the behaviour cannot drift apart again.
+    ["Track 'closed-beta' does not exist", "NOT_FOUND"],
+  ];
+it.each(commitEditCases)("classifies commit_edit rejection as %s -> %s", async (message, expected) => {
+  const { playRejection } = await import("../src/provider_errors");
+  const error = playRejection(400, { error: { code: 400, status: "INVALID_ARGUMENT", message } }, "commit_edit");
+  expect(error.cause_detail).toMatchObject({ stage: "commit_edit", provider_cause: expected });
+});

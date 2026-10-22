@@ -161,6 +161,20 @@ const PROVIDER_CAUSES: Array<[RegExp, string]> = [
   [/already been (?:used|uploaded)|duplicate/i, "DUPLICATE_VERSION"],
   [/version ?code/i, "VERSION_CODE_CONFLICT"],
   [/not ?found|does not exist|unknown (?:track|package)/i, "NOT_FOUND"],
+  // A commit rejected because the app carries unrelated unpublished changes (or a
+  // previously rejected submission). Google names this in the message; the remedy is
+  // a different commit flag, so it must not read as a generic validation failure.
+  [/changesNotSentForReview|not ?sent for review|unreviewed/i, "CHANGES_NOT_SENT_FOR_REVIEW"],
+  // A track whose testers or countries are not configured yet, or a track that does
+  // not exist in the console. Both are console-side setup, not a Hands defect.
+  // Deliberately does NOT cover "track does not exist": NOT_FOUND above matches
+  // "does not exist"/"unknown track" first, so an arm for it here would never run
+  // while reading as if it did. A missing track lands in NOT_FOUND, which is just
+  // as actionable.
+  [/testers|countries|no testers|not configured|invalid track/i, "TRACK_NOT_CONFIGURED"],
+  // Release shape rejected before it was ever sent: missing notes, or a status and
+  // userFraction combination Play does not allow (e.g. completed with a fraction).
+  [/releaseNotes|userFraction|invalid release|status .* not allowed/i, "RELEASE_VALIDATION"],
 ];
 
 function classifyProviderMessage(message: string): string {
