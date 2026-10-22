@@ -158,6 +158,87 @@ describe("App Store submission guards", () => {
     expect((await res.json() as any).code).toBe("VERSION_NOT_IN_APP");
   });
 
+  it("refuses an asc_build_id belonging to another app, and attaches nothing", async () => {
+    // M3 in review: the guard existed but no test would notice its removal.
+    vi.stubGlobal("fetch", vi.fn(async (url: unknown, init?: RequestInit) => {
+      const u = String(url);
+      if (u.includes("/appStoreVersions?")) return new Response(JSON.stringify({ data: [] }));
+      if (u.includes("/v1/builds?")) {
+        return new Response(JSON.stringify({ data: [{ id: "build-mine" }] }));
+      }
+      if ((init?.method ?? "GET") === "POST" && u.endsWith("/v1/appStoreVersions")) {
+        return new Response(JSON.stringify({ data: { id: "ver-new" } }));
+      }
+      // Any attach/patch would be a bug.
+      if ((init?.method ?? "GET") !== "GET") throw new Error(`unexpected write to ${u}`);
+      return new Response(JSON.stringify({ data: [] }));
+    }));
+    const res = await handlePrepareAppStoreVersion(
+      await makeContext({ version_string: "1.15.2", asc_build_id: "build-theirs" }),
+    );
+    expect(res.status).toBe(404);
+    expect((await res.json() as any).code).toBe("ASC_BUILD_NOT_IN_APP");
+  });
+
+  it("refuses to withdraw by a version_id belonging to another app, and cancels nothing", async () => {
+    // M4 in review: same shape -- guard present, test absent.
+    vi.stubGlobal("fetch", vi.fn(async (url: unknown, init?: RequestInit) => {
+      const u = String(url);
+      if (u.includes("/appStoreVersions?")) {
+        return new Response(JSON.stringify({ data: [{ id: "ver-mine" }] }));
+      }
+      if (u.includes("/reviewSubmissions?")) throw new Error("must not read submissions before the ownership check");
+      if ((init?.method ?? "GET") !== "GET") throw new Error(`unexpected write to ${u}`);
+      return new Response(JSON.stringify({ data: [] }));
+    }));
+    const res = await handleWithdrawAppStoreVersion(
+      await makeContext({ version_id: "ver-theirs" }),
+    );
+    expect(res.status).toBe(404);
+    expect((await res.json() as any).code).toBe("VERSION_NOT_IN_APP");
+  });
+
+  it("reports audited:false and logs when the audit write fails, but never fails the effect", async () => {
+    // The audit row is written after an effect that already happened; turning that
+    // into a 500 would invite a retry that performs the work twice. The failure has
+    // to be visible somewhere, so it is logged server-side as well.
+    vi.stubGlobal("fetch", vi.fn(async (url: unknown, init?: RequestInit) => {
+      const u = String(url);
+      if (u.includes("appStoreVersions")) {
+        return new Response(JSON.stringify({ data: [{ id: "ver-1", attributes: { versionString: "1.15.2", platform: "IOS" } }] }));
+      }
+      if (u.includes("appStoreVersionLocalizations")) {
+        return new Response(JSON.stringify({ data: [{ id: "loc-en", attributes: { locale: "en-US" } }] }));
+      }
+      if ((init?.method ?? "GET") !== "GET") return new Response(JSON.stringify({ data: {} }));
+      return new Response(JSON.stringify({ data: [] }));
+    }));
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const ctx = await makeContext({ notes: { "en-US": "Bug fixes" } });
+    // Fail ONLY the audit insert: the earlier app/bundle lookups must still answer.
+    // The stub DB answers app lookups; the audit insert is the only thing that fails.
+    // setVersionLocalization reads localizations over HTTP, so no other DB access occurs.
+    ctx.env.DB.prepare = (sql: unknown) => {
+      if (String(sql).includes("audit_logs")) {
+        return { bind: () => ({ run: async () => { throw new Error("d1 unavailable"); } }) };
+      }
+      return {
+        bind: () => ({
+          first: async () => ({ bundle_id: "build.raft.app", asc_app_id: "asc-app-1" }),
+        }),
+      };
+    };
+    const res = await handleSetAppStoreReleaseNotes(ctx);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as any;
+    expect(body.audited).toBe(false);
+    expect(body.locales).toEqual(["en-US"]);
+    expect(errorSpy).toHaveBeenCalledWith("app_store_audit_write_failed", expect.objectContaining({
+      action: "app_store.release_notes", app_id: "app-1",
+    }));
+    errorSpy.mockRestore();
+  });
+
   it("rejects an invalid release_type instead of sending it to Apple", async () => {
     const res = await handlePrepareAppStoreVersion(
       await makeContext({ version_string: "1.15.2", release_type: "EVERYONE" }),
