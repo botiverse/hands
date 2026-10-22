@@ -65,6 +65,21 @@ describe("verified TestFlight operation notifications", () => {
     expect(JSON.parse(row.payload_json).payload).toMatchObject({ state: "IN_BETA_TESTING", auto_notify_enabled: true,
       groups: [{ id: "group", name: "Botiverse" }], groups_display: "测试组：Botiverse", resource: { type: "builds", id: "asc-build" } });
   });
+
+  it("carries build identity under payload.build, the same path the webhook path uses", async () => {
+    // Downstream templates read payload.build.version / payload.build.version_code.
+    // Operation receipts used to expose only payload.version / payload.build_number,
+    // so every TestFlight notification rendered an empty version line.
+    const { db, sql } = setup("testflight-publish");
+    await completeTestflightOperation(db, "app", "operation", "testflight-publish", publish);
+    const row = sql.prepare("SELECT payload_json FROM webhook_deliveries LIMIT 1").get() as { payload_json: string };
+    const payload = JSON.parse(row.payload_json).payload;
+    expect(payload.build).toEqual({ version: "1.13.0", version_code: "11300004" });
+    // The pre-existing flat fields must survive: dropping them would break
+    // consumers that already read them.
+    expect(payload.version).toBe("1.13.0");
+    expect(payload.build_number).toBe("11300004");
+  });
   it("serializes all selected internal group names for scalar templates and excludes other groups", async () => {
     const { db, sql } = setup("testflight-publish");
     await completeTestflightOperation(db, "app", "operation", "testflight-publish", {
