@@ -346,6 +346,50 @@ export function registerReleaseCommands(program: Command): void {
     );
 
   releases
+    .command("cancel <appIdOrSlug> <releaseId>")
+    .description(
+      "Disable a draft or active release; build, assets and audit are kept. " +
+        "A never-activated version is freed for a corrected build; an ever-activated one stays " +
+        "reserved, so corrected bits need a higher version code. " +
+        "Cancelling an ACTIVE release puts the release it superseded back to active, " +
+        "so clients immediately start receiving that older version again.",
+    )
+    .option("--json", "Output JSON.", false)
+    .action(async (appIdOrSlug: string, releaseId: string, opts: { json?: boolean }) => {
+      const appId = await resolveAppId(appIdOrSlug);
+      const result = await apiRequest<Record<string, unknown>>(
+        `/api/apps/${appId}/releases/${releaseId}`,
+        { method: "DELETE" },
+      );
+      if (opts.json) {
+        console.log(JSON.stringify(result, null, 2));
+        return;
+      }
+      console.log(`Cancelled release ${releaseId}. Restore with \`hands releases restore\`, not by republishing.`);
+    });
+
+  releases
+    .command("restore <appIdOrSlug> <releaseId>")
+    .description(
+      "Restore a cancelled release while no replacement owns its version. " +
+        "A never-published draft returns to draft and must pass the normal publish gates; " +
+        "a previously active release returns to active.",
+    )
+    .option("--json", "Output JSON.", false)
+    .action(async (appIdOrSlug: string, releaseId: string, opts: { json?: boolean }) => {
+      const appId = await resolveAppId(appIdOrSlug);
+      const result = await apiRequest<Record<string, unknown>>(
+        `/api/apps/${appId}/releases/${releaseId}/rollback`,
+        { method: "POST" },
+      );
+      if (opts.json) {
+        console.log(JSON.stringify(result, null, 2));
+        return;
+      }
+      console.log(`Restored release ${releaseId}.`);
+    });
+
+  releases
     .command("publish <appIdOrSlug> <releaseId>")
     .description("Publish a draft release (the explicit human/agent step after changelog review).")
     .option(

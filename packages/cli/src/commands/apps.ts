@@ -150,6 +150,60 @@ export function registerAppCommands(program: Command): void {
       // response bodies, so the value does not leak into debug logs.
       console.log(result.client_key);
     });
+
+  apps
+    .command("add-member <appIdOrSlug> <accountId> <role>")
+    .description(
+      "Grant a Hands account a direct role on one app (admin, publisher or viewer). " +
+        "The account id comes from that principal's `whoami`.",
+    )
+    .option("--json", "Output JSON.", false)
+    .action(async (appIdOrSlug: string, accountId: string, role: string, opts: { json?: boolean }) => {
+      const appId = await resolveAppId(appIdOrSlug);
+      const result = await apiRequest<Record<string, unknown>>(`/api/apps/${appId}/members`, {
+        method: "POST",
+        body: { account_id: accountId, app_role: role },
+      });
+      if (opts.json) {
+        console.log(JSON.stringify(result, null, 2));
+        return;
+      }
+      console.log(`Granted ${role} on app ${appId} to account ${accountId}.`);
+    });
+
+  apps
+    .command("update-member <appIdOrSlug> <accountId> <role>")
+    .description("Change a Hands account's direct role on one app (admin, publisher or viewer).")
+    .option("--json", "Output JSON.", false)
+    .action(async (appIdOrSlug: string, accountId: string, role: string, opts: { json?: boolean }) => {
+      const appId = await resolveAppId(appIdOrSlug);
+      const result = await apiRequest<Record<string, unknown>>(
+        `/api/apps/${appId}/members/${accountId}`,
+        { method: "PATCH", body: { app_role: role } },
+      );
+      if (opts.json) {
+        console.log(JSON.stringify(result, null, 2));
+        return;
+      }
+      console.log(`Changed account ${accountId} to ${role} on app ${appId}.`);
+    });
+
+  apps
+    .command("remove-member <appIdOrSlug> <accountId>")
+    .description("Revoke a Hands account's direct role on one app.")
+    .option("--json", "Output JSON.", false)
+    .action(async (appIdOrSlug: string, accountId: string, opts: { json?: boolean }) => {
+      const appId = await resolveAppId(appIdOrSlug);
+      const result = await apiRequest<Record<string, unknown>>(
+        `/api/apps/${appId}/members/${accountId}`,
+        { method: "DELETE" },
+      );
+      if (opts.json) {
+        console.log(JSON.stringify(result, null, 2));
+        return;
+      }
+      console.log(`Removed account ${accountId} from app ${appId}.`);
+    });
 }
 
 async function resolveAppId(input: string): Promise<string> {
