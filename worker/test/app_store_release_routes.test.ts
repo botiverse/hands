@@ -66,6 +66,42 @@ describe("App Store submission guards", () => {
     expect(body.version_id).toBe("ver-old");
   });
 
+  it("refuses to reuse a version Apple is holding, so an in-review 1.12 cannot be modified", async () => {
+    // Reusing a version that is waiting for / in review would attach a different build
+    // to a submission under Apple's consideration -- one mis-call corrupts it.
+    vi.stubGlobal("fetch", vi.fn(async (url: unknown) => {
+      const u = String(url);
+      if (u.includes("/appStoreVersions?")) {
+        return new Response(JSON.stringify({ data: [{
+          id: "ver-112",
+          attributes: { versionString: "1.12", appStoreState: "WAITING_FOR_REVIEW", platform: "IOS" },
+        }] }));
+      }
+      // Any write would be a bug; fail loudly if one happens.
+      throw new Error(`unexpected write to ${u}`);
+    }));
+    const res = await handlePrepareAppStoreVersion(
+      await makeContext({ version_string: "1.12", asc_build_id: "build-x" }),
+    );
+    expect(res.status).toBe(409);
+    const body = (await res.json()) as any;
+    expect(body.code).toBe("VERSION_NOT_EDITABLE");
+    expect(body.state).toBe("WAITING_FOR_REVIEW");
+  });
+
+  it("refuses a version already approved and awaiting release", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () =>
+      new Response(JSON.stringify({ data: [{
+        id: "ver-112",
+        attributes: { versionString: "1.12", appStoreState: "PENDING_DEVELOPER_RELEASE", platform: "IOS" },
+      }] }))));
+    const res = await handlePrepareAppStoreVersion(await makeContext({ version_string: "1.12" }));
+    expect(res.status).toBe(409);
+    const body = (await res.json()) as any;
+    expect(body.code).toBe("VERSION_NOT_EDITABLE");
+    expect(body.next_action).toContain("approved and waiting to be released");
+  });
+
   it("rejects an invalid release_type instead of sending it to Apple", async () => {
     const res = await handlePrepareAppStoreVersion(
       await makeContext({ version_string: "1.15.2", release_type: "EVERYONE" }),

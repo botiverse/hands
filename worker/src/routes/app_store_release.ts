@@ -11,6 +11,7 @@ import type { Context } from "hono";
 import type { AdminEnv } from "../middleware/auth";
 import { getAscCredentials } from "../lib/asc_credentials";
 import {
+  AscApiError,
   type AscApiCredentials,
   attachBuildToVersion,
   cancelReviewSubmission,
@@ -24,6 +25,19 @@ import {
 } from "../lib/asc_api";
 
 type AdminContext = Context<AdminEnv & { Bindings: Env }>;
+
+/**
+ * Version states in which the record is still ours to edit. Anything else means
+ * Apple is holding it: WAITING_FOR_REVIEW / IN_REVIEW (under consideration),
+ * PENDING_DEVELOPER_RELEASE / PENDING_APPLE_RELEASE (approved, about to ship),
+ * READY_FOR_SALE (shipped), or a rejection state that needs a human decision.
+ */
+const EDITABLE_STATES = new Set([
+  "PREPARE_FOR_SUBMISSION",
+  "DEVELOPER_REJECTED",
+  "METADATA_REJECTED",
+  "REJECTED",
+]);
 
 /** Review states at which Apple will not accept a new submission for the platform. */
 const IN_REVIEW_STATES = new Set(["WAITING_FOR_REVIEW", "IN_REVIEW"]);
@@ -69,6 +83,18 @@ function fail(c: AdminContext, error: unknown) {
   if (error instanceof AppStoreReleaseError) {
     return c.json({ error: error.message, code: error.code }, error.status as 400);
   }
+  // Surface Apple's own words rather than a generic 502. When App Store Connect
+  // refuses a call (for example "another version is already pending release"), that
+  // reason is the only thing that tells the caller what to do next, so it is passed
+  // through as provider_cause in the same spirit as the Play adapter's receipts.
+  if (error instanceof AscApiError) {
+    return c.json({
+      error: error.message,
+      code: "ASC_API_REJECTED",
+      status: error.status,
+      ...(error.detail ? { provider_cause: error.detail } : {}),
+    }, 502);
+  }
   const message = error instanceof Error ? error.message : String(error);
   return c.json({ error: message, code: "APP_STORE_RELEASE_FAILED" }, 502);
 }
@@ -99,6 +125,22 @@ export async function handlePrepareAppStoreVersion(c: AdminContext) {
     const creds = await loadCredentials(c, appId);
     const ascAppId = await ascAppIdFor(c, appId);
     const existing = await findAppStoreVersion(creds, ascAppId, versionString, platform);
+    // Refuse to touch a version Apple is already handling. Reusing one that is
+    // waiting for or in review would attach a different build to a submission under
+    // Apple's consideration, and one already pending release is still the version
+    // that will ship -- either way a single mis-call would corrupt a live submission.
+    if (existing && existing.state && !EDITABLE_STATES.has(existing.state)) {
+      return c.json({
+        error: `version ${versionString} is in state ${existing.state} and cannot be modified`,
+        code: "VERSION_NOT_EDITABLE",
+        version_id: existing.id,
+        version_string: existing.versionString,
+        state: existing.state,
+        next_action: existing.state === "PENDING_DEVELOPER_RELEASE"
+          ? "this version is approved and waiting to be released; release or remove it before preparing another"
+          : "withdraw the pending submission first if the version must be changed",
+      }, 409);
+    }
     const version = existing ?? (await createAppStoreVersion(
       creds,
       ascAppId,
