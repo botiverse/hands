@@ -42,13 +42,22 @@ export async function completeTestflightOperation(db: D1Database, appId: string,
     const input = await db.prepare("SELECT input FROM operation_logs WHERE id=?1 AND app_id=?2")
       .bind(operationId, appId).first<{ input: string }>();
     const identity = JSON.parse(input?.input ?? "{}") as Record<string, unknown>;
+    const versionValue = (result.version as string | null | undefined) ?? (identity.version_name as string | null | undefined) ?? null;
+    const buildNumberValue = (result.build_number as string | null | undefined)
+      ?? (identity.version_code == null ? null : String(identity.version_code));
     const body = JSON.stringify({ event: event.event, event_id: eventId, delivered_at: now,
       org_id: app.org_id, app_id: appId, payload: {
         ...event, source: "hands_operation_receipt", operation_id: operationId,
         app: { id: app.id, slug: app.slug, name: app.name }, apple_app_id: result.asc_app_id,
         previous_state: null, occurred_at: new Date(now).toISOString(), platform: "IOS",
-        version: result.version ?? identity.version_name ?? null,
-        build_number: result.build_number ?? (identity.version_code == null ? null : String(identity.version_code)),
+        version: versionValue,
+        build_number: buildNumberValue,
+        // Same shape the Apple-webhook path emits (see apple_webhooks.ts
+        // resolveBuildIdentity), so a consumer can read ONE field path for every
+        // TestFlight notification. `version`/`build_number` stay at the top level
+        // too: they predate this object and dropping them would break existing
+        // consumers.
+        build: { version: versionValue, version_code: buildNumberValue },
         app_store_connect_url: `https://appstoreconnect.apple.com/apps/${result.asc_app_id}`,
       } });
     statements.push(db.prepare(`INSERT INTO webhook_deliveries
