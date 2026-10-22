@@ -164,6 +164,13 @@ const PROVIDER_CAUSES: Array<[RegExp, string]> = [
   // A commit rejected because the app carries unrelated unpublished changes (or a
   // previously rejected submission). Google names this in the message; the remedy is
   // a different commit flag, so it must not read as a generic validation failure.
+  // commitEdit sends changesInReviewBehavior=ERROR_IF_IN_REVIEW, so Google rejects
+  // the commit whenever the app already has an edit under review. This sits ABOVE
+  // CHANGES_NOT_SENT_FOR_REVIEW on purpose: a message can mention both ("not sent
+  // for review" in a phrase that also says "in review"), and the two remedies are
+  // opposite -- one waits for an open review, the other flags the commit. Review
+  // caught the comment promising this order while the code had it the other way.
+  [/in review|under review|review.*in progress|ERROR_IF_IN_REVIEW/i, "EDIT_IN_REVIEW"],
   [/changesNotSentForReview|not ?sent for review|unreviewed/i, "CHANGES_NOT_SENT_FOR_REVIEW"],
   // A track whose testers or countries are not configured yet, or a track that does
   // not exist in the console. Both are console-side setup, not a Hands defect.
