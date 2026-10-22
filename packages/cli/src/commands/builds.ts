@@ -2427,6 +2427,37 @@ function inferSymbolPlatform(filePath: string): string {
   return inferSymbolKind(filePath) === "proguard-mapping" ? "android" : "ios";
 }
 
+/**
+ * POST the completion step, retrying transient transport failures.
+ *
+ * Safe because the endpoint is a replay when the asset is already committed
+ * (build_asset_uploads.ts returns the stored row when state='ready'), so a retry
+ * can only produce the same result. Bounded: three attempts with short backoff,
+ * then surface the last error so a real failure is not hidden.
+ */
+async function completeWithRetry(appId: string, buildId: string, assetId: string) {
+  const attempts = 3;
+  let lastError: unknown;
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      return await apiRequest<{
+        asset_id: string;
+        file_hash: string;
+        size_bytes: number;
+      }>(`/api/apps/${appId}/builds/${buildId}/assets/${assetId}/upload/complete`, {
+        method: "POST",
+      });
+    } catch (error) {
+      lastError = error;
+      const message = error instanceof Error ? error.message : String(error);
+      const transient = /fetch failed|network|timeout|socket hang up|ECONNRESET|EAI_AGAIN/i.test(message);
+      if (!transient || attempt === attempts) throw error;
+      await new Promise((resolve) => setTimeout(resolve, 500 * attempt));
+    }
+  }
+  throw lastError;
+}
+
 async function uploadDirectBuildAsset(
   appId: string,
   buildId: string,
@@ -2498,13 +2529,12 @@ async function uploadDirectBuildAsset(
       throw new Error(`direct R2 upload failed: ${uploadResponse.status} ${uploadResponse.statusText}`);
     }
   }
-  const completed = await apiRequest<{
-    asset_id: string;
-    file_hash: string;
-    size_bytes: number;
-  }>(`/api/apps/${appId}/builds/${buildId}/assets/${declared.asset_id}/upload/complete`, {
-    method: "POST",
-  });
+  // Completion is idempotent server-side: if the row is already 'ready' with a
+  // committed key, the endpoint replays the stored result. So a transient network
+  // failure here can be retried without risking a duplicate asset -- and NOT
+  // retrying would report "fetch failed" for an upload that actually committed,
+  // which is exactly what happened during the first real use of attach-symbols.
+  const completed = await completeWithRetry(appId, buildId, declared.asset_id);
   return {
     id: completed.asset_id,
     artifact_kind: metadata.artifact_kind,
