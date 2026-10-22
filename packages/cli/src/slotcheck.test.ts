@@ -33,7 +33,26 @@ describe("publish-android declares a slot for every asset it uploads", () => {
           return res.end(JSON.stringify({ asset_id: "asset-direct", file_hash: "b".repeat(64), size_bytes: 3 }));
         }
         if (req.method === "POST" && url.startsWith("/api/apps/app-1/builds/build-1/assets")) return res.end(JSON.stringify({ id: "asset-1" }));
-        if (req.method === "PATCH" && url === "/api/apps/app-1/builds/build-1") return res.end(JSON.stringify({ id: "build-1" }));
+        if (req.method === "PATCH" && url === "/api/apps/app-1/builds/build-1") {
+          // Mirror the SERVER's predicate instead of rubber-stamping the PATCH.
+          // builds.ts refuses status=succeeded on a protocol-v1 build until every
+          // declared slot has a verified asset, so this mock rejects the same way.
+          // Without this the test was falsely green: it only proved what the CLI
+          // declared, never that the server would accept it.
+          const build = requests.find((r) => r.method === "POST" && r.url === "/api/apps/app-1/builds")!;
+          const slots = (build.body.required_asset_slots_json ?? []) as any[];
+          const completed = new Set(
+            requests
+              .filter((r) => r.method === "POST" && r.url.includes("/upload/complete"))
+              .map((r) => "proguard-mapping"),
+          );
+          const missing = slots.filter((s2) => !completed.has(`${s2.artifact_kind}`));
+          if (missing.length > 0) {
+            res.statusCode = 409;
+            return res.end(JSON.stringify({ error: "required build assets are not verified", code: "REQUIRED_ASSETS_INCOMPLETE" }));
+          }
+          return res.end(JSON.stringify({ id: "build-1", status: "succeeded" }));
+        }
         if (req.method === "POST" && url === "/api/apps/app-1/releases") return res.end(JSON.stringify({ id: "rel-1" }));
         res.statusCode = 404; return res.end(JSON.stringify({ error: "nf" }));
       });
@@ -62,11 +81,81 @@ describe("publish-android declares a slot for every asset it uploads", () => {
       expect(created!.body.status).toBe("pending");
       const slots = created!.body.required_asset_slots_json as any[];
       const kinds = slots.map((s) => `${s.artifact_kind}/${s.platform}/${s.filetype}`).sort();
-      expect(kinds).toContain("installable/android/apk");
-      expect(kinds).toContain("proguard-mapping/android/mapping.txt");
+      // ONLY the mapping is declared. Declaring the APK or the patches would add
+      // server-side gates for assets that already upload fine on the legacy path,
+      // and two --delta-patch flags cannot even be distinguished by the slot key.
+      expect(kinds).toEqual(["proguard-mapping/android/mapping.txt"]);
       // and the mapping actually went through the direct-upload declaration
       const declared = requests.filter((r) => r.url.includes("/assets/uploads"));
       expect(declared.length, "direct upload declarations").toBeGreaterThan(0);
+    } finally {
+      if (old.api === undefined) delete process.env.HANDS_API; else process.env.HANDS_API = old.api;
+      if (old.tok === undefined) delete process.env.HANDS_BEARER_TOKEN; else process.env.HANDS_BEARER_TOKEN = old.tok;
+      server.close();
+    }
+  }, 30000);
+});
+
+describe("publish-android asset slots do not over-declare", () => {
+  it("two --delta-patch flags do not collide on a slot key (builds.ts duplicate slot -> 400)", async () => {
+    // Regression for review feedback: the slot key is
+    // kind/platform/arch/variant/filetype and cannot express fromVersionCode, so
+    // declaring one slot per --delta-patch produced two identical keys and the
+    // server rejected the build with "duplicate slot".
+    const { createServer } = await import("node:http");
+    const requests: Array<{ method: string; url: string; body: any }> = [];
+    const server = createServer((req, res) => {
+      let raw = "";
+      req.on("data", (c) => { raw += c; });
+      req.on("end", () => {
+        const url = req.url ?? "";
+        let body: any = null;
+        if (raw) { try { body = JSON.parse(raw); } catch { body = raw; } }
+        requests.push({ method: req.method ?? "", url, body });
+        res.setHeader("content-type", "application/json");
+        if (req.method === "GET" && url === "/api/apps") return res.end(JSON.stringify({ apps: [{ id: "app-1", slug: "android-app" }] }));
+        if (req.method === "GET" && url === "/api/apps/app-1/channels") return res.end(JSON.stringify({ channels: [{ id: "channel-1", slug: "main" }] }));
+        if (req.method === "GET" && url.startsWith("/api/apps/app-1/releases?")) return res.end(JSON.stringify({ releases: [] }));
+        if (req.method === "POST" && url === "/api/apps/app-1/builds") return res.end(JSON.stringify({ id: "build-1" }));
+        if (req.method === "POST" && url === "/api/apps/app-1/upload") return res.end(JSON.stringify({ file_hash: "a".repeat(64), r2_key: "k", size_bytes: 3, original_filename: "f" }));
+        if (req.method === "POST" && url.startsWith("/api/apps/app-1/builds/build-1/assets")) return res.end(JSON.stringify({ id: "asset-1" }));
+        if (req.method === "POST" && url === "/api/apps/app-1/releases") return res.end(JSON.stringify({ id: "rel-1" }));
+        res.statusCode = 404; return res.end(JSON.stringify({ error: "nf" }));
+      });
+    });
+    await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+    const addr = server.address() as any;
+    const fs = await import("node:fs");
+    const os = await import("node:os");
+    const path = await import("node:path");
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "slots2-"));
+    const apk = path.join(dir, "a.apk"); fs.writeFileSync(apk, "apk");
+    // The CLI validates that a --delta-patch file is real gzip, so write real ones.
+    const zlib = await import("node:zlib");
+    // Must be gzip containing an archive-patcher v1 stream (magic "GFbFv1_0").
+    const magic = Buffer.from("GFbFv1_0", "ascii");
+    const p1 = path.join(dir, "1.patch.gz"); fs.writeFileSync(p1, zlib.gzipSync(Buffer.concat([magic, Buffer.from("one")])));
+    const p2 = path.join(dir, "2.patch.gz"); fs.writeFileSync(p2, zlib.gzipSync(Buffer.concat([magic, Buffer.from("two")])));
+
+    const old = { api: process.env.HANDS_API, tok: process.env.HANDS_BEARER_TOKEN };
+    process.env.HANDS_API = `http://127.0.0.1:${addr.port}`;
+    process.env.HANDS_BEARER_TOKEN = "t";
+    try {
+      const { registerBuildCommands } = await import("../src/commands/builds.js");
+      const program = new Command().version("1").option("--json", "j", false);
+      registerBuildCommands(program);
+      await program.parseAsync(["node","hands","builds","publish-android","android-app","--apk",apk,
+        "--delta-patch",`1000002=${p1}`,"--delta-patch",`1000003=${p2}`,
+        "--version-name","1.0.0","--version-code","1000004","--draft"]);
+
+      const created = requests.find((r) => r.method === "POST" && r.url === "/api/apps/app-1/builds");
+      // No --mapping: nothing needs streaming, so the build is created succeeded and
+      // carries no protocol fields at all -- identical to the pre-change behaviour.
+      expect(created!.body.status).toBe("succeeded");
+      expect(created!.body.required_asset_slots_json).toBeUndefined();
+      expect(created!.body.asset_ingest_protocol_version).toBeUndefined();
+      // and no activation PATCH is needed
+      expect(requests.some((r) => r.method === "PATCH" && r.url === "/api/apps/app-1/builds/build-1")).toBe(false);
     } finally {
       if (old.api === undefined) delete process.env.HANDS_API; else process.env.HANDS_API = old.api;
       if (old.tok === undefined) delete process.env.HANDS_BEARER_TOKEN; else process.env.HANDS_BEARER_TOKEN = old.tok;
