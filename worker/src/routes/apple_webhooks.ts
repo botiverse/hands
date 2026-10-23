@@ -472,7 +472,10 @@ export async function handleAppleWebhook(c: Context<{ Bindings: Env }>) {
       // read as "assigned to no groups", which is a claim, not an absence.
       ...(buildIdentity?.beta_groups?.length
         ? {
-            groups_display: `组：${buildIdentity.beta_groups
+            // Same prefix as the internal-beta notification (`测试组：`) so one
+            // concept reads the same way in both places; the parenthetical is added
+            // only here, where internal and external groups can appear together.
+            groups_display: `测试组：${buildIdentity.beta_groups
               .map((g) => `${g.name}（${g.is_internal ? "内部" : "外部"}）`)
               .join("、")}`,
           }

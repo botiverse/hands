@@ -561,9 +561,9 @@ describe("Apple ingress — build identity enrichment", () => {
 
     expect((await send(betaEvent())).status).toBe(200);
     const payload = latestPayload(sql);
-    // Assigned group only, labelled external so the line is not confused with the
-    // internal-beta notification's "测试组" line.
-    expect(payload.payload.groups_display).toBe("组：External QA（外部）");
+    // Same 测试组： prefix as the internal-beta notification, with the label only
+    // here where internal and external can appear together.
+    expect(payload.payload.groups_display).toBe("测试组：External QA（外部）");
     expect(payload.payload.build).toMatchObject({ version: "1.15.3", version_code: "11503001" });
   });
 
