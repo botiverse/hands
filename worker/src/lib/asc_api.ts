@@ -418,18 +418,59 @@ export async function expireAscBuild(
 export async function listBetaGroups(
   creds: AscApiCredentials,
   ascAppId: string,
+  signal?: AbortSignal,
 ): Promise<BetaGroupResource[]> {
   const res = await ascRequest<{ data: BetaGroupResource[] }>(
     creds,
     "GET",
     `/v1/apps/${encodeURIComponent(ascAppId)}/betaGroups?limit=200`,
+    undefined,
+    signal,
   );
   return res.data ?? [];
+}
+
+/**
+ * Named beta groups assigned to a build, for notification display.
+ *
+ * Two calls, deliberately: `getAssignedBetaGroupIds` returns only ids, and the names
+ * live on the app-level `listBetaGroups`. Showing an id is useless to a reader, so
+ * both are needed and the join happens here rather than in each caller.
+ *
+ * `timeoutMs` is set by the caller because this runs inside the webhook path, which
+ * has a tighter budget than an interactive request: two sequential round trips would
+ * not fit the single-hop allowance `resolveBuildIdentity` was written against.
+ *
+ * Returns [] rather than throwing when the build has no groups. That is a real state
+ * (an external build assigned to nothing yet), not a failure.
+ */
+export async function listAssignedBetaGroupNames(
+  creds: AscApiCredentials,
+  ascAppId: string,
+  ascBuildId: string,
+  timeoutMs: number,
+): Promise<Array<{ name: string; isInternal: boolean }>> {
+  const signal = AbortSignal.timeout(timeoutMs);
+  const assignedIds = await getAssignedBetaGroupIds(creds, ascBuildId, signal);
+  if (assignedIds.length === 0) return [];
+  const all = await listBetaGroups(creds, ascAppId, signal);
+  const byId = new Map(all.map((group) => [group.id, group]));
+  return assignedIds
+    .map((id) => byId.get(id))
+    // A group the build references but the app listing does not return is dropped
+    // rather than shown as a bare id: an id in a notification looks like information
+    // without being readable.
+    .filter((group): group is BetaGroupResource => group !== undefined)
+    .map((group) => ({
+      name: (group.attributes.name ?? "").trim() || group.id,
+      isInternal: group.attributes.isInternalGroup === true,
+    }));
 }
 
 export async function getAssignedBetaGroupIds(
   creds: AscApiCredentials,
   ascBuildId: string,
+  signal?: AbortSignal,
 ): Promise<string[]> {
   const res = await ascRequest<{
     data: AscBuildResource;
@@ -438,6 +479,8 @@ export async function getAssignedBetaGroupIds(
     creds,
     "GET",
     `/v1/builds/${encodeURIComponent(ascBuildId)}?include=betaGroups&limit[betaGroups]=50`,
+    undefined,
+    signal,
   );
   const relationshipIds =
     res.data.relationships?.betaGroups?.data?.map((item) => item.id) ?? [];

@@ -521,6 +521,69 @@ describe("Apple ingress — build identity enrichment", () => {
     vi.unstubAllGlobals();
   });
 
+  it("names the beta groups an external-state build is assigned to", async () => {
+    // artin asked why external groups were missing. The field was never emitted on
+    // this path; it now joins build->betaGroups (ids only) with the app-level group
+    // list (names) so the notification can print names rather than ids.
+    const { sql, send } = await setup();
+    await withAscCredentials(sql);
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        const json = (body: unknown) =>
+          new Response(JSON.stringify(body), { status: 200, headers: { "content-type": "application/json" } });
+        if (url.includes("/v1/buildBetaDetails/")) {
+          return json({
+            data: {
+              type: "builds", id: "asc-build-1",
+              attributes: { version: "11503001" },
+              relationships: { preReleaseVersion: { data: { type: "preReleaseVersions", id: "pre-1" } } },
+            },
+            included: [{ type: "preReleaseVersions", id: "pre-1", attributes: { version: "1.15.3" } }],
+          });
+        }
+        if (url.includes("include=betaGroups")) {
+          return json({
+            data: { type: "builds", id: "asc-build-1", relationships: { betaGroups: { data: [{ type: "betaGroups", id: "g-ext" }] } } },
+            included: [{ type: "betaGroups", id: "g-ext" }],
+          });
+        }
+        if (url.includes("/betaGroups")) {
+          return json({ data: [
+            { id: "g-ext", attributes: { name: "External QA", isInternalGroup: false } },
+            { id: "g-int", attributes: { name: "Botiverse", isInternalGroup: true } },
+          ] });
+        }
+        return json({ data: {} });
+      }),
+    );
+
+    expect((await send(betaEvent())).status).toBe(200);
+    const payload = latestPayload(sql);
+    // Same 测试组： prefix as the internal-beta notification, with the label only
+    // here where internal and external can appear together.
+    expect(payload.payload.groups_display).toBe("测试组：External QA（外部）");
+    expect(payload.payload.build).toMatchObject({ version: "1.15.3", version_code: "11503001" });
+  });
+
+  it("omits groups_display when the build has no assigned groups", async () => {
+    // Absent, not empty: an empty string would assert "assigned to nothing", which is
+    // a claim the adapter has not established.
+    const { sql, send } = await setup();
+    await withAscCredentials(sql);
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      const json = (b: unknown) => new Response(JSON.stringify(b), { status: 200, headers: { "content-type": "application/json" } });
+      if (url.includes("/v1/buildBetaDetails/")) {
+        return json({ data: { type: "builds", id: "b1", attributes: { version: "11503001" }, relationships: {} } });
+      }
+      return json({ data: [], included: [] });
+    }));
+    expect((await send(betaEvent())).status).toBe(200);
+    expect(latestPayload(sql).payload.groups_display).toBeUndefined();
+  });
+
   it("names the build for a buildUploads event from the resource's own attributes", async () => {
     // buildUploads carries cfBundleShortVersionString / cfBundleVersion directly, so
     // no relationship is followed. Before this, that event type was absent from
@@ -617,6 +680,13 @@ describe("Apple ingress — build identity enrichment", () => {
       vi.fn(async (input: RequestInfo | URL) => {
         const url = String(input);
         calls.push(url);
+        // Beta group lookups are a separate, additive concern; answer them empty so
+        // this test keeps asserting only the identity lookup it was written for.
+        if (url.includes("/betaGroups")) {
+          return new Response(JSON.stringify({ data: [], included: [] }), {
+            status: 200, headers: { "content-type": "application/json" },
+          });
+        }
         // ASC returns the BUILD here: `builds.version` is the BUILD NUMBER.
         // The marketing version only exists on the included preReleaseVersion.
         return new Response(
@@ -646,8 +716,9 @@ describe("Apple ingress — build identity enrichment", () => {
 
     expect((await send(betaEvent())).status).toBe(200);
 
-    // Exactly one ASC call, to the documented relationship endpoint.
-    expect(calls).toHaveLength(1);
+    // The identity lookup hits the documented relationship endpoint. Group
+    // resolution adds its own call(s) after it, so assert on the first rather than
+    // the total; the group case has its own test.
     expect(calls[0]).toContain("/v1/buildBetaDetails/beta-1/build");
     expect(calls[0]).toContain("include=preReleaseVersion");
 

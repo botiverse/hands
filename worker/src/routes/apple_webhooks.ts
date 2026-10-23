@@ -1,7 +1,7 @@
 import type { Context } from "hono";
 import type { AdminContext } from "../lib/permissions";
 import { getAscCredentials, encryptP8, decryptP8 } from "../lib/asc_credentials";
-import { ascRequest, AscApiError, type AscApiCredentials } from "../lib/asc_api";
+import { ascRequest, AscApiError, listAssignedBetaGroupNames, type AscApiCredentials } from "../lib/asc_api";
 import { insertAuditLog } from "../lib/permissions";
 import { businessOrigin } from "../lib/origin";
 import { triggerDeliveryNow } from "./webhooks";
@@ -50,6 +50,9 @@ interface Config {
  * Event types whose resource can be resolved to a `builds` resource. Kept
  * separate from EVENT_MAP so the tuple stays a flat, indexable shape.
  */
+/** Budget for the two extra round trips that resolve beta group names. */
+const GROUPS_TIMEOUT_MS = 4000;
+
 const BUILD_LOOKUP: Partial<Record<string, string>> = {
   buildBetaDetailExternalBuildStateUpdated: "/build",
   // Unlike buildBetaDetails, a buildUploads resource carries the version strings on
@@ -68,6 +71,12 @@ export interface BuildIdentity {
   version: string | null;
   /** Build number, e.g. "11400009" (ASC `builds.version`). */
   version_code: string | null;
+  /**
+   * Groups this build is ASSIGNED to, for display. Absent (never empty) when the
+   * groups could not be read -- an empty array would claim "assigned to nothing",
+   * which is a different and possibly false statement.
+   */
+  beta_groups?: Array<{ name: string; is_internal: boolean }>;
 }
 
 /**
@@ -186,6 +195,7 @@ async function resolveBuildIdentityForEvent(
   env: Env,
   encKey: string,
   appId: string,
+  ascAppId: string,
   eventType: string,
   resourceType: string,
   resourceId: string,
@@ -202,7 +212,24 @@ async function resolveBuildIdentityForEvent(
   const lookupPath: string = candidatePath;
   try {
     const creds = await getAscCredentials(env.DB, encKey, appId);
-    return await resolveBuildIdentity(creds, resourceType, resourceId, lookupPath);
+    const identity = await resolveBuildIdentity(creds, resourceType, resourceId, lookupPath);
+    if (!identity) return identity;
+    // Groups are only meaningful for the external-state event, and only a build id
+    // can be queried. Two extra round trips fit in their own budget rather than
+    // borrowing the single-hop one the identity lookup was designed around.
+    if (resourceType === "buildBetaDetails" && creds) {
+      try {
+        // ascAppId, NOT appId: listBetaGroups queries /v1/apps/{ascAppId}/betaGroups,
+        // and Hands' internal app id is a different identifier entirely.
+        const groups = await listAssignedBetaGroupNames(creds, ascAppId, resourceId, GROUPS_TIMEOUT_MS);
+        if (groups.length > 0) {
+          identity.beta_groups = groups.map((g) => ({ name: g.name, is_internal: g.isInternal }));
+        }
+      } catch {
+        // Groups are decoration on a notification that must still be delivered.
+      }
+    }
+    return identity;
   } catch {
     return null;
   }
@@ -417,6 +444,7 @@ export async function handleAppleWebhook(c: Context<{ Bindings: Env }>) {
     c.env,
     c.env.ASC_CRED_ENC_KEY,
     config.app_id,
+    config.apple_app_id,
     d.type,
     resourceType,
     resourceId,
@@ -438,6 +466,20 @@ export async function handleAppleWebhook(c: Context<{ Bindings: Env }>) {
       app_store_connect_url: `https://appstoreconnect.apple.com/apps/${config.apple_app_id}`,
       /** Version this event is about, or null when it could not be resolved. */
       build: buildIdentity,
+      // The same rendering shape the internal-beta operation event already emits, so a
+      // downstream template reads one field for every TestFlight notification.
+      // Omitted entirely when the groups were not resolved: an empty string would
+      // read as "assigned to no groups", which is a claim, not an absence.
+      ...(buildIdentity?.beta_groups?.length
+        ? {
+            // Same prefix as the internal-beta notification (`测试组：`) so one
+            // concept reads the same way in both places; the parenthetical is added
+            // only here, where internal and external groups can appear together.
+            groups_display: `测试组：${buildIdentity.beta_groups
+              .map((g) => `${g.name}（${g.is_internal ? "内部" : "外部"}）`)
+              .join("、")}`,
+          }
+        : {}),
     },
   });
   // One atomic batch: concurrent/replayed requests cannot insert additional deliveries,
