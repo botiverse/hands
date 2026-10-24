@@ -4820,6 +4820,7 @@ describe("quiver releases — draft lifecycle", () => {
           channel: "main",
           version_code: 2,
           previous_version_code: 1,
+          previous_version: "1.0.0",
           rollout: 100,
         },
       });
@@ -4851,7 +4852,9 @@ describe("quiver releases — draft lifecycle", () => {
       const payloads = await publishedPayloads();
       expect(payloads).toHaveLength(1);
       // Nothing was superseded, so a consumer must not render "1 -> 2".
+      // Both halves must be null together, or a template renders a half arrow.
       expect(payloads[0].payload.previous_version_code).toBeNull();
+      expect(payloads[0].payload.previous_version).toBeNull();
     });
 
     it("gives a re-publish after a cancel a new event_id", async () => {
@@ -4898,7 +4901,7 @@ describe("quiver releases — draft lifecycle", () => {
       // The unique index must absorb the replay rather than deliver twice.
       await emitReleasePublished(env as any, "default", "app-release", {
         release_id: "rel-draft", app_id: "app-release", build_id: "build-draft",
-        channel_id: "ch-main", revision: 1, displacedVersionCode: 1,
+        channel_id: "ch-main", revision: 1, displacedVersion: { code: 1, name: "1.0.0" },
       });
       expect(await publishedPayloads()).toHaveLength(1);
     });
@@ -4925,7 +4928,7 @@ describe("quiver releases — draft lifecycle", () => {
       // is still reported -- which is the point: it comes from the caller.
       await emitReleasePublished(env as any, "default", "app-release", {
         release_id: "rel-pub", app_id: "app-release", build_id: "build-draft",
-        channel_id: "ch-main", revision: 4, displacedVersionCode: 1,
+        channel_id: "ch-main", revision: 4, displacedVersion: { code: 1, name: "1.0.0" },
       });
 
       const payloads = await publishedPayloads();
