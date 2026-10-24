@@ -1172,7 +1172,14 @@ export async function emitReleaseNew(
   } catch (err) {
     console.warn("[release:new] version lookup failed; emitting bare payload", err);
   }
-  await emitWebhookEvent(env, { orgId, appId, event: "release:new", body: { ...base, ...extra } });
+  // A release is created once, so its id is the occurrence.
+  await emitWebhookEvent(env, {
+    orgId,
+    appId,
+    event: "release:new",
+    eventId: `release:new:${base.release_id}`,
+    body: { ...base, ...extra },
+  });
 }
 
 /**
@@ -1253,7 +1260,7 @@ export async function emitReleasePublished(
     orgId,
     appId,
     event: "release:published",
-    eventId: `${base.release_id}:${base.revision}`,
+    eventId: `release:published:${base.release_id}:${base.revision}`,
     body: { ...base, ...extra },
   });
 }
@@ -1322,6 +1329,7 @@ async function emitReleaseDraftCreated(
       orgId,
       appId,
       event: "release:draft_created",
+      eventId: `release:draft_created:${releaseId}`,
       body: {
         release_id: releaseId,
         app_id: appId,
@@ -2451,6 +2459,11 @@ export async function handleDeleteRelease(c: AdminContext) {
         orgId,
         appId,
         event: "release:cancelled",
+        // Cancelling bumps revision, and a release can be re-published and
+        // cancelled again -- that second cancellation is a real event, so the
+        // revision is part of the key. expectedRevision is the state this
+        // transition moved FROM, which is what makes the pair unique.
+        eventId: `release:cancelled:${releaseId}:${expectedRevision + 1}`,
         body: { release_id: releaseId, app_id: appId, build_id: existing.build_id },
       }),
     );
@@ -2642,6 +2655,7 @@ export async function handleRollbackRelease(c: AdminContext) {
           orgId,
           appId,
           event: "release:rolled_back",
+          eventId: `release:rolled_back:${releaseId}:${expectedRevision + 1}`,
           body: { release_id: releaseId, app_id: appId, reactivated: true, build_id: existing.build_id },
         }),
       );

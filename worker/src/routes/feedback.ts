@@ -897,6 +897,10 @@ export async function handlePublicFeedbackSubmit(c: Context<{ Bindings: Env }>) 
           orgId,
           appId: app.id,
           event: `${eventPrefix}:new_group`,
+          // A signature is first seen once, so (app, signature) is the
+          // occurrence. This also makes concurrent submissions that both read
+          // prior.n === 0 collapse instead of double-notifying.
+          eventId: `${eventPrefix}:new_group:${app.id}:${signature}`,
           body: base,
         });
         return;
@@ -913,6 +917,11 @@ export async function handlePublicFeedbackSubmit(c: Context<{ Bindings: Env }>) 
           orgId,
           appId: app.id,
           event: `${eventPrefix}:spike`,
+          // The threshold alone is not enough: this fires only when the hourly
+          // count is exactly 10/50/100, so a later hour returning to 10 is a
+          // genuine second outbreak. Without the hour bucket that one collides
+          // with the earlier key and is silently dropped.
+          eventId: `${eventPrefix}:spike:${app.id}:${signature}:${Math.floor(now / 3_600_000)}:${hourCount}`,
           body: { ...base, count_last_hour: hourCount },
         });
       }
@@ -932,6 +941,7 @@ export async function handlePublicFeedbackSubmit(c: Context<{ Bindings: Env }>) 
       orgId: app.org_id,
       appId: app.id,
       event: "feedback:new",
+      eventId: `feedback:new:${ticketId}`,
       body: {
         ticket_id: ticketId,
         app_slug: app.slug,
@@ -1271,6 +1281,7 @@ export async function handlePublicMinidumpSubmit(c: Context<{ Bindings: Env }>) 
       orgId: app.org_id,
       appId: app.id,
       event: "feedback:new",
+      eventId: `feedback:new:${ticketId}`,
       body: {
         ticket_id: ticketId,
         app_slug: app.slug,

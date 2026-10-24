@@ -4809,7 +4809,7 @@ describe("quiver releases — draft lifecycle", () => {
       expect(payloads).toHaveLength(1);
       // Consumers key idempotency on event_id, so it has to be here -- an event
       // without one is silently un-dedupable on their side.
-      expect(payloads[0].event_id).toBe("rel-draft:1");
+      expect(payloads[0].event_id).toBe("release:published:rel-draft:1");
       expect(payloads[0]).toMatchObject({
         event: "release:published",
         payload: {
@@ -12010,6 +12010,17 @@ describe("quiver public API v2 — scope resolution", () => {
     ).bind("wh-crash").all()).results as Array<{ event_type: string }>;
     expect(deliveries.filter((d) => d.event_type === "crash:new_group").length).toBe(2);
     expect(deliveries.filter((d) => d.event_type === "crash:spike").length).toBe(0);
+
+    // Each new section has to carry its own event_id. Two crashes sharing a
+    // signature must NOT share one either -- they are the same group, so only
+    // the first submission emits, and an id keyed on the ticket would differ.
+    const ids = (await env.DB.prepare(
+      "SELECT external_event_id FROM webhook_deliveries WHERE webhook_id = ?1 AND event_type = 'crash:new_group' ORDER BY created_at",
+    ).bind("wh-crash").all()).results as Array<{ external_event_id: string | null }>;
+    expect(ids).toHaveLength(2);
+    expect(ids.every((r) => typeof r.external_event_id === "string" && r.external_event_id.length > 0)).toBe(true);
+    expect(new Set(ids.map((r) => r.external_event_id)).size).toBe(2);
+    for (const r of ids) expect(r.external_event_id).toMatch(/^crash:new_group:/);
   });
 
   it("devices: register upserts per device and analytics aggregates by version", async () => {

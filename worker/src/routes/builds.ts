@@ -956,6 +956,9 @@ export async function handleCreateBuild(c: AdminContext) {
           orgId,
           appId,
           event: body.status === "succeeded" ? "build:succeeded" : "build:failed",
+          // A build reaches one terminal status once; re-emitting reports the
+          // same fact, so (build, status) is the occurrence.
+          eventId: `build:${id}:${body.status}`,
           body: { build_id: id, app_id: appId, version_name: body.version_name, version_code: body.version_code },
         }),
       );
@@ -1065,6 +1068,7 @@ export async function handleUpdateBuild(c: AdminContext) {
           orgId,
           appId,
           event: body.status === "succeeded" ? "build:succeeded" : "build:failed",
+          eventId: `build:${buildId}:${body.status}`,
           body: { build_id: buildId, app_id: appId, status: body.status },
         }),
       );
