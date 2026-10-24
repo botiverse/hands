@@ -1,6 +1,7 @@
 import { randomBytes } from "node:crypto";
 import type { Command } from "commander";
 import { apiRequest } from "../lib/api.js";
+import { jsonRequested } from "../lib/json_output";
 
 type AppRow = { id: string; slug: string };
 type Webhook = {
@@ -38,7 +39,7 @@ export function registerWebhookCommands(program: Command): void {
     .action(async (appIdOrSlug: string, opts: { json?: boolean }) => {
       const appId = await resolveAppId(appIdOrSlug);
       const result = await apiRequest<{ webhooks: Webhook[] }>(`/api/apps/${appId}/webhooks`);
-      if (opts.json) return console.log(JSON.stringify(result, null, 2));
+      if (jsonRequested(program, opts.json)) return console.log(JSON.stringify(result, null, 2));
       if (result.webhooks.length === 0) return console.log("No webhooks.");
       for (const w of result.webhooks) {
         const events = safeJsonArray(w.events_json);
@@ -66,7 +67,7 @@ export function registerWebhookCommands(program: Command): void {
         `/api/apps/${appId}/webhooks`,
         { method: "POST", body },
       );
-      if (opts.json) {
+      if (jsonRequested(program, opts.json)) {
         return console.log(JSON.stringify(generated ? { ...result, secret } : result, null, 2));
       }
       console.log(`Created webhook ${result.id} -> ${result.url} (events: ${result.events.length ? result.events.join(",") : "*"}).`);
@@ -102,7 +103,7 @@ export function registerWebhookCommands(program: Command): void {
         method: "PATCH",
         body,
       });
-      if (opts.json) return console.log(JSON.stringify(result, null, 2));
+      if (jsonRequested(program, opts.json)) return console.log(JSON.stringify(result, null, 2));
       console.log(`Updated webhook ${webhookId}.`);
     });
 
@@ -112,7 +113,7 @@ export function registerWebhookCommands(program: Command): void {
       const result = await apiRequest<{ ok: true }>(`/api/apps/${appId}/webhooks/${encodeURIComponent(webhookId)}`, {
         method: "DELETE",
       });
-      if (opts.json) return console.log(JSON.stringify(result, null, 2));
+      if (jsonRequested(program, opts.json)) return console.log(JSON.stringify(result, null, 2));
       console.log(`Deleted webhook ${webhookId}.`);
     });
 
@@ -122,7 +123,7 @@ export function registerWebhookCommands(program: Command): void {
       const result = await apiRequest<{ deliveries: Delivery[] }>(
         `/api/apps/${appId}/webhooks/${encodeURIComponent(webhookId)}/deliveries`,
       );
-      if (opts.json) return console.log(JSON.stringify(result, null, 2));
+      if (jsonRequested(program, opts.json)) return console.log(JSON.stringify(result, null, 2));
       if (result.deliveries.length === 0) return console.log("No deliveries.");
       for (const d of result.deliveries) {
         const outcome = d.last_response_status ?? d.last_error ?? "-";

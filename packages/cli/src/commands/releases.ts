@@ -6,6 +6,7 @@ import { readFileSync } from "node:fs";
 import type { Command } from "commander";
 import { apiRequest, QuiverApiError } from "../lib/api.js";
 import { readEnv } from "../lib/env.js";
+import { jsonRequested } from "../lib/json_output";
 
 interface AppRow {
   id: string;
@@ -201,7 +202,7 @@ export function registerReleaseCommands(program: Command): void {
       const detail = await apiRequest<{ release: Record<string, unknown> }>(
         `/api/apps/${appId}/releases/${releaseId}`,
       );
-      if (opts.json) {
+      if (jsonRequested(program, opts.json)) {
         console.log(JSON.stringify(detail, null, 2));
         return;
       }
@@ -329,7 +330,7 @@ export function registerReleaseCommands(program: Command): void {
           `/api/apps/${appId}/releases/${releaseId}`,
           { method: "PATCH", body },
         );
-        if (opts.json) {
+        if (jsonRequested(program, opts.json)) {
           console.log(JSON.stringify(updated, null, 2));
           return;
         }
@@ -361,7 +362,7 @@ export function registerReleaseCommands(program: Command): void {
         `/api/apps/${appId}/releases/${releaseId}`,
         { method: "DELETE" },
       );
-      if (opts.json) {
+      if (jsonRequested(program, opts.json)) {
         console.log(JSON.stringify(result, null, 2));
         return;
       }
@@ -382,7 +383,7 @@ export function registerReleaseCommands(program: Command): void {
         `/api/apps/${appId}/releases/${releaseId}/rollback`,
         { method: "POST" },
       );
-      if (opts.json) {
+      if (jsonRequested(program, opts.json)) {
         console.log(JSON.stringify(result, null, 2));
         return;
       }
@@ -437,7 +438,7 @@ export function registerReleaseCommands(program: Command): void {
           },
         },
       );
-      if (opts.json) {
+      if (jsonRequested(program, opts.json)) {
         console.log(JSON.stringify(result, null, 2));
         return;
       }
@@ -473,7 +474,7 @@ export function registerReleaseCommands(program: Command): void {
           `/api/apps/${appId}/releases/${releaseId}/shares`,
           { method: "POST", body },
         );
-        if (opts.json) {
+        if (jsonRequested(program, opts.json)) {
           console.log(JSON.stringify(share, null, 2));
           return;
         }
@@ -498,7 +499,7 @@ export function registerReleaseCommands(program: Command): void {
         const res = await apiRequest<{ shares: ReleaseShare[] }>(
           `/api/apps/${appId}/releases/${releaseId}/shares`,
         );
-        if (opts.json) {
+        if (jsonRequested(program, opts.json)) {
           console.log(JSON.stringify(res, null, 2));
           return;
         }
@@ -549,7 +550,7 @@ export function registerReleaseCommands(program: Command): void {
           `/api/apps/${appId}/releases/${releaseId}/shares/${shareId}`,
           { method: "PATCH", body },
         );
-        if (opts.json) {
+        if (jsonRequested(program, opts.json)) {
           console.log(JSON.stringify(share, null, 2));
           return;
         }
@@ -574,7 +575,7 @@ export function registerReleaseCommands(program: Command): void {
           `/api/apps/${appId}/releases/${releaseId}/shares/${shareId}`,
           { method: "DELETE" },
         );
-        if (opts.json) {
+        if (jsonRequested(program, opts.json)) {
           console.log(JSON.stringify(res, null, 2));
           return;
         }
@@ -604,7 +605,7 @@ export function registerReleaseCommands(program: Command): void {
         method: "POST",
         body: { expected_release_id: opts.from, target_release_id: opts.to },
       });
-      if (opts.json) {
+      if (jsonRequested(program, opts.json)) {
         console.log(JSON.stringify(result, null, 2));
         return;
       }

@@ -17,6 +17,7 @@ import { promisify } from "node:util";
 import { createGunzip } from "node:zlib";
 import { apiRequest, apiUploadFile, QuiverApiError } from "../lib/api.js";
 import { createHash } from "node:crypto";
+import { jsonRequested } from "../lib/json_output";
 
 const execFileAsync = promisify(execFile);
 
@@ -647,7 +648,7 @@ export function registerBuildCommands(program: Command): void {
           `/api/apps/${id}/builds`,
           { query: { limit: opts.limit } },
         );
-        if (shouldOutputJson(program, opts.json)) {
+        if (shouldOutputJson(program, jsonRequested(program, opts.json))) {
           console.log(JSON.stringify(res, null, 2));
           return;
         }
@@ -676,7 +677,7 @@ export function registerBuildCommands(program: Command): void {
       ) => {
         const id = await resolveAppId(appIdOrSlug);
         const build = await apiRequest<BuildRow>(`/api/apps/${id}/builds/${buildId}`);
-        if (shouldOutputJson(program, opts.json)) {
+        if (shouldOutputJson(program, jsonRequested(program, opts.json))) {
           console.log(JSON.stringify(build, null, 2));
           return;
         }
@@ -715,7 +716,7 @@ export function registerBuildCommands(program: Command): void {
         const result = await apiRequest<Record<string, unknown>>(
           `/api/apps/${id}/builds/${buildId}/assets/${assetId}/download?presign=1`,
         );
-        if (shouldOutputJson(program, opts.json)) {
+        if (shouldOutputJson(program, jsonRequested(program, opts.json))) {
           console.log(JSON.stringify(result, null, 2));
           return;
         }
@@ -743,7 +744,7 @@ export function registerBuildCommands(program: Command): void {
           `/api/apps/${id}/builds/${buildId}/assets/${assetId}`,
           { method: "DELETE" },
         );
-        if (shouldOutputJson(program, opts.json)) {
+        if (shouldOutputJson(program, jsonRequested(program, opts.json))) {
           console.log(JSON.stringify(result, null, 2));
           return;
         }
@@ -848,7 +849,7 @@ export function registerBuildCommands(program: Command): void {
           },
         });
 
-        if (shouldOutputJson(program, opts.json)) {
+        if (shouldOutputJson(program, jsonRequested(program, opts.json))) {
           console.log(JSON.stringify(result, null, 2));
           return;
         }
@@ -1124,7 +1125,7 @@ export function registerBuildCommands(program: Command): void {
             size_bytes: asset.size_bytes,
           })),
         };
-        if (shouldOutputJson(program, opts.json)) {
+        if (shouldOutputJson(program, jsonRequested(program, opts.json))) {
           console.log(JSON.stringify(result, null, 2));
           return;
         }
@@ -1396,7 +1397,7 @@ export function registerBuildCommands(program: Command): void {
           version_code: versionCode,
           assets,
         };
-        if (shouldOutputJson(program, opts.json)) {
+        if (shouldOutputJson(program, jsonRequested(program, opts.json))) {
           console.log(JSON.stringify(result, null, 2));
           return;
         }
@@ -1595,7 +1596,7 @@ export function registerBuildCommands(program: Command): void {
           version_code: versionCode,
           assets,
         };
-        if (shouldOutputJson(program, opts.json)) {
+        if (shouldOutputJson(program, jsonRequested(program, opts.json))) {
           console.log(JSON.stringify(result, null, 2));
           return;
         }
@@ -1648,7 +1649,7 @@ export function registerBuildCommands(program: Command): void {
           arch: null,
           filetype: SYMBOL_FILETYPE[kind] ?? "mapping.txt",
         });
-        if (shouldOutputJson(program, opts.json)) {
+        if (shouldOutputJson(program, jsonRequested(program, opts.json))) {
           console.log(JSON.stringify(asset, null, 2));
           return;
         }
@@ -1681,7 +1682,7 @@ export function registerBuildCommands(program: Command): void {
         }>(`/api/apps/${appId}/builds/${buildId}/testflight-groups`, {
           query: { bundle_id: opts.bundleId },
         });
-        if (shouldOutputJson(program, opts.json)) {
+        if (shouldOutputJson(program, jsonRequested(program, opts.json))) {
           console.log(JSON.stringify(result, null, 2));
           return;
         }
@@ -1723,7 +1724,7 @@ export function registerBuildCommands(program: Command): void {
         }
         const appId = await resolveAppId(appIdOrSlug);
         const status = await getTestflightPublishStatus(appId, buildId, opts);
-        if (shouldOutputJson(program, opts.json)) {
+        if (shouldOutputJson(program, jsonRequested(program, opts.json))) {
           console.log(JSON.stringify(status, null, 2));
           return;
         }
@@ -1818,7 +1819,7 @@ export function registerBuildCommands(program: Command): void {
           opts.timeoutSeconds,
           "--timeout-seconds",
         );
-        const quiet = shouldOutputJson(program, opts.json);
+        const quiet = shouldOutputJson(program, jsonRequested(program, opts.json));
         const distribution = opts.distribution;
         const waitStartedAt = Date.now();
         if (opts.wait) {
@@ -2105,7 +2106,7 @@ export function registerBuildCommands(program: Command): void {
           version_code: versionCode,
           assets,
         };
-        if (shouldOutputJson(program, opts.json)) {
+        if (shouldOutputJson(program, jsonRequested(program, opts.json))) {
           console.log(JSON.stringify(result, null, 2));
           return;
         }
@@ -2324,7 +2325,7 @@ export function registerBuildCommands(program: Command): void {
           version_code: versionCode,
           assets,
         };
-        if (shouldOutputJson(program, opts.json)) {
+        if (shouldOutputJson(program, jsonRequested(program, opts.json))) {
           console.log(JSON.stringify(result, null, 2));
           return;
         }

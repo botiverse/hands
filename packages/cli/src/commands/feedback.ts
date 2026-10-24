@@ -6,6 +6,7 @@
 import type { Command } from "commander";
 import { writeFile } from "node:fs/promises";
 import { apiRequest } from "../lib/api.js";
+import { jsonRequested } from "../lib/json_output";
 
 interface TicketRow {
   id: string;
@@ -52,7 +53,7 @@ export function registerFeedbackCommands(program: Command): void {
       const res = await apiRequest<{ tickets: TicketRow[] }>(
         `/api/apps/${appId}/feedback${qs ? `?${qs}` : ""}`,
       );
-      if (opts.json) {
+      if (jsonRequested(program, opts.json)) {
         console.log(JSON.stringify(res, null, 2));
         return;
       }
@@ -81,7 +82,7 @@ export function registerFeedbackCommands(program: Command): void {
         attachments: Array<{ id: string; filename: string; size_bytes: number }>;
         comments: Array<{ author_actor: string; body: string; created_at: number }>;
       }>(`/api/apps/${appId}/feedback/${ticketId}`);
-      if (opts.json) {
+      if (jsonRequested(program, opts.json)) {
         console.log(JSON.stringify(res, null, 2));
         return;
       }
@@ -133,7 +134,7 @@ export function registerFeedbackCommands(program: Command): void {
           `/api/apps/${appId}/feedback/${ticketId}`,
           { method: "PATCH", body },
         );
-        if (opts.json) {
+        if (jsonRequested(program, opts.json)) {
           console.log(JSON.stringify(res, null, 2));
           return;
         }
@@ -152,7 +153,7 @@ export function registerFeedbackCommands(program: Command): void {
         `/api/apps/${appId}/feedback/${ticketId}/comments`,
         { method: "POST", body: { body: text, internal: opts.internal === true } },
       );
-      if (opts.json) {
+      if (jsonRequested(program, opts.json)) {
         console.log(JSON.stringify(res, null, 2));
         return;
       }
