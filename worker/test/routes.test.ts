@@ -4903,6 +4903,36 @@ describe("quiver releases — draft lifecycle", () => {
       expect(await publishedPayloads()).toHaveLength(1);
     });
 
+    it("reads the displaced version before clearing the pointer", async () => {
+      // The helper is exercised directly because the publish path resolves its
+      // deferred emit before any assertion can interleave a cancel -- an
+      // integration test here would pass whether the value is captured in-band
+      // or re-queried, which is worse than no test. This asserts the CONTRACT
+      // instead: the emitted field is whatever the caller captured, so the
+      // publish path's pre-batch read is what the consumer sees even after the
+      // predecessor's superseded_by_release_id is gone.
+      const { emitReleasePublished } = await import("../src/routes/releases");
+      const now = Date.now();
+      await env.DB.prepare(
+        "INSERT INTO webhooks (id, org_id, app_id, url, secret, events_json, enabled, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      ).bind("wh-pub", "default", null, "https://bobo.example/hooks/hands", "s",
+        JSON.stringify(["release:published"]), 1, now, now).run();
+
+      const { createRelease } = await import("../src/routes/releases");
+      await createRelease(env.DB as any, "app-release", { build_id: "build-draft", status: "active" }, "tester", "rel-pub");
+
+      // No superseded predecessor exists for this release, yet the captured value
+      // is still reported -- which is the point: it comes from the caller.
+      await emitReleasePublished(env as any, "default", "app-release", {
+        release_id: "rel-pub", app_id: "app-release", build_id: "build-draft",
+        channel_id: "ch-main", revision: 4, displacedVersionCode: 1,
+      });
+
+      const payloads = await publishedPayloads();
+      expect(payloads).toHaveLength(1);
+      expect(payloads[0].payload.previous_version_code).toBe(1);
+    });
+
     it("does not emit for a draft that was only created", async () => {
       const { createRelease } = await import("../src/routes/releases");
       const now = Date.now();

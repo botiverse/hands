@@ -1215,6 +1215,12 @@ export async function emitReleasePublished(
      *  the unique index, while a genuine re-publish after a cancel produces a new
      *  revision and therefore a new event. A fixed id would swallow the latter. */
     revision: number;
+    /** The version code this publish displaced, captured inside the publish
+     *  transaction. It must be passed in rather than re-queried here: cancelling
+     *  or narrowing the published release clears the predecessor's
+     *  superseded_by_release_id, so a later lookup would read the post-cancel
+     *  state and report null for a publish that did displace something. */
+    displacedVersionCode: number | null;
   },
 ): Promise<void> {
   let extra: Record<string, unknown> = {};
@@ -1225,12 +1231,7 @@ export async function emitReleasePublished(
     // displaced it (full coverage). If nothing points at us, nothing was displaced.
     const row = await env.DB.prepare(
       `SELECT b.version_name, b.version_code, a.slug AS app_slug, a.platform AS platform,
-              ch.slug AS channel,
-              (SELECT pb.version_code FROM releases prev
-                 JOIN builds pb ON pb.id = prev.build_id
-                WHERE prev.superseded_by_release_id = r.id
-                  AND prev.status = 'superseded'
-                ORDER BY prev.revision DESC LIMIT 1) AS previous_version_code
+              ch.slug AS channel
        FROM releases r
        JOIN apps a ON a.id = r.app_id
        JOIN builds b ON b.id = r.build_id
@@ -1240,7 +1241,7 @@ export async function emitReleasePublished(
       .bind(appId, base.release_id)
       .first<{
         version_name: string | null; version_code: number | null; app_slug: string;
-        platform: string | null; channel: string | null; previous_version_code: number | null;
+        platform: string | null; channel: string | null;
       }>();
     if (row) {
       extra = {
@@ -1250,7 +1251,7 @@ export async function emitReleasePublished(
         version_code: row.version_code,
         channel: row.channel,
         rollout: base.rollout_cohort_count ?? 100,
-        previous_version_code: row.previous_version_code,
+        previous_version_code: base.displacedVersionCode,
       };
     }
   } catch (err) {
@@ -2262,6 +2263,37 @@ async function executeReleasePublish(
         siblingProductType(existing.product_type),
       ),
   );
+  // Read the displaced version BEFORE the batch. The supersede statement above
+  // repoints the predecessor at this release, and a later cancel clears that
+  // pointer again, so querying after commit could miss it entirely.
+  // Mirrors the supersede statement's own condition, so the field describes
+  // exactly what that statement is about to displace: the threshold is on THIS
+  // release being full-scope, not on the predecessor's rollout.
+  const coversWholeChannel = await c.env.DB.prepare(
+    `SELECT 1 AS ok FROM releases next
+      WHERE next.id = ?1 AND next.app_id = ?2
+        AND (next.rollout_cohort_count IS NULL OR next.rollout_cohort_count >= 100)
+        AND EXISTS (SELECT 1 FROM release_scopes s
+                     WHERE s.release_id = next.id AND s.scope_type = 'full' AND s.scope_value = 'all')`,
+  )
+    .bind(releaseId, appId)
+    .first<{ ok: number }>()
+    .catch(() => null);
+  const displaced = coversWholeChannel
+    ? await c.env.DB.prepare(
+      `SELECT pb.version_code FROM releases prev
+         JOIN builds pb ON pb.id = prev.build_id
+        WHERE prev.app_id = ?1 AND prev.channel_id = ?2
+          AND prev.release_type = ?4 AND prev.product_type IN (?5, ?6)
+          AND prev.status = 'active' AND prev.id <> ?3
+        ORDER BY prev.revision DESC LIMIT 1`,
+    )
+      .bind(appId, existing.channel_id, releaseId, existing.release_type,
+        existing.product_type, siblingProductType(existing.product_type))
+      .first<{ version_code: number | null }>()
+      .catch(() => null)
+    : null;
+
   const activationResultIndex = statements.length;
   statements.push(
     c.env.DB
@@ -2339,6 +2371,7 @@ async function executeReleasePublish(
         release_type: existing.release_type,
         rollout_cohort_count: existing.rollout_cohort_count ?? null,
         revision: expectedRevision + 1,
+        displacedVersionCode: displaced?.version_code ?? null,
       }),
     );
   }
