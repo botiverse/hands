@@ -7,7 +7,7 @@
 
 import type { Command } from "commander";
 import { apiRequest } from "../lib/api.js";
-import { jsonRequested } from "../lib/json_output";
+import { jsonRequested } from "../lib/json_output.js";
 
 interface AppRow {
   id: string;

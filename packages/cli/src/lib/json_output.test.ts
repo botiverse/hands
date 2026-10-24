@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { Command } from "commander";
-import { jsonRequested } from "./json_output";
+import { jsonRequested } from "./json_output.js";
 
 /** Minimal stand-in for the shape commander gives a handler. */
 function fakeCommand(globals: { json?: boolean }): Command {

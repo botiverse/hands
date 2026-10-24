@@ -6,7 +6,7 @@
 import type { Command } from "commander";
 import { writeFile } from "node:fs/promises";
 import { apiRequest } from "../lib/api.js";
-import { jsonRequested } from "../lib/json_output";
+import { jsonRequested } from "../lib/json_output.js";
 
 interface TicketRow {
   id: string;

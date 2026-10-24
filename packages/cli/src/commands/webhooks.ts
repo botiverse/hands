@@ -1,7 +1,7 @@
 import { randomBytes } from "node:crypto";
 import type { Command } from "commander";
 import { apiRequest } from "../lib/api.js";
-import { jsonRequested } from "../lib/json_output";
+import { jsonRequested } from "../lib/json_output.js";
 
 type AppRow = { id: string; slug: string };
 type Webhook = {

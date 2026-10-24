@@ -17,7 +17,7 @@ import { promisify } from "node:util";
 import { createGunzip } from "node:zlib";
 import { apiRequest, apiUploadFile, QuiverApiError } from "../lib/api.js";
 import { createHash } from "node:crypto";
-import { jsonRequested } from "../lib/json_output";
+import { jsonRequested } from "../lib/json_output.js";
 
 const execFileAsync = promisify(execFile);
 
