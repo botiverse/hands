@@ -11,6 +11,7 @@
 
 import type { Command } from "commander";
 import { apiRequest } from "../lib/api.js";
+import { jsonRequested } from "../lib/json_output.js";
 
 interface AppRow {
   id: string;
@@ -57,7 +58,7 @@ export function registerDeployTokenCommands(program: Command): void {
       const res = await apiRequest<{ deploy_tokens: DeployToken[] }>(
         `/api/apps/${appId}/deploy-tokens`,
       );
-      if (opts.json) {
+      if (jsonRequested(program, opts.json)) {
         console.log(JSON.stringify(res, null, 2));
         return;
       }
@@ -116,7 +117,7 @@ export function registerDeployTokenCommands(program: Command): void {
             body: { name: opts.name, app_role: opts.role, expires_at: expiresAt },
           },
         );
-        if (opts.json) {
+        if (jsonRequested(program, opts.json)) {
           console.log(JSON.stringify(res, null, 2));
           return;
         }

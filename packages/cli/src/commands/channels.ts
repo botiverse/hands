@@ -1,5 +1,6 @@
 import type { Command } from "commander";
 import { apiRequest } from "../lib/api.js";
+import { jsonRequested } from "../lib/json_output.js";
 
 type AppRow = { id: string; slug: string };
 type Channel = {
@@ -22,7 +23,7 @@ export function registerChannelCommands(program: Command): void {
     .action(async (appIdOrSlug: string, opts: { json?: boolean }) => {
       const appId = await resolveAppId(appIdOrSlug);
       const result = await apiRequest<{ channels: Channel[] }>(`/api/apps/${appId}/channels`);
-      if (opts.json) return console.log(JSON.stringify(result, null, 2));
+      if (jsonRequested(program, opts.json)) return console.log(JSON.stringify(result, null, 2));
       if (result.channels.length === 0) return console.log("No channels.");
       for (const ch of result.channels) {
         const types = safeJsonArray(ch.enabled_product_types_json);
@@ -59,7 +60,7 @@ export function registerChannelCommands(program: Command): void {
       if (opts.productTypes !== undefined) body.enabled_product_types = parseList(opts.productTypes);
       if (opts.metadata !== undefined) body.metadata = parseJsonObject(opts.metadata, "--metadata");
       const result = await apiRequest<Channel>(`/api/apps/${appId}/channels`, { method: "POST", body });
-      if (opts.json) return console.log(JSON.stringify(result, null, 2));
+      if (jsonRequested(program, opts.json)) return console.log(JSON.stringify(result, null, 2));
       console.log(`Created channel ${result.slug} (${result.name}) id=${result.id}.`);
     });
 
@@ -94,7 +95,7 @@ export function registerChannelCommands(program: Command): void {
       const result = await apiRequest<{ ok: boolean }>(`/api/apps/${appId}/channels/${channelId}`, {
         method: "PATCH", body,
       });
-      if (opts.json) return console.log(JSON.stringify(result, null, 2));
+      if (jsonRequested(program, opts.json)) return console.log(JSON.stringify(result, null, 2));
       console.log(`Updated channel ${channelIdOrSlug}.`);
     });
 
@@ -105,7 +106,7 @@ export function registerChannelCommands(program: Command): void {
       const result = await apiRequest<Record<string, unknown>>(`/api/apps/${appId}/channels/${channelId}`, {
         method: "DELETE",
       });
-      if (opts.json) return console.log(JSON.stringify(result, null, 2));
+      if (jsonRequested(program, opts.json)) return console.log(JSON.stringify(result, null, 2));
       console.log(`Deleted channel ${channelIdOrSlug}.`);
     });
 }

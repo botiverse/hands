@@ -7,6 +7,7 @@
 
 import type { Command } from "commander";
 import { apiRequest } from "../lib/api.js";
+import { jsonRequested } from "../lib/json_output.js";
 
 interface AppRow {
   id: string;
@@ -63,7 +64,7 @@ export function registerAppCommands(program: Command): void {
             : {}),
         },
       });
-      if (opts.json) {
+      if (jsonRequested(program, opts.json)) {
         console.log(JSON.stringify(app, null, 2));
         return;
       }
@@ -82,7 +83,7 @@ export function registerAppCommands(program: Command): void {
       const res = await apiRequest<{ apps: AppRow[] }>("/api/apps", {
         query: { include_archived: opts.includeArchived ? "1" : "0" },
       });
-      if (opts.json) {
+      if (jsonRequested(program, opts.json)) {
         console.log(JSON.stringify(res, null, 2));
         return;
       }
@@ -115,7 +116,7 @@ export function registerAppCommands(program: Command): void {
     .action(async (appIdOrSlug: string, opts: { json?: boolean }) => {
       const id = await resolveAppId(appIdOrSlug);
       const app = await apiRequest<AppRow>(`/api/apps/${id}`);
-      if (opts.json) {
+      if (jsonRequested(program, opts.json)) {
         console.log(JSON.stringify(app, null, 2));
         return;
       }
@@ -137,7 +138,7 @@ export function registerAppCommands(program: Command): void {
       const result = await apiRequest<ClientKeyResponse>(
         `/api/apps/${appId}/client-key`,
       );
-      if (opts.json) {
+      if (jsonRequested(program, opts.json)) {
         console.log(JSON.stringify(result, null, 2));
         return;
       }
@@ -164,7 +165,7 @@ export function registerAppCommands(program: Command): void {
         method: "POST",
         body: { account_id: accountId, app_role: role },
       });
-      if (opts.json) {
+      if (jsonRequested(program, opts.json)) {
         console.log(JSON.stringify(result, null, 2));
         return;
       }
@@ -181,7 +182,7 @@ export function registerAppCommands(program: Command): void {
         `/api/apps/${appId}/members/${accountId}`,
         { method: "PATCH", body: { app_role: role } },
       );
-      if (opts.json) {
+      if (jsonRequested(program, opts.json)) {
         console.log(JSON.stringify(result, null, 2));
         return;
       }
@@ -198,7 +199,7 @@ export function registerAppCommands(program: Command): void {
         `/api/apps/${appId}/members/${accountId}`,
         { method: "DELETE" },
       );
-      if (opts.json) {
+      if (jsonRequested(program, opts.json)) {
         console.log(JSON.stringify(result, null, 2));
         return;
       }

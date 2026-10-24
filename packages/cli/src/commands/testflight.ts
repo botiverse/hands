@@ -2,6 +2,7 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { Command } from "commander";
 import { apiRequest } from "../lib/api.js";
+import { jsonRequested } from "../lib/json_output.js";
 
 type AppRow = { id: string; slug: string };
 export type TestflightCrash = {
@@ -79,7 +80,7 @@ export function registerTestflightCommands(program: Command): void {
             saved[crash.id] = path;
           }
         }
-        if (opts.json || program.opts<{ json?: boolean }>().json) {
+        if (jsonRequested(program, opts.json) || program.opts<{ json?: boolean }>().json) {
           console.log(JSON.stringify({ ...list, saved }, null, 2));
           return;
         }
@@ -125,7 +126,7 @@ export function registerTestflightCommands(program: Command): void {
             if (paths.length) saved[item.id] = paths.join(", ");
           }
         }
-        if (opts.json || program.opts<{ json?: boolean }>().json) {
+        if (jsonRequested(program, opts.json) || program.opts<{ json?: boolean }>().json) {
           console.log(JSON.stringify({ ...list, saved }, null, 2));
           return;
         }
@@ -159,7 +160,7 @@ export function registerTestflightCommands(program: Command): void {
         `/api/apps/${appId}/${segment}/${encodeURIComponent(submissionId)}`,
         { method: "DELETE" },
       );
-      if (opts.json || program.opts<{ json?: boolean }>().json) {
+      if (jsonRequested(program, opts.json) || program.opts<{ json?: boolean }>().json) {
         console.log(JSON.stringify(result, null, 2));
         return;
       }

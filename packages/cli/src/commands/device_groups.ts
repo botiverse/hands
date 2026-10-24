@@ -1,5 +1,6 @@
 import type { Command } from "commander";
 import { apiRequest } from "../lib/api.js";
+import { jsonRequested } from "../lib/json_output.js";
 
 type AppRow = { id: string; slug: string };
 type DeviceGroup = {
@@ -17,7 +18,7 @@ export function registerDeviceGroupCommands(program: Command): void {
     .action(async (appIdOrSlug: string, opts: { json?: boolean }) => {
       const appId = await resolveAppId(appIdOrSlug);
       const result = await apiRequest<{ groups: DeviceGroup[] }>(`/api/apps/${appId}/device-groups`);
-      if (opts.json) return console.log(JSON.stringify(result, null, 2));
+      if (jsonRequested(program, opts.json)) return console.log(JSON.stringify(result, null, 2));
       if (result.groups.length === 0) return console.log("No device groups.");
       for (const group of result.groups) console.log(`${group.id}  ${group.name}  members=${group.member_count}`);
     });
@@ -29,7 +30,7 @@ export function registerDeviceGroupCommands(program: Command): void {
       const result = await apiRequest<DeviceGroup>(`/api/apps/${appId}/device-groups`, {
         method: "POST", body: { name: opts.name, description: opts.description },
       });
-      if (opts.json) return console.log(JSON.stringify(result, null, 2));
+      if (jsonRequested(program, opts.json)) return console.log(JSON.stringify(result, null, 2));
       console.log(`Created device group ${result.id} (${result.name}).`);
     });
 
@@ -52,7 +53,7 @@ export function registerDeviceGroupCommands(program: Command): void {
       const result = await apiRequest<DeviceGroup>(`/api/apps/${appId}/device-groups/${groupId}`, {
         method: "PATCH", body,
       });
-      if (opts.json) return console.log(JSON.stringify(result, null, 2));
+      if (jsonRequested(program, opts.json)) return console.log(JSON.stringify(result, null, 2));
       console.log(`Updated device group ${result.id} (${result.name}).`);
     });
 
@@ -64,7 +65,7 @@ export function registerDeviceGroupCommands(program: Command): void {
       const result = await apiRequest<Record<string, unknown>>(`/api/apps/${appId}/device-groups/${groupId}/members`, {
         method: "POST", body: { device_id: opts.deviceId, label: opts.label },
       });
-      if (opts.json) return console.log(JSON.stringify(result, null, 2));
+      if (jsonRequested(program, opts.json)) return console.log(JSON.stringify(result, null, 2));
       console.log(`Added device to group ${groupId}.`);
     });
 
@@ -77,7 +78,7 @@ export function registerDeviceGroupCommands(program: Command): void {
         `/api/apps/${appId}/device-groups/${groupId}/members/${encodeURIComponent(opts.deviceId)}`,
         { method: "DELETE" },
       );
-      if (opts.json) return console.log(JSON.stringify(result, null, 2));
+      if (jsonRequested(program, opts.json)) return console.log(JSON.stringify(result, null, 2));
       console.log(`Removed device from group ${groupId}.`);
     });
 
@@ -87,7 +88,7 @@ export function registerDeviceGroupCommands(program: Command): void {
       const result = await apiRequest<Record<string, unknown>>(`/api/apps/${appId}/device-groups/${groupId}`, {
         method: "DELETE",
       });
-      if (opts.json) return console.log(JSON.stringify(result, null, 2));
+      if (jsonRequested(program, opts.json)) return console.log(JSON.stringify(result, null, 2));
       console.log(`Deleted device group ${groupId}.`);
     });
 }

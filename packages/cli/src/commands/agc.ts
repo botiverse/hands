@@ -1,5 +1,6 @@
 import type { Command } from "commander";
 import { apiRequest } from "../lib/api.js";
+import { jsonRequested } from "../lib/json_output.js";
 
 type AppRow = { id: string; slug: string };
 export type AgcSubmission = {
@@ -24,7 +25,7 @@ type AgcGroup = { groupId: string; groupName?: string | null; addedTestersNum?: 
  */
 export function registerAgcCommands(program: Command): void {
   const agc = program.command("agc").description("AppGallery Connect packages and invitation testing for HarmonyOS builds.");
-  const wantsJson = (opts: { json?: boolean }) => Boolean(opts.json || program.opts<{ json?: boolean }>().json);
+  const wantsJson = (opts: { json?: boolean }) => Boolean(jsonRequested(program, opts.json) || program.opts<{ json?: boolean }>().json);
 
   agc
     .command("upload-market <appIdOrSlug> <buildId>")
