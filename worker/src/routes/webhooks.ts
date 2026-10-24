@@ -34,6 +34,7 @@ const WEBHOOK_EVENT_TYPES = [
   "appgallery:package_state_changed",
   "google_play:submission_succeeded", "google_play:submission_failed", "google_play:release_state_changed",
   "release:new", "release:draft_created", "release:superseded", "release:rolled_back", "release:cancelled",
+  "release:published",
   "build:succeeded", "build:failed",
 ] as const;
 type WebhookEventType = typeof WEBHOOK_EVENT_TYPES[number];

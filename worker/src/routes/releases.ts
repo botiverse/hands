@@ -1175,6 +1175,83 @@ export async function emitReleaseNew(
   await emitWebhookEvent(env, { orgId, appId, event: "release:new", body: { ...base, ...extra } });
 }
 
+/**
+ * Emit `release:published` when a release actually goes live on a channel.
+ *
+ * Consumers need to tell a real rollover from a canary: a full-coverage publish
+ * supersedes the previous release, so `previous_version_code` names the version
+ * that was displaced. A partial rollout leaves the previous release ACTIVE, so
+ * nothing was displaced and `previous_version_code` is null -- a consumer must
+ * not render "1.15.4 -> 1.15.5" for a canary, because 1.15.4 never went away.
+ *
+ * `previous_version_code` is therefore defined as "the version this publish
+ * displaced", not "the version that was live before". It is null whenever this
+ * publish displaced nothing.
+ *
+ * Durable like every other event: the body is written to the delivery outbox,
+ * and a lookup failure degrades to the bare identity rather than dropping it.
+ */
+export async function emitReleasePublished(
+  env: Env,
+  orgId: string,
+  appId: string,
+  base: {
+    release_id: string;
+    app_id: string;
+    build_id: unknown;
+    channel_id: unknown;
+    product_type?: string;
+    release_type?: string;
+    rollout_cohort_count?: number | null;
+  },
+): Promise<void> {
+  let extra: Record<string, unknown> = {};
+  try {
+    // Everything except the platform comes from one row. `previous_version_code`
+    // is the release this publish just superseded -- read from the release whose
+    // superseded_by_release_id points at us, which is only set when this publish
+    // displaced it (full coverage). If nothing points at us, nothing was displaced.
+    const row = await env.DB.prepare(
+      `SELECT b.version_name, b.version_code, a.slug AS app_slug, a.platform AS platform,
+              ch.slug AS channel,
+              (SELECT pb.version_code FROM releases prev
+                 JOIN builds pb ON pb.id = prev.build_id
+                WHERE prev.superseded_by_release_id = r.id
+                  AND prev.status = 'superseded'
+                ORDER BY prev.revision DESC LIMIT 1) AS previous_version_code
+       FROM releases r
+       JOIN apps a ON a.id = r.app_id
+       JOIN builds b ON b.id = r.build_id
+       LEFT JOIN channels ch ON ch.id = r.channel_id
+       WHERE r.app_id = ?1 AND r.id = ?2`,
+    )
+      .bind(appId, base.release_id)
+      .first<{
+        version_name: string | null; version_code: number | null; app_slug: string;
+        platform: string | null; channel: string | null; previous_version_code: number | null;
+      }>();
+    if (row) {
+      extra = {
+        app_slug: row.app_slug,
+        platform: row.platform,
+        version: row.version_name,
+        version_code: row.version_code,
+        channel: row.channel,
+        rollout: base.rollout_cohort_count ?? 100,
+        previous_version_code: row.previous_version_code,
+      };
+    }
+  } catch (err) {
+    console.warn("[release:published] enrichment lookup failed; emitting bare payload", err);
+  }
+  await emitWebhookEvent(env, {
+    orgId,
+    appId,
+    event: "release:published",
+    body: { ...base, ...extra },
+  });
+}
+
 async function emitReleaseDraftCreated(
   c: AdminContext,
   appId: string,
@@ -2230,6 +2307,23 @@ async function executeReleasePublish(
         app_id: appId,
         build_id: existing.build_id,
         channel_id: existing.channel_id,
+      }),
+    );
+    // Publishing is what actually changes what clients receive, which is why it
+    // gets its own event: `release:new` fires on creation and says nothing about
+    // a release going live. Emitted only here, after the activating batch has
+    // committed -- a draft that is merely created never reaches this point, and a
+    // failed publish returns above, so no event escapes for a release that did
+    // not activate.
+    c.executionCtx?.waitUntil(
+      emitReleasePublished(c.env, orgId, appId, {
+        release_id: releaseId,
+        app_id: appId,
+        build_id: existing.build_id,
+        channel_id: existing.channel_id,
+        product_type: existing.product_type,
+        release_type: existing.release_type,
+        rollout_cohort_count: existing.rollout_cohort_count ?? null,
       }),
     );
   }

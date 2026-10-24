@@ -4754,6 +4754,127 @@ describe("quiver releases — draft lifecycle", () => {
     ]);
   });
 
+  describe("release:published webhook", () => {
+    // waitUntil in makeReleaseContext discards the promise, so every assertion
+    // here has to capture it and await it -- otherwise the event could silently
+    // never be emitted and these tests would still pass.
+    function publishContext(releaseId: string, body: unknown, waited: Promise<unknown>[]) {
+      return {
+        env,
+        req: {
+          param: (name: string) =>
+            name === "appId" ? "app-release" : name === "releaseId" ? releaseId : "",
+          json: async () => body,
+          query: () => undefined,
+        },
+        get: (key: string) =>
+          key === "admin_actor" ? "tester" : key === "org_id" ? "default" : undefined,
+        executionCtx: { waitUntil: (p: Promise<unknown>) => waited.push(p) },
+        json: (data: unknown, status = 200) =>
+          new Response(JSON.stringify(data), {
+            status,
+            headers: { "content-type": "application/json" },
+          }),
+      } as any;
+    }
+
+    async function publishedPayloads(): Promise<any[]> {
+      const { results } = await env.DB
+        .prepare("SELECT event_type, payload_json FROM webhook_deliveries WHERE event_type = 'release:published'")
+        .all();
+      return results.map((r: any) => JSON.parse(r.payload_json));
+    }
+
+    it("emits on a full publish and names the version it displaced", async () => {
+      const { createRelease, handlePublishRelease } = await import("../src/routes/releases");
+      await env.DB.prepare(
+        "INSERT INTO webhooks (id, org_id, app_id, url, secret, events_json, enabled, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      ).bind("wh-pub", "default", null, "https://bobo.example/hooks/hands", "s",
+        JSON.stringify(["release:published"]), 1, Date.now(), Date.now()).run();
+      await createRelease(env.DB as any, "app-release", { build_id: "build-active", status: "active" }, "tester", "rel-active");
+      await createRelease(env.DB as any, "app-release", { build_id: "build-draft", status: "draft" }, "tester", "rel-draft");
+
+      const waited: Promise<unknown>[] = [];
+      const response = await handlePublishRelease(publishContext("rel-draft", {}, waited));
+      expect(response.status).toBe(200);
+      await Promise.all(waited);
+
+      const payloads = await publishedPayloads();
+      expect(payloads).toHaveLength(1);
+      expect(payloads[0]).toMatchObject({
+        event: "release:published",
+        payload: {
+          app_id: "app-release",
+          release_id: "rel-draft",
+          app_slug: "release-app",
+          platform: "android",
+          channel: "main",
+          version_code: 2,
+          previous_version_code: 1,
+          rollout: 100,
+        },
+      });
+    });
+
+    it("emits with previous_version_code null when the publish displaced nothing", async () => {
+      const { createRelease, handlePublishRelease } = await import("../src/routes/releases");
+      const now = Date.now();
+      await env.DB.prepare(
+        "INSERT INTO webhooks (id, org_id, app_id, url, secret, events_json, enabled, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      ).bind("wh-pub", "default", null, "https://bobo.example/hooks/hands", "s",
+        JSON.stringify(["release:published"]), 1, now, now).run();
+      await env.DB.prepare(
+        `INSERT INTO device_groups (id, app_id, name, description, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)`,
+      ).bind("group-pub", "app-release", "QA", null, now, now).run();
+      await createRelease(env.DB as any, "app-release", { build_id: "build-active", status: "active" }, "tester", "rel-active");
+      await createRelease(env.DB as any, "app-release", {
+        build_id: "build-draft", status: "draft",
+        scopes: [{ scope_type: "device_group", scope_value: "group-pub" }],
+      }, "tester", "rel-group");
+
+      const waited: Promise<unknown>[] = [];
+      const response = await handlePublishRelease(publishContext("rel-group", {
+        expected_scope: { scope_type: "device_group", scope_value: "group-pub" },
+      }, waited));
+      expect(response.status).toBe(200);
+      await Promise.all(waited);
+
+      const payloads = await publishedPayloads();
+      expect(payloads).toHaveLength(1);
+      // Nothing was superseded, so a consumer must not render "1 -> 2".
+      expect(payloads[0].payload.previous_version_code).toBeNull();
+    });
+
+    it("does not emit for a draft that was only created", async () => {
+      const { createRelease } = await import("../src/routes/releases");
+      const now = Date.now();
+      await env.DB.prepare(
+        "INSERT INTO webhooks (id, org_id, app_id, url, secret, events_json, enabled, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      ).bind("wh-pub", "default", null, "https://bobo.example/hooks/hands", "s",
+        JSON.stringify(["release:published"]), 1, now, now).run();
+      await createRelease(env.DB as any, "app-release", { build_id: "build-draft", status: "draft" }, "tester", "rel-draft");
+      expect(await publishedPayloads()).toHaveLength(0);
+    });
+
+    it("does not emit when the publish is refused", async () => {
+      const { createRelease, handlePublishRelease } = await import("../src/routes/releases");
+      const now = Date.now();
+      await env.DB.prepare(
+        "INSERT INTO webhooks (id, org_id, app_id, url, secret, events_json, enabled, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      ).bind("wh-pub", "default", null, "https://bobo.example/hooks/hands", "s",
+        JSON.stringify(["release:published"]), 1, now, now).run();
+      await createRelease(env.DB as any, "app-release", { build_id: "build-draft", status: "draft" }, "tester", "rel-draft");
+
+      const waited: Promise<unknown>[] = [];
+      // Stale revision: the publish must be refused, and a refused publish must
+      // leave no delivery row behind.
+      const response = await handlePublishRelease(publishContext("rel-draft", { expected_revision: 99 }, waited));
+      expect(response.status).toBe(409);
+      await Promise.all(waited);
+      expect(await publishedPayloads()).toHaveLength(0);
+    });
+  });
+
   it("publishes a device-group draft without superseding the full fallback release", async () => {
     const { createRelease, handlePublishRelease } = await import("../src/routes/releases");
     const now = Date.now();
