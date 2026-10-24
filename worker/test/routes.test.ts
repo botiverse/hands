@@ -4898,7 +4898,7 @@ describe("quiver releases — draft lifecycle", () => {
       // The unique index must absorb the replay rather than deliver twice.
       await emitReleasePublished(env as any, "default", "app-release", {
         release_id: "rel-draft", app_id: "app-release", build_id: "build-draft",
-        channel_id: "ch-main", revision: 1,
+        channel_id: "ch-main", revision: 1, displacedVersionCode: 1,
       });
       expect(await publishedPayloads()).toHaveLength(1);
     });
