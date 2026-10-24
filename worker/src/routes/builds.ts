@@ -956,6 +956,9 @@ export async function handleCreateBuild(c: AdminContext) {
           orgId,
           appId,
           event: body.status === "succeeded" ? "build:succeeded" : "build:failed",
+          // A build reaches one terminal status once; re-emitting reports the
+          // same fact, so (build, status) is the occurrence.
+          eventId: `build:${id}:${body.status}`,
           body: { build_id: id, app_id: appId, version_name: body.version_name, version_code: body.version_code },
         }),
       );
@@ -1039,11 +1042,15 @@ export async function handleUpdateBuild(c: AdminContext) {
     updates.push(`availability_at = ?${binds.length + 1}`);
     binds.push(body.availability_at ?? null);
   }
+  // Captured once so the emitted event_id can identify THIS terminal
+  // transition rather than the build's status in general.
+  let terminalCompletedAt: number | null = null;
   if (body.status !== undefined) {
     updates.push(`status = ?${binds.length + 1}`);
     binds.push(body.status);
     updates.push(`completed_at = ?${binds.length + 1}`);
-    binds.push(body.status === "succeeded" || body.status === "failed" ? Date.now() : null);
+    terminalCompletedAt = body.status === "succeeded" || body.status === "failed" ? Date.now() : null;
+    binds.push(terminalCompletedAt);
   }
   if (updates.length === 0) return c.json({ error: "nothing to update" }, 400);
 
@@ -1065,6 +1072,11 @@ export async function handleUpdateBuild(c: AdminContext) {
           orgId,
           appId,
           event: body.status === "succeeded" ? "build:succeeded" : "build:failed",
+          // Keyed on the transition, not just (build, status): the update
+          // endpoint permits failed -> running -> failed, and both failures are
+          // real notifications. completed_at is reset on each terminal
+          // transition, so it distinguishes them rather than collapsing them.
+          eventId: `build:${buildId}:${body.status}:${terminalCompletedAt ?? Date.now()}`,
           body: { build_id: buildId, app_id: appId, status: body.status },
         }),
       );

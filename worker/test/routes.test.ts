@@ -758,6 +758,12 @@ function makeMockDb() {
     );
     CREATE UNIQUE INDEX idx_webhook_deliveries_event
       ON webhook_deliveries(webhook_id, event_id) WHERE event_id IS NOT NULL;
+    -- Mirrors migrations/sql/0081_apple_webhooks.sql: the column alone is not
+    -- enough, because emitWebhookEvent's ON CONFLICT targets this exact index.
+    -- Without it every emit fails with "ON CONFLICT clause does not match any
+    -- PRIMARY KEY or UNIQUE constraint".
+    CREATE UNIQUE INDEX idx_webhook_deliveries_external_event
+      ON webhook_deliveries(webhook_id, external_event_id) WHERE external_event_id IS NOT NULL;
     CREATE TABLE feedback_events (
       id TEXT PRIMARY KEY,
       event_type TEXT NOT NULL,
@@ -4752,6 +4758,209 @@ describe("quiver releases — draft lifecycle", () => {
       { id: "rel-active", status: "superseded", superseded_by_release_id: "rel-draft" },
       { id: "rel-draft", status: "active", superseded_by_release_id: null },
     ]);
+  });
+
+  describe("release:published webhook", () => {
+    // waitUntil in makeReleaseContext discards the promise, so every assertion
+    // here has to capture it and await it -- otherwise the event could silently
+    // never be emitted and these tests would still pass.
+    function publishContext(releaseId: string, body: unknown, waited: Promise<unknown>[]) {
+      return {
+        env,
+        req: {
+          param: (name: string) =>
+            name === "appId" ? "app-release" : name === "releaseId" ? releaseId : "",
+          json: async () => body,
+          query: () => undefined,
+        },
+        get: (key: string) =>
+          key === "admin_actor" ? "tester" : key === "org_id" ? "default" : undefined,
+        executionCtx: { waitUntil: (p: Promise<unknown>) => waited.push(p) },
+        json: (data: unknown, status = 200) =>
+          new Response(JSON.stringify(data), {
+            status,
+            headers: { "content-type": "application/json" },
+          }),
+      } as any;
+    }
+
+    async function publishedPayloads(): Promise<any[]> {
+      const { results } = await env.DB
+        .prepare("SELECT event_type, payload_json FROM webhook_deliveries WHERE event_type = 'release:published'")
+        .all();
+      return results.map((r: any) => JSON.parse(r.payload_json));
+    }
+
+    it("emits on a full publish and names the version it displaced", async () => {
+      const { createRelease, handlePublishRelease } = await import("../src/routes/releases");
+      await env.DB.prepare(
+        "INSERT INTO webhooks (id, org_id, app_id, url, secret, events_json, enabled, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      ).bind("wh-pub", "default", null, "https://bobo.example/hooks/hands", "s",
+        JSON.stringify(["release:published"]), 1, Date.now(), Date.now()).run();
+      await createRelease(env.DB as any, "app-release", { build_id: "build-active", status: "active" }, "tester", "rel-active");
+      await createRelease(env.DB as any, "app-release", { build_id: "build-draft", status: "draft" }, "tester", "rel-draft");
+
+      const waited: Promise<unknown>[] = [];
+      const response = await handlePublishRelease(publishContext("rel-draft", {}, waited));
+      expect(response.status).toBe(200);
+      await Promise.all(waited);
+
+      const payloads = await publishedPayloads();
+      expect(payloads).toHaveLength(1);
+      // Consumers key idempotency on event_id, so it has to be here -- an event
+      // without one is silently un-dedupable on their side.
+      expect(payloads[0].event_id).toBe("release:published:rel-draft:1");
+      expect(payloads[0]).toMatchObject({
+        event: "release:published",
+        payload: {
+          app_id: "app-release",
+          release_id: "rel-draft",
+          app_slug: "release-app",
+          platform: "android",
+          channel: "main",
+          version_code: 2,
+          previous_version_code: 1,
+          rollout: 100,
+        },
+      });
+    });
+
+    it("emits with previous_version_code null when the publish displaced nothing", async () => {
+      const { createRelease, handlePublishRelease } = await import("../src/routes/releases");
+      const now = Date.now();
+      await env.DB.prepare(
+        "INSERT INTO webhooks (id, org_id, app_id, url, secret, events_json, enabled, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      ).bind("wh-pub", "default", null, "https://bobo.example/hooks/hands", "s",
+        JSON.stringify(["release:published"]), 1, now, now).run();
+      await env.DB.prepare(
+        `INSERT INTO device_groups (id, app_id, name, description, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)`,
+      ).bind("group-pub", "app-release", "QA", null, now, now).run();
+      await createRelease(env.DB as any, "app-release", { build_id: "build-active", status: "active" }, "tester", "rel-active");
+      await createRelease(env.DB as any, "app-release", {
+        build_id: "build-draft", status: "draft",
+        scopes: [{ scope_type: "device_group", scope_value: "group-pub" }],
+      }, "tester", "rel-group");
+
+      const waited: Promise<unknown>[] = [];
+      const response = await handlePublishRelease(publishContext("rel-group", {
+        expected_scope: { scope_type: "device_group", scope_value: "group-pub" },
+      }, waited));
+      expect(response.status).toBe(200);
+      await Promise.all(waited);
+
+      const payloads = await publishedPayloads();
+      expect(payloads).toHaveLength(1);
+      // Nothing was superseded, so a consumer must not render "1 -> 2".
+      expect(payloads[0].payload.previous_version_code).toBeNull();
+    });
+
+    it("gives a re-publish after a cancel a new event_id", async () => {
+      const { createRelease, handlePublishRelease } = await import("../src/routes/releases");
+      const now = Date.now();
+      await env.DB.prepare(
+        "INSERT INTO webhooks (id, org_id, app_id, url, secret, events_json, enabled, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      ).bind("wh-pub", "default", null, "https://bobo.example/hooks/hands", "s",
+        JSON.stringify(["release:published"]), 1, now, now).run();
+      await createRelease(env.DB as any, "app-release", { build_id: "build-active", status: "active" }, "tester", "rel-active");
+      await createRelease(env.DB as any, "app-release", { build_id: "build-draft", status: "draft" }, "tester", "rel-draft");
+
+      const waited: Promise<unknown>[] = [];
+      expect((await handlePublishRelease(publishContext("rel-draft", {}, waited))).status).toBe(200);
+      await Promise.all(waited);
+
+      // Simulate a later re-publish of the same release: back to draft and a
+      // bumped revision, as cancel-then-publish would leave it.
+      await env.DB.prepare("UPDATE releases SET status = 'draft', revision = revision + 1 WHERE id = 'rel-draft'").run();
+      expect((await handlePublishRelease(publishContext("rel-draft", {}, waited))).status).toBe(200);
+      await Promise.all(waited);
+
+      const payloads = await publishedPayloads();
+      // A fixed id would collapse these into one and lose the second activation.
+      expect(new Set(payloads.map((p) => p.event_id)).size).toBe(2);
+    });
+
+    it("collapses a replayed emit of the same activation into one delivery", async () => {
+      const { createRelease, handlePublishRelease } = await import("../src/routes/releases");
+      const { emitReleasePublished } = await import("../src/routes/releases");
+      const now = Date.now();
+      await env.DB.prepare(
+        "INSERT INTO webhooks (id, org_id, app_id, url, secret, events_json, enabled, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      ).bind("wh-pub", "default", null, "https://bobo.example/hooks/hands", "s",
+        JSON.stringify(["release:published"]), 1, now, now).run();
+      await createRelease(env.DB as any, "app-release", { build_id: "build-active", status: "active" }, "tester", "rel-active");
+      await createRelease(env.DB as any, "app-release", { build_id: "build-draft", status: "draft" }, "tester", "rel-draft");
+
+      const waited: Promise<unknown>[] = [];
+      expect((await handlePublishRelease(publishContext("rel-draft", {}, waited))).status).toBe(200);
+      await Promise.all(waited);
+
+      // Same activation emitted twice (a retried request, or a recomputation).
+      // The unique index must absorb the replay rather than deliver twice.
+      await emitReleasePublished(env as any, "default", "app-release", {
+        release_id: "rel-draft", app_id: "app-release", build_id: "build-draft",
+        channel_id: "ch-main", revision: 1,
+      });
+      expect(await publishedPayloads()).toHaveLength(1);
+    });
+
+    it("reads the displaced version before clearing the pointer", async () => {
+      // The helper is exercised directly because the publish path resolves its
+      // deferred emit before any assertion can interleave a cancel -- an
+      // integration test here would pass whether the value is captured in-band
+      // or re-queried, which is worse than no test. This asserts the CONTRACT
+      // instead: the emitted field is whatever the caller captured, so the
+      // publish path's pre-batch read is what the consumer sees even after the
+      // predecessor's superseded_by_release_id is gone.
+      const { emitReleasePublished } = await import("../src/routes/releases");
+      const now = Date.now();
+      await env.DB.prepare(
+        "INSERT INTO webhooks (id, org_id, app_id, url, secret, events_json, enabled, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      ).bind("wh-pub", "default", null, "https://bobo.example/hooks/hands", "s",
+        JSON.stringify(["release:published"]), 1, now, now).run();
+
+      const { createRelease } = await import("../src/routes/releases");
+      await createRelease(env.DB as any, "app-release", { build_id: "build-draft", status: "active" }, "tester", "rel-pub");
+
+      // No superseded predecessor exists for this release, yet the captured value
+      // is still reported -- which is the point: it comes from the caller.
+      await emitReleasePublished(env as any, "default", "app-release", {
+        release_id: "rel-pub", app_id: "app-release", build_id: "build-draft",
+        channel_id: "ch-main", revision: 4, displacedVersionCode: 1,
+      });
+
+      const payloads = await publishedPayloads();
+      expect(payloads).toHaveLength(1);
+      expect(payloads[0].payload.previous_version_code).toBe(1);
+    });
+
+    it("does not emit for a draft that was only created", async () => {
+      const { createRelease } = await import("../src/routes/releases");
+      const now = Date.now();
+      await env.DB.prepare(
+        "INSERT INTO webhooks (id, org_id, app_id, url, secret, events_json, enabled, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      ).bind("wh-pub", "default", null, "https://bobo.example/hooks/hands", "s",
+        JSON.stringify(["release:published"]), 1, now, now).run();
+      await createRelease(env.DB as any, "app-release", { build_id: "build-draft", status: "draft" }, "tester", "rel-draft");
+      expect(await publishedPayloads()).toHaveLength(0);
+    });
+
+    it("does not emit when the publish is refused", async () => {
+      const { createRelease, handlePublishRelease } = await import("../src/routes/releases");
+      const now = Date.now();
+      await env.DB.prepare(
+        "INSERT INTO webhooks (id, org_id, app_id, url, secret, events_json, enabled, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      ).bind("wh-pub", "default", null, "https://bobo.example/hooks/hands", "s",
+        JSON.stringify(["release:published"]), 1, now, now).run();
+      await createRelease(env.DB as any, "app-release", { build_id: "build-draft", status: "draft" }, "tester", "rel-draft");
+
+      const waited: Promise<unknown>[] = [];
+      // Stale revision: the publish must be refused, and a refused publish must
+      // leave no delivery row behind.
+      const response = await handlePublishRelease(publishContext("rel-draft", { expected_revision: 99 }, waited));
+      expect(response.status).toBe(409);
+      await Promise.all(waited);
+      expect(await publishedPayloads()).toHaveLength(0);
+    });
   });
 
   it("publishes a device-group draft without superseding the full fallback release", async () => {
@@ -11831,6 +12040,17 @@ describe("quiver public API v2 — scope resolution", () => {
     ).bind("wh-crash").all()).results as Array<{ event_type: string }>;
     expect(deliveries.filter((d) => d.event_type === "crash:new_group").length).toBe(2);
     expect(deliveries.filter((d) => d.event_type === "crash:spike").length).toBe(0);
+
+    // Each new section has to carry its own event_id. Two crashes sharing a
+    // signature must NOT share one either -- they are the same group, so only
+    // the first submission emits, and an id keyed on the ticket would differ.
+    const ids = (await env.DB.prepare(
+      "SELECT external_event_id FROM webhook_deliveries WHERE webhook_id = ?1 AND event_type = 'crash:new_group' ORDER BY created_at",
+    ).bind("wh-crash").all()).results as Array<{ external_event_id: string | null }>;
+    expect(ids).toHaveLength(2);
+    expect(ids.every((r) => typeof r.external_event_id === "string" && r.external_event_id.length > 0)).toBe(true);
+    expect(new Set(ids.map((r) => r.external_event_id)).size).toBe(2);
+    for (const r of ids) expect(r.external_event_id).toMatch(/^crash:new_group:/);
   });
 
   it("devices: register upserts per device and analytics aggregates by version", async () => {

@@ -34,6 +34,7 @@ const WEBHOOK_EVENT_TYPES = [
   "appgallery:package_state_changed",
   "google_play:submission_succeeded", "google_play:submission_failed", "google_play:release_state_changed",
   "release:new", "release:draft_created", "release:superseded", "release:rolled_back", "release:cancelled",
+  "release:published",
   "build:succeeded", "build:failed",
 ] as const;
 type WebhookEventType = typeof WEBHOOK_EVENT_TYPES[number];
@@ -368,6 +369,12 @@ export async function emitWebhookEvent(
     appId: string | null;
     event: WebhookEventType;
     body: Record<string, unknown>;
+    /** Optional stable id for this occurrence. Emitted to consumers as
+     *  `event_id` and stored in `external_event_id`, whose unique index makes a
+     *  replayed emit a no-op instead of a second delivery. Events that can be
+     *  recomputed from state (a release staying active) need this; events
+     *  derived from an immutable upstream record do not. */
+    eventId?: string;
   },
 ): Promise<void> {
   const db = env.DB;
@@ -408,6 +415,7 @@ export async function emitWebhookEvent(
   const now = Date.now();
   const body = JSON.stringify({
     event: payload.event,
+    ...(payload.eventId ? { event_id: payload.eventId } : {}),
     delivered_at: now,
     org_id: payload.orgId,
     app_id: payload.appId,
@@ -422,10 +430,11 @@ export async function emitWebhookEvent(
         `INSERT INTO webhook_deliveries
          (id, webhook_id, event_type, payload_json, status,
           attempts, max_attempts, last_attempt_at, next_attempt_at,
-          created_at, updated_at)
-         VALUES (?1, ?2, ?3, ?4, 'pending', 0, 3, NULL, ?5, ?6, ?7)`,
+          created_at, updated_at, external_event_id)
+         VALUES (?1, ?2, ?3, ?4, 'pending', 0, 3, NULL, ?5, ?6, ?7, ?8)
+         ON CONFLICT(webhook_id, external_event_id) WHERE external_event_id IS NOT NULL DO NOTHING`,
       )
-      .bind(deliveryIds[i], s.id, payload.event, body, now, now, now),
+      .bind(deliveryIds[i], s.id, payload.event, body, now, now, now, payload.eventId ?? null),
   );
   await db.batch(stmts);
 

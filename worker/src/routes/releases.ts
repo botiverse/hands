@@ -1172,7 +1172,98 @@ export async function emitReleaseNew(
   } catch (err) {
     console.warn("[release:new] version lookup failed; emitting bare payload", err);
   }
-  await emitWebhookEvent(env, { orgId, appId, event: "release:new", body: { ...base, ...extra } });
+  // A release is created once, so its id is the occurrence.
+  await emitWebhookEvent(env, {
+    orgId,
+    appId,
+    event: "release:new",
+    eventId: `release:new:${base.release_id}`,
+    body: { ...base, ...extra },
+  });
+}
+
+/**
+ * Emit `release:published` when a release actually goes live on a channel.
+ *
+ * Consumers need to tell a real rollover from a canary: a full-coverage publish
+ * supersedes the previous release, so `previous_version_code` names the version
+ * that was displaced. A partial rollout leaves the previous release ACTIVE, so
+ * nothing was displaced and `previous_version_code` is null -- a consumer must
+ * not render "1.15.4 -> 1.15.5" for a canary, because 1.15.4 never went away.
+ *
+ * `previous_version_code` is therefore defined as "the version this publish
+ * displaced", not "the version that was live before". It is null whenever this
+ * publish displaced nothing.
+ *
+ * Durable like every other event: the body is written to the delivery outbox,
+ * and a lookup failure degrades to the bare identity rather than dropping it.
+ */
+export async function emitReleasePublished(
+  env: Env,
+  orgId: string,
+  appId: string,
+  base: {
+    release_id: string;
+    app_id: string;
+    build_id: unknown;
+    channel_id: unknown;
+    product_type?: string;
+    release_type?: string;
+    rollout_cohort_count?: number | null;
+    /** The revision this publish produced. Publishing increments it, so the pair
+     *  (release, revision) identifies one activation: a replayed emit collides on
+     *  the unique index, while a genuine re-publish after a cancel produces a new
+     *  revision and therefore a new event. A fixed id would swallow the latter. */
+    revision: number;
+    /** The version code this publish displaced, captured inside the publish
+     *  transaction. It must be passed in rather than re-queried here: cancelling
+     *  or narrowing the published release clears the predecessor's
+     *  superseded_by_release_id, so a later lookup would read the post-cancel
+     *  state and report null for a publish that did displace something. */
+    displacedVersionCode: number | null;
+  },
+): Promise<void> {
+  let extra: Record<string, unknown> = {};
+  try {
+    // Everything except the platform comes from one row. `previous_version_code`
+    // is the release this publish just superseded -- read from the release whose
+    // superseded_by_release_id points at us, which is only set when this publish
+    // displaced it (full coverage). If nothing points at us, nothing was displaced.
+    const row = await env.DB.prepare(
+      `SELECT b.version_name, b.version_code, a.slug AS app_slug, a.platform AS platform,
+              ch.slug AS channel
+       FROM releases r
+       JOIN apps a ON a.id = r.app_id
+       JOIN builds b ON b.id = r.build_id
+       LEFT JOIN channels ch ON ch.id = r.channel_id
+       WHERE r.app_id = ?1 AND r.id = ?2`,
+    )
+      .bind(appId, base.release_id)
+      .first<{
+        version_name: string | null; version_code: number | null; app_slug: string;
+        platform: string | null; channel: string | null;
+      }>();
+    if (row) {
+      extra = {
+        app_slug: row.app_slug,
+        platform: row.platform,
+        version: row.version_name,
+        version_code: row.version_code,
+        channel: row.channel,
+        rollout: base.rollout_cohort_count ?? 100,
+        previous_version_code: base.displacedVersionCode,
+      };
+    }
+  } catch (err) {
+    console.warn("[release:published] enrichment lookup failed; emitting bare payload", err);
+  }
+  await emitWebhookEvent(env, {
+    orgId,
+    appId,
+    event: "release:published",
+    eventId: `release:published:${base.release_id}:${base.revision}`,
+    body: { ...base, ...extra },
+  });
 }
 
 async function emitReleaseDraftCreated(
@@ -1239,6 +1330,7 @@ async function emitReleaseDraftCreated(
       orgId,
       appId,
       event: "release:draft_created",
+      eventId: `release:draft_created:${releaseId}`,
       body: {
         release_id: releaseId,
         app_id: appId,
@@ -2171,6 +2263,37 @@ async function executeReleasePublish(
         siblingProductType(existing.product_type),
       ),
   );
+  // Read the displaced version BEFORE the batch. The supersede statement above
+  // repoints the predecessor at this release, and a later cancel clears that
+  // pointer again, so querying after commit could miss it entirely.
+  // Mirrors the supersede statement's own condition, so the field describes
+  // exactly what that statement is about to displace: the threshold is on THIS
+  // release being full-scope, not on the predecessor's rollout.
+  const coversWholeChannel = await c.env.DB.prepare(
+    `SELECT 1 AS ok FROM releases next
+      WHERE next.id = ?1 AND next.app_id = ?2
+        AND (next.rollout_cohort_count IS NULL OR next.rollout_cohort_count >= 100)
+        AND EXISTS (SELECT 1 FROM release_scopes s
+                     WHERE s.release_id = next.id AND s.scope_type = 'full' AND s.scope_value = 'all')`,
+  )
+    .bind(releaseId, appId)
+    .first<{ ok: number }>()
+    .catch(() => null);
+  const displaced = coversWholeChannel
+    ? await c.env.DB.prepare(
+      `SELECT pb.version_code FROM releases prev
+         JOIN builds pb ON pb.id = prev.build_id
+        WHERE prev.app_id = ?1 AND prev.channel_id = ?2
+          AND prev.release_type = ?4 AND prev.product_type IN (?5, ?6)
+          AND prev.status = 'active' AND prev.id <> ?3
+        ORDER BY prev.revision DESC LIMIT 1`,
+    )
+      .bind(appId, existing.channel_id, releaseId, existing.release_type,
+        existing.product_type, siblingProductType(existing.product_type))
+      .first<{ version_code: number | null }>()
+      .catch(() => null)
+    : null;
+
   const activationResultIndex = statements.length;
   statements.push(
     c.env.DB
@@ -2230,6 +2353,25 @@ async function executeReleasePublish(
         app_id: appId,
         build_id: existing.build_id,
         channel_id: existing.channel_id,
+      }),
+    );
+    // Publishing is what actually changes what clients receive, which is why it
+    // gets its own event: `release:new` fires on creation and says nothing about
+    // a release going live. Emitted only here, after the activating batch has
+    // committed -- a draft that is merely created never reaches this point, and a
+    // failed publish returns above, so no event escapes for a release that did
+    // not activate.
+    c.executionCtx?.waitUntil(
+      emitReleasePublished(c.env, orgId, appId, {
+        release_id: releaseId,
+        app_id: appId,
+        build_id: existing.build_id,
+        channel_id: existing.channel_id,
+        product_type: existing.product_type,
+        release_type: existing.release_type,
+        rollout_cohort_count: existing.rollout_cohort_count ?? null,
+        revision: expectedRevision + 1,
+        displacedVersionCode: displaced?.version_code ?? null,
       }),
     );
   }
@@ -2350,6 +2492,11 @@ export async function handleDeleteRelease(c: AdminContext) {
         orgId,
         appId,
         event: "release:cancelled",
+        // Cancelling bumps revision, and a release can be re-published and
+        // cancelled again -- that second cancellation is a real event, so the
+        // revision is part of the key. expectedRevision is the state this
+        // transition moved FROM, which is what makes the pair unique.
+        eventId: `release:cancelled:${releaseId}:${expectedRevision + 1}`,
         body: { release_id: releaseId, app_id: appId, build_id: existing.build_id },
       }),
     );
@@ -2541,6 +2688,7 @@ export async function handleRollbackRelease(c: AdminContext) {
           orgId,
           appId,
           event: "release:rolled_back",
+          eventId: `release:rolled_back:${releaseId}:${expectedRevision + 1}`,
           body: { release_id: releaseId, app_id: appId, reactivated: true, build_id: existing.build_id },
         }),
       );
