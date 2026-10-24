@@ -1215,12 +1215,16 @@ export async function emitReleasePublished(
      *  the unique index, while a genuine re-publish after a cancel produces a new
      *  revision and therefore a new event. A fixed id would swallow the latter. */
     revision: number;
-    /** The version code this publish displaced, captured inside the publish
+    /** The version this publish displaced, captured inside the publish
      *  transaction. It must be passed in rather than re-queried here: cancelling
      *  or narrowing the published release clears the predecessor's
      *  superseded_by_release_id, so a later lookup would read the post-cancel
-     *  state and report null for a publish that did displace something. */
-    displacedVersionCode: number | null;
+     *  state and report null for a publish that did displace something.
+     *
+     *  Both parts travel together and are null together. The name is what a
+     *  human reads ("1.15.4"), the code is what a machine matches on, and a
+     *  notification showing only the code asks the reader to decode it. */
+    displacedVersion: { code: number | null; name: string | null } | null;
   },
 ): Promise<void> {
   let extra: Record<string, unknown> = {};
@@ -1251,7 +1255,8 @@ export async function emitReleasePublished(
         version_code: row.version_code,
         channel: row.channel,
         rollout: base.rollout_cohort_count ?? 100,
-        previous_version_code: base.displacedVersionCode,
+        previous_version_code: base.displacedVersion?.code ?? null,
+        previous_version: base.displacedVersion?.name ?? null,
       };
     }
   } catch (err) {
@@ -2281,7 +2286,7 @@ async function executeReleasePublish(
     .catch(() => null);
   const displaced = coversWholeChannel
     ? await c.env.DB.prepare(
-      `SELECT pb.version_code FROM releases prev
+      `SELECT pb.version_code, pb.version_name FROM releases prev
          JOIN builds pb ON pb.id = prev.build_id
         WHERE prev.app_id = ?1 AND prev.channel_id = ?2
           AND prev.release_type = ?4 AND prev.product_type IN (?5, ?6)
@@ -2290,7 +2295,7 @@ async function executeReleasePublish(
     )
       .bind(appId, existing.channel_id, releaseId, existing.release_type,
         existing.product_type, siblingProductType(existing.product_type))
-      .first<{ version_code: number | null }>()
+      .first<{ version_code: number | null; version_name: string | null }>()
       .catch(() => null)
     : null;
 
@@ -2371,7 +2376,9 @@ async function executeReleasePublish(
         release_type: existing.release_type,
         rollout_cohort_count: existing.rollout_cohort_count ?? null,
         revision: expectedRevision + 1,
-        displacedVersionCode: displaced?.version_code ?? null,
+        displacedVersion: displaced
+          ? { code: displaced.version_code, name: displaced.version_name }
+          : null,
       }),
     );
   }
