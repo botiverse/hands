@@ -758,6 +758,12 @@ function makeMockDb() {
     );
     CREATE UNIQUE INDEX idx_webhook_deliveries_event
       ON webhook_deliveries(webhook_id, event_id) WHERE event_id IS NOT NULL;
+    -- Mirrors migrations/sql/0081_apple_webhooks.sql: the column alone is not
+    -- enough, because emitWebhookEvent's ON CONFLICT targets this exact index.
+    -- Without it every emit fails with "ON CONFLICT clause does not match any
+    -- PRIMARY KEY or UNIQUE constraint".
+    CREATE UNIQUE INDEX idx_webhook_deliveries_external_event
+      ON webhook_deliveries(webhook_id, external_event_id) WHERE external_event_id IS NOT NULL;
     CREATE TABLE feedback_events (
       id TEXT PRIMARY KEY,
       event_type TEXT NOT NULL,
@@ -4801,6 +4807,9 @@ describe("quiver releases — draft lifecycle", () => {
 
       const payloads = await publishedPayloads();
       expect(payloads).toHaveLength(1);
+      // Consumers key idempotency on event_id, so it has to be here -- an event
+      // without one is silently un-dedupable on their side.
+      expect(payloads[0].event_id).toBe("rel-draft:1");
       expect(payloads[0]).toMatchObject({
         event: "release:published",
         payload: {
@@ -4843,6 +4852,55 @@ describe("quiver releases — draft lifecycle", () => {
       expect(payloads).toHaveLength(1);
       // Nothing was superseded, so a consumer must not render "1 -> 2".
       expect(payloads[0].payload.previous_version_code).toBeNull();
+    });
+
+    it("gives a re-publish after a cancel a new event_id", async () => {
+      const { createRelease, handlePublishRelease } = await import("../src/routes/releases");
+      const now = Date.now();
+      await env.DB.prepare(
+        "INSERT INTO webhooks (id, org_id, app_id, url, secret, events_json, enabled, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      ).bind("wh-pub", "default", null, "https://bobo.example/hooks/hands", "s",
+        JSON.stringify(["release:published"]), 1, now, now).run();
+      await createRelease(env.DB as any, "app-release", { build_id: "build-active", status: "active" }, "tester", "rel-active");
+      await createRelease(env.DB as any, "app-release", { build_id: "build-draft", status: "draft" }, "tester", "rel-draft");
+
+      const waited: Promise<unknown>[] = [];
+      expect((await handlePublishRelease(publishContext("rel-draft", {}, waited))).status).toBe(200);
+      await Promise.all(waited);
+
+      // Simulate a later re-publish of the same release: back to draft and a
+      // bumped revision, as cancel-then-publish would leave it.
+      await env.DB.prepare("UPDATE releases SET status = 'draft', revision = revision + 1 WHERE id = 'rel-draft'").run();
+      expect((await handlePublishRelease(publishContext("rel-draft", {}, waited))).status).toBe(200);
+      await Promise.all(waited);
+
+      const payloads = await publishedPayloads();
+      // A fixed id would collapse these into one and lose the second activation.
+      expect(new Set(payloads.map((p) => p.event_id)).size).toBe(2);
+    });
+
+    it("collapses a replayed emit of the same activation into one delivery", async () => {
+      const { createRelease, handlePublishRelease } = await import("../src/routes/releases");
+      const { emitReleasePublished } = await import("../src/routes/releases");
+      const now = Date.now();
+      await env.DB.prepare(
+        "INSERT INTO webhooks (id, org_id, app_id, url, secret, events_json, enabled, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      ).bind("wh-pub", "default", null, "https://bobo.example/hooks/hands", "s",
+        JSON.stringify(["release:published"]), 1, now, now).run();
+      await createRelease(env.DB as any, "app-release", { build_id: "build-active", status: "active" }, "tester", "rel-active");
+      await createRelease(env.DB as any, "app-release", { build_id: "build-draft", status: "draft" }, "tester", "rel-draft");
+
+      const waited: Promise<unknown>[] = [];
+      expect((await handlePublishRelease(publishContext("rel-draft", {}, waited))).status).toBe(200);
+      await Promise.all(waited);
+
+      // Same activation emitted twice (a retried request, or a recomputation).
+      // The unique index must absorb the replay rather than deliver twice.
+      await emitReleasePublished(env as any, "default", "app-release", {
+        release_id: "rel-draft", app_id: "app-release", build_id: "build-draft",
+        channel_id: "ch-main", revision: 1,
+      });
+      expect(await publishedPayloads()).toHaveLength(1);
     });
 
     it("does not emit for a draft that was only created", async () => {

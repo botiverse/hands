@@ -1203,6 +1203,11 @@ export async function emitReleasePublished(
     product_type?: string;
     release_type?: string;
     rollout_cohort_count?: number | null;
+    /** The revision this publish produced. Publishing increments it, so the pair
+     *  (release, revision) identifies one activation: a replayed emit collides on
+     *  the unique index, while a genuine re-publish after a cancel produces a new
+     *  revision and therefore a new event. A fixed id would swallow the latter. */
+    revision: number;
   },
 ): Promise<void> {
   let extra: Record<string, unknown> = {};
@@ -1248,6 +1253,7 @@ export async function emitReleasePublished(
     orgId,
     appId,
     event: "release:published",
+    eventId: `${base.release_id}:${base.revision}`,
     body: { ...base, ...extra },
   });
 }
@@ -2324,6 +2330,7 @@ async function executeReleasePublish(
         product_type: existing.product_type,
         release_type: existing.release_type,
         rollout_cohort_count: existing.rollout_cohort_count ?? null,
+        revision: expectedRevision + 1,
       }),
     );
   }
