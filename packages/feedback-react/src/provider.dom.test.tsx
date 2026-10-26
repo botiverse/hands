@@ -10,7 +10,7 @@ import {
 } from "@testing-library/react";
 import { useState } from "react";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { FeedbackWorkspace } from "./components.js";
+import { FeedbackWorkspace, MAX_FEEDBACK_ATTACHMENTS } from "./components.js";
 import { FeedbackProvider } from "./provider.js";
 import { FeedbackTransportError } from "./types.js";
 import type {
@@ -518,6 +518,66 @@ describe("FeedbackWorkspace browser behavior", () => {
     });
     expect((await screen.findByRole("alert")).textContent).toContain(
       "Unsupported: notes.txt",
+    );
+  });
+
+  it("adds a pasted image to the composer without opening a file picker", async () => {
+    render(
+      <FeedbackProvider transport={transport()}>
+        <FeedbackWorkspace />
+      </FeedbackProvider>,
+    );
+    fireEvent.click(await screen.findByText("New Feedback"));
+    const box = screen.getByRole("textbox", {
+      name: /What would you like us to know/,
+    });
+    const shot = new File(["png"], "shot.png", { type: "image/png" });
+    fireEvent.paste(box, { clipboardData: { files: [shot] } });
+
+    // Attachment count updates and Send becomes possible; the picker never opened.
+    // (The preview <img> is decorative -- alt="" -- so it has no "img" role.)
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Send Feedback" })).toBeTruthy(),
+    );
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("lets a plain-text paste through so text still lands in the box", async () => {
+    render(
+      <FeedbackProvider transport={transport()}>
+        <FeedbackWorkspace />
+      </FeedbackProvider>,
+    );
+    fireEvent.click(await screen.findByText("New Feedback"));
+    const box = screen.getByRole("textbox", {
+      name: /What would you like us to know/,
+    }) as HTMLTextAreaElement;
+    // No files on the clipboard: the handler must NOT preventDefault, because
+    // doing so would silently swallow ordinary text pastes.
+    const notPrevented = fireEvent.paste(box, { clipboardData: { files: [] } });
+    expect(notPrevented).toBe(true);
+    expect(box.value).toBe("");
+  });
+
+  it("applies the same max-attachment error to paste as to the file picker", async () => {
+    render(
+      <FeedbackProvider transport={transport()}>
+        <FeedbackWorkspace />
+      </FeedbackProvider>,
+    );
+    fireEvent.click(await screen.findByText("New Feedback"));
+    const box = screen.getByRole("textbox", {
+      name: /What would you like us to know/,
+    });
+    const shots = Array.from(
+      { length: MAX_FEEDBACK_ATTACHMENTS + 1 },
+      (_, i) => new File(["png"], `s${i}.png`, { type: "image/png" }),
+    );
+    fireEvent.paste(box, { clipboardData: { files: shots } });
+
+    // Identical copy to the picker path, because both call the same validator.
+    expect((await screen.findByRole("alert")).textContent).toContain(
+      `no more than ${MAX_FEEDBACK_ATTACHMENTS}`,
     );
   });
 

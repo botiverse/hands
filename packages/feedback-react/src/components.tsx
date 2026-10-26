@@ -661,7 +661,10 @@ type FeedbackComposerProps = {
   onChange(value: string): void;
   textareaRef: RefObject<HTMLTextAreaElement | null>;
   attachments: PendingAttachment[];
-  onAttachmentsChange(event: ChangeEvent<HTMLInputElement>): void;
+  /** Files chosen from either picker OR dropped in by paste. Taking File[] rather
+   *  than a ChangeEvent is what lets the paste path reuse the same add+validate
+   *  logic instead of duplicating it. */
+  onAttachmentsChange(files: File[]): void;
   onRemoveAttachment(id: string): void;
   onOpenAttachment?: (input: FeedbackPendingAttachmentOpenInput) => void;
   busy: boolean;
@@ -865,7 +868,10 @@ function FeedbackComposer({
         accept={FEEDBACK_ATTACHMENT_TYPES.join(",")}
         multiple
         disabled={attachmentsDisabled}
-        onChange={onAttachmentsChange}
+        onChange={(event) => {
+          onAttachmentsChange(Array.from(event.currentTarget.files ?? []));
+          event.currentTarget.value = "";
+        }}
       />
       <input
         ref={fileInputRef}
@@ -875,7 +881,10 @@ function FeedbackComposer({
         accept={FEEDBACK_ATTACHMENT_TYPES.join(",")}
         multiple
         disabled={attachmentsDisabled}
-        onChange={onAttachmentsChange}
+        onChange={(event) => {
+          onAttachmentsChange(Array.from(event.currentTarget.files ?? []));
+          event.currentTarget.value = "";
+        }}
       />
       <PendingAttachmentList
         attachments={attachments}
@@ -893,6 +902,18 @@ function FeedbackComposer({
           maxLength={10_000}
           value={value}
           onChange={(event) => onChange(event.target.value)}
+          onPaste={(event) => {
+            // Screenshots are far more often pasted than saved to a file first.
+            // Only act when the clipboard actually carries an image: a plain-text
+            // paste must fall through to the browser so text still lands normally.
+            const pasted = Array.from(event.clipboardData?.files ?? []).filter((file) =>
+              file.type.startsWith("image/"),
+            );
+            if (pasted.length === 0) return;
+            event.preventDefault();
+            // Same path as the file pickers, so MAX/locale errors match exactly.
+            onAttachmentsChange(pasted);
+          }}
           {...(onKeyDown ? { onKeyDown } : {})}
           {...(placeholder ? { placeholder } : {})}
           rows={showCounter ? 5 : 1}
@@ -1942,8 +1963,7 @@ export function FeedbackTicket({
     }
   };
 
-  const chooseReplyAttachments = (event: ChangeEvent<HTMLInputElement>) => {
-    const selected = Array.from(event.currentTarget.files ?? []);
+  const chooseReplyAttachments = (selected: File[]) => {
     const combined = [
       ...replyAttachments.map(({ file }) => file),
       ...selected,
@@ -1951,7 +1971,6 @@ export function FeedbackTicket({
     const attachmentError = localizedAttachmentError(combined, message);
     if (attachmentError) {
       setActionError(attachmentError);
-      event.currentTarget.value = "";
       return;
     }
     setActionError(null);
@@ -1964,7 +1983,6 @@ export function FeedbackTicket({
         state: "ready" as const,
       })),
     ]);
-    event.currentTarget.value = "";
   };
 
   const onReplyKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
@@ -2427,8 +2445,7 @@ function NewFeedbackForm({
     }
   };
 
-  const choose = (event: ChangeEvent<HTMLInputElement>) => {
-    const selected = Array.from(event.currentTarget.files ?? []);
+  const choose = (selected: File[]) => {
     const combined = [
       ...attachments,
       ...selected.map((file) => ({
@@ -2441,7 +2458,6 @@ function NewFeedbackForm({
     const attachmentError = localizedPendingAttachmentError(combined, copy);
     if (attachmentError) {
       setError(attachmentError);
-      event.currentTarget.value = "";
       return;
     }
     setError(null);
@@ -2454,7 +2470,6 @@ function NewFeedbackForm({
         state: "ready" as const,
       })),
     ]);
-    event.currentTarget.value = "";
   };
 
   const cancelUpload = () => {
