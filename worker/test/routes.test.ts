@@ -4821,6 +4821,8 @@ describe("quiver releases — draft lifecycle", () => {
           version_code: 2,
           previous_version_code: 1,
           previous_version: "1.0.0",
+          // Pre-composed so a template needs one line and no conditionals.
+          version_transition: "1.0.0 → 1.0.0",
           rollout: 100,
         },
       });
@@ -4855,6 +4857,9 @@ describe("quiver releases — draft lifecycle", () => {
       // Both halves must be null together, or a template renders a half arrow.
       expect(payloads[0].payload.previous_version_code).toBeNull();
       expect(payloads[0].payload.previous_version).toBeNull();
+      // Must be null, not " → 1.1.0": a template collapses only a line that
+      // renders empty, and a literal arrow is content.
+      expect(payloads[0].payload.version_transition).toBeNull();
     });
 
     it("gives a re-publish after a cancel a new event_id", async () => {

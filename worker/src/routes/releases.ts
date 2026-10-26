@@ -1257,6 +1257,16 @@ export async function emitReleasePublished(
         rollout: base.rollout_cohort_count ?? 100,
         previous_version_code: base.displacedVersion?.code ?? null,
         previous_version: base.displacedVersion?.name ?? null,
+        // Pre-composed so a consumer's template needs one line and no
+        // conditionals: notification templates here collapse a line only when
+        // it renders EMPTY, and a literal arrow is content -- so rendering
+        // "<previous_version> -> <version>" directly would leave "-> 1.15.5"
+        // behind on a canary, and a bare "->" on every event that lacks these
+        // fields entirely (Apple/TestFlight). Null when nothing was displaced;
+        // those events do not carry the key at all.
+        version_transition: base.displacedVersion?.name && row.version_name
+          ? `${base.displacedVersion.name} → ${row.version_name}`
+          : null,
       };
     }
   } catch (err) {
