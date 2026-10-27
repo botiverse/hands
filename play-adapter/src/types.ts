@@ -50,6 +50,15 @@ export interface SymbolsRpcInput {
   expectedSize: number;
 }
 
+/** Google Play edits.deobfuscationfiles.upload `deobfuscationFileType` values Hands uploads. */
+export type DeobfuscationSymbolType = "nativeCode" | "proguard";
+
+/** Play `LocalizedText`: a BCP-47 language tag and plain text (Play caps it at 500 characters). */
+export interface LocalizedReleaseNote {
+  language: string;
+  text: string;
+}
+
 export interface PromotionRpcInput extends TrackMaximumRpcInput {
   versionCode: number;
   expectedSha256: string;
@@ -58,6 +67,20 @@ export interface PromotionRpcInput extends TrackMaximumRpcInput {
   operationId: string;
   /** Optional native debug symbols declaration; the zip bytes arrive as a separate stream. */
   symbols?: SymbolsRpcInput | null;
+  /** Optional R8/ProGuard mapping.txt declaration; the bytes arrive as the fourth RPC argument. */
+  mapping?: SymbolsRpcInput | null;
+  /** Optional release notes for the new track release, already mapped to Play BCP-47 tags. */
+  releaseNotes?: LocalizedReleaseNote[] | null;
+}
+
+/** What happened to one declared deobfuscation file during promote(). */
+export interface DeobfuscationFileResult {
+  symbol_type: DeobfuscationSymbolType;
+  sha256: string;
+  size_bytes: number;
+  uploaded: boolean;
+  /** Present only when uploaded=false. */
+  skipped_reason?: "bundle_already_on_play";
 }
 
 export type AdapterResult<T> =
@@ -104,6 +127,10 @@ export interface PromotionRequest {
   body: ReadableStream<Uint8Array>;
   /** Present only when Hands declared symbols for this promotion. */
   symbols?: PromotionSymbolsRequest | null;
+  /** Present only when Hands declared an R8/ProGuard mapping for this promotion. */
+  mapping?: PromotionSymbolsRequest | null;
+  /** Validated release notes for the new track release; null/empty sends none. */
+  releaseNotes?: LocalizedReleaseNote[] | null;
 }
 
 /** Read-only release summaries; lifecycle is distinct from edits.tracks status. */

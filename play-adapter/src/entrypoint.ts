@@ -29,7 +29,8 @@ export default class GooglePlayAdapter extends WorkerEntrypoint<PlayAdapterEnv> 
     input: PromotionRpcInput,
     body: ReadableStream<Uint8Array>,
     symbolsBody: ReadableStream<Uint8Array> | null,
+    mappingBody?: ReadableStream<Uint8Array> | null,
   ) {
-    return this.service.promote(input, body, symbolsBody ?? null, this.env);
+    return this.service.promote(input, body, symbolsBody ?? null, this.env, mappingBody ?? null);
   }
 }

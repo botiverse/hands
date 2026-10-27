@@ -5,6 +5,7 @@ import { sha256 } from "@noble/hashes/sha256";
 import { bytesToHex } from "@noble/hashes/utils";
 import { currentActor, currentActorInfo, type AdminEnv } from "../middleware/auth";
 import { getGooglePlayBinding, hasGooglePlayConfiguration } from "../lib/google_play_bindings";
+import { PlayReleaseNotesError, playCharCount, playReleaseNotesFromChangelog, type PlayReleaseNotesResult } from "../lib/play_release_notes";
 
 type AdminContext = Context<AdminEnv & { Bindings: Env }>;
 type PlayTrack = "internal" | "closed" | "production";
@@ -20,6 +21,8 @@ interface ReleaseArtifactRow {
   release_id: string;
   release_revision: number;
   release_status: string;
+  /** The release's changelog (plain text or a JSON language -> text object). */
+  release_changelog?: string | null;
   build_id: string;
   package_name: string;
   version_name: string;
@@ -48,9 +51,11 @@ interface PlayReadback {
 
 interface GateFailure {
   code: "gate_failed" | "edit_conflict" | "version_conflict" | "play_api_error" | "hold_active" | "forbidden";
-  gate: "immutable_binding" | "acceptance_receipt" | "channel" | "version_code" | "edit_lock" | "live_hold" | "permission" | null;
+  gate: "immutable_binding" | "acceptance_receipt" | "channel" | "version_code" | "edit_lock" | "live_hold" | "permission" | "release_notes" | null;
   message: string;
   receipt_id?: string | null;
+  /** Specific, stable reason within the gate (e.g. play_release_notes_too_long). */
+  failure_code?: string;
 }
 
 function fail(c: Context<any>, status: 400 | 403 | 409 | 502, failure: GateFailure) {
@@ -111,6 +116,86 @@ interface ReleaseSymbolsRow {
   metadata_json: string;
 }
 
+/**
+ * Google Play mediaUpload.maxSize for edits.deobfuscationfiles.upload (v3
+ * discovery document), for either symbolType. Mirrors the adapter's bound so an
+ * oversized mapping fails before the edit lock is taken.
+ */
+const PLAY_DEOBFUSCATION_MAX_BYTES = 2_097_152_000;
+
+/**
+ * Optional sealed R8/ProGuard mapping attached to the release's build (via
+ * `hands builds publish-android --mapping` or `hands builds attach-symbols`).
+ * It is a different asset kind from the native symbols zip below, which is why
+ * the native-only query never found it and receipts said `symbols: null`.
+ */
+async function getReleaseMapping(db: D1Database, appId: string, releaseId: string): Promise<ReleaseSymbolsRow | null> {
+  return db.prepare(
+    `SELECT ba.id AS asset_id, 'ready' AS bundle_state,
+            ba.r2_key, ba.file_hash, ba.size_bytes, ba.metadata_json
+     FROM releases r
+     JOIN builds b ON b.id = r.build_id AND b.app_id = r.app_id
+     JOIN build_assets ba ON ba.build_id = b.id
+     WHERE r.app_id = ?1 AND r.id = ?2
+       AND ba.artifact_kind = 'proguard-mapping' AND ba.platform = 'android' AND ba.filetype = 'mapping.txt'
+     ORDER BY ba.created_at DESC LIMIT 1`,
+  ).bind(appId, releaseId).first<ReleaseSymbolsRow>();
+}
+
+function sealed(asset: ReleaseSymbolsRow): boolean {
+  const metadata = jsonObject(asset.metadata_json);
+  return asset.bundle_state === "ready"
+    && metadata.upload_state === "ready"
+    && metadata.verified_sha256 === asset.file_hash
+    && metadata.verified_size_bytes === asset.size_bytes;
+}
+
+interface AdapterDeobfuscationFile {
+  symbol_type?: string;
+  sha256?: string;
+  size_bytes?: number;
+  uploaded?: boolean;
+  skipped_reason?: string;
+}
+
+/**
+ * Receipt entry for one declared deobfuscation file, from what the adapter
+ * acknowledged -- never assumed. An adapter that does not report the file (e.g.
+ * an older deploy) yields uploaded:false with reason not_acknowledged.
+ */
+function receiptDeobfuscationFile(
+  asset: ReleaseSymbolsRow,
+  symbolType: "nativeCode" | "proguard",
+  reported: AdapterDeobfuscationFile[] | undefined,
+) {
+  const entry = (reported ?? []).find((item) => item?.symbol_type === symbolType);
+  const uploaded = entry?.uploaded === true && entry.sha256 === asset.file_hash && entry.size_bytes === asset.size_bytes;
+  return {
+    sha256: asset.file_hash,
+    size_bytes: asset.size_bytes,
+    uploaded,
+    provider_ack: uploaded ? `deobfuscationFile.symbolType=${symbolType}` : null,
+    ...(uploaded ? {} : {
+      skipped_reason: entry?.skipped_reason === "bundle_already_on_play" ? "bundle_already_on_play" : "not_acknowledged",
+    }),
+    post_commit_get: false,
+  };
+}
+
+function receiptReleaseNotes(result: PlayReleaseNotesResult, acknowledged: unknown) {
+  if (!result.present) return { present: false, reason: result.reason };
+  const languages = Array.isArray(acknowledged) ? acknowledged.filter((item): item is string => typeof item === "string") : [];
+  const sent = result.notes.every((note) => languages.includes(note.language));
+  return {
+    present: true,
+    sent,
+    ...(sent ? {} : { reason: "not_acknowledged" }),
+    languages: result.notes.map((note) => note.language),
+    chars: Object.fromEntries(result.notes.map((note) => [note.language, playCharCount(note.text)])),
+    format: "plain_text_markdown_bold_stripped",
+  };
+}
+
 /** Optional sealed native debug symbols zip stored alongside the AAB/APK bundle. */
 async function getReleaseSymbols(db: D1Database, appId: string, releaseId: string): Promise<ReleaseSymbolsRow | null> {
   return db.prepare(
@@ -129,6 +214,7 @@ async function getReleaseSymbols(db: D1Database, appId: string, releaseId: strin
 async function getReleaseArtifact(db: D1Database, appId: string, releaseId: string): Promise<ReleaseArtifactRow | null> {
   return db.prepare(
     `SELECT r.id AS release_id, r.revision AS release_revision, r.status AS release_status,
+            r.changelog AS release_changelog,
             b.id AS build_id, arb.package_name, arb.version_name, arb.version_code,
             arb.source_repository, arb.source_commit, arb.ci_run_id,
             arb.upload_key_cert_sha256,
@@ -486,16 +572,24 @@ export async function handlePromotePlayDistribution(c: AdminContext) {
   // Declared native debug symbols must be sealed to their exact bytes too; a
   // declared-but-unsealed zip fails closed instead of being silently skipped.
   const symbolsAsset = await getReleaseSymbols(c.env.DB, appId, releaseId);
-  if (symbolsAsset) {
-    const symbolsMetadata = jsonObject(symbolsAsset.metadata_json);
-    if (
-      symbolsAsset.bundle_state !== "ready"
-      || symbolsMetadata.upload_state !== "ready"
-      || symbolsMetadata.verified_sha256 !== symbolsAsset.file_hash
-      || symbolsMetadata.verified_size_bytes !== symbolsAsset.size_bytes
-    ) {
-      return fail(c, 400, { code: "gate_failed", gate: "immutable_binding", message: "native debug symbols are not sealed to their declared exact bytes" });
-    }
+  if (symbolsAsset && !sealed(symbolsAsset)) {
+    return fail(c, 400, { code: "gate_failed", gate: "immutable_binding", message: "native debug symbols are not sealed to their declared exact bytes" });
+  }
+  // Same rule for an attached R8/ProGuard mapping: present-but-unsealed fails closed.
+  const mappingAsset = await getReleaseMapping(c.env.DB, appId, releaseId);
+  if (mappingAsset && !sealed(mappingAsset)) {
+    return fail(c, 400, { code: "gate_failed", gate: "immutable_binding", failure_code: "mapping_not_sealed", message: "R8/ProGuard mapping is not sealed to its declared exact bytes" });
+  }
+  if (mappingAsset && mappingAsset.size_bytes > PLAY_DEOBFUSCATION_MAX_BYTES) {
+    return fail(c, 400, { code: "gate_failed", gate: "immutable_binding", failure_code: "mapping_too_large", message: `R8/ProGuard mapping is ${mappingAsset.size_bytes} bytes; Google Play accepts at most ${PLAY_DEOBFUSCATION_MAX_BYTES}` });
+  }
+  // Changelog -> Play releaseNotes, validated before any Play call or lock.
+  let releaseNotes: PlayReleaseNotesResult;
+  try {
+    releaseNotes = playReleaseNotesFromChangelog(artifact.release_changelog);
+  } catch (error) {
+    if (!(error instanceof PlayReleaseNotesError)) throw error;
+    return fail(c, 400, { code: "gate_failed", gate: "release_notes", failure_code: error.code, message: error.message });
   }
   const hold = await c.env.DB.prepare(
     "SELECT id FROM release_distribution_holds WHERE app_id = ?1 AND release_id = ?2 AND closed_at IS NULL LIMIT 1",
@@ -575,8 +669,22 @@ export async function handlePromotePlayDistribution(c: AdminContext) {
         return fail(c, 400, { code: "gate_failed", gate: "immutable_binding", message: "stored native debug symbols size changed", receipt_id: receiptId });
       }
     }
+    let mappingObject: R2ObjectBody | null = null;
+    if (mappingAsset) {
+      try {
+        mappingObject = await c.env.APK_BUCKET.get(mappingAsset.r2_key);
+      } catch {
+        const receiptId = await failedPromotionReceipt(c, artifact, actor, input.track, input.approval.note, "immutable_binding", { mapping_object_read: "failed" });
+        return fail(c, 400, { code: "gate_failed", gate: "immutable_binding", message: "stored R8/ProGuard mapping could not be read", receipt_id: receiptId });
+      }
+      if (!mappingObject || mappingObject.size !== mappingAsset.size_bytes) {
+        const receiptId = await failedPromotionReceipt(c, artifact, actor, input.track, input.approval.note, "immutable_binding", { mapping_object_size: mappingObject?.size ?? null });
+        return fail(c, 400, { code: "gate_failed", gate: "immutable_binding", message: "stored R8/ProGuard mapping size changed", receipt_id: receiptId });
+      }
+    }
     const [hashBranch, uploadBranch] = object.body.tee();
     const [symbolsHashBranch, symbolsUploadBranch] = symbolsObject ? symbolsObject.body.tee() : [null, null];
+    const [mappingHashBranch, mappingUploadBranch] = mappingObject ? mappingObject.body.tee() : [null, null];
     const uploadResponsePromise = Promise.resolve().then(() => c.env.PLAY_RELEASE_SERVICE!.promote({
       credential: binding.credential,
       packageName: binding.package_name,
@@ -588,10 +696,13 @@ export async function handlePromotePlayDistribution(c: AdminContext) {
       rolloutPercent: input.rollout_percent ?? 100,
       operationId,
       symbols: symbolsAsset ? { expectedSha256: symbolsAsset.file_hash, expectedSize: symbolsAsset.size_bytes } : null,
-    }, uploadBranch, symbolsUploadBranch));
-    const [localResult, symbolsLocalResult, uploadResult] = await Promise.allSettled([
+      mapping: mappingAsset ? { expectedSha256: mappingAsset.file_hash, expectedSize: mappingAsset.size_bytes } : null,
+      releaseNotes: releaseNotes.present ? releaseNotes.notes : null,
+    }, uploadBranch, symbolsUploadBranch, mappingUploadBranch));
+    const [localResult, symbolsLocalResult, mappingLocalResult, uploadResult] = await Promise.allSettled([
       hashStream(hashBranch),
       symbolsHashBranch ? hashStream(symbolsHashBranch) : null,
+      mappingHashBranch ? hashStream(mappingHashBranch) : null,
       uploadResponsePromise,
     ]);
     if (localResult.status === "rejected") {
@@ -601,6 +712,10 @@ export async function handlePromotePlayDistribution(c: AdminContext) {
     if (symbolsAsset && symbolsLocalResult.status === "rejected") {
       const receiptId = await failedPromotionReceipt(c, artifact, actor, input.track, input.approval.note, "immutable_binding", { symbols_stream_read: "failed" });
       return fail(c, 400, { code: "gate_failed", gate: "immutable_binding", message: "stored native debug symbols stream could not be verified", receipt_id: receiptId });
+    }
+    if (mappingAsset && mappingLocalResult.status === "rejected") {
+      const receiptId = await failedPromotionReceipt(c, artifact, actor, input.track, input.approval.note, "immutable_binding", { mapping_stream_read: "failed" });
+      return fail(c, 400, { code: "gate_failed", gate: "immutable_binding", message: "stored R8/ProGuard mapping stream could not be verified", receipt_id: receiptId });
     }
     if (uploadResult.status === "rejected") {
       const receiptId = await failedPromotionReceipt(c, artifact, actor, input.track, input.approval.note, "play_api_error", { request: "failed" });
@@ -617,6 +732,13 @@ export async function handlePromotePlayDistribution(c: AdminContext) {
       if (!symbolsLocal || symbolsLocal.sha256 !== symbolsAsset.file_hash || symbolsLocal.size !== symbolsAsset.size_bytes) {
         const receiptId = await failedPromotionReceipt(c, artifact, actor, input.track, input.approval.note, "immutable_binding", { symbols_actual: symbolsLocal });
         return fail(c, 400, { code: "gate_failed", gate: "immutable_binding", message: "streamed native debug symbols did not match the accepted artifact", receipt_id: receiptId });
+      }
+    }
+    if (mappingAsset) {
+      const mappingLocal = mappingLocalResult.status === "fulfilled" ? mappingLocalResult.value : null;
+      if (!mappingLocal || mappingLocal.sha256 !== mappingAsset.file_hash || mappingLocal.size !== mappingAsset.size_bytes) {
+        const receiptId = await failedPromotionReceipt(c, artifact, actor, input.track, input.approval.note, "immutable_binding", { mapping_actual: mappingLocal });
+        return fail(c, 400, { code: "gate_failed", gate: "immutable_binding", message: "streamed R8/ProGuard mapping did not match the accepted artifact", receipt_id: receiptId });
       }
     }
     if (!uploadResponse?.ok) {
@@ -643,6 +765,8 @@ export async function handlePromotePlayDistribution(c: AdminContext) {
       const receiptId = await failedPromotionReceipt(c, artifact, actor, input.track, input.approval.note, "play_readback_mismatch", { readback });
       return fail(c, 502, { code: "play_api_error", gate: "immutable_binding", message: "Play readback did not match package/version/track/SHA-256", receipt_id: receiptId });
     }
+    const reported = uploadResponse.value as { deobfuscation_files?: AdapterDeobfuscationFile[]; release_notes_languages?: unknown };
+    const reportedFiles = Array.isArray(reported.deobfuscation_files) ? reported.deobfuscation_files : undefined;
     const receiptId = crypto.randomUUID();
     await insertReceipt(c.env.DB, {
       id: receiptId, appId, releaseId, kind: "play-promotion", verdict: "success",
@@ -660,14 +784,14 @@ export async function handlePromotePlayDistribution(c: AdminContext) {
         approvals: [{ approver: actor, at: new Date().toISOString(), scope: input.track }],
         // Google exposes no post-commit GET for deobfuscation files; the only
         // provider acknowledgement is the in-edit upload response, checked by
-        // the adapter (deobfuscationFile.symbolType == "nativeCode").
-        symbols: symbolsAsset ? {
-          sha256: symbolsAsset.file_hash,
-          size_bytes: symbolsAsset.size_bytes,
-          uploaded: true,
-          provider_ack: "deobfuscationFile.symbolType=nativeCode",
-          post_commit_get: false,
-        } : null,
+        // the adapter against the requested symbolType. Recorded from what the
+        // adapter reported, so a re-promote that skipped the bundle (and with it
+        // the files) says so instead of claiming an upload.
+        symbols: symbolsAsset ? receiptDeobfuscationFile(symbolsAsset, "nativeCode", reportedFiles) : null,
+        mapping: mappingAsset
+          ? { present: true, ...receiptDeobfuscationFile(mappingAsset, "proguard", reportedFiles) }
+          : { present: false, reason: "no_mapping_asset" },
+        release_notes: receiptReleaseNotes(releaseNotes, reported.release_notes_languages),
         play: {
           edit_id: readback.edit_id,
           track: input.track,

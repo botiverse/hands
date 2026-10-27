@@ -19,6 +19,17 @@ function symbolsBody() {
   return new Blob([symbolsBytes]).stream();
 }
 
+const mappingBytes = new TextEncoder().encode("com.example.A -> a:\n    void run() -> b\n");
+const mappingDigest = bytesToHex(sha256(mappingBytes));
+
+function mappingBody() {
+  return new Blob([mappingBytes]).stream();
+}
+
+function mappingDeclaration(overrides: Partial<{ expectedSha256: string; expectedSize: number }> = {}) {
+  return { expectedSha256: mappingDigest, expectedSize: mappingBytes.byteLength, ...overrides };
+}
+
 function symbolsDeclaration(overrides: Partial<{ expectedSha256: string; expectedSize: number }> = {}) {
   return { expectedSha256: symbolsDigest, expectedSize: symbolsBytes.byteLength, ...overrides };
 }
@@ -73,6 +84,8 @@ interface GoogleFixtureOptions {
   commitThrows?: boolean;
   symbolsStatus?: number;
   symbolsMalformed?: boolean;
+  /** symbolType Google echoes for a proguard upload (default: proguard). */
+  mappingAckType?: string;
 }
 
 function googleFixture(options: GoogleFixtureOptions = {}) {
@@ -86,6 +99,7 @@ function googleFixture(options: GoogleFixtureOptions = {}) {
   };
   const requests: Array<{ url: string; method: string; body: unknown }> = [];
   const symbolsUploads: Array<{ sha256: string; size: number }> = [];
+  const mappingUploads: Array<{ sha256: string; size: number }> = [];
   let assertion = "";
   // Set by alreadyOnPlay(): makes the /tracks LIST report this versionCode as present,
   // which is what promote() consults before deciding to upload the bundle.
@@ -142,6 +156,11 @@ function googleFixture(options: GoogleFixtureOptions = {}) {
       }
       return Response.json({ versionCode: options.uploadVersionCode ?? 42, sha256: options.uploadSha ?? bytesToHex(sha256(uploaded)) });
     }
+    if (url.includes("/deobfuscationFiles/proguard")) {
+      const uploaded = new Uint8Array(await new Response(init.body).arrayBuffer());
+      mappingUploads.push({ sha256: bytesToHex(sha256(uploaded)), size: uploaded.byteLength });
+      return Response.json({ deobfuscationFile: { symbolType: options.mappingAckType ?? "proguard" } });
+    }
     if (url.includes("/deobfuscationFiles/nativeCode")) {
       const uploaded = new Uint8Array(await new Response(init.body).arrayBuffer());
       symbolsUploads.push({ sha256: bytesToHex(sha256(uploaded)), size: uploaded.byteLength });
@@ -168,6 +187,7 @@ function googleFixture(options: GoogleFixtureOptions = {}) {
     fetchImpl: fetchImpl as unknown as typeof fetch,
     requests,
     symbolsUploads,
+    mappingUploads,
     assertion: () => assertion,
     track: () => track,
     /** Pretend Google Play already holds this versionCode (as after an earlier promote). */
@@ -226,6 +246,8 @@ describe("Google Play adapter RPC service", () => {
         track: "internal",
         sha256: digest,
         rollout_percent: 100,
+        deobfuscation_files: [],
+        release_notes_languages: [],
       },
     });
     // The previous completed release is superseded, not carried alongside: Play
@@ -325,6 +347,141 @@ describe("Google Play adapter RPC service", () => {
       environment(),
     )).toMatchObject({ ok: false, error: { code: "symbols_too_large" } });
     expect(fixture.fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it("uploads a declared R8/ProGuard mapping with symbolType proguard after native symbols, before the track", async () => {
+    const fixture = googleFixture();
+    const service = createPlayAdapterService({ fetchImpl: fixture.fetchImpl, nowSeconds: () => NOW });
+    const result = await service.promote(
+      promotion({ symbols: symbolsDeclaration(), mapping: mappingDeclaration() }),
+      body(),
+      symbolsBody(),
+      environment(),
+      mappingBody(),
+    );
+    expect(result).toMatchObject({ ok: true, value: {
+      deobfuscation_files: [
+        { symbol_type: "nativeCode", sha256: symbolsDigest, size_bytes: symbolsBytes.byteLength, uploaded: true },
+        { symbol_type: "proguard", sha256: mappingDigest, size_bytes: mappingBytes.byteLength, uploaded: true },
+      ],
+    } });
+    expect(fixture.mappingUploads).toEqual([{ sha256: mappingDigest, size: mappingBytes.byteLength }]);
+    const order = fixture.requests.map((request) => {
+      if (request.url.includes("/bundles?uploadType=media")) return "bundle";
+      if (request.url.includes("/deobfuscationFiles/nativeCode")) return "symbols";
+      if (request.url.includes("/deobfuscationFiles/proguard")) return "mapping";
+      if (request.method === "PUT" && request.url.includes("/tracks/")) return "track";
+      if (request.url.includes(":commit?")) return "commit";
+      return null;
+    }).filter(Boolean);
+    expect(order).toEqual(["bundle", "symbols", "mapping", "track", "commit"]);
+    expect(fixture.requests.find((request) => request.url.includes("/deobfuscationFiles/proguard"))!.url)
+      .toContain("/apks/42/deobfuscationFiles/proguard?uploadType=media");
+  });
+
+  it("requires a proguard acknowledgement for a mapping and words the failure as a mapping, not native symbols", async () => {
+    const fixture = googleFixture({ mappingAckType: "nativeCode" });
+    const service = createPlayAdapterService({ fetchImpl: fixture.fetchImpl, nowSeconds: () => NOW });
+    const result = await service.promote(promotion({ mapping: mappingDeclaration() }), body(), null, environment(), mappingBody());
+    expect(result).toMatchObject({ ok: false, error: {
+      code: "play_mapping_malformed",
+      message: "Google Play did not acknowledge a proguard deobfuscation file",
+    } });
+    expect(fixture.requests.filter((request) => request.url.includes(":commit?"))).toHaveLength(0);
+    expect(fixture.requests.filter((request) => request.method === "DELETE")).toHaveLength(1);
+  });
+
+  it("reports mapping size and integrity failures with proguard wording", async () => {
+    const fixture = googleFixture();
+    const service = createPlayAdapterService({ fetchImpl: fixture.fetchImpl, nowSeconds: () => NOW });
+    const tooLarge = await service.promote(
+      promotion({ mapping: mappingDeclaration({ expectedSize: 2_097_152_001 }) }), body(), null, environment(), mappingBody(),
+    );
+    expect(tooLarge).toMatchObject({ ok: false, error: {
+      code: "mapping_too_large",
+      message: "R8/ProGuard mapping (deobfuscation file, proguard) exceed the Google Play maximum size",
+    } });
+    expect(tooLarge.ok || tooLarge.error.message).not.toMatch(/native/i);
+    expect(fixture.fetchImpl).not.toHaveBeenCalled();
+    const mismatch = await service.promote(
+      promotion({ mapping: mappingDeclaration({ expectedSha256: "e".repeat(64) }) }), body(), null, environment(), mappingBody(),
+    );
+    expect(mismatch).toMatchObject({ ok: false, error: {
+      code: "mapping_integrity_mismatch",
+      message: "Streamed R8/ProGuard mapping (deobfuscation file, proguard) did not match the Hands identity",
+    } });
+    expect(fixture.requests.filter((request) => request.method === "PUT")).toHaveLength(0);
+  });
+
+  it("classifies a rejected mapping upload as stage=upload_mapping", async () => {
+    const fixture = googleFixture();
+    const inner = fixture.fetchImpl;
+    const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => String(input).includes("/deobfuscationFiles/proguard")
+      ? Response.json({ error: { errors: [{ reason: "insufficientPermissions" }], code: 403 } }, { status: 403 })
+      : inner(input, init)) as typeof fetch;
+    const service = createPlayAdapterService({ fetchImpl, nowSeconds: () => NOW });
+    const result = await service.promote(promotion({ mapping: mappingDeclaration() }), body(), null, environment(), mappingBody());
+    expect(result).toMatchObject({ ok: false, error: { code: "play_api_rejected", cause: { stage: "upload_mapping" } } });
+  });
+
+  it("rejects a mapping stream without a declaration, and a declaration without a stream", async () => {
+    const fixture = googleFixture();
+    const service = createPlayAdapterService({ fetchImpl: fixture.fetchImpl, nowSeconds: () => NOW });
+    expect(await service.promote(promotion(), body(), null, environment(), mappingBody())).toMatchObject({
+      ok: false, error: { code: "promotion_request_invalid" },
+    });
+    expect(await service.promote(promotion({ mapping: mappingDeclaration() }), body(), null, environment())).toMatchObject({
+      ok: false, error: { code: "promotion_request_invalid" },
+    });
+    expect(fixture.fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it("reports declared files as skipped, not uploaded, when Play already holds the bundle", async () => {
+    const fixture = googleFixture({ trackMaximum: 0 });
+    fixture.alreadyOnPlay(42, digest);
+    const service = createPlayAdapterService({ fetchImpl: fixture.fetchImpl, nowSeconds: () => NOW });
+    const stream = mappingBody();
+    const result = await service.promote(promotion({ mapping: mappingDeclaration() }), body(), null, environment(), stream);
+    expect(result).toMatchObject({ ok: true, value: { bundle_uploaded: false, deobfuscation_files: [
+      { symbol_type: "proguard", sha256: mappingDigest, uploaded: false, skipped_reason: "bundle_already_on_play" },
+    ] } });
+    expect(fixture.mappingUploads).toHaveLength(0);
+    // The unread stream is released so the caller's tee never buffers it.
+    expect(stream.locked).toBe(false);
+    await expect(stream.getReader().read()).resolves.toMatchObject({ done: true });
+  });
+
+  it("puts release notes on the new track release only", async () => {
+    const fixture = googleFixture();
+    const service = createPlayAdapterService({ fetchImpl: fixture.fetchImpl, nowSeconds: () => NOW });
+    const notes = [{ language: "zh-CN", text: "修复" }, { language: "en-US", text: "Fixes" }, { language: "ja-JP", text: "修正" }];
+    const result = await service.promote(promotion({ releaseNotes: notes }), body(), null, environment());
+    expect(result).toMatchObject({ ok: true, value: { release_notes_languages: ["zh-CN", "en-US", "ja-JP"] } });
+    expect(fixture.track().releases).toEqual([{ versionCodes: ["42"], status: "completed", releaseNotes: notes }]);
+  });
+
+  it("fails closed on release notes over 500 characters, never truncating", async () => {
+    const fixture = googleFixture();
+    const service = createPlayAdapterService({ fetchImpl: fixture.fetchImpl, nowSeconds: () => NOW });
+    const ok = await service.promote(
+      promotion({ releaseNotes: [{ language: "en-US", text: "🐛".repeat(500) }] }), body(), null, environment(),
+    );
+    expect(ok).toMatchObject({ ok: true });
+    const calls = (fixture.fetchImpl as unknown as { mock: { calls: unknown[] } }).mock.calls.length;
+    const tooLong = await service.promote(
+      promotion({ releaseNotes: [{ language: "en-US", text: "x".repeat(501) }] }), body(), null, environment(),
+    );
+    expect(tooLong).toMatchObject({ ok: false, error: { code: "release_notes_too_long" } });
+    expect((fixture.fetchImpl as unknown as { mock: { calls: unknown[] } }).mock.calls.length).toBe(calls);
+    for (const bad of [
+      [{ language: "en", text: "" }],
+      [{ language: "EN_us", text: "x" }],
+      [{ language: "en-US", text: "a" }, { language: "en-us", text: "b" }],
+      "not-a-list",
+    ]) {
+      expect(await service.promote(promotion({ releaseNotes: bad as never }), body(), null, environment()))
+        .toMatchObject({ ok: false, error: { code: "release_notes_invalid" } });
+    }
   });
 
   it("deletes an uncommitted edit on exact-byte mismatch", async () => {
@@ -440,6 +597,8 @@ describe("Google Play adapter RPC service", () => {
         track: "internal",
         sha256: digest,
         rollout_percent: 100,
+        deobfuscation_files: [],
+        release_notes_languages: [],
       },
     });
     // Only the new completed release remains, whether or not the track already had

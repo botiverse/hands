@@ -1,8 +1,10 @@
 import { createAccessToken, parsePlayCredential } from "./auth";
 import { PlayAdapterError } from "./errors";
-import { GooglePlayClient, MAX_SYMBOLS_SIZE_BYTES } from "./google_play";
+import { DEOBFUSCATION_FILE_KINDS, GooglePlayClient, MAX_SYMBOLS_SIZE_BYTES } from "./google_play";
 import type {
   AdapterResult,
+  DeobfuscationSymbolType,
+  LocalizedReleaseNote,
   HandsTrack,
   PlayAdapterEnv,
   PlayBindingInput,
@@ -10,6 +12,8 @@ import type {
   PlayTracks,
   PromotionRequest,
   PromotionRpcInput,
+  PromotionSymbolsRequest,
+  SymbolsRpcInput,
   TrackMaximumRpcInput,
 } from "./types";
 
@@ -65,10 +69,69 @@ function trackInput(input: TrackMaximumRpcInput) {
   return { ...binding, handsTrack, playTrack: binding.tracks[handsTrack] };
 }
 
+/** Google Play caps LocalizedText release notes at 500 characters per language. */
+export const MAX_RELEASE_NOTES_CHARS = 500;
+/** BCP-47-shaped tag as Play lists them (en-US, zh-CN, fil, es-419). */
+const PLAY_LANGUAGE = /^[a-z]{2,3}(?:-[A-Za-z0-9]{2,8})*$/;
+const MAX_RELEASE_NOTES_LANGUAGES = 100;
+
+/**
+ * Validate release notes at the trust boundary. Hands maps and converts them;
+ * the adapter refuses anything Play would reject rather than truncating. Length
+ * is counted in Unicode code points.
+ */
+function releaseNotesInput(value: unknown): LocalizedReleaseNote[] | null {
+  if (value === undefined || value === null) return null;
+  if (!Array.isArray(value) || value.length > MAX_RELEASE_NOTES_LANGUAGES) {
+    throw new PlayAdapterError(400, "release_notes_invalid", "Release notes must be a list of {language, text}");
+  }
+  const seen = new Set<string>();
+  const notes: LocalizedReleaseNote[] = [];
+  for (const item of value as Array<Partial<LocalizedReleaseNote> | null>) {
+    const language = typeof item?.language === "string" ? item.language : "";
+    const text = typeof item?.text === "string" ? item.text : "";
+    if (!PLAY_LANGUAGE.test(language) || seen.has(language.toLowerCase()) || !text.trim()) {
+      throw new PlayAdapterError(400, "release_notes_invalid", "Release notes need a unique Play language tag and non-empty text");
+    }
+    if ([...text].length > MAX_RELEASE_NOTES_CHARS) {
+      throw new PlayAdapterError(400, "release_notes_too_long", `Release notes for ${language} exceed ${MAX_RELEASE_NOTES_CHARS} characters`);
+    }
+    seen.add(language.toLowerCase());
+    notes.push({ language, text });
+  }
+  return notes.length > 0 ? notes : null;
+}
+
+/** A declared deobfuscation file must arrive with its stream, and a stream must be declared. */
+function deobfuscationInput(
+  symbolType: DeobfuscationSymbolType,
+  declared: SymbolsRpcInput | null | undefined,
+  stream: ReadableStream<Uint8Array> | null,
+): PromotionSymbolsRequest | null {
+  if (declared === null || declared === undefined) {
+    if (stream !== null) {
+      // An undeclared stream is a contract violation, not a silent extra upload.
+      throw new PlayAdapterError(400, "promotion_request_invalid", "Hands promotion request is invalid");
+    }
+    return null;
+  }
+  const size = positiveInteger(declared.expectedSize);
+  const sha = typeof declared.expectedSha256 === "string" ? declared.expectedSha256.toLowerCase() : "";
+  if (size === null || !SHA256.test(sha) || !(stream instanceof ReadableStream)) {
+    throw new PlayAdapterError(400, "promotion_request_invalid", "Hands promotion request is invalid");
+  }
+  if (size > MAX_SYMBOLS_SIZE_BYTES) {
+    const kind = DEOBFUSCATION_FILE_KINDS[symbolType];
+    throw new PlayAdapterError(413, kind.tooLargeCode, `${kind.label} exceed the Google Play maximum size`);
+  }
+  return { body: stream, expectedSha256: sha, expectedSize: size };
+}
+
 function promotionInput(
   input: PromotionRpcInput,
   body: ReadableStream<Uint8Array>,
   symbolsBody: ReadableStream<Uint8Array> | null,
+  mappingBody: ReadableStream<Uint8Array> | null,
   env: PlayAdapterEnv,
 ): PromotionRequest {
   const track = trackInput(input);
@@ -94,26 +157,9 @@ function promotionInput(
   if (expectedSize > maxAabSize(env)) {
     throw new PlayAdapterError(413, "aab_too_large", "AAB exceeds the configured maximum size");
   }
-  const declared = input.symbols ?? null;
-  let symbols: PromotionRequest["symbols"] = null;
-  if (declared !== null) {
-    const symbolsSize = positiveInteger(declared.expectedSize);
-    const symbolsSha256 = typeof declared.expectedSha256 === "string" ? declared.expectedSha256.toLowerCase() : "";
-    if (
-      symbolsSize === null
-      || !SHA256.test(symbolsSha256)
-      || !(symbolsBody instanceof ReadableStream)
-    ) {
-      throw new PlayAdapterError(400, "promotion_request_invalid", "Hands promotion request is invalid");
-    }
-    if (symbolsSize > MAX_SYMBOLS_SIZE_BYTES) {
-      throw new PlayAdapterError(413, "symbols_too_large", "Native debug symbols exceed the Google Play maximum size");
-    }
-    symbols = { body: symbolsBody, expectedSha256: symbolsSha256, expectedSize: symbolsSize };
-  } else if (symbolsBody !== null) {
-    // An undeclared stream is a contract violation, not a silent extra upload.
-    throw new PlayAdapterError(400, "promotion_request_invalid", "Hands promotion request is invalid");
-  }
+  const symbols = deobfuscationInput("nativeCode", input.symbols, symbolsBody);
+  const mapping = deobfuscationInput("proguard", input.mapping, mappingBody);
+  const releaseNotes = releaseNotesInput(input.releaseNotes);
   return {
     packageName: track.packageName,
     handsTrack: track.handsTrack,
@@ -125,6 +171,8 @@ function promotionInput(
     operationId,
     body,
     symbols,
+    mapping,
+    releaseNotes,
   };
 }
 function failure(error: unknown, operationId: string | null): AdapterResult<never> {
@@ -215,10 +263,11 @@ export function createPlayAdapterService(options: AdapterOptions = {}) {
       body: ReadableStream<Uint8Array>,
       symbolsBody: ReadableStream<Uint8Array> | null,
       env: PlayAdapterEnv,
+      mappingBody: ReadableStream<Uint8Array> | null = null,
     ): Promise<AdapterResult<Awaited<ReturnType<GooglePlayClient["promote"]>>>> {
       const operationId = OPERATION_ID.test(input?.operationId ?? "") ? input.operationId : null;
       try {
-        const promotion = promotionInput(input, body, symbolsBody, env);
+        const promotion = promotionInput(input, body, symbolsBody, mappingBody, env);
         const resolved = await client(input, env);
         return { ok: true, value: await resolved.client.promote(promotion) };
       } catch (error) {
