@@ -216,7 +216,7 @@ function narrowCause(value: unknown): NarrowCause | null {
   if (typeof source.message_sha256 === "string" && /^[0-9a-f]{64}$/.test(source.message_sha256)) out.message_sha256 = source.message_sha256;
   if (Number.isSafeInteger(source.message_length) && (source.message_length as number) >= 0) out.message_length = source.message_length as number;
   if (Array.isArray(source.tried)) {
-    const tried = source.tried.filter((item): item is string => typeof item === "string" && item.length <= 200 && /^[A-Z_]+: /.test(item)).slice(0, 16);
+    const tried = source.tried.filter((item): item is string => typeof item === "string" && item.length <= 200 && /^(?:structured|text):/.test(item)).slice(0, 16);
     if (tried.length) out.tried = tried;
   }
   return Object.keys(out).length ? out : null;

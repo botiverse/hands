@@ -87,6 +87,7 @@ export function playRejection(status: number, body: unknown, stage: string): Pla
  * identifier naming the condition; each value is shape-checked as an identifier
  * first, so no provider prose is ever matched here.
  */
+// Same order as the text layer: NOT_SENT_FOR_REVIEW before IN_REVIEW.
 const STRUCTURED_CAUSES: Array<[RegExp, string]> = [
   [/NOT_?SENT_?FOR_?REVIEW/i, "CHANGES_NOT_SENT_FOR_REVIEW"],
   [/(?:^|_)IN_?REVIEW(?:$|_)|InReview/, "EDIT_IN_REVIEW"],
@@ -117,10 +118,14 @@ function classifyStructuredIdentifiers(body: unknown): string | undefined {
  * so a new Google wording can be added without guessing what was checked.
  */
 export function editStatePatternsTried(): string[] {
-  const message = PROVIDER_CAUSES.filter(([, cause]) => cause === "EDIT_IN_REVIEW" || cause === "CHANGES_NOT_SENT_FOR_REVIEW");
+  const relevant = (cause: string) => cause === "EDIT_IN_REVIEW" || cause === "CHANGES_NOT_SENT_FOR_REVIEW";
+  // In match order. Prefix = layer: structured identifiers (error.status,
+  // errors[].reason, details[].reason) first, then the message text.
   return [
-    ...STRUCTURED_CAUSES.map(([pattern, cause]) => `${cause}: status/errors[].reason/details[].reason ~ /${pattern.source}/${pattern.flags}`),
-    ...message.map(([pattern, cause]) => `${cause}: message ~ /${pattern.source}/${pattern.flags}`),
+    ...STRUCTURED_CAUSES.filter(([, cause]) => relevant(cause))
+      .map(([pattern, cause]) => `structured:/${pattern.source}/${pattern.flags} -> ${cause}`),
+    ...PROVIDER_CAUSES.filter(([, cause]) => relevant(cause))
+      .map(([pattern, cause]) => `text:/${pattern.source}/${pattern.flags} -> ${cause}`),
   ];
 }
 
@@ -235,14 +240,15 @@ const PROVIDER_CAUSES: Array<[RegExp, string]> = [
   // A commit rejected because the app carries unrelated unpublished changes (or a
   // previously rejected submission). Google names this in the message; the remedy is
   // a different commit flag, so it must not read as a generic validation failure.
-  // commitEdit sends changesInReviewBehavior=ERROR_IF_IN_REVIEW, so Google rejects
-  // the commit whenever the app already has an edit under review. This sits ABOVE
-  // CHANGES_NOT_SENT_FOR_REVIEW on purpose: a message can mention both ("not sent
-  // for review" in a phrase that also says "in review"), and the two remedies are
-  // opposite -- one waits for an open review, the other flags the commit. Review
-  // caught the comment promising this order while the code had it the other way.
-  [/in review|under review|review.*in progress|ERROR_IF_IN_REVIEW/i, "EDIT_IN_REVIEW"],
+  // Two edit-state causes with opposite remedies: CHANGES_NOT_SENT_FOR_REVIEW (the
+  // app's changes must be sent for review manually -> commit with
+  // changesNotSentForReview) and EDIT_IN_REVIEW (another change is in review ->
+  // wait; commitEdit sends ERROR_IF_IN_REVIEW). NOT_SENT is checked FIRST, in this
+  // text layer and in STRUCTURED_CAUSES alike: its wording is the more specific
+  // ("not sent for review"), while the in-review patterns are broad enough to also
+  // hit a not-sent message that mentions a review. Tests pin both directions.
   [/changesNotSentForReview|not ?sent for review|unreviewed/i, "CHANGES_NOT_SENT_FOR_REVIEW"],
+  [/in review|under review|review.*in progress|ERROR_IF_IN_REVIEW/i, "EDIT_IN_REVIEW"],
   // A track whose testers or countries are not configured yet, or a track that does
   // not exist in the console. Both are console-side setup, not a Hands defect.
   // Deliberately does NOT cover "track does not exist": NOT_FOUND above matches

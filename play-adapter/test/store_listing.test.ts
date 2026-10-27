@@ -210,6 +210,27 @@ describe("Google Play store listing RPC", () => {
       .toMatchObject({ ok: false, error: { code: "play_changes_not_sent_for_review", cause: { cause_source: "structured" } } });
   });
 
+  it("keeps not-sent-for-review and in-review apart in both layers, and a bare REVIEW matches neither", async () => {
+    const commit = async (body: unknown) => {
+      const google = googleFixture([EN], { commitErrorBody: { status: 400, body } });
+      return createPlayAdapterService({ fetchImpl: google.fetchImpl }).pushStoreListings(push({ mode: "commit" }), env);
+    };
+    const structured = (reason: string) => ({ error: { code: 400, message: "x", details: [{ reason }] } });
+    const text = (message: string) => ({ error: { code: 400, message } });
+    const cases: Array<[unknown, string]> = [
+      [structured("CHANGES_NOT_SENT_FOR_REVIEW"), "play_changes_not_sent_for_review"],
+      [structured("CHANGES_IN_REVIEW"), "play_edit_in_review"],
+      [structured("REVIEW"), "play_edit_state_unknown"],
+      // Not-sent wording that also mentions a review in progress: still not-sent.
+      [text("Changes were not sent for review; a review is in progress for this app."), "play_changes_not_sent_for_review"],
+      [text("Changes are currently in review."), "play_edit_in_review"],
+      [text("REVIEW"), "play_edit_state_unknown"],
+    ];
+    for (const [body, code] of cases) {
+      expect(await commit(body), JSON.stringify(body)).toMatchObject({ ok: false, error: { code } });
+    }
+  });
+
   it("reports an unmatched (German) commit rejection as play_edit_state_unknown with the patterns tried, never Google's text", async () => {
     const message = "Für diese App werden derzeit Änderungen geprüft.";
     const google = googleFixture([EN], { commitErrorBody: { status: 400, body: { error: { code: 400, status: "FAILED_PRECONDITION", message, errors: [{ reason: "badRequest" }] } } } });
@@ -219,11 +240,13 @@ describe("Google Play store listing RPC", () => {
       message_sha256: bytesToHex(sha256(new TextEncoder().encode(message))),
     } } });
     if (result.ok) return;
-    expect(result.error.cause!.tried).toEqual(expect.arrayContaining([
-      expect.stringMatching(/^EDIT_IN_REVIEW: status\/errors\[\]\.reason\/details\[\]\.reason ~ /),
-      expect.stringMatching(/^EDIT_IN_REVIEW: message ~ \/in review/),
-      expect.stringMatching(/^CHANGES_NOT_SENT_FOR_REVIEW: message ~ /),
-    ]));
+    // Both layers, prefixed, in match order (NOT_SENT before IN_REVIEW in each).
+    expect(result.error.cause!.tried).toEqual([
+      "structured:/NOT_?SENT_?FOR_?REVIEW/i -> CHANGES_NOT_SENT_FOR_REVIEW",
+      "structured:/(?:^|_)IN_?REVIEW(?:$|_)|InReview/ -> EDIT_IN_REVIEW",
+      "text:/changesNotSentForReview|not ?sent for review|unreviewed/i -> CHANGES_NOT_SENT_FOR_REVIEW",
+      "text:/in review|under review|review.*in progress|ERROR_IF_IN_REVIEW/i -> EDIT_IN_REVIEW",
+    ]);
     expect(JSON.stringify(result)).not.toContain("geprüft");
     expect(google.live().get("en-US")).toEqual(EN);
   });

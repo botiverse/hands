@@ -237,10 +237,10 @@ describe("store listing routes", () => {
 
   it("reports an unrecognised commit answer as 502 edit_state_unknown with a failed-closed receipt", async () => {
     const h = await harness();
-    const tried = ["EDIT_IN_REVIEW: message ~ /in review/i", "CHANGES_NOT_SENT_FOR_REVIEW: message ~ /not ?sent for review/i"];
+    const tried = ["structured:/NOT_?SENT_?FOR_?REVIEW/i -> CHANGES_NOT_SENT_FOR_REVIEW", "text:/in review/i -> EDIT_IN_REVIEW"];
     h.env.PLAY_RELEASE_SERVICE = adapter({ pushStoreListings: async () => ({ ok: false, error: {
       status: 502, code: "play_edit_state_unknown", message: "Google Play answered the commit in a way Hands does not recognise",
-      cause: { stage: "commit_edit", provider_cause: "OTHER", message_sha256: "a".repeat(64), message_length: 47, tried, provider_text: "Für diese App…" } as never,
+      cause: { stage: "commit_edit", provider_cause: "OTHER", message_sha256: "a".repeat(64), message_length: 47, tried: [...tried, "Google: Für diese App…"], provider_text: "Für diese App…" } as never,
     } }) });
     const response = await h.pushBody({ mode: "commit", listings: [{ language: "en-US", title: "Raft" }] });
     expect(response.status).toBe(502);
