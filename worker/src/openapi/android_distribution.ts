@@ -369,7 +369,7 @@ export function registerAndroidDistributionRoutes(): RouteConfigList {
     tags: ["Android distribution"],
     summary: "Update Google Play store listing text in one edit (dry run or commit)",
     description:
-      "Whitelisted edits.listings.update/delete only; nothing touches tracks, releases or bundles. Languages and character limits are validated before any Play call (failure_code listing_language_unsupported, listing_field_too_long, ...). One package-scoped Play edit lock is shared with promote. The response carries the per-language plan (create/update/delete/unchanged with changed fields and before/after). An immutable receipt records actor, edit id, mode, languages and per-field sha256/length. A commit blocked by another change in review returns 409 code edit_in_review, failure_code play_edit_in_review; nothing was committed.",
+      "Whitelisted edits.listings.update/delete only; nothing touches tracks, releases or bundles. Languages and character limits are validated before any Play call (failure_code listing_language_unsupported, listing_field_too_long, ...). One package-scoped Play edit lock is shared with promote. The response carries the per-language plan (create/update/delete/unchanged with changed fields and before/after). An immutable receipt records actor, edit id, mode, languages and per-field sha256/length. A commit blocked by another change in review returns 409 code edit_in_review, failure_code play_edit_in_review; nothing was committed. A validate/commit answer Hands cannot classify (no known structured reason or message pattern), or a commit response that is not this edit's AppEdit, returns 502 code edit_state_unknown, failure_code play_edit_state_unknown, with cause.tried (patterns checked) and the provider message's sha256/length only; it is never reported as success.",
     security: auth,
     request: { params: AppIdParam, body: { content: json(PlayStoreListingPushInput), required: true } },
     responses: {
@@ -377,7 +377,7 @@ export function registerAndroidDistributionRoutes(): RouteConfigList {
       400: error("Request, language, or limit validation failed (no Play call)."),
       403: error("Authenticated human or agent publisher and a verified, enabled binding are required."),
       409: error("Another Hands Play edit is active, or another change is in review on Google Play."),
-      502: error("Play adapter failed or readback mismatched; see receipt_id."),
+      502: error("Play adapter failed, readback mismatched, or Google's answer was unrecognised (edit_state_unknown); see receipt_id."),
     },
   });
   routes.push({

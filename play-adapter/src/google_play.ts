@@ -593,14 +593,16 @@ export class GooglePlayClient {
    * cancels someone else's in-review submission. `changesNotSentForReview=true` is
    * sent only when the caller opts in; omitted otherwise (Google's default).
    */
-  async commitEdit(packageName: string, editId: string, options: { changesNotSentForReview?: boolean } = {}): Promise<void> {
+  async commitEdit(packageName: string, editId: string, options: { changesNotSentForReview?: boolean } = {}): Promise<string | null> {
     const query = options.changesNotSentForReview
       ? "changesInReviewBehavior=ERROR_IF_IN_REVIEW&changesNotSentForReview=true"
       : "changesInReviewBehavior=ERROR_IF_IN_REVIEW";
-    await this.requestJson<{ id?: string }>(
+    const body = await this.requestJson<{ id?: unknown }>(
       `${this.editRoot(packageName, editId)}:commit?${query}`,
       { method: "POST", body: "{}" },
     );
+    // The returned AppEdit id; promote does not inspect it, store listing requires it.
+    return typeof body.id === "string" ? body.id : null;
   }
 
   /** edits.validate: Google checks the edit as a commit would, without committing. */

@@ -235,6 +235,24 @@ describe("store listing routes", () => {
     expect(payload.result).toEqual({ status: "failed-closed", failure_code: "play_edit_in_review", cause: { stage: "commit_edit", provider_cause: "EDIT_IN_REVIEW" } });
   });
 
+  it("reports an unrecognised commit answer as 502 edit_state_unknown with a failed-closed receipt", async () => {
+    const h = await harness();
+    const tried = ["EDIT_IN_REVIEW: message ~ /in review/i", "CHANGES_NOT_SENT_FOR_REVIEW: message ~ /not ?sent for review/i"];
+    h.env.PLAY_RELEASE_SERVICE = adapter({ pushStoreListings: async () => ({ ok: false, error: {
+      status: 502, code: "play_edit_state_unknown", message: "Google Play answered the commit in a way Hands does not recognise",
+      cause: { stage: "commit_edit", provider_cause: "OTHER", message_sha256: "a".repeat(64), message_length: 47, tried, provider_text: "Für diese App…" } as never,
+    } }) });
+    const response = await h.pushBody({ mode: "commit", listings: [{ language: "en-US", title: "Raft" }] });
+    expect(response.status).toBe(502);
+    const body = await response.json() as { error: Record<string, any> };
+    const cause = { stage: "commit_edit", provider_cause: "OTHER", message_sha256: "a".repeat(64), message_length: 47, tried };
+    expect(body.error).toMatchObject({ code: "edit_state_unknown", failure_code: "play_edit_state_unknown", cause });
+    expect(JSON.stringify(body)).not.toContain("Für");
+    const [receipt] = h.receipts();
+    expect(receipt).toMatchObject({ verdict: "failed-closed" });
+    expect(JSON.parse(String(receipt!.payload_json)).result).toEqual({ status: "failed-closed", failure_code: "play_edit_state_unknown", cause });
+  });
+
   it("shares the package edit lock with promote", async () => {
     const h = await harness();
     h.sqlite.pragma("foreign_keys = OFF");

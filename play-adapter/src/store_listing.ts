@@ -1,4 +1,5 @@
 import { PlayAdapterError } from "./errors";
+import { editStatePatternsTried } from "./provider_errors";
 import type { GooglePlayClient } from "./google_play";
 import { PLAY_LISTING_FIELDS } from "./types";
 import type {
@@ -180,11 +181,17 @@ export async function readStoreListings(client: GooglePlayClient, packageName: s
 }
 
 /**
- * Translate a commit rejection Google answered into a specific, actionable code.
- * The classified cause is a constant from provider_errors; Google's text never
- * reaches here.
+ * Translate a validate/commit rejection Google answered into a specific code.
+ *
+ * In-review and not-sent-for-review are recognised only by matching Google's
+ * message (provider_errors classifies it into a constant; Google's text never
+ * reaches here), and that text can change or be localised. So a rejection whose
+ * message matches none of the known patterns is never passed on as a generic
+ * failure that could be misread: it becomes `play_edit_state_unknown`, which tells
+ * the caller to check Play Console. Recognised non-review causes keep
+ * `play_api_rejected` with their classified cause.
  */
-function commitRejection(error: unknown): unknown {
+function editStateRejection(error: unknown, stage: "validate_edit" | "commit_edit"): unknown {
   if (!(error instanceof PlayAdapterError) || error.code !== "play_api_rejected") return error;
   const cause = error.cause_detail?.provider_cause;
   if (cause === "EDIT_IN_REVIEW") {
@@ -197,7 +204,28 @@ function commitRejection(error: unknown): unknown {
       "Google Play requires this app's changes to be sent for review from Play Console; the store listing was not committed. Push again with changes_not_sent_for_review=true to add it to the pending changes, then send them for review in Play Console.",
       error.cause_detail);
   }
+  if (!cause || cause === "OTHER") return editStateUnknown(stage, "OTHER", error.cause_detail);
   return error;
+}
+
+/**
+ * Google's answer cannot be classified: report failure, never success. Carries the
+ * patterns tried and, when Google sent a message, its sha256 + length for
+ * correlation with the operator log -- never the text.
+ */
+function editStateUnknown(
+  stage: "validate_edit" | "commit_edit",
+  providerCause: string,
+  detail?: { message_sha256?: string; message_length?: number },
+): PlayAdapterError {
+  return new PlayAdapterError(502, "play_edit_state_unknown",
+    `Google Play answered ${stage === "commit_edit" ? "the commit" : "validation"} in a way Hands does not recognise; the store listing is not reported as ${stage === "commit_edit" ? "committed" : "validated"}. Check the app in Play Console before pushing again.`,
+    {
+      stage,
+      provider_cause: providerCause,
+      tried: editStatePatternsTried(),
+      ...(detail?.message_sha256 ? { message_sha256: detail.message_sha256, message_length: detail.message_length } : {}),
+    });
 }
 
 /**
@@ -236,22 +264,35 @@ export async function pushStoreListings(
       return result("no_changes");
     }
     await applyStoreListingChanges(client, packageName, editId, effective);
-    await client.validateEdit(packageName, editId);
+    try {
+      await client.validateEdit(packageName, editId);
+    } catch (error) {
+      throw editStateRejection(error, "validate_edit");
+    }
     if (request.mode === "dry_run") {
       await client.deleteEdit(packageName, editId);
       return result("validated");
     }
+    let committedId: string | null;
     try {
-      await client.commitEdit(packageName, editId, { changesNotSentForReview: request.changesNotSentForReview });
-      committed = true;
+      committedId = await client.commitEdit(packageName, editId, { changesNotSentForReview: request.changesNotSentForReview });
     } catch (error) {
       // No HTTP answer: Google may or may not have committed. Do not touch the edit.
       if (error instanceof PlayAdapterError && error.code === "play_api_unavailable") {
         committed = true;
         throw new PlayAdapterError(502, "play_commit_ambiguous", "Google Play did not answer the commit; check Play Console before pushing again", { stage: "commit_edit" });
       }
-      throw commitRejection(error);
+      // A 2xx whose body is not an AppEdit: Google may have committed. Not success,
+      // and the edit is left alone.
+      if (error instanceof PlayAdapterError && error.code === "play_api_malformed") {
+        committed = true;
+        throw editStateUnknown("commit_edit", "MALFORMED_RESPONSE");
+      }
+      throw editStateRejection(error, "commit_edit");
     }
+    committed = true;
+    // edits.commit returns the AppEdit; anything but this edit's id is not a commit we can vouch for.
+    if (committedId !== editId) throw editStateUnknown("commit_edit", "MALFORMED_RESPONSE");
   } catch (error) {
     if (committed) throw error;
     await client.cleanupOrThrow(packageName, editId, error);

@@ -1,3 +1,5 @@
+import { sha256 } from "@noble/hashes/sha256";
+import { bytesToHex } from "@noble/hashes/utils";
 import { exportPKCS8, generateKeyPair } from "jose";
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import { createPlayAdapterService } from "../src/index";
@@ -28,6 +30,10 @@ interface FixtureOptions {
   /** Google's error message for the commit (classified, never echoed). */
   commitError?: { status: number; message: string };
   commitNetworkError?: boolean;
+  /** Full Google error envelope for the commit (overrides commitError's simple body). */
+  commitErrorBody?: { status: number; body: unknown };
+  /** 2xx commit body (default: the AppEdit). */
+  commitOkBody?: unknown;
   validateStatus?: number;
   /** Return a different listing from PUT than what was sent. */
   updateEchoes?: (sent: PlayListing) => unknown;
@@ -85,11 +91,15 @@ function googleFixture(initial: PlayListing[], options: FixtureOptions = {}) {
     }
     if (method === "POST" && url.pathname.endsWith(":commit")) {
       if (options.commitNetworkError) throw new TypeError("network");
+      if (options.commitErrorBody) return Response.json(options.commitErrorBody.body, { status: options.commitErrorBody.status });
       if (options.commitError) {
         return Response.json({ error: { code: options.commitError.status, message: options.commitError.message } }, { status: options.commitError.status });
       }
       live = new Map([...edit].map(([k, v]) => [k, { ...v }]));
       edits.delete(editId);
+      if (options.commitOkBody !== undefined) {
+        return typeof options.commitOkBody === "string" ? new Response(options.commitOkBody) : Response.json(options.commitOkBody);
+      }
       return Response.json({ id: editId });
     }
     return Response.json({ error: { code: 400, message: "unexpected" } }, { status: 400 });
@@ -186,6 +196,48 @@ describe("Google Play store listing RPC", () => {
     expect(google.live().get("en-US")).toEqual(EN);
   });
 
+  it("recognises in-review from a structured reason even when the message is localised", async () => {
+    for (const message of ["该应用有正在审核的更改。", "審査中の変更があります。"]) {
+      const google = googleFixture([EN], { commitErrorBody: { status: 400, body: { error: {
+        code: 400, status: "FAILED_PRECONDITION", message,
+        details: [{ "@type": "type.googleapis.com/google.rpc.ErrorInfo", reason: "CHANGES_IN_REVIEW", domain: "androidpublisher.googleapis.com" }],
+      } } } });
+      const result = await createPlayAdapterService({ fetchImpl: google.fetchImpl }).pushStoreListings(push({ mode: "commit" }), env);
+      expect(result, message).toMatchObject({ ok: false, error: { status: 409, code: "play_edit_in_review", cause: { provider_cause: "EDIT_IN_REVIEW", cause_source: "structured" } } });
+    }
+    const notSent = googleFixture([EN], { commitErrorBody: { status: 400, body: { error: { code: 400, message: "変更は審査に送信されていません", errors: [{ reason: "changesNotSentForReview" }] } } } });
+    expect(await createPlayAdapterService({ fetchImpl: notSent.fetchImpl }).pushStoreListings(push({ mode: "commit" }), env))
+      .toMatchObject({ ok: false, error: { code: "play_changes_not_sent_for_review", cause: { cause_source: "structured" } } });
+  });
+
+  it("reports an unmatched (German) commit rejection as play_edit_state_unknown with the patterns tried, never Google's text", async () => {
+    const message = "Für diese App werden derzeit Änderungen geprüft.";
+    const google = googleFixture([EN], { commitErrorBody: { status: 400, body: { error: { code: 400, status: "FAILED_PRECONDITION", message, errors: [{ reason: "badRequest" }] } } } });
+    const result = await createPlayAdapterService({ fetchImpl: google.fetchImpl }).pushStoreListings(push({ mode: "commit" }), env);
+    expect(result).toMatchObject({ ok: false, error: { status: 502, code: "play_edit_state_unknown", cause: {
+      stage: "commit_edit", provider_cause: "OTHER", message_length: message.length,
+      message_sha256: bytesToHex(sha256(new TextEncoder().encode(message))),
+    } } });
+    if (result.ok) return;
+    expect(result.error.cause!.tried).toEqual(expect.arrayContaining([
+      expect.stringMatching(/^EDIT_IN_REVIEW: status\/errors\[\]\.reason\/details\[\]\.reason ~ /),
+      expect.stringMatching(/^EDIT_IN_REVIEW: message ~ \/in review/),
+      expect.stringMatching(/^CHANGES_NOT_SENT_FOR_REVIEW: message ~ /),
+    ]));
+    expect(JSON.stringify(result)).not.toContain("geprüft");
+    expect(google.live().get("en-US")).toEqual(EN);
+  });
+
+  it("never reports success for a commit whose response is not this edit's AppEdit", async () => {
+    for (const commitOkBody of [{ id: "some-other-edit" }, {}, "not json"]) {
+      const google = googleFixture([EN], { commitOkBody });
+      const result = await createPlayAdapterService({ fetchImpl: google.fetchImpl }).pushStoreListings(push({ mode: "commit" }), env);
+      expect(result, JSON.stringify(commitOkBody)).toMatchObject({ ok: false, error: { code: "play_edit_state_unknown", cause: { stage: "commit_edit", provider_cause: "MALFORMED_RESPONSE" } } });
+      // Google answered 2xx: the edit may be committed, so Hands does not delete it.
+      expect(google.requests.filter((r) => r.method === "DELETE" && r.path === "/edit-1")).toEqual([]);
+    }
+  });
+
   it("names the changesNotSentForReview remedy when Google requires it", async () => {
     const google = googleFixture([EN], { commitError: { status: 400, message: "Changes cannot be sent for review automatically. Please set the query parameter changesNotSentForReview to true." } });
     const result = await createPlayAdapterService({ fetchImpl: google.fetchImpl }).pushStoreListings(push({ mode: "commit" }), env);
@@ -202,8 +254,10 @@ describe("Google Play store listing RPC", () => {
   it("fails closed on a validate rejection, deletes the edit, and keeps Google's text out", async () => {
     const google = googleFixture([EN], { validateStatus: 400 });
     const result = await createPlayAdapterService({ fetchImpl: google.fetchImpl }).pushStoreListings(push({ mode: "commit" }), env);
-    expect(result).toMatchObject({ ok: false, error: { code: "play_api_rejected", cause: { stage: "validate_edit" } } });
+    // The message matches no known pattern: unknown state, never a generic rejection.
+    expect(result).toMatchObject({ ok: false, error: { code: "play_edit_state_unknown", cause: { stage: "validate_edit", provider_cause: "OTHER" } } });
     expect(JSON.stringify(result)).not.toContain("BEGIN PRIVATE KEY");
+    expect(JSON.stringify(result)).not.toContain("secret");
     expect(google.requests.some((r) => r.path.includes(":commit"))).toBe(false);
     expect(realEdits(google.edits)).toEqual([]);
   });

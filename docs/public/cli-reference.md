@@ -256,7 +256,11 @@ accepted too.
 - **In review:** Hands commits with `changesInReviewBehavior=ERROR_IF_IN_REVIEW`
   and never cancels another change that is in review. If one is, the push fails
   with code `play_edit_in_review` and nothing is committed; wait for the review,
-  then push again.
+  then push again. Hands recognises this from Google's structured error reason
+  first and its message second. If Google's answer matches neither (for
+  example a localized message), or a commit returns an unexpected response, the
+  push fails with `play_edit_state_unknown` and is never reported as done:
+  check the app in Play Console before pushing again.
 - `--changes-not-sent-for-review` (with `--commit`) sends
   `changesNotSentForReview=true`: for apps whose changes must be sent for review
   manually, the edit is added to the pending changes and you send it for review

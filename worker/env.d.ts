@@ -22,7 +22,16 @@ type GooglePlayAdapterResult<T> =
       // Mirrors AdapterResult in play-adapter/src/types.ts. Kept in step by the
       // promote route's use of `error.cause`: if the adapter renames or reshapes it,
       // the worker stops compiling instead of silently writing a receipt without it.
-      error: { status: number; code: string; message: string; cause?: { stage?: string; provider_cause?: string } };
+      error: { status: number; code: string; message: string; cause?: {
+        stage?: string;
+        provider_cause?: string;
+        cause_source?: "structured" | "message";
+        /** sha256 + length of Google's unmatched message, never the text. */
+        message_sha256?: string;
+        message_length?: number;
+        /** play_edit_state_unknown: the adapter's own descriptions of the patterns it tried. */
+        tried?: string[];
+      } };
     };
 
 /** androidpublisher v3 `Listing`; mirrors PlayListing in play-adapter/src/types.ts. */

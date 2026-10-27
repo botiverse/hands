@@ -3,6 +3,9 @@
 -- A store listing push is app-scoped, not release-scoped, so it cannot reuse
 -- release_receipts (release_id NOT NULL) or play_edit_locks (release_id NOT NULL
 -- REFERENCES releases). Both tables below are additive; nothing existing changes.
+--
+-- Apply BEFORE deploying the worker that ships with it: promote's lock query reads
+-- play_store_listing_locks. Deploy order: docs/google-play-operations.md.
 
 -- Immutable evidence for every push that reached Google: dry runs (validated, then
 -- the edit deleted), commits, no-op pushes, and failures after the adapter was

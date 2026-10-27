@@ -1,3 +1,5 @@
+import { sha256 } from "@noble/hashes/sha256";
+import { bytesToHex } from "@noble/hashes/utils";
 import { PlayAdapterError } from "./errors";
 
 // Only documented error identifiers cross the provider boundary. Never expose
@@ -59,13 +61,67 @@ export function playRejection(status: number, body: unknown, stage: string): Pla
   // reused version code. The classified cause travels with the error so the caller
   // -- and the receipt it writes -- carries it too, without needing log access.
   const envelopeMessage = error && typeof error === "object" ? (error as Record<string, unknown>).message : null;
-  const providerCause = typeof envelopeMessage === "string" ? classifyProviderMessage(envelopeMessage) : undefined;
+  // Structured identifiers first (stable across wording and locale), message text second.
+  const structured = classifyStructuredIdentifiers(body);
+  const providerCause = structured
+    ?? (typeof envelopeMessage === "string" ? classifyProviderMessage(envelopeMessage) : undefined);
   return new PlayAdapterError(
     [400, 401, 403, 404].includes(status) ? 403 : 502,
     "play_api_rejected",
     `Google Play API request failed with ${status} (stage=${stage}; reason=${reason})`,
-    { stage, ...(providerCause ? { provider_cause: providerCause } : {}) },
+    {
+      stage,
+      ...(providerCause ? { provider_cause: providerCause, cause_source: structured ? "structured" as const : "message" as const } : {}),
+      ...(typeof envelopeMessage === "string"
+        ? { message_sha256: bytesToHex(sha256(new TextEncoder().encode(envelopeMessage))), message_length: envelopeMessage.length }
+        : {}),
+    },
   );
+}
+
+/**
+ * Edit-state causes recognised from Google's structured identifiers:
+ * `error.status`, `errors[].reason` and `details[].reason` (google.rpc.ErrorInfo).
+ * Google does not document a specific identifier for "changes in review" or
+ * "changes not sent for review" in androidpublisher, so these match any
+ * identifier naming the condition; each value is shape-checked as an identifier
+ * first, so no provider prose is ever matched here.
+ */
+const STRUCTURED_CAUSES: Array<[RegExp, string]> = [
+  [/NOT_?SENT_?FOR_?REVIEW/i, "CHANGES_NOT_SENT_FOR_REVIEW"],
+  [/(?:^|_)IN_?REVIEW(?:$|_)|InReview/, "EDIT_IN_REVIEW"],
+];
+
+function classifyStructuredIdentifiers(body: unknown): string | undefined {
+  const error = body && typeof body === "object" ? (body as Record<string, unknown>).error : null;
+  if (!error || typeof error !== "object") return undefined;
+  const e = error as Record<string, unknown>;
+  const identifiers: string[] = [];
+  if (typeof e.status === "string") identifiers.push(e.status);
+  for (const items of [e.errors, e.details]) {
+    if (!Array.isArray(items)) continue;
+    for (const item of items.slice(0, 16)) {
+      const value = item && typeof item === "object" ? (item as Record<string, unknown>).reason : null;
+      if (typeof value === "string") identifiers.push(value);
+    }
+  }
+  for (const id of identifiers.filter((value) => /^[A-Za-z][A-Za-z0-9._]{0,60}$/.test(value))) {
+    for (const [pattern, cause] of STRUCTURED_CAUSES) if (pattern.test(id)) return cause;
+  }
+  return undefined;
+}
+
+/**
+ * The edit-state patterns Hands tries, as constant descriptions derived from the
+ * patterns themselves (so they cannot drift). Returned in play_edit_state_unknown
+ * so a new Google wording can be added without guessing what was checked.
+ */
+export function editStatePatternsTried(): string[] {
+  const message = PROVIDER_CAUSES.filter(([, cause]) => cause === "EDIT_IN_REVIEW" || cause === "CHANGES_NOT_SENT_FOR_REVIEW");
+  return [
+    ...STRUCTURED_CAUSES.map(([pattern, cause]) => `${cause}: status/errors[].reason/details[].reason ~ /${pattern.source}/${pattern.flags}`),
+    ...message.map(([pattern, cause]) => `${cause}: message ~ /${pattern.source}/${pattern.flags}`),
+  ];
 }
 
 /**

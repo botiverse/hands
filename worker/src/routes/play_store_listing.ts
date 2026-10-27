@@ -145,7 +145,7 @@ export function normalizeStoreListingPush(body: unknown): StoreListingPushInput 
 }
 
 type Failure = {
-  code: "gate_failed" | "forbidden" | "edit_conflict" | "edit_in_review" | "play_api_error";
+  code: "gate_failed" | "forbidden" | "edit_conflict" | "edit_in_review" | "edit_state_unknown" | "play_api_error";
   failure_code: string;
   message: string;
   receipt_id?: string | null;
@@ -190,13 +190,34 @@ function fingerprint(listing: PlayListing | null) {
 const ACTIONS = new Set(["create", "update", "delete", "unchanged"]);
 const IDENTIFIER_RE = /^[A-Za-z][A-Za-z0-9._]{0,60}$/;
 
-function narrowCause(value: unknown): { stage?: string; provider_cause?: string } | null {
+type NarrowCause = {
+  stage?: string;
+  provider_cause?: string;
+  cause_source?: "structured" | "message";
+  message_sha256?: string;
+  message_length?: number;
+  tried?: string[];
+};
+
+/**
+ * Keep only fields whose shape is ours: identifiers, a hex digest, a length and the
+ * adapter's own pattern descriptions. Anything else the adapter (or Google through
+ * it) might add is dropped before it reaches a receipt or a response.
+ */
+function narrowCause(value: unknown): NarrowCause | null {
   if (!value || typeof value !== "object") return null;
   const source = value as Record<string, unknown>;
-  const out: { stage?: string; provider_cause?: string } = {};
+  const out: NarrowCause = {};
   for (const key of ["stage", "provider_cause"] as const) {
     const raw = source[key];
     if (typeof raw === "string" && IDENTIFIER_RE.test(raw)) out[key] = raw;
+  }
+  if (source.cause_source === "structured" || source.cause_source === "message") out.cause_source = source.cause_source;
+  if (typeof source.message_sha256 === "string" && /^[0-9a-f]{64}$/.test(source.message_sha256)) out.message_sha256 = source.message_sha256;
+  if (Number.isSafeInteger(source.message_length) && (source.message_length as number) >= 0) out.message_length = source.message_length as number;
+  if (Array.isArray(source.tried)) {
+    const tried = source.tried.filter((item): item is string => typeof item === "string" && item.length <= 200 && /^[A-Z_]+: /.test(item)).slice(0, 16);
+    if (tried.length) out.tried = tried;
   }
   return Object.keys(out).length ? out : null;
 }
@@ -323,6 +344,9 @@ export async function handlePushPlayStoreListing(c: AdminContext) {
       const status = reply?.error?.status;
       if (code === "play_edit_in_review" || code === "play_changes_not_sent_for_review") {
         return fail(c, 409, { code: "edit_in_review", failure_code: code, message: reply.error.message, receipt_id: receiptId, ...(cause ? { cause } : {}) });
+      }
+      if (code === "play_edit_state_unknown" || code === "play_commit_ambiguous") {
+        return fail(c, 502, { code: "edit_state_unknown", failure_code: code, message: reply.error.message, receipt_id: receiptId, ...(cause ? { cause } : {}) });
       }
       return fail(c, status === 400 ? 400 : 502, {
         code: status === 400 ? "gate_failed" : "play_api_error",
