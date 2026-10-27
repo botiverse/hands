@@ -188,10 +188,13 @@ const commitEditCases: Array<[string, string]> = [
     // commitEdit sends changesInReviewBehavior=ERROR_IF_IN_REVIEW, so this state is
     // the expected rejection whenever a review is already open.
     ["Cannot commit the edit because another change is already in review.", "EDIT_IN_REVIEW"],
-    // Both phrases in one message: NOT_SENT_FOR_REVIEW is checked first (#809 review:
-    // its wording is the more specific; in-review patterns are broad). This reverses
-    // the earlier pin, deliberately, for promote and store listing alike.
-    ["Changes not sent for review because another edit is in review.", "CHANGES_NOT_SENT_FOR_REVIEW"],
+    // This message says two things: "not sent" AND "because another edit is in
+    // review". Overlap is classified by the remedy that works, not by the sentence's
+    // subject: sending for review by hand would fail while another change is in
+    // review, so the actionable answer is to wait -> EDIT_IN_REVIEW.
+    ["Changes not sent for review because another edit is in review.", "EDIT_IN_REVIEW"],
+    // A not-sent message with no review in progress stays CHANGES_NOT_SENT_FOR_REVIEW.
+    ["Changes cannot be sent for review automatically; changes were not sent for review.", "CHANGES_NOT_SENT_FOR_REVIEW"],
   ];
 it.each(commitEditCases)("classifies commit_edit rejection as %s -> %s", async (message, expected) => {
   const { playRejection } = await import("../src/provider_errors");

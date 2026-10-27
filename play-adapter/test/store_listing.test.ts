@@ -221,8 +221,11 @@ describe("Google Play store listing RPC", () => {
       [structured("CHANGES_NOT_SENT_FOR_REVIEW"), "play_changes_not_sent_for_review"],
       [structured("CHANGES_IN_REVIEW"), "play_edit_in_review"],
       [structured("REVIEW"), "play_edit_state_unknown"],
-      // Not-sent wording that also mentions a review in progress: still not-sent.
-      [text("Changes were not sent for review; a review is in progress for this app."), "play_changes_not_sent_for_review"],
+      // Not-sent wording that also says a review is in progress: classified by the
+      // remedy that works (wait), so in-review, in both layers.
+      [text("Changes were not sent for review; a review is in progress for this app."), "play_edit_in_review"],
+      [{ error: { code: 400, message: "x", details: [{ reason: "CHANGES_NOT_SENT_FOR_REVIEW" }, { reason: "CHANGES_IN_REVIEW" }] } }, "play_edit_in_review"],
+      [text("Changes cannot be sent for review automatically and were not sent for review."), "play_changes_not_sent_for_review"],
       [text("Changes are currently in review."), "play_edit_in_review"],
       [text("REVIEW"), "play_edit_state_unknown"],
     ];
