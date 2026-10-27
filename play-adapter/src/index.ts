@@ -1,6 +1,7 @@
 import { createAccessToken, parsePlayCredential } from "./auth";
 import { PlayAdapterError } from "./errors";
 import { DEOBFUSCATION_FILE_KINDS, GooglePlayClient, MAX_SYMBOLS_SIZE_BYTES } from "./google_play";
+import { pushStoreListings, readStoreListings, storeListingsInput } from "./store_listing";
 import type {
   AdapterResult,
   DeobfuscationSymbolType,
@@ -13,6 +14,10 @@ import type {
   PromotionRequest,
   PromotionRpcInput,
   PromotionSymbolsRequest,
+  StoreListingPushResult,
+  StoreListingPushRpcInput,
+  StoreListingReadResult,
+  StoreListingReadRpcInput,
   SymbolsRpcInput,
   TrackMaximumRpcInput,
 } from "./types";
@@ -175,6 +180,31 @@ function promotionInput(
     releaseNotes,
   };
 }
+function storeListingPushInput(input: StoreListingPushRpcInput) {
+  const binding = discoveryInput(input);
+  const operationId = typeof input?.operationId === "string" ? input.operationId : "";
+  if (!OPERATION_ID.test(operationId) || (input.mode !== "dry_run" && input.mode !== "commit")) {
+    throw new PlayAdapterError(400, "listing_request_invalid", "Hands store listing request is invalid");
+  }
+  for (const flag of [input.deleteUnlistedLanguages, input.changesNotSentForReview]) {
+    if (flag !== undefined && typeof flag !== "boolean") {
+      throw new PlayAdapterError(400, "listing_request_invalid", "Hands store listing request is invalid");
+    }
+  }
+  const listings = storeListingsInput(input.listings);
+  if (listings.length === 0 && !input.deleteUnlistedLanguages) {
+    throw new PlayAdapterError(400, "listing_request_invalid", "Hands store listing request names no listings");
+  }
+  return {
+    ...binding,
+    operationId,
+    mode: input.mode,
+    listings,
+    deleteUnlistedLanguages: input.deleteUnlistedLanguages === true,
+    changesNotSentForReview: input.changesNotSentForReview === true,
+  };
+}
+
 function failure(error: unknown, operationId: string | null): AdapterResult<never> {
   const known = error instanceof PlayAdapterError;
   const status = known ? error.status : 502;
@@ -207,7 +237,33 @@ export function createPlayAdapterService(options: AdapterOptions = {}) {
     return { binding, client: new GooglePlayClient(accessToken, fetchImpl, maxAabSize(env)) };
   }
 
+  /** A client for operations that need only the package (store listings are not track-scoped). */
+  async function discoveryClient(input: PlayDiscoveryInput, env: PlayAdapterEnv) {
+    const binding = discoveryInput(input);
+    const token = await createAccessToken(binding.credential, fetchImpl, options.nowSeconds?.() ?? Math.floor(Date.now() / 1000));
+    return { binding, client: new GooglePlayClient(token, fetchImpl, maxAabSize(env)) };
+  }
+
   return {
+    /** edits.details.get + edits.listings.list in a throwaway edit. */
+    async readStoreListings(input: StoreListingReadRpcInput, env: PlayAdapterEnv): Promise<AdapterResult<StoreListingReadResult>> {
+      try {
+        const resolved = await discoveryClient(input, env);
+        return { ok: true, value: await readStoreListings(resolved.client, resolved.binding.packageName) };
+      } catch (error) { return failure(error, null); }
+    },
+
+    /** One edit: edits.listings.update/delete, edits.validate, then delete (dry_run) or commit. */
+    async pushStoreListings(input: StoreListingPushRpcInput, env: PlayAdapterEnv): Promise<AdapterResult<StoreListingPushResult>> {
+      const operationId = OPERATION_ID.test(input?.operationId ?? "") ? input.operationId : null;
+      try {
+        // Validate before OAuth: a malformed request never reaches Google.
+        const request = storeListingPushInput(input);
+        const resolved = await discoveryClient(request, env);
+        return { ok: true, value: await pushStoreListings(resolved.client, request) };
+      } catch (error) { return failure(error, operationId); }
+    },
+
     async listTracks(input: PlayDiscoveryInput, env: PlayAdapterEnv): Promise<AdapterResult<{ client_email: string; package_name: string; tracks: string[] }>> {
       try {
         const binding = discoveryInput(input);

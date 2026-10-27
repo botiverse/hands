@@ -80,6 +80,22 @@ const GooglePlayBindingInput = z.object({
   }).passthrough(),
 }).passthrough().openapi("GooglePlayBindingInput");
 
+/** androidpublisher v3 `Listing` (discovery revision 20261027), field names verbatim. */
+const PlayListing = z.object({
+  language: z.string().min(2).max(16).openapi({ description: "Play store listing language tag (BCP-47 as Play lists it, e.g. en-US, zh-CN, ja-JP, iw-IL, es-419). Must be one of Play's store listing languages." }),
+  title: z.string().max(30).optional().openapi({ description: "Localized app name; at most 30 characters (Unicode code points)." }),
+  shortDescription: z.string().max(80).optional().openapi({ description: "At most 80 characters." }),
+  fullDescription: z.string().max(4000).optional().openapi({ description: "At most 4,000 characters." }),
+  video: z.string().max(2048).optional().openapi({ description: "Promotional YouTube video URL; empty string clears it." }),
+}).strict().openapi("PlayListing");
+
+const PlayStoreListingPushInput = z.object({
+  mode: z.enum(["dry_run", "commit"]).openapi({ description: "dry_run: apply inside a fresh edit, edits.validate, then delete the edit. commit: apply, validate, edits.commit (ERROR_IF_IN_REVIEW), read back." }),
+  listings: z.array(PlayListing).max(100).openapi({ description: "Listing resources to write. Absent fields keep Play's current value; Hands writes edits.listings.update with the merged resource. A language not yet on Play needs title, shortDescription and fullDescription." }),
+  delete_unlisted_languages: z.boolean().optional().openapi({ description: "Default false. When true, edits.listings.delete every current language not in listings (never the app's default language)." }),
+  changes_not_sent_for_review: z.boolean().optional().openapi({ description: "Default false. When true, edits.commit is sent changesNotSentForReview=true: the change joins the app's pending changes and must be sent for review from Play Console." }),
+}).strict().openapi("PlayStoreListingPushInput");
+
 export function registerAndroidDistributionRoutes(): RouteConfigList {
   const routes: RouteConfigDef[] = [];
   routes.push({
@@ -333,5 +349,48 @@ export function registerAndroidDistributionRoutes(): RouteConfigList {
       },
     });
   }
+  routes.push({
+    method: "get",
+    path: "/api/apps/{appId}/distributions/play/store-listing",
+    tags: ["Android distribution"],
+    summary: "Read the Google Play store listing text (edits.listings.list)",
+    description: "Reads every language's Listing and the app's defaultLanguage in a throwaway Play edit, which is then deleted. App publisher (the read uses the app's Google credential).",
+    security: auth,
+    request: { params: AppIdParam },
+    responses: {
+      200: success("package_name, default_language and listings (Google Listing resources).", GenericObject),
+      403: error("App publisher role, or a verified and enabled Google Play binding, is required."),
+      502: error("Play adapter failed."),
+    },
+  });
+  routes.push({
+    method: "post",
+    path: "/api/apps/{appId}/distributions/play/store-listing",
+    tags: ["Android distribution"],
+    summary: "Update Google Play store listing text in one edit (dry run or commit)",
+    description:
+      "Whitelisted edits.listings.update/delete only; nothing touches tracks, releases or bundles. Languages and character limits are validated before any Play call (failure_code listing_language_unsupported, listing_field_too_long, ...). One package-scoped Play edit lock is shared with promote. The response carries the per-language plan (create/update/delete/unchanged with changed fields and before/after). An immutable receipt records actor, edit id, mode, languages and per-field sha256/length. A commit blocked by another change in review returns 409 code edit_in_review, failure_code play_edit_in_review; nothing was committed.",
+    security: auth,
+    request: { params: AppIdParam, body: { content: json(PlayStoreListingPushInput), required: true } },
+    responses: {
+      200: success("Validated (dry_run), committed, or no_changes; receipt appended.", GenericObject),
+      400: error("Request, language, or limit validation failed (no Play call)."),
+      403: error("Authenticated human or agent publisher and a verified, enabled binding are required."),
+      409: error("Another Hands Play edit is active, or another change is in review on Google Play."),
+      502: error("Play adapter failed or readback mismatched; see receipt_id."),
+    },
+  });
+  routes.push({
+    method: "get",
+    path: "/api/apps/{appId}/distributions/play/store-listing/receipts",
+    tags: ["Android distribution"],
+    summary: "List store listing push receipts (newest first)",
+    security: auth,
+    request: { params: AppIdParam, query: z.object({ limit: z.string().optional() }) },
+    responses: {
+      200: success("Immutable store listing receipts.", GenericObject),
+      403: error("App viewer role is required."),
+    },
+  });
   return routes;
 }

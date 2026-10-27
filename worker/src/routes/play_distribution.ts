@@ -489,12 +489,15 @@ async function hashStream(body: ReadableStream<Uint8Array>) {
 
 async function takeLock(db: D1Database, appId: string, row: ReleaseArtifactRow, operationId: string, actor: string) {
   try {
-    await db.prepare(
+    // A store listing push holds its own package-scoped lock row
+    // (play_store_listing_locks); one Hands-held Play edit per package at a time.
+    const result = await db.prepare(
       `INSERT INTO play_edit_locks
        (app_id, package_name, release_id, operation_id, acquired_by, acquired_at)
-       VALUES (?1, ?2, ?3, ?4, ?5, ?6)`,
+       SELECT ?1, ?2, ?3, ?4, ?5, ?6
+       WHERE NOT EXISTS (SELECT 1 FROM play_store_listing_locks WHERE app_id = ?1 AND package_name = ?2)`,
     ).bind(appId, row.package_name, row.release_id, operationId, actor, Date.now()).run();
-    return true;
+    return (result.meta?.changes ?? 0) === 1;
   } catch {
     return false;
   }

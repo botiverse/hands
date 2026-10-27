@@ -2,7 +2,9 @@ import { sha256 } from "@noble/hashes/sha256";
 import { bytesToHex } from "@noble/hashes/utils";
 import { PlayAdapterError } from "./errors";
 import { playRejection, playRejectionReason, playRequestStage } from "./provider_errors";
+import { PLAY_LISTING_FIELDS } from "./types";
 import type {
+  PlayListing,
   DeobfuscationFileResult,
   DeobfuscationSymbolType,
   PromotionRequest,
@@ -126,6 +128,30 @@ function requestedRelease(request: PromotionRequest): TrackRelease {
     };
   }
   return { versionCodes: [String(request.versionCode)], status: "completed", ...notes };
+}
+
+/** BCP-47-shaped tag as Google returns it (en-US, fil, es-419). */
+const PLAY_LANGUAGE_SHAPE = /^[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8})*$/;
+
+/**
+ * Narrow a provider Listing to Google's documented fields. Unknown keys are
+ * dropped; a known field of the wrong type is a malformed response, not data.
+ */
+export function cleanListing(value: unknown): PlayListing {
+  const row = value && typeof value === "object" ? value as Record<string, unknown> : null;
+  if (!row || typeof row.language !== "string" || !PLAY_LANGUAGE_SHAPE.test(row.language)) {
+    throw new PlayAdapterError(502, "play_listings_malformed", "Google Play returned malformed store listings");
+  }
+  const listing: PlayListing = { language: row.language };
+  for (const field of PLAY_LISTING_FIELDS) {
+    const raw = row[field];
+    if (raw === undefined) continue;
+    if (typeof raw !== "string") {
+      throw new PlayAdapterError(502, "play_listings_malformed", "Google Play returned malformed store listings");
+    }
+    listing[field] = raw;
+  }
+  return listing;
 }
 
 function hashingBody(
@@ -562,14 +588,70 @@ export class GooglePlayClient {
     );
   }
 
-  private async commitEdit(packageName: string, editId: string): Promise<void> {
+  /**
+   * edits.commit. Always `changesInReviewBehavior=ERROR_IF_IN_REVIEW`: Hands never
+   * cancels someone else's in-review submission. `changesNotSentForReview=true` is
+   * sent only when the caller opts in; omitted otherwise (Google's default).
+   */
+  async commitEdit(packageName: string, editId: string, options: { changesNotSentForReview?: boolean } = {}): Promise<void> {
+    const query = options.changesNotSentForReview
+      ? "changesInReviewBehavior=ERROR_IF_IN_REVIEW&changesNotSentForReview=true"
+      : "changesInReviewBehavior=ERROR_IF_IN_REVIEW";
     await this.requestJson<{ id?: string }>(
-      `${this.editRoot(packageName, editId)}:commit?changesInReviewBehavior=ERROR_IF_IN_REVIEW`,
+      `${this.editRoot(packageName, editId)}:commit?${query}`,
       { method: "POST", body: "{}" },
     );
   }
 
-  private async cleanupOrThrow(packageName: string, editId: string, original: unknown): Promise<never> {
+  /** edits.validate: Google checks the edit as a commit would, without committing. */
+  async validateEdit(packageName: string, editId: string): Promise<void> {
+    const body = await this.requestJson<{ id?: string }>(`${this.editRoot(packageName, editId)}:validate`, {
+      method: "POST",
+      body: "{}",
+    });
+    if (body.id !== undefined && body.id !== editId) {
+      throw new PlayAdapterError(502, "play_edit_malformed", "Google Play validated a different edit");
+    }
+  }
+
+  /** edits.details.get: only `defaultLanguage` is read; contact fields are not Hands' concern. */
+  async getDefaultLanguage(packageName: string, editId: string): Promise<string | null> {
+    const body = await this.requestJson<{ defaultLanguage?: unknown }>(`${this.editRoot(packageName, editId)}/details`);
+    if (body.defaultLanguage === undefined) return null;
+    if (typeof body.defaultLanguage !== "string" || !PLAY_LANGUAGE_SHAPE.test(body.defaultLanguage)) {
+      throw new PlayAdapterError(502, "play_details_malformed", "Google Play returned malformed app details");
+    }
+    return body.defaultLanguage;
+  }
+
+  /** edits.listings.list. */
+  async listListings(packageName: string, editId: string): Promise<PlayListing[]> {
+    const body = await this.requestJson<{ listings?: unknown }>(`${this.editRoot(packageName, editId)}/listings`);
+    if (body.listings === undefined) return [];
+    if (!Array.isArray(body.listings) || body.listings.length > 500) {
+      throw new PlayAdapterError(502, "play_listings_malformed", "Google Play returned malformed store listings");
+    }
+    return body.listings.map((value) => cleanListing(value));
+  }
+
+  /** edits.listings.update (PUT): creates or fully replaces one language's listing. */
+  async updateListing(packageName: string, editId: string, listing: PlayListing): Promise<PlayListing> {
+    const body = await this.requestJson<unknown>(
+      `${this.editRoot(packageName, editId)}/listings/${encodeURIComponent(listing.language)}`,
+      { method: "PUT", body: JSON.stringify(listing) },
+    );
+    return cleanListing(body);
+  }
+
+  /** edits.listings.delete. */
+  async deleteListing(packageName: string, editId: string, language: string): Promise<void> {
+    await this.requestEmpty(
+      `${this.editRoot(packageName, editId)}/listings/${encodeURIComponent(language)}`,
+      { method: "DELETE" },
+    );
+  }
+
+  async cleanupOrThrow(packageName: string, editId: string, original: unknown): Promise<never> {
     try {
       await this.deleteEdit(packageName, editId);
     } catch {

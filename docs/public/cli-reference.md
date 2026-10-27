@@ -199,6 +199,75 @@ hands builds publish-android raft-android \
 
 Public update checks only use the installable artifact. Mapping files, native symbols, and metadata stay available through authenticated admin APIs.
 
+## Google Play Store Listing
+
+Update the Play store listing text (app name, short and full description,
+promotional video) through Hands instead of editing Play Console by hand. Hands
+holds the app's Google credential; the CLI never sees it. Requires the app
+**publisher** role and a verified, enabled Google Play binding.
+
+```bash
+# Export the live listing in the format push accepts
+hands store-listing pull raft-android --out listing.json
+
+# Dry run (the default): Hands opens one Play edit, applies the text,
+# runs Google's edits.validate, deletes the edit and prints the plan
+hands store-listing push raft-android --listing listing.json
+
+# Publish the same change
+hands store-listing push raft-android --listing listing.json --commit
+
+# Only some languages from the file
+hands store-listing push raft-android --listing listing.json --locales en-US,ja-JP --commit
+
+# Audit trail
+hands store-listing receipts raft-android
+```
+
+`listing.json` is keyed by Play language tag, with Google's `Listing` field names:
+
+```json
+{
+  "en-US": { "title": "Raft", "shortDescription": "Chat with your agents", "fullDescription": "…" },
+  "zh-CN": { "title": "Raft", "shortDescription": "…", "fullDescription": "…" },
+  "ja-JP": { "title": "Raft", "shortDescription": "…", "fullDescription": "…", "video": "https://www.youtube.com/watch?v=…" }
+}
+```
+
+Google's list form `{ "listings": [ { "language": "en-US", "title": "…" } ] }` is
+accepted too.
+
+- **Languages** must be Play store listing tags, spelled exactly as Play lists
+  them: `en-US`, `zh-CN`, `zh-TW`, `zh-HK`, `ja-JP`, `ko-KR`, `es-ES`, `fr-FR`,
+  `de-DE`, `pt-BR`, `iw-IL` (Hebrew), `es-419`, `fil`, … (86 tags, from Play
+  Console Help "Translate and localize your app"). `zh-Hans`, `en`, or `en-us`
+  are rejected with a suggestion (`zh-Hans (did you mean zh-CN?)`) before any
+  Play call.
+- **Limits** (Play Console Help "Create and set up your app"): `title` 30,
+  `shortDescription` 80, `fullDescription` 4,000 characters, counted per
+  character for CJK and Latin alike. Over-long text is rejected
+  (`listing_field_too_long`), never truncated.
+- **Fields you leave out keep their current Play value.** A language that is not
+  on Play yet needs `title`, `shortDescription` and `fullDescription`. `video: ""`
+  clears the video.
+- Languages on Play that are not in the file are **left untouched** unless you
+  pass `--delete-unlisted-languages` (the app's default language is never
+  deleted; the flag cannot be combined with `--locales`).
+- **In review:** Hands commits with `changesInReviewBehavior=ERROR_IF_IN_REVIEW`
+  and never cancels another change that is in review. If one is, the push fails
+  with code `play_edit_in_review` and nothing is committed; wait for the review,
+  then push again.
+- `--changes-not-sent-for-review` (with `--commit`) sends
+  `changesNotSentForReview=true`: for apps whose changes must be sent for review
+  manually, the edit is added to the pending changes and you send it for review
+  in Play Console. Without it, such an app fails with
+  `play_changes_not_sent_for_review`.
+
+Every push that reaches Google writes an immutable receipt: who, when, edit id,
+dry run or commit, the per-language plan, and a sha256 + length of each field.
+API: `GET|POST /api/apps/:appId/distributions/play/store-listing`,
+`GET /api/apps/:appId/distributions/play/store-listing/receipts` (see OpenAPI).
+
 ## Publish iOS / TestFlight
 
 CI should upload the **signed IPA** exported by macOS/Xcode, not an unsigned

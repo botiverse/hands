@@ -698,6 +698,12 @@ function playAdapterStub(overrides: Partial<PlayAdapter> = {}): PlayAdapter {
     promote: async () => {
       throw new Error("unexpected promote call");
     },
+    readStoreListings: async () => {
+      throw new Error("unexpected readStoreListings call");
+    },
+    pushStoreListings: async () => {
+      throw new Error("unexpected pushStoreListings call");
+    },
     ...overrides,
   };
 }
@@ -1487,6 +1493,25 @@ describe("Play promotion route", () => {
     expect(response.status).toBe(409);
     expect(await response.json()).toMatchObject({ error: { code: "edit_conflict", gate: "edit_lock" } });
     expect(calls).toBe(0);
+  });
+
+  it("returns edit_conflict while a store listing push holds the package's Play edit", async () => {
+    const harness = await readyRelease();
+    let calls = 0;
+    harness.env.PLAY_RELEASE_SERVICE = playAdapterStub({
+      readTrackMaximum: async () => {
+        calls += 1;
+        return { ok: true, value: { max_version_code: 41 } };
+      },
+    });
+    harness.sqlite.prepare(`INSERT INTO play_store_listing_locks
+      (app_id, package_name, operation_id, acquired_by, acquired_at)
+      VALUES ('app', 'build.raft.app', 'listing-op', 'other', ?)`).run(Date.now());
+    const response = await promoteInternal(harness);
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({ error: { code: "edit_conflict", gate: "edit_lock" } });
+    expect(calls).toBe(0);
+    expect(harness.sqlite.prepare("SELECT COUNT(*) AS n FROM play_edit_locks").get()).toEqual({ n: 0 });
   });
 
   it("returns typed play_api_error before revision reserve for malformed track JSON", async () => {

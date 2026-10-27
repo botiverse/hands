@@ -158,3 +158,73 @@ export interface ReleaseSummary {
   activeArtifacts: Array<{ versionCode: number }>;
   releaseLifecycleState: string;
 }
+
+/**
+ * androidpublisher v3 `Listing` (discovery revision 20261027): every field is an
+ * optional string, field names exactly as Google spells them. `language` is the
+ * BCP-47 tag that is also the edits.listings path parameter.
+ */
+export interface PlayListing {
+  language: string;
+  title?: string;
+  shortDescription?: string;
+  fullDescription?: string;
+  video?: string;
+}
+
+/** The mutable Listing fields, in Google's order. `language` is the key, not a field. */
+export const PLAY_LISTING_FIELDS = ["title", "shortDescription", "fullDescription", "video"] as const;
+export type PlayListingField = typeof PLAY_LISTING_FIELDS[number];
+
+/**
+ * dry_run: apply inside a fresh edit, edits.validate, then edits.delete.
+ * commit: apply, edits.validate, edits.commit, then read back from a new edit.
+ */
+export type StoreListingMode = "dry_run" | "commit";
+
+export interface StoreListingReadRpcInput extends PlayDiscoveryInput {}
+
+export interface StoreListingPushRpcInput extends PlayDiscoveryInput {
+  operationId: string;
+  mode: StoreListingMode;
+  /**
+   * Listings to write. A field that is absent keeps the value Play already has
+   * (Hands writes edits.listings.update with the merged resource); a field that is
+   * present replaces it. Only `video` may be the empty string (clears the video).
+   */
+  listings: PlayListing[];
+  /** edits.listings.delete every current language that is not in `listings`. Default false. */
+  deleteUnlistedLanguages?: boolean;
+  /** edits.commit `changesNotSentForReview=true`. Default false (parameter not sent). */
+  changesNotSentForReview?: boolean;
+}
+
+export type StoreListingAction = "create" | "update" | "delete" | "unchanged";
+
+export interface StoreListingChange {
+  language: string;
+  action: StoreListingAction;
+  /** Fields whose value differs between before and after (empty for unchanged). */
+  changed_fields: PlayListingField[];
+  /** The listing Play held in the edit before Hands wrote; null for create. */
+  before: PlayListing | null;
+  /** The listing Hands wrote; null for delete. */
+  after: PlayListing | null;
+}
+
+export interface StoreListingPushResult {
+  edit_id: string;
+  package_name: string;
+  mode: StoreListingMode;
+  /** validated: dry run passed edits.validate and the edit was deleted. */
+  outcome: "validated" | "committed" | "no_changes";
+  default_language: string | null;
+  changes: StoreListingChange[];
+  changes_not_sent_for_review: boolean;
+}
+
+export interface StoreListingReadResult {
+  package_name: string;
+  default_language: string | null;
+  listings: PlayListing[];
+}

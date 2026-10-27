@@ -1,6 +1,14 @@
 import { WorkerEntrypoint } from "cloudflare:workers";
 import { createPlayAdapterService } from "./index";
-import type { PlayAdapterEnv, PlayBindingInput, PlayDiscoveryInput, PromotionRpcInput, TrackMaximumRpcInput } from "./types";
+import type {
+  PlayAdapterEnv,
+  PlayBindingInput,
+  PlayDiscoveryInput,
+  PromotionRpcInput,
+  StoreListingPushRpcInput,
+  StoreListingReadRpcInput,
+  TrackMaximumRpcInput,
+} from "./types";
 
 export default class GooglePlayAdapter extends WorkerEntrypoint<PlayAdapterEnv> {
   private readonly service = createPlayAdapterService();
@@ -19,6 +27,14 @@ export default class GooglePlayAdapter extends WorkerEntrypoint<PlayAdapterEnv> 
 
   listReleaseStates(input: TrackMaximumRpcInput) {
     return this.service.listReleaseStates(input, this.env);
+  }
+
+  readStoreListings(input: StoreListingReadRpcInput) {
+    return this.service.readStoreListings(input, this.env);
+  }
+
+  pushStoreListings(input: StoreListingPushRpcInput) {
+    return this.service.pushStoreListings(input, this.env);
   }
 
   readTrackMaximum(input: TrackMaximumRpcInput) {

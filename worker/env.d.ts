@@ -25,7 +25,44 @@ type GooglePlayAdapterResult<T> =
       error: { status: number; code: string; message: string; cause?: { stage?: string; provider_cause?: string } };
     };
 
+/** androidpublisher v3 `Listing`; mirrors PlayListing in play-adapter/src/types.ts. */
+type GooglePlayListing = {
+  language: string;
+  title?: string;
+  shortDescription?: string;
+  fullDescription?: string;
+  video?: string;
+};
+
+type GooglePlayStoreListingChange = {
+  language: string;
+  action: "create" | "update" | "delete" | "unchanged";
+  changed_fields: Array<"title" | "shortDescription" | "fullDescription" | "video">;
+  before: GooglePlayListing | null;
+  after: GooglePlayListing | null;
+};
+
 interface GooglePlayAdapterService {
+  readStoreListings(input: Pick<GooglePlayBindingInput, "credential" | "packageName">): Promise<GooglePlayAdapterResult<{
+    package_name: string;
+    default_language: string | null;
+    listings: GooglePlayListing[];
+  }>>;
+  pushStoreListings(input: Pick<GooglePlayBindingInput, "credential" | "packageName"> & {
+    operationId: string;
+    mode: "dry_run" | "commit";
+    listings: GooglePlayListing[];
+    deleteUnlistedLanguages?: boolean;
+    changesNotSentForReview?: boolean;
+  }): Promise<GooglePlayAdapterResult<{
+    edit_id: string;
+    package_name: string;
+    mode: "dry_run" | "commit";
+    outcome: "validated" | "committed" | "no_changes";
+    default_language: string | null;
+    changes: GooglePlayStoreListingChange[];
+    changes_not_sent_for_review: boolean;
+  }>>;
   listTracks(input: Pick<GooglePlayBindingInput, "credential" | "packageName">): Promise<GooglePlayAdapterResult<{ client_email: string; package_name: string; tracks: string[] }>>;
   verifyBinding(input: GooglePlayBindingInput): Promise<GooglePlayAdapterResult<{
     client_email: string;
