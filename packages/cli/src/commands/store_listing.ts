@@ -187,6 +187,7 @@ export interface StoreListingPushResponse {
     before: Array<{ id: string; sha256: string }>;
     after: Array<{ id: string; sha256: string; size_bytes: number }>;
   }>;
+  image_warnings?: Array<{ code: string; language: string; imageType: string; index: number }>;
 }
 
 /**
@@ -260,6 +261,9 @@ export function formatPlan(result: StoreListingPushResponse): string {
   }
   for (const change of result.image_changes ?? []) {
     lines.push(`  ${(change.action === "replace" ? "images" : "unchanged").padEnd(9)} ${change.language} ${change.imageType}: ${change.before.length} -> ${change.action === "replace" ? change.after.length : change.before.length}`);
+  }
+  for (const warning of result.image_warnings ?? []) {
+    lines.push(`  warning   ${warning.language} ${warning.imageType} #${warning.index + 1}: ${warning.code} (Google reported a different sha256; recorded, not a failure)`);
   }
   lines.push(`Receipt: ${result.receipt_id}`);
   if (result.outcome === "validated") lines.push("Run again with --commit to publish this change.");

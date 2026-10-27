@@ -95,6 +95,12 @@ describe("store-listing file format", () => {
     expect(text).toContain("update    en-US (default)");
     expect(text).toContain('title: "Old" [3] -> "Raft" [4]');
     expect(text).toContain("--commit");
+    expect(formatPlan({
+      receipt_id: "r1", operation_id: "o", package_name: "p", edit_id: "e1", mode: "dry_run", outcome: "validated",
+      default_language: "en-US", changes_not_sent_for_review: false, changes: [],
+      image_changes: [{ language: "en-US", imageType: "icon", action: "replace", before: [], after: [{ id: "i", sha256: "a", size_bytes: 1 }] }],
+      image_warnings: [{ code: "provider_sha256_mismatch", language: "en-US", imageType: "icon", index: 0 }],
+    })).toContain("warning   en-US icon #1: provider_sha256_mismatch");
   });
 });
 

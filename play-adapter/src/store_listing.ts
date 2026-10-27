@@ -5,7 +5,9 @@ import { sha256 } from "@noble/hashes/sha256";
 import { bytesToHex } from "@noble/hashes/utils";
 import { PLAY_AI_GENERATED_STATES, PLAY_IMAGE_TYPES, PLAY_LISTING_FIELDS } from "./types";
 import type {
+  PlayImageRef,
   PlayImageType,
+  UploadedImageRecord,
   StoreListingImageChange,
   StoreListingImageSetInput,
   PlayListing,
@@ -243,7 +245,11 @@ export function storeListingImagesInput(value: unknown): StoreListingImageSetInp
   });
 }
 
-/** Read the current sets and decide replace vs unchanged (same sha256 sequence). */
+/**
+ * Read the current sets and decide replace vs unchanged: unchanged only when Google
+ * reports exactly our sha256 sequence. If Google's sha256 ever stops being a digest
+ * of the uploaded bytes, sets are simply always replaced -- never wrongly skipped.
+ */
 async function planImages(
   client: GooglePlayClient,
   packageName: string,
@@ -265,11 +271,22 @@ async function planImages(
       action: same ? "unchanged" : "replace",
       before,
       after: same
-        ? before.map((image, index) => ({ ...image, size_bytes: set.images[index]!.bytes.byteLength, aiGeneratedState: set.images[index]!.aiGeneratedState ?? null }))
+        ? before.map((image, index) => record(image, set.images[index]!))
         : [],
     });
   }
   return changes;
+}
+
+function record(uploaded: PlayImageRef, image: StoreListingImageSetInput["images"][number]): UploadedImageRecord {
+  return {
+    id: uploaded.id,
+    sha256: image.sha256,
+    provider_sha256: uploaded.sha256,
+    sha256_match: uploaded.sha256 === null ? null : uploaded.sha256 === image.sha256,
+    size_bytes: image.bytes.byteLength,
+    aiGeneratedState: image.aiGeneratedState ?? null,
+  };
 }
 
 /** deleteall + ordered uploads for every replace; fills in Google's image ids. */
@@ -286,7 +303,7 @@ async function applyImages(
     await client.deleteAllImages(packageName, editId, set.language, set.imageType);
     for (const image of set.images) {
       const uploaded = await client.uploadImage(packageName, editId, set.language, set.imageType, image);
-      change.after.push({ ...uploaded, size_bytes: image.bytes.byteLength, aiGeneratedState: image.aiGeneratedState ?? null });
+      change.after.push(record(uploaded, image));
     }
   }
 }
@@ -463,9 +480,16 @@ export async function pushStoreListings(
   for (const change of imageChanges) {
     if (change.action !== "replace") continue;
     const live = await readImages(client, packageName, change.language, change.imageType);
-    if (live.length !== change.after.length || live.some((image, index) => image.sha256 !== change.after[index]!.sha256)) {
-      throw new PlayAdapterError(502, "play_image_readback_mismatch", `Google Play readback for ${change.language} ${change.imageType} did not match the committed images`, { stage: "readback" });
+    // Count is the fail-closed check; Google's sha256 is recorded, not trusted.
+    if (live.length !== change.after.length) {
+      throw new PlayAdapterError(502, "play_image_readback_mismatch", `Google Play readback for ${change.language} ${change.imageType} lists ${live.length} images, not ${change.after.length}`, { stage: "readback" });
     }
+    change.readback = {
+      count: live.length,
+      sha256_match: live.some((image) => image.sha256 === null)
+        ? null
+        : live.every((image, index) => image.sha256 === change.after[index]!.sha256),
+    };
   }
   return result("committed");
 

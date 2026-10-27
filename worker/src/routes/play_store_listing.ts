@@ -392,6 +392,44 @@ function narrowCause(value: unknown): NarrowCause | null {
   return Object.keys(out).length ? out : null;
 }
 
+const HEX64 = /^[0-9a-f]{64}$/;
+const hexOrNull = (value: unknown) => (typeof value === "string" && HEX64.test(value) ? value : null);
+const idOrNull = (value: unknown) => (typeof value === "string" && /^[A-Za-z0-9._:-]{1,200}$/.test(value) ? value : null);
+
+type AdapterImageChange = {
+  language: string;
+  imageType: string;
+  action: "replace" | "unchanged";
+  before?: unknown;
+  after?: unknown;
+  readback?: unknown;
+};
+
+/** Keep only the documented, shape-checked fields of an adapter image change. */
+function narrowImageChange(change: AdapterImageChange) {
+  const list = (value: unknown) => (Array.isArray(value) ? value.slice(0, 16) : []) as Array<Record<string, unknown> | null>;
+  const readback = change.readback && typeof change.readback === "object" ? change.readback as Record<string, unknown> : null;
+  return {
+    language: change.language,
+    imageType: change.imageType,
+    action: change.action,
+    before: list(change.before).map((image) => ({ id: idOrNull(image?.id), sha256: hexOrNull(image?.sha256) })),
+    after: list(change.after).map((image) => ({
+      id: idOrNull(image?.id),
+      sha256: hexOrNull(image?.sha256),
+      provider_sha256: hexOrNull(image?.provider_sha256),
+      sha256_match: typeof image?.sha256_match === "boolean" ? image.sha256_match : null,
+      size_bytes: Number.isSafeInteger(image?.size_bytes) ? image!.size_bytes as number : null,
+      aiGeneratedState: typeof image?.aiGeneratedState === "string" && (PLAY_AI_GENERATED_STATES as readonly string[]).includes(image.aiGeneratedState)
+        ? image.aiGeneratedState : null,
+    })),
+    ...(readback ? { readback: {
+      count: Number.isSafeInteger(readback.count) ? readback.count as number : null,
+      sha256_match: typeof readback.sha256_match === "boolean" ? readback.sha256_match : null,
+    } } : {}),
+  };
+}
+
 async function takeListingLock(db: D1Database, appId: string, packageName: string, operationId: string, actor: string): Promise<boolean> {
   const now = Date.now();
   // A listing push lives inside one request; a row older than this is a crashed one.
@@ -553,7 +591,13 @@ export async function handlePushPlayStoreListing(c: AdminContext) {
     const changes = (Array.isArray(value.changes) ? value.changes : [])
       .filter((change) => change && typeof change.language === "string" && ACTIONS.has(change.action));
     const imageChanges = (Array.isArray(value.image_changes) ? value.image_changes : [])
-      .filter((change) => change && typeof change.language === "string" && (change.action === "replace" || change.action === "unchanged"));
+      .filter((change) => change && typeof change.language === "string" && (change.action === "replace" || change.action === "unchanged"))
+      .map(narrowImageChange);
+    // Google's Image.sha256 is recorded beside ours; a difference is a warning only.
+    const imageWarnings = imageChanges.flatMap((change) => change.after
+      .map((image, index) => ({ image, index }))
+      .filter(({ image }) => image.sha256_match === false)
+      .map(({ index }) => ({ code: "provider_sha256_mismatch", language: change.language, imageType: change.imageType, index })));
     // An adapter that predates images ignores them: never report that as success.
     if (imageSets.length > 0 && imageChanges.length !== imageSets.length) {
       await insertReceipt(c.env.DB, {
@@ -593,13 +637,8 @@ export async function handlePushPlayStoreListing(c: AdminContext) {
           before: fingerprint(change.before),
           after: fingerprint(change.after),
         })),
-        image_changes: imageChanges.map((change) => ({
-          language: change.language,
-          imageType: change.imageType,
-          action: change.action,
-          before: change.before,
-          after: change.after,
-        })),
+        image_changes: imageChanges,
+        image_warnings: imageWarnings,
         result: { status: verdict },
       },
     });
@@ -614,6 +653,7 @@ export async function handlePushPlayStoreListing(c: AdminContext) {
       changes_not_sent_for_review: value.changes_not_sent_for_review === true,
       changes,
       image_changes: imageChanges,
+      image_warnings: imageWarnings,
     });
   } finally {
     await releaseListingLock(c.env.DB, operationId);

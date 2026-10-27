@@ -383,9 +383,10 @@ describe("Google Play store listing images", () => {
       language: "en-US", imageType: "phoneScreenshots", action: "replace",
       before: [{ id: "img-1", sha256: "0".repeat(64) }],
       after: [
-        { id: "img-2", sha256: image("one").sha256, size_bytes: 3, aiGeneratedState: "aiGeneratedStateNotAiGenerated" },
-        { id: "img-3", sha256: image("two").sha256, size_bytes: 3, aiGeneratedState: null },
+        { id: "img-2", sha256: image("one").sha256, provider_sha256: image("one").sha256, sha256_match: true, size_bytes: 3, aiGeneratedState: "aiGeneratedStateNotAiGenerated" },
+        { id: "img-3", sha256: image("two").sha256, provider_sha256: image("two").sha256, sha256_match: true, size_bytes: 3, aiGeneratedState: null },
       ],
+      readback: { count: 2, sha256_match: true },
     }]);
     const order = google.requests.map((r) => `${r.method} ${r.path.replace(/\?.*/, "")}`);
     expect(order.slice(0, 9)).toEqual([
@@ -419,14 +420,24 @@ describe("Google Play store listing images", () => {
     expect(realEdits(google.edits)).toEqual([]);
   });
 
-  it("fails closed when Google acknowledges different bytes", async () => {
+  it("records a different Google Image.sha256 as a warning, not a failure", async () => {
     const google = googleFixture([EN], { uploadSha: "f".repeat(64) });
     const result = await createPlayAdapterService({ fetchImpl: google.fetchImpl }).pushStoreListings(push({
       mode: "commit", listings: [], images: [{ language: "en-US", imageType: "featureGraphic", images: [image("fg")] }],
     }), env);
-    expect(result).toMatchObject({ ok: false, error: { code: "play_image_integrity_mismatch" } });
-    expect(google.requests.some((r) => r.path.includes(":commit"))).toBe(false);
-    expect(realEdits(google.edits)).toEqual([]);
+    expect(result).toMatchObject({ ok: true, value: { outcome: "committed", image_changes: [{
+      action: "replace",
+      after: [{ sha256: image("fg").sha256, provider_sha256: "f".repeat(64), sha256_match: false }],
+      readback: { count: 1, sha256_match: false },
+    }] } });
+  });
+
+  it("records sha256_match:null when Google returns no usable sha256", async () => {
+    const google = googleFixture([EN], { uploadSha: "not-a-digest" });
+    const result = await createPlayAdapterService({ fetchImpl: google.fetchImpl }).pushStoreListings(push({
+      listings: [], images: [{ language: "en-US", imageType: "icon", images: [image("i")] }],
+    }), env);
+    expect(result).toMatchObject({ ok: true, value: { outcome: "validated", image_changes: [{ after: [{ provider_sha256: null, sha256_match: null }] }] } });
   });
 
   it("needs a listing for the image language, created in the same push if new", async () => {

@@ -157,15 +157,19 @@ export function cleanListing(value: unknown): PlayListing {
   return listing;
 }
 
-/** Google `Image`: id and sha256 are required for Hands to reason about it. */
+/**
+ * Google `Image`: an id is required for Hands to reason about it; the reported
+ * sha256 is kept when it is a hex digest and is otherwise null (only a digest
+ * shape is ever recorded, never other provider text).
+ */
 function cleanImage(value: unknown): PlayImageRef {
   const row = value && typeof value === "object" ? value as Record<string, unknown> : null;
   const id = row?.id;
-  const sha = typeof row?.sha256 === "string" ? row.sha256.toLowerCase() : "";
-  if (typeof id !== "string" || !id || !/^[0-9a-f]{64}$/.test(sha)) {
+  if (typeof id !== "string" || !/^[A-Za-z0-9._:-]{1,200}$/.test(id)) {
     throw new PlayAdapterError(502, "play_images_malformed", "Google Play returned a malformed image");
   }
-  return { id, sha256: sha };
+  const sha = typeof row?.sha256 === "string" ? row.sha256.toLowerCase() : "";
+  return { id, sha256: /^[0-9a-f]{64}$/.test(sha) ? sha : null };
 }
 
 function hashingBody(
@@ -679,8 +683,8 @@ export class GooglePlayClient {
   }
 
   /**
-   * edits.images.upload (simple media upload). Google's Image.sha256 must equal the
-   * sha256 of the bytes sent; anything else means Play holds different bytes.
+   * edits.images.upload (simple media upload). Returns Google's Image id and its
+   * reported sha256; the caller records whether that matches the bytes sent.
    */
   async uploadImage(
     packageName: string,
@@ -705,11 +709,7 @@ export class GooglePlayClient {
     }
     const body = await response.json().catch(() => null) as { image?: unknown } | null;
     if (!response.ok) throw playRejection(response.status, body, "upload_image");
-    const uploaded = cleanImage(body?.image);
-    if (uploaded.sha256 !== image.sha256) {
-      throw new PlayAdapterError(409, "play_image_integrity_mismatch", `Google Play acknowledged different bytes for a ${language} ${imageType} image`, { stage: "upload_image" });
-    }
-    return uploaded;
+    return cleanImage(body?.image);
   }
 
   /** edits.listings.delete. */

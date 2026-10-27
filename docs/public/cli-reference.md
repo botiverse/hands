@@ -311,11 +311,14 @@ its own for that image type.
 Each listed `(language, imageType)` set **replaces** what Play has
 (`edits.images.deleteall`, then upload in order); a set Play already holds
 byte-for-byte (same sha256 sequence) is skipped. Image types you do not list are
-left untouched. Google must acknowledge each upload with the same sha256, and a
-commit is read back. `--ai-generated-state <aiGeneratedStateNotAiGenerated|
+left untouched. Hands checks that every uploaded file matches its declared
+sha256 (fail closed). Google's own `Image.sha256` is recorded next to it with
+`sha256_match: true|false|null`; a difference is listed in `image_warnings`
+and does not fail the push. A commit is read back (image count must match). `--ai-generated-state <aiGeneratedStateNotAiGenerated|
 aiGeneratedStateAiGeneratedDeveloperAttested|aiGeneratedStateUnspecified>` is
 passed to Google's `aiGeneratedState` for every image. The receipt records each
-image's sha256, size, type, pixel size and Google image id.
+image's sha256, Google's sha256 and whether they match, size, type, pixel size
+and Google image id.
 
 Every push that reaches Google writes an immutable receipt: who, when, edit id,
 dry run or commit, the per-language plan, and a sha256 + length of each field.

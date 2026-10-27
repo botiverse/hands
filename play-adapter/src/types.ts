@@ -270,10 +270,30 @@ export interface StoreListingImageSetInput {
   images: StoreListingImageInput[];
 }
 
-/** Google `Image` fields Hands keeps: id and sha256 (sha1/url are not needed). */
+/**
+ * Google `Image` fields Hands keeps: id and Google's reported sha256 (sha1/url are
+ * not needed). sha256 is null when Google omits it or sends something that is not
+ * a hex digest.
+ */
 export interface PlayImageRef {
   id: string;
+  sha256: string | null;
+}
+
+/**
+ * One uploaded image. `sha256` is Hands' own digest of the bytes it sent (checked
+ * against the declaration before upload; that check fails closed). Google's
+ * `Image.sha256` is recorded beside it: undocumented whether it is a digest of the
+ * uploaded bytes, so a difference is a recorded warning, never a failure.
+ */
+export interface UploadedImageRecord {
+  id: string;
   sha256: string;
+  provider_sha256: string | null;
+  /** null when Google returned no sha256. */
+  sha256_match: boolean | null;
+  size_bytes: number;
+  aiGeneratedState: PlayAiGeneratedState | null;
 }
 
 export interface StoreListingImageChange {
@@ -282,5 +302,7 @@ export interface StoreListingImageChange {
   /** unchanged: Play already holds exactly these bytes in this order; nothing was sent. */
   action: "replace" | "unchanged";
   before: PlayImageRef[];
-  after: Array<PlayImageRef & { size_bytes: number; aiGeneratedState: PlayAiGeneratedState | null }>;
+  after: UploadedImageRecord[];
+  /** Commit only: what a fresh edit lists for this set afterwards. */
+  readback?: { count: number; sha256_match: boolean | null };
 }

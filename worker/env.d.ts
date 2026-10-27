@@ -83,8 +83,11 @@ interface GooglePlayAdapterService {
       language: string;
       imageType: GooglePlayImageType;
       action: "replace" | "unchanged";
-      before: Array<{ id: string; sha256: string }>;
-      after: Array<{ id: string; sha256: string; size_bytes: number; aiGeneratedState: GooglePlayAiGeneratedState | null }>;
+      /** Google's reported sha256 (null when absent or not a digest). */
+      before: Array<{ id: string; sha256: string | null }>;
+      /** sha256 is Hands' digest of the bytes sent; provider_sha256 is Google's, recorded only. */
+      after: Array<{ id: string; sha256: string; provider_sha256: string | null; sha256_match: boolean | null; size_bytes: number; aiGeneratedState: GooglePlayAiGeneratedState | null }>;
+      readback?: { count: number; sha256_match: boolean | null };
     }>;
     changes_not_sent_for_review: boolean;
   }>>;

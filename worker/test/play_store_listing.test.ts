@@ -374,7 +374,12 @@ describe("store listing images route", () => {
         edit_id: "edit-9", package_name: input.packageName, mode: input.mode, outcome: "validated", default_language: "en-US",
         changes_not_sent_for_review: false, changes: [],
         image_changes: input.images!.map((set) => ({ language: set.language, imageType: set.imageType, action: "replace" as const, before: [],
-          after: set.images.map((image, i) => ({ id: `img-${i}`, sha256: image.sha256, size_bytes: image.bytes.byteLength, aiGeneratedState: image.aiGeneratedState ?? null })) })),
+          // Google reports a different sha256 for the first phone screenshot: a warning, not a failure.
+          after: set.images.map((image, i) => {
+            const differs = set.imageType === "phoneScreenshots" && i === 0;
+            return { id: `img-${i}`, sha256: image.sha256, provider_sha256: differs ? "f".repeat(64) : image.sha256, sha256_match: !differs,
+              size_bytes: image.bytes.byteLength, aiGeneratedState: image.aiGeneratedState ?? null };
+          }) })),
       } };
     } });
     const response = await h.request("/api/apps/app/distributions/play/store-listing", {
@@ -384,6 +389,7 @@ describe("store listing images route", () => {
     expect(response.status).toBe(200);
     const body = await response.json() as Record<string, any>;
     expect(body.image_changes.map((c: any) => [c.imageType, c.action, c.after.length])).toEqual([["phoneScreenshots", "replace", 2], ["featureGraphic", "replace", 1]]);
+    expect(body.image_warnings).toEqual([{ code: "provider_sha256_mismatch", language: "en-US", imageType: "phoneScreenshots", index: 0 }]);
     expect(seen!.listings).toEqual([{ language: "en-US", title: "Raft" }]);
     expect(seen!.images!.map((set) => [set.imageType, set.images.map((i) => [i.contentType, i.bytes.byteLength, i.aiGeneratedState ?? null])])).toEqual([
       ["phoneScreenshots", [["image/png", PHONE.byteLength, "aiGeneratedStateNotAiGenerated"], ["image/png", PHONE.byteLength, null]]],
@@ -393,7 +399,12 @@ describe("store listing images route", () => {
     expect(payload.requested.images[1]).toEqual({ language: "en-US", imageType: "featureGraphic", images: [{
       sha256: hex(FEATURE), size_bytes: FEATURE.byteLength, content_type: "image/png", width: 1024, height: 500, aiGeneratedState: null,
     }] });
-    expect(payload.image_changes[0].after[0]).toMatchObject({ id: "img-0", sha256: hex(PHONE) });
+    expect(payload.image_changes[0].after[0]).toEqual({
+      id: "img-0", sha256: hex(PHONE), provider_sha256: "f".repeat(64), sha256_match: false,
+      size_bytes: PHONE.byteLength, aiGeneratedState: "aiGeneratedStateNotAiGenerated",
+    });
+    expect(payload.image_warnings).toEqual(body.image_warnings);
+    expect(h.receipts()[0]).toMatchObject({ verdict: "validated" });
   });
 
   it("rejects images that break Play's rules before any adapter call", async () => {
