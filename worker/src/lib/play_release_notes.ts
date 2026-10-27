@@ -5,8 +5,10 @@
  * maps en -> "en" and ja -> "ja", which suits Hands' own update checks but is not
  * what Play lists ("en-US", "ja-JP"). zh-cn -> "zh-CN" happens to coincide, which
  * is exactly how the mismatch would hide. This table is explicit and closed: a
- * changelog key that is not listed fails closed instead of being guessed at or
- * silently dropped, because a dropped language means those users see no notes.
+ * changelog key that is not listed is never guessed at. It is skipped and named
+ * in the receipt instead of failing the promote, because Hands changelogs may
+ * legitimately carry any language (normalizeReleaseNotesKey keeps unknown keys
+ * as-is) and "someone wrote a French note" must not mean "Android cannot ship".
  */
 export const PLAY_RELEASE_NOTES_LOCALES: Readonly<Record<string, string>> = Object.freeze({
   zh: "zh-CN",
@@ -33,7 +35,6 @@ export const PLAY_RELEASE_NOTES_MAX_CHARS = 500;
 
 export type PlayReleaseNotesErrorCode =
   | "play_release_notes_invalid"
-  | "play_release_notes_locale_unsupported"
   | "play_release_notes_locale_duplicate"
   | "play_release_notes_too_long";
 
@@ -49,7 +50,11 @@ export interface PlayReleaseNote {
 }
 
 export type PlayReleaseNotesResult =
-  | { present: true; notes: PlayReleaseNote[] }
+  /**
+   * The changelog is localized. `notes` may be empty when every non-empty key was
+   * unsupported; `skipped` lists those original changelog keys, in order.
+   */
+  | { present: true; notes: PlayReleaseNote[]; skipped: string[] }
   | { present: false; reason: "no_changelog" | "changelog_not_localized" | "changelog_empty" };
 
 /**
@@ -72,9 +77,12 @@ export function playCharCount(text: string): number {
  * - null/blank changelog -> absent (promote proceeds without notes).
  * - plain-text (non-JSON) changelog -> absent: it carries no language, and
  *   guessing one would publish it under the wrong locale.
- * - JSON object -> every non-empty entry must map through the table, map to a
- *   distinct Play language and fit in 500 characters after plain-text conversion;
- *   otherwise PlayReleaseNotesError (fail closed, before any Play call).
+ * - JSON object -> each non-empty entry whose key is in the table is sent; a key
+ *   not in the table is skipped and returned in `skipped`. A sent entry over 500
+ *   characters (after plain-text conversion) is an error, never a truncation.
+ *   Two keys mapping to one Play language with the SAME text are deduplicated
+ *   (first key wins); with DIFFERENT text the data is ambiguous and it is an
+ *   error. Errors are PlayReleaseNotesError (fail closed, before any Play call).
  */
 export function playReleaseNotesFromChangelog(raw: string | null | undefined): PlayReleaseNotesResult {
   const trimmed = (raw ?? "").trim();
@@ -90,6 +98,7 @@ export function playReleaseNotesFromChangelog(raw: string | null | undefined): P
     throw new PlayReleaseNotesError("play_release_notes_invalid", "release changelog must be a JSON object of language -> text");
   }
   const notes: PlayReleaseNote[] = [];
+  const skipped: string[] = [];
   const sourceFor = new Map<string, string>();
   for (const [key, value] of Object.entries(parsed as Record<string, unknown>)) {
     if (typeof value !== "string") {
@@ -99,16 +108,15 @@ export function playReleaseNotesFromChangelog(raw: string | null | undefined): P
     if (!text) continue;
     const language = PLAY_RELEASE_NOTES_LOCALES[key.trim().toLowerCase()];
     if (!language) {
-      throw new PlayReleaseNotesError(
-        "play_release_notes_locale_unsupported",
-        `release changelog key "${key}" has no Google Play language mapping (supported: ${[...new Set(Object.values(PLAY_RELEASE_NOTES_LOCALES))].join(", ")})`,
-      );
+      skipped.push(key);
+      continue;
     }
     const previous = sourceFor.get(language);
     if (previous !== undefined) {
+      if (notes.find((note) => note.language === language)?.text === text) continue;
       throw new PlayReleaseNotesError(
         "play_release_notes_locale_duplicate",
-        `release changelog keys "${previous}" and "${key}" both map to Google Play language ${language}`,
+        `release changelog keys "${previous}" and "${key}" both map to Google Play language ${language} with different text`,
       );
     }
     const chars = playCharCount(text);
@@ -121,5 +129,6 @@ export function playReleaseNotesFromChangelog(raw: string | null | undefined): P
     sourceFor.set(language, key);
     notes.push({ language, text });
   }
-  return notes.length > 0 ? { present: true, notes } : { present: false, reason: "changelog_empty" };
+  if (notes.length === 0 && skipped.length === 0) return { present: false, reason: "changelog_empty" };
+  return { present: true, notes, skipped };
 }

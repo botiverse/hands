@@ -1036,8 +1036,9 @@ describe("Play promotion route", () => {
       post_commit_get: false,
     });
     expect(payload.release_notes).toMatchObject({
-      present: true, sent: true, languages: ["zh-CN", "en-US", "ja-JP"], chars: { "en-US": 23 },
+      present: true, sent: ["zh-CN", "en-US", "ja-JP"], skipped: [], requested: ["zh-CN", "en-US", "ja-JP"], chars: { "en-US": 23 },
     });
+    expect(payload.release_notes.reason).toBeUndefined();
   });
 
   it("records a mapping the adapter skipped (bundle already on Play) or did not acknowledge as not uploaded", async () => {
@@ -1063,14 +1064,13 @@ describe("Play promotion route", () => {
       const payload = successPayload(harness);
       expect(payload.mapping).toMatchObject({ present: true, uploaded: false, provider_ack: null, skipped_reason: reported.reason });
       expect(payload.release_notes).toMatchObject(reported.files
-        ? { present: true, sent: true }
-        : { present: true, sent: false, reason: "not_acknowledged" });
+        ? { present: true, sent: ["en-US"], skipped: [] }
+        : { present: true, sent: [], requested: ["en-US"], reason: "not_acknowledged" });
     }
   });
 
   it.each([
     ["play_release_notes_too_long", JSON.stringify({ en: "x".repeat(501) })],
-    ["play_release_notes_locale_unsupported", JSON.stringify({ en: "Fixes", fr: "Corrections" })],
     ["play_release_notes_locale_duplicate", JSON.stringify({ en: "Fixes", "en-us": "Fixes too" })],
     ["play_release_notes_invalid", "{not json"],
   ])("fails closed with %s before any Play call", async (failureCode, changelog) => {
@@ -1086,6 +1086,31 @@ describe("Play promotion route", () => {
     expect(await res.json()).toMatchObject({ error: { code: "gate_failed", gate: "release_notes", failure_code: failureCode } });
     expect(calls).toBe(0);
     expect(harness.sqlite.prepare("SELECT revision FROM releases WHERE id='release'").get()).toEqual({ revision: 1 });
+  });
+
+  it.each([
+    ["some keys unsupported", { "zh-cn": "修复", fr: "Corrections", en: "Fixes" }, [{ language: "zh-CN", text: "修复" }, { language: "en-US", text: "Fixes" }], ["fr"]],
+    ["all keys unsupported", { fr: "Corrections", de: "Fehlerbehebungen" }, null, ["fr", "de"]],
+  ] as const)("skips unsupported release-note languages without failing (%s)", async (_label, changelog, expectedNotes, skipped) => {
+    const harness = await readyRelease();
+    harness.sqlite.prepare("UPDATE releases SET changelog = ? WHERE id = 'release'").run(JSON.stringify(changelog));
+    let notes: unknown = "unset";
+    harness.env.PLAY_RELEASE_SERVICE = playAdapterStub({
+      promote: async (input, stream) => {
+        notes = input.releaseNotes;
+        const bytes = new Uint8Array(await new Response(stream).arrayBuffer());
+        return { ok: true, value: {
+          edit_id: "edit-1", package_name: "build.raft.app", version_code: 42,
+          track: "internal", sha256: sha(bytes), rollout_percent: 100, deobfuscation_files: [],
+          release_notes_languages: (input.releaseNotes ?? []).map((note) => note.language),
+        } };
+      },
+    });
+    expect((await promoteInternal(harness)).status).toBe(200);
+    expect(notes).toEqual(expectedNotes);
+    const expectedSent = (expectedNotes ?? []).map((note) => note.language);
+    expect(successPayload(harness).release_notes).toMatchObject({ present: true, sent: expectedSent, skipped: [...skipped], requested: expectedSent });
+    expect(successPayload(harness).release_notes.reason).toBeUndefined();
   });
 
   it("sends no notes for a plain-text changelog and records why", async () => {

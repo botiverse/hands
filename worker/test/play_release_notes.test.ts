@@ -25,7 +25,7 @@ describe("Hands changelog -> Google Play releaseNotes", () => {
     expect(normalizeReleaseNotesKey("en")).toBe("en");
     expect(normalizeReleaseNotesKey("ja")).toBe("ja");
     const result = playReleaseNotesFromChangelog(JSON.stringify({ "zh-cn": "修复", en: "Fixes", ja: "修正", "zh-TW": "修復" }));
-    expect(result).toEqual({ present: true, notes: [
+    expect(result).toEqual({ present: true, skipped: [], notes: [
       { language: "zh-CN", text: "修复" },
       { language: "en-US", text: "Fixes" },
       { language: "ja-JP", text: "修正" },
@@ -51,9 +51,26 @@ describe("Hands changelog -> Google Play releaseNotes", () => {
     expect(errorCode(JSON.stringify({ en: "x".repeat(501) }))).toBe("play_release_notes_too_long");
   });
 
-  it("fails closed on unknown, duplicate, or malformed entries", () => {
-    expect(errorCode(JSON.stringify({ fr: "Corrections" }))).toBe("play_release_notes_locale_unsupported");
+  it("skips and reports unsupported keys instead of failing", () => {
+    expect(playReleaseNotesFromChangelog(JSON.stringify({ "zh-cn": "修复", fr: "Corrections", en: "Fixes", "pt-BR": "Correções" })))
+      .toEqual({ present: true, skipped: ["fr", "pt-BR"], notes: [
+        { language: "zh-CN", text: "修复" },
+        { language: "en-US", text: "Fixes" },
+      ] });
+    // All keys unsupported: still localized, nothing to send, every key recorded.
+    expect(playReleaseNotesFromChangelog(JSON.stringify({ fr: "Corrections", de: "Fehlerbehebungen" })))
+      .toEqual({ present: true, notes: [], skipped: ["fr", "de"] });
+    // An unsupported key is not length-checked: it is never sent.
+    expect(errorCode(JSON.stringify({ en: "ok", fr: "x".repeat(501) }))).toBeNull();
+  });
+
+  it("dedupes two keys for one Play language with identical text, and errors when they differ", () => {
+    expect(playReleaseNotesFromChangelog(JSON.stringify({ zh: "**修复**", "zh-cn": "修复" })))
+      .toEqual({ present: true, skipped: [], notes: [{ language: "zh-CN", text: "修复" }] });
     expect(errorCode(JSON.stringify({ zh: "a", "zh-cn": "b" }))).toBe("play_release_notes_locale_duplicate");
+  });
+
+  it("fails closed on malformed entries", () => {
     expect(errorCode(JSON.stringify({ en: 1 }))).toBe("play_release_notes_invalid");
     expect(errorCode("{oops")).toBe("play_release_notes_invalid");
     expect(errorCode("{}")).toBeNull();

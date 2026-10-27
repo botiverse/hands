@@ -184,13 +184,17 @@ function receiptDeobfuscationFile(
 
 function receiptReleaseNotes(result: PlayReleaseNotesResult, acknowledged: unknown) {
   if (!result.present) return { present: false, reason: result.reason };
-  const languages = Array.isArray(acknowledged) ? acknowledged.filter((item): item is string => typeof item === "string") : [];
-  const sent = result.notes.every((note) => languages.includes(note.language));
+  const acked = Array.isArray(acknowledged) ? acknowledged.filter((item): item is string => typeof item === "string") : [];
+  const requested = result.notes.map((note) => note.language);
+  // `sent` is what the adapter confirms it put on the track release, never assumed.
+  const sent = requested.filter((language) => acked.includes(language));
   return {
     present: true,
     sent,
-    ...(sent ? {} : { reason: "not_acknowledged" }),
-    languages: result.notes.map((note) => note.language),
+    // Original changelog keys with no Play language mapping: not sent, not fatal.
+    skipped: result.skipped,
+    requested,
+    ...(sent.length === requested.length ? {} : { reason: "not_acknowledged" }),
     chars: Object.fromEntries(result.notes.map((note) => [note.language, playCharCount(note.text)])),
     format: "plain_text_markdown_bold_stripped",
   };
@@ -697,7 +701,7 @@ export async function handlePromotePlayDistribution(c: AdminContext) {
       operationId,
       symbols: symbolsAsset ? { expectedSha256: symbolsAsset.file_hash, expectedSize: symbolsAsset.size_bytes } : null,
       mapping: mappingAsset ? { expectedSha256: mappingAsset.file_hash, expectedSize: mappingAsset.size_bytes } : null,
-      releaseNotes: releaseNotes.present ? releaseNotes.notes : null,
+      releaseNotes: releaseNotes.present && releaseNotes.notes.length > 0 ? releaseNotes.notes : null,
     }, uploadBranch, symbolsUploadBranch, mappingUploadBranch));
     const [localResult, symbolsLocalResult, mappingLocalResult, uploadResult] = await Promise.allSettled([
       hashStream(hashBranch),
