@@ -21,6 +21,16 @@ import { bytesToHex } from "@noble/hashes/utils";
 import { currentActor, currentActorInfo, type AdminEnv } from "../middleware/auth";
 import { getGooglePlayBinding, hasGooglePlayConfiguration, type GooglePlayBinding } from "../lib/google_play_bindings";
 import { isPlayListingLanguage, suggestPlayListingLanguage } from "../lib/play_listing_languages";
+import {
+  PLAY_AI_GENERATED_STATES,
+  PLAY_IMAGE_MAX_BYTES,
+  PlayImageError,
+  checkImage,
+  checkImageCount,
+  isPlayImageType,
+  type PlayAiGeneratedState,
+  type PlayImageType,
+} from "../lib/play_images";
 
 type AdminContext = Context<AdminEnv & { Bindings: Env }>;
 
@@ -50,7 +60,28 @@ export interface StoreListingPushInput {
   listings: PlayListing[];
   delete_unlisted_languages: boolean;
   changes_not_sent_for_review: boolean;
+  /** Raw image set declarations; resolved against multipart parts by normalizeStoreListingImages. */
+  images: unknown;
 }
+
+export interface StoreListingImageSet {
+  language: string;
+  imageType: PlayImageType;
+  images: Array<{
+    part: string;
+    bytes: Uint8Array;
+    sha256: string;
+    size_bytes: number;
+    contentType: "image/png" | "image/jpeg";
+    width: number;
+    height: number;
+    aiGeneratedState?: PlayAiGeneratedState;
+  }>;
+}
+
+/** Binary bound for one push; matches the adapter's MAX_IMAGE_PUSH_BYTES. */
+export const MAX_IMAGE_PUSH_BYTES = 24 * 1024 * 1024;
+const MAX_MULTIPART_BYTES = MAX_IMAGE_PUSH_BYTES + 2 * 1024 * 1024;
 
 export class StoreListingInputError extends Error {
   constructor(readonly failureCode: string, message: string, readonly details: Record<string, unknown> = {}) {
@@ -69,7 +100,7 @@ export function normalizeStoreListingPush(body: unknown): StoreListingPushInput 
   }
   const raw = body as Record<string, unknown>;
   for (const key of Object.keys(raw)) {
-    if (!["mode", "listings", "delete_unlisted_languages", "changes_not_sent_for_review"].includes(key)) {
+    if (!["mode", "listings", "delete_unlisted_languages", "changes_not_sent_for_review", "images"].includes(key)) {
       throw new StoreListingInputError("listing_request_invalid", `unknown field ${key}`);
     }
   }
@@ -82,7 +113,9 @@ export function normalizeStoreListingPush(body: unknown): StoreListingPushInput 
     }
   }
   const deleteUnlisted = raw.delete_unlisted_languages === true;
-  if (!Array.isArray(raw.listings) || raw.listings.length > MAX_LANGUAGES || (raw.listings.length === 0 && !deleteUnlisted)) {
+  const hasImages = Array.isArray(raw.images) && raw.images.length > 0;
+  if (raw.listings === undefined && hasImages) raw.listings = [];
+  if (!Array.isArray(raw.listings) || raw.listings.length > MAX_LANGUAGES || (raw.listings.length === 0 && !deleteUnlisted && !hasImages)) {
     throw new StoreListingInputError("listing_request_invalid", `listings must be a list of 1-${MAX_LANGUAGES} Listing resources`);
   }
   const seen = new Set<string>();
@@ -141,7 +174,144 @@ export function normalizeStoreListingPush(body: unknown): StoreListingPushInput 
     listings,
     delete_unlisted_languages: deleteUnlisted,
     changes_not_sent_for_review: raw.changes_not_sent_for_review === true,
+    images: raw.images,
   };
+}
+
+function hexBytes(bytes: Uint8Array): string {
+  return bytesToHex(sha256(bytes));
+}
+
+/**
+ * Resolve image declarations against the uploaded multipart parts and check every
+ * documented Play constraint (type, count, format, pixel size, byte size) before
+ * any Play call. Each part is used exactly once; undeclared parts are refused.
+ */
+export function normalizeStoreListingImages(raw: unknown, parts: Map<string, Uint8Array>): StoreListingImageSet[] {
+  if (raw === undefined || raw === null) {
+    if (parts.size > 0) throw new StoreListingInputError("image_request_invalid", "uploaded files are not declared in images");
+    return [];
+  }
+  if (!Array.isArray(raw) || raw.length > 200) {
+    throw new StoreListingInputError("image_request_invalid", "images must be a list of {language, imageType, images}");
+  }
+  const used = new Set<string>();
+  const seen = new Set<string>();
+  let total = 0;
+  const sets = raw.map((item: unknown): StoreListingImageSet => {
+    const row = item && typeof item === "object" && !Array.isArray(item) ? item as Record<string, unknown> : null;
+    if (!row) throw new StoreListingInputError("image_request_invalid", "each image set must be an object");
+    for (const key of Object.keys(row)) {
+      if (!["language", "imageType", "images"].includes(key)) throw new StoreListingInputError("image_request_invalid", `unknown image set field ${key}`);
+    }
+    const language = typeof row.language === "string" ? row.language : "";
+    if (!isPlayListingLanguage(language)) {
+      const suggestion = suggestPlayListingLanguage(language);
+      throw new StoreListingInputError("listing_language_unsupported",
+        `not a Google Play store listing language: ${language}${suggestion ? ` (did you mean ${suggestion}?)` : ""}`,
+        { unsupported: [{ language, suggestion }] });
+    }
+    if (!isPlayImageType(row.imageType)) {
+      throw new StoreListingInputError("image_type_invalid", `imageType ${String(row.imageType)} is not a Google Play imageType`);
+    }
+    const imageType = row.imageType;
+    const label = `${language} ${imageType}`;
+    if (seen.has(label)) throw new StoreListingInputError("image_request_invalid", `${label} appears more than once`);
+    seen.add(label);
+    if (!Array.isArray(row.images)) throw new StoreListingInputError("image_request_invalid", `${label}: images must be a list`);
+    try {
+      checkImageCount(imageType, row.images.length, label);
+    } catch (error) {
+      if (error instanceof PlayImageError) throw new StoreListingInputError(error.failureCode, error.message, error.details);
+      throw error;
+    }
+    return {
+      language,
+      imageType,
+      images: row.images.map((entry: unknown, index: number) => {
+        const declaration = entry && typeof entry === "object" && !Array.isArray(entry) ? entry as Record<string, unknown> : null;
+        const part = typeof declaration?.part === "string" ? declaration.part : "";
+        const declaredSha = typeof declaration?.sha256 === "string" ? declaration.sha256 : "";
+        const ai = declaration?.aiGeneratedState;
+        const where = `${label} #${index + 1}`;
+        if (!declaration || !part || !/^[0-9a-f]{64}$/.test(declaredSha)) {
+          throw new StoreListingInputError("image_request_invalid", `${where}: needs part and a lowercase hex sha256`);
+        }
+        for (const key of Object.keys(declaration)) {
+          if (!["part", "sha256", "aiGeneratedState"].includes(key)) throw new StoreListingInputError("image_request_invalid", `${where}: unknown field ${key}`);
+        }
+        if (ai !== undefined && !(PLAY_AI_GENERATED_STATES as readonly unknown[]).includes(ai)) {
+          throw new StoreListingInputError("image_ai_generated_state_invalid", `${where}: aiGeneratedState must be one of ${PLAY_AI_GENERATED_STATES.join(", ")}`);
+        }
+        const bytes = parts.get(part);
+        if (!bytes) throw new StoreListingInputError("image_part_missing", `${where}: no uploaded file named ${part}`);
+        if (used.has(part)) throw new StoreListingInputError("image_request_invalid", `${where}: file ${part} is declared twice`);
+        used.add(part);
+        if (hexBytes(bytes) !== declaredSha) {
+          throw new StoreListingInputError("image_integrity_mismatch", `${where}: uploaded bytes do not match the declared sha256`);
+        }
+        total += bytes.byteLength;
+        if (total > MAX_IMAGE_PUSH_BYTES) {
+          throw new StoreListingInputError("images_request_too_large", `images in one push exceed ${MAX_IMAGE_PUSH_BYTES} bytes; push fewer languages at a time (--locales)`);
+        }
+        let sniffed;
+        try {
+          sniffed = checkImage(imageType, bytes, where);
+        } catch (error) {
+          if (error instanceof PlayImageError) throw new StoreListingInputError(error.failureCode, error.message, error.details);
+          throw error;
+        }
+        return {
+          part,
+          bytes,
+          sha256: declaredSha,
+          size_bytes: bytes.byteLength,
+          contentType: sniffed.contentType,
+          width: sniffed.width,
+          height: sniffed.height,
+          ...(ai !== undefined ? { aiGeneratedState: ai as PlayAiGeneratedState } : {}),
+        };
+      }),
+    };
+  });
+  const unused = [...parts.keys()].filter((part) => !used.has(part));
+  if (unused.length > 0) throw new StoreListingInputError("image_request_invalid", `uploaded files not declared in images: ${unused.join(", ")}`);
+  return sets;
+}
+
+/** JSON body, or multipart/form-data with a `request` JSON part plus one part per image. */
+async function readPushRequest(c: AdminContext): Promise<{ body: unknown; parts: Map<string, Uint8Array> }> {
+  const contentType = c.req.header("content-type") ?? "";
+  if (!contentType.toLowerCase().startsWith("multipart/form-data")) {
+    return { body: await c.req.json().catch(() => null), parts: new Map() };
+  }
+  const declared = Number(c.req.header("content-length") ?? "0");
+  if (Number.isFinite(declared) && declared > MAX_MULTIPART_BYTES) {
+    throw new StoreListingInputError("images_request_too_large", `request exceeds ${MAX_MULTIPART_BYTES} bytes; push fewer languages at a time (--locales)`);
+  }
+  let form: FormData;
+  try {
+    form = await c.req.raw.formData();
+  } catch {
+    throw new StoreListingInputError("listing_request_invalid", "multipart body could not be parsed");
+  }
+  let body: unknown = null;
+  const parts = new Map<string, Uint8Array>();
+  for (const [name, entry] of form.entries()) {
+    const value = entry as unknown as string | File;
+    if (name === "request") {
+      if (typeof value !== "string") throw new StoreListingInputError("listing_request_invalid", "request part must be JSON text");
+      try { body = JSON.parse(value); } catch { throw new StoreListingInputError("listing_request_invalid", "request part is not valid JSON"); }
+      continue;
+    }
+    if (typeof value === "string") throw new StoreListingInputError("image_request_invalid", `part ${name} must be a file`);
+    if (parts.has(name)) throw new StoreListingInputError("image_request_invalid", `part ${name} appears more than once`);
+    if (value.size > PLAY_IMAGE_MAX_BYTES) {
+      throw new StoreListingInputError("image_too_large", `part ${name} is ${value.size} bytes; Google Play accepts at most ${PLAY_IMAGE_MAX_BYTES}`);
+    }
+    parts.set(name, new Uint8Array(await value.arrayBuffer()));
+  }
+  return { body, parts };
 }
 
 type Failure = {
@@ -222,6 +392,44 @@ function narrowCause(value: unknown): NarrowCause | null {
   return Object.keys(out).length ? out : null;
 }
 
+const HEX64 = /^[0-9a-f]{64}$/;
+const hexOrNull = (value: unknown) => (typeof value === "string" && HEX64.test(value) ? value : null);
+const idOrNull = (value: unknown) => (typeof value === "string" && /^[A-Za-z0-9._:-]{1,200}$/.test(value) ? value : null);
+
+type AdapterImageChange = {
+  language: string;
+  imageType: string;
+  action: "replace" | "unchanged";
+  before?: unknown;
+  after?: unknown;
+  readback?: unknown;
+};
+
+/** Keep only the documented, shape-checked fields of an adapter image change. */
+function narrowImageChange(change: AdapterImageChange) {
+  const list = (value: unknown) => (Array.isArray(value) ? value.slice(0, 16) : []) as Array<Record<string, unknown> | null>;
+  const readback = change.readback && typeof change.readback === "object" ? change.readback as Record<string, unknown> : null;
+  return {
+    language: change.language,
+    imageType: change.imageType,
+    action: change.action,
+    before: list(change.before).map((image) => ({ id: idOrNull(image?.id), sha256: hexOrNull(image?.sha256) })),
+    after: list(change.after).map((image) => ({
+      id: idOrNull(image?.id),
+      sha256: hexOrNull(image?.sha256),
+      provider_sha256: hexOrNull(image?.provider_sha256),
+      sha256_match: typeof image?.sha256_match === "boolean" ? image.sha256_match : null,
+      size_bytes: Number.isSafeInteger(image?.size_bytes) ? image!.size_bytes as number : null,
+      aiGeneratedState: typeof image?.aiGeneratedState === "string" && (PLAY_AI_GENERATED_STATES as readonly string[]).includes(image.aiGeneratedState)
+        ? image.aiGeneratedState : null,
+    })),
+    ...(readback ? { readback: {
+      count: Number.isSafeInteger(readback.count) ? readback.count as number : null,
+      sha256_match: typeof readback.sha256_match === "boolean" ? readback.sha256_match : null,
+    } } : {}),
+  };
+}
+
 async function takeListingLock(db: D1Database, appId: string, packageName: string, operationId: string, actor: string): Promise<boolean> {
   const now = Date.now();
   // A listing push lives inside one request; a row older than this is a crashed one.
@@ -286,8 +494,11 @@ export async function handlePushPlayStoreListing(c: AdminContext) {
     return fail(c, 403, { code: "forbidden", failure_code: "actor_not_allowed", message: "Store listing changes require an authenticated human or agent publisher" });
   }
   let input: StoreListingPushInput;
+  let imageSets: StoreListingImageSet[];
   try {
-    input = normalizeStoreListingPush(await c.req.json().catch(() => null));
+    const request = await readPushRequest(c);
+    input = normalizeStoreListingPush(request.body);
+    imageSets = normalizeStoreListingImages(input.images, request.parts);
   } catch (error) {
     if (!(error instanceof StoreListingInputError)) throw error;
     return fail(c, 400, { code: "gate_failed", failure_code: error.failureCode, message: error.message, ...error.details });
@@ -314,6 +525,14 @@ export async function handlePushPlayStoreListing(c: AdminContext) {
         delete_unlisted_languages: input.delete_unlisted_languages,
         changes_not_sent_for_review: input.changes_not_sent_for_review,
         listings: Object.fromEntries(input.listings.map((listing) => [listing.language, fingerprint(listing)])),
+        images: imageSets.map((set) => ({
+          language: set.language,
+          imageType: set.imageType,
+          images: set.images.map((image) => ({
+            sha256: image.sha256, size_bytes: image.size_bytes, content_type: image.contentType,
+            width: image.width, height: image.height, aiGeneratedState: image.aiGeneratedState ?? null,
+          })),
+        })),
       },
     };
     let reply;
@@ -326,6 +545,18 @@ export async function handlePushPlayStoreListing(c: AdminContext) {
         listings: input.listings,
         deleteUnlistedLanguages: input.delete_unlisted_languages,
         changesNotSentForReview: input.changes_not_sent_for_review,
+        ...(imageSets.length > 0 ? {
+          images: imageSets.map((set) => ({
+            language: set.language,
+            imageType: set.imageType,
+            images: set.images.map((image) => ({
+              bytes: image.bytes,
+              sha256: image.sha256,
+              contentType: image.contentType,
+              ...(image.aiGeneratedState ? { aiGeneratedState: image.aiGeneratedState } : {}),
+            })),
+          })),
+        } : {}),
       });
     } catch {
       reply = { ok: false as const, error: { status: 502, code: "play_adapter_unavailable", message: "Google Play store listing request failed" } };
@@ -359,11 +590,33 @@ export async function handlePushPlayStoreListing(c: AdminContext) {
     const value = reply.value;
     const changes = (Array.isArray(value.changes) ? value.changes : [])
       .filter((change) => change && typeof change.language === "string" && ACTIONS.has(change.action));
+    const imageChanges = (Array.isArray(value.image_changes) ? value.image_changes : [])
+      .filter((change) => change && typeof change.language === "string" && (change.action === "replace" || change.action === "unchanged"))
+      .map(narrowImageChange);
+    // Google's Image.sha256 is recorded beside ours; a difference is a warning only.
+    const imageWarnings = imageChanges.flatMap((change) => change.after
+      .map((image, index) => ({ image, index }))
+      .filter(({ image }) => image.sha256_match === false)
+      .map(({ index }) => ({ code: "provider_sha256_mismatch", language: change.language, imageType: change.imageType, index })));
+    // An adapter that predates images ignores them: never report that as success.
+    if (imageSets.length > 0 && imageChanges.length !== imageSets.length) {
+      await insertReceipt(c.env.DB, {
+        id: receiptId, appId, packageName, operationId, mode: input.mode, verdict: "failed-closed",
+        editId: typeof value.edit_id === "string" ? value.edit_id : null, languages: requested, actor, createdAt,
+        payload: { ...base, receipt_id: receiptId, created_at: new Date(createdAt).toISOString(),
+          result: { status: "failed-closed", failure_code: "play_images_not_acknowledged", outcome: value.outcome } },
+      });
+      return fail(c, 502, { code: "play_api_error", failure_code: "play_images_not_acknowledged",
+        message: `The Play adapter did not acknowledge the images (outcome ${value.outcome}); deploy the current adapter`, receipt_id: receiptId });
+    }
     const verdict = value.outcome === "committed" ? "committed" : value.outcome === "no_changes" ? "no_changes" : "validated";
     await insertReceipt(c.env.DB, {
       id: receiptId, appId, packageName, operationId, mode: input.mode, verdict,
       editId: typeof value.edit_id === "string" ? value.edit_id : null,
-      languages: changes.filter((change) => change.action !== "unchanged").map((change) => change.language),
+      languages: [...new Set([
+        ...changes.filter((change) => change.action !== "unchanged").map((change) => change.language),
+        ...imageChanges.filter((change) => change.action === "replace").map((change) => change.language),
+      ])],
       actor, createdAt,
       payload: {
         ...base,
@@ -384,6 +637,8 @@ export async function handlePushPlayStoreListing(c: AdminContext) {
           before: fingerprint(change.before),
           after: fingerprint(change.after),
         })),
+        image_changes: imageChanges,
+        image_warnings: imageWarnings,
         result: { status: verdict },
       },
     });
@@ -397,6 +652,8 @@ export async function handlePushPlayStoreListing(c: AdminContext) {
       default_language: value.default_language,
       changes_not_sent_for_review: value.changes_not_sent_for_review === true,
       changes,
+      image_changes: imageChanges,
+      image_warnings: imageWarnings,
     });
   } finally {
     await releaseListingLock(c.env.DB, operationId);

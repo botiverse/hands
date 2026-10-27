@@ -202,7 +202,7 @@ Public update checks only use the installable artifact. Mapping files, native sy
 ## Google Play Store Listing
 
 Update the Play store listing text (app name, short and full description,
-promotional video) through Hands instead of editing Play Console by hand. Hands
+promotional video) and graphics (screenshots, feature graphic, icon) through Hands instead of editing Play Console by hand. Hands
 holds the app's Google credential; the CLI never sees it. Requires the app
 **publisher** role and a verified, enabled Google Play binding.
 
@@ -266,6 +266,59 @@ accepted too.
   manually, the edit is added to the pending changes and you send it for review
   in Play Console. Without it, such an app fails with
   `play_changes_not_sent_for_review`.
+
+### Store listing images
+
+`--images <dir>` replaces screenshots and graphics in the same Play edit as the
+text (text first, so a new language exists before its images). Use it alone or
+together with `--listing`; dry run by default, `--commit` to publish.
+
+```bash
+# The designer export layout works as-is
+hands store-listing push raft-android --listing listing.json --images ./shots/play
+hands store-listing push raft-android --listing listing.json --images ./shots/play --commit
+```
+
+Two directory layouts are accepted (files are uploaded in filename order,
+numeric-aware, so `01-…`, `02-…`, … `10-…`):
+
+```text
+<dir>/<device>/<language>/NN-name.png      device first (designer export)
+<dir>/<language>/<imageType>/NN-name.png   language first
+```
+
+| Device folder | Play imageType | Rule checked before any Play call |
+| --- | --- | --- |
+| `phone` | `phoneScreenshots` | 2-8, JPEG or 24-bit PNG (no alpha), sides 320-3840 px, long side ≤ 2× short side |
+| `tablet-7` | `sevenInchScreenshots` | 1-8, same screenshot rules |
+| `tablet-10` | `tenInchScreenshots` | 1-8, same screenshot rules |
+| `tv` | `tvScreenshots` | 1-8, same screenshot rules |
+| `wear` | `wearScreenshots` | 1-8, 1:1, at least 384×384 |
+| `feature-graphic` | `featureGraphic` | exactly 1, 1024×500, JPEG or 24-bit PNG |
+| `icon` | `icon` | exactly 1, 512×512, 32-bit PNG (with alpha), ≤ 1024 KB |
+| `tv-banner` | `tvBanner` | exactly 1, 1280×720, JPEG or 24-bit PNG |
+
+Every image is at most 15,728,640 bytes (Google's upload limit) and one push
+carries at most 24 MiB of images; split larger sets with `--locales`.
+Google's `appImageTypeUnspecified` is rejected as `image_type_not_supported`.
+
+Language folders are Play tags (`en-US`, `zh-CN`, …) or one of the explicit
+aliases `en`→`en-US`, `zh-Hans`→`zh-CN`, `zh-Hant`→`zh-TW`, `ja`→`ja-JP`,
+`ko`→`ko-KR`. A `default` folder applies to every target language (from
+`--listing`, the other language folders, or `--locales`) that has no folder of
+its own for that image type.
+
+Each listed `(language, imageType)` set **replaces** what Play has
+(`edits.images.deleteall`, then upload in order); a set Play already holds
+byte-for-byte (same sha256 sequence) is skipped. Image types you do not list are
+left untouched. Hands checks that every uploaded file matches its declared
+sha256 (fail closed). Google's own `Image.sha256` is recorded next to it with
+`sha256_match: true|false|null`; a difference is listed in `image_warnings`
+and does not fail the push. A commit is read back (image count must match). `--ai-generated-state <aiGeneratedStateNotAiGenerated|
+aiGeneratedStateAiGeneratedDeveloperAttested|aiGeneratedStateUnspecified>` is
+passed to Google's `aiGeneratedState` for every image. The receipt records each
+image's sha256, Google's sha256 and whether they match, size, type, pixel size
+and Google image id.
 
 Every push that reaches Google writes an immutable receipt: who, when, edit id,
 dry run or commit, the per-language plan, and a sha256 + length of each field.

@@ -38,12 +38,20 @@ interface FixtureOptions {
   /** Return a different listing from PUT than what was sent. */
   updateEchoes?: (sent: PlayListing) => unknown;
   defaultLanguage?: string;
+  /** sha256 Google reports for an uploaded image (default: the real one). */
+  uploadSha?: string;
+  initialImages?: Record<string, string[]>;
 }
 
 function googleFixture(initial: PlayListing[], options: FixtureOptions = {}) {
   let nextEdit = 1;
   let live = new Map(initial.map((listing) => [listing.language, { ...listing }]));
   const edits = new Map<string, Map<string, PlayListing>>();
+  let nextImage = 1;
+  type Img = { id: string; sha256: string };
+  let liveImages = new Map<string, Img[]>(Object.entries(options.initialImages ?? {}).map(([k, shas]) => [k, shas.map((sha) => ({ id: `img-${nextImage++}`, sha256: sha }))]));
+  const editImages = new Map<string, Map<string, Img[]>>();
+  const uploads: Array<{ key: string; query: string; contentType: string | null }> = [];
   const requests: Array<{ method: string; path: string; body: unknown }> = [];
   const fetchImpl = vi.fn(async (input: RequestInfo | URL, init: RequestInit = {}) => {
     const url = new URL(String(input));
@@ -52,15 +60,17 @@ function googleFixture(initial: PlayListing[], options: FixtureOptions = {}) {
       return Response.json({ access_token: "access-token", expires_in: 3600 });
     }
     const body = typeof init.body === "string" ? JSON.parse(init.body) : null;
-    const path = url.pathname.replace(`/androidpublisher/v3/applications/${PACKAGE}/edits`, "") + url.search;
+    const pathname = url.pathname.replace(/^\/upload/, "");
+    const path = pathname.replace(`/androidpublisher/v3/applications/${PACKAGE}/edits`, "") + url.search;
     requests.push({ method, path, body });
     expect(new Headers(init.headers).get("authorization")).toBe("Bearer access-token");
     if (method === "POST" && path === "") {
       const id = `edit-${nextEdit++}`;
       edits.set(id, new Map([...live].map(([k, v]) => [k, { ...v }])));
+      editImages.set(id, new Map([...liveImages].map(([k, v]) => [k, [...v]])));
       return Response.json({ id });
     }
-    const match = /^\/([^/:?]+)(.*)$/.exec(url.pathname.replace(`/androidpublisher/v3/applications/${PACKAGE}/edits`, ""));
+    const match = /^\/([^/:?]+)(.*)$/.exec(pathname.replace(`/androidpublisher/v3/applications/${PACKAGE}/edits`, ""));
     const editId = decodeURIComponent(match?.[1] ?? "");
     const rest = match?.[2] ?? "";
     const edit = edits.get(editId);
@@ -72,6 +82,24 @@ function googleFixture(initial: PlayListing[], options: FixtureOptions = {}) {
     if (method === "GET" && rest === "/details") return Response.json({ defaultLanguage: options.defaultLanguage ?? "en-US", contactEmail: "x@example.com" });
     if (method === "GET" && rest === "/listings") {
       return Response.json(edit.size ? { kind: "androidpublisher#listingsListResponse", listings: [...edit.values()] } : {});
+    }
+    const imagePath = /^\/listings\/([^/]+)\/([^/]+)$/.exec(rest);
+    if (imagePath) {
+      const key = `${decodeURIComponent(imagePath[1]!)}/${imagePath[2]}`;
+      const sets = editImages.get(editId)!;
+      if (method === "GET") return Response.json(sets.get(key)?.length ? { images: sets.get(key) } : {});
+      if (method === "DELETE") {
+        const deleted = sets.get(key) ?? [];
+        sets.set(key, []);
+        return Response.json({ deleted });
+      }
+      if (method === "POST") {
+        const bytes = new Uint8Array(await new Response(init.body as BodyInit).arrayBuffer());
+        const image = { id: `img-${nextImage++}`, sha256: options.uploadSha ?? bytesToHex(sha256(bytes)) };
+        sets.set(key, [...(sets.get(key) ?? []), image]);
+        uploads.push({ key, query: url.search, contentType: new Headers(init.headers).get("content-type") });
+        return Response.json({ image: { ...image, sha1: "x", url: "https://lh3.example/x" } });
+      }
     }
     const listingPath = /^\/listings\/([^/]+)$/.exec(rest);
     if (listingPath && method === "PUT") {
@@ -89,13 +117,14 @@ function googleFixture(initial: PlayListing[], options: FixtureOptions = {}) {
       }
       return Response.json({ id: editId.replace(/:.*/, "") });
     }
-    if (method === "POST" && url.pathname.endsWith(":commit")) {
+    if (method === "POST" && pathname.endsWith(":commit")) {
       if (options.commitNetworkError) throw new TypeError("network");
       if (options.commitErrorBody) return Response.json(options.commitErrorBody.body, { status: options.commitErrorBody.status });
       if (options.commitError) {
         return Response.json({ error: { code: options.commitError.status, message: options.commitError.message } }, { status: options.commitError.status });
       }
       live = new Map([...edit].map(([k, v]) => [k, { ...v }]));
+      liveImages = new Map(editImages.get(editId)!);
       edits.delete(editId);
       if (options.commitOkBody !== undefined) {
         return typeof options.commitOkBody === "string" ? new Response(options.commitOkBody) : Response.json(options.commitOkBody);
@@ -104,7 +133,7 @@ function googleFixture(initial: PlayListing[], options: FixtureOptions = {}) {
     }
     return Response.json({ error: { code: 400, message: "unexpected" } }, { status: 400 });
   });
-  return { fetchImpl, requests, edits, live: () => live };
+  return { fetchImpl, requests, edits, uploads, live: () => live, liveImages: () => liveImages };
 }
 
 function push(overrides: Partial<StoreListingPushRpcInput> = {}): StoreListingPushRpcInput {
@@ -332,5 +361,110 @@ describe("Google Play store listing RPC", () => {
     expect(await service.pushStoreListings(push({ listings: [{ language: "en-US", title: "筏".repeat(30) }] }), env))
       .toMatchObject({ ok: true });
     expect(google.fetchImpl.mock.calls.filter(([url]) => String(url).includes("oauth2"))).toHaveLength(1);
+  });
+});
+
+function image(text: string, ai?: "aiGeneratedStateNotAiGenerated") {
+  const bytes = new TextEncoder().encode(text);
+  return { bytes, sha256: bytesToHex(sha256(bytes)), contentType: "image/png" as const, ...(ai ? { aiGeneratedState: ai } : {}) };
+}
+
+describe("Google Play store listing images", () => {
+  it("replaces a set with deleteall + ordered uploads in the same edit as the text, then validates", async () => {
+    const google = googleFixture([EN], { initialImages: { "en-US/phoneScreenshots": ["0".repeat(64)] } });
+    const result = await createPlayAdapterService({ fetchImpl: google.fetchImpl }).pushStoreListings(push({
+      mode: "commit",
+      listings: [{ language: "en-US", title: "Raft 2" }],
+      images: [{ language: "en-US", imageType: "phoneScreenshots", images: [image("one", "aiGeneratedStateNotAiGenerated"), image("two")] }],
+    }), env);
+    expect(result).toMatchObject({ ok: true, value: { outcome: "committed" } });
+    if (!result.ok) return;
+    expect(result.value.image_changes).toEqual([{
+      language: "en-US", imageType: "phoneScreenshots", action: "replace",
+      before: [{ id: "img-1", sha256: "0".repeat(64) }],
+      after: [
+        { id: "img-2", sha256: image("one").sha256, provider_sha256: image("one").sha256, sha256_match: true, size_bytes: 3, aiGeneratedState: "aiGeneratedStateNotAiGenerated" },
+        { id: "img-3", sha256: image("two").sha256, provider_sha256: image("two").sha256, sha256_match: true, size_bytes: 3, aiGeneratedState: null },
+      ],
+      readback: { count: 2, sha256_match: true },
+    }]);
+    const order = google.requests.map((r) => `${r.method} ${r.path.replace(/\?.*/, "")}`);
+    expect(order.slice(0, 9)).toEqual([
+      "POST ", "GET /edit-1/details", "GET /edit-1/listings", "GET /edit-1/listings/en-US/phoneScreenshots",
+      "PUT /edit-1/listings/en-US", "DELETE /edit-1/listings/en-US/phoneScreenshots",
+      "POST /edit-1/listings/en-US/phoneScreenshots", "POST /edit-1/listings/en-US/phoneScreenshots", "POST /edit-1:validate",
+    ]);
+    expect(google.uploads.map((u) => [u.query, u.contentType])).toEqual([
+      ["?uploadType=media&aiGeneratedState=aiGeneratedStateNotAiGenerated", "image/png"],
+      ["?uploadType=media", "image/png"],
+    ]);
+    expect(google.liveImages().get("en-US/phoneScreenshots")!.map((i) => i.sha256)).toEqual([image("one").sha256, image("two").sha256]);
+  });
+
+  it("skips a set Play already holds byte-for-byte, in order", async () => {
+    const google = googleFixture([EN], { initialImages: { "en-US/featureGraphic": [image("fg").sha256] } });
+    const result = await createPlayAdapterService({ fetchImpl: google.fetchImpl }).pushStoreListings(push({
+      mode: "commit", listings: [], images: [{ language: "en-US", imageType: "featureGraphic", images: [image("fg")] }],
+    }), env);
+    expect(result).toMatchObject({ ok: true, value: { outcome: "no_changes", image_changes: [{ action: "unchanged" }] } });
+    expect(google.uploads).toEqual([]);
+  });
+
+  it("dry run uploads into the edit, validates, and deletes it without touching live images", async () => {
+    const google = googleFixture([EN]);
+    const result = await createPlayAdapterService({ fetchImpl: google.fetchImpl }).pushStoreListings(push({
+      listings: [], images: [{ language: "en-US", imageType: "icon", images: [image("icon")] }],
+    }), env);
+    expect(result).toMatchObject({ ok: true, value: { outcome: "validated" } });
+    expect(google.liveImages().get("en-US/icon")).toBeUndefined();
+    expect(realEdits(google.edits)).toEqual([]);
+  });
+
+  it("records a different Google Image.sha256 as a warning, not a failure", async () => {
+    const google = googleFixture([EN], { uploadSha: "f".repeat(64) });
+    const result = await createPlayAdapterService({ fetchImpl: google.fetchImpl }).pushStoreListings(push({
+      mode: "commit", listings: [], images: [{ language: "en-US", imageType: "featureGraphic", images: [image("fg")] }],
+    }), env);
+    expect(result).toMatchObject({ ok: true, value: { outcome: "committed", image_changes: [{
+      action: "replace",
+      after: [{ sha256: image("fg").sha256, provider_sha256: "f".repeat(64), sha256_match: false }],
+      readback: { count: 1, sha256_match: false },
+    }] } });
+  });
+
+  it("records sha256_match:null when Google returns no usable sha256", async () => {
+    const google = googleFixture([EN], { uploadSha: "not-a-digest" });
+    const result = await createPlayAdapterService({ fetchImpl: google.fetchImpl }).pushStoreListings(push({
+      listings: [], images: [{ language: "en-US", imageType: "icon", images: [image("i")] }],
+    }), env);
+    expect(result).toMatchObject({ ok: true, value: { outcome: "validated", image_changes: [{ after: [{ provider_sha256: null, sha256_match: null }] }] } });
+  });
+
+  it("needs a listing for the image language, created in the same push if new", async () => {
+    const google = googleFixture([EN]);
+    const service = createPlayAdapterService({ fetchImpl: google.fetchImpl });
+    expect(await service.pushStoreListings(push({ listings: [], images: [{ language: "ja-JP", imageType: "icon", images: [image("i")] }] }), env))
+      .toMatchObject({ ok: false, error: { code: "image_language_has_no_listing" } });
+    expect(await service.pushStoreListings(push({ listings: [JA], images: [{ language: "ja-JP", imageType: "icon", images: [image("i")] }] }), env))
+      .toMatchObject({ ok: true, value: { outcome: "validated" } });
+  });
+
+  it("accepts Google's full imageType enum but only implements some, and checks bytes before OAuth", async () => {
+    const google = googleFixture([EN]);
+    const service = createPlayAdapterService({ fetchImpl: google.fetchImpl });
+    const cases: Array<[unknown, string]> = [
+      [[{ language: "en-US", imageType: "appImageTypeUnspecified", images: [image("x")] }], "image_type_not_supported"],
+      [[{ language: "en-US", imageType: "screenshots", images: [image("x")] }], "image_type_invalid"],
+      [[{ language: "en-US", imageType: "featureGraphic", images: [image("a"), image("b")] }], "image_count_invalid"],
+      [[{ language: "en-US", imageType: "phoneScreenshots", images: Array.from({ length: 9 }, (_, i) => image(String(i))) }], "image_count_invalid"],
+      [[{ language: "en-US", imageType: "icon", images: [{ ...image("x"), sha256: "a".repeat(64) }] }], "image_integrity_mismatch"],
+      [[{ language: "en-US", imageType: "icon", images: [{ ...image("x"), aiGeneratedState: "maybe" }] }], "image_request_invalid"],
+      [[{ language: "en-US", imageType: "icon", images: [{ ...image("x"), contentType: "image/gif" }] }], "image_request_invalid"],
+    ];
+    for (const [images, code] of cases) {
+      const result = await service.pushStoreListings(push({ listings: [], images: images as never }), env);
+      expect(result, code).toMatchObject({ ok: false, error: { code } });
+    }
+    expect(google.fetchImpl).not.toHaveBeenCalled();
   });
 });

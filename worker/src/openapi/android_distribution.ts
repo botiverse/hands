@@ -89,12 +89,32 @@ const PlayListing = z.object({
   video: z.string().max(2048).optional().openapi({ description: "Promotional YouTube video URL; empty string clears it." }),
 }).strict().openapi("PlayListing");
 
+/** Hands' declaration of one image to upload; `sha256` and `aiGeneratedState` are Google `Image` field names. */
+const PlayImageDeclaration = z.object({
+  part: z.string().min(1).openapi({ description: "Name of the multipart file part carrying this image's bytes." }),
+  sha256: Sha256,
+  aiGeneratedState: z.enum(["aiGeneratedStateUnspecified", "aiGeneratedStateNotAiGenerated", "aiGeneratedStateAiGeneratedDeveloperAttested"]).optional()
+    .openapi({ description: "edits.images.upload aiGeneratedState, passed through when present." }),
+}).strict();
+
+const PlayImageSet = z.object({
+  language: z.string().min(2).max(16),
+  imageType: z.enum(["appImageTypeUnspecified", "phoneScreenshots", "sevenInchScreenshots", "tenInchScreenshots", "tvScreenshots", "wearScreenshots", "icon", "featureGraphic", "tvBanner"])
+    .openapi({ description: "Google's full imageType enum. appImageTypeUnspecified is rejected as image_type_not_supported." }),
+  images: z.array(PlayImageDeclaration).min(1).max(8).openapi({ description: "In display order. The set replaces Play's (edits.images.deleteall, then upload); skipped when Play already holds the same sha256 sequence." }),
+}).strict().openapi("PlayImageSet");
+
 const PlayStoreListingPushInput = z.object({
   mode: z.enum(["dry_run", "commit"]).openapi({ description: "dry_run: apply inside a fresh edit, edits.validate, then delete the edit. commit: apply, validate, edits.commit (ERROR_IF_IN_REVIEW), read back." }),
   listings: z.array(PlayListing).max(100).openapi({ description: "Listing resources to write. Absent fields keep Play's current value; Hands writes edits.listings.update with the merged resource. A language not yet on Play needs title, shortDescription and fullDescription." }),
   delete_unlisted_languages: z.boolean().optional().openapi({ description: "Default false. When true, edits.listings.delete every current language not in listings (never the app's default language)." }),
   changes_not_sent_for_review: z.boolean().optional().openapi({ description: "Default false. When true, edits.commit is sent changesNotSentForReview=true: the change joins the app's pending changes and must be sent for review from Play Console." }),
+  images: z.array(PlayImageSet).max(200).optional().openapi({ description: "Multipart only. Image sets applied in the same edit after the text. Format, pixel size, count and byte limits are checked before any Play call." }),
 }).strict().openapi("PlayStoreListingPushInput");
+
+const PlayStoreListingMultipart = z.object({
+  request: z.string().openapi({ description: "PlayStoreListingPushInput as JSON text." }),
+}).catchall(z.any().openapi({ type: "string", format: "binary" })).openapi("PlayStoreListingMultipart");
 
 export function registerAndroidDistributionRoutes(): RouteConfigList {
   const routes: RouteConfigDef[] = [];
@@ -367,11 +387,11 @@ export function registerAndroidDistributionRoutes(): RouteConfigList {
     method: "post",
     path: "/api/apps/{appId}/distributions/play/store-listing",
     tags: ["Android distribution"],
-    summary: "Update Google Play store listing text in one edit (dry run or commit)",
+    summary: "Update Google Play store listing text and images in one edit (dry run or commit)",
     description:
-      "Whitelisted edits.listings.update/delete only; nothing touches tracks, releases or bundles. Languages and character limits are validated before any Play call (failure_code listing_language_unsupported, listing_field_too_long, ...). One package-scoped Play edit lock is shared with promote. The response carries the per-language plan (create/update/delete/unchanged with changed fields and before/after). An immutable receipt records actor, edit id, mode, languages and per-field sha256/length. A commit blocked by another change in review returns 409 code edit_in_review, failure_code play_edit_in_review; nothing was committed. A validate/commit answer Hands cannot classify (no known structured reason or message pattern), or a commit response that is not this edit's AppEdit, returns 502 code edit_state_unknown, failure_code play_edit_state_unknown, with cause.tried (patterns checked) and the provider message's sha256/length only; it is never reported as success.",
+      "Whitelisted edits.listings.update/delete only; nothing touches tracks, releases or bundles. Languages and character limits are validated before any Play call (failure_code listing_language_unsupported, listing_field_too_long, ...). One package-scoped Play edit lock is shared with promote. The response carries the per-language plan (create/update/delete/unchanged with changed fields and before/after). An immutable receipt records actor, edit id, mode, languages and per-field sha256/length. A commit blocked by another change in review returns 409 code edit_in_review, failure_code play_edit_in_review; nothing was committed. A validate/commit answer Hands cannot classify (no known structured reason or message pattern), or a commit response that is not this edit's AppEdit, returns 502 code edit_state_unknown, failure_code play_edit_state_unknown, with cause.tried (patterns checked) and the provider message's sha256/length only; it is never reported as success. Images (edits.images deleteall + upload) need multipart/form-data: a `request` JSON part plus one file part per declared image; at most 24 MiB of images per push; each image is checked against Play's documented format, pixel size and count before any Play call (failure_code image_dimensions_invalid, image_format_unsupported, image_count_invalid, image_type_not_supported, ...).",
     security: auth,
-    request: { params: AppIdParam, body: { content: json(PlayStoreListingPushInput), required: true } },
+    request: { params: AppIdParam, body: { content: { ...json(PlayStoreListingPushInput), "multipart/form-data": { schema: PlayStoreListingMultipart } }, required: true } },
     responses: {
       200: success("Validated (dry_run), committed, or no_changes; receipt appended.", GenericObject),
       400: error("Request, language, or limit validation failed (no Play call)."),

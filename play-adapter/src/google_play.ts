@@ -4,6 +4,9 @@ import { PlayAdapterError } from "./errors";
 import { playRejection, playRejectionReason, playRequestStage } from "./provider_errors";
 import { PLAY_LISTING_FIELDS } from "./types";
 import type {
+  PlayAiGeneratedState,
+  PlayImageRef,
+  PlayImageType,
   PlayListing,
   DeobfuscationFileResult,
   DeobfuscationSymbolType,
@@ -152,6 +155,21 @@ export function cleanListing(value: unknown): PlayListing {
     listing[field] = raw;
   }
   return listing;
+}
+
+/**
+ * Google `Image`: an id is required for Hands to reason about it; the reported
+ * sha256 is kept when it is a hex digest and is otherwise null (only a digest
+ * shape is ever recorded, never other provider text).
+ */
+function cleanImage(value: unknown): PlayImageRef {
+  const row = value && typeof value === "object" ? value as Record<string, unknown> : null;
+  const id = row?.id;
+  if (typeof id !== "string" || !/^[A-Za-z0-9._:-]{1,200}$/.test(id)) {
+    throw new PlayAdapterError(502, "play_images_malformed", "Google Play returned a malformed image");
+  }
+  const sha = typeof row?.sha256 === "string" ? row.sha256.toLowerCase() : "";
+  return { id, sha256: /^[0-9a-f]{64}$/.test(sha) ? sha : null };
 }
 
 function hashingBody(
@@ -643,6 +661,55 @@ export class GooglePlayClient {
       { method: "PUT", body: JSON.stringify(listing) },
     );
     return cleanListing(body);
+  }
+
+  private imagesPath(packageName: string, editId: string, language: string, imageType: PlayImageType): string {
+    return `/applications/${encodeURIComponent(packageName)}/edits/${encodeURIComponent(editId)}/listings/${encodeURIComponent(language)}/${encodeURIComponent(imageType)}`;
+  }
+
+  /** edits.images.list: ordered as Play displays them. */
+  async listImages(packageName: string, editId: string, language: string, imageType: PlayImageType): Promise<PlayImageRef[]> {
+    const body = await this.requestJson<{ images?: unknown }>(`${API_ROOT}${this.imagesPath(packageName, editId, language, imageType)}`);
+    if (body.images === undefined) return [];
+    if (!Array.isArray(body.images) || body.images.length > 50) {
+      throw new PlayAdapterError(502, "play_images_malformed", "Google Play returned a malformed image list");
+    }
+    return body.images.map(cleanImage);
+  }
+
+  /** edits.images.deleteall. The ImagesDeleteAllResponse body is not needed. */
+  async deleteAllImages(packageName: string, editId: string, language: string, imageType: PlayImageType): Promise<void> {
+    await this.requestEmpty(`${API_ROOT}${this.imagesPath(packageName, editId, language, imageType)}`, { method: "DELETE" });
+  }
+
+  /**
+   * edits.images.upload (simple media upload). Returns Google's Image id and its
+   * reported sha256; the caller records whether that matches the bytes sent.
+   */
+  async uploadImage(
+    packageName: string,
+    editId: string,
+    language: string,
+    imageType: PlayImageType,
+    image: { bytes: Uint8Array; sha256: string; contentType: string; aiGeneratedState?: PlayAiGeneratedState },
+  ): Promise<PlayImageRef> {
+    const query = new URLSearchParams({ uploadType: "media" });
+    if (image.aiGeneratedState) query.set("aiGeneratedState", image.aiGeneratedState);
+    let response: Response;
+    try {
+      response = await this.fetchImpl(`${UPLOAD_ROOT}${this.imagesPath(packageName, editId, language, imageType)}?${query}`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${this.accessToken}`, "content-type": image.contentType },
+        body: image.bytes as Uint8Array<ArrayBuffer>,
+        redirect: "manual",
+        signal: AbortSignal.timeout(120_000),
+      });
+    } catch {
+      throw new PlayAdapterError(502, "play_image_upload_unavailable", "Google Play image upload failed");
+    }
+    const body = await response.json().catch(() => null) as { image?: unknown } | null;
+    if (!response.ok) throw playRejection(response.status, body, "upload_image");
+    return cleanImage(body?.image);
   }
 
   /** edits.listings.delete. */

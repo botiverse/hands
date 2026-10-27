@@ -1,4 +1,6 @@
-import { mkdtemp, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -17,10 +19,26 @@ vi.mock("../lib/api.js", async (importOriginal) => {
       if (state.__REPLY instanceof Error) throw state.__REPLY;
       return state.__REPLY as never;
     },
+    getApiBase: () => "https://hands.test",
+    agentAwareFetch: (doFetch: (bearer: string | undefined) => Promise<Response>) => doFetch("token"),
   };
 });
 
-const { formatPlan, parseListingFile, selectLocales, toListingFile } = await import("./store_listing.js");
+const { collectImageSets, formatPlan, parseListingFile, selectLocales, toListingFile } = await import("./store_listing.js");
+
+/** Real designer exports, shared with the worker's image tests. */
+const FIXTURES = fileURLToPath(new URL("../../../../worker/test/fixtures/play-images/", import.meta.url));
+const PHONE = `${FIXTURES}phone-1080x1920.png`;
+const FEATURE = `${FIXTURES}feature-graphic-1024x500.png`;
+
+async function tree(files: Record<string, string>) {
+  const root = await mkdtemp(join(tmpdir(), "hands-images-"));
+  for (const [path, source] of Object.entries(files)) {
+    await mkdir(join(root, path, ".."), { recursive: true });
+    await copyFile(source, join(root, path));
+  }
+  return root;
+}
 
 async function run(argv: string[], reply: unknown = {}): Promise<{ calls: Call[]; out: string[] }> {
   const calls: Call[] = [];
@@ -77,6 +95,12 @@ describe("store-listing file format", () => {
     expect(text).toContain("update    en-US (default)");
     expect(text).toContain('title: "Old" [3] -> "Raft" [4]');
     expect(text).toContain("--commit");
+    expect(formatPlan({
+      receipt_id: "r1", operation_id: "o", package_name: "p", edit_id: "e1", mode: "dry_run", outcome: "validated",
+      default_language: "en-US", changes_not_sent_for_review: false, changes: [],
+      image_changes: [{ language: "en-US", imageType: "icon", action: "replace", before: [], after: [{ id: "i", sha256: "a", size_bytes: 1 }] }],
+      image_warnings: [{ code: "provider_sha256_mismatch", language: "en-US", imageType: "icon", index: 0 }],
+    })).toContain("warning   en-US icon #1: provider_sha256_mismatch");
   });
 });
 
@@ -115,5 +139,77 @@ describe("store-listing commands reach the Hands endpoints", () => {
     const { calls } = await run(["store-listing", "pull", APP_ID], { package_name: "p", default_language: "en-US", listings: [{ language: "en-US", title: "Raft" }] });
     expect(calls).toEqual([{ method: "GET", path: `/api/apps/${APP_ID}/distributions/play/store-listing`, body: undefined }]);
     expect(JSON.parse(String(write.mock.calls[0]![0]))).toEqual({ "en-US": { title: "Raft" } });
+  });
+});
+
+describe("store-listing images directory", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it("reads the designer export layout (<device>/<lang>/NN.png) with the explicit locale table", async () => {
+    const root = await tree({
+      "phone/en/02-activity.png": PHONE, "phone/en/01-chat.png": PHONE, "phone/en/10-late.png": PHONE,
+      "phone/zh-Hans/01-chat.png": PHONE, "phone/ja/01-chat.png": PHONE,
+      "feature-graphic/en/feature-graphic.png": FEATURE,
+      "tablet-10/en/01-chat.png": PHONE,
+    });
+    const sets = await collectImageSets(root);
+    expect(sets.map((set) => [set.language, set.imageType, set.files.map((file) => file.slice(root.length + 1))])).toEqual([
+      ["en-US", "phoneScreenshots", ["phone/en/01-chat.png", "phone/en/02-activity.png", "phone/en/10-late.png"]],
+      ["en-US", "tenInchScreenshots", ["tablet-10/en/01-chat.png"]],
+      ["en-US", "featureGraphic", ["feature-graphic/en/feature-graphic.png"]],
+      ["ja-JP", "phoneScreenshots", ["phone/ja/01-chat.png"]],
+      ["zh-CN", "phoneScreenshots", ["phone/zh-Hans/01-chat.png"]],
+    ]);
+    expect((await collectImageSets(root, { locales: ["ja-JP"] })).map((set) => set.language)).toEqual(["ja-JP"]);
+  });
+
+  it("reads the language-first layout and applies default/ to every target language without its own set", async () => {
+    const root = await tree({
+      "default/featureGraphic/01.png": FEATURE,
+      "default/phoneScreenshots/01.png": PHONE,
+      "ja-JP/phoneScreenshots/01.png": PHONE,
+    });
+    const sets = await collectImageSets(root, { languages: ["en-US", "ja-JP"] });
+    expect(sets.map((set) => [set.language, set.imageType, set.source])).toEqual([
+      ["en-US", "phoneScreenshots", "default"],
+      ["en-US", "featureGraphic", "default"],
+      ["ja-JP", "phoneScreenshots", "language"],
+      ["ja-JP", "featureGraphic", "default"],
+    ]);
+    await expect(collectImageSets(await tree({ "default/icon/1.png": PHONE }))).rejects.toThrow(/need target languages/);
+    await expect(collectImageSets(await tree({ "en-US/screens/1.png": PHONE }))).rejects.toThrow(/unknown imageType folder/);
+    await expect(collectImageSets(await tree({ "phone/en/1.gif": PHONE }))).rejects.toThrow(/only .png/);
+    await expect(collectImageSets(await tree({ "phone/en/1.png": PHONE, "phone/en-US/1.png": PHONE }))).rejects.toThrow(/two folders/);
+  });
+
+  it("push --images sends one multipart request: request JSON + one part per declared image", async () => {
+    const root = await tree({ "phone/en/01.png": PHONE, "phone/en/02.png": PHONE, "feature-graphic/en/fg.png": FEATURE });
+    const listing = await listingFile({ "en-US": { title: "Raft" } });
+    const sent: Array<{ url: string; form: FormData; auth: string | null }> = [];
+    vi.stubGlobal("fetch", async (url: string, init: RequestInit) => {
+      sent.push({ url, form: init.body as FormData, auth: new Headers(init.headers).get("authorization") });
+      return Response.json({ receipt_id: "r", edit_id: "e", package_name: "p", mode: "dry_run", outcome: "validated", default_language: "en-US", changes: [], image_changes: [], changes_not_sent_for_review: false });
+    });
+    await run(["store-listing", "push", APP_ID, "--listing", listing, "--images", root, "--ai-generated-state", "aiGeneratedStateNotAiGenerated"]);
+    vi.unstubAllGlobals();
+    expect(sent).toHaveLength(1);
+    expect(sent[0]!.url).toBe(`https://hands.test/api/apps/${APP_ID}/distributions/play/store-listing`);
+    expect(sent[0]!.auth).toBe("Bearer token");
+    const request = JSON.parse(String(sent[0]!.form.get("request")));
+    const sha = (path: string) => readFile(path).then((bytes) => createHash("sha256").update(bytes).digest("hex"));
+    expect(request).toEqual({
+      mode: "dry_run",
+      listings: [{ language: "en-US", title: "Raft" }],
+      images: [
+        { language: "en-US", imageType: "phoneScreenshots", images: [
+          { part: "img1", sha256: await sha(PHONE), aiGeneratedState: "aiGeneratedStateNotAiGenerated" },
+          { part: "img2", sha256: await sha(PHONE), aiGeneratedState: "aiGeneratedStateNotAiGenerated" },
+        ] },
+        { language: "en-US", imageType: "featureGraphic", images: [{ part: "img3", sha256: await sha(FEATURE), aiGeneratedState: "aiGeneratedStateNotAiGenerated" }] },
+      ],
+    });
+    const part = sent[0]!.form.get("img3") as File;
+    expect(part.type).toBe("image/png");
+    expect(part.size).toBe((await readFile(FEATURE)).byteLength);
   });
 });
