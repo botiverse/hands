@@ -1,8 +1,13 @@
 import { PlayAdapterError } from "./errors";
 import { editStatePatternsTried } from "./provider_errors";
 import type { GooglePlayClient } from "./google_play";
-import { PLAY_LISTING_FIELDS } from "./types";
+import { sha256 } from "@noble/hashes/sha256";
+import { bytesToHex } from "@noble/hashes/utils";
+import { PLAY_AI_GENERATED_STATES, PLAY_IMAGE_TYPES, PLAY_LISTING_FIELDS } from "./types";
 import type {
+  PlayImageType,
+  StoreListingImageChange,
+  StoreListingImageSetInput,
   PlayListing,
   PlayListingField,
   StoreListingChange,
@@ -161,6 +166,131 @@ export async function applyStoreListingChanges(
   }
 }
 
+/** edits.images.upload mediaUpload.maxSize (discovery revision 20261027). */
+export const MAX_IMAGE_BYTES = 15_728_640;
+/** Hands' per-push binary bound: stays well inside the Workers RPC message size. */
+export const MAX_IMAGE_PUSH_BYTES = 24 * 1024 * 1024;
+/** Image types Hands implements; the rest of Google's enum is "not supported yet". */
+export const SUPPORTED_IMAGE_TYPES: ReadonlySet<PlayImageType> = new Set([
+  "phoneScreenshots", "sevenInchScreenshots", "tenInchScreenshots", "tvScreenshots", "wearScreenshots",
+  "icon", "featureGraphic", "tvBanner",
+]);
+const SINGLE_IMAGE_TYPES: ReadonlySet<PlayImageType> = new Set(["icon", "featureGraphic", "tvBanner"]);
+const SHA256 = /^[a-f0-9]{64}$/;
+
+/**
+ * Image sets at the adapter boundary. Hands has already checked format, pixel
+ * size and per-type counts before opening any edit; the adapter re-checks what it
+ * can without decoding: Google's enum, the declared sha256 against the bytes, the
+ * upload size bound and the count bound.
+ */
+export function storeListingImagesInput(value: unknown): StoreListingImageSetInput[] {
+  if (value === undefined || value === null) return [];
+  if (!Array.isArray(value) || value.length > 200) {
+    throw new PlayAdapterError(400, "image_request_invalid", "Image sets must be a list");
+  }
+  const seen = new Set<string>();
+  let total = 0;
+  return value.map((item: unknown) => {
+    const row = item && typeof item === "object" ? item as Record<string, unknown> : null;
+    const language = typeof row?.language === "string" ? row.language : "";
+    const imageType = row?.imageType;
+    if (!row || !PLAY_LANGUAGE.test(language)) {
+      throw new PlayAdapterError(400, "image_request_invalid", "Each image set needs a Play language tag");
+    }
+    if (typeof imageType !== "string" || !(PLAY_IMAGE_TYPES as readonly string[]).includes(imageType)) {
+      throw new PlayAdapterError(400, "image_type_invalid", "imageType is not a Google Play imageType");
+    }
+    if (!SUPPORTED_IMAGE_TYPES.has(imageType as PlayImageType)) {
+      throw new PlayAdapterError(400, "image_type_not_supported", `imageType ${imageType} is not supported yet`);
+    }
+    const key = `${language.toLowerCase()}/${imageType}`;
+    if (seen.has(key)) throw new PlayAdapterError(400, "image_request_invalid", `${language} ${imageType} appears more than once`);
+    seen.add(key);
+    const images = row.images;
+    const max = SINGLE_IMAGE_TYPES.has(imageType as PlayImageType) ? 1 : 8;
+    if (!Array.isArray(images) || images.length < 1 || images.length > max) {
+      throw new PlayAdapterError(400, "image_count_invalid", `${language} ${imageType} takes 1-${max} images`);
+    }
+    return {
+      language,
+      imageType: imageType as PlayImageType,
+      images: images.map((image: unknown) => {
+        const entry = image && typeof image === "object" ? image as Record<string, unknown> : null;
+        const bytes = entry?.bytes;
+        const sha = typeof entry?.sha256 === "string" ? entry.sha256 : "";
+        const contentType = entry?.contentType;
+        const ai = entry?.aiGeneratedState;
+        if (!(bytes instanceof Uint8Array) || !SHA256.test(sha) || (contentType !== "image/png" && contentType !== "image/jpeg")
+          || (ai !== undefined && !(PLAY_AI_GENERATED_STATES as readonly unknown[]).includes(ai))) {
+          throw new PlayAdapterError(400, "image_request_invalid", `${language} ${imageType}: malformed image declaration`);
+        }
+        if (bytes.byteLength === 0 || bytes.byteLength > MAX_IMAGE_BYTES) {
+          throw new PlayAdapterError(413, "image_too_large", `${language} ${imageType}: image exceeds ${MAX_IMAGE_BYTES} bytes`);
+        }
+        total += bytes.byteLength;
+        if (total > MAX_IMAGE_PUSH_BYTES) {
+          throw new PlayAdapterError(413, "images_request_too_large", `Images in one push exceed ${MAX_IMAGE_PUSH_BYTES} bytes`);
+        }
+        if (bytesToHex(sha256(bytes)) !== sha) {
+          throw new PlayAdapterError(409, "image_integrity_mismatch", `${language} ${imageType}: bytes do not match the declared sha256`);
+        }
+        const out: StoreListingImageSetInput["images"][number] = { bytes, sha256: sha, contentType };
+        if (ai !== undefined) out.aiGeneratedState = ai as NonNullable<typeof out.aiGeneratedState>;
+        return out;
+      }),
+    };
+  });
+}
+
+/** Read the current sets and decide replace vs unchanged (same sha256 sequence). */
+async function planImages(
+  client: GooglePlayClient,
+  packageName: string,
+  editId: string,
+  sets: StoreListingImageSetInput[],
+  languages: ReadonlySet<string>,
+): Promise<StoreListingImageChange[]> {
+  const changes: StoreListingImageChange[] = [];
+  for (const set of sets) {
+    // Google: "There must be a store listing for the specified language."
+    if (!languages.has(set.language)) {
+      throw new PlayAdapterError(400, "image_language_has_no_listing", `${set.language} has no store listing; add its text in the same push first`);
+    }
+    const before = await client.listImages(packageName, editId, set.language, set.imageType);
+    const same = before.length === set.images.length && before.every((image, index) => image.sha256 === set.images[index]!.sha256);
+    changes.push({
+      language: set.language,
+      imageType: set.imageType,
+      action: same ? "unchanged" : "replace",
+      before,
+      after: same
+        ? before.map((image, index) => ({ ...image, size_bytes: set.images[index]!.bytes.byteLength, aiGeneratedState: set.images[index]!.aiGeneratedState ?? null }))
+        : [],
+    });
+  }
+  return changes;
+}
+
+/** deleteall + ordered uploads for every replace; fills in Google's image ids. */
+async function applyImages(
+  client: GooglePlayClient,
+  packageName: string,
+  editId: string,
+  sets: StoreListingImageSetInput[],
+  changes: StoreListingImageChange[],
+): Promise<void> {
+  for (const [index, change] of changes.entries()) {
+    if (change.action !== "replace") continue;
+    const set = sets[index]!;
+    await client.deleteAllImages(packageName, editId, set.language, set.imageType);
+    for (const image of set.images) {
+      const uploaded = await client.uploadImage(packageName, editId, set.language, set.imageType, image);
+      change.after.push({ ...uploaded, size_bytes: image.bytes.byteLength, aiGeneratedState: image.aiGeneratedState ?? null });
+    }
+  }
+}
+
 /** Read every listing plus the default language in a throwaway edit. */
 export async function readStoreListings(client: GooglePlayClient, packageName: string): Promise<StoreListingReadResult> {
   const editId = await client.createEdit(packageName);
@@ -178,6 +308,18 @@ export async function readStoreListings(client: GooglePlayClient, packageName: s
   }
   await client.deleteEdit(packageName, editId);
   return result!;
+}
+
+async function readImages(client: GooglePlayClient, packageName: string, language: string, imageType: PlayImageType) {
+  const editId = await client.createEdit(packageName);
+  let images: Awaited<ReturnType<GooglePlayClient["listImages"]>>;
+  try {
+    images = await client.listImages(packageName, editId, language, imageType);
+  } catch (error) {
+    await client.cleanupOrThrow(packageName, editId, error);
+  }
+  await client.deleteEdit(packageName, editId);
+  return images!;
 }
 
 /**
@@ -244,11 +386,14 @@ export async function pushStoreListings(
     listings: PlayListing[];
     deleteUnlistedLanguages: boolean;
     changesNotSentForReview: boolean;
+    images?: StoreListingImageSetInput[];
   },
 ): Promise<StoreListingPushResult> {
+  const imageSets = request.images ?? [];
   const { packageName } = request;
   const editId = await client.createEdit(packageName);
   let changes: StoreListingChange[] = [];
+  let imageChanges: StoreListingImageChange[] = [];
   let defaultLanguage: string | null = null;
   let committed = false;
   try {
@@ -259,11 +404,19 @@ export async function pushStoreListings(
       defaultLanguage,
     });
     const effective = changes.filter((change) => change.action !== "unchanged");
-    if (effective.length === 0) {
+    const languagesAfter = new Set(current.map((listing) => listing.language));
+    for (const change of changes) {
+      if (change.action === "delete") languagesAfter.delete(change.language);
+      else languagesAfter.add(change.language);
+    }
+    imageChanges = await planImages(client, packageName, editId, imageSets, languagesAfter);
+    if (effective.length === 0 && imageChanges.every((change) => change.action === "unchanged")) {
       await client.deleteEdit(packageName, editId);
       return result("no_changes");
     }
+    // Text first: a language created in this push must exist before its images.
     await applyStoreListingChanges(client, packageName, editId, effective);
+    await applyImages(client, packageName, editId, imageSets, imageChanges);
     try {
       await client.validateEdit(packageName, editId);
     } catch (error) {
@@ -307,6 +460,13 @@ export async function pushStoreListings(
       throw new PlayAdapterError(502, "play_listing_readback_mismatch", `Google Play readback for ${change.language} did not match the committed listing`, { stage: "readback" });
     }
   }
+  for (const change of imageChanges) {
+    if (change.action !== "replace") continue;
+    const live = await readImages(client, packageName, change.language, change.imageType);
+    if (live.length !== change.after.length || live.some((image, index) => image.sha256 !== change.after[index]!.sha256)) {
+      throw new PlayAdapterError(502, "play_image_readback_mismatch", `Google Play readback for ${change.language} ${change.imageType} did not match the committed images`, { stage: "readback" });
+    }
+  }
   return result("committed");
 
   function result(outcome: StoreListingPushResult["outcome"]): StoreListingPushResult {
@@ -317,6 +477,7 @@ export async function pushStoreListings(
       outcome,
       default_language: defaultLanguage,
       changes,
+      image_changes: imageChanges,
       changes_not_sent_for_review: request.changesNotSentForReview,
     };
   }

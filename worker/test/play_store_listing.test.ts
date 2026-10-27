@@ -14,6 +14,8 @@ import {
   normalizeStoreListingPush,
 } from "../src/routes/play_store_listing";
 import { openApiDocument } from "../src/openapi";
+import { createHash } from "node:crypto";
+import { checkImage, sniffImage, PLAY_IMAGE_TYPES } from "../src/lib/play_images";
 
 let privateKey: string;
 beforeAll(async () => {
@@ -287,5 +289,147 @@ describe("store listing routes", () => {
     expect(paths["/api/apps/{appId}/distributions/play/store-listing"]?.get).toBeDefined();
     expect(paths["/api/apps/{appId}/distributions/play/store-listing"]?.post).toBeDefined();
     expect(paths["/api/apps/{appId}/distributions/play/store-listing/receipts"]?.get).toBeDefined();
+  });
+});
+
+const fixtureDir = fileURLToPath(new URL("./fixtures/play-images/", import.meta.url));
+/** Real designer exports (play/phone/en/06-home.png, play/feature-graphic/en/feature-graphic.png). */
+const PHONE = new Uint8Array(readFileSync(`${fixtureDir}phone-1080x1920.png`));
+const FEATURE = new Uint8Array(readFileSync(`${fixtureDir}feature-graphic-1024x500.png`));
+const hex = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex");
+
+/** Header-only PNG: signature, IHDR, optional tRNS, IDAT. CRCs are not checked by the sniffer. */
+function png(width: number, height: number, colorType: number, trns = false): Uint8Array {
+  const chunk = (type: string, data: number[]) => {
+    const length = [24, 16, 8, 0].map((shift) => (data.length >>> shift) & 0xff);
+    return [...length, ...[...type].map((ch) => ch.charCodeAt(0)), ...data, 0, 0, 0, 0];
+  };
+  const be = (n: number) => [24, 16, 8, 0].map((shift) => (n >>> shift) & 0xff);
+  return new Uint8Array([
+    0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
+    ...chunk("IHDR", [...be(width), ...be(height), 8, colorType, 0, 0, 0]),
+    ...(trns ? chunk("tRNS", [0, 0, 0, 0, 0, 0]) : []),
+    ...chunk("IDAT", [0]),
+  ]);
+}
+
+function jpeg(width: number, height: number): Uint8Array {
+  return new Uint8Array([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x04, 0x00, 0x00,
+    0xff, 0xc0, 0x00, 0x0b, 0x08, height >> 8, height & 0xff, width >> 8, width & 0xff, 0x01, 0x01, 0x11, 0x00]);
+}
+
+describe("Play image constraints", () => {
+  it("reads the real designer exports as 24-bit PNGs with their pixel sizes", () => {
+    expect(sniffImage(PHONE)).toEqual({ format: "png", contentType: "image/png", width: 1080, height: 1920, alpha: false, pngDepth: 24 });
+    expect(sniffImage(FEATURE)).toMatchObject({ width: 1024, height: 500, alpha: false, pngDepth: 24 });
+    expect(sniffImage(jpeg(1920, 1080))).toMatchObject({ format: "jpeg", width: 1920, height: 1080 });
+    expect(sniffImage(new TextEncoder().encode("GIF89a...."))).toBeNull();
+  });
+
+  it("applies Play's documented per-type rules", () => {
+    expect(() => checkImage("phoneScreenshots", PHONE, "p")).not.toThrow();
+    expect(() => checkImage("tenInchScreenshots", PHONE, "p")).not.toThrow();
+    expect(() => checkImage("featureGraphic", FEATURE, "f")).not.toThrow();
+    const code = (fn: () => unknown) => { try { fn(); return null; } catch (error) { return (error as { failureCode: string }).failureCode; } };
+    // 1024x500 is wider than 2:1, so it cannot be a screenshot.
+    expect(code(() => checkImage("phoneScreenshots", FEATURE, "f"))).toBe("image_dimensions_invalid");
+    expect(code(() => checkImage("featureGraphic", PHONE, "p"))).toBe("image_dimensions_invalid");
+    expect(code(() => checkImage("phoneScreenshots", png(300, 600, 2), "s"))).toBe("image_dimensions_invalid");
+    expect(code(() => checkImage("phoneScreenshots", png(2000, 3841, 2), "s"))).toBe("image_dimensions_invalid");
+    expect(code(() => checkImage("phoneScreenshots", png(1080, 1920, 6), "s"))).toBe("image_format_unsupported");
+    expect(code(() => checkImage("phoneScreenshots", png(1080, 1920, 2, true), "s"))).toBe("image_format_unsupported");
+    expect(code(() => checkImage("phoneScreenshots", jpeg(1080, 1920), "s"))).toBeNull();
+    // Icon: 32-bit PNG with alpha, 512x512, at most 1024 KB.
+    expect(code(() => checkImage("icon", png(512, 512, 6), "i"))).toBeNull();
+    expect(code(() => checkImage("icon", png(512, 512, 2), "i"))).toBe("image_format_unsupported");
+    expect(code(() => checkImage("icon", jpeg(512, 512), "i"))).toBe("image_format_unsupported");
+    expect(code(() => checkImage("icon", png(1024, 1024, 6), "i"))).toBe("image_dimensions_invalid");
+    expect(code(() => checkImage("tvBanner", png(1280, 720, 2), "t"))).toBeNull();
+    expect(code(() => checkImage("wearScreenshots", png(384, 384, 2), "w"))).toBeNull();
+    expect(code(() => checkImage("wearScreenshots", png(384, 400, 2), "w"))).toBe("image_dimensions_invalid");
+    expect(code(() => checkImage("appImageTypeUnspecified", PHONE, "u"))).toBe("image_type_not_supported");
+    expect(PLAY_IMAGE_TYPES).toHaveLength(9);
+  });
+});
+
+describe("store listing images route", () => {
+  function multipart(request: unknown, files: Record<string, Uint8Array>) {
+    const form = new FormData();
+    form.append("request", JSON.stringify(request));
+    for (const [name, bytes] of Object.entries(files)) form.append(name, new Blob([bytes], { type: "image/png" }), `${name}.png`);
+    return form;
+  }
+  const phoneSet = {
+    language: "en-US", imageType: "phoneScreenshots",
+    images: [{ part: "p1", sha256: hex(PHONE), aiGeneratedState: "aiGeneratedStateNotAiGenerated" }, { part: "p2", sha256: hex(PHONE) }],
+  };
+  const featureSet = { language: "en-US", imageType: "featureGraphic", images: [{ part: "f1", sha256: hex(FEATURE) }] };
+
+  it("dry-runs real screenshots + feature graphic with the text in one adapter call and records each image", async () => {
+    const h = await harness();
+    let seen: PushInput | null = null;
+    h.env.PLAY_RELEASE_SERVICE = adapter({ pushStoreListings: async (input) => {
+      seen = input;
+      return { ok: true, value: {
+        edit_id: "edit-9", package_name: input.packageName, mode: input.mode, outcome: "validated", default_language: "en-US",
+        changes_not_sent_for_review: false, changes: [],
+        image_changes: input.images!.map((set) => ({ language: set.language, imageType: set.imageType, action: "replace" as const, before: [],
+          after: set.images.map((image, i) => ({ id: `img-${i}`, sha256: image.sha256, size_bytes: image.bytes.byteLength, aiGeneratedState: image.aiGeneratedState ?? null })) })),
+      } };
+    } });
+    const response = await h.request("/api/apps/app/distributions/play/store-listing", {
+      method: "POST",
+      body: multipart({ mode: "dry_run", listings: [{ language: "en-US", title: "Raft" }], images: [phoneSet, featureSet] }, { p1: PHONE, p2: PHONE, f1: FEATURE }),
+    });
+    expect(response.status).toBe(200);
+    const body = await response.json() as Record<string, any>;
+    expect(body.image_changes.map((c: any) => [c.imageType, c.action, c.after.length])).toEqual([["phoneScreenshots", "replace", 2], ["featureGraphic", "replace", 1]]);
+    expect(seen!.listings).toEqual([{ language: "en-US", title: "Raft" }]);
+    expect(seen!.images!.map((set) => [set.imageType, set.images.map((i) => [i.contentType, i.bytes.byteLength, i.aiGeneratedState ?? null])])).toEqual([
+      ["phoneScreenshots", [["image/png", PHONE.byteLength, "aiGeneratedStateNotAiGenerated"], ["image/png", PHONE.byteLength, null]]],
+      ["featureGraphic", [["image/png", FEATURE.byteLength, null]]],
+    ]);
+    const payload = JSON.parse(String(h.receipts()[0]!.payload_json));
+    expect(payload.requested.images[1]).toEqual({ language: "en-US", imageType: "featureGraphic", images: [{
+      sha256: hex(FEATURE), size_bytes: FEATURE.byteLength, content_type: "image/png", width: 1024, height: 500, aiGeneratedState: null,
+    }] });
+    expect(payload.image_changes[0].after[0]).toMatchObject({ id: "img-0", sha256: hex(PHONE) });
+  });
+
+  it("rejects images that break Play's rules before any adapter call", async () => {
+    const h = await harness();
+    const cases: Array<[unknown, Record<string, Uint8Array>, string]> = [
+      [{ ...featureSet, images: [{ part: "f1", sha256: hex(PHONE) }] }, { f1: PHONE }, "image_dimensions_invalid"],
+      [{ ...phoneSet, images: [phoneSet.images[0]] }, { p1: PHONE }, "image_count_invalid"],
+      [{ ...featureSet, imageType: "appImageTypeUnspecified" }, { f1: FEATURE }, "image_type_not_supported"],
+      [{ ...featureSet, imageType: "promoGraphic" }, { f1: FEATURE }, "image_type_invalid"],
+      [{ ...featureSet, language: "zh-Hans" }, { f1: FEATURE }, "listing_language_unsupported"],
+      [featureSet, { f1: PHONE }, "image_integrity_mismatch"],
+      [featureSet, { f1: FEATURE, extra: FEATURE }, "image_request_invalid"],
+      [featureSet, {}, "image_part_missing"],
+      [{ ...featureSet, images: [{ ...featureSet.images[0], aiGeneratedState: "yes" }] }, { f1: FEATURE }, "image_ai_generated_state_invalid"],
+    ];
+    for (const [set, files, code] of cases) {
+      const response = await h.request("/api/apps/app/distributions/play/store-listing", {
+        method: "POST", body: multipart({ mode: "dry_run", images: [set] }, files),
+      });
+      expect(response.status, code).toBe(400);
+      expect(await response.json(), code).toMatchObject({ error: { failure_code: code } });
+    }
+    expect(h.receipts()).toEqual([]);
+  });
+
+  it("fails closed when the adapter predates images", async () => {
+    const h = await harness();
+    h.env.PLAY_RELEASE_SERVICE = adapter({ pushStoreListings: async (input) => ({ ok: true, value: {
+      edit_id: "e", package_name: input.packageName, mode: input.mode, outcome: "validated", default_language: "en-US",
+      changes_not_sent_for_review: false, changes: [],
+    } }) });
+    const response = await h.request("/api/apps/app/distributions/play/store-listing", {
+      method: "POST", body: multipart({ mode: "commit", images: [featureSet] }, { f1: FEATURE }),
+    });
+    expect(response.status).toBe(502);
+    expect(await response.json()).toMatchObject({ error: { failure_code: "play_images_not_acknowledged" } });
+    expect(h.receipts()[0]).toMatchObject({ verdict: "failed-closed" });
   });
 });

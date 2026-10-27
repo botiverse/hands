@@ -197,6 +197,8 @@ export interface StoreListingPushRpcInput extends PlayDiscoveryInput {
   deleteUnlistedLanguages?: boolean;
   /** edits.commit `changesNotSentForReview=true`. Default false (parameter not sent). */
   changesNotSentForReview?: boolean;
+  /** Image sets to replace in the same edit, after the listing text. Default none. */
+  images?: StoreListingImageSetInput[];
 }
 
 export type StoreListingAction = "create" | "update" | "delete" | "unchanged";
@@ -220,6 +222,8 @@ export interface StoreListingPushResult {
   outcome: "validated" | "committed" | "no_changes";
   default_language: string | null;
   changes: StoreListingChange[];
+  /** One entry per requested image set. Absent from adapters older than images. */
+  image_changes: StoreListingImageChange[];
   changes_not_sent_for_review: boolean;
 }
 
@@ -227,4 +231,56 @@ export interface StoreListingReadResult {
   package_name: string;
   default_language: string | null;
   listings: PlayListing[];
+}
+
+/** edits.images imageType, Google's full enum (discovery revision 20261027). */
+export const PLAY_IMAGE_TYPES = [
+  "appImageTypeUnspecified",
+  "phoneScreenshots",
+  "sevenInchScreenshots",
+  "tenInchScreenshots",
+  "tvScreenshots",
+  "wearScreenshots",
+  "icon",
+  "featureGraphic",
+  "tvBanner",
+] as const;
+export type PlayImageType = typeof PLAY_IMAGE_TYPES[number];
+
+/** edits.images.upload `aiGeneratedState` query enum (discovery revision 20261027). */
+export const PLAY_AI_GENERATED_STATES = [
+  "aiGeneratedStateUnspecified",
+  "aiGeneratedStateNotAiGenerated",
+  "aiGeneratedStateAiGeneratedDeveloperAttested",
+] as const;
+export type PlayAiGeneratedState = typeof PLAY_AI_GENERATED_STATES[number];
+
+export interface StoreListingImageInput {
+  bytes: Uint8Array;
+  sha256: string;
+  contentType: "image/png" | "image/jpeg";
+  /** Passed to edits.images.upload as-is; omitted when absent. */
+  aiGeneratedState?: PlayAiGeneratedState;
+}
+
+/** Replace one (language, imageType) set: edits.images.deleteall, then upload in order. */
+export interface StoreListingImageSetInput {
+  language: string;
+  imageType: PlayImageType;
+  images: StoreListingImageInput[];
+}
+
+/** Google `Image` fields Hands keeps: id and sha256 (sha1/url are not needed). */
+export interface PlayImageRef {
+  id: string;
+  sha256: string;
+}
+
+export interface StoreListingImageChange {
+  language: string;
+  imageType: PlayImageType;
+  /** unchanged: Play already holds exactly these bytes in this order; nothing was sent. */
+  action: "replace" | "unchanged";
+  before: PlayImageRef[];
+  after: Array<PlayImageRef & { size_bytes: number; aiGeneratedState: PlayAiGeneratedState | null }>;
 }

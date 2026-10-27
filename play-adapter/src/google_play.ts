@@ -4,6 +4,9 @@ import { PlayAdapterError } from "./errors";
 import { playRejection, playRejectionReason, playRequestStage } from "./provider_errors";
 import { PLAY_LISTING_FIELDS } from "./types";
 import type {
+  PlayAiGeneratedState,
+  PlayImageRef,
+  PlayImageType,
   PlayListing,
   DeobfuscationFileResult,
   DeobfuscationSymbolType,
@@ -152,6 +155,17 @@ export function cleanListing(value: unknown): PlayListing {
     listing[field] = raw;
   }
   return listing;
+}
+
+/** Google `Image`: id and sha256 are required for Hands to reason about it. */
+function cleanImage(value: unknown): PlayImageRef {
+  const row = value && typeof value === "object" ? value as Record<string, unknown> : null;
+  const id = row?.id;
+  const sha = typeof row?.sha256 === "string" ? row.sha256.toLowerCase() : "";
+  if (typeof id !== "string" || !id || !/^[0-9a-f]{64}$/.test(sha)) {
+    throw new PlayAdapterError(502, "play_images_malformed", "Google Play returned a malformed image");
+  }
+  return { id, sha256: sha };
 }
 
 function hashingBody(
@@ -643,6 +657,59 @@ export class GooglePlayClient {
       { method: "PUT", body: JSON.stringify(listing) },
     );
     return cleanListing(body);
+  }
+
+  private imagesPath(packageName: string, editId: string, language: string, imageType: PlayImageType): string {
+    return `/applications/${encodeURIComponent(packageName)}/edits/${encodeURIComponent(editId)}/listings/${encodeURIComponent(language)}/${encodeURIComponent(imageType)}`;
+  }
+
+  /** edits.images.list: ordered as Play displays them. */
+  async listImages(packageName: string, editId: string, language: string, imageType: PlayImageType): Promise<PlayImageRef[]> {
+    const body = await this.requestJson<{ images?: unknown }>(`${API_ROOT}${this.imagesPath(packageName, editId, language, imageType)}`);
+    if (body.images === undefined) return [];
+    if (!Array.isArray(body.images) || body.images.length > 50) {
+      throw new PlayAdapterError(502, "play_images_malformed", "Google Play returned a malformed image list");
+    }
+    return body.images.map(cleanImage);
+  }
+
+  /** edits.images.deleteall. The ImagesDeleteAllResponse body is not needed. */
+  async deleteAllImages(packageName: string, editId: string, language: string, imageType: PlayImageType): Promise<void> {
+    await this.requestEmpty(`${API_ROOT}${this.imagesPath(packageName, editId, language, imageType)}`, { method: "DELETE" });
+  }
+
+  /**
+   * edits.images.upload (simple media upload). Google's Image.sha256 must equal the
+   * sha256 of the bytes sent; anything else means Play holds different bytes.
+   */
+  async uploadImage(
+    packageName: string,
+    editId: string,
+    language: string,
+    imageType: PlayImageType,
+    image: { bytes: Uint8Array; sha256: string; contentType: string; aiGeneratedState?: PlayAiGeneratedState },
+  ): Promise<PlayImageRef> {
+    const query = new URLSearchParams({ uploadType: "media" });
+    if (image.aiGeneratedState) query.set("aiGeneratedState", image.aiGeneratedState);
+    let response: Response;
+    try {
+      response = await this.fetchImpl(`${UPLOAD_ROOT}${this.imagesPath(packageName, editId, language, imageType)}?${query}`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${this.accessToken}`, "content-type": image.contentType },
+        body: image.bytes as Uint8Array<ArrayBuffer>,
+        redirect: "manual",
+        signal: AbortSignal.timeout(120_000),
+      });
+    } catch {
+      throw new PlayAdapterError(502, "play_image_upload_unavailable", "Google Play image upload failed");
+    }
+    const body = await response.json().catch(() => null) as { image?: unknown } | null;
+    if (!response.ok) throw playRejection(response.status, body, "upload_image");
+    const uploaded = cleanImage(body?.image);
+    if (uploaded.sha256 !== image.sha256) {
+      throw new PlayAdapterError(409, "play_image_integrity_mismatch", `Google Play acknowledged different bytes for a ${language} ${imageType} image`, { stage: "upload_image" });
+    }
+    return uploaded;
   }
 
   /** edits.listings.delete. */

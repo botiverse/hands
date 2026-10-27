@@ -1,7 +1,7 @@
 import { createAccessToken, parsePlayCredential } from "./auth";
 import { PlayAdapterError } from "./errors";
 import { DEOBFUSCATION_FILE_KINDS, GooglePlayClient, MAX_SYMBOLS_SIZE_BYTES } from "./google_play";
-import { pushStoreListings, readStoreListings, storeListingsInput } from "./store_listing";
+import { pushStoreListings, readStoreListings, storeListingImagesInput, storeListingsInput } from "./store_listing";
 import type {
   AdapterResult,
   DeobfuscationSymbolType,
@@ -192,7 +192,8 @@ function storeListingPushInput(input: StoreListingPushRpcInput) {
     }
   }
   const listings = storeListingsInput(input.listings);
-  if (listings.length === 0 && !input.deleteUnlistedLanguages) {
+  const images = storeListingImagesInput(input.images);
+  if (listings.length === 0 && images.length === 0 && !input.deleteUnlistedLanguages) {
     throw new PlayAdapterError(400, "listing_request_invalid", "Hands store listing request names no listings");
   }
   return {
@@ -202,6 +203,7 @@ function storeListingPushInput(input: StoreListingPushRpcInput) {
     listings,
     deleteUnlistedLanguages: input.deleteUnlistedLanguages === true,
     changesNotSentForReview: input.changesNotSentForReview === true,
+    images,
   };
 }
 

@@ -51,6 +51,9 @@ type GooglePlayStoreListingChange = {
   after: GooglePlayListing | null;
 };
 
+type GooglePlayImageType = import("./src/lib/play_images").PlayImageType;
+type GooglePlayAiGeneratedState = import("./src/lib/play_images").PlayAiGeneratedState;
+
 interface GooglePlayAdapterService {
   readStoreListings(input: Pick<GooglePlayBindingInput, "credential" | "packageName">): Promise<GooglePlayAdapterResult<{
     package_name: string;
@@ -63,6 +66,11 @@ interface GooglePlayAdapterService {
     listings: GooglePlayListing[];
     deleteUnlistedLanguages?: boolean;
     changesNotSentForReview?: boolean;
+    images?: Array<{
+      language: string;
+      imageType: GooglePlayImageType;
+      images: Array<{ bytes: Uint8Array; sha256: string; contentType: "image/png" | "image/jpeg"; aiGeneratedState?: GooglePlayAiGeneratedState }>;
+    }>;
   }): Promise<GooglePlayAdapterResult<{
     edit_id: string;
     package_name: string;
@@ -70,6 +78,14 @@ interface GooglePlayAdapterService {
     outcome: "validated" | "committed" | "no_changes";
     default_language: string | null;
     changes: GooglePlayStoreListingChange[];
+    /** Older adapters omit this; Hands then fails a push that carried images. */
+    image_changes?: Array<{
+      language: string;
+      imageType: GooglePlayImageType;
+      action: "replace" | "unchanged";
+      before: Array<{ id: string; sha256: string }>;
+      after: Array<{ id: string; sha256: string; size_bytes: number; aiGeneratedState: GooglePlayAiGeneratedState | null }>;
+    }>;
     changes_not_sent_for_review: boolean;
   }>>;
   listTracks(input: Pick<GooglePlayBindingInput, "credential" | "packageName">): Promise<GooglePlayAdapterResult<{ client_email: string; package_name: string; tracks: string[] }>>;
