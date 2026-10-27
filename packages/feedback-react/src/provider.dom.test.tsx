@@ -521,8 +521,8 @@ describe("FeedbackWorkspace browser behavior", () => {
     );
   });
 
-  it("adds a pasted image to the composer without opening a file picker", async () => {
-    render(
+  it("adds a pasted image to the composer", async () => {
+    const { container } = render(
       <FeedbackProvider transport={transport()}>
         <FeedbackWorkspace />
       </FeedbackProvider>,
@@ -531,15 +531,34 @@ describe("FeedbackWorkspace browser behavior", () => {
     const box = screen.getByRole("textbox", {
       name: /What would you like us to know/,
     });
-    const shot = new File(["png"], "shot.png", { type: "image/png" });
-    fireEvent.paste(box, { clipboardData: { files: [shot] } });
+    // The pending-attachment preview is decorative (alt=""), so count previews
+    // directly: an assertion that only looked for the Send button or the absence
+    // of an alert passed even with the whole onPaste handler deleted.
+    const previews = () => container.querySelectorAll("img").length;
+    expect(previews()).toBe(0);
 
-    // Attachment count updates and Send becomes possible; the picker never opened.
-    // (The preview <img> is decorative -- alt="" -- so it has no "img" role.)
-    await waitFor(() =>
-      expect(screen.getByRole("button", { name: "Send Feedback" })).toBeTruthy(),
+    fireEvent.paste(box, {
+      clipboardData: { files: [new File(["png"], "shot.png", { type: "image/png" })] },
+    });
+
+    await waitFor(() => expect(previews()).toBe(1));
+  });
+
+  it("does not attach a pasted non-image file", async () => {
+    const { container } = render(
+      <FeedbackProvider transport={transport()}>
+        <FeedbackWorkspace />
+      </FeedbackProvider>,
     );
-    expect(screen.queryByRole("alert")).toBeNull();
+    fireEvent.click(await screen.findByText("New Feedback"));
+    const box = screen.getByRole("textbox", {
+      name: /What would you like us to know/,
+    });
+    fireEvent.paste(box, {
+      clipboardData: { files: [new File(["txt"], "a.txt", { type: "text/plain" })] },
+    });
+    // Non-images fall through to the browser; nothing is attached.
+    expect(container.querySelectorAll("img").length).toBe(0);
   });
 
   it("lets a plain-text paste through so text still lands in the box", async () => {

@@ -910,6 +910,10 @@ function FeedbackComposer({
               file.type.startsWith("image/"),
             );
             if (pasted.length === 0) return;
+            // Same guard as the pickers. Without it a paste during submit adds a
+            // file the in-flight request already snapshot, so it silently does
+            // not go out and may be cleared when the request succeeds.
+            if (attachmentsDisabled) return;
             event.preventDefault();
             // Same path as the file pickers, so MAX/locale errors match exactly.
             onAttachmentsChange(pasted);
