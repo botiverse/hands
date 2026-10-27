@@ -297,7 +297,7 @@ export function registerAndroidDistributionRoutes(): RouteConfigList {
     tags: ["Android distribution"],
     summary: "Promote the accepted exact AAB through the server-side Play adapter",
     description:
-      "Requires immutable binding, latest passing AAB acceptance, versionCode greater than the target track maximum (at most 2100000000), one edit lock, no live hold, and an explicit submission note from an authenticated human or agent publisher. No Play credential reaches this API caller.",
+      "Requires immutable binding, latest passing AAB acceptance, versionCode greater than the target track maximum (at most 2100000000), one edit lock, no live hold, and an explicit submission note from an authenticated human or agent publisher. No Play credential reaches this API caller. In the same Play edit, a sealed native symbols zip is uploaded as deobfuscation symbolType nativeCode and a sealed R8/ProGuard mapping (proguard-mapping asset) as symbolType proguard; a localized JSON changelog becomes the track release's releaseNotes (Hands keys mapped to Play BCP-47 tags, Markdown bold markers stripped, at most 500 characters per language). A changelog key with no Play language mapping is skipped and listed in the receipt, never fatal; over-long notes, or two keys mapping to one Play language with different text, fail the release_notes gate before any Play call. The receipt records what was uploaded, sent, skipped, or absent.",
     security: auth,
     request: {
       params: AppReleaseParams,

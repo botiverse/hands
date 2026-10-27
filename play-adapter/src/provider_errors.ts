@@ -15,6 +15,7 @@ export function playRequestStage(url: string, method = "GET"): string {
   if (path.endsWith("/edits") && method === "POST") return "create_edit";
   if (path.endsWith(":commit")) return "commit_edit";
   if (path.endsWith("/bundles")) return "upload_bundle";
+  if (path.includes("/deobfuscationFiles/proguard")) return "upload_mapping";
   if (path.includes("/deobfuscationFiles/")) return "upload_symbols";
   if (path.endsWith("/releases") && path.includes("/tracks/")) return "list_release_states";
   if (path.endsWith("/tracks")) return "list_tracks";

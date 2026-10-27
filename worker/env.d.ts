@@ -48,9 +48,14 @@ interface GooglePlayAdapterService {
       operationId: string;
       /** Declared identity of the optional native debug symbols zip. */
       symbols?: { expectedSha256: string; expectedSize: number } | null;
+      /** Declared identity of the optional R8/ProGuard mapping.txt (symbolType proguard). */
+      mapping?: { expectedSha256: string; expectedSize: number } | null;
+      /** Release notes for the new track release, as Play BCP-47 language tags. */
+      releaseNotes?: Array<{ language: string; text: string }> | null;
     },
     body: ReadableStream<Uint8Array>,
     symbolsBody: ReadableStream<Uint8Array> | null,
+    mappingBody?: ReadableStream<Uint8Array> | null,
   ): Promise<GooglePlayAdapterResult<{
     edit_id: string;
     package_name: string;
@@ -58,6 +63,15 @@ interface GooglePlayAdapterService {
     track: keyof GooglePlayTracks;
     sha256: string;
     rollout_percent: number;
+    /** Older adapters omit these; Hands then records the files/notes as not acknowledged. */
+    deobfuscation_files?: Array<{
+      symbol_type: "nativeCode" | "proguard";
+      sha256: string;
+      size_bytes: number;
+      uploaded: boolean;
+      skipped_reason?: "bundle_already_on_play";
+    }>;
+    release_notes_languages?: string[];
   }>>;
 }
 

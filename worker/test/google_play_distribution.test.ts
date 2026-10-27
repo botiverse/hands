@@ -648,6 +648,38 @@ async function readyRelease(principal: "human" | "agent" = "human", role: "publi
   return { ...harness, aab, aabAsset, declared, symbols };
 }
 
+/** Simulates `hands builds attach-symbols <app> <build> mapping.txt` on the release's build. */
+function attachSealedMapping(
+  harness: Awaited<ReturnType<typeof readyRelease>>,
+  options: { sealed?: boolean; storedBytes?: Uint8Array } = {},
+) {
+  const mapping = new TextEncoder().encode("com.example.Main -> a:\n    void run() -> b\n");
+  const key = `apps/app/builds/${harness.declared.build_id}/mapping.txt`;
+  const metadata = options.sealed === false
+    ? { upload_state: "pending_upload" }
+    : { upload_state: "ready", verified_sha256: sha(mapping), verified_size_bytes: mapping.byteLength };
+  harness.sqlite.prepare(
+    `INSERT INTO build_assets
+     (id, build_id, artifact_kind, platform, arch, variant, filetype, r2_key, file_hash, size_bytes, metadata_json, download_count, created_at)
+     VALUES ('mapping-asset', ?, 'proguard-mapping', 'android', NULL, NULL, 'mapping.txt', ?, ?, ?, ?, 0, ?)`,
+  ).run(harness.declared.build_id, key, sha(mapping), mapping.byteLength, JSON.stringify(metadata), Date.now());
+  harness.bucket.objects.set(key, options.storedBytes ?? mapping);
+  return mapping;
+}
+
+function promoteInternal(harness: Awaited<ReturnType<typeof readyRelease>>) {
+  return harness.request("/api/apps/app/releases/release/distributions/play/promote", {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ track: "internal", expected_revision: 1, approval: { note: "promote" } }),
+  });
+}
+
+function successPayload(harness: Awaited<ReturnType<typeof readyRelease>>) {
+  return JSON.parse(String((harness.sqlite.prepare(
+    "SELECT payload_json FROM release_receipts WHERE kind='play-promotion' AND verdict='success'",
+  ).get() as { payload_json: string }).payload_json));
+}
+
 type PlayAdapter = NonNullable<Env["PLAY_RELEASE_SERVICE"]>;
 
 function playAdapterStub(overrides: Partial<PlayAdapter> = {}): PlayAdapter {
@@ -916,6 +948,9 @@ describe("Play promotion route", () => {
     });
     expect(JSON.stringify(payload)).not.toMatch(/distribution[_-]?cert/i);
     expect(payload.symbols).toBeNull();
+    // Absence is recorded explicitly, not left for the reader to infer.
+    expect(payload.mapping).toEqual({ present: false, reason: "no_mapping_asset" });
+    expect(payload.release_notes).toEqual({ present: false, reason: "no_changelog" });
   });
 
   it("attaches sealed native symbols to the same promote edit and records them in the receipt", async () => {
@@ -931,6 +966,10 @@ describe("Play promotion route", () => {
         return { ok: true, value: {
           edit_id: "edit-1", package_name: "build.raft.app", version_code: 42,
           track: "internal", sha256: sha(bytes), rollout_percent: 100,
+          deobfuscation_files: [{
+            symbol_type: "nativeCode", sha256: sha(harness.symbols), size_bytes: harness.symbols.byteLength, uploaded: true,
+          }],
+          release_notes_languages: [],
         } };
       },
     });
@@ -951,6 +990,174 @@ describe("Play promotion route", () => {
       provider_ack: "deobfuscationFile.symbolType=nativeCode",
       post_commit_get: false,
     });
+  });
+
+  it("sends the R8 mapping as symbolType proguard and the changelog as Play releaseNotes, and records both", async () => {
+    const harness = await readyRelease();
+    const mapping = attachSealedMapping(harness);
+    harness.sqlite.prepare("UPDATE releases SET changelog = ? WHERE id = 'release'").run(JSON.stringify({
+      "zh-cn": "🐛 **修复**\r\n- 修复崩溃",
+      en: "🐛 **Fixes**\n- Fixed a crash",
+      ja: "🐛 **修正**\n- クラッシュを修正",
+    }));
+    let seen: { mapping: unknown; releaseNotes: unknown; mappingSha: string | null } | null = null;
+    harness.env.PLAY_RELEASE_SERVICE = playAdapterStub({
+      promote: async (input, stream, _symbolsStream, mappingStream) => {
+        const bytes = new Uint8Array(await new Response(stream).arrayBuffer());
+        const mappingBytes = mappingStream ? new Uint8Array(await new Response(mappingStream).arrayBuffer()) : null;
+        seen = { mapping: input.mapping, releaseNotes: input.releaseNotes, mappingSha: mappingBytes ? sha(mappingBytes) : null };
+        return { ok: true, value: {
+          edit_id: "edit-1", package_name: "build.raft.app", version_code: 42,
+          track: "internal", sha256: sha(bytes), rollout_percent: 100,
+          deobfuscation_files: [{ symbol_type: "proguard", sha256: sha(mapping), size_bytes: mapping.byteLength, uploaded: true }],
+          release_notes_languages: ["zh-CN", "en-US", "ja-JP"],
+        } };
+      },
+    });
+    const promoted = await promoteInternal(harness);
+    expect(promoted.status).toBe(200);
+    expect(seen).toEqual({
+      mapping: { expectedSha256: sha(mapping), expectedSize: mapping.byteLength },
+      mappingSha: sha(mapping),
+      releaseNotes: [
+        { language: "zh-CN", text: "🐛 修复\n- 修复崩溃" },
+        { language: "en-US", text: "🐛 Fixes\n- Fixed a crash" },
+        { language: "ja-JP", text: "🐛 修正\n- クラッシュを修正" },
+      ],
+    });
+    const payload = successPayload(harness);
+    expect(payload.symbols).toBeNull();
+    expect(payload.mapping).toEqual({
+      present: true,
+      sha256: sha(mapping),
+      size_bytes: mapping.byteLength,
+      uploaded: true,
+      provider_ack: "deobfuscationFile.symbolType=proguard",
+      post_commit_get: false,
+    });
+    expect(payload.release_notes).toMatchObject({
+      present: true, sent: ["zh-CN", "en-US", "ja-JP"], skipped: [], requested: ["zh-CN", "en-US", "ja-JP"], chars: { "en-US": 23 },
+    });
+    expect(payload.release_notes.reason).toBeUndefined();
+  });
+
+  it("records a mapping the adapter skipped (bundle already on Play) or did not acknowledge as not uploaded", async () => {
+    for (const reported of [
+      { files: [{ symbol_type: "proguard", sha256: "", size_bytes: 0, uploaded: false, skipped_reason: "bundle_already_on_play" }], reason: "bundle_already_on_play" },
+      { files: undefined, reason: "not_acknowledged" },
+    ] as const) {
+      const harness = await readyRelease();
+      attachSealedMapping(harness);
+      harness.sqlite.prepare("UPDATE releases SET changelog = ? WHERE id = 'release'").run(JSON.stringify({ en: "Fixes" }));
+      harness.env.PLAY_RELEASE_SERVICE = playAdapterStub({
+        promote: async (_input, stream, _symbolsStream, mappingStream) => {
+          const bytes = new Uint8Array(await new Response(stream).arrayBuffer());
+          if (mappingStream) await mappingStream.cancel();
+          return { ok: true, value: {
+            edit_id: "edit-1", package_name: "build.raft.app", version_code: 42,
+            track: "internal", sha256: sha(bytes), rollout_percent: 100,
+            ...(reported.files ? { deobfuscation_files: [...reported.files], release_notes_languages: ["en-US"] } : {}),
+          } };
+        },
+      });
+      expect((await promoteInternal(harness)).status).toBe(200);
+      const payload = successPayload(harness);
+      expect(payload.mapping).toMatchObject({ present: true, uploaded: false, provider_ack: null, skipped_reason: reported.reason });
+      expect(payload.release_notes).toMatchObject(reported.files
+        ? { present: true, sent: ["en-US"], skipped: [] }
+        : { present: true, sent: [], requested: ["en-US"], reason: "not_acknowledged" });
+    }
+  });
+
+  it.each([
+    ["play_release_notes_too_long", JSON.stringify({ en: "x".repeat(501) })],
+    ["play_release_notes_locale_duplicate", JSON.stringify({ en: "Fixes", "en-us": "Fixes too" })],
+    ["play_release_notes_invalid", "{not json"],
+  ])("fails closed with %s before any Play call", async (failureCode, changelog) => {
+    const harness = await readyRelease();
+    harness.sqlite.prepare("UPDATE releases SET changelog = ? WHERE id = 'release'").run(changelog);
+    let calls = 0;
+    harness.env.PLAY_RELEASE_SERVICE = playAdapterStub({
+      readTrackMaximum: async () => { calls++; return { ok: true, value: { max_version_code: 41 } }; },
+      promote: async () => { calls++; throw new Error("must not call Play"); },
+    });
+    const res = await promoteInternal(harness);
+    expect(res.status).toBe(400);
+    expect(await res.json()).toMatchObject({ error: { code: "gate_failed", gate: "release_notes", failure_code: failureCode } });
+    expect(calls).toBe(0);
+    expect(harness.sqlite.prepare("SELECT revision FROM releases WHERE id='release'").get()).toEqual({ revision: 1 });
+  });
+
+  it.each([
+    ["some keys unsupported", { "zh-cn": "修复", fr: "Corrections", en: "Fixes" }, [{ language: "zh-CN", text: "修复" }, { language: "en-US", text: "Fixes" }], ["fr"]],
+    ["all keys unsupported", { fr: "Corrections", de: "Fehlerbehebungen" }, null, ["fr", "de"]],
+  ] as const)("skips unsupported release-note languages without failing (%s)", async (_label, changelog, expectedNotes, skipped) => {
+    const harness = await readyRelease();
+    harness.sqlite.prepare("UPDATE releases SET changelog = ? WHERE id = 'release'").run(JSON.stringify(changelog));
+    let notes: unknown = "unset";
+    harness.env.PLAY_RELEASE_SERVICE = playAdapterStub({
+      promote: async (input, stream) => {
+        notes = input.releaseNotes;
+        const bytes = new Uint8Array(await new Response(stream).arrayBuffer());
+        return { ok: true, value: {
+          edit_id: "edit-1", package_name: "build.raft.app", version_code: 42,
+          track: "internal", sha256: sha(bytes), rollout_percent: 100, deobfuscation_files: [],
+          release_notes_languages: (input.releaseNotes ?? []).map((note) => note.language),
+        } };
+      },
+    });
+    expect((await promoteInternal(harness)).status).toBe(200);
+    expect(notes).toEqual(expectedNotes);
+    const expectedSent = (expectedNotes ?? []).map((note) => note.language);
+    expect(successPayload(harness).release_notes).toMatchObject({ present: true, sent: expectedSent, skipped: [...skipped], requested: expectedSent });
+    expect(successPayload(harness).release_notes.reason).toBeUndefined();
+  });
+
+  it("sends no notes for a plain-text changelog and records why", async () => {
+    const harness = await readyRelease();
+    harness.sqlite.prepare("UPDATE releases SET changelog = 'Bug fixes' WHERE id = 'release'").run();
+    let notes: unknown = "unset";
+    harness.env.PLAY_RELEASE_SERVICE = playAdapterStub({
+      promote: async (input, stream) => {
+        notes = input.releaseNotes;
+        const bytes = new Uint8Array(await new Response(stream).arrayBuffer());
+        return { ok: true, value: {
+          edit_id: "edit-1", package_name: "build.raft.app", version_code: 42,
+          track: "internal", sha256: sha(bytes), rollout_percent: 100, deobfuscation_files: [], release_notes_languages: [],
+        } };
+      },
+    });
+    expect((await promoteInternal(harness)).status).toBe(200);
+    expect(notes).toBeNull();
+    expect(successPayload(harness).release_notes).toEqual({ present: false, reason: "changelog_not_localized" });
+  });
+
+  it("fails closed before any Play call when an attached mapping is not sealed", async () => {
+    const harness = await readyRelease();
+    attachSealedMapping(harness, { sealed: false });
+    let calls = 0;
+    harness.env.PLAY_RELEASE_SERVICE = playAdapterStub({
+      readTrackMaximum: async () => { calls++; return { ok: true, value: { max_version_code: 41 } }; },
+      promote: async () => { calls++; throw new Error("must not call Play"); },
+    });
+    const res = await promoteInternal(harness);
+    expect(res.status).toBe(400);
+    expect(await res.json()).toMatchObject({ error: { code: "gate_failed", gate: "immutable_binding", failure_code: "mapping_not_sealed" } });
+    expect(calls).toBe(0);
+  });
+
+  it("fails closed with a receipt when stored mapping bytes were tampered", async () => {
+    const harness = await readyRelease();
+    attachSealedMapping(harness, { storedBytes: new TextEncoder().encode("tampered") });
+    harness.env.PLAY_RELEASE_SERVICE = playAdapterStub({
+      promote: async () => { throw new Error("must not upload"); },
+    });
+    const res = await promoteInternal(harness);
+    expect(res.status).toBe(400);
+    expect(await res.json()).toMatchObject({ error: { code: "gate_failed", gate: "immutable_binding" } });
+    const failed = harness.sqlite.prepare("SELECT verdict, payload_json FROM release_receipts WHERE kind='play-promotion'").get() as { verdict: string; payload_json: string };
+    expect(failed.verdict).toBe("failed-closed");
+    expect(JSON.parse(failed.payload_json).result.failure_reason).toContain("mapping_object_size");
   });
 
   it("fails closed before any Play call when declared symbols are not sealed", async () => {

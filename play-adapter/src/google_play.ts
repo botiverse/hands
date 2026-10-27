@@ -2,16 +2,56 @@ import { sha256 } from "@noble/hashes/sha256";
 import { bytesToHex } from "@noble/hashes/utils";
 import { PlayAdapterError } from "./errors";
 import { playRejection, playRequestStage } from "./provider_errors";
-import type { PromotionRequest, TrackRelease, TrackResource, ReleaseSummary } from "./types";
+import type {
+  DeobfuscationFileResult,
+  DeobfuscationSymbolType,
+  PromotionRequest,
+  PromotionSymbolsRequest,
+  TrackRelease,
+  TrackResource,
+  ReleaseSummary,
+} from "./types";
 
 const API_ROOT = "https://androidpublisher.googleapis.com/androidpublisher/v3";
 const UPLOAD_ROOT = "https://androidpublisher.googleapis.com/upload/androidpublisher/v3";
 /**
  * Google Play mediaUpload.maxSize for edits.deobfuscationfiles.upload, taken
  * from the androidpublisher v3 discovery document (2,097,152,000 bytes).
- * Native debug symbols zips above this bound are rejected before streaming.
+ * Native debug symbols zips and R8/ProGuard mapping files above this bound are
+ * rejected before streaming. The bound is per upload, for either symbolType.
  */
 export const MAX_SYMBOLS_SIZE_BYTES = 2_097_152_000;
+
+/**
+ * Per-symbolType wording and error codes. A ProGuard mapping failure must never
+ * read as a native-symbols failure (and vice versa): the codes and messages are
+ * what an operator sees in a receipt.
+ */
+export const DEOBFUSCATION_FILE_KINDS: Record<DeobfuscationSymbolType, {
+  label: string;
+  stage: string;
+  tooLargeCode: string;
+  integrityCode: string;
+  unavailableCode: string;
+  malformedCode: string;
+}> = {
+  nativeCode: {
+    label: "Native debug symbols",
+    stage: "upload_symbols",
+    tooLargeCode: "symbols_too_large",
+    integrityCode: "symbols_integrity_mismatch",
+    unavailableCode: "play_symbols_unavailable",
+    malformedCode: "play_symbols_malformed",
+  },
+  proguard: {
+    label: "R8/ProGuard mapping (deobfuscation file, proguard)",
+    stage: "upload_mapping",
+    tooLargeCode: "mapping_too_large",
+    integrityCode: "mapping_integrity_mismatch",
+    unavailableCode: "play_mapping_unavailable",
+    malformedCode: "play_mapping_malformed",
+  },
+};
 
 interface GoogleBundle {
   versionCode?: number;
@@ -69,6 +109,11 @@ function cleanRelease(value: TrackRelease): TrackRelease {
 }
 
 function requestedRelease(request: PromotionRequest): TrackRelease {
+  // Release notes ride on the NEW release only; carried releases keep whatever
+  // notes Play already had (cleanRelease passes them through untouched).
+  const notes = request.releaseNotes && request.releaseNotes.length > 0
+    ? { releaseNotes: request.releaseNotes.map((note) => ({ language: note.language, text: note.text })) }
+    : {};
   if (request.rolloutPercent < 100) {
     if (request.handsTrack !== "production") {
       throw new PlayAdapterError(400, "rollout_track_invalid", "Partial rollout is supported only on the production track");
@@ -77,9 +122,10 @@ function requestedRelease(request: PromotionRequest): TrackRelease {
       versionCodes: [String(request.versionCode)],
       status: "inProgress",
       userFraction: request.rolloutPercent / 100,
+      ...notes,
     };
   }
-  return { versionCodes: [String(request.versionCode)], status: "completed" };
+  return { versionCodes: [String(request.versionCode)], status: "completed", ...notes };
 }
 
 function hashingBody(
@@ -341,19 +387,28 @@ export class GooglePlayClient {
     return body;
   }
 
-  private async uploadSymbols(request: PromotionRequest, editId: string): Promise<void> {
-    const symbols = request.symbols;
-    if (!symbols) return;
-    const local = hashingBody(symbols.body, MAX_SYMBOLS_SIZE_BYTES, {
-      tooLargeCode: "symbols_too_large",
-      tooLargeMessage: "Native debug symbols exceed the Google Play maximum size",
-      incompleteCode: "symbols_integrity_mismatch",
-      incompleteMessage: "Google Play did not consume the complete native debug symbols stream",
+  /**
+   * edits.deobfuscationfiles.upload for one declared file, inside the open edit.
+   * symbolType selects both the URL path segment and the acknowledgement Google
+   * must return, so a proguard upload can never be accepted on a nativeCode ack.
+   */
+  private async uploadDeobfuscationFile(
+    request: PromotionRequest,
+    editId: string,
+    symbolType: DeobfuscationSymbolType,
+    file: PromotionSymbolsRequest,
+  ): Promise<DeobfuscationFileResult> {
+    const kind = DEOBFUSCATION_FILE_KINDS[symbolType];
+    const local = hashingBody(file.body, MAX_SYMBOLS_SIZE_BYTES, {
+      tooLargeCode: kind.tooLargeCode,
+      tooLargeMessage: `${kind.label} exceed the Google Play maximum size`,
+      incompleteCode: kind.integrityCode,
+      incompleteMessage: `Google Play did not consume the complete ${kind.label} stream`,
     });
     let response: Response;
     try {
       response = await this.fetchImpl(
-        `${UPLOAD_ROOT}/applications/${encodeURIComponent(request.packageName)}/edits/${encodeURIComponent(editId)}/apks/${request.versionCode}/deobfuscationFiles/nativeCode?uploadType=media`,
+        `${UPLOAD_ROOT}/applications/${encodeURIComponent(request.packageName)}/edits/${encodeURIComponent(editId)}/apks/${request.versionCode}/deobfuscationFiles/${symbolType}?uploadType=media`,
         {
           method: "POST",
           headers: {
@@ -366,21 +421,22 @@ export class GooglePlayClient {
       );
     } catch (error) {
       if (error instanceof PlayAdapterError) throw error;
-      throw new PlayAdapterError(502, "play_symbols_unavailable", "Google Play native debug symbols upload failed");
+      throw new PlayAdapterError(502, kind.unavailableCode, `Google Play ${kind.label} upload failed`);
     }
     const body = await response.json().catch(() => null) as { deobfuscationFile?: { symbolType?: string } } | null;
     if (!response.ok) {
-      throw playRejection(response.status, body, "upload_symbols");
+      throw playRejection(response.status, body, kind.stage);
     }
     const hashResult = local.digest();
-    if (hashResult.size !== symbols.expectedSize || hashResult.sha256 !== symbols.expectedSha256) {
-      throw new PlayAdapterError(409, "symbols_integrity_mismatch", "Streamed native debug symbols did not match the Hands identity");
+    if (hashResult.size !== file.expectedSize || hashResult.sha256 !== file.expectedSha256) {
+      throw new PlayAdapterError(409, kind.integrityCode, `Streamed ${kind.label} did not match the Hands identity`);
     }
     // Discovery documents no post-commit GET for deobfuscation files: this
     // upload response is the only provider-side acknowledgement available.
-    if (body?.deobfuscationFile?.symbolType !== "nativeCode") {
-      throw new PlayAdapterError(502, "play_symbols_malformed", "Google Play did not acknowledge a nativeCode deobfuscation file");
+    if (body?.deobfuscationFile?.symbolType !== symbolType) {
+      throw new PlayAdapterError(502, kind.malformedCode, `Google Play did not acknowledge a ${symbolType} deobfuscation file`);
     }
+    return { symbol_type: symbolType, sha256: hashResult.sha256, size_bytes: hashResult.size, uploaded: true };
   }
 
   private async updateTrack(request: PromotionRequest, editId: string, current: TrackResource): Promise<void> {
@@ -561,6 +617,10 @@ export class GooglePlayClient {
     const editId = await this.createEdit(request.packageName);
     let commitAttempted = false;
     let bundleUploaded = true;
+    const declaredFiles: Array<[DeobfuscationSymbolType, PromotionSymbolsRequest]> = [];
+    if (request.symbols) declaredFiles.push(["nativeCode", request.symbols]);
+    if (request.mapping) declaredFiles.push(["proguard", request.mapping]);
+    const deobfuscationFiles: DeobfuscationFileResult[] = [];
     // Reset per promote: a reused client must never report a previous app's lookup.
     this.lastBundleLookup = null;
     try {
@@ -572,7 +632,23 @@ export class GooglePlayClient {
       bundleUploaded = !(await this.bundleAlreadyOnPlay(request.packageName, editId, request));
       if (bundleUploaded) {
         await this.uploadBundle(request, editId);
-        await this.uploadSymbols(request, editId);
+        for (const [symbolType, file] of declaredFiles) {
+          deobfuscationFiles.push(await this.uploadDeobfuscationFile(request, editId, symbolType, file));
+        }
+      } else {
+        // Play already holds this exact bundle (an earlier promote uploaded it and
+        // its files). Release the unread streams so the caller's tee does not
+        // buffer them, and report the skip instead of claiming an upload.
+        for (const [symbolType, file] of declaredFiles) {
+          await file.body.cancel().catch(() => undefined);
+          deobfuscationFiles.push({
+            symbol_type: symbolType,
+            sha256: file.expectedSha256,
+            size_bytes: file.expectedSize,
+            uploaded: false,
+            skipped_reason: "bundle_already_on_play",
+          });
+        }
       }
       // Symbols attach to the bundle's versionCode inside the same edit and
       // must land before the track update; any failure here runs the existing
@@ -596,6 +672,11 @@ export class GooglePlayClient {
       track: request.handsTrack,
       sha256: request.expectedSha256,
       rollout_percent: request.rolloutPercent,
+      // One entry per declared file, in upload order: what Play acknowledged or why
+      // it was skipped. Empty when Hands declared none.
+      deobfuscation_files: deobfuscationFiles,
+      // The languages sent as releaseNotes on the new track release (empty: none).
+      release_notes_languages: (request.releaseNotes ?? []).map((note) => note.language),
     };
   }
 }
