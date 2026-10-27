@@ -69,8 +69,16 @@ interface GooglePlayAdapterService {
       sha256: string;
       size_bytes: number;
       uploaded: boolean;
-      skipped_reason?: "bundle_already_on_play";
+      edit?: "promotion" | "existing_bundle";
+      attempt?: "rejected";
+      stage?: string;
+      error_code?: string;
+      http_status?: number;
+      provider_reason?: string;
+      provider_cause?: string;
     }>;
+    /** false when Play already held this exact bundle and only the track was edited. */
+    bundle_uploaded?: boolean;
     release_notes_languages?: string[];
   }>>;
 }

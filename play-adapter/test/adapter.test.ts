@@ -86,6 +86,10 @@ interface GoogleFixtureOptions {
   symbolsMalformed?: boolean;
   /** symbolType Google echoes for a proguard upload (default: proguard). */
   mappingAckType?: string;
+  /** Reject the proguard upload with this HTTP status. */
+  mappingStatus?: number;
+  /** Reject the commit of this edit id with 403 EDIT_IN_REVIEW-style prose. */
+  failCommitOf?: string;
 }
 
 function googleFixture(options: GoogleFixtureOptions = {}) {
@@ -157,6 +161,13 @@ function googleFixture(options: GoogleFixtureOptions = {}) {
       return Response.json({ versionCode: options.uploadVersionCode ?? 42, sha256: options.uploadSha ?? bytesToHex(sha256(uploaded)) });
     }
     if (url.includes("/deobfuscationFiles/proguard")) {
+      if (options.mappingStatus) {
+        // Answer without reading the body, as Google may for an early refusal.
+        return Response.json(
+          { error: { errors: [{ reason: "insufficientPermissions" }], code: options.mappingStatus, message: "redacted-provider-text" } },
+          { status: options.mappingStatus },
+        );
+      }
       const uploaded = new Uint8Array(await new Response(init.body).arrayBuffer());
       mappingUploads.push({ sha256: bytesToHex(sha256(uploaded)), size: uploaded.byteLength });
       return Response.json({ deobfuscationFile: { symbolType: options.mappingAckType ?? "proguard" } });
@@ -179,6 +190,12 @@ function googleFixture(options: GoogleFixtureOptions = {}) {
     }
     if (method === "POST" && url.includes(":commit?")) {
       if (options.commitThrows) throw new Error("ambiguous network failure");
+      if (options.failCommitOf && url.includes(`/edits/${options.failCommitOf}:commit`)) {
+        return Response.json(
+          { error: { code: 403, message: "Cannot commit the edit because another change is already in review." } },
+          { status: 403 },
+        );
+      }
       return Response.json({ id: "edit-1" });
     }
     return Response.json({ error: "unexpected request" }, { status: 500 });
@@ -436,19 +453,97 @@ describe("Google Play adapter RPC service", () => {
     expect(fixture.fetchImpl).not.toHaveBeenCalled();
   });
 
-  it("reports declared files as skipped, not uploaded, when Play already holds the bundle", async () => {
+  function stepsOf(fixture: ReturnType<typeof googleFixture>) {
+    return fixture.requests.map((request) => {
+      const edit = /\/edits\/([^/:?]+)/.exec(request.url)?.[1] ?? "";
+      if (request.method === "POST" && /\/edits$/.test(request.url)) return "create";
+      if (request.url.includes("/bundles?uploadType=media")) return `bundle@${edit}`;
+      if (request.url.includes("/deobfuscationFiles/nativeCode")) return `symbols@${edit}`;
+      if (request.url.includes("/deobfuscationFiles/proguard")) return `mapping@${edit}`;
+      if (request.method === "PUT") return `track@${edit}`;
+      if (request.url.includes(":commit?")) return `commit@${edit}`;
+      if (request.method === "DELETE") return `delete@${edit}`;
+      return null;
+    }).filter(Boolean);
+  }
+
+  it("still uploads native symbols and the mapping when Play already holds the bundle, in their own edit before the release edit", async () => {
+    // Real case: receipt d5df9591 -- the bundle was pushed before mappings were
+    // sent, so "bundle already on Play" must not imply "mapping already on Play".
     const fixture = googleFixture({ trackMaximum: 0 });
+    fixture.alreadyOnPlay(42, digest);
+    const service = createPlayAdapterService({ fetchImpl: fixture.fetchImpl, nowSeconds: () => NOW });
+    const result = await service.promote(
+      promotion({ symbols: symbolsDeclaration(), mapping: mappingDeclaration() }),
+      body(), symbolsBody(), environment(), mappingBody(),
+    );
+    expect(result).toMatchObject({ ok: true, value: { edit_id: "edit-2", bundle_uploaded: false, deobfuscation_files: [
+      { symbol_type: "nativeCode", sha256: symbolsDigest, uploaded: true, edit: "existing_bundle" },
+      { symbol_type: "proguard", sha256: mappingDigest, uploaded: true, edit: "existing_bundle" },
+    ] } });
+    expect(fixture.mappingUploads).toEqual([{ sha256: mappingDigest, size: mappingBytes.byteLength }]);
+    expect(stepsOf(fixture)).toEqual([
+      "create", "symbols@edit-1", "mapping@edit-1", "commit@edit-1",
+      "create", "track@edit-2", "commit@edit-2",
+      "create", // readback
+      "delete@edit-3",
+    ]);
+  });
+
+  it("does not fail the promote when Play refuses the mapping for a bundle it already holds, and reports the refusal", async () => {
+    const fixture = googleFixture({ trackMaximum: 0, mappingStatus: 403 });
     fixture.alreadyOnPlay(42, digest);
     const service = createPlayAdapterService({ fetchImpl: fixture.fetchImpl, nowSeconds: () => NOW });
     const stream = mappingBody();
     const result = await service.promote(promotion({ mapping: mappingDeclaration() }), body(), null, environment(), stream);
-    expect(result).toMatchObject({ ok: true, value: { bundle_uploaded: false, deobfuscation_files: [
-      { symbol_type: "proguard", sha256: mappingDigest, uploaded: false, skipped_reason: "bundle_already_on_play" },
-    ] } });
-    expect(fixture.mappingUploads).toHaveLength(0);
-    // The unread stream is released so the caller's tee never buffers it.
+    expect(result).toMatchObject({ ok: true, value: { edit_id: "edit-2", bundle_uploaded: false } });
+    const [file] = (result as { ok: true; value: { deobfuscation_files: unknown[] } }).value.deobfuscation_files;
+    expect(file).toEqual({
+      symbol_type: "proguard", sha256: mappingDigest, size_bytes: mappingBytes.byteLength,
+      uploaded: false, edit: "existing_bundle", attempt: "rejected", stage: "upload_mapping",
+      error_code: "play_api_rejected", http_status: 403, provider_reason: "insufficientPermissions", provider_cause: "OTHER",
+    });
+    expect(JSON.stringify(result)).not.toContain("redacted-provider-text");
+    // Nothing was accepted, so the side edit is deleted, never committed; the release still commits.
+    expect(stepsOf(fixture)).toEqual([
+      "create", "mapping@edit-1", "delete@edit-1",
+      "create", "track@edit-2", "commit@edit-2",
+      "create", "delete@edit-3",
+    ]);
+    // The unread mapping stream is released, so the caller's tee stops buffering.
     expect(stream.locked).toBe(false);
     await expect(stream.getReader().read()).resolves.toMatchObject({ done: true });
+  });
+
+  it("reports a refused side-edit commit as rejected at commit_edit and still ships the release", async () => {
+    const fixture = googleFixture({ trackMaximum: 0, failCommitOf: "edit-1" });
+    fixture.alreadyOnPlay(42, digest);
+    const service = createPlayAdapterService({ fetchImpl: fixture.fetchImpl, nowSeconds: () => NOW });
+    const result = await service.promote(promotion({ mapping: mappingDeclaration() }), body(), null, environment(), mappingBody());
+    expect(result).toMatchObject({ ok: true, value: { edit_id: "edit-2", deobfuscation_files: [{
+      symbol_type: "proguard", uploaded: false, attempt: "rejected", stage: "commit_edit",
+      error_code: "play_api_rejected", provider_cause: "EDIT_IN_REVIEW",
+    }] } });
+    expect(stepsOf(fixture)).toContain("commit@edit-2");
+  });
+
+  it("still fails closed on Hands' own integrity mismatch when the bundle is already on Play", async () => {
+    const fixture = googleFixture({ trackMaximum: 0 });
+    fixture.alreadyOnPlay(42, digest);
+    const service = createPlayAdapterService({ fetchImpl: fixture.fetchImpl, nowSeconds: () => NOW });
+    const result = await service.promote(
+      promotion({ mapping: mappingDeclaration({ expectedSha256: "e".repeat(64) }) }), body(), null, environment(), mappingBody(),
+    );
+    expect(result).toMatchObject({ ok: false, error: { code: "mapping_integrity_mismatch" } });
+    expect(stepsOf(fixture)).toEqual(["create", "mapping@edit-1", "delete@edit-1"]);
+  });
+
+  it("keeps a new bundle fail-closed when Play refuses its mapping", async () => {
+    const fixture = googleFixture({ mappingStatus: 403 });
+    const service = createPlayAdapterService({ fetchImpl: fixture.fetchImpl, nowSeconds: () => NOW });
+    const result = await service.promote(promotion({ mapping: mappingDeclaration() }), body(), null, environment(), mappingBody());
+    expect(result).toMatchObject({ ok: false, error: { code: "play_api_rejected", cause: { stage: "upload_mapping" } } });
+    expect(stepsOf(fixture)).toEqual(["create", "bundle@edit-1", "mapping@edit-1", "delete@edit-1"]);
   });
 
   it("puts release notes on the new track release only", async () => {

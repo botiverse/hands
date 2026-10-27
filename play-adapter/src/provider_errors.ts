@@ -24,7 +24,12 @@ export function playRequestStage(url: string, method = "GET"): string {
   return "play_request";
 }
 
-export function playRejection(status: number, body: unknown, stage: string): PlayAdapterError {
+/**
+ * Google's documented `errors[].reason` / `details[].reason` identifiers in a
+ * rejection body, allowlisted (REASONS) and joined; "unspecified" when none.
+ * Identifiers only -- never Google's prose.
+ */
+export function playRejectionReason(body: unknown): string {
   const error = body && typeof body === "object" ? (body as Record<string, unknown>).error : null;
   const reasons = new Set<string>();
   if (error && typeof error === "object") {
@@ -38,7 +43,12 @@ export function playRejection(status: number, body: unknown, stage: string): Pla
       }
     }
   }
-  const reason = [...reasons].sort().join(",") || "unspecified";
+  return [...reasons].sort().join(",") || "unspecified";
+}
+
+export function playRejection(status: number, body: unknown, stage: string): PlayAdapterError {
+  const error = body && typeof body === "object" ? (body as Record<string, unknown>).error : null;
+  const reason = playRejectionReason(body);
   console.warn("hands_play_rejection", JSON.stringify({ stage, status, reason, provider: providerDiagnostic(body) }));
   // `reason` is only a documented identifier, and a validation rejection reports
   // `badRequest` for causes as different as a duplicate completed release and a
