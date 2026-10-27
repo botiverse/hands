@@ -1,3 +1,5 @@
+import { sha256 } from "@noble/hashes/sha256";
+import { bytesToHex } from "@noble/hashes/utils";
 import { PlayAdapterError } from "./errors";
 
 // Only documented error identifiers cross the provider boundary. Never expose
@@ -14,6 +16,10 @@ export function playRequestStage(url: string, method = "GET"): string {
   const path = new URL(url).pathname;
   if (path.endsWith("/edits") && method === "POST") return "create_edit";
   if (path.endsWith(":commit")) return "commit_edit";
+  if (path.endsWith(":validate")) return "validate_edit";
+  if (path.endsWith("/details")) return "get_details";
+  if (path.endsWith("/listings")) return "list_listings";
+  if (path.includes("/listings/")) return method === "PUT" ? "update_listing" : method === "DELETE" ? "delete_listing" : "get_listing";
   if (path.endsWith("/bundles")) return "upload_bundle";
   if (path.includes("/deobfuscationFiles/proguard")) return "upload_mapping";
   if (path.includes("/deobfuscationFiles/")) return "upload_symbols";
@@ -55,13 +61,79 @@ export function playRejection(status: number, body: unknown, stage: string): Pla
   // reused version code. The classified cause travels with the error so the caller
   // -- and the receipt it writes -- carries it too, without needing log access.
   const envelopeMessage = error && typeof error === "object" ? (error as Record<string, unknown>).message : null;
-  const providerCause = typeof envelopeMessage === "string" ? classifyProviderMessage(envelopeMessage) : undefined;
+  // Structured identifiers first (stable across wording and locale), message text second.
+  const structured = classifyStructuredIdentifiers(body);
+  const providerCause = structured
+    ?? (typeof envelopeMessage === "string" ? classifyProviderMessage(envelopeMessage) : undefined);
   return new PlayAdapterError(
     [400, 401, 403, 404].includes(status) ? 403 : 502,
     "play_api_rejected",
     `Google Play API request failed with ${status} (stage=${stage}; reason=${reason})`,
-    { stage, ...(providerCause ? { provider_cause: providerCause } : {}) },
+    {
+      stage,
+      ...(providerCause ? { provider_cause: providerCause, cause_source: structured ? "structured" as const : "message" as const } : {}),
+      ...(typeof envelopeMessage === "string"
+        ? { message_sha256: bytesToHex(sha256(new TextEncoder().encode(envelopeMessage))), message_length: envelopeMessage.length }
+        : {}),
+    },
   );
+}
+
+/**
+ * Edit-state causes recognised from Google's structured identifiers:
+ * `error.status`, `errors[].reason` and `details[].reason` (google.rpc.ErrorInfo).
+ * Google does not document a specific identifier for "changes in review" or
+ * "changes not sent for review" in androidpublisher, so these match any
+ * identifier naming the condition; each value is shape-checked as an identifier
+ * first, so no provider prose is ever matched here.
+ */
+// Same order as the text layer: NOT_SENT_FOR_REVIEW before IN_REVIEW per identifier;
+// when both states are named, EDIT_IN_REVIEW wins (classified by the remedy that works).
+const STRUCTURED_CAUSES: Array<[RegExp, string]> = [
+  [/NOT_?SENT_?FOR_?REVIEW/i, "CHANGES_NOT_SENT_FOR_REVIEW"],
+  [/(?:^|_)IN_?REVIEW(?:$|_)|InReview/, "EDIT_IN_REVIEW"],
+];
+
+function classifyStructuredIdentifiers(body: unknown): string | undefined {
+  const error = body && typeof body === "object" ? (body as Record<string, unknown>).error : null;
+  if (!error || typeof error !== "object") return undefined;
+  const e = error as Record<string, unknown>;
+  const identifiers: string[] = [];
+  if (typeof e.status === "string") identifiers.push(e.status);
+  for (const items of [e.errors, e.details]) {
+    if (!Array.isArray(items)) continue;
+    for (const item of items.slice(0, 16)) {
+      const value = item && typeof item === "object" ? (item as Record<string, unknown>).reason : null;
+      if (typeof value === "string") identifiers.push(value);
+    }
+  }
+  const found = new Set<string>();
+  for (const id of identifiers.filter((value) => /^[A-Za-z][A-Za-z0-9._]{0,60}$/.test(value))) {
+    for (const [pattern, cause] of STRUCTURED_CAUSES) {
+      if (pattern.test(id)) { found.add(cause); break; }
+    }
+  }
+  // Both states named: classify by the remedy that works (wait), as the text layer does.
+  if (found.has("EDIT_IN_REVIEW")) return "EDIT_IN_REVIEW";
+  if (found.has("CHANGES_NOT_SENT_FOR_REVIEW")) return "CHANGES_NOT_SENT_FOR_REVIEW";
+  return undefined;
+}
+
+/**
+ * The edit-state patterns Hands tries, as constant descriptions derived from the
+ * patterns themselves (so they cannot drift). Returned in play_edit_state_unknown
+ * so a new Google wording can be added without guessing what was checked.
+ */
+export function editStatePatternsTried(): string[] {
+  const relevant = (cause: string) => cause === "EDIT_IN_REVIEW" || cause === "CHANGES_NOT_SENT_FOR_REVIEW";
+  // In match order. Prefix = layer: structured identifiers (error.status,
+  // errors[].reason, details[].reason) first, then the message text.
+  return [
+    ...STRUCTURED_CAUSES.filter(([, cause]) => relevant(cause))
+      .map(([pattern, cause]) => `structured:/${pattern.source}/${pattern.flags} -> ${cause}`),
+    ...PROVIDER_CAUSES.filter(([, cause]) => relevant(cause))
+      .map(([pattern, cause]) => `text:/${pattern.source}/${pattern.flags} -> ${cause}`),
+  ];
 }
 
 /**
@@ -166,6 +238,9 @@ function itemKeyIsIdentifier(key: string, value: string): boolean {
 // Order matters: the first match wins, so the more specific causes precede the
 // broader ones. "Version code X has already been used" must read as DUPLICATE_VERSION
 // rather than VERSION_CODE_CONFLICT, because the two have different remedies.
+const NOT_SENT_TEXT = /changesNotSentForReview|not ?sent for review|unreviewed/i;
+const IN_REVIEW_TEXT = /in review|under review|review.*in progress|ERROR_IF_IN_REVIEW/i;
+
 const PROVIDER_CAUSES: Array<[RegExp, string]> = [
   [/multiple.*completed|more than one completed|only one (?:completed|release)/i, "MULTIPLE_COMPLETED"],
   [/draft/i, "DRAFT_APP_RESTRICTION"],
@@ -175,14 +250,17 @@ const PROVIDER_CAUSES: Array<[RegExp, string]> = [
   // A commit rejected because the app carries unrelated unpublished changes (or a
   // previously rejected submission). Google names this in the message; the remedy is
   // a different commit flag, so it must not read as a generic validation failure.
-  // commitEdit sends changesInReviewBehavior=ERROR_IF_IN_REVIEW, so Google rejects
-  // the commit whenever the app already has an edit under review. This sits ABOVE
-  // CHANGES_NOT_SENT_FOR_REVIEW on purpose: a message can mention both ("not sent
-  // for review" in a phrase that also says "in review"), and the two remedies are
-  // opposite -- one waits for an open review, the other flags the commit. Review
-  // caught the comment promising this order while the code had it the other way.
-  [/in review|under review|review.*in progress|ERROR_IF_IN_REVIEW/i, "EDIT_IN_REVIEW"],
-  [/changesNotSentForReview|not ?sent for review|unreviewed/i, "CHANGES_NOT_SENT_FOR_REVIEW"],
+  // Two edit-state causes with opposite remedies: CHANGES_NOT_SENT_FOR_REVIEW (the
+  // app's changes must be sent for review manually -> commit with
+  // changesNotSentForReview) and EDIT_IN_REVIEW (another change is in review ->
+  // wait; commitEdit sends ERROR_IF_IN_REVIEW). NOT_SENT is checked FIRST, in this
+  // text layer and in STRUCTURED_CAUSES alike: its wording is the more specific
+  // ("not sent for review"), while the in-review patterns are broad enough to also
+  // hit a not-sent message that mentions a review. A message matching BOTH is
+  // decided before this list, by remedy (EDIT_IN_REVIEW): see classifyProviderMessage.
+  // Tests pin both directions and the overlap.
+  [NOT_SENT_TEXT, "CHANGES_NOT_SENT_FOR_REVIEW"],
+  [IN_REVIEW_TEXT, "EDIT_IN_REVIEW"],
   // A track whose testers or countries are not configured yet, or a track that does
   // not exist in the console. Both are console-side setup, not a Hands defect.
   // Deliberately does NOT cover "track does not exist": NOT_FOUND above matches
@@ -196,6 +274,10 @@ const PROVIDER_CAUSES: Array<[RegExp, string]> = [
 ];
 
 function classifyProviderMessage(message: string): string {
+  // A message that says both ("Changes not sent for review because another edit is
+  // in review.") is classified by the remedy that works: sending for review by hand
+  // would fail while another change is in review, so the actionable answer is to wait.
+  if (NOT_SENT_TEXT.test(message) && IN_REVIEW_TEXT.test(message)) return "EDIT_IN_REVIEW";
   for (const [pattern, cause] of PROVIDER_CAUSES) {
     if (pattern.test(message)) return cause;
   }

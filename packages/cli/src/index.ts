@@ -31,6 +31,7 @@ import { registerChannelCommands } from "./commands/channels.js";
 import { registerWebhookCommands } from "./commands/webhooks.js";
 import { registerTestflightCommands } from "./commands/testflight.js";
 import { registerAgcCommands } from "./commands/agc.js";
+import { registerStoreListingCommands } from "./commands/store_listing.js";
 import { registerApiCommand } from "./commands/api.js";
 import { getConfig } from "./lib/config.js";
 import { readEnv } from "./lib/env.js";
@@ -85,6 +86,9 @@ Common recipes:
                                                        OHOS .app → AppGallery invitation-test version
   hands agc submit <app> <submission> --group <id>    Submit it to Huawei review for a test group
   hands agc status <app> <submission>                 Huawei review / testing state (refreshed)
+  hands store-listing pull <app> --out listing.json   Google Play listing text as JSON
+  hands store-listing push <app> --listing listing.json [--commit]
+                                                       Dry-run (default) or commit listing text to Play
   hands logs collect                                  Bundle local CLI logs for a bug report
 
 Every command supports --json for scripts/agents. Full docs:
@@ -122,6 +126,7 @@ registerChannelCommands(program);
 registerWebhookCommands(program);
 registerTestflightCommands(program);
 registerAgcCommands(program);
+registerStoreListingCommands(program);
 registerFeedbackCommands(program);
 registerDeployTokenCommands(program);
 registerLogsCommands(program);

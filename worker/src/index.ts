@@ -236,6 +236,11 @@ import {
   handleRollbackPlayDistribution,
 } from "./routes/play_distribution";
 import {
+  handleGetPlayStoreListing,
+  handleListPlayStoreListingReceipts,
+  handlePushPlayStoreListing,
+} from "./routes/play_store_listing";
+import {
   handleDeleteGooglePlayBinding,
   handleDisableGooglePlayBinding,
   handleEnableGooglePlayBinding,
@@ -1083,6 +1088,20 @@ bindAdmin("get", "/api/apps/:appId/releases/:releaseId/receipts",
 bindAdmin("post", "/api/apps/:appId/releases/:releaseId/receipts/acceptance",
   requireAppRole("publisher"),
   handleCreateAcceptanceReceipt,
+);
+// Store listing text (edits.listings). App-scoped, not release-scoped.
+// Reading opens (and deletes) a Play edit with the app's credential: publisher, like the push.
+bindAdmin("get", "/api/apps/:appId/distributions/play/store-listing",
+  requireAppRole("publisher"),
+  handleGetPlayStoreListing,
+);
+bindAdmin("post", "/api/apps/:appId/distributions/play/store-listing",
+  requireAppRole("publisher"),
+  handlePushPlayStoreListing,
+);
+bindAdmin("get", "/api/apps/:appId/distributions/play/store-listing/receipts",
+  requireAppRole("viewer"),
+  handleListPlayStoreListingReceipts,
 );
 bindAdmin("post", "/api/apps/:appId/google-play-oauth/start", requireAppRole("admin"), handleStartGooglePlayOAuth);
 bindAdmin("get", "/api/google-play/oauth/callback", handleGooglePlayOAuthCallback);

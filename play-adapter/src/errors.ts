@@ -11,6 +11,16 @@
 export type PlayErrorCause = {
   stage?: string;
   provider_cause?: string;
+  /** Where provider_cause came from: Google's structured identifiers, or the message text. */
+  cause_source?: "structured" | "message";
+  /**
+   * Correlation for an unmatched provider message: sha256 + length of Google's
+   * text, never the text itself (provider_errors.ts boundary rule).
+   */
+  message_sha256?: string;
+  message_length?: number;
+  /** For play_edit_state_unknown: the patterns Hands tried, as its own constant descriptions. */
+  tried?: string[];
   /**
    * What the bundle lookup saw, when the failure depends on it.
    *

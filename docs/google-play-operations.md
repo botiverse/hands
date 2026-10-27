@@ -109,6 +109,24 @@ Hands 中的上传校验通过，仅证明文件和所声明的摘要一致，�
 
 提交要求候选 AAB 的 versionCode **大于目标轨道已有最大值，且不超过 2100000000**；空轨道不要求从 1 开始。准备签名候选前先核目标轨道的已有版本，避免产物做好后才发现冲突。完整请求结构见 [公开 API](../public-api-reference/) 和 [OpenAPI](https://hands.build/openapi.json)。
 
+### 商店详情文字（store listing）接口
+
+`POST /api/apps/:appId/distributions/play/store-listing` 让具备应用 publisher 权限的真人或 agent 通过 Hands 修改 Play 商店详情文字，CLI 为 `hands store-listing push`（见公开 CLI 文档）。只开放白名单的 androidpublisher v3 端点：`edits.details.get`（读 defaultLanguage）、`edits.listings.list/update/delete`、`edits.validate`、`edits.commit`、`edits.delete`；不提供通用 path+body 代理，不触碰轨道、release 或 bundle。请求体 `listings[]` 的字段与 Google `Listing` 资源逐字一致（language、title、shortDescription、fullDescription、video，discovery revision 20261027）。
+
+- **校验先于 Play 调用**：language 必须是 Play 商店详情语言（86 个标签，来源 Play Console 帮助 answer/9844778，大小写精确，例如 `iw-IL`、`es-419`，`zh-Hans` 会提示 `zh-CN`）；title ≤30、shortDescription ≤80、fullDescription ≤4000 个字符（answer/9859152，按 Unicode code point 计，全角半角相同），超限拒绝不截断。adapter 在自己的边界再查一遍形状与上限。
+- **一次 push 一个 edit**：开 edit → 读 defaultLanguage 与现有 listings → 计划 diff → 对 create/update 写 `edits.listings.update`（PUT 合并后的完整资源：未提供的字段保留 Play 现值，Google 回应必须原样回显）→ `edits.validate`。`mode:"dry_run"` 随后删除 edit，什么都不改变；`mode:"commit"` 用 `changesInReviewBehavior=ERROR_IF_IN_REVIEW` 提交，再开新 edit 读回核对。全部相同时返回 `no_changes`，不提交。`mode` 必填，无默认值；CLI 默认 dry run，`--commit` 才提交。
+- **审核中**：提交时若 Google 报已有更改在审核，返回 409 `code:"edit_in_review"`、`failure_code:"play_edit_in_review"`，未提交，edit 已删除（Google 说明 ERROR_IF_IN_REVIEW 不会使 edit 失效）。Hands 从不使用默认的 CANCEL_IN_REVIEW_AND_SUBMIT 去取消别人的审核。Google 要求手动送审时返回 `play_changes_not_sent_for_review`；显式传 `changes_not_sent_for_review:true` 会带 `changesNotSentForReview=true` 提交，之后需在 Play Console 送审。提交无应答（网络错误）返回 `play_commit_ambiguous`，不删除 edit，先到 Play Console 核对。
+  - “审核中 / 需手动送审”的识别顺序：先看 Google 的结构化标识（`error.status`、`errors[].reason`、`details[].reason` 即 ErrorInfo，名称含 NOT_SENT_FOR_REVIEW / IN_REVIEW 即命中，与文案语言无关），再回退到英文文案匹配。两层都**先查 NOT_SENT_FOR_REVIEW（需手动送审）、后查 IN_REVIEW（另有更改在审核）**：前者措辞更具体，后者的模式较宽。**同一条消息两者都提到时（如 “Changes not sent for review because another edit is in review.”）按可行的处置判为 IN_REVIEW**：另有更改在审核时手动送审也会失败，能推进的只有等待。单独的 `REVIEW` 两者都不命中。此顺序同样适用于 promote 的错误分类。Google 未公开这两种情况的固定 reason，所以两层都只是尽力识别。
+  - **识别不了就不算成功**：validate 或 commit 被拒且以上模式都不命中（例如德文文案、无结构化 reason），返回 502 `code:"edit_state_unknown"`、`failure_code:"play_edit_state_unknown"`，并写 failed-closed 回执；请到 Play Console 核对。commit 返回 2xx 但响应不是本 edit 的 AppEdit（id 不符、空对象、非 JSON）同样记为 `play_edit_state_unknown`（`provider_cause:"MALFORMED_RESPONSE"`），且不删除 edit。错误详情 `cause.tried` 按匹配顺序列出两层尝试过的模式，由实际正则生成并带层前缀，例如 `structured:/NOT_?SENT_?FOR_?REVIEW/i -> CHANGES_NOT_SENT_FOR_REVIEW`、`text:/in review|…/i -> EDIT_IN_REVIEW`，并附 Google 原文的 `message_sha256` 与 `message_length` 供与运维日志对照；Google 原文本身从不跨出 adapter，也不写入日志或回执。新的文案出现时，把对应模式加到 `play-adapter/src/provider_errors.ts` 即可。
+- **删除语言**：默认不动文件外的语言；`delete_unlisted_languages:true` 才对其调用 `edits.listings.delete`，默认语言永不删除（`listing_default_language_delete`）。
+- **锁与回执**：与 promote 共享“每个包同一时刻只有一个 Hands Play edit”（`play_store_listing_locks` 与 `play_edit_locks` 互相排斥，listing 锁 15 分钟后视为崩溃残留）。每次到达 adapter 的 push 都写入不可变的 `play_store_listing_receipts`（0084 迁移，禁止 UPDATE/DELETE）：操作者、时间、edit id、dry_run/commit、结果、每种语言的动作与变更字段，以及每个字段的 sha256 与字符数（不保存原文、不含凭据）。`GET .../store-listing/receipts` 读取。
+- **设计上可拆分**：adapter 内部的“计划/应用到给定 edit/validate/commit”是独立步骤，以后可增加“复用已有 edit id”的 API，而不改变本接口。
+- **部署顺序（唯一依据，以此为准）：0084 迁移 → Play adapter → Worker → CLI。** 原因：新 Worker 中 promote 的加锁语句会读取 `play_store_listing_locks`，没有 0084 时 promote 会以 `no such table: play_store_listing_locks` 失败，因此迁移必须先于 Worker。
+  1. 先应用 0084 迁移（只新增表）。必须在 Worker 之前：新 Worker 的 promote 加锁语句会读取 `play_store_listing_locks`，表不存在时 promote 会以 `no such table` 失败。迁移需按部署工作流提供 owner handshake。
+  2. 再部署 Play adapter（新增 `readStoreListings` / `pushStoreListings`，旧 Worker 不调用它们）。
+  3. 再部署 Worker。若 adapter 仍是旧版本，Worker 返回 `play_adapter_unavailable`，不会写任何东西到 Play。
+  4. 最后发布 CLI（`hands store-listing`）。
+
 ## 常见问题
 
 | 现象 | 检查或处理 |
