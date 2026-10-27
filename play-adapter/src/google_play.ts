@@ -1,7 +1,7 @@
 import { sha256 } from "@noble/hashes/sha256";
 import { bytesToHex } from "@noble/hashes/utils";
 import { PlayAdapterError } from "./errors";
-import { playRejection, playRequestStage } from "./provider_errors";
+import { playRejection, playRejectionReason, playRequestStage } from "./provider_errors";
 import type {
   DeobfuscationFileResult,
   DeobfuscationSymbolType,
@@ -136,7 +136,11 @@ function hashingBody(
   const hasher = sha256.create();
   let size = 0;
   let finished = false;
+  let control: TransformStreamDefaultController<Uint8Array> | null = null;
   const stream = body.pipeThrough(new TransformStream<Uint8Array, Uint8Array>({
+    start(controller) {
+      control = controller;
+    },
     transform(chunk, controller) {
       size += chunk.byteLength;
       if (size > maxBytes) {
@@ -151,6 +155,15 @@ function hashingBody(
   }));
   return {
     stream,
+    /**
+     * Stop reading the source after Google answered early (e.g. a rejection).
+     * Erroring the transform makes the pipe cancel the source, so the caller's
+     * tee stops buffering bytes nobody will read.
+     */
+    abort() {
+      if (finished) return;
+      try { control?.error(new PlayAdapterError(409, limits.incompleteCode, limits.incompleteMessage)); } catch { /* already closed */ }
+    },
     digest() {
       if (!finished) {
         throw new PlayAdapterError(409, limits.incompleteCode, limits.incompleteMessage);
@@ -391,12 +404,17 @@ export class GooglePlayClient {
    * edits.deobfuscationfiles.upload for one declared file, inside the open edit.
    * symbolType selects both the URL path segment and the acknowledgement Google
    * must return, so a proguard upload can never be accepted on a nativeCode ack.
+   *
+   * mode "strict" throws on any failure (new bundle: the promote fails closed).
+   * mode "soft" returns a provider refusal as attempt:"rejected" instead (bundle
+   * already on Play). Hands' own integrity failures throw in both modes.
    */
   private async uploadDeobfuscationFile(
     request: PromotionRequest,
     editId: string,
     symbolType: DeobfuscationSymbolType,
     file: PromotionSymbolsRequest,
+    mode: "strict" | "soft" = "strict",
   ): Promise<DeobfuscationFileResult> {
     const kind = DEOBFUSCATION_FILE_KINDS[symbolType];
     const local = hashingBody(file.body, MAX_SYMBOLS_SIZE_BYTES, {
@@ -405,6 +423,18 @@ export class GooglePlayClient {
       incompleteCode: kind.integrityCode,
       incompleteMessage: `Google Play did not consume the complete ${kind.label} stream`,
     });
+    const rejected = (fields: Partial<DeobfuscationFileResult>): DeobfuscationFileResult => {
+      local.abort();
+      return {
+        symbol_type: symbolType,
+        sha256: file.expectedSha256,
+        size_bytes: file.expectedSize,
+        uploaded: false,
+        attempt: "rejected",
+        stage: kind.stage,
+        ...fields,
+      };
+    };
     let response: Response;
     try {
       response = await this.fetchImpl(
@@ -421,11 +451,21 @@ export class GooglePlayClient {
       );
     } catch (error) {
       if (error instanceof PlayAdapterError) throw error;
+      if (mode === "soft") return rejected({ error_code: kind.unavailableCode });
       throw new PlayAdapterError(502, kind.unavailableCode, `Google Play ${kind.label} upload failed`);
     }
     const body = await response.json().catch(() => null) as { deobfuscationFile?: { symbolType?: string } } | null;
     if (!response.ok) {
-      throw playRejection(response.status, body, kind.stage);
+      const rejection = playRejection(response.status, body, kind.stage);
+      if (mode === "soft") {
+        return rejected({
+          error_code: rejection.code,
+          http_status: response.status,
+          provider_reason: playRejectionReason(body),
+          ...(rejection.cause_detail?.provider_cause ? { provider_cause: rejection.cause_detail.provider_cause } : {}),
+        });
+      }
+      throw rejection;
     }
     const hashResult = local.digest();
     if (hashResult.size !== file.expectedSize || hashResult.sha256 !== file.expectedSha256) {
@@ -434,9 +474,59 @@ export class GooglePlayClient {
     // Discovery documents no post-commit GET for deobfuscation files: this
     // upload response is the only provider-side acknowledgement available.
     if (body?.deobfuscationFile?.symbolType !== symbolType) {
+      if (mode === "soft") return rejected({ error_code: kind.malformedCode, http_status: response.status });
       throw new PlayAdapterError(502, kind.malformedCode, `Google Play did not acknowledge a ${symbolType} deobfuscation file`);
     }
     return { symbol_type: symbolType, sha256: hashResult.sha256, size_bytes: hashResult.size, uploaded: true };
+  }
+
+  /**
+   * Attach deobfuscation files to a bundle Play ALREADY holds, in their own edit
+   * (the lookup edit), committed or deleted before the release edit is created.
+   *
+   * "Bundle already on Play" says nothing about whether its mapping is: a bundle
+   * pushed by an older Hands (or by hand) has none, and Google offers no GET to
+   * check, so the files are always uploaded. Whether Play accepts a re-upload for
+   * a versionCode is not documented, so a provider refusal here is reported,
+   * never fatal. It runs in a SEPARATE edit so a refused upload can never poison
+   * the release edit's commit, and BEFORE that edit, because committing any edit
+   * invalidates edits opened earlier and because a commit made after the release
+   * commit could hit ERROR_IF_IN_REVIEW on our own just-submitted release.
+   */
+  private async attachToExistingBundle(
+    request: PromotionRequest,
+    editId: string,
+    files: Array<[DeobfuscationSymbolType, PromotionSymbolsRequest]>,
+  ): Promise<DeobfuscationFileResult[]> {
+    let results: DeobfuscationFileResult[] = [];
+    try {
+      for (const [symbolType, file] of files) {
+        results.push({ ...(await this.uploadDeobfuscationFile(request, editId, symbolType, file, "soft")), edit: "existing_bundle" });
+      }
+    } catch (error) {
+      // Hands' own integrity failure (bytes did not match the sealed identity):
+      // nothing is committed and the promote fails closed, as on the new-bundle path.
+      await this.cleanupOrThrow(request.packageName, editId, error);
+    }
+    if (!results.some((result) => result.uploaded)) {
+      await this.deleteEdit(request.packageName, editId).catch(() => undefined);
+      return results;
+    }
+    try {
+      await this.commitEdit(request.packageName, editId);
+    } catch (error) {
+      const known = error instanceof PlayAdapterError ? error : null;
+      results = results.map((result) => result.uploaded ? {
+        ...result,
+        uploaded: false,
+        attempt: "rejected" as const,
+        stage: "commit_edit",
+        error_code: known?.code ?? "play_api_unavailable",
+        ...(known?.cause_detail?.provider_cause ? { provider_cause: known.cause_detail.provider_cause } : {}),
+      } : result);
+      await this.deleteEdit(request.packageName, editId).catch(() => undefined);
+    }
+    return results;
   }
 
   private async updateTrack(request: PromotionRequest, editId: string, current: TrackResource): Promise<void> {
@@ -614,13 +704,13 @@ export class GooglePlayClient {
     if (request.expectedSize > this.maxAabSize) {
       throw new PlayAdapterError(413, "aab_too_large", "AAB exceeds the configured maximum size");
     }
-    const editId = await this.createEdit(request.packageName);
+    let editId = await this.createEdit(request.packageName);
     let commitAttempted = false;
     let bundleUploaded = true;
     const declaredFiles: Array<[DeobfuscationSymbolType, PromotionSymbolsRequest]> = [];
     if (request.symbols) declaredFiles.push(["nativeCode", request.symbols]);
     if (request.mapping) declaredFiles.push(["proguard", request.mapping]);
-    const deobfuscationFiles: DeobfuscationFileResult[] = [];
+    let deobfuscationFiles: DeobfuscationFileResult[] = [];
     // Reset per promote: a reused client must never report a previous app's lookup.
     this.lastBundleLookup = null;
     try {
@@ -630,29 +720,24 @@ export class GooglePlayClient {
       // the whole operation. Check every track first and skip the upload when this
       // versionCode is already present anywhere.
       bundleUploaded = !(await this.bundleAlreadyOnPlay(request.packageName, editId, request));
+    } catch (error) {
+      await this.cleanupOrThrow(request.packageName, editId, error);
+    }
+    if (!bundleUploaded && declaredFiles.length > 0) {
+      // The bundle is on Play, but that does not mean its files are: upload them
+      // anyway, fail-soft, in the lookup edit; the release gets a fresh edit.
+      deobfuscationFiles = await this.attachToExistingBundle(request, editId, declaredFiles);
+      editId = await this.createEdit(request.packageName);
+    }
+    try {
       if (bundleUploaded) {
         await this.uploadBundle(request, editId);
+        // New bundle: files attach in the release edit before the track update,
+        // fail-closed; any failure runs cleanupOrThrow, so nothing half-commits.
         for (const [symbolType, file] of declaredFiles) {
-          deobfuscationFiles.push(await this.uploadDeobfuscationFile(request, editId, symbolType, file));
-        }
-      } else {
-        // Play already holds this exact bundle (an earlier promote uploaded it and
-        // its files). Release the unread streams so the caller's tee does not
-        // buffer them, and report the skip instead of claiming an upload.
-        for (const [symbolType, file] of declaredFiles) {
-          await file.body.cancel().catch(() => undefined);
-          deobfuscationFiles.push({
-            symbol_type: symbolType,
-            sha256: file.expectedSha256,
-            size_bytes: file.expectedSize,
-            uploaded: false,
-            skipped_reason: "bundle_already_on_play",
-          });
+          deobfuscationFiles.push({ ...(await this.uploadDeobfuscationFile(request, editId, symbolType, file)), edit: "promotion" });
         }
       }
-      // Symbols attach to the bundle's versionCode inside the same edit and
-      // must land before the track update; any failure here runs the existing
-      // cleanupOrThrow path, so a rejected zip can never half-commit.
       const current = await this.getTrack(request.packageName, editId, request.playTrack);
       await this.updateTrack(request, editId, current);
       commitAttempted = true;
@@ -672,8 +757,9 @@ export class GooglePlayClient {
       track: request.handsTrack,
       sha256: request.expectedSha256,
       rollout_percent: request.rolloutPercent,
-      // One entry per declared file, in upload order: what Play acknowledged or why
-      // it was skipped. Empty when Hands declared none.
+      // One entry per declared file, in upload order: acknowledged (uploaded:true)
+      // or refused (attempt:"rejected", bundle-already-on-Play path only). Empty
+      // when Hands declared none.
       deobfuscation_files: deobfuscationFiles,
       // The languages sent as releaseNotes on the new track release (empty: none).
       release_notes_languages: (request.releaseNotes ?? []).map((note) => note.language),

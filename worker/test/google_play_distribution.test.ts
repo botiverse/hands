@@ -947,9 +947,9 @@ describe("Play promotion route", () => {
       result: { status: "success" },
     });
     expect(JSON.stringify(payload)).not.toMatch(/distribution[_-]?cert/i);
-    expect(payload.symbols).toBeNull();
     // Absence is recorded explicitly, not left for the reader to infer.
-    expect(payload.mapping).toEqual({ present: false, reason: "no_mapping_asset" });
+    expect(payload.symbols).toEqual({ present: false, uploaded: false, skipped_reason: "no_symbols_asset" });
+    expect(payload.mapping).toEqual({ present: false, uploaded: false, skipped_reason: "no_mapping_asset" });
     expect(payload.release_notes).toEqual({ present: false, reason: "no_changelog" });
   });
 
@@ -984,6 +984,7 @@ describe("Play promotion route", () => {
       "SELECT payload_json FROM release_receipts WHERE kind='play-promotion' AND verdict='success'",
     ).get() as { payload_json: string }).payload_json));
     expect(payload.symbols).toEqual({
+      present: true,
       sha256: sha(harness.symbols),
       size_bytes: harness.symbols.byteLength,
       uploaded: true,
@@ -1026,7 +1027,7 @@ describe("Play promotion route", () => {
       ],
     });
     const payload = successPayload(harness);
-    expect(payload.symbols).toBeNull();
+    expect(payload.symbols).toMatchObject({ present: false, skipped_reason: "no_symbols_asset" });
     expect(payload.mapping).toEqual({
       present: true,
       sha256: sha(mapping),
@@ -1041,32 +1042,59 @@ describe("Play promotion route", () => {
     expect(payload.release_notes.reason).toBeUndefined();
   });
 
-  it("records a mapping the adapter skipped (bundle already on Play) or did not acknowledge as not uploaded", async () => {
-    for (const reported of [
-      { files: [{ symbol_type: "proguard", sha256: "", size_bytes: 0, uploaded: false, skipped_reason: "bundle_already_on_play" }], reason: "bundle_already_on_play" },
-      { files: undefined, reason: "not_acknowledged" },
-    ] as const) {
-      const harness = await readyRelease();
-      attachSealedMapping(harness);
-      harness.sqlite.prepare("UPDATE releases SET changelog = ? WHERE id = 'release'").run(JSON.stringify({ en: "Fixes" }));
-      harness.env.PLAY_RELEASE_SERVICE = playAdapterStub({
-        promote: async (_input, stream, _symbolsStream, mappingStream) => {
-          const bytes = new Uint8Array(await new Response(stream).arrayBuffer());
-          if (mappingStream) await mappingStream.cancel();
-          return { ok: true, value: {
-            edit_id: "edit-1", package_name: "build.raft.app", version_code: 42,
-            track: "internal", sha256: sha(bytes), rollout_percent: 100,
-            ...(reported.files ? { deobfuscation_files: [...reported.files], release_notes_languages: ["en-US"] } : {}),
-          } };
-        },
-      });
-      expect((await promoteInternal(harness)).status).toBe(200);
-      const payload = successPayload(harness);
-      expect(payload.mapping).toMatchObject({ present: true, uploaded: false, provider_ack: null, skipped_reason: reported.reason });
-      expect(payload.release_notes).toMatchObject(reported.files
-        ? { present: true, sent: ["en-US"], skipped: [] }
-        : { present: true, sent: [], requested: ["en-US"], reason: "not_acknowledged" });
-    }
+  it("records a mapping Play refused on an existing bundle as attempt=rejected, keeping only identifier fields", async () => {
+    const harness = await readyRelease();
+    const mapping = attachSealedMapping(harness);
+    harness.env.PLAY_RELEASE_SERVICE = playAdapterStub({
+      promote: async (_input, stream, _symbolsStream, mappingStream) => {
+        const bytes = new Uint8Array(await new Response(stream).arrayBuffer());
+        if (mappingStream) await mappingStream.cancel();
+        return { ok: true, value: {
+          edit_id: "edit-2", package_name: "build.raft.app", version_code: 42,
+          track: "internal", sha256: sha(bytes), rollout_percent: 100, bundle_uploaded: false,
+          deobfuscation_files: [{
+            symbol_type: "proguard", sha256: sha(mapping), size_bytes: mapping.byteLength, uploaded: false,
+            edit: "existing_bundle", attempt: "rejected", stage: "upload_mapping", error_code: "play_api_rejected",
+            http_status: 403, provider_reason: "insufficientPermissions", provider_cause: "OTHER",
+            // A field outside the contract, and one with provider prose, must not reach the receipt.
+            message: "Google said something", ...({ provider_cause_text: "free text <script>" } as object),
+          } as never],
+          release_notes_languages: [],
+        } };
+      },
+    });
+    expect((await promoteInternal(harness)).status).toBe(200);
+    const payload = successPayload(harness);
+    expect(payload.mapping).toEqual({
+      present: true, sha256: sha(mapping), size_bytes: mapping.byteLength, edit: "existing_bundle",
+      uploaded: false, attempt: "rejected", stage: "upload_mapping", error_code: "play_api_rejected",
+      http_status: 403, provider_reason: "insufficientPermissions", provider_cause: "OTHER",
+      provider_ack: null, post_commit_get: false,
+    });
+    expect(payload.play.bundle_uploaded).toBe(false);
+    expect(JSON.stringify(payload)).not.toContain("Google said");
+    expect(JSON.stringify(payload)).not.toContain("bundle_already_on_play");
+  });
+
+  it("records a mapping the adapter did not report (older adapter) as not_acknowledged", async () => {
+    const harness = await readyRelease();
+    attachSealedMapping(harness);
+    harness.sqlite.prepare("UPDATE releases SET changelog = ? WHERE id = 'release'").run(JSON.stringify({ en: "Fixes" }));
+    harness.env.PLAY_RELEASE_SERVICE = playAdapterStub({
+      promote: async (_input, stream, _symbolsStream, mappingStream) => {
+        const bytes = new Uint8Array(await new Response(stream).arrayBuffer());
+        if (mappingStream) await mappingStream.cancel();
+        return { ok: true, value: {
+          edit_id: "edit-1", package_name: "build.raft.app", version_code: 42,
+          track: "internal", sha256: sha(bytes), rollout_percent: 100,
+        } };
+      },
+    });
+    expect((await promoteInternal(harness)).status).toBe(200);
+    const payload = successPayload(harness);
+    expect(payload.mapping).toMatchObject({ present: true, uploaded: false, attempt: "not_acknowledged", provider_ack: null });
+    expect(payload.mapping.skipped_reason).toBeUndefined();
+    expect(payload.release_notes).toMatchObject({ present: true, sent: [], requested: ["en-US"], reason: "not_acknowledged" });
   });
 
   it.each([

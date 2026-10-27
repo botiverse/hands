@@ -155,13 +155,27 @@ interface AdapterDeobfuscationFile {
   sha256?: string;
   size_bytes?: number;
   uploaded?: boolean;
-  skipped_reason?: string;
+  edit?: string;
+  attempt?: string;
+  stage?: string;
+  error_code?: string;
+  http_status?: number;
+  provider_reason?: string;
+  provider_cause?: string;
 }
+
+/** Adapter-derived identifiers only; anything else is dropped, never persisted. */
+const REJECTION_FIELD_RE = /^[A-Za-z][A-Za-z0-9._,]{0,120}$/;
 
 /**
  * Receipt entry for one declared deobfuscation file, from what the adapter
- * acknowledged -- never assumed. An adapter that does not report the file (e.g.
- * an older deploy) yields uploaded:false with reason not_acknowledged.
+ * reported -- never assumed. Exactly one of:
+ *   uploaded:true                       Google acknowledged the symbolType;
+ *   uploaded:false, attempt:"rejected"  Hands tried, Google refused (bundle was
+ *                                       already on Play, so the promote went on);
+ *   uploaded:false, attempt:"not_acknowledged"  the adapter reported nothing
+ *                                       usable (e.g. an older adapter deploy).
+ * An absent asset is recorded by the caller as skipped_reason.
  */
 function receiptDeobfuscationFile(
   asset: ReleaseSymbolsRow,
@@ -170,16 +184,32 @@ function receiptDeobfuscationFile(
 ) {
   const entry = (reported ?? []).find((item) => item?.symbol_type === symbolType);
   const uploaded = entry?.uploaded === true && entry.sha256 === asset.file_hash && entry.size_bytes === asset.size_bytes;
-  return {
-    sha256: asset.file_hash,
-    size_bytes: asset.size_bytes,
-    uploaded,
-    provider_ack: uploaded ? `deobfuscationFile.symbolType=${symbolType}` : null,
-    ...(uploaded ? {} : {
-      skipped_reason: entry?.skipped_reason === "bundle_already_on_play" ? "bundle_already_on_play" : "not_acknowledged",
-    }),
-    post_commit_get: false,
-  };
+  const edit = entry?.edit === "promotion" || entry?.edit === "existing_bundle" ? { edit: entry.edit } : {};
+  const base = { present: true, sha256: asset.file_hash, size_bytes: asset.size_bytes, ...edit };
+  if (uploaded) {
+    return { ...base, uploaded: true, provider_ack: `deobfuscationFile.symbolType=${symbolType}`, post_commit_get: false };
+  }
+  if (entry?.attempt === "rejected") {
+    const pick = (value: unknown) => typeof value === "string" && REJECTION_FIELD_RE.test(value) ? value : undefined;
+    const httpStatus = Number.isInteger(entry.http_status) && entry.http_status! >= 100 && entry.http_status! <= 599
+      ? entry.http_status : undefined;
+    const fields = {
+      stage: pick(entry.stage),
+      error_code: pick(entry.error_code),
+      http_status: httpStatus,
+      provider_reason: pick(entry.provider_reason),
+      provider_cause: pick(entry.provider_cause),
+    };
+    return {
+      ...base,
+      uploaded: false,
+      attempt: "rejected",
+      ...Object.fromEntries(Object.entries(fields).filter(([, value]) => value !== undefined)),
+      provider_ack: null,
+      post_commit_get: false,
+    };
+  }
+  return { ...base, uploaded: false, attempt: "not_acknowledged", provider_ack: null, post_commit_get: false };
 }
 
 function receiptReleaseNotes(result: PlayReleaseNotesResult, acknowledged: unknown) {
@@ -787,19 +817,25 @@ export async function handlePromotePlayDistribution(c: AdminContext) {
         action: "promote",
         approvals: [{ approver: actor, at: new Date().toISOString(), scope: input.track }],
         // Google exposes no post-commit GET for deobfuscation files; the only
-        // provider acknowledgement is the in-edit upload response, checked by
-        // the adapter against the requested symbolType. Recorded from what the
-        // adapter reported, so a re-promote that skipped the bundle (and with it
-        // the files) says so instead of claiming an upload.
-        symbols: symbolsAsset ? receiptDeobfuscationFile(symbolsAsset, "nativeCode", reportedFiles) : null,
+        // provider acknowledgement is the upload response, checked by the adapter
+        // against the requested symbolType. Recorded from what the adapter
+        // reported: uploaded, rejected (with the provider's identifiers), or not
+        // acknowledged. The files are attempted even when the bundle was already
+        // on Play, so "bundle already on Play" is never a reason recorded here.
+        symbols: symbolsAsset
+          ? receiptDeobfuscationFile(symbolsAsset, "nativeCode", reportedFiles)
+          : { present: false, uploaded: false, skipped_reason: "no_symbols_asset" },
         mapping: mappingAsset
-          ? { present: true, ...receiptDeobfuscationFile(mappingAsset, "proguard", reportedFiles) }
-          : { present: false, reason: "no_mapping_asset" },
+          ? receiptDeobfuscationFile(mappingAsset, "proguard", reportedFiles)
+          : { present: false, uploaded: false, skipped_reason: "no_mapping_asset" },
         release_notes: receiptReleaseNotes(releaseNotes, reported.release_notes_languages),
         play: {
           edit_id: readback.edit_id,
           track: input.track,
           rollout_percent: input.rollout_percent ?? 100,
+          // Version dimension only: says nothing about the deobfuscation files above.
+          ...(typeof (reported as { bundle_uploaded?: unknown }).bundle_uploaded === "boolean"
+            ? { bundle_uploaded: (reported as { bundle_uploaded: boolean }).bundle_uploaded } : {}),
           play_version_code: artifact.version_code,
           api_readback: {
             package: readback.package_name,

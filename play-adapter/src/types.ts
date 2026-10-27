@@ -73,14 +73,32 @@ export interface PromotionRpcInput extends TrackMaximumRpcInput {
   releaseNotes?: LocalizedReleaseNote[] | null;
 }
 
-/** What happened to one declared deobfuscation file during promote(). */
+/**
+ * What happened to one declared deobfuscation file during promote().
+ *
+ * uploaded:true  -> Google acknowledged the requested symbolType.
+ * attempt:"rejected" -> Hands tried and Google refused (only reported, not
+ *   thrown, when the bundle was already on Play; see GooglePlayClient.promote).
+ *   The fields are identifiers this adapter derived, never Google's prose.
+ */
 export interface DeobfuscationFileResult {
   symbol_type: DeobfuscationSymbolType;
   sha256: string;
   size_bytes: number;
   uploaded: boolean;
-  /** Present only when uploaded=false. */
-  skipped_reason?: "bundle_already_on_play";
+  /** "existing_bundle" when attached to a bundle Play already held, in its own edit. */
+  edit?: "promotion" | "existing_bundle";
+  attempt?: "rejected";
+  /** Adapter stage that failed: upload_symbols | upload_mapping | commit_edit. */
+  stage?: string;
+  /** Adapter error code, e.g. play_api_rejected or play_mapping_malformed. */
+  error_code?: string;
+  /** Google's HTTP status, when Google answered. */
+  http_status?: number;
+  /** Google's documented reason identifiers (allowlisted), e.g. insufficientPermissions. */
+  provider_reason?: string;
+  /** Classified cause of Google's message (e.g. EDIT_IN_REVIEW, OTHER). */
+  provider_cause?: string;
 }
 
 export type AdapterResult<T> =
