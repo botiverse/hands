@@ -79,6 +79,13 @@ describe("migration handshake gate — the reject branch, exercised", () => {
     ["empty", ""],
     ["a bare id", "f9eca512"],
     ["an off-surface thread", "#joint-hands:dcbb01c3 msg=f9eca512"],
+    // Cross-mismatch: a real surface paired with a different thread's id shape, and
+    // a recognised thread id attached to the wrong surface. Once the surface is an
+    // alternation, these are the mistakes most likely to slip through -- the gate
+    // rejects both today, and these pin that so a later edit to the pattern cannot
+    // quietly start accepting half of each pair.
+    ["a surface whose thread id is not in the set", "#joint-hands:00000000 msg=deadbeef"],
+    ["a thread id attached to the wrong surface", "#proj-hands:85c491c0 msg=deadbeef"],
     ["a malformed canonical id", "#proj-hands:3308eb65 msg=f9eca512-extra"],
     ["a double-space separator", "#proj-hands:3308eb65  msg=f9eca512"],
     ["a tab separator", "#proj-hands:3308eb65\tmsg=f9eca512"],
