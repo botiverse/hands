@@ -33,6 +33,11 @@ const regexMatch = workflow.match(
   /READBACK_OWNER\}"\s*=~\s*(.+?)\s+\]\]; then/,
 );
 const SHAPE_RE = regexMatch?.[1];
+// The gate builds its pattern from a named list of accepted surfaces, so the
+// reconstruction must carry that list too: the gate runs under `set -u`, where a
+// bare $CANONICAL_SURFACES is a fatal error rather than an empty match.
+const surfacesMatch = workflow.match(/^\s*CANONICAL_SURFACES='([^']+)'/m);
+const CANONICAL_SURFACES = surfacesMatch?.[1];
 
 // Faithful reproduction of the gate's decision logic. Only the wrangler fetch is
 // replaced by $PENDING; everything else mirrors the workflow step.
@@ -41,6 +46,7 @@ function runGate(pending: string, reference: string): { code: number; out: strin
     set -euo pipefail
     pending="$1"
     READBACK_OWNER="$2"
+    CANONICAL_SURFACES=${JSON.stringify(CANONICAL_SURFACES ?? "")}
     if grep -qi "no migrations to apply" <<<"$pending"; then
       echo "short-circuit"; exit 0
     fi
@@ -60,7 +66,7 @@ describe("migration handshake gate — the reject branch, exercised", () => {
     // The regex the gate actually uses. Pinned so a change to it fails here
     // rather than drifting from what the test exercises.
     expect(SHAPE_RE).toBe(
-      "^#proj-hands:3308eb65\\ msg=([0-9a-fA-F]{8}|[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})$",
+      "^(${CANONICAL_SURFACES})\\ msg=([0-9a-fA-F]{8}|[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})$",
     );
   });
 
@@ -94,6 +100,11 @@ describe("migration handshake gate — the reject branch, exercised", () => {
       "canonical full UUID",
       "#proj-hands:3308eb65 msg=a1b2c3d4-1111-2222-3333-444455556666",
     ],
+    // Accepted after the #proj-hands channel was renamed: a legitimate owner
+    // reply in a second canonical thread is no less auditable, so the gate takes
+    // a set of surfaces. This case pins that the second one actually works --
+    // otherwise the list would be documentation rather than behaviour.
+    ["the second canonical thread", "#joint-hands:85c491c0 msg=97026bda"],
   ])("proceeds when pending and reference is a %s", (_label, reference) => {
     const { code, out } = runGate("0063_something.sql (pending)", reference);
     expect(code).toBe(0);

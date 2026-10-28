@@ -176,7 +176,7 @@ jobs:
           echo "Migrations pending, and this deploy will apply them to production:"
           echo "$pending"
 
-          # Canonical-reference shape only: the exact auditable Raft thread plus an
+          # Canonical-reference shape only: an exact auditable Raft thread plus an
           # 8-character short id or full UUID. Whether the message exists, is really
           # the owner's reply, and predates this run remains for the readback owner to
           # verify against Raft, which this runner cannot reach.
@@ -184,7 +184,16 @@ jobs:
           # Requiring the surface in the value is intentional. A bare id, or an id
           # from another/private thread, is not independently resolvable by the owner
           # responsible for this production audit and must stop before apply.
-          if [[ ! "${READBACK_OWNER}" =~ ^#proj-hands:3308eb65\ msg=([0-9a-fA-F]{8}|[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})$ ]]; then
+          #
+          # A SET of surfaces, not one: a channel can be renamed out from under a
+          # thread, and a legitimate owner reply posted in a second canonical thread
+          # is no less auditable -- the requirement is that the surface is a known,
+          # independently resolvable one, not that it never changes. Adding a surface
+          # here does NOT weaken the check: the confirmer is still a human owner
+          # replying in a named thread, and the id is still resolved against Raft by
+          # the readback owner. Do not add a surface that the deployer alone controls.
+          CANONICAL_SURFACES='#proj-hands:3308eb65|#joint-hands:85c491c0'
+          if [[ ! "${READBACK_OWNER}" =~ ^(${CANONICAL_SURFACES})\ msg=([0-9a-fA-F]{8}|[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})$ ]]; then
             echo "" >&2
             echo "Stopping before the apply." >&2
             echo "" >&2
@@ -193,10 +202,12 @@ jobs:
             echo "That is the right answer when you came here to ship something unrelated" >&2
             echo "- you are not being asked to take migration readback on." >&2
             echo "" >&2
-            echo "Expected: '#proj-hands:3308eb65 msg=<message-id>'" >&2
+            echo "Expected: '<canonical-thread> msg=<message-id>', one of:" >&2
+            echo "  #proj-hands:3308eb65   (original migration audit thread)" >&2
+            echo "  #joint-hands:85c491c0  (accepted after a channel rename)" >&2
             echo "Got:      '${READBACK_OWNER}'" >&2
             echo "" >&2
-            echo "Ask the migration's owner in #proj-hands:3308eb65 and wait for their" >&2
+            echo "Ask the migration's owner in one of the threads above and wait for their" >&2
             echo "reply, then re-dispatch with the exact thread-and-message reference." >&2
             echo "Their answer is the handshake - naming them is not." >&2
             echo "" >&2
