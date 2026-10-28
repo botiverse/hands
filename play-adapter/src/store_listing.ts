@@ -358,6 +358,11 @@ function editStateRejection(error: unknown, stage: "validate_edit" | "commit_edi
       "Another change for this app is in review on Google Play (Hands commits with ERROR_IF_IN_REVIEW and never cancels it); the store listing was not committed. Wait for the review to finish, then push again.",
       error.cause_detail);
   }
+  if (cause === "APP_REVIEW_NOT_MANAGED") {
+    return new PlayAdapterError(409, "play_review_not_managed",
+      "This app does not allow changes to be stored without sending them for review, and another change is already in review; the store listing was not committed. Retrying with or without changes_not_sent_for_review will fail the same way. Wait for the open review to finish, or enable managed publishing for this app once.",
+      error.cause_detail);
+  }
   if (cause === "CHANGES_NOT_SENT_FOR_REVIEW") {
     return new PlayAdapterError(409, "play_changes_not_sent_for_review",
       "Google Play requires this app's changes to be sent for review from Play Console; the store listing was not committed. Push again with changes_not_sent_for_review=true to add it to the pending changes, then send them for review in Play Console.",

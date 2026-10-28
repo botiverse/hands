@@ -573,7 +573,7 @@ export async function handlePushPlayStoreListing(c: AdminContext) {
           result: { status: "failed-closed", failure_code: code, ...(cause ? { cause } : {}) } },
       });
       const status = reply?.error?.status;
-      if (code === "play_edit_in_review" || code === "play_changes_not_sent_for_review") {
+      if (code === "play_edit_in_review" || code === "play_changes_not_sent_for_review" || code === "play_review_not_managed") {
         return fail(c, 409, { code: "edit_in_review", failure_code: code, message: reply.error.message, receipt_id: receiptId, ...(cause ? { cause } : {}) });
       }
       if (code === "play_edit_state_unknown" || code === "play_commit_ambiguous") {

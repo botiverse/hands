@@ -940,6 +940,22 @@ describe("changesNotSentForReview and sendForReview", () => {
     expect(commits(fixture)).toEqual(["edit-1?changesInReviewBehavior=ERROR_IF_IN_REVIEW&changesNotSentForReview=true"]);
   });
 
+  it("with the flag, 'parameter must not be set' is play_review_not_managed, not 'send it by hand'", async () => {
+    // The app does not allow upload-without-review. Telling the operator to submit
+    // in Console would be the opposite of the remedy, and retrying with or without
+    // the flag cannot succeed until the open review finishes.
+    const fixture = googleFixture({
+      failCommitOf: "edit-1",
+      failCommitMessage:
+        "Changes are sent for review automatically. The query parameter changesNotSentForReview must not be set",
+    });
+    const service = createPlayAdapterService({ fetchImpl: fixture.fetchImpl, nowSeconds: () => NOW });
+    const result = await service.promote(promotion({ changesNotSentForReview: true }), body(), null, environment());
+    expect(result).toMatchObject({ ok: false, error: { status: 409, code: "play_review_not_managed" } });
+    const message = String((result as { error?: { message?: string } }).error?.message ?? "");
+    expect(message).toContain("Retrying with or without changesNotSentForReview will fail the same way");
+  });
+
   it("with the flag, an unrecognised commit rejection is play_edit_state_unknown, never success", async () => {
     const fixture = googleFixture({ failCommitOf: "edit-1", failCommitMessage: "Etwas ist schiefgelaufen." });
     const service = createPlayAdapterService({ fetchImpl: fixture.fetchImpl, nowSeconds: () => NOW });

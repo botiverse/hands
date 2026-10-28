@@ -195,6 +195,13 @@ const commitEditCases: Array<[string, string]> = [
     ["Changes not sent for review because another edit is in review.", "EDIT_IN_REVIEW"],
     // A not-sent message with no review in progress stays CHANGES_NOT_SENT_FOR_REVIEW.
     ["Changes cannot be sent for review automatically; changes were not sent for review.", "CHANGES_NOT_SENT_FOR_REVIEW"],
+    // Google sends two sentences that both name changesNotSentForReview, with
+    // opposite remedies. Collapsing them told the operator to submit by hand when
+    // the app forbids upload-without-review entirely.
+    ["Changes cannot be sent for review automatically. Please set the query parameter changesNotSentForReview to true",
+      "CHANGES_NOT_SENT_FOR_REVIEW"],
+    ["Changes are sent for review automatically. The query parameter changesNotSentForReview must not be set",
+      "APP_REVIEW_NOT_MANAGED"],
   ];
 it.each(commitEditCases)("classifies commit_edit rejection as %s -> %s", async (message, expected) => {
   const { playRejection } = await import("../src/provider_errors");

@@ -248,6 +248,16 @@ describe("Google Play store listing RPC", () => {
     const text = (message: string) => ({ error: { code: 400, message } });
     const cases: Array<[unknown, string]> = [
       [structured("CHANGES_NOT_SENT_FOR_REVIEW"), "play_changes_not_sent_for_review"],
+      // The parameter's subject AND a prohibition must both appear. A bare
+      // prohibition names unrelated refusals, and routing those here would tell
+      // the operator to wait for a review when the real problem is, say, a track
+      // configuration.
+      [structured("changesNotSentForReviewNotAllowed"), "play_review_not_managed"],
+      // A bare prohibition names unrelated refusals. It must NOT be read as
+      // "wait for review"; it is simply unrecognised, which this path reports as
+      // unknown rather than inventing a remedy.
+      [structured("operationNotAllowed"), "play_edit_state_unknown"],
+      [structured("permissionDisallowed"), "play_edit_state_unknown"],
       [structured("CHANGES_IN_REVIEW"), "play_edit_in_review"],
       [structured("REVIEW"), "play_edit_state_unknown"],
       // Not-sent wording that also says a review is in progress: classified by the
@@ -274,8 +284,10 @@ describe("Google Play store listing RPC", () => {
     if (result.ok) return;
     // Both layers, prefixed, in match order (NOT_SENT before IN_REVIEW in each).
     expect(result.error.cause!.tried).toEqual([
+      "structured:/(?:NOT_?SENT_?FOR_?REVIEW.*(?:NOT_?ALLOWED|MUST_?NOT|NOT_?PERMITTED|DISALLOWED)|(?:NOT_?ALLOWED|MUST_?NOT|NOT_?PERMITTED|DISALLOWED).*NOT_?SENT_?FOR_?REVIEW)/i -> APP_REVIEW_NOT_MANAGED",
       "structured:/NOT_?SENT_?FOR_?REVIEW/i -> CHANGES_NOT_SENT_FOR_REVIEW",
       "structured:/(?:^|_)IN_?REVIEW(?:$|_)|InReview/ -> EDIT_IN_REVIEW",
+      "text:/must not be set|must not be provided|not be set on this/i -> APP_REVIEW_NOT_MANAGED",
       "text:/changesNotSentForReview|not ?sent for review|unreviewed/i -> CHANGES_NOT_SENT_FOR_REVIEW",
       "text:/in review|under review|review.*in progress|ERROR_IF_IN_REVIEW/i -> EDIT_IN_REVIEW",
     ]);

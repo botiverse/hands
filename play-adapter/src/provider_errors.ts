@@ -91,6 +91,19 @@ export function playRejection(status: number, body: unknown, stage: string): Pla
 // Same order as the text layer: NOT_SENT_FOR_REVIEW before IN_REVIEW per identifier;
 // when both states are named, EDIT_IN_REVIEW wins (classified by the remedy that works).
 const STRUCTURED_CAUSES: Array<[RegExp, string]> = [
+  // Ordered most-specific first. A reason naming the parameter as NOT ALLOWED
+  // describes the app refusing upload-without-review (sentence B), not a request
+  // to send changes by hand -- but it still contains NOT_SENT_FOR_REVIEW, so the
+  // broad pattern below would claim it first. We do not know whether Google emits
+  // such an identifier; this arm exists so that if it does, the structured layer
+  // cannot silently invert the remedy before the text layer is ever consulted.
+  // BOTH tokens are required: the parameter's subject AND a prohibition. A bare
+  // prohibition names unrelated rejections (operationNotAllowed, permissionDisallowed,
+  // trackNotAllowed...), and routing those here would tell the operator "wait for
+  // review" about a track configuration problem -- more misleading than the generic
+  // rejection it replaced.
+  [/(?:NOT_?SENT_?FOR_?REVIEW.*(?:NOT_?ALLOWED|MUST_?NOT|NOT_?PERMITTED|DISALLOWED)|(?:NOT_?ALLOWED|MUST_?NOT|NOT_?PERMITTED|DISALLOWED).*NOT_?SENT_?FOR_?REVIEW)/i,
+    "APP_REVIEW_NOT_MANAGED"],
   [/NOT_?SENT_?FOR_?REVIEW/i, "CHANGES_NOT_SENT_FOR_REVIEW"],
   [/(?:^|_)IN_?REVIEW(?:$|_)|InReview/, "EDIT_IN_REVIEW"],
 ];
@@ -114,8 +127,12 @@ function classifyStructuredIdentifiers(body: unknown): string | undefined {
       if (pattern.test(id)) { found.add(cause); break; }
     }
   }
-  // Both states named: classify by the remedy that works (wait), as the text layer does.
+  // Several states named: classify by the remedy that works (wait), as the text
+  // layer does. APP_REVIEW_NOT_MANAGED sits between the two because it is also a
+  // "you cannot proceed now" answer, but EDIT_IN_REVIEW still wins when both appear
+  // -- an open review is the narrower reason to wait.
   if (found.has("EDIT_IN_REVIEW")) return "EDIT_IN_REVIEW";
+  if (found.has("APP_REVIEW_NOT_MANAGED")) return "APP_REVIEW_NOT_MANAGED";
   if (found.has("CHANGES_NOT_SENT_FOR_REVIEW")) return "CHANGES_NOT_SENT_FOR_REVIEW";
   return undefined;
 }
@@ -126,7 +143,8 @@ function classifyStructuredIdentifiers(body: unknown): string | undefined {
  * so a new Google wording can be added without guessing what was checked.
  */
 export function editStatePatternsTried(): string[] {
-  const relevant = (cause: string) => cause === "EDIT_IN_REVIEW" || cause === "CHANGES_NOT_SENT_FOR_REVIEW";
+  const relevant = (cause: string) =>
+    cause === "EDIT_IN_REVIEW" || cause === "CHANGES_NOT_SENT_FOR_REVIEW" || cause === "APP_REVIEW_NOT_MANAGED";
   // In match order. Prefix = layer: structured identifiers (error.status,
   // errors[].reason, details[].reason) first, then the message text.
   return [
@@ -239,6 +257,22 @@ function itemKeyIsIdentifier(key: string, value: string): boolean {
 // Order matters: the first match wins, so the more specific causes precede the
 // broader ones. "Version code X has already been used" must read as DUPLICATE_VERSION
 // rather than VERSION_CODE_CONFLICT, because the two have different remedies.
+// Google sends two sentences that both name changesNotSentForReview, with OPPOSITE
+// remedies:
+//   A) "Changes cannot be sent for review automatically. Please set the query
+//      parameter changesNotSentForReview to true"  -> add the parameter
+//   B) "Changes are sent for review automatically. The query parameter
+//      changesNotSentForReview must not be set"     -> remove it; the app does not
+//      allow upload-without-review at all
+// A single /changesNotSentForReview/ test classifies both as (A), which tells the
+// operator to go submit in Console when submitting is exactly what the app forbids.
+// B is therefore matched FIRST on its distinguishing wording. Its remedy is to
+// wait for the in-review change, or to enable managed publishing once -- retrying
+// with or without the flag changes nothing until that review finishes.
+// "sent for review automatically" appears in sentence A too ("Changes cannot be sent
+// for review automatically"), so the only reliable discriminator is what B says about
+// the parameter: it must NOT be set.
+const REVIEW_NOT_MANAGED_TEXT = /must not be set|must not be provided|not be set on this/i;
 const NOT_SENT_TEXT = /changesNotSentForReview|not ?sent for review|unreviewed/i;
 const IN_REVIEW_TEXT = /in review|under review|review.*in progress|ERROR_IF_IN_REVIEW/i;
 
@@ -260,6 +294,9 @@ const PROVIDER_CAUSES: Array<[RegExp, string]> = [
   // hit a not-sent message that mentions a review. A message matching BOTH is
   // decided before this list, by remedy (EDIT_IN_REVIEW): see classifyProviderMessage.
   // Tests pin both directions and the overlap.
+  // Before NOT_SENT_TEXT: sentence B contains the same token as sentence A, so the
+  // narrower pattern has to win or the distinction is lost.
+  [REVIEW_NOT_MANAGED_TEXT, "APP_REVIEW_NOT_MANAGED"],
   [NOT_SENT_TEXT, "CHANGES_NOT_SENT_FOR_REVIEW"],
   [IN_REVIEW_TEXT, "EDIT_IN_REVIEW"],
   // A track whose testers or countries are not configured yet, or a track that does

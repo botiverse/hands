@@ -875,7 +875,7 @@ export async function handlePromotePlayDistribution(c: AdminContext) {
       }, promoteReceipt);
       // Edit-state codes come only from the changes_not_sent_for_review path (the
       // adapter classifies its commit); a default promote keeps today's mapping.
-      if (errorCode === "play_edit_in_review" || errorCode === "play_changes_not_sent_for_review") {
+      if (errorCode === "play_edit_in_review" || errorCode === "play_changes_not_sent_for_review" || errorCode === "play_review_not_managed") {
         return fail(c, 409, { code: "edit_in_review", gate: null, failure_code: errorCode, message: uploadResponse.error.message, receipt_id: receiptId });
       }
       if (errorCode === "play_edit_state_unknown") {
@@ -1086,7 +1086,7 @@ export async function handleSendPlayDistributionForReview(c: AdminContext) {
         ...(cause ? { cause } : {}),
       }, options);
       const message = reply?.error?.message ?? "Play send-for-review failed";
-      if (code === "play_edit_in_review" || code === "play_changes_not_sent_for_review") {
+      if (code === "play_edit_in_review" || code === "play_changes_not_sent_for_review" || code === "play_review_not_managed") {
         return fail(c, 409, { code: "edit_in_review", gate: null, failure_code: code, message, receipt_id: receiptId });
       }
       if (code === "play_edit_state_unknown" || code === "play_commit_ambiguous") {
