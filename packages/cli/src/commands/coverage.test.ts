@@ -160,8 +160,16 @@ describe("builds asset commands reach the manifest endpoints", () => {
     expect(output).toContain("status=failed");
     expect(output).toContain("0.0.0-upload-probe.1");
     expect(output).toContain("assets=0");
-    // And the record must exist before the DELETE is issued.
-    expect(calls.some((call) => call.method === "DELETE")).toBe(true);
+    // The NAME of this test says "before deleting", so assert the ORDER, not
+    // merely that a DELETE happened: the record is only useful if it is read
+    // while the build still exists.
+    const getIndex = calls.findIndex(
+      (call) => call.method === "GET" && call.path === `/api/apps/${APP_ID}/builds/${BUILD_ID}`,
+    );
+    const deleteIndex = calls.findIndex((call) => call.method === "DELETE");
+    expect(getIndex).toBeGreaterThanOrEqual(0);
+    expect(deleteIndex).toBeGreaterThanOrEqual(0);
+    expect(getIndex).toBeLessThan(deleteIndex);
   });
 
   it("builds delete --dry-run reads the build and issues no DELETE", async () => {
