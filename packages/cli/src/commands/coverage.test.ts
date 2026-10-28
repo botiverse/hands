@@ -84,6 +84,25 @@ describe("builds asset commands reach the manifest endpoints", () => {
     });
   });
 
+  it("builds delete DELETEs the build path", async () => {
+    const calls = await run(["builds", "delete", APP_ID, BUILD_ID]);
+    expect(calls).toContainEqual({
+      method: "DELETE",
+      path: `/api/apps/${APP_ID}/builds/${BUILD_ID}`,
+    });
+  });
+
+  it("builds delete --dry-run reads the build and issues no DELETE", async () => {
+    const calls = await run(["builds", "delete", APP_ID, BUILD_ID, "--dry-run"]);
+    expect(calls).toContainEqual({
+      method: "GET",
+      path: `/api/apps/${APP_ID}/builds/${BUILD_ID}`,
+    });
+    // The whole point of --dry-run: nothing is removed, so a 409 is discovered
+    // before anyone decides to delete rather than after a failed attempt.
+    expect(calls.some((call) => call.method === "DELETE")).toBe(false);
+  });
+
   it("delete-asset DELETEs the asset path", async () => {
     const calls = await run(["builds", "delete-asset", APP_ID, BUILD_ID, ASSET_ID]);
     expect(calls).toContainEqual({

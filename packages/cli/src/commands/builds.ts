@@ -753,6 +753,65 @@ export function registerBuildCommands(program: Command): void {
     );
 
   builds
+    .command("delete <appIdOrSlug> <buildId>")
+    .description(
+      "Delete a build that has never been released and has no assets. " +
+        "Requires app admin. Hands refuses (409) while any release references the build " +
+        "or any asset is attached, so this can only remove a build that never shipped -- " +
+        "a test leftover, not a release record.",
+    )
+    .option("--json", "Output JSON.", false)
+    .option("--dry-run", "Check whether the build can be deleted without deleting it.", false)
+    .action(
+      async (
+        appIdOrSlug: string,
+        buildId: string,
+        opts: { json?: boolean; dryRun?: boolean },
+      ) => {
+        const id = await resolveAppId(appIdOrSlug);
+        const asJson = shouldOutputJson(program, jsonRequested(program, opts.json));
+
+        if (opts.dryRun) {
+          // Read the build so the refusal reasons can be reported before anyone
+          // commits to the delete: a 409 later is far less useful than knowing
+          // up front which condition blocks it.
+          const detail = await apiRequest<{ build?: Record<string, unknown> }>(
+            `/api/apps/${id}/builds/${buildId}`,
+          );
+          const build = detail.build ?? {};
+          const report = {
+            build_id: buildId,
+            status: build.status ?? null,
+            version_name: build.version_name ?? null,
+            version_code: build.version_code ?? null,
+            checked: "server enforces: no releases referencing this build, no assets attached",
+          };
+          if (asJson) {
+            console.log(JSON.stringify(report, null, 2));
+            return;
+          }
+          console.log(
+            `Build ${buildId}: status=${String(report.status)} version=${String(report.version_name)} (${String(report.version_code)})`,
+          );
+          console.log("A delete would be refused if any release references it or any asset is attached.");
+          return;
+        }
+
+        const result = await apiRequest<Record<string, unknown>>(
+          `/api/apps/${id}/builds/${buildId}`,
+          { method: "DELETE" },
+        );
+        if (asJson) {
+          console.log(JSON.stringify(result, null, 2));
+          return;
+        }
+        console.log(
+          `Deleted build ${buildId} of ${appIdOrSlug}. It had no releases and no assets.`,
+        );
+      },
+    );
+
+  builds
     .command("publish-version <appIdOrSlug>")
     .description("Register an immutable externally hosted Node/CLI build target.")
     .requiredOption("--version-name <version>", "Release version name.")
