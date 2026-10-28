@@ -97,7 +97,13 @@ const STRUCTURED_CAUSES: Array<[RegExp, string]> = [
   // broad pattern below would claim it first. We do not know whether Google emits
   // such an identifier; this arm exists so that if it does, the structured layer
   // cannot silently invert the remedy before the text layer is ever consulted.
-  [/(?:NOT_?ALLOWED|MUST_?NOT|NOT_?PERMITTED|DISALLOWED)/i, "APP_REVIEW_NOT_MANAGED"],
+  // BOTH tokens are required: the parameter's subject AND a prohibition. A bare
+  // prohibition names unrelated rejections (operationNotAllowed, permissionDisallowed,
+  // trackNotAllowed...), and routing those here would tell the operator "wait for
+  // review" about a track configuration problem -- more misleading than the generic
+  // rejection it replaced.
+  [/(?:NOT_?SENT_?FOR_?REVIEW.*(?:NOT_?ALLOWED|MUST_?NOT|NOT_?PERMITTED|DISALLOWED)|(?:NOT_?ALLOWED|MUST_?NOT|NOT_?PERMITTED|DISALLOWED).*NOT_?SENT_?FOR_?REVIEW)/i,
+    "APP_REVIEW_NOT_MANAGED"],
   [/NOT_?SENT_?FOR_?REVIEW/i, "CHANGES_NOT_SENT_FOR_REVIEW"],
   [/(?:^|_)IN_?REVIEW(?:$|_)|InReview/, "EDIT_IN_REVIEW"],
 ];
@@ -121,8 +127,12 @@ function classifyStructuredIdentifiers(body: unknown): string | undefined {
       if (pattern.test(id)) { found.add(cause); break; }
     }
   }
-  // Both states named: classify by the remedy that works (wait), as the text layer does.
+  // Several states named: classify by the remedy that works (wait), as the text
+  // layer does. APP_REVIEW_NOT_MANAGED sits between the two because it is also a
+  // "you cannot proceed now" answer, but EDIT_IN_REVIEW still wins when both appear
+  // -- an open review is the narrower reason to wait.
   if (found.has("EDIT_IN_REVIEW")) return "EDIT_IN_REVIEW";
+  if (found.has("APP_REVIEW_NOT_MANAGED")) return "APP_REVIEW_NOT_MANAGED";
   if (found.has("CHANGES_NOT_SENT_FOR_REVIEW")) return "CHANGES_NOT_SENT_FOR_REVIEW";
   return undefined;
 }
