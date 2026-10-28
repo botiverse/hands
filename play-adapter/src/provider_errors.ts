@@ -239,6 +239,22 @@ function itemKeyIsIdentifier(key: string, value: string): boolean {
 // Order matters: the first match wins, so the more specific causes precede the
 // broader ones. "Version code X has already been used" must read as DUPLICATE_VERSION
 // rather than VERSION_CODE_CONFLICT, because the two have different remedies.
+// Google sends two sentences that both name changesNotSentForReview, with OPPOSITE
+// remedies:
+//   A) "Changes cannot be sent for review automatically. Please set the query
+//      parameter changesNotSentForReview to true"  -> add the parameter
+//   B) "Changes are sent for review automatically. The query parameter
+//      changesNotSentForReview must not be set"     -> remove it; the app does not
+//      allow upload-without-review at all
+// A single /changesNotSentForReview/ test classifies both as (A), which tells the
+// operator to go submit in Console when submitting is exactly what the app forbids.
+// B is therefore matched FIRST on its distinguishing wording. Its remedy is to
+// wait for the in-review change, or to enable managed publishing once -- retrying
+// with or without the flag changes nothing until that review finishes.
+// "sent for review automatically" appears in sentence A too ("Changes cannot be sent
+// for review automatically"), so the only reliable discriminator is what B says about
+// the parameter: it must NOT be set.
+const REVIEW_NOT_MANAGED_TEXT = /must not be set|must not be provided|not be set on this/i;
 const NOT_SENT_TEXT = /changesNotSentForReview|not ?sent for review|unreviewed/i;
 const IN_REVIEW_TEXT = /in review|under review|review.*in progress|ERROR_IF_IN_REVIEW/i;
 
@@ -260,6 +276,9 @@ const PROVIDER_CAUSES: Array<[RegExp, string]> = [
   // hit a not-sent message that mentions a review. A message matching BOTH is
   // decided before this list, by remedy (EDIT_IN_REVIEW): see classifyProviderMessage.
   // Tests pin both directions and the overlap.
+  // Before NOT_SENT_TEXT: sentence B contains the same token as sentence A, so the
+  // narrower pattern has to win or the distinction is lost.
+  [REVIEW_NOT_MANAGED_TEXT, "APP_REVIEW_NOT_MANAGED"],
   [NOT_SENT_TEXT, "CHANGES_NOT_SENT_FOR_REVIEW"],
   [IN_REVIEW_TEXT, "EDIT_IN_REVIEW"],
   // A track whose testers or countries are not configured yet, or a track that does
